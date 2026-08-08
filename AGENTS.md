@@ -148,10 +148,19 @@ npm test              # builds, then node --test via tsx — no $DISPLAY needed
 npm run lint          # eslint, over the JavaScript only — see "Linting"
 npm run format        # prettier --write
 npm run format:check  # what CI runs
-npm run typecheck     # tsc over src, test, examples and scripts
+npm run typecheck     # builds, then tsc over src, test, examples, scripts
 npm run check:package # exports map + tree-shaking contract (needs a build)
 npm run examples:sparkline   # needs a real $DISPLAY
 ```
+
+`pretest` and `pretypecheck` both build, and both have to. `package.test.ts`
+imports `@react-x11/components` **by name** — the self-reference Node allows
+a package with an `exports` map — because that is the only way to exercise
+the resolution an installed copy actually gets. That name resolves to
+`dist/`, so without a build the packaging test cannot run and `tsc` cannot
+even find the module. Do not "optimise" either hook away: the failure is a
+clean checkout where `npm run typecheck` reports two missing modules that
+are not missing.
 
 Tests are headless: react-x11's harness runs node-x11's pure-JavaScript X
 server in-process. Use `{ backend: 'mock' }` unless a test genuinely needs

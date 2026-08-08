@@ -43,6 +43,7 @@
     "build": "tsc -p tsconfig.build.json",
     "pretest": "npm run build",
     "test": "tsx --test test/*.test.ts",
+    "pretypecheck": "npm run build",
     "typecheck": "tsc -p tsconfig.json",
     "lint": "eslint .",
     "format": "prettier --write .",
