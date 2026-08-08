@@ -203,6 +203,16 @@ release-please on `master` opens the release PR; merging it tags, and the
 workflow publishes with npm trusted publishing (OIDC), so there is no token
 secret in this repo.
 
+It runs in **manifest mode**: the strategy is in `release-please-config.json`
+and the current version in `.release-please-manifest.json`, not in the
+workflow. `release-please-action@v5` accepts no per-package inputs — pass
+`bump-minor-pre-major` to the action and it warns and ignores it, which looks
+like it worked until the release PR proposes the wrong version. Change
+release behaviour in the config file.
+
+`bump-minor-pre-major` is what keeps a `feat:` bumping the minor instead of
+jumping to 1.0.0. Stay in 0.x until the API has actually been used.
+
 Two one-time setup steps, neither of which the workflow can do:
 
 1. **The first publish must be manual.** Trusted publishing binds to a
