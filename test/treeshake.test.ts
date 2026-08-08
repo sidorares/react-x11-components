@@ -25,9 +25,21 @@ import * as esbuild from 'esbuild';
 
 const ROOT = path.resolve(fileURLToPath(import.meta.url), '../..');
 
-/** Export name -> a string only that component's modules contain. Element
- * names make good markers: they survive minification because they are data. */
-const COMPONENTS = [{ exportName: 'Sparkline', marker: 'sparkline' }];
+/**
+ * One entry per component: an export to pull, the subpath it also lives at,
+ * and a string only that component's modules contain. Good markers are data
+ * rather than identifiers — an element name, an aria-label, a D-Bus name —
+ * because data survives minification and identifiers do not.
+ */
+const COMPONENTS = [
+  { exportName: 'Sparkline', dir: 'sparkline', marker: 'sparkline' },
+  { exportName: 'Calendar', dir: 'calendar', marker: 'Previous month' },
+  {
+    exportName: 'DesktopCalendar',
+    dir: 'desktop-calendar',
+    marker: 'org.gnome.evolution.dataserver',
+  },
+];
 
 async function bundle(contents: string): Promise<string> {
   const result = await esbuild.build({
@@ -37,8 +49,11 @@ async function bundle(contents: string): Promise<string> {
     write: false,
     minify: true,
     treeShaking: true,
-    // peers: an app already has these, and what is under test is our code
-    external: ['react', 'react-x11', 'react-x11/*'],
+    // peers: an app already has these, and what is under test is our code.
+    // `ical.js` is an optional dependency the app installs (or does not), and
+    // it is reached through a dynamic import — bundling a copy of it here
+    // would measure its size rather than ours.
+    external: ['react', 'react-x11', 'react-x11/*', 'ical.js'],
     logLevel: 'silent',
   });
   const [output] = result.outputFiles ?? [];
@@ -76,8 +91,8 @@ test('naming one component does not pull in the others', async () => {
 });
 
 test('each component is also importable on its own', async () => {
-  for (const { exportName } of COMPONENTS) {
-    const subpath = `./dist/${exportName.toLowerCase()}/index.js`;
+  for (const { exportName, dir } of COMPONENTS) {
+    const subpath = `./dist/${dir}/index.js`;
     const out = await bundle(
       `import { ${exportName} } from '${subpath}';\n` +
         `globalThis.__keep = ${exportName};\n`,

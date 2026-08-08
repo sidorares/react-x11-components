@@ -8,3 +8,62 @@
 // consumer of the barrel and takes the whole package into their bundle.
 export { Sparkline, SPARKLINE_ELEMENT } from './sparkline/index.js';
 export type { SparklineProps } from './sparkline/index.js';
+
+export {
+  Calendar,
+  DatePicker,
+  CALENDAR_WIDTH,
+  CALENDAR_HEIGHT,
+  // The day vocabulary the calendar props speak. An app that renders one
+  // almost always does a little of the same arithmetic to decide what to
+  // block or what to mark, so it comes out through the barrel too.
+  addDays,
+  addMonths,
+  clampDay,
+  dayDate,
+  dayParts,
+  firstOfMonth,
+  formatDay,
+  formatDayRange,
+  formatMonth,
+  localeWeekStart,
+  monthGrid,
+  monthOf,
+  toDay,
+  toMonth,
+  today,
+  weekdayLabels,
+} from './calendar/index.js';
+export type {
+  CalendarProps,
+  SingleCalendarProps,
+  RangeCalendarProps,
+  CalendarDayState,
+  CalendarHandle,
+  DatePickerProps,
+  DateRange,
+  DateRangeInput,
+  CalendarDay,
+  CalendarMonth,
+  DayInput,
+  DayParts,
+  WidgetChangeEvent,
+} from './calendar/index.js';
+
+export {
+  DesktopCalendar,
+  IcalUnavailableError,
+  byDay,
+  parseKeyFile,
+  useDesktopCalendarEvents,
+} from './desktop-calendar/index.js';
+export type {
+  DesktopCalendarChange,
+  DesktopCalendarError,
+  DesktopCalendarInfo,
+  DesktopCalendarStatus,
+  DesktopEvent,
+  EventsResult,
+  UseDesktopCalendarEventsOptions,
+  UseDesktopCalendarEventsResult,
+} from './desktop-calendar/index.js';

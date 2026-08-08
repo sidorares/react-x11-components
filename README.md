@@ -109,9 +109,62 @@ import type { SparklineProps } from '@react-x11/components';
 
 ## Components
 
-| Component   | Import                            |                                                |
-| ----------- | --------------------------------- | ---------------------------------------------- |
-| `Sparkline` | `@react-x11/components/sparkline` | A bare line chart. Needs a width and a height. |
+| Component    | Import                                   |                                                       |
+| ------------ | ---------------------------------------- | ----------------------------------------------------- |
+| `Calendar`   | `@react-x11/components/calendar`         | A month grid: one date or a range, any day blockable. |
+| `DatePicker` | `@react-x11/components/calendar`         | That calendar on a popup, behind a field.             |
+| `Sparkline`  | `@react-x11/components/sparkline`        | A bare line chart. Needs a width and a height.        |
+| _(hook)_     | `@react-x11/components/desktop-calendar` | The user's real calendar events, over D-Bus.          |
+
+## The user's real calendar
+
+`useDesktopCalendarEvents` reads the calendars the desktop already has —
+Google, Microsoft, CalDAV, local — through Evolution Data Server over D-Bus.
+**Your app never sees a credential and never runs an OAuth flow**, because the
+desktop did that already, in Settings.
+
+```jsx
+import { Calendar, useDesktopCalendarEvents } from '@react-x11/components';
+
+function Month({ from, to }) {
+  const { byDay } = useDesktopCalendarEvents({ from, to, watch: true });
+
+  return (
+    <Calendar
+      dayContent={(day, state) =>
+        (byDay.get(day) ?? []).slice(0, 3).map((ev, i) => (
+          <box
+            key={i}
+            style={{
+              width: 4,
+              height: 4,
+              borderRadius: 2,
+              backgroundColor: state.selected
+                ? state.color
+                : (ev.calendar.color ?? '$accent'),
+            }}
+          />
+        ))
+      }
+    />
+  );
+}
+```
+
+The keys `byDay` uses are exactly the `'YYYY-MM-DD'` days `dayContent` is
+handed, so nothing sits between the two.
+
+Expanding recurring events needs [`ical.js`](https://github.com/kewisch/ical.js),
+which is an **optional** dependency — install it if you want events:
+
+```bash
+npm install ical.js
+```
+
+Without it, or with no session bus, or on a desktop with no Evolution Data
+Server, `status` is `'unavailable'` and the calendar simply renders without
+dots. None of those is an error; they are ordinary states of a healthy
+machine. `npm run examples:calendar` in this repo is the whole thing working.
 
 ## Roadmap
 

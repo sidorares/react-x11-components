@@ -32,6 +32,14 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
+    "./calendar": {
+      "types": "./dist/calendar/index.d.ts",
+      "default": "./dist/calendar/index.js"
+    },
+    "./desktop-calendar": {
+      "types": "./dist/desktop-calendar/index.d.ts",
+      "default": "./dist/desktop-calendar/index.js"
+    },
     "./sparkline": {
       "types": "./dist/sparkline/index.d.ts",
       "default": "./dist/sparkline/index.js"
@@ -49,6 +57,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "check:package": "tsx scripts/check-package.ts",
+    "examples:calendar": "tsx examples/calendar.tsx",
     "examples:sparkline": "tsx examples/sparkline.tsx",
     "prepack": "npm run build"
   },
@@ -71,5 +80,8 @@
   },
   "publishConfig": {
     "access": "public"
+  },
+  "optionalDependencies": {
+    "ical.js": "^2.2.1"
   }
 }
