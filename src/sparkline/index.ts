@@ -7,12 +7,22 @@
 // design, not a shortcut. Nothing in the package registers anything until
 // an app imports the component that needs it, so `sideEffects: false` stays
 // honest: an app that never renders a sparkline ships none of this. Do not
-// move registration up into `../index.js` — that is the one edit that would
+// move registration up into `../index.ts` — that is the one edit that would
 // make the barrel pull every component into every bundle.
 import React from 'react';
+import type { ReactElement } from 'react';
 import { registerElement, registeredElements } from 'react-x11/host';
 
+// Loads the module the JSX augmentation at the bottom of this file targets.
+// Nothing in `src/` writes JSX, so without this the build program never
+// resolves `react-x11/jsx-runtime` and the augmentation is an error rather
+// than an addition. Type-only, so it is erased and costs no bundle.
+import type {} from 'react-x11/jsx-runtime';
+
 import { ELEMENT, SparklineNode } from './node.js';
+import type { SparklineProps } from './node.js';
+
+export type { SparklineProps };
 
 // Idempotent on purpose. `registerElement` throws on a second registration
 // without `override`, which is the right default for two *packages* fighting
@@ -43,8 +53,20 @@ if (!registeredElements().includes(ELEMENT)) {
  * an app imports (and therefore the thing that triggers registration), and
  * to be the seam if this ever grows props that are not the element's.
  */
-export function Sparkline(props) {
+export function Sparkline(props: SparklineProps): ReactElement {
   return React.createElement(ELEMENT, props);
 }
 
+/** The host element name, for apps that would rather write `<sparkline>`. */
 export { ELEMENT as SPARKLINE_ELEMENT };
+
+// Importing this module teaches JSX the element too, so `<sparkline>` is a
+// typed tag and not an error. This is the module-augmentation shape
+// react-x11's docs/typescript.md prescribes for a third-party element.
+declare module 'react-x11/jsx-runtime' {
+  namespace JSX {
+    interface IntrinsicElements {
+      sparkline: SparklineProps;
+    }
+  }
+}

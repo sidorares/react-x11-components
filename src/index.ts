@@ -7,3 +7,4 @@
 // here (a registration, a theme install, a feature probe) runs for every
 // consumer of the barrel and takes the whole package into their bundle.
 export { Sparkline, SPARKLINE_ELEMENT } from './sparkline/index.js';
+export type { SparklineProps } from './sparkline/index.js';

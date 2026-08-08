@@ -56,18 +56,29 @@ element.
 ## Layout
 
 - `src/<component>/` — **one directory per component.** Each has an
-  `index.js` (the React component, and the `registerElement` call if it has
-  one), `index.d.ts` (hand-written; nothing here is compiled), and whatever
-  private modules it needs. No component imports another component.
-- `src/index.js` — the convenience barrel. Re-exports only. Never put
+  `index.ts` (the React component, its props interface, and the
+  `registerElement` call if it has one) and whatever private modules it
+  needs. No component imports another component.
+- `src/index.ts` — the convenience barrel. Re-exports only. Never put
   anything with a side effect here.
-- `test/` — `node --test` files, one per component plus the repo-wide
-  guards (`treeshake.test.js`, `package.test.js`).
+- `dist/` — **the build output, and what ships.** `tsc` writes it, git
+  ignores it, and nothing in the repo edits it by hand.
+- `test/` — `node --test` files run through `tsx`, one per component plus
+  the repo-wide guards (`treeshake.test.ts`, `package.test.ts`).
 - `test/types/` — type-level tests, compiled by `npm run typecheck`.
-- `scripts/check-package.mjs` — the exports-map/publishability check that
-  stands in for a build step.
+- `scripts/check-package.ts` — the exports-map/publishability check. `tsc`
+  is the build now, but it has no opinion about the exports map, so this
+  still runs.
 - `examples/` — one runnable file per component. These need a real
   `$DISPLAY`; CI does not run them.
+
+Two tsconfigs, and the split matters. `tsconfig.json` typechecks
+_everything_ — `src`, `test`, `examples`, `scripts` — and emits nothing;
+it is what `npm run typecheck` and your editor use. `tsconfig.build.json`
+extends it, narrows `include` to `src`, and is the only config that writes
+files. It also sets `types: []`, so a `process` or a `Buffer` that wanders
+into `src/` fails the build instead of becoming a `@types/node` dependency
+a consumer has to satisfy.
 
 `src/sparkline/` is the worked example of all of the above, and deliberately
 small. It is also the element react-x11's own `docs/extending.md` uses to
@@ -77,19 +88,19 @@ illustrate `registerElement`, now shipped for real.
 
 An app that uses one component and a bundler must pay for one component.
 That is a promise the package makes, so it is enforced by
-`test/treeshake.test.js` rather than left to good intentions.
+`test/treeshake.test.ts` rather than left to good intentions.
 
 What that means in practice:
 
 1. **`"sideEffects": false` stays true.** Every module must be safe to drop
    when nothing imports its exports.
-2. **A component registers its element in its own `index.js`, at module
+2. **A component registers its element in its own `index.ts`, at module
    scope.** That is the one side effect the design relies on, and it is fine
    precisely because it lives in the module a bundler keeps only when the
-   component is used. Hoisting a registration into `src/index.js` is the
+   component is used. Hoisting a registration into `src/index.ts` is the
    single edit that would drag every component into every bundle.
-3. **Every component gets its own subpath export.** `check-package.mjs`
-   fails the build if a `src/<name>/index.js` has no `./<name>` entry — the
+3. **Every component gets its own subpath export.** `check-package.ts`
+   fails the build if a `src/<name>/index.ts` has no `./<name>` entry — the
    no-bundler and the deep-import cases both need it.
 4. **No component imports another component.** Shared code goes in a shared
    module that both import; a lateral import makes two components one unit.
@@ -98,6 +109,11 @@ What that means in practice:
 
 The first tree-shaking test is the one that actually catches regressions:
 importing the barrel for _no_ exports must bundle to nothing.
+
+`treeshake.test.ts` bundles `dist/`, not `src/`, because `dist/` is what an
+app installs and a compiler is perfectly capable of emitting something that
+does not shake — a downlevelled class, a `namespace`, an `enum`. `pretest`
+builds, so the artifact under test is never stale.
 
 ## react-x11 is a peer dependency, and it has to be
 
@@ -127,12 +143,13 @@ the git URL.** Nothing else should need touching.
 ## Commands
 
 ```bash
-npm test              # node --test — no X server, no $DISPLAY needed
-npm run lint          # eslint
+npm run build         # tsc: src/ -> dist/. `pretest` and `prepack` run it
+npm test              # builds, then node --test via tsx — no $DISPLAY needed
+npm run lint          # eslint, over the JavaScript only — see "Linting"
 npm run format        # prettier --write
 npm run format:check  # what CI runs
-npm run typecheck     # tsc over src/**/*.d.ts and test/types/
-npm run check:package # exports map + tree-shaking contract; the "build"
+npm run typecheck     # tsc over src, test, examples and scripts
+npm run check:package # exports map + tree-shaking contract (needs a build)
 npm run examples:sparkline   # needs a real $DISPLAY
 ```
 
@@ -145,17 +162,22 @@ real pixels — the mock context has no path API, which is why a component's
 
 1. Check it against the split criteria above. If it belongs in core, say so
    and stop.
-2. `src/<name>/` with `index.js` and `index.d.ts`.
-3. Add the `./<name>` subpath to `exports`, and the re-export to
-   `src/index.js` and `src/index.d.ts`.
-4. Add its entry to `COMPONENTS` in `test/treeshake.test.js` — export name
+2. `src/<name>/` with `index.ts`.
+3. Add the `./<name>` subpath to `exports` — pointing at `dist/` — and the
+   re-export to `src/index.ts`. Props types go out through
+   `export type { … }`, so `verbatimModuleSyntax` keeps them out of the emit.
+4. Add its entry to `COMPONENTS` in `test/treeshake.test.ts` — export name
    plus a string only that component's modules contain. The "one component
    does not drag in the others" test is a loop over that list, so a missing
    entry silently drops the component out of the guard.
-5. Tests in `test/<name>.test.js`, type tests in `test/types/<name>.tsx`, an
-   example in `examples/<name>.jsx`.
+5. Tests in `test/<name>.test.ts`, type tests in `test/types/<name>.tsx`, an
+   example in `examples/<name>.tsx`.
 6. If it registers an element, declare it to JSX in the component's
-   `index.d.ts` — the `declare module 'react-x11/jsx-runtime'` augmentation.
+   `index.ts` — the `declare module 'react-x11/jsx-runtime'` augmentation.
+   It needs `import type {} from 'react-x11/jsx-runtime';` above it: nothing
+   in `src/` writes JSX, so the build program has no other reason to load
+   the module being augmented, and TypeScript rejects an augmentation whose
+   target it never resolved. The import is type-only and costs no bundle.
 
 ## Incoming: what is planned to move here
 
@@ -182,20 +204,59 @@ majority of apps" test, which the core widgets pass.
 
 ## Conventions
 
-Inherited from react-x11, and worth keeping identical so moving code between
-the two repos stays mechanical:
+Mostly inherited from react-x11. The language is the one place the two repos
+have diverged, so moving code between them is no longer quite mechanical —
+see below.
 
-- **ESM, no build step.** `src/` is what ships. `"type": "module"`.
-- **No JSX in library source.** `React.createElement` (aliased to `h`) —
-  consumers should not need a build step. JSX is fine in `examples/` and
-  `test/types/`.
-- **Hand-written `.d.ts`** next to each module. `skipLibCheck` is off.
+- **TypeScript, compiled to ESM.** `src/*.ts` in, `dist/` out,
+  `"type": "module"`. What ships is plain ESM JavaScript with declarations
+  beside it, so a _consumer_ still needs no build step of their own. That
+  was always the point of the older "no build step" rule; this repo now pays
+  the compile itself instead of pushing it downstream.
+- **No JSX in library source.** `React.createElement` (aliased to `h`). JSX
+  is fine in `examples/`, `test/types/` and tests.
+- **Declarations are emitted, not written.** The props interface lives beside
+  the code that reads it and `tsc` produces the `.d.ts`. `skipLibCheck` is
+  still off, so react-x11's own declarations are checked too.
+- **`verbatimModuleSyntax` is on**, so a type-only import must say
+  `import type`. That is what keeps the emitted JavaScript identical to the
+  source minus the types, and what stops a type import becoming a runtime
+  one that the tree-shaking guard would then catch.
 - Prettier with `singleQuote`, eslint flat config. Both match core's.
 - **Conventional commits** — release-please reads them. `feat:` for a new
   component, `fix:` for a bug, `feat!:`/`BREAKING CHANGE:` for a prop or
   export that changes shape.
 - Comments explain _why_, especially where getting it wrong fails far from
   the cause. Both traps in "Gotchas" are that shape.
+
+### Moving code to or from core
+
+core is still JavaScript with hand-written `.d.ts`. Bringing a component
+here means folding its `.d.ts` into the `.ts`; sending one back means
+splitting them again. Everything else — the element registration, the node
+subclass, the tests — transfers unchanged, because none of it was ever
+typed at runtime.
+
+### Linting
+
+**eslint does not see the TypeScript, and cannot yet.** typescript-eslint's
+parser is built on the classic `typescript` JavaScript API; TypeScript 7 is
+the native compiler and its package exports `version.cjs` and a set of
+`./unstable/*` entry points instead. Every published typescript-eslint,
+canary included, still declares `peerDependencies.typescript` as
+`>=4.8.4 <6.1.0`. There is no configuration that makes it work.
+
+So `npm run lint` covers `eslint.config.js` and any other `.js`/`.mjs`, and
+`tsc` covers the rest: `strict`, plus `noUnusedLocals` standing in for the
+`no-unused-vars` rule this repo actually relied on (`args: 'none'` there is
+`noUnusedParameters` left off here). `eslint-plugin-react` went with the
+last `.jsx` file — its two rules only ever existed to stop `no-unused-vars`
+flagging an `import React` that the classic JSX transform required.
+
+**When typescript-eslint supports TypeScript 7**, add it back: install it,
+spread `tseslint.configs.recommended`, and give it a `files: ['**/*.ts',
+'**/*.tsx']` block. Consider dropping `noUnusedLocals` at that point so the
+same finding is not reported twice.
 
 ## Releases
 
@@ -221,6 +282,13 @@ Two one-time setup steps, neither of which the workflow can do:
 2. The `@react-x11` npm scope must exist and this repo + workflow must be
    configured as a trusted publisher for `@react-x11/components`.
 
+`dist/` is not committed, so publishing depends on the build running. It
+does: `prepack` is wired to `npm run build`, which covers `npm publish` and
+`npm pack` alike, and the release workflow also builds explicitly so a
+compile failure is its own red step. What this means for the manual first
+publish is that it has to happen after an `npm ci` in a clean checkout, not
+from a tree where `dist/` was left over from something else.
+
 Do not publish before react-x11 2.0.0 is on npm — the peer range cannot be
 satisfied until then.
 
@@ -234,7 +302,7 @@ from the cause:
   correctly, reports a sensible `abs` rect, and never appears on screen, with
   no error anywhere. `registerElement` opts you in unless you say otherwise —
   so the failure mode is passing `drawn: false` without meaning it. Assert
-  membership in a test, the way `test/sparkline.test.js` does.
+  membership in a test, the way `test/sparkline.test.ts` does.
 - **`semanticNames` is the difference between DEV and production.** react-x11
   throws in development on a style property written as a flat prop
   (`<sparkline color="red">`), because that is usually a real mistake. An

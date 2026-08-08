@@ -1,0 +1,21 @@
+// The build. `src/` in, `dist/` out: ESM JavaScript, declarations, and both
+// map kinds — `files` ships `src` alongside `dist` so the maps resolve and
+// "go to definition" lands on the TypeScript a consumer's editor can read.
+//
+// `types: []` is deliberate and is not inherited noise: nothing that ships
+// may depend on `@types/node`. The tests and scripts need node's globals,
+// the library does not, and a stray `process` or `Buffer` in `src/` should
+// fail here rather than at a consumer's `tsc`.
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "rootDir": "src",
+    "outDir": "dist",
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "types": []
+  },
+  "include": ["src"]
+}

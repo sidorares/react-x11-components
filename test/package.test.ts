@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
 
-import { checkPackage } from '../scripts/check-package.mjs';
+import { checkPackage } from '../scripts/check-package.js';
 
 test('the package layout is publishable', () => {
   const errors = checkPackage();
@@ -13,7 +13,8 @@ test('the package layout is publishable', () => {
 
 test('every subpath resolves through the exports map', async () => {
   // Node self-references a package by its own name when it has `exports`,
-  // so this exercises the real resolution an app gets — not a file path.
+  // so this exercises the real resolution an app gets — the built `dist/`,
+  // not a source file a relative path happened to reach.
   const barrel = await import('@react-x11/components');
   assert.strictEqual(typeof barrel.Sparkline, 'function');
 
