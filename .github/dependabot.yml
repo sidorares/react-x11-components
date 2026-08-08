@@ -1,0 +1,25 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      dev-dependencies:
+        dependency-type: development
+    ignore:
+      # eslint 10 cannot be installed alongside eslint-plugin-react, which
+      # caps its peer at `^9.7` — `npm ci` fails with ERESOLVE before any job
+      # runs. react-x11 carries the same hold and the same reason: the
+      # plugin's `react/jsx-uses-react` and `react/jsx-uses-vars` are what
+      # stop `no-unused-vars` flagging every JSX-referenced identifier.
+      # Lift once jsx-eslint/eslint-plugin-react#3977 ships.
+      - dependency-name: eslint
+        update-types: ['version-update:semver-major']
+      # released in lockstep with eslint, so holding one holds both
+      - dependency-name: '@eslint/js'
+        update-types: ['version-update:semver-major']
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

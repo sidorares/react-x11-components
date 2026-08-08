@@ -1,0 +1,66 @@
+{
+  "name": "@react-x11/components",
+  "version": "0.0.1",
+  "description": "Components for react-x11 that do not belong in the core package",
+  "keywords": [
+    "react",
+    "react-x11",
+    "x11",
+    "components",
+    "widgets",
+    "desktop",
+    "ui"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sidorares/react-x11-components.git"
+  },
+  "author": "Andrey Sidorov <andrey.sidorov@gmail.com>",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20.19"
+  },
+  "files": [
+    "src"
+  ],
+  "sideEffects": false,
+  "types": "./src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "default": "./src/index.js"
+    },
+    "./sparkline": {
+      "types": "./src/sparkline/index.d.ts",
+      "default": "./src/sparkline/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "test": "node --test",
+    "typecheck": "tsc -p tsconfig.json",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "check:package": "node scripts/check-package.mjs",
+    "examples:sparkline": "tsx examples/sparkline.jsx"
+  },
+  "peerDependencies": {
+    "react": "^19.0.0",
+    "react-x11": "^2.0.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.32.0",
+    "@types/react": "^19.2.17",
+    "esbuild": "^0.25.0",
+    "eslint": "^9.32.0",
+    "eslint-plugin-react": "^7.37.5",
+    "globals": "^17.8.0",
+    "prettier": "^3.6.0",
+    "react": "^19.2.8",
+    "react-x11": "github:sidorares/react-x11#master",
+    "tsx": "^4.23.1",
+    "typescript": "^7.0.2"
+  }
+}
