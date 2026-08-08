@@ -6,7 +6,11 @@
     "target": "ES2022",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
-    "lib": ["ES2022"],
+    // `ESNext.Disposable` is not for our code — react-x11's own declarations
+    // use `Symbol.asyncDispose` (a `BusRef` and an application handle are both
+    // `await using`-able). `skipLibCheck` is off here on purpose, so their lib
+    // requirements are ours.
+    "lib": ["ES2022", "ESNext.Disposable"],
     "jsx": "react-jsx",
     "jsxImportSource": "react-x11",
 

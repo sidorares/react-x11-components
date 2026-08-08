@@ -84,6 +84,41 @@ a consumer has to satisfy.
 small. It is also the element react-x11's own `docs/extending.md` uses to
 illustrate `registerElement`, now shipped for real.
 
+### Not every component registers an element
+
+`<Sparkline>` does; `<Calendar>` does not. A calendar is a composition of
+`<box>`, `<text>` and `<canvas>` — there is nothing for the reconciler to
+learn, so `src/calendar/` has no `registerElement` call, no JSX augmentation
+and **no side effect at import time at all**. Both shapes belong here; the
+`registerElement` seam is a tool, not an entry requirement.
+
+`src/calendar/hx.ts` is what makes the no-JSX rule survive TypeScript.
+`React.createElement`'s own overloads are `@types/react`'s and describe the
+DOM, so a `<box onKeyDown>` handler gets checked against React's
+`KeyboardEvent` rather than react-x11's. `hx('box', …)` looks the name up in
+react-x11's element table instead, and `hx('div', …)` is an error. Reach for
+it in any component that writes more than a couple of elements.
+
+### Vendored from core
+
+`src/calendar/dates.ts` and `src/calendar/internal.ts` are copies of code that
+is still in react-x11 today — the day arithmetic, `tint`, `changeEvent`,
+`useDismissOnWindowBlur`. They were copied rather than imported because they
+are not on core's exports map, and they are pure, so the copy is cheap.
+
+**Core is expected to drop `<Calendar>` and `<DatePicker>`, so divergence here
+is intended rather than drift.** This package is the owner now. Until that
+lands, the two copies exist; do not try to keep them in sync.
+
+Everything else the calendar stands on is public API: `useTheme`,
+`createStyles`, `useAnchor`/`useAnchorTracking`, the `XK_*` keysyms, and
+`cssColorStraight` off `react-x11/ntk`. Three of react-x11's declarations are
+narrower than its runtime, and each is worked around locally with a comment
+saying so — `theme` on any node (not just `<window>`), `'@supports
+transparency'` as a style block, and `cssColorStraight` not being in
+`ntk.d.ts`'s named list. None of them is patched globally: a package should
+not quietly change what type-checks in an app that merely installs it.
+
 ## Tree-shaking is a constraint, not a nice-to-have
 
 An app that uses one component and a bundler must pay for one component.
@@ -140,6 +175,36 @@ The subpaths this package imports — `react-x11/host`, `/node`, `/style`,
 **When core publishes 2.0.0, change the devDependency to `^2.0.0` and drop
 the git URL.** Nothing else should need touching.
 
+## Talking to the desktop, and optional dependencies
+
+`src/desktop-calendar/` reads the user's real calendars — Google, Microsoft,
+CalDAV, local — over D-Bus through Evolution Data Server. It is the reason
+`<Calendar dayContent>` exists, and the answer to "how do we get the user's
+events" is: **the desktop already did the OAuth**, so this package never sees
+a credential.
+
+Two rules it establishes for anything else that talks to the system:
+
+- **Never open your own bus.** `useSessionBus()` (or `sessionBus()` off the
+  render path) hands over react-x11's shared connection. A second one makes
+  the app two names on the bus — the tray under one, the exported service
+  under another — and leaks a connection per mount. `DesktopCalendar` takes
+  its bus as a constructor argument for exactly this reason, which is also
+  what lets `test/desktop-calendar.test.ts` drive it from a fake one.
+- **A heavy parser is an `optionalDependency`, and its types are ours.**
+  `ical.js` is needed only to expand recurrence rules, so it is optional and
+  loaded through a dynamic `import()` that is allowed to fail —
+  `IcalUnavailableError` says which, and the hook reports `'unavailable'`
+  rather than throwing. Its _types_ are written out structurally in
+  `src/desktop-calendar/ical.ts` rather than imported: `import type … from
+'ical.js'` would put it in the type graph and an app that did not install it
+  could no longer type-check against this package, which is the opposite of
+  optional. react-x11 does the same with `dbus-native`.
+
+"No bus", "no EDS", and "no `ical.js`" are all ordinary states of a perfectly
+healthy machine. None of them is an error to report — the calendar renders,
+the dots do not.
+
 ## Commands
 
 ```bash
@@ -150,6 +215,7 @@ npm run format        # prettier --write
 npm run format:check  # what CI runs
 npm run typecheck     # builds, then tsc over src, test, examples, scripts
 npm run check:package # exports map + tree-shaking contract (needs a build)
+npm run examples:calendar    # needs a real $DISPLAY (and a bus, for events)
 npm run examples:sparkline   # needs a real $DISPLAY
 ```
 
@@ -190,8 +256,17 @@ real pixels — the mock context has no path API, which is why a component's
 
 ## Incoming: what is planned to move here
 
-Nothing below has moved yet. The table is the running decision record, so
-that "should this move?" is not re-litigated from scratch each time.
+The table is the running decision record, so that "should this move?" is not
+re-litigated from scratch each time.
+
+**Moved so far:** `<Calendar>` and `<DatePicker>`, from react-x11
+`src/components/`. They are still exported by core as well, and core is
+expected to drop them — until it does, an app that imports the name from both
+places gets two independent widgets, which is harmless (neither registers a
+host element) but is not the end state. See "Vendored from core" above for
+what came with them.
+
+Nothing else below has moved yet.
 
 | Candidate                                        | Where it is now                                          | Status                                                                                                                                                |
 | ------------------------------------------------ | -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
