@@ -17,6 +17,12 @@ jobs:
         id: release
         with:
           release-type: node
+          # Stay in 0.x while the API settles. Without this a single `feat:`
+          # takes 0.0.1 straight to 1.0.0, which is release-please's default
+          # below 1.0 — and this package cannot even publish until react-x11
+          # 2.0.0 ships, so 1.0.0 would be a promise made before the first
+          # user. A `feat:` bumps the minor, a `feat!:` bumps it too.
+          bump-minor-pre-major: true
 
       # Publishing uses npm trusted publishing (OIDC) — no token secret.
       # Configure this repo + workflow as a trusted publisher for
