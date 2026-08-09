@@ -9,16 +9,32 @@ import React from 'react';
 import { renderX11, cleanup, screen } from 'react-x11/test';
 import { drawnKinds, knownElements } from 'react-x11/host';
 import { isStyleProp } from 'react-x11/style';
+import type { Node as RetainedNode } from 'react-x11/node';
 
 import { Sparkline, SPARKLINE_ELEMENT } from '../src/index.js';
+import type { SparklineProps } from '../src/index.js';
 
 const h = React.createElement;
 
 afterEach(cleanup);
 
+/**
+ * The queries are typed as `DrawnNode` — the narrow, ref-facing view of a
+ * node: `type`, `abs`, `focus()`. What they hand back at runtime is the
+ * retained `Node`, which is what a test about `kind`, `props` and paint
+ * order has to reach for. react-x11's public test types just describe the
+ * smaller surface, so the widening is explicit and lives in one place.
+ */
+function retained(node: unknown): RetainedNode {
+  return node as RetainedNode;
+}
+
 /** Mount without React's report of an escaping error on stderr — the
  * message under test is the one thrown, not the one React logs about it. */
-async function rejectsQuietly(fn, expected) {
+async function rejectsQuietly(
+  fn: () => Promise<unknown>,
+  expected: RegExp,
+): Promise<void> {
   const origError = console.error;
   console.error = () => {};
   try {
@@ -28,10 +44,10 @@ async function rejectsQuietly(fn, expected) {
   }
 }
 
-function sparklineNode() {
-  const [node] = screen.all((n) => n.kind === SPARKLINE_ELEMENT);
+function sparklineNode(): RetainedNode {
+  const [node] = screen.all((n) => retained(n).kind === SPARKLINE_ELEMENT);
   assert.ok(node, 'the element is in the retained tree');
-  return node;
+  return retained(node);
 }
 
 test('importing the component is what registers the element', () => {
@@ -60,8 +76,11 @@ test('it mounts, lays out and joins its parent paint order', async () => {
   assert.strictEqual(node.abs.width, 120);
   assert.strictEqual(node.abs.height, 40);
   assert.strictEqual(node.abs.x, 10);
+
+  const { parent } = node;
+  assert.ok(parent, 'the element is attached');
   assert.ok(
-    node.parent.paintOrder().includes(node),
+    parent.paintOrder().includes(node),
     'painted by its parent rather than silently skipped',
   );
 });
@@ -73,7 +92,9 @@ test('the element claims `color`, which is also a style name', async () => {
 
   await renderX11(
     h(Sparkline, { data: [1, 2], color: 'red', strokeWidth: 2 }),
-    { backend: 'mock' },
+    {
+      backend: 'mock',
+    },
   );
   sparklineNode();
 });
@@ -93,8 +114,15 @@ test('props update through the normal commit path', async () => {
 
 test('degenerate series paint without throwing', async () => {
   const style = { width: 60, height: 20 };
-  for (const data of [undefined, [], [7], [5, 5, 5], [-3, 0, -8]]) {
-    await renderX11(h(Sparkline, { data, style }), { backend: 'mock' });
+  // The type says `data` is a required `number[]`. What is under test is a
+  // caller that ignores that — a plain-JavaScript app, or a series built at
+  // runtime — so these props are asserted past the type on purpose. The
+  // element re-checks the series in `paint` for exactly this reason.
+  const series: unknown[] = [undefined, [], [7], [5, 5, 5], [-3, 0, -8]];
+  for (const data of series) {
+    await renderX11(h(Sparkline, { data, style } as SparklineProps), {
+      backend: 'mock',
+    });
     sparklineNode();
     await cleanup();
   }

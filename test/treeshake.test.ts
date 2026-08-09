@@ -4,7 +4,7 @@
 //
 //  1. Importing the barrel for *no* exports leaves nothing behind. This is
 //     what fails the moment a module does work at import time — a
-//     registration hoisted into `src/index.js`, a theme installed eagerly,
+//     registration hoisted into `src/index.ts`, a theme installed eagerly,
 //     a feature probe — and it fails long before anyone notices their app
 //     grew.
 //  2. Naming one component does not drag in the others.
@@ -12,6 +12,11 @@
 // The second is trivially true while there is one component and becomes a
 // real guard the moment a second lands, which is why it is written as a
 // loop over the manifest rather than a pair of hand-written assertions.
+//
+// These bundle `dist/`, not `src/`: what an app installs is the compiler's
+// output, and TypeScript is perfectly capable of emitting something that
+// does not shake — a downlevelled class, a namespace, an `enum`. `pretest`
+// builds, so the artifact under test is always current.
 import { test } from 'node:test';
 import assert from 'node:assert';
 import path from 'node:path';
@@ -24,7 +29,7 @@ const ROOT = path.resolve(fileURLToPath(import.meta.url), '../..');
  * names make good markers: they survive minification because they are data. */
 const COMPONENTS = [{ exportName: 'Sparkline', marker: 'sparkline' }];
 
-async function bundle(contents) {
+async function bundle(contents: string): Promise<string> {
   const result = await esbuild.build({
     stdin: { contents, resolveDir: ROOT, sourcefile: 'entry.js', loader: 'js' },
     bundle: true,
@@ -36,11 +41,13 @@ async function bundle(contents) {
     external: ['react', 'react-x11', 'react-x11/*'],
     logLevel: 'silent',
   });
-  return result.outputFiles[0].text;
+  const [output] = result.outputFiles ?? [];
+  assert.ok(output, 'esbuild wrote no output to read');
+  return output.text;
 }
 
 test('the barrel has no side effects to keep', async () => {
-  const out = await bundle("import './src/index.js';\n");
+  const out = await bundle("import './dist/index.js';\n");
   assert.strictEqual(
     out.trim(),
     '',
@@ -51,7 +58,7 @@ test('the barrel has no side effects to keep', async () => {
 test('naming one component does not pull in the others', async () => {
   for (const { exportName, marker } of COMPONENTS) {
     const out = await bundle(
-      `import { ${exportName} } from './src/index.js';\n` +
+      `import { ${exportName} } from './dist/index.js';\n` +
         `globalThis.__keep = ${exportName};\n`,
     );
     assert.ok(
@@ -70,7 +77,7 @@ test('naming one component does not pull in the others', async () => {
 
 test('each component is also importable on its own', async () => {
   for (const { exportName } of COMPONENTS) {
-    const subpath = `./src/${exportName.toLowerCase()}/index.js`;
+    const subpath = `./dist/${exportName.toLowerCase()}/index.js`;
     const out = await bundle(
       `import { ${exportName} } from '${subpath}';\n` +
         `globalThis.__keep = ${exportName};\n`,

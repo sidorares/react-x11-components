@@ -41,6 +41,11 @@ jobs:
         if: ${{ steps.release.outputs.release_created }}
       - run: npm ci
         if: ${{ steps.release.outputs.release_created }}
+      # `prepack` builds too, so this is not what produces `dist/` — it is
+      # what makes a compile failure its own red step instead of something to
+      # find in the middle of `npm publish` output.
+      - run: npm run build
+        if: ${{ steps.release.outputs.release_created }}
       # A scoped package defaults to restricted; this one is public.
       - run: npm publish --access public
         if: ${{ steps.release.outputs.release_created }}

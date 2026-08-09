@@ -1,3 +1,6 @@
+// The typecheck-everything project: `npm run typecheck`, and what an editor
+// picks up. It emits nothing — `tsconfig.build.json` extends this and is the
+// only config that writes files.
 {
   "compilerOptions": {
     "target": "ES2022",
@@ -6,11 +9,23 @@
     "lib": ["ES2022"],
     "jsx": "react-jsx",
     "jsxImportSource": "react-x11",
+
     "strict": true,
+    // eslint cannot parse a `.ts` file while this repo is on TypeScript 7
+    // (see AGENTS.md, "Linting"), so the one lint rule that was doing real
+    // work here is the compiler's job now. `args: 'none'` was the old
+    // eslint setting, which is `noUnusedParameters` left off.
+    "noUnusedLocals": true,
+    "noImplicitOverride": true,
+    // Imports are erased exactly as written, so what `tsc` emits and what
+    // `tsx` and esbuild strip agree. Type-only imports must say so.
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+
     "noEmit": true,
     "skipLibCheck": false,
-    "types": [],
+    "types": ["node"],
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["src/**/*.d.ts", "test/types/**/*.tsx", "test/types/**/*.ts"]
+  "include": ["src", "test", "examples", "scripts"]
 }

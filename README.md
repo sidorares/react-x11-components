@@ -84,6 +84,29 @@ Deep imports work too, for apps without a bundler:
 import { Sparkline } from '@react-x11/components/sparkline';
 ```
 
+## TypeScript
+
+The package is written in TypeScript and ships its own declarations, so
+there is no `@types` package to install. Point your compiler at react-x11's
+JSX namespace and the host elements type-check:
+
+```json
+{
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "jsxImportSource": "react-x11"
+  }
+}
+```
+
+Importing a component teaches JSX its element too, so `<sparkline>` is a
+typed tag as soon as `Sparkline` is in scope. Props types are exported
+under their component's name:
+
+```ts
+import type { SparklineProps } from '@react-x11/components';
+```
+
 ## Components
 
 | Component   | Import                            |                                                |

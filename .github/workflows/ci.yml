@@ -37,10 +37,11 @@ jobs:
       - run: npm run format:check
       - run: npm run typecheck
 
-  # Nothing here is compiled — `src/` is what ships — so this is the build:
-  # it checks that what would be published is coherent. A broken exports map
-  # passes every test in the repo (they import through relative paths) and
-  # fails for the first person who installs the package.
+  # `tsc` compiles `src/` to `dist/`, and `dist/` is what ships — so this job
+  # builds it and then checks the part the compiler has no opinion about: that
+  # what would be published is coherent. A broken exports map passes every
+  # test in the repo (they import through relative paths) and fails for the
+  # first person who installs the package.
   package:
     runs-on: ubuntu-latest
     steps:
@@ -50,5 +51,6 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - run: npm run build
       - run: npm run check:package
       - run: npm pack --dry-run
