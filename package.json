@@ -1,6 +1,6 @@
 {
   "name": "@react-x11/components",
-  "version": "0.0.1",
+  "version": "1.0.0",
   "description": "Components for react-x11 that do not belong in the core package",
   "keywords": [
     "react",
