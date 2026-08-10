@@ -111,8 +111,32 @@ is intended rather than drift.** This package is the owner now. Until that
 lands, the two copies exist; do not try to keep them in sync.
 
 Everything else the calendar stands on is public API: `useTheme`,
-`createStyles`, `useAnchor`/`useAnchorTracking`, the `XK_*` keysyms, and
-`cssColorStraight` off `react-x11/ntk`. Three of react-x11's declarations are
+`createStyles`, `<Icon>`, `useAnchor`/`useAnchorTracking`, the `XK_*` keysyms,
+and `cssColorStraight` off `react-x11/ntk`.
+
+### Affordance glyphs come from core's set; nouns do not
+
+Core ships a **system icon set** — twelve affordance glyphs (the four
+chevrons, `check`, `dash`, `dot`, `close`, `plus`, `moreVertical`, `eye`,
+`eyeOff`) drawn over `<canvas mono>` and reached through `<Icon name size
+color />`. Anything in this package that means _something about the control_
+takes its mark from there rather than drawing its own, so a `<Calendar>` a
+user opened from a core `<Select>` agrees with it without being told to. The
+month nav is the worked example: two `<Icon name="chevronLeft|chevronRight">`
+where there used to be a local `<canvas>`.
+
+The line core draws is affordances, not nouns, and it holds here too:
+`DatePicker`'s wall-calendar glyph stays a local `<canvas>` because a
+calendar page is a noun, and the set will never have one. A component that
+wants a noun draws it, or the app brings an icon library.
+
+Two things every call site has to know, because neither is inherited:
+**colour and size do not cascade** — an icon inside a row painted in
+`theme.hoverText` is handed that colour by name — and **`:hover` marks the
+ancestor chain rather than the children**, so a glyph that has to follow a
+hover follows it through React state. Both are the current model in core
+rather than a settled verdict; if a real cascade lands, the explicit
+arguments become defaults rather than mistakes. Three of react-x11's declarations are
 narrower than its runtime, and each is worked around locally with a comment
 saying so — `theme` on any node (not just `<window>`), `'@supports
 transparency'` as a style block, and `cssColorStraight` not being in
