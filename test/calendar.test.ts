@@ -155,6 +155,31 @@ test('the month steps, and the title follows', async () => {
   screen.getByText('July 2026');
 });
 
+/**
+ * The glyph is core's, so what is worth pinning here is not its shape but the
+ * pairing: the button that says "Previous month" points left. A chevron that
+ * followed the wrong branch would still lay out, still click and still step
+ * the month — the arrow would simply point the other way, which no other
+ * assertion in this file can see. `cacheKey` is the name `<Icon>` hands the
+ * canvas, and it is the whole of what the drawing is identified by.
+ */
+test('each nav button is drawn with the chevron that matches its label', async () => {
+  await renderX11(h(Calendar, { defaultMonth: '2026-08' }), {
+    backend: 'mock',
+  });
+  for (const [label, name] of [
+    ['Previous month', 'chevronLeft'],
+    ['Next month', 'chevronRight'],
+  ]) {
+    const [glyph] = retained(byLabel(label)).children;
+    assert.strictEqual(glyph?.kind, 'canvas');
+    assert.strictEqual(glyph.props.cacheKey, name);
+    // `mono` is what takes the colour out of the cache key, so the four
+    // chevrons on screen in a `<DatePicker>` are two rendered copies.
+    assert.strictEqual(glyph.props.mono, true);
+  }
+});
+
 test('picking a day reports it as a form-shaped change event', async () => {
   const seen: WidgetChangeEvent<CalendarDay | null>[] = [];
   await renderX11(
