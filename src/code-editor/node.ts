@@ -34,8 +34,8 @@ import {
   XK_UP,
 } from 'react-x11/keysyms';
 
-import { startInterval, stopInterval } from './timers.js';
-import type { TimerId } from './timers.js';
+import { startInterval, stopInterval } from '../code-language/timers.js';
+import type { TimerId } from '../code-language/timers.js';
 import {
   clampPos,
   comparePos,
@@ -53,7 +53,7 @@ import {
   isDarkBackground,
   LIGHT_TOKEN_STYLES,
   tokenStyleFor,
-} from './theme.js';
+} from '../code-language/theme.js';
 import type {
   Diagnostic,
   Language,
@@ -62,7 +62,7 @@ import type {
   Token,
   TokenStyles,
   Tokenizer,
-} from './types.js';
+} from '../code-language/types.js';
 
 /**
  * The element name — registration key, `kind`, and JSX tag, one string (see

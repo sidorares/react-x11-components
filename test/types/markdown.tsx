@@ -1,8 +1,8 @@
 // Type-level test: the declarations compile against react-x11's JSX
-// namespace, both as a component and as the raw `<mdtext>` element the
-// module augmentation adds.
-import { Markdown, MarkdownSelection, parseMarkdown } from '../../src/index.js';
-import type { MarkdownProps, MdRun } from '../../src/index.js';
+// namespace, both as a component and as the raw `<richtext>` element the
+// shared module's augmentation adds.
+import { Markdown, TextSelection, parseMarkdown } from '../../src/index.js';
+import type { MarkdownProps, TextRun } from '../../src/index.js';
 
 export const asComponent = (
   <box style={{ overflow: 'scroll', flexGrow: 1 }}>
@@ -21,16 +21,16 @@ export const asComponent = (
   </box>
 );
 
-// `import`ing the component teaches JSX the element too
-const runs: MdRun[] = [
+// `import`ing the component teaches JSX the shared element too
+const runs: TextRun[] = [
   { text: 'plain ' },
   { text: 'bold', weight: 700 },
   { text: ' code', family: 'monospace', bg: '#eee' },
   { text: ' link', href: 'https://x.dev', underline: '#2980b9' },
 ];
-const selection = new MarkdownSelection();
+const selection = new TextSelection();
 export const asElement = (
-  <mdtext runs={runs} order={0} registry={selection} joiner={'\n'} />
+  <richtext runs={runs} order={0} registry={selection} joiner={'\n'} />
 );
 
 export const props: MarkdownProps = { source: 'hi' };
@@ -40,5 +40,5 @@ export const doc = parseMarkdown('# t', { partial: true });
 // @ts-expect-error source is required
 export const missingSource = <Markdown partial />;
 
-// @ts-expect-error an mdtext takes runs, not children
-export const withChildren = <mdtext>nope</mdtext>;
+// @ts-expect-error a richtext takes runs, not children
+export const withChildren = <richtext>nope</richtext>;

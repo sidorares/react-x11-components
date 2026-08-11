@@ -1,10 +1,17 @@
-// The retained node behind `<mdtext>` — one wrapped, styled, *selectable*
+// The retained node behind `<richtext>` — one wrapped, styled, *selectable*
 // run of inline text: a paragraph, a heading, a list item's line, a table
-// cell, a code block. `<Markdown>` composes documents out of these plus
-// plain `<box>`es; this node is deliberately unaware of markdown itself —
-// it renders the `runs` it is given and answers geometry questions about
+// cell, a code block. `<Markdown>` and `<Code>` compose documents out of
+// these plus plain `<box>`es; this node knows nothing about either — it
+// renders the `runs` it is given and answers geometry questions about
 // them, which is the whole selection story (see selection.ts for the part
-// that spans blocks).
+// that spans blocks, gestures.ts for the mouse and keyboard wiring).
+//
+// This directory is a shared module, not a component: registration is a
+// function (`registerRichText()`), called at module scope by each
+// component whose index.ts uses the element, so the "a component registers
+// its element in its own index.ts" tree-shaking rule keeps holding — an
+// app that imports neither `<Markdown>` nor `<Code>` never registers or
+// ships any of this.
 //
 // Why not core's `<text>`: nested `<text>` spans already wrap mixed styles,
 // but the node keeps its TextLayout private, so there is no way to ask
@@ -13,6 +20,7 @@
 // glyphs. Selection needs exactly those, so this element owns its layout.
 // (That is a gap worth closing in core one day: a text element that
 // exposes hit-testing would let this file shrink to the selection parts.)
+import { registerElement, registeredElements } from 'react-x11/host';
 import { Node } from 'react-x11/node';
 import type { Context2D } from 'react-x11/node';
 import { Yoga } from 'react-x11/ntk';
@@ -22,7 +30,33 @@ import { tint } from './internal.js';
 import type { SelectionRegistry } from './selection.js';
 
 /** The element name — registration key, `node.kind` and JSX tag alike. */
-export const ELEMENT = 'mdtext';
+export const ELEMENT = 'richtext';
+
+/**
+ * Register `<richtext>`. Called at module scope by every component index
+ * that renders the element — never at this module's own scope, so the
+ * shared module stays side-effect free. Idempotent for the same reason
+ * sparkline's guard is: a lockfile skew that puts two copies of this
+ * package in one app should not fail to boot.
+ */
+export function registerRichText(): void {
+  if (registeredElements().includes(ELEMENT)) return;
+  registerElement(ELEMENT, {
+    create: (props, app) => new RichTextNode(props, app),
+    // none of these is a style name today, but `wrap` reads like one —
+    // declaring everything the element owns keeps the DEV assertion
+    // honest even if core's style vocabulary grows underneath us
+    semanticNames: [
+      'runs',
+      'wrap',
+      'order',
+      'registry',
+      'joiner',
+      'selectionColor',
+    ],
+    childrenAllowed: false,
+  });
+}
 
 /** The ntk connection a node is built against (same derivation, and the
  *  same reason, as `sparkline/node.ts`). */
@@ -35,7 +69,7 @@ export type NtkApp = ConstructorParameters<typeof Node>[2];
  * is how the paint pass knows where code backgrounds, link underlines and
  * strikethroughs go (the same trick ntk's own MarkdownView used).
  */
-export interface MdRun {
+export interface TextRun {
   text: string;
   family?: string;
   size?: number;
@@ -60,11 +94,11 @@ export interface MdRun {
 // retained node cannot read context).
 export type { SelectableBlock, SelectionRegistry } from './selection.js';
 
-/** The props `<mdtext>` takes. */
-export interface MdTextProps {
+/** The props `<richtext>` takes. */
+export interface RichTextProps {
   /** The styled runs. Give a stable array identity — the layout cache and
    *  the streaming path both key off it. */
-  runs: MdRun[];
+  runs: TextRun[];
   /** False lays the text out at its natural width, unwrapped — code. */
   wrap?: boolean;
   /** Document position for cross-block selection ordering. */
@@ -92,7 +126,7 @@ interface LaidRunLike {
   width: number;
   start: number;
   end: number;
-  span: MdRun;
+  span: TextRun;
   run: { font: { metrics(size: number): FontMetricsLike }; size: number };
 }
 
@@ -112,13 +146,18 @@ export interface TextLayoutLike {
   height: number;
   lines: LineLike[];
   draw(ctx: unknown, x?: number, y?: number): void;
-  caretPosition(index: number): { x: number; y: number; height: number; line: number };
+  caretPosition(index: number): {
+    x: number;
+    y: number;
+    height: number;
+    line: number;
+  };
   indexAt(x: number, y: number): number;
 }
 
 interface FontsLike {
   layout(
-    content: MdRun[],
+    content: TextRun[],
     style: Record<string, unknown>,
     options: { maxWidth?: number; lineHeight?: number; align?: string },
   ): TextLayoutLike;
@@ -157,7 +196,7 @@ interface MeasurableInternals {
   };
 }
 
-export class MdTextNode extends Node {
+export class RichTextNode extends Node {
   private _layouts = new Map<string, TextLayoutLike | null>();
   private _plain: string[] | null = null;
   private _selA = 0;
@@ -167,7 +206,7 @@ export class MdTextNode extends Node {
     super(ELEMENT, props, app);
     const internals = this as unknown as MeasurableInternals;
     internals.yoga?.setMeasureFunc((width, widthMode) => {
-      const wrap = (this.props as unknown as MdTextProps).wrap !== false;
+      const wrap = (this.props as unknown as RichTextProps).wrap !== false;
       const maxWidth =
         !wrap || widthMode === MEASURE_MODE_UNDEFINED ? Infinity : width;
       const layout = this._layoutFor(maxWidth);
@@ -181,11 +220,11 @@ export class MdTextNode extends Node {
   }
 
   private _registry(): SelectionRegistry | null {
-    return (this.props as unknown as MdTextProps).registry ?? null;
+    return (this.props as unknown as RichTextProps).registry ?? null;
   }
 
-  private _runs(): MdRun[] {
-    const runs = (this.props as unknown as MdTextProps).runs;
+  private _runs(): TextRun[] {
+    const runs = (this.props as unknown as RichTextProps).runs;
     return Array.isArray(runs) ? runs : [];
   }
 
@@ -218,7 +257,7 @@ export class MdTextNode extends Node {
 
   /** The layout this node is currently painted with. */
   private _paintLayout(): TextLayoutLike | null {
-    const wrap = (this.props as unknown as MdTextProps).wrap !== false;
+    const wrap = (this.props as unknown as RichTextProps).wrap !== false;
     return this._layoutFor(wrap ? this.abs.width : Infinity);
   }
 
@@ -256,19 +295,23 @@ export class MdTextNode extends Node {
 
   /** Document order, as assigned by the renderer. */
   get order(): number {
-    return Number((this.props as unknown as MdTextProps).order ?? 0);
+    return Number((this.props as unknown as RichTextProps).order ?? 0);
   }
 
   /** Copy-time separator between this block and the one before it. */
   get joiner(): string {
-    return (this.props as unknown as MdTextProps).joiner ?? '\n\n';
+    return (this.props as unknown as RichTextProps).joiner ?? '\n\n';
   }
 
   /** The text as code points — the unit every index in this API uses,
    *  matching ntk's `caretPosition`/`indexAt`. */
   private _chars(): string[] {
     if (!this._plain) {
-      this._plain = Array.from(this._runs().map((r) => r.text).join(''));
+      this._plain = Array.from(
+        this._runs()
+          .map((r) => r.text)
+          .join(''),
+      );
     }
     return this._plain;
   }
@@ -375,7 +418,7 @@ export class MdTextNode extends Node {
       const posA = layout.caretPosition(this._selA);
       const posB = layout.caretPosition(this._selB);
       const color =
-        (this.props as unknown as MdTextProps).selectionColor ??
+        (this.props as unknown as RichTextProps).selectionColor ??
         tint(String(this.theme?.accent ?? '#2980b9'), 0.35);
       ctx.fillStyle = color;
       for (let li = posA.line; li <= posB.line; li += 1) {

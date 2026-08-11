@@ -11,7 +11,7 @@ import { renderX11, cleanup, screen, fireEvent, act } from 'react-x11/test';
 import { drawnKinds, registeredElements } from 'react-x11/host';
 import type { DrawnNode } from 'react-x11';
 
-import { Markdown, MdTextNode, parseMarkdown } from '../src/index.js';
+import { Markdown, RichTextNode, parseMarkdown } from '../src/index.js';
 import { parseInline } from '../src/markdown/index.js';
 import type { BlockNode, InlineNode } from '../src/index.js';
 
@@ -19,7 +19,7 @@ const h = React.createElement;
 
 /** `fireEvent` speaks the ref-facing `DrawnNode`; the queries hand back the
  *  retained node. Same widening as `calendar.test.ts`. */
-function drawn(node: MdTextNode): DrawnNode {
+function drawn(node: RichTextNode): DrawnNode {
   return node as unknown as DrawnNode;
 }
 
@@ -27,8 +27,11 @@ function drawn(node: MdTextNode): DrawnNode {
 function clipboardOf(r: { app: unknown }): {
   read(o: { selection: string }): Promise<string | null>;
 } {
-  return (r.app as { clipboard: { read(o: { selection: string }): Promise<string | null> } })
-    .clipboard;
+  return (
+    r.app as {
+      clipboard: { read(o: { selection: string }): Promise<string | null> };
+    }
+  ).clipboard;
 }
 
 afterEach(cleanup);
@@ -37,13 +40,18 @@ afterEach(cleanup);
 // macOS and the Linux paths cover the common distros; a box with neither
 // skips the metric-dependent tests rather than failing them.
 const FONT_CANDIDATES: Array<[string, string]> = [
-  ['/System/Library/Fonts/Supplemental/Arial.ttf', '/System/Library/Fonts/Monaco.ttf'],
+  [
+    '/System/Library/Fonts/Supplemental/Arial.ttf',
+    '/System/Library/Fonts/Monaco.ttf',
+  ],
   [
     '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
     '/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf',
   ],
 ];
-const found = FONT_CANDIDATES.find(([sans, mono]) => existsSync(sans) && existsSync(mono));
+const found = FONT_CANDIDATES.find(
+  ([sans, mono]) => existsSync(sans) && existsSync(mono),
+);
 const FONTS = found ? { 'sans-serif': found[0], monospace: found[1] } : null;
 
 // --- inline helpers over the AST -------------------------------------------
@@ -94,11 +102,16 @@ test('blocks: headings, setext, rule, quote, code', () => {
 
 test('inline: emphasis, code, links, entities, escapes', () => {
   assert.equal(
-    flat(parseInline('**b** *i* ~~s~~ `c` [t](u) <https://a.b> \\*lit\\*', false)),
+    flat(
+      parseInline('**b** *i* ~~s~~ `c` [t](u) <https://a.b> \\*lit\\*', false),
+    ),
     'strong[b] em[i] del[s] code[c] link[t](u) link[https://a.b](https://a.b) *lit*',
   );
   assert.equal(flat(parseInline('a &amp; b', false)), 'a & b');
-  assert.equal(flat(parseInline('snake_case 2*3*4', false)), 'snake_case 2em[3]4');
+  assert.equal(
+    flat(parseInline('snake_case 2*3*4', false)),
+    'snake_case 2em[3]4',
+  );
   assert.equal(flat(parseInline('**foo*bar***', false)), 'strong[fooem[bar]]');
   // single tilde is never strikethrough here, so ranges need no escaping
   assert.equal(flat(parseInline('20~25', false)), '20~25');
@@ -158,14 +171,28 @@ test('partial: unclosed emphasis and code close implicitly at the tail', () => {
 });
 
 test('partial: implicit closes stop at the tail block, not mid-document', () => {
-  const { blocks } = parseMarkdown('one **two\n\nlast **word', { partial: true });
-  assert.equal(flat((blocks[0] as { children: InlineNode[] }).children), 'one **two');
-  assert.equal(flat((blocks[1] as { children: InlineNode[] }).children), 'last strong[word]');
+  const { blocks } = parseMarkdown('one **two\n\nlast **word', {
+    partial: true,
+  });
+  assert.equal(
+    flat((blocks[0] as { children: InlineNode[] }).children),
+    'one **two',
+  );
+  assert.equal(
+    flat((blocks[1] as { children: InlineNode[] }).children),
+    'last strong[word]',
+  );
 });
 
 test('partial: half-arrived links keep their text, images vanish', () => {
-  assert.equal(flat(parseInline('see [docs](https://exa', true)), 'see link[docs](null)');
-  assert.equal(flat(parseInline('see [docs are', true)), 'see link[docs are](null)');
+  assert.equal(
+    flat(parseInline('see [docs](https://exa', true)),
+    'see link[docs](null)',
+  );
+  assert.equal(
+    flat(parseInline('see [docs are', true)),
+    'see link[docs are](null)',
+  );
   assert.equal(flat(parseInline('pic ![alt](http://x', true)), 'pic ');
 });
 
@@ -176,12 +203,27 @@ test('partial: a bare trailing opener is hidden, not shown raw', () => {
 
 test('partial: ambiguous tail lines are held back', () => {
   // "---" could still become a rule, a setext underline, or plain text
-  assert.equal(types(parseMarkdown('Title\n---', { partial: true }).blocks), 'paragraph');
-  assert.equal(types(parseMarkdown('para\n\n---', { partial: true }).blocks), 'paragraph');
-  assert.equal(types(parseMarkdown('text\n\n##', { partial: true }).blocks), 'paragraph');
+  assert.equal(
+    types(parseMarkdown('Title\n---', { partial: true }).blocks),
+    'paragraph',
+  );
+  assert.equal(
+    types(parseMarkdown('para\n\n---', { partial: true }).blocks),
+    'paragraph',
+  );
+  assert.equal(
+    types(parseMarkdown('text\n\n##', { partial: true }).blocks),
+    'paragraph',
+  );
   // …and commit once the document is final
-  assert.equal(types(parseMarkdown('Title\n---', { partial: false }).blocks), 'heading');
-  assert.equal(types(parseMarkdown('para\n\n---', { partial: false }).blocks), 'paragraph,rule');
+  assert.equal(
+    types(parseMarkdown('Title\n---', { partial: false }).blocks),
+    'heading',
+  );
+  assert.equal(
+    types(parseMarkdown('para\n\n---', { partial: false }).blocks),
+    'paragraph,rule',
+  );
 });
 
 test('partial: an open fence renders as an open code block', () => {
@@ -194,7 +236,10 @@ test('partial: an open fence renders as an open code block', () => {
 
 test('partial: tables appear as soon as they can be read', () => {
   // delimiter row still arriving: header-only table
-  assert.equal(types(parseMarkdown('| a | b |\n| :-', { partial: true }).blocks), 'table');
+  assert.equal(
+    types(parseMarkdown('| a | b |\n| :-', { partial: true }).blocks),
+    'table',
+  );
   // header row itself still arriving: held, not flashed as literal pipes
   assert.equal(types(parseMarkdown('| a | b |', { partial: true }).blocks), '');
   // a ragged final row renders with the cells that exist
@@ -206,8 +251,11 @@ test('partial: tables appear as soon as they can be read', () => {
 // --- the element -----------------------------------------------------------
 
 test('importing the component is what registers the element', () => {
-  assert.ok(registeredElements().includes('mdtext'));
-  assert.ok(drawnKinds().includes('mdtext'), 'mdtext must join the paint order');
+  assert.ok(registeredElements().includes('richtext'));
+  assert.ok(
+    drawnKinds().includes('richtext'),
+    'richtext must join the paint order',
+  );
 });
 
 test('it mounts on the mock backend, where there are no font metrics', async () => {
@@ -216,10 +264,12 @@ test('it mounts on the mock backend, where there are no font metrics', async () 
     backend: 'mock',
   });
   const root = screen.all(
-    (n) => (n as { props?: Record<string, unknown> }).props?.['data-testname'] === 'md',
+    (n) =>
+      (n as { props?: Record<string, unknown> }).props?.['data-testname'] ===
+      'md',
   );
   assert.equal(root.length, 1);
-  const texts = screen.all((n) => n instanceof MdTextNode);
+  const texts = screen.all((n) => n instanceof RichTextNode);
   assert.ok(texts.length >= 5, `expected blocks, got ${texts.length}`);
 });
 
@@ -237,180 +287,215 @@ const x = 1;
 \`\`\`
 `;
 
-function mdNodes(): MdTextNode[] {
+function mdNodes(): RichTextNode[] {
   return screen
-    .all((n) => n instanceof MdTextNode)
-    .map((n) => n as unknown as MdTextNode)
+    .all((n) => n instanceof RichTextNode)
+    .map((n) => n as unknown as RichTextNode)
     .sort((a, b) => a.order - b.order);
 }
 
-test('blocks lay out with real heights and wrap to the given width', {
-  skip: !FONTS,
-}, async () => {
-  await renderX11(
-    h(
-      'box',
-      { style: { flexGrow: 1, padding: 10 } },
-      h(Markdown, { source: SOURCE }),
-    ),
-    { fonts: FONTS!, width: 420, height: 400 },
-  );
-  const nodes = mdNodes();
-  assert.equal(nodes.length, 5);
-  const [heading, para, itemOne] = nodes;
-  assert.ok(heading.abs.height > para.abs.height, 'heading is bigger than body');
-  assert.ok(para.abs.height > 0);
-  assert.equal(itemOne.text(), 'item one');
-  assert.ok(itemOne.abs.x > para.abs.x, 'list items are indented');
-});
+test(
+  'blocks lay out with real heights and wrap to the given width',
+  {
+    skip: !FONTS,
+  },
+  async () => {
+    await renderX11(
+      h(
+        'box',
+        { style: { flexGrow: 1, padding: 10 } },
+        h(Markdown, { source: SOURCE }),
+      ),
+      { fonts: FONTS!, width: 420, height: 400 },
+    );
+    const nodes = mdNodes();
+    assert.equal(nodes.length, 5);
+    const [heading, para, itemOne] = nodes;
+    assert.ok(
+      heading.abs.height > para.abs.height,
+      'heading is bigger than body',
+    );
+    assert.ok(para.abs.height > 0);
+    assert.equal(itemOne.text(), 'item one');
+    assert.ok(itemOne.abs.x > para.abs.x, 'list items are indented');
+  },
+);
 
-test('drag selects across blocks and mouse-up takes PRIMARY', {
-  skip: !FONTS,
-}, async () => {
-  const r = await renderX11(
-    h(
-      'box',
-      { style: { flexGrow: 1, padding: 10 } },
-      h(Markdown, { source: SOURCE }),
-    ),
-    { fonts: FONTS!, width: 420, height: 400 },
-  );
-  const nodes = mdNodes();
-  const para = nodes[1];
-  const itemTwo = nodes[3];
+test(
+  'drag selects across blocks and mouse-up takes PRIMARY',
+  {
+    skip: !FONTS,
+  },
+  async () => {
+    const r = await renderX11(
+      h(
+        'box',
+        { style: { flexGrow: 1, padding: 10 } },
+        h(Markdown, { source: SOURCE }),
+      ),
+      { fonts: FONTS!, width: 420, height: 400 },
+    );
+    const nodes = mdNodes();
+    const para = nodes[1];
+    const itemTwo = nodes[3];
 
-  await act(async () => {
-    fireEvent.mouseDown(drawn(para), { dx: -para.abs.width / 2 + 1 });
-  });
-  await act(async () => {
-    fireEvent.mouseMove(drawn(itemTwo), {});
-  });
-  await act(async () => {
-    fireEvent.mouseUp(drawn(itemTwo), {});
-  });
+    await act(async () => {
+      fireEvent.mouseDown(drawn(para), { dx: -para.abs.width / 2 + 1 });
+    });
+    await act(async () => {
+      fireEvent.mouseMove(drawn(itemTwo), {});
+    });
+    await act(async () => {
+      fireEvent.mouseUp(drawn(itemTwo), {});
+    });
 
-  const [a, b] = para.selection;
-  assert.equal(para.text(a, b), 'This is bold and a link here.');
-  const [c, d] = itemTwo.selection;
-  assert.equal(itemTwo.text(c, d), 'item two');
+    const [a, b] = para.selection;
+    assert.equal(para.text(a, b), 'This is bold and a link here.');
+    const [c, d] = itemTwo.selection;
+    assert.equal(itemTwo.text(c, d), 'item two');
 
-  const primary = await clipboardOf(r).read({ selection: 'PRIMARY' });
-  assert.equal(primary, 'This is bold and a link here.\nitem one\nitem two');
-});
+    const primary = await clipboardOf(r).read({ selection: 'PRIMARY' });
+    assert.equal(primary, 'This is bold and a link here.\nitem one\nitem two');
+  },
+);
 
-test('Ctrl+A selects everything, Ctrl+C copies it', { skip: !FONTS }, async () => {
-  const r = await renderX11(
-    h(
-      'box',
-      { style: { flexGrow: 1, padding: 10 } },
-      h(Markdown, { source: 'first para\n\nsecond para' }),
-    ),
-    { fonts: FONTS!, width: 420, height: 300 },
-  );
-  const [first] = mdNodes();
+test(
+  'Ctrl+A selects everything, Ctrl+C copies it',
+  { skip: !FONTS },
+  async () => {
+    const r = await renderX11(
+      h(
+        'box',
+        { style: { flexGrow: 1, padding: 10 } },
+        h(Markdown, { source: 'first para\n\nsecond para' }),
+      ),
+      { fonts: FONTS!, width: 420, height: 300 },
+    );
+    const [first] = mdNodes();
 
-  // focus lands on the markdown root via mousedown, like any focusable
-  await act(async () => {
-    fireEvent.mouseDown(drawn(first), {});
-    fireEvent.mouseUp(drawn(first), {});
-  });
-  await act(async () => {
-    fireEvent.key(0x61 /* a */, { modifiers: ['Control'] });
-  });
-  for (const n of mdNodes()) {
-    const [a, b] = n.selection;
-    assert.equal(n.text(a, b), n.text(), 'Ctrl+A selects every block fully');
-  }
+    // focus lands on the markdown root via mousedown, like any focusable
+    await act(async () => {
+      fireEvent.mouseDown(drawn(first), {});
+      fireEvent.mouseUp(drawn(first), {});
+    });
+    await act(async () => {
+      fireEvent.key(0x61 /* a */, { modifiers: ['Control'] });
+    });
+    for (const n of mdNodes()) {
+      const [a, b] = n.selection;
+      assert.equal(n.text(a, b), n.text(), 'Ctrl+A selects every block fully');
+    }
 
-  await act(async () => {
-    fireEvent.key(0x63 /* c */, { modifiers: ['Control'] });
-  });
-  const copied = await clipboardOf(r).read({ selection: 'CLIPBOARD' });
-  assert.equal(copied, 'first para\n\nsecond para');
-});
+    await act(async () => {
+      fireEvent.key(0x63 /* c */, { modifiers: ['Control'] });
+    });
+    const copied = await clipboardOf(r).read({ selection: 'CLIPBOARD' });
+    assert.equal(copied, 'first para\n\nsecond para');
+  },
+);
 
-test('double-click selects the word under the pointer', { skip: !FONTS }, async () => {
-  await renderX11(
-    h(
-      'box',
-      { style: { flexGrow: 1, padding: 10 } },
-      h(Markdown, { source: 'alpha beta gamma' }),
-    ),
-    { fonts: FONTS!, width: 420, height: 200 },
-  );
-  const [para] = mdNodes();
-  await act(async () => {
-    fireEvent.doubleClick(drawn(para), { dx: -para.abs.width / 2 + 4 });
-  });
-  const [a, b] = para.selection;
-  assert.equal(para.text(a, b), 'alpha');
-});
+test(
+  'double-click selects the word under the pointer',
+  { skip: !FONTS },
+  async () => {
+    await renderX11(
+      h(
+        'box',
+        { style: { flexGrow: 1, padding: 10 } },
+        h(Markdown, { source: 'alpha beta gamma' }),
+      ),
+      { fonts: FONTS!, width: 420, height: 200 },
+    );
+    const [para] = mdNodes();
+    await act(async () => {
+      fireEvent.doubleClick(drawn(para), { dx: -para.abs.width / 2 + 4 });
+    });
+    const [a, b] = para.selection;
+    assert.equal(para.text(a, b), 'alpha');
+  },
+);
 
-test('a click follows a link; a drag is a selection, not a click', {
-  skip: !FONTS,
-}, async () => {
-  const seen: string[] = [];
-  await renderX11(
-    h(
-      'box',
-      { style: { flexGrow: 1, padding: 10 } },
-      h(Markdown, {
-        source: '[go somewhere](https://dest.example) trailing text',
-        onLink: (href: string) => seen.push(href),
-      }),
-    ),
-    { fonts: FONTS!, width: 420, height: 200 },
-  );
-  const [para] = mdNodes();
-  const linkDx = -para.abs.width / 2 + 8; // inside "go somewhere"
+test(
+  'a click follows a link; a drag is a selection, not a click',
+  {
+    skip: !FONTS,
+  },
+  async () => {
+    const seen: string[] = [];
+    await renderX11(
+      h(
+        'box',
+        { style: { flexGrow: 1, padding: 10 } },
+        h(Markdown, {
+          source: '[go somewhere](https://dest.example) trailing text',
+          onLink: (href: string) => seen.push(href),
+        }),
+      ),
+      { fonts: FONTS!, width: 420, height: 200 },
+    );
+    const [para] = mdNodes();
+    const linkDx = -para.abs.width / 2 + 8; // inside "go somewhere"
 
-  await act(async () => {
-    fireEvent.mouseDown(drawn(para), { dx: linkDx });
-    fireEvent.mouseUp(drawn(para), { dx: linkDx });
-  });
-  assert.deepEqual(seen, ['https://dest.example']);
+    await act(async () => {
+      fireEvent.mouseDown(drawn(para), { dx: linkDx });
+      fireEvent.mouseUp(drawn(para), { dx: linkDx });
+    });
+    assert.deepEqual(seen, ['https://dest.example']);
 
-  // drag off the link: selection, no navigation
-  await act(async () => {
-    fireEvent.mouseDown(drawn(para), { dx: linkDx });
-  });
-  await act(async () => {
-    fireEvent.mouseMove(drawn(para), { dx: linkDx + 120 });
-  });
-  await act(async () => {
-    fireEvent.mouseUp(drawn(para), { dx: linkDx + 120 });
-  });
-  assert.deepEqual(seen, ['https://dest.example'], 'the drag did not navigate');
-  const [a, b] = para.selection;
-  assert.ok(b > a, 'the drag selected instead');
-});
+    // drag off the link: selection, no navigation
+    await act(async () => {
+      fireEvent.mouseDown(drawn(para), { dx: linkDx });
+    });
+    await act(async () => {
+      fireEvent.mouseMove(drawn(para), { dx: linkDx + 120 });
+    });
+    await act(async () => {
+      fireEvent.mouseUp(drawn(para), { dx: linkDx + 120 });
+    });
+    assert.deepEqual(
+      seen,
+      ['https://dest.example'],
+      'the drag did not navigate',
+    );
+    const [a, b] = para.selection;
+    assert.ok(b > a, 'the drag selected instead');
+  },
+);
 
-test('streaming keeps settled blocks: same retained node, growing tail', {
-  skip: !FONTS,
-}, async () => {
-  const r = await renderX11(
-    h(
-      'box',
-      { style: { flexGrow: 1, padding: 10 } },
-      h(Markdown, { source: 'stable paragraph\n\nstreaming **bo' }),
-    ),
-    { fonts: FONTS!, width: 420, height: 300 },
-  );
-  const before = mdNodes();
-  assert.equal(before[1].text(), 'streaming bo', 'implicit close, markers hidden');
+test(
+  'streaming keeps settled blocks: same retained node, growing tail',
+  {
+    skip: !FONTS,
+  },
+  async () => {
+    const r = await renderX11(
+      h(
+        'box',
+        { style: { flexGrow: 1, padding: 10 } },
+        h(Markdown, { source: 'stable paragraph\n\nstreaming **bo' }),
+      ),
+      { fonts: FONTS!, width: 420, height: 300 },
+    );
+    const before = mdNodes();
+    assert.equal(
+      before[1].text(),
+      'streaming bo',
+      'implicit close, markers hidden',
+    );
 
-  await r.rerender(
-    h(
-      'box',
-      { style: { flexGrow: 1, padding: 10 } },
-      h(Markdown, { source: 'stable paragraph\n\nstreaming **bold** done' }),
-    ),
-  );
-  const after = mdNodes();
-  assert.equal(after[1].text(), 'streaming bold done');
-  assert.equal(
-    after[0],
-    before[0],
-    'the settled block kept its retained node across the append',
-  );
-});
+    await r.rerender(
+      h(
+        'box',
+        { style: { flexGrow: 1, padding: 10 } },
+        h(Markdown, { source: 'stable paragraph\n\nstreaming **bold** done' }),
+      ),
+    );
+    const after = mdNodes();
+    assert.equal(after[1].text(), 'streaming bold done');
+    assert.equal(
+      after[0],
+      before[0],
+      'the settled block kept its retained node across the append',
+    );
+  },
+);

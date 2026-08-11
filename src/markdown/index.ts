@@ -26,22 +26,10 @@
 // component tag is just one more held-back tail). The parser is the only
 // part that would grow.
 import React from 'react';
-import type { ReactElement, ReactNode, Ref } from 'react';
-import { registerElement, registeredElements } from 'react-x11/host';
-import * as reactX11 from 'react-x11';
-import { Icon, useApp, useClipboard, useTheme } from 'react-x11';
-import type {
-  DrawnNode,
-  KeyboardEvent as X11KeyboardEvent,
-  MouseEvent as X11MouseEvent,
-} from 'react-x11';
-import { XK_ESCAPE } from 'react-x11/keysyms';
+import type { ReactElement, ReactNode } from 'react';
+import { Icon, useApp, useTheme } from 'react-x11';
+import type { DrawnNode, MouseEvent as X11MouseEvent } from 'react-x11';
 import type { Style } from 'react-x11/style';
-
-// Loads the module the JSX augmentation at the bottom targets — nothing in
-// `src/` writes JSX, so without this the augmentation has no resolved
-// target (same note as `sparkline/index.ts`).
-import type {} from 'react-x11/jsx-runtime';
 
 import type {
   BlockNode,
@@ -50,17 +38,26 @@ import type {
   ListBlock,
   TableBlock,
 } from './ast.js';
+import {
+  registerRichText,
+  RICHTEXT_ELEMENT,
+  TextSelection,
+  tint,
+  useSelectionGestures,
+} from '../richtext/index.js';
+import type {
+  SelectionRegistry,
+  RichTextProps,
+  TextRun,
+} from '../richtext/index.js';
+import { autoTokenStyles, codeRuns } from '../code-language/index.js';
+import type { TokenStyles } from '../code-language/index.js';
+
 import { parse } from './parse.js';
-import { ELEMENT, MdTextNode } from './node.js';
-import type { MdRun, MdTextProps, SelectionRegistry } from './node.js';
-import { MarkdownSelection } from './selection.js';
 import { runsOf, plainTextOf } from './spans.js';
 import type { InlineStyles } from './spans.js';
-import { ctrlChordLetter, highlightCode, tint } from './internal.js';
 import { hx } from './hx.js';
 
-export type { MdRun, MdTextProps } from './node.js';
-export type { SelectableBlock, SelectionRegistry } from './selection.js';
 export type {
   BlockNode,
   InlineNode,
@@ -68,41 +65,14 @@ export type {
   ParseOptions,
 } from './ast.js';
 export { parse, parseInline } from './parse.js';
-export { MarkdownSelection } from './selection.js';
 
 const h = React.createElement;
 
-// Idempotent for the same reason sparkline's is: a lockfile skew that puts
-// two copies of this package in one app should not fail to boot.
-if (!registeredElements().includes(ELEMENT)) {
-  registerElement(ELEMENT, {
-    create: (props, app) => new MdTextNode(props, app),
-    // `wrap` is not a style name today, but it reads like one — declaring
-    // everything this element owns keeps the DEV assertion honest even if
-    // core's style vocabulary grows underneath us.
-    semanticNames: ['runs', 'wrap', 'order', 'registry', 'joiner', 'selectionColor'],
-    childrenAllowed: false,
-  });
-}
-
-// `openEditMenu` is react-x11#256 — the shared edit/context menu. Not on
-// core master yet, so it is reached for by name and skipped when absent;
-// when core ships it, right-click grows the standard menu with no change
-// here. (Verbs only: this document is read-only, so copy and select-all.)
-interface EditMenuActions {
-  hasSelection: boolean;
-  copy?(): void;
-  selectAll?(): void;
-}
-const openEditMenu = (
-  reactX11 as unknown as {
-    openEditMenu?: (
-      node: unknown,
-      at: { x: number; y: number },
-      actions: EditMenuActions,
-    ) => void;
-  }
-).openEditMenu;
+// Registration is a shared-module function so `<Code>` can render the same
+// element — but the call sits here, at this component's module scope, so
+// the tree-shaking contract ("a component registers its element in its own
+// index.ts") keeps holding.
+registerRichText();
 
 // --- props -----------------------------------------------------------------
 
@@ -148,7 +118,10 @@ interface Look {
   headerBg: string;
   headingScales: number[];
   blockGap: number;
-  codeTheme: Record<string, string>;
+  /** Token palette for fenced code, chosen against the theme background. */
+  tokenStyles: TokenStyles;
+  /** Resolves `'$token'` colours a custom token palette may use. */
+  resolveToken: (name: string) => string | undefined;
   selectionColor?: string;
   highlight: boolean;
   /** Cache epoch: two equal keys derive identical elements. */
@@ -163,6 +136,7 @@ function deriveLook(
   const dim = String(theme.dim ?? '#7f8c8d');
   const accent = String(theme.accent ?? '#2980b9');
   const border = String(theme.border ?? '#b2bec3');
+  const background = String(theme.background ?? 'white');
   const size = props.fontSize ?? Number(theme.fontSize ?? 14);
   const family = props.fontFamily ?? 'sans-serif';
   const monoFamily = props.monoFamily ?? 'monospace';
@@ -184,22 +158,27 @@ function deriveLook(
     headerBg: tint(text, 0.05),
     headingScales: [1.75, 1.4, 1.2, 1.05, 0.95, 0.85],
     blockGap: Math.round(size * 0.7),
-    // medium-chroma values, readable over both palettes; the keyword and
-    // tag slots follow the accent so highlighting agrees with the theme
-    codeTheme: {
-      keyword: accent,
-      literal: '#a3663a',
-      number: '#a3663a',
-      string: '#348a55',
-      comment: dim,
-      tag: accent,
-      attr: '#7c5fbf',
-      function: text,
-      plain: text,
+    // the same palettes the code editor uses, picked by background
+    // luminance — a fenced block and an editor in one window agree
+    tokenStyles: autoTokenStyles(background),
+    resolveToken: (name) => {
+      const v = theme[name];
+      return typeof v === 'string' ? v : undefined;
     },
     selectionColor: props.selectionColor,
     highlight,
-    key: [text, dim, accent, border, size, family, monoFamily, highlight, props.selectionColor].join('|'),
+    key: [
+      text,
+      dim,
+      accent,
+      border,
+      background,
+      size,
+      family,
+      monoFamily,
+      highlight,
+      props.selectionColor,
+    ].join('|'),
   };
 }
 
@@ -210,7 +189,7 @@ interface RenderCtx {
   registry: SelectionRegistry | undefined;
   /** Monotonic document-order counter for selection ordering. */
   order: { n: number };
-  /** Copy separator for the next mdtext in this scope. */
+  /** Copy separator for the next richtext in this scope. */
   joiner: string;
   /** `app.fonts`, when real — table column sizing measures through it. */
   fonts: FontsMeasureLike | null;
@@ -218,20 +197,20 @@ interface RenderCtx {
 
 interface FontsMeasureLike {
   layout(
-    content: MdRun[] | string,
+    content: TextRun[] | string,
     style: Record<string, unknown>,
     options?: Record<string, unknown>,
   ): { width: number };
 }
 
-function mdtext(
+function richtext(
   ctx: RenderCtx,
   key: string | number,
-  runs: MdRun[],
+  runs: TextRun[],
   style?: Style,
   wrap = true,
 ): ReactElement {
-  const props: MdTextProps & { key?: string | number } = {
+  const props: RichTextProps & { key?: string | number } = {
     runs,
     order: ctx.order.n++,
     registry: ctx.registry,
@@ -240,10 +219,13 @@ function mdtext(
   if (ctx.look.selectionColor) props.selectionColor = ctx.look.selectionColor;
   if (!wrap) props.wrap = false;
   if (style) props.style = style;
-  return h(ELEMENT, { ...props, key } as Record<string, unknown>);
+  return h(RICHTEXT_ELEMENT, { ...props, key } as Record<string, unknown>);
 }
 
-function inlineStyles(ctx: RenderCtx, over: Partial<InlineStyles>): InlineStyles {
+function inlineStyles(
+  ctx: RenderCtx,
+  over: Partial<InlineStyles>,
+): InlineStyles {
   return { ...ctx.look.inline, ...over };
 }
 
@@ -255,7 +237,7 @@ function renderBlock(block: BlockNode, ctx: RenderCtx, key: number): ReactNode {
   const look = ctx.look;
   switch (block.type) {
     case 'paragraph':
-      return mdtext(ctx, key, runsOf(block.children, look.inline));
+      return richtext(ctx, key, runsOf(block.children, look.inline));
 
     case 'heading': {
       const scale = look.headingScales[block.depth - 1] ?? 1;
@@ -263,7 +245,7 @@ function renderBlock(block: BlockNode, ctx: RenderCtx, key: number): ReactNode {
         size: Math.round(look.inline.size * scale),
         weight: 700,
       });
-      return mdtext(ctx, key, runsOf(block.children, s), {
+      return richtext(ctx, key, runsOf(block.children, s), {
         marginTop: key === 0 ? 0 : Math.round(look.blockGap * 0.6),
       });
     }
@@ -282,10 +264,19 @@ function renderBlock(block: BlockNode, ctx: RenderCtx, key: number): ReactNode {
       return hx(
         'box',
         { key, style: STYLES.quoteRow },
-        hx('box', { style: { width: 3, backgroundColor: look.border, borderRadius: 1.5 } }),
+        hx('box', {
+          style: { width: 3, backgroundColor: look.border, borderRadius: 1.5 },
+        }),
         h(
           'box',
-          { style: { ...STYLES.column, gap: look.blockGap, flexGrow: 1, flexShrink: 1 } },
+          {
+            style: {
+              ...STYLES.column,
+              gap: look.blockGap,
+              flexGrow: 1,
+              flexShrink: 1,
+            },
+          },
           ...renderBlocks(block.children, quoted),
         ),
       );
@@ -297,7 +288,12 @@ function renderBlock(block: BlockNode, ctx: RenderCtx, key: number): ReactNode {
     case 'rule':
       return hx('box', {
         key,
-        style: { height: 1, backgroundColor: look.border, marginTop: 2, marginBottom: 2 },
+        style: {
+          height: 1,
+          backgroundColor: look.border,
+          marginTop: 2,
+          marginBottom: 2,
+        },
       });
 
     case 'table':
@@ -316,21 +312,11 @@ function renderCode(
     family: look.inline.monoFamily,
     size: Math.round(look.inline.size * 0.9),
   });
-  let runs: MdRun[];
-  const tokens =
-    look.highlight && lang && highlightCode ? highlightCode(text, lang) : null;
-  if (tokens) {
-    runs = tokens.map((t) => ({
-      text: t.text,
-      family: mono.family,
-      size: mono.size,
-      color: look.codeTheme[t.kind] ?? mono.color,
-    }));
-  } else {
-    runs = [{ text, family: mono.family, size: mono.size, color: mono.color }];
-  }
-  if (runs.length === 0 || text.length === 0)
-    runs = [{ text: '', family: mono.family, size: mono.size, color: mono.color }];
+  const runs: TextRun[] = codeRuns(text, look.highlight ? lang : '', {
+    styles: look.tokenStyles,
+    color: mono.color,
+    resolveToken: look.resolveToken,
+  }).map((r) => ({ ...r, family: mono.family, size: mono.size }));
   // The block scrolls horizontally rather than wrapping — code is code.
   return hx(
     'box',
@@ -344,7 +330,7 @@ function renderCode(
         flexDirection: 'column',
       },
     },
-    mdtext(ctx, 'code', runs, { lineHeight: 1.25 }, false),
+    richtext(ctx, 'code', runs, { lineHeight: 1.25 }, false),
   );
 }
 
@@ -353,7 +339,9 @@ function renderList(list: ListBlock, ctx: RenderCtx, key: number): ReactNode {
   const itemCtx: RenderCtx = { ...ctx, joiner: '\n' };
   const gap = list.tight ? Math.round(look.blockGap * 0.25) : look.blockGap;
   const markerWidth = list.ordered
-    ? Math.max(String(list.start + list.items.length - 1).length, 1) * Math.ceil(look.inline.size * 0.62) + 10
+    ? Math.max(String(list.start + list.items.length - 1).length, 1) *
+        Math.ceil(look.inline.size * 0.62) +
+      10
     : Math.round(look.inline.size * 1.15);
   const items = list.items.map((item, i) => {
     let marker: ReactNode;
@@ -404,7 +392,14 @@ function renderList(list: ListBlock, ctx: RenderCtx, key: number): ReactNode {
       marker,
       hx(
         'box',
-        { style: { ...STYLES.column, gap: Math.round(look.blockGap * 0.4), flexGrow: 1, flexShrink: 1 } },
+        {
+          style: {
+            ...STYLES.column,
+            gap: Math.round(look.blockGap * 0.4),
+            flexGrow: 1,
+            flexShrink: 1,
+          },
+        },
         ...renderBlocks(item.children, itemCtx),
       ),
     );
@@ -412,7 +407,11 @@ function renderList(list: ListBlock, ctx: RenderCtx, key: number): ReactNode {
   return hx('box', { key, style: { ...STYLES.column, gap } }, ...items);
 }
 
-function renderTable(table: TableBlock, ctx: RenderCtx, key: number): ReactNode {
+function renderTable(
+  table: TableBlock,
+  ctx: RenderCtx,
+  key: number,
+): ReactNode {
   const look = ctx.look;
   const size = look.inline.size;
   const padX = Math.round(size * 0.6);
@@ -427,7 +426,10 @@ function renderTable(table: TableBlock, ctx: RenderCtx, key: number): ReactNode 
     for (let c = 0; c < cols; c += 1) {
       let w: number;
       if (ctx.fonts) {
-        w = ctx.fonts.layout(runsOf(cells[c], s), { family: s.family, size: s.size }).width;
+        w = ctx.fonts.layout(runsOf(cells[c], s), {
+          family: s.family,
+          size: s.size,
+        }).width;
       } else {
         w = plainTextOf(cells[c]).length * size * 0.55;
       }
@@ -464,7 +466,7 @@ function renderTable(table: TableBlock, ctx: RenderCtx, key: number): ReactNode 
               paddingBottom: Math.round(size * 0.35),
             },
           },
-          mdtext(cellRunCtx, 'c', runsOf(cell, s), {
+          richtext(cellRunCtx, 'c', runsOf(cell, s), {
             textAlign: table.align[c] ?? undefined,
             flexGrow: 1,
           }),
@@ -476,7 +478,10 @@ function renderTable(table: TableBlock, ctx: RenderCtx, key: number): ReactNode 
   children.push(renderRow(table.header, headStyles, 'h', look.headerBg));
   table.rows.forEach((row, r) => {
     children.push(
-      hx('box', { key: `s${r}`, style: { height: 1, backgroundColor: look.border } }),
+      hx('box', {
+        key: `s${r}`,
+        style: { height: 1, backgroundColor: look.border },
+      }),
     );
     children.push(renderRow(row, look.inline, r));
   });
@@ -535,34 +540,28 @@ interface BlockCache {
  * ```
  */
 export function Markdown(props: MarkdownProps): ReactElement {
-  const {
-    source,
-    partial = true,
-    selectable = true,
-    onLink,
-    style,
-  } = props;
+  const { source, partial = true, selectable = true, onLink, style } = props;
   // `Theme` is an interface, so it has no implicit index signature — the
   // same widening `hx.ts` documents for the `theme` prop.
   const theme = useTheme() as unknown as Record<string, unknown>;
   const app = useApp() as { fonts?: FontsMeasureLike } | null;
-  const clipboard = useClipboard();
 
-  const selectionRef = React.useRef<MarkdownSelection | null>(null);
-  if (!selectionRef.current) selectionRef.current = new MarkdownSelection();
+  const selectionRef = React.useRef<TextSelection | null>(null);
+  if (!selectionRef.current) selectionRef.current = new TextSelection();
   const selection = selectionRef.current;
+  const gestures = useSelectionGestures(selection, { selectable, onLink });
 
-  const draggingRef = React.useRef(false);
-  const pressRef = React.useRef<{ x: number; y: number; href: string | null } | null>(null);
-
-  const look = React.useMemo(() => deriveLook(theme, props), [
-    theme,
-    props.fontSize,
-    props.fontFamily,
-    props.monoFamily,
-    props.selectionColor,
-    props.highlight,
-  ]);
+  const look = React.useMemo(
+    () => deriveLook(theme, props),
+    [
+      theme,
+      props.fontSize,
+      props.fontFamily,
+      props.monoFamily,
+      props.selectionColor,
+      props.highlight,
+    ],
+  );
 
   const doc: Document = React.useMemo(
     () => parse(source, { partial }),
@@ -612,85 +611,6 @@ export function Markdown(props: MarkdownProps): ReactElement {
     cache.map = nextMap; // old entries fall away with the text that made them
   }
 
-  // --- events --------------------------------------------------------------
-
-  const takePrimary = (): void => {
-    if (!selection.hasSelection()) return;
-    clipboard.write(selection.text(), { selection: 'PRIMARY' }).catch(() => {});
-  };
-
-  const copy = (): void => {
-    if (!selection.hasSelection()) return;
-    clipboard.write(selection.text()).catch(() => {});
-  };
-
-  const onMouseDown = (ev: X11MouseEvent<DrawnNode>): void => {
-    if (ev.button !== 1) return;
-    const target = ev.target as unknown;
-    pressRef.current = {
-      x: ev.x,
-      y: ev.y,
-      href:
-        target instanceof MdTextNode ? target.hrefAtPoint(ev.x, ev.y) : null,
-    };
-    if (!selectable) return;
-    draggingRef.current = true;
-    ev.capturePointer();
-    selection.begin(ev.x, ev.y, ev.detail);
-  };
-
-  const onMouseMove = (ev: X11MouseEvent<DrawnNode>): void => {
-    if (!draggingRef.current) return;
-    selection.extend(ev.x, ev.y);
-  };
-
-  const onMouseUp = (ev: X11MouseEvent<DrawnNode>): void => {
-    if (ev.button !== 1) return;
-    const press = pressRef.current;
-    pressRef.current = null;
-    if (draggingRef.current) {
-      draggingRef.current = false;
-      if (selection.end()) takePrimary();
-    }
-    // an un-dragged click on a link follows it; a drag is a selection
-    if (
-      press?.href &&
-      onLink &&
-      Math.abs(ev.x - press.x) <= 3 &&
-      Math.abs(ev.y - press.y) <= 3 &&
-      !selection.hasSelection()
-    ) {
-      onLink(press.href, ev);
-    }
-  };
-
-  const onKeyDown = (ev: X11KeyboardEvent<DrawnNode>): void => {
-    if (!selectable) return;
-    if (ev.ctrlKey) {
-      const letter = ctrlChordLetter(ev);
-      if (letter === 0x61 /* a */) {
-        selection.selectAll();
-        takePrimary();
-      } else if (letter === 0x63 /* c */) {
-        copy();
-      }
-      return;
-    }
-    if (ev.keysym === XK_ESCAPE) selection.clear();
-  };
-
-  const onContextMenu = (ev: X11MouseEvent<DrawnNode>): void => {
-    if (!selectable || !openEditMenu) return;
-    openEditMenu(ev.currentTarget, { x: ev.x, y: ev.y }, {
-      hasSelection: selection.hasSelection(),
-      copy,
-      selectAll: () => {
-        selection.selectAll();
-        takePrimary();
-      },
-    });
-  };
-
   const rootStyle: Style = {
     flexDirection: 'column',
     gap: look.blockGap,
@@ -701,26 +621,13 @@ export function Markdown(props: MarkdownProps): ReactElement {
   return hx(
     'box',
     {
-      style: style ? [rootStyle, ...(Array.isArray(style) ? style : [style])] : rootStyle,
+      style: style
+        ? [rootStyle, ...(Array.isArray(style) ? style : [style])]
+        : rootStyle,
       focusable: selectable || undefined,
-      onMouseDown,
-      onMouseMove,
-      onMouseUp,
-      onKeyDown,
-      onContextMenu,
+      ...gestures,
       'data-testname': props['data-testname'],
     } as Record<string, unknown>,
     ...children,
   );
-}
-
-/** The host element name, for apps composing their own selectable text. */
-export { ELEMENT as MDTEXT_ELEMENT, MdTextNode };
-
-declare module 'react-x11/jsx-runtime' {
-  namespace JSX {
-    interface IntrinsicElements {
-      mdtext: MdTextProps & { key?: string | number; ref?: Ref<unknown> };
-    }
-  }
 }

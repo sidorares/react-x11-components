@@ -1,5 +1,5 @@
 // Cross-block selection for `<Markdown>`. One document renders as many
-// `<mdtext>` nodes (paragraphs, list lines, cells); this controller is the
+// `<richtext>` nodes (paragraphs, list lines, cells); this controller is the
 // thing that makes them feel like one continuous text: it owns the
 // anchor/focus pair, decides which node a pointer position belongs to, and
 // pushes per-node [start, end) ranges down to the nodes that paint them.
@@ -11,10 +11,10 @@
 // changes go straight to `SelectableBlock.setSelection`, which damages only the
 // node's own rect.
 /**
- * What the controller needs a block to be. `MdTextNode` satisfies it, but
+ * What the controller needs a block to be. `RichTextNode` satisfies it, but
  * the controller never names the class: a structural interface keeps the
  * public `.d.ts` free of the (nominal) node type — and leaves the seam
- * open for a future block kind that is not an `<mdtext>` at all (an MDX
+ * open for a future block kind that is not an `<richtext>` at all (an MDX
  * component that wants its text selectable would implement this).
  */
 export interface SelectableBlock {
@@ -48,7 +48,7 @@ interface Point {
 
 type Granularity = 'char' | 'word' | 'block';
 
-export class MarkdownSelection implements SelectionRegistry {
+export class TextSelection implements SelectionRegistry {
   private nodes = new Set<SelectableBlock>();
   private sorted: SelectableBlock[] | null = null;
   private anchorFrom: Point | null = null; // the fixed end's range: word and
@@ -219,7 +219,10 @@ export class MarkdownSelection implements SelectionRegistry {
       if (focus) {
         if (this.granularity === 'word') {
           const [a, b] = focus.node.wordRangeAt(focus.index);
-          pts.push({ node: focus.node, index: a }, { node: focus.node, index: b });
+          pts.push(
+            { node: focus.node, index: a },
+            { node: focus.node, index: b },
+          );
         } else if (this.granularity === 'block') {
           pts.push(
             { node: focus.node, index: 0 },

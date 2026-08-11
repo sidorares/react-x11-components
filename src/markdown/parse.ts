@@ -179,7 +179,11 @@ function parseBlocks(
     // Ambiguous live tails, hidden until they commit to being something:
     // a bare marker run (`---`, `***` — rule? setext? bold opener?) or a
     // content-less ATX stub (`##`).
-    if (held && para.length === 0 && (RE_SETEXT.test(line) || RE_HR.test(line) || RE_ATX_STUB.test(line))) {
+    if (
+      held &&
+      para.length === 0 &&
+      (RE_SETEXT.test(line) || RE_HR.test(line) || RE_ATX_STUB.test(line))
+    ) {
       i += 1;
       continue;
     }
@@ -233,14 +237,14 @@ function parseBlocks(
           break;
         }
         // content dedents by at most the opening fence's indent
-        body.push(indentOf(l) >= fenceIndent ? l.slice(fenceIndent) : l.replace(/^ +/, ''));
+        body.push(
+          indentOf(l) >= fenceIndent
+            ? l.slice(fenceIndent)
+            : l.replace(/^ +/, ''),
+        );
         i += 1;
       }
-      commit(
-        { type: 'code', lang, text: body.join('\n'), closed },
-        start,
-        i,
-      );
+      commit({ type: 'code', lang, text: body.join('\n'), closed }, start, i);
       continue;
     }
 
@@ -274,8 +278,7 @@ function parseBlocks(
       }
       const children: BlockNode[] = [];
       parseBlocks(inner, tailOpen && i === n, children);
-      if (children.length > 0)
-        commit({ type: 'quote', children }, start, i);
+      if (children.length > 0) commit({ type: 'quote', children }, start, i);
       continue;
     }
 
@@ -337,7 +340,11 @@ function parseBlocks(
           i,
         );
         continue;
-      } else if (arrivingDelim && headerCells.length > 1 && line.trimStart().startsWith('|')) {
+      } else if (
+        arrivingDelim &&
+        headerCells.length > 1 &&
+        line.trimStart().startsWith('|')
+      ) {
         // the header row itself is the live tail — hold it rather than
         // flashing "| a | b |" as literal text for one frame
         i += 1;
@@ -384,7 +391,11 @@ interface ParsedList {
   end: number;
 }
 
-function parseList(lines: string[], from: number, tailOpen: boolean): ParsedList {
+function parseList(
+  lines: string[],
+  from: number,
+  tailOpen: boolean,
+): ParsedList {
   const n = lines.length;
   const first = RE_LIST.exec(lines[from]);
   // caller matched — this is the narrowing, not a runtime possibility
@@ -415,7 +426,9 @@ function parseList(lines: string[], from: number, tailOpen: boolean): ParsedList
     const rest = m[4] ?? '';
     // content column: marker + one space, or the actual spacing when ≤ 4
     const pad =
-      afterMarker.length === 0 || afterMarker.length > 4 ? 1 : afterMarker.length;
+      afterMarker.length === 0 || afterMarker.length > 4
+        ? 1
+        : afterMarker.length;
     const contentIndent = indent + m[2].length + pad;
 
     const inner: string[] = [rest];
@@ -487,7 +500,11 @@ function splitRow(line: string): string[] {
   cells.push(cur.trim());
   if (cells.length > 0 && cells[0] === '' && trimmed.startsWith('|'))
     cells.shift();
-  if (cells.length > 0 && cells[cells.length - 1] === '' && trimmed.endsWith('|'))
+  if (
+    cells.length > 0 &&
+    cells[cells.length - 1] === '' &&
+    trimmed.endsWith('|')
+  )
     cells.pop();
   return cells;
 }
@@ -510,7 +527,10 @@ function normalizeRow(
   for (let c = 0; c < width; c += 1) {
     const text = cells[c] ?? '';
     row.push(
-      parseInline(text, rowIsLiveTail && c === Math.min(cells.length, width) - 1),
+      parseInline(
+        text,
+        rowIsLiveTail && c === Math.min(cells.length, width) - 1,
+      ),
     );
   }
   return row;
@@ -535,7 +555,8 @@ const RE_UNI_WS = /\s/u;
 const RE_UNI_PUNCT = /[\p{P}\p{S}]/u;
 const RE_AUTOLINK = /^<([a-zA-Z][a-zA-Z0-9+.-]{1,31}:[^<>\s]*)>/;
 const RE_AUTOEMAIL = /^<([^<>\s@]+@[^<>\s@]+\.[^<>\s@]+)>/;
-const RE_ENTITY = /&(?:#(\d{1,7})|#[xX]([0-9a-fA-F]{1,6})|([a-zA-Z][a-zA-Z0-9]{1,31}));/g;
+const RE_ENTITY =
+  /&(?:#(\d{1,7})|#[xX]([0-9a-fA-F]{1,6})|([a-zA-Z][a-zA-Z0-9]{1,31}));/g;
 
 const NAMED_ENTITIES: Record<string, string> = {
   amp: '&',
@@ -588,7 +609,10 @@ export function parseInline(text: string, atDocEnd: boolean): InlineNode[] {
 
   const flushText = (): void => {
     if (buf.length === 0) return;
-    items.push({ kind: 'node', node: { type: 'text', text: decodeEntities(buf) } });
+    items.push({
+      kind: 'node',
+      node: { type: 'text', text: decodeEntities(buf) },
+    });
     buf = '';
   };
 
@@ -620,7 +644,10 @@ export function parseInline(text: string, atDocEnd: boolean): InlineNode[] {
       const hard = buf.endsWith('  ');
       buf = buf.replace(/[ \t]+$/, '');
       flushText();
-      items.push({ kind: 'node', node: hard ? { type: 'break' } : { type: 'text', text: ' ' } });
+      items.push({
+        kind: 'node',
+        node: hard ? { type: 'break' } : { type: 'text', text: ' ' },
+      });
       i += 1;
       while (text[i] === ' ' || text[i] === '\t') i += 1;
       continue;
@@ -645,7 +672,13 @@ export function parseInline(text: string, atDocEnd: boolean): InlineNode[] {
       }
       if (close !== -1) {
         flushText();
-        items.push({ kind: 'node', node: { type: 'code', text: codeSpanText(text.slice(i + run, close)) } });
+        items.push({
+          kind: 'node',
+          node: {
+            type: 'code',
+            text: codeSpanText(text.slice(i + run, close)),
+          },
+        });
         i = close + run;
         continue;
       }
@@ -655,7 +688,10 @@ export function parseInline(text: string, atDocEnd: boolean): InlineNode[] {
         const rest = text.slice(i + run);
         flushText();
         if (rest.length > 0)
-          items.push({ kind: 'node', node: { type: 'code', text: codeSpanText(rest) } });
+          items.push({
+            kind: 'node',
+            node: { type: 'code', text: codeSpanText(rest) },
+          });
         i = len;
         continue;
       }
@@ -724,7 +760,10 @@ export function parseInline(text: string, atDocEnd: boolean): InlineNode[] {
       flushText();
       items.splice(openIdx, 1, {
         kind: 'node',
-        node: { type: 'text', text: (items[openIdx] as { image: boolean }).image ? '![' : '[' },
+        node: {
+          type: 'text',
+          text: (items[openIdx] as { image: boolean }).image ? '![' : '[',
+        },
       });
       buf += ch;
       i += 1;
@@ -736,8 +775,10 @@ export function parseInline(text: string, atDocEnd: boolean): InlineNode[] {
       while (text[i + run] === ch) run += 1;
       const before = classify(text[i - 1]);
       const after = classify(text[i + run]);
-      const leftFlank = after !== 'ws' && (after !== 'punct' || before !== 'other');
-      const rightFlank = before !== 'ws' && (before !== 'punct' || after !== 'other');
+      const leftFlank =
+        after !== 'ws' && (after !== 'punct' || before !== 'other');
+      const rightFlank =
+        before !== 'ws' && (before !== 'punct' || after !== 'other');
       let canOpen = leftFlank;
       let canClose = rightFlank;
       if (ch === '_') {
@@ -797,7 +838,12 @@ export function parseInline(text: string, atDocEnd: boolean): InlineNode[] {
  *  shaved off each end when both ends have one and content remains. */
 function codeSpanText(raw: string): string {
   const flat = raw.replace(/\n/g, ' ');
-  if (flat.length >= 2 && flat.startsWith(' ') && flat.endsWith(' ') && flat.trim() !== '')
+  if (
+    flat.length >= 2 &&
+    flat.startsWith(' ') &&
+    flat.endsWith(' ') &&
+    flat.trim() !== ''
+  )
     return flat.slice(1, -1);
   return flat;
 }
@@ -846,7 +892,8 @@ function parseLinkSuffix(text: string, from: number): LinkSuffix | null {
       i += 1;
     }
   }
-  while (i < len && (text[i] === ' ' || text[i] === '\n' || text[i] === '\t')) i += 1;
+  while (i < len && (text[i] === ' ' || text[i] === '\n' || text[i] === '\t'))
+    i += 1;
   // an optional title in any of the three quote styles
   const q = text[i];
   if (q === '"' || q === "'" || q === '(') {
@@ -855,7 +902,8 @@ function parseLinkSuffix(text: string, from: number): LinkSuffix | null {
     while (j < len && text[j] !== closer) j += 1;
     if (j >= len) return null;
     i = j + 1;
-    while (i < len && (text[i] === ' ' || text[i] === '\n' || text[i] === '\t')) i += 1;
+    while (i < len && (text[i] === ' ' || text[i] === '\n' || text[i] === '\t'))
+      i += 1;
   }
   if (text[i] !== ')') return null;
   return { href: decodeEntities(href), end: i + 1 };
@@ -944,7 +992,10 @@ function processEmphasis(items: Item[], implicitClose: boolean): void {
       let node: InlineNode;
       if (o.char === '~') node = { type: 'del', children: restNodes };
       else if (o.length >= 3)
-        node = { type: 'strong', children: [{ type: 'em', children: restNodes }] };
+        node = {
+          type: 'strong',
+          children: [{ type: 'em', children: restNodes }],
+        };
       else if (o.length === 2) node = { type: 'strong', children: restNodes };
       else node = { type: 'em', children: restNodes };
       items.splice(k, 1, { kind: 'node', node });
@@ -959,7 +1010,10 @@ function processEmphasis(items: Item[], implicitClose: boolean): void {
 }
 
 function delimToText(d: Extract<Item, { kind: 'delim' }>): Item {
-  return { kind: 'node', node: { type: 'text', text: d.char.repeat(d.length) } };
+  return {
+    kind: 'node',
+    node: { type: 'text', text: d.char.repeat(d.length) },
+  };
 }
 
 /** Collapse a fully-resolved item list to nodes, merging adjacent texts. */

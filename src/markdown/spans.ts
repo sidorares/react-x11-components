@@ -1,8 +1,8 @@
-// Inline AST → the styled runs `<mdtext>` renders. Pure: all the colour
+// Inline AST → the styled runs `<richtext>` renders. Pure: all the colour
 // and font decisions arrive in `InlineStyles`, which `index.ts` derives
 // from the theme once per render.
 import type { InlineNode } from './ast.js';
-import type { MdRun } from './node.js';
+import type { TextRun } from '../richtext/node.js';
 
 /** The resolved look of inline text, for one block. */
 export interface InlineStyles {
@@ -27,9 +27,14 @@ interface WalkState {
 
 /** Flatten an inline tree to runs. Nested emphasis composes; a code span
  *  inside a link keeps the chip and gains the underline, like HTML. */
-export function runsOf(nodes: InlineNode[], s: InlineStyles): MdRun[] {
-  const out: MdRun[] = [];
-  walk(nodes, s, { bold: false, italic: false, code: false, del: false, href: undefined }, out);
+export function runsOf(nodes: InlineNode[], s: InlineStyles): TextRun[] {
+  const out: TextRun[] = [];
+  walk(
+    nodes,
+    s,
+    { bold: false, italic: false, code: false, del: false, href: undefined },
+    out,
+  );
   return out;
 }
 
@@ -37,7 +42,7 @@ function walk(
   nodes: InlineNode[],
   s: InlineStyles,
   st: WalkState,
-  out: MdRun[],
+  out: TextRun[],
 ): void {
   for (const node of nodes) {
     switch (node.type) {
@@ -45,7 +50,12 @@ function walk(
         pushRun(node.text, s, st, out);
         break;
       case 'code':
-        walk([{ type: 'text', text: node.text }], s, { ...st, code: true }, out);
+        walk(
+          [{ type: 'text', text: node.text }],
+          s,
+          { ...st, code: true },
+          out,
+        );
         break;
       case 'strong':
         walk(node.children, s, { ...st, bold: true }, out);
@@ -71,11 +81,16 @@ function walk(
   }
 }
 
-function pushRun(text: string, s: InlineStyles, st: WalkState, out: MdRun[]): void {
+function pushRun(
+  text: string,
+  s: InlineStyles,
+  st: WalkState,
+  out: TextRun[],
+): void {
   if (text.length === 0) return;
   const inLink = st.href !== undefined;
   const color = st.code ? s.codeColor : inLink ? s.linkColor : s.color;
-  const run: MdRun = {
+  const run: TextRun = {
     text,
     family: st.code ? s.monoFamily : s.family,
     size: st.code ? Math.round(s.size * 0.9) : s.size,
@@ -94,7 +109,7 @@ function pushRun(text: string, s: InlineStyles, st: WalkState, out: MdRun[]): vo
   else out.push(run);
 }
 
-function sameStyle(a: MdRun, b: MdRun): boolean {
+function sameStyle(a: TextRun, b: TextRun): boolean {
   return (
     a.family === b.family &&
     a.size === b.size &&

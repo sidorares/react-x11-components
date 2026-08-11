@@ -55,7 +55,8 @@ export interface CodeToken {
     | 'plain';
 }
 
-export const highlightCode: ((code: string, lang: string) => CodeToken[]) | undefined = (
+export const highlightCode:
+  ((code: string, lang: string) => CodeToken[]) | undefined = (
   ntk as unknown as {
     highlightCode?: (code: string, lang: string) => CodeToken[];
   }
