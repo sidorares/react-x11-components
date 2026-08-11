@@ -26,7 +26,7 @@ function App(): ReactElement {
             alignItems: 'center',
             gap: 12,
             padding: 8,
-            backgroundColor: '$surface',
+            backgroundColor: '$surfaceHover',
           }}
         >
           <text style={{ fontSize: 13, color: '$text', flexGrow: 1 }}>
@@ -37,7 +37,7 @@ function App(): ReactElement {
             style={{
               padding: 6,
               borderRadius: 4,
-              backgroundColor: '$surfaceHover',
+              backgroundColor: '$surfaceActive',
               cursor: 'pointer',
             }}
             onClick={() => {

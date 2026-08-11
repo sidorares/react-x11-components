@@ -64,14 +64,14 @@ function App(): ReactElement {
             alignItems: 'center',
             gap: 12,
             padding: 10,
-            backgroundColor: '$surface',
+            backgroundColor: '$surfaceHover',
           }}
         >
           <box
             style={{
               padding: 6,
               borderRadius: 4,
-              backgroundColor: '$surfaceHover',
+              backgroundColor: '$surfaceActive',
               cursor: 'pointer',
             }}
             onClick={() =>
@@ -93,7 +93,7 @@ function App(): ReactElement {
               flexGrow: 1,
               height: 6,
               borderRadius: 3,
-              backgroundColor: '$surfaceHover',
+              backgroundColor: '$track',
               cursor: 'pointer',
             }}
             onClick={(ev) => {
