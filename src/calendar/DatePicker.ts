@@ -5,7 +5,12 @@ import type { ReactElement } from 'react';
 import { createStyles } from 'react-x11/style';
 import type { Style, StyleProperties } from 'react-x11/style';
 import { useAnchor, useAnchorTracking, useTheme } from 'react-x11';
-import type { AnchorOptions, DrawnNode, KeyboardEvent, Rect } from 'react-x11';
+import type {
+  AnchorOptions,
+  AnchorRect,
+  DrawnNode,
+  KeyboardEvent,
+} from 'react-x11';
 import { XK_DOWN, XK_ESCAPE, XK_RETURN, XK_UP } from 'react-x11/keysyms';
 
 import { hx } from './hx.js';
@@ -177,7 +182,11 @@ export function DatePicker(props: DatePickerProps): ReactElement {
 
   const theme = useTheme();
   const [open, setOpen] = useState(false);
-  const [anchor, setAnchor] = useState<Rect | null>(null);
+  // `AnchorRect` rather than `Rect`: core narrowed `useAnchorTracking`'s
+  // setter to the placement-carrying rect, and `useAnchor` has always
+  // returned one. Only the popup's x/y are read below, so this is the
+  // declaration catching up with what was already stored here.
+  const [anchor, setAnchor] = useState<AnchorRect | null>(null);
   const [focused, setFocused] = useState(false);
   const [ownValue, setOwnValue] = useState<unknown>(defaultValue ?? null);
   const triggerRef = useRef<DrawnNode | null>(null);
