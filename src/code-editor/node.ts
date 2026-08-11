@@ -504,10 +504,12 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
     const num = (v: unknown): number => (typeof v === 'number' ? v : 0);
     const border = num(s.borderWidth);
     const pad = num(s.padding);
-    const top = border + num(s.paddingTop ?? pad);
-    const right = border + num(s.paddingRight ?? pad);
-    const bottom = border + num(s.paddingBottom ?? pad);
-    const left = border + num(s.paddingLeft ?? pad);
+    const top = num(s.borderTopWidth ?? border) + num(s.paddingTop ?? pad);
+    const right =
+      num(s.borderRightWidth ?? border) + num(s.paddingRight ?? pad);
+    const bottom =
+      num(s.borderBottomWidth ?? border) + num(s.paddingBottom ?? pad);
+    const left = num(s.borderLeftWidth ?? border) + num(s.paddingLeft ?? pad);
     const { x, y, width, height } = this.abs;
     return {
       x: x + left,

@@ -263,22 +263,17 @@ function renderBlock(block: BlockNode, ctx: RenderCtx, key: number): ReactNode {
       };
       return hx(
         'box',
-        { key, style: STYLES.quoteRow },
-        hx('box', {
-          style: { width: 3, backgroundColor: look.border, borderRadius: 1.5 },
-        }),
-        h(
-          'box',
-          {
-            style: {
-              ...STYLES.column,
-              gap: look.blockGap,
-              flexGrow: 1,
-              flexShrink: 1,
-            },
+        {
+          key,
+          style: {
+            ...STYLES.column,
+            gap: look.blockGap,
+            borderLeftWidth: 3,
+            borderLeftColor: look.border,
+            paddingLeft: 10,
           },
-          ...renderBlocks(block.children, quoted),
-        ),
+        },
+        ...renderBlocks(block.children, quoted),
       );
     }
 
@@ -447,10 +442,19 @@ function renderTable(
     s: InlineStyles,
     rowKey: string | number,
     bg?: string,
+    divided?: boolean,
   ): ReactNode =>
     hx(
       'box',
-      { key: rowKey, style: { flexDirection: 'row', backgroundColor: bg } },
+      {
+        key: rowKey,
+        style: {
+          flexDirection: 'row',
+          backgroundColor: bg,
+          borderTopWidth: divided ? 1 : undefined,
+          borderTopColor: divided ? look.border : undefined,
+        },
+      },
       ...cells.map((cell, c) => {
         // the first cell of a row starts a new line in the copied text
         const cellRunCtx = c === 0 ? { ...cellCtx, joiner: '\n' } : cellCtx;
@@ -477,13 +481,7 @@ function renderTable(
   const children: ReactNode[] = [];
   children.push(renderRow(table.header, headStyles, 'h', look.headerBg));
   table.rows.forEach((row, r) => {
-    children.push(
-      hx('box', {
-        key: `s${r}`,
-        style: { height: 1, backgroundColor: look.border },
-      }),
-    );
-    children.push(renderRow(row, look.inline, r));
+    children.push(renderRow(row, look.inline, r, undefined, true));
   });
 
   // A wide table scrolls inside its own viewport instead of forcing the
@@ -509,7 +507,6 @@ function renderTable(
 
 const STYLES = {
   column: { flexDirection: 'column' },
-  quoteRow: { flexDirection: 'row', gap: 10 },
   itemRow: { flexDirection: 'row' },
   markerBox: { flexDirection: 'row', flexShrink: 0 },
 } as const satisfies Record<string, Style>;
