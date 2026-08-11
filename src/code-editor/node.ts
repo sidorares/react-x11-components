@@ -3,21 +3,29 @@
 // caret, bracket match, diagnostics). `./index.ts` registers it and wires
 // input to it.
 //
-// **How input reaches this node.** Core's own editable elements get their
-// default behaviour through `_defaultKeyDown`-style hooks the EventManager
-// calls after user handlers — hooks that are underscore-internal, and that
-// this package therefore does not touch. Instead the `<CodeEditor>`
-// component installs ordinary prop handlers (`onKeyDown`, `onMouseDown`, …)
-// that call the `handle*` methods below, composing the app's own handlers
-// in front exactly the way core sequences them (user first, default only if
-// not `preventDefault`ed). That keeps every input path on public API.
-// [react-x11 gap] A sanctioned `defaultActions` seam on `registerElement`
-// would let a custom interactive element behave like a built-in one —
-// filed as react-x11#251.
-import { Node } from 'react-x11/node';
-import type { Context2D } from 'react-x11/node';
+// **How input reaches this node.** Through the default-action seam
+// react-x11#266 made public: `defaultKeyDown`, `defaultMouseDown`,
+// `defaultMouseDrag`, `defaultMouseUp`, `defaultFocus` and `defaultBlur`
+// are methods the EventManager calls on the focused or pressed node, after
+// the application's own `onKeyDown`/`onMouseDown` handlers and not at all
+// if one of them called `preventDefault()`. So a bare `<codeeditor>` in
+// JSX edits, selects and blinks the way `<textinput>` does, with no
+// wrapping component required — and an app still vetoes or extends any of
+// it without knowing how the element is built.
+//
+// `<CodeEditor>` is now only the completion popup: it is an ordinary
+// `onKeyDown` handler that consumes the keys the popup owns (arrows,
+// Return, Tab-accept, Escape-close) and, by consuming them, keeps this
+// node's default action from also acting on them.
+import { CARET_BLINK_MS, Node } from 'react-x11/node';
+import type {
+  Context2D,
+  MeasureConstraints,
+  MeasuredSize,
+} from 'react-x11/node';
 import type { Style } from 'react-x11/style';
 import {
+  ctrlChordLetter,
   XK_BACKSPACE,
   XK_DELETE,
   XK_DOWN,
@@ -34,8 +42,8 @@ import {
   XK_UP,
 } from 'react-x11/keysyms';
 
-import { startInterval, stopInterval } from './timers.js';
-import type { TimerId } from './timers.js';
+import { startInterval, stopInterval } from '../code-language/timers.js';
+import type { TimerId } from '../code-language/timers.js';
 import {
   clampPos,
   comparePos,
@@ -53,7 +61,7 @@ import {
   isDarkBackground,
   LIGHT_TOKEN_STYLES,
   tokenStyleFor,
-} from './theme.js';
+} from '../code-language/theme.js';
 import type {
   Diagnostic,
   Language,
@@ -62,7 +70,7 @@ import type {
   Token,
   TokenStyles,
   Tokenizer,
-} from './types.js';
+} from '../code-language/types.js';
 
 /**
  * The element name — registration key, `kind`, and JSX tag, one string (see
@@ -70,7 +78,6 @@ import type {
  */
 export const ELEMENT = 'codeeditor';
 
-const BLINK_MS = 530; // matches core's caret cadence by observation
 const UNDO_LIMIT = 200;
 const DEFAULT_ROWS = 6;
 const PREFERRED_WIDTH = 360;
@@ -151,6 +158,9 @@ export interface CodeEditorProps {
   /** Ranges to underline (LSP-shaped). */
   diagnostics?: readonly Diagnostic[];
   readOnly?: boolean;
+  /** Inert: no default action runs, and the component also stops making it
+   * focusable. `readOnly` still navigates and copies; this does neither. */
+  disabled?: boolean;
   placeholder?: string;
   placeholderColor?: string;
   /** Preferred height in text lines (default 6). */
@@ -193,21 +203,6 @@ interface FontsLike {
     style: Record<string, unknown>,
     options?: Record<string, unknown>,
   ): LayoutLike;
-}
-
-/**
- * [react-x11 gap] A registered element has no public way to give itself an
- * intrinsic size: `<textinput>` does it through `this.yoga.setMeasureFunc`,
- * and `yoga` is not on the public `Node` surface. Declared structurally here
- * — if a react-x11 release moves it, this is the one place to update.
- * Filed as react-x11#250 (which also covers why this must not stay raw:
- * PR react-x11#248's content-floor pass cannot see a raw yoga measure).
- */
-interface YogaLike {
-  setMeasureFunc(
-    fn: (width: number, widthMode: number) => { width: number; height: number },
-  ): void;
-  markDirty(): void;
 }
 
 /** ntk's clipboard, reached through the public `app` — write/read are what
@@ -261,18 +256,6 @@ function utf16ToCp(text: string, index: number): number {
   return cp;
 }
 
-/** The letter of a Ctrl chord, Shift-independent — a local copy of core's
- * `ctrlChordLetter`, which the runtime exports but `keysyms.d.ts` does not
- * declare. [react-x11 gap] declare it and this copy goes — react-x11#252. */
-function chordLetter(ev: {
-  keysym?: number;
-  codepoint?: number;
-}): number | null {
-  const code = ev.keysym ?? ev.codepoint;
-  if (code == null) return null;
-  return code >= 0x41 && code <= 0x5a ? code + 0x20 : code;
-}
-
 /** What the component's handlers pass in — the public synthetic event
  * surface (docs/events.md), structurally. */
 export interface EditorKeyEvent {
@@ -283,6 +266,9 @@ export interface EditorKeyEvent {
   ctrlKey: boolean;
   nativeEvent?: unknown;
   defaultPrevented?: boolean;
+  /** Consumes the key: what it suppresses is the default action *after*
+   * this one, which for Tab is the focus cycle. */
+  preventDefault?(): void;
 }
 
 export interface EditorMouseEvent {
@@ -293,6 +279,7 @@ export interface EditorMouseEvent {
   shiftKey: boolean;
   capturePointer?(): void;
   releasePointer?(): void;
+  preventDefault?(): void;
 }
 
 interface LineCacheEntry {
@@ -318,6 +305,9 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
   private _goalX: number | null = null;
   private _drag: 'char' | 'word' | 'line' | null = null;
   private _dragOrigin: Position = { line: 0, ch: 0 };
+  /** Escape was the last key, so the next Tab leaves instead of indenting —
+   * the editor's way of not being a keyboard trap (see `defaultKeyDown`). */
+  private _tabEscapes = false;
   private _history: HistoryEntry[];
   private _historyIndex = 0;
   private _undoRun: string | null = null;
@@ -344,15 +334,26 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
     this._history = [
       { value: initial, caret: this._caret, anchor: this._anchor },
     ];
-    const yoga = (this as unknown as { yoga?: YogaLike }).yoga;
-    yoga?.setMeasureFunc((width, widthMode) => {
-      // widthMode 0 is yoga's MEASURE_MODE_UNDEFINED; the constant is not
-      // public either, but its value is fixed by yoga's ABI.
-      const w =
-        widthMode === 0 ? PREFERRED_WIDTH : Math.min(PREFERRED_WIDTH, width);
-      const rows = Math.max(1, Number(this.props.rows ?? DEFAULT_ROWS));
-      return { width: w, height: Math.ceil(this._lineHeight() * rows) };
-    });
+    // Without this nothing focuses the editor and no key ever reaches it —
+    // an app's `focusable`/`tabIndex` prop still overrides either way, which
+    // is how `<CodeEditor disabled>` stays out of the tab order.
+    this.focusableByDefault = true;
+    this.defaultCursor = 'text';
+  }
+
+  /**
+   * The editor's own size: a comfortable width, never wider than what is on
+   * offer, and `rows` text lines tall. An unbounded axis arrives as
+   * `Infinity`, so the `Math.min` is the whole rule. The height comes from a
+   * prop rather than from the style, which is what makes the
+   * `invalidateMeasure` in `applyProps` necessary.
+   */
+  override measureContent({ width }: MeasureConstraints): MeasuredSize {
+    const rows = Math.max(1, Number(this.props.rows ?? DEFAULT_ROWS));
+    return {
+      width: Math.min(PREFERRED_WIDTH, width),
+      height: Math.ceil(this._lineHeight() * rows),
+    };
   }
 
   // --- value & props sync --------------------------------------------------
@@ -504,10 +505,12 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
     const num = (v: unknown): number => (typeof v === 'number' ? v : 0);
     const border = num(s.borderWidth);
     const pad = num(s.padding);
-    const top = border + num(s.paddingTop ?? pad);
-    const right = border + num(s.paddingRight ?? pad);
-    const bottom = border + num(s.paddingBottom ?? pad);
-    const left = border + num(s.paddingLeft ?? pad);
+    const top = num(s.borderTopWidth ?? border) + num(s.paddingTop ?? pad);
+    const right =
+      num(s.borderRightWidth ?? border) + num(s.paddingRight ?? pad);
+    const bottom =
+      num(s.borderBottomWidth ?? border) + num(s.paddingBottom ?? pad);
+    const left = num(s.borderLeftWidth ?? border) + num(s.paddingLeft ?? pad);
     const { x, y, width, height } = this.abs;
     return {
       x: x + left,
@@ -1105,10 +1108,38 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
   // --- input: keyboard -----------------------------------------------------
 
   /**
-   * The editor's default key behaviour. Returns true when the key was
-   * consumed — the component calls `ev.preventDefault()` exactly then, which
-   * is also what keeps Tab-to-move-focus working after Escape (the component
-   * simply does not call this for that one Tab).
+   * The editor's own key behaviour, run by the EventManager after the app's
+   * `onKeyDown` handlers and not at all if one of them called
+   * `preventDefault()` — so `<CodeEditor>`'s completion popup vetoes this
+   * simply by consuming the key first, and so does an application handler.
+   *
+   * Tab is an ordinary key here, ahead of focus traversal, which is what
+   * lets a bare `<codeeditor>` indent with it. Owning Tab means owning the
+   * keyboard user's way out, hence the convention `docs/extending.md` asks
+   * elements to converge on: **Escape arms one pass-through Tab**. Escape on
+   * its own does nothing visible, the next Tab leaves, and the one after
+   * that indents again.
+   */
+  override defaultKeyDown(ev: EditorKeyEvent): void {
+    if (this.props.disabled) return;
+    const k = ev.keysym;
+    if (k === XK_ESCAPE) {
+      this._tabEscapes = true;
+      return;
+    }
+    if (k === XK_TAB && this._tabEscapes) {
+      this._tabEscapes = false;
+      return; // this one belongs to the focus cycle
+    }
+    this._tabEscapes = false;
+    if (this.handleKeyDown(ev)) ev.preventDefault?.();
+  }
+
+  /**
+   * The editor's key behaviour as a predicate — true when the key was
+   * consumed. Kept apart from {@link defaultKeyDown} because the editing
+   * model is also driven directly in tests and by an app that wires the raw
+   * element itself; the default action is this plus the Tab/Escape bargain.
    */
   handleKeyDown(ev: EditorKeyEvent): boolean {
     this._syncProps();
@@ -1257,7 +1288,7 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
     }
 
     if (ev.ctrlKey) {
-      const letter = chordLetter(ev);
+      const letter = ctrlChordLetter(ev);
       if (letter === 0x61 /* a */) {
         this.selectAll();
         return true;
@@ -1334,6 +1365,27 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
   }
 
   // --- input: mouse --------------------------------------------------------
+
+  /**
+   * A press: place the caret, start a drag-selection, or paste PRIMARY on
+   * the middle button. The drag and release below are the continuation of
+   * *this* press — core vetoes a gesture once, at its press, so an editor
+   * whose `defaultMouseDown` never ran hears neither, and needs no
+   * `dragging` flag to discover that.
+   */
+  override defaultMouseDown(ev: EditorMouseEvent): void {
+    if (this.props.disabled) return;
+    this.focus();
+    if (this.handleMouseDown(ev)) ev.preventDefault?.();
+  }
+
+  override defaultMouseDrag(ev: EditorMouseEvent): void {
+    if (this.handleMouseMove(ev)) ev.preventDefault?.();
+  }
+
+  override defaultMouseUp(): void {
+    this.handleMouseUp();
+  }
 
   handleMouseDown(ev: EditorMouseEvent): boolean {
     this._syncProps();
@@ -1417,18 +1469,22 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
 
   // --- focus ---------------------------------------------------------------
 
-  /** `Node.focus()`/`blur()` exist at runtime (they move the window's focus
-   * the way a click would) but `node.d.ts` omits them — [react-x11 gap],
-   * filed as react-x11#252. Declared here so the handle can promise them;
-   * the call is forwarded to the runtime implementation. */
-  focus(): void {
-    const f = (Node.prototype as unknown as { focus?(): unknown }).focus;
-    f?.call(this);
+  // `focus()`/`blur()` come from `Node` — declared as well as implemented
+  // since react-x11#267, so the forwarding shims this file used to carry are
+  // gone. `CodeEditorHandle` keeps promising `void`: the base returns `this`,
+  // and widening the handle to the node type would drag the class's nominal
+  // type into the exported props (see the note on `CodeEditorHandle`).
+
+  /** Focus is a state, not an event: `onFocus` is where the app hears about
+   * it, and this is where the caret starts blinking. The timer is also
+   * released in `destroySubtree`, because a node that unmounts while focused
+   * is forgotten rather than blurred and this would never run. */
+  override defaultFocus(): void {
+    this.handleFocus();
   }
 
-  blur(): void {
-    const f = (Node.prototype as unknown as { blur?(): unknown }).blur;
-    f?.call(this);
+  override defaultBlur(): void {
+    this.handleBlur();
   }
 
   handleFocus(): void {
@@ -1438,7 +1494,7 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
       this._blinkTimer = startInterval(() => {
         this._caretOn = !this._caretOn;
         this.root?.invalidate(false, this.abs, 'text');
-      }, BLINK_MS);
+      }, CARET_BLINK_MS);
     }
     this._repaint();
   }
@@ -1464,10 +1520,7 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
       this._tokenizer(); // re-resolves against the new props
       this._repaint();
     }
-    if (nextProps.rows !== before.rows) {
-      (this as unknown as { yoga?: YogaLike }).yoga?.markDirty();
-      this.root?.invalidate(true, null, 'props');
-    }
+    if (nextProps.rows !== before.rows) this.invalidateMeasure('props');
     if (
       nextProps.tokenStyles !== before.tokenStyles ||
       nextProps.diagnostics !== before.diagnostics ||

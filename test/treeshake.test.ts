@@ -40,6 +40,12 @@ const COMPONENTS = [
     dir: 'desktop-calendar',
     marker: 'org.gnome.evolution.dataserver',
   },
+  // `<Markdown>`, `<Code>` and `<CodeEditor>` share `src/richtext/` and
+  // `src/code-language/`, so their markers name what is theirs alone: the
+  // autolink scheme only the markdown parser writes, the gutter label only
+  // the code block draws.
+  { exportName: 'Markdown', dir: 'markdown', marker: 'mailto:' },
+  { exportName: 'Code', dir: 'code', marker: 'Code block' },
 ];
 
 async function bundle(contents: string): Promise<string> {

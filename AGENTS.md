@@ -59,6 +59,18 @@ element.
   `index.ts` (the React component, its props interface, and the
   `registerElement` call if it has one) and whatever private modules it
   needs. No component imports another component.
+- **Shared modules are directories too**, with their own `index.ts` and
+  subpath, and the difference from a component is that they are
+  side-effect free: `src/richtext/` (the selectable styled-text element
+  behind `<Markdown>` and `<Code>`, plus the cross-block selection
+  controller and the gesture hook) and `src/code-language/` (the tokenizer
+  seam, the built-in languages, the token palettes — under `<CodeEditor>`,
+  `<Code>` and `<Markdown>`'s fences alike). A shared module never calls
+  `registerElement` at module scope; `richtext` exports
+  `registerRichText()` instead, and **each component that renders the
+  element calls it at its own module scope**, so "a component registers
+  its element in its own index.ts" keeps holding and an app that imports
+  neither component registers nothing.
 - `src/index.ts` — the convenience barrel. Re-exports only. Never put
   anything with a side effect here.
 - `dist/` — **the build output, and what ships.** `tsc` writes it, git
@@ -303,11 +315,22 @@ places gets two independent widgets, which is harmless (neither registers a
 host element) but is not the end state. See "Vendored from core" above for
 what came with them.
 
-Nothing else below has moved yet.
+**Replaced rather than moved:** core's ntk-backed `<markdown>` element.
+`src/markdown/` is a from-scratch successor (its own GFM parser, tolerant
+of streaming-truncated input; rendering is box/`<richtext>` composition),
+because ntk's `MarkdownView` and `HtmlView` widgets are being deprecated
+and neither supported selection. There is deliberately **no `<html>`
+successor**: nothing in this package renders through an HTML pass. The
+reuse question was asked against Vercel's Streamdown first and answered
+"behaviour yes, code no" — its pipeline is remark→rehype→DOM, but its
+`remend` package's unterminated-markdown rules are implemented natively by
+`src/markdown/parse.ts` (as parser tolerance, not a repair pre-pass; the
+handlers were read, not imported).
 
 | Candidate                                        | Where it is now                                          | Status                                                                                                                                                |
 | ------------------------------------------------ | -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `<markdown>`, `<html>`                           | react-x11 `src/richnodes.js`, over ntk's widgets         | **Candidate.** Small fraction of apps, large closure. See react-x11's `RICH_CONTENT.md` and [ntk#106](https://github.com/sidorares/ntk/issues/106).   |
+| `<markdown>`, `<html>`                           | replaced by `src/markdown/` here (see above)             | **Done** for markdown, **never** for html. ntk's document widgets are deprecated; see [ntk#106](https://github.com/sidorares/ntk/issues/106).         |
+| MDX in `<Markdown>`                              | reserved seams only (`component` AST node)               | **Planned.** Composition-friendly by construction; the parser is the only part that grows. Streaming-compatible in principle.                         |
 | `<svg>`, `<tex>`                                 | ntk (`SvgView`, `layoutTex`), wrapped in react-x11       | **Staying in ntk**, per ntk#106. Recorded here so it is not reopened.                                                                                 |
 | mermaid                                          | nowhere — dropped from ntk                               | **Dropped**, not extracted: 155 MB of install closure for a grammar. If it comes back, it comes back here, as its own subpath, and it stays optional. |
 | `<Tabs>`                                         | react-x11 `src/components/Tabs.js`                       | **Open.** May stay in core. Undecided — do not move it on a hunch.                                                                                    |

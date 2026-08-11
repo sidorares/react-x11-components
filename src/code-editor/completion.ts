@@ -10,7 +10,7 @@ import type {
   CompletionItem,
   CompletionResult,
   CompletionSource,
-} from './types.js';
+} from '../code-language/types.js';
 
 /**
  * Rank `items` against what has been typed: prefix matches first (case
