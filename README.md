@@ -119,6 +119,7 @@ import type { CodeEditorProps } from '@react-x11/components';
 | `LineChart` … | `@react-x11/components/charts`           | Cartesian charts; a million points is a normal input. |
 | `Code`        | `@react-x11/components/code`             | A static code block: highlighted, selectable.         |
 | `CodeEditor`  | `@react-x11/components/code-editor`      | Multiline code editing: highlighting, completion.     |
+| `Flow`        | `@react-x11/components/flow`             | A directed-graph editor: nodes, edges, pan and zoom.  |
 | `Markdown`    | `@react-x11/components/markdown`         | Streaming-friendly GFM with cross-block selection.    |
 | `MediaPlayer` | `@react-x11/components/media-player`     | mpv or VLC, embedded, with real transport control.    |
 | `Terminal`    | `@react-x11/components/terminal`         | A real terminal: an embedded emulator, or its own.    |
@@ -380,6 +381,97 @@ Completion sources are one async function each, deliberately the shape of an
 LSP `textDocument/completion` call, so a language-server client is "just
 another source". `npm run examples:code-editor` shows the three input-field
 use cases side by side.
+
+## The graph editor
+
+A directed graph you can edit — a pipeline, a state machine, a dependency
+map, a node-based tool. The surface is [react-flow][rf]'s, so a graph
+described for that is described for this:
+
+```jsx
+import {
+  Flow,
+  useNodesState,
+  useEdgesState,
+  addEdge,
+} from '@react-x11/components/flow';
+
+const [nodes, setNodes, onNodesChange] = useNodesState([
+  { id: 'read', position: { x: 0, y: 0 }, data: { label: 'read' } },
+  { id: 'parse', position: { x: 0, y: 120 }, data: { label: 'parse' } },
+]);
+const [edges, setEdges, onEdgesChange] = useEdgesState([
+  { id: 'r-p', source: 'read', target: 'parse', label: 'bytes' },
+]);
+
+<Flow
+  nodes={nodes}
+  edges={edges}
+  onNodesChange={onNodesChange}
+  onEdgesChange={onEdgesChange}
+  onConnect={(c) => setEdges((es) => addEdge(c, es))}
+  fitView
+  minimap
+  style={{ flexGrow: 1 }}
+/>;
+```
+
+Nothing mutates the arrays: every gesture arrives as a _change_ the app
+applies (`applyNodeChanges`, `applyEdgeChanges`, `addEdge`), which is what
+makes `nodes`/`edges` an ordinary controlled prop — and undo a matter of not
+applying one. `defaultNodes`/`defaultEdges` give the uncontrolled form.
+
+Drag a node to move it, a handle to connect two, the pane to pan, Shift+drag
+to box-select; the wheel zooms, Delete removes the selection (with the edges
+that would dangle), Ctrl+A selects everything, the arrows nudge or pan, `0`
+frames the graph. Edges route as bezier, smoothstep, step or straight, carry
+labels and arrowheads, and animate. `background`, `minimap` and `controls`
+are props rather than child components.
+
+**One thing is deliberately not react-flow's**, and it is the interesting
+one: a custom node type is a `paint` function, not a React component.
+react-flow gives every node a DOM subtree and pans and zooms with a CSS
+transform, so the browser moves ten thousand boxes for free. This renderer
+has no transform — `style` is yoga plus paint — so the same design would
+re-render and re-lay-out every node on every pointer step of a pan. The pane
+draws the graph instead: panning becomes two numbers and one node's repaint,
+zoom scales text along with everything else, and React is not involved at all
+unless the graph itself changed.
+
+```jsx
+const nodeTypes = {
+  task: {
+    size: { width: 150, height: 52 },
+    handles: [
+      { type: 'target', position: 'left' },
+      { type: 'source', position: 'right', id: 'ok', label: 'ok' },
+      { type: 'source', position: 'right', id: 'err', offset: 0.8 },
+    ],
+    paint({ rect, zoom, selected, palette, painter, node }) {
+      painter.rect(rect.x, rect.y, rect.width, rect.height, 6 * zoom, {
+        fill: palette.nodeBackground,
+        stroke: selected ? palette.accent : palette.nodeBorder,
+        lineWidth: selected ? 2 : 1,
+      });
+      painter.text(
+        node.data.label,
+        rect.x + rect.width / 2,
+        rect.y + rect.height / 2,
+        {
+          size: 13 * zoom,
+          align: 'center',
+          baseline: 'middle',
+          color: palette.text,
+        },
+      );
+    },
+  },
+};
+```
+
+`npm run examples:flow` is a working pipeline editor.
+
+[rf]: https://reactflow.dev/
 
 ## The user's real calendar
 
@@ -693,7 +785,6 @@ Candidates to move here:
 
 - The 3D scene graph and a Three.js / react-three-fiber-shaped layer, with
   `<glarea>` itself staying in core.
-- A react-flow-style node/edge graph editor.
 - `<Tabs>`, undecided — it may well stay in core.
 - MDX support in `<Markdown>` — see the note in that section.
 - A StatusNotifierItem host, beside `<TrayHost>` rather than inside it: the

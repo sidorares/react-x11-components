@@ -64,6 +64,10 @@
       "types": "./dist/embed/index.d.ts",
       "default": "./dist/embed/index.js"
     },
+    "./flow": {
+      "types": "./dist/flow/index.d.ts",
+      "default": "./dist/flow/index.js"
+    },
     "./markdown": {
       "types": "./dist/markdown/index.d.ts",
       "default": "./dist/markdown/index.js"
@@ -107,6 +111,7 @@
     "examples:charts": "tsx examples/charts.tsx",
     "examples:code": "tsx examples/code.tsx",
     "examples:code-editor": "tsx examples/code-editor.tsx",
+    "examples:flow": "tsx examples/flow.tsx",
     "examples:markdown": "tsx examples/markdown.tsx",
     "examples:media-player": "tsx examples/media-player.tsx",
     "examples:terminal": "tsx examples/terminal.tsx",
