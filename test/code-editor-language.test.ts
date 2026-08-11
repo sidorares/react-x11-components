@@ -476,7 +476,7 @@ test('isDarkBackground and autoTokenStyles', async () => {
     autoTokenStyles,
     DARK_TOKEN_STYLES,
     LIGHT_TOKEN_STYLES,
-  } = await import('../src/code-editor/theme.js');
+  } = await import('../src/code-language/theme.js');
   assert.equal(isDarkBackground('#1e2227'), true);
   assert.equal(isDarkBackground('#ffffff'), false);
   assert.equal(isDarkBackground('#fff'), false);
