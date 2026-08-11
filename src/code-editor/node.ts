@@ -668,15 +668,19 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
     };
   }
 
-  /** Text width in this editor's font — the popup measures labels with it. */
+  /** Text width in this editor's font. The built-in completion popup no
+   * longer needs it — a `<popup anchor>` measures its own rows — but an app
+   * laying out its own overlay against the text still does. */
   measureText(text: string): number {
     const fonts = this._fonts();
     if (!fonts) return text.length * this._charW;
     return fonts.layout(text, this._textStyle()).width;
   }
 
-  /** Caret geometry relative to this node's origin — what the completion
-   * popup anchors to (the component adds `screenRect`). */
+  /** Caret geometry relative to this node's origin — node coordinates, which
+   * is exactly what a `<popup anchor={{at}}>` takes, so the completion popup
+   * hands this straight through and nothing here has to know where the
+   * editor sits on screen. */
   caretRect(): { x: number; y: number; height: number } {
     this._syncProps();
     this._metrics();
