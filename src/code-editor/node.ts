@@ -3,23 +3,20 @@
 // caret, bracket match, diagnostics). `./index.ts` registers it and wires
 // input to it.
 //
-// **How input reaches this node.** Core's own editable elements get their
-// default behaviour through `_defaultKeyDown`-style hooks the EventManager
-// calls after user handlers — hooks that are underscore-internal, and that
-// this package therefore does not touch. Instead the `<CodeEditor>`
-// component installs ordinary prop handlers (`onKeyDown`, `onMouseDown`, …)
-// that call the `handle*` methods below, composing the app's own handlers
-// in front exactly the way core sequences them (user first, default only if
-// not `preventDefault`ed). That keeps every input path on public API.
+// **How input reaches this node.** Through the default-action seam
+// react-x11#266 made public: `defaultKeyDown`, `defaultMouseDown`,
+// `defaultMouseDrag`, `defaultMouseUp`, `defaultFocus` and `defaultBlur`
+// are methods the EventManager calls on the focused or pressed node, after
+// the application's own `onKeyDown`/`onMouseDown` handlers and not at all
+// if one of them called `preventDefault()`. So a bare `<codeeditor>` in
+// JSX edits, selects and blinks the way `<textinput>` does, with no
+// wrapping component required — and an app still vetoes or extends any of
+// it without knowing how the element is built.
 //
-// react-x11#266 has since blessed that seam: `defaultKeyDown` and friends
-// are public methods on `Node`, called by the EventManager on any target it
-// reaches, so a bare `<codeeditor>` in JSX could behave the way
-// `<textinput>` does instead of needing the component wrapper. Moving onto
-// it is a behaviour change rather than a rename — Tab becomes an ordinary
-// defaultable key ahead of focus traversal, which an element consuming it
-// has to pair with the documented Escape-arms-one-Tab convention so it does
-// not become a keyboard trap — so it is deliberately not done here.
+// `<CodeEditor>` is now only the completion popup: it is an ordinary
+// `onKeyDown` handler that consumes the keys the popup owns (arrows,
+// Return, Tab-accept, Escape-close) and, by consuming them, keeps this
+// node's default action from also acting on them.
 import { CARET_BLINK_MS, Node } from 'react-x11/node';
 import type {
   Context2D,
@@ -161,6 +158,9 @@ export interface CodeEditorProps {
   /** Ranges to underline (LSP-shaped). */
   diagnostics?: readonly Diagnostic[];
   readOnly?: boolean;
+  /** Inert: no default action runs, and the component also stops making it
+   * focusable. `readOnly` still navigates and copies; this does neither. */
+  disabled?: boolean;
   placeholder?: string;
   placeholderColor?: string;
   /** Preferred height in text lines (default 6). */
@@ -266,6 +266,9 @@ export interface EditorKeyEvent {
   ctrlKey: boolean;
   nativeEvent?: unknown;
   defaultPrevented?: boolean;
+  /** Consumes the key: what it suppresses is the default action *after*
+   * this one, which for Tab is the focus cycle. */
+  preventDefault?(): void;
 }
 
 export interface EditorMouseEvent {
@@ -276,6 +279,7 @@ export interface EditorMouseEvent {
   shiftKey: boolean;
   capturePointer?(): void;
   releasePointer?(): void;
+  preventDefault?(): void;
 }
 
 interface LineCacheEntry {
@@ -301,6 +305,9 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
   private _goalX: number | null = null;
   private _drag: 'char' | 'word' | 'line' | null = null;
   private _dragOrigin: Position = { line: 0, ch: 0 };
+  /** Escape was the last key, so the next Tab leaves instead of indenting —
+   * the editor's way of not being a keyboard trap (see `defaultKeyDown`). */
+  private _tabEscapes = false;
   private _history: HistoryEntry[];
   private _historyIndex = 0;
   private _undoRun: string | null = null;
@@ -327,6 +334,11 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
     this._history = [
       { value: initial, caret: this._caret, anchor: this._anchor },
     ];
+    // Without this nothing focuses the editor and no key ever reaches it —
+    // an app's `focusable`/`tabIndex` prop still overrides either way, which
+    // is how `<CodeEditor disabled>` stays out of the tab order.
+    this.focusableByDefault = true;
+    this.defaultCursor = 'text';
   }
 
   /**
@@ -1096,10 +1108,38 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
   // --- input: keyboard -----------------------------------------------------
 
   /**
-   * The editor's default key behaviour. Returns true when the key was
-   * consumed — the component calls `ev.preventDefault()` exactly then, which
-   * is also what keeps Tab-to-move-focus working after Escape (the component
-   * simply does not call this for that one Tab).
+   * The editor's own key behaviour, run by the EventManager after the app's
+   * `onKeyDown` handlers and not at all if one of them called
+   * `preventDefault()` — so `<CodeEditor>`'s completion popup vetoes this
+   * simply by consuming the key first, and so does an application handler.
+   *
+   * Tab is an ordinary key here, ahead of focus traversal, which is what
+   * lets a bare `<codeeditor>` indent with it. Owning Tab means owning the
+   * keyboard user's way out, hence the convention `docs/extending.md` asks
+   * elements to converge on: **Escape arms one pass-through Tab**. Escape on
+   * its own does nothing visible, the next Tab leaves, and the one after
+   * that indents again.
+   */
+  override defaultKeyDown(ev: EditorKeyEvent): void {
+    if (this.props.disabled) return;
+    const k = ev.keysym;
+    if (k === XK_ESCAPE) {
+      this._tabEscapes = true;
+      return;
+    }
+    if (k === XK_TAB && this._tabEscapes) {
+      this._tabEscapes = false;
+      return; // this one belongs to the focus cycle
+    }
+    this._tabEscapes = false;
+    if (this.handleKeyDown(ev)) ev.preventDefault?.();
+  }
+
+  /**
+   * The editor's key behaviour as a predicate — true when the key was
+   * consumed. Kept apart from {@link defaultKeyDown} because the editing
+   * model is also driven directly in tests and by an app that wires the raw
+   * element itself; the default action is this plus the Tab/Escape bargain.
    */
   handleKeyDown(ev: EditorKeyEvent): boolean {
     this._syncProps();
@@ -1326,6 +1366,27 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
 
   // --- input: mouse --------------------------------------------------------
 
+  /**
+   * A press: place the caret, start a drag-selection, or paste PRIMARY on
+   * the middle button. The drag and release below are the continuation of
+   * *this* press — core vetoes a gesture once, at its press, so an editor
+   * whose `defaultMouseDown` never ran hears neither, and needs no
+   * `dragging` flag to discover that.
+   */
+  override defaultMouseDown(ev: EditorMouseEvent): void {
+    if (this.props.disabled) return;
+    this.focus();
+    if (this.handleMouseDown(ev)) ev.preventDefault?.();
+  }
+
+  override defaultMouseDrag(ev: EditorMouseEvent): void {
+    if (this.handleMouseMove(ev)) ev.preventDefault?.();
+  }
+
+  override defaultMouseUp(): void {
+    this.handleMouseUp();
+  }
+
   handleMouseDown(ev: EditorMouseEvent): boolean {
     this._syncProps();
     this.breakUndoRun();
@@ -1413,6 +1474,18 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
   // gone. `CodeEditorHandle` keeps promising `void`: the base returns `this`,
   // and widening the handle to the node type would drag the class's nominal
   // type into the exported props (see the note on `CodeEditorHandle`).
+
+  /** Focus is a state, not an event: `onFocus` is where the app hears about
+   * it, and this is where the caret starts blinking. The timer is also
+   * released in `destroySubtree`, because a node that unmounts while focused
+   * is forgotten rather than blurred and this would never run. */
+  override defaultFocus(): void {
+    this.handleFocus();
+  }
+
+  override defaultBlur(): void {
+    this.handleBlur();
+  }
 
   handleFocus(): void {
     this._focused = true;

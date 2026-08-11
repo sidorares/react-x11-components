@@ -24,7 +24,12 @@ import {
 } from 'react-x11/test';
 import type { DrawnNode } from 'react-x11';
 
-import { CodeEditor, keywordCompletionSource, sql } from '../src/index.js';
+import {
+  CODE_EDITOR_ELEMENT,
+  CodeEditor,
+  keywordCompletionSource,
+  sql,
+} from '../src/index.js';
 import type { CodeEditorEvent, CodeEditorNode } from '../src/index.js';
 
 const h = React.createElement;
@@ -306,5 +311,69 @@ test('size: rows decides the height, and changing it re-measures', async () => {
   assert.ok(
     tall > short * 2,
     `rows=8 (${tall}) is far taller than rows=2 (${short})`,
+  );
+});
+
+// --- the bare element ------------------------------------------------------
+//
+// The point of moving onto react-x11#266's default-action seam: a
+// `<codeeditor>` written directly in JSX behaves, with no <CodeEditor>
+// wrapper installing handlers for it.
+
+test('bare element: edits and indents with Tab, with no wrapper', async () => {
+  await renderX11(h(CODE_EDITOR_ELEMENT, { defaultValue: '' }));
+  const node = editorNode();
+  await userEvent.type(node as unknown as DrawnNode, 'ab');
+  assert.equal(node.value, 'ab', 'the element edits itself');
+  await userEvent.key(XK_TAB);
+  assert.equal(node.value, 'ab  ', 'Tab indents rather than moving focus');
+});
+
+test('bare element: Escape arms one Tab out, the next indents again', async () => {
+  await renderX11(h(CODE_EDITOR_ELEMENT, { defaultValue: 'a' }));
+  const node = editorNode();
+  await userEvent.click(node as unknown as DrawnNode);
+  await userEvent.key(XK_END);
+
+  await userEvent.key(XK_ESCAPE);
+  await userEvent.key(XK_TAB);
+  assert.equal(node.value, 'a', 'the armed Tab left the editor alone');
+
+  await userEvent.click(node as unknown as DrawnNode);
+  await userEvent.key(XK_END);
+  await userEvent.key(XK_TAB);
+  assert.equal(node.value, 'a   ', 'the one after that indents again');
+});
+
+test('an app handler vetoes the default action', async () => {
+  const seen: string[] = [];
+  await renderX11(
+    h(CODE_EDITOR_ELEMENT, {
+      defaultValue: '',
+      onKeyDown: (ev: { key?: string; preventDefault(): void }) => {
+        seen.push(ev.key ?? '');
+        ev.preventDefault();
+      },
+    }),
+  );
+  const node = editorNode();
+  await userEvent.type(node as unknown as DrawnNode, 'zz');
+  assert.ok(seen.length > 0, 'the handler ran, so the keys did arrive');
+  assert.equal(node.value, '', 'preventDefault stopped the editing');
+});
+
+test('bare element: a press places the caret and takes focus', async () => {
+  await renderX11(h(CODE_EDITOR_ELEMENT, { defaultValue: 'abc\ndef' }));
+  const node = editorNode();
+  await userEvent.click(node as unknown as DrawnNode);
+  assert.ok(node.focused, 'the press focused the element');
+  // wherever the pointer landed, the caret is a real position in the text
+  // and Home/End move from it — the press ran the editor's own behaviour
+  await userEvent.key(XK_END);
+  const { line } = node.selection.head;
+  assert.equal(
+    node.selection.head.ch,
+    node.lines[line].length,
+    'End went to the end of the clicked line',
   );
 });

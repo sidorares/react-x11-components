@@ -165,9 +165,6 @@ export function CodeEditor(props: CodeEditorComponentProps): ReactElement {
   const [completion, setCompletion] = useState<CompletionState | null>(null);
   // bumped per query; a stale async result compares and drops itself
   const queryId = useRef(0);
-  // Escape arms one Tab to pass through to focus traversal — the standard
-  // way out of an editor that owns the Tab key
-  const tabEscape = useRef(false);
 
   const setNode = useCallback(
     (n: unknown) => {
@@ -308,6 +305,11 @@ export function CodeEditor(props: CodeEditorComponentProps): ReactElement {
     setCompletion({ ...state, selected, offset });
   };
 
+  // The completion popup's own keys, as an ordinary user-level handler: it
+  // runs before the element's default action (react-x11#266), so consuming a
+  // key here is exactly what stops the editor from also acting on it. The
+  // editing keys, and the Escape-arms-one-Tab bargain that keeps the editor
+  // from being a keyboard trap, belong to the node and are not repeated.
   const handleKeyDown = (ev: KeyboardEvent): void => {
     userKeyDown?.(ev);
     if (ev.defaultPrevented) return;
@@ -339,18 +341,7 @@ export function CodeEditor(props: CodeEditorComponentProps): ReactElement {
         ev.preventDefault();
         return;
       }
-    } else if (k === XK_ESCAPE) {
-      // one Tab may now leave the editor
-      tabEscape.current = true;
-      return;
     }
-
-    if (k === XK_TAB && tabEscape.current) {
-      tabEscape.current = false;
-      close();
-      return; // not consumed: the focus manager takes it
-    }
-    if (k !== XK_ESCAPE) tabEscape.current = false;
 
     // Ctrl+Space: explicit completion
     if (
@@ -363,11 +354,14 @@ export function CodeEditor(props: CodeEditorComponentProps): ReactElement {
       return;
     }
 
-    const consumed = node.handleKeyDown(ev);
-    if (!consumed) return;
-    ev.preventDefault();
+    // Escape with no popup open is the node's (it arms the Tab-out), and a
+    // Tab it lets through is leaving the editor: either way the popup that
+    // is not open needs nothing, but a stale one must not outlive the move.
+    if (k === XK_ESCAPE || k === XK_TAB) close();
 
-    // after the edit lands: retrigger or dismiss the popup
+    // After the edit the node is about to make: retrigger or dismiss. In a
+    // microtask because the default action has not run yet — the text this
+    // reads is the text the key is about to produce.
     if (!completionSources || completionSources.length === 0) return;
     const typed =
       ev.codepoint != null && ev.codepoint >= 0x20 && !ev.ctrlKey
@@ -391,9 +385,6 @@ export function CodeEditor(props: CodeEditorComponentProps): ReactElement {
     userMouseDown?.(ev);
     if (ev.defaultPrevented) return;
     close();
-    const node = nodeRef.current;
-    if (!node || disabled) return;
-    if (node.handleMouseDown(ev)) ev.preventDefault();
   };
 
   const rows: ReactNode[] = [];
@@ -467,27 +458,24 @@ export function CodeEditor(props: CodeEditorComponentProps): ReactElement {
   const editor = React.createElement(ELEMENT, {
     ...(nodeProps as Record<string, unknown>),
     ref: setNode,
+    // `focusableByDefault` on the node already makes a bare <codeeditor> a
+    // tab stop; this is the app's override, and what keeps a disabled
+    // editor out of the tab order entirely.
     focusable: focusable && !disabled,
+    disabled,
     autoFocus,
     role: 'textbox',
     onKeyDown: handleKeyDown,
     onMouseDown: handleMouseDown,
-    onMouseMove: (ev: MouseEvent) => {
-      if (nodeRef.current?.handleMouseMove(ev)) ev.preventDefault();
-    },
-    onMouseUp: (ev: MouseEvent) => {
-      if (nodeRef.current?.handleMouseUp()) ev.preventDefault();
-    },
+    // Caret placement, drag-selection, focus and the caret blink are the
+    // node's default actions now. Wheel has no default-action hook, so it
+    // stays wired here.
     onWheel: (ev: WheelEvent) => {
       if (disabled) return;
       if (nodeRef.current?.handleWheel(ev)) ev.preventDefault();
     },
-    onFocus: (ev: FocusEvent) => {
-      nodeRef.current?.handleFocus();
-      userFocus?.(ev);
-    },
+    onFocus: userFocus,
     onBlur: (ev: FocusEvent) => {
-      nodeRef.current?.handleBlur();
       close();
       userBlur?.(ev);
     },
