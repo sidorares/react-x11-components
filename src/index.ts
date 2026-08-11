@@ -51,6 +51,23 @@ export type {
 } from './calendar/index.js';
 
 export {
+  Markdown,
+  MarkdownSelection,
+  MDTEXT_ELEMENT,
+  MdTextNode,
+  parse as parseMarkdown,
+} from './markdown/index.js';
+export type {
+  MarkdownProps,
+  MarkdownDocument,
+  MdRun,
+  MdTextProps,
+  BlockNode,
+  InlineNode,
+  ParseOptions,
+} from './markdown/index.js';
+
+export {
   DesktopCalendar,
   IcalUnavailableError,
   byDay,

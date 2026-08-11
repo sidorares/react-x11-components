@@ -39,6 +39,7 @@ const COMPONENTS = [
     dir: 'desktop-calendar',
     marker: 'org.gnome.evolution.dataserver',
   },
+  { exportName: 'Markdown', dir: 'markdown', marker: 'mdtext' },
 ];
 
 async function bundle(contents: string): Promise<string> {
