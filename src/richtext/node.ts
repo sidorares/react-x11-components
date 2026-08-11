@@ -22,8 +22,11 @@
 // exposes hit-testing would let this file shrink to the selection parts.)
 import { registerElement, registeredElements } from 'react-x11/host';
 import { Node } from 'react-x11/node';
-import type { Context2D } from 'react-x11/node';
-import { Yoga } from 'react-x11/ntk';
+import type {
+  Context2D,
+  MeasureConstraints,
+  MeasuredSize,
+} from 'react-x11/node';
 import type { Style } from 'react-x11/style';
 
 import { tint } from './internal.js';
@@ -174,28 +177,6 @@ function canFill(ctx: Context2D): ctx is FillContext {
   return typeof (ctx as Partial<FillContext> | null)?.fillRect === 'function';
 }
 
-const MEASURE_MODE_UNDEFINED = (Yoga as { MEASURE_MODE_UNDEFINED?: number })
-  .MEASURE_MODE_UNDEFINED;
-
-/** The layout-owning face of the runtime node that `node.d.ts` does not
- *  describe. Core's own `<text>` and `<markdown>` measure through exactly
- *  this seam; docs/extending.md just has no public word for it yet — the
- *  cast is local and commented, per this repo's rule for the places where
- *  react-x11's declarations are narrower than its runtime. */
-interface MeasurableInternals {
-  yoga?: {
-    setMeasureFunc(
-      fn: (
-        width: number,
-        widthMode: number,
-        height: number,
-        heightMode: number,
-      ) => { width: number; height: number },
-    ): void;
-    markDirty(): void;
-  };
-}
-
 export class RichTextNode extends Node {
   private _layouts = new Map<string, TextLayoutLike | null>();
   private _plain: string[] | null = null;
@@ -204,19 +185,25 @@ export class RichTextNode extends Node {
 
   constructor(props: Record<string, unknown>, app: NtkApp) {
     super(ELEMENT, props, app);
-    const internals = this as unknown as MeasurableInternals;
-    internals.yoga?.setMeasureFunc((width, widthMode) => {
-      const wrap = (this.props as unknown as RichTextProps).wrap !== false;
-      const maxWidth =
-        !wrap || widthMode === MEASURE_MODE_UNDEFINED ? Infinity : width;
-      const layout = this._layoutFor(maxWidth);
-      if (!layout) return { width: 0, height: 0 };
-      return {
-        width: Math.ceil(layout.width),
-        height: Math.ceil(layout.height),
-      };
-    });
     this._registry()?.register(this);
+  }
+
+  /**
+   * The size the laid-out runs come to. An unbounded axis arrives as
+   * `Infinity`, which is also what `wrap={false}` wants, so the wrap flag is
+   * the only branch left — and an answer wider than the offer overflows
+   * rather than being clamped, which is what makes a non-wrapping run
+   * scrollable inside its parent. `null` is the mock backend, where there is
+   * no font manager to measure through.
+   */
+  override measureContent({ width }: MeasureConstraints): MeasuredSize {
+    const wrap = (this.props as unknown as RichTextProps).wrap !== false;
+    const layout = this._layoutFor(wrap ? width : Infinity);
+    if (!layout) return { width: 0, height: 0 };
+    return {
+      width: Math.ceil(layout.width),
+      height: Math.ceil(layout.height),
+    };
   }
 
   private _registry(): SelectionRegistry | null {
@@ -274,9 +261,7 @@ export class RichTextNode extends Node {
       this._layouts.clear();
       this._plain = null;
       this._clampSelection();
-      const internals = this as unknown as MeasurableInternals;
-      internals.yoga?.markDirty();
-      this.root?.invalidate(true, null, 'content');
+      this.invalidateMeasure('content');
     }
     const registry = this._registry();
     if (registry !== (prevRegistry ?? null)) {

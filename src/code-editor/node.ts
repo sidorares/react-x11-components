@@ -15,7 +15,11 @@
 // would let a custom interactive element behave like a built-in one —
 // filed as react-x11#251.
 import { Node } from 'react-x11/node';
-import type { Context2D } from 'react-x11/node';
+import type {
+  Context2D,
+  MeasureConstraints,
+  MeasuredSize,
+} from 'react-x11/node';
 import type { Style } from 'react-x11/style';
 import {
   XK_BACKSPACE,
@@ -195,21 +199,6 @@ interface FontsLike {
   ): LayoutLike;
 }
 
-/**
- * [react-x11 gap] A registered element has no public way to give itself an
- * intrinsic size: `<textinput>` does it through `this.yoga.setMeasureFunc`,
- * and `yoga` is not on the public `Node` surface. Declared structurally here
- * — if a react-x11 release moves it, this is the one place to update.
- * Filed as react-x11#250 (which also covers why this must not stay raw:
- * PR react-x11#248's content-floor pass cannot see a raw yoga measure).
- */
-interface YogaLike {
-  setMeasureFunc(
-    fn: (width: number, widthMode: number) => { width: number; height: number },
-  ): void;
-  markDirty(): void;
-}
-
 /** ntk's clipboard, reached through the public `app` — write/read are what
  * core's own fields call. Absent on older ntk; every use is optional. */
 interface ClipboardLike {
@@ -344,15 +333,21 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
     this._history = [
       { value: initial, caret: this._caret, anchor: this._anchor },
     ];
-    const yoga = (this as unknown as { yoga?: YogaLike }).yoga;
-    yoga?.setMeasureFunc((width, widthMode) => {
-      // widthMode 0 is yoga's MEASURE_MODE_UNDEFINED; the constant is not
-      // public either, but its value is fixed by yoga's ABI.
-      const w =
-        widthMode === 0 ? PREFERRED_WIDTH : Math.min(PREFERRED_WIDTH, width);
-      const rows = Math.max(1, Number(this.props.rows ?? DEFAULT_ROWS));
-      return { width: w, height: Math.ceil(this._lineHeight() * rows) };
-    });
+  }
+
+  /**
+   * The editor's own size: a comfortable width, never wider than what is on
+   * offer, and `rows` text lines tall. An unbounded axis arrives as
+   * `Infinity`, so the `Math.min` is the whole rule. The height comes from a
+   * prop rather than from the style, which is what makes the
+   * `invalidateMeasure` in `applyProps` necessary.
+   */
+  override measureContent({ width }: MeasureConstraints): MeasuredSize {
+    const rows = Math.max(1, Number(this.props.rows ?? DEFAULT_ROWS));
+    return {
+      width: Math.min(PREFERRED_WIDTH, width),
+      height: Math.ceil(this._lineHeight() * rows),
+    };
   }
 
   // --- value & props sync --------------------------------------------------
@@ -1466,10 +1461,7 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
       this._tokenizer(); // re-resolves against the new props
       this._repaint();
     }
-    if (nextProps.rows !== before.rows) {
-      (this as unknown as { yoga?: YogaLike }).yoga?.markDirty();
-      this.root?.invalidate(true, null, 'props');
-    }
+    if (nextProps.rows !== before.rows) this.invalidateMeasure('props');
     if (
       nextProps.tokenStyles !== before.tokenStyles ||
       nextProps.diagnostics !== before.diagnostics ||

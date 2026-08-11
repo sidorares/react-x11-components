@@ -297,3 +297,20 @@ test('Enter: shell indents after do', async () => {
   await userEvent.key(XK_RETURN);
   assert.equal(node.value, 'for f in x; do\n  ');
 });
+
+test('size: rows decides the height, and changing it re-measures', async () => {
+  // The editor sizes itself through `measureContent` (react-x11#265). Its
+  // width answer is capped by what is offered and its height is `rows` text
+  // lines, so an editor in an unstyled parent still arrives at a usable box.
+  const { rerender } = await renderX11(
+    h(CodeEditor, { defaultValue: 'x', rows: 2 }),
+  );
+  const short = editorNode().abs.height;
+  await rerender(h(CodeEditor, { defaultValue: 'x', rows: 8 }));
+  const tall = editorNode().abs.height;
+  assert.ok(short > 0, `rows=2 measured a real height (got ${short})`);
+  assert.ok(
+    tall > short * 2,
+    `rows=8 (${tall}) is far taller than rows=2 (${short})`,
+  );
+});
