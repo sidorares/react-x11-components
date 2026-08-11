@@ -22,6 +22,7 @@ import {
   XK_TAB,
   XK_UP,
 } from 'react-x11/test';
+import { screenRect } from 'react-x11';
 import type { DrawnNode } from 'react-x11';
 
 import {
@@ -30,7 +31,11 @@ import {
   keywordCompletionSource,
   sql,
 } from '../src/index.js';
-import type { CodeEditorEvent, CodeEditorNode } from '../src/index.js';
+import type {
+  CodeEditorEvent,
+  CodeEditorNode,
+  CompletionSource,
+} from '../src/index.js';
 
 const h = React.createElement;
 
@@ -41,6 +46,33 @@ function editorNode(): CodeEditorNode {
   const node = screen.all((n: DrawnNode) => n.kind === 'codeeditor')[0];
   assert.ok(node, 'a <codeeditor> node is mounted');
   return node as unknown as CodeEditorNode;
+}
+
+/**
+ * The completion popup's geometry: the one `<window>` in the tree that is not
+ * the harness's own root. A `<popup>` is its own X window, so where it *is*
+ * comes off the window (screen coordinates) and how big it is off the node's
+ * layout — which is the size it measured itself to. Throws until it has an X
+ * window, so it is meant to be called through `waitFor`.
+ */
+function completionPopup(): {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+} {
+  const windows = screen.all((n: DrawnNode) => n.kind === 'window');
+  const popup = windows[1] as unknown as
+    | { abs: DrawnNode['abs']; window: { x: number; y: number } | null }
+    | undefined;
+  assert.ok(popup, 'the completion popup is a window of its own');
+  assert.ok(popup.window, 'the popup has reached the server');
+  return {
+    x: popup.window.x,
+    y: popup.window.y,
+    width: popup.abs.width,
+    height: popup.abs.height,
+  };
 }
 
 test('typing edits, onChange reports, value reads back', async () => {
@@ -254,6 +286,109 @@ test('completion: arrows move the highlight, Escape dismisses', async () => {
     assert.equal(screen.queryByText('select', { selector: 'text' }), null);
   });
   assert.equal(node.value, 'se');
+});
+
+// --- where the completion popup lands --------------------------------------
+//
+// The component computes no geometry at all now: it hands the popup the caret
+// in the editor's own coordinates and react-x11#280 does the rest. Both halves
+// were inexpressible before — the caret is not the editor, and a list as wide
+// as its labels has no size at the moment a rect would have had to be passed
+// in — so what is under test is that the seam is actually carrying them.
+
+test('completion: the popup opens at the caret, and follows it down a line', async () => {
+  await renderX11(
+    h(CodeEditor, {
+      defaultValue: '',
+      language: sql(),
+      completionSources: [keywordCompletionSource()],
+      rows: 8,
+    }),
+  );
+  const node = editorNode();
+  await userEvent.type(node as unknown as DrawnNode, 'sel');
+  await waitFor(() => screen.getByText('select'));
+
+  const editor = screenRect(node as unknown as DrawnNode);
+  assert.ok(editor, 'the editor is laid out');
+  const caret = node.caretRect();
+  const first = await waitFor(completionPopup);
+  assert.deepEqual(
+    [first.x, first.y],
+    [
+      Math.round(editor.x + caret.x),
+      Math.round(editor.y + caret.y + caret.height + 2),
+    ],
+    'at the caret with the default two-pixel gap, not under the editor',
+  );
+  assert.ok(
+    first.y < editor.y + editor.height,
+    'the caret is on the first line, so the list opens well inside the editor',
+  );
+  // the height is the rows it is showing, which is the popup measuring its
+  // own content: nothing here ever computed one
+  const rowHeight = Math.ceil(node.metrics().lineHeight) + 6;
+  const rows = first.height - 2; // the 1px border, top and bottom
+  assert.equal(rows % rowHeight, 0, `${rows} is whole rows of ${rowHeight}`);
+  assert.ok(rows > 0 && rows <= rowHeight * 8, 'at most the visible window');
+
+  // three lines down, and the list is three lines down with it — the whole
+  // point of anchoring to a rect inside the node rather than to the node
+  await userEvent.key(XK_ESCAPE);
+  await waitFor(() => {
+    assert.equal(screen.queryByText('select', { selector: 'text' }), null);
+  });
+  for (let i = 0; i < 3; i++) await userEvent.key(XK_RETURN);
+  assert.equal(node.selection.head.line, 3, 'three lines further down');
+  await userEvent.type(node as unknown as DrawnNode, 'sel', {
+    skipClick: true,
+  });
+  await waitFor(() => screen.getByText('select'));
+  const moved = await waitFor(completionPopup);
+  const dropped = moved.y - first.y;
+  const lines = node.metrics().lineHeight * 3;
+  assert.ok(
+    Math.abs(dropped - lines) <= 1,
+    `the list dropped ${dropped}px for three lines of ${lines}px`,
+  );
+});
+
+test('completion: the list is as wide as its labels, floored and capped', async () => {
+  const only =
+    (label: string): CompletionSource =>
+    () => ({
+      items: [{ label }],
+    });
+  const widthOf = async (label: string): Promise<number> => {
+    await renderX11(
+      h(CodeEditor, {
+        defaultValue: '',
+        completionSources: [only(label)],
+        rows: 8,
+      }),
+    );
+    const node = editorNode();
+    await userEvent.type(node as unknown as DrawnNode, 'a');
+    await waitFor(() => screen.getByText(label));
+    const { width } = await waitFor(completionPopup);
+    cleanup();
+    return width;
+  };
+
+  // 180 and 480 are the component's own bounds; between them the width is
+  // the label's, which used to be a loop over `node.measureText`. Every
+  // label starts with the `a` that is typed, or the ranking drops it.
+  assert.equal(await widthOf('acos'), 180, 'a short label sits on the floor');
+  const middling = await widthOf('a_column_name_long_enough_to_pass_the_floor');
+  assert.ok(
+    middling > 180 && middling < 480,
+    `a longer one is measured, not guessed (got ${middling})`,
+  );
+  assert.equal(
+    await widthOf('a_column_name'.repeat(8)),
+    480,
+    'and one nothing could show in full stops at the cap',
+  );
 });
 
 test('Enter: syntax-aware indentation, and opening a bracket pair', async () => {

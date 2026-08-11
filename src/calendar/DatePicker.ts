@@ -182,10 +182,10 @@ export function DatePicker(props: DatePickerProps): ReactElement {
 
   const theme = useTheme();
   const [open, setOpen] = useState(false);
-  // `AnchorRect` rather than `Rect`: core narrowed `useAnchorTracking`'s
-  // setter to the placement-carrying rect, and `useAnchor` has always
-  // returned one. Only the popup's x/y are read below, so this is the
-  // declaration catching up with what was already stored here.
+  // `AnchorRect` rather than `Rect`: `useAnchorTracking` reports the side the
+  // sheet actually landed on (react-x11#280), and its `setRect` is typed to
+  // hand that back. Nothing here reads `placement` — the sheet has no arrow
+  // to aim — but the state has to be able to hold it.
   const [anchor, setAnchor] = useState<AnchorRect | null>(null);
   const [focused, setFocused] = useState(false);
   const [ownValue, setOwnValue] = useState<unknown>(defaultValue ?? null);
