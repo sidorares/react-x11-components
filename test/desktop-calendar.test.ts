@@ -19,7 +19,10 @@ import {
   byDay,
   parseKeyFile,
 } from '../src/desktop-calendar/index.js';
-import type { DesktopEvent } from '../src/desktop-calendar/index.js';
+import type {
+  CalendarChange,
+  DesktopEvent,
+} from '../src/desktop-calendar/index.js';
 import type { MessageBus } from 'react-x11';
 
 // --- the keyfile a source carries its whole config in ----------------------
@@ -147,16 +150,34 @@ const ICS_WEEKLY = [
   'END:VCALENDAR',
 ].join('\r\n');
 
+/** `E_CAL_CLIENT_VIEW_FLAGS_NOTIFY_INITIAL` — what EDS creates a view with,
+ *  and why `Start()` announces the range's current contents. */
+const NOTIFY_INITIAL = 1;
+
+/** A view the fake bus handed out, so a test can make something change on it
+ *  after the initial delivery is over. */
+interface FakeView {
+  flags: number;
+  stopped: boolean;
+  disposed: boolean;
+  emit(signal: string, objects: string[]): void;
+}
+
 interface FakeOptions {
   /** uid -> the ICS objects that calendar answers with. */
   objects?: Record<string, string[]>;
   /** uids whose `OpenCalendar` throws, standing in for an offline backend. */
   broken?: string[];
+  /** uids whose view refuses `SetFlags`, standing in for a backend that
+   *  replays its contents whatever it is asked. */
+  refusesFlags?: string[];
+  /** Filled in with each view the bus hands out, keyed by calendar uid. */
+  views?: Map<string, FakeView>;
 }
 
 /** A session bus that answers the two EDS services and nothing else. */
 function fakeBus(options: FakeOptions = {}): MessageBus {
-  const { objects = {}, broken = [] } = options;
+  const { objects = {}, broken = [], refusesFlags = [], views } = options;
 
   const managed = {
     '/org/gnome/evolution/dataserver/SourceManager/Sources/1': {
@@ -205,6 +226,43 @@ function fakeBus(options: FakeOptions = {}): MessageBus {
           throw new Error('no definition');
         },
         GetView: async () => `${path}/view`,
+      };
+    }
+    if (iface === 'org.gnome.evolution.dataserver.CalendarView') {
+      const uid = path.split('/').slice(-2)[0] ?? '';
+      const handlers = new Map<string, ((objects: string[]) => void)[]>();
+      const view: FakeView = {
+        flags: NOTIFY_INITIAL,
+        stopped: false,
+        disposed: false,
+        emit: (signal, objs) => {
+          for (const fn of handlers.get(signal) ?? []) fn(objs);
+        },
+      };
+      views?.set(uid, view);
+      return {
+        SetFlags: async (flags: number) => {
+          if (refusesFlags.includes(uid)) throw new Error('SetFlags: no');
+          view.flags = flags;
+        },
+        $subscribe: async (signal: string, fn: (objects: string[]) => void) => {
+          handlers.set(signal, [...(handlers.get(signal) ?? []), fn]);
+        },
+        Start: async () => {
+          // EDS replays what the query already matches, unless the flags said
+          // not to — then `Complete` closes the delivery either way.
+          const initial = objects[uid] ?? [];
+          if (view.flags & NOTIFY_INITIAL && initial.length) {
+            view.emit('ObjectsAdded', initial);
+          }
+          view.emit('Complete', []);
+        },
+        Stop: async () => {
+          view.stopped = true;
+        },
+        Dispose: async () => {
+          view.disposed = true;
+        },
       };
     }
     throw new Error(`unexpected interface ${iface}`);
@@ -337,4 +395,83 @@ test('the grouped result is keyed the way a calendar grid asks', async () => {
     // exactly what `<Calendar dayContent>` is handed
     assert.match(key, /^\d{4}-\d{2}-\d{2}$/);
   }
+});
+
+// --- watching for changes --------------------------------------------------
+//
+// The failure these are written against: `Start()` announces the range's
+// current contents as `ObjectsAdded`, a caller whose answer to a change is to
+// re-query does so, the re-query starts a new view, and that view says the
+// same thing again — for as long as the app is open.
+
+const AUGUST = [new Date(Date.UTC(2026, 7, 1)), new Date(Date.UTC(2026, 8, 1))];
+
+test('watch does not report the contents the range already had', async () => {
+  const views = new Map<string, FakeView>();
+  const desktop = new DesktopCalendar(
+    fakeBus({ objects: { personal: [ICS_ONE], work: [ICS_WEEKLY] }, views }),
+  );
+
+  const changes: CalendarChange[] = [];
+  await desktop.watch(AUGUST[0], AUGUST[1], (c) => changes.push(c));
+
+  assert.deepStrictEqual(changes, [], 'Start() replayed nothing at the caller');
+  // and this is why: the view was told to notify changes only
+  assert.strictEqual(views.get('personal')?.flags, 0);
+  assert.strictEqual(views.get('work')?.flags, 0);
+});
+
+test('watch reports what changes after the initial delivery', async () => {
+  const views = new Map<string, FakeView>();
+  const desktop = new DesktopCalendar(
+    fakeBus({ objects: { personal: [ICS_ONE] }, views }),
+  );
+
+  const changes: CalendarChange[] = [];
+  await desktop.watch(AUGUST[0], AUGUST[1], (c) => changes.push(c));
+  views.get('personal')?.emit('ObjectsModified', [ICS_ONE]);
+
+  assert.strictEqual(changes.length, 1);
+  assert.strictEqual(changes[0].kind, 'ObjectsModified');
+  assert.strictEqual(changes[0].count, 1);
+  assert.strictEqual(changes[0].calendar.uid, 'personal');
+});
+
+test('a backend that refuses the flags still replays into silence', async () => {
+  const views = new Map<string, FakeView>();
+  const desktop = new DesktopCalendar(
+    fakeBus({
+      objects: { personal: [ICS_ONE] },
+      refusesFlags: ['personal'],
+      views,
+    }),
+  );
+
+  const changes: CalendarChange[] = [];
+  await desktop.watch(AUGUST[0], AUGUST[1], (c) => changes.push(c));
+
+  assert.strictEqual(
+    views.get('personal')?.flags,
+    NOTIFY_INITIAL,
+    'it replayed',
+  );
+  assert.deepStrictEqual(changes, [], 'and the replay was not a change');
+
+  // `Complete` closed the delivery, so this one is
+  views.get('personal')?.emit('ObjectsAdded', [ICS_ONE]);
+  assert.strictEqual(changes.length, 1, 'a later change still gets through');
+});
+
+test('unsubscribing stops and disposes the views it started', async () => {
+  // what the hook's subscription effect runs on cleanup — a month the user
+  // paged away from must not leave a live view behind
+  const views = new Map<string, FakeView>();
+  const desktop = new DesktopCalendar(
+    fakeBus({ objects: { personal: [ICS_ONE] }, views }),
+  );
+  const stop = await desktop.watch(AUGUST[0], AUGUST[1], () => {});
+  await stop();
+
+  assert.ok(views.get('personal')?.stopped, 'the view was stopped');
+  assert.ok(views.get('personal')?.disposed, 'and disposed');
 });

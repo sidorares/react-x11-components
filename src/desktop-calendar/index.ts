@@ -112,6 +112,18 @@ const NO_EVENTS: DesktopEvent[] = [];
 const NO_CALENDARS: DesktopCalendarInfo[] = [];
 const NO_ERRORS: DesktopCalendarError[] = [];
 
+/** The calendars a caller asked for by uid, or every enabled one. `onlyKey`
+ *  is the comma-joined list, because an array prop is a new identity every
+ *  render and these two effects are keyed on it. */
+function pickCalendars(
+  all: DesktopCalendarInfo[],
+  onlyKey: string,
+): DesktopCalendarInfo[] {
+  if (!onlyKey) return all.filter((c) => c.enabled);
+  const wanted = new Set(onlyKey.split(','));
+  return all.filter((c) => wanted.has(c.uid));
+}
+
 /**
  * The user's desktop calendar events, as rendering state.
  *
@@ -176,7 +188,6 @@ export function useDesktopCalendarEvents(
     }
 
     let live = true;
-    let stopWatching: (() => Promise<void>) | null = null;
     const desktop = new DesktopCalendar(bus);
 
     const run = async (): Promise<void> => {
@@ -187,33 +198,15 @@ export function useDesktopCalendarEvents(
         if (!live) return;
         setFound(all);
 
-        const wanted = onlyKey
-          ? all.filter((c) => onlyKey.split(',').includes(c.uid))
-          : all.filter((c) => c.enabled);
-
         const result = await desktop.eventsBetween(
           new Date(fromMs),
           new Date(toMs),
-          { calendars: wanted },
+          { calendars: pickCalendars(all, onlyKey) },
         );
         if (!live) return;
         setEvents(result.events);
         setErrors(result.errors);
         setStatus('ready');
-
-        if (watch) {
-          stopWatching = await desktop.watch(
-            new Date(fromMs),
-            new Date(toMs),
-            () => {
-              // Re-query rather than patch: a recurrence master edited months
-              // away changes what this range looks like.
-              if (live) refresh();
-            },
-            { calendars: wanted },
-          );
-          if (!live) await stopWatching();
-        }
       } catch (err) {
         if (!live) return;
         // No bus, no ical.js, no EDS on this desktop — all ordinary.
@@ -227,13 +220,55 @@ export function useDesktopCalendarEvents(
 
     return () => {
       live = false;
+      void desktop.dispose();
+    };
+    // `refresh` is stable; `nonce` is what a manual refresh moves.
+  }, [bus, enabled, fromMs, toMs, onlyKey, nonce, refresh]);
+
+  // The subscription is a **separate** effect, and deliberately not keyed on
+  // `nonce`: a change has to re-run the query, and only the query. Watching
+  // from inside the effect the change re-runs means every notification tears
+  // the views down and starts new ones — which is a loop as soon as anything
+  // is delivered while a view is starting, and was one for as long as
+  // `Start()` reported the range's existing contents as a change.
+  //
+  // The cost is one extra `listCalendars()` per range, not per refresh.
+  useEffect(() => {
+    if (!enabled || !watch || !bus) return undefined;
+
+    let live = true;
+    let stopWatching: (() => Promise<void>) | null = null;
+    const desktop = new DesktopCalendar(bus);
+
+    void (async () => {
+      try {
+        const all = await desktop.listCalendars();
+        if (!live) return;
+        stopWatching = await desktop.watch(
+          new Date(fromMs),
+          new Date(toMs),
+          () => {
+            // Re-query rather than patch: a recurrence master edited months
+            // away changes what this range looks like.
+            if (live) refresh();
+          },
+          { calendars: pickCalendars(all, onlyKey) },
+        );
+        if (!live) await stopWatching();
+      } catch {
+        // No bus, no EDS, nothing to watch. The query effect above is what
+        // reports that to the caller; a second copy of it would only race.
+      }
+    })();
+
+    return () => {
+      live = false;
       void (async () => {
         if (stopWatching) await stopWatching();
         await desktop.dispose();
       })();
     };
-    // `refresh` is stable; `nonce` is what a manual refresh moves.
-  }, [bus, enabled, fromMs, toMs, onlyKey, watch, nonce, refresh]);
+  }, [bus, enabled, watch, fromMs, toMs, onlyKey, refresh]);
 
   const grouped = useMemo(() => byDay(events), [events]);
 
