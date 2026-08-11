@@ -33,6 +33,7 @@ const ROOT = path.resolve(fileURLToPath(import.meta.url), '../..');
  */
 const COMPONENTS = [
   { exportName: 'Sparkline', dir: 'sparkline', marker: 'sparkline' },
+  { exportName: 'CodeEditor', dir: 'code-editor', marker: 'codeeditor' },
   { exportName: 'Calendar', dir: 'calendar', marker: 'Previous month' },
   {
     exportName: 'DesktopCalendar',
@@ -50,10 +51,16 @@ async function bundle(contents: string): Promise<string> {
     minify: true,
     treeShaking: true,
     // peers: an app already has these, and what is under test is our code.
-    // `ical.js` is an optional dependency the app installs (or does not), and
-    // it is reached through a dynamic import — bundling a copy of it here
-    // would measure its size rather than ours.
-    external: ['react', 'react-x11', 'react-x11/*', 'ical.js'],
+    // `ical.js` and `@lezer/highlight` are optional (the app installs them
+    // or does not), each reached through a dynamic import — bundling a copy
+    // here would measure their size rather than ours.
+    external: [
+      'react',
+      'react-x11',
+      'react-x11/*',
+      'ical.js',
+      '@lezer/highlight',
+    ],
     logLevel: 'silent',
   });
   const [output] = result.outputFiles ?? [];

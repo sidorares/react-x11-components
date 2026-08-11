@@ -113,8 +113,59 @@ import type { SparklineProps } from '@react-x11/components';
 | ------------ | ---------------------------------------- | ----------------------------------------------------- |
 | `Calendar`   | `@react-x11/components/calendar`         | A month grid: one date or a range, any day blockable. |
 | `DatePicker` | `@react-x11/components/calendar`         | That calendar on a popup, behind a field.             |
+| `CodeEditor` | `@react-x11/components/code-editor`      | Multiline code editing: highlighting, completion.     |
 | `Sparkline`  | `@react-x11/components/sparkline`        | A bare line chart. Needs a width and a height.        |
 | _(hook)_     | `@react-x11/components/desktop-calendar` | The user's real calendar events, over D-Bus.          |
+
+## The code editor
+
+A multiline editor for code-shaped input — a SQL box, a shell one-liner, a
+config field, a small IDE pane:
+
+```jsx
+import {
+  CodeEditor,
+  sql,
+  sqlCompletionSource,
+  keywordCompletionSource,
+} from '@react-x11/components/code-editor';
+
+<CodeEditor
+  language={sql()}
+  value={query}
+  onChange={(ev) => setQuery(ev.value)}
+  completionSources={[
+    sqlCompletionSource({ users: ['id', 'name'] }),
+    keywordCompletionSource(),
+  ]}
+  lineNumbers
+  style={{ flexGrow: 1 }}
+/>;
+```
+
+Editing is the full expected set: selection (keyboard and mouse, word and
+line variants), undo/redo with coalescing, X11 clipboard including PRIMARY
+and middle-click paste, auto-indent, Tab/Shift+Tab indentation, Ctrl+/
+comment toggling, bracket matching, and LSP-shaped `diagnostics` squiggles.
+Escape then Tab leaves the field. Ctrl+Space asks for completions.
+
+Languages are pluggable, three ways:
+
+- **Built-in, zero dependencies**: `sql()`, `shell()`, `glsl()`,
+  `javascript()` (`{ typescript: true }` for TS), `json()` — hand-written
+  stream tokenizers on a CodeMirror-5-style line-state engine, or write your
+  own with `streamLanguage(…)` in ~50 lines.
+- **The CodeMirror grammar world**: `lezerLanguage({ name, parser })` runs
+  any `@lezer/<lang>` parser. Install the grammar you want; nothing lezer
+  ships with this package.
+- **The VS Code grammar world**: `textMateLanguage({ name, grammar })` runs
+  an initialized TextMate grammar (via `vscode-textmate` or shiki's core) —
+  their tokenizer is line-state shaped too, so it drops straight in.
+
+Completion sources are one async function each, deliberately the shape of an
+LSP `textDocument/completion` call, so a language-server client is "just
+another source". `npm run examples:code-editor` shows the three input-field
+use cases side by side.
 
 ## The user's real calendar
 
