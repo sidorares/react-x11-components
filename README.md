@@ -109,20 +109,23 @@ import type { SparklineProps } from '@react-x11/components';
 
 ## Components
 
-| Component    | Import                                   |                                                       |
-| ------------ | ---------------------------------------- | ----------------------------------------------------- |
-| `Calendar`   | `@react-x11/components/calendar`         | A month grid: one date or a range, any day blockable. |
-| `DatePicker` | `@react-x11/components/calendar`         | That calendar on a popup, behind a field.             |
-| `Code`       | `@react-x11/components/code`             | A static code block: highlighted, selectable.         |
-| `CodeEditor` | `@react-x11/components/code-editor`      | Multiline code editing: highlighting, completion.     |
-| `Markdown`   | `@react-x11/components/markdown`         | Streaming-friendly GFM with cross-block selection.    |
-| `Sparkline`  | `@react-x11/components/sparkline`        | A bare line chart. Needs a width and a height.        |
-| _(hook)_     | `@react-x11/components/desktop-calendar` | The user's real calendar events, over D-Bus.          |
+| Component     | Import                                   |                                                       |
+| ------------- | ---------------------------------------- | ----------------------------------------------------- |
+| `Calendar`    | `@react-x11/components/calendar`         | A month grid: one date or a range, any day blockable. |
+| `DatePicker`  | `@react-x11/components/calendar`         | That calendar on a popup, behind a field.             |
+| `Code`        | `@react-x11/components/code`             | A static code block: highlighted, selectable.         |
+| `CodeEditor`  | `@react-x11/components/code-editor`      | Multiline code editing: highlighting, completion.     |
+| `Markdown`    | `@react-x11/components/markdown`         | Streaming-friendly GFM with cross-block selection.    |
+| `MediaPlayer` | `@react-x11/components/media-player`     | mpv or VLC, embedded, with real transport control.    |
+| `Sparkline`   | `@react-x11/components/sparkline`        | A bare line chart. Needs a width and a height.        |
+| `Terminal`    | `@react-x11/components/terminal`         | A real terminal emulator, embedded as an element.     |
+| _(hook)_      | `@react-x11/components/desktop-calendar` | The user's real calendar events, over D-Bus.          |
 
-Two shared modules sit underneath and are importable on their own:
+Three shared modules sit underneath and are importable on their own:
 `/richtext` (the selectable styled-text element and its cross-block
-selection controller) and `/code-language` (the pluggable tokenizer seam,
-the built-in languages and the token palettes).
+selection controller), `/code-language` (the pluggable tokenizer seam,
+the built-in languages and the token palettes) and `/embed` (the spawn,
+watch and hand-back lifecycle both XEmbed wrappers are built on).
 
 ## Markdown
 
@@ -285,6 +288,77 @@ Server, `status` is `'unavailable'` and the calendar simply renders without
 dots. None of those is an error; they are ordinary states of a healthy
 machine. `npm run examples:calendar` in this repo is the whole thing working.
 
+## Hosting another X client: `<Terminal>` and `<MediaPlayer>`
+
+These two are the same component twice, and they are what core's `<foreign>`
+element was added for: a react-x11 app can now **host** another X client
+rather than only drawing its own pixels.
+
+```jsx
+import { Terminal } from '@react-x11/components';
+
+<Terminal
+  command={['bash', '-lc', 'npm test']}
+  cwd={projectDir}
+  style={{ flexGrow: 1 }}
+  onExit={({ code }) => setPassed(code === 0)}
+  onTitleChange={setTabLabel}
+  fallback={<text>Install xterm to use the console.</text>}
+/>;
+```
+
+```jsx
+import { MediaPlayer } from '@react-x11/components';
+
+<MediaPlayer
+  src={file}
+  aspectRatio="16:9"
+  volume={0.8}
+  style={{ flexGrow: 1 }}
+  onProgress={({ position, duration }) => setScrub(position / duration)}
+  onEnded={next}
+/>;
+```
+
+Mechanically: a `<foreign>` with no `windowId` adopts whatever is put inside
+it, the container's X window id arrives in `onReady`, and the component
+spawns `xterm -into $WID` or `mpv --wid=$WID` into it. Layout, focus, the
+ICCCM configure and handing the client back untouched on unmount are all
+core's.
+
+**Nothing is a hard dependency.** No emulator and no player is an ordinary
+state of a healthy machine, so `backend` defaults to `'auto'` and picks the
+first of xterm / rxvt-unicode / alacritty (or mpv / VLC) that is actually
+installed; with none of them, `fallback` renders and `onError` gets a
+`BackendUnavailableError` naming what was looked for.
+
+Four things worth knowing before reaching for them:
+
+- **The client's window stacks above everything you draw.** Same rule
+  `<glarea>` has. A transport bar or a HUD cannot be a `<box>` over the
+  surface — put it beside the element, or in a sibling `<popup>`.
+- **The terminal is themed by default.** Background, foreground and cursor
+  come from the react-x11 palette, so a pane looks like part of the app.
+  `colors` overrides any of it, and `colors={{}}` leaves the emulator on its
+  own defaults.
+- **`src`, `volume`, `muted` and `paused` are live commands**, sent over
+  mpv's JSON IPC socket — changing them does not respawn the player. Under
+  VLC that channel is write-only, so play/pause/seek/volume work and
+  `onProgress` never fires; `handle.reportsProgress` says which you have.
+- **`<Terminal>` has no `write()`.** There is no honest way to type into an
+  external emulator — the pty is xterm's, not ours, and synthetic key events
+  are refused by xterm (`allowSendEvents`) and dropped by alacritty. The name
+  is reserved for a pure-JS VT backend over a real pty, which would own the
+  input side and slot in behind the same props.
+
+`npm run examples:terminal` and
+`npm run examples:media-player -- <file>` are both working programs.
+
+Both take a `processes` prop — the `ProcessHost` seam from
+`@react-x11/components/embed` — so the child can be run somewhere other than
+this machine, and so the test suite can assert what _would_ have been spawned
+without an xterm in CI.
+
 ## Roadmap
 
 Candidates to move here:
@@ -294,6 +368,10 @@ Candidates to move here:
 - A react-flow-style node/edge graph editor.
 - `<Tabs>`, undecided — it may well stay in core.
 - MDX support in `<Markdown>` — see the note in that section.
+- A pure-JS VT backend for `<Terminal>`, over a pty rather than an external
+  emulator. It would drop the external dependency, work where nothing is
+  installed, and be the thing that makes `write()` real — behind the same
+  props, which is why the component's API is backend-agnostic already.
 
 `<Markdown>` above **replaces** core's ntk-backed `<markdown>` element
 (ntk's `MarkdownView` and `HtmlView` widgets are being deprecated). There
