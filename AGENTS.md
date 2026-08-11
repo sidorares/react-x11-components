@@ -229,6 +229,19 @@ Two rules it establishes for anything else that talks to the system:
 healthy machine. None of them is an error to report — the calendar renders,
 the dots do not.
 
+`src/code-editor/lezer.ts` follows the same dynamic-import rule with one
+deliberate difference: `@lezer/highlight` is an **optional peer** rather
+than an optional dependency. An optionalDependency installs by default,
+which is the right trade for `ical.js` (nothing else would bring it) and
+the wrong one here — every `@lezer/<lang>` grammar package the app installs
+already depends on `@lezer/highlight`, so listing it as optionalDeps would
+install ~100 KB for apps that never touch the adapter, and the apps that do
+touch it have it anyway. `peerDependenciesMeta.optional` also keeps the
+bare `import('@lezer/highlight')` resolvable under pnpm's strict layout,
+where a genuinely undeclared package would not be. The TextMate adapter
+(`textmate.ts`) needs no dependency at all: the app hands it an initialized
+grammar object, typed structurally.
+
 ## Commands
 
 ```bash
