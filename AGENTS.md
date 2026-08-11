@@ -130,16 +130,32 @@ the way `<codeeditor>` draws a whole text editor: panning is two numbers and
 one node's damage rect, zoom is arithmetic, and React sees nothing until the
 graph itself changes.
 
-What that costs is the thing react-flow is best known for — a node type is a
-`paint` callback rather than a React component. That is the honest trade and
-not a gap to close later: a node body drawn by React could not be zoomed.
-Everything else about the seam survives (`nodeTypes` is still a prop keyed by
-`node.type`), and `FlowPainter` exists so a type's drawing is written against
-something that also works on the mock backend.
+What that costs is the thing react-flow is best known for — the default node
+type is a `paint` callback rather than a React component. `FlowPainter`
+exists so that a type's drawing is written against something that also works
+on the mock backend.
+
+**And then the escape hatch, which is worth understanding before it is
+copied.** A node whose body is a form cannot be a picture, so a node type may
+`render` a real react-x11 tree instead. The pane cannot _contain_ it —
+`Node.paint` paints a node's children before the node's own drawing, so
+anything mounted inside the pane would be painted over by the graph — so
+`<Flow>` renders a `<box>` around the pane and mounts the bodies as
+absolutely positioned _siblings_, at rectangles the pane hands over through
+`onNodeBodies`. The pane stays the only thing that knows where a node is; the
+React half only places boxes.
+
+Three consequences are load-bearing and are documented at the seam: a mounted
+body re-renders as the viewport moves (the cost the drawn path exists to
+avoid, paid only by the nodes that opt in), it does not scale with the zoom
+(there is no transform), and its type reserves a `headerHeight` strip the
+body does not cover, because a node made entirely of text fields has nothing
+left to drag.
 
 The rule to carry forward: **ask whether the feature's viewport is a
-transform.** If it is, the element draws. If it is not — a calendar, a
-date picker — compose.
+transform.** If it is, the element draws, and anything that has to be a real
+widget is mounted beside it rather than inside it. If it is not — a calendar,
+a date picker — compose.
 
 `src/calendar/hx.ts` is what makes the no-JSX rule survive TypeScript.
 `React.createElement`'s own overloads are `@types/react`'s and describe the

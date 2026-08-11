@@ -49,12 +49,42 @@ const jobType: FlowNodeType<Job> = {
   },
 };
 
+/** The other half of the seam: real host elements rather than a drawing. */
+const formType: FlowNodeType<Job> = {
+  size: { width: 200, height: 140 },
+  headerHeight: 24,
+  render: ({ node, rect, selected }) => (
+    <box style={{ flexGrow: 1, padding: 6, gap: 4 }}>
+      <text style={{ fontSize: 11 }}>
+        {node.data?.label} is {rect.width}px wide{selected ? ' (selected)' : ''}
+      </text>
+      <textarea defaultValue="" style={{ flexGrow: 1 }} />
+    </box>
+  ),
+};
+
+export const resizable: FlowNode<Job> = {
+  id: 'form',
+  type: 'form',
+  position: { x: 0, y: 0 },
+  width: 200,
+  height: 140,
+  resizable: true,
+  minWidth: 120,
+  minHeight: 90,
+};
+
+export const sized: NodeChange<Job>[] = [
+  { type: 'dimensions', id: 'form', dimensions: { width: 240, height: 160 } },
+];
+
 export const asComponent = (
   <box style={{ flexGrow: 1 }}>
     <Flow<Job>
       nodes={nodes}
       edges={edges}
-      nodeTypes={{ job: jobType }}
+      nodeTypes={{ job: jobType, form: formType }}
+      nodesResizable
       onNodesChange={(changes: NodeChange<Job>[]) => void changes}
       // the data generic reaches the node handlers
       onNodeClick={(_ev, node) => void node.data?.cost.toFixed(0)}

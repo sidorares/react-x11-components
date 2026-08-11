@@ -14,7 +14,7 @@
 //   ReactFlowInstance   FlowInstance
 //
 // Nothing in this file has a runtime half, so it costs no bundle.
-import type { Ref } from 'react';
+import type { ReactNode, Ref } from 'react';
 import type { Style } from 'react-x11/style';
 import type {
   DrawnNode,
@@ -113,6 +113,9 @@ export interface FlowNode<Data = FlowNodeData> {
    * remembered — see `FlowNodeType.size`. */
   width?: number;
   height?: number;
+  /** Smallest the resize gesture may make it. Defaults to 48×32. */
+  minWidth?: number;
+  minHeight?: number;
   selected?: boolean;
   hidden?: boolean;
   /** All default to the pane-wide prop (`nodesDraggable`, …). */
@@ -120,6 +123,10 @@ export interface FlowNode<Data = FlowNodeData> {
   selectable?: boolean;
   connectable?: boolean;
   deletable?: boolean;
+  /** Grow handles on its border while it is selected. Off by default —
+   * a graph of fixed cards should not sprout eight dots the moment one is
+   * clicked. `<Flow nodesResizable>` turns it on for every node. */
+  resizable?: boolean;
   /** Higher paints later, and is hit first. */
   zIndex?: number;
   /** Where the built-in handles sit. Defaults: target `'top'`, source
@@ -212,6 +219,13 @@ export type NodeChange<Data = FlowNodeData> =
       /** True for every step of a drag, false on the one that ends it —
        * so an app can skip persisting the intermediate positions. */
       dragging?: boolean;
+    }
+  | {
+      type: 'dimensions';
+      id: string;
+      dimensions: { width: number; height: number };
+      /** The drag/settle pair {@link NodeChange.dragging} makes for a move. */
+      resizing?: boolean;
     }
   | { type: 'select'; id: string; selected: boolean }
   | { type: 'remove'; id: string }
@@ -339,16 +353,29 @@ export interface NodePaintContext<Data = FlowNodeData> {
   handles: readonly HandleAnchor[];
 }
 
+/** What {@link FlowNodeType.render} is handed. */
+export interface NodeRenderContext<Data = FlowNodeData> {
+  node: FlowNode<Data>;
+  selected: boolean;
+  zoom: number;
+  /** The box the returned tree is mounted in and laid out to, in pixels
+   * relative to the pane's top-left corner. Its size is the useful half;
+   * the position is there for a body that wants to know where it is. */
+  rect: FlowRect;
+}
+
 /**
- * A node type: what the node is shaped like, where it connects, and how it
- * is drawn.
+ * A node type: what the node is shaped like, where it connects, how it is
+ * drawn — and, when drawing is not enough, what it *mounts*.
  *
  * react-flow's `nodeTypes` maps a name to a React component, because there
  * the node body is a DOM subtree the browser transforms. Here the pane draws
  * the graph — zoom is not a transform this renderer has, so it is arithmetic
- * — and the analogue of a node component is a `paint`. Everything else about
- * the seam is the same: the registry is a prop, the name lives on the node,
- * and an app that needs none of it never writes one.
+ * — and `paint` is the analogue that costs nothing. `render` is the other
+ * half: real host elements, laid out by yoga, for the nodes that need a
+ * `<textarea>` or a `<Checkbox>` rather than a picture of one. Everything
+ * else about the seam is react-flow's: the registry is a prop, the name
+ * lives on the node, and an app that needs none of it writes none of it.
  */
 export interface FlowNodeType<Data = FlowNodeData> {
   /** The node's size when it carries no `width`/`height`. A function is
@@ -365,6 +392,34 @@ export interface FlowNodeType<Data = FlowNodeData> {
     readonly HandleSpec[] | ((node: FlowNode<Data>) => readonly HandleSpec[]);
   /** Draw the body. Leave it out for the built-in card. */
   paint?: (context: NodePaintContext<Data>) => void;
+  /**
+   * Real React content for the node's body — `<Checkbox>`, `<Button>`,
+   * `<textarea>`, anything. Mounted in a `<box>` the pane positions and
+   * sizes over the node, laid out by yoga inside it, and clipped to it.
+   *
+   * Three things follow from it being a real subtree rather than a picture,
+   * and all three are the point:
+   *
+   * - **It is interactive.** The widgets take focus, keys and clicks
+   *   themselves; the pane never sees those events.
+   * - **The node re-renders as the viewport moves.** This is the cost the
+   *   drawn path exists to avoid, so it is paid only by the nodes that ask
+   *   for it, and only while they are on screen.
+   * - **It does not scale with the zoom.** The *box* does — there is no
+   *   transform in this renderer, which is the whole reason `paint` is the
+   *   default — so content is laid out to the zoomed box at its natural
+   *   size, and clipped. Below `zoom` 0.6 it is not mounted at all and the
+   *   node is drawn instead.
+   *
+   * `headerHeight` is what leaves the node draggable: the body starts below
+   * it, so there is always somewhere to grab that is not a text field.
+   */
+  render?: (context: NodeRenderContext<Data>) => ReactNode;
+  /** The strip along the top of the node that {@link FlowNodeType.render}
+   * does not cover — where the pane draws the title, and what the node is
+   * dragged by. Graph units; default 26. `0` hands the whole box over, and
+   * then only the keyboard can move the node. */
+  headerHeight?: number;
 }
 
 // --- pane furniture --------------------------------------------------------
@@ -406,6 +461,23 @@ export interface FitViewOptions {
   maxZoom?: number;
   /** Fit only these nodes. */
   nodes?: readonly { id: string }[];
+}
+
+/**
+ * Where one node's React body goes: the box `<Flow>` mounts
+ * {@link FlowNodeType.render}'s tree into, in pixels relative to the pane's
+ * own top-left corner.
+ *
+ * This is the seam between the two halves. The pane owns node geometry —
+ * sizes it measured, a drag it is mid-way through, the viewport it has not
+ * told React about — so it is the only thing that can answer "where is this
+ * node right now", and it answers by handing the whole list over whenever
+ * it changes. `<Flow>` wires it up; an app never sees it.
+ */
+export interface NodeBodyRect extends FlowRect {
+  id: string;
+  zoom: number;
+  selected: boolean;
 }
 
 // --- the imperative surface ------------------------------------------------
@@ -503,6 +575,8 @@ export interface FlowProps<N = FlowNodeData, E = unknown> {
   nodesDraggable?: boolean;
   nodesConnectable?: boolean;
   elementsSelectable?: boolean;
+  /** The default for {@link FlowNode.resizable}. `false`. */
+  nodesResizable?: boolean;
   panOnDrag?: boolean;
   zoomOnScroll?: boolean;
   zoomOnDoubleClick?: boolean;
@@ -536,4 +610,11 @@ export interface FlowProps<N = FlowNodeData, E = unknown> {
   onFocus?: (event: FocusEvent<DrawnNode>) => void;
   onBlur?: (event: FocusEvent<DrawnNode>) => void;
   ref?: Ref<FlowInstance>;
+  /**
+   * Where the bodies of the nodes whose type has a `render` should be
+   * mounted, whenever that changes. Wired by `<Flow>` — this is the seam
+   * between the drawn half and the mounted one, and the raw `<flowgraph>`
+   * element is the only reason it is a prop rather than a private method.
+   */
+  onNodeBodies?: (bodies: readonly NodeBodyRect[]) => void;
 }

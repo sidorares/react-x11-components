@@ -50,8 +50,13 @@ import {
   handleAnchor,
   HANDLE_RADIUS,
   HANDLE_SLOP,
+  gripPoint,
   measureNode,
+  MIN_NODE_HEIGHT,
+  MIN_NODE_WIDTH,
+  NODE_BODY_INSET,
   NODE_DESC_SIZE,
+  NODE_HEADER,
   NODE_LABEL_SIZE,
   NODE_PAD_X,
   NODE_PAD_Y,
@@ -60,6 +65,11 @@ import {
   orientConnection,
   rectContains,
   rectsOverlap,
+  RENDER_ZOOM,
+  RESIZE_DIRECTIONS,
+  RESIZE_GRIP,
+  RESIZE_SLOP,
+  resizeRect,
   resolveHandles,
   resolvePalette,
   snapTo,
@@ -91,6 +101,7 @@ import type {
   HandleAnchor,
   HandleSpec,
   MiniMapOptions,
+  NodeBodyRect,
   NodeChange,
   TextOptions,
   Viewport,
@@ -188,6 +199,15 @@ type Gesture =
   /** A press that landed on an edge. It moves nothing; it exists so that
    * the release can tell a click from the start of something else. */
   | { kind: 'edge'; id: string; startX: number; startY: number }
+  | {
+      kind: 'resize';
+      id: string;
+      /** Which grip, as a unit direction: `{-1,-1}` is the top-left. */
+      dir: XYPosition;
+      startX: number;
+      startY: number;
+      origin: FlowRect;
+    }
   | { kind: 'minimap' };
 
 /** What the pointer is over, for hover styling and for the cursor a press
@@ -246,6 +266,11 @@ export class FlowGraphNode extends Node implements FlowInstance {
    * when the app applies the changes it is being sent. Cleared on release,
    * which is also how a refused drag snaps back. */
   private _dragTo: Map<string, XYPosition> | null = null;
+  /** The box a resize is currently making, for the same reason. */
+  private _resizeTo: { id: string; rect: FlowRect } | null = null;
+  /** What was last handed to `onNodeBodies`, so the React half is told only
+   * when something actually moved. */
+  private _bodiesKey = '';
   private _dashPhase = 0;
   private _animTimer: unknown = null;
   /** Inside `paint`, where an invalidation would only schedule a redraw of
@@ -470,10 +495,50 @@ export class FlowGraphNode extends Node implements FlowInstance {
     return this._dragTo?.get(node.id) ?? node.position;
   }
 
-  /** A node's box in graph space. */
+  /** A node's box in graph space — including whatever a gesture in flight
+   * is making of it, which is what keeps the pane from being a frame behind
+   * the pointer even when the app is applying the changes it is sent. */
   rectOf(entry: NodeEntry): FlowRect {
+    const resizing = this._resizeTo;
+    if (resizing && resizing.id === entry.node.id) return resizing.rect;
     const p = this._positionOf(entry.node);
     return { x: p.x, y: p.y, width: entry.width, height: entry.height };
+  }
+
+  /** The strip a `render` node keeps for its title and for dragging. Zero
+   * for a node whose body the pane draws itself. */
+  private _headerHeight(entry: NodeEntry): number {
+    if (!entry.type?.render) return 0;
+    return entry.type.headerHeight ?? NODE_HEADER;
+  }
+
+  private _resizable(entry: NodeEntry): boolean {
+    return (
+      (entry.node.resizable ?? this._bool('nodesResizable', false)) !== false
+    );
+  }
+
+  /** The grips a node offers right now: none unless it is selected and
+   * resizable, because eight dots on every node is a graph nobody can
+   * read. */
+  private _grips(entry: NodeEntry): readonly XYPosition[] {
+    if (!entry.node.selected || !this._resizable(entry)) return [];
+    if (this._viewport().zoom < HANDLE_ZOOM) return [];
+    if (!this._connectable(entry)) return RESIZE_DIRECTIONS;
+    // Both families live on the border, and a side-centred handle sits
+    // exactly on a side-centred grip. The handle wins the hit test, so a
+    // grip drawn under one is a control that does not work: drop it. The
+    // corners — which is what a resize actually reaches for — are never the
+    // ones lost, unless a handle was put there on purpose.
+    const rect = this.rectOf(entry);
+    const anchors = this._handlesOf(entry);
+    const near = RESIZE_GRIP + RESIZE_SLOP;
+    return RESIZE_DIRECTIONS.filter((dir) => {
+      const at = gripPoint(rect, dir);
+      return !anchors.some(
+        (a) => Math.abs(a.x - at.x) <= near && Math.abs(a.y - at.y) <= near,
+      );
+    });
   }
 
   private _handlesOf(entry: NodeEntry): HandleAnchor[] {
@@ -483,12 +548,13 @@ export class FlowGraphNode extends Node implements FlowInstance {
 
   private _screenRect(entry: NodeEntry): FlowRect {
     const v = this._viewport();
-    const p = this._toScreen(this._positionOf(entry.node));
+    const rect = this.rectOf(entry);
+    const p = this._toScreen(rect);
     return {
       x: p.x,
       y: p.y,
-      width: entry.width * v.zoom,
-      height: entry.height * v.zoom,
+      width: rect.width * v.zoom,
+      height: rect.height * v.zoom,
     };
   }
 
@@ -730,6 +796,42 @@ export class FlowGraphNode extends Node implements FlowInstance {
         if (accept && !accept(anchor, entry)) continue;
         const s = this._toScreen(anchor);
         if (Math.hypot(s.x - x, s.y - y) <= reach) return anchor;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * A resize grip under the point, if any. Tested *after* the connection
+   * handles: the two families both live on the border and a side-centred
+   * handle sits exactly on a side-centred grip, so one of them has to give
+   * way, and it should be the one whose corners are still reachable.
+   */
+  private _gripAt(
+    x: number,
+    y: number,
+  ): { entry: NodeEntry; dir: XYPosition } | null {
+    const zoom = this._viewport().zoom;
+    const reach = Math.max(6, (RESIZE_GRIP + RESIZE_SLOP) * zoom);
+    for (let i = this._order.length - 1; i >= 0; i--) {
+      const entry = this._order[i];
+      if (entry.node.hidden) continue;
+      const grips = this._grips(entry);
+      if (grips.length === 0) continue;
+      const rect = this._screenRect(entry);
+      if (
+        x < rect.x - reach ||
+        x > rect.x + rect.width + reach ||
+        y < rect.y - reach ||
+        y > rect.y + rect.height + reach
+      ) {
+        continue;
+      }
+      for (const dir of grips) {
+        const at = gripPoint(rect, dir);
+        if (Math.abs(at.x - x) <= reach && Math.abs(at.y - y) <= reach) {
+          return { entry, dir };
+        }
       }
     }
     return null;
@@ -1077,7 +1179,25 @@ export class FlowGraphNode extends Node implements FlowInstance {
       }
     }
 
-    // 3. a node
+    // 3. a resize grip on a selected node
+    if (ev.button === 1) {
+      const grip = this._gripAt(x, y);
+      if (grip) {
+        this._gesture = {
+          kind: 'resize',
+          id: grip.entry.node.id,
+          dir: grip.dir,
+          startX: x,
+          startY: y,
+          origin: this.rectOf(grip.entry),
+        };
+        ev.capturePointer();
+        ev.preventDefault();
+        return;
+      }
+    }
+
+    // 4. a node
     const entry = ev.button === 1 ? this._nodeAt(x, y) : null;
     if (entry) {
       const additive = ev.shiftKey || ev.ctrlKey;
@@ -1119,7 +1239,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
       return;
     }
 
-    // 4. an edge
+    // 5. an edge
     if (ev.button === 1) {
       const edge = this._edgeAt(x, y);
       if (edge) {
@@ -1138,7 +1258,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
       }
     }
 
-    // 5. the empty pane: a box selection, or a pan
+    // 6. the empty pane: a box selection, or a pan
     const boxSelect =
       ev.button === 1 &&
       (ev.shiftKey || this._bool('selectionOnDrag', false)) &&
@@ -1188,6 +1308,9 @@ export class FlowGraphNode extends Node implements FlowInstance {
         return;
       case 'connect':
         this._connectStep(gesture, ev);
+        return;
+      case 'resize':
+        this._resizeStep(gesture, ev);
         return;
       case 'select':
         gesture.x = ev.x;
@@ -1273,6 +1396,13 @@ export class FlowGraphNode extends Node implements FlowInstance {
           this._zoomAbout(ZOOM_STEP, ev.x, ev.y);
         }
       }
+      return;
+    }
+
+    if (gesture.kind === 'resize') {
+      this._resizeStep(gesture, ev, true);
+      this._resizeTo = null;
+      this._repaint();
       return;
     }
 
@@ -1379,6 +1509,53 @@ export class FlowGraphNode extends Node implements FlowInstance {
       });
     }
     this._dragTo = to;
+    this._emitNodes(changes);
+    this._repaint();
+  }
+
+  /** The box a resize is making, reported as it goes. A grip that moves the
+   * top or the left edge moves the node too, so both changes go out — an
+   * app that applied only one would watch the node crawl. */
+  private _resizeStep(
+    gesture: Extract<Gesture, { kind: 'resize' }>,
+    ev: MouseEvent,
+    settling = false,
+  ): void {
+    const entry = this._byId.get(gesture.id);
+    if (!entry) return;
+    const zoom = this._viewport().zoom;
+    const grid = this._prop<readonly [number, number]>('snapGrid') ?? [16, 16];
+    const snap = this._bool('snapToGrid', false)
+      ? (value: number, axis: 0 | 1) => snapTo(value, grid[axis])
+      : undefined;
+    const rect = resizeRect(
+      gesture.origin,
+      gesture.dir,
+      (ev.x - gesture.startX) / zoom,
+      (ev.y - gesture.startY) / zoom,
+      {
+        minWidth: entry.node.minWidth ?? MIN_NODE_WIDTH,
+        minHeight: entry.node.minHeight ?? MIN_NODE_HEIGHT,
+      },
+      snap,
+    );
+    this._resizeTo = { id: gesture.id, rect };
+    const changes: NodeChange<unknown>[] = [
+      {
+        type: 'dimensions',
+        id: gesture.id,
+        dimensions: { width: rect.width, height: rect.height },
+        resizing: !settling,
+      },
+    ];
+    if (rect.x !== entry.node.position.x || rect.y !== entry.node.position.y) {
+      changes.push({
+        type: 'position',
+        id: gesture.id,
+        position: { x: rect.x, y: rect.y },
+        dragging: !settling,
+      });
+    }
     this._emitNodes(changes);
     this._repaint();
   }
@@ -1551,6 +1728,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
       if (this._gesture) {
         this._gesture = null;
         this._dragTo = null;
+        this._resizeTo = null;
         this._repaint();
       } else {
         this._select(null, false);
@@ -1747,6 +1925,53 @@ export class FlowGraphNode extends Node implements FlowInstance {
     // The timer exists only while something on screen needs it.
     if (animated) this._startAnimation();
     else this._stopAnimation();
+
+    // Last, and outside the drawing: this is what tells the React half where
+    // to put the node bodies it mounts, and it is answered from the geometry
+    // this frame just used — the same numbers, never a second derivation.
+    this._emitBodies();
+  }
+
+  /**
+   * Where every mounted node body belongs, relative to the pane's own
+   * top-left. Sent only when the list changed, so a repaint that moved
+   * nothing does not re-render React — but a pan does, once per frame,
+   * which is the cost `render` is documented to carry.
+   */
+  private _emitBodies(): void {
+    const notify =
+      this._prop<(bodies: readonly NodeBodyRect[]) => void>('onNodeBodies');
+    if (!notify) return;
+    const v = this._viewport();
+    const pane = this._pane();
+    const bodies: NodeBodyRect[] = [];
+    for (const entry of this._order) {
+      if (entry.node.hidden || !this._mounted(entry)) continue;
+      const rect = this._screenRect(entry);
+      if (!rectsOverlap(rect, pane)) continue;
+      const header = this._headerHeight(entry) * v.zoom;
+      const inset = NODE_BODY_INSET * v.zoom;
+      const width = rect.width - inset * 2;
+      const height = rect.height - header - inset;
+      if (width <= 1 || height <= 1) continue;
+      bodies.push({
+        id: entry.node.id,
+        // pane-relative, because that is what an absolutely positioned box
+        // beside the pane is laid out against
+        x: Math.round(rect.x + inset - pane.x),
+        y: Math.round(rect.y + header - pane.y),
+        width: Math.round(width),
+        height: Math.round(height),
+        zoom: v.zoom,
+        selected: entry.node.selected ?? false,
+      });
+    }
+    const key = bodies
+      .map((b) => `${b.id}:${b.x},${b.y},${b.width},${b.height},${b.selected}`)
+      .join('|');
+    if (key === this._bodiesKey) return;
+    this._bodiesKey = key;
+    notify(bodies);
   }
 
   private _paintGrid(painter: FlowPainter, palette: FlowPalette): void {
@@ -2009,11 +2234,40 @@ export class FlowGraphNode extends Node implements FlowInstance {
         handles,
       });
     } else {
-      this._paintCard(painter, palette, entry, rect, selected, hovered);
+      // A node whose body is mounted keeps its title in the header strip;
+      // one whose body is drawn centres it. The card is the same card.
+      const header = this._mounted(entry) ? this._headerHeight(entry) : 0;
+      this._paintCard(painter, palette, entry, rect, selected, hovered, header);
     }
 
     if (this._connectable(entry) && (v.zoom >= HANDLE_ZOOM || hovered)) {
       this._paintHandles(painter, palette, handles);
+    }
+    this._paintGrips(painter, palette, entry, rect);
+  }
+
+  /** Is this node's React body on screen? Below `RENDER_ZOOM` it is not
+   * mounted, and the pane draws the whole card instead. */
+  private _mounted(entry: NodeEntry): boolean {
+    return entry.type?.render != null && this._viewport().zoom >= RENDER_ZOOM;
+  }
+
+  private _paintGrips(
+    painter: FlowPainter,
+    palette: FlowPalette,
+    entry: NodeEntry,
+    rect: FlowRect,
+  ): void {
+    const grips = this._grips(entry);
+    if (grips.length === 0) return;
+    const size = Math.max(4, RESIZE_GRIP * 2 * this._viewport().zoom);
+    for (const dir of grips) {
+      const at = gripPoint(rect, dir);
+      painter.rect(at.x - size / 2, at.y - size / 2, size, size, 1, {
+        fill: palette.nodeBackground,
+        stroke: palette.accent,
+        lineWidth: 1.5,
+      });
     }
   }
 
@@ -2026,6 +2280,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
     rect: FlowRect,
     selected: boolean,
     hovered: boolean,
+    header: number,
   ): void {
     const v = this._viewport();
     const style = entry.node.style;
@@ -2062,6 +2317,29 @@ export class FlowGraphNode extends Node implements FlowInstance {
     const centre = rect.x + rect.width / 2;
     const maxWidth = Math.max(8, rect.width - padX * 2);
     const showDescription = Boolean(description) && v.zoom >= DESC_ZOOM;
+
+    if (header > 0) {
+      // The title bar of a node whose body is somebody else's: left-aligned,
+      // with a hairline under it so the strip reads as the thing to grab.
+      const band = header * v.zoom;
+      painter.text(label, rect.x + padX, rect.y + band / 2, {
+        size: NODE_LABEL_SIZE * v.zoom,
+        weight: 'bold',
+        color,
+        baseline: 'middle',
+        maxWidth,
+      });
+      painter.strokeRuns(
+        [
+          [
+            { x: rect.x + 1, y: rect.y + band },
+            { x: rect.x + rect.width - 1, y: rect.y + band },
+          ],
+        ],
+        { stroke: palette.nodeBorder, lineWidth: 1 },
+      );
+      return;
+    }
 
     if (!showDescription) {
       painter.text(label, centre, rect.y + rect.height / 2, {

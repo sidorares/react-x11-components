@@ -40,6 +40,21 @@ export const NODE_MAX_WIDTH = 260;
 export const NODE_MIN_HEIGHT = 40;
 /** Handle radius in graph units. */
 export const HANDLE_RADIUS = 4.5;
+/** Resize grip half-width, and how far outside one a press still grabs it. */
+export const RESIZE_GRIP = 3.5;
+export const RESIZE_SLOP = 4;
+/** Floors for a resize, when the node names none. Small enough to be a
+ * badge, big enough that a node cannot be dragged out of existence. */
+export const MIN_NODE_WIDTH = 48;
+export const MIN_NODE_HEIGHT = 32;
+/** The strip a `render` node keeps for its title and for dragging. */
+export const NODE_HEADER = 26;
+/** How far a `render` node's body is inset from its own border, so the
+ * resize grips and the border stay the pane's to hit. */
+export const NODE_BODY_INSET = 5;
+/** Below this the mounted body is not worth showing: it is laid out at its
+ * natural size, so a small box would show a corner of a form. */
+export const RENDER_ZOOM = 0.6;
 /** How far outside a handle a press still counts as grabbing it. */
 export const HANDLE_SLOP = 5;
 /** How far from an edge a press still counts as hitting it. */
@@ -93,6 +108,11 @@ export function applyNodeChanges<Data = FlowNodeData>(
     } else if (change.type === 'select') {
       if ((current.selected ?? false) === change.selected) continue;
       byId.set(change.id, { ...current, selected: change.selected });
+      touched = true;
+    } else if (change.type === 'dimensions') {
+      const { width, height } = change.dimensions;
+      if (current.width === width && current.height === height) continue;
+      byId.set(change.id, { ...current, width, height });
       touched = true;
     } else if (change.position) {
       const { x, y } = change.position;
@@ -392,6 +412,69 @@ export function fitViewport(
     x: size.width / 2 - (bounds.x + bounds.width / 2) * zoom,
     y: size.height / 2 - (bounds.y + bounds.height / 2) * zoom,
   };
+}
+
+/** The eight grips on a node's border, as unit directions. */
+export const RESIZE_DIRECTIONS: readonly XYPosition[] = [
+  { x: -1, y: -1 },
+  { x: 0, y: -1 },
+  { x: 1, y: -1 },
+  { x: 1, y: 0 },
+  { x: 1, y: 1 },
+  { x: 0, y: 1 },
+  { x: -1, y: 1 },
+  { x: -1, y: 0 },
+];
+
+/** Where a grip sits on a box. */
+export function gripPoint(rect: FlowRect, dir: XYPosition): XYPosition {
+  return {
+    x: rect.x + (rect.width * (dir.x + 1)) / 2,
+    y: rect.y + (rect.height * (dir.y + 1)) / 2,
+  };
+}
+
+/**
+ * Drag one grip and get the box it makes. The edges the grip does not own
+ * stay exactly where they were — which is what makes a resize from the
+ * top-left move the node's origin and one from the bottom-right not.
+ *
+ * Clamped to the minimum by moving the dragged edge back, never by moving
+ * the opposite one: a node held at its floor must not creep across the
+ * canvas while the pointer keeps going.
+ */
+export function resizeRect(
+  origin: FlowRect,
+  dir: XYPosition,
+  dx: number,
+  dy: number,
+  limits: { minWidth: number; minHeight: number },
+  snap?: (value: number, axis: 0 | 1) => number,
+): FlowRect {
+  let { x, y, width, height } = origin;
+  if (dir.x < 0) {
+    const right = origin.x + origin.width;
+    x = snap ? snap(origin.x + dx, 0) : origin.x + dx;
+    x = Math.min(x, right - limits.minWidth);
+    width = right - x;
+  } else if (dir.x > 0) {
+    const edge = snap
+      ? snap(origin.x + origin.width + dx, 0)
+      : origin.x + origin.width + dx;
+    width = Math.max(limits.minWidth, edge - origin.x);
+  }
+  if (dir.y < 0) {
+    const bottom = origin.y + origin.height;
+    y = snap ? snap(origin.y + dy, 1) : origin.y + dy;
+    y = Math.min(y, bottom - limits.minHeight);
+    height = bottom - y;
+  } else if (dir.y > 0) {
+    const edge = snap
+      ? snap(origin.y + origin.height + dy, 1)
+      : origin.y + origin.height + dy;
+    height = Math.max(limits.minHeight, edge - origin.y);
+  }
+  return { x, y, width, height };
 }
 
 // --- connections -----------------------------------------------------------

@@ -428,15 +428,15 @@ frames the graph. Edges route as bezier, smoothstep, step or straight, carry
 labels and arrowheads, and animate. `background`, `minimap` and `controls`
 are props rather than child components.
 
-**One thing is deliberately not react-flow's**, and it is the interesting
-one: a custom node type is a `paint` function, not a React component.
-react-flow gives every node a DOM subtree and pans and zooms with a CSS
-transform, so the browser moves ten thousand boxes for free. This renderer
-has no transform — `style` is yoga plus paint — so the same design would
-re-render and re-lay-out every node on every pointer step of a pan. The pane
-draws the graph instead: panning becomes two numbers and one node's repaint,
-zoom scales text along with everything else, and React is not involved at all
-unless the graph itself changed.
+**The default node type is a `paint`, not a React component**, and that is
+the one place this is deliberately not react-flow. react-flow gives every
+node a DOM subtree and pans and zooms with a CSS transform, so the browser
+moves ten thousand boxes for free. This renderer has no transform — `style`
+is yoga plus paint — so the same design would re-render and re-lay-out every
+node on every pointer step of a pan. The pane draws the graph instead:
+panning becomes two numbers and one node's repaint, zoom scales text along
+with everything else, and React is not involved at all unless the graph
+itself changed.
 
 ```jsx
 const nodeTypes = {
@@ -468,6 +468,58 @@ const nodeTypes = {
   },
 };
 ```
+
+### Nodes that hold real widgets
+
+Drawing is right for the nodes there are a lot of. It is not right for a node
+whose body is a form, so a node type may `render` one instead: an ordinary
+react-x11 tree, mounted in a box the pane positions and sizes over the node,
+and laid out by yoga inside it.
+
+```jsx
+const nodeTypes = {
+  options: {
+    size: { width: 268, height: 212 },
+    headerHeight: 26, // the strip left for the title, and for dragging
+    handles: [{ type: 'source', position: 'right' }],
+    render: ({ node }) => (
+      <box style={{ flexGrow: 1, padding: 8, gap: 7 }}>
+        <text style={{ fontSize: 11, color: '$dim' }}>build options</text>
+        <Checkbox
+          label="strict"
+          checked={node.data.strict}
+          onChange={(ev) => patch(node.id, { strict: ev.value })}
+        />
+        <textarea
+          value={node.data.text}
+          onChange={(ev) => patch(node.id, { text: ev.value })}
+          style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }}
+        />
+      </box>
+    ),
+  },
+};
+```
+
+Everything in there behaves the way it does anywhere else: the checkbox takes
+clicks, the textarea takes the keyboard — Delete deletes _text_ while it has
+the focus, not the node — and the buttons draw their own hover and pressed
+states. Three things follow, and all three are the point:
+
+- **It re-renders as the viewport moves.** That is the cost the drawn path
+  exists to avoid, so it is paid by the nodes that ask for it and no others.
+- **It does not scale with the zoom.** The box does; there is no transform
+  here. Content is laid out to the zoomed box at its natural size and
+  clipped, and below `zoom` 0.6 it is not mounted at all — the pane draws the
+  card instead.
+- **`headerHeight` is what keeps the node draggable.** The body starts below
+  it, so there is always somewhere to grab that is not a text field.
+
+Add `resizable` to such a node and it grows eight grips on its border while
+it is selected; drag one and the widgets inside reflow with it. The gesture
+arrives as a `dimensions` change (with a `position` one when the grip moved
+the node's origin), applied by the same `applyNodeChanges` as everything
+else. `minWidth`/`minHeight` are the floor.
 
 `npm run examples:flow` is a working pipeline editor.
 

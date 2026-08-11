@@ -1,13 +1,24 @@
 // Run with: npm run examples:flow   (needs an X server / DISPLAY)
 //
-// A small pipeline editor: drag nodes, drag between handles to connect,
-// Shift+drag to box-select, Delete to remove, the wheel to zoom. The custom
-// `task` node type is the interesting part — a node's body is a `paint`
-// here, not a React component, because zoom is drawn rather than
-// transformed. See README.md, "The graph editor".
+// A small pipeline editor: drag nodes by anything that is not a widget, drag
+// between handles to connect, Shift+drag to box-select, Delete to remove,
+// the wheel to zoom.
+//
+// The two custom node types are the point, because they are the two halves
+// of the seam:
+//
+//   `task`  — a `paint`. The pane draws it, so it costs nothing to pan past
+//             a thousand of them and it scales with the zoom.
+//   `notes` — a `render`. Real `<Checkbox>`, `<Button>` and `<textarea>`,
+//             laid out by yoga inside a box the pane places over the node.
+//             It is interactive, it re-renders as the viewport moves, and
+//             it does not scale — see README.md, "The graph editor".
+//
+// The `notes` node is also `resizable`: drag any of the eight grips on its
+// border while it is selected, and the textarea inside grows with it.
 import { useCallback, useMemo, useRef, useState } from 'react';
 import type { ReactElement } from 'react';
-import { createRoot } from 'react-x11';
+import { Button, Checkbox, createRoot } from 'react-x11';
 
 import { addEdge, Flow, useEdgesState, useNodesState } from '../src/index.js';
 import type {
@@ -18,22 +29,29 @@ import type {
   NodeChange,
 } from '../src/index.js';
 
+/** One data type for every node here; each node type reads its own half. */
 interface TaskData {
   label?: string;
   description?: string;
-  kind: 'source' | 'transform' | 'sink';
+  /** `task` only. */
+  kind?: 'source' | 'transform' | 'sink';
+  /** `notes` only. */
+  text?: string;
+  strict?: boolean;
+  sourcemaps?: boolean;
 }
 
-const ACCENTS: Record<TaskData['kind'], string> = {
+const ACCENTS: Record<NonNullable<TaskData['kind']>, string> = {
   source: '#3fa66a',
   transform: '#4b7bec',
   sink: '#d9822b',
 };
 
 /**
- * A node type: how big, where it connects, and how it draws. Everything the
- * `paint` is handed is in screen pixels already — a type multiplies its own
- * sizes by `zoom` and otherwise never thinks about the viewport.
+ * The drawn node type: how big, where it connects, and how it draws.
+ * Everything the `paint` is handed is in screen pixels already — a type
+ * multiplies its own sizes by `zoom` and otherwise never thinks about the
+ * viewport.
  */
 const task: FlowNodeType<TaskData> = {
   size: { width: 168, height: 56 },
@@ -78,6 +96,82 @@ const task: FlowNodeType<TaskData> = {
   },
 };
 
+/**
+ * The mounted node type. `render` returns an ordinary react-x11 tree, so
+ * everything in it behaves the way it does anywhere else: the checkboxes
+ * take clicks, the textarea takes the keyboard (Delete deletes *text* while
+ * it has the focus, not the node), and the buttons draw their own hover and
+ * pressed states.
+ *
+ * `headerHeight` is what keeps the node draggable: the body starts below the
+ * title strip, so there is always somewhere to grab that is not a field.
+ *
+ * It takes the state setter because the node's data *is* the widget state —
+ * there is nowhere else for a controlled input to keep it, which is exactly
+ * how it would be in a react-flow node component.
+ */
+function notesType(
+  patch: (id: string, data: Partial<TaskData>) => void,
+): FlowNodeType<TaskData> {
+  return {
+    size: { width: 268, height: 212 },
+    headerHeight: 26,
+    handles: [{ type: 'source', position: 'right' }],
+    render: ({ node }) => (
+      <box style={{ flexGrow: 1, padding: 8, gap: 7 }}>
+        <text style={{ fontSize: 11, color: '$dim' }}>
+          Real widgets, laid out by yoga inside the node.
+        </text>
+        <box style={{ flexDirection: 'row', gap: 12 }}>
+          <Checkbox
+            label="strict"
+            checked={node.data?.strict ?? false}
+            onChange={(ev) => patch(node.id, { strict: ev.value })}
+          />
+          <Checkbox
+            label="sourcemaps"
+            checked={node.data?.sourcemaps ?? false}
+            onChange={(ev) => patch(node.id, { sourcemaps: ev.value })}
+          />
+        </box>
+        {/* `flexShrink` as well as `flexGrow`: a `<textarea>` measures
+            itself at `rows` lines and yoga does not shrink a flex item
+            below its own measurement unless it is told it may — which is
+            what makes this field *fill* the node however it is resized. */}
+        <textarea
+          rows={2}
+          value={node.data?.text ?? ''}
+          onChange={(ev) => patch(node.id, { text: ev.value })}
+          placeholder="build notes…"
+          style={{
+            flexGrow: 1,
+            flexShrink: 1,
+            minHeight: 0,
+            borderWidth: 1,
+            borderColor: '$border',
+            borderRadius: 4,
+            padding: 4,
+          }}
+        />
+        <box
+          style={{ flexDirection: 'row', gap: 6, justifyContent: 'flex-end' }}
+        >
+          <Button label="Clear" onPress={() => patch(node.id, { text: '' })} />
+          <Button
+            primary
+            label="Run"
+            onPress={() =>
+              patch(node.id, {
+                text: `${node.data?.text ?? ''}${node.data?.text ? '\n' : ''}ran at ${new Date().toLocaleTimeString()}`,
+              })
+            }
+          />
+        </box>
+      </box>
+    ),
+  };
+}
+
 const initialNodes: FlowNode<TaskData>[] = [
   {
     id: 'watch',
@@ -102,15 +196,26 @@ const initialNodes: FlowNode<TaskData>[] = [
     },
   },
   {
+    id: 'options',
+    type: 'notes',
+    position: { x: 190, y: 180 },
+    width: 268,
+    height: 212,
+    resizable: true,
+    minWidth: 210,
+    minHeight: 160,
+    data: { label: 'options', text: 'watch mode', strict: true },
+  },
+  {
     id: 'bundle',
     type: 'task',
-    position: { x: 480, y: 40 },
+    position: { x: 540, y: 40 },
     data: { label: 'bundle', description: 'esbuild', kind: 'transform' },
   },
   {
     id: 'reload',
     type: 'task',
-    position: { x: 720, y: 40 },
+    position: { x: 780, y: 40 },
     data: { label: 'reload', description: 'the running app', kind: 'sink' },
   },
 ];
@@ -120,16 +225,31 @@ const initialEdges = [
   { id: 'w-t', source: 'watch', target: 'typecheck' },
   { id: 'p-b', source: 'parse', target: 'bundle', label: 'ast' },
   { id: 't-b', source: 'typecheck', target: 'bundle', label: 'ok' },
+  { id: 'o-b', source: 'options', target: 'bundle', label: 'config' },
   { id: 'b-r', source: 'bundle', target: 'reload', animated: true },
 ];
 
 function App(): ReactElement {
-  const [nodes, , onNodesChange] = useNodesState<TaskData>(initialNodes);
+  const [nodes, setNodes, onNodesChange] =
+    useNodesState<TaskData>(initialNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
   const [status, setStatus] = useState('drag a handle to connect two steps');
   const flow = useRef<FlowInstance>(null);
 
-  const nodeTypes = useMemo(() => ({ task }), []);
+  // A mounted node's widgets are controlled by the node's own `data`, so
+  // this is the setter they all go through.
+  const patch = useCallback(
+    (id: string, data: Partial<TaskData>) => {
+      setNodes((current) =>
+        current.map((node) =>
+          node.id === id ? { ...node, data: { ...node.data, ...data } } : node,
+        ),
+      );
+    },
+    [setNodes],
+  );
+
+  const nodeTypes = useMemo(() => ({ task, notes: notesType(patch) }), [patch]);
 
   const onConnect = useCallback(
     (connection: Connection) => {
@@ -151,12 +271,20 @@ function App(): ReactElement {
           `${dropped.id} at ${Math.round(dropped.position.x)}, ${Math.round(dropped.position.y)}`,
         );
       }
+      const sized = changes.find(
+        (c) => c.type === 'dimensions' && c.resizing === false,
+      );
+      if (sized && sized.type === 'dimensions') {
+        setStatus(
+          `${sized.id} is ${Math.round(sized.dimensions.width)}×${Math.round(sized.dimensions.height)}`,
+        );
+      }
     },
     [onNodesChange],
   );
 
   return (
-    <window width={880} height={560} title="@react-x11/components — Flow">
+    <window width={1000} height={660} title="@react-x11/components — Flow">
       <box style={{ flexGrow: 1, padding: 12, gap: 10 }}>
         <box
           style={{
@@ -180,19 +308,21 @@ function App(): ReactElement {
           onEdgesChange={onEdgesChange}
           onConnect={onConnect}
           onSelectionChange={({ nodes: selected }) => {
-            if (selected.length > 0) {
+            if (selected.length === 1) {
               setStatus(
-                selected.length === 1
-                  ? `selected ${selected[0].id} — Delete removes it`
-                  : `${selected.length} selected`,
+                selected[0].resizable
+                  ? `${selected[0].id} — drag a grip to resize it`
+                  : `selected ${selected[0].id} — Delete removes it`,
               );
+            } else if (selected.length > 1) {
+              setStatus(`${selected.length} selected`);
             }
           }}
           defaultEdgeOptions={{ type: 'smoothstep' }}
           fitView
+          fitViewOptions={{ padding: 0.04, maxZoom: 1 }}
           minimap
           controls
-          snapToGrid
           background={{ variant: 'dots', gap: 24 }}
           style={{
             flexGrow: 1,

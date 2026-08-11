@@ -41,6 +41,7 @@ import type {
   FlowNode,
   FlowNodeData,
   FlowProps,
+  NodeBodyRect,
   NodeChange,
 } from './types.js';
 
@@ -55,10 +56,21 @@ if (!registeredElements().includes(ELEMENT)) {
   });
 }
 
-/** The pane fills its parent — unless the app's own style gives it a height
- * or a `flexGrow`, in which case adding one would silently override what it
- * asked for. Checked against the *flattened* style so an array works too. */
-const styles = createStyles({ pane: { flexGrow: 1 } });
+/**
+ * `pane` is the default for the box `<Flow>` renders: it fills its parent —
+ * unless the app's own style gives it a height or a `flexGrow`, in which
+ * case adding one would silently override what it asked for. Checked
+ * against the *flattened* style, so an array works too.
+ *
+ * `fill` is what the drawn pane always gets, because the app's style went on
+ * the box around it. `overflow: 'hidden'` there is what clips a mounted node
+ * body that has been panned half off the edge.
+ */
+const styles = createStyles({
+  pane: { flexGrow: 1, overflow: 'hidden' },
+  clip: { overflow: 'hidden' },
+  fill: { flexGrow: 1 },
+});
 
 /**
  * A directed graph.
@@ -203,20 +215,87 @@ export function Flow<N = FlowNodeData, E = unknown>(
     pane.current?.handleLeave();
   };
 
-  return React.createElement(ELEMENT, {
-    ...rest,
-    ref: pane,
-    nodes: currentNodes,
-    edges: currentEdges,
-    onNodesChange: handleNodesChange,
-    onEdgesChange: handleEdgesChange,
-    onWheel: handleWheel,
-    onMouseMove: handleMouseMove,
-    onMouseLeave: handleMouseLeave,
-    style: sized ? style : [styles.pane, style],
-    role: 'group',
-    'aria-label': rest['aria-label'] ?? 'Flow graph',
-  });
+  // --- mounted node bodies ------------------------------------------------
+  //
+  // Only the node types that asked for one cost anything: with no `render`
+  // in the registry the pane is never given `onNodeBodies`, never computes a
+  // rect, and this half of the component is one `useState` that stays empty.
+  const { nodeTypes } = rest;
+  const mounts = useMemo(
+    () =>
+      nodeTypes
+        ? Object.values(nodeTypes).some((type) => type?.render != null)
+        : false,
+    [nodeTypes],
+  );
+  const [bodies, setBodies] = useState<readonly NodeBodyRect[]>([]);
+  const byId = useMemo(() => {
+    const map = new Map<string, FlowNode<N>>();
+    if (mounts) for (const node of currentNodes) map.set(node.id, node);
+    return map;
+  }, [mounts, currentNodes]);
+
+  const overlays = mounts
+    ? bodies.map((body) => {
+        const node = byId.get(body.id);
+        const type = node && nodeTypes?.[node.type ?? 'default'];
+        if (!node || !type?.render) return null;
+        return React.createElement(
+          'box',
+          {
+            key: body.id,
+            style: {
+              position: 'absolute',
+              left: body.x,
+              top: body.y,
+              width: body.width,
+              height: body.height,
+              // The box follows the zoom; what is inside it does not, so
+              // this is what stops a zoomed-out node spilling its form over
+              // the graph.
+              overflow: 'hidden',
+            },
+          },
+          type.render({
+            node,
+            selected: body.selected,
+            zoom: body.zoom,
+            rect: {
+              x: body.x,
+              y: body.y,
+              width: body.width,
+              height: body.height,
+            },
+          }),
+        );
+      })
+    : null;
+
+  // The pane and the bodies are siblings rather than parent and children:
+  // a registered element's own drawing happens *after* `super.paint` has
+  // painted its children, so anything mounted inside the pane would be
+  // painted over by the graph. Beside it, and after it, they land on top.
+  return React.createElement(
+    'box',
+    { style: sized ? [styles.clip, style] : [styles.pane, style] },
+    React.createElement(ELEMENT, {
+      ...rest,
+      key: 'pane',
+      ref: pane,
+      nodes: currentNodes,
+      edges: currentEdges,
+      onNodesChange: handleNodesChange,
+      onEdgesChange: handleEdgesChange,
+      onWheel: handleWheel,
+      onMouseMove: handleMouseMove,
+      onMouseLeave: handleMouseLeave,
+      onNodeBodies: mounts ? setBodies : undefined,
+      style: styles.fill,
+      role: 'group',
+      'aria-label': rest['aria-label'] ?? 'Flow graph',
+    }),
+    overlays,
+  );
 }
 
 /**
@@ -299,9 +378,11 @@ export type {
   MarkerType,
   MiniMapOptions,
   NodeAppearance,
+  NodeBodyRect,
   NodeChange,
   NodeMouseHandler,
   NodePaintContext,
+  NodeRenderContext,
   PanePosition,
   ShapeOptions,
   StrokeOptions,

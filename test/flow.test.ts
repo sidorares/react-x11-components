@@ -41,6 +41,7 @@ import type {
   FlowInstance,
   FlowNode,
   FlowNodeData,
+  FlowNodeType,
   FlowProps,
   NodeChange,
 } from '../src/index.js';
@@ -48,6 +49,7 @@ import {
   boundsOf,
   fitViewport,
   measureNode,
+  resizeRect,
   resolveHandles,
 } from '../src/flow/model.js';
 import {
@@ -767,6 +769,203 @@ test('fitView frames the graph, and the pane reports where things ended up', asy
     assert.ok(topLeft.x >= pane().abs.x, `${id} is not off the left`);
     assert.ok(topLeft.y >= pane().abs.y, `${id} is not off the top`);
   }
+});
+
+// --- resizing ---------------------------------------------------------------
+
+test('resizeRect moves the edges the grip owns and leaves the rest', () => {
+  const box = { x: 100, y: 100, width: 200, height: 100 };
+  const limits = { minWidth: 40, minHeight: 30 };
+
+  const se = resizeRect(box, { x: 1, y: 1 }, 30, 20, limits);
+  assert.deepStrictEqual(se, { x: 100, y: 100, width: 230, height: 120 });
+
+  // dragging the top-left moves the origin, and the far edges do not budge
+  const nw = resizeRect(box, { x: -1, y: -1 }, 30, 20, limits);
+  assert.deepStrictEqual(nw, { x: 130, y: 120, width: 170, height: 80 });
+  assert.strictEqual(nw.x + nw.width, box.x + box.width);
+  assert.strictEqual(nw.y + nw.height, box.y + box.height);
+
+  // one axis at a time for an edge grip
+  assert.deepStrictEqual(resizeRect(box, { x: 0, y: 1 }, 999, -40, limits), {
+    x: 100,
+    y: 100,
+    width: 200,
+    height: 60,
+  });
+});
+
+test('a node held at its floor stops shrinking instead of walking away', () => {
+  const box = { x: 100, y: 100, width: 200, height: 100 };
+  const limits = { minWidth: 40, minHeight: 30 };
+  // Past the floor from the top-left: the dragged edge stops, the opposite
+  // one stays where it was — the alternative is a node that creeps across
+  // the canvas while the pointer keeps going.
+  const squashed = resizeRect(box, { x: -1, y: -1 }, 500, 500, limits);
+  assert.deepStrictEqual(squashed, {
+    x: 260,
+    y: 170,
+    width: 40,
+    height: 30,
+  });
+  assert.strictEqual(squashed.x + squashed.width, box.x + box.width);
+});
+
+test('applyNodeChanges folds a dimensions change', () => {
+  const resized = applyNodeChanges(
+    [{ type: 'dimensions', id: 'a', dimensions: { width: 300, height: 90 } }],
+    nodes(),
+  );
+  assert.strictEqual(resized[0].width, 300);
+  assert.strictEqual(resized[0].height, 90);
+  assert.strictEqual(
+    applyNodeChanges(
+      [{ type: 'dimensions', id: 'a', dimensions: { width: 120, height: 40 } }],
+      nodes(),
+    ).length,
+    2,
+  );
+});
+
+test('dragging a grip resizes the node, and reports the settle', async () => {
+  const { recorded } = await mount({
+    nodes: nodes().map((n) =>
+      n.id === 'a' ? { ...n, selected: true, resizable: true } : n,
+    ),
+  });
+  const node = pane() as unknown as DrawnNode;
+  // `a` is (100,100)–(220,140); the bottom-right grip is on its corner
+  await act(() => {
+    fireEvent.mouseDown(node, at(220, 140));
+    fireEvent.mouseMove(node, at(280, 190));
+    fireEvent.mouseUp(node, at(280, 190));
+  });
+  const sizes = ofType(recorded.nodeChanges, 'dimensions');
+  assert.ok(sizes.length >= 2, 'a step and the settle');
+  const last = sizes[sizes.length - 1];
+  assert.deepStrictEqual(last.dimensions, { width: 180, height: 90 });
+  assert.strictEqual(last.resizing, false);
+  assert.ok(
+    sizes.slice(0, -1).every((c) => c.resizing === true),
+    'every step before it is mid-resize',
+  );
+  assert.deepStrictEqual(
+    ofType(recorded.nodeChanges, 'position'),
+    [],
+    'the bottom-right corner does not move the node',
+  );
+});
+
+test('a grip on the top-left moves the node as well as sizing it', async () => {
+  const { recorded } = await mount({
+    nodes: nodes().map((n) =>
+      n.id === 'a' ? { ...n, selected: true, resizable: true } : n,
+    ),
+  });
+  const node = pane() as unknown as DrawnNode;
+  // 40px right and 5px down, which keeps the height above its 32px floor
+  await act(() => {
+    fireEvent.mouseDown(node, at(100, 100));
+    fireEvent.mouseMove(node, at(140, 105));
+    fireEvent.mouseUp(node, at(140, 105));
+  });
+  const sizes = ofType(recorded.nodeChanges, 'dimensions');
+  const moves = ofType(recorded.nodeChanges, 'position');
+  assert.deepStrictEqual(sizes[sizes.length - 1].dimensions, {
+    width: 80,
+    height: 35,
+  });
+  assert.deepStrictEqual(moves[moves.length - 1].position, { x: 140, y: 105 });
+});
+
+test('a node that is not selected has no grips, so the border pans', async () => {
+  const { recorded, flow } = await mount({
+    nodes: nodes().map((n) => (n.id === 'a' ? { ...n, resizable: true } : n)),
+  });
+  const node = pane() as unknown as DrawnNode;
+  await act(() => {
+    fireEvent.mouseDown(node, at(220, 140));
+    fireEvent.mouseMove(node, at(280, 190));
+    fireEvent.mouseUp(node, at(280, 190));
+  });
+  assert.deepStrictEqual(ofType(recorded.nodeChanges, 'dimensions'), []);
+  // the corner is on the node, so this was a node drag, not a pan
+  assert.deepStrictEqual(flow.current!.getViewport(), { x: 0, y: 0, zoom: 1 });
+  assert.ok(ofType(recorded.nodeChanges, 'position').length > 0);
+});
+
+// --- mounted node bodies ----------------------------------------------------
+
+/** A node type whose body is real host elements rather than a drawing. */
+const mountedType: FlowNodeType = {
+  size: { width: 200, height: 120 },
+  headerHeight: 20,
+  render: ({ node }) =>
+    h('box', { style: { flexGrow: 1 } }, h('text', null, `body of ${node.id}`)),
+};
+
+test('a `render` node type mounts a real subtree over the node', async () => {
+  await mount({
+    nodes: [
+      {
+        id: 'a',
+        type: 'form',
+        position: { x: 100, y: 100 },
+        width: 200,
+        height: 120,
+      },
+    ],
+    edges: [],
+    nodeTypes: { form: mountedType },
+  });
+  const text = screen.getByText('body of a');
+  const box = retained(text).parent!;
+  // the body starts under the header strip and is inset from the border, so
+  // the grips and the edge of the card stay the pane's to hit
+  assert.strictEqual(box.abs.y, pane().abs.y + 100 + 20);
+  assert.strictEqual(box.abs.x, pane().abs.x + 100 + 5);
+  assert.strictEqual(box.abs.width, 200 - 5 * 2);
+  assert.strictEqual(box.abs.height, 120 - 20 - 5);
+});
+
+test('the mounted body follows the viewport, and leaves below a zoom', async () => {
+  const { flow } = await mount({
+    nodes: [
+      {
+        id: 'a',
+        type: 'form',
+        position: { x: 100, y: 100 },
+        width: 200,
+        height: 120,
+      },
+    ],
+    edges: [],
+    nodeTypes: { form: mountedType },
+  });
+  await act(() => flow.current!.setViewport({ x: 40, y: 25, zoom: 1 }));
+  assert.strictEqual(
+    retained(screen.getByText('body of a')).parent!.abs.x,
+    pane().abs.x + 140 + 5,
+  );
+
+  // The box follows the zoom but its content does not, so below a threshold
+  // there would be nothing readable to show: the pane draws the card instead.
+  await act(() => flow.current!.setViewport({ zoom: 0.3 }));
+  assert.strictEqual(screen.queryByText('body of a'), null);
+  await act(() => flow.current!.setViewport({ zoom: 1 }));
+  screen.getByText('body of a');
+});
+
+test('a graph with no `render` type mounts nothing and is one node deep', async () => {
+  await mount();
+  // The box `<Flow>` wraps the pane in is always there — it is what an
+  // absolutely positioned body is laid out against — but with nothing to
+  // mount it is the pane's only child.
+  const wrapper = pane().parent!;
+  assert.deepStrictEqual(
+    wrapper.children.map((c) => c.kind),
+    [FLOW_ELEMENT],
+  );
 });
 
 test('screenToFlowPosition and back is a round trip at any viewport', async () => {
