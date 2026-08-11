@@ -31,6 +31,19 @@ const FACTORY_IFACE = 'org.gnome.evolution.dataserver.CalendarFactory';
 const CAL_IFACE = 'org.gnome.evolution.dataserver.Calendar';
 const VIEW_IFACE = 'org.gnome.evolution.dataserver.CalendarView';
 
+/**
+ * `E_CAL_CLIENT_VIEW_FLAGS_NONE`. A view is created with
+ * `NOTIFY_INITIAL` instead, which makes `Start()` replay everything already
+ * matching the query as `ObjectsAdded` — the current contents, announced as
+ * if they had just changed.
+ *
+ * That is the wrong signal for a watcher whose answer to a change is to run
+ * the query again: the re-query tears the view down, starts a new one, and is
+ * told the same thing again, for as long as the app is open. Flags of NONE is
+ * the whole of "only tell me what changes from here".
+ */
+const VIEW_FLAGS_NONE = 0;
+
 /** One calendar the desktop knows about. */
 export interface DesktopCalendarInfo {
   uid: string;
@@ -129,7 +142,8 @@ interface CalendarIface {
   GetView(query: string): Promise<string>;
 }
 interface ViewIface {
-  $subscribe(signal: string, fn: (objects: unknown[]) => void): Promise<void>;
+  $subscribe(signal: string, fn: (...args: unknown[]) => void): Promise<void>;
+  SetFlags(flags: number): Promise<void>;
   Start(): Promise<void>;
   Stop(): Promise<void>;
   Dispose(): Promise<void>;
@@ -376,6 +390,11 @@ export class DesktopCalendar {
    * Deliberately a "something changed" signal rather than a patch — a
    * recurrence master edited three months away can change what today looks
    * like, and re-running the query is both simpler and correct.
+   *
+   * **Changes only.** What is in the range already is what `eventsBetween`
+   * answered; `onChange` fires for what happens after that. See
+   * {@link VIEW_FLAGS_NONE} for the loop that reporting the initial contents
+   * as a change costs a caller who re-queries on one.
    */
   async watch(
     from: Date,
@@ -396,18 +415,36 @@ export class DesktopCalendar {
         const view = (await this.#bus
           .getService(busName)
           .getInterface(viewPath, VIEW_IFACE)) as ViewIface;
+
+        // Belt to `VIEW_FLAGS_NONE`'s braces, for a backend that would not
+        // take the flags: `Complete` closes the initial delivery, so anything
+        // before it is the replay rather than a change. Only armed when
+        // `SetFlags` failed — a view that never reports `Complete` would
+        // otherwise be watched in silence, and losing live updates is the
+        // worse half of the trade.
+        let replaying = false;
+        try {
+          await view.SetFlags(VIEW_FLAGS_NONE);
+        } catch {
+          replaying = true;
+        }
+        await view.$subscribe('Complete', () => {
+          replaying = false;
+        });
+
         for (const signal of [
           'ObjectsAdded',
           'ObjectsModified',
           'ObjectsRemoved',
         ] as const) {
-          await view.$subscribe(signal, (objects) =>
+          await view.$subscribe(signal, (objects) => {
+            if (replaying) return;
             onChange({
               calendar: meta,
               kind: signal,
               count: Array.isArray(objects) ? objects.length : 0,
-            }),
-          );
+            });
+          });
         }
         await view.Start();
         started.push(view);
