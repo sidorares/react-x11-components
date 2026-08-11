@@ -62,17 +62,8 @@ export const highlightCode:
   }
 ).highlightCode;
 
-/**
- * The letter of a Ctrl chord, lowercased. Vendored: `react-x11/keysyms`
- * exports it at runtime but `keysyms.d.ts` names only the `XK_*`
- * constants. ntk derives `codepoint` from the *shifted* keysym, so Ctrl+C
- * must be read this way rather than off `ev.key`.
- */
-export function ctrlChordLetter(ev: {
-  keysym?: number;
-  codepoint?: number;
-}): number | null {
-  const code = ev.keysym ?? ev.codepoint;
-  if (code == null) return null;
-  return code >= 0x41 && code <= 0x5a ? code + 0x20 : code;
-}
+/** The letter of a Ctrl chord, lowercased — declared since react-x11#267,
+ * so this is core's own function rather than the copy that used to live
+ * here. Re-exported from this module because that is where `./gestures.ts`
+ * already reaches for it. */
+export { ctrlChordLetter } from 'react-x11/keysyms';

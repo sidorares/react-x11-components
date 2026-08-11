@@ -31,15 +31,9 @@ const h = React.createElement;
 
 afterEach(() => cleanup());
 
-/** `kind` is on every retained node at runtime; `DrawnNode`'s public type
- * does not carry it, so the probe reads it structurally. */
-function kindOf(n: DrawnNode): string {
-  return (n as { kind?: string }).kind ?? '';
-}
-
 /** The retained editor node, straight off the queries. */
 function editorNode(): CodeEditorNode {
-  const node = screen.all((n: DrawnNode) => kindOf(n) === 'codeeditor')[0];
+  const node = screen.all((n: DrawnNode) => n.kind === 'codeeditor')[0];
   assert.ok(node, 'a <codeeditor> node is mounted');
   return node as unknown as CodeEditorNode;
 }
@@ -98,7 +92,7 @@ test('Escape then Tab leaves the editor', async () => {
     ),
     { wrap: true },
   );
-  const [first] = screen.all((n: DrawnNode) => kindOf(n) === 'codeeditor');
+  const [first] = screen.all((n: DrawnNode) => n.kind === 'codeeditor');
   await userEvent.click(first);
   await userEvent.key(XK_HOME);
   // Tab is an edit while focused…
@@ -109,7 +103,7 @@ test('Escape then Tab leaves the editor', async () => {
   await userEvent.key(XK_ESCAPE);
   await userEvent.tab();
   const second = screen.all(
-    (n: DrawnNode) => kindOf(n) === 'codeeditor',
+    (n: DrawnNode) => n.kind === 'codeeditor',
   )[1] as unknown as CodeEditorNode;
   await userEvent.type(second as unknown as DrawnNode, 'x', {
     skipClick: true,
@@ -186,7 +180,7 @@ test('controlled: parent accepts edits; parent silence reverts them', async () =
     }),
   );
   const locked = screen.all(
-    (n: DrawnNode) => kindOf(n) === 'codeeditor',
+    (n: DrawnNode) => n.kind === 'codeeditor',
   )[0] as unknown as CodeEditorNode;
   await userEvent.type(locked as unknown as DrawnNode, 'x');
   assert.equal(locked.value, 'fixed', 'a silent parent wins');

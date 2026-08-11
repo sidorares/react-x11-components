@@ -11,10 +11,16 @@
 // that call the `handle*` methods below, composing the app's own handlers
 // in front exactly the way core sequences them (user first, default only if
 // not `preventDefault`ed). That keeps every input path on public API.
-// [react-x11 gap] A sanctioned `defaultActions` seam on `registerElement`
-// would let a custom interactive element behave like a built-in one —
-// filed as react-x11#251.
-import { Node } from 'react-x11/node';
+//
+// react-x11#266 has since blessed that seam: `defaultKeyDown` and friends
+// are public methods on `Node`, called by the EventManager on any target it
+// reaches, so a bare `<codeeditor>` in JSX could behave the way
+// `<textinput>` does instead of needing the component wrapper. Moving onto
+// it is a behaviour change rather than a rename — Tab becomes an ordinary
+// defaultable key ahead of focus traversal, which an element consuming it
+// has to pair with the documented Escape-arms-one-Tab convention so it does
+// not become a keyboard trap — so it is deliberately not done here.
+import { CARET_BLINK_MS, Node } from 'react-x11/node';
 import type {
   Context2D,
   MeasureConstraints,
@@ -22,6 +28,7 @@ import type {
 } from 'react-x11/node';
 import type { Style } from 'react-x11/style';
 import {
+  ctrlChordLetter,
   XK_BACKSPACE,
   XK_DELETE,
   XK_DOWN,
@@ -74,7 +81,6 @@ import type {
  */
 export const ELEMENT = 'codeeditor';
 
-const BLINK_MS = 530; // matches core's caret cadence by observation
 const UNDO_LIMIT = 200;
 const DEFAULT_ROWS = 6;
 const PREFERRED_WIDTH = 360;
@@ -248,18 +254,6 @@ function utf16ToCp(text: string, index: number): number {
     cp++;
   }
   return cp;
-}
-
-/** The letter of a Ctrl chord, Shift-independent — a local copy of core's
- * `ctrlChordLetter`, which the runtime exports but `keysyms.d.ts` does not
- * declare. [react-x11 gap] declare it and this copy goes — react-x11#252. */
-function chordLetter(ev: {
-  keysym?: number;
-  codepoint?: number;
-}): number | null {
-  const code = ev.keysym ?? ev.codepoint;
-  if (code == null) return null;
-  return code >= 0x41 && code <= 0x5a ? code + 0x20 : code;
 }
 
 /** What the component's handlers pass in — the public synthetic event
@@ -1254,7 +1248,7 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
     }
 
     if (ev.ctrlKey) {
-      const letter = chordLetter(ev);
+      const letter = ctrlChordLetter(ev);
       if (letter === 0x61 /* a */) {
         this.selectAll();
         return true;
@@ -1414,19 +1408,11 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
 
   // --- focus ---------------------------------------------------------------
 
-  /** `Node.focus()`/`blur()` exist at runtime (they move the window's focus
-   * the way a click would) but `node.d.ts` omits them — [react-x11 gap],
-   * filed as react-x11#252. Declared here so the handle can promise them;
-   * the call is forwarded to the runtime implementation. */
-  focus(): void {
-    const f = (Node.prototype as unknown as { focus?(): unknown }).focus;
-    f?.call(this);
-  }
-
-  blur(): void {
-    const f = (Node.prototype as unknown as { blur?(): unknown }).blur;
-    f?.call(this);
-  }
+  // `focus()`/`blur()` come from `Node` — declared as well as implemented
+  // since react-x11#267, so the forwarding shims this file used to carry are
+  // gone. `CodeEditorHandle` keeps promising `void`: the base returns `this`,
+  // and widening the handle to the node type would drag the class's nominal
+  // type into the exported props (see the note on `CodeEditorHandle`).
 
   handleFocus(): void {
     this._focused = true;
@@ -1435,7 +1421,7 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
       this._blinkTimer = startInterval(() => {
         this._caretOn = !this._caretOn;
         this.root?.invalidate(false, this.abs, 'text');
-      }, BLINK_MS);
+      }, CARET_BLINK_MS);
     }
     this._repaint();
   }
