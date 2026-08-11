@@ -146,6 +146,67 @@ export type {
 } from './code-editor/index.js';
 
 export {
+  Terminal,
+  TERMINAL_BACKENDS,
+  backendsFor as terminalBackendsFor,
+  alacritty,
+  urxvt,
+  xterm,
+} from './terminal/index.js';
+export type {
+  TerminalBackend,
+  TerminalBackendName,
+  TerminalColors,
+  TerminalHandle,
+  TerminalLaunch,
+  TerminalProps,
+} from './terminal/index.js';
+
+export {
+  MediaPlayer,
+  MEDIA_BACKENDS,
+  mediaBackendsFor,
+  mpv,
+  vlc,
+} from './media-player/index.js';
+export type {
+  MediaBackend,
+  MediaBackendName,
+  MediaLaunch,
+  MediaPlayerHandle,
+  MediaPlayerProps,
+  MediaProgress,
+  PlayerControl,
+  PlayerEvents,
+} from './media-player/index.js';
+
+// The lifecycle both XEmbed wrappers are built on. Public because
+// `ProcessHost` is the seam for running the child somewhere else, and because
+// a third `-into WID` wrapper should not have to reimplement it.
+export {
+  BackendUnavailableError,
+  IpcConnectError,
+  connectWhenReady,
+  nodeProcessHost,
+  resolveBackend,
+  useEmbeddedClient,
+} from './embed/index.js';
+export type {
+  EmbedStatus,
+  EmbeddedClient,
+  ExitInfo,
+  IpcSocket,
+  LaunchPlan,
+  PlanContext,
+  PlanFactory,
+  ProcessHost,
+  ScratchSocket,
+  SpawnOptions,
+  SpawnedProcess,
+  UseEmbeddedClientOptions,
+} from './embed/index.js';
+
+export {
   DesktopCalendar,
   IcalUnavailableError,
   byDay,

@@ -52,9 +52,17 @@
       "types": "./dist/desktop-calendar/index.d.ts",
       "default": "./dist/desktop-calendar/index.js"
     },
+    "./embed": {
+      "types": "./dist/embed/index.d.ts",
+      "default": "./dist/embed/index.js"
+    },
     "./markdown": {
       "types": "./dist/markdown/index.d.ts",
       "default": "./dist/markdown/index.js"
+    },
+    "./media-player": {
+      "types": "./dist/media-player/index.d.ts",
+      "default": "./dist/media-player/index.js"
     },
     "./richtext": {
       "types": "./dist/richtext/index.d.ts",
@@ -63,6 +71,10 @@
     "./sparkline": {
       "types": "./dist/sparkline/index.d.ts",
       "default": "./dist/sparkline/index.js"
+    },
+    "./terminal": {
+      "types": "./dist/terminal/index.d.ts",
+      "default": "./dist/terminal/index.js"
     },
     "./package.json": "./package.json"
   },
@@ -81,7 +93,9 @@
     "examples:code": "tsx examples/code.tsx",
     "examples:code-editor": "tsx examples/code-editor.tsx",
     "examples:markdown": "tsx examples/markdown.tsx",
+    "examples:media-player": "tsx examples/media-player.tsx",
     "examples:sparkline": "tsx examples/sparkline.tsx",
+    "examples:terminal": "tsx examples/terminal.tsx",
     "prepack": "npm run build"
   },
   "peerDependencies": {

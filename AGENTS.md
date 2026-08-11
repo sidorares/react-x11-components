@@ -63,9 +63,12 @@ element.
   subpath, and the difference from a component is that they are
   side-effect free: `src/richtext/` (the selectable styled-text element
   behind `<Markdown>` and `<Code>`, plus the cross-block selection
-  controller and the gesture hook) and `src/code-language/` (the tokenizer
+  controller and the gesture hook), `src/code-language/` (the tokenizer
   seam, the built-in languages, the token palettes — under `<CodeEditor>`,
-  `<Code>` and `<Markdown>`'s fences alike). A shared module never calls
+  `<Code>` and `<Markdown>`'s fences alike) and `src/embed/` (the spawn,
+  watch and hand-back lifecycle under `<Terminal>` and `<MediaPlayer>`,
+  plus the `ProcessHost` seam — see "Running someone else's program"). A
+  shared module never calls
   `registerElement` at module scope; `richtext` exports
   `registerRichText()` instead, and **each component that renders the
   element calls it at its own module scope**, so "a component registers
@@ -254,6 +257,62 @@ where a genuinely undeclared package would not be. The TextMate adapter
 (`textmate.ts`) needs no dependency at all: the app hands it an initialized
 grammar object, typed structurally.
 
+## Running someone else's program
+
+`src/embed/`, `src/terminal/` and `src/media-player/` are the first things
+here that spawn a process and host another X client. They establish four
+rules, and each one exists because getting it wrong fails somewhere else.
+
+**`<foreign>` owns the protocol; this package owns the argv.** The reparent,
+the save set, `_XEMBED_INFO`, the synthetic ICCCM ConfigureNotify, layout,
+focus forwarding and handing the client back **without destroying it** on
+unmount are all core's (react-x11 `src/foreignnodes.js`, ntk's
+`XEmbedSocket`). What is left is: take the container id from `onReady`, build
+a command line, spawn it, watch it, kill it. That is the whole of
+`src/embed/client.ts`, and it is why a third wrapper around some other
+`-into WID` program should be a `backends.ts` and nothing else.
+
+**Node's API is an interface, not an import.** `tsconfig.build.json` sets
+`types: []`, so `src/` cannot name `child_process`, `net`, `fs` or `process`.
+`src/embed/host.ts` writes out the slice it uses structurally and reaches the
+modules through a dynamic `import()` whose specifier is built at run time —
+the same shape `desktop-calendar/ical.ts` uses for an optional dependency,
+for a different reason. `globalThis` is how `process.env` and the timers are
+reached (`src/embed/timers.ts`, and `code-language/timers.ts` before it).
+
+**`ProcessHost` is public because it is a feature, not a test double.** It
+happens to be what `test/fake-host.ts` drives — which is the only way CI,
+with no xterm and no mpv, can assert what _would_ have been spawned — but the
+reason it is exported is that "run the terminal in a container / over ssh /
+under a sandbox" is a real thing to want and should not need a fork.
+
+**A missing backend is not an error.** No emulator installed, no player
+installed: both are ordinary states of a healthy machine, so `backend`
+defaults to `'auto'`, detection is a `PATH` probe, and the result is
+`status: 'unavailable'` plus a `fallback` — never a throw and never a
+dependency on a binary. Same call `useDesktopCalendarEvents` makes about a
+desktop with no Evolution Data Server.
+
+Three things about these components that are decisions rather than gaps, so
+they are not re-litigated:
+
+- **The launch key is a string, and it is the restart signal.** An external
+  emulator cannot be handed a new command, so changing `command` respawns —
+  but `command={['bash']}` is a new array on every paint, and an effect keyed
+  on identity would respawn per frame. Both components serialize the
+  launch-relevant props into one string and memoize the plan factory on it.
+  `<MediaPlayer>` deliberately leaves `src`, `volume`, `muted` and `paused`
+  _out_ of that key: those go over the control channel to the running player.
+- **`<Terminal>` has no `write()`.** The issue sketched one; there is no
+  honest implementation over an external emulator, because the pty belongs to
+  xterm and synthetic X key events are refused by xterm (`allowSendEvents`,
+  off by default and not ours to change in a user's terminal) and dropped by
+  alacritty. The name is reserved for the pure-JS VT backend.
+- **VLC's control channel is write-only.** Its rc replies carry no request id,
+  so a reply cannot be matched to its question except by counting, and one
+  dropped line desynchronises that permanently. `reportsProgress: false` says
+  so in the type rather than shipping a parser that lies to a progress bar.
+
 ## Commands
 
 ```bash
@@ -266,6 +325,8 @@ npm run typecheck     # builds, then tsc over src, test, examples, scripts
 npm run check:package # exports map + tree-shaking contract (needs a build)
 npm run examples:calendar    # needs a real $DISPLAY (and a bus, for events)
 npm run examples:sparkline   # needs a real $DISPLAY
+npm run examples:terminal    # needs a real $DISPLAY and an emulator installed
+npm run examples:media-player -- <file>   # needs a real $DISPLAY and mpv/VLC
 ```
 
 `pretest` and `pretypecheck` both build, and both have to. `package.test.ts`
@@ -336,6 +397,8 @@ handlers were read, not imported).
 | `<Tabs>`                                         | react-x11 `src/components/Tabs.js`                       | **Open.** May stay in core. Undecided — do not move it on a hunch.                                                                                    |
 | 3D scene graph, Three.js / r3f layer, `Canvas3D` | react-x11 `src/scene3d.js`, `src/components/Canvas3D.js` | **Candidate**, with `<glarea>` staying in core. See "The boundary can run through a feature".                                                         |
 | react-flow clone                                 | prototype, not yet in any repo                           | **Incoming.** A node/edge graph editor: big, pure composition, small fraction of apps — this package's shape exactly.                                 |
+| `<Terminal>`, `<MediaPlayer>`                    | new, here (`src/terminal/`, `src/media-player/`)         | **Done.** Built on core's `<foreign>`; the wrapper is here because a binary dependency can never be core's. See "Running someone else's program".     |
+| A pure-JS VT backend for `<Terminal>`            | nowhere yet                                              | **Planned**, behind the existing props. It is what would make `write()` real and what would work with no emulator installed. Needs a pty dependency.  |
 
 Verified against ntk 7.2.0 on 2026-08-09: `MarkdownView`, `HtmlView`,
 `SvgView` and `layoutTex` are all still exported; only mermaid is gone.

@@ -46,6 +46,15 @@ const COMPONENTS = [
   // the code block draws.
   { exportName: 'Markdown', dir: 'markdown', marker: 'mailto:' },
   { exportName: 'Code', dir: 'code', marker: 'Code block' },
+  // `<Terminal>` and `<MediaPlayer>` share `src/embed/`, so their markers name
+  // what is theirs alone: an X resource only the xterm adapter writes, and the
+  // flag only mpv is given.
+  { exportName: 'Terminal', dir: 'terminal', marker: 'XTerm*color' },
+  {
+    exportName: 'MediaPlayer',
+    dir: 'media-player',
+    marker: '--input-ipc-server=',
+  },
 ];
 
 async function bundle(contents: string): Promise<string> {
