@@ -13,14 +13,14 @@
 // over `<popup>`, so an app can ignore it and build its own from the same
 // `CompletionSource`s.
 import React, { useCallback, useRef, useState } from 'react';
-import type { ReactElement, ReactNode, Ref } from 'react';
+import type { ReactElement, ReactNode, Ref, RefObject } from 'react';
 import { registerElement, registeredElements } from 'react-x11/host';
-import { screenRect, useTheme } from 'react-x11';
+import { useTheme } from 'react-x11';
 import type {
+  DrawnNode,
   FocusEvent,
   KeyboardEvent,
   MouseEvent,
-  Rect,
   WheelEvent,
 } from 'react-x11';
 import type { Style } from 'react-x11/style';
@@ -79,6 +79,10 @@ const MAX_VISIBLE_COMPLETIONS = 8;
 const MAX_COMPLETIONS = 100;
 /** A word character for the "should typing reopen the popup" test. */
 const TRIGGER_CHAR = /[\p{L}\p{N}_.$]/u;
+/** What the list may shrink to, and grow to, around its labels. Bounds
+ * rather than a width: the popup measures its own rows (see below). */
+const MIN_COMPLETION_WIDTH = 180;
+const MAX_COMPLETION_WIDTH = 480;
 
 interface CompletionState {
   items: CompletionItem[];
@@ -88,7 +92,8 @@ interface CompletionState {
   selected: number;
   /** First visible row — the popup shows a window of the list. */
   offset: number;
-  rect: Rect; // popup geometry, screen coordinates
+  /** The caret, in the **editor's own coordinates** — the popup's `at`. */
+  at: { x: number; y: number; width: number; height: number };
   rowHeight: number;
 }
 
@@ -245,41 +250,20 @@ export function CodeEditor(props: CodeEditorComponentProps): ReactElement {
       setCompletion(null);
       return;
     }
-    const anchor = screenRect(node as never);
-    if (!anchor) {
-      setCompletion(null);
-      return;
-    }
+    // Geometry stops here: the caret rect is all the popup needs, and it is
+    // already in the editor's own coordinates, which is what `at` wants
+    // (react-x11#280). Where that lands on screen, which side of the line
+    // the list opens on, and how wide it is are all worked out by the popup
+    // itself — see the `anchor` below for why they have to be.
     const caret = node.caretRect();
-    const m = node.metrics();
-    const rowHeight = Math.ceil(m.lineHeight) + 6;
-    const visible = Math.min(order.length, MAX_VISIBLE_COMPLETIONS);
-    const height = visible * rowHeight + 2;
-    let width = 0;
-    for (const item of order.slice(0, 30)) {
-      const w =
-        node.measureText(item.label) +
-        (item.detail ? node.measureText(item.detail) + 24 : 0);
-      if (w > width) width = w;
-    }
-    width = Math.max(180, Math.min(480, Math.ceil(width) + 28));
-    // below the caret line; above it when the editor sits low in its window
-    const rootH = node.root?.abs.height ?? Infinity;
-    const caretBottomInWindow = node.abs.y + caret.y + caret.height;
-    const below =
-      caretBottomInWindow + height + 4 <= rootH ||
-      caretBottomInWindow < rootH / 2;
-    const x = Math.round(anchor.x + caret.x);
-    const y = below
-      ? Math.round(anchor.y + caret.y + caret.height + 2)
-      : Math.round(anchor.y + caret.y - height - 2);
+    const rowHeight = Math.ceil(node.metrics().lineHeight) + 6;
     setCompletion({
       items: order,
       froms: orderedFroms,
       from: context.word.from,
       selected: 0,
       offset: 0,
-      rect: { x, y, width, height },
+      at: { x: caret.x, y: caret.y, width: 1, height: caret.height },
       rowHeight,
     });
   };
@@ -488,10 +472,30 @@ export function CodeEditor(props: CodeEditorComponentProps): ReactElement {
       'popup',
       {
         theme,
-        x: completion.rect.x,
-        y: completion.rect.y,
-        width: completion.rect.width,
-        height: completion.rect.height,
+        // The popup places itself (react-x11#280), and it is the only thing
+        // that can: with no `width`/`height` it is sized by the rows it
+        // happens to be showing, and that size is settled after the content
+        // is measured and before the window exists — past the last commit
+        // that could have handed a rect in. Which side of the caret line the
+        // list opens on is a function of that size, so it is core's answer
+        // too, and it is taken against the usable part of the monitor rather
+        // than the guess at the owner window this made before.
+        //
+        // `at` is the caret **inside** the editor, so the list opens on the
+        // line being typed rather than under the editor, and follows it
+        // through everything that can move it: the editor's own layout, an
+        // ancestor scrolling, the window being dragged. When the caret
+        // scrolls out of the editor the popup unmaps until it is back — a
+        // list floating over text it no longer points into has no position
+        // worth having.
+        anchor: {
+          to: nodeRef as unknown as RefObject<DrawnNode | null>,
+          at: completion.at,
+          placement: 'bottom',
+        },
+        // The bounds the label measuring used to enforce by hand.
+        minWidth: MIN_COMPLETION_WIDTH,
+        maxWidth: MAX_COMPLETION_WIDTH,
         // the grab is what dismisses on an outside press, menu-style; the
         // popup never takes focus, so typing continues in the editor
         grab: true,

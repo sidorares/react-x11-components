@@ -5,7 +5,12 @@ import type { ReactElement } from 'react';
 import { createStyles } from 'react-x11/style';
 import type { Style, StyleProperties } from 'react-x11/style';
 import { useAnchor, useAnchorTracking, useTheme } from 'react-x11';
-import type { AnchorOptions, DrawnNode, KeyboardEvent, Rect } from 'react-x11';
+import type {
+  AnchorOptions,
+  AnchorRect,
+  DrawnNode,
+  KeyboardEvent,
+} from 'react-x11';
 import { XK_DOWN, XK_ESCAPE, XK_RETURN, XK_UP } from 'react-x11/keysyms';
 
 import { hx } from './hx.js';
@@ -177,7 +182,11 @@ export function DatePicker(props: DatePickerProps): ReactElement {
 
   const theme = useTheme();
   const [open, setOpen] = useState(false);
-  const [anchor, setAnchor] = useState<Rect | null>(null);
+  // `AnchorRect` rather than `Rect`: `useAnchorTracking` reports the side the
+  // sheet actually landed on (react-x11#280), and its `setRect` is typed to
+  // hand that back. Nothing here reads `placement` — the sheet has no arrow
+  // to aim — but the state has to be able to hold it.
+  const [anchor, setAnchor] = useState<AnchorRect | null>(null);
   const [focused, setFocused] = useState(false);
   const [ownValue, setOwnValue] = useState<unknown>(defaultValue ?? null);
   const triggerRef = useRef<DrawnNode | null>(null);
