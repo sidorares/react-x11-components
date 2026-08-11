@@ -59,6 +59,18 @@ element.
   `index.ts` (the React component, its props interface, and the
   `registerElement` call if it has one) and whatever private modules it
   needs. No component imports another component.
+- **Shared modules are directories too**, with their own `index.ts` and
+  subpath, and the difference from a component is that they are
+  side-effect free: `src/richtext/` (the selectable styled-text element
+  behind `<Markdown>` and `<Code>`, plus the cross-block selection
+  controller and the gesture hook) and `src/code-language/` (the tokenizer
+  seam, the built-in languages, the token palettes — under `<CodeEditor>`,
+  `<Code>` and `<Markdown>`'s fences alike). A shared module never calls
+  `registerElement` at module scope; `richtext` exports
+  `registerRichText()` instead, and **each component that renders the
+  element calls it at its own module scope**, so "a component registers
+  its element in its own index.ts" keeps holding and an app that imports
+  neither component registers nothing.
 - `src/index.ts` — the convenience barrel. Re-exports only. Never put
   anything with a side effect here.
 - `dist/` — **the build output, and what ships.** `tsc` writes it, git
@@ -111,8 +123,32 @@ is intended rather than drift.** This package is the owner now. Until that
 lands, the two copies exist; do not try to keep them in sync.
 
 Everything else the calendar stands on is public API: `useTheme`,
-`createStyles`, `useAnchor`/`useAnchorTracking`, the `XK_*` keysyms, and
-`cssColorStraight` off `react-x11/ntk`. Three of react-x11's declarations are
+`createStyles`, `<Icon>`, `useAnchor`/`useAnchorTracking`, the `XK_*` keysyms,
+and `cssColorStraight` off `react-x11/ntk`.
+
+### Affordance glyphs come from core's set; nouns do not
+
+Core ships a **system icon set** — twelve affordance glyphs (the four
+chevrons, `check`, `dash`, `dot`, `close`, `plus`, `moreVertical`, `eye`,
+`eyeOff`) drawn over `<canvas mono>` and reached through `<Icon name size
+color />`. Anything in this package that means _something about the control_
+takes its mark from there rather than drawing its own, so a `<Calendar>` a
+user opened from a core `<Select>` agrees with it without being told to. The
+month nav is the worked example: two `<Icon name="chevronLeft|chevronRight">`
+where there used to be a local `<canvas>`.
+
+The line core draws is affordances, not nouns, and it holds here too:
+`DatePicker`'s wall-calendar glyph stays a local `<canvas>` because a
+calendar page is a noun, and the set will never have one. A component that
+wants a noun draws it, or the app brings an icon library.
+
+Two things every call site has to know, because neither is inherited:
+**colour and size do not cascade** — an icon inside a row painted in
+`theme.hoverText` is handed that colour by name — and **`:hover` marks the
+ancestor chain rather than the children**, so a glyph that has to follow a
+hover follows it through React state. Both are the current model in core
+rather than a settled verdict; if a real cascade lands, the explicit
+arguments become defaults rather than mistakes. Three of react-x11's declarations are
 narrower than its runtime, and each is worked around locally with a comment
 saying so — `theme` on any node (not just `<window>`), `'@supports
 transparency'` as a style block, and `cssColorStraight` not being in
@@ -279,11 +315,22 @@ places gets two independent widgets, which is harmless (neither registers a
 host element) but is not the end state. See "Vendored from core" above for
 what came with them.
 
-Nothing else below has moved yet.
+**Replaced rather than moved:** core's ntk-backed `<markdown>` element.
+`src/markdown/` is a from-scratch successor (its own GFM parser, tolerant
+of streaming-truncated input; rendering is box/`<richtext>` composition),
+because ntk's `MarkdownView` and `HtmlView` widgets are being deprecated
+and neither supported selection. There is deliberately **no `<html>`
+successor**: nothing in this package renders through an HTML pass. The
+reuse question was asked against Vercel's Streamdown first and answered
+"behaviour yes, code no" — its pipeline is remark→rehype→DOM, but its
+`remend` package's unterminated-markdown rules are implemented natively by
+`src/markdown/parse.ts` (as parser tolerance, not a repair pre-pass; the
+handlers were read, not imported).
 
 | Candidate                                        | Where it is now                                          | Status                                                                                                                                                |
 | ------------------------------------------------ | -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `<markdown>`, `<html>`                           | react-x11 `src/richnodes.js`, over ntk's widgets         | **Candidate.** Small fraction of apps, large closure. See react-x11's `RICH_CONTENT.md` and [ntk#106](https://github.com/sidorares/ntk/issues/106).   |
+| `<markdown>`, `<html>`                           | replaced by `src/markdown/` here (see above)             | **Done** for markdown, **never** for html. ntk's document widgets are deprecated; see [ntk#106](https://github.com/sidorares/ntk/issues/106).         |
+| MDX in `<Markdown>`                              | reserved seams only (`component` AST node)               | **Planned.** Composition-friendly by construction; the parser is the only part that grows. Streaming-compatible in principle.                         |
 | `<svg>`, `<tex>`                                 | ntk (`SvgView`, `layoutTex`), wrapped in react-x11       | **Staying in ntk**, per ntk#106. Recorded here so it is not reopened.                                                                                 |
 | mermaid                                          | nowhere — dropped from ntk                               | **Dropped**, not extracted: 155 MB of install closure for a grammar. If it comes back, it comes back here, as its own subpath, and it stays optional. |
 | `<Tabs>`                                         | react-x11 `src/components/Tabs.js`                       | **Open.** May stay in core. Undecided — do not move it on a hunch.                                                                                    |

@@ -1,7 +1,7 @@
 // Pure text-model helpers for the editor node: position ordering, word
 // boundaries, and the tab display mapping. No react-x11 imports — this file
 // is the part of the editor that is trivially unit-testable.
-import type { Position } from './types.js';
+import type { Position } from '../code-language/types.js';
 
 export function comparePos(a: Position, b: Position): number {
   return a.line - b.line || a.ch - b.ch;

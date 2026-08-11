@@ -36,13 +36,29 @@
       "types": "./dist/calendar/index.d.ts",
       "default": "./dist/calendar/index.js"
     },
+    "./code": {
+      "types": "./dist/code/index.d.ts",
+      "default": "./dist/code/index.js"
+    },
     "./code-editor": {
       "types": "./dist/code-editor/index.d.ts",
       "default": "./dist/code-editor/index.js"
     },
+    "./code-language": {
+      "types": "./dist/code-language/index.d.ts",
+      "default": "./dist/code-language/index.js"
+    },
     "./desktop-calendar": {
       "types": "./dist/desktop-calendar/index.d.ts",
       "default": "./dist/desktop-calendar/index.js"
+    },
+    "./markdown": {
+      "types": "./dist/markdown/index.d.ts",
+      "default": "./dist/markdown/index.js"
+    },
+    "./richtext": {
+      "types": "./dist/richtext/index.d.ts",
+      "default": "./dist/richtext/index.js"
     },
     "./sparkline": {
       "types": "./dist/sparkline/index.d.ts",
@@ -62,7 +78,9 @@
     "format:check": "prettier --check .",
     "check:package": "tsx scripts/check-package.ts",
     "examples:calendar": "tsx examples/calendar.tsx",
+    "examples:code": "tsx examples/code.tsx",
     "examples:code-editor": "tsx examples/code-editor.tsx",
+    "examples:markdown": "tsx examples/markdown.tsx",
     "examples:sparkline": "tsx examples/sparkline.tsx",
     "prepack": "npm run build"
   },

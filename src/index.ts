@@ -50,6 +50,41 @@ export type {
   WidgetChangeEvent,
 } from './calendar/index.js';
 
+export { Code } from './code/index.js';
+export type { CodeProps } from './code/index.js';
+
+export { Markdown, parse as parseMarkdown } from './markdown/index.js';
+export type {
+  MarkdownProps,
+  MarkdownDocument,
+  BlockNode,
+  InlineNode,
+  ParseOptions,
+} from './markdown/index.js';
+
+export {
+  RICHTEXT_ELEMENT,
+  registerRichText,
+  RichTextNode,
+  TextSelection,
+  useSelectionGestures,
+} from './richtext/index.js';
+export type {
+  RichTextProps,
+  TextRun,
+  SelectableBlock,
+  SelectionRegistry,
+  SelectionGestureHandlers,
+  SelectionGestureOptions,
+} from './richtext/index.js';
+
+export {
+  codeRuns,
+  languageForTag,
+  tokenizeText,
+} from './code-language/index.js';
+export type { CodeRun, CodeRunOptions } from './code-language/index.js';
+
 export {
   CodeEditor,
   CodeEditorNode,

@@ -2,13 +2,13 @@
 //
 // Ported from react-x11's `src/components/Calendar.js`. Built purely on the
 // host primitives, so there is no `registerElement` here and nothing for the
-// reconciler to learn — a `<Calendar>` is `<box>`es, `<text>` and a `<canvas>`
-// for the chevrons.
+// reconciler to learn — a `<Calendar>` is `<box>`es, `<text>` and, for the
+// month nav, two glyphs out of core's system icon set.
 import React, { useImperativeHandle, useMemo, useState } from 'react';
 import type { ReactElement, ReactNode, Ref } from 'react';
 import { createStyles } from 'react-x11/style';
 import type { Style } from 'react-x11/style';
-import { useTheme } from 'react-x11';
+import { Icon, useTheme } from 'react-x11';
 import type { KeyboardEvent, Theme } from 'react-x11';
 import {
   XK_DOWN,
@@ -59,6 +59,11 @@ const PILL_H = 28;
 // plain calendar is not 6×8 pixels taller for a feature it is not using.
 const MARKER_H = 8;
 const NAV = 26;
+// The month-nav glyph inside its 26px button. The chevron this calendar drew
+// itself was tall and narrow (7×12) so that it read as an arrow at all; a
+// square box at 12 puts the same ink there, because a system chevron's long
+// axis is its box and its short one is half of that.
+const NAV_CHEVRON = 12;
 const PAD = 8;
 const GAP = 4;
 const WEEKDAY_H = 20;
@@ -93,7 +98,6 @@ const s = createStyles({
     cursor: 'pointer',
     transition: { backgroundColor: 80 },
   },
-  chevron: { width: 7, height: 12 },
   week: { flexDirection: 'row', flexShrink: 0 },
   weekdayCell: {
     width: CELL_W,
@@ -272,41 +276,22 @@ function sameDayIn(month: CalendarMonth, day: CalendarDay): CalendarDay {
   return `${month}-${String(Math.min(wanted, last)).padStart(2, '0')}`;
 }
 
-function Chevron({
-  direction,
-  color,
-}: {
-  direction: 'left' | 'right';
-  color: string;
-}): ReactElement {
-  return hx('canvas', {
-    style: s.chevron,
-    onDraw: (ctx, { width, height }) => {
-      const mid = height / 2;
-      ctx.strokeStyle = color;
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      if (direction === 'left') {
-        ctx.moveTo(width - 1, 1);
-        ctx.lineTo(1, mid);
-        ctx.lineTo(width - 1, height - 1);
-      } else {
-        ctx.moveTo(1, 1);
-        ctx.lineTo(width - 1, mid);
-        ctx.lineTo(1, height - 1);
-      }
-      ctx.stroke();
-    },
-  });
-}
-
+/**
+ * `direction` is the number of months the button steps, `-1` or `+1` — the
+ * argument it already hands `stepMonth`, rather than a second vocabulary
+ * beside it. Core's copy of this component took the same shape when the icon
+ * set landed, and there a `'left'`/`'right'` string sitting next to a
+ * `direction < 0` test had already made every button announce itself as "Next
+ * month". One name and one type is what leaves no second comparison to get
+ * wrong.
+ */
 function NavButton({
   direction,
   disabled,
   onPress,
   theme,
 }: {
-  direction: 'left' | 'right';
+  direction: -1 | 1;
   disabled: boolean;
   onPress: () => void;
   theme: Theme;
@@ -315,7 +300,7 @@ function NavButton({
     'box',
     {
       role: 'button',
-      'aria-label': direction === 'left' ? 'Previous month' : 'Next month',
+      'aria-label': direction < 0 ? 'Previous month' : 'Next month',
       disabled: disabled || undefined,
       onClick: disabled ? undefined : onPress,
       style: [
@@ -330,8 +315,12 @@ function NavButton({
         },
       ],
     },
-    React.createElement(Chevron, {
-      direction,
+    React.createElement(Icon, {
+      name: direction < 0 ? 'chevronLeft' : 'chevronRight',
+      size: NAV_CHEVRON,
+      // The button carries the `:hover`, but neither colour nor a state block
+      // reaches down to the glyph — disabled is the state that has to be
+      // handed over by name.
       color: disabled ? theme.border : theme.dim,
     }),
   );
@@ -683,7 +672,7 @@ export function Calendar(props: CalendarProps): ReactElement {
       'box',
       { style: s.header },
       React.createElement(NavButton, {
-        direction: 'left',
+        direction: -1,
         disabled: !canGoBack,
         theme,
         onPress: () => stepMonth(-1),
@@ -694,7 +683,7 @@ export function Calendar(props: CalendarProps): ReactElement {
         formatMonth(visibleMonth, locale),
       ),
       React.createElement(NavButton, {
-        direction: 'right',
+        direction: 1,
         disabled: !canGoOn,
         theme,
         onPress: () => stepMonth(1),

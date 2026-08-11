@@ -113,9 +113,77 @@ import type { SparklineProps } from '@react-x11/components';
 | ------------ | ---------------------------------------- | ----------------------------------------------------- |
 | `Calendar`   | `@react-x11/components/calendar`         | A month grid: one date or a range, any day blockable. |
 | `DatePicker` | `@react-x11/components/calendar`         | That calendar on a popup, behind a field.             |
+| `Code`       | `@react-x11/components/code`             | A static code block: highlighted, selectable.         |
 | `CodeEditor` | `@react-x11/components/code-editor`      | Multiline code editing: highlighting, completion.     |
+| `Markdown`   | `@react-x11/components/markdown`         | Streaming-friendly GFM with cross-block selection.    |
 | `Sparkline`  | `@react-x11/components/sparkline`        | A bare line chart. Needs a width and a height.        |
 | _(hook)_     | `@react-x11/components/desktop-calendar` | The user's real calendar events, over D-Bus.          |
+
+Two shared modules sit underneath and are importable on their own:
+`/richtext` (the selectable styled-text element and its cross-block
+selection controller) and `/code-language` (the pluggable tokenizer seam,
+the built-in languages and the token palettes).
+
+## Markdown
+
+A GFM renderer built for streamed model output — the
+[Streamdown](https://streamdown.ai/) use case, rendered natively. Feed it a
+growing `source` and every instant renders clean: unclosed `**bold`,
+`` `code `` or a half-arrived `[link](…` never flash their raw markers, an
+ambiguous `---` tail is held until it can be read, an open fence is already
+a code block. When the stream ends, flip `partial` off.
+
+```jsx
+import { Markdown } from '@react-x11/components/markdown';
+
+<box style={{ overflow: 'scroll', flexGrow: 1 }}>
+  <Markdown
+    source={streamed}
+    partial={stillStreaming}
+    onLink={(href) => open(href)}
+    style={{ padding: 16 }}
+  />
+</box>;
+```
+
+The feature set is GFM: headings (ATX and setext), emphasis with the real
+CommonMark delimiter algorithm, inline code, links and autolinks, images
+(rendered as their alt text, linked to the source — no remote fetches),
+nested and task lists, blockquotes, tables with alignment and measured
+column widths, thematic breaks, fenced code highlighted through the same
+language seam as `<CodeEditor>` (with ntk's highlighter as a fallback for
+tags the built-ins do not cover). The parser is this package's own — no
+markdown→HTML pass anywhere — and is exported (`parseMarkdown`) with the
+AST types.
+
+**Selection is the point.** Text selects across every block — drag,
+double-click a word, triple-click a block, Ctrl+A, Ctrl+C — and a mouse-up
+with a selection takes the X11 PRIMARY selection, so middle-click paste
+works everywhere. Copied text is clean: list markers and table chrome stay
+behind, cells join with tabs and rows with newlines. Rendering is cached
+per top-level block on the raw source text, so appending to the tail
+re-renders the tail alone. `npm run examples:markdown` streams a document
+in live.
+
+MDX is on the roadmap, not in the box: the AST reserves a `component` node
+and the renderer is ordinary React composition, so user components can
+interleave — including mid-stream — once the parser learns the syntax.
+
+## Code
+
+The static sibling of `<CodeEditor>`: a read-only, selectable code block
+for showing code rather than editing it.
+
+```jsx
+import { Code } from '@react-x11/components/code';
+
+<Code source={snippet} lang="ts" lineNumbers />;
+```
+
+Highlighting goes through the same language seam (`lang` tag or an
+explicit `language={…}`), selection and copy through the same machinery as
+`<Markdown>` — and the line-number gutter is not part of the selection, so
+copied code pastes clean.
 
 ## The code editor
 
@@ -219,15 +287,20 @@ machine. `npm run examples:calendar` in this repo is the whole thing working.
 
 ## Roadmap
 
-Candidates to move here, none of them moved yet:
+Candidates to move here:
 
-- `<markdown>` and `<html>`, currently in react-x11 over ntk's document
-  widgets. `<svg>` and `<tex>` stay in ntk. Mermaid was dropped rather than
-  extracted — 155 MB of install closure for a grammar.
 - The 3D scene graph and a Three.js / react-three-fiber-shaped layer, with
   `<glarea>` itself staying in core.
 - A react-flow-style node/edge graph editor.
 - `<Tabs>`, undecided — it may well stay in core.
+- MDX support in `<Markdown>` — see the note in that section.
+
+`<Markdown>` above **replaces** core's ntk-backed `<markdown>` element
+(ntk's `MarkdownView` and `HtmlView` widgets are being deprecated). There
+is no `<html>` successor here and no plan for one: rendering is
+box-and-text composition, never an HTML pass. `<svg>` and `<tex>` stay in
+ntk; mermaid was dropped rather than extracted — 155 MB of install closure
+for a grammar.
 
 ## Contributing
 
