@@ -101,6 +101,7 @@
     "examples:sparkline": "tsx examples/sparkline.tsx",
     "examples:terminal": "tsx examples/terminal.tsx",
     "examples:terminal-vt": "tsx examples/terminal-vt.tsx",
+    "examples:terminal-ssh": "tsx examples/terminal-ssh.tsx",
     "examples:tray-host": "tsx examples/tray-host.tsx",
     "prepack": "npm run build"
   },

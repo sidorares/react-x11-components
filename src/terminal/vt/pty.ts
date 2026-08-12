@@ -21,10 +21,26 @@ import type { ExitInfo } from '../../embed/index.js';
 export interface PtySession {
   /** UTF-8 text towards the program. */
   write(data: string): void;
-  /** SIGWINCH, with the new grid. */
+  /**
+   * The grid changed. A local pty turns this into SIGWINCH; SSH sends a
+   * `window-change` request. Note the argument order is the one every
+   * terminal API uses and `ssh2.setWindow` does not — see the adapter in
+   * `examples/terminal-ssh.tsx`.
+   */
   resize(cols: number, rows: number): void;
   kill(signal?: string): boolean;
-  onData(listener: (chunk: string) => void): void;
+  /**
+   * Output from the program.
+   *
+   * **Bytes are preferred over a string** for any transport that carries
+   * them — a socket, an SSH channel, a WebSocket. A `Buffer.toString()` on
+   * whatever chunk boundary the network chose splits multi-byte UTF-8 down
+   * the middle and produces mojibake that no amount of care further down can
+   * repair; handed a `Uint8Array`, this component passes it to the emulator
+   * untouched, and the emulator's decoder is stateful across chunks. Node-pty
+   * hands over strings and that is fine — it decodes with the same care.
+   */
+  onData(listener: (chunk: string | Uint8Array) => void): void;
   onExit(listener: (info: ExitInfo) => void): void;
   /**
    * Flow control. Optional because not every transport has it: without a

@@ -73,7 +73,8 @@ import { PtyUnavailableError } from '../src/terminal/vt/pty.js';
 import { loadXterm } from '../src/terminal/vt/xterm.js';
 import type { XtermCell, XtermTerminal } from '../src/terminal/vt/xterm.js';
 import type { VtTermNode } from '../src/terminal/vt/node.js';
-import { nodePtyHost } from '../src/terminal/vt/pty.js';
+import { defaultShell, nodePtyHost } from '../src/terminal/vt/pty.js';
+import type { PtyHost } from '../src/terminal/vt/pty.js';
 import { FakePtyHost } from './fake-pty.js';
 import { FakeHost } from './fake-host.js';
 
@@ -674,9 +675,14 @@ test('the shell runs on the pty, with TERM set to what we are', async () => {
   assert.ok(opened.options.cols > 0 && opened.options.rows > 0);
 });
 
-test('with no command it runs the login shell', async () => {
+test('with no command the host decides what the shell is', async () => {
+  // Empty argv rather than this machine's `$SHELL`: over ssh, or into a
+  // container, the local shell is the wrong answer and only the host knows
+  // the right one. `nodePtyHost` fills in `defaultShell()` for exactly this.
   const { pty } = await mountVt();
-  assert.deepEqual(pty.opened[0].argv, ['/bin/sh']);
+  assert.deepEqual(pty.opened[0].argv, []);
+  assert.match(defaultShell({ SHELL: '/bin/zsh' }), /zsh/);
+  assert.equal(defaultShell({}), '/bin/sh');
 });
 
 test('auto prefers an installed emulator over the vt floor', async () => {
@@ -721,6 +727,46 @@ test('bytes from the program reach the screen', async () => {
   await waitFor(() =>
     assert.match(ref.current?.serialize() ?? '', /hello world/),
   );
+});
+
+test('a pty of your own: bytes in, split wherever the network split them', async () => {
+  // The "BYO pty" case — ssh2, a WebSocket, a container exec — reduced to what
+  // makes it different from node-pty: output arrives as *bytes*, chunked
+  // wherever the transport felt like chunking. Splitting a two-byte character
+  // down the middle is the thing that turns into mojibake if anybody decodes
+  // per chunk, so it is what this feeds.
+  let emit: ((chunk: Uint8Array) => void) | null = null;
+  const host: PtyHost = {
+    available: async () => true,
+    openPty: async () => ({
+      write() {},
+      resize() {},
+      kill: () => true,
+      onData(listener) {
+        emit = listener as (chunk: Uint8Array) => void;
+      },
+      onExit() {},
+      pid: null,
+    }),
+  };
+
+  const ref = React.createRef<TerminalHandle>();
+  await renderX11(h(Terminal, { backend: 'vt', pty: host, ref }), {
+    backend: 'mock',
+  });
+  await waitFor(() =>
+    assert.ok(emit, 'the custom host was used, not node-pty'),
+  );
+
+  // "héllo" as UTF-8, cut between the two bytes of "é".
+  const utf8 = new Uint8Array([0x68, 0xc3, 0xa9, 0x6c, 0x6c, 0x6f]);
+  await act(async () => {
+    emit!(utf8.slice(0, 2));
+  });
+  await act(async () => {
+    emit!(utf8.slice(2));
+  });
+  await waitFor(() => assert.match(ref.current?.serialize() ?? '', /héllo/));
 });
 
 test('write() is real at last, and typing reaches the pty', async () => {

@@ -392,7 +392,13 @@ somewhere else:
 - **`PtyHost` is public because it is a feature**, exactly as `ProcessHost` is:
   "run the shell in a container / over ssh / in a sandbox" is a real thing to
   want. `test/fake-pty.ts` drives it, which is how CI tests a terminal with no
-  native module anywhere.
+  native module anywhere, and `examples/terminal-ssh.tsx` is the real thing —
+  an ssh2 adapter, no pty on this machine at all. Two rules the seam carries
+  for those hosts: **`onData` may hand over bytes** (`Uint8Array` straight to
+  the emulator, because a `.toString()` per network chunk halves a multi-byte
+  character and no care downstream repairs it), and **empty argv means "the
+  default shell over there"** — substituting this machine's `$SHELL` would be
+  wrong for every host that is not this machine.
 - **A test that renders `<Terminal>` must pin `pty`.** Since `'auto'` falls
   through to vt, a `<Terminal>` with no emulator installed and no `pty` prop
   opens a _real login shell_ — which then keeps node's event loop alive, so

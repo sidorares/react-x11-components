@@ -429,6 +429,55 @@ Escape arms one pass-through Tab, so the terminal is not a keyboard trap;
 Escape still reaches the program, and the arming is off while an alternate-screen
 application (vim, htop) is up, because it owns Esc-then-Tab as real input.
 
+#### Bring your own pty
+
+`pty` takes a `PtyHost`, and when you pass one **node-pty is never loaded**.
+Anything that carries bytes both ways and can be told a size is a terminal:
+ssh2, a WebSocket, `docker exec`, a serial port, a device over TCP.
+
+```ts
+interface PtyHost {
+  available(): Promise<boolean>;
+  openPty(argv: readonly string[], opts: PtyOptions): Promise<PtySession>;
+  environment?(): Record<string, string | undefined>;
+}
+
+interface PtySession {
+  write(data: string): void;
+  resize(cols: number, rows: number): void;
+  kill(signal?: string): boolean;
+  onData(listener: (chunk: string | Uint8Array) => void): void;
+  onExit(listener: (info: ExitInfo) => void): void;
+  pause?(): void; // flow control, when the transport has it
+  resume?(): void;
+  readonly pid: number | null; // null is fine — SSH has no pid
+}
+```
+
+Three things worth knowing before writing one:
+
+- **Hand over bytes when you have bytes.** `onData` accepts a `Uint8Array` (a
+  node `Buffer` is one), and passing it through untouched is not an
+  optimisation — a `.toString()` on whatever boundary the network chose cuts
+  multi-byte UTF-8 in half. The emulator's decoder carries a partial character
+  across chunks; a per-chunk decode cannot.
+- **Empty `argv` means "your default shell, wherever you are".** The component
+  does not substitute this machine's `$SHELL`, because over ssh that is the
+  wrong answer; `nodePtyHost` fills it in locally, and a remote host opens a
+  login shell on the far side.
+- **A failed connection is `'exited'`, not `'unavailable'`.** `fallback` is for
+  "this machine cannot run a terminal at all"; an ssh host that refused you is
+  ordinary bad news, and it arrives through `onError`.
+
+[`examples/terminal-ssh.tsx`](examples/terminal-ssh.tsx) is a complete ssh2
+adapter — about eighty lines, with the three gotchas marked — and runs against
+a real host:
+
+```bash
+npm i --save-dev ssh2
+SSH_HOST=example.com SSH_USER=me npm run examples:terminal-ssh
+```
+
 `npm run examples:terminal-vt` is a working program, and
 [`docs/prd-vt-terminal.md`](docs/prd-vt-terminal.md) is the design document
 behind it.

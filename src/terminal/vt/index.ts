@@ -33,7 +33,7 @@ import type { EmbedStatus, ExitInfo } from '../../embed/index.js';
 import type { TerminalColors } from '../backends.js';
 import { ELEMENT, VtTermNode } from './node.js';
 import type { VtTermProps } from './node.js';
-import { PtyUnavailableError, defaultShell, nodePtyHost } from './pty.js';
+import { PtyUnavailableError, nodePtyHost } from './pty.js';
 import type { PtyHost, PtySession } from './pty.js';
 import { startTimeout, stopTimeout } from '../../embed/timers.js';
 import type { TimerId } from '../../embed/timers.js';
@@ -249,12 +249,14 @@ export function VtTerminal(props: VtTerminalProps): ReactElement {
         );
       });
 
-      const ambient = host.environment?.() ?? {};
       try {
         session = await host.openPty(
-          handlers.current.command && handlers.current.command.length
-            ? handlers.current.command
-            : [defaultShell(ambient)],
+          // Empty argv means "whatever the default shell is over there", and
+          // that is the host's call rather than ours: `nodePtyHost` fills in
+          // the local `$SHELL`, an ssh host opens a login shell on the far
+          // side. Substituting *this* machine's shell here would be wrong for
+          // every host that is not this machine.
+          handlers.current.command ?? [],
           {
             cols,
             rows,
@@ -271,7 +273,14 @@ export function VtTerminal(props: VtTerminalProps): ReactElement {
       } catch (err) {
         emulator.dispose();
         emulator = null;
-        fail(err, 'unavailable');
+        // "This machine cannot run a terminal at all" and "the ssh host
+        // refused the connection" are different news, and only the first is
+        // what `fallback` is for. Same split the embed path makes between
+        // `BackendUnavailableError` and everything else.
+        fail(
+          err,
+          err instanceof PtyUnavailableError ? 'unavailable' : 'exited',
+        );
         return;
       }
       if (!live) {
