@@ -128,8 +128,11 @@ export interface TokenizerHost {
 
 /**
  * The per-document tokenizing instance. `setLines` hands over the editor's
- * live line array — the tokenizer may keep the reference (the editor
- * guarantees an `edit()` call after every mutation) but must not mutate it.
+ * live line array — the tokenizer may keep the reference (the editor edits
+ * that array in place and guarantees an `edit()` call after every mutation)
+ * but must not mutate it. Reading it inside `lineTokens` is the point: an
+ * engine that instead snapshots the text at `setLines` time will paint the
+ * pre-edit document.
  */
 export interface Tokenizer {
   setLines(lines: readonly string[]): void;

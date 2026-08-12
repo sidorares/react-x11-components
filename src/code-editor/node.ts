@@ -945,7 +945,22 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
     newLines: string[],
     edit: { fromLine: number; removed: number; inserted: number } | null,
   ): void {
-    this._lines = newLines;
+    if (edit) {
+      // A tokenizer keeps the array `setLines` handed it (that is the
+      // contract in `Tokenizer`) and is told about changes through `edit()`
+      // alone, so an incremental edit has to *mutate* the live array —
+      // swapping in a fresh one would leave every engine tokenizing the
+      // pre-edit text at the new line numbers, painting a split line with
+      // its neighbour's colours. Callers only touch the edited span, so
+      // splicing that span across reproduces `newLines` exactly.
+      this._lines.splice(
+        edit.fromLine,
+        edit.removed,
+        ...newLines.slice(edit.fromLine, edit.fromLine + edit.inserted),
+      );
+    } else {
+      this._lines = newLines;
+    }
     const tok = this._tokenizer();
     if (edit && tok) {
       tok.edit(edit);
@@ -955,7 +970,7 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
       }
       if (edit.removed !== edit.inserted) this._lineCache.clear();
     } else {
-      tok?.setLines(newLines);
+      tok?.setLines(this._lines);
       this._lineCache.clear();
     }
   }
