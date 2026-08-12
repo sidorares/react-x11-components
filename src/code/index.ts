@@ -1,14 +1,17 @@
 // <Code> — a static, read-only code block: syntax highlighting through the
-// same language seam `<CodeEditor>` tokenizes with (`../code-language/`),
-// selection and copy through the same `<richtext>` element `<Markdown>`
-// renders (`../richtext/`). For showing code, not editing it: no caret, no
-// history, no completion — an app that wants those renders `<CodeEditor>`
-// (readOnly or otherwise) and pays for them.
+// same language seam `<CodeEditor>` tokenizes with (`../code-language/`), a
+// look shared with `<Markdown>`'s fenced blocks (`../codeblock/`), and text
+// laid out in the same `<richtext>` element `<Markdown>` renders
+// (`../richtext/`). For showing code, not editing it: no caret, no history,
+// no completion — an app that wants those renders `<CodeEditor>` (readOnly
+// or otherwise) and pays for them.
 //
 // The composition is one `<richtext>` for the whole text (unwrapped, in a
-// horizontally scrolling viewport) plus an optional line-number gutter that
-// is deliberately *not* registered for selection — copying code should
-// never capture the numbering.
+// horizontally scrolling viewport) plus an optional line-number gutter,
+// inside a `selectable` root. Selection, copy, Ctrl+A and PRIMARY are all
+// core's since react-x11#291; what is left here is saying which parts of the
+// block are text a reader would want — the gutter is `selectable={false}`,
+// so copied code never carries the numbering.
 import React from 'react';
 import type { ReactElement } from 'react';
 import { useTheme } from 'react-x11';
@@ -17,12 +20,15 @@ import type { Style } from 'react-x11/style';
 import {
   registerRichText,
   RICHTEXT_ELEMENT,
-  TextSelection,
-  tint,
-  useSelectionGestures,
+  useSelectionMenu,
 } from '../richtext/index.js';
 import type { RichTextProps, TextRun } from '../richtext/index.js';
-import { autoTokenStyles, codeRuns } from '../code-language/index.js';
+import {
+  codeBlockLook,
+  codeBlockRuns,
+  codeBlockStyle,
+  codeTextStyle,
+} from '../codeblock/index.js';
 import type { Language, TokenStyles } from '../code-language/index.js';
 import { hx } from './hx.js';
 
@@ -80,74 +86,59 @@ export function Code(props: CodeProps): ReactElement {
     selectionColor,
   } = props;
   const lineNumbers = (props.lineNumbers ?? false) && !wrap;
+  // `Theme` is an interface, so it has no implicit index signature — the
+  // same widening `hx.ts` documents for the `theme` prop.
   const theme = useTheme() as unknown as Record<string, unknown>;
+  const menu = useSelectionMenu(selectable);
 
-  const selectionRef = React.useRef<TextSelection | null>(null);
-  if (!selectionRef.current) selectionRef.current = new TextSelection();
-  const gestures = useSelectionGestures(selectionRef.current, { selectable });
-
-  const text = String(theme.text ?? '#2d3436');
-  const dim = String(theme.dim ?? '#7f8c8d');
-  const background = String(theme.background ?? 'white');
-  const size = props.fontSize ?? Math.round(Number(theme.fontSize ?? 14) * 0.9);
-  const family = props.monoFamily ?? 'monospace';
-  const styles = props.tokenStyles ?? autoTokenStyles(background);
-
-  const runs: TextRun[] = React.useMemo(
+  const look = React.useMemo(
     () =>
-      codeRuns(source, lang, {
-        styles,
-        color: text,
-        language,
-        resolveToken: (name) => {
-          const v = theme[name];
-          return typeof v === 'string' ? v : undefined;
-        },
-      }).map((r) => ({ ...r, family, size })),
-    [source, lang, language, styles, text, family, size, theme],
+      codeBlockLook(theme, {
+        fontSize: props.fontSize,
+        monoFamily: props.monoFamily,
+        tokenStyles: props.tokenStyles,
+      }),
+    [theme, props.fontSize, props.monoFamily, props.tokenStyles],
   );
 
-  const pad = Math.round(size * 0.65);
+  const runs: TextRun[] = React.useMemo(
+    () => codeBlockRuns(source, look, { lang, language }),
+    [source, lang, language, look],
+  );
+
   const lineCount = React.useMemo(() => source.split('\n').length, [source]);
 
-  const codeProps: RichTextProps = {
-    runs,
-    order: 0,
-    registry: selectable ? selectionRef.current : undefined,
-    joiner: '\n\n',
-    style: { lineHeight: 1.25 },
-  };
+  const codeProps: RichTextProps = { runs, style: codeTextStyle(look) };
   if (!wrap) codeProps.wrap = false;
-  if (selectionColor) codeProps.selectionColor = selectionColor;
 
   const gutter = lineNumbers
     ? h(RICHTEXT_ELEMENT, {
-        // one unregistered richtext for all the numbers: same font, same
-        // line height, so it stays in register with the code beside it
+        // one richtext for all the numbers: same font, same line height, so
+        // it stays in register with the code beside it. `selectable={false}`
+        // is what keeps it out of a drag and out of the copied text — the
+        // numbering is chrome, and CSS spells that `user-select: none`.
+        selectable: false,
         runs: Array.from({ length: lineCount }, (_, i) => ({
           text: `${i + 1}\n`,
-          family,
-          size,
-          color: dim,
+          family: look.family,
+          size: look.size,
+          color: look.dim,
         })),
         wrap: false,
         style: {
-          lineHeight: 1.25,
+          lineHeight: look.lineHeight,
           textAlign: 'right',
           minWidth:
-            Math.max(String(lineCount).length, 2) * Math.ceil(size * 0.62),
-          marginRight: pad,
+            Math.max(String(lineCount).length, 2) * Math.ceil(look.size * 0.62),
+          marginRight: look.padding,
           flexShrink: 0,
         },
       } as Record<string, unknown>)
     : null;
 
   const rootStyle: Style = {
+    ...codeBlockStyle(look),
     flexDirection: 'row',
-    backgroundColor: tint(text, 0.06),
-    borderRadius: 6,
-    padding: pad,
-    cursor: 'text',
     alignItems: 'stretch',
   };
 
@@ -160,9 +151,13 @@ export function Code(props: CodeProps): ReactElement {
             ...(Array.isArray(props.style) ? props.style : [props.style]),
           ]
         : rootStyle,
-      focusable: selectable || undefined,
+      // The whole feature: a drag selects across everything below, a double
+      // click takes a word, Ctrl+C copies, PRIMARY follows the release. The
+      // surface is a focus target and shows an I-beam because it said this.
+      selectable,
+      selectionColor,
       'aria-label': 'Code block',
-      ...gestures,
+      ...menu,
       'data-testname': props['data-testname'],
     } as Record<string, unknown>,
     gutter,

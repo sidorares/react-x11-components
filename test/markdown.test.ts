@@ -287,11 +287,41 @@ const x = 1;
 \`\`\`
 `;
 
+/** The blocks, in document order — which is the order the tree is walked
+ *  in, and since react-x11#291 the order the selection reads them in too:
+ *  there is no `order` prop to sort by any more. */
 function mdNodes(): RichTextNode[] {
   return screen
     .all((n) => n instanceof RichTextNode)
-    .map((n) => n as unknown as RichTextNode)
-    .sort((a, b) => a.order - b.order);
+    .map((n) => n as unknown as RichTextNode);
+}
+
+/** The `selectable` root — the surface the public selection methods are on. */
+function surface(): DrawnNode {
+  const [root] = screen.all(
+    (n) =>
+      (n as { props?: Record<string, unknown> }).props?.selectable === true,
+  );
+  assert.ok(root, 'the document root is a selection surface');
+  return root as DrawnNode;
+}
+
+/** What one block has lit, as text. */
+function litIn(node: RichTextNode): string {
+  const range = node.selectionRange;
+  if (!range) return '';
+  return [...node.textContent()].slice(range.start, range.end).join('');
+}
+
+/**
+ * Drag the pointer and let the motion land. ntk coalesces `mousemove` onto
+ * its own frame clock, which `act()` does not run — the same wait core's
+ * selection tests take.
+ */
+async function dragTo(node: DrawnNode, options: object = {}): Promise<void> {
+  fireEvent.mouseMove(node, options);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  await act();
 }
 
 test(
@@ -316,7 +346,7 @@ test(
       'heading is bigger than body',
     );
     assert.ok(para.abs.height > 0);
-    assert.equal(itemOne.text(), 'item one');
+    assert.equal(itemOne.textContent(), 'item one');
     assert.ok(itemOne.abs.x > para.abs.x, 'list items are indented');
   },
 );
@@ -339,22 +369,23 @@ test(
     const para = nodes[1];
     const itemTwo = nodes[3];
 
-    await act(async () => {
-      fireEvent.mouseDown(drawn(para), { dx: -para.abs.width / 2 + 1 });
-    });
-    await act(async () => {
-      fireEvent.mouseMove(drawn(itemTwo), {});
-    });
-    await act(async () => {
-      fireEvent.mouseUp(drawn(itemTwo), {});
-    });
+    fireEvent.mouseDown(drawn(para), { dx: -para.abs.width / 2 + 1 });
+    await dragTo(drawn(itemTwo));
+    fireEvent.mouseUp(drawn(itemTwo), {});
+    await act();
 
-    const [a, b] = para.selection;
-    assert.equal(para.text(a, b), 'This is bold and a link here.');
-    const [c, d] = itemTwo.selection;
-    assert.equal(itemTwo.text(c, d), 'item two');
+    assert.equal(litIn(para), 'This is bold and a link here.');
+    assert.equal(litIn(itemTwo), 'item two');
+    assert.equal(
+      surface().selectedText(),
+      'This is bold and a link here.\nitem one\nitem two',
+      'the surface assembles what the blocks have lit',
+    );
 
     const primary = await clipboardOf(r).read({ selection: 'PRIMARY' });
+    // The separators come from the layout, not the markup: each block starts
+    // below the last, so each is a new line. The list markers are
+    // `selectable={false}` and are absent from both.
     assert.equal(primary, 'This is bold and a link here.\nitem one\nitem two');
   },
 );
@@ -382,15 +413,22 @@ test(
       fireEvent.key(0x61 /* a */, { modifiers: ['Control'] });
     });
     for (const n of mdNodes()) {
-      const [a, b] = n.selection;
-      assert.equal(n.text(a, b), n.text(), 'Ctrl+A selects every block fully');
+      assert.equal(
+        litIn(n),
+        n.textContent(),
+        'Ctrl+A selects every block fully',
+      );
     }
 
     await act(async () => {
       fireEvent.key(0x63 /* c */, { modifiers: ['Control'] });
     });
     const copied = await clipboardOf(r).read({ selection: 'CLIPBOARD' });
-    assert.equal(copied, 'first para\n\nsecond para');
+    // One paragraph per line: core assembles a copy from the boxes on screen,
+    // where a paragraph is a row and the blank line between two of them is
+    // a gap rather than text. (It used to be `\n\n`, from a separator this
+    // renderer threaded through every block itself.)
+    assert.equal(copied, 'first para\nsecond para');
   },
 );
 
@@ -410,8 +448,7 @@ test(
     await act(async () => {
       fireEvent.doubleClick(drawn(para), { dx: -para.abs.width / 2 + 4 });
     });
-    const [a, b] = para.selection;
-    assert.equal(para.text(a, b), 'alpha');
+    assert.equal(litIn(para), 'alpha');
   },
 );
 
@@ -443,22 +480,16 @@ test(
     assert.deepEqual(seen, ['https://dest.example']);
 
     // drag off the link: selection, no navigation
-    await act(async () => {
-      fireEvent.mouseDown(drawn(para), { dx: linkDx });
-    });
-    await act(async () => {
-      fireEvent.mouseMove(drawn(para), { dx: linkDx + 120 });
-    });
-    await act(async () => {
-      fireEvent.mouseUp(drawn(para), { dx: linkDx + 120 });
-    });
+    fireEvent.mouseDown(drawn(para), { dx: linkDx });
+    await dragTo(drawn(para), { dx: linkDx + 120 });
+    fireEvent.mouseUp(drawn(para), { dx: linkDx + 120 });
+    await act();
     assert.deepEqual(
       seen,
       ['https://dest.example'],
       'the drag did not navigate',
     );
-    const [a, b] = para.selection;
-    assert.ok(b > a, 'the drag selected instead');
+    assert.ok(litIn(para).length > 0, 'the drag selected instead');
   },
 );
 
@@ -478,7 +509,7 @@ test(
     );
     const before = mdNodes();
     assert.equal(
-      before[1].text(),
+      before[1].textContent(),
       'streaming bo',
       'implicit close, markers hidden',
     );
@@ -491,7 +522,7 @@ test(
       ),
     );
     const after = mdNodes();
-    assert.equal(after[1].text(), 'streaming bold done');
+    assert.equal(after[1].textContent(), 'streaming bold done');
     assert.equal(
       after[0],
       before[0],

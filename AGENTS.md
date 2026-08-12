@@ -61,9 +61,12 @@ element.
   needs. No component imports another component.
 - **Shared modules are directories too**, with their own `index.ts` and
   subpath, and the difference from a component is that they are
-  side-effect free: `src/richtext/` (the selectable styled-text element
-  behind `<Markdown>` and `<Code>`, plus the cross-block selection
-  controller and the gesture hook), `src/code-language/` (the tokenizer
+  side-effect free: `src/richtext/` (the styled-text element behind
+  `<Markdown>` and `<Code>` — it paints per-run decoration and answers
+  core's four text accessors, so a document selects across it — plus the
+  edit menu a read-only surface offers), `src/codeblock/` (the look of a
+  block of code: the palette, the runs and the chrome `<Code>` and
+  `<Markdown>`'s fences share), `src/code-language/` (the tokenizer
   seam, the built-in languages, the token palettes — under `<CodeEditor>`,
   `<Code>` and `<Markdown>`'s fences alike) and `src/embed/` (the spawn,
   watch and hand-back lifecycle under `<Terminal>` and `<MediaPlayer>`,
@@ -226,7 +229,15 @@ npm ci        # the pin is what `npm ci` installs, here and in CI
 Skipping the bump is the failure that looks like nothing: a working tree that
 already has the newer core installed passes everything locally, and every CI
 job fails on an import that is not there yet. `src/tray-host/` needed this for
-`serverTime()`.
+`serverTime()`, and `src/richtext/` for the selection service (#291) and the
+edit menu (#289).
+
+**The pin is also how far up master this package has migrated.** It sits at
+`b98d520c` deliberately, one commit short of `49fb2b30`
+(react-x11#290, `feat(theme)!`), which drops `Theme.dim` and retypes the
+palette — `src/calendar/` and `src/code-editor/` do not compile against it
+yet. That migration is its own change; bumping past this commit without
+doing it breaks the build, so bump and migrate together or not at all.
 
 ## Talking to the desktop, and optional dependencies
 

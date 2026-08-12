@@ -62,21 +62,36 @@ export type {
   ParseOptions,
 } from './markdown/index.js';
 
+// Styled text that a document selects across. The selection itself is
+// core's (`selectable` on any box, react-x11#291); what is here is the
+// element that paints per-run decoration and answers the text accessors,
+// and the read-only edit menu a surface offers on right-click.
 export {
   RICHTEXT_ELEMENT,
   registerRichText,
   RichTextNode,
-  TextSelection,
-  useSelectionGestures,
+  useSelectionMenu,
 } from './richtext/index.js';
 export type {
   RichTextProps,
+  SelectionMenuHandlers,
   TextRun,
-  SelectableBlock,
-  SelectionRegistry,
-  SelectionGestureHandlers,
-  SelectionGestureOptions,
 } from './richtext/index.js';
+
+// The look of a block of code, shared by `<Code>` and `<Markdown>`'s fences.
+export {
+  CODE_LINE_HEIGHT,
+  codeBlockLook,
+  codeBlockRuns,
+  codeBlockStyle,
+  codeTextStyle,
+  themeTokenResolver,
+} from './codeblock/index.js';
+export type {
+  CodeBlockLook,
+  CodeBlockLookOptions,
+  CodeBlockRunOptions,
+} from './codeblock/index.js';
 
 export {
   codeRuns,

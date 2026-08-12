@@ -48,6 +48,10 @@
       "types": "./dist/code-language/index.d.ts",
       "default": "./dist/code-language/index.js"
     },
+    "./codeblock": {
+      "types": "./dist/codeblock/index.d.ts",
+      "default": "./dist/codeblock/index.js"
+    },
     "./desktop-calendar": {
       "types": "./dist/desktop-calendar/index.d.ts",
       "default": "./dist/desktop-calendar/index.js"

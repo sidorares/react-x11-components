@@ -38,32 +38,36 @@ export function tint(color: string, alpha: number): string {
   return rgba([c[0], c[1], c[2], c[3] * alpha]);
 }
 
-/** ntk's fence tokenizer (a maintained adapter over highlight.js, already
- *  in ntk's dependency closure). Loose-typed like the rest of `ntk.d.ts`;
- *  absent (an older ntk) simply means unhighlighted code. */
-export interface CodeToken {
-  text: string;
-  kind:
-    | 'keyword'
-    | 'literal'
-    | 'string'
-    | 'number'
-    | 'comment'
-    | 'tag'
-    | 'attr'
-    | 'function'
-    | 'plain';
+// --- code points vs code units ---------------------------------------------
+//
+// ntk's line runs report their extent in **code units** while its caret API
+// speaks **code points**, so anything reading run geometry has to translate.
+// Core has exactly these two functions in `src/textrange.js` (react-x11#291)
+// and its `<text>` uses them for the same purpose; they are copied rather
+// than imported because that module is not on core's exports map. Delete
+// them the day it is.
+
+/** Code point index -> UTF-16 offset, with one extra entry for the end. */
+export function codeUnitOffsets(text: string): number[] {
+  const offsets: number[] = [];
+  const s = text ?? '';
+  for (let i = 0; i < s.length;) {
+    offsets.push(i);
+    i += (s.codePointAt(i) ?? 0) > 0xffff ? 2 : 1;
+  }
+  offsets.push(s.length);
+  return offsets;
 }
 
-export const highlightCode:
-  ((code: string, lang: string) => CodeToken[]) | undefined = (
-  ntk as unknown as {
-    highlightCode?: (code: string, lang: string) => CodeToken[];
+/** The code point index for a UTF-16 offset, rounded down to a whole
+ *  character. Binary search over `codeUnitOffsets`. */
+export function codePointAtOffset(offsets: number[], offset: number): number {
+  let lo = 0;
+  let hi = offsets.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (offsets[mid] <= offset) lo = mid;
+    else hi = mid - 1;
   }
-).highlightCode;
-
-/** The letter of a Ctrl chord, lowercased — declared since react-x11#267,
- * so this is core's own function rather than the copy that used to live
- * here. Re-exported from this module because that is where `./gestures.ts`
- * already reaches for it. */
-export { ctrlChordLetter } from 'react-x11/keysyms';
+  return lo;
+}

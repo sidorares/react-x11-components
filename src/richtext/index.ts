@@ -1,8 +1,15 @@
-// Selectable styled text, as a shared module: the `<richtext>` element
-// (wrapped runs + a paintable selection range), the cross-block
-// `TextSelection` controller, and the gesture hook that wires a root box
-// to it. `<Markdown>` and `<Code>` are compositions over this; an app can
-// build its own selectable surface from the same parts.
+// Styled text that a document can select across, as a shared module: the
+// `<richtext>` element (wrapped runs, per-run decoration, and the four text
+// accessors core's selection asks for), plus the right-click menu a
+// read-only surface offers. `<Markdown>` and `<Code>` are compositions over
+// this; an app can build its own surface from the same parts.
+//
+// The selection itself is core's since react-x11#291 — a `selectable` prop
+// on the root box, and the anchor/focus, granularity, PRIMARY, Ctrl+A/Ctrl+C
+// and the one-visible-selection rule that come with it. This module used to
+// carry all of that (a `TextSelection` controller and a `useSelectionGestures`
+// hook); both are gone, and so are the `order`/`registry`/`joiner` props the
+// element took to feed them — a copy's separators now come from the layout.
 //
 // Importing this barrel registers nothing. A component that renders
 // `<richtext>` calls `registerRichText()` at its own module scope — see
@@ -20,14 +27,9 @@ export {
   registerRichText,
   RichTextNode,
 } from './node.js';
-export type { NtkApp, RichTextProps, TextRun } from './node.js';
-export { TextSelection } from './selection.js';
-export type { SelectableBlock, SelectionRegistry } from './selection.js';
-export { useSelectionGestures } from './gestures.js';
-export type {
-  SelectionGestureHandlers,
-  SelectionGestureOptions,
-} from './gestures.js';
+export type { NtkApp, RichTextProps, TextLayoutLike, TextRun } from './node.js';
+export { useSelectionMenu } from './menu.js';
+export type { SelectionMenuHandlers } from './menu.js';
 export { tint } from './internal.js';
 
 declare module 'react-x11/jsx-runtime' {
