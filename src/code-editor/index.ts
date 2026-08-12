@@ -188,7 +188,9 @@ export function CodeEditor(props: CodeEditorComponentProps): ReactElement {
       if (!node || !completionSources || completionSources.length === 0) {
         return;
       }
-      const lines = node.lines;
+      // a snapshot: the node's own array is live across edits, and an async
+      // source must not see it move out from under the `pos` it was given
+      const lines = node.lines.slice();
       const pos = node.selection.head;
       const wordChars = node.language?.data?.wordChars ?? '';
       const range = wordRangeAt(lines[pos.line], pos.ch, wordChars);

@@ -35,6 +35,9 @@ import type {
   CodeEditorEvent,
   CodeEditorNode,
   CompletionSource,
+  Language,
+  Token,
+  Tokenizer,
 } from '../src/index.js';
 
 const h = React.createElement;
@@ -430,6 +433,65 @@ test('Enter: shell indents after do', async () => {
   await userEvent.key(XK_END);
   await userEvent.key(XK_RETURN);
   assert.equal(node.value, 'for f in x; do\n  ');
+});
+
+/** A language that hands back the tokenizer the editor is actually using, so
+ * a test can ask it what it thinks each line looks like. */
+function spyLanguage(base: Language): {
+  language: Language;
+  lineTokens(line: number): readonly Token[];
+} {
+  let tok: Tokenizer | null = null;
+  return {
+    language: {
+      ...base,
+      createTokenizer: (host) => (tok = base.createTokenizer(host)),
+    },
+    lineTokens: (line) => tok?.lineTokens(line) ?? [],
+  };
+}
+
+test('Enter: the highlighting follows the text across the split', async () => {
+  // Regression: an edit replaced the editor's line array instead of mutating
+  // it, so the tokenizer — which holds that array by reference — kept
+  // tokenizing the *pre-edit* text at the new line numbers. Splitting a line
+  // painted the moved code with its neighbour's colours and left the token
+  // runs of the old line behind on the new empty one.
+  const spy = spyLanguage(sql());
+  await renderX11(
+    h(CodeEditor, { defaultValue: 'select 1\nfrom t', language: spy.language }),
+  );
+  const node = editorNode();
+  await userEvent.click(node as unknown as DrawnNode);
+  await userEvent.key(XK_DOWN);
+  await userEvent.key(XK_HOME);
+  await userEvent.key(XK_RETURN);
+  assert.equal(node.value, 'select 1\n\nfrom t');
+
+  assert.deepEqual(
+    [...spy.lineTokens(1)],
+    [],
+    'the new empty line keeps none of the runs that were on it',
+  );
+  assert.deepEqual(
+    [...spy.lineTokens(2)],
+    [{ from: 0, to: 4, type: 'keyword' }],
+    '`from` is still a keyword on the line it moved to',
+  );
+});
+
+test('typing: the highlighting is current, not one keystroke behind', async () => {
+  // The same stale-array bug on the same-line path: what was painted was the
+  // text as of the previous edit.
+  const spy = spyLanguage(sql());
+  await renderX11(h(CodeEditor, { defaultValue: '', language: spy.language }));
+  const node = editorNode();
+  await userEvent.type(node as unknown as DrawnNode, 'where');
+  assert.deepEqual(
+    [...spy.lineTokens(0)],
+    [{ from: 0, to: 5, type: 'keyword' }],
+    'the keyword lights up on the character that completes it',
+  );
 });
 
 test('size: rows decides the height, and changing it re-measures', async () => {
