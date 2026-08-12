@@ -211,19 +211,26 @@ The subpaths this package imports — `react-x11/host`, `/node`, `/style`,
 - `peerDependencies.react-x11` is `^2.0.0` — the version core will cut next
   (there are breaking changes queued on master, so release-please will go to
   2.0.0, not 1.3.0).
-- `devDependencies.react-x11` is `github:sidorares/react-x11#master`, which
-  is what makes the suite runnable and CI green today.
+- `devDependencies.react-x11` is `github:sidorares/react-x11#<commit>` — a
+  **full commit sha, not `#master`**, which is what makes the suite runnable
+  and CI green today.
 
 **When core publishes 2.0.0, change the devDependency to `^2.0.0` and drop
 the git URL.** Nothing else should need touching.
 
-**A `#master` spec still resolves through the lockfile, which pins a
-commit.** So depending on something core landed _since that commit_ is two
-edits, not one: use it, and bump the pin.
+**The spec names the commit, because the lockfile alone does not hold a
+floating one.** `#master` plus a locked commit reads like it pins, and does
+on npm 10 — but npm 11 (Node 24) re-resolves the branch and installs
+whatever master is now, so `npm ci` gave the matrix two different cores and
+only the Node 24 leg failed. Naming the sha is what makes every `npm ci`,
+on every npm, install the thing the tree was written against.
+
+So depending on something core landed since that commit is two edits, not
+one: use it, and move the pin.
 
 ```bash
-npm install --package-lock-only --save-dev "github:sidorares/react-x11#master"
-npm ci        # the pin is what `npm ci` installs, here and in CI
+npm install --package-lock-only --save-dev "github:sidorares/react-x11#<sha>"
+npm ci        # what CI installs, and now what it installs everywhere
 ```
 
 Skipping the bump is the failure that looks like nothing: a working tree that
@@ -236,8 +243,9 @@ edit menu (#289).
 `b98d520c` deliberately, one commit short of `49fb2b30`
 (react-x11#290, `feat(theme)!`), which drops `Theme.dim` and retypes the
 palette — `src/calendar/` and `src/code-editor/` do not compile against it
-yet. That migration is its own change; bumping past this commit without
-doing it breaks the build, so bump and migrate together or not at all.
+yet. That migration is its own change; moving the pin past this commit
+without doing it breaks the build, so move and migrate together or not at
+all.
 
 ## Talking to the desktop, and optional dependencies
 
