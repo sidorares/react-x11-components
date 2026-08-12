@@ -1,7 +1,9 @@
 // <Code> — the static code block. Highlighting itself is the language
-// seam's and is tested in code-editor-language.test.ts; what is tested
-// here is the composition: runs reach the element coloured, the gutter
-// stays out of the selection, and copy pastes clean code.
+// seam's and is tested in code-editor-language.test.ts; the selection
+// itself is core's since react-x11#291 and is tested there. What is tested
+// here is the composition: runs reach the element coloured, the element
+// answers for its own text, the gutter stays out of the selection, and copy
+// pastes clean code.
 import { test, afterEach } from 'node:test';
 import assert from 'node:assert';
 import { existsSync } from 'node:fs';
@@ -54,7 +56,30 @@ function richNodes(): RichTextNode[] {
     .map((n) => n as unknown as RichTextNode);
 }
 
-test('it mounts on the mock backend and the code is one selectable block', async () => {
+/** The `selectable` root — the surface every public selection method is on. */
+function surface(): DrawnNode {
+  return screen.getByTestName('code');
+}
+
+/** What this element has lit, as text. */
+function litIn(node: RichTextNode): string {
+  const range = node.selectionRange;
+  if (!range) return '';
+  return [...node.textContent()].slice(range.start, range.end).join('');
+}
+
+/**
+ * Drag the pointer and let the motion land. ntk coalesces `mousemove` onto
+ * its own frame clock, which `act()` does not run — the same wait core's
+ * selection tests take.
+ */
+async function dragTo(node: DrawnNode, options: object): Promise<void> {
+  fireEvent.mouseMove(node, options);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  await act();
+}
+
+test('it mounts on the mock backend and the code is one block of text', async () => {
   await renderX11(
     h(Code, { source: SOURCE, lang: 'js', 'data-testname': 'code' }),
     {
@@ -63,7 +88,7 @@ test('it mounts on the mock backend and the code is one selectable block', async
   );
   const nodes = richNodes();
   assert.equal(nodes.length, 1);
-  assert.equal(nodes[0].text(), SOURCE);
+  assert.equal(nodes[0].textContent(), SOURCE);
 });
 
 test('the tokenizer coloured the runs', async () => {
@@ -90,29 +115,32 @@ test(
   },
   async () => {
     const r = await renderX11(
-      h(Code, { source: SOURCE, lang: 'js', lineNumbers: true }),
+      h(Code, {
+        source: SOURCE,
+        lang: 'js',
+        lineNumbers: true,
+        'data-testname': 'code',
+      }),
       { fonts: FONTS!, width: 420, height: 200 },
     );
     const nodes = richNodes();
     assert.equal(nodes.length, 2, 'code plus gutter');
-    const code = nodes.find((n) => n.text().startsWith('const'));
-    const gutter = nodes.find((n) => n.text().startsWith('1'));
+    const code = nodes.find((n) => n.textContent().startsWith('const'));
+    const gutter = nodes.find((n) => n.textContent().startsWith('1'));
     assert.ok(code && gutter);
 
-    await act(async () => {
-      fireEvent.mouseDown(drawn(code), { dx: -code.abs.width / 2 + 1, dy: -4 });
-    });
-    await act(async () => {
-      fireEvent.mouseMove(drawn(code), { dx: code.abs.width / 2 - 1, dy: 8 });
-    });
-    await act(async () => {
-      fireEvent.mouseUp(drawn(code), { dx: code.abs.width / 2 - 1, dy: 8 });
-    });
+    fireEvent.mouseDown(drawn(code), { dx: -code.abs.width / 2 + 1, dy: -4 });
+    await dragTo(drawn(code), { dx: code.abs.width / 2 - 1, dy: 8 });
+    fireEvent.mouseUp(drawn(code), { dx: code.abs.width / 2 - 1, dy: 8 });
+    await act();
 
-    const [a, b] = code.selection;
-    assert.equal(code.text(a, b), SOURCE, 'the drag selected the whole block');
-    const [ga, gb] = gutter.selection;
-    assert.equal(gb - ga, 0, 'the gutter took no selection');
+    assert.equal(litIn(code), SOURCE, 'the drag selected the whole block');
+    assert.equal(litIn(gutter), '', 'the gutter took no selection');
+    assert.equal(
+      surface().selectedText(),
+      SOURCE,
+      'and it is absent from what the surface would copy',
+    );
 
     const primary = await clipboardOf(r).read({ selection: 'PRIMARY' });
     assert.equal(primary, SOURCE, 'PRIMARY pastes code, not line numbers');
@@ -121,10 +149,15 @@ test(
 
 test('Ctrl+A / Ctrl+C copy only the code', { skip: !FONTS }, async () => {
   const r = await renderX11(
-    h(Code, { source: SOURCE, lang: 'js', lineNumbers: true }),
+    h(Code, {
+      source: SOURCE,
+      lang: 'js',
+      lineNumbers: true,
+      'data-testname': 'code',
+    }),
     { fonts: FONTS!, width: 420, height: 200 },
   );
-  const code = richNodes().find((n) => n.text().startsWith('const'));
+  const code = richNodes().find((n) => n.textContent().startsWith('const'));
   assert.ok(code);
   await act(async () => {
     fireEvent.mouseDown(drawn(code), {});
@@ -139,3 +172,26 @@ test('Ctrl+A / Ctrl+C copy only the code', { skip: !FONTS }, async () => {
   const copied = await clipboardOf(r).read({ selection: 'CLIPBOARD' });
   assert.equal(copied, SOURCE);
 });
+
+test(
+  'selectable={false} leaves the block inert',
+  { skip: !FONTS },
+  async () => {
+    await renderX11(
+      h(Code, {
+        source: SOURCE,
+        lang: 'js',
+        selectable: false,
+        'data-testname': 'code',
+      }),
+      { fonts: FONTS!, width: 420, height: 200 },
+    );
+    const [code] = richNodes();
+    fireEvent.mouseDown(drawn(code), { dx: -code.abs.width / 2 + 1, dy: -4 });
+    await dragTo(drawn(code), { dx: code.abs.width / 2 - 1, dy: 8 });
+    fireEvent.mouseUp(drawn(code), { dx: code.abs.width / 2 - 1, dy: 8 });
+    await act();
+    assert.equal(litIn(code), '', 'nothing was lit');
+    assert.equal(surface().selectedText(), '', 'and nothing would be copied');
+  },
+);

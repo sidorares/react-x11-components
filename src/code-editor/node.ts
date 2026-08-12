@@ -339,6 +339,14 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
     // is how `<CodeEditor disabled>` stays out of the tab order.
     this.focusableByDefault = true;
     this.defaultCursor = 'text';
+    // The editor's selection is its own (react-x11#291). A `selectable`
+    // document around it — a `<Markdown>` with a live editor in it, a form
+    // on a selectable pane — skips this subtree whole rather than lighting
+    // up half the text somebody is typing in, and a press here never
+    // reaches the surface above. That is the same rule `<textinput>` keeps,
+    // and the reason the `default*` handlers below can own the gesture
+    // without calling `super`.
+    this.hasOwnSelection = true;
   }
 
   /**

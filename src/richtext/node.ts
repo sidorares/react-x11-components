@@ -1,25 +1,26 @@
-// The retained node behind `<richtext>` — one wrapped, styled, *selectable*
-// run of inline text: a paragraph, a heading, a list item's line, a table
-// cell, a code block. `<Markdown>` and `<Code>` compose documents out of
-// these plus plain `<box>`es; this node knows nothing about either — it
-// renders the `runs` it is given and answers geometry questions about
-// them, which is the whole selection story (see selection.ts for the part
-// that spans blocks, gestures.ts for the mouse and keyboard wiring).
+// The retained node behind `<richtext>` — one wrapped, styled run of inline
+// text: a paragraph, a heading, a list item's line, a table cell, a code
+// block. `<Markdown>` and `<Code>` compose documents out of these plus plain
+// `<box>`es.
 //
 // This directory is a shared module, not a component: registration is a
-// function (`registerRichText()`), called at module scope by each
-// component whose index.ts uses the element, so the "a component registers
-// its element in its own index.ts" tree-shaking rule keeps holding — an
-// app that imports neither `<Markdown>` nor `<Code>` never registers or
-// ships any of this.
+// function (`registerRichText()`), called at module scope by each component
+// whose index.ts uses the element, so the "a component registers its element
+// in its own index.ts" tree-shaking rule keeps holding — an app that imports
+// neither `<Markdown>` nor `<Code>` never registers or ships any of this.
 //
-// Why not core's `<text>`: nested `<text>` spans already wrap mixed styles,
-// but the node keeps its TextLayout private, so there is no way to ask
-// "which character is under this point" or "where is the caret for index
-// 12" from outside — and no way to paint a highlight band behind the right
-// glyphs. Selection needs exactly those, so this element owns its layout.
-// (That is a gap worth closing in core one day: a text element that
-// exposes hit-testing would let this file shrink to the selection parts.)
+// **Why the element still exists, now that core selects text.** react-x11#291
+// gave every node the four text accessors and made `selectable` a core
+// service, which is what this directory used to implement itself (a whole
+// `TextSelection` controller and a gestures hook, both deleted with it). What
+// core's `<text>` still does not do is paint *per-run decoration*: the
+// inline-code chip's background, a link's underline, `~~del~~`'s rule — and
+// it composes mixed styles by nesting spans rather than laying out one array
+// of styled runs, which is the shape a markdown inline sequence and a
+// tokenized line of code both already have. So the element is a painter that
+// answers for its own text, which is exactly the seam docs/extending.md
+// describes: implement the four accessors and a document selects across you,
+// with no registration call.
 import { registerElement, registeredElements } from 'react-x11/host';
 import { Node } from 'react-x11/node';
 import type {
@@ -27,10 +28,10 @@ import type {
   MeasureConstraints,
   MeasuredSize,
 } from 'react-x11/node';
+import type { Rect } from 'react-x11';
 import type { Style } from 'react-x11/style';
 
-import { tint } from './internal.js';
-import type { SelectionRegistry } from './selection.js';
+import { codePointAtOffset, codeUnitOffsets } from './internal.js';
 
 /** The element name — registration key, `node.kind` and JSX tag alike. */
 export const ELEMENT = 'richtext';
@@ -46,17 +47,10 @@ export function registerRichText(): void {
   if (registeredElements().includes(ELEMENT)) return;
   registerElement(ELEMENT, {
     create: (props, app) => new RichTextNode(props, app),
-    // none of these is a style name today, but `wrap` reads like one —
-    // declaring everything the element owns keeps the DEV assertion
-    // honest even if core's style vocabulary grows underneath us
-    semanticNames: [
-      'runs',
-      'wrap',
-      'order',
-      'registry',
-      'joiner',
-      'selectionColor',
-    ],
+    // neither is a style name today, but `wrap` reads like one — declaring
+    // everything the element owns keeps the DEV assertion honest even if
+    // core's style vocabulary grows underneath us
+    semanticNames: ['runs', 'wrap'],
     childrenAllowed: false,
   });
 }
@@ -89,14 +83,6 @@ export interface TextRun {
   href?: string | null;
 }
 
-// What a selection host gives `<Markdown>`'s blocks. Defined in
-// `selection.ts` over a structural `SelectableBlock` — never over this
-// class, whose private fields would make the public `.d.ts` nominal and
-// break the JSX augmentation's src/dist identity. The prop exists so the
-// node and the controller find each other without React context (a
-// retained node cannot read context).
-export type { SelectableBlock, SelectionRegistry } from './selection.js';
-
 /** The props `<richtext>` takes. */
 export interface RichTextProps {
   /** The styled runs. Give a stable array identity — the layout cache and
@@ -104,14 +90,6 @@ export interface RichTextProps {
   runs: TextRun[];
   /** False lays the text out at its natural width, unwrapped — code. */
   wrap?: boolean;
-  /** Document position for cross-block selection ordering. */
-  order?: number;
-  /** Selection host; absent means this block is not selectable. */
-  registry?: SelectionRegistry | null;
-  /** Copy-time separator between this block and the previous one. */
-  joiner?: string;
-  /** Highlight fill; defaults to the theme accent at 35%. */
-  selectionColor?: string;
   style?: Style | Style[];
 }
 
@@ -127,10 +105,15 @@ interface FontMetricsLike {
 interface LaidRunLike {
   x: number;
   width: number;
+  /** Extent within the paragraph, in **code units** (ntk's run vocabulary). */
   start: number;
   end: number;
   span: TextRun;
-  run: { font: { metrics(size: number): FontMetricsLike }; size: number };
+  run: {
+    font: { metrics(size: number): FontMetricsLike };
+    size: number;
+    direction?: 'ltr' | 'rtl';
+  };
 }
 
 interface LineLike {
@@ -141,6 +124,9 @@ interface LineLike {
   width: number;
   ascent: number;
   descent: number;
+  /** The line's extent, in code units, like its runs'. */
+  start: number;
+  end: number;
   runs: LaidRunLike[];
 }
 
@@ -177,15 +163,99 @@ function canFill(ctx: Context2D): ctx is FillContext {
   return typeof (ctx as Partial<FillContext> | null)?.fillRect === 'function';
 }
 
+/** A selected empty line still shows as a sliver, so a selection spanning a
+ *  blank line does not appear to skip it. Core's own width for the same. */
+const EMPTY_LINE_BAND = 4;
+
+/**
+ * The bands a highlight over `[start, end)` fills, in layout coordinates.
+ *
+ * One per line — and more than one on a line that changes direction, because
+ * a selection is contiguous in *logical* order while a line is laid out in
+ * *visual* order: a range crossing from Latin into Arabic covers two disjoint
+ * stretches of pixels, and a single rectangle drawn between the two caret
+ * positions paints over text nobody selected. So this walks `line.runs` and
+ * intersects each with the range rather than interpolating between carets.
+ *
+ * Core's `<text>` does the same thing with the same code (react-x11#291's
+ * `rangeBands`), which is not on its exports map; when it is, delete this.
+ */
+function rangeBands(
+  layout: TextLayoutLike,
+  text: string,
+  start: number,
+  end: number,
+): Rect[] {
+  const lines = layout.lines;
+  if (!lines?.length || end <= start) return [];
+  const offsets = codeUnitOffsets(text);
+  const last = offsets.length - 1;
+  const from = offsets[Math.max(0, Math.min(start, last))];
+  const to = offsets[Math.max(0, Math.min(end, last))];
+  if (to <= from) return [];
+  const bands: Rect[] = [];
+  for (const line of lines) {
+    if (line.end <= from || line.start >= to) continue;
+    const spans: [number, number][] = [];
+    for (const positioned of line.runs) {
+      const a = Math.max(from, positioned.start);
+      const b = Math.min(to, positioned.end);
+      if (b <= a) continue;
+      const rtl = positioned.run?.direction === 'rtl';
+      const near = line.x + positioned.x;
+      const far = near + positioned.width;
+      // a boundary at the run's own logical edge is that edge — which side
+      // of the pixels it is on is what the run's direction decides
+      const edgeAt = (cu: number, logicalStart: boolean): number => {
+        if (logicalStart ? cu <= positioned.start : cu >= positioned.end) {
+          return rtl === logicalStart ? far : near;
+        }
+        return layout.caretPosition(codePointAtOffset(offsets, cu)).x;
+      };
+      const x1 = edgeAt(a, true);
+      const x2 = edgeAt(b, false);
+      spans.push([Math.min(x1, x2), Math.max(x1, x2)]);
+    }
+    if (!spans.length) {
+      bands.push({
+        x: line.x,
+        y: line.y,
+        width: EMPTY_LINE_BAND,
+        height: line.height,
+      });
+      continue;
+    }
+    // Runs also split at every style span, so an ordinary line with a bold
+    // word in it is three rectangles that touch. Merging keeps the common
+    // case at one per line.
+    spans.sort((p, q) => p[0] - q[0]);
+    let [left, right] = spans[0];
+    for (let i = 1; i <= spans.length; i += 1) {
+      const next = spans[i];
+      if (next && next[0] <= right + 0.5) {
+        right = Math.max(right, next[1]);
+        continue;
+      }
+      if (right > left) {
+        bands.push({
+          x: left,
+          y: line.y,
+          width: right - left,
+          height: line.height,
+        });
+      }
+      if (next) [left, right] = next;
+    }
+  }
+  return bands;
+}
+
 export class RichTextNode extends Node {
   private _layouts = new Map<string, TextLayoutLike | null>();
-  private _plain: string[] | null = null;
-  private _selA = 0;
-  private _selB = 0;
+  private _text: string | null = null;
 
   constructor(props: Record<string, unknown>, app: NtkApp) {
     super(ELEMENT, props, app);
-    this._registry()?.register(this);
   }
 
   /**
@@ -204,10 +274,6 @@ export class RichTextNode extends Node {
       width: Math.ceil(layout.width),
       height: Math.ceil(layout.height),
     };
-  }
-
-  private _registry(): SelectionRegistry | null {
-    return (this.props as unknown as RichTextProps).registry ?? null;
   }
 
   private _runs(): TextRun[] {
@@ -242,7 +308,11 @@ export class RichTextNode extends Node {
     return layout;
   }
 
-  /** The layout this node is currently painted with. */
+  /**
+   * The layout this node is currently painted with — and, because it is the
+   * one thing every accessor below answers from, the reason a caret rect and
+   * a glyph cannot disagree (docs/extending.md, "answer from what you draw").
+   */
   private _paintLayout(): TextLayoutLike | null {
     const wrap = (this.props as unknown as RichTextProps).wrap !== false;
     return this._layoutFor(wrap ? this.abs.width : Infinity);
@@ -252,109 +322,72 @@ export class RichTextNode extends Node {
     nextProps: Record<string, unknown>,
     prevProps: Record<string, unknown>,
   ): void {
-    const prevRegistry = prevProps.registry as SelectionRegistry | undefined;
     super.applyProps(nextProps, prevProps);
     if (
       nextProps.runs !== prevProps.runs ||
       nextProps.wrap !== prevProps.wrap
     ) {
       this._layouts.clear();
-      this._plain = null;
-      this._clampSelection();
+      this._text = null;
       this.invalidateMeasure('content');
-    }
-    const registry = this._registry();
-    if (registry !== (prevRegistry ?? null)) {
-      prevRegistry?.unregister(this);
-      registry?.register(this);
     }
   }
 
   override destroySubtree(): void {
-    this._registry()?.unregister(this);
     this._layouts.clear();
     super.destroySubtree();
   }
 
-  // --- what the selection controller talks to ------------------------------
+  // --- answering for our own text ------------------------------------------
+  //
+  // The four accessors from react-x11#291. Implementing them is the whole of
+  // joining a `selectable` document: core walks the subtree, asks, and pushes
+  // back a `selectionRange` for `paint` to fill. Indices are **code points**
+  // and rectangles are in the **owning window's** coordinates, which is the
+  // space `abs` and a mouse event's `x`/`y` are already in.
 
-  /** Document order, as assigned by the renderer. */
-  get order(): number {
-    return Number((this.props as unknown as RichTextProps).order ?? 0);
-  }
-
-  /** Copy-time separator between this block and the one before it. */
-  get joiner(): string {
-    return (this.props as unknown as RichTextProps).joiner ?? '\n\n';
-  }
-
-  /** The text as code points — the unit every index in this API uses,
-   *  matching ntk's `caretPosition`/`indexAt`. */
-  private _chars(): string[] {
-    if (!this._plain) {
-      this._plain = Array.from(
-        this._runs()
-          .map((r) => r.text)
-          .join(''),
-      );
+  override textContent(): string {
+    if (this._text === null) {
+      this._text = this._runs()
+        .map((r) => r.text)
+        .join('');
     }
-    return this._plain;
+    return this._text;
   }
 
-  get length(): number {
-    return this._chars().length;
-  }
-
-  text(from = 0, to = this.length): string {
-    return this._chars().slice(from, to).join('');
-  }
-
-  /** Code-point index under a window-coordinate point, clamped. */
-  indexAtPoint(x: number, y: number): number {
+  override textIndexAt(x: number, y: number): number {
     const layout = this._paintLayout();
     if (!layout) return 0;
     const i = layout.indexAt(x - this.abs.x, y - this.abs.y);
-    return Math.max(0, Math.min(this.length, i));
+    return Math.max(0, Math.min([...this.textContent()].length, i));
   }
 
-  /** The word around an index — double-click's unit. */
-  wordRangeAt(index: number): [number, number] {
-    const chars = this._chars();
-    const n = chars.length;
-    if (n === 0) return [0, 0];
-    const i = Math.max(0, Math.min(n - 1, index));
-    const isWord = (ch: string): boolean => /[\p{L}\p{N}_]/u.test(ch);
-    const target = isWord(chars[i]);
-    let a = i;
-    let b = i + 1;
-    while (a > 0 && isWord(chars[a - 1]) === target && target) a -= 1;
-    while (b < n && isWord(chars[b]) === target && target) b += 1;
-    if (!target) return [i, i + 1];
-    return [a, b];
+  override textCaretRect(index: number): Rect | null {
+    const layout = this._paintLayout();
+    if (!layout) return null;
+    const caret = layout.caretPosition(index);
+    return {
+      x: this.abs.x + caret.x,
+      y: this.abs.y + caret.y,
+      width: 0,
+      height: caret.height,
+    };
   }
 
-  /** Set the highlighted range, [a, b) in code points. Equal ends clear. */
-  setSelection(a: number, b: number): void {
-    const lo = Math.max(0, Math.min(a, b));
-    const hi = Math.min(this.length, Math.max(a, b));
-    const [na, nb] = hi > lo ? [lo, hi] : [0, 0];
-    if (na === this._selA && nb === this._selB) return;
-    this._selA = na;
-    this._selB = nb;
-    this.root?.invalidate(false, this.abs, 'text');
+  override textRangeRects(start: number, end: number): Rect[] {
+    const layout = this._paintLayout();
+    if (!layout) return [];
+    return rangeBands(layout, this.textContent(), start, end).map((band) => ({
+      x: this.abs.x + band.x,
+      y: this.abs.y + band.y,
+      width: band.width,
+      height: band.height,
+    }));
   }
 
-  get selection(): [number, number] {
-    return [this._selA, this._selB];
-  }
-
-  private _clampSelection(): void {
-    const n = this.length;
-    if (this._selB > n) this._selB = n;
-    if (this._selA > this._selB) this._selA = this._selB;
-  }
-
-  /** The run's link target under a point, if any — for click-to-follow. */
+  /** The run's link target under a point, if any — for click-to-follow.
+   *  Not part of the selection seam: core deliberately left hover and
+   *  `cursorAt` out of #291, so following a link stays this package's. */
   hrefAtPoint(x: number, y: number): string | null {
     const layout = this._paintLayout();
     if (!layout) return null;
@@ -397,28 +430,20 @@ export class RichTextNode extends Node {
       }
     }
 
-    // 2. the selection band — translucent, so the ink keeps its contrast
-    //    on either palette (the same reasoning as `<textarea>`'s band)
-    if (this._selB > this._selA) {
-      const posA = layout.caretPosition(this._selA);
-      const posB = layout.caretPosition(this._selB);
-      const color =
-        (this.props as unknown as RichTextProps).selectionColor ??
-        tint(String(this.theme?.accent ?? '#2980b9'), 0.35);
-      ctx.fillStyle = color;
-      for (let li = posA.line; li <= posB.line; li += 1) {
-        const line = layout.lines[li];
-        if (!line) continue;
-        const x0 = li === posA.line ? posA.x : line.x;
-        const x1 = li === posB.line ? posB.x : line.x + line.width;
-        // a selected empty stretch still shows as a sliver, so a selection
-        // spanning a blank line does not appear to skip it
-        const w = Math.max(x1 - x0, 3);
+    // 2. the band the document selection has claimed of this element's text,
+    //    translucent so the ink keeps its contrast on either palette (the
+    //    same reasoning as `<textarea>`'s). The range and the colour both
+    //    arrive from the surface above; `textRangeRects` is what a custom
+    //    element and core's own `<text>` both fill, so they cannot drift.
+    const range = this.selectionRange;
+    if (range && range.end > range.start) {
+      ctx.fillStyle = this.selectionColor;
+      for (const r of this.textRangeRects(range.start, range.end)) {
         ctx.fillRect(
-          Math.round(x + x0),
-          Math.round(y + line.y),
-          Math.ceil(w),
-          Math.ceil(line.height),
+          Math.round(r.x),
+          Math.round(r.y),
+          Math.ceil(r.width),
+          Math.ceil(r.height),
         );
       }
     }

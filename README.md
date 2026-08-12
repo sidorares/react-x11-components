@@ -122,11 +122,20 @@ import type { SparklineProps } from '@react-x11/components';
 | `TrayHost`    | `@react-x11/components/tray-host`        | The system tray: applications dock their icons in.    |
 | _(hook)_      | `@react-x11/components/desktop-calendar` | The user's real calendar events, over D-Bus.          |
 
-Three shared modules sit underneath and are importable on their own:
-`/richtext` (the selectable styled-text element and its cross-block
-selection controller), `/code-language` (the pluggable tokenizer seam,
+Four shared modules sit underneath and are importable on their own:
+`/richtext` (the styled-text element a document selects across),
+`/codeblock` (the look of a block of code, shared by `<Code>` and
+`<Markdown>`'s fences), `/code-language` (the pluggable tokenizer seam,
 the built-in languages and the token palettes) and `/embed` (the spawn,
 watch and hand-back lifecycle both XEmbed wrappers are built on).
+
+Selecting text is **core's**, not this package's: a `<box selectable>` is
+a surface, everything under it that answers for its own text is in the
+selection, and the drag, the word and block granularities, Ctrl+A, Ctrl+C
+and PRIMARY come with it (react-x11#291). `<Markdown>` and `<Code>` set
+that prop and say which parts are chrome; the elements underneath answer
+`textContent`/`textIndexAt`/`textCaretRect`/`textRangeRects`, which is all
+an element of your own has to do to join a document.
 
 ## Markdown
 
@@ -163,8 +172,10 @@ AST types.
 **Selection is the point.** Text selects across every block — drag,
 double-click a word, triple-click a block, Ctrl+A, Ctrl+C — and a mouse-up
 with a selection takes the X11 PRIMARY selection, so middle-click paste
-works everywhere. Copied text is clean: list markers and table chrome stay
-behind, cells join with tabs and rows with newlines. Rendering is cached
+works everywhere. All of that is core's `selectable` (react-x11#291); what
+this component adds is which parts are chrome, so copied text is clean:
+list markers stay behind, and the separators come from the layout, which
+for a table is exactly cells with tabs and rows with newlines. Rendering is cached
 per top-level block on the raw source text, so appending to the tail
 re-renders the tail alone. `npm run examples:markdown` streams a document
 in live.
@@ -185,9 +196,9 @@ import { Code } from '@react-x11/components/code';
 ```
 
 Highlighting goes through the same language seam (`lang` tag or an
-explicit `language={…}`), selection and copy through the same machinery as
-`<Markdown>` — and the line-number gutter is not part of the selection, so
-copied code pastes clean.
+explicit `language={…}`) and the look is shared with `<Markdown>`'s fenced
+blocks, so the two agree in one window. Selection and copy are core's; the
+line-number gutter is `selectable={false}`, so copied code pastes clean.
 
 ## The code editor
 

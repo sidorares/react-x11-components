@@ -137,6 +137,12 @@ export class VtTermNode extends Node {
     // An app's `focusable`/`tabIndex` prop still overrides either way.
     this.focusableByDefault = true;
     this.defaultCursor = 'text';
+    // A terminal drags out a selection of its own, over a cell grid nothing
+    // outside it can index (react-x11#291). Saying so keeps a `selectable`
+    // document around it from walking in, and keeps the two from both
+    // claiming to be showing the application's selection — the same
+    // declaration `<textinput>` and `<codeeditor>` make.
+    this.hasOwnSelection = true;
     this._palette = buildPalette(paletteColors(this._props()));
     this._paletteKey = paletteKey(this._props());
     this._attach(this._props().term ?? null);

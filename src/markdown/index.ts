@@ -14,17 +14,29 @@
 // repair pre-pass (one pass instead of repair-then-reparse).
 //
 // So: `parse.ts` → AST → this file renders `<box>` structure with one
-// `<mdtext>` per run of inline text, and `selection.ts` stitches those
-// into one selectable document. During streaming, every top-level block
-// whose raw source did not change renders from a cache keyed on that raw
-// text, so appending to the tail re-renders the tail alone.
+// `<richtext>` per run of inline text, inside one `selectable` root. During
+// streaming, every top-level block whose raw source did not change renders
+// from a cache keyed on that raw text, so appending to the tail re-renders
+// the tail alone.
+//
+// **What the selection costs this file: nothing.** react-x11#291 made it a
+// core service, so a drag across blocks, the word and block granularities,
+// Ctrl+A, Ctrl+C and PRIMARY all arrive with the `selectable` prop on the
+// root. What a copy assembles comes from the *layout* — two blocks sharing
+// a band of pixels are joined with a tab, one below the last with a newline
+// — which is what a table's cells and rows already are on screen, so the
+// separator plumbing this renderer used to thread through every cell and
+// list line is gone. What is left to say is which parts are not text a
+// reader wants: the list markers, with `selectable={false}`.
 //
 // **MDX (planned, not implemented):** the AST reserves a `component` node
 // and the renderer keeps a components-map seam; because a document here is
 // ordinary React composition — not a painted widget — interleaving user
 // components is structurally possible, in streaming mode too (a pending
 // component tag is just one more held-back tail). The parser is the only
-// part that would grow.
+// part that would grow. A user component's text joins the selection by
+// answering the four accessors in core's docs/extending.md, with nothing to
+// register.
 import React from 'react';
 import type { ReactElement, ReactNode } from 'react';
 import { Icon, useApp, useTheme } from 'react-x11';
@@ -41,21 +53,22 @@ import type {
 import {
   registerRichText,
   RICHTEXT_ELEMENT,
-  TextSelection,
   tint,
-  useSelectionGestures,
+  useSelectionMenu,
 } from '../richtext/index.js';
-import type {
-  SelectionRegistry,
-  RichTextProps,
-  TextRun,
-} from '../richtext/index.js';
-import { autoTokenStyles, codeRuns } from '../code-language/index.js';
-import type { TokenStyles } from '../code-language/index.js';
+import type { RichTextProps, TextRun } from '../richtext/index.js';
+import {
+  codeBlockLook,
+  codeBlockRuns,
+  codeBlockStyle,
+  codeTextStyle,
+} from '../codeblock/index.js';
+import type { CodeBlockLook } from '../codeblock/index.js';
 
 import { parse } from './parse.js';
 import { runsOf, plainTextOf } from './spans.js';
 import type { InlineStyles } from './spans.js';
+import { useLinkClicks } from './links.js';
 import { hx } from './hx.js';
 
 export type {
@@ -114,15 +127,11 @@ interface Look {
   inline: InlineStyles;
   dim: string;
   border: string;
-  codeBlockBg: string;
   headerBg: string;
   headingScales: number[];
   blockGap: number;
-  /** Token palette for fenced code, chosen against the theme background. */
-  tokenStyles: TokenStyles;
-  /** Resolves `'$token'` colours a custom token palette may use. */
-  resolveToken: (name: string) => string | undefined;
-  selectionColor?: string;
+  /** Fenced code: shared with `<Code>`, so the two agree in one window. */
+  code: CodeBlockLook;
   highlight: boolean;
   /** Cache epoch: two equal keys derive identical elements. */
   key: string;
@@ -154,18 +163,10 @@ function deriveLook(
     inline,
     dim,
     border,
-    codeBlockBg: tint(text, 0.06),
     headerBg: tint(text, 0.05),
     headingScales: [1.75, 1.4, 1.2, 1.05, 0.95, 0.85],
     blockGap: Math.round(size * 0.7),
-    // the same palettes the code editor uses, picked by background
-    // luminance — a fenced block and an editor in one window agree
-    tokenStyles: autoTokenStyles(background),
-    resolveToken: (name) => {
-      const v = theme[name];
-      return typeof v === 'string' ? v : undefined;
-    },
-    selectionColor: props.selectionColor,
+    code: codeBlockLook(theme, { baseSize: size, monoFamily }),
     highlight,
     key: [
       text,
@@ -177,7 +178,6 @@ function deriveLook(
       family,
       monoFamily,
       highlight,
-      props.selectionColor,
     ].join('|'),
   };
 }
@@ -186,11 +186,6 @@ function deriveLook(
 
 interface RenderCtx {
   look: Look;
-  registry: SelectionRegistry | undefined;
-  /** Monotonic document-order counter for selection ordering. */
-  order: { n: number };
-  /** Copy separator for the next richtext in this scope. */
-  joiner: string;
   /** `app.fonts`, when real — table column sizing measures through it. */
   fonts: FontsMeasureLike | null;
 }
@@ -204,19 +199,12 @@ interface FontsMeasureLike {
 }
 
 function richtext(
-  ctx: RenderCtx,
   key: string | number,
   runs: TextRun[],
   style?: Style,
   wrap = true,
 ): ReactElement {
-  const props: RichTextProps & { key?: string | number } = {
-    runs,
-    order: ctx.order.n++,
-    registry: ctx.registry,
-    joiner: ctx.joiner,
-  };
-  if (ctx.look.selectionColor) props.selectionColor = ctx.look.selectionColor;
+  const props: RichTextProps & { key?: string | number } = { runs };
   if (!wrap) props.wrap = false;
   if (style) props.style = style;
   return h(RICHTEXT_ELEMENT, { ...props, key } as Record<string, unknown>);
@@ -237,7 +225,7 @@ function renderBlock(block: BlockNode, ctx: RenderCtx, key: number): ReactNode {
   const look = ctx.look;
   switch (block.type) {
     case 'paragraph':
-      return richtext(ctx, key, runsOf(block.children, look.inline));
+      return richtext(key, runsOf(block.children, look.inline));
 
     case 'heading': {
       const scale = look.headingScales[block.depth - 1] ?? 1;
@@ -245,7 +233,7 @@ function renderBlock(block: BlockNode, ctx: RenderCtx, key: number): ReactNode {
         size: Math.round(look.inline.size * scale),
         weight: 700,
       });
-      return richtext(ctx, key, runsOf(block.children, s), {
+      return richtext(key, runsOf(block.children, s), {
         marginTop: key === 0 ? 0 : Math.round(look.blockGap * 0.6),
       });
     }
@@ -302,48 +290,44 @@ function renderCode(
   ctx: RenderCtx,
   key: number,
 ): ReactNode {
-  const look = ctx.look;
-  const mono = inlineStyles(ctx, {
-    family: look.inline.monoFamily,
-    size: Math.round(look.inline.size * 0.9),
+  const code = ctx.look.code;
+  const runs = codeBlockRuns(text, code, {
+    lang,
+    highlight: ctx.look.highlight,
   });
-  const runs: TextRun[] = codeRuns(text, look.highlight ? lang : '', {
-    styles: look.tokenStyles,
-    color: mono.color,
-    resolveToken: look.resolveToken,
-  }).map((r) => ({ ...r, family: mono.family, size: mono.size }));
   // The block scrolls horizontally rather than wrapping — code is code.
   return hx(
     'box',
     {
       key,
       style: {
-        backgroundColor: look.codeBlockBg,
-        borderRadius: 6,
-        padding: Math.round(look.inline.size * 0.6),
+        ...codeBlockStyle(code),
         overflow: 'scroll',
         flexDirection: 'column',
       },
     },
-    richtext(ctx, 'code', runs, { lineHeight: 1.25 }, false),
+    richtext('code', runs, codeTextStyle(code), false),
   );
 }
 
 function renderList(list: ListBlock, ctx: RenderCtx, key: number): ReactNode {
   const look = ctx.look;
-  const itemCtx: RenderCtx = { ...ctx, joiner: '\n' };
   const gap = list.tight ? Math.round(look.blockGap * 0.25) : look.blockGap;
   const markerWidth = list.ordered
     ? Math.max(String(list.start + list.items.length - 1).length, 1) *
         Math.ceil(look.inline.size * 0.62) +
       10
     : Math.round(look.inline.size * 1.15);
+  // The bullet or the number is chrome, not text: `selectable={false}` keeps
+  // it out of what a drag across the list lights up *and* out of what the
+  // drag copies. CSS spells this `user-select: none`.
+  const markerStyle: Style = { ...STYLES.markerBox, width: markerWidth };
   const items = list.items.map((item, i) => {
     let marker: ReactNode;
     if (item.checked !== null) {
       marker = hx(
         'box',
-        { style: { ...STYLES.markerBox, width: markerWidth } },
+        { selectable: false, style: markerStyle },
         h(
           'box',
           {
@@ -367,7 +351,7 @@ function renderList(list: ListBlock, ctx: RenderCtx, key: number): ReactNode {
     } else {
       marker = hx(
         'box',
-        { style: { ...STYLES.markerBox, width: markerWidth } },
+        { selectable: false, style: markerStyle },
         hx(
           'text',
           {
@@ -395,7 +379,7 @@ function renderList(list: ListBlock, ctx: RenderCtx, key: number): ReactNode {
             flexShrink: 1,
           },
         },
-        ...renderBlocks(item.children, itemCtx),
+        ...renderBlocks(item.children, ctx),
       ),
     );
   });
@@ -436,7 +420,9 @@ function renderTable(
   for (let c = 0; c < cols; c += 1)
     widths[c] = Math.max(widths[c] + padX * 2 + 2, size * 2.5);
 
-  const cellCtx: RenderCtx = { ...ctx, joiner: '\t' };
+  // Nothing here says "these are cells and those are rows": a copy reads the
+  // boxes below, where two cells share a band of pixels and the next row
+  // starts under them, and joins them with tabs and newlines accordingly.
   const renderRow = (
     cells: InlineNode[][],
     s: InlineStyles,
@@ -455,10 +441,8 @@ function renderTable(
           borderTopColor: divided ? look.border : undefined,
         },
       },
-      ...cells.map((cell, c) => {
-        // the first cell of a row starts a new line in the copied text
-        const cellRunCtx = c === 0 ? { ...cellCtx, joiner: '\n' } : cellCtx;
-        return h(
+      ...cells.map((cell, c) =>
+        h(
           'box',
           {
             key: c,
@@ -470,12 +454,12 @@ function renderTable(
               paddingBottom: Math.round(size * 0.35),
             },
           },
-          richtext(cellRunCtx, 'c', runsOf(cell, s), {
+          richtext('c', runsOf(cell, s), {
             textAlign: table.align[c] ?? undefined,
             flexGrow: 1,
           }),
-        );
-      }),
+        ),
+      ),
     );
 
   const children: ReactNode[] = [];
@@ -513,14 +497,9 @@ const STYLES = {
 
 // --- the component ---------------------------------------------------------
 
-interface BlockCacheEntry {
-  element: ReactNode;
-  orderCount: number;
-}
-
 interface BlockCache {
   epoch: string;
-  map: Map<string, BlockCacheEntry>;
+  map: Map<string, ReactNode>;
 }
 
 /**
@@ -543,10 +522,8 @@ export function Markdown(props: MarkdownProps): ReactElement {
   const theme = useTheme() as unknown as Record<string, unknown>;
   const app = useApp() as { fonts?: FontsMeasureLike } | null;
 
-  const selectionRef = React.useRef<TextSelection | null>(null);
-  if (!selectionRef.current) selectionRef.current = new TextSelection();
-  const selection = selectionRef.current;
-  const gestures = useSelectionGestures(selection, { selectable, onLink });
+  const links = useLinkClicks(onLink);
+  const menu = useSelectionMenu(selectable);
 
   const look = React.useMemo(
     () => deriveLook(theme, props),
@@ -555,7 +532,6 @@ export function Markdown(props: MarkdownProps): ReactElement {
       props.fontSize,
       props.fontFamily,
       props.monoFamily,
-      props.selectionColor,
       props.highlight,
     ],
   );
@@ -565,15 +541,13 @@ export function Markdown(props: MarkdownProps): ReactElement {
     [source, partial],
   );
 
-  // Per-block element cache, keyed on the block's raw source (+ the order
-  // counter it starts at, + whether it is the live tail). Streaming appends
-  // re-render only the block that changed; everything else is the same
-  // ReactElement, so React bails out and the retained nodes keep their
-  // layout caches.
+  // Per-block element cache, keyed on the block's raw source (+ whether it
+  // is the live tail). Streaming appends re-render only the block that
+  // changed; everything else is the same ReactElement, so React bails out
+  // and the retained nodes keep their layout caches.
   const cacheRef = React.useRef<BlockCache | null>(null);
-  const registry = selectable ? selection : undefined;
   const fonts = app?.fonts ?? null;
-  const epoch = `${look.key}|${selectable}|${fonts ? 'f' : '-'}`;
+  const epoch = `${look.key}|${fonts ? 'f' : '-'}`;
   if (!cacheRef.current || cacheRef.current.epoch !== epoch) {
     cacheRef.current = { epoch, map: new Map() };
   }
@@ -581,29 +555,20 @@ export function Markdown(props: MarkdownProps): ReactElement {
 
   const children: ReactNode[] = [];
   {
-    const nextMap = new Map<string, BlockCacheEntry>();
-    const order = { n: 0 };
+    const nextMap = new Map<string, ReactNode>();
+    const ctx: RenderCtx = { look, fonts };
     for (let i = 0; i < doc.blocks.length; i += 1) {
       const live = partial && i === doc.blocks.length - 1;
-      const cacheKey = `${order.n}|${live ? 'L' : '.'}|${doc.raws[i]}`;
+      const cacheKey = `${i}|${live ? 'L' : '.'}|${doc.raws[i]}`;
       const hit = cache.map.get(cacheKey) ?? nextMap.get(cacheKey);
       if (hit !== undefined) {
-        children.push(hit.element);
-        order.n += hit.orderCount;
+        children.push(hit);
         nextMap.set(cacheKey, hit);
         continue;
       }
-      const before = order.n;
-      const ctx: RenderCtx = {
-        look,
-        registry,
-        order,
-        joiner: '\n\n',
-        fonts,
-      };
       const element = renderBlock(doc.blocks[i], ctx, i);
       children.push(element);
-      nextMap.set(cacheKey, { element, orderCount: order.n - before });
+      nextMap.set(cacheKey, element);
     }
     cache.map = nextMap; // old entries fall away with the text that made them
   }
@@ -611,7 +576,6 @@ export function Markdown(props: MarkdownProps): ReactElement {
   const rootStyle: Style = {
     flexDirection: 'column',
     gap: look.blockGap,
-    cursor: 'text',
     alignItems: 'stretch',
   };
 
@@ -621,8 +585,14 @@ export function Markdown(props: MarkdownProps): ReactElement {
       style: style
         ? [rootStyle, ...(Array.isArray(style) ? style : [style])]
         : rootStyle,
-      focusable: selectable || undefined,
-      ...gestures,
+      // The whole selection: a drag across blocks, word and block
+      // granularity, Ctrl+A, Ctrl+C, PRIMARY on release, and one visible
+      // selection per application. The surface is a focus target and shows
+      // an I-beam because it said this.
+      selectable,
+      selectionColor: props.selectionColor,
+      ...links,
+      ...menu,
       'data-testname': props['data-testname'],
     } as Record<string, unknown>,
     ...children,
