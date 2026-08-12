@@ -1107,14 +1107,20 @@ test(
     await waitFor(() => assert.ok(pty.last));
     const node = vtNode();
     const { rows } = node.gridSize();
-    // Fill the screen first and let it paint: a copy needs a mirror of
-    // something, and the very first frame has none.
+    // Fill the screen first and let it *paint*: a copy needs a mirror of
+    // something, and the very first frame has none. Waiting for the pixels
+    // rather than for the parse is the whole of it — on a slower machine the
+    // two feeds otherwise coalesce into one frame, which repaints instead of
+    // copying and is the coalescing working correctly.
     await act(async () => {
       pty.last!.feed(
         Array.from({ length: rows }, (_, i) => `line ${i}`).join('\r\n'),
       );
     });
-    await act(async () => {});
+    await waitFor(() =>
+      assert.match(node.serialize() ?? '', new RegExp(`line ${rows - 1}`)),
+    );
+    await settle(node);
     // Now push it up by one.
     await act(async () => {
       pty.last!.feed('\r\none more');
