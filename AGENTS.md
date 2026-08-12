@@ -393,6 +393,12 @@ somewhere else:
   "run the shell in a container / over ssh / in a sandbox" is a real thing to
   want. `test/fake-pty.ts` drives it, which is how CI tests a terminal with no
   native module anywhere.
+- **A test that renders `<Terminal>` must pin `pty`.** Since `'auto'` falls
+  through to vt, a `<Terminal>` with no emulator installed and no `pty` prop
+  opens a _real login shell_ — which then keeps node's event loop alive, so
+  the suite does not fail, it **hangs**. Every test here passes a
+  `FakePtyHost`; the one that drives a real pty is opt-in behind
+  `REACT_X11_COMPONENTS_REAL_PTY=1` for the same reason.
 
 ## Hosting a client nobody spawned
 

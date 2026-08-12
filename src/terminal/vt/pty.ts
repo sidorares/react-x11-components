@@ -109,6 +109,8 @@ export const PTY_MODULES: readonly string[] = ['node-pty', '@lydell/node-pty'];
  * bundle.
  */
 let probing: Promise<NodePty | null> | null = null;
+let loadError: Error | null = null;
+
 function loadNodePty(): Promise<NodePty | null> {
   probing ??= (async () => {
     for (const name of PTY_MODULES) {
@@ -120,14 +122,56 @@ function loadNodePty(): Promise<NodePty | null> {
         };
         const spawn = mod.spawn ?? mod.default?.spawn;
         if (typeof spawn === 'function') return { spawn } as NodePty;
-      } catch {
-        // not installed, or a native build that will not load on this
-        // platform — try the next one, and report "no pty" if there is none
+      } catch (err) {
+        // "Not installed" and "installed but it will not load" are very
+        // different problems with the same symptom, and telling a user to
+        // install what they already installed is the worst way to spend
+        // their afternoon. A missing module is an ordinary state and stays
+        // silent; anything else — a native build for the wrong Node ABI, a
+        // broken postinstall — is kept and reported through `onError`.
+        if (!isModuleNotFound(err)) {
+          loadError = err instanceof Error ? err : new Error(String(err));
+        }
       }
     }
     return null;
   })();
   return probing;
+}
+
+function isModuleNotFound(err: unknown): boolean {
+  const code = (err as { code?: string } | null)?.code;
+  return code === 'ERR_MODULE_NOT_FOUND' || code === 'MODULE_NOT_FOUND';
+}
+
+/**
+ * Why the probe came back empty, when the reason was not "nothing installed".
+ *
+ * Null both when a pty was found and when none of the modules is there at
+ * all — the caller says "install one" for that case, and this for the other.
+ */
+export function ptyLoadError(): Error | null {
+  return loadError;
+}
+
+/** The error a caller reports when no pty could be had. */
+export class PtyUnavailableError extends Error {
+  readonly tried: readonly string[];
+
+  constructor(cause?: unknown) {
+    const failed = cause ?? ptyLoadError();
+    super(
+      failed
+        ? `@react-x11/components: a pty module is installed but would not ` +
+            `load — ${failed instanceof Error ? failed.message : String(failed)}`
+        : `@react-x11/components: no pty module is installed — looked for ` +
+            `${PTY_MODULES.join(', ')}. Install one (\`npm i node-pty\`), or ` +
+            'pass `fallback` to render something else.',
+      { cause: failed ?? undefined },
+    );
+    this.name = 'PtyUnavailableError';
+    this.tried = PTY_MODULES;
+  }
 }
 
 /** `process`, if there is one — `globalThis` because `process` is not typed. */
@@ -245,13 +289,7 @@ export function nodePtyHost(): PtyHost {
 
     async openPty(argv, options) {
       const pty = await loadNodePty();
-      if (!pty) {
-        throw new Error(
-          '@react-x11/components: no pty module is installed — ' +
-            `looked for ${PTY_MODULES.join(', ')}. Install one to use ` +
-            '<Terminal backend="vt">.',
-        );
-      }
+      if (!pty) throw new PtyUnavailableError();
       const ambient = host.environment?.() ?? {};
       const merged: Record<string, string> = {};
       for (const [key, value] of Object.entries({

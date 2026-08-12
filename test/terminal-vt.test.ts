@@ -23,6 +23,7 @@ import {
   act,
   expectPixel,
   screen,
+  userEvent,
   waitFor,
 } from 'react-x11/test';
 import type { DrawnNode } from 'react-x11';
@@ -68,9 +69,11 @@ import {
 } from '../src/terminal/vt/diff.js';
 import type { CursorState } from '../src/terminal/vt/diff.js';
 import { createRenderer } from '../src/terminal/vt/renderer.js';
+import { PtyUnavailableError } from '../src/terminal/vt/pty.js';
 import { loadXterm } from '../src/terminal/vt/xterm.js';
 import type { XtermCell, XtermTerminal } from '../src/terminal/vt/xterm.js';
 import type { VtTermNode } from '../src/terminal/vt/node.js';
+import { nodePtyHost } from '../src/terminal/vt/pty.js';
 import { FakePtyHost } from './fake-pty.js';
 import { FakeHost } from './fake-host.js';
 
@@ -634,6 +637,15 @@ test('a selection repaints only the cells whose highlight changed', async () => 
 
 // --- 5. the component -------------------------------------------------------
 
+/** Act until the renderer stops drawing — "the screen has settled". */
+async function settle(node: VtTermNode): Promise<void> {
+  for (let i = 0; i < 8; i++) {
+    const before = node.rendererStats.totals.cellsFilled;
+    await act(async () => {});
+    if (node.rendererStats.totals.cellsFilled === before) return;
+  }
+}
+
 function vtNode(): VtTermNode {
   const node = screen.all((n: DrawnNode) => n.kind === 'vtterm')[0];
   assert.ok(node, 'a <vtterm> node is mounted');
@@ -757,6 +769,64 @@ test('Escape arms one pass-through Tab, and Escape still reaches the program', a
   assert.equal(pty.last?.written, '\x1b', 'and sends nothing');
   assert.ok(press({ keysym: XK_TAB }), 'the one after it indents again');
   assert.equal(pty.last?.written, '\x1b\t');
+});
+
+test("the clipboard chords are a terminal's, and they really fire", async () => {
+  // Through the real server, with real key events: the chord handling reads
+  // fields (keysym vs codepoint, base vs shifted) that a hand-built event
+  // object gets wrong in exactly the way the first cut of this did.
+  const pty = new FakePtyHost();
+  const r = await renderX11(h(Terminal, { backend: 'vt', pty }), {
+    backend: 'xserver',
+    width: 400,
+    height: 200,
+  });
+  await waitFor(() => assert.ok(pty.last));
+  const clipboard = (
+    r.app as unknown as {
+      clipboard: {
+        write(text: string, o?: { selection?: string }): Promise<unknown>;
+      };
+    }
+  ).clipboard;
+  const node = vtNode();
+  node.focus();
+  await act(async () => {});
+
+  await clipboard.write('pasted-text', { selection: 'CLIPBOARD' });
+  await userEvent.key(0x76 /* v */, { modifiers: ['Control', 'Shift'] });
+  await waitFor(() =>
+    assert.match(pty.last?.written ?? '', /pasted-text/, 'Ctrl+Shift+V pastes'),
+  );
+
+  // Super+V is the same thing for the Command key on a Mac keyboard: `keys.ts`
+  // never forwards a Super chord, so answering it takes nothing from the
+  // program.
+  pty.last!.writes.length = 0;
+  await clipboard.write('cmd-pasted', { selection: 'CLIPBOARD' });
+  await userEvent.key(0x76, { modifiers: ['Mod4'] });
+  await waitFor(() =>
+    assert.match(pty.last?.written ?? '', /cmd-pasted/, 'Super+V pastes too'),
+  );
+
+  // Shift+Insert takes PRIMARY, the convention that predates both.
+  pty.last!.writes.length = 0;
+  await clipboard.write('primary-text', { selection: 'PRIMARY' });
+  await userEvent.key(0xff63 /* Insert */, { modifiers: ['Shift'] });
+  await waitFor(() =>
+    assert.match(
+      pty.last?.written ?? '',
+      /primary-text/,
+      'Shift+Insert pastes',
+    ),
+  );
+
+  // And the ones that must NOT be intercepted: Ctrl+C is SIGINT and Ctrl+V is
+  // readline's literal-next, so both go to the program as control bytes.
+  pty.last!.writes.length = 0;
+  await userEvent.key(0x63 /* c */, { modifiers: ['Control'] });
+  await userEvent.key(0x76 /* v */, { modifiers: ['Control'] });
+  assert.equal(pty.last?.written, '\x03\x16');
 });
 
 test('the program exiting is reported once, with its status', async () => {
@@ -884,6 +954,42 @@ test(
 );
 
 test(
+  'the grid the layout gives is the grid the program is told about',
+  { skip: !FONTS },
+  async () => {
+    const pty = new FakePtyHost();
+    const ref = React.createRef<TerminalHandle>();
+    await renderX11(
+      h(Terminal, {
+        backend: 'vt',
+        pty,
+        ref,
+        fontFamily: 'monospace',
+        fontSize: 16,
+        colors: { background: '#000000', foreground: '#ffffff' },
+      }),
+      { fonts: FONTS!, width: 400, height: 200 },
+    );
+    await waitFor(() => assert.ok(pty.last));
+    const node = vtNode();
+    const grid = node.gridSize();
+    assert.ok(grid.cols > 1 && grid.rows > 1, 'the box measured to real cells');
+    // The emulator reflows to it…
+    await waitFor(() => assert.equal(ref.current?.cols, grid.cols));
+    assert.equal(ref.current?.rows, grid.rows);
+    // …and the pty hears about it, which is what SIGWINCH is.
+    const session = pty.last!;
+    const told =
+      session.resizes[session.resizes.length - 1] ??
+      ([pty.opened[0].options.cols, pty.opened[0].options.rows] as [
+        number,
+        number,
+      ]);
+    assert.deepEqual(told, [grid.cols, grid.rows]);
+  },
+);
+
+test(
   'a keystroke costs a couple of cells, not a screenful',
   { skip: !FONTS },
   async () => {
@@ -904,11 +1010,12 @@ test(
     await act(async () => {
       pty.last!.feed('$ echo hello');
     });
-    // Wait for the prompt to be *on screen*, not merely parsed: a keystroke
-    // that lands in the same frame as the line before it is one frame, which
-    // is the coalescing working rather than a budget being blown.
+    // Wait for the prompt to be *on screen*, not merely parsed, and then for
+    // the frames to stop coming: a keystroke that lands in the same frame as
+    // the line before it is one frame, which is the coalescing working rather
+    // than a budget being blown.
     await waitFor(() => assert.match(node.serialize() ?? '', /echo hello/));
-    await act(async () => {});
+    await settle(node);
     const before = { ...node.rendererStats.totals };
 
     // One more character. Measured as a delta over the renderer's lifetime
@@ -917,7 +1024,12 @@ test(
     await act(async () => {
       pty.last!.feed('!');
     });
-    await act(async () => {});
+    await waitFor(() =>
+      assert.ok(
+        node.rendererStats.totals.cellsFilled > before.cellsFilled,
+        'the frame that draws it has not landed yet',
+      ),
+    );
     const after = node.rendererStats.totals;
     const filled = after.cellsFilled - before.cellsFilled;
     const glyphs = after.glyphsDrawn - before.glyphsDrawn;
@@ -969,3 +1081,56 @@ test(
     });
   },
 );
+
+// --- 7. a real pty ----------------------------------------------------------
+
+// Everything above runs with no native module anywhere, which is what makes
+// it CI. This one drives a real pty, and it is **opt-in** rather than merely
+// skipped-when-absent:
+//
+//     REACT_X11_COMPONENTS_REAL_PTY=1 npx tsx --test test/terminal-vt.test.ts
+//
+// because node-pty keeps the event loop alive after its child has gone, so a
+// suite that touches one does not exit — `npm test` hangs rather than fails,
+// which is the worst way for a test to be wrong. The gate is the PRD's
+// (§13), and `@lydell/node-pty` is a devDependency so the run is one command
+// away for anyone.
+const REAL_PTY =
+  process.env.REACT_X11_COMPONENTS_REAL_PTY === '1' &&
+  (await nodePtyHost().available());
+
+test(
+  'a real program on a real pty reaches the screen',
+  { skip: !REAL_PTY },
+  async () => {
+    const host = nodePtyHost();
+    const ref = React.createRef<TerminalHandle>();
+    await renderX11(
+      h(Terminal, {
+        backend: 'vt',
+        pty: host,
+        ref,
+        command: ['/bin/sh', '-c', 'echo vt-real-pty; exit 3'],
+      }),
+      { backend: 'mock' },
+    );
+    await waitFor(() =>
+      assert.match(ref.current?.serialize() ?? '', /vt-real-pty/),
+    );
+    // …and the exit status of a program nobody faked.
+    await waitFor(() => assert.equal(ref.current?.status, 'exited'));
+  },
+);
+
+test('a pty seam that has nothing to load says which', async () => {
+  const err = new PtyUnavailableError();
+  assert.match(err.message, /no pty module is installed/);
+  assert.deepEqual([...err.tried], ['node-pty', '@lydell/node-pty']);
+  // The other half: a module that is there and will not load must not be
+  // reported as missing, because "install it" is then the wrong advice.
+  const broken = new PtyUnavailableError(
+    new Error('NODE_MODULE_VERSION 127 vs 145'),
+  );
+  assert.match(broken.message, /installed but would not load/);
+  assert.match(broken.message, /NODE_MODULE_VERSION/);
+});

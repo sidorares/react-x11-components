@@ -18,7 +18,12 @@ import type {
 import type { KeyboardEvent, MouseEvent, WheelEvent } from 'react-x11';
 import type { Style } from 'react-x11/style';
 import { Surface } from 'react-x11/ntk';
-import { XK_ESCAPE, XK_TAB } from 'react-x11/keysyms';
+import {
+  XK_ESCAPE,
+  XK_INSERT,
+  XK_TAB,
+  ctrlChordLetter,
+} from 'react-x11/keysyms';
 
 import type { TerminalColors } from '../backends.js';
 import { buildPalette } from './colors.js';
@@ -649,18 +654,9 @@ export class VtTermNode extends Node {
     const term = this._term;
     if (!term) return;
 
-    if (ev.ctrlKey && ev.shiftKey) {
-      const cp = ev.codepoint;
-      if (cp === 0x43 || cp === 0x63) {
-        this.copySelection();
-        ev.preventDefault();
-        return;
-      }
-      if (cp === 0x56 || cp === 0x76) {
-        this.paste('CLIPBOARD');
-        ev.preventDefault();
-        return;
-      }
+    if (this._clipboardChord(ev)) {
+      ev.preventDefault();
+      return;
     }
 
     if (ev.keysym === XK_TAB && this._tabEscapes) {
@@ -675,6 +671,55 @@ export class VtTermNode extends Node {
     this._typed();
     this._send(bytes);
     ev.preventDefault();
+  }
+
+  /**
+   * The clipboard chords, and why a terminal's are not everyone else's.
+   *
+   * **Ctrl+C and Ctrl+V are not available.** Ctrl+C is SIGINT — the single
+   * most-pressed key in a terminal — and Ctrl+V is readline's literal-next.
+   * Both have to reach the program, so every terminal since xterm spells the
+   * clipboard with Shift: **Ctrl+Shift+C / Ctrl+Shift+V**, which is what
+   * gnome-terminal, konsole, kitty and alacritty all use.
+   *
+   * Three more are accepted because they cost the program nothing:
+   *
+   * - **Super+C / Super+V** (Command on a Mac keyboard under XQuartz).
+   *   `keys.ts` never forwards a Super chord — those belong to the desktop —
+   *   so nothing is taken from the program by answering them here, and it is
+   *   the chord a Mac user's fingers already know.
+   * - **Shift+Insert** pastes PRIMARY and **Ctrl+Insert** copies to
+   *   CLIPBOARD: the X convention that predates all of the above and still
+   *   works everywhere.
+   * - **Ctrl+Shift+A** selects the screen. (Not Ctrl+A: that is
+   *   beginning-of-line, and readline wants it.)
+   *
+   * The letter comes from core's `ctrlChordLetter`, which is public for
+   * exactly this and gets the subtlety right — ntk derives `codepoint` from
+   * the *shifted* keysym, so Ctrl+Shift+V arrives as `V` and Ctrl+V as `v`,
+   * while the keysym does not shift.
+   */
+  private _clipboardChord(ev: KeyboardEvent): boolean {
+    if (ev.keysym === XK_INSERT && (ev.shiftKey || ev.ctrlKey)) {
+      if (ev.shiftKey) this.paste('PRIMARY');
+      else this.copySelection();
+      return true;
+    }
+    const clipboardModifier = (ev.ctrlKey && ev.shiftKey) || ev.metaKey;
+    if (!clipboardModifier) return false;
+    switch (ctrlChordLetter(ev)) {
+      case 0x63: // c
+        this.copySelection();
+        return true;
+      case 0x76: // v
+        this.paste('CLIPBOARD');
+        return true;
+      case 0x61: // a
+        this.selectAll();
+        return true;
+      default:
+        return false;
+    }
   }
 
   /**

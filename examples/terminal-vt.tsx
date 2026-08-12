@@ -1,6 +1,15 @@
-// Run with: npm run examples:terminal-vt   (needs an X server / DISPLAY and a
-// pty module — `npm i node-pty` or `npm i @lydell/node-pty`. It needs no
-// terminal emulator installed, which is the whole point of this backend.)
+// Run with: npm run examples:terminal-vt   (needs an X server / DISPLAY. It
+// needs no terminal emulator installed, which is the whole point of this
+// backend, and the pty it does need is already a devDependency here —
+// `@lydell/node-pty`, 220 KB.)
+//
+// **`npm install node-pty` in this repo installs nothing**, and exits 0 while
+// doing it: this package *declares* node-pty as an optional peer dependency,
+// so npm treats the request as already satisfied by the declaration and
+// writes only the lockfile. In an app that consumes this package it is an
+// ordinary `npm i node-pty`; in here, use `npm i --save-dev node-pty` (and do
+// not commit it — 64 MB) if you want to test against that provider rather
+// than the fork.
 //
 // The same component as `terminal.tsx` with one prop changed, and three
 // things that only work this way:
@@ -97,10 +106,15 @@ function App(): ReactElement {
           }
           onError={(err) => setStatus(err.message)}
           fallback={
-            <box style={{ flexGrow: 1, padding: 24 }}>
-              <text style={{ fontSize: 13, color: '$dim' }}>
-                No pty module. Install one: npm i node-pty
+            // `status` is whatever `onError` last said, which separates "no
+            // pty module here" from "there is one and it would not load" —
+            // printing a fixed "install node-pty" would be a lie in the
+            // second case, and the second case is the confusing one.
+            <box style={{ flexGrow: 1, padding: 24, gap: 8 }}>
+              <text style={{ fontSize: 13, color: '$text' }}>
+                The vt backend is unavailable.
               </text>
+              <text style={{ fontSize: 12, color: '$dim' }}>{status}</text>
             </box>
           }
         />

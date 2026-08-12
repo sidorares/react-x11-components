@@ -398,9 +398,18 @@ The dependencies stay optional, and the split is deliberate:
 nothing else would bring it), while the pty is an **optional peer**, either
 `node-pty` or `@lydell/node-pty`, probed in that order. node-pty unpacks to
 64 MB and builds a native addon, which is not something a package a calendar
-app installed may drag in. With neither present, `status` is `'unavailable'`
-and `fallback` renders — an ordinary state of a healthy machine, never a
-throw.
+app installed may drag in. So an app installs the one it wants:
+
+```bash
+npm i node-pty              # or: npm i @lydell/node-pty
+```
+
+With neither present, `status` is `'unavailable'` and `fallback` renders — an
+ordinary state of a healthy machine, never a throw. `onError` says _which_
+half is missing, and separates "nothing installed" from "installed but it
+would not load", because a native module built for another Node ABI looks
+exactly like a missing one from the outside and "install it" is then the
+wrong advice.
 
 None of it costs anything to an app that does not use it: the whole vt
 module, `registerElement('vtterm')` included, sits behind a dynamic

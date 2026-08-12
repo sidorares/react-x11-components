@@ -33,7 +33,7 @@ import type { EmbedStatus, ExitInfo } from '../../embed/index.js';
 import type { TerminalColors } from '../backends.js';
 import { ELEMENT, VtTermNode } from './node.js';
 import type { VtTermProps } from './node.js';
-import { defaultShell, nodePtyHost } from './pty.js';
+import { PtyUnavailableError, defaultShell, nodePtyHost } from './pty.js';
 import type { PtyHost, PtySession } from './pty.js';
 import { startTimeout, stopTimeout } from '../../embed/timers.js';
 import type { TimerId } from '../../embed/timers.js';
@@ -42,7 +42,13 @@ import type { XtermTerminal } from './xterm.js';
 
 export { ELEMENT as VT_TERMINAL_ELEMENT, VtTermNode };
 export type { VtTermProps };
-export { nodePtyHost, defaultShell } from './pty.js';
+export {
+  PTY_MODULES,
+  PtyUnavailableError,
+  defaultShell,
+  nodePtyHost,
+  ptyLoadError,
+} from './pty.js';
 export type { PtyHost, PtyOptions, PtySession } from './pty.js';
 
 if (!registeredElements().includes(ELEMENT)) {
@@ -184,13 +190,26 @@ export function VtTerminal(props: VtTerminalProps): ReactElement {
       if (!live) return;
       if (!mod) {
         // An ordinary state of a healthy machine — `npm install --no-optional`
-        // — so it is a status and a fallback, never a throw (AGENTS.md).
-        report('unavailable');
+        // — so it is a status and a fallback, never a throw (AGENTS.md). It
+        // is still *reported*: `status` and `fallback` say something is
+        // missing, and only `onError` can say which thing.
+        fail(
+          new Error(
+            '@react-x11/components: the terminal core is not installed — ' +
+              '`npm i @xterm/headless`, or pass `fallback` to render ' +
+              'something else.',
+          ),
+          'unavailable',
+        );
         return;
       }
       const host = handlers.current.pty ?? nodePtyHost();
       if (!(await host.available())) {
-        if (live) report('unavailable');
+        // The message separates "nothing installed" from "installed but it
+        // would not load" — a native module built for another Node ABI looks
+        // exactly like a missing one from out here, and telling somebody to
+        // install what they already installed is the worst answer available.
+        if (live) fail(new PtyUnavailableError(), 'unavailable');
         return;
       }
       if (!live) return;
