@@ -100,16 +100,25 @@
     "examples:media-player": "tsx examples/media-player.tsx",
     "examples:sparkline": "tsx examples/sparkline.tsx",
     "examples:terminal": "tsx examples/terminal.tsx",
+    "examples:terminal-vt": "tsx examples/terminal-vt.tsx",
     "examples:tray-host": "tsx examples/tray-host.tsx",
     "prepack": "npm run build"
   },
   "peerDependencies": {
     "@lezer/highlight": "^1.0.0",
+    "@lydell/node-pty": "^1.0.0",
+    "node-pty": "^1.0.0",
     "react": "^19.0.0",
     "react-x11": "^2.0.0"
   },
   "peerDependenciesMeta": {
     "@lezer/highlight": {
+      "optional": true
+    },
+    "@lydell/node-pty": {
+      "optional": true
+    },
+    "node-pty": {
       "optional": true
     }
   },
@@ -130,6 +139,7 @@
     "access": "public"
   },
   "optionalDependencies": {
+    "@xterm/headless": "^6.0.0",
     "ical.js": "^2.2.1"
   }
 }

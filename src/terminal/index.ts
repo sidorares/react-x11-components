@@ -11,22 +11,34 @@
 // lines. Layout, focus, the ICCCM configure and handing the client back on
 // unmount are all core's — see react-x11's `foreignnodes.js`.
 //
-// Registers no element: `<foreign>` is a built-in. Like `<Calendar>`, this
-// module has **no side effect at import time at all**.
+// Registers no element *itself*: `<foreign>` is a built-in, and the vt
+// backend's `<vtterm>` is registered by `./vt/index.ts`, which is reached
+// only through a dynamic `import()`. So this module still has **no side
+// effect at import time at all**, and an app on an XEmbed backend never loads
+// the emulator core.
 //
-// ### What is deliberately not here
+// ### The second backend
 //
-// **`write()`.** The issue this came from sketches a handle with
-// `write()`/`signal()`/`restart()`, and the other two are here. Writing into
-// the terminal is not, because there is no honest way to do it with an
-// external emulator: the pty belongs to xterm, not to us, so "type this" would
-// have to be synthetic X key events — which xterm ignores unless
-// `allowSendEvents` is on (a documented security setting, off by default, and
-// not ours to turn on in a user's terminal), and which alacritty's event loop
-// filters out entirely. The name is reserved rather than faked: a pure-JS VT
-// backend over a pty — the fallback the issue also sketches — owns the input
-// side for real, and `write()` lands with it, behind the same props.
-import React, { useMemo } from 'react';
+// `backend="vt"` is the same component over a pty and `@xterm/headless`,
+// rendered as a native element rather than as somebody else's X window. It is
+// what makes `write()` real — the pty is ours — and what works on a machine
+// with no emulator installed, which is why `'auto'` ends there rather than at
+// the `fallback`.
+//
+// **`write()` still returns `false` on the XEmbed backends**, and that is not
+// an oversight: the pty belongs to xterm, so "type this" would have to be
+// synthetic X key events, which xterm ignores unless `allowSendEvents` is on
+// (a documented security setting, off by default and not ours to change in a
+// user's terminal) and which alacritty's event loop filters out entirely.
+// Returning `false` rather than throwing lets an app feature-test with the
+// call itself.
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import type { ReactElement, ReactNode, Ref } from 'react';
 import { useTheme } from 'react-x11';
 import type { ForeignProps } from 'react-x11';
@@ -52,6 +64,8 @@ import type {
 } from './backends.js';
 import { useForeignTitle } from './title.js';
 import { hx } from './hx.js';
+import type { PtyHost } from './vt/pty.js';
+import type { VtHandle, VtTerminalProps } from './vt/index.js';
 
 export {
   TERMINAL_BACKENDS,
@@ -69,6 +83,16 @@ export type {
 
 const h = React.createElement;
 
+/**
+ * What `import('./vt/index.js')` resolves to.
+ *
+ * A `typeof import(…)` type rather than a value import: the whole point is
+ * that the vt module — and `@xterm/headless` behind it — is fetched only when
+ * a vt terminal is actually rendered, which is what `test/treeshake.test.ts`
+ * asserts by bundling this subpath and looking for the emulator in it.
+ */
+type VtModule = typeof import('./vt/index.js');
+
 /** `<foreign>`'s props as `hx` takes them — `theme` is dropped because
  *  `hx` re-declares it (see `./hx.ts`). */
 type ForeignElementProps = Omit<ForeignProps, 'theme'>;
@@ -83,11 +107,33 @@ export interface TerminalHandle {
   signal(signal?: string): boolean;
   /** The emulator's pid, or `null`. */
   readonly pid: number | null;
-  /** The `<foreign>` container's X window id — what the emulator was given. */
+  /** The `<foreign>` container's X window id — what the emulator was given.
+   *  `null` on the vt backend, which has no child X window. */
   readonly windowId: number | null;
   /** Which backend was chosen, once one has been. */
   readonly backend: string | null;
   readonly status: EmbedStatus;
+
+  /**
+   * Type into the terminal. **vt backend only** — `false` everywhere else,
+   * for the reason at the top of this file, so an app can feature-test with
+   * the call itself.
+   */
+  write(data: string): boolean;
+  /** Re-derive the grid from the current layout now, rather than at the next
+   *  paint. vt only. */
+  resizeToFit(): void;
+  /** Columns and rows the emulator currently has. vt only. */
+  readonly cols: number | null;
+  readonly rows: number | null;
+  /** The selected text, or null. vt only. */
+  selection(): string | null;
+  clearSelection(): void;
+  scrollToBottom(): void;
+  /** Move the viewport by `n` lines — negative is back into the scrollback. */
+  scrollLines(n: number): void;
+  /** The visible screen as text: "copy all", and what a test asserts on. */
+  serialize(): string | null;
 }
 
 export interface TerminalProps {
@@ -104,14 +150,19 @@ export interface TerminalProps {
   cwd?: string;
   /** Added to the ambient environment, not a replacement for it. */
   env?: Record<string, string | undefined>;
-  /** Which emulator. Default `'auto'`: the first of xterm, urxvt, alacritty
-   *  that is installed. */
+  /**
+   * Which terminal. Default `'auto'`: the first of xterm, urxvt, alacritty
+   * that is installed, and `'vt'` — this package's own emulator, which needs
+   * nothing installed — when none of them is.
+   */
   backend?: TerminalBackendName;
   fontFamily?: string;
   fontSize?: number;
   /** Lines of scrollback the emulator keeps. */
   scrollback?: number;
-  /** The emulator's window title before the program sets one of its own. */
+  /** The emulator's window title before the program sets one of its own.
+   *  XEmbed backends only — the vt backend has no window of its own to name,
+   *  and reports the program's own title through `onTitleChange`. */
   title?: string;
   /**
    * Colours for the emulator. Default: the react-x11 theme's `background` and
@@ -150,6 +201,67 @@ export interface TerminalProps {
   style?: Style | Style[];
   ref?: Ref<TerminalHandle>;
   'data-testname'?: string;
+
+  // --- vt backend only -----------------------------------------------------
+  //
+  // Each of these needs the emulator to be ours. On an XEmbed backend they are
+  // ignored — the running program owns its cursor, its bell and its clipboard,
+  // and none of it is reachable from out here — with a warning in development,
+  // because a prop that silently does nothing is the worst shape a prop has.
+
+  /** Default `'block'`. */
+  cursorStyle?: 'block' | 'underline' | 'bar';
+  /** Default true. */
+  cursorBlink?: boolean;
+  /** The program rang the bell. */
+  onBell?: () => void;
+  /** What the bell looks like. Default `'none'`; `'visual'` flashes the pane. */
+  bell?: 'none' | 'visual';
+  /** Honour OSC 52 clipboard *writes* — how `tmux` and `vim` copy out of an
+   *  ssh session. Default true. Reads are never answered, at any setting. */
+  allowClipboardWrite?: boolean;
+  /** The user finished selecting; the text is also on PRIMARY. */
+  onSelectionChange?: (text: string) => void;
+  /**
+   * Where the pty comes from. The `processes` seam's counterpart, public for
+   * the same reason — "run the shell in a container / over ssh / under a
+   * sandbox" is a real thing to want — and what the tests drive.
+   */
+  pty?: PtyHost;
+}
+
+/** The props only the vt backend reads, for the development warning below. */
+const VT_ONLY = [
+  'cursorStyle',
+  'cursorBlink',
+  'onBell',
+  'bell',
+  'allowClipboardWrite',
+  'onSelectionChange',
+  'pty',
+] as const;
+
+/**
+ * Say so, once, when a vt-only prop was passed to an embedded emulator.
+ *
+ * `process` and `console` come off `globalThis` because the build compiles
+ * `src/` with `types: []` — a Node global that wanders in has to fail the
+ * build rather than become an implicit `@types/node` dependency.
+ */
+function warnVtOnly(props: TerminalProps): void {
+  const g = globalThis as {
+    process?: { env?: Record<string, string | undefined> };
+    console?: { warn(message: string): void };
+  };
+  if (g.process?.env?.NODE_ENV === 'production') return;
+  const named = VT_ONLY.filter((name) => props[name] !== undefined);
+  if (named.length === 0) return;
+  g.console?.warn(
+    `@react-x11/components: <Terminal ${named.join(', ')}> ` +
+      `${named.length === 1 ? 'is' : 'are'} only honoured by ` +
+      'backend="vt" — an embedded emulator owns its own cursor, bell and ' +
+      'clipboard.',
+  );
 }
 
 /**
@@ -166,15 +278,20 @@ export interface TerminalProps {
  * />
  * ```
  *
- * **The emulator's window stacks above everything drawn in this one**, the
- * same rule `<glarea>` has, so nothing 2D can overlap it: an overlay belongs
- * in a sibling `<popup>`.
+ * **On an XEmbed backend the emulator's window stacks above everything drawn
+ * in this one**, the same rule `<glarea>` has, so nothing 2D can overlap it:
+ * an overlay belongs in a sibling `<popup>`. The vt backend has no child
+ * window and composites like any other node, so a `<popup>` over it works.
  *
  * **Keys reach the app first.** While the terminal holds focus, react-x11
  * dispatches each key through the React tree and forwards whatever nothing
  * called `preventDefault()` on — so an application chord still wins. The one
  * exception is X's own rule that the pointer position picks the recipient:
- * while the pointer is *over* the terminal, keys go straight to it.
+ * while the pointer is *over* an embedded emulator, keys go straight to it.
+ *
+ * **The vt backend is the floor.** With `backend="auto"` (the default), a
+ * machine with no emulator installed gets this package's own — so `fallback`
+ * renders only when the pty module or `@xterm/headless` is missing too.
  */
 export function Terminal(props: TerminalProps): ReactElement {
   const {
@@ -266,36 +383,111 @@ export function Terminal(props: TerminalProps): ReactElement {
     [backend, key],
   );
 
+  // --- which half of the component is running ------------------------------
+  //
+  // `'vt'` asks for it outright; `'auto'` arrives here only after the PATH
+  // probe found no emulator, which is what makes vt the floor rather than a
+  // parallel option. Both halves' hooks run unconditionally — the one that is
+  // not in use is simply disabled — because that is what hooks require and
+  // because a `<Terminal>` that flips backends must not remount the other one.
+  const [vtFallback, setVtFallback] = useState(false);
+  const vt = backend === 'vt' || (backend === 'auto' && vtFallback);
+  useEffect(() => {
+    if (backend !== 'auto') setVtFallback(false);
+  }, [backend]);
+
   const client = useEmbeddedClient({
     plan,
     host: processes,
-    enabled,
+    enabled: enabled && !vt,
     stopSignal,
     onExit: props.onExit,
     onError: props.onError,
   });
 
+  useEffect(() => {
+    if (backend === 'auto' && client.status === 'unavailable') {
+      setVtFallback(true);
+    }
+  }, [backend, client.status]);
+
+  // Not `vt`, because `'auto'` may still land there: what is worth a warning
+  // is a backend that was *named* and cannot honour the prop.
+  useEffect(() => {
+    if (backend !== 'auto' && backend !== 'vt') warnVtOnly(props);
+    // Once per backend change, not once per render — the props object is a
+    // new identity every time and this is a diagnostic, not a subscription.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [backend]);
+
   const title = useForeignTitle(props.onTitleChange);
+
+  // The vt module is loaded on demand and never at import time: this is the
+  // whole tree-shaking bargain — `@xterm/headless` and the renderer are a
+  // separate chunk that an XEmbed app never fetches.
+  const [vtModule, setVtModule] = useState<VtModule | null>(null);
+  const [vtStatus, setVtStatus] = useState<EmbedStatus>('idle');
+  const onErrorRef = useRef(props.onError);
+  onErrorRef.current = props.onError;
+
+  useEffect(() => {
+    if (!vt || vtModule) return undefined;
+    let live = true;
+    void import('./vt/index.js')
+      .then((mod) => {
+        if (live) setVtModule(mod);
+      })
+      .catch((err: unknown) => {
+        if (!live) return;
+        setVtStatus('unavailable');
+        onErrorRef.current?.(
+          err instanceof Error ? err : new Error(String(err)),
+        );
+      });
+    return () => {
+      live = false;
+    };
+  }, [vt, vtModule]);
+
+  const vtHandle = useRef<VtHandle | null>(null);
+  const onVtStatus = useCallback((next: EmbedStatus) => setVtStatus(next), []);
 
   React.useImperativeHandle(
     props.ref,
     () => ({
-      restart: client.restart,
-      signal: client.signal,
+      restart: () => (vt ? vtHandle.current?.restart() : client.restart()),
+      signal: (signal?: string) =>
+        vt
+          ? (vtHandle.current?.signal(signal) ?? false)
+          : client.signal(signal),
+      write: (data: string) => vtHandle.current?.write(data) ?? false,
+      resizeToFit: () => vtHandle.current?.resizeToFit(),
+      selection: () => vtHandle.current?.selection() ?? null,
+      clearSelection: () => vtHandle.current?.clearSelection(),
+      scrollToBottom: () => vtHandle.current?.scrollToBottom(),
+      scrollLines: (n: number) => vtHandle.current?.scrollLines(n),
+      serialize: () => vtHandle.current?.serialize() ?? null,
       get pid() {
-        return client.pid;
+        return vt ? (vtHandle.current?.pid ?? null) : client.pid;
       },
       get windowId() {
-        return client.windowId;
+        // The vt backend draws into this window; there is no child to name.
+        return vt ? null : client.windowId;
       },
       get backend() {
-        return client.backend;
+        return vt ? 'vt' : client.backend;
       },
       get status() {
-        return client.status;
+        return vt ? vtStatus : client.status;
+      },
+      get cols() {
+        return vtHandle.current?.cols ?? null;
+      },
+      get rows() {
+        return vtHandle.current?.rows ?? null;
       },
     }),
-    [client],
+    [client, vt, vtStatus],
   );
 
   const style: Style = {
@@ -312,6 +504,47 @@ export function Terminal(props: TerminalProps): ReactElement {
       : [props.style]) {
       styles.push(extra);
     }
+  }
+
+  if (vt) {
+    // Nothing installed *at all* — no emulator, and no pty module or no
+    // `@xterm/headless` either — is still an ordinary state of a healthy
+    // machine, and still a status plus a fallback rather than a throw.
+    if (vtStatus === 'unavailable' && props.fallback !== undefined) {
+      return h(React.Fragment, null, props.fallback);
+    }
+    if (!vtModule) {
+      // The dynamic import is in flight. An empty box in the terminal's own
+      // background holds the layout, so the pane does not jump when it lands.
+      return hx('box', { style: styles });
+    }
+    const vtProps: VtTerminalProps = {
+      command: props.command,
+      cwd: props.cwd,
+      env: props.env,
+      colors,
+      fontFamily: props.fontFamily,
+      fontSize: props.fontSize,
+      scrollback: props.scrollback,
+      cursorStyle: props.cursorStyle,
+      cursorBlink: props.cursorBlink,
+      bell: props.bell,
+      onBell: props.onBell,
+      allowClipboardWrite: props.allowClipboardWrite,
+      onSelectionChange: props.onSelectionChange,
+      pty: props.pty,
+      enabled,
+      stopSignal,
+      focusable: focusable ?? true,
+      onExit: props.onExit,
+      onTitleChange: props.onTitleChange,
+      onError: props.onError,
+      onStatus: onVtStatus,
+      style: styles,
+      ref: vtHandle,
+      'data-testname': props['data-testname'],
+    };
+    return h(vtModule.VtTerminal, vtProps);
   }
 
   // No backend installed is an ordinary state of a perfectly healthy machine,

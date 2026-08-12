@@ -118,7 +118,7 @@ import type { SparklineProps } from '@react-x11/components';
 | `Markdown`    | `@react-x11/components/markdown`         | Streaming-friendly GFM with cross-block selection.    |
 | `MediaPlayer` | `@react-x11/components/media-player`     | mpv or VLC, embedded, with real transport control.    |
 | `Sparkline`   | `@react-x11/components/sparkline`        | A bare line chart. Needs a width and a height.        |
-| `Terminal`    | `@react-x11/components/terminal`         | A real terminal emulator, embedded as an element.     |
+| `Terminal`    | `@react-x11/components/terminal`         | A real terminal: an embedded emulator, or its own.    |
 | `TrayHost`    | `@react-x11/components/tray-host`        | The system tray: applications dock their icons in.    |
 | _(hook)_      | `@react-x11/components/desktop-calendar` | The user's real calendar events, over D-Bus.          |
 
@@ -346,11 +346,11 @@ Four things worth knowing before reaching for them:
   mpv's JSON IPC socket — changing them does not respawn the player. Under
   VLC that channel is write-only, so play/pause/seek/volume work and
   `onProgress` never fires; `handle.reportsProgress` says which you have.
-- **`<Terminal>` has no `write()`.** There is no honest way to type into an
-  external emulator — the pty is xterm's, not ours, and synthetic key events
-  are refused by xterm (`allowSendEvents`) and dropped by alacritty. The name
-  is reserved for a pure-JS VT backend over a real pty, which would own the
-  input side and slot in behind the same props.
+- **`write()` needs the pty to be ours**, so it works on `backend="vt"`
+  below and returns `false` on the embedded emulators: the pty there is
+  xterm's, and synthetic key events are refused by xterm
+  (`allowSendEvents`) and dropped by alacritty. An app can feature-test with
+  the call itself.
 
 `npm run examples:terminal` and
 `npm run examples:media-player -- <file>` are both working programs.
@@ -359,6 +359,72 @@ Both take a `processes` prop — the `ProcessHost` seam from
 `@react-x11/components/embed` — so the child can be run somewhere other than
 this machine, and so the test suite can assert what _would_ have been spawned
 without an xterm in CI.
+
+### `<Terminal backend="vt">` — the terminal this package draws itself
+
+One prop changes the terminal from a hosted X client into a native element: a
+pty (through a pluggable `PtyHost`), [`@xterm/headless`][xterm-headless] as
+the escape-sequence state machine, and a cell-grid renderer that draws with
+XRender glyph runs into a retained offscreen surface, scrolls with a
+server-side copy, and coalesces onto react-x11's vblank-paced frame clock.
+
+```jsx
+<Terminal
+  backend="vt"
+  command={['bash', '-l']}
+  cursorStyle="bar"
+  bell="visual"
+  style={{ flexGrow: 1 }}
+  onSelectionChange={setCopied}
+  fallback={<text>Install a pty module: npm i node-pty</text>}
+/>
+```
+
+What it buys over the embedded emulators:
+
+- **It works with nothing installed** — no xterm, no alacritty. That is why
+  `backend="auto"` (the default) now ends here instead of at the `fallback`:
+  the ladder is xterm → urxvt → alacritty → vt.
+- **`write()` is real**, and with it `cols`/`rows`, `resizeToFit()`,
+  `selection()`, `scrollLines()` and `serialize()` on the handle.
+- **It is a native element, not a hole punched in the window.** Theme colours
+  apply exactly (`colors.palette` included, which urxvt cannot take at all),
+  a `<popup>` composites _above_ it, and focus follows the app's rules.
+- **It is testable without a display.** A fake pty plus the in-process X
+  server gives byte-in/pixel-out tests; `test/terminal-vt.test.ts` is one.
+
+The dependencies stay optional, and the split is deliberate:
+`@xterm/headless` is an **optionalDependency** (2 MB, installs by default —
+nothing else would bring it), while the pty is an **optional peer**, either
+`node-pty` or `@lydell/node-pty`, probed in that order. node-pty unpacks to
+64 MB and builds a native addon, which is not something a package a calendar
+app installed may drag in. With neither present, `status` is `'unavailable'`
+and `fallback` renders — an ordinary state of a healthy machine, never a
+throw.
+
+None of it costs anything to an app that does not use it: the whole vt
+module, `registerElement('vtterm')` included, sits behind a dynamic
+`import()` taken only when the backend is selected, and
+`test/treeshake.test.ts` asserts the terminal's entry chunk does not contain
+it.
+
+Keyboard, mouse and selection are what a terminal user expects: xterm-compatible
+key encoding (application cursor/keypad modes, the modifier parameter
+scheme, `Alt` as an ESC prefix), mouse reporting in the tracking mode the
+program asked for (with Shift as the universal "let me select instead"
+override), char/word/line selection that publishes PRIMARY, middle-click
+paste, Ctrl+Shift+C/V, bracketed paste, and OSC 52 clipboard **writes** —
+never reads, which are answered with nothing whatever a program asks for.
+
+Escape arms one pass-through Tab, so the terminal is not a keyboard trap;
+Escape still reaches the program, and the arming is off while an alternate-screen
+application (vim, htop) is up, because it owns Esc-then-Tab as real input.
+
+`npm run examples:terminal-vt` is a working program, and
+[`docs/prd-vt-terminal.md`](docs/prd-vt-terminal.md) is the design document
+behind it.
+
+[xterm-headless]: https://www.npmjs.com/package/@xterm/headless
 
 ## The system tray: `<TrayHost>`
 
@@ -430,10 +496,6 @@ Candidates to move here:
 - A react-flow-style node/edge graph editor.
 - `<Tabs>`, undecided — it may well stay in core.
 - MDX support in `<Markdown>` — see the note in that section.
-- A pure-JS VT backend for `<Terminal>`, over a pty rather than an external
-  emulator. It would drop the external dependency, work where nothing is
-  installed, and be the thing that makes `write()` real — behind the same
-  props, which is why the component's API is backend-agnostic already.
 - A StatusNotifierItem host, beside `<TrayHost>` rather than inside it: the
   D-Bus way modern applications publish a tray icon. It pairs with core's
   `dbusmenu.js`, and a complete panel wants both.

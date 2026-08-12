@@ -320,15 +320,79 @@ they are not re-litigated:
   launch-relevant props into one string and memoize the plan factory on it.
   `<MediaPlayer>` deliberately leaves `src`, `volume`, `muted` and `paused`
   _out_ of that key: those go over the control channel to the running player.
-- **`<Terminal>` has no `write()`.** The issue sketched one; there is no
-  honest implementation over an external emulator, because the pty belongs to
-  xterm and synthetic X key events are refused by xterm (`allowSendEvents`,
+- **`write()` is per backend, and that is the API rather than a gap.** Over an
+  external emulator there is no honest implementation — the pty belongs to
+  xterm, and synthetic X key events are refused by xterm (`allowSendEvents`,
   off by default and not ours to change in a user's terminal) and dropped by
-  alacritty. The name is reserved for the pure-JS VT backend.
+  alacritty — so it returns `false` there and works on `backend="vt"`, whose
+  pty is ours. `false` rather than a throw is what lets an app feature-test
+  with the call itself.
 - **VLC's control channel is write-only.** Its rc replies carry no request id,
   so a reply cannot be matched to its question except by counting, and one
   dropped line desynchronises that permanently. `reportsProgress: false` says
   so in the type rather than shipping a parser that lies to a progress bar.
+
+## The terminal that is not somebody else's program
+
+`src/terminal/vt/` is the other half of `<Terminal>`: a pty, `@xterm/headless`
+as the escape-sequence state machine, and `<vtterm>` — a registered element
+that draws the cell grid itself. It shares `TerminalProps` with the XEmbed
+path deliberately, so "use ours instead" is one prop.
+
+The rules it adds, each of which exists because getting it wrong fails
+somewhere else:
+
+- **The side effect lives behind a dynamic `import()`.** `src/terminal/index.ts`
+  still has none at import time; `vt/index.ts` is the module that calls
+  `registerElement('vtterm')`, and it is loaded only when the backend is
+  actually selected. That is what keeps `@xterm/headless` (2 MB) and the
+  renderer out of an app that embeds a real xterm — asserted by the
+  "vt backend is a lazy chunk" case in `test/treeshake.test.ts`, which bundles
+  **with code splitting**, because that is what a bundler does with a dynamic
+  import and an unsplit build inlines everything by design.
+- **Two optional dependencies, two different postures.** `@xterm/headless` is
+  an `optionalDependency` (installs by default — nothing else would bring it,
+  and the terminal is a flagship); the pty is an optional _peer_, `node-pty`
+  or `@lydell/node-pty`, probed in that order and never installed for anyone.
+  node-pty alone unpacks to 64 MB with a native build, which is more than
+  react-x11's entire closure. Both absences are `status: 'unavailable'` plus
+  `fallback`, never a throw — the same call the calendar makes about a desktop
+  with no Evolution Data Server.
+- **Their types are ours.** `vt/xterm.ts` and `vt/pty.ts` write out the slice
+  each package exposes structurally, for the reason `desktop-calendar/ical.ts`
+  does: `import type … from '@xterm/headless'` would make an app that skipped
+  optional dependencies fail to type-check against this package.
+  `@xterm/headless` 6.0 also gates `buffer`, `parser` and `modes` behind
+  `allowProposedApi: true` — `term.buffer` _throws_ without it — so the
+  component sets the flag and the version is pinned.
+- **Damage is a diff, not a story about escape sequences.** The renderer keeps
+  a mirror of the signatures of what the surface currently shows and repaints
+  the cells whose signature changed. Selection, cursor position and blink
+  phase are inputs to that signature, so there is exactly one damage path for
+  every cause. Two consequences worth not undoing: a skipped frame repairs
+  itself on the next diff (eventual correctness is structural), and **nothing
+  invisible may enter a row's hash** — a frame counter or a palette generation
+  would make every row differ every frame and silently kill the scroll
+  detector, which reads those same row signatures to find the band a scroll
+  moved.
+- **The renderer is two implementations of one interface**, and the fallback
+  is not decoration: `RetainedRenderer` owns an ntk `Surface` and scrolls it
+  with `Surface.copyWithin`, `DirectRenderer` draws into the paint context and
+  refuses `copyRows`. The mock backend's context has no pixel API at all, so
+  `createRenderer` answers `null` there and paint is a no-op — the repo
+  convention that keeps components testable headlessly.
+- **No escape hatches.** The design started on four (a raw `X.CopyArea` on a
+  pixmap, a private `Render.FillRectangles`, an undocumented glyph-run shape,
+  `altKey` off `nativeEvent.buttons`); all four were promoted upstream —
+  ntk#252/#253/#254 and react-x11#284 — and the lockfile was bumped in the
+  same change, per "react-x11 is a peer dependency". Do not reintroduce one:
+  the two things still missing (mouse _encoding_ and underline colour, both in
+  `@xterm/headless`) are worked around through its public parser instead, and
+  filed.
+- **`PtyHost` is public because it is a feature**, exactly as `ProcessHost` is:
+  "run the shell in a container / over ssh / in a sandbox" is a real thing to
+  want. `test/fake-pty.ts` drives it, which is how CI tests a terminal with no
+  native module anywhere.
 
 ## Hosting a client nobody spawned
 
@@ -398,6 +462,7 @@ npm run check:package # exports map + tree-shaking contract (needs a build)
 npm run examples:calendar    # needs a real $DISPLAY (and a bus, for events)
 npm run examples:sparkline   # needs a real $DISPLAY
 npm run examples:terminal    # needs a real $DISPLAY and an emulator installed
+npm run examples:terminal-vt # needs a real $DISPLAY and a pty module (node-pty)
 npm run examples:media-player -- <file>   # needs a real $DISPLAY and mpv/VLC
 npm run examples:tray-host   # needs a real $DISPLAY with no tray on it yet
 ```
@@ -461,19 +526,19 @@ reuse question was asked against Vercel's Streamdown first and answered
 `src/markdown/parse.ts` (as parser tolerance, not a repair pre-pass; the
 handlers were read, not imported).
 
-| Candidate                                        | Where it is now                                          | Status                                                                                                                                                        |
-| ------------------------------------------------ | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `<markdown>`, `<html>`                           | replaced by `src/markdown/` here (see above)             | **Done** for markdown, **never** for html. ntk's document widgets are deprecated; see [ntk#106](https://github.com/sidorares/ntk/issues/106).                 |
-| MDX in `<Markdown>`                              | reserved seams only (`component` AST node)               | **Planned.** Composition-friendly by construction; the parser is the only part that grows. Streaming-compatible in principle.                                 |
-| `<svg>`, `<tex>`                                 | ntk (`SvgView`, `layoutTex`), wrapped in react-x11       | **Staying in ntk**, per ntk#106. Recorded here so it is not reopened.                                                                                         |
-| mermaid                                          | nowhere — dropped from ntk                               | **Dropped**, not extracted: 155 MB of install closure for a grammar. If it comes back, it comes back here, as its own subpath, and it stays optional.         |
-| `<Tabs>`                                         | react-x11 `src/components/Tabs.js`                       | **Open.** May stay in core. Undecided — do not move it on a hunch.                                                                                            |
-| 3D scene graph, Three.js / r3f layer, `Canvas3D` | react-x11 `src/scene3d.js`, `src/components/Canvas3D.js` | **Candidate**, with `<glarea>` staying in core. See "The boundary can run through a feature".                                                                 |
-| react-flow clone                                 | prototype, not yet in any repo                           | **Incoming.** A node/edge graph editor: big, pure composition, small fraction of apps — this package's shape exactly.                                         |
-| `<Terminal>`, `<MediaPlayer>`                    | new, here (`src/terminal/`, `src/media-player/`)         | **Done.** Built on core's `<foreign>`; the wrapper is here because a binary dependency can never be core's. See "Running someone else's program".             |
-| `<TrayHost>`                                     | new, here (`src/tray-host/`)                             | **Done** (issue #17). XEmbed's third consumer here, and the other side of it. Core keeps the _plug_ side — `createRoot({ embedInto })` is renderer internals. |
-| A StatusNotifierItem host                        | nowhere yet                                              | **Planned**, as a sibling of `<TrayHost>` with its own issue. Shares intent and nothing else: it pairs with core's `dbusmenu.js`, not with `<foreign>`.       |
-| A pure-JS VT backend for `<Terminal>`            | nowhere yet                                              | **Planned**, behind the existing props. It is what would make `write()` real and what would work with no emulator installed. Needs a pty dependency.          |
+| Candidate                                        | Where it is now                                          | Status                                                                                                                                                                   |
+| ------------------------------------------------ | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `<markdown>`, `<html>`                           | replaced by `src/markdown/` here (see above)             | **Done** for markdown, **never** for html. ntk's document widgets are deprecated; see [ntk#106](https://github.com/sidorares/ntk/issues/106).                            |
+| MDX in `<Markdown>`                              | reserved seams only (`component` AST node)               | **Planned.** Composition-friendly by construction; the parser is the only part that grows. Streaming-compatible in principle.                                            |
+| `<svg>`, `<tex>`                                 | ntk (`SvgView`, `layoutTex`), wrapped in react-x11       | **Staying in ntk**, per ntk#106. Recorded here so it is not reopened.                                                                                                    |
+| mermaid                                          | nowhere — dropped from ntk                               | **Dropped**, not extracted: 155 MB of install closure for a grammar. If it comes back, it comes back here, as its own subpath, and it stays optional.                    |
+| `<Tabs>`                                         | react-x11 `src/components/Tabs.js`                       | **Open.** May stay in core. Undecided — do not move it on a hunch.                                                                                                       |
+| 3D scene graph, Three.js / r3f layer, `Canvas3D` | react-x11 `src/scene3d.js`, `src/components/Canvas3D.js` | **Candidate**, with `<glarea>` staying in core. See "The boundary can run through a feature".                                                                            |
+| react-flow clone                                 | prototype, not yet in any repo                           | **Incoming.** A node/edge graph editor: big, pure composition, small fraction of apps — this package's shape exactly.                                                    |
+| `<Terminal>`, `<MediaPlayer>`                    | new, here (`src/terminal/`, `src/media-player/`)         | **Done.** Built on core's `<foreign>`; the wrapper is here because a binary dependency can never be core's. See "Running someone else's program".                        |
+| `<TrayHost>`                                     | new, here (`src/tray-host/`)                             | **Done** (issue #17). XEmbed's third consumer here, and the other side of it. Core keeps the _plug_ side — `createRoot({ embedInto })` is renderer internals.            |
+| A StatusNotifierItem host                        | nowhere yet                                              | **Planned**, as a sibling of `<TrayHost>` with its own issue. Shares intent and nothing else: it pairs with core's `dbusmenu.js`, not with `<foreign>`.                  |
+| A pure-JS VT backend for `<Terminal>`            | new, here (`src/terminal/vt/`)                           | **Done** (issue #19). `backend="vt"`, behind the existing props: pty + `@xterm/headless` + a cell-grid renderer. See "The terminal that is not somebody else's program". |
 
 Verified against ntk 7.2.0 on 2026-08-09: `MarkdownView`, `HtmlView`,
 `SvgView` and `layoutTex` are all still exported; only mermaid is gone.
