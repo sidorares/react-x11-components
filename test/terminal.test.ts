@@ -24,6 +24,7 @@ import {
 } from '../src/terminal/index.js';
 import type { TerminalHandle } from '../src/terminal/index.js';
 import { FakeHost } from './fake-host.js';
+import { FakePtyHost } from './fake-pty.js';
 
 const h = React.createElement;
 
@@ -182,13 +183,41 @@ test('auto-detection skips what is not installed', async () => {
   assert.strictEqual(host.last?.command, '/usr/bin/alacritty');
 });
 
-test('no emulator installed renders the fallback instead of the surface', async () => {
+test('no emulator installed falls through to the vt backend', async () => {
+  // The ladder ends at `vt` rather than at the `fallback`: this package's own
+  // terminal needs nothing installed, so a machine with no xterm still gets a
+  // terminal. What the fallback is for is the case below — nothing at all.
+  const host = new FakeHost({ installed: [] });
+  const pty = new FakePtyHost();
+  const ref = React.createRef<TerminalHandle>();
+
+  await renderX11(
+    h(Terminal, {
+      processes: host,
+      pty,
+      ref,
+      fallback: h('text', { 'data-testname': 'no-terminal' }, 'install xterm'),
+    }),
+    { backend: 'xserver' },
+  );
+
+  await waitFor(() => assert.ok(pty.last, 'a pty was opened instead'));
+  assert.strictEqual(ref.current?.backend, 'vt');
+  assert.strictEqual(host.spawns.length, 0, 'and nothing was spawned');
+});
+
+test('nothing installed at all renders the fallback', async () => {
+  // No emulator *and* no pty module. `pty` is pinned to a host that reports
+  // neither, because the suite must never depend on what is installed on the
+  // machine running it — and because a real `nodePtyHost()` here would open a
+  // login shell that outlives the test.
   const host = new FakeHost({ installed: [] });
   const errors: Error[] = [];
 
   await renderX11(
     h(Terminal, {
       processes: host,
+      pty: new FakePtyHost({ installed: false }),
       onError: (err) => errors.push(err),
       fallback: h('text', { 'data-testname': 'no-terminal' }, 'install xterm'),
     }),
@@ -198,10 +227,17 @@ test('no emulator installed renders the fallback instead of the surface', async 
   await waitFor(() => assert.ok(screen.getByTestName('no-terminal')));
   assert.strictEqual(foreignNode(), undefined, 'no surface to embed into');
   assert.strictEqual(host.spawns.length, 0);
-  assert.strictEqual(errors.length, 1);
-  assert.match(errors[0]!.message, /no terminal backend is installed/);
-  // the message names what was looked for, so an app can print the install line
-  assert.match(errors[0]!.message, /xterm, urxvt, rxvt-unicode, alacritty/);
+  // Two now: the emulator probe found nothing, and so did the pty probe. The
+  // second names what it looked for, so the app can print the install line.
+  assert.ok(errors.length >= 1);
+  assert.match(
+    errors.map((err) => err.message).join('\n'),
+    /no terminal backend is installed/,
+  );
+  assert.match(
+    errors.map((err) => err.message).join('\n'),
+    /no pty module is installed/,
+  );
 });
 
 test('unmounting hands the emulator a signal, not a leak', async () => {

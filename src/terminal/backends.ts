@@ -12,8 +12,21 @@
 // async. `test/terminal.test.ts` asserts the argv of all three without a
 // terminal installed anywhere, which is the point.
 
-/** Which emulator to embed. `'auto'` takes the first one installed. */
-export type TerminalBackendName = 'auto' | 'xterm' | 'urxvt' | 'alacritty';
+/**
+ * Which terminal to use.
+ *
+ * The first three are emulators this package *embeds* — a real xterm, urxvt
+ * or alacritty drawing into a `<foreign>`. `'vt'` is the one it *is*: a pty
+ * and a pure-JS emulator core rendered as a native element, which needs no
+ * program installed and is the only backend `write()` can work on.
+ *
+ * `'auto'` takes the first embeddable emulator that is installed and falls
+ * back to `'vt'`. That order — rather than vt first — is deliberate: an
+ * external emulator is battle-tested, and a user who installed one expressed
+ * a preference. Moving vt to the front is a later, deliberate decision.
+ */
+export type TerminalBackendName =
+  'auto' | 'xterm' | 'urxvt' | 'alacritty' | 'vt';
 
 /**
  * The colours a terminal is asked to use.
@@ -215,7 +228,11 @@ export const TERMINAL_BACKENDS: readonly TerminalBackend[] = [
   alacritty,
 ];
 
-/** The backends a `backend` prop selects. `'auto'` is all of them, in order. */
+/**
+ * The *embeddable* backends a `backend` prop selects. `'auto'` is all of
+ * them, in order; `'vt'` is none of them, because nothing is spawned — the
+ * component takes that branch before it ever asks this.
+ */
 export function backendsFor(
   name: TerminalBackendName,
 ): readonly TerminalBackend[] {
