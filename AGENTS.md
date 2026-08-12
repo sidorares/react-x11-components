@@ -214,6 +214,20 @@ The subpaths this package imports — `react-x11/host`, `/node`, `/style`,
 **When core publishes 2.0.0, change the devDependency to `^2.0.0` and drop
 the git URL.** Nothing else should need touching.
 
+**A `#master` spec still resolves through the lockfile, which pins a
+commit.** So depending on something core landed _since that commit_ is two
+edits, not one: use it, and bump the pin.
+
+```bash
+npm install --package-lock-only --save-dev "github:sidorares/react-x11#master"
+npm ci        # the pin is what `npm ci` installs, here and in CI
+```
+
+Skipping the bump is the failure that looks like nothing: a working tree that
+already has the newer core installed passes everything locally, and every CI
+job fails on an import that is not there yet. `src/tray-host/` needed this for
+`serverTime()`.
+
 ## Talking to the desktop, and optional dependencies
 
 `src/desktop-calendar/` reads the user's real calendars — Google, Microsoft,
@@ -262,6 +276,9 @@ grammar object, typed structurally.
 `src/embed/`, `src/terminal/` and `src/media-player/` are the first things
 here that spawn a process and host another X client. They establish four
 rules, and each one exists because getting it wrong fails somewhere else.
+(`src/tray-host/` is the third XEmbed consumer and shares none of this:
+nothing is spawned, so there is no `ProcessHost` and no backend probe — see
+"Hosting a client nobody spawned" below.)
 
 **`<foreign>` owns the protocol; this package owns the argv.** The reparent,
 the save set, `_XEMBED_INFO`, the synthetic ICCCM ConfigureNotify, layout,
@@ -313,6 +330,61 @@ they are not re-litigated:
   dropped line desynchronises that permanently. `reportsProgress: false` says
   so in the type rather than shipping a parser that lies to a progress bar.
 
+## Hosting a client nobody spawned
+
+`src/tray-host/` is the same protocol as the two above pointed the other way:
+the windows arrive because applications ask, so there is no argv, no backend
+table and no `ProcessHost`. What replaces them is the freedesktop
+[system tray spec][tray-spec], and the split inside the directory is the rule
+worth keeping:
+
+- **`protocol.ts` is the spec as data and pure functions** — atoms, opcodes,
+  the balloon reassembler, the UTF-8 decode, and `argbVisualOf`. None of it
+  needs a display, so all of it is asserted without one.
+- **`manager.ts` is the only thing that talks to the server.** Selection
+  ownership, the `MANAGER` broadcast, the two advertised properties, opcode
+  routing, `SelectionClear`.
+- **`index.ts` holds the icon list as React state** and renders one
+  `<foreign>` per icon. That is the whole component.
+
+[tray-spec]: http://specifications.freedesktop.org/systemtray/latest/
+
+Four decisions in it that are load-bearing:
+
+- **The selection is held on a window this creates with `X.CreateWindow`, not
+  on a node.** A selection owned by something that can unmount is a tray that
+  silently stops being the tray.
+- **The ICCCM 2.1 timestamp comes from core.** `serverTime(app)` is a fresh
+  server timestamp for an operation no user action caused, which is exactly
+  what taking a manager selection at startup is; `lastInputTime(app)` is the
+  other half, for something the user did. Never substitute `0` for either —
+  that is `CurrentTime`, which ICCCM forbids and which leaves two clients
+  racing for one selection unable to be ordered. **This needed the lockfile
+  pin bumped**, because core is a `github:…#master` git spec: see "react-x11
+  is a peer dependency".
+- **`X.on('event')` here is deliberate, not a gap.** Core has an
+  element-scoped ClientMessage seam, and an application should use it — but
+  `onClientMessage` is a **`<window>`** prop, and the tray's manager window is
+  not an element. It cannot be: the selection has to be held on something that
+  outlives the render. That is the case core's own `src/clientmessage.js`
+  carves out in as many words — filtering `X.on('event')` "is the right shape
+  _there_, because a settings daemon's window is nobody's element". Do not
+  "fix" this by moving the selection onto the host `<window>`.
+- **Advertising a capability the window does not have is worse than
+  advertising none.** `_NET_SYSTEM_TRAY_VISUAL` is written only when the
+  top-level window genuinely carries a 32-bit TrueColor visual, because an
+  icon that believes it and draws an alpha channel into a 24-bit parent comes
+  out as a black box.
+- **Icon nodes are keyed on the window id and their `windowId` never
+  changes**, so reordering is a move. Handing a client between two `<foreign>`
+  nodes parks it at the root long enough for a window manager to frame it, and
+  the second node then reports `onClientGone` for a live window
+  (react-x11 `docs/embedding.md`).
+
+`onIcons`-shaped mutation is the one bug to watch for here: the component
+holds the icon list as state, so every change has to be a **new array**. A
+splice removes the icon from the list and leaves it on screen.
+
 ## Commands
 
 ```bash
@@ -327,6 +399,7 @@ npm run examples:calendar    # needs a real $DISPLAY (and a bus, for events)
 npm run examples:sparkline   # needs a real $DISPLAY
 npm run examples:terminal    # needs a real $DISPLAY and an emulator installed
 npm run examples:media-player -- <file>   # needs a real $DISPLAY and mpv/VLC
+npm run examples:tray-host   # needs a real $DISPLAY with no tray on it yet
 ```
 
 `pretest` and `pretypecheck` both build, and both have to. `package.test.ts`
@@ -388,17 +461,19 @@ reuse question was asked against Vercel's Streamdown first and answered
 `src/markdown/parse.ts` (as parser tolerance, not a repair pre-pass; the
 handlers were read, not imported).
 
-| Candidate                                        | Where it is now                                          | Status                                                                                                                                                |
-| ------------------------------------------------ | -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `<markdown>`, `<html>`                           | replaced by `src/markdown/` here (see above)             | **Done** for markdown, **never** for html. ntk's document widgets are deprecated; see [ntk#106](https://github.com/sidorares/ntk/issues/106).         |
-| MDX in `<Markdown>`                              | reserved seams only (`component` AST node)               | **Planned.** Composition-friendly by construction; the parser is the only part that grows. Streaming-compatible in principle.                         |
-| `<svg>`, `<tex>`                                 | ntk (`SvgView`, `layoutTex`), wrapped in react-x11       | **Staying in ntk**, per ntk#106. Recorded here so it is not reopened.                                                                                 |
-| mermaid                                          | nowhere — dropped from ntk                               | **Dropped**, not extracted: 155 MB of install closure for a grammar. If it comes back, it comes back here, as its own subpath, and it stays optional. |
-| `<Tabs>`                                         | react-x11 `src/components/Tabs.js`                       | **Open.** May stay in core. Undecided — do not move it on a hunch.                                                                                    |
-| 3D scene graph, Three.js / r3f layer, `Canvas3D` | react-x11 `src/scene3d.js`, `src/components/Canvas3D.js` | **Candidate**, with `<glarea>` staying in core. See "The boundary can run through a feature".                                                         |
-| react-flow clone                                 | prototype, not yet in any repo                           | **Incoming.** A node/edge graph editor: big, pure composition, small fraction of apps — this package's shape exactly.                                 |
-| `<Terminal>`, `<MediaPlayer>`                    | new, here (`src/terminal/`, `src/media-player/`)         | **Done.** Built on core's `<foreign>`; the wrapper is here because a binary dependency can never be core's. See "Running someone else's program".     |
-| A pure-JS VT backend for `<Terminal>`            | nowhere yet                                              | **Planned**, behind the existing props. It is what would make `write()` real and what would work with no emulator installed. Needs a pty dependency.  |
+| Candidate                                        | Where it is now                                          | Status                                                                                                                                                        |
+| ------------------------------------------------ | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `<markdown>`, `<html>`                           | replaced by `src/markdown/` here (see above)             | **Done** for markdown, **never** for html. ntk's document widgets are deprecated; see [ntk#106](https://github.com/sidorares/ntk/issues/106).                 |
+| MDX in `<Markdown>`                              | reserved seams only (`component` AST node)               | **Planned.** Composition-friendly by construction; the parser is the only part that grows. Streaming-compatible in principle.                                 |
+| `<svg>`, `<tex>`                                 | ntk (`SvgView`, `layoutTex`), wrapped in react-x11       | **Staying in ntk**, per ntk#106. Recorded here so it is not reopened.                                                                                         |
+| mermaid                                          | nowhere — dropped from ntk                               | **Dropped**, not extracted: 155 MB of install closure for a grammar. If it comes back, it comes back here, as its own subpath, and it stays optional.         |
+| `<Tabs>`                                         | react-x11 `src/components/Tabs.js`                       | **Open.** May stay in core. Undecided — do not move it on a hunch.                                                                                            |
+| 3D scene graph, Three.js / r3f layer, `Canvas3D` | react-x11 `src/scene3d.js`, `src/components/Canvas3D.js` | **Candidate**, with `<glarea>` staying in core. See "The boundary can run through a feature".                                                                 |
+| react-flow clone                                 | prototype, not yet in any repo                           | **Incoming.** A node/edge graph editor: big, pure composition, small fraction of apps — this package's shape exactly.                                         |
+| `<Terminal>`, `<MediaPlayer>`                    | new, here (`src/terminal/`, `src/media-player/`)         | **Done.** Built on core's `<foreign>`; the wrapper is here because a binary dependency can never be core's. See "Running someone else's program".             |
+| `<TrayHost>`                                     | new, here (`src/tray-host/`)                             | **Done** (issue #17). XEmbed's third consumer here, and the other side of it. Core keeps the _plug_ side — `createRoot({ embedInto })` is renderer internals. |
+| A StatusNotifierItem host                        | nowhere yet                                              | **Planned**, as a sibling of `<TrayHost>` with its own issue. Shares intent and nothing else: it pairs with core's `dbusmenu.js`, not with `<foreign>`.       |
+| A pure-JS VT backend for `<Terminal>`            | nowhere yet                                              | **Planned**, behind the existing props. It is what would make `write()` real and what would work with no emulator installed. Needs a pty dependency.          |
 
 Verified against ntk 7.2.0 on 2026-08-09: `MarkdownView`, `HtmlView`,
 `SvgView` and `layoutTex` are all still exported; only mermaid is gone.
