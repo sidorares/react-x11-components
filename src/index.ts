@@ -163,6 +163,33 @@ export type {
 } from './terminal/index.js';
 
 export {
+  TrayHost,
+  TrayManager,
+  BalloonAssembler,
+  BalloonNotifier,
+  ORIENTATION_HORIZONTAL,
+  ORIENTATION_VERTICAL,
+  SYSTEM_TRAY_BEGIN_MESSAGE,
+  SYSTEM_TRAY_CANCEL_MESSAGE,
+  SYSTEM_TRAY_REQUEST_DOCK,
+  argbVisualOf,
+  orientationValue,
+  selectionNameFor,
+} from './tray-host/index.js';
+export type {
+  TrayApp,
+  TrayConflict,
+  TrayHostHandle,
+  TrayHostProps,
+  TrayIcon,
+  TrayManagerHandlers,
+  TrayManagerStartOptions,
+  TrayMessage,
+  TrayOrientation,
+  TrayStatus,
+} from './tray-host/index.js';
+
+export {
   MediaPlayer,
   MEDIA_BACKENDS,
   mediaBackendsFor,

@@ -55,6 +55,9 @@ const COMPONENTS = [
     dir: 'media-player',
     marker: '--input-ipc-server=',
   },
+  // `<TrayHost>` shares `<foreign>` with the two above but none of their
+  // modules, so its marker is the atom nothing else in the package names.
+  { exportName: 'TrayHost', dir: 'tray-host', marker: '_NET_SYSTEM_TRAY_S' },
 ];
 
 async function bundle(contents: string): Promise<string> {
