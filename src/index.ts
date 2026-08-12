@@ -163,6 +163,30 @@ export type {
 } from './terminal/index.js';
 
 export {
+  TrayHost,
+  TrayManager,
+  BalloonMessages,
+  asTrayApp,
+  hostVisual,
+  notifyBalloon,
+  sendNotification,
+  traySelectionName,
+} from './tray/index.js';
+export type {
+  TrayApp,
+  TrayHostHandle,
+  TrayHostProps,
+  TrayHostStatus,
+  TrayIconEvent,
+  TrayManagerOptions,
+  TrayManagerResult,
+  TrayMessage,
+  TrayOrientation,
+  TrayX,
+  TrayXEvent,
+} from './tray/index.js';
+
+export {
   MediaPlayer,
   MEDIA_BACKENDS,
   mediaBackendsFor,

@@ -119,6 +119,7 @@ import type { SparklineProps } from '@react-x11/components';
 | `MediaPlayer` | `@react-x11/components/media-player`     | mpv or VLC, embedded, with real transport control.    |
 | `Sparkline`   | `@react-x11/components/sparkline`        | A bare line chart. Needs a width and a height.        |
 | `Terminal`    | `@react-x11/components/terminal`         | A real terminal emulator, embedded as an element.     |
+| `TrayHost`    | `@react-x11/components/tray`             | The system tray: other applications' icons, docked.   |
 | _(hook)_      | `@react-x11/components/desktop-calendar` | The user's real calendar events, over D-Bus.          |
 
 Three shared modules sit underneath and are importable on their own:
@@ -359,6 +360,65 @@ Both take a `processes` prop — the `ProcessHost` seam from
 this machine, and so the test suite can assert what _would_ have been spawned
 without an xterm in CI.
 
+## The other half of XEmbed: `<TrayHost>`
+
+`<Terminal>` and `<MediaPlayer>` host programs they start themselves. A
+[system tray](http://specifications.freedesktop.org/systemtray/latest/) is the
+same protocol with the initiative reversed: the host publishes a selection
+saying "there is a tray here", and any application on the display may then ask
+to put its icon in it.
+
+```jsx
+import { TrayHost } from '@react-x11/components';
+
+<TrayHost
+  orientation="horizontal"
+  iconSize={22}
+  onDock={({ windowId }) => log(`docked ${windowId}`)}
+  fallback={<text>Another tray is running.</text>}
+/>;
+```
+
+Mounting takes `_NET_SYSTEM_TRAY_S<screen>` with a real server timestamp and
+broadcasts `MANAGER`, which is what makes applications that were waiting for a
+tray dock into this one. Each docked icon becomes a `<foreign windowId>`, so
+the embedding, the focus messages and the ICCCM configure are core's.
+
+Five things worth knowing before putting one in a panel:
+
+- **One tray per display.** Finding the selection already owned is
+  `status: 'conflict'` plus `onConflict` — never a throw, because a second
+  panel is a configuration mistake rather than an exception — and nothing is
+  embedded. Losing it later is `onReplaced`, and every icon is released:
+  a panel that keeps drawing dead icons is what "my tray is empty" looks like
+  from the user's side.
+- **Nothing is ever destroyed.** An icon is somebody else's window. Unmounting
+  the tray, losing the selection and an application exiting all end with the
+  client reparented back to the root, alive.
+- **`_NET_SYSTEM_TRAY_VISUAL` is advertised only when it is true.** Icons are
+  embedded into this window, so they can be composited only if it is on the
+  ARGB visual — which is what `<window transparent>` decides. The property is
+  published when the server confirms that visual and left absent otherwise,
+  because an icon that believes a lie here draws a black box.
+- **Balloon messages have somewhere to go.** `SYSTEM_TRAY_BEGIN_MESSAGE` is
+  the pre-notification-daemon way an icon speaks, and the applications still
+  sending it have no other channel. They are forwarded to
+  `org.freedesktop.Notifications` by default; take `onMessage` to draw the
+  balloon in the panel instead.
+- **Reordering is safe, and `order` is the seam for it.** Node identity is
+  keyed on the window id, so a moved icon is a moved node rather than an
+  unmount and a re-embed — the race react-x11's `docs/embedding.md` describes,
+  where a client is parked at the root long enough for the window manager to
+  frame it.
+
+`npm run examples:tray` is a working panel; `Xephyr` is the easy way to see it
+host for real on a desktop that already has one.
+
+**StatusNotifierItem is not this.** Modern applications publish a tray icon
+over D-Bus instead, and a complete panel supports both — but SNI shares nothing
+with this except intent, and pairs with core's `dbusmenu.js` rather than with
+`<foreign>`. It belongs beside `<TrayHost>` as its own component.
+
 ## Roadmap
 
 Candidates to move here:
@@ -372,6 +432,8 @@ Candidates to move here:
   emulator. It would drop the external dependency, work where nothing is
   installed, and be the thing that makes `write()` real — behind the same
   props, which is why the component's API is backend-agnostic already.
+- A `StatusNotifierItem` host beside `<TrayHost>`: the D-Bus tray modern
+  applications publish to, over core's `dbusmenu.js`.
 
 `<Markdown>` above **replaces** core's ntk-backed `<markdown>` element
 (ntk's `MarkdownView` and `HtmlView` widgets are being deprecated). There

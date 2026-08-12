@@ -313,6 +313,56 @@ they are not re-litigated:
   dropped line desynchronises that permanently. `reportsProgress: false` says
   so in the type rather than shipping a parser that lies to a progress bar.
 
+## Hosting a program you did **not** start
+
+`src/tray/` is the third `<foreign>` consumer and the first one with no argv
+in it at all. A system tray does not spawn anything: it publishes a manager
+selection, and applications already running on the display ask to be embedded.
+Same element, opposite initiative — which is why it is a sibling of
+`src/terminal/` and `src/media-player/` rather than a user of `src/embed/`.
+
+Four rules it adds, each because getting it wrong fails somewhere else:
+
+- **A selection needs a window that outlives the render.** `src/tray/manager.ts`
+  creates its manager window with `X.CreateWindow` directly and holds it for
+  the life of the component. Owning the selection on a node that can unmount
+  under any condition means the tray silently stops being the tray, with every
+  icon still drawn.
+- **Raw events, filtered by hand.** The tray's opcodes arrive as ClientMessages
+  and react-x11 has no `<window onClientMessage>`, so the manager listens on
+  `X.on('event')` — the same thing core's `src/xsettings.js` does internally.
+  A per-element seam in core would pay for itself across every EWMH-adjacent
+  protocol; until there is one this is what `useApp().X` is for. The other core
+  gap is `src/inputtime.js`: a selection acquisition needs a real server
+  timestamp (ICCCM 2.1 forbids `CurrentTime`), core already tracks one, and it
+  is not exported — so `#timestamp()` re-derives it with a zero-length property
+  append.
+- **Advertise only what is true.** `_NET_SYSTEM_TRAY_VISUAL` says icons may use
+  an ARGB visual, and they can only do that if the window they are embedded
+  into has one — which is `<window transparent>`, not a property of the
+  display. So `hostVisual()` asks the server what visual the host window
+  actually has and the property is absent unless it matches. An icon that
+  believes a lie here renders a black box.
+- **Keys, not positions.** Each icon's `<foreign>` is keyed on its window id
+  and carries that id as `windowId`, so reordering the strip moves a node
+  rather than unmounting one and mounting another for the same client. The
+  second shape is the race react-x11's `docs/embedding.md` documents: the
+  client is parked at the root long enough for the window manager to frame it,
+  and the new node reports `onClientGone` for a live window.
+
+Two more that are decisions rather than gaps:
+
+- **Not being the tray is a state, not an error.** One display holds one
+  selection. A second host reports `'conflict'` through a prop and embeds
+  nothing; losing the selection later reports `'replaced'` and releases every
+  icon. Same call `<Terminal>` makes about a machine with no emulator.
+- **Balloon messages have a default sink.** `SYSTEM_TRAY_BEGIN_MESSAGE` is how
+  an icon spoke before notification daemons, and the applications still sending
+  it have no other channel — so `src/tray/notify.ts` forwards to
+  `org.freedesktop.Notifications` when the panel takes no `onMessage`. It takes
+  its bus as an argument and reaches for the shared one only when a message
+  actually arrives, so a tray that never hears from an icon never dials a bus.
+
 ## Commands
 
 ```bash
@@ -327,6 +377,7 @@ npm run examples:calendar    # needs a real $DISPLAY (and a bus, for events)
 npm run examples:sparkline   # needs a real $DISPLAY
 npm run examples:terminal    # needs a real $DISPLAY and an emulator installed
 npm run examples:media-player -- <file>   # needs a real $DISPLAY and mpv/VLC
+npm run examples:tray        # needs a real $DISPLAY with no tray of its own
 ```
 
 `pretest` and `pretypecheck` both build, and both have to. `package.test.ts`
@@ -388,17 +439,20 @@ reuse question was asked against Vercel's Streamdown first and answered
 `src/markdown/parse.ts` (as parser tolerance, not a repair pre-pass; the
 handlers were read, not imported).
 
-| Candidate                                        | Where it is now                                          | Status                                                                                                                                                |
-| ------------------------------------------------ | -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `<markdown>`, `<html>`                           | replaced by `src/markdown/` here (see above)             | **Done** for markdown, **never** for html. ntk's document widgets are deprecated; see [ntk#106](https://github.com/sidorares/ntk/issues/106).         |
-| MDX in `<Markdown>`                              | reserved seams only (`component` AST node)               | **Planned.** Composition-friendly by construction; the parser is the only part that grows. Streaming-compatible in principle.                         |
-| `<svg>`, `<tex>`                                 | ntk (`SvgView`, `layoutTex`), wrapped in react-x11       | **Staying in ntk**, per ntk#106. Recorded here so it is not reopened.                                                                                 |
-| mermaid                                          | nowhere — dropped from ntk                               | **Dropped**, not extracted: 155 MB of install closure for a grammar. If it comes back, it comes back here, as its own subpath, and it stays optional. |
-| `<Tabs>`                                         | react-x11 `src/components/Tabs.js`                       | **Open.** May stay in core. Undecided — do not move it on a hunch.                                                                                    |
-| 3D scene graph, Three.js / r3f layer, `Canvas3D` | react-x11 `src/scene3d.js`, `src/components/Canvas3D.js` | **Candidate**, with `<glarea>` staying in core. See "The boundary can run through a feature".                                                         |
-| react-flow clone                                 | prototype, not yet in any repo                           | **Incoming.** A node/edge graph editor: big, pure composition, small fraction of apps — this package's shape exactly.                                 |
-| `<Terminal>`, `<MediaPlayer>`                    | new, here (`src/terminal/`, `src/media-player/`)         | **Done.** Built on core's `<foreign>`; the wrapper is here because a binary dependency can never be core's. See "Running someone else's program".     |
-| A pure-JS VT backend for `<Terminal>`            | nowhere yet                                              | **Planned**, behind the existing props. It is what would make `write()` real and what would work with no emulator installed. Needs a pty dependency.  |
+| Candidate                                        | Where it is now                                          | Status                                                                                                                                                                  |
+| ------------------------------------------------ | -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `<markdown>`, `<html>`                           | replaced by `src/markdown/` here (see above)             | **Done** for markdown, **never** for html. ntk's document widgets are deprecated; see [ntk#106](https://github.com/sidorares/ntk/issues/106).                           |
+| MDX in `<Markdown>`                              | reserved seams only (`component` AST node)               | **Planned.** Composition-friendly by construction; the parser is the only part that grows. Streaming-compatible in principle.                                           |
+| `<svg>`, `<tex>`                                 | ntk (`SvgView`, `layoutTex`), wrapped in react-x11       | **Staying in ntk**, per ntk#106. Recorded here so it is not reopened.                                                                                                   |
+| mermaid                                          | nowhere — dropped from ntk                               | **Dropped**, not extracted: 155 MB of install closure for a grammar. If it comes back, it comes back here, as its own subpath, and it stays optional.                   |
+| `<Tabs>`                                         | react-x11 `src/components/Tabs.js`                       | **Open.** May stay in core. Undecided — do not move it on a hunch.                                                                                                      |
+| 3D scene graph, Three.js / r3f layer, `Canvas3D` | react-x11 `src/scene3d.js`, `src/components/Canvas3D.js` | **Candidate**, with `<glarea>` staying in core. See "The boundary can run through a feature".                                                                           |
+| react-flow clone                                 | prototype, not yet in any repo                           | **Incoming.** A node/edge graph editor: big, pure composition, small fraction of apps — this package's shape exactly.                                                   |
+| `<Terminal>`, `<MediaPlayer>`                    | new, here (`src/terminal/`, `src/media-player/`)         | **Done.** Built on core's `<foreign>`; the wrapper is here because a binary dependency can never be core's. See "Running someone else's program".                       |
+| `<TrayHost>`                                     | new, here (`src/tray/`)                                  | **Done.** The XEmbed host side of the freedesktop tray spec. Hosting a tray is what a panel does, not what most apps do. See "Hosting a program you did **not** start". |
+| `StatusNotifierItem` host                        | nowhere yet                                              | **Planned**, as a sibling of `<TrayHost>` rather than part of it: the D-Bus tray, over core's `dbusmenu.js`, sharing nothing with XEmbed but intent.                    |
+| `createRoot({ embedInto })` — being a tray icon  | react-x11 (unfiled)                                      | **Core, not here.** The plug side is a root option that changes how the connection's first window is created, which is renderer internals by definition.                |
+| A pure-JS VT backend for `<Terminal>`            | nowhere yet                                              | **Planned**, behind the existing props. It is what would make `write()` real and what would work with no emulator installed. Needs a pty dependency.                    |
 
 Verified against ntk 7.2.0 on 2026-08-09: `MarkdownView`, `HtmlView`,
 `SvgView` and `layoutTex` are all still exported; only mermaid is gone.

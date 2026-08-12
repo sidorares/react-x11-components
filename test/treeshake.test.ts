@@ -55,6 +55,10 @@ const COMPONENTS = [
     dir: 'media-player',
     marker: '--input-ipc-server=',
   },
+  // `<TrayHost>` is the third `<foreign>` consumer and shares nothing with
+  // the other two — no process to spawn — so its marker is the protocol atom
+  // only it interns.
+  { exportName: 'TrayHost', dir: 'tray', marker: '_NET_SYSTEM_TRAY_OPCODE' },
 ];
 
 async function bundle(contents: string): Promise<string> {

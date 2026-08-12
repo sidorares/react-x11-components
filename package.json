@@ -76,6 +76,10 @@
       "types": "./dist/terminal/index.d.ts",
       "default": "./dist/terminal/index.js"
     },
+    "./tray": {
+      "types": "./dist/tray/index.d.ts",
+      "default": "./dist/tray/index.js"
+    },
     "./package.json": "./package.json"
   },
   "scripts": {
@@ -96,6 +100,7 @@
     "examples:media-player": "tsx examples/media-player.tsx",
     "examples:sparkline": "tsx examples/sparkline.tsx",
     "examples:terminal": "tsx examples/terminal.tsx",
+    "examples:tray": "tsx examples/tray.tsx",
     "prepack": "npm run build"
   },
   "peerDependencies": {
