@@ -7,20 +7,28 @@
 // component — `./index.ts` owns the icon list as state and this owns the
 // protocol that changes it.
 //
-// ### Two things core does not quite give this, and neither blocks it
+// ### Why this listens on `X.on('event')` rather than `onClientMessage`
 //
-// **There is no `<window onClientMessage>`.** The opcodes arrive as
-// ClientMessages addressed to the manager window, so this listens on
-// `X.on('event')` and filters by `ev.wid` — which is what core's own
-// `src/xsettings.js` does internally for the same reason. A global listener
-// doing a per-window job; it works, and every EWMH-adjacent protocol wants
-// the same seam.
+// Core has an element-scoped ClientMessage seam now, and it is the right
+// thing for an application — but it is a **`<window>`** prop, and the window
+// the tray opcodes are addressed to is not an element. It cannot be: the
+// selection has to be held on something that outlives the render, so this
+// creates its own window with `X.CreateWindow` rather than rendering one. A
+// `<TrayHost>` that unmounted while its panel stayed up would otherwise take
+// the selection with it and leave the desktop with no tray.
 //
-// **`src/inputtime.js` is not exported.** Core already tracks the server
-// timestamp of the last input event, precisely because a selection must not
-// be taken with `CurrentTime` (ICCCM 2.1). Outside core it has to be
-// re-derived, which is what `#serverTime()` below does.
-import { startTimeout, stopTimeout } from './timers.js';
+// That is exactly the case core's own `src/clientmessage.js` carves out:
+// filtering `X.on('event')` "is the right shape *there*, because a settings
+// daemon's window is nobody's element". A tray's manager window is the same
+// kind of window.
+//
+// The timestamp is the other half, and that one core does answer:
+// `serverTime()` is a current server timestamp for an operation no user
+// action caused, and its own documentation names a tray taking its manager
+// selection as the case. ICCCM 2.1 forbids `CurrentTime` here.
+import { serverTime } from 'react-x11';
+import type { NtkApp } from 'react-x11';
+
 import {
   BalloonAssembler,
   MANAGER_ATOM,
@@ -41,20 +49,13 @@ import type { TrayIcon, TrayMessage, TrayOrientation } from './protocol.js';
 // `src/xsettings.js` writes them out: they are protocol constants, and
 // naming them here is cheaper than reaching into node-x11 for a number that
 // has not changed since 1987.
-const PROPERTY_NOTIFY = 28;
 const SELECTION_CLEAR = 29;
 const CLIENT_MESSAGE = 33;
-const PROPERTY_CHANGE_MASK = 4194304; // x11.eventMask.PropertyChange
 const STRUCTURE_NOTIFY_MASK = 131072; // x11.eventMask.StructureNotify
 const INPUT_ONLY = 2;
 /** Predefined atoms — no InternAtom round trip for these. */
 const XA_CARDINAL = 6;
-const XA_STRING = 31;
 const XA_VISUALID = 32;
-
-/** How long `#serverTime()` waits for its PropertyNotify before giving up
- *  and letting the server stamp the request itself. */
-const TIMESTAMP_TIMEOUT = 2000;
 
 /**
  * Where a tray host is in its life.
@@ -200,7 +201,6 @@ export class TrayManager {
   #visualAtom = 0;
   #messageDataAtom = 0;
   #managerAtom = 0;
-  #timestampAtom = 0;
 
   /** The window that owns the selection, and the address the opcodes are
    *  sent to. Created here rather than rendered, because a selection held on
@@ -297,8 +297,9 @@ export class TrayManager {
 
       this.#window = X.AllocID();
       // InputOnly, never mapped, 1x1 off-screen: this window exists to be an
-      // address and to hold two properties, which InputOnly windows do.
-      // PropertyChange is selected for `#serverTime()` alone.
+      // address and to hold two properties, which InputOnly windows do. It
+      // selects nothing — a ClientMessage reaches the client that created the
+      // window whatever its event mask is, which is how the opcodes arrive.
       X.CreateWindow(
         this.#window,
         this.#root,
@@ -310,7 +311,9 @@ export class TrayManager {
         0,
         INPUT_ONLY,
         0,
-        { eventMask: PROPERTY_CHANGE_MASK },
+        {
+          eventMask: 0,
+        },
       );
 
       this.#visual = await this.#resolveVisual(X, options.hostWindowId);
@@ -323,7 +326,9 @@ export class TrayManager {
       this.#writeOrientation();
       this.#writeVisual();
 
-      const time = await this.#serverTime(X);
+      // ICCCM 2.1: never `CurrentTime`. Nothing the user did caused this, so
+      // it is a fresh server timestamp rather than `lastInputTime()`.
+      const time = await serverTime(this.#app as unknown as NtkApp);
       if (!live()) {
         this.#destroyWindow();
         return;
@@ -567,47 +572,6 @@ export class TrayManager {
     }
   }
 
-  /**
-   * A real server timestamp.
-   *
-   * ICCCM 2.1: a selection is taken with the timestamp of the event that
-   * caused it and never with `CurrentTime`, because X arbitrates between
-   * clients by comparing timestamps and `CurrentTime` compares with nothing.
-   * Core tracks exactly this (`src/inputtime.js`) and does not export it, so
-   * it is re-derived here the way GTK's `gdk_x11_get_server_time` does: a
-   * zero-length *append* to a property on a window we own changes nothing
-   * and still produces a PropertyNotify, and that event is stamped.
-   *
-   * The timeout is the honest fallback rather than a hang. Passing 0 lets
-   * the server substitute its own clock — worse than a real timestamp,
-   * better than a tray that never starts.
-   */
-  #serverTime(X: XConnection): Promise<number> {
-    return new Promise<number>((resolve) => {
-      let settled = false;
-      const finish = (time: number): void => {
-        if (settled) return;
-        settled = true;
-        stopTimeout(timer);
-        X.removeListener?.('event', onEvent);
-        resolve(time >>> 0);
-      };
-      const onEvent = (ev: XEvent): void => {
-        if (
-          ev.type === PROPERTY_NOTIFY &&
-          ev.wid === this.#window &&
-          ev.atom === this.#timestampAtom
-        ) {
-          finish(ev.time ?? 0);
-        }
-      };
-      const timer = startTimeout(() => finish(0), TIMESTAMP_TIMEOUT);
-      X.on('event', onEvent);
-      // mode 2 is append, and an empty array is zero elements of it
-      X.ChangeProperty(2, this.#window, this.#timestampAtom, XA_STRING, 8, []);
-    });
-  }
-
   #selectionOwner(X: XConnection): Promise<number> {
     return new Promise<number>((resolve, reject) =>
       X.GetSelectionOwner(this.#selectionAtom, (err, owner) =>
@@ -623,30 +587,21 @@ export class TrayManager {
           err ? reject(err) : resolve(atom),
         ),
       );
-    const [
-      selection,
-      opcode,
-      orientation,
-      visual,
-      messageData,
-      manager,
-      timestamp,
-    ] = await Promise.all([
-      intern(selectionNameFor(this.#screen)),
-      intern(OPCODE_ATOM),
-      intern(ORIENTATION_ATOM),
-      intern(VISUAL_ATOM),
-      intern(MESSAGE_DATA_ATOM),
-      intern(MANAGER_ATOM),
-      intern('_REACT_X11_TRAY_TIMESTAMP'),
-    ]);
+    const [selection, opcode, orientation, visual, messageData, manager] =
+      await Promise.all([
+        intern(selectionNameFor(this.#screen)),
+        intern(OPCODE_ATOM),
+        intern(ORIENTATION_ATOM),
+        intern(VISUAL_ATOM),
+        intern(MESSAGE_DATA_ATOM),
+        intern(MANAGER_ATOM),
+      ]);
     this.#selectionAtom = selection ?? 0;
     this.#opcodeAtom = opcode ?? 0;
     this.#orientationAtom = orientation ?? 0;
     this.#visualAtom = visual ?? 0;
     this.#messageDataAtom = messageData ?? 0;
     this.#managerAtom = manager ?? 0;
-    this.#timestampAtom = timestamp ?? 0;
   }
 
   #destroyWindow(): void {

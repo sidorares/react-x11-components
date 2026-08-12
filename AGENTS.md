@@ -214,6 +214,20 @@ The subpaths this package imports — `react-x11/host`, `/node`, `/style`,
 **When core publishes 2.0.0, change the devDependency to `^2.0.0` and drop
 the git URL.** Nothing else should need touching.
 
+**A `#master` spec still resolves through the lockfile, which pins a
+commit.** So depending on something core landed _since that commit_ is two
+edits, not one: use it, and bump the pin.
+
+```bash
+npm install --package-lock-only --save-dev "github:sidorares/react-x11#master"
+npm ci        # the pin is what `npm ci` installs, here and in CI
+```
+
+Skipping the bump is the failure that looks like nothing: a working tree that
+already has the newer core installed passes everything locally, and every CI
+job fails on an import that is not there yet. `src/tray-host/` needed this for
+`serverTime()`.
+
 ## Talking to the desktop, and optional dependencies
 
 `src/desktop-calendar/` reads the user's real calendars — Google, Microsoft,
@@ -340,13 +354,22 @@ Four decisions in it that are load-bearing:
 - **The selection is held on a window this creates with `X.CreateWindow`, not
   on a node.** A selection owned by something that can unmount is a tray that
   silently stops being the tray.
-- **`useApp().X` is the whole X surface it uses**, and the two ergonomics core
-  does not have are worked around locally rather than waited for. There is no
-  `<window onClientMessage>`, so the opcodes are filtered out of a global
-  `X.on('event')` — which is exactly what core's own `src/xsettings.js` does.
-  And `src/inputtime.js` is not exported, so the ICCCM 2.1 timestamp is
-  re-derived with a zero-length property append (`gdk_x11_get_server_time`'s
-  trick). Both are worth filing against react-x11; neither blocked this.
+- **The ICCCM 2.1 timestamp comes from core.** `serverTime(app)` is a fresh
+  server timestamp for an operation no user action caused, which is exactly
+  what taking a manager selection at startup is; `lastInputTime(app)` is the
+  other half, for something the user did. Never substitute `0` for either —
+  that is `CurrentTime`, which ICCCM forbids and which leaves two clients
+  racing for one selection unable to be ordered. **This needed the lockfile
+  pin bumped**, because core is a `github:…#master` git spec: see "react-x11
+  is a peer dependency".
+- **`X.on('event')` here is deliberate, not a gap.** Core has an
+  element-scoped ClientMessage seam, and an application should use it — but
+  `onClientMessage` is a **`<window>`** prop, and the tray's manager window is
+  not an element. It cannot be: the selection has to be held on something that
+  outlives the render. That is the case core's own `src/clientmessage.js`
+  carves out in as many words — filtering `X.on('event')` "is the right shape
+  _there_, because a settings daemon's window is nobody's element". Do not
+  "fix" this by moving the selection onto the host `<window>`.
 - **Advertising a capability the window does not have is worse than
   advertising none.** `_NET_SYSTEM_TRAY_VISUAL` is written only when the
   top-level window genuinely carries a 32-bit TrueColor visual, because an
