@@ -115,6 +115,71 @@ test('naming one component does not pull in the others', async () => {
   }
 });
 
+/**
+ * The same bundle with code splitting on — what a real bundler does with a
+ * dynamic `import()`. Returns every chunk, entry first.
+ */
+async function bundleChunks(
+  contents: string,
+): Promise<Array<{ path: string; text: string }>> {
+  const result = await esbuild.build({
+    stdin: { contents, resolveDir: ROOT, sourcefile: 'entry.js', loader: 'js' },
+    bundle: true,
+    format: 'esm',
+    splitting: true,
+    outdir: 'chunks',
+    write: false,
+    minify: true,
+    treeShaking: true,
+    external: [
+      'react',
+      'react-x11',
+      'react-x11/*',
+      'ical.js',
+      '@lezer/highlight',
+    ],
+    logLevel: 'silent',
+  });
+  const files = (result.outputFiles ?? []).map((f) => ({
+    path: f.path,
+    text: f.text,
+  }));
+  assert.ok(files.length, 'esbuild wrote no output to read');
+  return files.sort((a, b) =>
+    a.path.includes('entry') ? -1 : b.path.includes('entry') ? 1 : 0,
+  );
+}
+
+/**
+ * `<Terminal>` must not cost the emulator.
+ *
+ * The vt backend is a `registerElement` side effect plus `@xterm/headless` —
+ * about 2 MB unpacked — behind a dynamic `import()` taken only when
+ * `backend="vt"` is actually selected. Split, that is a chunk an XEmbed app
+ * never fetches; unsplit, esbuild inlines it (which is the bundler's call,
+ * not ours), so this is the split build, which is what any app that cares
+ * about the size is doing anyway.
+ */
+test('the vt backend is a lazy chunk, not part of <Terminal>', async () => {
+  const chunks = await bundleChunks(
+    "import { Terminal } from './dist/terminal/index.js';\n" +
+      'globalThis.__keep = Terminal;\n',
+  );
+  const [entry] = chunks;
+  assert.ok(
+    !entry.text.includes('vtterm'),
+    'the terminal entry chunk should not contain the vt element',
+  );
+  assert.ok(
+    chunks.slice(1).some((chunk) => chunk.text.includes('vtterm')),
+    'and the vt element should still be reachable, in a chunk of its own',
+  );
+  assert.ok(
+    chunks.some((chunk) => /xterm/i.test(chunk.path)),
+    'the emulator core is its own chunk too',
+  );
+});
+
 test('each component is also importable on its own', async () => {
   for (const { exportName, dir } of COMPONENTS) {
     const subpath = `./dist/${dir}/index.js`;
