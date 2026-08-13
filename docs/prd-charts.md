@@ -73,6 +73,17 @@ enforced:
    client-side and issuing one `putImageData`. The crossover is computed,
    not guessed: `occupiedCells > plotW × plotH / 2`.
 
+   The sparse stroke carries one **shape guarantee**: points sharing a
+   pixel column collapse to a single ordered vertical min→max pair before
+   the path is built. Same-x bursts (a stream appending several samples
+   per timestamp) are otherwise a storm of sub-pixel 180° hairpins, and
+   ntk's stroke extruder emits NaN join geometry on that input
+   ([ntk#259](https://github.com/sidorares/ntk/issues/259)) — invisible on
+   the headless server, wedges to the window origin on a real one, which
+   is why only real-display runs ever showed it. The collapse is
+   pixel-identical at sparse densities and also what the dense branch
+   draws, so the two modes agree at the boundary.
+
 ## The data structures
 
 **Columns, not rows.** Rows (`data={[{month, desktop}]}`) are accepted for

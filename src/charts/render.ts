@@ -392,6 +392,17 @@ export function renderLineArea(env: SeriesEnv, g: SeriesGeometry): void {
   if (density <= DENSE_PPX && canPath(ctx) && ctx.stroke) {
     // ---- sparse: real geometry. Runs split at NaN, each carrying its own
     // base edge so an area's return path is collected in the same walk.
+    //
+    // Points sharing (nearly) one pixel column collapse to a single
+    // ordered vertical pair — the same envelope the dense branch draws,
+    // pixel-identical at this width. This is a **shape guarantee, not an
+    // optimisation**: a burst of same-x samples (three appends sharing one
+    // timestamp) is a storm of sub-pixel 180° hairpins, and ntk's stroke
+    // extruder emits NaN join geometry on it. A NaN vertex is invisible on
+    // the headless server and a wedge to the window origin on a real one
+    // (the wire encodes NaN as 0) — the demo's "missing sine with flat
+    // streaks". After the collapse, consecutive points always advance in
+    // x, which is the input the extruder is safe on.
     const runsX: number[][] = [];
     const runsY: number[][] = [];
     const runsB: number[][] = [];
@@ -409,19 +420,64 @@ export function renderLineArea(env: SeriesEnv, g: SeriesGeometry): void {
         bs = [];
       }
     };
+    // one pending pixel column: px, first/min/max y, the area base
+    const COL_EPS = 0.5;
+    let colPx = NaN;
+    let colFirst = 0;
+    let colMin = 0;
+    let colMax = 0;
+    let colBase = 0;
+    let colCount = 0;
+    const emitColumn = () => {
+      if (colCount === 0) return;
+      if (colCount === 1) {
+        xs.push(colPx);
+        ys.push(colFirst);
+        if (isArea) bs.push(colBase);
+      } else {
+        // enter at the extreme nearer the first sample, leave at the other:
+        // one vertical segment, no reversal inside the column
+        const enterMin =
+          Math.abs(colFirst - colMin) <= Math.abs(colFirst - colMax);
+        xs.push(colPx, colPx);
+        ys.push(enterMin ? colMin : colMax, enterMin ? colMax : colMin);
+        if (isArea) bs.push(colBase, colBase);
+      }
+      colCount = 0;
+      colPx = NaN;
+    };
     for (let i = i0; i < i1; i++) {
       const v = yv[i] as number;
-      if (Number.isNaN(v)) {
+      const py = yScale.scale(v);
+      // isFinite, not isNaN: an index past a snapshot's end reads as
+      // undefined, and undefined is not NaN — both are gaps, not points
+      if (!Number.isFinite(py)) {
+        emitColumn();
         flush();
         continue;
       }
-      xs.push(pxAt(env, g, i));
-      ys.push(yScale.scale(v));
+      const px = pxAt(env, g, i);
+      if (!Number.isFinite(px)) {
+        emitColumn();
+        flush();
+        continue;
+      }
+      if (colCount > 0 && Math.abs(px - colPx) < COL_EPS) {
+        if (py < colMin) colMin = py;
+        if (py > colMax) colMax = py;
+        colCount++;
+        continue;
+      }
+      emitColumn();
+      colPx = px;
+      colFirst = colMin = colMax = py;
+      colCount = 1;
       if (isArea) {
         const b = baseValueAt(g, i);
-        bs.push(yScale.scale(Number.isNaN(b) ? 0 : b));
+        colBase = yScale.scale(Number.isNaN(b) ? 0 : b);
       }
     }
+    emitColumn();
     flush();
 
     if (isArea && ctx.fill) {

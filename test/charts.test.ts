@@ -1407,3 +1407,60 @@ test('plotRef hands out the snap query an app builds pan and zoom on', async () 
   );
   assert.ok(hit!.plot.width > 0, 'the hit carries the plot rect');
 });
+
+test('burst-shaped points collapse to safe vertical pairs in the sparse stroke', () => {
+  // Three samples sharing one timestamp — the streaming demo's shape, and
+  // the input ntk's stroke extruder emits NaN join geometry on (invisible
+  // on the headless server, wedges to the window origin on a real one).
+  // The sparse branch must never hand the extruder a same-x hairpin: per
+  // pixel column, at most one ordered vertical min→max pair, x advancing
+  // between columns, every coordinate finite.
+  const N = 1200;
+  const t = new Float64Array(N);
+  const v = new Float64Array(N);
+  let phase = 0;
+  for (let i = 0; i < N; i++) {
+    t[i] = 1000 + Math.floor(i / 3) * 50;
+    phase += 0.02;
+    v[i] = 50 + 35 * Math.sin(phase) + (i % 3) * 4;
+  }
+  const ctx = fakeCtx();
+  const pts: [number, number][] = [];
+  ctx.moveTo = (x: number, y: number) => {
+    pts.push([x, y]);
+  };
+  ctx.lineTo = (x: number, y: number) => {
+    pts.push([x, y]);
+  };
+  const width = 700; // 1200 points over 700px: the sparse (stroke) branch
+  const env = makeEnv(ctx, width, 200, [1000, 1000 + (N / 3) * 50], [0, 100]);
+  const xCol = column(t);
+  renderLineArea(env, { ...lineGeometry(v), x: xCol, xIdx: xIndexFor(xCol) });
+
+  assert.ok(ctx.strokes >= 1, 'the sparse branch stroked');
+  assert.ok(pts.length > 100, `a real path was emitted (${pts.length})`);
+  let verticalPairs = 0;
+  for (let i = 0; i < pts.length; i++) {
+    assert.ok(
+      Number.isFinite(pts[i][0]) && Number.isFinite(pts[i][1]),
+      `finite coordinates at ${i}`,
+    );
+    if (i === 0) continue;
+    const dx = pts[i][0] - pts[i - 1][0];
+    if (Math.abs(dx) < 0.5) {
+      verticalPairs++;
+      if (i >= 2) {
+        assert.ok(
+          Math.abs(pts[i - 1][0] - pts[i - 2][0]) >= 0.5,
+          `no same-x run longer than one pair at ${i}`,
+        );
+      }
+    } else {
+      assert.ok(dx > 0, `x advances between columns at ${i} (dx=${dx})`);
+    }
+  }
+  assert.ok(
+    verticalPairs > 100,
+    `bursts collapsed into vertical pairs (${verticalPairs})`,
+  );
+});
