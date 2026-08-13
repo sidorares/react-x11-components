@@ -505,12 +505,15 @@ What it had to grow to be worth replacing, and what each one costs:
   `getText` looks redundant next to `getLabel` and is not: a label rendered
   as an icon beside a `<text>` is a React element, `String()` of it is
   `[object Object]`, and type-ahead would silently stop matching.
-- **It virtualizes**, on `Table`'s pattern — a slice plus two spacer boxes,
-  `onViewport` for the height and `onScroll` for the offset. `virtual` is
-  `'auto'`, which turns on past 200 visible rows. **The threshold exists
-  because virtualization costs two things**: every row must be `rowHeight`
-  tall, and only the built rows are in the accessibility tree. A tree that is
-  merely long should not pay either.
+- **It virtualizes rows it does not have to assume the height of.** A slice
+  plus two spacer boxes, like `Table` — but `Table` may divide by a row height
+  and this may not, because a tree row wraps, carries two lines, or is
+  whatever `renderContent` returned. `src/tree/heights.ts` measures what each
+  drawn row became and indexes it; `rowHeight` is a floor and
+  `estimatedRowHeight` is what an unseen row is guessed at. `virtual` is
+  `'auto'`, past 200 visible rows. The threshold survives because
+  virtualization still costs one thing — only the built rows are in the
+  accessibility tree — and a tree that is merely long should not pay it.
 - **The focus is on the tree, not the row.** Core's focused each row node.
   A virtualized row unmounts the moment it scrolls out and the focus would go
   with it, so the container is the single tab stop and the selection is the
@@ -519,8 +522,21 @@ What it had to grow to be worth replacing, and what each one costs:
 - **Every visible part is a seam**: `renderToggle`, `renderGuide`,
   `renderLabel`, `renderContent`, `renderSubtree`, plus a `styles` bag.
 
-Four decisions in it that are decisions rather than gaps:
+Five decisions in it that are decisions rather than gaps:
 
+- **Layout runs after React's effects, so a row cannot be measured in one.**
+  react-x11 lays out on a frame flush, not in the commit: `useLayoutEffect`
+  and `useEffect` both read the _previous_ pass, and on the render that
+  created a row `node.abs.height` is still 0. `src/tree/timers.ts` schedules
+  the measurement a macrotask later, which is the first moment the geometry is
+  real. Anything else in this package that needs to read back what layout
+  decided has the same problem and the same answer.
+- **The measure/render loop terminates because measuring is idempotent.**
+  `RowHeights.measure` reports whether it changed anything, and only a change
+  bumps the counter the component re-renders on. A second pass over the same
+  rows finds nothing and stops. Break that — re-render unconditionally after
+  measuring — and the tree spins at the frame rate, quietly, on a machine
+  fast enough not to look broken.
 - **`src/tree/rows.ts` is pure, and the flattening is iterative.** Which rows
   are visible, at what depth, which is the last of its siblings — all of it is
   answerable with no display, and it is where every subtle tree bug lives.

@@ -64,7 +64,8 @@ and the keyboard steps over it.
 | `onSelect`                                                         | `(id, item: T) => void`                           | A click, or the keyboard moving the cursor.                                                               |
 | `onActivate`                                                       | `(id, item: T) => void`                           | The _open_ gesture on top of selection: a double click, `Enter`, or `Space`. On a branch it also toggles. |
 | `indent`                                                           | `number`                                          | One level of indent. Default 14. `0` puts the whole indent in `renderSubtree`'s hands.                    |
-| `rowHeight`                                                        | `number`                                          | Default 22. Virtualization is arithmetic over it.                                                         |
+| `rowHeight`                                                        | `number`                                          | The **shortest** a row may be. Default 22; rows grow past it to fit their content.                        |
+| `estimatedRowHeight`                                               | `number`                                          | What an unmeasured row is assumed to be while virtualizing. Defaults to `rowHeight`.                      |
 | `virtual`                                                          | `boolean \| 'auto'`                               | Build only the rows on screen. Default `'auto'`: on past 200 visible rows.                                |
 | `overscan`                                                         | `number`                                          | Rows built either side of the viewport. Default 6.                                                        |
 | `layout`                                                           | `'flat'` (default) \| `'nested'`                  | Whether rows are siblings or grouped into subtree containers. See below.                                  |
@@ -140,14 +141,28 @@ Past `virtual="auto"`'s threshold the tree builds only the rows near the
 viewport and stands two spacer boxes in for the rest, so the scrollbar still
 measures the whole tree. Ten thousand rows mount about forty.
 
-Two things it costs, and they are why the threshold exists rather than
-virtualizing always:
+**Rows do not have to be the same height for this to work.** The tree reads
+back what each row it drew actually laid out at, keyed by item id, and keeps
+those heights in an index that answers "where does row _i_ start" and "which
+row is at offset _y_" in O(log n). A row that has never been drawn is assumed
+to be `estimatedRowHeight`, and the scrollbar gets more honest as you scroll —
+which is the one thing to know about it:
 
-- **Every row must be `rowHeight` tall.** If rows vary — a `renderContent`
-  that wraps, a row with a second line — pass `virtual={false}`.
-- **Only the built rows are in the accessibility tree**, which is the same set
-  a sighted user can see. Each one still carries `aria-level`,
-  `aria-posinset` and `aria-setsize` for the whole tree.
+- **The scrollbar is an estimate until the rows have been seen.** Only rows
+  that have been drawn have been measured. If rows are typically much taller
+  than `rowHeight`, set `estimatedRowHeight` so the first guess is close;
+  otherwise a long tree starts out claiming to be shorter than it is.
+- **Measured heights survive.** They are keyed by item id, so collapsing a
+  branch and opening it again, or sorting, does not re-estimate rows you have
+  already looked at and shift the list under you.
+- **Measuring a row above the viewport does not move what is on screen.** The
+  scroll offset absorbs the difference, or every late measurement would yank
+  the list under the pointer.
+
+One thing virtualizing still costs, and the reason the threshold exists rather
+than doing it always: **only the built rows are in the accessibility tree**,
+which is the same set a sighted user can see. Each one still carries
+`aria-level`, `aria-posinset` and `aria-setsize` for the whole tree.
 
 `layout="nested"` is never virtualized whatever `virtual` says. A slice of a
 list is a list; a slice of a tree is not.
@@ -177,10 +192,14 @@ the tree scrolling"** — the container inside an ancestor that is already
 taller than the window has nothing left to scroll, so opening a folder just
 makes the window's content taller.
 
-A row is exactly `rowHeight` tall and its label refuses to wrap, so a name too
-long for the panel is clipped rather than wrapped onto a second line the row
-has no room for. A tree that should scroll sideways instead, or show an
-ellipsis, does it through `renderLabel`.
+**Rows are as tall as their content.** `rowHeight` is a floor, not a height: a
+label too long for the pane wraps, and the row grows to hold both lines. For
+the one-line, clipped look a file browser has, say so once —
+`styles={{ label: { textWrap: 'nowrap' } }}` — and the whole tree follows.
+
+A `renderLabel` **replaces** the default label, and its style with it. A
+custom label that should not wrap has to say `textWrap: 'nowrap'` itself;
+nothing inherits it.
 
 ## Keyboard
 

@@ -8,7 +8,7 @@ import { test, afterEach } from 'node:test';
 import assert from 'node:assert';
 import React from 'react';
 
-import { renderX11, cleanup, screen, userEvent } from 'react-x11/test';
+import { renderX11, cleanup, screen, userEvent, act } from 'react-x11/test';
 import {
   XK_DOWN,
   XK_END,
@@ -603,36 +603,175 @@ test('renderSubtree replaces the container', async () => {
   assert.strictEqual(retained(box).children.length, 2);
 });
 
-// --- the row is one line tall ----------------------------------------------
+// --- rows are as tall as their content --------------------------------------
 
-test('a label too long for the panel is clipped, never wrapped', async () => {
-  // The bug this pins: a wrapped label is two lines tall inside a box that is
-  // `rowHeight` tall, so its second line is drawn over the row below and the
-  // whole column goes illegible — while the row geometry the keyboard and
-  // virtualization are measured in stays perfectly correct, which is what
-  // makes it hard to see in a test that only reads the model.
-  //
-  // Not `backend: 'mock'`: the mock context does not measure text, so a
-  // wrapped label and a clipped one are the same zero-height box there and
-  // the assertion would pass either way.
-  const long = 'markdown-component-selection-9ded95-and-then-some-more-still';
+// None of these can use `backend: 'mock'`: the mock context does not measure
+// text, so a wrapped label and a clipped one are the same zero-height box
+// there and every assertion below would pass either way.
+
+const LONG = 'markdown-component-selection-9ded95-and-then-some-more-still';
+
+/** Let the measurement pass run. Layout happens on a frame flush and the
+ *  measurement a tick after it, so a render is two turns short of settled. */
+async function settle(): Promise<void> {
+  for (let i = 0; i < 4; i++) {
+    await new Promise((res) => setTimeout(res, 20));
+    await act();
+  }
+}
+
+test('a row grows to hold a label that wraps', async () => {
+  // The whole point of measuring rows. Before this, a wrapped label was two
+  // lines inside a 22px box and its second line was drawn over the row below.
   await renderX11(
     h(
       'box',
       { style: { width: 180, height: 200, minHeight: 0 } },
-      h(Tree, { items: [{ id: 'a', label: long }] }),
+      h(Tree, {
+        items: [
+          { id: 'a', label: LONG },
+          { id: 'b', label: 'b' },
+        ],
+      }),
     ),
   );
-  const [row] = rowNodes();
-  const text = retained(row).children.find(
+  const [first, second] = rowNodes().map((n) => retained(n));
+  const text = first.children.find(
     (n) => (n as RetainedNode).kind === 'text',
   ) as RetainedNode | undefined;
   assert.ok(text, 'the default label is a <text>');
-  assert.strictEqual(retained(row).abs.height, 22, 'the row is one line tall');
+  assert.ok(text.abs.height > 22, 'the label really did wrap');
   assert.ok(
-    text.abs.height <= 22,
-    `the label wrapped: ${text.abs.height}px of text in a 22px row`,
+    first.abs.height >= text.abs.height,
+    `the row is ${first.abs.height}px and its label ${text.abs.height}px`,
   );
+  // and the row below starts under it rather than through it
+  assert.ok(
+    second.abs.y >= first.abs.y + first.abs.height,
+    'the next row starts below the wrapped one',
+  );
+  // a short label still gets the floor
+  assert.strictEqual(second.abs.height, 22);
+});
+
+test('styles.label puts the one-line, clipped look back', async () => {
+  // What a file browser wants, and what the example asks for.
+  await renderX11(
+    h(
+      'box',
+      { style: { width: 180, height: 200, minHeight: 0 } },
+      h(Tree, {
+        items: [{ id: 'a', label: LONG }],
+        styles: { label: { textWrap: 'nowrap' } },
+      }),
+    ),
+  );
+  assert.strictEqual(retained(rowNodes()[0]).abs.height, 22);
+});
+
+test('rowHeight is a floor, and rows may exceed it', async () => {
+  await renderX11(
+    h(
+      'box',
+      { style: { width: 180, height: 200, minHeight: 0 } },
+      h(Tree, {
+        items: [
+          { id: 'a', label: LONG },
+          { id: 'b', label: 'b' },
+        ],
+        rowHeight: 40,
+      }),
+    ),
+  );
+  const [first, second] = rowNodes().map((n) => retained(n).abs.height);
+  assert.strictEqual(second, 40, 'the floor is honoured');
+  assert.ok(first > 40, `a wrapped row exceeds it, got ${first}`);
+});
+
+// --- virtualization --------------------------------------------------------
+
+test('a virtualized tree measures its rows and totals them honestly', async () => {
+  // Every other row wraps, so a fixed-height guess is wrong for half the
+  // list. The scrollbar has to end up measuring what the rows really are.
+  const items: TreeItem[] = Array.from({ length: 400 }, (_, i) => ({
+    id: i,
+    label: i % 2 === 0 ? `row ${i}` : `${LONG} ${i}`,
+  }));
+  await renderX11(
+    h(
+      'box',
+      { style: { width: 200, height: 220, minHeight: 0 } },
+      h(Tree, { items, virtual: true }),
+    ),
+  );
+  const tree = () =>
+    scrolling(screen.all((n) => retained(n).props.role === 'tree')[0]);
+  await settle();
+
+  // The unmeasured guess is 400 × 22. Every wrapped row that has been drawn
+  // is taller than that, so a total still sitting on the guess would mean no
+  // measurement reached the index at all.
+  const guess = 400 * 22;
+  const measured = tree().contentHeight;
+  assert.ok(
+    measured > guess,
+    `the total is still the flat guess: ${measured} vs ${guess}`,
+  );
+
+  // it stops: a second settle over the same rows finds nothing new, which is
+  // what keeps measure → render → measure from spinning
+  await settle();
+  assert.strictEqual(tree().contentHeight, measured, 'it converged');
+
+  // scrolling measures rows nobody had drawn yet, and the total gets more
+  // honest rather than drifting
+  tree().scrollTo({ y: 4000 });
+  await settle();
+  assert.ok(
+    tree().contentHeight > measured,
+    `scrolling should have measured more rows: ${measured} -> ${tree().contentHeight}`,
+  );
+
+  // only a slice is built, which is the point of virtualizing at all
+  assert.ok(rowNodes().length < 60, `built ${rowNodes().length} of 400`);
+});
+
+test('measuring a row above the viewport does not move what is on screen', async () => {
+  // The failure this guards: rows scrolled past are measured late, every one
+  // of them taller than the guess, and the list yanks upward under the
+  // pointer. The scroll offset has to absorb the difference.
+  const items: TreeItem[] = Array.from({ length: 400 }, (_, i) => ({
+    id: i,
+    label: `${LONG} ${i}`,
+  }));
+  await renderX11(
+    h(
+      'box',
+      { style: { width: 200, height: 220, minHeight: 0 } },
+      h(Tree, { items, virtual: true }),
+    ),
+  );
+  const tree = () =>
+    scrolling(screen.all((n) => retained(n).props.role === 'tree')[0]);
+  await settle();
+
+  tree().scrollTo({ y: 4000 });
+  await settle();
+  const at = tree().scrollY;
+  /** The id of the row drawn at the top of the viewport. */
+  const topRow = (): string => {
+    const rows = rowNodes()
+      .map((n) => retained(n))
+      .filter((n) => n.abs.height > 0)
+      .sort((a, b) => a.abs.y - b.abs.y);
+    const top = rows.find((n) => n.abs.y + n.abs.height > 0);
+    return String(top?.props['aria-posinset'] ?? '?');
+  };
+  const wasShowing = topRow();
+
+  await settle();
+  assert.strictEqual(tree().scrollY, at, 'the offset held still');
+  assert.strictEqual(topRow(), wasShowing, 'and so did the row under it');
 });
 
 // --- virtualization --------------------------------------------------------

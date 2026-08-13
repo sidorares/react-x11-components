@@ -30,6 +30,7 @@
 // and no side effect at import time at all.
 import React, {
   useCallback,
+  useEffect,
   useImperativeHandle,
   useMemo,
   useRef,
@@ -54,7 +55,9 @@ import {
 
 import { hx } from './hx.js';
 import type { Host } from './hx.js';
+import { RowHeights } from './heights.js';
 import { typeAheadChar, useTypeAhead } from './internal.js';
+import { afterLayout, cancelAfterLayout } from './timers.js';
 import {
   branchEdges,
   findItem,
@@ -129,13 +132,10 @@ const s = createStyles({
     alignItems: 'center',
     gap: 4,
     paddingEnd: 8,
+    paddingTop: 3,
+    paddingBottom: 3,
     cursor: 'pointer',
     transition: { backgroundColor: 80 },
-    // A row is exactly `rowHeight` tall — virtualization counts on it — so
-    // anything that did not fit is clipped here rather than drawn over the
-    // row below. The label already refuses to wrap; this is what stops a
-    // `renderLabel` that does not know the rule from painting outside.
-    overflow: 'hidden',
   },
   twisty: {
     width: TWISTY,
@@ -146,14 +146,13 @@ const s = createStyles({
   },
   guide: { flexShrink: 0, alignSelf: 'stretch' },
   /**
-   * A label is one line, and a long one is clipped rather than wrapped.
+   * The label **wraps**, and the row grows to hold it.
    *
-   * `textWrap: 'nowrap'` is the load-bearing half. Without it a name too long
-   * for the panel wraps to two lines inside a box that is `rowHeight` tall,
-   * and the second line is drawn straight over the row below — the whole
-   * column ends up illegible, and the row geometry virtualization and the
-   * keyboard are measured in stays right while the pixels are wrong. Same
-   * call core's `Table` makes about a cell.
+   * This is the whole point of rows being measured rather than fixed: a name
+   * too long for the pane becomes two lines of a taller row, not two lines
+   * drawn over the row below. An app that wants the one-line, clipped look a
+   * file browser has says so — `styles={{ label: { textWrap: 'nowrap' } }}` —
+   * and gets it for the whole tree.
    *
    * `textBoxTrim` makes the box the letters rather than the font's ascent and
    * descent, so a label centres on what can be seen. That is what core's
@@ -162,7 +161,6 @@ const s = createStyles({
   label: {
     flexShrink: 1,
     minWidth: 0,
-    textWrap: 'nowrap',
     textBoxTrim: 'cap-alphabetic',
   },
   subtree: { flexShrink: 0 },
@@ -211,8 +209,13 @@ export interface TreeGuideState<T> {
   continues: boolean;
   /** This is the row's own column rather than an ancestor's. */
   own: boolean;
-  /** The column's box: `indent` wide, `rowHeight` tall. */
+  /** How wide the column is: the `indent` prop. */
   width: number;
+  /** The row's **minimum** height — `rowHeight`. The column stretches to
+   *  whatever the row turned out to be, and a drawing is told that real size
+   *  in its own `onDraw`, so this is a hint rather than a measurement.
+   *  A `<canvas cacheKey>` need not name it: the paint cache already keys on
+   *  the node's laid-out size. */
   height: number;
 }
 
@@ -298,9 +301,26 @@ export interface TreeProps<T = TreeItem>
   /** One level of indent, in pixels. `0` puts the whole indent in
    *  `renderSubtree`'s hands instead. */
   indent?: number;
-  /** Every row is this tall. Virtualization is arithmetic over it, so a tree
-   *  with rows of different heights must say `virtual={false}`. */
+  /**
+   * The **shortest** a row may be, in pixels. Default 22.
+   *
+   * A row is not this tall, it is at least this tall: it grows to whatever
+   * its content needs, so a label that wraps to two lines gets a row of two
+   * lines. Virtualization measures rows rather than assuming them, which is
+   * what makes that safe — see {@link estimatedRowHeight}.
+   */
   rowHeight?: number;
+  /**
+   * What a row that has not been measured yet is assumed to be, while
+   * virtualizing. Defaults to `rowHeight`.
+   *
+   * Only the rows on screen have ever been laid out, so the scrollbar is
+   * this guess for everything else, and it converges as you scroll. Set it
+   * when rows are typically much taller than `rowHeight` — a tree of
+   * two-line rows with the default guess starts with a scrollbar that thinks
+   * the tree is half its real length.
+   */
+  estimatedRowHeight?: number;
 
   /**
    * Build only the rows on screen. `'auto'` (the default) turns it on past
@@ -402,6 +422,7 @@ export function Tree<T = TreeItem>({
   onActivate,
   indent = INDENT,
   rowHeight = ROW_HEIGHT,
+  estimatedRowHeight,
   virtual = 'auto',
   overscan = OVERSCAN,
   layout = 'flat',
@@ -435,9 +456,23 @@ export function Tree<T = TreeItem>({
     defaultSelected ?? null,
   );
   const [view, setView] = useState({ top: 0, height: 0 });
+  // Bumped by a measurement pass that found a row taller or shorter than the
+  // index believed. It is the only reason the component re-renders for a
+  // measurement, and a pass that finds nothing new does not bump it, which is
+  // what makes measure → render → measure converge instead of spinning.
+  const [, setMeasured] = useState(0);
   const typeAhead = useTypeAhead();
   const scroller = useRef<ScrollableNode | null>(null);
-  const rowNodes = useRef(new Map<TreeItemId, DrawnNode>());
+  /** The rows on screen, by id — with the index each was drawn at, so a
+   *  measurement pass does not have to search the row list for it. */
+  const rowNodes = useRef(
+    new Map<TreeItemId, { node: DrawnNode; at: number }>(),
+  );
+  const estimate = estimatedRowHeight ?? rowHeight;
+  // `useState` for its lazy initializer rather than `useRef`: one index per
+  // mounted tree, built once. Nothing ever calls the setter — what it holds
+  // is mutable and its changes are announced through `setMeasured`.
+  const [heights] = useState(() => new RowHeights(estimate));
 
   const accessors: ResolvedAccessors<T> = useMemo(
     () =>
@@ -482,16 +517,36 @@ export function Tree<T = TreeItem>({
     (virtual === true ||
       (virtual === 'auto' && rows.length > VIRTUAL_THRESHOLD));
 
+  // The index is re-pointed at the rows about to be drawn before anything
+  // asks it where they are. `rows` is memoized, so this is an identity check
+  // on every render that did not change the tree.
+  const index = heights;
+  index.sync(rows, estimate);
+
   // The slice worth building: what is on screen, plus a little either side.
+  // Which rows those are is a question for the height index now — with rows
+  // of different heights there is no division that answers it.
   const first = virtualizing
-    ? Math.max(0, Math.floor(view.top / rowHeight) - overscan)
+    ? Math.max(0, index.indexAt(view.top) - overscan)
     : 0;
-  const count = virtualizing
-    ? view.height > 0
-      ? Math.ceil(view.height / rowHeight) + overscan * 2
-      : ASSUMED_ROWS
-    : rows.length;
-  const last = Math.min(rows.length, first + count);
+  let last = rows.length;
+  if (virtualizing) {
+    if (view.height > 0) {
+      last = Math.min(
+        rows.length,
+        index.indexAt(view.top + view.height) + 1 + overscan,
+      );
+    } else {
+      // Before the first layout there is no viewport to measure against, and
+      // guessing "all of them" would put a hundred thousand rows in the tree
+      // for a frame.
+      last = Math.min(rows.length, first + ASSUMED_ROWS);
+    }
+  }
+  /** Where the slice starts, and how much of the list is below it — the two
+   *  spacers that keep the scrollbar measuring the whole tree. */
+  const above = virtualizing ? index.offsetAt(first) : 0;
+  const below = virtualizing ? index.total() - index.offsetAt(last) : 0;
 
   const setExpandedSet = useCallback(
     (next: ReadonlySet<TreeItemId>, change: TreeExpandChange<T>): void => {
@@ -518,30 +573,74 @@ export function Tree<T = TreeItem>({
    *
    * A mounted row can say where it is, and `scrollIntoView` then works
    * whatever height it turned out to be — which is what a tree that is *not*
-   * virtualizing wants, since its rows may be anything. A row that is not
+   * virtualizing wants, since nothing has measured its rows. A row that is not
    * mounted has no geometry to ask about, and while virtualizing that is the
-   * normal case, so the offset is computed from the index instead. The two
-   * agree because virtualization already assumes every row is `rowHeight`.
+   * normal case, so the height index answers instead: where the row starts,
+   * and how tall it is or is estimated to be.
    */
-  const reveal = useCallback(
-    (index: number): void => {
-      const box = scroller.current;
-      const row = rowsRef.current[index];
-      if (!box || !row) return;
-      const node = rowNodes.current.get(row.id);
-      if (node) {
-        box.scrollIntoView(node);
-        return;
-      }
-      const top = index * rowHeight;
-      const height = viewRef.current.height;
-      if (top < box.scrollY) box.scrollTo({ y: top });
-      else if (height > 0 && top + rowHeight > box.scrollY + height) {
-        box.scrollTo({ y: top + rowHeight - height });
-      }
-    },
-    [rowHeight],
-  );
+  const reveal = useCallback((at: number): void => {
+    const box = scroller.current;
+    const row = rowsRef.current[at];
+    if (!box || !row) return;
+    const drawn = rowNodes.current.get(row.id);
+    if (drawn) {
+      box.scrollIntoView(drawn.node);
+      return;
+    }
+    const top = heights.offsetAt(at);
+    const rowH = heights.heightAt(at);
+    const height = viewRef.current.height;
+    if (top < box.scrollY) box.scrollTo({ y: top });
+    else if (height > 0 && top + rowH > box.scrollY + height) {
+      box.scrollTo({ y: top + rowH - height });
+    }
+  }, []);
+
+  /**
+   * Read back what the rows on screen actually laid out at.
+   *
+   * The one thing that makes rows of different heights work, and the reason
+   * it is not simply "read the height in an effect": **layout runs after
+   * React's effects, on the frame flush**, so a `useEffect` sees the
+   * *previous* pass's geometry — zero, on the render that created the row.
+   * This runs a tick later, when `abs` is current.
+   *
+   * Idempotent by construction. A row whose measurement has not changed
+   * reports no change, so the second pass over the same rows costs a map walk
+   * and re-renders nothing, and measure → render → measure terminates.
+   */
+  const measureRows = useCallback((): void => {
+    if (!virtualizing) return;
+    const box = scroller.current;
+    const rows = rowsRef.current;
+    const idx = heights;
+    // Rows above the top of the viewport are the ones that move the content
+    // under it, so their total change is what has to come back out of the
+    // scroll offset — otherwise measuring a row you have already scrolled
+    // past yanks the list under the pointer.
+    const anchor = box ? idx.indexAt(box.scrollY) : 0;
+    let shift = 0;
+    let changed = false;
+    for (const [id, { node, at }] of rowNodes.current) {
+      if (rows[at]?.id !== id) continue; // drawn against a list that has moved
+      const height = node.abs.height;
+      const was = idx.heightAt(at);
+      if (!idx.measure(id, at, height)) continue;
+      changed = true;
+      if (at < anchor) shift += height - was;
+    }
+    if (!changed) return;
+    if (shift !== 0 && box) {
+      box.scrollTo({ y: Math.max(0, box.scrollY + shift) });
+    }
+    setMeasured((n) => n + 1);
+  }, [virtualizing]);
+
+  useEffect(() => {
+    if (!virtualizing) return undefined;
+    const id = afterLayout(measureRows);
+    return () => cancelAfterLayout(id);
+  });
 
   const goTo = useCallback(
     (row: TreeRow<T> | null | undefined): void => {
@@ -591,10 +690,26 @@ export function Tree<T = TreeItem>({
       // second set of cases.
       const deeper = rtl ? XK_LEFT : XK_RIGHT;
       const shallower = rtl ? XK_RIGHT : XK_LEFT;
-      const page = Math.max(
-        1,
-        Math.floor(viewRef.current.height / rowHeight) - 1,
-      );
+      /**
+       * How far a page key moves, in rows.
+       *
+       * A viewport's worth, which with rows of different heights is not a
+       * division: it is "where does the row `index` sits at end up if I add a
+       * viewport to its offset". One row of overlap is kept, the way every
+       * document viewer does, so a page down leaves a line of context.
+       */
+      const pageFrom = (from: number, dir: number): number => {
+        const idx = heights;
+        const viewport = viewRef.current.height;
+        if (viewport <= 0) return from + dir;
+        const at = Math.max(0, Math.min(rows.length - 1, from));
+        const target =
+          idx.offsetAt(at) + dir * Math.max(1, viewport - rowHeight);
+        const landed = idx.indexAt(Math.max(0, target));
+        // never stand still: a row taller than the viewport would otherwise
+        // make Page Down a no-op
+        return landed === at ? at + dir : landed;
+      };
 
       switch (ev.keysym) {
         case XK_UP:
@@ -604,10 +719,10 @@ export function Tree<T = TreeItem>({
           goTo(step(1));
           return true;
         case XK_PAGE_UP:
-          goTo(nearest(index < 0 ? 0 : index - page, 1));
+          goTo(nearest(index < 0 ? 0 : pageFrom(index, -1), 1));
           return true;
         case XK_PAGE_DOWN:
-          goTo(nearest(index < 0 ? page : index + page, -1));
+          goTo(nearest(index < 0 ? pageFrom(0, 1) : pageFrom(index, 1), -1));
           return true;
         case deeper:
           // open it, then walk into it — one key does both, in order
@@ -810,8 +925,12 @@ export function Tree<T = TreeItem>({
         // selects the `:disabled` style block — and there is no aria spelling
         // of it to write instead.
         disabled: row.disabled || undefined,
+        // The index the row was drawn at travels with the node, so measuring
+        // does not have to search a hundred thousand rows for where it is.
+        // It can go stale — the rows may move before the tick that measures —
+        // and both this and the height index check it rather than trust it.
         ref: (node: DrawnNode | null) => {
-          if (node) rowNodes.current.set(row.id, node);
+          if (node) rowNodes.current.set(row.id, { node, at: row.index });
           else rowNodes.current.delete(row.id);
         },
         onClick: (ev) => {
@@ -824,7 +943,10 @@ export function Tree<T = TreeItem>({
         },
         style: [
           s.row,
-          { height: rowHeight },
+          // A floor, not a height. The row grows to whatever its content
+          // needs — a wrapped label, two lines, a thumbnail — and the height
+          // index reads back what it actually became.
+          { minHeight: rowHeight },
           // The indent is what says "inside", so it is measured from the edge
           // the row's label begins at.
           { paddingStart: renderGuide ? 4 : 4 + row.depth * indent },
@@ -898,7 +1020,7 @@ export function Tree<T = TreeItem>({
       body.push(
         hx('box', {
           key: 'spacer:before',
-          style: [s.spacer, { height: first * rowHeight }],
+          style: [s.spacer, { height: above }],
         }),
       );
     }
@@ -907,7 +1029,7 @@ export function Tree<T = TreeItem>({
       body.push(
         hx('box', {
           key: 'spacer:after',
-          style: [s.spacer, { height: (rows.length - last) * rowHeight }],
+          style: [s.spacer, { height: below }],
         }),
       );
     }
