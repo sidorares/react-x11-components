@@ -6,7 +6,7 @@
 // strings green-in-dark / navy-in-light, comments dim italic) because a code
 // editor that surprises the eye reads as broken. An app overrides per token
 // type, and a value may be a `$token` into the react-x11 theme — resolved at
-// paint against the editor's own `theme`, so `comment: { color: '$dim' }`
+// paint against the editor's own `theme`, so `comment: { color: '$textMuted' }`
 // follows the palette the rest of the window uses.
 import type { TokenStyle, TokenStyles } from './types.js';
 import { TOKEN_FALLBACK } from './types.js';

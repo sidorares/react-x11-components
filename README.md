@@ -116,6 +116,7 @@ import type { CodeEditorProps } from '@react-x11/components';
 | ------------- | ---------------------------------------- | ----------------------------------------------------- |
 | `Calendar`    | `@react-x11/components/calendar`         | A month grid: one date or a range, any day blockable. |
 | `DatePicker`  | `@react-x11/components/calendar`         | That calendar on a popup, behind a field.             |
+| `LineChart` … | `@react-x11/components/charts`           | Cartesian charts; a million points is a normal input. |
 | `Code`        | `@react-x11/components/code`             | A static code block: highlighted, selectable.         |
 | `CodeEditor`  | `@react-x11/components/code-editor`      | Multiline code editing: highlighting, completion.     |
 | `Markdown`    | `@react-x11/components/markdown`         | Streaming-friendly GFM with cross-block selection.    |
@@ -139,6 +140,99 @@ and PRIMARY come with it (react-x11#291). `<Markdown>` and `<Code>` set
 that prop and say which parts are chrome; the elements underneath answer
 `textContent`/`textIndexAt`/`textCaretRect`/`textRangeRects`, which is all
 an element of your own has to do to join a document.
+
+## Charts
+
+A [shadcn/charts](https://ui.shadcn.com/charts)-shaped component set for
+cartesian charts — line, area, bar, scatter — with the composition you
+expect and a cost model you usually do not: **every frame is bounded by
+pixels, never by points.**
+
+```jsx
+import {
+  ChartContainer,
+  LineChart,
+  LineSeries,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  ChartTooltip,
+  ChartLegend,
+} from '@react-x11/components/charts';
+
+const config = {
+  cpu: { label: 'CPU', color: '$accent' },
+  mem: { label: 'Memory', color: '#e17055' },
+};
+
+<ChartContainer config={config} style={{ height: 240 }}>
+  <LineChart data={rows}>
+    <CartesianGrid />
+    <XAxis dataKey="time" type="time" />
+    <YAxis />
+    <LineSeries dataKey="cpu" />
+    <LineSeries dataKey="mem" curve="monotone" />
+    <ChartTooltip />
+    <ChartLegend />
+  </LineChart>
+</ChartContainer>;
+```
+
+The children are config carriers, recharts-style; one registered element
+paints the grid, the axes and every series in a single pass. `data` takes
+rows (shadcn-familiar), columns (`{ length, columns }` of typed arrays —
+the fast path), or a `ChartData` streaming store whose appends extend the
+decimation index incrementally and never rescan. A live feed should window
+by **time**, not only by count: `maxAge: { key: 't', ms: 60_000 }` keeps
+"the last minute", where a count window silently means "however long that
+many points took" — an OS throttling a hidden window's timers leaves a
+minutes-wide, points-thin era that a count window then renders as fresh
+data squeezed into a sliver. Age eviction drops it on the first append
+after resume, hard stalls included; `ChartData.clear()` is the manual
+reset for switching feeds.
+
+Pan and zoom are a controlled domain: pass `<XAxis domain={[a, b]}>` from
+app state, and use `plotRef` — the imperative snap query the tooltip
+itself uses — to convert a drag's pixels into domain units (the hit
+carries the plot rect and the x value under any window x). The demo's
+million-point chart pans by drag and zooms by buttons this way; the
+pyramid keeps every frame O(width) at any zoom.
+
+What "put a lot of effort into performance" means here, concretely:
+
+- **Off the viewport costs nothing.** Core already culls the paint of
+  scrolled-away nodes; a `ChartData` append to a fully offscreen chart
+  skips even the invalidation — scrolling back repaints from current data.
+- **Too small to see costs nothing to draw.** Every series renders through
+  a per-pixel-column min/max index (a pyramid over the data, built lazily
+  and extended on append), so a million points in a 90px cell cost ~90
+  rectangles. A million points that fall on one pixel render one pixel.
+- **Server-side drawing commands by default, pixels when they win.** A
+  dense line goes out as one batched `FillRectangles` (~8 bytes per pixel
+  column); a sparse one as a real antialiased path. The one place a pixel
+  push wins — a scatter covering most of the plot — is detected by
+  comparing the actual byte costs, and flips to one composited density
+  image.
+
+Tooltips snap to the nearest point in O(log n) through a ref into the
+element. **The value bubble is a real popup window by default** — anchored
+to the data point through core's anchor system, stacked above everything
+(content that flows after the chart included), flipped at screen edges,
+never focused. `<ChartTooltip mode="overlay">` keeps it as a
+hit-transparent box inside the chart instead — one window, one paint
+surface — with the documented trade that later siblings can overdraw
+whatever part of it would have left the chart's box. The crosshair and
+point markers are part of the plot and stay in-window either way, and the
+hover's React re-render contributes no damage of its own. Pass
+`onFrameStats` to see
+what any frame cost: per-series mode, commands issued, estimated wire
+bytes, prep and paint time. `npm run examples:charts` is a live tour —
+streaming at 60 points/s, a million-point walk, small multiples, stacked
+bars and areas, a 200k-point density scatter — with that HUD under every
+chart. [`docs/prd-charts.md`](docs/prd-charts.md) is the design record.
+
+Pie/radial charts and a second y axis are deliberately not in this first
+cut; the cartesian perf story is.
 
 ## Markdown
 

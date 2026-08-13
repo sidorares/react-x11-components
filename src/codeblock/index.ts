@@ -89,7 +89,7 @@ export function codeBlockLook(
     size,
     family: options.monoFamily ?? 'monospace',
     color,
-    dim: String(theme.dim ?? '#7f8c8d'),
+    dim: String(theme.textMuted ?? '#7f8c8d'),
     fill: tint(color, 0.06),
     padding: Math.round(size * 0.65),
     radius: 6,

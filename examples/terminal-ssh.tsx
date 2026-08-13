@@ -267,7 +267,7 @@ function App(): ReactElement {
           <text style={{ fontSize: 13, color: '$text', flexGrow: 1 }}>
             {title}
           </text>
-          <text style={{ fontSize: 11, color: '$dim' }}>{status}</text>
+          <text style={{ fontSize: 11, color: '$textMuted' }}>{status}</text>
         </box>
 
         {pty ? (
@@ -286,7 +286,9 @@ function App(): ReactElement {
             onError={(err) => setStatus(err.message)}
             fallback={
               <box style={{ flexGrow: 1, padding: 24 }}>
-                <text style={{ fontSize: 13, color: '$dim' }}>{status}</text>
+                <text style={{ fontSize: 13, color: '$textMuted' }}>
+                  {status}
+                </text>
               </box>
             }
           />
@@ -295,7 +297,7 @@ function App(): ReactElement {
             <text style={{ fontSize: 13, color: '$text' }}>
               Set SSH_HOST and SSH_USER to connect.
             </text>
-            <text style={{ fontSize: 12, color: '$dim' }}>
+            <text style={{ fontSize: 12, color: '$textMuted' }}>
               SSH_HOST=example.com SSH_USER=me npm run examples:terminal-ssh
             </text>
           </box>

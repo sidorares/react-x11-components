@@ -58,7 +58,7 @@ const DIAGNOSTICS: readonly Diagnostic[] = [
 
 function Label({ children }: { children: string }): ReactElement {
   return (
-    <text style={{ fontSize: 12, fontWeight: 'bold', color: '$dim' }}>
+    <text style={{ fontSize: 12, fontWeight: 'bold', color: '$textMuted' }}>
       {children}
     </text>
   );
@@ -91,7 +91,7 @@ function App(): ReactElement {
           placeholder="select …"
           style={{ borderRadius: 4 }}
         />
-        <text style={{ fontSize: 11, color: '$dim' }}>
+        <text style={{ fontSize: 11, color: '$textMuted' }}>
           {submitted
             ? `Ctrl+Enter ran: ${submitted.split('\n')[0]}…`
             : 'Ctrl+Enter “runs” the query.'}

@@ -814,7 +814,7 @@ export function Tree<T = TreeItem>({
   const renderOneRow = (row: TreeRow<T>): ReactElement => {
     const isSelected = row.id === current;
     const color = row.disabled
-      ? theme.dim
+      ? theme.textMuted
       : isSelected
         ? theme.hoverText
         : theme.text;
@@ -890,7 +890,7 @@ export function Tree<T = TreeItem>({
                 size: TWISTY_GLYPH,
                 // dimmer than the label on a resting row, and the row's own
                 // ink once it is selected
-                style: isSelected ? undefined : { color: theme.dim },
+                style: isSelected ? undefined : { color: theme.textMuted },
               })
             : null,
       ),

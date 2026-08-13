@@ -15,6 +15,7 @@ component.
 | Page                                               | Import                                   | What it is                                            |
 | -------------------------------------------------- | ---------------------------------------- | ----------------------------------------------------- |
 | [Calendar / DatePicker](components/calendar.md)    | `@react-x11/components/calendar`         | A month grid: one date or a range, any day blockable. |
+| [Charts](components/charts.md)                     | `@react-x11/components/charts`           | Cartesian charts; a million points is a normal input. |
 | [Code](components/code.md)                         | `@react-x11/components/code`             | A static code block: highlighted, selectable.         |
 | [CodeEditor](components/code-editor.md)            | `@react-x11/components/code-editor`      | Multiline code editing: highlighting, completion.     |
 | [Markdown](components/markdown.md)                 | `@react-x11/components/markdown`         | Streaming-friendly GFM with cross-block selection.    |
@@ -42,6 +43,9 @@ parts.
 
 - [A pure-JS VT backend for `<Terminal>`](prd-vt-terminal.md) — the design
   behind `backend="vt"`.
+- [Composable, cost-bounded charts](prd-charts.md) — the decimation
+  pyramid, the command-stream/pixel crossover, and the tooltip-popup
+  policy behind `/charts`.
 
 ## Conventions these pages follow
 

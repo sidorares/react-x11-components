@@ -423,7 +423,7 @@ export function CodeEditor(props: CodeEditorComponentProps): ReactElement {
                 {
                   style: {
                     fontSize: Math.max(10, (m?.size ?? 13) - 2),
-                    color: selected ? theme.accentText : theme.dim,
+                    color: selected ? theme.accentText : theme.textMuted,
                   },
                 },
                 item.detail,

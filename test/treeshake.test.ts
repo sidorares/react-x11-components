@@ -32,6 +32,7 @@ const ROOT = path.resolve(fileURLToPath(import.meta.url), '../..');
  * because data survives minification and identifiers do not.
  */
 const COMPONENTS = [
+  { exportName: 'ChartContainer', dir: 'charts', marker: 'chartplot' },
   { exportName: 'CodeEditor', dir: 'code-editor', marker: 'codeeditor' },
   { exportName: 'Calendar', dir: 'calendar', marker: 'Previous month' },
   {

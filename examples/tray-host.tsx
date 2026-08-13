@@ -54,14 +54,16 @@ function App(): ReactElement {
           onMessage={(message) => setSaid(message.text)}
           onError={(err) => setSaid(err.message)}
           fallback={
-            <text style={{ fontSize: 11, color: '$dim' }}>
+            <text style={{ fontSize: 11, color: '$textMuted' }}>
               tray taken — stop the desktop panel and restart
             </text>
           }
         />
 
         <box style={{ flexGrow: 1 }} />
-        <text style={{ fontSize: 11, color: '$dim' }}>{said || label}</text>
+        <text style={{ fontSize: 11, color: '$textMuted' }}>
+          {said || label}
+        </text>
       </box>
     </window>
   );

@@ -1033,18 +1033,21 @@ export class VtTermNode extends Node {
     return out.length ? out : null;
   }
 
-  clearSelection(): void {
-    if (!this._selection && !this._anchor) return;
+  // `: this`, matching the base declarations core grew in #294 — a subclass
+  // narrowing them to void stops being structurally a DrawnNode.
+  override clearSelection(): this {
+    if (!this._selection && !this._anchor) return this;
     this._selection = null;
     this._anchor = null;
     this._head = null;
     this._dragMode = null;
     this._repaint();
+    return this;
   }
 
-  selectAll(): void {
+  override selectAll(): this {
     const term = this._term;
-    if (!term) return;
+    if (!term) return this;
     this._selection = {
       startLine: 0,
       startCol: 0,
@@ -1052,6 +1055,7 @@ export class VtTermNode extends Node {
       endCol: term.cols,
     };
     this._repaint();
+    return this;
   }
 
   // --- clipboard -----------------------------------------------------------

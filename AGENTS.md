@@ -245,12 +245,19 @@ job fails on an import that is not there yet. `src/tray-host/` needed this for
 edit menu (#289).
 
 **The pin is also how far up master this package has migrated.** It sits at
-`b98d520c` deliberately, one commit short of `49fb2b30`
-(react-x11#290, `feat(theme)!`), which drops `Theme.dim` and retypes the
-palette — `src/calendar/` and `src/code-editor/` do not compile against it
-yet. That migration is its own change; moving the pin past this commit
-without doing it breaks the build, so move and migrate together or not at
-all.
+`ceb9da51` — master's tip after react-x11#296 (the scroll-blit claim-race
+fix) and the ntk 7.6.1 bump (react-x11#300, carrying ntk#260's stroke
+hairpin fix) — and the theme break it rode in behind is migrated: `49fb2b30`
+(react-x11#290, `feat(theme)!`) renamed `dim`/`dimActive` to
+`textMuted`/`textMutedActive`, and both the `theme.dim` reads and the
+`'$dim'` style tokens here moved with it. The `'$dim'` half is the one to
+remember: string tokens type-check against any palette and fail only at
+mount, in DEV, as an unknown-token throw — so a palette migration is a
+repo-wide grep for the token, `examples/` and `test/` included, not a
+`tsc` run. `49fb2b30` also grew base-class selection members
+(`selectAll(): this` et al., react-x11#294's declarations), which a
+registered element here must `override` with matching return types or stop
+being structurally a `DrawnNode`.
 
 ## Talking to the desktop, and optional dependencies
 
@@ -589,6 +596,7 @@ npm run check:package # exports map + tree-shaking contract (needs a build)
 npm run docs          # sync docs/ into website/ and serve it
 npm run docs:build    # what the deploy workflow runs
 npm run examples:calendar    # needs a real $DISPLAY (and a bus, for events)
+npm run examples:charts      # needs a real $DISPLAY
 npm run examples:code        # needs a real $DISPLAY
 npm run examples:code-editor # needs a real $DISPLAY
 npm run examples:markdown    # needs a real $DISPLAY
@@ -923,3 +931,21 @@ One more, specific to here:
   the node otherwise, and the reason it bothers is that `kind` is what paint
   order, the test queries and the DEV assertion all match on. Keep the name
   in one exported constant per component and use it in all three places.
+
+And two that come from subclassing `Node` and augmenting JSX:
+
+- **Underscore-prefixed member names belong to core.** The base `Node`
+  assigns own properties like `_theme` in its constructor, and an own
+  property silently shadows a subclass's prototype method of the same name
+  — `this._theme()` then throws "not a function" at the first paint, far
+  from the declaration. Before adding a private `_name` to a node subclass,
+  grep react-x11's `nodes.js` for it (`src/charts/node.ts` renamed its
+  helper to `_themeRecord` for exactly this).
+- **A JSX augmentation's props must be structural.** `npm run typecheck`
+  compiles `src/` and, through `package.test.ts`'s self-import, `dist/` in
+  one program — so the element augmentation exists twice and TypeScript
+  requires the two declarations to be _identical_. Interfaces unify;
+  a class with private members is nominal and does not, and the error
+  (TS2717, pointing at `dist/`) says nothing about why. That is why
+  `ChartSourceData` names the structural `ChartDataLike` rather than the
+  `ChartData` class — which is also what lets an app bring its own store.

@@ -142,7 +142,7 @@ function deriveLook(
   props: MarkdownProps,
 ): Look {
   const text = String(theme.text ?? '#2d3436');
-  const dim = String(theme.dim ?? '#7f8c8d');
+  const dim = String(theme.textMuted ?? '#7f8c8d');
   const accent = String(theme.accent ?? '#2980b9');
   const border = String(theme.border ?? '#b2bec3');
   const background = String(theme.background ?? 'white');
