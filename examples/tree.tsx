@@ -29,7 +29,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { ReactElement } from 'react';
 import { readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
-import { createRoot } from 'react-x11';
+import { SplitPane, createRoot } from 'react-x11';
 import type { DrawInfo } from 'react-x11';
 
 import { Tree } from '../src/index.js';
@@ -308,20 +308,21 @@ function App(): ReactElement {
       height={560}
       title={`@react-x11/components — file explorer (${ROOT})`}
     >
-      {/* `minHeight: 0` is not decoration. A flex item's automatic minimum
-          size is its content — CSS's `min-height: auto` — so this row would
-          refuse to shrink to the window and grow to the height of the whole
-          expanded tree instead. The tree's own root can shrink (it says
-          `minHeight: 0` itself), but a scroll container inside an ancestor
-          that is already taller than the window has nothing left to scroll:
-          expanding a folder would simply make the window's content taller.
-          Every flex ancestor between the window and a scroll container needs
-          this. */}
-      <box style={{ flexGrow: 1, flexDirection: 'row', minHeight: 0 }}>
+      {/* Core's `<SplitPane>` rather than a hand-rolled row, and it is worth
+          knowing why beyond the draggable divider: it gives **both** panes
+          `minHeight: 0` and the second one a zero flex basis. A flex item's
+          automatic minimum size is its content — CSS's `min-height: auto` —
+          so a plain row here would refuse to shrink to the window and grow to
+          the height of the whole expanded tree, and a scroll container inside
+          something already taller than the window has nothing left to scroll:
+          opening a folder would just make the window's content taller. The
+          tree's own root already says `minHeight: 0`; every flex ancestor
+          between it and the window has to as well, and this is a component
+          that does. */}
+      <SplitPane direction="row" defaultSize={280} min={160} minSecond={220}>
         <box
           style={{
-            width: 280,
-            flexShrink: 0,
+            flexGrow: 1,
             minHeight: 0,
             backgroundColor: '$surfaceHover',
             borderEndWidth: 1,
@@ -409,7 +410,17 @@ function App(): ReactElement {
                         : state.color,
                   }}
                 />
-                <text style={{ flexShrink: 1, minWidth: 0 }}>
+                {/* `textWrap: 'nowrap'` is on the default label, and a
+                    `renderLabel` replaces the default label — so it has to
+                    say it again. Without it a name too long for the pane
+                    wraps to a second line inside a box that is `rowHeight`
+                    tall: the row clips, so what you see is a horizontal slice
+                    through two half-lines. One line, clipped at the pane's
+                    edge, is what a file browser shows; drag the divider to
+                    read the rest. */}
+                <text
+                  style={{ flexShrink: 1, minWidth: 0, textWrap: 'nowrap' }}
+                >
                   {state.item.name}
                 </text>
               </box>
@@ -454,10 +465,11 @@ function App(): ReactElement {
           <box style={{ flexGrow: 1 }} />
           <text style={{ fontSize: 11, color: '$dim' }}>
             Arrows walk the tree · Right opens a folder and steps in · Left
-            closes it and steps out · type a name to jump to it
+            closes it and steps out · type a name to jump to it · drag the
+            divider, or focus it and use the arrows
           </text>
         </box>
-      </box>
+      </SplitPane>
     </window>
   );
 }
