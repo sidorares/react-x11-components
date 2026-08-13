@@ -41,7 +41,7 @@ afterEach(cleanup);
 // runs node-x11's pure-JavaScript server in this process.
 
 /** The queries hand back the retained node; their public type describes the
- *  narrower ref-facing view. Same widening as `sparkline.test.ts`. */
+ *  narrower ref-facing view. Same widening as `code.test.ts`. */
 function retained(node: unknown): RetainedNode {
   return node as RetainedNode;
 }

@@ -19,7 +19,7 @@ import type { Ref } from 'react';
 import type { RichTextProps } from './node.js';
 
 // The augmentation needs its target module resolved (same note as
-// `sparkline/index.ts`): nothing in `src/` writes JSX.
+// `code-editor/index.ts`): nothing in `src/` writes JSX.
 import type {} from 'react-x11/jsx-runtime';
 
 export {

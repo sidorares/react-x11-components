@@ -16,8 +16,8 @@ test('every subpath resolves through the exports map', async () => {
   // so this exercises the real resolution an app gets — the built `dist/`,
   // not a source file a relative path happened to reach.
   const barrel = await import('@react-x11/components');
-  assert.strictEqual(typeof barrel.Sparkline, 'function');
+  assert.strictEqual(typeof barrel.Calendar, 'function');
 
-  const sparkline = await import('@react-x11/components/sparkline');
-  assert.strictEqual(sparkline.Sparkline, barrel.Sparkline);
+  const calendar = await import('@react-x11/components/calendar');
+  assert.strictEqual(calendar.Calendar, barrel.Calendar);
 });
