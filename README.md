@@ -50,17 +50,16 @@ would leave you with an element that lays out correctly and never paints.
 ## Usage
 
 ```jsx
-import { Sparkline } from '@react-x11/components';
+import { Code } from '@react-x11/components';
 
 function App() {
   return (
-    <window width={360} height={160} title="components">
+    <window width={480} height={240} title="components">
       <box style={{ flexGrow: 1, padding: 16 }}>
-        <Sparkline
-          data={[3, 7, 4, 9, 6, 11, 8]}
-          color="#c0392b"
-          strokeWidth={2}
-          style={{ width: 320, height: 80 }}
+        <Code
+          source={'const x = 1;\nconsole.log(x);\n'}
+          lang="ts"
+          lineNumbers
         />
       </box>
     </window>
@@ -81,7 +80,7 @@ this repo, not an aspiration.
 Deep imports work too, for apps without a bundler:
 
 ```js
-import { Sparkline } from '@react-x11/components/sparkline';
+import { Code } from '@react-x11/components/code';
 ```
 
 ## TypeScript
@@ -99,12 +98,12 @@ JSX namespace and the host elements type-check:
 }
 ```
 
-Importing a component teaches JSX its element too, so `<sparkline>` is a
-typed tag as soon as `Sparkline` is in scope. Props types are exported
+Importing a component teaches JSX its element too, so `<codeeditor>` is a
+typed tag as soon as `CodeEditor` is in scope. Props types are exported
 under their component's name:
 
 ```ts
-import type { SparklineProps } from '@react-x11/components';
+import type { CodeEditorProps } from '@react-x11/components';
 ```
 
 ## Components
@@ -117,7 +116,6 @@ import type { SparklineProps } from '@react-x11/components';
 | `CodeEditor`  | `@react-x11/components/code-editor`      | Multiline code editing: highlighting, completion.     |
 | `Markdown`    | `@react-x11/components/markdown`         | Streaming-friendly GFM with cross-block selection.    |
 | `MediaPlayer` | `@react-x11/components/media-player`     | mpv or VLC, embedded, with real transport control.    |
-| `Sparkline`   | `@react-x11/components/sparkline`        | A bare line chart. Needs a width and a height.        |
 | `Terminal`    | `@react-x11/components/terminal`         | A real terminal: an embedded emulator, or its own.    |
 | `TrayHost`    | `@react-x11/components/tray-host`        | The system tray: applications dock their icons in.    |
 | _(hook)_      | `@react-x11/components/desktop-calendar` | The user's real calendar events, over D-Bus.          |

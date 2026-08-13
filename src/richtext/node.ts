@@ -39,9 +39,11 @@ export const ELEMENT = 'richtext';
 /**
  * Register `<richtext>`. Called at module scope by every component index
  * that renders the element — never at this module's own scope, so the
- * shared module stays side-effect free. Idempotent for the same reason
- * sparkline's guard is: a lockfile skew that puts two copies of this
- * package in one app should not fail to boot.
+ * shared module stays side-effect free. Idempotent on purpose:
+ * `registerElement` throws on a second registration without `override`,
+ * which is the right default for two *packages* fighting over a name — but a
+ * lockfile skew that puts two copies of this package in one app should not
+ * fail to boot over it.
  */
 export function registerRichText(): void {
   if (registeredElements().includes(ELEMENT)) return;
@@ -55,8 +57,8 @@ export function registerRichText(): void {
   });
 }
 
-/** The ntk connection a node is built against (same derivation, and the
- *  same reason, as `sparkline/node.ts`). */
+/** The ntk connection a node is built against. Derived from `Node`'s own
+ *  constructor rather than named, so it cannot drift from core's. */
 export type NtkApp = ConstructorParameters<typeof Node>[2];
 
 /**
@@ -94,8 +96,8 @@ export interface RichTextProps {
 }
 
 // --- the slices of ntk this node speaks to ---------------------------------
-// Typed structurally, the way `sparkline/node.ts` types its path context:
-// react-x11 keeps ntk deliberately loose, so an element says what it needs.
+// Typed structurally rather than imported: react-x11 keeps ntk deliberately
+// loose, so an element says what it needs and nothing more.
 
 interface FontMetricsLike {
   ascent: number;

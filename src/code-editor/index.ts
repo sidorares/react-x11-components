@@ -2,9 +2,12 @@
 // pluggable language seam (built-in stream tokenizers, or Lezer / TextMate
 // adapters), completion through async sources, LSP-shaped diagnostics.
 //
-// **Registration happens when this module is evaluated** — the same design
-// as the sparkline, for the same tree-shaking reason: an app that never
-// renders a code editor ships none of this.
+// **Registration happens when this module is evaluated**, and that is the
+// design, not a shortcut: nothing in the package registers anything until an
+// app imports the component that needs it, so `sideEffects: false` stays
+// honest and an app that never renders a code editor ships none of this. Do
+// not move registration up into `../index.ts` — that is the one edit that
+// would make the barrel pull every component into every bundle.
 //
 // The split of labour with `./node.ts`: the node owns the text model and the
 // pixels; this file owns registration, the React component that wires input

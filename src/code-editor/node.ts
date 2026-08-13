@@ -73,8 +73,10 @@ import type {
 } from '../code-language/types.js';
 
 /**
- * The element name — registration key, `kind`, and JSX tag, one string (see
- * the sparkline for why they must agree).
+ * The element name — registration key, `kind`, and JSX tag, one string.
+ * react-x11 rejects a node whose `kind` is not the name it was registered
+ * under, because `kind` is what paint order, the test queries and the DEV
+ * assertion all match on. One constant, used in all three places.
  */
 export const ELEMENT = 'codeeditor';
 
