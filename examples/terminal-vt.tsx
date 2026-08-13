@@ -54,7 +54,7 @@ function App(): ReactElement {
           <text style={{ fontSize: 13, color: '$text', flexGrow: 1 }}>
             {title}
           </text>
-          <text style={{ fontSize: 11, color: '$dim' }}>{status}</text>
+          <text style={{ fontSize: 11, color: '$textMuted' }}>{status}</text>
           {[
             ['ls -la\r', 'ls'],
             ['git status\r', 'git status'],
@@ -114,7 +114,9 @@ function App(): ReactElement {
               <text style={{ fontSize: 13, color: '$text' }}>
                 The vt backend is unavailable.
               </text>
-              <text style={{ fontSize: 12, color: '$dim' }}>{status}</text>
+              <text style={{ fontSize: 12, color: '$textMuted' }}>
+                {status}
+              </text>
             </box>
           }
         />
@@ -127,12 +129,12 @@ function App(): ReactElement {
             backgroundColor: '$surfaceHover',
           }}
         >
-          <text style={{ fontSize: 11, color: '$dim', flexGrow: 1 }}>
+          <text style={{ fontSize: 11, color: '$textMuted', flexGrow: 1 }}>
             {selected
               ? `selected ${selected.length} chars — also on PRIMARY`
               : 'drag to select; middle-click pastes; Ctrl+Shift+C/V for the clipboard'}
           </text>
-          <text style={{ fontSize: 11, color: '$dim' }}>
+          <text style={{ fontSize: 11, color: '$textMuted' }}>
             Escape then Tab leaves the terminal
           </text>
         </box>

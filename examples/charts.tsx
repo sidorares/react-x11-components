@@ -50,7 +50,7 @@ function Section(props: {
   return (
     <box style={{ flexDirection: 'column', gap: 6, flexShrink: 0 }}>
       <text style={{ fontSize: 15, color: '$text' }}>{props.title}</text>
-      <text style={{ fontSize: 11, color: '$dim' }}>{props.blurb}</text>
+      <text style={{ fontSize: 11, color: '$textMuted' }}>{props.blurb}</text>
       {props.children}
     </box>
   );
@@ -77,7 +77,9 @@ function useHud(): {
     );
   };
   const hud = (
-    <text style={{ fontSize: 10, color: '$dim', fontFamily: '$monoFamily' }}>
+    <text
+      style={{ fontSize: 10, color: '$textMuted', fontFamily: '$monoFamily' }}
+    >
       {line}
     </text>
   );
@@ -200,7 +202,9 @@ function SmallMultiples(): ReactElement {
           </ChartContainer>
         ))}
       </box>
-      <text style={{ fontSize: 10, color: '$dim', fontFamily: '$monoFamily' }}>
+      <text
+        style={{ fontSize: 10, color: '$textMuted', fontFamily: '$monoFamily' }}
+      >
         {`${totalCmds} drawing commands total, across every repaint of all twelve`}
       </text>
     </Section>
@@ -360,7 +364,7 @@ function App(): ReactElement {
           gap: 24,
         }}
       >
-        <text style={{ fontSize: 11, color: '$dim' }}>
+        <text style={{ fontSize: 11, color: '$textMuted' }}>
           Scroll. Charts outside the viewport stop painting — their frame
           counters freeze even while the streaming store keeps appending.
         </text>

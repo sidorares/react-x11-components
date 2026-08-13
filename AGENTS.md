@@ -245,15 +245,18 @@ job fails on an import that is not there yet. `src/tray-host/` needed this for
 edit menu (#289).
 
 **The pin is also how far up master this package has migrated.** It sits at
-`70264563` — core's `fix/scroll-blit-claim-race` branch (react-x11#296),
-which is `b98d520c` plus one scroll-blit fix and nothing else — deliberately
-short of `49fb2b30` (react-x11#290, `feat(theme)!`), which drops `Theme.dim`
-and retypes the palette. `src/calendar/` and `src/code-editor/` do not
-compile against the theme break yet; that migration is its own change, so
-the pin moves past `49fb2b30` together with it or not at all. A branch
-commit is an exception to "how far up master", carried because the charts
-need the fix: once #296 merges, the next pin bump lands back on master's
-first-parent line.
+`a1abc6d0` — master's tip after react-x11#296 (the scroll-blit claim-race
+fix) merged — and the theme break it rode in behind is migrated: `49fb2b30`
+(react-x11#290, `feat(theme)!`) renamed `dim`/`dimActive` to
+`textMuted`/`textMutedActive`, and both the `theme.dim` reads and the
+`'$dim'` style tokens here moved with it. The `'$dim'` half is the one to
+remember: string tokens type-check against any palette and fail only at
+mount, in DEV, as an unknown-token throw — so a palette migration is a
+repo-wide grep for the token, `examples/` and `test/` included, not a
+`tsc` run. `49fb2b30` also grew base-class selection members
+(`selectAll(): this` et al., react-x11#294's declarations), which a
+registered element here must `override` with matching return types or stop
+being structurally a `DrawnNode`.
 
 ## Talking to the desktop, and optional dependencies
 

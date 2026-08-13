@@ -876,7 +876,7 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
     return !posEqual(this._anchor, this._caret);
   }
 
-  selectedText(): string {
+  override selectedText(): string {
     this._syncProps();
     const [a, b] = this._selectionRange();
     if (posEqual(a, b)) return '';
@@ -1010,13 +1010,16 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
     this._fire('onSelectionChange', this.value);
   }
 
-  selectAll(): void {
+  // `: this`, matching the base declaration core grew in #294 — a subclass
+  // narrowing it to void stops being structurally a DrawnNode.
+  override selectAll(): this {
     const last = this._lines.length - 1;
     this.select(
       { line: 0, ch: 0 },
       { line: last, ch: this._lines[last].length },
     );
     this._ownPrimary();
+    return this;
   }
 
   // --- clipboard -----------------------------------------------------------

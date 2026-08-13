@@ -290,12 +290,15 @@ export function DatePicker(props: DatePickerProps): ReactElement {
     hx(
       'text',
       {
-        style: [s.label, { color: disabled || empty ? theme.dim : theme.text }],
+        style: [
+          s.label,
+          { color: disabled || empty ? theme.textMuted : theme.text },
+        ],
       },
       text,
     ),
     React.createElement(CalendarGlyph, {
-      color: disabled ? theme.border : theme.dim,
+      color: disabled ? theme.border : theme.textMuted,
     }),
     open &&
       anchor &&

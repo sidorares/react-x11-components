@@ -32,7 +32,7 @@ function App(): ReactElement {
           <text style={{ fontSize: 13, color: '$text', flexGrow: 1 }}>
             {title}
           </text>
-          <text style={{ fontSize: 11, color: '$dim' }}>{status}</text>
+          <text style={{ fontSize: 11, color: '$textMuted' }}>{status}</text>
           <box
             style={{
               padding: 6,
@@ -59,7 +59,7 @@ function App(): ReactElement {
           onError={(err) => setStatus(err.message)}
           fallback={
             <box style={{ flexGrow: 1, padding: 24 }}>
-              <text style={{ fontSize: 13, color: '$dim' }}>
+              <text style={{ fontSize: 13, color: '$textMuted' }}>
                 No terminal emulator found. Install one of xterm, rxvt-unicode
                 or alacritty.
               </text>

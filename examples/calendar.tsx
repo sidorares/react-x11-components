@@ -49,7 +49,7 @@ function App(): ReactElement {
             locale="en-GB"
             onChange={(ev) => setDay(ev.value as CalendarDay | null)}
           />
-          <text style={{ fontSize: 11, color: '$dim' }}>
+          <text style={{ fontSize: 11, color: '$textMuted' }}>
             {status === 'ready'
               ? `${calendars.filter((c) => c.enabled).length} desktop calendars`
               : status === 'loading'
@@ -90,7 +90,7 @@ function App(): ReactElement {
               {day ?? 'nothing picked'}
             </text>
             {events.length === 0 ? (
-              <text style={{ fontSize: 12, color: '$dim' }}>
+              <text style={{ fontSize: 12, color: '$textMuted' }}>
                 Nothing on this day.
               </text>
             ) : (
@@ -118,7 +118,7 @@ function App(): ReactElement {
                     <text style={{ fontSize: 12, color: '$text' }}>
                       {ev.summary || '(no title)'}
                     </text>
-                    <text style={{ fontSize: 11, color: '$dim' }}>
+                    <text style={{ fontSize: 11, color: '$textMuted' }}>
                       {ev.allDay
                         ? 'all day'
                         : ev.start.toLocaleTimeString(undefined, {

@@ -435,7 +435,7 @@ export class ChartPlotNode extends Node {
       9,
       Math.round(this.resolvedTextStyle().size * 0.8),
     );
-    const labelColor = this._color('$dim', '#777777');
+    const labelColor = this._color('$textMuted', '#777777');
 
     // -- columns
     const xCol = spec.x.key ? resolveColumn(data, spec.x.key) : null;
@@ -763,7 +763,7 @@ export class ChartPlotNode extends Node {
     if (!spec) return;
     const { plot, xTicks, yTicks } = layout;
     const lineColor = this._color('$border', '#cccccc');
-    const labelColor = this._color('$dim', '#777777');
+    const labelColor = this._color('$textMuted', '#777777');
     const labelSize = Math.max(
       9,
       Math.round(this.resolvedTextStyle().size * 0.8),

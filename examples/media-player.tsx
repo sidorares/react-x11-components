@@ -50,7 +50,7 @@ function App(): ReactElement {
           onEnded={() => setPlaying(false)}
           fallback={
             <box style={{ flexGrow: 1, padding: 24 }}>
-              <text style={{ fontSize: 13, color: '$dim' }}>
+              <text style={{ fontSize: 13, color: '$textMuted' }}>
                 No media player found. Install mpv (preferred — it reports
                 position back) or VLC.
               </text>
@@ -83,7 +83,7 @@ function App(): ReactElement {
             </text>
           </box>
 
-          <text style={{ fontSize: 11, color: '$dim' }}>
+          <text style={{ fontSize: 11, color: '$textMuted' }}>
             {`${clock(position)} / ${clock(duration)}`}
           </text>
 
@@ -117,7 +117,7 @@ function App(): ReactElement {
             style={{ padding: 6, cursor: 'pointer' }}
             onClick={() => setVolume((v) => (v > 0 ? 0 : 0.8))}
           >
-            <text style={{ fontSize: 11, color: '$dim' }}>
+            <text style={{ fontSize: 11, color: '$textMuted' }}>
               {volume > 0 ? 'mute' : 'unmute'}
             </text>
           </box>

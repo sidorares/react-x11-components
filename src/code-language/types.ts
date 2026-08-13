@@ -69,7 +69,7 @@ export type TokenType =
   | 'invalid';
 
 /** How one token type paints. `color` may be a `$token` from the react-x11
- * theme (`'$dim'`), resolved against the editor's own `theme` at paint. */
+ * theme (`'$textMuted'`), resolved against the editor's own `theme` at paint. */
 export interface TokenStyle {
   color?: string;
   /** ntk font weight, 100–900. */

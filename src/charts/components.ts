@@ -684,7 +684,7 @@ function defaultTooltipContent(
   const rows: ReactNode[] = [
     hx(
       'text',
-      { key: 'label', style: { color: '$dim', fontSize: 12 } },
+      { key: 'label', style: { color: '$textMuted', fontSize: 12 } },
       fmtLabel(data.xValue),
     ),
   ];
@@ -704,7 +704,7 @@ function defaultTooltipContent(
             backgroundColor: p.color,
           },
         }),
-        hx('text', { style: { color: '$dim', fontSize: 12 } }, p.label),
+        hx('text', { style: { color: '$textMuted', fontSize: 12 } }, p.label),
         hx('box', { style: { flexGrow: 1, minWidth: 12 } }),
         hx(
           'text',
@@ -747,7 +747,7 @@ function renderLegend(spec: PlotSpec, align: 'top' | 'bottom'): ReactElement {
             backgroundColor: s.color,
           },
         }),
-        hx('text', { style: { color: '$dim', fontSize: 12 } }, s.label),
+        hx('text', { style: { color: '$textMuted', fontSize: 12 } }, s.label),
       ),
     ),
   );

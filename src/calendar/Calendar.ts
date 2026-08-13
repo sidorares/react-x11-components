@@ -321,7 +321,7 @@ function NavButton({
       // The button carries the `:hover`, but neither colour nor a state block
       // reaches down to the glyph — disabled is the state that has to be
       // handed over by name.
-      color: disabled ? theme.border : theme.dim,
+      color: disabled ? theme.border : theme.textMuted,
     }),
   );
 }
@@ -354,7 +354,7 @@ function DayCell({
   const color = selected
     ? theme.accentText
     : blocked || outside
-      ? theme.dim
+      ? theme.textMuted
       : theme.text;
   const markers = dayContent?.(day, { ...state, color });
 
@@ -696,7 +696,11 @@ export function Calendar(props: CalendarProps): ReactElement {
         hx(
           'box',
           { key: i, style: s.weekdayCell },
-          hx('text', { style: [s.weekdayLabel, { color: theme.dim }] }, label),
+          hx(
+            'text',
+            { style: [s.weekdayLabel, { color: theme.textMuted }] },
+            label,
+          ),
         ),
       ),
     ),
