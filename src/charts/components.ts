@@ -60,6 +60,8 @@ export interface ChartContainerProps {
   /** Series key → label and colour, the shadcn shape. */
   config?: ChartConfig;
   style?: StyleInput;
+  /** Names the root box for `react-x11/test`'s queries. */
+  'data-testname'?: string;
   children?: ReactNode;
 }
 
@@ -73,7 +75,10 @@ export function ChartContainer(props: ChartContainerProps): ReactElement {
     { value: props.config ?? {} },
     hx(
       'box',
-      { style: [{ flexDirection: 'column' }, props.style] },
+      {
+        style: [{ flexDirection: 'column' }, props.style],
+        'data-testname': props['data-testname'],
+      },
       props.children,
     ),
   );
@@ -343,6 +348,8 @@ export interface CartesianChartProps {
   /** Per painted frame: modes, command counts, wire bytes, timings. */
   onFrameStats?: (stats: ChartFrameStats) => void;
   style?: StyleInput;
+  /** Names the chart's root box for `react-x11/test`'s queries. */
+  'data-testname'?: string;
   children?: ReactNode;
 }
 
@@ -453,7 +460,10 @@ function makeCartesianChart(
       // flexGrow so a chart FILLS the container's styled height instead of
       // sitting at the element's intrinsic size and overflowing it; with no
       // height anywhere the intrinsic size still decides, as before
-      { style: [{ flexDirection: 'column', flexGrow: 1 }, props.style] },
+      {
+        style: [{ flexDirection: 'column', flexGrow: 1 }, props.style],
+        'data-testname': props['data-testname'],
+      },
       parts.legend?.verticalAlign === 'top' ? legendRow : null,
       hx(
         'box',

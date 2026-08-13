@@ -89,6 +89,10 @@ element.
   still runs.
 - `examples/` — one runnable file per component. These need a real
   `$DISPLAY`; CI does not run them.
+- `docs/` — the reference, one page per component under `docs/components/`,
+  plus design documents. **The only copy** — see "Documentation".
+- `website/` — the Docusaurus site that renders `docs/`. Its own
+  `package.json` and lockfile; nothing in it is published to npm.
 
 Two tsconfigs, and the split matters. `tsconfig.json` typechecks
 _everything_ — `src`, `test`, `examples`, `scripts` — and emits nothing;
@@ -98,13 +102,14 @@ files. It also sets `types: []`, so a `process` or a `Buffer` that wanders
 into `src/` fails the build instead of becoming a `@types/node` dependency
 a consumer has to satisfy.
 
-`src/sparkline/` is the worked example of all of the above, and deliberately
-small. It is also the element react-x11's own `docs/extending.md` uses to
-illustrate `registerElement`, now shipped for real.
+`src/richtext/` is the smallest worked example of the element half of all
+this — one `registerElement` call, one `Node` subclass, one props interface —
+and `src/code-editor/` is the same shape at full size, registering at its own
+module scope the way a component does.
 
 ### Not every component registers an element
 
-`<Sparkline>` does; `<Calendar>` does not. A calendar is a composition of
+`<CodeEditor>` does; `<Calendar>` does not. A calendar is a composition of
 `<box>`, `<text>` and `<canvas>` — there is nothing for the reconciler to
 learn, so `src/calendar/` has no `registerElement` call, no JSX augmentation
 and **no side effect at import time at all**. Both shapes belong here; the
@@ -490,9 +495,13 @@ npm run format        # prettier --write
 npm run format:check  # what CI runs
 npm run typecheck     # builds, then tsc over src, test, examples, scripts
 npm run check:package # exports map + tree-shaking contract (needs a build)
+npm run docs          # sync docs/ into website/ and serve it
+npm run docs:build    # what the deploy workflow runs
 npm run examples:calendar    # needs a real $DISPLAY (and a bus, for events)
 npm run examples:charts      # needs a real $DISPLAY
-npm run examples:sparkline   # needs a real $DISPLAY
+npm run examples:code        # needs a real $DISPLAY
+npm run examples:code-editor # needs a real $DISPLAY
+npm run examples:markdown    # needs a real $DISPLAY
 npm run examples:terminal    # needs a real $DISPLAY and an emulator installed
 npm run examples:terminal-vt # needs a real $DISPLAY and a pty module (node-pty)
 npm run examples:media-player -- <file>   # needs a real $DISPLAY and mpv/VLC
@@ -527,12 +536,132 @@ real pixels — the mock context has no path API, which is why a component's
    entry silently drops the component out of the guard.
 5. Tests in `test/<name>.test.ts`, type tests in `test/types/<name>.tsx`, an
    example in `examples/<name>.tsx`.
-6. If it registers an element, declare it to JSX in the component's
+6. **A page in `docs/components/<name>.md`**, and its row in
+   `docs/README.md`. See "Documentation" below — `test/docs.test.ts` fails
+   without it, so this is not a step that can be left for later.
+7. If it registers an element, declare it to JSX in the component's
    `index.ts` — the `declare module 'react-x11/jsx-runtime'` augmentation.
    It needs `import type {} from 'react-x11/jsx-runtime';` above it: nothing
    in `src/` writes JSX, so the build program has no other reason to load
    the module being augmented, and TypeScript rejects an augmentation whose
    target it never resolved. The import is type-only and costs no bundle.
+
+## Documentation
+
+**There is one copy of the reference, it lives in `docs/`, and the site
+renders it rather than restating it.** `website/scripts/sync-docs.mjs` copies
+`docs/` into the Docusaurus tree at build time, adding front matter and
+rewriting the links that escape the directory. Nothing under
+`website/docs/reference/` is committed, and a page deleted from `docs/`
+disappears from the site because the output tree is rebuilt from scratch.
+
+The shape:
+
+- `docs/README.md` — the index, and the site's `/docs/reference` landing
+  page. Every component page has a row in one of its two tables.
+- `docs/components/<name>.md` — **one page per `src/<name>/`**, components
+  and shared modules alike. The filename is the subpath, so
+  `@react-x11/components/tray-host` is `docs/components/tray-host.md`.
+- `docs/<topic>.md` — design documents and anything that is not one
+  component. `prd-vt-terminal.md` is the worked example.
+
+`test/docs.test.ts` is what keeps this true, and it checks both directions:
+a component with no page, **and a page with no component**. The second is the
+one that rots quietly — delete a component and its page keeps describing
+props nothing has, and the site keeps serving it. It also asserts every page
+starts with a `# Heading`, because that heading is what titles the page in
+the sidebar; without one the sidebar says `tray-host`.
+
+What a component page owes the reader, in roughly this order:
+
+1. The import line and a real snippet — the shortest thing that works.
+2. What the component _is_, in a sentence, including whether it registers a
+   host element.
+3. Props, as a table. The default goes in the description rather than a
+   column of its own; most defaults here are a sentence, not a value.
+4. The handle, if it has one, and the event shape, if it has one.
+5. **The decisions.** Every component in this package has two or three
+   behaviours that look like gaps and are not — one tray per display,
+   `write()` returning `false` on an embedded emulator, a missing player
+   being an ordinary state rather than a throw. Those are the paragraphs the
+   reader actually needs, and the source comments are usually already written:
+   move the reasoning, do not re-derive it.
+6. The `npm run examples:<name>` line, when there is one.
+
+Two rules that are easy to get wrong:
+
+- **Do not restate the README.** It is the tour — what the package is for,
+  and why a component is here rather than in core. `docs/` is the detail.
+  When both would say the same thing, the README gets the short version and
+  links.
+- **Links out of `docs/` are rewritten to GitHub by the sync script, and
+  links inside it stay relative.** So link a sibling page as
+  `[Terminal](terminal.md)`, and the site and the GitHub view of the repo
+  both work.
+
+### The site
+
+`website/` is a Docusaurus site with no build step of its own beyond
+Docusaurus. It has two hand-written pages — `intro.md` and
+`getting-started.md` — and everything else is synced. It deploys to GitHub
+Pages from `master` through `.github/workflows/deploy-docs.yml`.
+
+```bash
+npm --prefix website ci     # once
+npm --prefix website start  # sync + dev server
+npm --prefix website run build
+```
+
+`onBrokenLinks` and `onBrokenAnchors` are both `throw`, deliberately: a
+heading renamed in `docs/` must break the build rather than quietly leave a
+dead link. Markdown is parsed with `format: 'detect'`, so `.md` files are
+CommonMark and not MDX — these docs are full of bare element names like
+`<box>` and of `{braces}`, neither of which is valid MDX.
+
+## Pull requests
+
+### Screenshots
+
+- When a PR contains changes that can be detected by eye (rendering, widgets,
+  layout, the docs site), include screenshots **rendered by the PR's own
+  code** in the description. Headless recipe: render into node-x11's
+  in-process X server, read back with `getImageData` (BGRA byte order), save
+  with `pngjs`. Everything here is testable without a `$DISPLAY` for exactly
+  this reason. For the docs site, `npm run docs:build` and then a headless
+  browser against `website/build`.
+- **Do not commit PR-illustration images to this repo.** Upload them to
+  GitHub's user-attachments storage — the same place a drag-&-drop into the
+  description puts them. Commit an image under `docs/img/` only when it is
+  useful beyond the PR itself, which means the README or the docs site.
+- **Upload with `gh-attach`**, which replays the web UI's upload flow with a
+  saved session and splices the results into the body:
+
+  ```bash
+  gh-attach sidorares/react-x11-components <pr#> shot-a.png shot-b.png
+  ```
+
+  It replaces a `<!-- drag in: shot-a.png -->` placeholder where the body has
+  one and appends the rest, so writing those placeholders while drafting is
+  worth doing either way. `gh-attach login` re-captures the session when it
+  has expired.
+
+- user-attachments has **no public API** (github/community#29993), which is
+  why a PAT or `gh` alone cannot do this and why the tool exists. Without a
+  usable session, fall back to **ntk's** convention instead of giving up:
+  commit the PNGs under `docs/img/` on the PR branch and reference them as
+  `https://raw.githubusercontent.com/sidorares/react-x11-components/<commit-sha>/docs/img/…`.
+  SHA-pinned links survive the branch being deleted on squash-merge. That
+  leaves the images in history, which is the cost, so prefer `gh-attach`.
+- A freshly uploaded asset is **private**: its URL 404s for logged-out
+  visitors until it is referenced from content they can see. Embedding it in
+  the PR body is what publishes it — a bare uploaded URL is useless on its
+  own.
+
+### Documentation
+
+A PR that adds or changes a component changes its `docs/components/` page in
+the same PR. `test/docs.test.ts` catches the missing page; it cannot catch a
+page that still describes the old props.
 
 ## Incoming: what is planned to move here
 
@@ -681,10 +810,11 @@ from the cause:
   correctly, reports a sensible `abs` rect, and never appears on screen, with
   no error anywhere. `registerElement` opts you in unless you say otherwise —
   so the failure mode is passing `drawn: false` without meaning it. Assert
-  membership in a test, the way `test/sparkline.test.ts` does.
+  membership in a test, the way `test/markdown.test.ts` does for
+  `<richtext>`.
 - **`semanticNames` is the difference between DEV and production.** react-x11
   throws in development on a style property written as a flat prop
-  (`<sparkline color="red">`), because that is usually a real mistake. An
+  (`<richtext color="red">`), because that is usually a real mistake. An
   element whose own vocabulary overlaps the style vocabulary — `color`,
   `width`, `opacity`, `stroke` — must declare those names, or it throws on
   its own props in development and works in production. Check a name with

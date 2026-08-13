@@ -75,8 +75,9 @@ const h = React.createElement;
 
 afterEach(cleanup);
 
-/** Widen a query result to the retained node — the sparkline test's
- * pattern, for the same reason. */
+/** Widen a query result to the retained node: the queries hand back the
+ * ref-facing `DrawnNode` view, and a test about `kind`, `props` and paint
+ * order has to reach for the retained class underneath. */
 function retained(node: unknown): RetainedNode {
   return node as RetainedNode;
 }

@@ -19,11 +19,15 @@ export type Host = ReactX11Elements;
  * What every element takes on top of its own props. `theme` is honoured by
  * every node at runtime; react-x11's declarations only put it on
  * `<window>`, so it is re-declared here the way the calendar does.
+ * `data-testname` is the query hook every component forwards
+ * (docs/README.md, "Conventions"); react-x11 passes `data-*` through, the
+ * declarations just do not spell it.
  */
 interface CommonProps {
   key?: Key;
   ref?: Ref<unknown>;
   theme?: Theme | Record<string, string | number>;
+  'data-testname'?: string;
 }
 
 export function hx<K extends keyof Host>(

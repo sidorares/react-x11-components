@@ -1,6 +1,6 @@
 // <Calendar> and <DatePicker> — the date widgets, moved out of react-x11 core.
 //
-// Unlike `../sparkline/`, nothing here registers a host element: both are
+// Unlike `../code-editor/`, nothing here registers a host element: both are
 // compositions of `<box>`, `<text>` and `<canvas>`, so there is no
 // `registerElement` call, no JSX augmentation, and **no side effect at import
 // time at all**. An app that names neither pays for neither.

@@ -14,7 +14,23 @@ import globals from 'globals';
 
 export default [
   // Build output. Never linted, never formatted, never committed.
-  { ignores: ['dist/**'] },
+  //
+  // The docs site is its own project with its own dependencies, its own
+  // module system (Docusaurus config is CommonJS) and JSX in `src/pages/` —
+  // none of which this flat config describes. It is not published, and
+  // `npm run docs:build` is what actually checks it.
+  {
+    ignores: [
+      'dist/**',
+      'website/node_modules/**',
+      'website/build/**',
+      'website/.docusaurus/**',
+      'website/docs/reference/**',
+      'website/docusaurus.config.js',
+      'website/sidebars.js',
+      'website/src/**',
+    ],
+  },
   js.configs.recommended,
   {
     files: ['**/*.js', '**/*.mjs'],

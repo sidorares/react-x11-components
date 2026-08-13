@@ -11,9 +11,9 @@
 //  - `components.ts` — `ChartContainer`, the chart wrappers and the
 //    config-carrier children.
 //
-// **Registration happens when this module is evaluated** — the sparkline
-// pattern, and the one side effect tree-shaking relies on being here and
-// nowhere shallower.
+// **Registration happens when this module is evaluated** — the one side
+// effect tree-shaking relies on being here and nowhere shallower (AGENTS.md,
+// "Tree-shaking is a constraint, not a nice-to-have").
 import { registerElement, registeredElements } from 'react-x11/host';
 
 // Loads the module the JSX augmentation below targets; nothing in `src/`
@@ -24,9 +24,10 @@ import type {} from 'react-x11/jsx-runtime';
 import { ChartPlotNode, ELEMENT } from './node.js';
 import type { ChartPlotProps } from './node.js';
 
-// Idempotent for the same reason the sparkline's is: two copies of this
-// package in one app (a lockfile skew) should not fail to boot over a name
-// both of them mean the same thing by.
+// Idempotent on purpose: `registerElement` throws on a second registration
+// without `override`, which is right for two packages fighting over a name —
+// but two copies of this one (a lockfile skew) should not fail to boot over
+// a name both of them mean the same thing by.
 if (!registeredElements().includes(ELEMENT)) {
   registerElement(ELEMENT, {
     create: (props, app) => new ChartPlotNode(props, app),

@@ -54,3 +54,21 @@ jobs:
       - run: npm run build
       - run: npm run check:package
       - run: npm pack --dry-run
+
+  # The site renders docs/ rather than restating it, and its config sets
+  # `onBrokenLinks: throw` — so this job is what turns a heading renamed in
+  # docs/ into a red PR instead of a dead link discovered after deploy. The
+  # deploy workflow runs the same build on master.
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+      - run: npm ci
+        working-directory: website
+      - run: npm run build
+        working-directory: website

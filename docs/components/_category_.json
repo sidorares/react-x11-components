@@ -1,0 +1,10 @@
+{
+  "label": "Components",
+  "position": 2,
+  "collapsed": false,
+  "link": {
+    "type": "generated-index",
+    "title": "Components",
+    "description": "One page per directory under src/ — the components, and the shared modules underneath them."
+  }
+}
