@@ -205,6 +205,17 @@ export interface TooltipData {
   points: { id: string; label: string; color: string; value: number }[];
 }
 
+/**
+ * The imperative handle `plotRef` exposes: the snap-to-nearest query the
+ * tooltip itself uses. It is also the primitive an app builds pan and zoom
+ * gestures on — the hit carries the plot rect (for pixels→domain-units)
+ * and the x value under any window x, so a drag handler needs nothing
+ * else from the chart's internals.
+ */
+export interface ChartPlotHandle {
+  hitAt(x: number): ChartHit | null;
+}
+
 // --- child introspection ---------------------------------------------------
 
 const SERIES_TYPES = new Map<unknown, SeriesType>([
@@ -349,6 +360,8 @@ export interface CartesianChartProps {
   data: ChartSourceData;
   /** Per painted frame: modes, command counts, wire bytes, timings. */
   onFrameStats?: (stats: ChartFrameStats) => void;
+  /** The imperative snap query, for app gestures — pan, zoom, brushing. */
+  plotRef?: React.Ref<ChartPlotHandle | null>;
   style?: StyleInput;
   /** Names the chart's root box for `react-x11/test`'s queries. */
   'data-testname'?: string;
@@ -400,6 +413,22 @@ function makeCartesianChart(
     const [hover, setHover] = React.useState<HoverState | null>(null);
     const sideRef = React.useRef<'left' | 'right'>('right');
     const lastPointer = React.useRef<{ x: number; y: number } | null>(null);
+
+    // one callback ref feeds both the internal node ref and the public
+    // plotRef handle; memoized so React does not detach/attach per render
+    const plotRefProp = props.plotRef;
+    const setNode = React.useCallback(
+      (n: ChartPlotNode | null) => {
+        nodeRef.current = n;
+        if (typeof plotRefProp === 'function') plotRefProp(n);
+        else if (plotRefProp) {
+          (
+            plotRefProp as React.MutableRefObject<ChartPlotHandle | null>
+          ).current = n;
+        }
+      },
+      [plotRefProp],
+    );
 
     const wantHover = parts.tooltip !== null;
     // Re-runnable for a pointer that has not moved: streaming data slides
@@ -471,7 +500,7 @@ function makeCartesianChart(
     const plotChildren: ReactNode[] = [
       h(ELEMENT, {
         key: 'plot',
-        ref: nodeRef,
+        ref: setNode,
         spec,
         data: props.data,
         formatters,

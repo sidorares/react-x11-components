@@ -77,6 +77,7 @@ export type {
   CartesianGridProps,
   ChartTooltipProps,
   ChartLegendProps,
+  ChartPlotHandle,
   TooltipData,
   ChartDataOptions,
   ChartDataChange,

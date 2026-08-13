@@ -17,9 +17,11 @@ import {
   ChartLegend,
   ChartData,
 } from '../../src/index.js';
+import React from 'react';
 import type {
   ChartConfig,
   ChartFrameStats,
+  ChartPlotHandle,
   ChartSourceData,
 } from '../../src/index.js';
 
@@ -122,3 +124,22 @@ export const badAlign = <ChartLegend verticalAlign="left" />;
 
 // @ts-expect-error tooltip modes are popup or overlay
 export const badMode = <ChartTooltip mode="fixed" />;
+
+// the imperative handle: pan/zoom gestures build on hitAt
+export function PanZoom(): ReturnType<typeof LineChart> {
+  const plot = React.useRef<ChartPlotHandle | null>(null);
+  return (
+    <LineChart data={rows} plotRef={plot}>
+      <LineSeries dataKey="cpu" />
+    </LineChart>
+  );
+}
+
+// the time window takes a key and a duration
+export const aged = new ChartData({
+  maxLength: 1000,
+  maxAge: { key: 't', ms: 60_000 },
+});
+
+// @ts-expect-error maxAge needs its key
+export const badAge = new ChartData({ maxAge: { ms: 60_000 } });

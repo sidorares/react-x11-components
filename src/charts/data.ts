@@ -201,6 +201,20 @@ export interface ChartDataOptions {
    * in occasional batches (12.5% slack), so appends stay O(1) and the
    * expensive re-preparation is amortized over many frames. */
   maxLength?: number;
+  /**
+   * Keep only points whose `key` column is within `ms` of the newest one —
+   * a **time** window where `maxLength` is a count window. A live feed
+   * wants this one: a count window silently turns into "however long that
+   * many points took", and an OS that throttles a hidden window's timers
+   * (it fires them slowly rather than not at all, so no gap heuristic
+   * notices) leaves a minutes-wide, points-thin era in the store — the
+   * dense fresh data then renders squeezed beside honest emptiness until
+   * enough appends push the sparse era out. Age eviction drops it on the
+   * first append instead, hard stalls included. Assumes `key` is appended
+   * in non-decreasing order, which a timestamp is; trims in occasional
+   * batches like `maxLength`.
+   */
+  maxAge?: { key: string; ms: number };
 }
 
 export interface ChartDataChange {
@@ -224,9 +238,13 @@ export class ChartData {
   private _epoch = 0;
   private _listeners = new Set<(change: ChartDataChange) => void>();
   private readonly _maxLength: number;
+  private readonly _maxAge: { key: string; ms: number } | null;
 
   constructor(options: ChartDataOptions = {}) {
     this._maxLength = Math.max(2, options.maxLength ?? Infinity);
+    const age = options.maxAge;
+    this._maxAge =
+      age && age.ms > 0 && age.key ? { key: age.key, ms: age.ms } : null;
   }
 
   get length(): number {
@@ -305,12 +323,36 @@ export class ChartData {
     this._cols.set(key, col);
   }
 
-  /** Drop the oldest points once the window is exceeded by its slack.
+  /** Drop the oldest points once a window is exceeded by its slack.
    * Returns true when history moved. */
   private _enforceWindow(): boolean {
+    let drop = 0;
     const limit = this._maxLength;
-    if (!Number.isFinite(limit) || this._n <= limit * 1.125) return false;
-    const drop = this._n - limit;
+    if (Number.isFinite(limit) && this._n > limit * 1.125) {
+      drop = this._n - limit;
+    }
+    const age = this._maxAge;
+    if (age) {
+      const col = this._cols.get(age.key);
+      if (col?.numeric && this._n > 0) {
+        const values = col.values as Float64Array;
+        const cutoff = values[this._n - 1] - age.ms;
+        // the age key appends in non-decreasing order, so the first row to
+        // keep is a binary search away
+        const first = lowerBound(values, this._n, cutoff);
+        // the same 12.5% slack the count window uses, so a live feed trims
+        // in occasional batches instead of every append — except when the
+        // stale run dwarfs the window (a resumed feed after a throttled
+        // era), where waiting for slack is exactly the squeeze to avoid
+        if (
+          first > drop &&
+          (first - drop >= this._n * 0.125 || values[0] < cutoff - age.ms)
+        ) {
+          drop = first;
+        }
+      }
+    }
+    if (drop <= 0) return false;
     for (const col of this._cols.values()) {
       if (col.numeric) {
         const values = col.values as Float64Array;

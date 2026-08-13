@@ -38,7 +38,11 @@ import {
   XAxis,
   YAxis,
 } from '../src/index.js';
-import type { ChartConfig, ChartFrameStats } from '../src/index.js';
+import type {
+  ChartConfig,
+  ChartFrameStats,
+  ChartPlotHandle,
+} from '../src/index.js';
 
 // --- shared bits -----------------------------------------------------------
 
@@ -88,17 +92,19 @@ function useHud(): {
 
 // --- 1. streaming ----------------------------------------------------------
 
-const telemetry = new ChartData({ maxLength: 3000 });
+// A time window, not just a count window: an occluded app's timers are
+// *throttled* rather than stopped (no per-tick gap a heuristic could see),
+// and a count window would keep that minutes-wide, points-thin era —
+// squeezing the fresh data into a sliver until it evicts. maxAge drops
+// anything older than a minute on the first append after resume, hard
+// stalls included.
+const telemetry = new ChartData({
+  maxLength: 3000,
+  maxAge: { key: 't', ms: 60_000 },
+});
 let phase = 0;
-let lastTick = Date.now();
 setInterval(() => {
   const now = Date.now();
-  // The process was suspended (occluded window, App Nap, a closed lid):
-  // the resumed stream would put a minutes-wide hole in a fifty-second
-  // window, squeezing the real data into slivers until the hole evicts.
-  // Start the window over instead — the honest x-domain is "since resume".
-  if (now - lastTick > 5000) telemetry.clear();
-  lastTick = now;
   for (let i = 0; i < 3; i++) {
     phase += 0.02;
     telemetry.append({
@@ -153,25 +159,115 @@ const million = new Float64Array(MILLION);
 }
 const millionData = { length: MILLION, columns: { walk: million } };
 
+const MILLION_FULL: readonly [number, number] = [0, MILLION - 1];
+const MIN_ZOOM_SPAN = 64;
+
+function ZoomButton(props: {
+  label: string;
+  onClick: () => void;
+}): ReactElement {
+  return (
+    <box
+      onClick={props.onClick}
+      style={{
+        paddingLeft: 10,
+        paddingRight: 10,
+        paddingTop: 3,
+        paddingBottom: 3,
+        borderWidth: 1,
+        borderColor: '$border',
+        borderRadius: 5,
+        backgroundColor: '$surface',
+      }}
+    >
+      <text style={{ fontSize: 12, color: '$text' }}>{props.label}</text>
+    </box>
+  );
+}
+
 function Million(): ReactElement {
   const { onFrameStats, hud } = useHud();
+  // pan + zoom = a controlled x domain, in data units (indices here).
+  // null means "the whole series".
+  const [domain, setDomain] = useState<readonly [number, number] | null>(null);
+  const plot = useRef<ChartPlotHandle | null>(null);
+  const drag = useRef<{
+    startX: number;
+    d: readonly [number, number];
+    perPx: number;
+  } | null>(null);
+
+  const clamp = (a: number, b: number): readonly [number, number] | null => {
+    const span = b - a;
+    if (span >= MILLION - 1) return null; // fully out = back to auto
+    let lo = a;
+    if (lo < 0) lo = 0;
+    if (lo + span > MILLION - 1) lo = MILLION - 1 - span;
+    return [lo, lo + span];
+  };
+  const zoom = (factor: number) => {
+    const [a, b] = domain ?? MILLION_FULL;
+    const mid = (a + b) / 2;
+    const half = Math.max(MIN_ZOOM_SPAN / 2, ((b - a) / 2) * factor);
+    setDomain(clamp(mid - half, mid + half));
+  };
+
   return (
     <Section
       title="One million points"
-      blurb="Per-pixel-column min/max through the pyramid: the whole series is one batched request, ~8 bytes per column of pixels."
+      blurb="Per-pixel-column min/max through the pyramid keeps every frame O(width) at any zoom. Drag to pan; the buttons zoom around the centre."
     >
-      <ChartContainer
-        config={{ walk: { label: 'random walk', color: '#00b894' } }}
-        style={{ height: 220 }}
+      <box style={{ flexDirection: 'row', gap: 8 }}>
+        <ZoomButton label="Zoom in" onClick={() => zoom(0.5)} />
+        <ZoomButton label="Zoom out" onClick={() => zoom(2)} />
+        {domain ? (
+          <ZoomButton label="Reset" onClick={() => setDomain(null)} />
+        ) : null}
+      </box>
+      <box
+        style={{ flexDirection: 'column' }}
+        onMouseDown={(ev) => {
+          // the hit carries the plot rect and the snap — everything a
+          // pixels→indices conversion needs (see ChartPlotHandle)
+          const hit = plot.current?.hitAt(ev.x);
+          if (!hit) return;
+          const d = domain ?? MILLION_FULL;
+          drag.current = {
+            startX: ev.x,
+            d,
+            perPx: (d[1] - d[0]) / Math.max(1, hit.plot.width),
+          };
+        }}
+        onMouseMove={(ev) => {
+          const g = drag.current;
+          if (!g) return;
+          const shift = (g.startX - ev.x) * g.perPx;
+          setDomain(clamp(g.d[0] + shift, g.d[1] + shift));
+        }}
+        onMouseUp={() => {
+          drag.current = null;
+        }}
+        onMouseLeave={() => {
+          drag.current = null;
+        }}
       >
-        <LineChart data={millionData} onFrameStats={onFrameStats}>
-          <CartesianGrid />
-          <XAxis />
-          <YAxis width={44} />
-          <LineSeries dataKey="walk" strokeWidth={1} />
-          <ChartTooltip />
-        </LineChart>
-      </ChartContainer>
+        <ChartContainer
+          config={{ walk: { label: 'random walk', color: '#00b894' } }}
+          style={{ height: 220 }}
+        >
+          <LineChart
+            data={millionData}
+            onFrameStats={onFrameStats}
+            plotRef={plot}
+          >
+            <CartesianGrid />
+            <XAxis domain={domain ? [domain[0], domain[1]] : undefined} />
+            <YAxis width={44} />
+            <LineSeries dataKey="walk" strokeWidth={1} />
+            <ChartTooltip />
+          </LineChart>
+        </ChartContainer>
+      </box>
       {hud}
     </Section>
   );

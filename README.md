@@ -181,11 +181,21 @@ The children are config carriers, recharts-style; one registered element
 paints the grid, the axes and every series in a single pass. `data` takes
 rows (shadcn-familiar), columns (`{ length, columns }` of typed arrays —
 the fast path), or a `ChartData` streaming store whose appends extend the
-decimation index incrementally and never rescan. `ChartData.clear()` is
-the reset a live feed wants after its process was suspended — a resumed
-stream otherwise puts a minutes-wide hole in a seconds-wide window, and
-the real data renders as slivers beside it until the hole evicts (the
-demo clears on any tick gap over five seconds).
+decimation index incrementally and never rescan. A live feed should window
+by **time**, not only by count: `maxAge: { key: 't', ms: 60_000 }` keeps
+"the last minute", where a count window silently means "however long that
+many points took" — an OS throttling a hidden window's timers leaves a
+minutes-wide, points-thin era that a count window then renders as fresh
+data squeezed into a sliver. Age eviction drops it on the first append
+after resume, hard stalls included; `ChartData.clear()` is the manual
+reset for switching feeds.
+
+Pan and zoom are a controlled domain: pass `<XAxis domain={[a, b]}>` from
+app state, and use `plotRef` — the imperative snap query the tooltip
+itself uses — to convert a drag's pixels into domain units (the hit
+carries the plot rect and the x value under any window x). The demo's
+million-point chart pans by drag and zooms by buttons this way; the
+pyramid keeps every frame O(width) at any zoom.
 
 What "put a lot of effort into performance" means here, concretely:
 

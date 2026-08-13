@@ -38,7 +38,7 @@ import {
   ChartData,
   CHARTPLOT_ELEMENT,
 } from '../src/index.js';
-import type { ChartFrameStats } from '../src/index.js';
+import type { ChartFrameStats, ChartPlotHandle } from '../src/index.js';
 
 import {
   minMaxRange,
@@ -1287,14 +1287,16 @@ test('a parked pointer keeps a live tooltip: data shifts re-snap the hover', asy
     node as unknown as Parameters<typeof fireEvent.mouseMove>[0],
     { dx: 200, dy: 60 },
   );
-  await act();
+  // findByText polls: the bubble lives in a popup window whose first
+  // frame rides the frame clock, and a fixed number of act()s is exactly
+  // as much slack as the suite's load happens to leave
+  await screen.findByText('10');
 
   const valueTexts = () =>
     screen.all((n) => {
       const r = retained(n);
       return r.kind === 'text' && /^\d+(\.\d+)?$/.test(textOf(n) ?? '');
     });
-  assert.ok(valueTexts().length >= 1, 'the bubble shows a value');
   assert.ok(
     valueTexts().some((n) => textOf(n) === '10'),
     'the parked hover shows the old value',
@@ -1306,8 +1308,7 @@ test('a parked pointer keeps a live tooltip: data shifts re-snap the hover', asy
     t += 1000;
     store.append({ t, v: 90 });
   }
-  await act();
-  await act();
+  await screen.findByText('90');
   assert.ok(
     valueTexts().some((n) => textOf(n) === '90'),
     `the tooltip re-snapped to the shifted data, saw: ${valueTexts()
@@ -1328,4 +1329,81 @@ test('a parked pointer keeps a live tooltip: data shifts re-snap the hover', asy
     0,
     'no raw epoch header anywhere',
   );
+});
+
+test('maxAge keeps a time window through a throttled-timer era', () => {
+  // an occluded app's timers fire slowly rather than not at all: no
+  // per-tick gap a heuristic could see, but the store accumulates a
+  // minutes-wide, points-thin era that squeezes fresh data into a sliver
+  const store = new ChartData({
+    maxLength: 3000,
+    maxAge: { key: 't', ms: 60_000 },
+  });
+  let t = 1_700_000_000_000;
+  // normal era: 20 ticks/s for 30s
+  for (let i = 0; i < 600; i++) {
+    t += 50;
+    store.append({ t, v: 1 });
+  }
+  // throttled era: one tick every 2s for 5 minutes — never a 5s gap
+  for (let i = 0; i < 150; i++) {
+    t += 2000;
+    store.append({ t, v: 2 });
+  }
+  // resumed era: full rate again
+  for (let i = 0; i < 100; i++) {
+    t += 50;
+    store.append({ t, v: 3 });
+  }
+  const col = store.column('t')! as NumericColumn;
+  const newest = col.values[col.n - 1] as number;
+  const oldest = col.values[0] as number;
+  assert.ok(
+    newest - oldest <= 60_000 * 1.25,
+    `the retained span stays near the window: ${(newest - oldest) / 1000}s`,
+  );
+
+  // a hard stall: one giant leap evicts everything old on the next append
+  t += 14 * 60_000;
+  store.append({ t, v: 4 });
+  const after = store.column('t')! as NumericColumn;
+  assert.ok(
+    (after.values[after.n - 1] as number) - (after.values[0] as number) <=
+      60_000,
+    'the pre-stall block is gone at once, no slack wait',
+  );
+});
+
+test('plotRef hands out the snap query an app builds pan and zoom on', async () => {
+  const ref: { current: ChartPlotHandle | null } = { current: null };
+  const rows = Array.from({ length: 100 }, (_, i) => ({ v: i % 50 }));
+  await renderX11(
+    h(
+      ChartContainer,
+      {
+        config: { v: { label: 'V', color: '#2980b9' } },
+        style: { width: 420, height: 200 },
+      },
+      h(
+        LineChart,
+        { data: rows, plotRef: ref },
+        h(XAxis, { domain: [20, 60] }),
+        h(YAxis, null),
+        h(LineSeries, { dataKey: 'v' }),
+      ),
+    ),
+  );
+  await act();
+  assert.ok(ref.current, 'the handle attached');
+  const node = plotNode();
+  const mid = retained(node as unknown).abs;
+  const hit = ref.current!.hitAt(mid.x + mid.width / 2);
+  assert.ok(hit, 'hitAt answers through the handle');
+  // the domain is controlled [20, 60], so the middle of the plot snaps
+  // near index 40 — the px→domain conversion a drag handler relies on
+  assert.ok(
+    Math.abs((hit!.xValue as number) - 40) <= 2,
+    `mid-plot snaps near 40, got ${String(hit!.xValue)}`,
+  );
+  assert.ok(hit!.plot.width > 0, 'the hit carries the plot rect');
 });

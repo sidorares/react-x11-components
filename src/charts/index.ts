@@ -59,6 +59,7 @@ export {
 export type {
   ChartContainerProps,
   CartesianChartProps,
+  ChartPlotHandle,
   SeriesProps,
   XAxisProps,
   YAxisProps,
