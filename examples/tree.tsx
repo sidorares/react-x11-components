@@ -332,7 +332,7 @@ function App(): ReactElement {
           <text
             style={{
               fontSize: 11,
-              color: '$dim',
+              color: '$textMuted',
               paddingStart: 10,
               paddingTop: 8,
               paddingBottom: 4,
@@ -459,11 +459,11 @@ function App(): ReactElement {
           <text style={{ fontSize: 15, color: '$text' }}>
             {selected ? path.basename(selected) : 'Nothing selected'}
           </text>
-          <text style={{ fontSize: 11, color: '$dim' }}>
+          <text style={{ fontSize: 11, color: '$textMuted' }}>
             {error || details || selected || 'Pick something on the left.'}
           </text>
           <box style={{ flexGrow: 1 }} />
-          <text style={{ fontSize: 11, color: '$dim' }}>
+          <text style={{ fontSize: 11, color: '$textMuted' }}>
             Arrows walk the tree · Right opens a folder and steps in · Left
             closes it and steps out · type a name to jump to it · drag the
             divider, or focus it and use the arrows
