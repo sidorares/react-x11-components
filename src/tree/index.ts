@@ -1045,7 +1045,23 @@ export function Tree<T = TreeItem>({
       ...boxProps,
       ref: scroller,
       style: [s.root, style],
-      onKeyDown: handleKey,
+      /**
+       * `preventDefault` is the load-bearing half.
+       *
+       * The tree's root is a scroll container **and** the focused node, and a
+       * focused scroller has default key actions of its own: Down and Up
+       * scroll by a wheel notch, the Page keys by a viewport, Home and End to
+       * the ends, Space by a page. Without this, every arrow did both — moved
+       * the selection *and* scrolled the list under it — which reads as the
+       * tree scrolling whenever you use the keyboard rather than only when
+       * the selection would otherwise leave the viewport.
+       *
+       * `handleKey` reports whether the tree took the key, so a key it did
+       * not take (a letter that matched nothing) still gets the default.
+       */
+      onKeyDown: (ev) => {
+        if (handleKey(ev)) ev.preventDefault();
+      },
       // Layout, not scrolling, is what first tells a list how much of it is
       // worth building — and it is also where a page key gets its distance,
       // so this is measured whether or not the tree virtualizes.

@@ -437,6 +437,51 @@ test('the keyboard walks the tree the way every tree does', async () => {
   assert.strictEqual(retained(rowFor('src')).props['aria-selected'], true);
 });
 
+test('the keyboard only scrolls when the selection would leave the viewport', async () => {
+  // The tree's root is a scroll container *and* the focused node, and a
+  // focused scroller has default key actions: Down and Up scroll by a wheel
+  // notch, the Page keys by a viewport, Home and End to the ends. Without a
+  // `preventDefault` every arrow did both — moved the selection and scrolled
+  // the list under it — so the tree appeared to scroll whenever the keyboard
+  // was used at all.
+  const items: TreeItem[] = Array.from({ length: 60 }, (_, i) => ({
+    id: i,
+    label: `row ${i}`,
+  }));
+  await renderX11(
+    h(
+      'box',
+      { style: { width: 220, height: 220, minHeight: 0 } },
+      h(Tree, { items, rowHeight: 40 }),
+    ),
+  );
+  const tree = () =>
+    scrolling(screen.all((n) => retained(n).props.role === 'tree')[0]);
+  const fits = Math.floor(220 / 40); // rows that fit in the viewport
+
+  await userEvent.click(rowNodes()[0]);
+  assert.strictEqual(tree().scrollY, 0);
+
+  // walking down inside the viewport must not move the list at all
+  for (let i = 1; i < fits; i++) {
+    await userEvent.key(XK_DOWN);
+    assert.strictEqual(
+      tree().scrollY,
+      0,
+      `row ${i} is still on screen, so nothing should have scrolled`,
+    );
+  }
+
+  // the first row past the fold scrolls by exactly what it needs
+  await userEvent.key(XK_DOWN);
+  assert.strictEqual(tree().scrollY, (fits + 1) * 40 - 220);
+
+  // and coming back up holds still until the selection would leave the top
+  const at = tree().scrollY;
+  await userEvent.key(XK_UP);
+  assert.strictEqual(tree().scrollY, at, 'the row above is already visible');
+});
+
 test('Enter toggles a branch and activates whatever it lands on', async () => {
   const activated: TreeItemId[] = [];
   await renderX11(
@@ -627,7 +672,11 @@ test('a row grows to hold a label that wraps', async () => {
     h(
       'box',
       { style: { width: 180, height: 200, minHeight: 0 } },
+      // `rowHeight` well clear of one line: the exact height of a line is
+      // the font's business and CI's font is not this machine's, so a test
+      // that pinned 22 would be pinning the font.
       h(Tree, {
+        rowHeight: 40,
         items: [
           { id: 'a', label: LONG },
           { id: 'b', label: 'b' },
@@ -640,7 +689,7 @@ test('a row grows to hold a label that wraps', async () => {
     (n) => (n as RetainedNode).kind === 'text',
   ) as RetainedNode | undefined;
   assert.ok(text, 'the default label is a <text>');
-  assert.ok(text.abs.height > 22, 'the label really did wrap');
+  assert.ok(text.abs.height > 40, 'the label really did wrap');
   assert.ok(
     first.abs.height >= text.abs.height,
     `the row is ${first.abs.height}px and its label ${text.abs.height}px`,
@@ -651,7 +700,7 @@ test('a row grows to hold a label that wraps', async () => {
     'the next row starts below the wrapped one',
   );
   // a short label still gets the floor
-  assert.strictEqual(second.abs.height, 22);
+  assert.strictEqual(second.abs.height, 40);
 });
 
 test('styles.label puts the one-line, clipped look back', async () => {
@@ -661,12 +710,13 @@ test('styles.label puts the one-line, clipped look back', async () => {
       'box',
       { style: { width: 180, height: 200, minHeight: 0 } },
       h(Tree, {
+        rowHeight: 40,
         items: [{ id: 'a', label: LONG }],
         styles: { label: { textWrap: 'nowrap' } },
       }),
     ),
   );
-  assert.strictEqual(retained(rowNodes()[0]).abs.height, 22);
+  assert.strictEqual(retained(rowNodes()[0]).abs.height, 40);
 });
 
 test('rowHeight is a floor, and rows may exceed it', async () => {
@@ -852,9 +902,12 @@ test('the spacers make the scrollbar measure the whole tree', async () => {
     h(
       'box',
       { style: { width: 200, height: 220 } },
+      // A floor no line of text can exceed, so every row is exactly 40 on
+      // any font and the total is a number this can assert rather than a
+      // range. With a floor near one line the answer is the font's.
       h(Tree, {
         items: manyItems(1000),
-        rowHeight: 20,
+        rowHeight: 40,
       }),
     ),
   );
@@ -864,7 +917,7 @@ test('the spacers make the scrollbar measure the whole tree', async () => {
   const rows = rowNodes().length;
   const spacers = kids.length - rows;
   assert.ok(spacers >= 1, 'at least the trailing spacer');
-  assert.strictEqual(scrolling(tree).contentHeight, 1000 * 20);
+  assert.strictEqual(scrolling(tree).contentHeight, 1000 * 40);
 });
 
 test('a small tree is built whole, so its rows may be any height', async () => {
