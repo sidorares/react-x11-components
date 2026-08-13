@@ -619,32 +619,48 @@ CommonMark and not MDX — these docs are full of bare element names like
 
 ## Pull requests
 
-Borrowed from react-x11's AGENTS.md, because the two repos share a reviewer
-and there is no reason for the ritual to differ.
+### Screenshots
 
-- When a PR contains changes that can be detected by eye (rendering,
-  widgets, layout), include screenshots **rendered by the PR's own code** in
-  the PR description. Headless recipe: render into node-x11's in-process X
-  server, read back with `getImageData` (BGRA byte order), save with `pngjs`.
-  Everything here is testable without a `$DISPLAY` for exactly this reason.
-- **Do not commit PR-illustration images to the repo.** Upload them as PR
-  attachments instead — GitHub's user-attachments storage, the same one used
-  when pasting or drag-&-dropping an image into the description. Commit an
-  image under `docs/img/` only when it is useful beyond the PR itself, which
-  means the README or the docs site.
-- user-attachments still has **no public API**
-  (github/community#29993) — uploading needs a browser session, so it cannot
-  be done with a PAT or `gh` alone. If you do not have a tool that replays
-  the web UI's upload flow, generate the PNGs, leave
-  `<!-- drag in: name.png -->` placeholders in the PR body, and hand over the
-  file paths.
+- When a PR contains changes that can be detected by eye (rendering, widgets,
+  layout, the docs site), include screenshots **rendered by the PR's own
+  code** in the description. Headless recipe: render into node-x11's
+  in-process X server, read back with `getImageData` (BGRA byte order), save
+  with `pngjs`. Everything here is testable without a `$DISPLAY` for exactly
+  this reason. For the docs site, `npm run docs:build` and then a headless
+  browser against `website/build`.
+- **Do not commit PR-illustration images to this repo.** Upload them to
+  GitHub's user-attachments storage — the same place a drag-&-drop into the
+  description puts them. Commit an image under `docs/img/` only when it is
+  useful beyond the PR itself, which means the README or the docs site.
+- **Upload with `gh-attach`**, which replays the web UI's upload flow with a
+  saved session and splices the results into the body:
+
+  ```bash
+  gh-attach sidorares/react-x11-components <pr#> shot-a.png shot-b.png
+  ```
+
+  It replaces a `<!-- drag in: shot-a.png -->` placeholder where the body has
+  one and appends the rest, so writing those placeholders while drafting is
+  worth doing either way. `gh-attach login` re-captures the session when it
+  has expired.
+
+- user-attachments has **no public API** (github/community#29993), which is
+  why a PAT or `gh` alone cannot do this and why the tool exists. Without a
+  usable session, fall back to **ntk's** convention instead of giving up:
+  commit the PNGs under `docs/img/` on the PR branch and reference them as
+  `https://raw.githubusercontent.com/sidorares/react-x11-components/<commit-sha>/docs/img/…`.
+  SHA-pinned links survive the branch being deleted on squash-merge. That
+  leaves the images in history, which is the cost, so prefer `gh-attach`.
 - A freshly uploaded asset is **private**: its URL 404s for logged-out
   visitors until it is referenced from content they can see. Embedding it in
   the PR body is what publishes it — a bare uploaded URL is useless on its
   own.
-- A PR that adds or changes a component changes its `docs/components/` page
-  in the same PR. `test/docs.test.ts` catches the missing page; it cannot
-  catch a page that still describes the old props.
+
+### Documentation
+
+A PR that adds or changes a component changes its `docs/components/` page in
+the same PR. `test/docs.test.ts` catches the missing page; it cannot catch a
+page that still describes the old props.
 
 ## Incoming: what is planned to move here
 
