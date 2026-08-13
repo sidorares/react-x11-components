@@ -1464,3 +1464,64 @@ test('burst-shaped points collapse to safe vertical pairs in the sparse stroke',
     `bursts collapsed into vertical pairs (${verticalPairs})`,
   );
 });
+
+test('a press hides the bubble; release re-mounts it above', async () => {
+  // The toolkit convention (Qt/GTK dismiss tooltips on press), and what
+  // keeps a drag from fighting the WM over stacking: click-to-raise puts
+  // the owner window above the override-redirect popup and nothing
+  // restacks unmanaged windows back (react-x11#299). Hiding on press and
+  // re-mounting on release sidesteps it — a freshly created window
+  // starts above its siblings.
+  await renderX11(
+    h(
+      ChartContainer,
+      { config: { cpu: { label: 'CPU', color: '#e17055' } } },
+      h(
+        LineChart,
+        { data: sampleRows(60), style: { width: 420, height: 240 } },
+        h(XAxis, { dataKey: 't' }),
+        h(YAxis, null),
+        h(LineSeries, { dataKey: 'cpu' }),
+        h(ChartTooltip, null),
+      ),
+    ),
+  );
+  await act();
+  const nestedWindows = () =>
+    screen.all((n) => {
+      const r = retained(n);
+      return r.kind === 'window' && r.parent !== null;
+    });
+  const overlays = () =>
+    screen.all((n) => {
+      const r = retained(n);
+      return r.kind === 'box' && r.style.pointerEvents === 'none';
+    });
+
+  const node = plotNode();
+  const target = node as unknown as Parameters<typeof fireEvent.mouseMove>[0];
+  fireEvent.mouseMove(target, { dx: 30, dy: 30 });
+  await screen.findByText('CPU');
+  assert.strictEqual(nestedWindows().length, 1, 'hover opens the popup');
+
+  fireEvent.mouseDown(target, { dx: 30, dy: 30 });
+  await act();
+  assert.strictEqual(nestedWindows().length, 0, 'the press hides the bubble');
+  assert.ok(
+    overlays().length >= 1,
+    'the crosshair keeps tracking through the drag',
+  );
+  // tracking continues while pressed: the crosshair follows the drag
+  fireEvent.mouseMove(target, { dx: 60, dy: 30 });
+  await act();
+  assert.strictEqual(nestedWindows().length, 0, 'still hidden mid-drag');
+
+  fireEvent.mouseUp(target, { dx: 60, dy: 30 });
+  await act();
+  await act();
+  assert.strictEqual(
+    nestedWindows().length,
+    1,
+    'release re-mounts the popup — freshly created, above its siblings',
+  );
+});

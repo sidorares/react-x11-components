@@ -184,6 +184,22 @@ Everything interactive or content-shaped is React composition above it:
     into the chart — one window, one paint surface, right for screenshots
     and embedding, with the overdraw trade above accepted.
 
+  **The bubble hides while a button is down and re-mounts on release** —
+  the Qt/GTK tooltip convention, and what keeps a press-gesture (pan,
+  click-to-flip) from fighting the window manager over stacking: a
+  click-to-raise WM raises the owner window above the override-redirect
+  popup, and no WM restacks unmanaged windows (there is no EWMH standing
+  keep-above-owner constraint for them). A freshly created window starts
+  above its siblings, so release restores the bubble on top. The
+  crosshair and markers are in-window and track through the drag. The
+  residue this cannot cover — popup already up, pointer parked, owner
+  raised from the Dock — is filed as core work:
+  [react-x11#299](https://github.com/sidorares/react-x11/issues/299)
+  (VisibilityNotify-driven raise, blocked on
+  [ntk#261](https://github.com/sidorares/ntk/issues/261)), with
+  [react-x11#298](https://github.com/sidorares/react-x11/issues/298) for
+  the `_NET_WM_WINDOW_TYPE` semantics popups should carry regardless.
+
   The memoized `spec`/`data` props hold their identity and handler props
   are excluded from core's damage test, so the React re-render contributes
   **no damage of its own**; what a mousemove costs is the overlays' damage

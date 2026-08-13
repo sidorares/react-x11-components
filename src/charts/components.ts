@@ -480,6 +480,17 @@ function makeCartesianChart(
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [data]);
 
+    // The bubble hides while a button is down — the toolkit convention
+    // (Qt and GTK dismiss tooltips on any press), and what makes a press
+    // that doubles as a gesture (pan, click-to-flip) never fight the
+    // window manager over stacking: a click-to-raise WM raises the owner
+    // window above the override-redirect popup, and no WM restacks
+    // unmanaged windows back (react-x11#299 is the standing fix). The
+    // crosshair and markers are in-window and keep tracking through the
+    // drag; on release the popup re-mounts, and a freshly created window
+    // starts above its siblings.
+    const [pressed, setPressed] = React.useState(false);
+
     // The handlers ride the plot *wrapper*, not the element: the hover
     // overlays live between the two, and tracking must survive the pointer
     // passing over its own crosshair. (They are also hit-transparent — see
@@ -493,9 +504,12 @@ function makeCartesianChart(
     const onMouseLeave = wantHover
       ? () => {
           lastPointer.current = null;
+          setPressed(false);
           setHover(null);
         }
       : undefined;
+    const onMouseDown = wantHover ? () => setPressed(true) : undefined;
+    const onMouseUp = wantHover ? () => setPressed(false) : undefined;
 
     const plotChildren: ReactNode[] = [
       h(ELEMENT, {
@@ -514,15 +528,17 @@ function makeCartesianChart(
     ];
     if (hover) {
       plotChildren.push(...renderPlotOverlays(hover, parts.tooltip));
-      const bubble = renderTooltipBubble(
-        hover,
-        parts.tooltip,
-        formatters,
-        theme,
-        nodeRef,
-        parts.xAxis?.type,
-      );
-      if (bubble) plotChildren.push(bubble);
+      if (!pressed) {
+        const bubble = renderTooltipBubble(
+          hover,
+          parts.tooltip,
+          formatters,
+          theme,
+          nodeRef,
+          parts.xAxis?.type,
+        );
+        if (bubble) plotChildren.push(bubble);
+      }
     }
 
     const legendRow = parts.legend
@@ -560,6 +576,8 @@ function makeCartesianChart(
           },
           onMouseMove,
           onMouseLeave,
+          onMouseDown,
+          onMouseUp,
         },
         ...plotChildren,
       ),
