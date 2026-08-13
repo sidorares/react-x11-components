@@ -1,0 +1,45 @@
+/**
+ * Infima variables, tuned to sit next to the react-x11 site rather than
+ * against it. Everything else is the classic theme.
+ */
+
+:root {
+  --ifm-color-primary: #1f6feb;
+  --ifm-color-primary-dark: #1c64d4;
+  --ifm-color-primary-darker: #1a5ec8;
+  --ifm-color-primary-darkest: #164ea5;
+  --ifm-color-primary-light: #367ded;
+  --ifm-color-primary-lighter: #4285ee;
+  --ifm-color-primary-lightest: #669cf1;
+  --ifm-code-font-size: 92%;
+  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.08);
+}
+
+[data-theme='dark'] {
+  --ifm-color-primary: #79b8ff;
+  --ifm-color-primary-dark: #57a5ff;
+  --ifm-color-primary-darker: #469bff;
+  --ifm-color-primary-darkest: #1381ff;
+  --ifm-color-primary-light: #9bcbff;
+  --ifm-color-primary-lighter: #acd4ff;
+  --ifm-color-primary-lightest: #dfeeff;
+  --docusaurus-highlighted-code-line-bg: rgba(255, 255, 255, 0.12);
+}
+
+/* Prop tables carry identifiers and import paths in code spans. Let the table
+   scroll rather than the page, and never break a code span mid-token — a
+   subpath split across two lines is unreadable and untypeable. Prose in the
+   description column still wraps. */
+.markdown table {
+  display: block;
+  overflow-x: auto;
+}
+
+.markdown table code {
+  white-space: nowrap;
+}
+
+/* The navbar title is a scoped package name and wraps on narrow screens. */
+.navbar__title {
+  white-space: nowrap;
+}

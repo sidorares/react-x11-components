@@ -7,6 +7,10 @@ Everything here is built on react-x11's public API — the built-in host
 elements, or the `registerElement` seam in `react-x11/host`. Nothing here
 needs a change to core to exist, and core does not grow to carry it.
 
+**[Documentation](https://sidorares.github.io/react-x11-components/)** — one
+reference page per component, rendered from [`docs/`](docs/README.md). This
+README is the tour; that is the detail.
+
 > **Not published yet.** This package needs react-x11 2.0.0, which is not on
 > npm — the subpath exports it imports (`react-x11/host`, `/node`, `/style`,
 > `/test`) are on core's `master`, unreleased. Until then, use it from a
