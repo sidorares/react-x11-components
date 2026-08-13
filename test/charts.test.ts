@@ -1302,11 +1302,18 @@ test('a parked pointer keeps a live tooltip: data shifts re-snap the hover', asy
     'the parked hover shows the old value',
   );
 
-  // the stream moves on under the parked pointer: the same x now holds
-  // different values, and the tooltip must follow without a mouse event
-  for (let i = 0; i < 120; i++) {
-    t += 1000;
-    store.append({ t, v: 90 });
+  // The stream moves on under the parked pointer: the same x now holds
+  // different values, and the tooltip must follow without a mouse event.
+  // Appends arrive in yielded batches, the way a real feed's timer does —
+  // a single synchronous 120-notification stampede is at the mercy of the
+  // scheduler's batching, which genuinely differs across Node versions
+  // (Node 20/24 dropped the tail renders on CI where 22 and 26 did not).
+  for (let batch = 0; batch < 12; batch++) {
+    for (let i = 0; i < 10; i++) {
+      t += 1000;
+      store.append({ t, v: 90 });
+    }
+    await act();
   }
   await screen.findByText('90');
   assert.ok(
