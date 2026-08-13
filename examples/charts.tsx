@@ -90,11 +90,19 @@ function useHud(): {
 
 const telemetry = new ChartData({ maxLength: 3000 });
 let phase = 0;
+let lastTick = Date.now();
 setInterval(() => {
+  const now = Date.now();
+  // The process was suspended (occluded window, App Nap, a closed lid):
+  // the resumed stream would put a minutes-wide hole in a fifty-second
+  // window, squeezing the real data into slivers until the hole evicts.
+  // Start the window over instead — the honest x-domain is "since resume".
+  if (now - lastTick > 5000) telemetry.clear();
+  lastTick = now;
   for (let i = 0; i < 3; i++) {
     phase += 0.02;
     telemetry.append({
-      t: Date.now(),
+      t: now,
       cpu: 35 + 25 * Math.sin(phase) + Math.random() * 8,
       mem: 55 + 12 * Math.sin(phase / 3 + 1) + Math.random() * 3,
     });

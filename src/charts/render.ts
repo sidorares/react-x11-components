@@ -862,6 +862,11 @@ export function renderScatter(env: SeriesEnv, g: SeriesGeometry): void {
   }
 
   if (!grid.buckets) {
+    // Plot-LOCAL coordinates, translated at draw time. Nothing that lives
+    // across frames may bake in the plot's window position: every part of
+    // the cache key stays equal while a scroll or a section reflow moves
+    // the plot rect, and window-space buckets then redraw at the old
+    // origin — sliced flat by the series clip, or clipped away entirely.
     const buckets: number[][] = Array.from({ length: ALPHA_LEVELS }, () => []);
     for (let cy = 0; cy < gh; cy++) {
       for (let cx = 0; cx < gw; cx++) {
@@ -871,7 +876,7 @@ export function renderScatter(env: SeriesEnv, g: SeriesGeometry): void {
           ALPHA_LEVELS - 1,
           Math.floor(Math.sqrt(count / grid.maxCount) * ALPHA_LEVELS),
         );
-        buckets[level].push(plot.x + cx * cell, plot.y + cy * cell, cell, cell);
+        buckets[level].push(cx * cell, cy * cell, cell, cell);
       }
     }
     grid.buckets = buckets;
@@ -879,10 +884,19 @@ export function renderScatter(env: SeriesEnv, g: SeriesGeometry): void {
   ctx.save();
   ctx.fillStyle = g.color;
   for (let level = 0; level < ALPHA_LEVELS; level++) {
-    const rects = grid.buckets[level];
-    if (!rects.length) continue;
+    const local = grid.buckets[level];
+    if (!local.length) continue;
     if (ctx.globalAlpha !== undefined) {
       ctx.globalAlpha = 0.3 + (0.7 * (level + 1)) / ALPHA_LEVELS;
+    }
+    // translate manually: ctx.translate would kick fillRects off ntk's
+    // single-FillRectangles fast path (it requires an identity transform)
+    const rects = new Array<number>(local.length);
+    for (let i = 0; i < local.length; i += 4) {
+      rects[i] = local[i] + plot.x;
+      rects[i + 1] = local[i + 1] + plot.y;
+      rects[i + 2] = local[i + 2];
+      rects[i + 3] = local[i + 3];
     }
     fillRects(ctx, rects);
     stats.commands++;

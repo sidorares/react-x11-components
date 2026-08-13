@@ -181,7 +181,11 @@ The children are config carriers, recharts-style; one registered element
 paints the grid, the axes and every series in a single pass. `data` takes
 rows (shadcn-familiar), columns (`{ length, columns }` of typed arrays —
 the fast path), or a `ChartData` streaming store whose appends extend the
-decimation index incrementally and never rescan.
+decimation index incrementally and never rescan. `ChartData.clear()` is
+the reset a live feed wants after its process was suspended — a resumed
+stream otherwise puts a minutes-wide hole in a seconds-wide window, and
+the real data renders as slivers beside it until the hole evicts (the
+demo clears on any tick gap over five seconds).
 
 What "put a lot of effort into performance" means here, concretely:
 

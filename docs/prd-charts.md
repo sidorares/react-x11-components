@@ -83,6 +83,15 @@ the fast path — a million points never materialise row objects.
 **`ChartData`** is the streaming store: append-only columns in growable
 typed arrays, a version counter, and subscriber notification. Appends extend
 the pyramids incrementally (O(appended/16 + levels)); nothing rescans.
+`clear()` empties the window through the same epoch bump a window shift
+uses — the reset for a feed resuming after its process was suspended, whose
+time gap would otherwise squeeze the real data into slivers beside minutes
+of nothing until the gap evicts. Two rules the caches under it live by,
+both learned from field bugs: **nothing cached across frames may bake in
+window coordinates** (the scatter's alpha buckets are plot-local, translated
+at draw — a scroll or reflow moves the plot while every cache key stays
+equal), and **every cross-frame cache keys on `{epoch, n}`** so history
+shifts invalidate everything at once.
 
 **The min/max pyramid** is the decimation index, built per numeric column,
 lazily, on the first paint whose density needs it:

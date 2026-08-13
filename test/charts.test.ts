@@ -17,6 +17,7 @@ import {
   act,
   fireEvent,
   textOf,
+  pixelAt,
 } from 'react-x11/test';
 import { drawnKinds, knownElements } from 'react-x11/host';
 import type { Node as RetainedNode } from 'react-x11/node';
@@ -25,8 +26,10 @@ import {
   ChartContainer,
   LineChart,
   BarChart,
+  ScatterChart,
   LineSeries,
   BarSeries,
+  ScatterSeries,
   XAxis,
   YAxis,
   CartesianGrid,
@@ -980,4 +983,275 @@ test('resolveColumn extracts rows once and reuses by identity', () => {
   assert.strictEqual(a.n, 1000);
   const missing = resolveColumn(rows, 'nope');
   assert.strictEqual(missing, null);
+});
+
+test('scatter buckets follow the plot across a scroll', async () => {
+  // The regression: alpha-bucket rects cached in window coordinates drew
+  // at the old origin after a scroll or a reflow — the cloud sliced flat
+  // or clipped away entirely — because nothing in the cache key changes
+  // when only the plot's position moves.
+  const N = 4000;
+  const xs = new Float64Array(N);
+  const ys = new Float64Array(N);
+  let seed = 7;
+  const rand = () => {
+    // deterministic points, so both mounts see identical data
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+    return seed / 0x7fffffff;
+  };
+  for (let i = 0; i < N; i++) {
+    xs[i] = rand() * 100;
+    ys[i] = rand() * 100;
+  }
+  const data = { length: N, columns: { x: xs, y: ys } };
+
+  const scatterApp = (testname: string) =>
+    h(
+      'box',
+      { style: { flexDirection: 'column', overflow: 'scroll', flexGrow: 1 } },
+      h('box', { style: { height: 80, flexShrink: 0 } }),
+      h(
+        ChartContainer,
+        {
+          config: { y: { label: 'Y', color: '#2980b9' } },
+          style: { height: 240, flexShrink: 0 },
+          'data-testname': testname,
+        },
+        h(
+          ScatterChart,
+          { data },
+          h(XAxis, { dataKey: 'x' }),
+          h(YAxis, null),
+          h(ScatterSeries, { dataKey: 'y', size: 2 }),
+        ),
+      ),
+      h('box', { style: { height: 600, flexShrink: 0 } }),
+    );
+
+  // mount (paints once at scroll 0, priming the grid cache), scroll, then
+  // force a full repaint at the new position — the scroll blit otherwise
+  // drags the old pixels and hides the stale draw in the exposed strip;
+  // the field failure is exactly a full repaint reusing position-baked
+  // buckets (a poisoned blit, a section reflow, fast wheel reversals)
+  const result = await renderX11(scatterApp('scrolled'), {
+    width: 420,
+    height: 420,
+  });
+  await act();
+  const [scrollNode] = screen.all((n) => {
+    const r = retained(n) as unknown as { isScroller?: () => boolean };
+    return typeof r.isScroller === 'function' && r.isScroller();
+  });
+  (retained(scrollNode) as unknown as { scrollTo(to: number): void }).scrollTo(
+    60,
+  );
+  await act();
+  const plot = retained(plotNode() as unknown);
+  plot.invalidate(false, null, 'expose');
+  await act();
+
+  // the points span the full y-domain, so after the repaint the TOP band
+  // of the plot must hold cloud ink; buckets drawn at the pre-scroll
+  // origin leave it empty (displaced down and clipped flat — the bug)
+  const ctx = (
+    result as unknown as { window: { getContext(n: string): unknown } }
+  ).window.getContext('2d');
+  const abs = plot.abs;
+  // reference background: inside the element, above the plot's ink, in
+  // the y-gutter's top-left corner
+  const bg = await pixelAt(ctx as never, abs.x + 2, abs.y + 2);
+  let inked = 0;
+  for (let dx = 60; dx < abs.width - 12; dx += 24) {
+    for (let dy = 8; dy <= 44; dy += 12) {
+      const px = await pixelAt(ctx as never, abs.x + dx, abs.y + dy);
+      const diff =
+        Math.abs(px[0] - bg[0]) +
+        Math.abs(px[1] - bg[1]) +
+        Math.abs(px[2] - bg[2]);
+      if (diff > 40) inked++;
+    }
+  }
+  assert.ok(
+    inked >= 5,
+    `the plot's top band holds cloud ink after the scrolled repaint ` +
+      `(${inked} inked samples — zero means the buckets stayed at the ` +
+      `pre-scroll origin)`,
+  );
+});
+
+test('a windowed stream stays bounded through compactions', async () => {
+  // The field failure: after the maxLength window compacts, a frame
+  // rendered the series as a full-length polyline hairball — hundreds of
+  // commands, a ballooned x-domain — then healed. Drive a stream through
+  // several compactions with the demo's timestamp shape (bursts sharing
+  // one millisecond) and hold every frame to the command budget.
+  const store = new ChartData({ maxLength: 300 });
+  let t = 1_700_000_000_000;
+  const frames: ChartFrameStats[] = [];
+  await renderX11(
+    h(
+      ChartContainer,
+      {
+        config: { v: { label: 'V', color: '#2980b9' } },
+        style: { width: 420, height: 200 },
+      },
+      h(
+        LineChart,
+        { data: store, onFrameStats: (s: ChartFrameStats) => frames.push(s) },
+        h(XAxis, { dataKey: 't', type: 'time' }),
+        h(YAxis, { domain: [0, 100] }),
+        h(LineSeries, { dataKey: 'v' }),
+      ),
+    ),
+  );
+  await act();
+
+  let phase = 0;
+  for (let batch = 0; batch < 120; batch++) {
+    // three appends per tick, one shared timestamp — the demo's shape
+    t += 50;
+    for (let i = 0; i < 3; i++) {
+      phase += 0.02;
+      store.append({ t, v: 50 + 40 * Math.sin(phase) });
+    }
+    await act();
+  }
+
+  assert.ok(
+    frames.length >= 20,
+    `painted through the stream, got ${frames.length}`,
+  );
+  for (const [i, frame] of frames.entries()) {
+    assert.ok(
+      frame.commands <= 40,
+      `frame ${i} stayed bounded: ${frame.commands} cmds, ` +
+        `~${Math.round(frame.estimatedWireBytes / 1024)}KB, ` +
+        `modes ${frame.series.map((s) => s.mode).join(',')}`,
+    );
+  }
+});
+
+test('clear() resets the window and every cache rebuilds through the epoch', async () => {
+  const store = new ChartData({ maxLength: 500 });
+  for (let i = 0; i < 400; i++) {
+    store.append({ t: 1000 + i * 50, v: i % 90, tag: `r${i}` });
+  }
+  const before = store.column('t')!;
+  assert.strictEqual(before.n, 400);
+
+  const epochBefore = store.epoch;
+  store.clear();
+  assert.strictEqual(store.length, 0);
+  assert.ok(store.epoch > epochBefore, 'clear bumps the epoch');
+  assert.strictEqual(store.column('t')!.n, 0);
+  assert.strictEqual(
+    (store.column('tag')!.values as string[]).length,
+    0,
+    'string columns actually empty — they append with push',
+  );
+
+  // a resumed stream: minutes later, fresh points only
+  for (let i = 0; i < 50; i++) {
+    store.append({ t: 900_000 + i * 50, v: i, tag: `s${i}` });
+  }
+  const after = store.column('t')! as NumericColumn;
+  assert.strictEqual(after.n, 50);
+  assert.strictEqual(after.values[0], 900_000, 'reads start at the new rows');
+  const idx = xIndexFor(after);
+  assert.strictEqual(idx.min, 900_000, 'the x extent forgot the old run');
+  assert.ok(idx.sorted);
+});
+
+test('a stream resuming after a stall renders the new window, not the gap', async () => {
+  const store = new ChartData({ maxLength: 300 });
+  let t = 1_700_000_000_000;
+  const frames: ChartFrameStats[] = [];
+  await renderX11(
+    h(
+      ChartContainer,
+      {
+        config: { v: { label: 'V', color: '#2980b9' } },
+        style: { width: 420, height: 200 },
+      },
+      h(
+        LineChart,
+        { data: store, onFrameStats: (s: ChartFrameStats) => frames.push(s) },
+        h(XAxis, { dataKey: 't', type: 'time' }),
+        h(YAxis, { domain: [0, 100] }),
+        h(LineSeries, { dataKey: 'v' }),
+      ),
+    ),
+  );
+  await act();
+  for (let batch = 0; batch < 40; batch++) {
+    t += 50;
+    store.append({ t, v: 50 });
+    await act();
+  }
+
+  // the stall: fourteen minutes pass, the app resumes, the feed clears
+  t += 14 * 60_000;
+  store.clear();
+  for (let batch = 0; batch < 40; batch++) {
+    t += 50;
+    store.append({ t, v: 60 });
+    await act();
+  }
+
+  const last = frames[frames.length - 1];
+  assert.ok(last, 'painted after the resume');
+  assert.strictEqual(last.pointsSpanned, 40, 'the frame spans the new window');
+  for (const frame of frames) {
+    assert.ok(
+      frame.commands <= 40,
+      `bounded through clear and resume, got ${frame.commands}`,
+    );
+  }
+});
+
+test('a fixed-height container contains the chart, legend included', async () => {
+  // yoga's `minHeight: auto` content floor held the element at its
+  // intrinsic measure, so chart + legend overflowed the styled box and
+  // the x-gutter's tick labels printed over whatever flowed below
+  await renderX11(
+    h(
+      'box',
+      { style: { flexDirection: 'column', padding: 8 } },
+      h(
+        ChartContainer,
+        {
+          config: { v: { label: 'V', color: '#2980b9' } },
+          style: { height: 220 },
+          'data-testname': 'contained',
+        },
+        h(
+          LineChart,
+          { data: [{ v: 1 }, { v: 3 }, { v: 2 }] },
+          h(XAxis, null),
+          h(YAxis, null),
+          h(LineSeries, { dataKey: 'v' }),
+          h(ChartLegend, null),
+        ),
+      ),
+    ),
+  );
+  await act();
+  const container = retained(
+    screen.all(
+      (n) => retained(n).props['data-testname'] === 'contained',
+    )[0] as unknown,
+  );
+  assert.ok(container, 'the container is queryable');
+  assert.strictEqual(container.abs.height, 220);
+  const plot = retained(plotNode() as unknown);
+  const legendBottom = container.children.reduce(
+    (max, c) => Math.max(max, c.abs.y + c.abs.height),
+    0,
+  );
+  assert.ok(
+    plot.abs.y + plot.abs.height <= container.abs.y + 220,
+    `the element stays inside the box: ` +
+      `${plot.abs.y + plot.abs.height} <= ${container.abs.y + 220}`,
+  );
+  assert.ok(legendBottom <= container.abs.y + 220, 'the legend row does too');
 });

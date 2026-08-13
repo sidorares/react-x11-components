@@ -436,7 +436,11 @@ function makeCartesianChart(
         data: props.data,
         formatters,
         onFrameStats: props.onFrameStats,
-        style: { flexGrow: 1, alignSelf: 'stretch' },
+        // minHeight/minWidth 0: yoga's `min* : auto` content floor would
+        // otherwise hold the element at its intrinsic measure, and a chart
+        // plus its legend then OVERFLOWS a fixed-height container — the
+        // x-gutter's tick labels land on whatever flows below the chart
+        style: { flexGrow: 1, alignSelf: 'stretch', minHeight: 0, minWidth: 0 },
       } as never),
     ];
     if (hover) {
@@ -459,9 +463,16 @@ function makeCartesianChart(
       'box',
       // flexGrow so a chart FILLS the container's styled height instead of
       // sitting at the element's intrinsic size and overflowing it; with no
-      // height anywhere the intrinsic size still decides, as before
+      // height anywhere the intrinsic size still decides, as before.
+      // minHeight/minWidth 0 at every level of the column (here, the plot
+      // wrapper, the element): yoga's `min*: auto` content floor at ANY of
+      // them re-inflates the chart past a fixed container, and the gutter's
+      // tick labels then print over whatever flows after the chart.
       {
-        style: [{ flexDirection: 'column', flexGrow: 1 }, props.style],
+        style: [
+          { flexDirection: 'column', flexGrow: 1, minHeight: 0, minWidth: 0 },
+          props.style,
+        ],
         'data-testname': props['data-testname'],
       },
       parts.legend?.verticalAlign === 'top' ? legendRow : null,
@@ -472,6 +483,10 @@ function makeCartesianChart(
             flexGrow: 1,
             flexDirection: 'column',
             position: 'relative',
+            // the other half of the content-floor release: the wrapper
+            // itself must be allowed to shrink into the container's box
+            minHeight: 0,
+            minWidth: 0,
           },
           onMouseMove,
           onMouseLeave,

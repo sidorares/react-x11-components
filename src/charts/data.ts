@@ -244,6 +244,30 @@ export class ChartData {
     this.appendRows([row]);
   }
 
+  /**
+   * Drop every row, keeping the columns and their storage. The reset every
+   * live dashboard eventually wants: a stream resuming after its process
+   * was suspended (a hidden window, a laptop lid) comes back with a time
+   * gap as wide as the sleep, and a windowed store then renders fifty
+   * seconds of data squeezed beside fourteen minutes of nothing until the
+   * gap evicts. Clearing on resume starts the window honestly instead.
+   *
+   * An epoch bump, so every cache keyed on `{epoch, n}` — pyramids, x
+   * indexes, scatter grids — rebuilds, through the same invalidation a
+   * window shift already exercises.
+   */
+  clear(): void {
+    if (this._n === 0) return;
+    // numeric storage is reused (reads are capped by n); string columns
+    // append with push, so their arrays must actually empty
+    for (const col of this._cols.values()) {
+      if (!col.numeric) (col.values as string[]).length = 0;
+    }
+    this._n = 0;
+    this._epoch++;
+    this._notify(0);
+  }
+
   /** Append many rows in one notification. */
   appendRows(rows: readonly Readonly<Record<string, number | string>>[]): void {
     if (rows.length === 0) return;
