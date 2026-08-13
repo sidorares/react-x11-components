@@ -484,7 +484,7 @@ const nodeTypes = {
     handles: [{ type: 'source', position: 'right' }],
     render: ({ node }) => (
       <box style={{ flexGrow: 1, padding: 8, gap: 7 }}>
-        <text style={{ fontSize: 11, color: '$dim' }}>build options</text>
+        <text style={{ fontSize: 11, color: '$textMuted' }}>build options</text>
         <Checkbox
           label="strict"
           checked={node.data.strict}

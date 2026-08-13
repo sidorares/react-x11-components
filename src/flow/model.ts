@@ -593,9 +593,10 @@ function themeString(
  * hard-coded scheme where it does not, and the app's `palette` prop over
  * both.
  *
- * The pane sits on `surfaceHover` rather than `background` so that a node —
- * which *is* `background` — reads as a card on it. That is the only place
- * this deviates from taking the token of the same name.
+ * Every token is taken by its own name. A node is `surface` and the pane is
+ * `background` — "the ground" and "what is raised off it", which is exactly
+ * the distinction core's palette draws, and the reason a card on a dark
+ * desktop is a card you can see.
  */
 export function resolvePalette(
   theme: Record<string, unknown> | null,
@@ -606,19 +607,25 @@ export function resolvePalette(
       ? DARK_PALETTE
       : LIGHT_PALETTE;
   const accent = themeString(theme, 'accent') ?? base.accent;
+  // `textMuted`, not `dim`: core renamed it (react-x11#290) and a stale read
+  // here would not fail — it would fall through to the hard-coded scheme and
+  // quietly stop following the desktop.
+  const muted = themeString(theme, 'textMuted');
+  const surface = themeString(theme, 'surface');
+  const border = themeString(theme, 'border');
   const palette: FlowPalette = {
-    background: themeString(theme, 'surfaceHover') ?? base.background,
-    grid: themeString(theme, 'border') ?? base.grid,
+    background: themeString(theme, 'background') ?? base.background,
+    grid: border ?? base.grid,
     text: themeString(theme, 'text') ?? base.text,
-    dim: themeString(theme, 'dim') ?? base.dim,
-    nodeBackground: themeString(theme, 'background') ?? base.nodeBackground,
-    nodeBorder: themeString(theme, 'border') ?? base.nodeBorder,
+    dim: muted ?? base.dim,
+    nodeBackground: surface ?? base.nodeBackground,
+    nodeBorder: border ?? base.nodeBorder,
     accent,
-    edge: themeString(theme, 'dim') ?? base.edge,
+    edge: muted ?? base.edge,
     edgeSelected: accent,
-    handle: themeString(theme, 'dim') ?? base.handle,
-    surface: themeString(theme, 'background') ?? base.surface,
-    surfaceBorder: themeString(theme, 'border') ?? base.surfaceBorder,
+    handle: muted ?? base.handle,
+    surface: surface ?? base.surface,
+    surfaceBorder: border ?? base.surfaceBorder,
     selection: tint(accent, 0.16),
   };
   return overrides ? { ...palette, ...overrides } : palette;

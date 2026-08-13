@@ -119,7 +119,7 @@ function notesType(
     handles: [{ type: 'source', position: 'right' }],
     render: ({ node }) => (
       <box style={{ flexGrow: 1, padding: 8, gap: 7 }}>
-        <text style={{ fontSize: 11, color: '$dim' }}>
+        <text style={{ fontSize: 11, color: '$textMuted' }}>
           Real widgets, laid out by yoga inside the node.
         </text>
         <box style={{ flexDirection: 'row', gap: 12 }}>
@@ -295,7 +295,7 @@ function App(): ReactElement {
           }}
         >
           <text style={{ fontSize: 14, color: '$text' }}>build pipeline</text>
-          <text style={{ fontSize: 12, color: '$dim', flexGrow: 1 }}>
+          <text style={{ fontSize: 12, color: '$textMuted', flexGrow: 1 }}>
             {status}
           </text>
         </box>

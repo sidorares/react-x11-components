@@ -602,6 +602,8 @@ export interface FlowProps<N = FlowNodeData, E = unknown> {
   focusable?: boolean;
   disabled?: boolean;
   'aria-label'?: string;
+  /** What `react-x11/test`'s `getByTestName` finds the pane by. */
+  'data-testname'?: string;
   /** Runs before the pane's own wheel handling; `preventDefault()` keeps
    * the pane from zooming or panning. */
   onWheel?: (event: WheelEvent<DrawnNode>) => void;

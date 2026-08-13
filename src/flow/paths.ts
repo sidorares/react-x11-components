@@ -35,19 +35,48 @@ export interface PathOptions {
 
 const BEZIER_CURVATURE = 0.25;
 
+/**
+ * How close two consecutive vertices may be before one of them is dropped.
+ *
+ * A third of a pixel rather than an epsilon, and that is a **correctness**
+ * bound rather than a tidiness one: ntk's stroke extruder emits NaN join
+ * vertices on a sub-pixel 180° hairpin, which reach the wire as zeros and
+ * draw as fat wedges from the window origin. Sampling a short curve finely
+ * makes exactly that shape — and no test here can catch it, because the
+ * headless server no-ops NaN triangles, so every probe is pixel-perfect
+ * while a real display is not. Filed as ntk#259; `src/charts/render.ts`
+ * collapses its same-x bursts for the same reason.
+ */
+const MIN_STEP = 0.34;
+
+/**
+ * Drop vertices closer than {@link MIN_STEP} to the one before them, keeping
+ * both ends: the first is where an edge leaves its handle, and the last is
+ * what the arrowhead is aimed at and what the hit test measures to, so
+ * neither is negotiable however degenerate the route.
+ */
 function dedupe(points: readonly XYPosition[]): XYPosition[] {
-  const out: XYPosition[] = [];
-  for (const p of points) {
+  if (points.length < 2) return [...points];
+  const out: XYPosition[] = [points[0]];
+  for (let i = 1; i < points.length - 1; i++) {
     const last = out[out.length - 1];
+    const p = points[i];
     if (
-      last &&
-      Math.abs(last.x - p.x) < 0.01 &&
-      Math.abs(last.y - p.y) < 0.01
+      Math.abs(last.x - p.x) < MIN_STEP &&
+      Math.abs(last.y - p.y) < MIN_STEP
     ) {
       continue;
     }
     out.push(p);
   }
+  const end = points[points.length - 1];
+  const last = out[out.length - 1];
+  const crowded =
+    Math.abs(last.x - end.x) < MIN_STEP && Math.abs(last.y - end.y) < MIN_STEP;
+  // Replaced rather than appended when the endpoint crowds what precedes it:
+  // appending is what would leave behind the hairpin this exists to remove.
+  if (crowded && out.length > 1) out[out.length - 1] = end;
+  else out.push(end);
   return out;
 }
 
@@ -209,7 +238,7 @@ function loopPoints(
     x: target.x + td.x * reach + td.y * reach * 0.7,
     y: target.y + td.y * reach - td.x * reach * 0.7,
   };
-  return sampleCubic(source, c0, c1, target);
+  return dedupe(sampleCubic(source, c0, c1, target));
 }
 
 /** The polyline for one edge. */
@@ -236,7 +265,7 @@ export function edgePath(
     default: {
       const c0 = control(source, target, options.scale);
       const c1 = control(target, source, options.scale);
-      return sampleCubic(source, c0, c1, target);
+      return dedupe(sampleCubic(source, c0, c1, target));
     }
   }
 }
