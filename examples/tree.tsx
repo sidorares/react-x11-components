@@ -308,11 +308,21 @@ function App(): ReactElement {
       height={560}
       title={`@react-x11/components — file explorer (${ROOT})`}
     >
-      <box style={{ flexGrow: 1, flexDirection: 'row' }}>
+      {/* `minHeight: 0` is not decoration. A flex item's automatic minimum
+          size is its content — CSS's `min-height: auto` — so this row would
+          refuse to shrink to the window and grow to the height of the whole
+          expanded tree instead. The tree's own root can shrink (it says
+          `minHeight: 0` itself), but a scroll container inside an ancestor
+          that is already taller than the window has nothing left to scroll:
+          expanding a folder would simply make the window's content taller.
+          Every flex ancestor between the window and a scroll container needs
+          this. */}
+      <box style={{ flexGrow: 1, flexDirection: 'row', minHeight: 0 }}>
         <box
           style={{
             width: 280,
             flexShrink: 0,
+            minHeight: 0,
             backgroundColor: '$surfaceHover',
             borderEndWidth: 1,
             borderColor: '$border',

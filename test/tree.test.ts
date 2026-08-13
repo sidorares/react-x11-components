@@ -603,7 +603,84 @@ test('renderSubtree replaces the container', async () => {
   assert.strictEqual(retained(box).children.length, 2);
 });
 
+// --- the row is one line tall ----------------------------------------------
+
+test('a label too long for the panel is clipped, never wrapped', async () => {
+  // The bug this pins: a wrapped label is two lines tall inside a box that is
+  // `rowHeight` tall, so its second line is drawn over the row below and the
+  // whole column goes illegible — while the row geometry the keyboard and
+  // virtualization are measured in stays perfectly correct, which is what
+  // makes it hard to see in a test that only reads the model.
+  //
+  // Not `backend: 'mock'`: the mock context does not measure text, so a
+  // wrapped label and a clipped one are the same zero-height box there and
+  // the assertion would pass either way.
+  const long = 'markdown-component-selection-9ded95-and-then-some-more-still';
+  await renderX11(
+    h(
+      'box',
+      { style: { width: 180, height: 200, minHeight: 0 } },
+      h(Tree, { items: [{ id: 'a', label: long }] }),
+    ),
+  );
+  const [row] = rowNodes();
+  const text = retained(row).children.find(
+    (n) => (n as RetainedNode).kind === 'text',
+  ) as RetainedNode | undefined;
+  assert.ok(text, 'the default label is a <text>');
+  assert.strictEqual(retained(row).abs.height, 22, 'the row is one line tall');
+  assert.ok(
+    text.abs.height <= 22,
+    `the label wrapped: ${text.abs.height}px of text in a 22px row`,
+  );
+});
+
 // --- virtualization --------------------------------------------------------
+
+test('a tree whose ancestors bound it can scroll once a branch is opened', async () => {
+  // The other half of the same report, and it is a layout rule rather than a
+  // component bug: a flex item's automatic minimum size is its content, so an
+  // ancestor without `minHeight: 0` grows to the whole expanded tree and the
+  // scroll container inside it has nothing left to scroll. Asserted here so
+  // that the shape this component is meant to be used in keeps working.
+  const kids = Array.from({ length: 40 }, (_, i) => ({
+    id: `k${i}`,
+    label: `child ${i}`,
+  }));
+  // The sidebar shape in full — a caption above the tree, and a second pane
+  // beside it. The second pane matters: with one child the row takes the
+  // window's height anyway, and the bug only shows once the row has to
+  // resolve a cross size across two of them.
+  await renderX11(
+    h(
+      'box',
+      { style: { flexGrow: 1, flexDirection: 'row', minHeight: 0 } },
+      h(
+        'box',
+        { style: { width: 200, flexShrink: 0, minHeight: 0 } },
+        h('text', { style: { fontSize: 11 } }, 'worktrees'),
+        h(Tree, { items: [{ id: 'root', label: 'root', children: kids }] }),
+      ),
+      h('box', { style: { flexGrow: 1 } }),
+    ),
+    { width: 400, height: 200 },
+  );
+  const [tree] = screen.all((n) => retained(n).props.role === 'tree');
+  const before = scrolling(tree).contentHeight;
+
+  const twisty = retained(rowFor('root')).children[0] as unknown as DrawnNode;
+  await userEvent.click(twisty);
+
+  const box = scrolling(tree);
+  assert.ok(box.contentHeight > before, 'opening a branch grows the content');
+  assert.ok(
+    box.abs.height < box.contentHeight,
+    `the tree stayed ${box.abs.height}px tall inside its ancestors, ` +
+      `not ${box.contentHeight}px`,
+  );
+  box.scrollTo({ y: 200 });
+  assert.strictEqual(box.scrollY, 200, 'and it actually scrolls');
+});
 
 /** `count` roots, `label`led by index. */
 function manyItems(count: number): TreeItem[] {

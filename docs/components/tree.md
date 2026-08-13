@@ -152,6 +152,36 @@ virtualizing always:
 `layout="nested"` is never virtualized whatever `virtual` says. A slice of a
 list is a list; a slice of a tree is not.
 
+## Laying one out
+
+A `<Tree>` is a scroll container, and a scroll container only scrolls if
+something above it bounds its height. **Every flex ancestor between the window
+and the tree needs `minHeight: 0`**:
+
+```jsx
+<box style={{ flexGrow: 1, flexDirection: 'row', minHeight: 0 }}>
+  <box style={{ width: 280, flexShrink: 0, minHeight: 0 }}>
+    <text style={{ fontSize: 11 }}>worktrees</text>
+    <Tree items={items} />
+  </box>
+  <box style={{ flexGrow: 1 }}>{/* the detail pane */}</box>
+</box>
+```
+
+This is CSS's `min-height: auto` and not something this component invents: a
+flex item's automatic minimum size is its content, so a sidebar that does not
+say `minHeight: 0` refuses to shrink to the window and grows to the height of
+the whole expanded tree instead. The tree's own root already says it, which is
+why the symptom is not "the tree overflows" but **"expanding a branch stops
+the tree scrolling"** — the container inside an ancestor that is already
+taller than the window has nothing left to scroll, so opening a folder just
+makes the window's content taller.
+
+A row is exactly `rowHeight` tall and its label refuses to wrap, so a name too
+long for the panel is clipped rather than wrapped onto a second line the row
+has no room for. A tree that should scroll sideways instead, or show an
+ellipsis, does it through `renderLabel`.
+
 ## Keyboard
 
 The tree is a single tab stop.

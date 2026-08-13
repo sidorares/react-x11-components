@@ -131,6 +131,11 @@ const s = createStyles({
     paddingEnd: 8,
     cursor: 'pointer',
     transition: { backgroundColor: 80 },
+    // A row is exactly `rowHeight` tall — virtualization counts on it — so
+    // anything that did not fit is clipped here rather than drawn over the
+    // row below. The label already refuses to wrap; this is what stops a
+    // `renderLabel` that does not know the rule from painting outside.
+    overflow: 'hidden',
   },
   twisty: {
     width: TWISTY,
@@ -140,9 +145,26 @@ const s = createStyles({
     justifyContent: 'center',
   },
   guide: { flexShrink: 0, alignSelf: 'stretch' },
-  // A label that runs past the row is clipped rather than wrapped: a row is
-  // one line tall by construction, and wrapped text would be sliced instead.
-  label: { flexShrink: 1, minWidth: 0 },
+  /**
+   * A label is one line, and a long one is clipped rather than wrapped.
+   *
+   * `textWrap: 'nowrap'` is the load-bearing half. Without it a name too long
+   * for the panel wraps to two lines inside a box that is `rowHeight` tall,
+   * and the second line is drawn straight over the row below — the whole
+   * column ends up illegible, and the row geometry virtualization and the
+   * keyboard are measured in stays right while the pixels are wrong. Same
+   * call core's `Table` makes about a cell.
+   *
+   * `textBoxTrim` makes the box the letters rather than the font's ascent and
+   * descent, so a label centres on what can be seen. That is what core's
+   * `labelContent` gives every label in the widget set.
+   */
+  label: {
+    flexShrink: 1,
+    minWidth: 0,
+    textWrap: 'nowrap',
+    textBoxTrim: 'cap-alphabetic',
+  },
   subtree: { flexShrink: 0 },
   spacer: { flexShrink: 0 },
 });
