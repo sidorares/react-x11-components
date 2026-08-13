@@ -394,15 +394,15 @@ export function renderLineArea(env: SeriesEnv, g: SeriesGeometry): void {
     // base edge so an area's return path is collected in the same walk.
     //
     // Points sharing (nearly) one pixel column collapse to a single
-    // ordered vertical pair — the same envelope the dense branch draws,
-    // pixel-identical at this width. This is a **shape guarantee, not an
-    // optimisation**: a burst of same-x samples (three appends sharing one
-    // timestamp) is a storm of sub-pixel 180° hairpins, and ntk's stroke
-    // extruder emits NaN join geometry on it. A NaN vertex is invisible on
-    // the headless server and a wedge to the window origin on a real one
-    // (the wire encodes NaN as 0) — the demo's "missing sine with flat
-    // streaks". After the collapse, consecutive points always advance in
-    // x, which is the input the extruder is safe on.
+    // ordered vertical pair — the same envelope the dense branch draws, so
+    // the two modes agree at their boundary, and a burst-heavy stream (a
+    // few samples per timestamp) strokes a third of the points for
+    // identical pixels. History worth keeping: this collapse began as a
+    // correctness workaround — ntk's stroke extruder emitted NaN join
+    // geometry on same-x sub-pixel hairpins (ntk#259; invisible on the
+    // headless server, origin-wedges on a real one), fixed in ntk 7.6.1
+    // (ntk#260, pinned via core ceb9da5) — and it still keeps any older
+    // extruder in an app's tree out of that input by construction.
     const runsX: number[][] = [];
     const runsY: number[][] = [];
     const runsB: number[][] = [];

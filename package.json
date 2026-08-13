@@ -139,7 +139,7 @@
     "globals": "^17.8.0",
     "prettier": "^3.6.0",
     "react": "^19.2.8",
-    "react-x11": "github:sidorares/react-x11#a1abc6d038ac4b85d0316b9b63429be35ed32884",
+    "react-x11": "github:sidorares/react-x11#ceb9da51c22bf7d91da44656ff2db2d7fada647e",
     "tsx": "^4.23.1",
     "typescript": "^7.0.2"
   },

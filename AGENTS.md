@@ -245,8 +245,9 @@ job fails on an import that is not there yet. `src/tray-host/` needed this for
 edit menu (#289).
 
 **The pin is also how far up master this package has migrated.** It sits at
-`a1abc6d0` — master's tip after react-x11#296 (the scroll-blit claim-race
-fix) merged — and the theme break it rode in behind is migrated: `49fb2b30`
+`ceb9da51` — master's tip after react-x11#296 (the scroll-blit claim-race
+fix) and the ntk 7.6.1 bump (react-x11#300, carrying ntk#260's stroke
+hairpin fix) — and the theme break it rode in behind is migrated: `49fb2b30`
 (react-x11#290, `feat(theme)!`) renamed `dim`/`dimActive` to
 `textMuted`/`textMutedActive`, and both the `theme.dim` reads and the
 `'$dim'` style tokens here moved with it. The `'$dim'` half is the one to
