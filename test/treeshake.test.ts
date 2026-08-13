@@ -33,6 +33,7 @@ const ROOT = path.resolve(fileURLToPath(import.meta.url), '../..');
  */
 const COMPONENTS = [
   { exportName: 'Sparkline', dir: 'sparkline', marker: 'sparkline' },
+  { exportName: 'ChartContainer', dir: 'charts', marker: 'chartplot' },
   { exportName: 'CodeEditor', dir: 'code-editor', marker: 'codeeditor' },
   { exportName: 'Calendar', dir: 'calendar', marker: 'Previous month' },
   {

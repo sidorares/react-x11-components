@@ -36,6 +36,10 @@
       "types": "./dist/calendar/index.d.ts",
       "default": "./dist/calendar/index.js"
     },
+    "./charts": {
+      "types": "./dist/charts/index.d.ts",
+      "default": "./dist/charts/index.js"
+    },
     "./code": {
       "types": "./dist/code/index.d.ts",
       "default": "./dist/code/index.js"
@@ -98,6 +102,7 @@
     "format:check": "prettier --check .",
     "check:package": "tsx scripts/check-package.ts",
     "examples:calendar": "tsx examples/calendar.tsx",
+    "examples:charts": "tsx examples/charts.tsx",
     "examples:code": "tsx examples/code.tsx",
     "examples:code-editor": "tsx examples/code-editor.tsx",
     "examples:markdown": "tsx examples/markdown.tsx",

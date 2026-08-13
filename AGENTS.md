@@ -491,6 +491,7 @@ npm run format:check  # what CI runs
 npm run typecheck     # builds, then tsc over src, test, examples, scripts
 npm run check:package # exports map + tree-shaking contract (needs a build)
 npm run examples:calendar    # needs a real $DISPLAY (and a bus, for events)
+npm run examples:charts      # needs a real $DISPLAY
 npm run examples:sparkline   # needs a real $DISPLAY
 npm run examples:terminal    # needs a real $DISPLAY and an emulator installed
 npm run examples:terminal-vt # needs a real $DISPLAY and a pty module (node-pty)
@@ -695,3 +696,21 @@ One more, specific to here:
   the node otherwise, and the reason it bothers is that `kind` is what paint
   order, the test queries and the DEV assertion all match on. Keep the name
   in one exported constant per component and use it in all three places.
+
+And two that come from subclassing `Node` and augmenting JSX:
+
+- **Underscore-prefixed member names belong to core.** The base `Node`
+  assigns own properties like `_theme` in its constructor, and an own
+  property silently shadows a subclass's prototype method of the same name
+  — `this._theme()` then throws "not a function" at the first paint, far
+  from the declaration. Before adding a private `_name` to a node subclass,
+  grep react-x11's `nodes.js` for it (`src/charts/node.ts` renamed its
+  helper to `_themeRecord` for exactly this).
+- **A JSX augmentation's props must be structural.** `npm run typecheck`
+  compiles `src/` and, through `package.test.ts`'s self-import, `dist/` in
+  one program — so the element augmentation exists twice and TypeScript
+  requires the two declarations to be _identical_. Interfaces unify;
+  a class with private members is nominal and does not, and the error
+  (TS2717, pointing at `dist/`) says nothing about why. That is why
+  `ChartSourceData` names the structural `ChartDataLike` rather than the
+  `ChartData` class — which is also what lets an app bring its own store.

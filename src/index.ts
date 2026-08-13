@@ -50,6 +50,49 @@ export type {
   WidgetChangeEvent,
 } from './calendar/index.js';
 
+// Charts: shadcn-shaped composition over one element that paints with cost
+// bounded by pixels, not points — docs/prd-charts.md is the design record.
+export {
+  ChartContainer,
+  LineChart,
+  AreaChart,
+  BarChart,
+  ScatterChart,
+  LineSeries,
+  AreaSeries,
+  BarSeries,
+  ScatterSeries,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  ChartTooltip,
+  ChartLegend,
+  ChartData,
+  CHARTPLOT_ELEMENT,
+} from './charts/index.js';
+export type {
+  ChartConfig,
+  ChartContainerProps,
+  CartesianChartProps,
+  SeriesProps,
+  XAxisProps,
+  YAxisProps,
+  CartesianGridProps,
+  ChartTooltipProps,
+  ChartLegendProps,
+  TooltipData,
+  ChartDataOptions,
+  ChartDataChange,
+  ChartDataLike,
+  ChartRow,
+  ColumnarData,
+  ChartSourceData,
+  ChartFrameStats,
+  ChartPlotProps,
+  ChartHit,
+  ChartFormatters,
+} from './charts/index.js';
+
 export { Code } from './code/index.js';
 export type { CodeProps } from './code/index.js';
 
