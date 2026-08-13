@@ -95,6 +95,9 @@ export interface ChartHit {
   xValue: number | string;
   /** Snap position for the crosshair, window coordinates. */
   px: number;
+  /** The x domain's width (0 for band axes) — what a time-axis tooltip
+   * sizes its default header format to, exactly as the ticks do. */
+  xSpan: number;
   plot: PlotRect;
   points: {
     id: string;
@@ -923,6 +926,7 @@ export class ChartPlotNode extends Node {
       });
     }
     if (points.length === 0) return null;
-    return { index, xValue, px, plot, points };
+    const xSpan = xScale.kind === 'band' ? 0 : xScale.d1 - xScale.d0;
+    return { index, xValue, px, xSpan, plot, points };
   }
 }

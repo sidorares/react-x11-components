@@ -36,7 +36,9 @@ type StyleInput = Style | Style[];
 import { hx } from './hx.js';
 import type { ChartFormatters, ChartHit, ChartPlotNode } from './node.js';
 import { ELEMENT } from './node.js';
-import type { ChartSourceData } from './data.js';
+import type { ChartDataLike, ChartSourceData } from './data.js';
+import { isChartDataLike } from './data.js';
+import { formatTimeTick } from './scale.js';
 import type {
   AxisSpec,
   AxisType,
@@ -397,36 +399,74 @@ function makeCartesianChart(
     const nodeRef = React.useRef<ChartPlotNode | null>(null);
     const [hover, setHover] = React.useState<HoverState | null>(null);
     const sideRef = React.useRef<'left' | 'right'>('right');
+    const lastPointer = React.useRef<{ x: number; y: number } | null>(null);
 
     const wantHover = parts.tooltip !== null;
+    // Re-runnable for a pointer that has not moved: streaming data slides
+    // the chart under a parked pointer, and a hover snapshot taken at the
+    // last mousemove would keep showing the point that was there before.
+    const takeHover = (x: number, y: number) => {
+      const node = nodeRef.current;
+      const hit = node?.hitAt(x);
+      if (!hit || !node) {
+        setHover(null);
+        return;
+      }
+      // bubble side: opposite the pointer, with a dead zone around the
+      // snap so sitting on a point does not flip it back and forth
+      if (x > hit.px + SIDE_HYSTERESIS) sideRef.current = 'left';
+      else if (x < hit.px - SIDE_HYSTERESIS) sideRef.current = 'right';
+      setHover({
+        hit,
+        originX: node.abs.x,
+        originY: node.abs.y,
+        width: node.abs.width,
+        height: node.abs.height,
+        pointerY: y,
+        side: sideRef.current,
+      });
+    };
+    // effects re-take the hover through this ref, so they always run the
+    // render's latest closure without re-subscribing per render
+    const takeHoverRef = React.useRef(takeHover);
+    takeHoverRef.current = takeHover;
+    const hoverActive = hover !== null;
+
+    // a live store shifts under the pointer between mouse events: while
+    // hovered, every store notification re-snaps from the parked position
+    const data = props.data;
+    React.useEffect(() => {
+      if (!wantHover || !hoverActive) return;
+      if (!data || !isChartDataLike(data as never)) return;
+      return (data as ChartDataLike).subscribe(() => {
+        const p = lastPointer.current;
+        if (p) takeHoverRef.current(p.x, p.y);
+      });
+    }, [data, wantHover, hoverActive]);
+
+    // plain rows/columns move by prop identity instead — same re-snap
+    React.useEffect(() => {
+      const p = lastPointer.current;
+      if (p && hoverActive) takeHoverRef.current(p.x, p.y);
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [data]);
+
     // The handlers ride the plot *wrapper*, not the element: the hover
     // overlays live between the two, and tracking must survive the pointer
     // passing over its own crosshair. (They are also hit-transparent — see
     // renderPlotOverlays — this is the second layer of the same defence.)
     const onMouseMove = wantHover
       ? (ev: { x: number; y: number }) => {
-          const node = nodeRef.current;
-          const hit = node?.hitAt(ev.x);
-          if (!hit || !node) {
-            setHover(null);
-            return;
-          }
-          // bubble side: opposite the pointer, with a dead zone around the
-          // snap so sitting on a point does not flip it back and forth
-          if (ev.x > hit.px + SIDE_HYSTERESIS) sideRef.current = 'left';
-          else if (ev.x < hit.px - SIDE_HYSTERESIS) sideRef.current = 'right';
-          setHover({
-            hit,
-            originX: node.abs.x,
-            originY: node.abs.y,
-            width: node.abs.width,
-            height: node.abs.height,
-            pointerY: ev.y,
-            side: sideRef.current,
-          });
+          lastPointer.current = { x: ev.x, y: ev.y };
+          takeHover(ev.x, ev.y);
         }
       : undefined;
-    const onMouseLeave = wantHover ? () => setHover(null) : undefined;
+    const onMouseLeave = wantHover
+      ? () => {
+          lastPointer.current = null;
+          setHover(null);
+        }
+      : undefined;
 
     const plotChildren: ReactNode[] = [
       h(ELEMENT, {
@@ -451,6 +491,7 @@ function makeCartesianChart(
         formatters,
         theme,
         nodeRef,
+        parts.xAxis?.type,
       );
       if (bubble) plotChildren.push(bubble);
     }
@@ -592,14 +633,21 @@ function renderTooltipBubble(
   formatters: ChartFormatters,
   theme: ReturnType<typeof useTheme>,
   anchorRef: React.RefObject<ChartPlotNode | null>,
+  xType?: AxisType,
 ): ReactNode | null {
   const { hit, originX, originY, width, height, side } = hover;
   const crosshairX = hit.px - originX;
   const data: TooltipData = { xValue: hit.xValue, points: hit.points };
   const fmtLabel =
     tooltip?.labelFormatter ??
-    ((v: number | string) =>
-      typeof v === 'number' && formatters.x ? formatters.x(v) : String(v));
+    ((v: number | string) => {
+      if (typeof v !== 'number') return String(v);
+      if (formatters.x) return formatters.x(v);
+      // a time axis without a formatter of its own labels the header the
+      // way it labels its ticks — never as raw epoch milliseconds
+      if (xType === 'time') return formatTimeTick(v, Math.max(1, hit.xSpan));
+      return String(v);
+    });
   const fmtValue =
     tooltip?.formatter ??
     ((v: number) => (formatters.y ? formatters.y(v) : formatValue(v)));

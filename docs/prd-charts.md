@@ -145,8 +145,14 @@ Everything interactive or content-shaped is React composition above it:
 - `ChartTooltip`/`ChartLegend` opt into the wrapper's hover state and
   legend row. The crosshair and the hover markers are absolutely-positioned,
   **hit-transparent** boxes the wrapper moves (`pointerEvents: 'none'`, so
-  the pointer can never land on the hover's own furniture); the value
-  bubble's home is a policy, `ChartTooltip mode`:
+  the pointer can never land on the hover's own furniture). A hover is a
+  **live query, not a snapshot**: while hovered, a `ChartData` notification
+  (or a change of `data` identity) re-snaps the hit from the parked pointer
+  position, so a streaming chart sliding under a stationary mouse keeps the
+  crosshair, markers and values on what is actually drawn. A time axis
+  formats the bubble header with the same `formatTimeTick` its ticks use —
+  never raw epoch milliseconds. The value bubble's home is a policy,
+  `ChartTooltip mode`:
 
   - `'popup'` (the default): a real override-redirect `<popup>` anchored to
     the data point (`anchor.at`), so it stacks above content that flows

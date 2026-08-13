@@ -1255,3 +1255,77 @@ test('a fixed-height container contains the chart, legend included', async () =>
   );
   assert.ok(legendBottom <= container.abs.y + 220, 'the legend row does too');
 });
+
+test('a parked pointer keeps a live tooltip: data shifts re-snap the hover', async () => {
+  const store = new ChartData({ maxLength: 200 });
+  let t = 1_700_000_000_000;
+  for (let i = 0; i < 100; i++) {
+    t += 1000;
+    store.append({ t, v: 10 });
+  }
+  await renderX11(
+    h(
+      ChartContainer,
+      {
+        config: { v: { label: 'V', color: '#2980b9' } },
+        style: { width: 420, height: 220 },
+      },
+      h(
+        LineChart,
+        { data: store },
+        h(XAxis, { dataKey: 't', type: 'time' }),
+        h(YAxis, { domain: [0, 100] }),
+        h(LineSeries, { dataKey: 'v' }),
+        h(ChartTooltip, null),
+      ),
+    ),
+  );
+  await act();
+
+  const node = plotNode();
+  fireEvent.mouseMove(
+    node as unknown as Parameters<typeof fireEvent.mouseMove>[0],
+    { dx: 200, dy: 60 },
+  );
+  await act();
+
+  const valueTexts = () =>
+    screen.all((n) => {
+      const r = retained(n);
+      return r.kind === 'text' && /^\d+(\.\d+)?$/.test(textOf(n) ?? '');
+    });
+  assert.ok(valueTexts().length >= 1, 'the bubble shows a value');
+  assert.ok(
+    valueTexts().some((n) => textOf(n) === '10'),
+    'the parked hover shows the old value',
+  );
+
+  // the stream moves on under the parked pointer: the same x now holds
+  // different values, and the tooltip must follow without a mouse event
+  for (let i = 0; i < 120; i++) {
+    t += 1000;
+    store.append({ t, v: 90 });
+  }
+  await act();
+  await act();
+  assert.ok(
+    valueTexts().some((n) => textOf(n) === '90'),
+    `the tooltip re-snapped to the shifted data, saw: ${valueTexts()
+      .map((n) => textOf(n))
+      .join(', ')}`,
+  );
+
+  // and the time-axis header is a clock reading, not epoch milliseconds
+  const headers = screen.all((n) => {
+    const r = retained(n);
+    return r.kind === 'text' && /^\d{1,2}:\d{2}/.test(textOf(n) ?? '');
+  });
+  assert.ok(headers.length >= 1, 'the header formats as time');
+  assert.strictEqual(
+    screen.all(
+      (n) => retained(n).kind === 'text' && /^17\d{11}$/.test(textOf(n) ?? ''),
+    ).length,
+    0,
+    'no raw epoch header anywhere',
+  );
+});
