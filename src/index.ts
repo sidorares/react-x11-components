@@ -50,6 +50,37 @@ export type {
 export { Code } from './code/index.js';
 export type { CodeProps } from './code/index.js';
 
+// The disclosure tree. Successor to react-x11's own `<Tree>`, which is being
+// retired — nothing here imports it. `visibleRows` and `branchEdges` come out
+// with it because they are the row model the seams are handed, and an app
+// that drives a tree from the outside does the same arithmetic.
+// `findItem`, `resolveAccessors` and `ResolvedAccessors` are renamed on the
+// way out: on `@react-x11/components/tree` those names are unambiguous, in a
+// barrel beside a calendar and a terminal they are not.
+export {
+  Tree,
+  branchEdges,
+  findItem as findTreeItem,
+  resolveAccessors as resolveTreeAccessors,
+  visibleRows,
+} from './tree/index.js';
+export type {
+  ResolvedAccessors as ResolvedTreeAccessors,
+  TreeAccessors,
+  TreeExpandChange,
+  TreeGroup,
+  TreeGuideState,
+  TreeHandle,
+  TreeItem,
+  TreeItemId,
+  TreeProps,
+  TreeRow,
+  TreeRowState,
+  TreeStyles,
+  TreeSubtreeState,
+  TreeToggleState,
+} from './tree/index.js';
+
 export { Markdown, parse as parseMarkdown } from './markdown/index.js';
 export type {
   MarkdownProps,
