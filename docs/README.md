@@ -22,6 +22,7 @@ component.
 | [MediaPlayer](components/media-player.md)          | `@react-x11/components/media-player`     | mpv or VLC, embedded, with real transport control.    |
 | [Terminal](components/terminal.md)                 | `@react-x11/components/terminal`         | A real terminal: an embedded emulator, or its own.    |
 | [TrayHost](components/tray-host.md)                | `@react-x11/components/tray-host`        | The system tray: applications dock their icons in.    |
+| [Tree](components/tree.md)                         | `@react-x11/components/tree`             | A disclosure tree: seams throughout, and virtualized. |
 | [Desktop calendar](components/desktop-calendar.md) | `@react-x11/components/desktop-calendar` | The user's real calendar events, over D-Bus. A hook.  |
 
 ## Shared modules

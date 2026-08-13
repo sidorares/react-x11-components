@@ -123,6 +123,7 @@ import type { CodeEditorProps } from '@react-x11/components';
 | `MediaPlayer` | `@react-x11/components/media-player`     | mpv or VLC, embedded, with real transport control.    |
 | `Terminal`    | `@react-x11/components/terminal`         | A real terminal: an embedded emulator, or its own.    |
 | `TrayHost`    | `@react-x11/components/tray-host`        | The system tray: applications dock their icons in.    |
+| `Tree`        | `@react-x11/components/tree`             | A disclosure tree: seams throughout, and virtualized. |
 | _(hook)_      | `@react-x11/components/desktop-calendar` | The user's real calendar events, over D-Bus.          |
 
 Four shared modules sit underneath and are importable on their own:
@@ -295,6 +296,40 @@ Highlighting goes through the same language seam (`lang` tag or an
 explicit `language={…}`) and the look is shared with `<Markdown>`'s fenced
 blocks, so the two agree in one window. Selection and copy are core's; the
 line-number gutter is `selectable={false}`, so copied code pastes clean.
+
+## The disclosure tree
+
+`<Tree>` is a **successor to react-x11's own `<Tree>`, which core is
+retiring** — nothing here imports it, and the two share no code. What it
+keeps is the behaviour a user has already learnt: the keyboard map,
+type-ahead, and the twisty being its own hit target, so peeking into a folder
+does not select it.
+
+```jsx
+import { Tree } from '@react-x11/components/tree';
+
+<Tree items={[{ id: 'src', label: 'src', children: [...] }]} />;
+```
+
+The default look is plain on purpose — a chevron, no branch lines, just
+indentation — and three things underneath are why the successor is out here
+rather than in core:
+
+- **It reads your data where it lies.** `getId` / `getChildren` / `isBranch`
+  and friends mean a filesystem listing, an AST or a normalized store is
+  rendered without being copied into a shape the component preferred. The
+  defaults describe `{ id, label, children }`, so a tree of that shape
+  configures nothing.
+- **It virtualizes.** Past a couple of hundred visible rows it builds only
+  the slice on screen and stands two spacers in for the rest, so a hundred
+  thousand rows cost what forty do.
+- **Every visible part is a seam** — the twisty, the branch edge down the
+  indent, the label, the row's contents, and the subtree container in
+  `layout="nested"` — each with a style override beside it.
+
+`npm run examples:tree` is a file explorer over the real filesystem, lazily
+listed, with folder glyphs and a dotted branch edge through those seams.
+[The reference](docs/components/tree.md) has the rest.
 
 ## The code editor
 

@@ -58,6 +58,9 @@ const COMPONENTS = [
   // `<TrayHost>` shares `<foreign>` with the two above but none of their
   // modules, so its marker is the atom nothing else in the package names.
   { exportName: 'TrayHost', dir: 'tray-host', marker: '_NET_SYSTEM_TRAY_S' },
+  // `<Tree>` shares core's chevron with `<Calendar>` but no module here; the
+  // role is the one string only it writes.
+  { exportName: 'Tree', dir: 'tree', marker: 'treeitem' },
 ];
 
 async function bundle(contents: string): Promise<string> {

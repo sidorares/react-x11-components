@@ -492,6 +492,97 @@ Four decisions in it that are load-bearing:
 holds the icon list as state, so every change has to be a **new array**. A
 splice removes the icon from the list and leaves it on screen.
 
+## Replacing a core widget rather than moving it
+
+`src/tree/` is the first component here that **supersedes a core widget that
+is being retired**. react-x11's `src/components/Tree.js` is going away;
+nothing in this package imports it, and the two share no code. That is a
+different relationship from `<Calendar>` (moved, still exported by core for
+now) and from `<Markdown>` (replaced an _ntk_ widget), so the rule it
+establishes is worth stating: **a successor keeps the behaviour and drops the
+implementation.** The keyboard map, type-ahead, and the twisty being its own
+hit target are the same, because they are what a user has already learnt; the
+rendering is new, because that is what needed to change.
+
+What it had to grow to be worth replacing, and what each one costs:
+
+- **The data is the app's.** `getId` / `getLabel` / `getText` /
+  `getChildren` / `isBranch` / `isDisabled` — defaulting to
+  `{ id, label, children }`, so a tree of that shape configures nothing.
+  `getText` looks redundant next to `getLabel` and is not: a label rendered
+  as an icon beside a `<text>` is a React element, `String()` of it is
+  `[object Object]`, and type-ahead would silently stop matching.
+- **It virtualizes rows it does not have to assume the height of.** A slice
+  plus two spacer boxes, like `Table` — but `Table` may divide by a row height
+  and this may not, because a tree row wraps, carries two lines, or is
+  whatever `renderContent` returned. `src/tree/heights.ts` measures what each
+  drawn row became and indexes it; `rowHeight` is a floor and
+  `estimatedRowHeight` is what an unseen row is guessed at. `virtual` is
+  `'auto'`, past 200 visible rows. The threshold survives because
+  virtualization still costs one thing — only the built rows are in the
+  accessibility tree — and a tree that is merely long should not pay it.
+- **The focus is on the tree, not the row.** Core's focused each row node.
+  A virtualized row unmounts the moment it scrolls out and the focus would go
+  with it, so the container is the single tab stop and the selection is the
+  cursor — `Table`'s model, and the reason `<Tree>` could not simply keep
+  core's.
+- **Every visible part is a seam**: `renderToggle`, `renderGuide`,
+  `renderLabel`, `renderContent`, `renderSubtree`, plus a `styles` bag.
+
+Five decisions in it that are decisions rather than gaps:
+
+- **Layout runs after React's effects, so a row cannot be measured in one.**
+  react-x11 lays out on a frame flush, not in the commit: `useLayoutEffect`
+  and `useEffect` both read the _previous_ pass, and on the render that
+  created a row `node.abs.height` is still 0. `src/tree/timers.ts` schedules
+  the measurement a macrotask later, which is the first moment the geometry is
+  real. Anything else in this package that needs to read back what layout
+  decided has the same problem and the same answer.
+- **The measure/render loop terminates because measuring is idempotent.**
+  `RowHeights.measure` reports whether it changed anything, and only a change
+  bumps the counter the component re-renders on. A second pass over the same
+  rows finds nothing and stops. Break that — re-render unconditionally after
+  measuring — and the tree spins at the frame rate, quietly, on a machine
+  fast enough not to look broken.
+- **`src/tree/rows.ts` is pure, and the flattening is iterative.** Which rows
+  are visible, at what depth, which is the last of its siblings — all of it is
+  answerable with no display, and it is where every subtle tree bug lives.
+  The explicit stack is not fastidiousness: a generated tree (a dependency
+  graph, a filesystem walked to the bottom) reaches depths that a call per
+  level does not survive, and `test/tree.test.ts` flattens ten thousand.
+- **`layout="nested"` is a regrouping of the flat rows, never a second
+  traversal.** `groupRows` rebuilds the nesting from the flat array, so the
+  two layouts cannot disagree about depth, order, or which row is last. It is
+  also the layout that cannot virtualize — a slice of a list is a list, a
+  slice of a tree is not — and the layout wins over `virtual` rather than the
+  other way round.
+- **The branch edge is computed per rendered row, not stored.** `branchEdges`
+  is asked for the handful of rows on screen while a row may be one of a
+  hundred thousand. The rule it encodes is the one an implementation gets
+  backwards: column `k` carries the line joining the _children_ of the
+  ancestor at depth `k`, so a row deep inside the **last** child of a branch
+  has a blank column above it even when that branch's parent has siblings
+  left. There is a test per case; get it wrong and the tree still draws,
+  just wrongly.
+- **A seam's return is keyed by the component.** `renderLabel` and
+  `renderSubtree` land in arrays beside the guides, the twisty, and the row
+  they hang off. "Remember to put a key on the box you return" is not
+  something a render prop should have to know, and the obvious guess — key it
+  on the row's id — collides with the row itself. Both are wrapped in a
+  `Fragment` carrying the key.
+
+The one thing it deliberately does **not** have is multiple selection.
+Nobody agrees on the policy (does Shift extend from the anchor or the cursor?
+does Ctrl+click on a branch take its children?), and every such policy is
+expressible on what is here: hold the set yourself, pass `selected` for the
+cursor, paint the rest from `styles.row`.
+
+`examples/tree.tsx` is the seams used in anger — a real file explorer over
+the real filesystem, lazily listed, with lucide-shaped folder glyphs and a
+dotted branch edge. Its glyphs are **drawn in the example**, which is the same
+line core's icon set draws: affordances are core's (the twisty's chevron is
+`<Icon>`), nouns are the app's.
+
 ## Commands
 
 ```bash
@@ -513,6 +604,7 @@ npm run examples:terminal    # needs a real $DISPLAY and an emulator installed
 npm run examples:terminal-vt # needs a real $DISPLAY and a pty module (node-pty)
 npm run examples:media-player -- <file>   # needs a real $DISPLAY and mpv/VLC
 npm run examples:tray-host   # needs a real $DISPLAY with no tray on it yet
+npm run examples:tree -- <dir>  # needs a real $DISPLAY; defaults to cwd
 ```
 
 `pretest` and `pretypecheck` both build, and both have to. `package.test.ts`
@@ -694,19 +786,25 @@ reuse question was asked against Vercel's Streamdown first and answered
 `src/markdown/parse.ts` (as parser tolerance, not a repair pre-pass; the
 handlers were read, not imported).
 
-| Candidate                                        | Where it is now                                          | Status                                                                                                                                                                   |
-| ------------------------------------------------ | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `<markdown>`, `<html>`                           | replaced by `src/markdown/` here (see above)             | **Done** for markdown, **never** for html. ntk's document widgets are deprecated; see [ntk#106](https://github.com/sidorares/ntk/issues/106).                            |
-| MDX in `<Markdown>`                              | reserved seams only (`component` AST node)               | **Planned.** Composition-friendly by construction; the parser is the only part that grows. Streaming-compatible in principle.                                            |
-| `<svg>`, `<tex>`                                 | ntk (`SvgView`, `layoutTex`), wrapped in react-x11       | **Staying in ntk**, per ntk#106. Recorded here so it is not reopened.                                                                                                    |
-| mermaid                                          | nowhere — dropped from ntk                               | **Dropped**, not extracted: 155 MB of install closure for a grammar. If it comes back, it comes back here, as its own subpath, and it stays optional.                    |
-| `<Tabs>`                                         | react-x11 `src/components/Tabs.js`                       | **Open.** May stay in core. Undecided — do not move it on a hunch.                                                                                                       |
-| 3D scene graph, Three.js / r3f layer, `Canvas3D` | react-x11 `src/scene3d.js`, `src/components/Canvas3D.js` | **Candidate**, with `<glarea>` staying in core. See "The boundary can run through a feature".                                                                            |
-| react-flow clone                                 | prototype, not yet in any repo                           | **Incoming.** A node/edge graph editor: big, pure composition, small fraction of apps — this package's shape exactly.                                                    |
-| `<Terminal>`, `<MediaPlayer>`                    | new, here (`src/terminal/`, `src/media-player/`)         | **Done.** Built on core's `<foreign>`; the wrapper is here because a binary dependency can never be core's. See "Running someone else's program".                        |
-| `<TrayHost>`                                     | new, here (`src/tray-host/`)                             | **Done** (issue #17). XEmbed's third consumer here, and the other side of it. Core keeps the _plug_ side — `createRoot({ embedInto })` is renderer internals.            |
-| A StatusNotifierItem host                        | nowhere yet                                              | **Planned**, as a sibling of `<TrayHost>` with its own issue. Shares intent and nothing else: it pairs with core's `dbusmenu.js`, not with `<foreign>`.                  |
-| A pure-JS VT backend for `<Terminal>`            | new, here (`src/terminal/vt/`)                           | **Done** (issue #19). `backend="vt"`, behind the existing props: pty + `@xterm/headless` + a cell-grid renderer. See "The terminal that is not somebody else's program". |
+And core's own `<Tree>`, which is the first _core widget_ replaced rather than
+moved: `src/tree/` is a successor that imports none of it, because core is
+retiring the widget rather than handing it over. What that changes about how
+one is written is in "Replacing a core widget rather than moving it" above.
+
+| Candidate                                        | Where it is now                                          | Status                                                                                                                                                                       |
+| ------------------------------------------------ | -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `<markdown>`, `<html>`                           | replaced by `src/markdown/` here (see above)             | **Done** for markdown, **never** for html. ntk's document widgets are deprecated; see [ntk#106](https://github.com/sidorares/ntk/issues/106).                                |
+| MDX in `<Markdown>`                              | reserved seams only (`component` AST node)               | **Planned.** Composition-friendly by construction; the parser is the only part that grows. Streaming-compatible in principle.                                                |
+| `<svg>`, `<tex>`                                 | ntk (`SvgView`, `layoutTex`), wrapped in react-x11       | **Staying in ntk**, per ntk#106. Recorded here so it is not reopened.                                                                                                        |
+| mermaid                                          | nowhere — dropped from ntk                               | **Dropped**, not extracted: 155 MB of install closure for a grammar. If it comes back, it comes back here, as its own subpath, and it stays optional.                        |
+| `<Tabs>`                                         | react-x11 `src/components/Tabs.js`                       | **Open.** May stay in core. Undecided — do not move it on a hunch.                                                                                                           |
+| `<Tree>`                                         | superseded by `src/tree/` here (see above)               | **Done.** Core's `src/components/Tree.js` is being retired; this is a successor, not a wrapper, and imports none of it. See "Replacing a core widget rather than moving it". |
+| 3D scene graph, Three.js / r3f layer, `Canvas3D` | react-x11 `src/scene3d.js`, `src/components/Canvas3D.js` | **Candidate**, with `<glarea>` staying in core. See "The boundary can run through a feature".                                                                                |
+| react-flow clone                                 | prototype, not yet in any repo                           | **Incoming.** A node/edge graph editor: big, pure composition, small fraction of apps — this package's shape exactly.                                                        |
+| `<Terminal>`, `<MediaPlayer>`                    | new, here (`src/terminal/`, `src/media-player/`)         | **Done.** Built on core's `<foreign>`; the wrapper is here because a binary dependency can never be core's. See "Running someone else's program".                            |
+| `<TrayHost>`                                     | new, here (`src/tray-host/`)                             | **Done** (issue #17). XEmbed's third consumer here, and the other side of it. Core keeps the _plug_ side — `createRoot({ embedInto })` is renderer internals.                |
+| A StatusNotifierItem host                        | nowhere yet                                              | **Planned**, as a sibling of `<TrayHost>` with its own issue. Shares intent and nothing else: it pairs with core's `dbusmenu.js`, not with `<foreign>`.                      |
+| A pure-JS VT backend for `<Terminal>`            | new, here (`src/terminal/vt/`)                           | **Done** (issue #19). `backend="vt"`, behind the existing props: pty + `@xterm/headless` + a cell-grid renderer. See "The terminal that is not somebody else's program".     |
 
 Verified against ntk 7.2.0 on 2026-08-09: `MarkdownView`, `HtmlView`,
 `SvgView` and `layoutTex` are all still exported; only mermaid is gone.
