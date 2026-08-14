@@ -55,9 +55,11 @@ import {
 
 import { hx } from './hx.js';
 import type { Host } from './hx.js';
-import { RowHeights } from './heights.js';
+// Shared with <Table> — internal, deliberately not a shared *module*; the
+// header of src/internal/heights.ts says why.
+import { RowHeights } from '../internal/heights.js';
+import { afterLayout, cancelAfterLayout } from '../internal/timers.js';
 import { typeAheadChar, useTypeAhead } from './internal.js';
-import { afterLayout, cancelAfterLayout } from './timers.js';
 import {
   branchEdges,
   findItem,
