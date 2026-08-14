@@ -77,6 +77,13 @@ element.
   element calls it at its own module scope**, so "a component registers
   its element in its own index.ts" keeps holding and an app that imports
   neither component registers nothing.
+- `src/internal/` is the half-step **below** a shared module: code two
+  components share — the height index and layout tick under `<Tree>` and
+  `<Table>` — that no app needs yet. Deliberately without an `index.ts`,
+  so it has no subpath and no docs page; `test/docs.test.ts` and
+  `scripts/check-package.ts` both key on `src/<name>/index.ts`, and that
+  is the seam this uses. Giving it an `index.ts` and the full
+  shared-module treatment is the promotion path.
 - `src/index.ts` — the convenience barrel. Re-exports only. Never put
   anything with a side effect here.
 - `dist/` — **the build output, and what ships.** `tsc` writes it, git

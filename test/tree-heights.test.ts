@@ -10,7 +10,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
 
-import { RowHeights } from '../src/tree/heights.js';
+import { RowHeights } from '../src/internal/heights.js';
 import type { TreeItemId } from '../src/index.js';
 
 const rowsOf = (n: number): Array<{ id: TreeItemId }> =>

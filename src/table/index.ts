@@ -60,8 +60,10 @@ import {
 
 import { hx } from './hx.js';
 import type { Host } from './hx.js';
-import { RowHeights } from './heights.js';
-import { afterLayout, cancelAfterLayout } from './timers.js';
+// Shared with <Tree> — internal, deliberately not a shared *module*; the
+// header of src/internal/heights.ts says why.
+import { RowHeights } from '../internal/heights.js';
+import { afterLayout, cancelAfterLayout } from '../internal/timers.js';
 import {
   MIN_COLUMN,
   columnValue,

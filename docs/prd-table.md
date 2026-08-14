@@ -498,9 +498,13 @@ indexAt(viewportBottom) + overscan`, mounted between two spacers so the
 
 The height index, `afterLayout`, and type-ahead currently live inside
 `src/tree/` (`heights.ts`, `timers.ts`, `internal.ts`); the table must not
-import another component. Decided: vendor-copy into `src/table/` for now —
-the `useTypeAhead` precedent, delete-when-shared notes included — and
-promote to a shared module in M2 alongside the tree refactor.
+import another component. Decided as vendor-copy, then promoted during
+review: the height index and `afterLayout` now live in `src/internal/` —
+shared code both components import, deliberately without an `index.ts`, so
+no subpath and no docs page (the guards key on `index.ts`; internal, not
+public API). Type-ahead stays in the tree until the table grows it (M3);
+a real shared module with a page is the promotion path if an app outside
+the package ever needs the index.
 
 ## Keyboard and focus
 
@@ -611,8 +615,8 @@ sticky header, roles/ARIA, theming, `data-testname`. Everything a core
 'auto'`/`overscan`, the seams (`renderHeader`, `renderRow`, `renderEmpty`,
 `styles` bag, grown cell state), the handle, `selectionMode: 'multiple'`
 with the full pointer/keyboard grammar, `presorted`, `onRowContextMenu`,
-`focusable` — and the vendored height index/`afterLayout` promoted to a
-shared module, the tree refactored onto it.
+`focusable` — and the height index/`afterLayout` shared with the tree
+(`src/internal/`, done during review rather than waiting for M2).
 
 **M3 — polish.** Type-ahead, controlled column widths (beyond
 `onColumnResize` reporting), the zebra/`stripe` decision, content-measured

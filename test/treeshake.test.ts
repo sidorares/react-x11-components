@@ -73,8 +73,10 @@ const COMPONENTS = [
     dir: 'timeline',
     marker: 'inside a <Timeline>',
   },
-  // `<Table>` vendors the tree's height index rather than importing it, so
-  // the two stay separate bundles; the role is the one string only it writes.
+  // `<Table>` shares the internal height index with `<Tree>`
+  // (src/internal/ — shared code, not a component import); the role is the
+  // one string only the table writes, and this loop is what proves the
+  // sharing keeps the two bundles separate.
   { exportName: 'Table', dir: 'table', marker: 'columnheader' },
 ];
 

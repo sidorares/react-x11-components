@@ -1,70 +1,22 @@
-// The table's height index is a vendored copy of the tree's
-// (src/table/heights.ts — see the banner there), and a vendored copy's
-// failure mode is drift: a fix lands in one and not the other. So the guard
-// here is agreement — both classes driven through the same randomized
-// sequence of syncs, measurements and lookups must answer identically,
-// which is also what makes the eventual shared-module promotion a no-op.
+// The table's stake in the shared height index.
 //
-// The tree's own suite (test/tree-heights.test.ts) proves the algorithm
-// against a naive oracle; this file proves the copy, plus the one property
-// the *table* buys from id-keying: a measured height survives a re-sort.
+// The index itself lives in `src/internal/heights.ts`, shared with the
+// tree, and the oracle suite (test/tree-heights.test.ts) proves the
+// algorithm against a naive reference at every size. What is asserted here
+// is the property the *table* buys from id-keying, which the tree never
+// exercises: a measured height survives a **re-sort** — the permutation
+// rebuilds offsets without remeasuring a single row.
 import { test } from 'node:test';
 import assert from 'node:assert';
 
-import { RowHeights as TableHeights } from '../src/table/heights.js';
-import { RowHeights as TreeHeights } from '../src/tree/heights.js';
+import { RowHeights } from '../src/internal/heights.js';
 
 const rowsOf = (
   ids: readonly (string | number)[],
 ): Array<{ id: string | number }> => ids.map((id) => ({ id }));
 
-test('the vendored copy agrees with the original, operation for operation', () => {
-  const a = new TableHeights(22);
-  const b = new TreeHeights(22);
-  let seed = 0x2f6e2b1;
-  const rand = (): number => {
-    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
-    return seed / 0x7fffffff;
-  };
-
-  let ids = Array.from({ length: 257 }, (_, i) => `r${i}`);
-  let rows = rowsOf(ids);
-  a.sync(rows, 22);
-  b.sync(rows, 22);
-
-  for (let round = 0; round < 500; round++) {
-    const op = rand();
-    if (op < 0.15) {
-      // shuffle — a sort — and re-point both at the same new array
-      ids = [...ids].sort(() => rand() - 0.5);
-      rows = rowsOf(ids);
-      a.sync(rows, 22);
-      b.sync(rows, 22);
-    } else if (op < 0.6) {
-      const at = Math.floor(rand() * ids.length);
-      const height = 8 + Math.floor(rand() * 90);
-      assert.strictEqual(
-        a.measure(ids[at], at, height),
-        b.measure(ids[at], at, height),
-        `measure disagreement at round ${round}`,
-      );
-    } else {
-      const probe = Math.floor(rand() * (a.total() + 100));
-      assert.strictEqual(
-        a.indexAt(probe),
-        b.indexAt(probe),
-        `indexAt(${probe})`,
-      );
-      const at = Math.floor(rand() * (ids.length + 1));
-      assert.strictEqual(a.offsetAt(at), b.offsetAt(at), `offsetAt(${at})`);
-      assert.strictEqual(a.total(), b.total(), `total at round ${round}`);
-    }
-  }
-});
-
 test('a measured height survives a re-sort without remeasuring', () => {
-  // what id-keying buys the table: sorting permutes offsets, not knowledge
-  const h = new TableHeights(24);
+  const h = new RowHeights(24);
   h.sync(rowsOf(['a', 'b', 'c', 'd']), 24);
   h.measure('c', 2, 90);
   assert.strictEqual(h.total(), 24 * 3 + 90);
@@ -74,4 +26,17 @@ test('a measured height survives a re-sort without remeasuring', () => {
   assert.strictEqual(h.heightAt(0), 90, 'c kept its measurement');
   assert.strictEqual(h.offsetAt(1), 90, 'and every offset moved with it');
   assert.strictEqual(h.total(), 24 * 3 + 90, 'the total did not change');
+});
+
+test('a shuffle mid-measurement re-indexes rather than corrupting offsets', () => {
+  // the table's version of the tree's stale-index case: the measure tick
+  // lands after a sort moved the rows under it
+  const h = new RowHeights(24);
+  h.sync(rowsOf(['a', 'b', 'c']), 24);
+  const shuffled = rowsOf(['c', 'b', 'a']);
+  h.sync(shuffled, 24);
+  assert.strictEqual(h.measure('a', 0, 60), true, 'stale index, applied');
+  h.sync(shuffled, 24); // the rebuild the mismatch asked for
+  assert.strictEqual(h.heightAt(2), 60, 'a is row 2 now, and it is 60 tall');
+  assert.strictEqual(h.total(), 24 * 2 + 60);
 });

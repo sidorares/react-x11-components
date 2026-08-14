@@ -1,8 +1,12 @@
 // "Run this once layout has happened", reached through `globalThis`.
 //
+// **Shared between `<Tree>` and `<Table>`** — promoted here with the height
+// index beside it; see `./heights.ts` for why this directory is internal
+// rather than a shared module with a subpath.
+//
 // The build compiles `src/` with `types: []` on purpose — a Node global that
 // wanders in must fail the build rather than become an implicit
-// `@types/node` dependency (AGENTS.md) — so the one timer this component
+// `@types/node` dependency (AGENTS.md) — so the one timer virtualization
 // needs is typed here, structurally, the way `../code-language/timers.ts`
 // does it.
 //
