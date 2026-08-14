@@ -20,6 +20,7 @@ component.
 | [CodeEditor](components/code-editor.md)            | `@react-x11/components/code-editor`      | Multiline code editing: highlighting, completion.     |
 | [Markdown](components/markdown.md)                 | `@react-x11/components/markdown`         | Streaming-friendly GFM with cross-block selection.    |
 | [MediaPlayer](components/media-player.md)          | `@react-x11/components/media-player`     | mpv or VLC, embedded, with real transport control.    |
+| [Table](components/table.md)                       | `@react-x11/components/table`            | A data table: sortable, virtualized, any row height.  |
 | [Terminal](components/terminal.md)                 | `@react-x11/components/terminal`         | A real terminal: an embedded emulator, or its own.    |
 | [TrayHost](components/tray-host.md)                | `@react-x11/components/tray-host`        | The system tray: applications dock their icons in.    |
 | [Tree](components/tree.md)                         | `@react-x11/components/tree`             | A disclosure tree: seams throughout, and virtualized. |
@@ -46,6 +47,9 @@ parts.
 - [Composable, cost-bounded charts](prd-charts.md) — the decimation
   pyramid, the command-stream/pixel crossover, and the tooltip-popup
   policy behind `/charts`.
+- [The data table](prd-table.md) — proposed: the prior-art survey, the
+  successor contract with core's `<Table>`, and the variable-height
+  virtualization it shares with the tree.
 
 ## Conventions these pages follow
 

@@ -121,6 +121,7 @@ import type { CodeEditorProps } from '@react-x11/components';
 | `CodeEditor`  | `@react-x11/components/code-editor`      | Multiline code editing: highlighting, completion.     |
 | `Markdown`    | `@react-x11/components/markdown`         | Streaming-friendly GFM with cross-block selection.    |
 | `MediaPlayer` | `@react-x11/components/media-player`     | mpv or VLC, embedded, with real transport control.    |
+| `Table`       | `@react-x11/components/table`            | A data table: sortable, virtualized, any row height.  |
 | `Terminal`    | `@react-x11/components/terminal`         | A real terminal: an embedded emulator, or its own.    |
 | `TrayHost`    | `@react-x11/components/tray-host`        | The system tray: applications dock their icons in.    |
 | `Tree`        | `@react-x11/components/tree`             | A disclosure tree: seams throughout, and virtualized. |
@@ -330,6 +331,42 @@ rather than in core:
 `npm run examples:tree` is a file explorer over the real filesystem, lazily
 listed, with folder glyphs and a dotted branch edge through those seams.
 [The reference](docs/components/tree.md) has the rest.
+
+## The data table
+
+`<Table>` is a **successor to react-x11's own `<Table>`** — the same
+relationship the tree has to core's: nothing here imports it, and the prop
+names core call sites already use mean migrating is changing the import.
+
+```jsx
+import { Table } from '@react-x11/components/table';
+
+<Table
+  rows={files}
+  columns={[
+    { id: 'name', label: 'Name', flex: 1 },
+    { id: 'size', label: 'Size', width: 96, align: 'right' },
+  ]}
+/>;
+```
+
+That is the whole basic setup — header, sort on click, selection, resizable
+columns, theme colours — and the design rule above every other one is that
+**ceremony is additive**: sorting, multi-selection, custom cells, and
+virtualization are independent opt-ins on this same element, never a second
+API. Two things underneath are why the successor lives out here:
+
+- **Rows may be any height.** Declare `rowHeight` and the visible slice is
+  arithmetic, core's model; omit it and drawn rows are measured, the tree's
+  model — so a cell that wraps or stacks lines keeps an honest scrollbar,
+  at a hundred thousand rows.
+- **Every visible part is a seam** — the cell, the header cell, the row's
+  content, the empty state, and a `styles` bag whose row/cell entries
+  follow row state.
+
+`npm run examples:table` shows the ladder in one window.
+[The reference](docs/components/table.md) has the rest;
+[the PRD](docs/prd-table.md) has the prior-art survey and the reasons.
 
 ## The code editor
 
@@ -699,6 +736,10 @@ Candidates to move here:
 - A StatusNotifierItem host, beside `<TrayHost>` rather than inside it: the
   D-Bus way modern applications publish a tray icon. It pairs with core's
   `dbusmenu.js`, and a complete panel wants both.
+
+`<Table>` above supersedes core's `<Table>` the way `<Tree>` supersedes
+core's tree; whether core's remainder is stripped down or removed outright
+is core's decision, still open — `docs/prd-table.md` records the contract.
 
 `<Markdown>` above **replaces** core's ntk-backed `<markdown>` element
 (ntk's `MarkdownView` and `HtmlView` widgets are being deprecated). There

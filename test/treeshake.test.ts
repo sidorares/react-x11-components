@@ -61,6 +61,9 @@ const COMPONENTS = [
   // `<Tree>` shares core's chevron with `<Calendar>` but no module here; the
   // role is the one string only it writes.
   { exportName: 'Tree', dir: 'tree', marker: 'treeitem' },
+  // `<Table>` vendors the tree's height index rather than importing it, so
+  // the two stay separate bundles; the role is the one string only it writes.
+  { exportName: 'Table', dir: 'table', marker: 'columnheader' },
 ];
 
 async function bundle(contents: string): Promise<string> {

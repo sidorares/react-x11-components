@@ -125,6 +125,39 @@ export type {
   TreeToggleState,
 } from './tree/index.js';
 
+// The data table. Successor to react-x11's own `<Table>`, which may be
+// stripped down or removed — nothing here imports it, and core call sites
+// migrate by changing the import (docs/prd-table.md is the design record).
+// The row/column model comes out with it; the generic names are qualified on
+// the way through the barrel, the way the tree's are.
+export {
+  Table,
+  MIN_COLUMN as TABLE_MIN_COLUMN,
+  UNSIZED_MIN as TABLE_UNSIZED_MIN,
+  columnValue as tableColumnValue,
+  defaultCompare as compareTableValues,
+  orderRows as orderTableRows,
+  resolveGetId as resolveTableGetId,
+  resolveWidths as resolveTableWidths,
+} from './table/index.js';
+export type {
+  ResolvedWidths as ResolvedTableWidths,
+  TableCellState,
+  TableColumn,
+  TableHandle,
+  TableHeaderCellState,
+  TableMultiSelectProps,
+  TableProps,
+  TableRow,
+  TableRowId,
+  TableRowState,
+  TableSelectChange,
+  TableSingleSelectProps,
+  TableSort,
+  TableStaticProps,
+  TableStyles,
+} from './table/index.js';
+
 export { Markdown, parse as parseMarkdown } from './markdown/index.js';
 export type {
   MarkdownProps,
