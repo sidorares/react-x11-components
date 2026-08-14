@@ -11,7 +11,7 @@ import { Table } from '@react-x11/components/table';
       id: 'size',
       label: 'Size',
       width: 96,
-      align: 'right',
+      align: 'end',
       value: (f) => f.bytes,
     },
     {
@@ -46,19 +46,19 @@ here, so the pixel arithmetic is this component's, and it resolves **once,
 at the table level**: every row agrees on the grid by construction, and a
 virtualized row mounting late cannot re-negotiate it.
 
-| Field          | Type                            | Notes                                                                                                                                                                                                    |
-| -------------- | ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `id`           | `string`                        | Names the column, the sort, and — by default — the row property the cell shows.                                                                                                                          |
-| `label`        | `string`                        | The header caption. Defaults to the id.                                                                                                                                                                  |
-| `width`        | `number`                        | A fixed column, in pixels. Ignored when `flex` is set.                                                                                                                                                   |
-| `flex`         | `number`                        | Shares the viewport width left over after the fixed columns, by weight. **A column declaring neither `width` nor `flex` is `flex: 1` with a 120px floor** — a table with no sizing config fills its box. |
-| `minWidth`     | `number`                        | The floor for flex resolution and user resize. Defaults to 40; 120 for an unsized column.                                                                                                                |
-| `align`        | `'left' \| 'right' \| 'center'` | `'right'` means the end of the row — the left edge in a mirrored table.                                                                                                                                  |
-| `sortable`     | `boolean`                       | Whether the header click sorts here. Default true.                                                                                                                                                       |
-| `value`        | `(row) => unknown`              | Feeds the default cell text **and** the sort. Defaults to `row[id]`.                                                                                                                                     |
-| `compare`      | `(a, b) => number`              | Sort order over whole rows. Defaults to a natural comparison over `value()` — numbers numerically, everything else as text.                                                                              |
-| `render`       | `(row, state) => ReactNode`     | Replaces the cell — see [Seams](#seams).                                                                                                                                                                 |
-| `renderHeader` | `(state) => ReactNode`          | Replaces the header cell's content — the box, its width, the sort click and the grip stay the table's.                                                                                                   |
+| Field          | Type                           | Notes                                                                                                                                                                                                    |
+| -------------- | ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`           | `string`                       | Names the column, the sort, and — by default — the row property the cell shows.                                                                                                                          |
+| `label`        | `string`                       | The header caption. Defaults to the id.                                                                                                                                                                  |
+| `width`        | `number`                       | A fixed column, in pixels. Ignored when `flex` is set.                                                                                                                                                   |
+| `flex`         | `number`                       | Shares the viewport width left over after the fixed columns, by weight. **A column declaring neither `width` nor `flex` is `flex: 1` with a 120px floor** — a table with no sizing config fills its box. |
+| `minWidth`     | `number`                       | The floor for flex resolution and user resize. Defaults to 40; 120 for an unsized column.                                                                                                                |
+| `align`        | `'start' \| 'center' \| 'end'` | Logical: `'end'` is the edge the row finishes at — where a column of figures lines up — and the left edge under RTL, with nothing else said.                                                             |
+| `sortable`     | `boolean`                      | Whether the header click sorts here. Default true.                                                                                                                                                       |
+| `value`        | `(row) => unknown`             | Feeds the default cell text **and** the sort. Defaults to `row[id]`.                                                                                                                                     |
+| `compare`      | `(a, b) => number`             | Sort order over whole rows. Defaults to a natural comparison over `value()` — numbers numerically, everything else as text.                                                                              |
+| `render`       | `(row, state) => ReactNode`    | Replaces the cell — see [Seams](#seams).                                                                                                                                                                 |
+| `renderHeader` | `(state) => ReactNode`         | Replaces the header cell's content — the box, its width, the sort click and the grip stay the table's.                                                                                                   |
 
 Dragging a grip (or Left/Right on a focused grip, 16px a press) resizes the
 column and **converts it to fixed** at that width, reported through
@@ -278,6 +278,8 @@ test asserting order).
 Change the import. Then, only if it matters:
 
 - Rows still need an `id` — or pass `getId`, which core did not have.
+- `align` speaks logical `start`/`end` where core said `left`/`right` —
+  the same rendered result in LTR, and RTL mirrors without a second prop.
 - Core's fixed 24px rows are `rowHeight={24}`; omitting it measures instead.
 - Columns without `width` now stretch rather than sitting at 120 fixed.
 - Tables under 200 rows are no longer virtualized (better for the

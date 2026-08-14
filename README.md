@@ -346,7 +346,7 @@ import { Table } from '@react-x11/components/table';
   rows={files}
   columns={[
     { id: 'name', label: 'Name', flex: 1 },
-    { id: 'size', label: 'Size', width: 96, align: 'right' },
+    { id: 'size', label: 'Size', width: 96, align: 'end' },
   ]}
 />;
 ```

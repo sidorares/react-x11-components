@@ -912,7 +912,7 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
             s.cell,
             { width: widths[at] },
             uniform && { height: rowHeight },
-            column.align === 'right' && {
+            column.align === 'end' && {
               alignItems: 'flex-end',
               paddingEnd: 8,
             },

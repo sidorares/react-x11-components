@@ -31,7 +31,7 @@ const COLUMNS: TableColumn<File>[] = [
     id: 'bytes',
     label: 'Size',
     width: 96,
-    align: 'right',
+    align: 'end',
     // value and compare both see the app's row type
     value: (f) => f.bytes,
     compare: (a, b) => a.bytes - b.bytes,
@@ -100,8 +100,8 @@ export const display = (
 // The union is the compiler walking a caller up the multi-select rung:
 // the plural shape needs the plural mode, and vice versa.
 
-// @ts-expect-error single selection takes one id, not an array
 export const arrayInSingle = (
+  // @ts-expect-error single selection takes one id, not an array
   <Table columns={COLUMNS} rows={FILES} selected={[1]} />
 );
 

@@ -78,10 +78,11 @@ export interface TableColumn<Row = any> {
    *  respect it. Defaults to 40 (core's resize floor); 120 for a column with
    *  neither `width` nor `flex`. */
   minWidth?: number;
-  /** `'right'` means "the end of the row" — a column of figures lines up on
-   *  the edge the row finishes at, which is the left one in a mirrored
-   *  table. */
-  align?: 'left' | 'right' | 'center';
+  /** Logical, so bidi is the layout's problem and never the app's: `'end'`
+   *  is the edge the row finishes at — where a column of figures lines up —
+   *  and under RTL that is the left edge without anyone saying so. Core
+   *  said `'left' | 'right'`; the successor says what it always meant. */
+  align?: 'start' | 'center' | 'end';
   /** Whether the header click sorts on this column. Default true. */
   sortable?: boolean;
   /** The cell's raw value: feeds the default cell text **and** the sort.

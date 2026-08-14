@@ -49,8 +49,8 @@ function listProcesses(): Proc[] {
 }
 
 const PROC_COLUMNS: TableColumn<Proc>[] = [
-  { id: 'id', label: 'PID', width: 64, align: 'right' },
-  { id: 'cpu', label: 'CPU %', width: 72, align: 'right' },
+  { id: 'id', label: 'PID', width: 64, align: 'end' },
+  { id: 'cpu', label: 'CPU %', width: 72, align: 'end' },
   { id: 'command', label: 'Command' }, // unsized: takes the room
 ];
 

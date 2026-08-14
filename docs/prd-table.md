@@ -23,7 +23,7 @@ import { Table } from '@react-x11/components/table';
       id: 'size',
       label: 'Size',
       width: 96,
-      align: 'right',
+      align: 'end',
       value: (f) => formatBytes(f.bytes),
     },
     {
@@ -128,7 +128,7 @@ bar `<Tree>` set. Item by item:
 
 **Kept from core verbatim** (migration should be an import swap for most
 call sites): the `TableColumn` shape (`id`, `label`, `width` defaulting
-120, `align`, `value` feeding both the default cell text and the sort,
+120, `value` feeding both the default cell text and the sort,
 `render`), `TableSort { column, direction }`,
 `sort`/`defaultSort`/`onSortChange`, `selected`/`defaultSelected`/
 `onSelect`/`onActivate`, `onColumnResize`, select on first click, activate
@@ -143,6 +143,12 @@ on `ev.detail === 2` or Enter, resize grips as header-cell siblings
   literal `row.id`; apps have their own key fields. A row whose id
   resolves `undefined` throws a remedial `TypeError` naming `getId`, the
   Calendar's precedent, rather than rendering broken.
+- **`align` speaks logical `start`/`end`** where core said
+  `left`/`right` (decided 2026-08-14). The implementation always mapped
+  the value to the row's end edge, so under RTL the physical name was a
+  lie — a column of figures lines up on the reading end in both
+  directions, and a bidi app never needs a second alignment prop.
+  `renderEmpty` was decided into M2 the same day.
 - **Unsized columns stretch.** A column declaring neither `width` nor
   `flex` resolves as `flex: 1, minWidth: 120` — the zero-config table
   fills its box instead of parking dead space to the right of fixed-120
@@ -265,7 +271,7 @@ export interface TableColumn<Row = any> {
   width?: number; // px; a fixed column
   flex?: number; // shares leftover width. Neither set: flex 1, minWidth 120
   minWidth?: number; // floor for flex resolution and user resize; default 40
-  align?: 'left' | 'right' | 'center';
+  align?: 'start' | 'center' | 'end';
   sortable?: boolean; // default true (core sorts on any header click)
   value?: (row: Row) => unknown; // default row[id]; feeds the default cell text AND the sort
   compare?: (a: Row, b: Row) => number; // sort override; default natural order over value()
@@ -624,35 +630,30 @@ screenshot via `gh-attach`, per `AGENTS.md`.
 
 ## Open questions (decision needed, defaults proposed)
 
-1. **`align` vocabulary.** Core says `'left' | 'right' | 'center'`; the
-   style system prefers logical edges (`start`/`end`), and the sticky
-   header already uses `marginStart`. Proposed: keep core's words for
-   parity (numeric right-alignment is what the prop is for) and map to
-   logical edges internally under RTL.
-2. **Core's fate.** Undecided, and both outcomes are live: stripped down
+1. **Core's fate.** Undecided, and both outcomes are live: stripped down
    to a very simple table, or removed altogether. Nothing in M1/M2
    depends on either — this component composes host primitives only, and
    the decommission milestone files the coordination issue whichever way
    core goes. Only if a remainder survives do the packages share a name
    (subpaths disambiguate mechanically; the docs page says which one a
    reader wants).
-3. **`selectionMode: 'none'` vs `selectionMode` absent + no handlers.**
+2. **`selectionMode: 'none'` vs `selectionMode` absent + no handlers.**
    The union needs the explicit `'none'` for display-only tables (hover
    off, no cursor); the alternative — inferring from handler absence —
    breaks controlled usage. Proposed: keep the explicit `'none'`.
-4. **Does `renderEmpty` belong in M2, or is an empty body enough?**
-   Proposed: ship it in M2; it is one seam and every real app asks for it.
 
 ## Risks
 
-- **The installed core is stale relative to the branch pin.** The
-  worktree's parent `node_modules` holds a pre-theme-rename core (`dim`,
-  not `textMuted`); anything mounted against it throws unknown-token in
-  DEV. `npm ci` before running `examples/table.tsx`. The pin itself
-  (`ceb9da5`) already has everything this design needs — goal 6 holds.
-- **A sibling component is landing conventions in parallel.** The flow
-  branch (`src/flow/`, react-flow-shaped) is a second large component in
-  flight; check it for accessor/seam naming drift before freezing
+- **The pin moved under the branch.** `<Flow>` (#14) carried the core
+  pin forward to `cefbf44` — a superset of everything this design needs,
+  so goal 6 still holds — but wrote the spec as `#master`, which npm 11
+  re-resolves; the merge names the sha. `npm ci` after pulling.
+- **A sibling component landed conventions in parallel.** The flow
+  branch (`src/flow/`, react-flow-shaped) merged first; checked for
+  accessor/seam naming drift while resolving the merge — flow registers
+  a drawing element where the table composes boxes, and no naming
+  collides. The check was worth keeping for the next pair landing
+  together; recorded here rather than re-derived. It was about freezing
   `TableProps` in M1.
 - **Two `Table`s exist during the overlap window** (core's and this one).
   Import subpaths disambiguate; the README should not list the component
