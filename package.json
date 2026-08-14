@@ -32,6 +32,10 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
+    "./ansi": {
+      "types": "./dist/ansi/index.d.ts",
+      "default": "./dist/ansi/index.js"
+    },
     "./calendar": {
       "types": "./dist/calendar/index.d.ts",
       "default": "./dist/calendar/index.js"
@@ -80,6 +84,10 @@
       "types": "./dist/terminal/index.d.ts",
       "default": "./dist/terminal/index.js"
     },
+    "./terminal-output": {
+      "types": "./dist/terminal-output/index.d.ts",
+      "default": "./dist/terminal-output/index.js"
+    },
     "./tray-host": {
       "types": "./dist/tray-host/index.d.ts",
       "default": "./dist/tray-host/index.js"
@@ -110,6 +118,7 @@
     "examples:markdown": "tsx examples/markdown.tsx",
     "examples:media-player": "tsx examples/media-player.tsx",
     "examples:terminal": "tsx examples/terminal.tsx",
+    "examples:terminal-output": "tsx examples/terminal-output.tsx",
     "examples:terminal-vt": "tsx examples/terminal-vt.tsx",
     "examples:terminal-ssh": "tsx examples/terminal-ssh.tsx",
     "examples:tray-host": "tsx examples/tray-host.tsx",

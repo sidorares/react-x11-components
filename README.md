@@ -112,26 +112,28 @@ import type { CodeEditorProps } from '@react-x11/components';
 
 ## Components
 
-| Component     | Import                                   |                                                       |
-| ------------- | ---------------------------------------- | ----------------------------------------------------- |
-| `Calendar`    | `@react-x11/components/calendar`         | A month grid: one date or a range, any day blockable. |
-| `DatePicker`  | `@react-x11/components/calendar`         | That calendar on a popup, behind a field.             |
-| `LineChart` … | `@react-x11/components/charts`           | Cartesian charts; a million points is a normal input. |
-| `Code`        | `@react-x11/components/code`             | A static code block: highlighted, selectable.         |
-| `CodeEditor`  | `@react-x11/components/code-editor`      | Multiline code editing: highlighting, completion.     |
-| `Markdown`    | `@react-x11/components/markdown`         | Streaming-friendly GFM with cross-block selection.    |
-| `MediaPlayer` | `@react-x11/components/media-player`     | mpv or VLC, embedded, with real transport control.    |
-| `Terminal`    | `@react-x11/components/terminal`         | A real terminal: an embedded emulator, or its own.    |
-| `TrayHost`    | `@react-x11/components/tray-host`        | The system tray: applications dock their icons in.    |
-| `Tree`        | `@react-x11/components/tree`             | A disclosure tree: seams throughout, and virtualized. |
-| _(hook)_      | `@react-x11/components/desktop-calendar` | The user's real calendar events, over D-Bus.          |
+| Component        | Import                                   |                                                              |
+| ---------------- | ---------------------------------------- | ------------------------------------------------------------ |
+| `Calendar`       | `@react-x11/components/calendar`         | A month grid: one date or a range, any day blockable.        |
+| `DatePicker`     | `@react-x11/components/calendar`         | That calendar on a popup, behind a field.                    |
+| `LineChart` …    | `@react-x11/components/charts`           | Cartesian charts; a million points is a normal input.        |
+| `Code`           | `@react-x11/components/code`             | A static code block: highlighted, selectable.                |
+| `CodeEditor`     | `@react-x11/components/code-editor`      | Multiline code editing: highlighting, completion.            |
+| `Markdown`       | `@react-x11/components/markdown`         | Streaming-friendly GFM with cross-block selection.           |
+| `MediaPlayer`    | `@react-x11/components/media-player`     | mpv or VLC, embedded, with real transport control.           |
+| `Terminal`       | `@react-x11/components/terminal`         | A real terminal: an embedded emulator, or its own.           |
+| `TerminalOutput` | `@react-x11/components/terminal-output`  | A captured session, rendered. `<Terminal>`'s static sibling. |
+| `TrayHost`       | `@react-x11/components/tray-host`        | The system tray: applications dock their icons in.           |
+| `Tree`           | `@react-x11/components/tree`             | A disclosure tree: seams throughout, and virtualized.        |
+| _(hook)_         | `@react-x11/components/desktop-calendar` | The user's real calendar events, over D-Bus.                 |
 
-Four shared modules sit underneath and are importable on their own:
+Five shared modules sit underneath and are importable on their own:
 `/richtext` (the styled-text element a document selects across),
 `/codeblock` (the look of a block of code, shared by `<Code>` and
 `<Markdown>`'s fences), `/code-language` (the pluggable tokenizer seam,
-the built-in languages and the token palettes) and `/embed` (the spawn,
-watch and hand-back lifecycle both XEmbed wrappers are built on).
+the built-in languages and the token palettes), `/ansi` (a captured
+terminal session reduced to a document of styled spans) and `/embed` (the
+spawn, watch and hand-back lifecycle both XEmbed wrappers are built on).
 
 Selecting text is **core's**, not this package's: a `<box selectable>` is
 a surface, everything under it that answers for its own text is in the
@@ -296,6 +298,63 @@ Highlighting goes through the same language seam (`lang` tag or an
 explicit `language={…}`) and the look is shared with `<Markdown>`'s fenced
 blocks, so the two agree in one window. Selection and copy are core's; the
 line-number gutter is `selectable={false}`, so copied code pastes clean.
+
+## A terminal session you already have: `<TerminalOutput>`
+
+The static sibling of `<Terminal>`, exactly as `<Code>` is `<CodeEditor>`'s.
+You ran something in a pty somewhere and kept the bytes; this draws what the
+terminal would have drawn, with no pty, no process and no input.
+
+```jsx
+import { TerminalOutput } from '@react-x11/components/terminal-output';
+
+<TerminalOutput data={await readFile('build.log')} lineNumbers />;
+```
+
+**A log is a document, not a grid**, and that is the whole design. A build
+log has lines, not rows, and no column count of its own — so it renders as
+styled spans in one `<richtext>`, which wraps if you ask, flows in a page,
+and selects like any other block. Putting it on a fixed grid would mean
+inventing a `cols` the capture never had and then wrapping at it.
+
+`\r` is honoured, which is most of the value: every progress bar and
+`npm install` line is a carriage return plus an overwrite, and a renderer
+that reads `\r` as a newline turns a three-line install into nine hundred.
+So are SGR in full (the 256 cube, truecolor, and the `:` sub-parameter forms,
+so `4:3` curly underlines and `58` underline colours work), `\e[K`, the
+in-line cursor moves, and **OSC 8 hyperlinks** — which `cargo`, `gcc` and
+`ls --hyperlink` all emit, and which arrive clickable through `onLink`.
+
+A capture from a full-screen program (vim, htop) is a different animal: those
+bytes address the cursor and mean nothing except at the grid they were made
+at. **That case is not rendered faithfully yet, and the component says so**
+rather than guessing — `onDocument` hands over a document whose `needsScreen`
+is true, with `dropped` naming every sequence that went unhonoured and how
+often. A real cell-grid renderer for it is phase 2 in
+[`docs/prd-terminal-output.md`](docs/prd-terminal-output.md), which is the
+design record.
+
+The parser is its own dependency-free shared module and is useful without a
+terminal in sight:
+
+```js
+import {
+  parseAnsi,
+  stripAnsi,
+  parseCast,
+  castOutput,
+} from '@react-x11/components/ansi';
+
+stripAnsi(log); // the text, escapes resolved away
+parseAnsi(log).lines[0].spans; // colour kept as intent: { kind: 'ansi', index: 2 }
+parseAnsi(castOutput(parseCast(rec), { until: 12.5 })); // an asciinema still
+```
+
+Colour stays **intent** through the parse and resolves at paint, which is
+what lets one parsed capture render correctly against a light theme and a
+dark one. `npm run examples:terminal-output` is a test run, a progress bar, a
+compiler capture with live hyperlinks, and a vim session reporting what it
+needed.
 
 ## The disclosure tree
 

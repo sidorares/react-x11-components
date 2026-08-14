@@ -62,13 +62,17 @@ element.
 - **Shared modules are directories too**, with their own `index.ts` and
   subpath, and the difference from a component is that they are
   side-effect free: `src/richtext/` (the styled-text element behind
-  `<Markdown>` and `<Code>` — it paints per-run decoration and answers
+  `<Markdown>`, `<Code>` and `<TerminalOutput>` — it paints per-run
+  decoration and answers
   core's four text accessors, so a document selects across it — plus the
-  edit menu a read-only surface offers), `src/codeblock/` (the look of a
+  edit menu a read-only surface offers and the link-click hook), `src/codeblock/` (the look of a
   block of code: the palette, the runs and the chrome `<Code>` and
   `<Markdown>`'s fences share), `src/code-language/` (the tokenizer
   seam, the built-in languages, the token palettes — under `<CodeEditor>`,
-  `<Code>` and `<Markdown>`'s fences alike) and `src/embed/` (the spawn,
+  `<Code>` and `<Markdown>`'s fences alike), `src/ansi/` (a captured
+  terminal session reduced to a document of styled spans: the escape-sequence
+  parser, the flow reducer and the palette under `<TerminalOutput>`, with no
+  React and no dependency in it) and `src/embed/` (the spawn,
   watch and hand-back lifecycle under `<Terminal>` and `<MediaPlayer>`,
   plus the `ProcessHost` seam — see "Running someone else's program"). A
   shared module never calls
@@ -791,20 +795,21 @@ moved: `src/tree/` is a successor that imports none of it, because core is
 retiring the widget rather than handing it over. What that changes about how
 one is written is in "Replacing a core widget rather than moving it" above.
 
-| Candidate                                        | Where it is now                                          | Status                                                                                                                                                                       |
-| ------------------------------------------------ | -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `<markdown>`, `<html>`                           | replaced by `src/markdown/` here (see above)             | **Done** for markdown, **never** for html. ntk's document widgets are deprecated; see [ntk#106](https://github.com/sidorares/ntk/issues/106).                                |
-| MDX in `<Markdown>`                              | reserved seams only (`component` AST node)               | **Planned.** Composition-friendly by construction; the parser is the only part that grows. Streaming-compatible in principle.                                                |
-| `<svg>`, `<tex>`                                 | ntk (`SvgView`, `layoutTex`), wrapped in react-x11       | **Staying in ntk**, per ntk#106. Recorded here so it is not reopened.                                                                                                        |
-| mermaid                                          | nowhere — dropped from ntk                               | **Dropped**, not extracted: 155 MB of install closure for a grammar. If it comes back, it comes back here, as its own subpath, and it stays optional.                        |
-| `<Tabs>`                                         | react-x11 `src/components/Tabs.js`                       | **Open.** May stay in core. Undecided — do not move it on a hunch.                                                                                                           |
-| `<Tree>`                                         | superseded by `src/tree/` here (see above)               | **Done.** Core's `src/components/Tree.js` is being retired; this is a successor, not a wrapper, and imports none of it. See "Replacing a core widget rather than moving it". |
-| 3D scene graph, Three.js / r3f layer, `Canvas3D` | react-x11 `src/scene3d.js`, `src/components/Canvas3D.js` | **Candidate**, with `<glarea>` staying in core. See "The boundary can run through a feature".                                                                                |
-| react-flow clone                                 | prototype, not yet in any repo                           | **Incoming.** A node/edge graph editor: big, pure composition, small fraction of apps — this package's shape exactly.                                                        |
-| `<Terminal>`, `<MediaPlayer>`                    | new, here (`src/terminal/`, `src/media-player/`)         | **Done.** Built on core's `<foreign>`; the wrapper is here because a binary dependency can never be core's. See "Running someone else's program".                            |
-| `<TrayHost>`                                     | new, here (`src/tray-host/`)                             | **Done** (issue #17). XEmbed's third consumer here, and the other side of it. Core keeps the _plug_ side — `createRoot({ embedInto })` is renderer internals.                |
-| A StatusNotifierItem host                        | nowhere yet                                              | **Planned**, as a sibling of `<TrayHost>` with its own issue. Shares intent and nothing else: it pairs with core's `dbusmenu.js`, not with `<foreign>`.                      |
-| A pure-JS VT backend for `<Terminal>`            | new, here (`src/terminal/vt/`)                           | **Done** (issue #19). `backend="vt"`, behind the existing props: pty + `@xterm/headless` + a cell-grid renderer. See "The terminal that is not somebody else's program".     |
+| Candidate                                        | Where it is now                                          | Status                                                                                                                                                                                                                              |
+| ------------------------------------------------ | -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `<markdown>`, `<html>`                           | replaced by `src/markdown/` here (see above)             | **Done** for markdown, **never** for html. ntk's document widgets are deprecated; see [ntk#106](https://github.com/sidorares/ntk/issues/106).                                                                                       |
+| MDX in `<Markdown>`                              | reserved seams only (`component` AST node)               | **Planned.** Composition-friendly by construction; the parser is the only part that grows. Streaming-compatible in principle.                                                                                                       |
+| `<svg>`, `<tex>`                                 | ntk (`SvgView`, `layoutTex`), wrapped in react-x11       | **Staying in ntk**, per ntk#106. Recorded here so it is not reopened.                                                                                                                                                               |
+| mermaid                                          | nowhere — dropped from ntk                               | **Dropped**, not extracted: 155 MB of install closure for a grammar. If it comes back, it comes back here, as its own subpath, and it stays optional.                                                                               |
+| `<Tabs>`                                         | react-x11 `src/components/Tabs.js`                       | **Open.** May stay in core. Undecided — do not move it on a hunch.                                                                                                                                                                  |
+| `<Tree>`                                         | superseded by `src/tree/` here (see above)               | **Done.** Core's `src/components/Tree.js` is being retired; this is a successor, not a wrapper, and imports none of it. See "Replacing a core widget rather than moving it".                                                        |
+| 3D scene graph, Three.js / r3f layer, `Canvas3D` | react-x11 `src/scene3d.js`, `src/components/Canvas3D.js` | **Candidate**, with `<glarea>` staying in core. See "The boundary can run through a feature".                                                                                                                                       |
+| react-flow clone                                 | prototype, not yet in any repo                           | **Incoming.** A node/edge graph editor: big, pure composition, small fraction of apps — this package's shape exactly.                                                                                                               |
+| `<Terminal>`, `<MediaPlayer>`                    | new, here (`src/terminal/`, `src/media-player/`)         | **Done.** Built on core's `<foreign>`; the wrapper is here because a binary dependency can never be core's. See "Running someone else's program".                                                                                   |
+| `<TrayHost>`                                     | new, here (`src/tray-host/`)                             | **Done** (issue #17). XEmbed's third consumer here, and the other side of it. Core keeps the _plug_ side — `createRoot({ embedInto })` is renderer internals.                                                                       |
+| A StatusNotifierItem host                        | nowhere yet                                              | **Planned**, as a sibling of `<TrayHost>` with its own issue. Shares intent and nothing else: it pairs with core's `dbusmenu.js`, not with `<foreign>`.                                                                             |
+| A pure-JS VT backend for `<Terminal>`            | new, here (`src/terminal/vt/`)                           | **Done** (issue #19). `backend="vt"`, behind the existing props: pty + `@xterm/headless` + a cell-grid renderer. See "The terminal that is not somebody else's program".                                                            |
+| `<TerminalOutput>` — a captured session          | new, here (`src/terminal-output/` + `src/ansi/`)         | **Phase 1 done.** A log is a document, not a grid, so flow mode is `<richtext>` spans with no dependency at all. The cell-grid path for captures that addressed the cursor is phase 2 — see [the PRD](docs/prd-terminal-output.md). |
 
 Verified against ntk 7.2.0 on 2026-08-09: `MarkdownView`, `HtmlView`,
 `SvgView` and `layoutTex` are all still exported; only mermaid is gone.

@@ -12,18 +12,19 @@ component.
 
 ## Components
 
-| Page                                               | Import                                   | What it is                                            |
-| -------------------------------------------------- | ---------------------------------------- | ----------------------------------------------------- |
-| [Calendar / DatePicker](components/calendar.md)    | `@react-x11/components/calendar`         | A month grid: one date or a range, any day blockable. |
-| [Charts](components/charts.md)                     | `@react-x11/components/charts`           | Cartesian charts; a million points is a normal input. |
-| [Code](components/code.md)                         | `@react-x11/components/code`             | A static code block: highlighted, selectable.         |
-| [CodeEditor](components/code-editor.md)            | `@react-x11/components/code-editor`      | Multiline code editing: highlighting, completion.     |
-| [Markdown](components/markdown.md)                 | `@react-x11/components/markdown`         | Streaming-friendly GFM with cross-block selection.    |
-| [MediaPlayer](components/media-player.md)          | `@react-x11/components/media-player`     | mpv or VLC, embedded, with real transport control.    |
-| [Terminal](components/terminal.md)                 | `@react-x11/components/terminal`         | A real terminal: an embedded emulator, or its own.    |
-| [TrayHost](components/tray-host.md)                | `@react-x11/components/tray-host`        | The system tray: applications dock their icons in.    |
-| [Tree](components/tree.md)                         | `@react-x11/components/tree`             | A disclosure tree: seams throughout, and virtualized. |
-| [Desktop calendar](components/desktop-calendar.md) | `@react-x11/components/desktop-calendar` | The user's real calendar events, over D-Bus. A hook.  |
+| Page                                               | Import                                   | What it is                                                   |
+| -------------------------------------------------- | ---------------------------------------- | ------------------------------------------------------------ |
+| [Calendar / DatePicker](components/calendar.md)    | `@react-x11/components/calendar`         | A month grid: one date or a range, any day blockable.        |
+| [Charts](components/charts.md)                     | `@react-x11/components/charts`           | Cartesian charts; a million points is a normal input.        |
+| [Code](components/code.md)                         | `@react-x11/components/code`             | A static code block: highlighted, selectable.                |
+| [CodeEditor](components/code-editor.md)            | `@react-x11/components/code-editor`      | Multiline code editing: highlighting, completion.            |
+| [Markdown](components/markdown.md)                 | `@react-x11/components/markdown`         | Streaming-friendly GFM with cross-block selection.           |
+| [MediaPlayer](components/media-player.md)          | `@react-x11/components/media-player`     | mpv or VLC, embedded, with real transport control.           |
+| [Terminal](components/terminal.md)                 | `@react-x11/components/terminal`         | A real terminal: an embedded emulator, or its own.           |
+| [TerminalOutput](components/terminal-output.md)    | `@react-x11/components/terminal-output`  | A captured session, rendered. `<Terminal>`'s static sibling. |
+| [TrayHost](components/tray-host.md)                | `@react-x11/components/tray-host`        | The system tray: applications dock their icons in.           |
+| [Tree](components/tree.md)                         | `@react-x11/components/tree`             | A disclosure tree: seams throughout, and virtualized.        |
+| [Desktop calendar](components/desktop-calendar.md) | `@react-x11/components/desktop-calendar` | The user's real calendar events, over D-Bus. A hook.         |
 
 ## Shared modules
 
@@ -34,6 +35,7 @@ parts.
 
 | Page                                         | Import                                | What it is                                         |
 | -------------------------------------------- | ------------------------------------- | -------------------------------------------------- |
+| [ansi](components/ansi.md)                   | `@react-x11/components/ansi`          | A captured terminal session, as a document.        |
 | [richtext](components/richtext.md)           | `@react-x11/components/richtext`      | The styled-text element a document selects across. |
 | [codeblock](components/codeblock.md)         | `@react-x11/components/codeblock`     | The look of a block of code.                       |
 | [code-language](components/code-language.md) | `@react-x11/components/code-language` | The tokenizer seam, the languages, the palettes.   |
@@ -46,6 +48,9 @@ parts.
 - [Composable, cost-bounded charts](prd-charts.md) — the decimation
   pyramid, the command-stream/pixel crossover, and the tooltip-popup
   policy behind `/charts`.
+- [Rendering a captured session](prd-terminal-output.md) — why a log is a
+  document rather than a grid, and what `/ansi` and `<TerminalOutput>` can
+  and cannot represent.
 
 ## Conventions these pages follow
 

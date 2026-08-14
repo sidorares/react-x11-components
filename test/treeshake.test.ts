@@ -46,6 +46,15 @@ const COMPONENTS = [
   // the code block draws.
   { exportName: 'Markdown', dir: 'markdown', marker: 'mailto:' },
   { exportName: 'Code', dir: 'code', marker: 'Code block' },
+  // `<TerminalOutput>` shares `src/richtext/` and `src/codeblock/` with the
+  // two above and shares nothing at all with `<Terminal>` — the name is the
+  // only thing the two terminals have in common — so its marker is the label
+  // only it writes.
+  {
+    exportName: 'TerminalOutput',
+    dir: 'terminal-output',
+    marker: 'Terminal output',
+  },
   // `<Terminal>` and `<MediaPlayer>` share `src/embed/`, so their markers name
   // what is theirs alone: an X resource only the xterm adapter writes, and the
   // flag only mpv is given.
