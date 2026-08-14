@@ -5,6 +5,7 @@
 // server, which is most of the interesting arithmetic. `./node.ts` is the
 // only caller that has state.
 import * as ntk from 'react-x11/ntk';
+import { tint } from 'react-x11/style';
 
 import type {
   BackgroundOptions,
@@ -552,6 +553,9 @@ export function orientConnection(
  * augmentation would be emitted into this package's own `.d.ts` and then
  * seen twice by a program holding both `src/` and `dist/`. `src/calendar/`
  * has the same three paragraphs for the same reason.
+ *
+ * Only `lightness` needs it now: the `tint` that used to sit beside it is
+ * `react-x11/style`'s, and every surface here imports it from there.
  */
 type StraightColor = [number, number, number, number];
 
@@ -560,16 +564,6 @@ const cssColorStraight = (
     cssColorStraight?: (color: string) => StraightColor | null;
   }
 ).cssColorStraight;
-
-/** A colour at a given opacity, for fills drawn under ink they do not own —
- * a selection wash, the minimap's mask. Returns the colour unchanged when it
- * cannot be parsed, which is the safe way round: opaque, not invisible. */
-export function tint(color: string, alpha: number): string {
-  const c = cssColorStraight?.(color);
-  if (!c) return color;
-  const [r, g, b, a] = c;
-  return `rgba(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)}, ${a * alpha})`;
-}
 
 /** Perceived lightness, 0-1, or null for a colour that would not parse. Only
  * used to pick between two hard-coded fallbacks, never to compute one. */

@@ -23,6 +23,7 @@ import * as ntk from 'react-x11/ntk';
 import { Node } from 'react-x11/node';
 import type { A11ySceneAction, A11ySceneItem } from 'react-x11/node';
 import type { Context2D } from 'react-x11/node';
+import { tint } from 'react-x11/style';
 import type { KeyboardEvent, MouseEvent, WheelEvent } from 'react-x11';
 import {
   ctrlChordLetter,
@@ -77,7 +78,6 @@ import {
   resolveHandles,
   resolvePalette,
   snapTo,
-  tint,
   unionRects,
   ZOOM_STEP,
 } from './model.js';

@@ -334,6 +334,31 @@ export type {
   TerminalProps,
 } from './terminal/index.js';
 
+// A run of events. Chakra UI's Timeline with the parts spelled flat, which is
+// how `/charts` names a composition too — `Timeline.Root` is `<Timeline>`.
+export {
+  Timeline,
+  TimelineConnector,
+  TimelineContent,
+  TimelineDescription,
+  TimelineIndicator,
+  TimelineItem,
+  TimelineSeparator,
+  TimelineTitle,
+} from './timeline/index.js';
+export type {
+  TimelineConnectorProps,
+  TimelineContentProps,
+  TimelineDescriptionProps,
+  TimelineIndicatorProps,
+  TimelineItemProps,
+  TimelineProps,
+  TimelineSeparatorProps,
+  TimelineSize,
+  TimelineTitleProps,
+  TimelineVariant,
+} from './timeline/index.js';
+
 export {
   TrayHost,
   TrayManager,
