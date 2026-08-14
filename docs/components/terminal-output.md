@@ -125,6 +125,24 @@ model — which only matters if a capture rewinds past CJK text with `\r` or
 - **Text in the default background paints no rectangle.** It is what lets a
   log sit inside a page instead of becoming an opaque strip, and it is why
   `colors.background` is the prop that turns the block into a terminal pane.
+
+  The cost is worth knowing: ANSI colours were chosen against a near-black
+  terminal background, and the default block fill is a faint tint of the ink
+  rather than that. On a **dark** theme in particular, ANSI 1 (`#cd0000`) on
+  that tint is dim. The rendering is faithful — the capture asked for ANSI 1
+  and got it — but if a capture is the point of the pane rather than a detail
+  in a page, give it the background it was written for:
+
+  ```jsx
+  <TerminalOutput
+    data={log}
+    colors={{ background: '#101014', foreground: '#e6e6e6' }}
+  />
+  ```
+
+  A `minimumContrast` policy (Windows Terminal's and iTerm's answer to the
+  same problem) is a follow-up, not a first cut.
+
 - **This is not a player.** [`parseCast`](ansi.md) reads an asciinema
   recording and `castOutput(cast, { until })` gives the bytes up to a moment;
   scheduling the moments is the app's. A component with a timer inside it

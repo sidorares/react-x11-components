@@ -134,19 +134,35 @@ function Panel({
 
 function App(): ReactElement {
   return (
-    <window width={860} height={720} title="TerminalOutput — captured sessions">
-      <box style={{ flexGrow: 1, padding: 16, gap: 18, overflow: 'scroll' }}>
-        <Panel title="A test run" data={TEST_RUN} lineNumbers />
-        <Panel
-          title="A progress bar, which is carriage returns"
-          data={INSTALL}
-        />
-        <Panel
-          title="Hyperlinks (OSC 8) — click one"
-          data={COMPILE}
-          terminalColors
-        />
-        <Panel title="A full-screen program" data={VIM} />
+    <window
+      width={1120}
+      height={560}
+      title="TerminalOutput — captured sessions"
+    >
+      <box
+        style={{
+          flexGrow: 1,
+          flexDirection: 'row',
+          padding: 16,
+          gap: 16,
+          overflow: 'scroll',
+        }}
+      >
+        <box style={{ flex: 1, gap: 18 }}>
+          <Panel title="A test run" data={TEST_RUN} lineNumbers />
+          <Panel
+            title="A progress bar, which is carriage returns"
+            data={INSTALL}
+          />
+        </box>
+        <box style={{ flex: 1, gap: 18 }}>
+          <Panel
+            title="Hyperlinks (OSC 8) — click one"
+            data={COMPILE}
+            terminalColors
+          />
+          <Panel title="A full-screen program" data={VIM} />
+        </box>
       </box>
     </window>
   );

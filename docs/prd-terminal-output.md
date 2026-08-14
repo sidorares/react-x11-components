@@ -250,9 +250,14 @@ versus `<CodeEditor>` is the precedent this package already set.
   payloads never print as garbage, and `dropped` says so.
 - **Reflow on resize in screen mode.** A capture was made at a grid;
   re-wrapping it invents content.
-- **`minimumContrast`.** Grey-on-white from a capture authored for a dark
-  terminal is a real problem and a real feature (Windows Terminal, iTerm),
-  and it is a follow-up rather than a first cut.
+- **`minimumContrast`.** A real problem and a real feature (Windows Terminal,
+  iTerm), and a follow-up rather than a first cut. It bites in both
+  directions: grey-on-white from a capture authored for a dark terminal, and
+  — visible in phase 1's own screenshots — ANSI 1 on a **dark** theme, where
+  the default block fill is a faint tint of the ink rather than the
+  near-black an ANSI palette was chosen against. `colors.background` is the
+  answer today, and it is the right one when the capture is the point of the
+  pane; a contrast floor is the answer when it is a detail in a page.
 - **Blink.** SGR 5 is parsed and carried on the span; nothing animates it. A
   static render that repaints twice a second is not static.
 
