@@ -168,6 +168,7 @@ export type {
   MarkerType,
   MiniMapOptions,
   NodeAppearance,
+  NodeBodyRect,
   NodeChange,
   NodeMouseHandler,
   NodePaintContext,

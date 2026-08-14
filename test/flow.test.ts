@@ -44,6 +44,7 @@ import type {
   FlowNodeData,
   FlowNodeType,
   FlowProps,
+  NodeBodyRect,
   NodeChange,
 } from '../src/index.js';
 import {
@@ -1279,6 +1280,97 @@ test('a graph with nothing in it, and one with no server font, both paint', asyn
     backend: 'mock',
   });
   assert.strictEqual(pane().kind, FLOW_ELEMENT);
+});
+
+test('a drag step recomposites mounted bodies in the same dispatch', async () => {
+  // The mounted body must move in the frame that moves the card. The pane
+  // hands body rects out during the gesture dispatch itself — a discrete
+  // update React commits before the frame — not from the paint after it,
+  // which is one frame too late by construction.
+  const bodies: NodeBodyRect[][] = [];
+  await renderX11(
+    h(
+      FLOW_ELEMENT as 'box',
+      {
+        nodes: [
+          {
+            id: 'form',
+            type: 'form',
+            position: { x: 100, y: 100 },
+            width: 200,
+            height: 120,
+          },
+        ],
+        edges: [],
+        nodeTypes: { form: mountedType },
+        onNodeBodies: (b: readonly NodeBodyRect[]) => void bodies.push([...b]),
+        // the raw element brings no default style; without a size it never
+        // paints, never syncs and has no bodies to hand out
+        style: { flexGrow: 1 },
+      } as never,
+    ),
+  );
+  await act();
+  const seam = pane() as unknown as {
+    defaultMouseDown(ev: unknown): void;
+    defaultMouseDrag(ev: unknown): void;
+    defaultMouseUp(ev: unknown): void;
+  };
+  const synth = (x: number, y: number) => ({
+    x,
+    y,
+    button: 1,
+    shiftKey: false,
+    ctrlKey: false,
+    detail: 1,
+    preventDefault() {},
+    capturePointer() {},
+  });
+  const paneAbs = pane().abs;
+  // press the header strip, then one step of 40,20
+  await act(() =>
+    seam.defaultMouseDown(synth(paneAbs.x + 200, paneAbs.y + 110)),
+  );
+  bodies.length = 0;
+  await act(() =>
+    seam.defaultMouseDrag(synth(paneAbs.x + 240, paneAbs.y + 130)),
+  );
+  assert.strictEqual(bodies.length, 1, 'one recomposite per step, no echo');
+  const [body] = bodies[0];
+  // moved by the step: x = 100 + 40 + inset(5), y = 100 + 20 + header(20)
+  assert.strictEqual(body.x, 145);
+  assert.strictEqual(body.y, 140);
+  await act(() => seam.defaultMouseUp(synth(paneAbs.x + 240, paneAbs.y + 130)));
+});
+
+test('a value-identical inline graph repaints nothing it can name', async () => {
+  // `nodes={[…]} edges={[…]}` written inline hands the pane fresh arrays of
+  // fresh objects on every app render. The diffs keep the built entries, so
+  // a keystroke into one node's data is that node's repaint — not a
+  // structural rebuild, which is what made typing into a mounted node's
+  // textarea feel slow.
+  const flow: { current: FlowInstance | null } = { current: null };
+  const graph = (text: string): FlowProps => ({
+    ref: flow,
+    nodes: [
+      { id: 'a', position: { x: 0, y: 0 }, width: 120, height: 40 },
+      {
+        id: 'notes',
+        position: { x: 200, y: 100 },
+        width: 200,
+        height: 120,
+        data: { label: 'notes', description: text },
+      },
+    ],
+    edges: [{ id: 'e', source: 'a', target: 'notes' }],
+  });
+  const { rerender } = await renderX11(h(TypedFlow, graph('one')));
+  const before = flow.current!.getNodeBounds('notes')!;
+  await act(() => rerender(h(TypedFlow, graph('two'))));
+  const after = flow.current!.getNodeBounds('notes')!;
+  assert.deepStrictEqual(after, before, 'explicit size held through the edit');
+  // and the graph still behaves — the entries were kept, not wedged
+  assert.ok(flow.current!.getNodeBounds('a'));
 });
 
 test('the drawn graph is accessible children, not one silent group', async () => {

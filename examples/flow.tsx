@@ -71,11 +71,18 @@ const task: FlowNodeType<TaskData> = {
       stroke: selected ? accent : hovered ? palette.dim : palette.nodeBorder,
       lineWidth: (selected ? 2 : 1) * Math.max(1, zoom),
     });
-    // the type stripe, clipped to the card so it keeps the rounded corner
-    painter.save();
-    painter.clipRect(rect.x, rect.y, rect.width, rect.height, radius);
-    painter.rect(rect.x, rect.y, 4 * zoom, rect.height, 0, { fill: accent });
-    painter.restore();
+    // The type stripe, inset past the rounded corners rather than clipped
+    // to them — a non-rectangular clip forfeits ntk's rounded-box fast path
+    // for every fill under it, which priced this stripe at a pixmap and a
+    // trapezoid pass per card per repaint.
+    painter.rect(
+      rect.x + Math.max(1, zoom),
+      rect.y + radius,
+      4 * zoom,
+      rect.height - radius * 2,
+      0,
+      { fill: accent },
+    );
 
     if (zoom < 0.4) return;
     const left = rect.x + 14 * zoom;

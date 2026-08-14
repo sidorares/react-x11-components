@@ -331,6 +331,30 @@ export const SELF_DAMAGED_PROPS: readonly string[] = [
   'snapGrid',
 ];
 
+/** Two edges saying the same thing, whatever the object identity. `style`
+ * and the markers compare one level deep; `data` is the app's and compares
+ * by identity, the same rule the node diff applies. */
+function edgeValueEqual(a: AnyEdge, b: AnyEdge): boolean {
+  return (
+    a.source === b.source &&
+    a.target === b.target &&
+    (a.sourceHandle ?? null) === (b.sourceHandle ?? null) &&
+    (a.targetHandle ?? null) === (b.targetHandle ?? null) &&
+    a.type === b.type &&
+    a.label === b.label &&
+    a.animated === b.animated &&
+    a.selected === b.selected &&
+    a.hidden === b.hidden &&
+    a.selectable === b.selectable &&
+    a.deletable === b.deletable &&
+    a.zIndex === b.zIndex &&
+    a.data === b.data &&
+    shallowEqual(a.style, b.style) &&
+    shallowEqual(a.markerEnd, b.markerEnd) &&
+    shallowEqual(a.markerStart, b.markerStart)
+  );
+}
+
 /** One level of value equality, for the object-shaped props above. */
 function shallowEqual(a: unknown, b: unknown): boolean {
   if (Object.is(a, b)) return true;
@@ -465,6 +489,8 @@ export class FlowGraphNode extends Node implements FlowInstance {
   private _entries: NodeEntry[] = [];
   private _byId = new Map<string, NodeEntry>();
   private _edgesByNode = new Map<string, AnyEdge[]>();
+  /** The prop array the built edges came from, for the per-edge diff. */
+  private _edgesRaw: AnyEdge[] = [];
   /** Paint order: `zIndex`, then selection, so a selected node is not hidden
    * under one it overlaps. Hit testing walks it backwards. */
   private _order: NodeEntry[] = [];
@@ -611,13 +637,65 @@ export class FlowGraphNode extends Node implements FlowInstance {
     } else if (this.props.nodes !== this._nodesSeen) {
       this._applyNodes(this._nodes());
     }
-    const edges = this.props.edges;
     const defaults = this.props.defaultEdgeOptions;
-    if (edges !== this._edgesSeen || defaults !== this._edgeDefaultsSeen) {
-      this._edgesSeen = edges;
+    if (defaults !== this._edgeDefaultsSeen) {
       this._edgeDefaultsSeen = defaults;
+      this._edgesSeen = this.props.edges;
       this._rebuildEdges();
+    } else if (this.props.edges !== this._edgesSeen) {
+      this._applyEdges(this._rawEdges());
     }
+  }
+
+  /**
+   * Fold a new `edges` array into the built list, the cheap way when that
+   * is honest — the `_applyNodes` treatment, for the other array.
+   *
+   * An app that writes `edges={[…]}` inline hands over a fresh array of
+   * fresh objects on every render, most of them value-identical to the
+   * last. Those keep their built entry (same object, so everything
+   * downstream that compares by identity stays quiet). An edge that truly
+   * changed is rebuilt alone and claims its own route, old and new. Adds,
+   * removes and reorders fall back to the full rebuild.
+   */
+  private _applyEdges(raw: readonly AnyEdge[]): 'full' | FlowRect | null {
+    const prev = this._edgesRaw;
+    this._edgesSeen = this.props.edges;
+    if (prev.length !== raw.length) {
+      this._rebuildEdges();
+      return 'full';
+    }
+    const defaults = this._prop<Partial<AnyEdge>>('defaultEdgeOptions');
+    let damage: FlowRect | null = null;
+    let adjacencyDirty = false;
+    for (let i = 0; i < raw.length; i++) {
+      const next = raw[i];
+      const old = prev[i];
+      if (next === old) continue;
+      if (next.id !== old.id) {
+        this._rebuildEdges();
+        return 'full';
+      }
+      if (edgeValueEqual(next, old)) {
+        // a fresh literal saying the same thing: keep the built entry
+        continue;
+      }
+      const wasBox = this._edgeCoarseBox(this._edges[i]);
+      this._edges[i] = defaults
+        ? ({ ...defaults, ...next } as AnyEdge)
+        : (next as AnyEdge);
+      this._edgesRaw[i] = next;
+      const isBox = this._edgeCoarseBox(this._edges[i]);
+      if (wasBox) damage = damage ? unionRects(damage, wasBox) : wasBox;
+      if (isBox) damage = damage ? unionRects(damage, isBox) : isBox;
+      if (next.source !== old.source || next.target !== old.target) {
+        adjacencyDirty = true;
+      }
+    }
+    // keep the raw array in step even where entries were kept
+    this._edgesRaw = raw as AnyEdge[];
+    if (adjacencyDirty) this._rebuildAdjacency();
+    return damage;
   }
 
   /**
@@ -650,16 +728,12 @@ export class FlowGraphNode extends Node implements FlowInstance {
         if (
           n.id !== o.id ||
           n.type !== o.type ||
-          n.data !== o.data ||
-          n.width !== o.width ||
-          n.height !== o.height ||
           n.selected !== o.selected ||
           n.hidden !== o.hidden ||
           n.zIndex !== o.zIndex ||
           n.handles !== o.handles ||
           n.sourcePosition !== o.sourcePosition ||
           n.targetPosition !== o.targetPosition ||
-          n.style !== o.style ||
           n.resizable !== o.resizable ||
           n.connectable !== o.connectable
         ) {
@@ -681,14 +755,41 @@ export class FlowGraphNode extends Node implements FlowInstance {
       const moved =
         next.position.x !== old.position.x ||
         next.position.y !== old.position.y;
-      if (!moved) {
+      // `data`, an explicit size or a paint style are the node's own to
+      // change: they re-measure and repaint *this* node, never the graph. A
+      // keystroke into a mounted node's textarea patches `data` on every
+      // character — as a structural change that was a full re-measure and a
+      // full-pane repaint per keypress, which is what "typing feels slow"
+      // turned out to mean.
+      const reshaped =
+        next.data !== old.data ||
+        next.width !== old.width ||
+        next.height !== old.height;
+      const restyled = next.style !== old.style;
+      if (!moved && !reshaped && !restyled) {
         // a behavioural flag (draggable, deletable…) — nothing drawn reads it
         entry.node = next;
         continue;
       }
-      let box = this._nodeDamage(entry);
+      const widthBefore = entry.width;
+      const heightBefore = entry.height;
+      let box = moved ? this._nodeDamage(entry) : this._screenRect(entry);
       entry.node = next;
-      box = unionRects(box, this._nodeDamage(entry));
+      if (reshaped) {
+        const size = measureNode(next, entry.type, this._measure);
+        entry.width = size.width;
+        entry.height = size.height;
+        entry.specs = resolveHandles(next, entry.type);
+      }
+      const grew = entry.width !== widthBefore || entry.height !== heightBefore;
+      // The edges ride along only when an endpoint actually moved — a
+      // label edit that kept the box is the box's own business, and a
+      // keystroke that unioned its node's edges swept half the layer's
+      // neighbours into every repaint.
+      box = unionRects(
+        box,
+        moved || grew ? this._nodeDamage(entry) : this._screenRect(entry),
+      );
       damage = damage ? unionRects(damage, box) : box;
     }
     return damage ? inflateRect(damage, CULL_MARGIN) : null;
@@ -757,10 +858,15 @@ export class FlowGraphNode extends Node implements FlowInstance {
   private _rebuildEdges(): void {
     const defaults = this._prop<Partial<AnyEdge>>('defaultEdgeOptions');
     const raw = this._rawEdges();
+    this._edgesRaw = raw as AnyEdge[];
     this._edges = defaults
       ? raw.map((edge) => ({ ...defaults, ...edge }) as AnyEdge)
       : (raw as AnyEdge[]);
-    // who touches whom — what a moved node's damage has to include
+    this._rebuildAdjacency();
+  }
+
+  /** who touches whom — what a moved node's damage has to include */
+  private _rebuildAdjacency(): void {
     const byNode = new Map<string, AnyEdge[]>();
     const push = (id: string, edge: AnyEdge): void => {
       const list = byNode.get(id);
@@ -918,6 +1024,8 @@ export class FlowGraphNode extends Node implements FlowInstance {
     // same picture twice.
     if (!controlled && !this._painting) {
       if (!this._blitPan(previous, v)) this._repaint('scroll');
+      // same-frame compositing for mounted bodies — see `_dragStep`
+      this._emitBodies();
     }
     this.notifyA11ySceneChanged();
   }
@@ -1915,6 +2023,13 @@ export class FlowGraphNode extends Node implements FlowInstance {
     } else {
       this._repaint();
     }
+    // Inside the gesture dispatch, deliberately: the body-rect setState this
+    // triggers is a discrete-priority update, so React commits the moved
+    // overlay box before the frame runs — the drawn card and the mounted
+    // body land in the same frame. Emitted only from paint, the commit
+    // chases the frame and the body is always one step behind the card.
+    this._emitBodies();
+    this.notifyA11ySceneChanged();
   }
 
   /** The box a resize is making, reported as it goes. A grip that moves the
@@ -1964,6 +2079,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
     }
     this._emitNodes(changes);
     this.invalidate(false, inflateRect(damage, CULL_MARGIN), 'content');
+    this._emitBodies();
   }
 
   private _connectStep(
@@ -2369,14 +2485,24 @@ export class FlowGraphNode extends Node implements FlowInstance {
     // repaints nothing.
     let damage: 'full' | FlowRect | null = null;
     if (
-      nextProps.edges !== before.edges ||
       !shallowEqual(nextProps.nodeTypes, before.nodeTypes) ||
       !shallowEqual(nextProps.defaultEdgeOptions, before.defaultEdgeOptions)
     ) {
       this._sync();
       damage = 'full';
-    } else if (nextProps.nodes !== before.nodes) {
-      damage = this._applyNodes(this._nodes());
+    } else {
+      if (nextProps.edges !== before.edges) {
+        damage = this._applyEdges(this._rawEdges());
+      }
+      if (damage !== 'full' && nextProps.nodes !== before.nodes) {
+        const nodeDamage = this._applyNodes(this._nodes());
+        damage =
+          nodeDamage === 'full' || damage === null
+            ? nodeDamage
+            : nodeDamage === null
+              ? damage
+              : unionRects(damage, nodeDamage);
+      }
     }
     // `fitView` is a one-shot: turning it on later refits, and it stays off
     // through every unrelated re-render in between.
@@ -2471,7 +2597,6 @@ export class FlowGraphNode extends Node implements FlowInstance {
       }
     }
     this._frameClip = this._fitPending ? this._pane() : clip;
-    this._animBox = null;
 
     const palette = this._palette();
     const { x, y, width, height } = this._pane();
@@ -2486,7 +2611,27 @@ export class FlowGraphNode extends Node implements FlowInstance {
       ((this.style.borderRadius as number | undefined) ?? 0) -
         ((this.style.borderWidth as number | undefined) ?? 0),
     );
-    painter.clipRect(x, y, width, height, radius);
+    // The rounded clip only when this pass can actually reach a corner: a
+    // non-rectangular clip forfeits ntk's rounded-box fast path for every
+    // fill under it, which multiplies a rounded *pane* into a per-card
+    // trapezoid pass. A keystroke's or a drag's damage is interior almost
+    // always, and an interior pass under a plain rect clip cannot touch
+    // the corners it is being protected from.
+    const nearCorner =
+      radius > 0 &&
+      (!this._frameClip ||
+        [
+          { x, y },
+          { x: x + width - radius, y },
+          { x, y: y + height - radius },
+          { x: x + width - radius, y: y + height - radius },
+        ].some((corner) =>
+          rectsOverlap(
+            { x: corner.x, y: corner.y, width: radius, height: radius },
+            this._frameClip!,
+          ),
+        ));
+    painter.clipRect(x, y, width, height, nearCorner ? radius : 0);
     // The fill and the grid draw only the region this pass repaints — on a
     // full pass that is the pane, and on a drag it is the sliver that moved.
     const region = this._frameClip
@@ -2796,22 +2941,21 @@ export class FlowGraphNode extends Node implements FlowInstance {
     }[] = [];
 
     const clip = this._frameClip;
+    let animBox: FlowRect | null = null;
     for (const edge of this._edges) {
       if (edge.hidden) continue;
       // two rejects: one from the nodes alone, one from the route it took
       const coarse = this._edgeCoarseBox(edge);
       if (!coarse || !rectsOverlap(coarse, pane)) continue;
       // Tracked before the damage skip, deliberately: whether the dash
-      // timer runs — and what box its ticks invalidate — is a question
-      // about the viewport, not about what this particular pass repaints.
-      // Deciding it after the skip is how a drag in one corner would stop
-      // the dash marching in the other.
-      if (edge.animated) {
-        animated = true;
-        this._animBox = this._animBox
-          ? unionRects(this._animBox, coarse)
-          : coarse;
-      }
+      // timer runs is a question about the viewport, not about what this
+      // particular pass repaints — deciding it after the skip is how a drag
+      // in one corner would stop the dash marching in the other. The box
+      // the ticks invalidate is collected below from the *drawn* geometry:
+      // the coarse box carries the bezier slack, and a tick that repaints
+      // slack repaints a card-sized halo of neighbours sixteen times a
+      // second.
+      if (edge.animated) animated = true;
       if (clip && !rectsOverlap(coarse, clip)) continue;
       const geometry = this._edgeGeometry(edge);
       if (!geometry) continue;
@@ -2858,6 +3002,10 @@ export class FlowGraphNode extends Node implements FlowInstance {
       }
       const dash =
         edge.style?.dash ?? (edge.animated ? DEFAULT_DASH : undefined);
+      if (edge.animated) {
+        const tight = inflateRect(pathBounds(geometry.points), CULL_MARGIN);
+        animBox = animBox ? unionRects(animBox, tight) : tight;
+      }
       strokes
         .bucket(
           stroke,
@@ -2968,6 +3116,10 @@ export class FlowGraphNode extends Node implements FlowInstance {
         baseline: 'middle',
       });
     }
+    // A pass that drew an animated edge knows exactly where its dash is; a
+    // pass that culled them all keeps the previous box — the endpoints did
+    // not move, or the move's own damage would have redrawn them here.
+    if (animBox) this._animBox = animBox;
     return animated;
   }
 
@@ -3121,12 +3273,18 @@ export class FlowGraphNode extends Node implements FlowInstance {
     painter.rect(rect.x, rect.y, rect.width, rect.height, radius, options);
 
     if (style?.accent) {
-      painter.save();
-      painter.clipRect(rect.x, rect.y, rect.width, rect.height, radius);
-      painter.rect(rect.x, rect.y, Math.max(2, 3 * v.zoom), rect.height, 0, {
-        fill: style.accent,
-      });
-      painter.restore();
+      // Inset past the rounded corners instead of clipped to them: a
+      // non-rectangular clip forfeits ntk's rounded-box fast path for every
+      // fill under it — measured as a pixmap create/free and a trapezoid
+      // pass per card per repaint.
+      painter.rect(
+        rect.x + Math.max(1, v.zoom),
+        rect.y + radius,
+        Math.max(2, 3 * v.zoom),
+        rect.height - radius * 2,
+        0,
+        { fill: style.accent },
+      );
     }
   }
 

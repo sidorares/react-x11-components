@@ -108,7 +108,12 @@ matter of not applying something.
 
 `applyNodeChanges` and `applyEdgeChanges` return the array they were given
 when nothing applied, so a `useMemo` above them is not defeated by an edit
-that changed nothing. `addEdge(connection, edges)` derives the edge's id from
+that changed nothing. The pane meets the arrays with the same courtesy, per
+element: `nodes={[…]}` and `edges={[…]}` written inline hand it fresh
+objects every render, and anything value-identical keeps its built entry —
+a keystroke into one node's `data` repaints that node, not the graph
+(measured at ~115 requests a character where the structural fallback paid
+~2,600). No memoisation is asked of the app. `addEdge(connection, edges)` derives the edge's id from
 its endpoints, so connecting the same two handles twice is idempotent rather
 than a duplicate nobody can tell apart. `connectedEdges(ids, edges)` is what a
 delete usually wants to take with it.
@@ -221,8 +226,12 @@ Everything in there behaves the way it does anywhere else: the checkbox takes
 clicks, the textarea takes the keyboard — Delete deletes _text_ while it has
 the focus, not the node. Three things follow, and all three are the point:
 
-- **It re-renders as the viewport moves.** That is the cost the drawn path
-  exists to avoid, so it is paid by the nodes that ask for it and no others.
+- **A move re-renders nothing.** The pane recomposites body rects inside
+  the gesture dispatch itself, so the overlay box and the drawn card land
+  in the same frame — and the body component is memoized on the node, its
+  selection, the zoom and its size, so a drag or a pan is one style-only
+  commit on one box. `render` is re-invoked only when what it shows could
+  have changed.
 - **It does not scale with the zoom.** The box does; there is no transform
   here. Content is laid out to the zoomed box at its natural size and clipped,
   and below `zoom` 0.6 it is not mounted at all — the pane draws the card

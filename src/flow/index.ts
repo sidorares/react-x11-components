@@ -38,6 +38,7 @@ import type {
   FlowInstance,
   FlowNode,
   FlowNodeData,
+  FlowNodeType,
   FlowProps,
   NodeBodyRect,
   NodeChange,
@@ -74,6 +75,51 @@ const styles = createStyles({
   clip: { overflow: 'hidden' },
   fill: { flexGrow: 1 },
 });
+
+interface FlowNodeBodyProps {
+  type: FlowNodeType<unknown>;
+  node: FlowNode<unknown>;
+  selected: boolean;
+  zoom: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * One mounted node body. Memoized so that a *move* re-renders nothing: a
+ * drag or a pan changes only the overlay box's `left`/`top` — the body's
+ * subtree keeps its identity and React commits a style-only update. The
+ * compare deliberately ignores `x`/`y`, which is why `rect`'s position half
+ * is documented as advisory: content re-renders when the node, its
+ * selection, the zoom or its size change, and rides along otherwise.
+ *
+ * This is what makes a mounted node cost one box diff per drag step with no
+ * memoisation asked of the app — its `render` is simply not called.
+ */
+const FlowNodeBody = React.memo(
+  function FlowNodeBody(props: FlowNodeBodyProps): ReactElement {
+    return props.type.render!({
+      node: props.node,
+      selected: props.selected,
+      zoom: props.zoom,
+      rect: {
+        x: props.x,
+        y: props.y,
+        width: props.width,
+        height: props.height,
+      },
+    }) as ReactElement;
+  },
+  (a, b) =>
+    a.type === b.type &&
+    a.node === b.node &&
+    a.selected === b.selected &&
+    a.zoom === b.zoom &&
+    a.width === b.width &&
+    a.height === b.height,
+);
 
 /**
  * A directed graph.
@@ -246,16 +292,15 @@ export function Flow<N = FlowNodeData, E = unknown>(
               overflow: 'hidden',
             },
           },
-          type.render({
-            node,
+          React.createElement(FlowNodeBody, {
+            type: type as FlowNodeType<unknown>,
+            node: node as FlowNode<unknown>,
             selected: body.selected,
             zoom: body.zoom,
-            rect: {
-              x: body.x,
-              y: body.y,
-              width: body.width,
-              height: body.height,
-            },
+            x: body.x,
+            y: body.y,
+            width: body.width,
+            height: body.height,
           }),
         );
       })
