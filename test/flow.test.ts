@@ -15,6 +15,7 @@ import {
   act,
   cleanup,
   fireEvent,
+  nodeUtterance,
   renderX11,
   screen,
   userEvent,
@@ -1278,6 +1279,73 @@ test('a graph with nothing in it, and one with no server font, both paint', asyn
     backend: 'mock',
   });
   assert.strictEqual(pane().kind, FLOW_ELEMENT);
+});
+
+test('the drawn graph is accessible children, not one silent group', async () => {
+  // react-x11#304: the pane draws its nodes, so the retained tree has
+  // nothing under it — `a11yScene()` is what a screen reader meets instead.
+  const flow: { current: FlowInstance | null } = { current: null };
+  const graph: FlowNode[] = [
+    { id: 'alpha', position: { x: 0, y: 0 }, data: { label: 'alpha' } },
+    { id: 'beta', position: { x: 0, y: 120 }, data: { label: 'beta' } },
+  ];
+  const { at, rerender } = await renderX11(
+    h(TypedFlow, {
+      ref: flow,
+      nodes: graph,
+      edges: [{ id: 'e', source: 'alpha', target: 'beta' }],
+    }),
+    { a11y: true },
+  );
+  assert.ok(at, 'the spy is installed');
+
+  // The scene itself, through the public seam: named, placed, listed.
+  const scene = (
+    pane() as unknown as {
+      a11yScene(): {
+        id: string;
+        name?: string;
+        role?: string;
+        rect: { width: number };
+        states?: { selected?: boolean };
+      }[];
+    }
+  ).a11yScene();
+  assert.deepStrictEqual(
+    scene.map((item) => [item.id, item.name, item.role]),
+    [
+      ['alpha', 'alpha', 'listitem'],
+      ['beta', 'beta', 'listitem'],
+    ],
+  );
+  assert.ok(scene[0].rect.width > 0, 'placed where it was drawn');
+
+  // Appearing is a baseline, not a change — the spy's model, same as a
+  // mount. What it *reports* is state moving on an item it already holds.
+  at.since();
+  await act(() =>
+    rerender(
+      h(TypedFlow, {
+        ref: flow,
+        nodes: graph.map((n) =>
+          n.id === 'beta' ? { ...n, selected: true } : n,
+        ),
+        edges: [{ id: 'e', source: 'alpha', target: 'beta' }],
+      }),
+    ),
+  );
+  const events = at.since();
+  const selectedEvent = events.find((e) => /selected/.test(e.summary));
+  assert.ok(
+    selectedEvent,
+    `a selected-state event reached the feed: ${events.map((e) => e.summary).join(', ')}`,
+  );
+  assert.ok(selectedEvent.node, 'the event carries the item');
+  assert.strictEqual(
+    nodeUtterance(selectedEvent.node).includes('beta'),
+    true,
+    'and it names the node it landed on',
+  );
 });
 
 test('the pane names itself to a screen reader', async () => {

@@ -352,11 +352,32 @@ Measured on the 300-node scene, one drag step went from a full repaint
 step from ~380 ms (its animated edge was invalidating the pane per tick) to
 ~70 ms.
 
-The two seams this stands on are renderer internals with graceful fallbacks,
-filed as react-x11#301; the wheel/hover forwarding the component does is
-react-x11#302. Panning is the remaining full repaint — a pan is
-`scrollRegion`-shaped, and exposing core's blit machinery to element-owned
-viewports is react-x11#303.
+The seams this stands on are public API: `paintDamage()` and the
+`selfDamagedProps` registration (react-x11#301), and `defaultWheel`/
+`defaultMouseMove` (react-x11#302) — a bare `<flowgraph>` zooms and hovers
+on its own.
+
+**Panning blits.** With no minimap, no controls and no mounted bodies, a pan
+frame is `scrollContents` (react-x11#303) plus a repaint of the exposed
+band: measured on the 300-node scene, **19 requests and 1.6 KB a frame**,
+from ~2,465. With the furniture up, a frame is a full repaint instead —
+core's blit gate is node-granular, so the panels' own repaint claims cancel
+the blit (react-x11#309 is the refinement that would let the two coexist);
+those frames still dropped to ~550 KB through ntk's mask clustering
+(ntk#264) and the pattern grid below.
+
+**The grid tiles.** At an integral device pitch the background is one
+`createPattern('repeat')` composite (ntk#263) — the phase baked into the
+tile, so alignment with the graph's own coordinates is exact — and at a
+fractional pitch it falls back to the batched runs, because a pixmap tile
+cannot land on a fraction and a grid that drifts under `snapToGrid` is
+worse than a slower exact one.
+
+**The graph is accessible.** The pane describes every visible node to
+assistive technology through `a11yScene()` (react-x11#304): named from its
+label, placed at its drawn rect, `selected` carried as state, activation
+falling back to a click at the item. The scene re-announces on graph
+commits and gesture settles.
 
 ## Example
 

@@ -19,7 +19,9 @@
 // `preventDefault()`. The wheel and plain pointer motion have no such seam
 // (filed as react-x11#302), so `<Flow>` forwards those two through
 // `handleWheel`/`handleHover` — with the same veto, checked here.
+import * as ntk from 'react-x11/ntk';
 import { Node } from 'react-x11/node';
+import type { A11ySceneAction, A11ySceneItem } from 'react-x11/node';
 import type { Context2D } from 'react-x11/node';
 import type { KeyboardEvent, MouseEvent, WheelEvent } from 'react-x11';
 import {
@@ -90,6 +92,7 @@ import {
 } from './paths.js';
 import type {
   BackgroundOptions,
+  BackgroundVariant,
   ControlsOptions,
   EdgeChange,
   FitViewOptions,
@@ -118,6 +121,25 @@ import type {
  * is what paint order, the test queries and the DEV style assertion all
  * match on. */
 export const ELEMENT = 'flowgraph';
+
+/** The slice of ntk's Surface/pattern API the grid tile uses, typed here
+ * structurally — `react-x11/ntk`'s declarations are deliberately loose. */
+interface SurfaceLike {
+  render(fn: (ctx: TileContext) => void): unknown;
+  destroy?(): void;
+}
+interface TileContext {
+  fillStyle: unknown;
+  fillRect(x: number, y: number, w: number, h: number): void;
+  clearRect?(x: number, y: number, w: number, h: number): void;
+}
+type SurfaceCtor = new (
+  app: unknown,
+  options: { width: number; height: number; format: string },
+) => SurfaceLike;
+interface PatternLike {
+  _picture?: { destroy?(): void };
+}
 
 /** Timers, through `globalThis`: `src/` compiles with `types: []` so a Node
  * global that wandered in would become an implicit `@types/node` dependency
@@ -282,10 +304,12 @@ function selectBoxRect(g: {
  * `applyProps` below either diffs into a damage rect (`nodes`, `edges`…),
  * repaints in full when it truly changed (the visual list), or that changes
  * behaviour without touching a pixel (`snapToGrid`, the gesture switches).
- * Core's per-commit damage must not also fire for these, or every drag step
- * is a full-pane repaint again — see `_paintChanged` below.
+ * Declared to `registerElement` as `selfDamagedProps`, so core's per-commit
+ * `paintChanged` contributes no damage for them — without the declaration,
+ * every drag step is a full-pane repaint again, because the commit's new
+ * `nodes` array identity would damage the whole node.
  */
-const SELF_DAMAGED_PROPS = new Set<string>([
+export const SELF_DAMAGED_PROPS: readonly string[] = [
   'nodes',
   'edges',
   'nodeTypes',
@@ -305,7 +329,7 @@ const SELF_DAMAGED_PROPS = new Set<string>([
   'deleteOnKey',
   'snapToGrid',
   'snapGrid',
-]);
+];
 
 /** One level of value equality, for the object-shaped props above. */
 function shallowEqual(a: unknown, b: unknown): boolean {
@@ -464,6 +488,9 @@ export class FlowGraphNode extends Node implements FlowInstance {
   /** Inside `paint`, where an invalidation would only schedule a redraw of
    * the frame being drawn. */
   private _painting = false;
+  /** The scene has been offered to assistive tech at least once — items
+   * only exist once layout has placed them, which no commit marks. */
+  private _sceneAnnounced = false;
   /** The damage rect of the pass being painted, or null for a full one —
    * what the drawing subroutines cull against. */
   private _frameClip: FlowRect | null = null;
@@ -472,12 +499,23 @@ export class FlowGraphNode extends Node implements FlowInstance {
   private _animBox: FlowRect | null = null;
 
   private _textCache = new Map<string, CachedText>();
+  /** The grid's repeating tile: one surface for as long as the pitch
+   * holds, re-rendered in place when the phase or the colours move. */
+  private _gridTile: {
+    key: string;
+    size: number;
+    surface: SurfaceLike;
+    pattern: PatternLike;
+  } | null = null;
 
   constructor(props: Record<string, unknown>, app: unknown) {
     super(ELEMENT, props, app as ConstructorParameters<typeof Node>[2]);
     // Without this nothing focuses the pane and no key ever reaches it; an
     // app's `focusable`/`tabIndex` still overrides either way.
     this.focusableByDefault = true;
+    // What the element is to a screen reader when the app says nothing —
+    // the scene below fills in what is inside it.
+    this.a11yRole = 'group';
     const initial = (props.defaultViewport ?? props.viewport) as
       Viewport | undefined;
     if (initial) this._vp = { ...initial };
@@ -743,34 +781,13 @@ export class FlowGraphNode extends Node implements FlowInstance {
   }
 
   /**
-   * The pane proper: `abs` inset by border and padding. Everything the
-   * viewport is measured against uses this rather than `abs`, so a
-   * `<Flow style={{ borderWidth: 1, padding: 8 }}>` keeps its border — the
-   * graph is drawn after `super.paint` has already stroked it — and its
-   * padding means what it does on a `<box>`.
-   *
-   * [react-x11 gap] the built-ins read an internal `contentBox()`; a public
-   * one would remove this arithmetic. Filed as react-x11#254, and
-   * `src/code-editor/node.ts` carries the same copy.
+   * The pane proper: `abs` inset by border and padding, off core's own
+   * resolved layout (react-x11#254) — so a `<Flow style={{ borderWidth: 1,
+   * padding: 8 }}>` keeps its border, and its padding means what it does on
+   * a `<box>`.
    */
   private _pane(): FlowRect {
-    const s = this.style as Record<string, unknown>;
-    const num = (v: unknown): number => (typeof v === 'number' ? v : 0);
-    const border = num(s.borderWidth);
-    const pad = num(s.padding);
-    const top = num(s.borderTopWidth ?? border) + num(s.paddingTop ?? pad);
-    const right =
-      num(s.borderRightWidth ?? border) + num(s.paddingRight ?? pad);
-    const bottom =
-      num(s.borderBottomWidth ?? border) + num(s.paddingBottom ?? pad);
-    const left = num(s.borderLeftWidth ?? border) + num(s.paddingLeft ?? pad);
-    const { x, y, width, height } = this.abs;
-    return {
-      x: x + left,
-      y: y + top,
-      width: Math.max(0, width - left - right),
-      height: Math.max(0, height - top - bottom),
-    };
+    return this.contentBox();
   }
 
   /** Graph point to window pixels. */
@@ -891,6 +908,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
 
   private _applyViewport(next: Viewport): void {
     const zoom = clamp(next.zoom, this._minZoom, this._maxZoom);
+    const previous = this._viewport();
     const v = { x: next.x, y: next.y, zoom };
     const controlled = this.props.viewport !== undefined;
     if (!controlled) this._vp = v;
@@ -898,7 +916,48 @@ export class FlowGraphNode extends Node implements FlowInstance {
     // The `fitView` that runs at the top of a paint has already changed what
     // this frame will draw, so asking for another one would only draw the
     // same picture twice.
-    if (!controlled && !this._painting) this._repaint('scroll');
+    if (!controlled && !this._painting) {
+      if (!this._blitPan(previous, v)) this._repaint('scroll');
+    }
+    this.notifyA11ySceneChanged();
+  }
+
+  /**
+   * A pan is a scroll in every way but the bookkeeping, and react-x11#303
+   * made the bookkeeping public: `scrollContents` claims the pane, arms the
+   * frame to blit the surviving band, and narrows the claim to the strip
+   * the shift exposed — which `paintDamage()` then hands to `paint`, so the
+   * existing culling draws the sliver and nothing else.
+   *
+   * Only when the whole pane is honestly one moving picture:
+   *
+   *  - the zoom held still (scaling is not a blit) and the shift is whole
+   *    pixels — every pan gesture is, wheel and keyboard included;
+   *  - no mounted node bodies: their pixels are core-owned siblings that
+   *    would shift with the blit and be re-laid a commit later;
+   *  - **no minimap and no controls.** The panels are pinned to the pane
+   *    while their pixels ride the blit, so they need a repaint claim per
+   *    frame — and any claim overlapping a node with a pending blit
+   *    poisons it (react-x11#295's race fix, node-granular on purpose).
+   *    One frame is a pure blit or a repaint, never both; with furniture
+   *    up, it is a repaint. A rect-granular gate for element blits is
+   *    react-x11#309.
+   */
+  private _blitPan(previous: Viewport, next: Viewport): boolean {
+    if (next.zoom !== previous.zoom) return false;
+    if (this._bodiesKey !== '') return false;
+    if (this._miniMapOptions() || this._controlsOptions()) return false;
+    const dx = Math.round(next.x - previous.x);
+    const dy = Math.round(next.y - previous.y);
+    if (dx === 0 && dy === 0) return true; // sub-pixel: nothing to show yet
+    if (next.x - previous.x !== dx || next.y - previous.y !== dy) return false;
+    const pane = this._pane();
+    if (pane.width < 64 || pane.height < 64) return false;
+    if (Math.abs(dx) >= pane.width || Math.abs(dy) >= pane.height) {
+      return false;
+    }
+    this.scrollContents(pane, dx, dy);
+    return true;
   }
 
   /** Zoom about a point that must not move — the pointer under a wheel, the
@@ -2040,10 +2099,11 @@ export class FlowGraphNode extends Node implements FlowInstance {
 
   // --- input with no default-action seam -----------------------------------
 
-  /** Wheel: zoom about the pointer, or pan when zooming is off. Called by
-   * `<Flow>`, after the app's own `onWheel` and only if it did not veto. */
-  handleWheel(ev: WheelEvent): void {
-    if (this.props.disabled || ev.defaultPrevented) return;
+  /** Wheel: zoom about the pointer, or pan when zooming is off. The seam
+   * runs it after the app's own `onWheel` and not at all if that vetoed;
+   * consuming it here is what keeps the scroll chain out of the pane. */
+  override defaultWheel(ev: WheelEvent): void {
+    if (this.props.disabled) return;
     this._sync();
     const zooming = ev.ctrlKey || this._bool('zoomOnScroll', true);
     if (zooming) {
@@ -2057,9 +2117,10 @@ export class FlowGraphNode extends Node implements FlowInstance {
     ev.preventDefault();
   }
 
-  /** Pointer motion with no button down: hover highlighting. Also from
-   * `<Flow>`, for the same reason. */
-  handleHover(ev: MouseEvent): void {
+  /** Pointer motion with no button down: hover highlighting. The seam skips
+   * delivery while a capture is in force, so the gesture guard is belt to
+   * its braces. */
+  override defaultMouseMove(ev: MouseEvent): void {
     if (this.props.disabled || this._gesture) return;
     this._sync();
     const handle = this._bool('nodesConnectable', true)
@@ -2092,7 +2153,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
     }
   }
 
-  handleLeave(): void {
+  override defaultMouseLeave(): void {
     if (this._hover === NO_HOVER) return;
     const damage = this._hoverDamage(this._hover);
     this._hover = NO_HOVER;
@@ -2116,6 +2177,56 @@ export class FlowGraphNode extends Node implements FlowInstance {
       return edge ? this._edgeCoarseBox(edge) : null;
     }
     return null;
+  }
+
+  // --- what a screen reader meets (react-x11#304) --------------------------
+
+  /**
+   * The graph, described: every visible node as an item a screen reader
+   * can reach, name and activate. Edges ride on each node's description
+   * rather than as items of their own — "what is this connected to" is the
+   * useful question, and a hundred unlabelled `link` items between the
+   * nodes would only bury them.
+   *
+   * Called once per question an AT asks, so it answers from the entries the
+   * pane already holds — no measuring, no layout.
+   */
+  override a11yScene(): A11ySceneItem[] {
+    this._sync();
+    const pane = this._pane();
+    const items: A11ySceneItem[] = [];
+    for (const entry of this._order) {
+      if (entry.node.hidden) continue;
+      const rect = this._screenRect(entry);
+      if (!rectsOverlap(rect, pane)) continue;
+      const data = entry.node.data as FlowNodeData | undefined;
+      const out = this._edgesByNode.get(entry.node.id) ?? [];
+      const degree = out.length;
+      items.push({
+        id: entry.node.id,
+        rect,
+        role: 'listitem',
+        name: data?.label ?? entry.node.id,
+        description:
+          degree === 0
+            ? (data?.description ?? undefined)
+            : `${data?.description ? `${data.description}. ` : ''}${degree} connection${degree === 1 ? '' : 's'}`,
+        states: { selected: entry.node.selected ?? false },
+      });
+    }
+    return items;
+  }
+
+  /**
+   * An AT activated a node: select it, the way a click would — but by id
+   * rather than by synthesizing a pointer at its rect, which would also
+   * arm a drag.
+   */
+  override a11ySceneAction(id: string, action: A11ySceneAction): boolean {
+    if (action !== 'activate') return false;
+    if (!this._byId.has(id)) return false;
+    this._select({ kind: 'node', id }, false);
+    return true;
   }
 
   // --- keyboard ------------------------------------------------------------
@@ -2283,45 +2394,15 @@ export class FlowGraphNode extends Node implements FlowInstance {
     }
     if (damage === 'full') this._repaint('props');
     else if (damage) this.invalidate(false, damage, 'props');
-  }
-
-  /**
-   * Core's "did anything this node draws change?" — the question its commit
-   * path asks to decide how much of the window a prop change damages, and
-   * for an element that fills the pane the node-granular answer is always
-   * "all of it". This override excuses the props `applyProps` claims damage
-   * for itself and keeps core's conservative answer for everything else
-   * (an `aria-label`, a style identity, a prop added tomorrow).
-   *
-   * [react-x11 gap] `_paintChanged` is internal, like `_paintDamage` above,
-   * and carries the same graceful degradation: a core that stops calling
-   * this name falls back to its own copy — full-pane damage per commit,
-   * slower and never wrong. The public "this element scopes its own damage"
-   * seam that would retire both is filed as react-x11#301.
-   *
-   * `protected`, and TypeScript never sees the caller: core reaches it
-   * through the prototype. `noUnusedLocals` would flag a private member
-   * nothing here reads.
-   */
-  protected _paintChanged(
-    newProps: Record<string, unknown>,
-    prev: Record<string, unknown>,
-    style: unknown,
-    prevStyle: unknown,
-  ): boolean {
-    if (style !== prevStyle) return true;
-    const keys = new Set([...Object.keys(newProps), ...Object.keys(prev)]);
-    for (const key of keys) {
-      if (key === 'children' || key === 'style') continue;
-      if (/^on[A-Z]/.test(key)) continue; // handlers: rebuilt every render
-      if (SELF_DAMAGED_PROPS.has(key)) continue; // claimed in applyProps
-      if (newProps[key] !== prev[key]) return true;
-    }
-    return false;
+    // Core re-reads the scene for aria-prop commits; a `nodes`/`edges`
+    // change is invisible to it, so the re-read is asked for by name.
+    // Free when no assistive technology is listening.
+    if (damage) this.notifyA11ySceneChanged();
   }
 
   override destroySubtree(): void {
     this._stopAnimation();
+    this._dropGridTile();
     super.destroySubtree();
   }
 
@@ -2344,38 +2425,13 @@ export class FlowGraphNode extends Node implements FlowInstance {
 
   // --- painting ------------------------------------------------------------
 
-  /**
-   * The damage rect of the pass being painted, read off the owning window.
-   *
-   * [react-x11 gap] `_paintDamage` is renderer-internal — the per-pass rect
-   * `_outsideDamage()` culls the retained tree with, set for exactly the
-   * span of `_paintRegion`. An element that draws a whole scene needs the
-   * same answer to cull its own content, and there is no public accessor —
-   * filed as react-x11#301. Guarded structurally, so a core that renames it
-   * degrades to `null` — full repaints, never wrong pixels.
-   */
-  private _frameDamage(): FlowRect | null {
-    const root = this.root as unknown as { _paintDamage?: unknown } | null;
-    const d = root?._paintDamage as Partial<FlowRect> | null | undefined;
-    if (
-      !d ||
-      typeof d.x !== 'number' ||
-      typeof d.y !== 'number' ||
-      typeof d.width !== 'number' ||
-      typeof d.height !== 'number'
-    ) {
-      return null;
-    }
-    return { x: d.x, y: d.y, width: d.width, height: d.height };
-  }
-
   override paint(ctx: Context2D): void {
     // What this pass is repainting. The renderer paints each damage rect as
     // its own clipped pass; content outside it survives on the window, so
     // everything we skip here is content the last frame already drew — the
     // window's backing is the composition cache, and this rect is the dirty
     // state. Null means a full pass.
-    const clip = this._frameDamage();
+    const clip = this.paintDamage();
 
     // The pane's own border and background need redrawing only when the
     // pass reaches them: a drag deep inside the pane should not restroke a
@@ -2461,6 +2517,13 @@ export class FlowGraphNode extends Node implements FlowInstance {
     if (animated) this._startAnimation();
     else this._stopAnimation();
 
+    if (!this._sceneAnnounced) {
+      // The first paint with a size is the first moment the items have
+      // rects; before it the scene is honestly empty.
+      this._sceneAnnounced = true;
+      this.notifyA11ySceneChanged();
+    }
+
     // Last, and outside the drawing: this is what tells the React half where
     // to put the node bodies it mounts, and it is answered from the geometry
     // this frame just used — the same numbers, never a second derivation.
@@ -2532,6 +2595,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
     const { x, y, width, height } = region;
     const originX = pane.x + v.x;
     const originY = pane.y + v.y;
+    if (this._paintGridPattern(painter, options, step, color, region)) return;
     const firstX = originX + Math.ceil((x - originX) / step) * step;
     const firstY = originY + Math.ceil((y - originY) / step) * step;
 
@@ -2583,6 +2647,128 @@ export class FlowGraphNode extends Node implements FlowInstance {
       Math.max(1, Math.round(options.size * 2 * v.zoom)),
       color,
     );
+  }
+
+  /**
+   * The grid as one repeating fill (ntk#263): a step-sized tile drawn once,
+   * a `createPattern('repeat')` over it, and one composite for the whole
+   * region — where the runs path pays a region-sized coverage mask.
+   *
+   * Two decisions with reasons:
+   *
+   * - **Integral device steps only.** The tile is a pixmap, so its size is
+   *   whole pixels; at a fractional step the pattern would drift against
+   *   the graph's own coordinates — against `snapToGrid`, against node
+   *   positions — by a fraction per tile, and a grid that slides under the
+   *   content it grids is worse than a slower exact one.
+   * - **The phase lives in the tile, not in a picture transform.** An
+   *   untransformed repeat is anchored to the window origin, so the grid's
+   *   alignment is baked in by drawing the mark at `origin mod tile` — and
+   *   re-baking when the origin moves. A `setTransform` translate says the
+   *   same thing in one request, but a *transformed* repeat forfeits the
+   *   server's untransformed fast path — on the in-process test server
+   *   that was ~180 ms a frame of per-pixel arithmetic, and re-rendering a
+   *   24px tile is a handful of requests on any server.
+   */
+  private _paintGridPattern(
+    painter: FlowPainter,
+    options: { variant: BackgroundVariant; size: number },
+    step: number,
+    color: string,
+    region: FlowRect,
+  ): boolean {
+    const tileSize = Math.round(step);
+    if (Math.abs(step - tileSize) > 0.01 || tileSize < 2) return false;
+    const raw = painter.raw as {
+      createPattern?: (source: unknown, repetition: string) => PatternLike;
+      fillStyle?: unknown;
+      fillRect?(x: number, y: number, w: number, h: number): void;
+    } | null;
+    if (!raw || typeof raw.createPattern !== 'function') return false;
+
+    const v = this._viewport();
+    const pane = this._pane();
+    const mod = (a: number, m: number): number => ((a % m) + m) % m;
+    const px = Math.round(mod(pane.x + v.x, tileSize)) % tileSize;
+    const py = Math.round(mod(pane.y + v.y, tileSize)) % tileSize;
+    const key = `${options.variant}|${Math.round(options.size * v.zoom * 4)}|${color}|${px},${py}`;
+
+    let tile = this._gridTile;
+    if (!tile || tile.size !== tileSize) {
+      this._dropGridTile();
+      const surface = this._makeGridSurface(tileSize);
+      if (!surface) return false;
+      tile = {
+        key: '',
+        size: tileSize,
+        surface,
+        pattern: raw.createPattern(surface, 'repeat'),
+      };
+      this._gridTile = tile;
+    }
+    if (tile.key !== key) {
+      tile.key = key;
+      this._renderGridTile(tile, options, v.zoom, color, px, py);
+    }
+    raw.fillStyle = tile.pattern;
+    raw.fillRect?.(region.x, region.y, region.width, region.height);
+    return true;
+  }
+
+  private _makeGridSurface(tileSize: number): SurfaceLike | null {
+    const ctor = (ntk as unknown as { Surface?: SurfaceCtor }).Surface;
+    if (typeof ctor !== 'function') return null;
+    try {
+      return new ctor(this.app, {
+        width: tileSize,
+        height: tileSize,
+        format: 'argb32',
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  /** Draw one grid cell with the mark at the phase point, wrapped — a mark
+   * near an edge is drawn again a tile over, so the seam never cuts it. */
+  private _renderGridTile(
+    tile: { size: number; surface: SurfaceLike },
+    options: { variant: BackgroundVariant; size: number },
+    zoom: number,
+    color: string,
+    px: number,
+    py: number,
+  ): void {
+    const t = tile.size;
+    tile.surface.render((ctx) => {
+      ctx.clearRect?.(0, 0, t, t);
+      ctx.fillStyle = color;
+      for (let i = -1; i <= 1; i++) {
+        for (let j = -1; j <= 1; j++) {
+          const cx = px + i * t;
+          const cy = py + j * t;
+          if (options.variant === 'lines') {
+            if (j === 0) ctx.fillRect(cx - 0.5, 0, 1, t);
+            if (i === 0) ctx.fillRect(0, cy - 0.5, t, 1);
+          } else if (options.variant === 'cross') {
+            const arm = Math.max(2, options.size * 3 * zoom);
+            ctx.fillRect(cx - arm, cy - 0.5, arm * 2, 1);
+            ctx.fillRect(cx - 0.5, cy - arm, 1, arm * 2);
+          } else {
+            const dot = Math.max(1, Math.round(options.size * 2 * zoom));
+            ctx.fillRect(cx - dot / 2, cy - dot / 2, dot, dot);
+          }
+        }
+      }
+    });
+  }
+
+  private _dropGridTile(): void {
+    const tile = this._gridTile;
+    if (!tile) return;
+    tile.pattern._picture?.destroy?.();
+    tile.surface.destroy?.();
+    this._gridTile = null;
   }
 
   /** Draws every visible edge; answers whether any of them is animated, so

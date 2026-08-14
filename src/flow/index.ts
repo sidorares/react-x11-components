@@ -24,8 +24,6 @@ import React, {
 import type { Dispatch, ReactElement, SetStateAction } from 'react';
 import { registerElement, registeredElements } from 'react-x11/host';
 import { createStyles, flattenStyle } from 'react-x11/style';
-import type { DrawnNode, MouseEvent, WheelEvent } from 'react-x11';
-
 // Loads the module the JSX augmentation at the bottom targets: nothing in
 // `src/` writes JSX, so without this the build program never resolves
 // `react-x11/jsx-runtime` and the augmentation is an error rather than an
@@ -33,7 +31,7 @@ import type { DrawnNode, MouseEvent, WheelEvent } from 'react-x11';
 import type {} from 'react-x11/jsx-runtime';
 
 import { applyEdgeChanges, applyNodeChanges } from './model.js';
-import { ELEMENT, FlowGraphNode } from './node.js';
+import { ELEMENT, FlowGraphNode, SELF_DAMAGED_PROPS } from './node.js';
 import type {
   EdgeChange,
   FlowEdge,
@@ -53,6 +51,11 @@ if (!registeredElements().includes(ELEMENT)) {
     // failure it guards against (throws in development, works in
     // production) is the worst shape a bug can have.
     childrenAllowed: false,
+    // The commit claim: changes to these damage nothing by name — the
+    // element's own `applyProps` diffs them into the box that actually
+    // changed (react-x11#301). Without this, every drag step's new `nodes`
+    // array identity would repaint the whole pane.
+    selfDamagedProps: [...SELF_DAMAGED_PROPS],
   });
 }
 
@@ -202,19 +205,6 @@ export function Flow<N = FlowNodeData, E = unknown>(
     flat.flexGrow !== undefined ||
     flat.flexBasis !== undefined;
 
-  const handleWheel = (ev: WheelEvent<DrawnNode>): void => {
-    onWheel?.(ev);
-    // The same veto the default-action seam gives every other gesture; the
-    // wheel just has no seam of its own to route through (react-x11#302).
-    if (!ev.defaultPrevented) pane.current?.handleWheel(ev);
-  };
-  const handleMouseMove = (ev: MouseEvent<DrawnNode>): void => {
-    pane.current?.handleHover(ev);
-  };
-  const handleMouseLeave = (): void => {
-    pane.current?.handleLeave();
-  };
-
   // --- mounted node bodies ------------------------------------------------
   //
   // Only the node types that asked for one cost anything: with no `render`
@@ -286,9 +276,11 @@ export function Flow<N = FlowNodeData, E = unknown>(
       edges: currentEdges,
       onNodesChange: handleNodesChange,
       onEdgesChange: handleEdgesChange,
-      onWheel: handleWheel,
-      onMouseMove: handleMouseMove,
-      onMouseLeave: handleMouseLeave,
+      // The wheel and hover reach the element through the default-action
+      // seam now (react-x11#302): an app's own `onWheel` runs first and
+      // `preventDefault()` vetoes, with no forwarding here — and the bare
+      // `<flowgraph>` element zooms and hovers on its own.
+      onWheel,
       onNodeBodies: mounts ? setBodies : undefined,
       style: styles.fill,
       role: 'group',
