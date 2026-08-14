@@ -13,7 +13,7 @@
 import { AUTO, isPct, resolve, resolveOrNull } from '../css/values.js';
 import type { Len } from '../css/values.js';
 import { Box } from './boxes.js';
-import type { BoxTree } from './boxes.js';
+import type { BoxTree, LineBox } from './boxes.js';
 import { FloatContext } from './floats.js';
 import { layoutInline } from './inline.js';
 import type { FontsLike } from './inline.js';
@@ -379,6 +379,17 @@ function layoutInternals(
   if (box.markerText) layoutMarker(box, ctx);
 }
 
+/** The first line box anywhere under a box, in layout order. */
+function firstLineIn(box: Box): LineBox | null {
+  if (box.lines?.length) return box.lines[0];
+  for (const child of box.children) {
+    if (child.outOfFlow || child.isFloat) continue;
+    const found = firstLineIn(child);
+    if (found) return found;
+  }
+  return null;
+}
+
 /**
  * A list item's marker.
  *
@@ -409,7 +420,12 @@ function layoutMarker(box: Box, ctx: LayoutContext): void {
   );
   box.markerLayout = layout;
   const gap = Math.round(style.fontSize * 0.4);
-  const first = box.lines?.[0];
+  // The marker sits on the first line of the item's *content*, which is not
+  // always the item's own: an `<li>` holding a paragraph, or one holding text
+  // and a nested list, has its inline content in an anonymous block. Looking
+  // only at `box.lines` puts the marker of every such item at the content
+  // top, which reads as a missing bullet rather than a misplaced one.
+  const first = firstLineIn(box);
   const baselineY = first ? first.y + first.baseline : box.contentY;
   const own = layout.lines[0];
   box.markerY = baselineY - (own ? own.baseline : style.fontSize);

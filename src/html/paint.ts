@@ -87,6 +87,15 @@ export function computePaintBounds(box: Box): Rect {
       }
     }
   }
+  if (box.markerLayout) {
+    // The marker hangs in the padding to the left of the content, so it is
+    // outside the border box and has to widen the ink bounds or a repaint
+    // clipped to a narrow strip drops it.
+    x1 = Math.min(x1, box.markerX);
+    y1 = Math.min(y1, box.markerY);
+    x2 = Math.max(x2, box.markerX + box.markerLayout.width);
+    y2 = Math.max(y2, box.markerY + box.markerLayout.height);
+  }
   for (const child of box.children) {
     if (child.kind === 'text' || child.kind === 'break') continue;
     const bounds = computePaintBounds(child);

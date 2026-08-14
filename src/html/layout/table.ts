@@ -73,6 +73,15 @@ export function layoutTable(
     columnX[c] = x;
     x += widths[c] + spacing;
   }
+  // A table with `width: auto` is as wide as its columns need, not as wide as
+  // its container — it shrinks to fit, which is what makes a two-column table
+  // in a wide document a small table rather than a pair of columns stranded
+  // at the left of a full-width box. The columns were sized against the space
+  // on offer, so this only ever narrows.
+  const used = Math.min(x - table.contentX, contentWidth);
+  const tableContentWidth = style.width === AUTO ? used : contentWidth;
+  if (style.width === AUTO)
+    table.width = tableContentWidth + table.horizontalExtra;
 
   const rowTop: number[] = new Array<number>(rows.length);
   const rowHeight: number[] = new Array<number>(rows.length).fill(0);
@@ -139,7 +148,7 @@ export function layoutTable(
     const row = rows[r];
     row.x = table.contentX;
     row.y = rowTop[r];
-    row.width = contentWidth;
+    row.width = tableContentWidth;
     row.height = rowHeight[r];
   }
   for (const child of table.children) {
@@ -148,7 +157,7 @@ export function layoutTable(
     if (!groupRows.length) continue;
     child.x = table.contentX;
     child.y = groupRows[0].y;
-    child.width = contentWidth;
+    child.width = tableContentWidth;
     child.height =
       groupRows[groupRows.length - 1].y +
       groupRows[groupRows.length - 1].height -
