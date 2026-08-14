@@ -68,7 +68,7 @@ import type { CodeBlockLook } from '../codeblock/index.js';
 import { parse } from './parse.js';
 import { runsOf, plainTextOf } from './spans.js';
 import type { InlineStyles } from './spans.js';
-import { useLinkClicks } from './links.js';
+import { useLinkClicks } from '../richtext/index.js';
 import { hx } from './hx.js';
 
 export type {
