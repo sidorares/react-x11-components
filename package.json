@@ -84,6 +84,10 @@
       "types": "./dist/terminal/index.d.ts",
       "default": "./dist/terminal/index.js"
     },
+    "./timeline": {
+      "types": "./dist/timeline/index.d.ts",
+      "default": "./dist/timeline/index.js"
+    },
     "./tray-host": {
       "types": "./dist/tray-host/index.d.ts",
       "default": "./dist/tray-host/index.js"
@@ -118,6 +122,7 @@
     "examples:terminal": "tsx examples/terminal.tsx",
     "examples:terminal-vt": "tsx examples/terminal-vt.tsx",
     "examples:terminal-ssh": "tsx examples/terminal-ssh.tsx",
+    "examples:timeline": "tsx examples/timeline.tsx",
     "examples:tray-host": "tsx examples/tray-host.tsx",
     "examples:tree": "tsx examples/tree.tsx",
     "prepack": "npm run build"

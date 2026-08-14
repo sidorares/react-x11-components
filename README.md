@@ -123,6 +123,7 @@ import type { CodeEditorProps } from '@react-x11/components';
 | `Markdown`    | `@react-x11/components/markdown`         | Streaming-friendly GFM with cross-block selection.    |
 | `MediaPlayer` | `@react-x11/components/media-player`     | mpv or VLC, embedded, with real transport control.    |
 | `Terminal`    | `@react-x11/components/terminal`         | A real terminal: an embedded emulator, or its own.    |
+| `Timeline` …  | `@react-x11/components/timeline`         | A run of events: a mark per step, a line between.     |
 | `TrayHost`    | `@react-x11/components/tray-host`        | The system tray: applications dock their icons in.    |
 | `Tree`        | `@react-x11/components/tree`             | A disclosure tree: seams throughout, and virtualized. |
 | _(hook)_      | `@react-x11/components/desktop-calendar` | The user's real calendar events, over D-Bus.          |
@@ -297,6 +298,50 @@ Highlighting goes through the same language seam (`lang` tag or an
 explicit `language={…}`) and the look is shared with `<Markdown>`'s fenced
 blocks, so the two agree in one window. Selection and copy are core's; the
 line-number gutter is `selectable={false}`, so copied code pastes clean.
+
+## Timeline
+
+A vertical run of events — a delivery, a deploy, an audit log, a wizard's
+progress. The API is
+[Chakra UI's Timeline](https://chakra-ui.com/docs/components/timeline) with
+its parts spelled flat, so `Timeline.Root` is `<Timeline>` and a snippet
+copied from their docs is otherwise the same tree:
+
+```jsx
+import {
+  Timeline,
+  TimelineItem,
+  TimelineConnector,
+  TimelineSeparator,
+  TimelineIndicator,
+  TimelineContent,
+  TimelineTitle,
+  TimelineDescription,
+} from '@react-x11/components/timeline';
+
+<Timeline variant="outline" size="lg">
+  <TimelineItem>
+    <TimelineConnector>
+      <TimelineSeparator />
+      <TimelineIndicator accent="$success">
+        <Icon name="check" size={12} />
+      </TimelineIndicator>
+    </TimelineConnector>
+    <TimelineContent>
+      <TimelineTitle>Product shipped</TimelineTitle>
+      <TimelineDescription>13th May 2021</TimelineDescription>
+    </TimelineContent>
+  </TimelineItem>
+</Timeline>;
+```
+
+It registers no element: a timeline is `<box>` and `<text>`, and the line
+down the gutter is one absolutely-positioned pixel spanning the item — so
+its length is a consequence of the content beside it rather than a height
+anyone has to name. `npm run examples:timeline` runs a live release
+pipeline beside galleries of the sizes and variants;
+[the reference](docs/components/timeline.md) has the rest, including why
+every indicator's chip is opaque.
 
 ## The disclosure tree
 

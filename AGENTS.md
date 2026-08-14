@@ -167,7 +167,7 @@ it in any component that writes more than a couple of elements.
 ### Vendored from core
 
 `src/calendar/dates.ts` and `src/calendar/internal.ts` are copies of code that
-is still in react-x11 today — the day arithmetic, `tint`, `changeEvent`,
+is still in react-x11 today — the day arithmetic, `changeEvent`,
 `useDismissOnWindowBlur`. They were copied rather than imported because they
 are not on core's exports map, and they are pure, so the copy is cheap.
 
@@ -176,8 +176,17 @@ is intended rather than drift.** This package is the owner now. Until that
 lands, the two copies exist; do not try to keep them in sync.
 
 Everything else the calendar stands on is public API: `useTheme`,
-`createStyles`, `<Icon>`, `useAnchor`/`useAnchorTracking`, the `XK_*` keysyms,
-and `cssColorStraight` off `react-x11/ntk`.
+`createStyles`, `tint`, `<Icon>`, `useAnchor`/`useAnchorTracking`, the `XK_*`
+keysyms, and `cssColorStraight` off `react-x11/ntk`.
+
+**The rule when core catches up is: delete the copy, import the export.**
+`tint` is the worked example. It was vendored three times over — the
+calendar's copy, `src/richtext/`'s, and `src/flow/`'s — each with the same
+paragraph about `cssColorStraight` not being on the exports map. It is on
+`react-x11/style` now (with `readableInk` and `interpolate` beside it), so all
+three are gone and every surface imports core's. `/richtext` stopped
+re-exporting it at the same time: a subpath of this package forwarding a core
+symbol under its own name is a claim of ownership that is no longer true.
 
 ### Affordance glyphs come from core's set; nouns do not
 

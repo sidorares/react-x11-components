@@ -111,7 +111,10 @@ afterwards — is core's `openEditMenu` and shared with the field.
 - `NtkApp`, `TextLayoutLike` — the structural types the node speaks. ntk is
   deliberately loose in react-x11's declarations, so an element says what it
   needs rather than importing a wide type.
-- `tint(color, amount)` — the shade helper the surfaces share.
+
+`tint(color, amount)` — the shade helper these surfaces share — used to be
+exported from here as well. It is **core's** now: import it from
+`react-x11/style`, where `readableInk` and `interpolate` sit beside it.
 
 ## Registering
 
