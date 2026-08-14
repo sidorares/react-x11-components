@@ -1,14 +1,33 @@
 // Where every row starts, when rows are not all the same height.
 //
+// **Shared between `<Tree>` and `<Table>`** — the one piece of machinery
+// both virtualizers stand on, promoted here from the vendored copy the
+// table briefly carried (docs/prd-table.md records the decision). "No
+// component imports another component" holds: this is shared code, not a
+// component, and both import it.
+//
+// **Deliberately not a shared *module*.** The directory has no `index.ts`,
+// so it has no subpath, no docs page, and is not public API — the repo's
+// guards (`test/docs.test.ts`, `scripts/check-package.ts`) key on
+// `src/<name>/index.ts`, and that is the seam this uses. The day an app
+// outside this package needs a height index of its own, the promotion is
+// mechanical: give the directory an `index.ts` and the full shared-module
+// treatment (subpath, page, barrel), the way `richtext` has it.
+//
+// The id-keying earns its place twice: in the tree a measured height
+// survives a collapse and re-expand, and in the table it survives a
+// **re-sort** — the permutation rebuilds offsets without remeasuring a
+// single row.
+//
 // A fixed-height list needs no structure at all: row `i` is at `i * h`, and
 // the row at offset `y` is `y / h`. That one multiplication is the whole
 // reason fixed-height virtualization is easy, and it is what this file
-// replaces — because a tree row wraps, carries two lines, holds a thumbnail,
-// or is whatever `renderContent` returned, and demanding that they all match
-// was the component telling the application what its data may look like.
+// replaces — because a tree row wraps, carries two lines, or is whatever a
+// render seam returned, and demanding that they all match would be the
+// component telling the application what its data may look like.
 //
-// What replaces it has to answer three questions on every scroll, over a list
-// that may be a hundred thousand rows long:
+// What replaces it has to answer three questions on every scroll, over a
+// list that may be a hundred thousand rows long:
 //
 //   - where does row `i` start?           `offsetAt`
 //   - which row is at offset `y`?         `indexAt`
@@ -19,33 +38,31 @@
 // into view is one. A Fenwick tree (binary indexed tree) answers all three in
 // O(log n) and updates in O(log n), which is what makes "measure the rows
 // that just appeared, then re-render" affordable at any size.
-//
-// **Heights are keyed by item id, not by index.** A row that has been
-// measured keeps its height across a collapse and re-expand, across a sort,
-// and across anything else that moves it — so scrolling back to somewhere you
-// have already been does not re-estimate it and shift under you.
 
-import type { TreeItemId } from './rows.js';
+/** What a row is keyed by. `TreeItemId` and `TableRowId` are both this
+ *  type; keeping it structural here is what lets each component keep its
+ *  own vocabulary. */
+export type RowKey = string | number;
 
 /** All this needs of a row. Taking the rows themselves rather than an array
  *  of ids is what keeps `sync` free on a re-render: the component already
  *  memoizes the row list, so identity alone says "nothing moved". */
 interface Keyed {
-  id: TreeItemId;
+  id: RowKey;
 }
 
 /**
- * The heights of a tree's rows, and where each one starts.
+ * The heights of the rows, and where each one starts.
  *
- * Mutable and long-lived: one of these belongs to a `<Tree>` for as long as it
- * is mounted, and `sync` re-points it at the rows a render is about to draw.
- * It is deliberately **not** React state — a measurement pass touches it once
- * per rendered row and the component re-renders once, on a version counter,
- * and only when something actually moved.
+ * Mutable and long-lived: one of these belongs to a component for as long
+ * as it is mounted, and `sync` re-points it at the rows a render is about
+ * to draw. It is deliberately **not** React state — a measurement pass
+ * touches it once per rendered row and the component re-renders once, on a
+ * version counter, and only when something actually moved.
  */
 export class RowHeights {
-  /** Measured heights, by item id. Survives `sync`. */
-  private readonly measured = new Map<TreeItemId, number>();
+  /** Measured heights, by row id. Survives `sync`. */
+  private readonly measured = new Map<RowKey, number>();
   /** The rows currently indexed, in draw order. */
   private rows: readonly Keyed[] = [];
   /** Fenwick tree over the heights, 1-based. */
@@ -73,7 +90,7 @@ export class RowHeights {
    * Rebuilt rather than patched, and cheap to call on every render: the row
    * list is memoized, so the common case is an identity check. When it does
    * rebuild it is O(n) — the rows change when a branch opens, when items
-   * arrive, when a filter runs, all O(n) events already.
+   * arrive, when a sort flips, when a filter runs, all O(n) events already.
    */
   sync(rows: readonly Keyed[], estimate: number): void {
     const next = Math.max(1, estimate);
@@ -100,7 +117,7 @@ export class RowHeights {
    * anything — which is what tells the component whether to re-render, and
    * the reason a measurement pass that finds nothing new costs nothing.
    */
-  measure(id: TreeItemId, index: number, height: number): boolean {
+  measure(id: RowKey, index: number, height: number): boolean {
     if (!(height > 0)) return false;
     const before = this.measured.get(id);
     if (before === height) return false;

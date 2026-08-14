@@ -1,0 +1,588 @@
+// <Table> — the successor to react-x11's own, which may be stripped down or
+// removed. The pure model is asserted in table-rows.test.ts and the height
+// index in table-heights.test.ts; this file mounts the component and asserts
+// the behaviour a user meets: the zero-config fill, sorting from the header,
+// the selection grammar in both modes, virtualization in both height models,
+// and the seams.
+import { test, afterEach } from 'node:test';
+import assert from 'node:assert';
+import React from 'react';
+import type { ReactNode } from 'react';
+
+import {
+  renderX11,
+  cleanup,
+  screen,
+  userEvent,
+  fireEvent,
+  act,
+} from 'react-x11/test';
+import { XK_DOWN, XK_RETURN, XK_RIGHT, XK_UP } from 'react-x11/keysyms';
+import type { Node as RetainedNode } from 'react-x11/node';
+import type { DrawnNode, KeyboardEvent, ScrollableNode } from 'react-x11';
+
+import { Table } from '../src/index.js';
+import type {
+  TableColumn,
+  TableHandle,
+  TableProps,
+  TableRowId,
+  TableRowState,
+  TableSelectChange,
+  TableSort,
+} from '../src/index.js';
+
+const h = React.createElement;
+
+afterEach(cleanup);
+
+/** The queries hand back the retained node; their public type describes the
+ *  narrower ref-facing view. Same widening as `tree.test.ts`. */
+function retained(node: unknown): RetainedNode {
+  return node as RetainedNode;
+}
+
+function scrolling(node: unknown): ScrollableNode {
+  return node as ScrollableNode;
+}
+
+function tableRoot(): RetainedNode {
+  return retained(screen.all((n) => retained(n).props.role === 'table')[0]);
+}
+
+/** The scrolling body pane — the root's second child, after the header
+ *  clip. */
+function bodyPane(): ScrollableNode {
+  return scrolling(tableRoot().children[1]);
+}
+
+function rowNodes(): DrawnNode[] {
+  return screen.all((n) => retained(n).props.role === 'row');
+}
+
+function headerNodes(): DrawnNode[] {
+  return screen.all((n) => retained(n).props.role === 'columnheader');
+}
+
+/** The first `<text>` under a node. */
+function textIn(node: unknown): string {
+  const stack = [...retained(node).children];
+  while (stack.length) {
+    const child = stack.shift() as RetainedNode;
+    if (child.kind === 'text') return String(child.props.children ?? '');
+    stack.push(...child.children);
+  }
+  return '';
+}
+
+/** The rows on screen, read by their first cell's text. */
+function firstCells(): string[] {
+  return rowNodes().map((n) => textIn(n));
+}
+
+function rowFor(text: string): DrawnNode {
+  const node = rowNodes().find((n) => textIn(n) === text);
+  assert.ok(node, `no row starting with ${JSON.stringify(text)}`);
+  return node;
+}
+
+function headerFor(text: string): DrawnNode {
+  const node = headerNodes().find((n) => textIn(n) === text);
+  assert.ok(node, `no header labelled ${JSON.stringify(text)}`);
+  return node;
+}
+
+function selectedRows(): string[] {
+  return rowNodes()
+    .filter((n) => retained(n).props['aria-selected'] === true)
+    .map((n) => textIn(n));
+}
+
+/** Layout runs on the frame flush and the measure pass a tick after it, so a
+ *  render is two turns short of settled. */
+async function settle(): Promise<void> {
+  for (let i = 0; i < 4; i++) {
+    await new Promise((res) => setTimeout(res, 20));
+    await act();
+  }
+}
+
+/** Mount without React's report of an escaping error on stderr. */
+async function rejectsQuietly(
+  fn: () => Promise<unknown>,
+  expected: RegExp,
+): Promise<void> {
+  const origError = console.error;
+  console.error = () => {};
+  try {
+    await assert.rejects(fn, expected);
+  } finally {
+    console.error = origError;
+  }
+}
+
+interface File {
+  id: number;
+  name: string;
+  bytes: number;
+}
+
+const FILES: File[] = [
+  { id: 1, name: 'banana', bytes: 300 },
+  { id: 2, name: 'apple', bytes: 1000 },
+  { id: 3, name: 'cherry', bytes: 20 },
+];
+
+const COLUMNS: TableColumn<File>[] = [
+  { id: 'name', label: 'Name' },
+  { id: 'bytes', label: 'Size', value: (f) => f.bytes },
+];
+
+function mount(
+  props: Record<string, unknown> = {},
+  width = 400,
+  height = 200,
+): Promise<unknown> {
+  // The cast, deliberately: several tests hand the union deliberately wrong
+  // shapes to meet the remedial TypeErrors, which the compiler would
+  // (rightly) refuse. test/types/table.tsx is where the union is asserted.
+  return renderX11(
+    h(
+      'box',
+      { style: { width, height, minHeight: 0 } },
+      h(Table<File>, {
+        columns: COLUMNS,
+        rows: FILES,
+        ...props,
+      } as TableProps<File>),
+    ),
+  );
+}
+
+// --- rendering -------------------------------------------------------------
+
+test('columns and rows are the whole basic setup', async () => {
+  await mount();
+  await settle();
+  assert.deepStrictEqual(
+    headerNodes().map((n) => textIn(n)),
+    ['Name', 'Size'],
+  );
+  assert.deepStrictEqual(firstCells(), ['banana', 'apple', 'cherry']);
+  // value() feeds the default cell text
+  const cells = retained(rowFor('banana')).children.map((c) => textIn(c));
+  assert.deepStrictEqual(cells, ['banana', '300']);
+});
+
+test('unsized columns stretch: the row fills the box it was given', async () => {
+  await mount({}, 400);
+  await settle();
+  const cells = retained(rowFor('banana')).children.filter(
+    (c) => (c as RetainedNode).props.role === 'cell',
+  );
+  const total = cells.reduce(
+    (sum, c) => sum + (c as RetainedNode).abs.width,
+    0,
+  );
+  assert.strictEqual(
+    total,
+    400,
+    `cells should share the whole 400px, got ${total}`,
+  );
+});
+
+test('the app’s own row shape reads through getId and value', async () => {
+  interface Track {
+    key: string;
+    title: string;
+  }
+  const rows: Track[] = [
+    { key: 'a', title: 'one' },
+    { key: 'b', title: 'two' },
+  ];
+  const picked: TableRowId[] = [];
+  await renderX11(
+    h(
+      'box',
+      { style: { width: 300, height: 120, minHeight: 0 } },
+      h(Table<Track>, {
+        columns: [{ id: 'title' }],
+        rows,
+        getId: (t) => t.key,
+        onSelect: (id) => {
+          picked.push(id);
+        },
+      }),
+    ),
+  );
+  await settle();
+  await userEvent.click(rowFor('two'));
+  assert.deepStrictEqual(picked, ['b']);
+});
+
+test('a row that resolves no id throws the remedial TypeError', async () => {
+  await rejectsQuietly(
+    () =>
+      renderX11(
+        h(Table, {
+          columns: [{ id: 'name' }],
+          rows: [{ name: 'x' }],
+        }),
+      ),
+    /has no id|getId/,
+  );
+});
+
+// --- sorting ---------------------------------------------------------------
+
+test('the header sorts: asc, then desc, and reports either way', async () => {
+  const seen: Array<string> = [];
+  await mount({
+    onSortChange: (s: TableSort | null) => {
+      seen.push(s ? `${s.column}:${s.direction}` : 'null');
+    },
+  });
+  await settle();
+  await userEvent.click(headerFor('Size'));
+  assert.deepStrictEqual(firstCells(), ['cherry', 'banana', 'apple']);
+  await userEvent.click(headerFor('Size'));
+  assert.deepStrictEqual(firstCells(), ['apple', 'banana', 'cherry']);
+  assert.deepStrictEqual(seen, ['bytes:asc', 'bytes:desc']);
+});
+
+test('sortable: false leaves a header inert', async () => {
+  await mount({
+    columns: [{ id: 'name', label: 'Name', sortable: false }, { id: 'bytes' }],
+  });
+  await settle();
+  await userEvent.click(headerFor('Name'));
+  assert.deepStrictEqual(firstCells(), ['banana', 'apple', 'cherry']);
+});
+
+test('the controlled descriptor still orders rows unless presorted', async () => {
+  await mount({ sort: { column: 'name', direction: 'asc' } });
+  await settle();
+  assert.deepStrictEqual(firstCells(), ['apple', 'banana', 'cherry']);
+  await cleanup();
+  await mount({ sort: { column: 'name', direction: 'asc' }, presorted: true });
+  await settle();
+  assert.deepStrictEqual(firstCells(), ['banana', 'apple', 'cherry']);
+});
+
+// --- selection: single -----------------------------------------------------
+
+test('click selects, double-click activates, and the keyboard walks', async () => {
+  const selects: TableRowId[] = [];
+  const opens: TableRowId[] = [];
+  await mount({
+    onSelect: (id: TableRowId) => {
+      selects.push(id);
+    },
+    onActivate: (id: TableRowId) => {
+      opens.push(id);
+    },
+  });
+  await settle();
+  await userEvent.click(rowFor('apple'));
+  assert.deepStrictEqual(selectedRows(), ['apple']);
+  await userEvent.key(XK_DOWN);
+  assert.deepStrictEqual(selectedRows(), ['cherry']);
+  await userEvent.key(XK_UP);
+  await userEvent.key(XK_RETURN);
+  await userEvent.doubleClick(rowFor('banana'));
+  assert.deepStrictEqual(selects, [2, 3, 2, 1, 1]);
+  // Enter opened the cursor row; the double click selected then opened
+  assert.deepStrictEqual(opens, [2, 1]);
+});
+
+test('selectionMode="none" is display only', async () => {
+  await mount({ selectionMode: 'none' });
+  await settle();
+  await userEvent.click(rowFor('apple'));
+  assert.deepStrictEqual(selectedRows(), []);
+  assert.strictEqual(
+    retained(rowFor('apple')).props['aria-selected'],
+    undefined,
+  );
+});
+
+test('the two selection shapes are told apart loudly', async () => {
+  await rejectsQuietly(
+    () => mount({ selected: [1, 2] } as unknown as Partial<TableProps<File>>),
+    /selectionMode="multiple"/,
+  );
+  await cleanup();
+  await rejectsQuietly(
+    () =>
+      mount({
+        selectionMode: 'multiple',
+        selected: 1,
+      } as unknown as Partial<TableProps<File>>),
+    /array of ids/,
+  );
+});
+
+// --- selection: multiple ---------------------------------------------------
+
+test('multiple selection speaks the file-manager grammar', async () => {
+  const changes: string[] = [];
+  await mount({
+    selectionMode: 'multiple',
+    onSelectedChange: (ids: TableRowId[], change: TableSelectChange<File>) => {
+      changes.push(`${change.type}:${ids.join(',')}`);
+    },
+  });
+  await settle();
+
+  await userEvent.click(rowFor('banana'));
+  assert.deepStrictEqual(selectedRows(), ['banana']);
+
+  // shift extends from the anchor — the last plain click
+  await userEvent.click(rowFor('cherry'), { modifiers: ['Shift'] });
+  assert.deepStrictEqual(selectedRows(), ['banana', 'apple', 'cherry']);
+
+  await userEvent.click(rowFor('apple'), { modifiers: ['Control'] });
+  assert.deepStrictEqual(selectedRows(), ['banana', 'cherry']);
+
+  // …and a ctrl toggle moves the anchor with it, the file-manager way
+  await userEvent.click(rowFor('cherry'), { modifiers: ['Shift'] });
+  assert.deepStrictEqual(selectedRows(), ['apple', 'cherry']);
+
+  assert.deepStrictEqual(changes, [
+    'replace:1',
+    'range:1,2,3',
+    'toggle:1,3',
+    'range:2,3',
+  ]);
+});
+
+test('shift on the keyboard extends, space toggles, ctrl+a takes all', async () => {
+  await mount({ selectionMode: 'multiple' });
+  await settle();
+  await userEvent.click(rowFor('banana'));
+  await userEvent.key(XK_DOWN, { modifiers: ['Shift'] });
+  assert.deepStrictEqual(selectedRows(), ['banana', 'apple']);
+
+  // space toggles the cursor row out again
+  fireEvent.char(' ');
+  await act();
+  assert.deepStrictEqual(selectedRows(), ['banana']);
+
+  fireEvent.char('a', { modifiers: ['Control'] });
+  await act();
+  assert.deepStrictEqual(selectedRows(), ['banana', 'apple', 'cherry']);
+});
+
+test('a right-click selects what is under it, unless it already is', async () => {
+  const menus: TableRowId[] = [];
+  await mount({
+    selectionMode: 'multiple',
+    onRowContextMenu: (id: TableRowId) => {
+      menus.push(id);
+    },
+  });
+  await settle();
+  fireEvent.contextMenu(rowFor('apple'));
+  await act();
+  assert.deepStrictEqual(selectedRows(), ['apple']);
+
+  // grow the selection, then right-click inside it: it must not collapse
+  await userEvent.click(rowFor('cherry'), { modifiers: ['Shift'] });
+  assert.deepStrictEqual(selectedRows(), ['apple', 'cherry']);
+  fireEvent.contextMenu(rowFor('apple'));
+  await act();
+  assert.deepStrictEqual(selectedRows(), ['apple', 'cherry']);
+
+  // …and outside it, the menu applies to what is under the pointer
+  fireEvent.contextMenu(rowFor('banana'));
+  await act();
+  assert.deepStrictEqual(selectedRows(), ['banana']);
+  assert.deepStrictEqual(menus, [2, 2, 1]);
+});
+
+// --- virtualization --------------------------------------------------------
+
+const many = (n: number): File[] =>
+  Array.from({ length: n }, (_, i) => ({
+    id: i,
+    name: `row ${i}`,
+    bytes: i,
+  }));
+
+test('declared-uniform rows virtualize by arithmetic: nothing is measured', async () => {
+  await mount({ rows: many(400), rowHeight: 24 }, 400, 220);
+  await settle();
+  // the scrollbar measures the whole list exactly — 400 × 24, no estimates
+  assert.strictEqual(bodyPane().contentHeight, 400 * 24 + 0);
+  assert.ok(rowNodes().length < 60, `built ${rowNodes().length} of 400`);
+
+  bodyPane().scrollTo({ y: 5000 });
+  await settle();
+  const posts = rowNodes().map((n) =>
+    Number(retained(n).props['aria-posinset']),
+  );
+  assert.ok(
+    posts.some((p) => p > 200),
+    `the slice should have moved with the scroll, saw ${posts[0]}…`,
+  );
+  assert.strictEqual(bodyPane().contentHeight, 400 * 24);
+});
+
+test('measured rows total honestly, converge, and stay a slice', async () => {
+  // every cell wraps to several lines in a narrow column, so the uniform
+  // guess is wrong for every row — the scrollbar has to learn better
+  const LONG =
+    'a name much too long for one line of a narrow column, kept long enough to wrap twice';
+  await mount(
+    {
+      rows: many(400),
+      columns: [
+        {
+          id: 'name',
+          label: 'Name',
+          render: (f: File) => h('text', { key: 't' }, `${LONG} ${f.id}`),
+        },
+      ],
+      virtual: true,
+    },
+    240,
+    220,
+  );
+  await settle();
+  const guess = 400 * 24;
+  const measured = bodyPane().contentHeight;
+  assert.ok(
+    measured > guess,
+    `the total is still the flat guess: ${measured} vs ${guess}`,
+  );
+  await settle();
+  assert.strictEqual(bodyPane().contentHeight, measured, 'it converged');
+
+  bodyPane().scrollTo({ y: 4000 });
+  await settle();
+  assert.ok(
+    bodyPane().contentHeight > measured,
+    'scrolling should have measured more rows',
+  );
+  assert.ok(rowNodes().length < 60, `built ${rowNodes().length} of 400`);
+});
+
+test('virtual={false} keeps a big table whole', async () => {
+  await mount({ rows: many(300), virtual: false, rowHeight: 24 }, 400, 200);
+  await settle();
+  assert.strictEqual(rowNodes().length, 300);
+});
+
+// --- the header stays put --------------------------------------------------
+
+test('the header tracks horizontal scroll and never vertical', async () => {
+  const wide: TableColumn<File>[] = [
+    { id: 'name', label: 'Name', width: 300 },
+    { id: 'bytes', label: 'Size', width: 300 },
+  ];
+  await mount({ columns: wide, rows: many(300), rowHeight: 24 }, 400, 200);
+  await settle();
+  const before = retained(headerFor('Name')).abs.x;
+
+  bodyPane().scrollTo({ x: 120, y: 2000 });
+  await settle();
+  assert.strictEqual(
+    retained(headerFor('Name')).abs.x,
+    before - 120,
+    'the header shifted with scrollX',
+  );
+  assert.ok(
+    retained(headerFor('Name')).abs.y < 30,
+    'and never moved vertically',
+  );
+});
+
+// --- resize ----------------------------------------------------------------
+
+test('the grip resizes by keyboard, reports, and converts to fixed', async () => {
+  const resizes: Array<[string, number]> = [];
+  await mount({
+    columns: [
+      { id: 'name', label: 'Name', width: 100 },
+      { id: 'bytes', label: 'Size', flex: 1 },
+    ],
+    onColumnResize: (id: string, w: number) => {
+      resizes.push([id, w]);
+    },
+  });
+  await settle();
+  const grip = screen.all((n) => retained(n).props.role === 'separator')[0];
+  await userEvent.click(grip); // focuses the handle
+  await userEvent.key(XK_RIGHT);
+  assert.deepStrictEqual(resizes, [['name', 116]]);
+  await settle();
+  const nameCell = retained(rowFor('banana')).children[0] as RetainedNode;
+  assert.strictEqual(nameCell.abs.width, 116);
+});
+
+// --- seams -----------------------------------------------------------------
+
+test('renderHeader, renderRow and renderEmpty each replace their part', async () => {
+  await mount({
+    columns: [
+      {
+        id: 'name',
+        label: 'Name',
+        renderHeader: () => h('text', { key: 'x' }, 'CUSTOM HEAD'),
+      },
+    ],
+    renderRow: (state: TableRowState<File>, content: ReactNode[]) =>
+      h('box', { key: 'wrap', style: { flexDirection: 'row' } }, [
+        h('text', { key: 'mark' }, `#${state.index} `),
+        ...content,
+      ]),
+  });
+  await settle();
+  assert.ok(
+    headerNodes().some((n) => textIn(n) === 'CUSTOM HEAD'),
+    'renderHeader owns the header content',
+  );
+  assert.strictEqual(textIn(rowFor('#0 ')), '#0 ', 'renderRow wrapped the row');
+
+  await cleanup();
+  await mount({ rows: [], renderEmpty: () => h('text', null, 'no files yet') });
+  await settle();
+  const empty = screen.all(
+    (n) =>
+      retained(n).kind === 'text' &&
+      String(retained(n).props.children) === 'no files yet',
+  );
+  assert.strictEqual(empty.length, 1);
+  assert.strictEqual(rowNodes().length, 0);
+});
+
+// --- the handle ------------------------------------------------------------
+
+test('the handle selects, scrolls, walks keys, and reads the model', async () => {
+  const ref = React.createRef<TableHandle<File>>();
+  await mount({ rows: many(400), rowHeight: 24, ref }, 400, 220);
+  await settle();
+  const handle = ref.current;
+  assert.ok(handle);
+
+  assert.strictEqual(handle.rows().length, 400);
+  assert.strictEqual(handle.rows()[0].id, 0);
+
+  assert.strictEqual(handle.scrollToRow(399), true);
+  await settle();
+  assert.ok(bodyPane().scrollY > 8000, 'scrolled to the far end');
+  assert.strictEqual(handle.scrollToRow('missing'), false);
+
+  handle.select(5);
+  await act();
+  assert.strictEqual(handle.rows().find((r) => r.id === 5)?.index, 5);
+
+  // a filter box above the table forwards the keys it does not use
+  const took = handle.handleKey({ keysym: XK_DOWN } as KeyboardEvent);
+  assert.strictEqual(took, true);
+  const notOurs = handle.handleKey({
+    keysym: 0x1234,
+    key: 'x',
+  } as KeyboardEvent);
+  assert.strictEqual(notOurs, false);
+});
