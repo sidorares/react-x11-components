@@ -261,6 +261,31 @@ export type {
   ParseOptions,
 } from './markdown/index.js';
 
+// A static HTML + CSS document, selectable, with seams for resources and
+// scripts and real widgets for its form controls. Replaces ntk's deprecated
+// `HtmlView` and core's `<html>` element; see docs/prd-html.md. The DOM
+// helpers are qualified on the way through the barrel — `createElement` and
+// `Element` are names an application already has several of.
+export { Html, useHtmlHandle } from './html/index.js';
+export {
+  appendChild as htmlAppendChild,
+  createHtmlElement,
+  createText as createHtmlText,
+  parseFragment as parseHtmlFragment,
+  removeNode as removeHtmlNode,
+  replaceNode as replaceHtmlNode,
+} from './html/index.js';
+export type {
+  ControlRect as HtmlControlRect,
+  Document as HtmlDocument,
+  Element as HtmlElement,
+  HtmlHandle,
+  HtmlProps,
+  ResourceRequest as HtmlResourceRequest,
+  ResourceResult as HtmlResourceResult,
+  ScriptRequest as HtmlScriptRequest,
+} from './html/index.js';
+
 // Styled text that a document selects across. The selection itself is
 // core's (`selectable` on any box, react-x11#291); what is here is the
 // element that paints per-run decoration and answers the text accessors,

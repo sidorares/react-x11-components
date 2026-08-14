@@ -7,9 +7,15 @@
 //
 // It lived in `../markdown/` until `<TerminalOutput>` needed it for OSC 8
 // hyperlinks, and it moved here rather than being copied: there is no
-// markdown in it at all. It is about `TextRun.href` and
-// `RichTextNode.hrefAtPoint`, both of which are this module's — the same
-// "extract when the second consumer arrives" move `../codeblock/` was.
+// markdown in it at all. It is about `TextRun.href` and `hrefAtPoint`, both
+// of which are this module's — the same "extract when the second consumer
+// arrives" move `../codeblock/` was.
+//
+// The third consumer, `<Html>`, is what made the node test structural: it
+// answers `hrefAtPoint` from a document it laid out itself and is not a
+// `RichTextNode`. Asking for the method rather than the class is also what
+// keeps this module from importing `node.ts`, so a surface that wants link
+// clicks and nothing else does not pull the element in behind them.
 //
 // The whole problem is that a press on a link is also the start of a drag,
 // and the two are told apart only at the release: a pointer that has barely
@@ -19,7 +25,11 @@
 import { useRef } from 'react';
 import type { DrawnNode, MouseEvent as X11MouseEvent } from 'react-x11';
 
-import { RichTextNode } from './node.js';
+/** Any node that can name the link under a point — `<richtext>` and
+ *  `<htmlview>` both do, and neither has to say so to this module. */
+interface HrefSource {
+  hrefAtPoint?(x: number, y: number): string | null;
+}
 
 /** How far the pointer may travel and still count as a click, in pixels. */
 const CLICK_SLOP = 3;
@@ -42,9 +52,11 @@ export function useLinkClicks(
     onMouseDown: (ev) => {
       press.current = null;
       if (!onLink || ev.button !== 1) return;
-      const target: unknown = ev.target;
+      const target = ev.target as HrefSource | null;
       const href =
-        target instanceof RichTextNode ? target.hrefAtPoint(ev.x, ev.y) : null;
+        typeof target?.hrefAtPoint === 'function'
+          ? target.hrefAtPoint(ev.x, ev.y)
+          : null;
       if (href != null) press.current = { x: ev.x, y: ev.y, href };
     },
     onMouseUp: (ev) => {

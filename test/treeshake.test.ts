@@ -72,6 +72,10 @@ const COMPONENTS = [
   { exportName: 'Tree', dir: 'tree', marker: 'treeitem' },
   // the element name rather than `flow`, which "overflow" contains
   { exportName: 'Flow', dir: 'flow', marker: 'flowgraph' },
+  // `<Html>` shares `src/richtext/`'s run decorations and `src/internal/`'s
+  // code-point helpers with `<Markdown>` and `<Code>`, so its marker is a
+  // string only its user-agent stylesheet writes.
+  { exportName: 'Html', dir: 'html', marker: 'table-header-group' },
   // `<Timeline>` is box-and-text composition and shares nothing at all, which
   // leaves it short of a marker: the export pulled is the *item* rather than
   // the root, because the root shakes so well that nothing distinctive

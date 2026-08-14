@@ -19,6 +19,7 @@ component.
 | [Code](components/code.md)                         | `@react-x11/components/code`             | A static code block: highlighted, selectable.                |
 | [CodeEditor](components/code-editor.md)            | `@react-x11/components/code-editor`      | Multiline code editing: highlighting, completion.            |
 | [Flow](components/flow.md)                         | `@react-x11/components/flow`             | A directed-graph editor: nodes, edges, pan and zoom.         |
+| [Html](components/html.md)                         | `@react-x11/components/html`             | A static HTML + CSS document, selectable, with seams.        |
 | [Markdown](components/markdown.md)                 | `@react-x11/components/markdown`         | Streaming-friendly GFM with cross-block selection.           |
 | [MediaPlayer](components/media-player.md)          | `@react-x11/components/media-player`     | mpv or VLC, embedded, with real transport control.           |
 | [Table](components/table.md)                       | `@react-x11/components/table`            | A data table: sortable, virtualized, any row height.         |
@@ -57,6 +58,9 @@ parts.
 - [The data table](prd-table.md) — proposed: the prior-art survey, the
   successor contract with core's `<Table>`, and the variable-height
   virtualization it shares with the tree.
+- [An HTML control worth having](prd-html.md) — the pipeline behind
+  `<Html>`, why the element draws a document rather than composing one, the
+  resource and script seams, and the isolated-process mode.
 
 ## Conventions these pages follow
 
