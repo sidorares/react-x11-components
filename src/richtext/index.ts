@@ -30,7 +30,6 @@ export {
 export type { NtkApp, RichTextProps, TextLayoutLike, TextRun } from './node.js';
 export { useSelectionMenu } from './menu.js';
 export type { SelectionMenuHandlers } from './menu.js';
-export { tint } from './internal.js';
 
 declare module 'react-x11/jsx-runtime' {
   namespace JSX {

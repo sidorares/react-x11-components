@@ -1,42 +1,8 @@
 // The bits `<Markdown>` needs that react-x11 has but does not export.
 // Same situation, and the same shape, as `src/calendar/internal.ts` — each
 // is small and pure, and if core ever puts one on its exports map, delete
-// it from here and import it. (`src/calendar` keeps its own copy: no
-// component imports another component, and a shared module for two
-// ten-line functions would couple their release cadence for nothing.)
-
-// Read off the namespace rather than declared through `declare module`: an
-// augmentation would be emitted into this package's own `.d.ts`, and a
-// program holding both the source and the build — which is what
-// `npm run typecheck` does — would see it twice and reject it.
-import * as ntk from 'react-x11/ntk';
-
-/** `[r, g, b, a]`, each 0-1, unassociated (not premultiplied). */
-type StraightColor = [number, number, number, number];
-
-const cssColorStraight = (
-  ntk as unknown as {
-    cssColorStraight: (color: string) => StraightColor | null;
-  }
-).cssColorStraight;
-
-function rgba(c: StraightColor): string {
-  return `rgba(${Math.round(c[0] * 255)}, ${Math.round(c[1] * 255)}, ${Math.round(c[2] * 255)}, ${c[3]})`;
-}
-
-/**
- * A colour at a given opacity — `tint('#2980b9', 0.35)`.
- *
- * The selection band and the inline-code background are both fills drawn
- * *under* ink whose colour they do not control, so an opaque value cannot be
- * chosen once for both a light and a dark palette. A translucent one works
- * against either surface, and the ink keeps whatever contrast it had.
- */
-export function tint(color: string, alpha: number): string {
-  const c = cssColorStraight(color);
-  if (!c) return color;
-  return rgba([c[0], c[1], c[2], c[3] * alpha]);
-}
+// it from here and import it. `tint` was the first to go that way: it is
+// `react-x11/style`'s now, and the surfaces here import it from there.
 
 // --- code points vs code units ---------------------------------------------
 //

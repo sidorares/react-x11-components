@@ -1,59 +1,15 @@
 // The bits of react-x11 that `<Calendar>` needs and react-x11 does not export.
 //
 // Everything else the widget stands on is public — `useTheme`, `createStyles`,
-// `useAnchor`/`useAnchorTracking`, the `XK_*` keysyms, the host elements. These
-// three are not, so they are vendored, and they are collected here rather than
+// `useAnchor`/`useAnchorTracking`, the `XK_*` keysyms, the host elements, and
+// `tint` off `react-x11/style`, which used to be vendored here and is not any
+// more. These two are what is left, and they are collected here rather than
 // scattered so the list stays short and visible. Each is small and pure; if
-// core ever puts one on its exports map, delete it from here and import it.
+// core ever puts one on its exports map, delete it from here and import it,
+// the way `tint` was deleted.
 
 import { useEffect, useRef } from 'react';
 import type { RefObject } from 'react';
-
-// ntk's colour parser is reachable — react-x11 re-exports the toolkit at
-// `react-x11/ntk` precisely so an extension does not declare a second,
-// independently-versioned `ntk` (two Yoga instances, two font caches). Its
-// declarations are deliberately loose and name only the exports an extension
-// "actually reaches for"; `cssColorStraight` is one more, and it is there at
-// run time.
-//
-// Read off the namespace rather than declared through `declare module`: an
-// augmentation would be emitted into this package's own `.d.ts`, and then a
-// program holding both the source and the build — which is exactly what
-// `npm run typecheck` does, since `package.test.ts` imports the package by
-// name — would see it twice and reject the redeclaration.
-import * as ntk from 'react-x11/ntk';
-
-/** `[r, g, b, a]`, each 0-1, unassociated (not premultiplied). */
-type StraightColor = [number, number, number, number];
-
-const cssColorStraight = (
-  ntk as unknown as {
-    cssColorStraight: (color: string) => StraightColor | null;
-  }
-).cssColorStraight;
-
-function rgba(c: StraightColor): string {
-  return `rgba(${Math.round(c[0] * 255)}, ${Math.round(c[1] * 255)}, ${Math.round(c[2] * 255)}, ${c[3]})`;
-}
-
-/**
- * A colour at a given opacity — `tint('#2980b9', 0.3)`.
- *
- * For fills that are drawn *under* text whose colour they do not control: the
- * range band is the case here, and an opaque one would have to be chosen to
- * contrast with the ink on top of it, which cannot be done once for both a
- * light and a dark palette. A translucent one is chosen against the surface
- * instead, and the ink keeps whatever contrast it already had.
- *
- * Parsed **straight**, not premultiplied: the result is formatted back into an
- * `rgba()` string and the paint path parses it again, and that round trip only
- * closes on unassociated components.
- */
-export function tint(color: string, alpha: number): string {
-  const c = cssColorStraight(color);
-  if (!c) return color;
-  return rgba([c[0], c[1], c[2], c[3] * alpha]);
-}
 
 /** The `target` a {@link WidgetChangeEvent} carries. */
 export interface ChangeTarget<T> {
