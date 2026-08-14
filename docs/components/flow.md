@@ -302,8 +302,35 @@ of it, and that is not arbitrary either: a node's children are painted before
 its own drawing, so a body mounted inside the pane would be painted over by
 the graph.
 
+### What the pane batches, and what it deliberately does not
+
+Everything drawn ends up as X protocol, and the trace in
+`react-x11/debug` is how that is kept honest. Two rules came out of
+measuring, and they pull in opposite directions:
+
+- **Geometry lands on whole pixels.** ntk draws a rounded box as cached
+  corner glyphs plus `FillRectangles` when its coordinates are integral, and
+  rasterizes a mask it has to upload when they are not — and any zoom that
+  is not 1 makes every box fractional. Rounding moved three hundred mask
+  uploads a frame onto the fast path.
+- **Batching pays for edges and for nothing else.** A path's mask is its
+  bounding box, so collapsing many draws into one path trades many small
+  masks for one the size of the pane — about three quarters of a megabyte.
+  For seven hundred edges, which already span that box, it is a large win
+  (3.9 MB a frame down to 1.3). For twenty edges, or for handles and cards,
+  which are small and scattered, it is a loss. So edges and arrowheads
+  batch **above a threshold** and everything else is drawn one at a time.
+
+The second rule is the one worth remembering, because the obvious
+optimisation is the wrong one below the threshold.
+
 ## Example
 
 `npm run examples:flow` is a build-pipeline editor with both kinds of node
 side by side — drawn `task` cards and a mounted, resizable `options` node made
 of real checkboxes, buttons and a textarea.
+
+`npm run examples:flow-stress` is the one to reach for when changing how the
+pane draws: two scene buttons (20 nodes on a spiral, 300 nodes and 745 edges
+in a fan), a **pan** button that drives the viewport continuously, and a live
+readout of requests, bytes and frames per second taken from the trace.

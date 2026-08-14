@@ -521,7 +521,9 @@ arrives as a `dimensions` change (with a `position` one when the grip moved
 the node's origin), applied by the same `applyNodeChanges` as everything
 else. `minWidth`/`minHeight` are the floor.
 
-`npm run examples:flow` is a working pipeline editor.
+`npm run examples:flow` is a working pipeline editor, and
+`npm run examples:flow-stress` is the measured one: two scene buttons, a pan
+loop, and a live count of X requests and bytes per frame.
 
 [rf]: https://reactflow.dev/
 

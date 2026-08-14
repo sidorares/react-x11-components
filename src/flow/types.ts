@@ -330,6 +330,12 @@ export interface FlowPainter {
     options: StrokeOptions,
   ): void;
   dots(centres: readonly XYPosition[], size: number, color: string): void;
+  /** Many closed shapes as one path and one `fill()` — every arrowhead of a
+   * colour in a single request instead of one apiece. */
+  polygons(
+    shapes: readonly (readonly XYPosition[])[],
+    options: ShapeOptions,
+  ): void;
   text(text: string, x: number, y: number, options?: TextOptions): void;
   measureText(
     text: string,

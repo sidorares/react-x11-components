@@ -47,6 +47,13 @@ interface LayoutLike {
   draw(ctx: unknown, x: number, y: number): void;
 }
 
+/** One shaped string, kept between frames. */
+export interface CachedText {
+  width: number;
+  height: number;
+  layout: LayoutLike;
+}
+
 /** ntk's font cache, reached through `app.fonts`. */
 export interface FontsLike {
   layout(
@@ -63,13 +70,16 @@ export interface PainterOptions {
   /** Ink for text that names no colour. */
   color: string;
   /**
-   * Measured text widths, keyed by face and string. Owned by the pane rather
-   * than the painter because a painter lives for one repaint and a label's
-   * width does not change between them — measuring is a round trip into the
-   * font stack, and a graph re-measuring every label every frame is the
-   * difference between a smooth pan and a slideshow.
+   * Laid-out text, keyed by face, size, weight, colour and the string.
+   *
+   * Owned by the pane rather than the painter because a painter lives for
+   * one repaint and a label does not change between them. The *layout* is
+   * cached rather than only its width because shaping is the expensive half
+   * and a `LayoutLike` can be drawn as many times as you like: a graph of
+   * three hundred labels was shaping three hundred strings a frame, which
+   * no amount of batching on the wire would have fixed.
    */
-  cache: Map<string, number>;
+  cache: Map<string, CachedText>;
 }
 
 function isCanvas(ctx: unknown): ctx is CanvasLike {
@@ -101,26 +111,44 @@ function fontStyle(
  * which is also when a hit test has to know how big it is — so measuring
  * cannot live behind the painter the way drawing does.
  */
+function shape(
+  opts: PainterOptions,
+  text: string,
+  options: TextOptions | undefined,
+): CachedText | null {
+  const { fonts, cache } = opts;
+  if (!fonts) return null;
+  const size = options?.size ?? 13;
+  const family = options?.family ?? opts.family;
+  // The colour is part of the key: it is baked into the layout, so two
+  // labels that differ only in ink are two shaped runs.
+  const key = `${family}|${size}|${options?.weight ?? 400}|${options?.color ?? opts.color}|${text}`;
+  const hit = cache.get(key);
+  if (hit) return hit;
+  const layout = fonts.layout(text, fontStyle(opts, options));
+  if (cache.size >= CACHE_LIMIT) cache.clear();
+  const entry = {
+    width: layout.width,
+    height: layout.height || size * 1.3,
+    layout,
+  };
+  cache.set(key, entry);
+  return entry;
+}
+
 export function measureText(
   opts: PainterOptions,
   text: string,
   options?: TextOptions,
 ): { width: number; height: number } {
   const size = options?.size ?? 13;
-  const { fonts, cache } = opts;
-  if (!fonts) {
+  const entry = shape(opts, text, options);
+  if (!entry) {
     // No font stack to ask. An estimate keeps layout plausible rather than
     // collapsing every node to its own padding.
     return { width: text.length * size * 0.55, height: size * 1.3 };
   }
-  const family = options?.family ?? opts.family;
-  const key = `${family}|${size}|${options?.weight ?? 400}|${text}`;
-  const hit = cache.get(key);
-  if (hit !== undefined) return { width: hit, height: size * 1.3 };
-  const layout = fonts.layout(text, fontStyle(opts, options));
-  if (cache.size >= CACHE_LIMIT) cache.clear();
-  cache.set(key, layout.width);
-  return { width: layout.width, height: layout.height || size * 1.3 };
+  return { width: entry.width, height: entry.height };
 }
 
 class Painter implements FlowPainter {
@@ -263,6 +291,33 @@ class Painter implements FlowPainter {
     ctx.fill();
   }
 
+  polygons(
+    shapes: readonly (readonly XYPosition[])[],
+    options: ShapeOptions,
+  ): void {
+    const { ctx } = this;
+    let any = false;
+    ctx.beginPath();
+    for (const points of shapes) {
+      if (points.length < 3) continue;
+      any = true;
+      ctx.moveTo(points[0].x, points[0].y);
+      for (let i = 1; i < points.length; i++)
+        ctx.lineTo(points[i].x, points[i].y);
+      ctx.closePath();
+    }
+    if (!any) return;
+    if (options.fill) {
+      ctx.fillStyle = options.fill;
+      ctx.fill();
+    }
+    if (options.stroke) {
+      this.applyStroke(options);
+      ctx.stroke();
+      this.clearDash();
+    }
+  }
+
   polygon(points: readonly XYPosition[], options: ShapeOptions): void {
     if (points.length < 3) return;
     const { ctx } = this;
@@ -309,12 +364,12 @@ class Painter implements FlowPainter {
 
   text(text: string, x: number, y: number, options?: TextOptions): void {
     if (!text) return;
-    const { fonts } = this.opts;
-    if (!fonts) return;
     const shown = options?.maxWidth
       ? this.fit(text, options, options.maxWidth)
       : text;
-    const layout = fonts.layout(shown, fontStyle(this.opts, options));
+    const entry = shape(this.opts, shown, options);
+    if (!entry) return;
+    const layout = entry;
     const align = options?.align ?? 'left';
     const dx =
       align === 'center'
@@ -323,7 +378,7 @@ class Painter implements FlowPainter {
           ? -layout.width
           : 0;
     const dy = options?.baseline === 'middle' ? -layout.height / 2 : 0;
-    layout.draw(this.raw, Math.round(x + dx), Math.round(y + dy));
+    entry.layout.draw(this.raw, Math.round(x + dx), Math.round(y + dy));
   }
 }
 

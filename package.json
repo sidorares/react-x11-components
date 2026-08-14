@@ -112,6 +112,7 @@
     "examples:code": "tsx examples/code.tsx",
     "examples:code-editor": "tsx examples/code-editor.tsx",
     "examples:flow": "tsx examples/flow.tsx",
+    "examples:flow-stress": "tsx examples/flow-stress.tsx",
     "examples:markdown": "tsx examples/markdown.tsx",
     "examples:media-player": "tsx examples/media-player.tsx",
     "examples:terminal": "tsx examples/terminal.tsx",

@@ -36,7 +36,7 @@ import {
 } from 'react-x11/keysyms';
 
 import { createPainter, measureText } from './draw.js';
-import type { FontsLike, PainterOptions } from './draw.js';
+import type { CachedText, FontsLike, PainterOptions } from './draw.js';
 import {
   boundsOf,
   canConnect,
@@ -103,6 +103,8 @@ import type {
   MiniMapOptions,
   NodeBodyRect,
   NodeChange,
+  ShapeOptions,
+  StrokeOptions,
   TextOptions,
   Viewport,
   XYPosition,
@@ -139,6 +141,9 @@ const DESC_ZOOM = 0.6;
 const DRAG_THRESHOLD = 3;
 /** The grid never draws denser than this on screen, whatever the zoom. */
 const MIN_GRID_PX = 16;
+
+/** See `StrokeBuckets.BATCH_MIN`. */
+const MARKER_BATCH_MIN = 24;
 
 const CONTROL_SIZE = 26;
 const PANEL_MARGIN = 10;
@@ -220,6 +225,78 @@ interface HoverState {
 
 const NO_HOVER: HoverState = { nodeId: null, handle: null, edgeId: null };
 
+/** An arrowhead pile: the filled heads and the open ones share a colour, so
+ * they share a bucket and differ only in which list they land in. */
+interface MarkerBucket {
+  color: string;
+  lineWidth: number;
+  filled: XYPosition[][];
+  open: XYPosition[][];
+}
+
+/**
+ * Edge strokes, grouped by the pen that will draw them.
+ *
+ * Everything a graph strokes is the same two or three pens — the default
+ * edge, the selected one, the animated dash — so grouping collapses a
+ * per-edge request into a per-pen one. The key has to carry the dash *and*
+ * its offset: two edges marching out of phase cannot share a path, because
+ * the offset is set on the context, not on the subpath.
+ */
+class StrokeBuckets {
+  private readonly byPen = new Map<
+    string,
+    { options: StrokeOptions; runs: XYPosition[][] }
+  >();
+
+  bucket(
+    stroke: string,
+    lineWidth: number,
+    dash: readonly number[] | undefined,
+    phase: number,
+    zoom: number,
+  ): XYPosition[][] {
+    const scaled = dash?.map((d) => d * zoom);
+    const key = `${stroke}|${lineWidth}|${scaled?.join(',') ?? ''}|${phase}`;
+    let entry = this.byPen.get(key);
+    if (!entry) {
+      entry = {
+        options: {
+          stroke,
+          lineWidth,
+          dash: scaled,
+          dashOffset: phase ? -phase * zoom : 0,
+        },
+        runs: [],
+      };
+      this.byPen.set(key, entry);
+    }
+    return entry.runs;
+  }
+
+  /**
+   * Below this many edges in one pen, they are stroked one at a time.
+   *
+   * A path's mask is its bounding box, so batching scattered geometry trades
+   * many small masks for one the size of the pane — about three quarters of
+   * a megabyte at a normal window size. That is a large win at seven hundred
+   * edges (measured: 3.9 MB a frame down to 1.3) and a loss at twenty, where
+   * the individual masks never add up to a paneful. The threshold is where
+   * they start to.
+   */
+  private static readonly BATCH_MIN = 24;
+
+  paint(painter: FlowPainter): void {
+    for (const { options, runs } of this.byPen.values()) {
+      if (runs.length >= StrokeBuckets.BATCH_MIN) {
+        painter.strokeRuns(runs, options);
+      } else {
+        for (const run of runs) painter.polyline(run, options);
+      }
+    }
+  }
+}
+
 /**
  * Are these the same handle? Anchors are rebuilt from the node on every read
  * — a drag moves them between commits — so identity says nothing, and the
@@ -277,7 +354,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
    * the frame being drawn. */
   private _painting = false;
 
-  private _textCache = new Map<string, number>();
+  private _textCache = new Map<string, CachedText>();
 
   constructor(props: Record<string, unknown>, app: unknown) {
     super(ELEMENT, props, app as ConstructorParameters<typeof Node>[2]);
@@ -546,15 +623,32 @@ export class FlowGraphNode extends Node implements FlowInstance {
     return entry.specs.map((spec) => handleAnchor(entry.node.id, rect, spec));
   }
 
+  /**
+   * A node's box on screen, **on whole pixels**.
+   *
+   * The rounding is not cosmetic. ntk draws a rounded box as cached corner
+   * glyphs plus `FillRectangles` when its geometry is integral, and
+   * rasterizes a mask it has to `PutImage` when it is not — and a zoom of
+   * 0.42 makes every one of them fractional. On a 300-node graph that was
+   * six hundred mask uploads a frame and about four megabytes on the wire;
+   * `react-x11/debug`'s trace names it as `fell back … fractional`.
+   *
+   * Hit testing reads the same rect, so what is drawn and what is clicked
+   * still agree to the pixel.
+   */
   private _screenRect(entry: NodeEntry): FlowRect {
     const v = this._viewport();
     const rect = this.rectOf(entry);
     const p = this._toScreen(rect);
+    const x = Math.round(p.x);
+    const y = Math.round(p.y);
     return {
-      x: p.x,
-      y: p.y,
-      width: rect.width * v.zoom,
-      height: rect.height * v.zoom,
+      x,
+      y,
+      // rounded as edges rather than as a size, so two nodes that share a
+      // column still share it after rounding
+      width: Math.round(p.x + rect.width * v.zoom) - x,
+      height: Math.round(p.y + rect.height * v.zoom) - y,
     };
   }
 
@@ -2049,6 +2143,22 @@ export class FlowGraphNode extends Node implements FlowInstance {
     const pane = this._pane();
     const labels = v.zoom >= LABEL_ZOOM;
     let animated = false;
+    // Collect, then draw. A stroke has no fast path in ntk — every one is a
+    // mask rasterized in JS, uploaded with `PutImage` and composited — so a
+    // graph of seven hundred edges was seven hundred round trips and about
+    // four megabytes a frame. Bucketed by the style they will be stroked
+    // with, the same graph is one path per distinct pen, which for almost
+    // every graph is one.
+    const strokes = new StrokeBuckets();
+    const markers = new Map<string, MarkerBucket>();
+    const labelChips: { rect: FlowRect; radius: number; fill: string }[] = [];
+    const pendingLabels: {
+      text: string;
+      x: number;
+      y: number;
+      size: number;
+      color: string;
+    }[] = [];
 
     for (const edge of this._edges) {
       if (edge.hidden) continue;
@@ -2101,16 +2211,19 @@ export class FlowGraphNode extends Node implements FlowInstance {
       const dash =
         edge.style?.dash ?? (edge.animated ? DEFAULT_DASH : undefined);
       if (edge.animated) animated = true;
-      painter.polyline(points, {
-        stroke,
-        lineWidth,
-        dash: dash ? dash.map((d) => d * v.zoom) : undefined,
-        dashOffset: edge.animated ? -this._dashPhase * v.zoom : 0,
-      });
+      strokes
+        .bucket(
+          stroke,
+          lineWidth,
+          dash,
+          edge.animated ? this._dashPhase : 0,
+          v.zoom,
+        )
+        .push(points);
 
       if (markerEnd) {
-        this._paintMarker(
-          painter,
+        this._collectMarker(
+          markers,
           endTip,
           outAngle,
           markerEnd.type,
@@ -2121,8 +2234,8 @@ export class FlowGraphNode extends Node implements FlowInstance {
       }
       if (markerStart) {
         const inAngle = startAngle(geometry.points);
-        this._paintMarker(
-          painter,
+        this._collectMarker(
+          markers,
           {
             x: geometry.points[0].x - Math.cos(inAngle) * inset,
             y: geometry.points[0].y - Math.sin(inAngle) * inset,
@@ -2141,31 +2254,80 @@ export class FlowGraphNode extends Node implements FlowInstance {
         const metrics = painter.measureText(edge.label, { size });
         const padX = 5 * v.zoom;
         const padY = 2 * v.zoom;
-        painter.rect(
-          at.x - metrics.width / 2 - padX,
-          at.y - metrics.height / 2 - padY,
-          metrics.width + padX * 2,
-          metrics.height + padY * 2,
-          Math.max(2, 3 * v.zoom),
-          {
-            fill: edge.style?.labelBackground ?? tint(palette.background, 0.92),
-            stroke: selected ? stroke : undefined,
-            lineWidth: 1,
+        // The chip is collected with the rest; the text is not, because a
+        // glyph run is already one request and nothing is gained by holding
+        // it. Both still land above every edge, which is the point of the
+        // chip.
+        labelChips.push({
+          rect: {
+            x: Math.round(at.x - metrics.width / 2 - padX),
+            y: Math.round(at.y - metrics.height / 2 - padY),
+            width: Math.round(metrics.width + padX * 2),
+            height: Math.round(metrics.height + padY * 2),
           },
-        );
-        painter.text(edge.label, at.x, at.y, {
+          radius: Math.max(2, Math.round(3 * v.zoom)),
+          fill: edge.style?.labelBackground ?? tint(palette.background, 0.92),
+        });
+        pendingLabels.push({
+          text: edge.label,
+          x: at.x,
+          y: at.y,
           size,
           color: edge.style?.labelColor ?? palette.text,
-          align: 'center',
-          baseline: 'middle',
         });
       }
+    }
+
+    strokes.paint(painter);
+    for (const bucket of markers.values()) {
+      // the same threshold, for the same reason: a handful of arrowheads
+      // scattered over the pane is cheaper drawn as a handful
+      if (bucket.filled.length >= MARKER_BATCH_MIN) {
+        painter.polygons(bucket.filled, { fill: bucket.color });
+      } else {
+        for (const head of bucket.filled) {
+          painter.polygon(head, { fill: bucket.color });
+        }
+      }
+      if (bucket.open.length >= MARKER_BATCH_MIN) {
+        painter.strokeRuns(bucket.open, {
+          stroke: bucket.color,
+          lineWidth: bucket.lineWidth,
+        });
+      } else {
+        for (const head of bucket.open) {
+          painter.strokeRuns([head], {
+            stroke: bucket.color,
+            lineWidth: bucket.lineWidth,
+          });
+        }
+      }
+    }
+    for (const chip of labelChips) {
+      painter.rect(
+        chip.rect.x,
+        chip.rect.y,
+        chip.rect.width,
+        chip.rect.height,
+        chip.radius,
+        { fill: chip.fill },
+      );
+    }
+    for (const l of pendingLabels) {
+      painter.text(l.text, l.x, l.y, {
+        size: l.size,
+        color: l.color,
+        align: 'center',
+        baseline: 'middle',
+      });
     }
     return animated;
   }
 
-  private _paintMarker(
-    painter: FlowPainter,
+  /** An arrowhead's three or four points, added to the pile for its colour
+   * rather than drawn — see {@link StrokeBuckets} for why. */
+  private _collectMarker(
+    markers: Map<string, MarkerBucket>,
     at: XYPosition,
     angle: number,
     type: 'arrow' | 'arrowclosed',
@@ -2186,24 +2348,31 @@ export class FlowGraphNode extends Node implements FlowInstance {
       x: at.x - Math.cos(angle + spread) * size,
       y: at.y - Math.sin(angle + spread) * size,
     };
-    if (type === 'arrowclosed') {
-      painter.polygon([at, left, back, right], { fill: color });
-    } else {
-      painter.strokeRuns([[left, at, right]], { stroke: color, lineWidth });
+    const key = `${color}|${lineWidth}`;
+    let bucket = markers.get(key);
+    if (!bucket) {
+      bucket = { color, lineWidth, filled: [], open: [] };
+      markers.set(key, bucket);
     }
+    if (type === 'arrowclosed') bucket.filled.push([at, left, back, right]);
+    else bucket.open.push([left, at, right]);
   }
 
   private _paintNodes(painter: FlowPainter, palette: FlowPalette): void {
     const dragging = this._dragTo;
+    const order: NodeEntry[] = [];
     const deferred: NodeEntry[] = [];
     for (const entry of this._order) {
-      if (dragging?.has(entry.node.id)) {
-        deferred.push(entry); // a dragged node comes to the top
-        continue;
-      }
-      this._paintNode(painter, palette, entry);
+      // a dragged node comes to the top
+      if (dragging?.has(entry.node.id)) deferred.push(entry);
+      else order.push(entry);
     }
-    for (const entry of deferred) this._paintNode(painter, palette, entry);
+    order.push(...deferred);
+
+    // Nodes are drawn one at a time, in z-order, and both halves of that
+    // were measured rather than assumed — see `_paintHandles` for why
+    // batching a card or a handle costs more than it saves.
+    for (const entry of order) this._paintNode(painter, palette, entry);
   }
 
   private _paintNode(
@@ -2223,6 +2392,8 @@ export class FlowGraphNode extends Node implements FlowInstance {
     });
 
     if (entry.type?.paint) {
+      // Never batched: a type that draws its own body is drawing whatever it
+      // likes, in an order only it knows.
       entry.type.paint({
         node: entry.node,
         rect,
@@ -2234,10 +2405,8 @@ export class FlowGraphNode extends Node implements FlowInstance {
         handles,
       });
     } else {
-      // A node whose body is mounted keeps its title in the header strip;
-      // one whose body is drawn centres it. The card is the same card.
-      const header = this._mounted(entry) ? this._headerHeight(entry) : 0;
-      this._paintCard(painter, palette, entry, rect, selected, hovered, header);
+      this._paintCardShape(painter, palette, entry, rect, selected, hovered);
+      this._paintCardInk(painter, palette, entry, rect);
     }
 
     if (this._connectable(entry) && (v.zoom >= HANDLE_ZOOM || hovered)) {
@@ -2246,8 +2415,6 @@ export class FlowGraphNode extends Node implements FlowInstance {
     this._paintGrips(painter, palette, entry, rect);
   }
 
-  /** Is this node's React body on screen? Below `RENDER_ZOOM` it is not
-   * mounted, and the pane draws the whole card instead. */
   private _mounted(entry: NodeEntry): boolean {
     return entry.type?.render != null && this._viewport().zoom >= RENDER_ZOOM;
   }
@@ -2273,31 +2440,34 @@ export class FlowGraphNode extends Node implements FlowInstance {
 
   /** The built-in node: a card with a label, an optional second line and an
    * optional accent stripe down its leading edge. */
-  private _paintCard(
+  /** The card itself: one rounded box, and the accent stripe if it has one.
+   * With a `batch` the box joins the pile for its appearance instead of
+   * being drawn on its own. */
+  private _paintCardShape(
     painter: FlowPainter,
     palette: FlowPalette,
     entry: NodeEntry,
     rect: FlowRect,
     selected: boolean,
     hovered: boolean,
-    header: number,
   ): void {
     const v = this._viewport();
     const style = entry.node.style;
-    const radius = (style?.borderRadius ?? 6) * v.zoom;
+    const radius = Math.round((style?.borderRadius ?? 6) * v.zoom);
     const border = selected
       ? palette.accent
       : hovered
         ? tint(palette.accent, 0.55)
         : (style?.borderColor ?? palette.nodeBorder);
-    painter.rect(rect.x, rect.y, rect.width, rect.height, radius, {
+    const options: ShapeOptions = {
       fill: style?.background ?? palette.nodeBackground,
       stroke: border,
       lineWidth: Math.max(
         1,
-        (style?.borderWidth ?? (selected ? 2 : 1)) * v.zoom,
+        Math.round((style?.borderWidth ?? (selected ? 2 : 1)) * v.zoom),
       ),
-    });
+    };
+    painter.rect(rect.x, rect.y, rect.width, rect.height, radius, options);
 
     if (style?.accent) {
       painter.save();
@@ -2307,8 +2477,20 @@ export class FlowGraphNode extends Node implements FlowInstance {
       });
       painter.restore();
     }
+  }
 
+  /** The label and its second line — the half of a card that has to come
+   * after every card when they are batched. */
+  private _paintCardInk(
+    painter: FlowPainter,
+    palette: FlowPalette,
+    entry: NodeEntry,
+    rect: FlowRect,
+  ): void {
+    const v = this._viewport();
     if (v.zoom < LABEL_ZOOM) return;
+    const style = entry.node.style;
+    const header = this._mounted(entry) ? this._headerHeight(entry) : 0;
     const data = entry.node.data as FlowNodeData | undefined;
     const label = data?.label ?? entry.node.id;
     const description = data?.description;
@@ -2368,6 +2550,17 @@ export class FlowGraphNode extends Node implements FlowInstance {
     });
   }
 
+  /**
+   * Handles are drawn one disc at a time, and that is the measured answer
+   * rather than the obvious one.
+   *
+   * Batching them into a single path halved the requests and made the frame
+   * *slower*: a path's mask is its bounding box, so forty dots scattered
+   * across the pane rasterize to a paneful of mask — three quarters of a
+   * megabyte — where forty small ones cost a kilobyte each. Batching pays
+   * for the edges because an edge already spans that box; it does not pay
+   * for anything small and scattered.
+   */
   private _paintHandles(
     painter: FlowPainter,
     palette: FlowPalette,
@@ -2377,16 +2570,23 @@ export class FlowGraphNode extends Node implements FlowInstance {
     const radius = this._handleRadius();
     const gesture = this._gesture;
     const connecting = gesture?.kind === 'connect' ? gesture : null;
+    const lineWidth = Math.max(1, 1.5 * v.zoom);
     for (const anchor of handles) {
       const active =
         sameHandle(this._hover.handle, anchor) ||
         sameHandle(connecting?.to ?? null, anchor) ||
         sameHandle(connecting?.from ?? null, anchor);
-      painter.circle(anchor.x, anchor.y, active ? radius * 1.4 : radius, {
+      const options: ShapeOptions = {
         fill: active ? palette.accent : palette.nodeBackground,
         stroke: active ? palette.accent : palette.handle,
-        lineWidth: Math.max(1, 1.5 * v.zoom),
-      });
+        lineWidth,
+      };
+      painter.circle(
+        anchor.x,
+        anchor.y,
+        active ? radius * 1.4 : radius,
+        options,
+      );
       if (anchor.label && v.zoom >= DESC_ZOOM) {
         const outside = anchor.position === 'left' || anchor.position === 'top';
         painter.text(
