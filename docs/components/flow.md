@@ -370,14 +370,17 @@ The seams this stands on are public API: `paintDamage()` and the
 `defaultMouseMove` (react-x11#302) — a bare `<flowgraph>` zooms and hovers
 on its own.
 
-**Panning blits.** With no minimap, no controls and no mounted bodies, a pan
-frame is `scrollContents` (react-x11#303) plus a repaint of the exposed
-band: measured on the 300-node scene, **19 requests and 1.6 KB a frame**,
-from ~2,465. With the furniture up, a frame is a full repaint instead —
-core's blit gate is node-granular, so the panels' own repaint claims cancel
-the blit (react-x11#309 is the refinement that would let the two coexist);
-those frames still dropped to ~550 KB through ntk's mask clustering
-(ntk#264) and the pattern grid below.
+**Panning blits.** A pan frame is `scrollContents` (react-x11#303) on the
+pane with the furniture bands carved out, plus ordinary claims for the
+strips — the blit gate tests foreign claims against the _rect_
+(react-x11#309, landed as #310), so the strips sit edge to edge with the
+copy and the frame stays a blit. Measured on the 300-node scene: **19
+requests and 1.6 KB a frame** bare, **~550 requests and ~170 KB** with the
+minimap and controls up (the strip repaints; it holds the minimap's three
+hundred dots), from ~2,465 requests and ~1.8 MB when every pan frame
+repainted the world. Mounted bodies still force the repaint path: their
+gesture-time commits claim inside the rect, which declines a blit by
+design.
 
 **The grid tiles.** At an integral device pitch the background is one
 `createPattern('repeat')` composite (ntk#263) — the phase baked into the

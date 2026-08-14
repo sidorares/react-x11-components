@@ -1042,34 +1042,94 @@ export class FlowGraphNode extends Node implements FlowInstance {
    * the shift exposed — which `paintDamage()` then hands to `paint`, so the
    * existing culling draws the sliver and nothing else.
    *
-   * Only when the whole pane is honestly one moving picture:
+   * The furniture — minimap, zoom controls — is pinned to the pane while
+   * its pixels would ride the blit, so its bands are carved out of the
+   * region that shifts and claimed as ordinary damage. The blit gate tests
+   * foreign claims against the *rect* (react-x11#309/#310), so a claim
+   * sitting edge to edge with it leaves the frame a blit: the middle of
+   * the pane is copied, the strips repaint with the new viewport, and the
+   * panels repaint in place.
    *
-   *  - the zoom held still (scaling is not a blit) and the shift is whole
-   *    pixels — every pan gesture is, wheel and keyboard included;
-   *  - no mounted node bodies: their pixels are core-owned siblings that
-   *    would shift with the blit and be re-laid a commit later;
-   *  - **no minimap and no controls.** The panels are pinned to the pane
-   *    while their pixels ride the blit, so they need a repaint claim per
-   *    frame — and any claim overlapping a node with a pending blit
-   *    poisons it (react-x11#295's race fix, node-granular on purpose).
-   *    One frame is a pure blit or a repaint, never both; with furniture
-   *    up, it is a repaint. A rect-granular gate for element blits is
-   *    react-x11#309.
+   * Still a full repaint when:
+   *  - the zoom moved (scaling is not a blit) or the shift is fractional —
+   *    every real pan gesture is whole pixels;
+   *  - mounted node bodies exist: they are core-owned siblings whose
+   *    gesture-time commits claim *inside* the rect every step, which
+   *    declines the blit anyway — bailing early skips the churn;
+   *  - the furniture bands would eat the pane (a tiny pane, or panels on
+   *    both the top and the bottom of a short one).
    */
   private _blitPan(previous: Viewport, next: Viewport): boolean {
     if (next.zoom !== previous.zoom) return false;
     if (this._bodiesKey !== '') return false;
-    if (this._miniMapOptions() || this._controlsOptions()) return false;
     const dx = Math.round(next.x - previous.x);
     const dy = Math.round(next.y - previous.y);
     if (dx === 0 && dy === 0) return true; // sub-pixel: nothing to show yet
     if (next.x - previous.x !== dx || next.y - previous.y !== dy) return false;
     const pane = this._pane();
-    if (pane.width < 64 || pane.height < 64) return false;
-    if (Math.abs(dx) >= pane.width || Math.abs(dy) >= pane.height) {
+
+    // The horizontal bands the furniture lives in. Full-width, because the
+    // graph beside a panel must repaint too — it does not ride the blit.
+    let topBand = 0;
+    let bottomBand = 0;
+    const claim = (panel: FlowRect, position: string | undefined): void => {
+      if ((position ?? 'bottom-right').startsWith('top')) {
+        topBand = Math.max(topBand, panel.y + panel.height - pane.y);
+      } else {
+        bottomBand = Math.max(bottomBand, pane.y + pane.height - panel.y);
+      }
+    };
+    const map = this._miniMapOptions();
+    if (map) {
+      claim(
+        this._corner(
+          map.position,
+          map.width ?? MINIMAP_W,
+          map.height ?? MINIMAP_H,
+          'bottom-right',
+        ),
+        map.position,
+      );
+    }
+    const buttons = this._controlButtons();
+    if (buttons.length > 0) {
+      const first = buttons[0].rect;
+      const last = buttons[buttons.length - 1].rect;
+      claim(
+        unionRects(first, last),
+        this._controlsOptions()?.position ?? 'bottom-left',
+      );
+    }
+    const blit: FlowRect = {
+      x: pane.x,
+      y: pane.y + topBand,
+      width: pane.width,
+      height: pane.height - topBand - bottomBand,
+    };
+    if (blit.width < 64 || blit.height < 64) return false;
+    if (Math.abs(dx) >= blit.width || Math.abs(dy) >= blit.height) {
       return false;
     }
-    this.scrollContents(pane, dx, dy);
+    this.scrollContents(blit, dx, dy);
+    if (topBand > 0) {
+      this.invalidate(
+        false,
+        { x: pane.x, y: pane.y, width: pane.width, height: topBand },
+        'scroll',
+      );
+    }
+    if (bottomBand > 0) {
+      this.invalidate(
+        false,
+        {
+          x: pane.x,
+          y: blit.y + blit.height,
+          width: pane.width,
+          height: bottomBand,
+        },
+        'scroll',
+      );
+    }
     return true;
   }
 
