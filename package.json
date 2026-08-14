@@ -64,6 +64,10 @@
       "types": "./dist/embed/index.d.ts",
       "default": "./dist/embed/index.js"
     },
+    "./flow": {
+      "types": "./dist/flow/index.d.ts",
+      "default": "./dist/flow/index.js"
+    },
     "./markdown": {
       "types": "./dist/markdown/index.d.ts",
       "default": "./dist/markdown/index.js"
@@ -111,6 +115,8 @@
     "examples:charts": "tsx examples/charts.tsx",
     "examples:code": "tsx examples/code.tsx",
     "examples:code-editor": "tsx examples/code-editor.tsx",
+    "examples:flow": "tsx examples/flow.tsx",
+    "examples:flow-stress": "tsx examples/flow-stress.tsx",
     "examples:markdown": "tsx examples/markdown.tsx",
     "examples:media-player": "tsx examples/media-player.tsx",
     "examples:terminal": "tsx examples/terminal.tsx",
@@ -149,7 +155,7 @@
     "globals": "^17.8.0",
     "prettier": "^3.6.0",
     "react": "^19.2.8",
-    "react-x11": "github:sidorares/react-x11#ceb9da51c22bf7d91da44656ff2db2d7fada647e",
+    "react-x11": "github:sidorares/react-x11#master",
     "tsx": "^4.23.1",
     "typescript": "^7.0.2"
   },

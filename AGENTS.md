@@ -115,6 +115,48 @@ learn, so `src/calendar/` has no `registerElement` call, no JSX augmentation
 and **no side effect at import time at all**. Both shapes belong here; the
 `registerElement` seam is a tool, not an entry requirement.
 
+### Drawing beats composing when the viewport is a transform
+
+`src/flow/` is the third shape, and the reason it is not the second is worth
+recording because the next component with a viewport will face it too.
+
+A graph editor looks like composition: a `<box>` per node, absolutely
+positioned. It cannot be. Pan and zoom are a _transform_, and this renderer's
+style vocabulary has no transform — so a composed graph would have to
+re-render every node through React and re-lay-out every node through yoga on
+every pointer step of a pan, and zoom could not scale text at all. `<Flow>`
+therefore registers one element and draws the whole graph in its `paint`,
+the way `<codeeditor>` draws a whole text editor: panning is two numbers and
+one node's damage rect, zoom is arithmetic, and React sees nothing until the
+graph itself changes.
+
+What that costs is the thing react-flow is best known for — the default node
+type is a `paint` callback rather than a React component. `FlowPainter`
+exists so that a type's drawing is written against something that also works
+on the mock backend.
+
+**And then the escape hatch, which is worth understanding before it is
+copied.** A node whose body is a form cannot be a picture, so a node type may
+`render` a real react-x11 tree instead. The pane cannot _contain_ it —
+`Node.paint` paints a node's children before the node's own drawing, so
+anything mounted inside the pane would be painted over by the graph — so
+`<Flow>` renders a `<box>` around the pane and mounts the bodies as
+absolutely positioned _siblings_, at rectangles the pane hands over through
+`onNodeBodies`. The pane stays the only thing that knows where a node is; the
+React half only places boxes.
+
+Three consequences are load-bearing and are documented at the seam: a mounted
+body re-renders as the viewport moves (the cost the drawn path exists to
+avoid, paid only by the nodes that opt in), it does not scale with the zoom
+(there is no transform), and its type reserves a `headerHeight` strip the
+body does not cover, because a node made entirely of text fields has nothing
+left to drag.
+
+The rule to carry forward: **ask whether the feature's viewport is a
+transform.** If it is, the element draws, and anything that has to be a real
+widget is mounted beside it rather than inside it. If it is not — a calendar,
+a date picker — compose.
+
 `src/calendar/hx.ts` is what makes the no-JSX rule survive TypeScript.
 `React.createElement`'s own overloads are `@types/react`'s and describe the
 DOM, so a `<box onKeyDown>` handler gets checked against React's
@@ -791,20 +833,20 @@ moved: `src/tree/` is a successor that imports none of it, because core is
 retiring the widget rather than handing it over. What that changes about how
 one is written is in "Replacing a core widget rather than moving it" above.
 
-| Candidate                                        | Where it is now                                          | Status                                                                                                                                                                       |
-| ------------------------------------------------ | -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `<markdown>`, `<html>`                           | replaced by `src/markdown/` here (see above)             | **Done** for markdown, **never** for html. ntk's document widgets are deprecated; see [ntk#106](https://github.com/sidorares/ntk/issues/106).                                |
-| MDX in `<Markdown>`                              | reserved seams only (`component` AST node)               | **Planned.** Composition-friendly by construction; the parser is the only part that grows. Streaming-compatible in principle.                                                |
-| `<svg>`, `<tex>`                                 | ntk (`SvgView`, `layoutTex`), wrapped in react-x11       | **Staying in ntk**, per ntk#106. Recorded here so it is not reopened.                                                                                                        |
-| mermaid                                          | nowhere — dropped from ntk                               | **Dropped**, not extracted: 155 MB of install closure for a grammar. If it comes back, it comes back here, as its own subpath, and it stays optional.                        |
-| `<Tabs>`                                         | react-x11 `src/components/Tabs.js`                       | **Open.** May stay in core. Undecided — do not move it on a hunch.                                                                                                           |
-| `<Tree>`                                         | superseded by `src/tree/` here (see above)               | **Done.** Core's `src/components/Tree.js` is being retired; this is a successor, not a wrapper, and imports none of it. See "Replacing a core widget rather than moving it". |
-| 3D scene graph, Three.js / r3f layer, `Canvas3D` | react-x11 `src/scene3d.js`, `src/components/Canvas3D.js` | **Candidate**, with `<glarea>` staying in core. See "The boundary can run through a feature".                                                                                |
-| react-flow clone                                 | prototype, not yet in any repo                           | **Incoming.** A node/edge graph editor: big, pure composition, small fraction of apps — this package's shape exactly.                                                        |
-| `<Terminal>`, `<MediaPlayer>`                    | new, here (`src/terminal/`, `src/media-player/`)         | **Done.** Built on core's `<foreign>`; the wrapper is here because a binary dependency can never be core's. See "Running someone else's program".                            |
-| `<TrayHost>`                                     | new, here (`src/tray-host/`)                             | **Done** (issue #17). XEmbed's third consumer here, and the other side of it. Core keeps the _plug_ side — `createRoot({ embedInto })` is renderer internals.                |
-| A StatusNotifierItem host                        | nowhere yet                                              | **Planned**, as a sibling of `<TrayHost>` with its own issue. Shares intent and nothing else: it pairs with core's `dbusmenu.js`, not with `<foreign>`.                      |
-| A pure-JS VT backend for `<Terminal>`            | new, here (`src/terminal/vt/`)                           | **Done** (issue #19). `backend="vt"`, behind the existing props: pty + `@xterm/headless` + a cell-grid renderer. See "The terminal that is not somebody else's program".     |
+| Candidate                                        | Where it is now                                          | Status                                                                                                                                                                        |
+| ------------------------------------------------ | -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `<markdown>`, `<html>`                           | replaced by `src/markdown/` here (see above)             | **Done** for markdown, **never** for html. ntk's document widgets are deprecated; see [ntk#106](https://github.com/sidorares/ntk/issues/106).                                 |
+| MDX in `<Markdown>`                              | reserved seams only (`component` AST node)               | **Planned.** Composition-friendly by construction; the parser is the only part that grows. Streaming-compatible in principle.                                                 |
+| `<svg>`, `<tex>`                                 | ntk (`SvgView`, `layoutTex`), wrapped in react-x11       | **Staying in ntk**, per ntk#106. Recorded here so it is not reopened.                                                                                                         |
+| mermaid                                          | nowhere — dropped from ntk                               | **Dropped**, not extracted: 155 MB of install closure for a grammar. If it comes back, it comes back here, as its own subpath, and it stays optional.                         |
+| `<Tabs>`                                         | react-x11 `src/components/Tabs.js`                       | **Open.** May stay in core. Undecided — do not move it on a hunch.                                                                                                            |
+| `<Tree>`                                         | superseded by `src/tree/` here (see above)               | **Done.** Core's `src/components/Tree.js` is being retired; this is a successor, not a wrapper, and imports none of it. See "Replacing a core widget rather than moving it".  |
+| 3D scene graph, Three.js / r3f layer, `Canvas3D` | react-x11 `src/scene3d.js`, `src/components/Canvas3D.js` | **Candidate**, with `<glarea>` staying in core. See "The boundary can run through a feature".                                                                                 |
+| react-flow clone                                 | `src/flow/` here                                         | **Done.** `<Flow>`: react-flow's surface API over one element that draws the graph, with a `render` seam for bodies that must be real widgets. See "Drawing beats composing". |
+| `<Terminal>`, `<MediaPlayer>`                    | new, here (`src/terminal/`, `src/media-player/`)         | **Done.** Built on core's `<foreign>`; the wrapper is here because a binary dependency can never be core's. See "Running someone else's program".                             |
+| `<TrayHost>`                                     | new, here (`src/tray-host/`)                             | **Done** (issue #17). XEmbed's third consumer here, and the other side of it. Core keeps the _plug_ side — `createRoot({ embedInto })` is renderer internals.                 |
+| A StatusNotifierItem host                        | nowhere yet                                              | **Planned**, as a sibling of `<TrayHost>` with its own issue. Shares intent and nothing else: it pairs with core's `dbusmenu.js`, not with `<foreign>`.                       |
+| A pure-JS VT backend for `<Terminal>`            | new, here (`src/terminal/vt/`)                           | **Done** (issue #19). `backend="vt"`, behind the existing props: pty + `@xterm/headless` + a cell-grid renderer. See "The terminal that is not somebody else's program".      |
 
 Verified against ntk 7.2.0 on 2026-08-09: `MarkdownView`, `HtmlView`,
 `SvgView` and `layoutTex` are all still exported; only mermaid is gone.
