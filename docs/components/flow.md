@@ -226,10 +226,14 @@ Everything in there behaves the way it does anywhere else: the checkbox takes
 clicks, the textarea takes the keyboard — Delete deletes _text_ while it has
 the focus, not the node. Three things follow, and all three are the point:
 
-- **A move re-renders nothing.** The pane recomposites body rects inside
-  the gesture dispatch itself, so the overlay box and the drawn card land
-  in the same frame — and the body component is memoized on the node, its
-  selection, the zoom and its size, so a drag or a pan is one style-only
+- **A move re-renders nothing, and cannot trail.** The pane recomposites
+  body rects inside the gesture dispatch, and gesture-time emissions are
+  committed synchronously — pointer motion dispatches at continuous
+  priority, whose ordinary React updates the scheduler may hold across
+  several frames while the pane paints each step, which showed as the body
+  converging on the card a few updates late. The flush pins both to the
+  same frame; the body component stays memoized on the node, its
+  selection, the zoom and its size, so the per-step cost is one style-only
   commit on one box. `render` is re-invoked only when what it shows could
   have changed.
 - **It does not scale with the zoom.** The box does; there is no transform

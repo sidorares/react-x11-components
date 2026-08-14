@@ -22,6 +22,7 @@ import React, {
   useState,
 } from 'react';
 import type { Dispatch, ReactElement, SetStateAction } from 'react';
+import { Renderer } from 'react-x11';
 import { registerElement, registeredElements } from 'react-x11/host';
 import { createStyles, flattenStyle } from 'react-x11/style';
 // Loads the module the JSX augmentation at the bottom targets: nothing in
@@ -75,6 +76,32 @@ const styles = createStyles({
   clip: { overflow: 'hidden' },
   fill: { flexGrow: 1 },
 });
+
+/**
+ * Commit a state update before returning, whatever lane the surrounding
+ * dispatch runs in.
+ *
+ * Pointer motion and the wheel dispatch at *continuous* priority, whose
+ * React updates the scheduler may hold across several frames — while the
+ * pane paints every gesture step immediately from its own state. A mounted
+ * node body positioned through ordinary setState therefore trails the drawn
+ * card by however many steps queue up, converging only when the gesture
+ * pauses; this is what "the content lags and catches up" looks like. The
+ * reconciler's own escape hatch forces the render and commit inline, so the
+ * body's box moves in the same frame as the card that carries it.
+ *
+ * `Renderer` is documented as an unstable escape hatch, so the shape is
+ * probed: a core that drops it degrades to the plain setState — laggy under
+ * continuous input, never wrong.
+ */
+const flushSync: (fn: () => void) => void =
+  typeof (Renderer as { flushSyncFromReconciler?: unknown })
+    .flushSyncFromReconciler === 'function'
+    ? (fn) =>
+        void (
+          Renderer as { flushSyncFromReconciler: (fn: () => void) => void }
+        ).flushSyncFromReconciler(fn)
+    : (fn) => fn();
 
 interface FlowNodeBodyProps {
   type: FlowNodeType<unknown>;
@@ -265,6 +292,12 @@ export function Flow<N = FlowNodeData, E = unknown>(
     [nodeTypes],
   );
   const [bodies, setBodies] = useState<readonly NodeBodyRect[]>([]);
+  // Gesture-time emissions commit inline (see `flushSync` above); the rest —
+  // a programmatic `fitView`, the first paint — take the ordinary path.
+  const handleBodies = (next: readonly NodeBodyRect[], sync: boolean): void => {
+    if (sync) flushSync(() => setBodies(next));
+    else setBodies(next);
+  };
   const byId = useMemo(() => {
     const map = new Map<string, FlowNode<N>>();
     if (mounts) for (const node of currentNodes) map.set(node.id, node);
@@ -326,7 +359,7 @@ export function Flow<N = FlowNodeData, E = unknown>(
       // `preventDefault()` vetoes, with no forwarding here — and the bare
       // `<flowgraph>` element zooms and hovers on its own.
       onWheel,
-      onNodeBodies: mounts ? setBodies : undefined,
+      onNodeBodies: mounts ? handleBodies : undefined,
       style: styles.fill,
       role: 'group',
       'aria-label': rest['aria-label'] ?? 'Flow graph',

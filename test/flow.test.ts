@@ -1343,6 +1343,66 @@ test('a drag step recomposites mounted bodies in the same dispatch', async () =>
   await act(() => seam.defaultMouseUp(synth(paneAbs.x + 240, paneAbs.y + 130)));
 });
 
+test('the body commit is synchronous inside the gesture dispatch', async () => {
+  // The stronger property, the one the eye checks: motion dispatches at
+  // continuous priority, whose React updates the scheduler may hold across
+  // frames — so an async setState converges 2–3 updates late while the pane
+  // tracks the pointer. The gesture-time emission flushes the commit before
+  // the dispatch returns: the overlay box's committed style already carries
+  // the step's position when `defaultMouseDrag` comes back, with no flush,
+  // no settle, no frame in between.
+  const overlay = (): { style?: { left?: number; top?: number } } => {
+    const wrapper = pane().parent!;
+    const box = wrapper.children.find((c) => c.kind === 'box');
+    assert.ok(box, 'the overlay box is mounted');
+    return retained(box).props as {
+      style?: { left?: number; top?: number };
+    };
+  };
+  await renderX11(
+    h(TypedFlow, {
+      nodes: [
+        {
+          id: 'form',
+          type: 'form',
+          position: { x: 100, y: 100 },
+          width: 200,
+          height: 120,
+        },
+      ],
+      edges: [],
+      nodeTypes: { form: mountedType },
+    }),
+  );
+  const seam = pane() as unknown as {
+    defaultMouseDown(ev: unknown): void;
+    defaultMouseDrag(ev: unknown): void;
+    defaultMouseUp(ev: unknown): void;
+  };
+  const synth = (x: number, y: number) => ({
+    x,
+    y,
+    button: 1,
+    shiftKey: false,
+    ctrlKey: false,
+    detail: 1,
+    preventDefault() {},
+    capturePointer() {},
+  });
+  const paneAbs = pane().abs;
+  await act(() =>
+    seam.defaultMouseDown(synth(paneAbs.x + 200, paneAbs.y + 110)),
+  );
+
+  // No act, no await: the dispatch itself must leave the box committed.
+  seam.defaultMouseDrag(synth(paneAbs.x + 250, paneAbs.y + 140));
+  const style = overlay().style;
+  assert.strictEqual(style?.left, 155, 'left committed inside the dispatch');
+  assert.strictEqual(style?.top, 150, 'top committed inside the dispatch');
+
+  await act(() => seam.defaultMouseUp(synth(paneAbs.x + 250, paneAbs.y + 140)));
+});
+
 test('a value-identical inline graph repaints nothing it can name', async () => {
   // `nodes={[…]} edges={[…]}` written inline hands the pane fresh arrays of
   // fresh objects on every app render. The diffs keep the built entries, so

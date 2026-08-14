@@ -514,6 +514,11 @@ export class FlowGraphNode extends Node implements FlowInstance {
   /** Inside `paint`, where an invalidation would only schedule a redraw of
    * the frame being drawn. */
   private _painting = false;
+  /** Inside a live input dispatch — what makes a body emission `sync`.
+   * Motion and the wheel run at continuous priority, whose React updates
+   * can trail the pane's own painting by frames; an emission made under
+   * this flag asks the receiver to commit before the dispatch returns. */
+  private _gestureSync = false;
   /** The scene has been offered to assistive tech at least once — items
    * only exist once layout has placed them, which no commit marks. */
   private _sceneAnnounced = false;
@@ -1781,6 +1786,15 @@ export class FlowGraphNode extends Node implements FlowInstance {
     const gesture = this._gesture;
     if (!gesture) return;
     ev.preventDefault();
+    this._gestureSync = true;
+    try {
+      this._dragDispatch(gesture, ev);
+    } finally {
+      this._gestureSync = false;
+    }
+  }
+
+  private _dragDispatch(gesture: Gesture, ev: MouseEvent): void {
     switch (gesture.kind) {
       case 'pan':
         if (!gesture.pans) return;
@@ -2220,6 +2234,15 @@ export class FlowGraphNode extends Node implements FlowInstance {
    * consuming it here is what keeps the scroll chain out of the pane. */
   override defaultWheel(ev: WheelEvent): void {
     if (this.props.disabled) return;
+    this._gestureSync = true;
+    try {
+      this._wheelDispatch(ev);
+    } finally {
+      this._gestureSync = false;
+    }
+  }
+
+  private _wheelDispatch(ev: WheelEvent): void {
     this._sync();
     const zooming = ev.ctrlKey || this._bool('zoomOnScroll', true);
     if (zooming) {
@@ -2349,6 +2372,15 @@ export class FlowGraphNode extends Node implements FlowInstance {
 
   override defaultKeyDown(ev: KeyboardEvent): void {
     if (this.props.disabled) return;
+    this._gestureSync = true;
+    try {
+      this._keyDispatch(ev);
+    } finally {
+      this._gestureSync = false;
+    }
+  }
+
+  private _keyDispatch(ev: KeyboardEvent): void {
     this._sync();
     const { keysym } = ev;
 
@@ -2683,7 +2715,9 @@ export class FlowGraphNode extends Node implements FlowInstance {
    */
   private _emitBodies(): void {
     const notify =
-      this._prop<(bodies: readonly NodeBodyRect[]) => void>('onNodeBodies');
+      this._prop<(bodies: readonly NodeBodyRect[], sync: boolean) => void>(
+        'onNodeBodies',
+      );
     if (!notify) return;
     const v = this._viewport();
     const pane = this._pane();
@@ -2714,7 +2748,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
       .join('|');
     if (key === this._bodiesKey) return;
     this._bodiesKey = key;
-    notify(bodies);
+    notify(bodies, this._gestureSync);
   }
 
   /** The grid, drawn only inside `region` — the pass's damage on a partial

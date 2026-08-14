@@ -623,6 +623,12 @@ export interface FlowProps<N = FlowNodeData, E = unknown> {
    * mounted, whenever that changes. Wired by `<Flow>` — this is the seam
    * between the drawn half and the mounted one, and the raw `<flowgraph>`
    * element is the only reason it is a prop rather than a private method.
+   *
+   * `sync` is true when the change came out of a live gesture — a drag
+   * step, a wheel tick, an arrow key. Motion dispatches at continuous
+   * priority, which React may hold across several frames while the pane
+   * paints each step immediately; a gesture-time receiver must commit
+   * synchronously or the mounted bodies visibly trail the drawn cards.
    */
-  onNodeBodies?: (bodies: readonly NodeBodyRect[]) => void;
+  onNodeBodies?: (bodies: readonly NodeBodyRect[], sync: boolean) => void;
 }
