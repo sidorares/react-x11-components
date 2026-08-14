@@ -320,6 +320,8 @@ measuring, and they pull in opposite directions:
   (3.9 MB a frame down to 1.3). For twenty edges, or for handles and cards,
   which are small and scattered, it is a loss. So edges and arrowheads
   batch **above a threshold** and everything else is drawn one at a time.
+  (Filed upstream as ntk#264; a tiled fill would take the grid out of the
+  question entirely — ntk#263.)
 
 The second rule is the one worth remembering, because the obvious
 optimisation is the wrong one below the threshold.
@@ -349,6 +351,12 @@ Measured on the 300-node scene, one drag step went from a full repaint
 (~2470 requests, ~150 ms) to ~400 requests and ~30 ms, and the small scene's
 step from ~380 ms (its animated edge was invalidating the pane per tick) to
 ~70 ms.
+
+The two seams this stands on are renderer internals with graceful fallbacks,
+filed as react-x11#301; the wheel/hover forwarding the component does is
+react-x11#302. Panning is the remaining full repaint — a pan is
+`scrollRegion`-shaped, and exposing core's blit machinery to element-owned
+viewports is react-x11#303.
 
 ## Example
 

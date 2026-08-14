@@ -205,7 +205,7 @@ export function Flow<N = FlowNodeData, E = unknown>(
   const handleWheel = (ev: WheelEvent<DrawnNode>): void => {
     onWheel?.(ev);
     // The same veto the default-action seam gives every other gesture; the
-    // wheel just has no seam of its own to route through.
+    // wheel just has no seam of its own to route through (react-x11#302).
     if (!ev.defaultPrevented) pane.current?.handleWheel(ev);
   };
   const handleMouseMove = (ev: MouseEvent<DrawnNode>): void => {

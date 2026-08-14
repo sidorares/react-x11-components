@@ -16,9 +16,9 @@
 // **How input arrives.** Through the default-action seam (react-x11#266):
 // `defaultMouseDown`/`Drag`/`Up`, `defaultKeyDown`, `defaultContextMenu` run
 // after the app's own handlers and not at all if one of them called
-// `preventDefault()`. The wheel and plain pointer motion have no such seam,
-// so `<Flow>` forwards those two through `handleWheel`/`handleHover` — with
-// the same veto, checked here.
+// `preventDefault()`. The wheel and plain pointer motion have no such seam
+// (filed as react-x11#302), so `<Flow>` forwards those two through
+// `handleWheel`/`handleHover` — with the same veto, checked here.
 import { Node } from 'react-x11/node';
 import type { Context2D } from 'react-x11/node';
 import type { KeyboardEvent, MouseEvent, WheelEvent } from 'react-x11';
@@ -2296,8 +2296,8 @@ export class FlowGraphNode extends Node implements FlowInstance {
    * [react-x11 gap] `_paintChanged` is internal, like `_paintDamage` above,
    * and carries the same graceful degradation: a core that stops calling
    * this name falls back to its own copy — full-pane damage per commit,
-   * slower and never wrong. A public "this element scopes its own damage"
-   * seam is the ask that would retire both.
+   * slower and never wrong. The public "this element scopes its own damage"
+   * seam that would retire both is filed as react-x11#301.
    *
    * `protected`, and TypeScript never sees the caller: core reaches it
    * through the prototype. `noUnusedLocals` would flag a private member
@@ -2350,10 +2350,9 @@ export class FlowGraphNode extends Node implements FlowInstance {
    * [react-x11 gap] `_paintDamage` is renderer-internal — the per-pass rect
    * `_outsideDamage()` culls the retained tree with, set for exactly the
    * span of `_paintRegion`. An element that draws a whole scene needs the
-   * same answer to cull its own content, and there is no public accessor;
-   * this read is the same shape as the `contentBox()` gap (react-x11#254).
-   * Guarded structurally, so a core that renames it degrades to `null` —
-   * full repaints, never wrong pixels.
+   * same answer to cull its own content, and there is no public accessor —
+   * filed as react-x11#301. Guarded structurally, so a core that renames it
+   * degrades to `null` — full repaints, never wrong pixels.
    */
   private _frameDamage(): FlowRect | null {
     const root = this.root as unknown as { _paintDamage?: unknown } | null;

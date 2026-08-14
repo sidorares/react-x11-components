@@ -226,6 +226,29 @@ class Painter implements FlowPainter {
       ctx.fill();
     }
     if (options.stroke) {
+      // The stroke is a second path, inset by half the pen: ntk's stroke
+      // fast path (ntk#211, #217) takes a border whose ink band lands on
+      // whole pixels — "path inset by bw/2" is its documented contract —
+      // and a band centred on the box edge is half-pixel at every width,
+      // which cost every stroked card a rasterized mask and a PutImage.
+      // This is also core's own `_paintBorder` geometry, so borders drawn
+      // here sit exactly where `<box borderWidth>` puts them.
+      const pen = options.lineWidth ?? 1;
+      if (w > pen && h > pen) {
+        const inset = pen / 2;
+        ctx.beginPath();
+        if (rounded) {
+          ctx.roundRect!(
+            x + inset,
+            y + inset,
+            w - pen,
+            h - pen,
+            Math.max(0, radius - inset),
+          );
+        } else {
+          ctx.rect(x + inset, y + inset, w - pen, h - pen);
+        }
+      }
       this.applyStroke(options);
       ctx.stroke();
       this.clearDash();
