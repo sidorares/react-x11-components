@@ -364,6 +364,38 @@ export function boundsOf(rects: readonly FlowRect[]): FlowRect | null {
   return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
 }
 
+/** The box around two boxes. */
+export function unionRects(a: FlowRect, b: FlowRect): FlowRect {
+  const x = Math.min(a.x, b.x);
+  const y = Math.min(a.y, b.y);
+  return {
+    x,
+    y,
+    width: Math.max(a.x + a.width, b.x + b.width) - x,
+    height: Math.max(a.y + a.height, b.y + b.height) - y,
+  };
+}
+
+/** A box grown by `m` on every side; negative shrinks. */
+export function inflateRect(r: FlowRect, m: number): FlowRect {
+  return {
+    x: r.x - m,
+    y: r.y - m,
+    width: r.width + m * 2,
+    height: r.height + m * 2,
+  };
+}
+
+/** The overlap of two boxes, or null when they have none. */
+export function intersectRects(a: FlowRect, b: FlowRect): FlowRect | null {
+  const x = Math.max(a.x, b.x);
+  const y = Math.max(a.y, b.y);
+  const right = Math.min(a.x + a.width, b.x + b.width);
+  const bottom = Math.min(a.y + a.height, b.y + b.height);
+  if (right <= x || bottom <= y) return null;
+  return { x, y, width: right - x, height: bottom - y };
+}
+
 export function rectsOverlap(a: FlowRect, b: FlowRect): boolean {
   return (
     a.x < b.x + b.width &&

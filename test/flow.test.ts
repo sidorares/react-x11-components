@@ -48,9 +48,12 @@ import type {
 import {
   boundsOf,
   fitViewport,
+  inflateRect,
+  intersectRects,
   measureNode,
   resizeRect,
   resolveHandles,
+  unionRects,
 } from '../src/flow/model.js';
 import {
   distanceToPath,
@@ -477,6 +480,28 @@ test('boundsOf is null for nothing, and the union otherwise', () => {
       { x: 20, y: -5, width: 10, height: 10 },
     ]),
     { x: 0, y: -5, width: 30, height: 15 },
+  );
+});
+
+test('the rect helpers behind damage tracking', () => {
+  const a = { x: 0, y: 0, width: 10, height: 10 };
+  const b = { x: 20, y: 5, width: 10, height: 10 };
+  assert.deepStrictEqual(unionRects(a, b), {
+    x: 0,
+    y: 0,
+    width: 30,
+    height: 15,
+  });
+  assert.deepStrictEqual(inflateRect(a, 3), {
+    x: -3,
+    y: -3,
+    width: 16,
+    height: 16,
+  });
+  assert.deepStrictEqual(intersectRects(a, b), null, 'disjoint boxes');
+  assert.deepStrictEqual(
+    intersectRects(a, { x: 5, y: 5, width: 10, height: 10 }),
+    { x: 5, y: 5, width: 5, height: 5 },
   );
 });
 
@@ -965,6 +990,47 @@ test('a graph with no `render` type mounts nothing and is one node deep', async 
   assert.deepStrictEqual(
     wrapper.children.map((c) => c.kind),
     [FLOW_ELEMENT],
+  );
+});
+
+test('a moved node keeps its measured size; a relabelled one is re-measured', async () => {
+  // The identity diff behind smooth dragging: a nodes array where only a
+  // position changed must not re-measure (the entries are folded in place),
+  // and one where a label changed must — data identity is a structural
+  // change, whatever else stayed the same.
+  const flow: { current: FlowInstance | null } = { current: null };
+  const base: FlowNode[] = [
+    { id: 'a', position: { x: 0, y: 0 }, data: { label: 'short' } },
+    { id: 'b', position: { x: 0, y: 200 }, data: { label: 'bb' } },
+  ];
+  const { rerender } = await renderX11(
+    h(TypedFlow, { ref: flow, nodes: base, edges: [] }),
+  );
+  const before = flow.current!.getNodeBounds('a')!;
+
+  const moved = base.map((n) =>
+    n.id === 'a' ? { ...n, position: { x: 40, y: 8 } } : n,
+  );
+  await act(() =>
+    rerender(h(TypedFlow, { ref: flow, nodes: moved, edges: [] })),
+  );
+  const after = flow.current!.getNodeBounds('a')!;
+  assert.strictEqual(after.x, 40);
+  assert.strictEqual(after.y, 8);
+  assert.strictEqual(after.width, before.width, 'size survived the move');
+
+  const relabelled = moved.map((n) =>
+    n.id === 'a'
+      ? { ...n, data: { label: 'a very much longer label than before' } }
+      : n,
+  );
+  await act(() =>
+    rerender(h(TypedFlow, { ref: flow, nodes: relabelled, edges: [] })),
+  );
+  const wide = flow.current!.getNodeBounds('a')!;
+  assert.ok(
+    wide.width > before.width,
+    `the new label re-measured (${wide.width} vs ${before.width})`,
   );
 });
 

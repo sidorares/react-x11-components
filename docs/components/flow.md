@@ -324,6 +324,32 @@ measuring, and they pull in opposite directions:
 The second rule is the one worth remembering, because the obvious
 optimisation is the wrong one below the threshold.
 
+### Gestures repaint what moved, and nothing else
+
+A drag step does not repaint the graph. The pane claims a damage rect — the
+moved nodes old and new, plus the routed bounds of every edge on them — and
+the paint pass culls to the rect the renderer hands back: grid, edges, nodes,
+minimap and controls outside it are skipped, and their pixels survive on the
+window from the previous frame. The window's backing is the composition
+cache; the damage rect is the dirty state. Resize, the connection line,
+hover and the selection box all claim the same way, and an animated edge's
+dash timer invalidates the box the animated edges were last drawn in rather
+than the pane.
+
+The other half is the commit. The app applies each step's `position` change,
+so the pane's props get a new `nodes` array per step — and a new identity for
+every inline handler and object prop with it. `applyProps` identity-diffs the
+array against its entries: a change that touches nothing but `position` is
+folded in place (no re-measuring, no re-sorting, damage = the box it moved
+through), object props like `background={{ … }}` are compared by value, and
+handler churn repaints nothing at all. Anything structural — a label, a size,
+a selection, an add or remove — falls back to the full rebuild it needs.
+
+Measured on the 300-node scene, one drag step went from a full repaint
+(~2470 requests, ~150 ms) to ~400 requests and ~30 ms, and the small scene's
+step from ~380 ms (its animated edge was invalidating the pane per tick) to
+~70 ms.
+
 ## Example
 
 `npm run examples:flow` is a build-pipeline editor with both kinds of node
@@ -333,4 +359,6 @@ of real checkboxes, buttons and a textarea.
 `npm run examples:flow-stress` is the one to reach for when changing how the
 pane draws: two scene buttons (20 nodes on a spiral, 300 nodes and 745 edges
 in a fan), a **pan** button that drives the viewport continuously, and a live
-readout of requests, bytes and frames per second taken from the trace.
+readout from the trace — per pan frame while the loop runs, per drag step
+while you drag a node. Pan measures the full-frame path; dragging measures
+the damage-scoped one.

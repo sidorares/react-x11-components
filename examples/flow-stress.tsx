@@ -6,12 +6,18 @@
 // rate the pan loop actually achieved.
 //
 // Everything the pane draws ends up as X protocol, so `react-x11/debug`'s
-// trace is the measurement: `requests` and `bytesOut` per frame, and
-// `byOpcode` for where a regression came from. The two are not the same
-// question — batching draws into one path cuts requests and *raises* bytes,
-// because a path's mask is its bounding box — which is why the pane batches
-// edges above a threshold and draws cards and handles one at a time. See
-// docs/components/flow.md, "What the pane batches".
+// trace is the measurement: `requests` and `bytesOut`, and `byOpcode` for
+// where a regression came from. Two numbers, two interactive paths:
+//
+//   pan   — repaints everything (the whole scene translated), so it measures
+//           the full-frame cost per scene. Press **pan** for the loop.
+//   drag  — repaints only the box the node moved through: the pane claims
+//           damage for the moved node and its edges, and everything outside
+//           it survives on the window from the last frame. Grab any node and
+//           the readout shows what each step actually cost.
+//
+// The readout is per pan frame while the loop runs, and per drag step while
+// you drag. See docs/components/flow.md, "What the pane batches".
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactElement } from 'react';
 import { Button, createRoot } from 'react-x11';
@@ -182,7 +188,9 @@ const TICK_MS = 16;
 function App(): ReactElement {
   const [scene, setScene] = useState<Scene>(EMPTY);
   const [panning, setPanning] = useState(false);
-  const [stats, setStats] = useState('press a scene, then pan');
+  const [stats, setStats] = useState(
+    'press a scene, then drag a node — or pan for the full-frame loop',
+  );
   const flow = useRef<FlowInstance>(null);
   const trace = useRef<TraceSession | null>(null);
 
@@ -191,59 +199,83 @@ function App(): ReactElement {
   const load = useCallback((next: Scene) => {
     setScene(next);
     setStats(`${next.nodes.length} nodes, ${next.edges.length} edges`);
-    // the graph changed under the viewport; frame it again
-    setTimeout(() => flow.current?.fitView({ padding: 0.06 }), 0);
+  }, []);
+
+  // One trace for the whole run: the readout below reports deltas out of it,
+  // so it measures the pan loop and a manual drag alike.
+  const frames = useRef(0);
+  const steps = useRef(0);
+  useEffect(() => {
+    const session = startTrace({ sink: 'summary' });
+    trace.current = session;
+    return () => {
+      trace.current = null;
+      const totals = session.stop();
+      // The opcode tally is where a regression names itself — one line, on
+      // exit, so the terminal is not a firehose while it runs.
+      const top = [...totals.byOpcode.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 4)
+        .map(([name, count]) => `${name} ${count}`)
+        .join(', ');
+      console.log(`[flow-stress] ${top}`);
+    };
   }, []);
 
   useEffect(() => {
     if (!panning) return;
-    const session = startTrace({ sink: 'summary' });
-    trace.current = session;
-    let ticks = 0;
     let dx = 2;
-    const started = Date.now();
-    const before = {
-      requests: session.stats.requests,
-      bytes: session.stats.bytesOut,
-    };
-
     const tick = setInterval(() => {
       const viewport = flow.current?.getViewport();
       if (!viewport) return;
       // reverse at the edges so the graph stays on screen
       if (viewport.x < -400 || viewport.x > 400) dx = -dx;
       flow.current?.setViewport({ x: viewport.x + dx });
-      ticks++;
+      frames.current++;
     }, TICK_MS);
+    return () => clearInterval(tick);
+  }, [panning]);
 
+  useEffect(() => {
+    const last = { requests: 0, bytes: 0, frames: 0, steps: 0, at: Date.now() };
+    const seed = trace.current?.stats;
+    if (seed) {
+      last.requests = seed.requests;
+      last.bytes = seed.bytesOut;
+    }
     const report = setInterval(() => {
-      if (ticks === 0) return;
-      const elapsed = (Date.now() - started) / 1000;
-      const requests = (session.stats.requests - before.requests) / ticks;
-      const bytes = (session.stats.bytesOut - before.bytes) / ticks;
-      setStats(
-        `${scene.nodes.length} nodes · ${scene.edges.length} edges — ` +
-          `${requests.toFixed(0)} requests/frame · ` +
-          `${(bytes / 1024).toFixed(1)} KB/frame · ` +
-          `${(ticks / elapsed).toFixed(0)} frames/s`,
-      );
-    }, 500);
-
-    return () => {
-      clearInterval(tick);
-      clearInterval(report);
-      const totals = session.stop();
-      trace.current = null;
-      // The opcode tally is where a regression names itself — one line, on
-      // stop, so the terminal is not a firehose while it runs.
-      const top = [...totals.byOpcode.entries()]
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, 4)
-        .map(([name, count]) => `${name} ${count}`)
-        .join(', ');
-      console.log(`[flow-stress] ${ticks} frames — ${top}`);
-    };
-  }, [panning, scene]);
+      const stats = trace.current?.stats;
+      if (!stats) return;
+      const now = Date.now();
+      const dt = (now - last.at) / 1000;
+      const requests = stats.requests - last.requests;
+      const kb = (stats.bytesOut - last.bytes) / 1024;
+      const panned = frames.current - last.frames;
+      const dragged = steps.current - last.steps;
+      last.requests = stats.requests;
+      last.bytes = stats.bytesOut;
+      last.frames = frames.current;
+      last.steps = steps.current;
+      last.at = now;
+      const head = `${scene.nodes.length} nodes · ${scene.edges.length} edges — `;
+      if (panned > 0) {
+        setStats(
+          head +
+            `pan: ${(requests / panned).toFixed(0)} req/frame · ` +
+            `${(kb / panned).toFixed(1)} KB/frame · ` +
+            `${(panned / dt).toFixed(0)} frames/s`,
+        );
+      } else if (dragged > 0) {
+        setStats(
+          head +
+            `drag: ${(requests / dragged).toFixed(0)} req/step · ` +
+            `${(kb / dragged).toFixed(1)} KB/step · ` +
+            `${(dragged / dt).toFixed(0)} steps/s`,
+        );
+      }
+    }, 600);
+    return () => clearInterval(report);
+  }, [scene]);
 
   return (
     <window
@@ -271,12 +303,21 @@ function App(): ReactElement {
         </box>
         <text style={{ fontSize: 12, color: '$textMuted' }}>{stats}</text>
         <Flow
+          // A remount per scene: `defaultNodes` is read once, and the
+          // uncontrolled pane owning the arrays is what makes every node
+          // draggable with no state wiring up here.
+          key={scene.name}
           ref={flow}
-          nodes={scene.nodes}
-          edges={scene.edges}
-          // Uncontrolled would re-render this component on every drag step;
-          // the point here is the pane's own cost, so nothing above it moves.
-          nodesDraggable={false}
+          defaultNodes={scene.nodes}
+          defaultEdges={scene.edges}
+          onNodesChange={() => {
+            // one batch per gesture step — counted, never stored: a setState
+            // here would re-render this component per pointer move, and the
+            // pane's own cost is what is being measured
+            steps.current++;
+          }}
+          fitView
+          fitViewOptions={{ padding: 0.06 }}
           minimap
           controls
           background={{ variant: 'dots', gap: 24 }}
