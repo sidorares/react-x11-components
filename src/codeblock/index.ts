@@ -17,8 +17,8 @@
 // another component).
 import { codeRuns, autoTokenStyles } from '../code-language/index.js';
 import type { Language, TokenStyles } from '../code-language/index.js';
-import { tint } from '../richtext/index.js';
 import type { TextRun } from '../richtext/index.js';
+import { tint } from 'react-x11/style';
 import type { Style } from 'react-x11/style';
 
 /** Code is set tighter than prose: the lines are short and the shapes are

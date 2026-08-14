@@ -6,7 +6,7 @@
 // month nav, two glyphs out of core's system icon set.
 import React, { useImperativeHandle, useMemo, useState } from 'react';
 import type { ReactElement, ReactNode, Ref } from 'react';
-import { createStyles } from 'react-x11/style';
+import { createStyles, tint } from 'react-x11/style';
 import type { Style } from 'react-x11/style';
 import { Icon, useTheme } from 'react-x11';
 import type { KeyboardEvent, Theme } from 'react-x11';
@@ -24,7 +24,7 @@ import {
 
 import { hx } from './hx.js';
 import type { Host } from './hx.js';
-import { tint, changeEvent } from './internal.js';
+import { changeEvent } from './internal.js';
 import type { WidgetChangeEvent } from './internal.js';
 import {
   addDays,

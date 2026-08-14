@@ -18,10 +18,12 @@ component.
 | [Charts](components/charts.md)                     | `@react-x11/components/charts`           | Cartesian charts; a million points is a normal input.        |
 | [Code](components/code.md)                         | `@react-x11/components/code`             | A static code block: highlighted, selectable.                |
 | [CodeEditor](components/code-editor.md)            | `@react-x11/components/code-editor`      | Multiline code editing: highlighting, completion.            |
+| [Flow](components/flow.md)                         | `@react-x11/components/flow`             | A directed-graph editor: nodes, edges, pan and zoom.         |
 | [Markdown](components/markdown.md)                 | `@react-x11/components/markdown`         | Streaming-friendly GFM with cross-block selection.           |
 | [MediaPlayer](components/media-player.md)          | `@react-x11/components/media-player`     | mpv or VLC, embedded, with real transport control.           |
 | [Terminal](components/terminal.md)                 | `@react-x11/components/terminal`         | A real terminal: an embedded emulator, or its own.           |
 | [TerminalOutput](components/terminal-output.md)    | `@react-x11/components/terminal-output`  | A captured session, rendered. `<Terminal>`'s static sibling. |
+| [Timeline](components/timeline.md)                 | `@react-x11/components/timeline`         | A run of events: a mark per step, a line between.            |
 | [TrayHost](components/tray-host.md)                | `@react-x11/components/tray-host`        | The system tray: applications dock their icons in.           |
 | [Tree](components/tree.md)                         | `@react-x11/components/tree`             | A disclosure tree: seams throughout, and virtualized.        |
 | [Desktop calendar](components/desktop-calendar.md) | `@react-x11/components/desktop-calendar` | The user's real calendar events, over D-Bus. A hook.         |

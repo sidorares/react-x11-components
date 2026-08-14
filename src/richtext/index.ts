@@ -32,7 +32,6 @@ export { useSelectionMenu } from './menu.js';
 export type { SelectionMenuHandlers } from './menu.js';
 export { useLinkClicks } from './links.js';
 export type { LinkHandlers } from './links.js';
-export { tint } from './internal.js';
 
 declare module 'react-x11/jsx-runtime' {
   namespace JSX {

@@ -41,6 +41,7 @@ import React from 'react';
 import type { ReactElement, ReactNode } from 'react';
 import { Icon, useApp, useTheme } from 'react-x11';
 import type { DrawnNode, MouseEvent as X11MouseEvent } from 'react-x11';
+import { tint } from 'react-x11/style';
 import type { Style } from 'react-x11/style';
 
 import type {
@@ -53,7 +54,6 @@ import type {
 import {
   registerRichText,
   RICHTEXT_ELEMENT,
-  tint,
   useSelectionMenu,
 } from '../richtext/index.js';
 import type { RichTextProps, TextRun } from '../richtext/index.js';

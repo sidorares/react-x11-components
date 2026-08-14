@@ -70,6 +70,18 @@ const COMPONENTS = [
   // `<Tree>` shares core's chevron with `<Calendar>` but no module here; the
   // role is the one string only it writes.
   { exportName: 'Tree', dir: 'tree', marker: 'treeitem' },
+  // the element name rather than `flow`, which "overflow" contains
+  { exportName: 'Flow', dir: 'flow', marker: 'flowgraph' },
+  // `<Timeline>` is box-and-text composition and shares nothing at all, which
+  // leaves it short of a marker: the export pulled is the *item* rather than
+  // the root, because the root shakes so well that nothing distinctive
+  // survives it, and the string is the guard message rather than the item's
+  // `listitem` role — `<Flow>` gives its scene items that role too.
+  {
+    exportName: 'TimelineItem',
+    dir: 'timeline',
+    marker: 'inside a <Timeline>',
+  },
 ];
 
 async function bundle(contents: string): Promise<string> {
