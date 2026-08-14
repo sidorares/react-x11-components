@@ -44,18 +44,33 @@ interface TextRun {
   style?: 'normal' | 'italic';
   color?: string;
   bg?: string; // fill painted behind the run — the inline-code chip
-  underline?: string; // 1px rule under the baseline, in this colour — links
+  bgFill?: 'chip' | 'line'; // how `bg` is painted; default 'chip'
+  underline?: string; // rule under the baseline, in this colour — links
+  underlineStyle?: 'single' | 'double' | 'curly' | 'dotted' | 'dashed';
   strike?: string; // 1px rule through the x-height — ~~del~~
   href?: string | null; // link target; null is a link still streaming in
 }
 ```
 
 `text`, `family`, `size`, `weight`, `style` and `color` are ntk-span
-vocabulary and pass straight through to `fonts.layout`. The rest —`bg`,
-`underline`, `strike`, `href` — are this element's, painted by it.
+vocabulary and pass straight through to `fonts.layout`. The rest — `bg`,
+`bgFill`, `underline`, `underlineStyle`, `strike`, `href` — are this
+element's, painted by it.
 
 `href: null` is deliberate and is what makes a streamed `[text](partial-url`
 render as link-styled text that is not yet clickable.
+
+**`bgFill` is the difference between a chip and a cell.** `'chip'` insets the
+fill to the run's ink and pads it a little, which is what an inline-code
+background wants. `'line'` fills the run's exact width and the line's full
+height, so adjacent runs abut with no seam and no bleed — which is what a
+captured terminal session needs, where a two-pixel overhang paints over the
+neighbouring cell and a fill that stops at the descender leaves a gap between
+rows. `<TerminalOutput>` is why the field exists.
+
+`underlineStyle` names SGR 4's sub-parameters. All five are drawn from 1px
+rectangles rather than a stroked path, because the mock backend has no path
+API and a hairline on a text baseline does not need one.
 
 ## Selection is core's
 
@@ -104,10 +119,35 @@ Everything else about the menu — which rows are enabled, the arrow keys,
 Escape, the pointer grab that dismisses it, handing the keyboard back
 afterwards — is core's `openEditMenu` and shared with the field.
 
+## `useLinkClicks(onLink?)`
+
+Following a link. Spread the handlers onto the document root; they return
+handlers that do nothing when `onLink` is absent, so a document with no
+handler simply has inert link text and this module never navigates by itself.
+
+```jsx
+const links = useLinkClicks(onLink);
+
+<box selectable {...links}>
+  …
+</box>;
+```
+
+The whole problem it solves is that **a press on a link is also the start of
+a drag**, and the two are told apart only at the release: a pointer that
+barely moved and left nothing selected was a click, anything else was a
+selection that happened to begin on a link. The handlers never call
+`preventDefault`, so core's own selection still runs after them.
+
+It lived in `<Markdown>` until `<TerminalOutput>` needed it for OSC 8
+hyperlinks, and moved here rather than being copied — there is no markdown in
+it, only `TextRun.href` and `RichTextNode.hrefAtPoint`, both of which are this
+module's.
+
 ## Also exported
 
 - `RichTextNode` — the node class, for a component that wants to subclass or
-  to type a ref.
+  to type a ref. `hrefAtPoint(x, y)` is what `useLinkClicks` reads.
 - `NtkApp`, `TextLayoutLike` — the structural types the node speaks. ntk is
   deliberately loose in react-x11's declarations, so an element says what it
   needs rather than importing a wide type.

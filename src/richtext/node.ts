@@ -77,8 +77,23 @@ export interface TextRun {
   color?: string;
   /** Fill painted behind the run — the inline-code chip. */
   bg?: string;
+  /**
+   * How `bg` is painted. `'chip'` (the default) insets the fill to the run's
+   * ink and pads it slightly, which is what an inline-code background wants.
+   *
+   * `'line'` fills the run's exact width and the line's full height instead,
+   * so adjacent runs abut with no seam and no bleed — what a terminal's
+   * background colours need, where a two-pixel overhang would paint over the
+   * neighbouring cell and a fill that stops at the descender would leave a
+   * gap between rows.
+   */
+  bgFill?: 'chip' | 'line';
   /** 1px rule under the baseline, in this colour — links. */
   underline?: string;
+  /** The rule `underline` draws. Default `'single'`; the rest are SGR 4's
+   *  sub-parameters, which a captured terminal session carries. Ignored
+   *  without `underline`, which is what says the rule exists at all. */
+  underlineStyle?: 'single' | 'double' | 'curly' | 'dotted' | 'dashed';
   /** 1px rule through the x-height, in this colour — `~~del~~`. */
   strike?: string;
   /** Link target. `null` is a link still streaming in (not clickable). */
@@ -252,6 +267,51 @@ function rangeBands(
   return bands;
 }
 
+/**
+ * The rule under a run, in one of SGR 4's five styles.
+ *
+ * All five are built from 1px rectangles rather than a stroked path: the mock
+ * backend has no path API (which is why every `paint` here checks `fillRect`
+ * first), and a hairline stroke on a text baseline is not worth an antialiased
+ * path even where there is one. The curl is a two-level square wave — at a
+ * text size it reads as a squiggle, which is the entire job.
+ */
+function underlineRule(
+  ctx: FillContext,
+  x: number,
+  y: number,
+  width: number,
+  style: NonNullable<TextRun['underlineStyle']>,
+): void {
+  switch (style) {
+    case 'double':
+      ctx.fillRect(x, y, width, 1);
+      ctx.fillRect(x, y + 2, width, 1);
+      return;
+    case 'dotted':
+      for (let i = 0; i < width; i += 2) ctx.fillRect(x + i, y, 1, 1);
+      return;
+    case 'dashed':
+      for (let i = 0; i < width; i += 6) {
+        ctx.fillRect(x + i, y, Math.min(3, width - i), 1);
+      }
+      return;
+    case 'curly':
+      for (let i = 0; i < width; i += 2) {
+        ctx.fillRect(
+          x + i,
+          y + (i % 4 === 0 ? 0 : 1),
+          Math.min(2, width - i),
+          1,
+        );
+      }
+      return;
+    default:
+      ctx.fillRect(x, y, width, 1);
+      return;
+  }
+}
+
 export class RichTextNode extends Node {
   private _layouts = new Map<string, TextLayoutLike | null>();
   private _text: string | null = null;
@@ -416,13 +476,28 @@ export class RichTextNode extends Node {
 
     ctx.save();
 
-    // 1. run decorations that sit under everything: the code chip
+    // 1. run decorations that sit under everything: the code chip, and the
+    //    terminal's cell backgrounds
     for (const line of layout.lines) {
       for (const r of line.runs) {
         const bg = r.span.bg;
         if (!bg) continue;
-        const m = r.run.font.metrics(r.run.size);
         ctx.fillStyle = bg;
+        if (r.span.bgFill === 'line') {
+          // Both edges are rounded from absolute positions rather than the
+          // left being rounded and the width ceiled, so two adjacent runs
+          // agree on the pixel between them: no seam, and no overlap either.
+          const left = Math.round(x + line.x + r.x);
+          const right = Math.round(x + line.x + r.x + r.width);
+          ctx.fillRect(
+            left,
+            Math.round(y + line.y),
+            Math.max(0, right - left),
+            Math.ceil(line.height),
+          );
+          continue;
+        }
+        const m = r.run.font.metrics(r.run.size);
         ctx.fillRect(
           Math.round(x + line.x + r.x - 2),
           Math.round(y + line.baseline - m.ascent),
@@ -459,11 +534,12 @@ export class RichTextNode extends Node {
         const { underline, strike } = r.span;
         if (underline) {
           ctx.fillStyle = underline;
-          ctx.fillRect(
+          underlineRule(
+            ctx,
             Math.round(x + line.x + r.x),
             Math.round(y + line.baseline + 2),
             Math.ceil(r.width),
-            1,
+            r.span.underlineStyle ?? 'single',
           );
         }
         if (strike) {

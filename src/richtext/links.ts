@@ -5,6 +5,12 @@
 // `cursorAt` out deliberately, so which run is a link and what a click on
 // one means are still this package's to answer.
 //
+// It lived in `../markdown/` until `<TerminalOutput>` needed it for OSC 8
+// hyperlinks, and it moved here rather than being copied: there is no
+// markdown in it at all. It is about `TextRun.href` and
+// `RichTextNode.hrefAtPoint`, both of which are this module's — the same
+// "extract when the second consumer arrives" move `../codeblock/` was.
+//
 // The whole problem is that a press on a link is also the start of a drag,
 // and the two are told apart only at the release: a pointer that has barely
 // moved and left nothing selected was a click, and anything else was a
@@ -13,7 +19,7 @@
 import { useRef } from 'react';
 import type { DrawnNode, MouseEvent as X11MouseEvent } from 'react-x11';
 
-import { RichTextNode } from '../richtext/index.js';
+import { RichTextNode } from './node.js';
 
 /** How far the pointer may travel and still count as a click, in pixels. */
 const CLICK_SLOP = 3;

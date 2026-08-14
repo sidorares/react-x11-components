@@ -94,6 +94,48 @@ export type {
 export { Code } from './code/index.js';
 export type { CodeProps } from './code/index.js';
 
+// A captured terminal session, rendered — `<Terminal>`'s static sibling, the
+// way `<Code>` is `<CodeEditor>`'s. `docs/prd-terminal-output.md` is the
+// design record.
+export { TerminalOutput } from './terminal-output/index.js';
+export type {
+  TerminalOutputProps,
+  TerminalOutputSource,
+} from './terminal-output/index.js';
+
+// The parser underneath it, which is useful without a terminal anywhere near:
+// colouring a build log, or stripping escapes before a diff.
+export {
+  ANSI_16,
+  AnsiState,
+  CastFormatError,
+  ansiColor,
+  ansiPalette,
+  castOutput,
+  cssColor,
+  parseAnsi,
+  parseCast,
+  resolveAnsiColors,
+  rgbColor,
+  stripAnsi,
+} from './ansi/index.js';
+export type {
+  AnsiAttrs,
+  AnsiCast,
+  AnsiCastEvent,
+  AnsiCastHeader,
+  AnsiColor,
+  AnsiDocument,
+  AnsiInput,
+  AnsiLine,
+  AnsiPalette,
+  AnsiPaletteOptions,
+  AnsiSpan,
+  AnsiUnderline,
+  ParseAnsiOptions,
+  ResolvedAnsiColors,
+} from './ansi/index.js';
+
 // The disclosure tree. Successor to react-x11's own `<Tree>`, which is being
 // retired — nothing here imports it. `visibleRows` and `branchEdges` come out
 // with it because they are the row model the seams are handed, and an app
@@ -227,9 +269,11 @@ export {
   RICHTEXT_ELEMENT,
   registerRichText,
   RichTextNode,
+  useLinkClicks,
   useSelectionMenu,
 } from './richtext/index.js';
 export type {
+  LinkHandlers,
   RichTextProps,
   SelectionMenuHandlers,
   TextRun,
