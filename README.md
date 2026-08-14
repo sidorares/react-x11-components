@@ -119,6 +119,7 @@ import type { CodeEditorProps } from '@react-x11/components';
 | `LineChart` … | `@react-x11/components/charts`           | Cartesian charts; a million points is a normal input. |
 | `Code`        | `@react-x11/components/code`             | A static code block: highlighted, selectable.         |
 | `CodeEditor`  | `@react-x11/components/code-editor`      | Multiline code editing: highlighting, completion.     |
+| `Flow`        | `@react-x11/components/flow`             | A directed-graph editor: nodes, edges, pan and zoom.  |
 | `Markdown`    | `@react-x11/components/markdown`         | Streaming-friendly GFM with cross-block selection.    |
 | `MediaPlayer` | `@react-x11/components/media-player`     | mpv or VLC, embedded, with real transport control.    |
 | `Terminal`    | `@react-x11/components/terminal`         | A real terminal: an embedded emulator, or its own.    |
@@ -380,6 +381,151 @@ Completion sources are one async function each, deliberately the shape of an
 LSP `textDocument/completion` call, so a language-server client is "just
 another source". `npm run examples:code-editor` shows the three input-field
 use cases side by side.
+
+## The graph editor
+
+A directed graph you can edit — a pipeline, a state machine, a dependency
+map, a node-based tool. The surface is [react-flow][rf]'s, so a graph
+described for that is described for this:
+
+```jsx
+import {
+  Flow,
+  useNodesState,
+  useEdgesState,
+  addEdge,
+} from '@react-x11/components/flow';
+
+const [nodes, setNodes, onNodesChange] = useNodesState([
+  { id: 'read', position: { x: 0, y: 0 }, data: { label: 'read' } },
+  { id: 'parse', position: { x: 0, y: 120 }, data: { label: 'parse' } },
+]);
+const [edges, setEdges, onEdgesChange] = useEdgesState([
+  { id: 'r-p', source: 'read', target: 'parse', label: 'bytes' },
+]);
+
+<Flow
+  nodes={nodes}
+  edges={edges}
+  onNodesChange={onNodesChange}
+  onEdgesChange={onEdgesChange}
+  onConnect={(c) => setEdges((es) => addEdge(c, es))}
+  fitView
+  minimap
+  style={{ flexGrow: 1 }}
+/>;
+```
+
+Nothing mutates the arrays: every gesture arrives as a _change_ the app
+applies (`applyNodeChanges`, `applyEdgeChanges`, `addEdge`), which is what
+makes `nodes`/`edges` an ordinary controlled prop — and undo a matter of not
+applying one. `defaultNodes`/`defaultEdges` give the uncontrolled form.
+
+Drag a node to move it, a handle to connect two, the pane to pan, Shift+drag
+to box-select; the wheel zooms, Delete removes the selection (with the edges
+that would dangle), Ctrl+A selects everything, the arrows nudge or pan, `0`
+frames the graph. Edges route as bezier, smoothstep, step or straight, carry
+labels and arrowheads, and animate. `background`, `minimap` and `controls`
+are props rather than child components.
+
+**The default node type is a `paint`, not a React component**, and that is
+the one place this is deliberately not react-flow. react-flow gives every
+node a DOM subtree and pans and zooms with a CSS transform, so the browser
+moves ten thousand boxes for free. This renderer has no transform — `style`
+is yoga plus paint — so the same design would re-render and re-lay-out every
+node on every pointer step of a pan. The pane draws the graph instead:
+panning becomes two numbers and one node's repaint, zoom scales text along
+with everything else, and React is not involved at all unless the graph
+itself changed.
+
+```jsx
+const nodeTypes = {
+  task: {
+    size: { width: 150, height: 52 },
+    handles: [
+      { type: 'target', position: 'left' },
+      { type: 'source', position: 'right', id: 'ok', label: 'ok' },
+      { type: 'source', position: 'right', id: 'err', offset: 0.8 },
+    ],
+    paint({ rect, zoom, selected, palette, painter, node }) {
+      painter.rect(rect.x, rect.y, rect.width, rect.height, 6 * zoom, {
+        fill: palette.nodeBackground,
+        stroke: selected ? palette.accent : palette.nodeBorder,
+        lineWidth: selected ? 2 : 1,
+      });
+      painter.text(
+        node.data.label,
+        rect.x + rect.width / 2,
+        rect.y + rect.height / 2,
+        {
+          size: 13 * zoom,
+          align: 'center',
+          baseline: 'middle',
+          color: palette.text,
+        },
+      );
+    },
+  },
+};
+```
+
+### Nodes that hold real widgets
+
+Drawing is right for the nodes there are a lot of. It is not right for a node
+whose body is a form, so a node type may `render` one instead: an ordinary
+react-x11 tree, mounted in a box the pane positions and sizes over the node,
+and laid out by yoga inside it.
+
+```jsx
+const nodeTypes = {
+  options: {
+    size: { width: 268, height: 212 },
+    headerHeight: 26, // the strip left for the title, and for dragging
+    handles: [{ type: 'source', position: 'right' }],
+    render: ({ node }) => (
+      <box style={{ flexGrow: 1, padding: 8, gap: 7 }}>
+        <text style={{ fontSize: 11, color: '$textMuted' }}>build options</text>
+        <Checkbox
+          label="strict"
+          checked={node.data.strict}
+          onChange={(ev) => patch(node.id, { strict: ev.value })}
+        />
+        <textarea
+          value={node.data.text}
+          onChange={(ev) => patch(node.id, { text: ev.value })}
+          style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }}
+        />
+      </box>
+    ),
+  },
+};
+```
+
+Everything in there behaves the way it does anywhere else: the checkbox takes
+clicks, the textarea takes the keyboard — Delete deletes _text_ while it has
+the focus, not the node — and the buttons draw their own hover and pressed
+states. Three things follow, and all three are the point:
+
+- **It re-renders as the viewport moves.** That is the cost the drawn path
+  exists to avoid, so it is paid by the nodes that ask for it and no others.
+- **It does not scale with the zoom.** The box does; there is no transform
+  here. Content is laid out to the zoomed box at its natural size and
+  clipped, and below `zoom` 0.6 it is not mounted at all — the pane draws the
+  card instead.
+- **`headerHeight` is what keeps the node draggable.** The body starts below
+  it, so there is always somewhere to grab that is not a text field.
+
+Add `resizable` to such a node and it grows eight grips on its border while
+it is selected; drag one and the widgets inside reflow with it. The gesture
+arrives as a `dimensions` change (with a `position` one when the grip moved
+the node's origin), applied by the same `applyNodeChanges` as everything
+else. `minWidth`/`minHeight` are the floor.
+
+`npm run examples:flow` is a working pipeline editor, and
+`npm run examples:flow-stress` is the measured one: two scene buttons, a pan
+loop, and a live count of X requests and bytes per frame.
+
+[rf]: https://reactflow.dev/
 
 ## The user's real calendar
 
@@ -693,7 +839,6 @@ Candidates to move here:
 
 - The 3D scene graph and a Three.js / react-three-fiber-shaped layer, with
   `<glarea>` itself staying in core.
-- A react-flow-style node/edge graph editor.
 - `<Tabs>`, undecided — it may well stay in core.
 - MDX support in `<Markdown>` — see the note in that section.
 - A StatusNotifierItem host, beside `<TrayHost>` rather than inside it: the

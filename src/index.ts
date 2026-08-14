@@ -125,6 +125,58 @@ export type {
   TreeToggleState,
 } from './tree/index.js';
 
+export {
+  Flow,
+  FlowGraphNode,
+  FLOW_ELEMENT,
+  // the controlled-state protocol: the pane describes a change, the app
+  // applies it, and these are what "applies it" means
+  addEdge,
+  applyEdgeChanges,
+  applyNodeChanges,
+  connectedEdges,
+  connectionId,
+  resolvePalette,
+  useEdgesState,
+  useNodesState,
+} from './flow/index.js';
+export type {
+  BackgroundOptions,
+  BackgroundVariant,
+  Connection,
+  ConnectionStart,
+  ControlsOptions,
+  EdgeAppearance,
+  EdgeChange,
+  EdgeMarker,
+  EdgeMouseHandler,
+  EdgeType,
+  FitViewOptions,
+  FlowEdge,
+  FlowInstance,
+  FlowNode,
+  FlowNodeData,
+  FlowNodeType,
+  FlowPainter,
+  FlowPalette,
+  FlowProps,
+  FlowRect,
+  HandleAnchor,
+  HandlePosition,
+  HandleSpec,
+  HandleType,
+  MarkerType,
+  MiniMapOptions,
+  NodeAppearance,
+  NodeBodyRect,
+  NodeChange,
+  NodeMouseHandler,
+  NodePaintContext,
+  PanePosition,
+  Viewport,
+  XYPosition,
+} from './flow/index.js';
+
 export { Markdown, parse as parseMarkdown } from './markdown/index.js';
 export type {
   MarkdownProps,
