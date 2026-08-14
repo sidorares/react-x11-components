@@ -102,6 +102,36 @@ Which makes `ground` the one prop worth knowing about: it is not decoration,
 it is the colour those two effects are cut with. A timeline on the window's
 own background needs nothing; a timeline on a card takes `ground="$surface"`.
 
+## Which side the gutter is on, and why there is no prop for it
+
+An RTL timeline puts its marks on the **right**, where an RTL reader starts —
+and it does that on its own, because nothing here is written in physical
+terms. `<TimelineItem>` is a plain flex row, so yoga mirrors it; the line is
+inset with the logical `start` rather than `left`, so it stays centred under
+the indicator on either side; the gaps are `gap` and the step's run is
+`paddingBottom`, neither of which has a side.
+
+So there is no `side` or `placement` prop, deliberately. `direction` is
+already the renderer's vocabulary for this — seeded from the locale, carried
+on the palette, overridable per subtree — and a second way to say the same
+thing is a second thing that can disagree with the first. An app that is RTL
+gets an RTL timeline with no code at all:
+
+```jsx
+<ThemeProvider value={{ direction: 'rtl' }}>
+```
+
+and one timeline can mirror inside an app that does not, because `direction`
+is an ordinary style property:
+
+```jsx
+<Timeline style={{ direction: 'rtl' }}>
+```
+
+Text follows from the same place: the base direction reaches ntk's shaper, so
+a date like `13 במאי 2021` sets its numerals the right way round inside an RTL
+line, and a title that wraps wraps from the correct edge.
+
 ## The last step is the end of the list
 
 By default the last item draws no line and reserves no gap under itself — the

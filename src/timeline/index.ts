@@ -350,6 +350,12 @@ export interface TimelineConnectorProps {
  * `alignSelf: 'stretch'` is what makes it as tall as the item however tall
  * the content beside it turns out to be, which is what the separator measures
  * itself against.
+ *
+ * Which *side* it lands on is nobody's decision here: `<TimelineItem>` is a
+ * plain flex row, so an RTL subtree mirrors it and the marks end up on the
+ * right, where an RTL reader starts. That is the reason there is no `side`
+ * prop — `direction` already says this, and a second way to say it is a
+ * second thing that can disagree with the first.
  */
 export function TimelineConnector(props: TimelineConnectorProps): ReactElement {
   useLook('TimelineConnector');

@@ -1,9 +1,9 @@
-// <Timeline> — the composition, and the four decisions inside it that a
-// reader of the source would not guess: the line spans the whole item and is
-// painted *under* the indicator, the last step drops both the line and the
-// gap under it, an indicator's chip is opaque so the line cannot show
-// through, and prose children are wrapped so a string is legal where the API
-// takes one.
+// <Timeline> — the composition, and the decisions inside it that a reader of
+// the source would not guess: the line spans the whole item and is painted
+// *under* the indicator, the last step drops both the line and the gap under
+// it, an indicator's chip is opaque so the line cannot show through, prose
+// children are wrapped so a string is legal where the API takes one, and the
+// gutter mirrors under RTL with no prop asking it to.
 //
 // Everything here runs on the mock backend: none of it is about pixels, and
 // the geometry that is (the line's height, its offset under the indicator)
@@ -183,6 +183,72 @@ test('the line spans its whole item and runs under the indicator', async () => {
     dot.style.outlineWidth,
     2,
     'the ring is what cuts the line at the mark',
+  );
+});
+
+test('an RTL timeline puts its gutter on the right, with no prop for it', async () => {
+  // The whole point of writing the gutter logically: `direction` is already
+  // the renderer's vocabulary for this — seeded from the locale, overridable
+  // per subtree — so a timeline that mirrored on a prop of its own would be a
+  // second way to say the same thing, and the two could disagree.
+  await mount(
+    h(
+      'window',
+      { width: 400, height: 400 } as Record<string, unknown>,
+      h(
+        ThemeProvider,
+        { value: { direction: 'rtl' }, colorScheme: 'light' },
+        h(Timeline, { 'data-testname': 'timeline' }, step(1), step(2)),
+      ),
+    ),
+  );
+
+  const item = retained(screen.getByTestName('item-1'));
+  const gutter = retained(screen.getByTestName('connector-1'));
+  const content = retained(screen.getByTestName('content-1'));
+  const line = retained(screen.getByTestName('line-1'));
+  const dot = retained(screen.getByTestName('dot-1'));
+
+  assert.strictEqual(
+    gutter.abs.x + gutter.abs.width,
+    item.abs.x + item.abs.width,
+    'the marks are on the side an RTL reader starts from',
+  );
+  assert.ok(
+    content.abs.x + content.abs.width <= gutter.abs.x,
+    'and the content is beside them, to their left',
+  );
+  // `start` rather than `left` on the separator is what this is checking:
+  // a physical inset would have left the line on the far side of the mark.
+  const off = line.abs.x + line.abs.width / 2 - (dot.abs.x + dot.abs.width / 2);
+  assert.ok(Math.abs(off) <= 0.5, `the line sits ${off}px off the mark`);
+});
+
+test('one timeline can mirror inside an app that does not', async () => {
+  // The escape hatch, and the reason there is no `side` prop: `direction` is
+  // a style property, so it applies to a subtree as readily as to an app.
+  await mount(
+    h(
+      'window',
+      { width: 400, height: 400 } as Record<string, unknown>,
+      h(
+        ThemeProvider,
+        { value: { direction: 'ltr' }, colorScheme: 'light' },
+        h(
+          Timeline,
+          { 'data-testname': 'timeline', style: { direction: 'rtl' } },
+          step(1),
+          step(2),
+        ),
+      ),
+    ),
+  );
+
+  const item = retained(screen.getByTestName('item-1'));
+  const gutter = retained(screen.getByTestName('connector-1'));
+  assert.strictEqual(
+    gutter.abs.x + gutter.abs.width,
+    item.abs.x + item.abs.width,
   );
 });
 
