@@ -83,10 +83,10 @@ export function layoutDocument(
 
   const contentWidth = Math.max(0, viewportWidth - root.horizontalExtra);
   const floats = new FloatContext(root.contentX, root.contentX + contentWidth);
-  const height = layoutChildren(root, ctx, floats, root.contentY, contentWidth);
+  const flow = layoutChildren(root, ctx, floats, root.contentY, contentWidth);
   const floatBottom =
     floats.bottom === -Infinity ? 0 : floats.bottom - root.contentY;
-  root.height = Math.max(height, floatBottom) + root.verticalExtra;
+  root.height = Math.max(flow.height, floatBottom) + root.verticalExtra;
 
   // Positioned boxes last, and in the order they were found, so a later one
   // can be positioned against an earlier one's resolved rectangle.
@@ -111,9 +111,25 @@ export function layoutDocument(
 }
 
 /**
+ * The collapsed value of two adjoining margins: the largest positive plus
+ * the most negative — CSS 8.3.1's rule, whole. Both-positive takes the max,
+ * both-negative the min, and a mixed pair genuinely adds, which is what
+ * makes a `-8px` pull work against a `40px` push and come out at `32`.
+ */
+function collapseMargins(a: number, b: number): number {
+  return Math.max(0, Math.max(a, b)) + Math.min(0, Math.min(a, b));
+}
+
+/** What a box's children came to: their height, and the margin still hanging
+ *  past the last of them when the box's own bottom edge does not stop it. */
+interface FlowResult {
+  height: number;
+  hanging: number;
+}
+
+/**
  * Lay out a box's children as a block formatting context's contents, or as
- * one inline formatting context when they are all inline-level. Returns the
- * content height.
+ * one inline formatting context when they are all inline-level.
  */
 function layoutChildren(
   box: Box,
@@ -121,10 +137,10 @@ function layoutChildren(
   floats: FloatContext,
   contentTop: number,
   contentWidth: number,
-): number {
+): FlowResult {
   const contentLeft = box.contentX;
   if (establishesInlineContext(box)) {
-    return layoutInlineContent(
+    const height = layoutInlineContent(
       box,
       ctx,
       floats,
@@ -132,6 +148,7 @@ function layoutChildren(
       contentWidth,
       contentLeft,
     );
+    return { height, hanging: 0 };
   }
 
   let y = contentTop;
@@ -154,15 +171,8 @@ function layoutChildren(
     }
 
     resolveEdges(child, contentWidth);
-    // Sibling margins collapse to the larger of the two; a negative margin
-    // and a positive one add, which is what makes a `-8px` pull work.
     const top = child.marginTop;
-    const collapsed = first
-      ? top
-      : Math.max(pendingMargin, top) +
-        Math.min(0, pendingMargin) +
-        Math.min(0, top) -
-        Math.min(Math.min(0, pendingMargin), Math.min(0, top));
+    const collapsed = first ? top : collapseMargins(pendingMargin, top);
     let childY = y + collapsed;
     const clearance = floats.clearance(child.style.clear);
     if (clearance > -Infinity && clearance > childY) childY = clearance;
@@ -173,14 +183,23 @@ function layoutChildren(
     first = false;
   }
 
-  // The last child's bottom margin sticks out of the parent unless the
-  // parent has a border, padding or a formatting context of its own — the
-  // "collapse through the bottom edge" case, which is why a `<div>` around
-  // a `<p>` is not 16px taller than the paragraph.
-  if (!first && !box.borderBottom && !box.padBottom && !establishesBFC(box)) {
-    return y - contentTop;
+  // The last child's bottom margin collapses through the parent's bottom
+  // edge unless a border, padding, a specified height or a formatting
+  // context of its own stops it — which is why a `<div>` around a `<p>` is
+  // not 16px taller than the paragraph. The margin is not *lost*, though: it
+  // escapes, and the caller merges it into the box's own bottom margin so
+  // the next sibling still sees it. Dropping it here was the bug that made
+  // `<div><p>…</p></div><p>…</p>` set the two paragraphs solid.
+  if (
+    !first &&
+    !box.borderBottom &&
+    !box.padBottom &&
+    box.style.height === AUTO &&
+    !establishesBFC(box)
+  ) {
+    return { height: y - contentTop, hanging: pendingMargin };
   }
-  return y + Math.max(0, pendingMargin) - contentTop;
+  return { height: y + pendingMargin - contentTop, hanging: 0 };
 }
 
 function layoutInlineContent(
@@ -359,23 +378,23 @@ function layoutInternals(
   const floats = ownFloats
     ? new FloatContext(box.contentX, box.contentX + contentWidth)
     : outerFloats;
-  const contentHeight = layoutChildren(
-    box,
-    ctx,
-    floats,
-    box.contentY,
-    contentWidth,
-  );
+  const flow = layoutChildren(box, ctx, floats, box.contentY, contentWidth);
   // A box that establishes a formatting context contains its own floats, so
   // it has to be at least as tall as they are. One that does not, does not —
   // that is the classic "collapsed parent" every author has met.
   const withFloats = ownFloats
     ? Math.max(
-        contentHeight,
+        flow.height,
         floats.bottom === -Infinity ? 0 : floats.bottom - box.contentY,
       )
-    : contentHeight;
+    : flow.height;
   finishHeight(box, withFloats);
+  // The margin that escaped through this box's bottom edge becomes part of
+  // its own: the parent's flow loop reads `child.marginBottom` for the next
+  // sibling's collapse, which is exactly where an escaped margin goes.
+  if (flow.hanging) {
+    box.marginBottom = collapseMargins(box.marginBottom, flow.hanging);
+  }
   if (box.markerText) layoutMarker(box, ctx);
 }
 

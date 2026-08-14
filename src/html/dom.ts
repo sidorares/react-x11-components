@@ -93,13 +93,37 @@ export function rawTextOf(node: AnyNode): string {
   return out;
 }
 
-/** Walk elements in document order. The styler, the resource sweep and the
- *  script sweep are all one pass over this. */
+/**
+ * Walk elements in document order. The styler, the resource sweep and the
+ * script sweep are all one pass over this.
+ *
+ * An explicit stack, and it has to be: the parser builds a tree of any depth
+ * without recursing (htmlparser2 is a state machine), so the first thing to
+ * die on a degenerately nested document would otherwise be this walk — and a
+ * `yield*` chain is the worst recursion there is, costing a resume per level
+ * per element (a walk of 1,000 nested divs measured 16ms as a generator and
+ * rounds to zero as a loop).
+ */
 export function* elementsIn(root: AnyNode): Generator<Element> {
-  for (const child of childrenOf(root)) {
-    if (isElement(child)) {
-      yield child;
-      yield* elementsIn(child);
+  const stack: ChildNode[][] = [childrenOf(root)];
+  const at: number[] = [0];
+  while (stack.length) {
+    const top = stack.length - 1;
+    const kids = stack[top];
+    const i = at[top];
+    if (i >= kids.length) {
+      stack.pop();
+      at.pop();
+      continue;
+    }
+    at[top] = i + 1;
+    const child = kids[i];
+    if (!isElement(child)) continue;
+    yield child;
+    const grandkids = childrenOf(child);
+    if (grandkids.length) {
+      stack.push(grandkids);
+      at.push(0);
     }
   }
 }

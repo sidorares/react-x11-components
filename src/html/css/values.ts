@@ -236,6 +236,12 @@ export function unquote(value: string): string {
   return v;
 }
 
+/** A colour as it is about to be used: `currentColor` resolved against the
+ *  element's own ink, everything else passed through. */
+export function inkColor(color: string, current: string): string {
+  return color === 'currentColor' ? current : color;
+}
+
 /** Whether a colour paints anything at all. Two string tests rather than a
  *  parse, for the reason at the top of the file. */
 export function isTransparent(color: string | null | undefined): boolean {
@@ -247,13 +253,21 @@ export function isTransparent(color: string | null | undefined): boolean {
   return /^(?:rgba|hsla)\([^)]*[,/]\s*0*(?:\.0+)?\s*\)$/.test(c);
 }
 
-/** A colour token, with `currentColor` substituted. `null` means the value
- *  was not a colour, which is what a shorthand parser branches on. */
-export function parseColor(value: string, currentColor: string): string | null {
+/**
+ * A colour token. `null` means the value was not a colour, which is what a
+ * shorthand parser branches on.
+ *
+ * `currentColor` survives as the literal token rather than being substituted:
+ * it means "this element's `color`" at *use* time, and substituting at parse
+ * time freezes whatever the colour happened to be mid-cascade — a rule
+ * writing `border-bottom: 1px solid` and then `color: red` would keep the
+ * inherited ink on its border. `inkColor` is the other half.
+ */
+export function parseColor(value: string): string | null {
   const v = value.trim();
   if (!v) return null;
   const lower = v.toLowerCase();
-  if (lower === 'currentcolor') return currentColor;
+  if (lower === 'currentcolor') return 'currentColor';
   if (lower === 'transparent') return 'transparent';
   if (lower === 'inherit' || lower === 'initial' || lower === 'unset')
     return null;

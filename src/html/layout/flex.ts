@@ -14,10 +14,14 @@
 // are none of those things, which is why they are written out here — the line
 // is drawn at "would a bug be visible", not at "is there a library".
 //
-// The bridge in both directions is `setMeasureFunc`: a flex item whose
-// content is ordinary block and inline content is measured by *this* engine,
-// and a flex container nested inside one becomes a nested Yoga node. Neither
-// side has to know which the other is.
+// The bridge in both directions is `setMeasureFunc`: every flex item is a
+// leaf with a measure function, and the function lays the item's content out
+// with *this* engine — which for a nested flex container means a second,
+// independent Yoga pass inside the measure call. Not a nested Yoga node:
+// that would need the whole child subtree mirrored into Yoga's tree, and the
+// measure seam already answers the only question the outer pass asks. What
+// the leaf shape costs is stretch — a stretched item's box grows but its
+// contents are not re-laid at the stretched height.
 import { Yoga } from 'react-x11/ntk';
 
 import { AUTO, isPct, resolveOrNull } from '../css/values.js';

@@ -286,10 +286,12 @@ export function initialStyle(look: RootLook): ComputedStyle {
     borderRightStyle: 'none',
     borderBottomStyle: 'none',
     borderLeftStyle: 'none',
-    borderTopColor: look.color,
-    borderRightColor: look.color,
-    borderBottomColor: look.color,
-    borderLeftColor: look.color,
+    // The token, not a colour: a border with no colour of its own follows
+    // the element's ink wherever the cascade takes it, resolved at paint.
+    borderTopColor: 'currentColor',
+    borderRightColor: 'currentColor',
+    borderBottomColor: 'currentColor',
+    borderLeftColor: 'currentColor',
     borderRadius: [0, 0, 0, 0],
 
     top: AUTO,
@@ -341,10 +343,10 @@ export function inherit(
     // write cannot see.
     (out as unknown as Record<string, unknown>)[key] = parent[key];
   }
-  out.borderTopColor = parent.color;
-  out.borderRightColor = parent.color;
-  out.borderBottomColor = parent.color;
-  out.borderLeftColor = parent.color;
+  out.borderTopColor = 'currentColor';
+  out.borderRightColor = 'currentColor';
+  out.borderBottomColor = 'currentColor';
+  out.borderLeftColor = 'currentColor';
   return out;
 }
 
@@ -433,9 +435,12 @@ export function applyDeclaration(
 
   const color = COLOR_PROPS[name];
   if (color) {
-    const parsed = parseColor(value, style.color);
-    if (parsed !== null)
-      (style as unknown as Record<string, unknown>)[color] = parsed;
+    const parsed = parseColor(value);
+    if (parsed === null) return;
+    // `color: currentColor` is the one place the token refers to itself; it
+    // means "keep the inherited colour", which the style already holds.
+    if (name === 'color' && parsed === 'currentColor') return;
+    (style as unknown as Record<string, unknown>)[color] = parsed;
     return;
   }
 
@@ -622,7 +627,7 @@ export function applyDeclaration(
       return;
     }
     case 'border-color': {
-      const parts = splitValue(value).map((p) => parseColor(p, style.color));
+      const parts = splitValue(value).map((p) => parseColor(p));
       if (parts.some((p) => p === null)) return;
       const sides = fourSides(parts as string[]);
       style.borderTopColor = sides[0];
@@ -840,7 +845,7 @@ export function applyDeclaration(
         ) {
           style.textDecorationLine = v;
         } else if (name === 'text-decoration') {
-          const c = parseColor(part, style.color);
+          const c = parseColor(part);
           if (c) style.textDecorationColor = c;
           else if (DECORATION_STYLES.has(v)) {
             style.textDecorationStyle =
@@ -1093,7 +1098,7 @@ function applyBorderShorthand(
   // what the spec says and what an author relies on to undo a UA border.
   let width: number | null = 3;
   let borderStyle: BorderStyle = 'none';
-  let color: string | null = style.color;
+  let color: string | null = 'currentColor';
   for (const part of splitValue(value)) {
     const v = part.toLowerCase();
     if (BORDER_STYLES.has(v)) {
@@ -1105,7 +1110,7 @@ function applyBorderShorthand(
       width = w;
       continue;
     }
-    const c = parseColor(part, style.color);
+    const c = parseColor(part);
     if (c !== null) color = c;
   }
   // A shorthand with a style but no width takes the initial `medium`; one
@@ -1165,7 +1170,7 @@ function applyBackgroundShorthand(
     ) {
       continue;
     }
-    const c = parseColor(part, style.color);
+    const c = parseColor(part);
     if (c !== null) {
       style.backgroundColor = c;
       continue;
@@ -1352,8 +1357,7 @@ export function blockify(style: ComputedStyle, inFlexContainer: boolean): void {
     case 'table-header-group':
     case 'table-footer-group':
     case 'table-caption':
-      style.display =
-        out === 'inline-block' || out === 'inline' ? 'block' : 'block';
+      style.display = 'block';
       return;
     case 'inline-flex':
       style.display = 'flex';

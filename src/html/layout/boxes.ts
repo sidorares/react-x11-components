@@ -141,6 +141,9 @@ export interface TextLayoutLike {
     line: number;
   };
   indexAt(x: number, y: number): number;
+  /** Whether `maxLines` dropped content — the slow inline path's "did this
+   *  segment wrap" question, answered without laying the tail out. */
+  truncated?: boolean;
 }
 
 /**
@@ -188,6 +191,18 @@ export class Box {
   /** Intrinsic size, for a replaced box that knows one. */
   intrinsicWidth = 0;
   intrinsicHeight = 0;
+  /**
+   * Cached min-/max-content widths, for a table cell. -1 until measured.
+   *
+   * Intrinsic widths are width-independent by definition, so measuring them
+   * per layout pass was this engine breaking its own phase rule — a resize
+   * re-probed every cell twice and cost as much as the first layout. The
+   * cache lives on the box because the box's lifetime is exactly the
+   * invalidation rule: any DOM or style change rebuilds the tree, and a new
+   * box starts unmeasured.
+   */
+  intrinsicMinContent = -1;
+  intrinsicMaxContent = -1;
   /** What a replaced box is: the resource seam and the control host both
    *  key on this rather than re-reading the tag. */
   replaced: ReplacedKind = 'none';
@@ -318,6 +333,16 @@ export function buildBoxes(
   return builder.run(root as Element);
 }
 
+/**
+ * How deep the box tree may go. Everything downstream of the builder — the
+ * fix-up pass, layout, paint, the accessor walks — recurses on box depth, so
+ * this is the one bound that keeps a degenerately nested document (fuzzer
+ * output, a runaway template) from a stack overflow five phases later.
+ * Blink's parser flattens at 512 for the same reason; content past the cap
+ * is dropped, which beats the alternative of crashing the application.
+ */
+const MAX_DEPTH = 512;
+
 class Builder {
   private _options: BuildOptions;
   private _text = '';
@@ -326,6 +351,7 @@ class Builder {
   private _links: Box[] = [];
   /** Counter stack for `<ol>` numbering, one entry per open list. */
   private _counters: number[] = [];
+  private _depth = 0;
 
   constructor(options: BuildOptions) {
     this._options = options;
@@ -394,6 +420,7 @@ class Builder {
       return;
     }
 
+    if (this._depth >= MAX_DEPTH) return;
     const kind = boxKindFor(style.display);
     const box = new Box(kind, el, style);
     into.append(box);
@@ -415,7 +442,9 @@ class Builder {
 
     const childInFlex =
       style.display === 'flex' || style.display === 'inline-flex';
+    this._depth += 1;
     this._children(el, box, style, childInFlex, el);
+    this._depth -= 1;
 
     if (opensCounter) this._counters.pop();
   }
@@ -737,7 +766,15 @@ function fixUp(box: Box): void {
     if (isBlockLevel(child)) hasBlockLevel = true;
     else hasInlineLevel = true;
   }
-  if (!hasBlockLevel || !hasInlineLevel) return;
+  // A flex container has no inline formatting context at all: every run of
+  // inline-level content becomes an anonymous flex *item*, whether or not a
+  // block-level sibling forced the question. `<div style="display:flex">some
+  // text</div>` is the case the mixed-content rule alone drops on the floor —
+  // all-inline children, so no wrapping, so the flex pass finds bare text
+  // boxes it cannot lay out and renders nothing.
+  const wrapAllInline = box.kind === 'flex';
+  if (!wrapAllInline && (!hasBlockLevel || !hasInlineLevel)) return;
+  if (wrapAllInline && !hasInlineLevel) return;
 
   const next: Box[] = [];
   let run: Box[] | null = null;

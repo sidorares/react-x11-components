@@ -31,7 +31,7 @@ import type { Element } from 'domhandler';
 import { codeUnitOffsets } from '../../internal/text.js';
 import type { TextRun } from '../../richtext/index.js';
 import type { ComputedStyle } from '../css/style.js';
-import { isTransparent } from '../css/values.js';
+import { inkColor, isTransparent } from '../css/values.js';
 import type {
   AtomicPlacement,
   Box,
@@ -95,8 +95,7 @@ const EMPTY_OFFSETS: number[] = [0];
 /** One thing in the inline stream. */
 type Item =
   | { kind: 'text'; run: TextRun; box: Box; length: number }
-  | { kind: 'atomic'; box: Box }
-  | { kind: 'break' };
+  | { kind: 'atomic'; box: Box };
 
 export interface InlineResult {
   lines: LineBox[];
@@ -213,16 +212,6 @@ export function layoutInline(block: Box, options: InlineOptions): InlineResult {
     const available = band.right - band.left;
     const item = items[index];
 
-    if (item.kind === 'break') {
-      open.forceHeight = Math.max(
-        open.forceHeight,
-        style.fontSize * lineHeightMul,
-      );
-      close();
-      index += 1;
-      continue;
-    }
-
     if (item.kind === 'atomic') {
       const box = item.box;
       const outer = box.width + box.marginLeft + box.marginRight;
@@ -245,30 +234,25 @@ export function layoutInline(block: Box, options: InlineOptions): InlineResult {
       offset = 0;
       continue;
     }
-    const room = Math.max(1, available - open.x);
-    const layout = fonts.layout(segment.runs, base, {
-      maxWidth: wraps(style) ? room : undefined,
-      lineHeight: lineHeightMul,
-      // A fragment that does not start at the line's left edge cannot be
-      // aligned by the text layout: the alignment belongs to the whole line,
-      // which only this loop can see.
-      align: open.x > 0 ? 'left' : align,
-      direction: style.direction,
-    });
-    LAYOUT_RUNS.set(layout, segment.runs);
 
-    // Can the rest be taken whole? Only if nothing left can change the width.
+    // Once nothing ahead can narrow a line — no atomic left, an empty line
+    // in hand, and no float at or below this y — the rest of the segment is
+    // one layout, every line of it. This is the exit that keeps the loop
+    // below from being quadratic on an ordinary paragraph: it runs line by
+    // line only while it has to.
     const tailIsPlain =
       segment.nextIndex >= items.length &&
       open.x === 0 &&
       !open.atomics.length &&
-      !(
-        options.floats?.intersects(
-          options.startY + y,
-          options.startY + y + layout.height,
-        ) ?? false
-      );
+      !(options.floats?.intersects(options.startY + y, Infinity) ?? false);
     if (tailIsPlain) {
+      const layout = fonts.layout(segment.runs, base, {
+        maxWidth: wraps(style) ? Math.max(1, available) : undefined,
+        lineHeight: lineHeightMul,
+        align,
+        direction: style.direction,
+      });
+      LAYOUT_RUNS.set(layout, segment.runs);
       for (let i = 0; i < layout.lines.length; i += 1) {
         const natural = layout.lines[i];
         const text: LineText = {
@@ -299,22 +283,24 @@ export function layoutInline(block: Box, options: InlineOptions): InlineResult {
       continue;
     }
 
-    const wrapped = layout.lines.length > 1;
-    // Only the first line is being placed, and ntk draws a whole layout — so
-    // when the segment wrapped, the fragment gets a layout re-cut to one
-    // line rather than one whose tail would be drawn wherever this one lands.
-    // The re-cut is nearly free: it re-runs the line breaker over text whose
-    // shaping is already in ntk's memo.
-    const fragment = wrapped
-      ? fonts.layout(segment.runs, base, {
-          maxWidth: wraps(style) ? room : undefined,
-          lineHeight: lineHeightMul,
-          align: open.x > 0 ? 'left' : align,
-          direction: style.direction,
-          maxLines: 1,
-        })
-      : layout;
-    if (fragment !== layout) LAYOUT_RUNS.set(fragment, segment.runs);
+    // One line: `maxLines: 1` cuts the layout at the first break and its
+    // `truncated` flag answers "did the segment wrap" — so a line costs one
+    // layout of one line, not a layout of the whole remaining tail plus a
+    // re-cut (which is what an earlier shape paid, per line, beside every
+    // float). ntk's shaping memo makes the successive cuts cheap; only the
+    // line breaker re-runs.
+    const room = Math.max(1, available - open.x);
+    const fragment = fonts.layout(segment.runs, base, {
+      maxWidth: wraps(style) ? room : undefined,
+      lineHeight: lineHeightMul,
+      // A fragment that does not start at the line's left edge cannot be
+      // aligned by the text layout: the alignment belongs to the whole line,
+      // which only this loop can see.
+      align: open.x > 0 ? 'left' : align,
+      direction: style.direction,
+      maxLines: 1,
+    });
+    LAYOUT_RUNS.set(fragment, segment.runs);
     const first = fragment.lines[0];
     if (!first) {
       index = segment.nextIndex;
@@ -324,7 +310,11 @@ export function layoutInline(block: Box, options: InlineOptions): InlineResult {
     open.texts.push({
       layout: fragment,
       layoutLine: 0,
-      drawX: band.left + open.x - first.x,
+      // The layout's own `first.x` carries the alignment offset, so the
+      // origin is the band edge plus the cursor — subtracting `first.x`
+      // here would left-align a centred line. Mid-line continuations were
+      // laid out `left`, where `first.x` is zero and the two agree.
+      drawX: band.left + open.x,
       drawY: 0, // filled in by `finishLine`, which is where the top is known
       textStart: segment.spans.documentAt(first.start),
       textEnd: segment.spans.documentAt(first.end),
@@ -333,7 +323,7 @@ export function layoutInline(block: Box, options: InlineOptions): InlineResult {
     open.x += first.width;
     open.left = band.left;
 
-    if (!wrapped) {
+    if (!fragment.truncated) {
       // It fitted: the cursor stays on this line for whatever comes next.
       index = segment.nextIndex;
       offset = 0;
@@ -360,20 +350,17 @@ interface OpenLine {
   left: number;
   texts: LineText[];
   atomics: AtomicPlacement[];
-  /** A `<br>` on an otherwise empty line still occupies one. */
-  forceHeight: number;
 }
 
 function openLine(indent: number): OpenLine {
-  return { x: indent, left: 0, texts: [], atomics: [], forceHeight: 0 };
+  return { x: indent, left: 0, texts: [], atomics: [] };
 }
 
 function finishLine(open: OpenLine, y: number): LineBox | null {
-  if (!open.texts.length && !open.atomics.length && !open.forceHeight)
-    return null;
+  if (!open.texts.length && !open.atomics.length) return null;
   let ascent = 0;
   let descent = 0;
-  let height = open.forceHeight;
+  let height = 0;
   for (const text of open.texts) {
     const natural = text.layout.lines[text.layoutLine];
     ascent = Math.max(ascent, natural.baseline);
@@ -460,7 +447,24 @@ function collect(box: Box, out: Item[]): void {
         }
         break;
       case 'break':
-        out.push({ kind: 'break' });
+        // A `<br>` is a newline *character* in the stream, not a control
+        // item: ntk's breaker treats `\n` as a required break, gives the
+        // blank line between two of them real font metrics, and both paths
+        // — the one-layout fast path and the line-at-a-time one — then
+        // handle it identically. (An earlier shape kept breaks as their own
+        // item kind and the fast path, which only reads text items, dropped
+        // them: `a<br>b` rendered as one line.) The box builder gave the
+        // break its slot in the document index, so the span map lines up.
+        out.push({
+          kind: 'text',
+          run: {
+            text: '\n',
+            family: child.style.fontFamily,
+            size: child.style.fontSize,
+          },
+          box: child,
+          length: 1,
+        });
         break;
       case 'inline':
         collect(child, out);
@@ -496,12 +500,15 @@ function runFor(
   // highlighted spans must not leave a seam between them. That is exactly
   // what richtext's `bgFill: 'line'` was added for.
   if (!isTransparent(style.backgroundColor)) {
-    run.bg = style.backgroundColor ?? undefined;
+    run.bg = inkColor(style.backgroundColor as string, style.color);
     run.bgFill = 'line';
   }
   if (owner) run.element = owner;
   if (style.textDecorationLine === 'underline') {
-    run.underline = style.textDecorationColor ?? style.color;
+    run.underline = inkColor(
+      style.textDecorationColor ?? 'currentColor',
+      style.color,
+    );
     // CSS's five rule styles and SGR 4's five are the same set under two
     // names; richtext speaks SGR's, so `solid` is `single` and `wavy` is
     // `curly`. The other three are spelled identically.
@@ -512,7 +519,10 @@ function runFor(
           ? 'single'
           : style.textDecorationStyle;
   } else if (style.textDecorationLine === 'line-through') {
-    run.strike = style.textDecorationColor ?? style.color;
+    run.strike = inkColor(
+      style.textDecorationColor ?? 'currentColor',
+      style.color,
+    );
   }
   return run;
 }

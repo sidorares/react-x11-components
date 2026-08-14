@@ -301,8 +301,22 @@ function autoColumns(
     // width of 1 for min-content — which the line breaker answers by
     // breaking at every opportunity, so the widest line is the longest
     // unbreakable word.
-    const cellMax = measureIntrinsicWidth(cell.box, ctx, Infinity);
-    const cellMin = measureIntrinsicWidth(cell.box, ctx, 1);
+    //
+    // Cached on the box, because intrinsic widths are width-independent by
+    // definition — measuring them per layout pass made a *resize* of a
+    // 500-row table cost as much as its first layout (223ms of re-probing
+    // measured against 10ms with the cache). The cache's invalidation rule
+    // is the box's lifetime: any DOM or style change rebuilds the tree.
+    if (cell.box.intrinsicMaxContent < 0) {
+      cell.box.intrinsicMaxContent = measureIntrinsicWidth(
+        cell.box,
+        ctx,
+        Infinity,
+      );
+      cell.box.intrinsicMinContent = measureIntrinsicWidth(cell.box, ctx, 1);
+    }
+    const cellMax = cell.box.intrinsicMaxContent;
+    const cellMin = cell.box.intrinsicMinContent;
 
     const len = cell.box.style.width;
     const width = len === AUTO ? null : lengthAgainst(len, containingWidth);

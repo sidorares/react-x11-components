@@ -365,6 +365,16 @@ function renderControl(
     onChange?.(el, value);
     touch();
   };
+  // A text edit does NOT touch: the value lives in the widget and is echoed
+  // into the DOM attribute, and neither changes any box — while `touch()`
+  // would re-run the cascade and relayout the whole document *per
+  // keystroke*. This also matches HTML's own semantics: typing updates the
+  // value property, not the attribute selectors match against. The
+  // checkables keep the full touch, because `[checked]` is a selector
+  // documents really use.
+  const reportText = (value: string): void => {
+    onChange?.(el, value);
+  };
 
   let widget: ReactNode;
   switch (rect.kind) {
@@ -424,16 +434,19 @@ function renderControl(
       break;
     }
     case 'textarea':
+      // Uncontrolled on purpose: the widget owns the live text the way a
+      // browser's does, and a re-render from any other cause remounts it
+      // with whatever was last echoed into the DOM.
       widget = hx('textarea', {
-        value: textareaValue(el),
+        defaultValue: textareaValue(el),
         style: [fieldChrome(look), { width: '100%', height: '100%' }],
-        onChange: readOnly ? undefined : (ev) => report(ev.value),
+        onChange: readOnly ? undefined : (ev) => reportText(ev.value),
       });
       break;
     case 'input': {
       const type = (attr(el, 'type') ?? 'text').toLowerCase();
       widget = hx('textinput', {
-        value: attr(el, 'value') ?? '',
+        defaultValue: attr(el, 'value') ?? '',
         placeholder: attr(el, 'placeholder'),
         // Core's word for a password field: nothing in it reaches a
         // selection, PRIMARY included.
@@ -443,7 +456,7 @@ function renderControl(
           ? undefined
           : (ev) => {
               el.attribs.value = ev.value;
-              report(ev.value);
+              reportText(ev.value);
             },
       });
       break;

@@ -26,7 +26,7 @@ import {
   paintRunRules,
 } from '../richtext/runs.js';
 import type { FillContext } from '../richtext/runs.js';
-import { isTransparent } from './css/values.js';
+import { inkColor, isTransparent } from './css/values.js';
 import type { ComputedStyle } from './css/style.js';
 import { Box } from './layout/boxes.js';
 import type { BoxTree, LineBox } from './layout/boxes.js';
@@ -186,7 +186,7 @@ function paintBackground(
   const w = Math.ceil(box.width);
   const h = Math.ceil(box.height);
   if (w <= 0 || h <= 0) return;
-  ctx.fillStyle = color as string;
+  ctx.fillStyle = inkColor(color as string, box.style.color);
   const radii = box.style.borderRadius;
   if (radii.some((r) => r > 0) && ctx.roundRect && ctx.fill && ctx.beginPath) {
     ctx.beginPath();
@@ -220,11 +220,11 @@ function paintBorders(
   if (w <= 0 || h <= 0) return;
 
   if (box.borderTop > 0 && !isTransparent(s.borderTopColor)) {
-    ctx.fillStyle = s.borderTopColor;
+    ctx.fillStyle = inkColor(s.borderTopColor, s.color);
     fillEdge(ctx, x, y, w, box.borderTop, s.borderTopStyle, true);
   }
   if (box.borderBottom > 0 && !isTransparent(s.borderBottomColor)) {
-    ctx.fillStyle = s.borderBottomColor;
+    ctx.fillStyle = inkColor(s.borderBottomColor, s.color);
     fillEdge(
       ctx,
       x,
@@ -236,7 +236,7 @@ function paintBorders(
     );
   }
   if (box.borderLeft > 0 && !isTransparent(s.borderLeftColor)) {
-    ctx.fillStyle = s.borderLeftColor;
+    ctx.fillStyle = inkColor(s.borderLeftColor, s.color);
     fillEdge(
       ctx,
       x,
@@ -248,7 +248,7 @@ function paintBorders(
     );
   }
   if (box.borderRight > 0 && !isTransparent(s.borderRightColor)) {
-    ctx.fillStyle = s.borderRightColor;
+    ctx.fillStyle = inkColor(s.borderRightColor, s.color);
     fillEdge(
       ctx,
       x + w - box.borderRight,
@@ -294,8 +294,7 @@ function fillEdge(
     }
     return;
   }
-  if (horizontal) ctx.fillRect(x, y, a, b);
-  else ctx.fillRect(x, y, a, b);
+  ctx.fillRect(x, y, a, b);
 }
 
 /** A list item's bullet or number, in the margin. */
@@ -331,6 +330,16 @@ function paintImage(ctx: PaintContext, box: Box, options: PaintOptions): void {
   }
 }
 
+/**
+ * The X protocol carries glyph positions as Int16, so anything drawn past
+ * ±32767 window coordinates does not clip — it throws in the encoder. The
+ * caller bounds a full repaint to the window (see `HtmlViewNode.paint`),
+ * which keeps every *culled* coordinate in range; this margin is how far a
+ * drawn layout's own lines may run past the damage before the batch itself
+ * would overflow.
+ */
+const COORD_LIMIT = 30000;
+
 function paintLines(ctx: PaintContext, box: Box, options: PaintOptions): void {
   const lines = box.lines;
   if (!lines) return;
@@ -338,25 +347,50 @@ function paintLines(ctx: PaintContext, box: Box, options: PaintOptions): void {
   const dy = options.originY;
   const damage = options.damage;
 
-  // One `draw` per layout, not per line: a paragraph is a single glyph
-  // composite, and drawing it once per line would be one X request per line
-  // for the same batch.
-  const drawn = new Set<unknown>();
-
+  // Three passes over the visible lines, not one: ntk draws a whole layout
+  // in one glyph batch, so a multi-line paragraph's ink all lands on the
+  // first line that references it — and anything painted "under the ink" on
+  // a later line would land *over* it. Everything under the glyphs is
+  // painted for every line first, then the ink once per layout, then the
+  // rules over it.
+  const visible: LineBox[] = [];
   for (const line of lines) {
     if (damage && !lineInDamage(line, dx, dy, damage)) continue;
+    visible.push(line);
+  }
+  if (!visible.length) return;
 
+  for (const line of visible) {
     for (const text of line.texts) {
       const natural = text.layout.lines[text.layoutLine];
       if (natural)
         paintRunBackgrounds(ctx, natural, text.drawX + dx, text.drawY + dy);
     }
     paintSelection(ctx, line, options);
+  }
+
+  // One `draw` per layout: a paragraph is a single glyph composite, and
+  // drawing it once per line would be one X request per line for the same
+  // batch.
+  const drawn = new Set<unknown>();
+  for (const line of visible) {
     for (const text of line.texts) {
       if (drawn.has(text.layout)) continue;
       drawn.add(text.layout);
-      text.layout.draw(ctx, text.drawX + dx, text.drawY + dy);
+      const top = text.drawY + dy;
+      if (top < -COORD_LIMIT || top + text.layout.height > COORD_LIMIT) {
+        // A single layout so tall its own lines overflow the Int16 envelope
+        // — a one-paragraph document tens of thousands of pixels high. The
+        // element scrolling itself (phase 2, see the PRD) is the real
+        // answer; until then the overflowing batch is skipped rather than
+        // thrown from the protocol encoder.
+        continue;
+      }
+      text.layout.draw(ctx, text.drawX + dx, top);
     }
+  }
+
+  for (const line of visible) {
     for (const text of line.texts) {
       const natural = text.layout.lines[text.layoutLine];
       if (natural)

@@ -456,6 +456,229 @@ metric(
   },
 );
 
+metric(
+  'mixed-sign sibling margins collapse to the sum of the extremes',
+  async () => {
+    // CSS 8.3.1: largest positive plus most negative — 40 + (-10) = 30. The
+    // easy wrong answers are 40 (max of the pair) and 30-with-clamping bugs.
+    const { node } = await render(
+      '<style>p{margin:0}.a{margin-bottom:40px}.b{margin-top:-10px}</style>' +
+        '<p class="a">one</p><p class="b">two</p>',
+    );
+    const tree = (
+      view(node) as unknown as {
+        _tree: { root: { children: { y: number; height: number }[] } };
+      }
+    )._tree;
+    const [a, b] = tree.root.children;
+    assert.ok(Math.abs(b.y - (a.y + a.height) - 30) < 1);
+  },
+);
+
+metric(
+  "a paragraph's bottom margin escapes a plain div around it",
+  async () => {
+    // Collapse-through: the div has no bottom border, padding or height, so
+    // the margin belongs between the div and what follows — not dropped.
+    const { node } = await render(
+      '<style>p{margin:0 0 20px}div{margin:0}</style>' +
+        '<div><p>in a div</p></div><p>after</p>',
+    );
+    const tree = (
+      view(node) as unknown as {
+        _tree: { root: { children: { y: number; height: number }[] } };
+      }
+    )._tree;
+    const [d, after] = tree.root.children;
+    assert.ok(Math.abs(after.y - (d.y + d.height) - 20) < 1);
+  },
+);
+
+metric(
+  'a flex container whose children are bare text still renders them',
+  async () => {
+    // Flex has no inline formatting context: a run of inline content becomes
+    // an anonymous item. Dropping it renders an empty row.
+    const { node } = await render('<div style="display:flex">just text</div>');
+    const el = view(node);
+    assert.ok(el.textContent().includes('just text'));
+    const tree = (
+      view(node) as unknown as {
+        _tree: { root: { children: { height: number }[] } };
+      }
+    )._tree;
+    assert.ok(tree.root.children[0].height > 10, 'the row has the text height');
+  },
+);
+
+metric('<br> breaks the line on the one-layout fast path too', async () => {
+  const { node } = await render('<style>p{margin:0}</style><p>a<br><br>b</p>');
+  const tree = (
+    view(node) as unknown as {
+      _tree: { root: { children: { lines: unknown[] | null }[] } };
+    }
+  )._tree;
+  // a / blank / b — the blank line is real and takes the font's height.
+  assert.strictEqual(tree.root.children[0].lines?.length, 3);
+});
+
+metric(
+  'run backgrounds paint under the ink on every line, not just the first',
+  async () => {
+    // ntk draws a whole layout in one glyph batch, so a highlight reaching a
+    // second line must be filled before the batch — filled after, it covers
+    // the glyphs. The recorder replaces the layouts' `draw` and asserts every
+    // highlight fill lands before any ink.
+    const { node } = await render(
+      '<style>p{margin:0}.hl{background:#ffee55}</style>' +
+        '<p>before <span class="hl">a highlighted stretch of text long enough ' +
+        'that it certainly wraps onto the following line</span> after</p>',
+      240,
+    );
+    const el = view(node);
+    const tree = (el as unknown as { _tree: unknown })._tree as {
+      root: {
+        children: unknown[];
+        lines: { texts: { layout: { draw(): void } }[] }[] | null;
+      };
+    };
+    const events: string[] = [];
+    const patched = new Set<unknown>();
+    const patch = (box: {
+      children: unknown[];
+      lines: { texts: { layout: { draw(): void } }[] }[] | null;
+    }): void => {
+      for (const line of box.lines ?? []) {
+        for (const text of line.texts) {
+          if (patched.has(text.layout)) continue;
+          patched.add(text.layout);
+          text.layout.draw = () => events.push('ink');
+        }
+      }
+      for (const child of box.children) patch(child as typeof box);
+    };
+    patch(tree.root);
+
+    const { paintDocument } = await import('../src/html/paint.js');
+    let fillStyle: unknown = null;
+    paintDocument(
+      {
+        set fillStyle(v: unknown) {
+          fillStyle = v;
+        },
+        get fillStyle() {
+          return fillStyle;
+        },
+        save() {},
+        restore() {},
+        fillRect() {
+          events.push(fillStyle === '#ffee55' ? 'highlight' : 'fill');
+        },
+      } as never,
+      (el as unknown as { _tree: never })._tree,
+      {
+        originX: 0,
+        originY: 0,
+        damage: null,
+        selection: null,
+        selectionColor: null,
+        imageFor: () => null,
+      },
+    );
+    const highlights = events.filter((e) => e === 'highlight').length;
+    assert.ok(
+      highlights >= 2,
+      `the highlight spans lines (${highlights} fills)`,
+    );
+    const firstInk = events.indexOf('ink');
+    const lastHighlight = events.lastIndexOf('highlight');
+    assert.ok(firstInk >= 0, 'the ink was drawn');
+    assert.ok(
+      lastHighlight < firstInk,
+      `every highlight fill precedes the ink (last highlight at ${lastHighlight}, first ink at ${firstInk})`,
+    );
+  },
+);
+
+metric(
+  "a border with no colour of its own follows the element's ink",
+  async () => {
+    // `border-bottom: 2px solid` then `color: red` in the same rule: the
+    // border is currentColor, resolved when it is painted — not frozen to the
+    // colour the cascade happened to hold mid-rule.
+    const { node } = await render(
+      '<style>p{border-bottom:2px solid;color:#ff0000;margin:0}</style><p>x</p>',
+    );
+    const el = view(node);
+    // The recorder has no window for ntk's glyph path to draw through, so the
+    // ink is stubbed out — the border fills are what this test is about.
+    const tree = (el as unknown as { _tree: unknown })._tree as {
+      root: {
+        children: unknown[];
+        lines: { texts: { layout: { draw(): void } }[] }[] | null;
+      };
+    };
+    const stub = (box: typeof tree.root): void => {
+      for (const line of box.lines ?? []) {
+        for (const text of line.texts) text.layout.draw = () => {};
+      }
+      for (const child of box.children) stub(child as typeof tree.root);
+    };
+    stub(tree.root);
+    const { paintDocument } = await import('../src/html/paint.js');
+    const fills: unknown[] = [];
+    let fillStyle: unknown = null;
+    paintDocument(
+      {
+        set fillStyle(v: unknown) {
+          fillStyle = v;
+        },
+        get fillStyle() {
+          return fillStyle;
+        },
+        save() {},
+        restore() {},
+        fillRect() {
+          fills.push(fillStyle);
+        },
+      } as never,
+      (el as unknown as { _tree: never })._tree,
+      {
+        originX: 0,
+        originY: 0,
+        damage: null,
+        selection: null,
+        selectionColor: null,
+        imageFor: () => null,
+      },
+    );
+    assert.ok(
+      fills.includes('#ff0000'),
+      `the border painted in the element's colour`,
+    );
+  },
+);
+
+test('a degenerately nested document is capped, not crashed', async () => {
+  // The box tree stops at depth 512 (Blink flattens at the same number), so
+  // fuzzer-shaped nesting cannot blow the stack five phases later.
+  const depth = 4000;
+  const source =
+    '<div>'.repeat(depth) + '<p>bottom</p>' + '</div>'.repeat(depth);
+  const result = await renderX11(
+    h(
+      'box',
+      { style: { width: 300 } },
+      h(Html, { source, partial: false, 'data-testname': 'doc' }),
+    ),
+    { backend: 'mock' },
+  );
+  const el = view(screen.getByTestName('doc') as DrawnNode);
+  // The capped content is dropped; the point is that nothing threw.
+  assert.strictEqual(typeof el.textContent(), 'string');
+  void result;
+});
+
 // --- selection and hit testing ----------------------------------------------
 
 metric('the caret and the selection bands agree with the glyphs', async () => {

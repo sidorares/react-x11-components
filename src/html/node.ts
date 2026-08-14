@@ -555,19 +555,30 @@ export class HtmlViewNode extends Node {
     const tree = this._tree;
     if (!tree) return;
     const range = this.selectionRange;
+    // Culling against the damage is what makes an expose of a strip cost the
+    // strip rather than the document. `paintDamage()` is null when the whole
+    // window is being repainted — but "the whole window" still bounds the
+    // paint, and the bound is load-bearing rather than an optimization: X
+    // carries glyph positions as Int16, so a document taller than ±32767
+    // *thrown to the server unculled* dies in the protocol encoder, not on
+    // the screen. The window node's rect is the tightest thing always known.
+    let damage = this.paintDamage();
+    if (!damage) {
+      const window = this.root?.abs;
+      if (window && window.height > 0) {
+        damage = { x: 0, y: 0, width: window.width, height: window.height };
+      }
+    }
     paintDocument(ctx as PaintContext, tree, {
       originX: this.abs.x,
       originY: this.abs.y,
-      // Culling against the damage is what makes an expose of a strip cost
-      // the strip rather than the document; `paintDamage()` is null when the
-      // whole window is being repainted, which means "nothing bounds you".
-      damage: this.paintDamage(),
+      damage,
       selection: range
         ? { start: this._toUnits(range.start), end: this._toUnits(range.end) }
         : null,
       selectionColor: this.selectionColor,
       imageFor: (box) =>
-        this._resources.image(attr(box.el as Element, 'src') ?? ''),
+        box.el ? this._resources.image(attr(box.el, 'src') ?? '') : null,
     });
   }
 }

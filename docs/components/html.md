@@ -178,6 +178,12 @@ rectangle. An author stylesheet still overrides all of it.
 restyles when some selector in the document actually tests `:hover`, which is
 why the user-agent sheet deliberately has no `a:hover` rule.
 
+**Nesting is capped at 512, the way Blink's parser caps it.** Everything
+after the box builder recurses on tree depth, so a degenerately nested
+document (fuzzer output, a runaway template) would otherwise be a stack
+overflow five phases from its cause. Content past the cap is dropped;
+documents this deep are not documents.
+
 ## Streaming
 
 `partial` works the way `<Markdown partial>` does, and rather better: the
