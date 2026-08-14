@@ -61,6 +61,12 @@ const COMPONENTS = [
   // `<Tree>` shares core's chevron with `<Calendar>` but no module here; the
   // role is the one string only it writes.
   { exportName: 'Tree', dir: 'tree', marker: 'treeitem' },
+  // `<Timeline>` is box-and-text composition and shares nothing at all. The
+  // export pulled is the *item* rather than the root, because the root shakes
+  // so well that nothing distinctive survives it — its own vocabulary is
+  // `list` and `column`, which half the package writes — while the role an
+  // item takes is a string nothing else here has.
+  { exportName: 'TimelineItem', dir: 'timeline', marker: 'listitem' },
 ];
 
 async function bundle(contents: string): Promise<string> {
