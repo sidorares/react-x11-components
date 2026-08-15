@@ -257,9 +257,27 @@ export type {
   MarkdownProps,
   MarkdownDocument,
   BlockNode,
+  FenceInfo,
   InlineNode,
   ParseOptions,
 } from './markdown/index.js';
+
+// TeX mathematics — KaTeX (an optional dependency) parses, the `formula`
+// element lays out and draws, and the glyphs answer the text accessors so
+// a selectable document (a `<Markdown>` math fence) reads them.
+export {
+  Formula,
+  FORMULA_ELEMENT,
+  FormulaNode,
+  useKatex,
+} from './formula/index.js';
+export type {
+  FormulaProps,
+  FormulaElementProps,
+  FormulaLayout,
+  KatexEngine,
+  KatexNode,
+} from './formula/index.js';
 
 // A static HTML + CSS document, selectable, with seams for resources and
 // scripts and real widgets for its form controls. Replaces ntk's deprecated

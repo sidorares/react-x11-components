@@ -72,6 +72,9 @@ const COMPONENTS = [
   { exportName: 'Tree', dir: 'tree', marker: 'treeitem' },
   // the element name rather than `flow`, which "overflow" contains
   { exportName: 'Flow', dir: 'flow', marker: 'flowgraph' },
+  // `<Formula>` reaches katex only through a dynamic import, so the marker
+  // is a face name only its own font table writes
+  { exportName: 'Formula', dir: 'formula', marker: 'KaTeX_Size4' },
   // `<Html>` shares `src/richtext/`'s run decorations and `src/internal/`'s
   // code-point helpers with `<Markdown>` and `<Code>`, so its marker is a
   // string only its user-agent stylesheet writes.

@@ -10,7 +10,8 @@ import { useEffect, useState } from 'react';
 import type { ReactElement } from 'react';
 import { createRoot } from 'react-x11';
 
-import { Markdown } from '../src/index.js';
+import { Formula, Markdown } from '../src/index.js';
+import type { FenceInfo } from '../src/index.js';
 
 const DOCUMENT = `# Streaming markdown
 
@@ -33,6 +34,16 @@ function greet(name) {
 }
 \`\`\`
 
+## Mathematics
+
+A \`\`\`math fence renders through \`<Formula>\` — registered below via the
+\`fences\` seam, streamed like everything else, and selectable with the rest
+of the document:
+
+\`\`\`math
+x = \\frac{-b \\pm \\sqrt{b^2-4ac}}{2a}
+\`\`\`
+
 ## And a table
 
 | feature | status | notes |
@@ -47,6 +58,15 @@ function greet(name) {
 
 const CHUNK = 3;
 const TICK_MS = 16;
+
+// Module scope, so the map keeps one identity — a new object per render
+// would invalidate the block cache. While the fence is still streaming
+// (`partial`), the formula renders its last parseable state.
+const FENCES = {
+  math: ({ text, partial }: FenceInfo) => (
+    <Formula tex={text} display partial={partial} />
+  ),
+};
 
 function App(): ReactElement {
   const [length, setLength] = useState(0);
@@ -67,6 +87,7 @@ function App(): ReactElement {
         <Markdown
           source={DOCUMENT.slice(0, length)}
           partial={!done}
+          fences={FENCES}
           onLink={(href) => console.log('link:', href)}
           style={{ padding: 16 }}
         />

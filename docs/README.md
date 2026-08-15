@@ -19,6 +19,7 @@ component.
 | [Code](components/code.md)                         | `@react-x11/components/code`             | A static code block: highlighted, selectable.                |
 | [CodeEditor](components/code-editor.md)            | `@react-x11/components/code-editor`      | Multiline code editing: highlighting, completion.            |
 | [Flow](components/flow.md)                         | `@react-x11/components/flow`             | A directed-graph editor: nodes, edges, pan and zoom.         |
+| [Formula](components/formula.md)                   | `@react-x11/components/formula`          | TeX mathematics: KaTeX layout, native ink, selectable.       |
 | [Html](components/html.md)                         | `@react-x11/components/html`             | A static HTML + CSS document, selectable, with seams.        |
 | [Markdown](components/markdown.md)                 | `@react-x11/components/markdown`         | Streaming-friendly GFM with cross-block selection.           |
 | [MediaPlayer](components/media-player.md)          | `@react-x11/components/media-player`     | mpv or VLC, embedded, with real transport control.           |
