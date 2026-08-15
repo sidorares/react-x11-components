@@ -140,17 +140,35 @@ export function layoutInline(block: Box, options: InlineOptions): InlineResult {
   const hasAtomics = items.some((i) => i.kind === 'atomic');
   const floated = options.floats?.intersects(options.startY, Infinity) ?? false;
 
-  // The text-only, float-free, unindented case: one call, every line.
+  // The text-only, float-free, unindented case: one call, every line — or
+  // one call per *chunk*, when the text is long and carries hard breaks.
   if (!hasAtomics && !floated && !indent) {
+    // `hasAtomics` is false, so every item is text; the cast is that fact.
+    const textItems = items as Extract<Item, { kind: 'text' }>[];
+    let total = 0;
+    let hasNewline = false;
+    for (const item of textItems) {
+      total += item.length;
+      if (!hasNewline && item.run.text.includes('\n')) hasNewline = true;
+    }
+    if (!total) return EMPTY;
+    if (total > CHUNK_TRIGGER_CHARS && hasNewline) {
+      return layoutChunked(
+        textItems,
+        base,
+        style,
+        options.width,
+        lineHeightMul,
+        align,
+        fonts,
+      );
+    }
     const runs: TextRun[] = [];
     const spans = new SpanMap();
-    for (const item of items) {
-      if (item.kind === 'text') {
-        spans.add(item.box.textStart, item.run.text.length);
-        runs.push(item.run);
-      }
+    for (const item of textItems) {
+      spans.add(item.box.textStart, item.run.text.length);
+      runs.push(item.run);
     }
-    if (!runs.length) return EMPTY;
     const layout = fonts.layout(runs, base, {
       maxWidth: wraps(style) ? options.width : undefined,
       lineHeight: lineHeightMul,
@@ -159,31 +177,7 @@ export function layoutInline(block: Box, options: InlineOptions): InlineResult {
     });
     LAYOUT_RUNS.set(layout, runs);
     const lines: LineBox[] = [];
-    let widest = 0;
-    for (let i = 0; i < layout.lines.length; i += 1) {
-      const natural = layout.lines[i];
-      const text: LineText = {
-        layout,
-        layoutLine: i,
-        drawX: 0,
-        drawY: 0,
-        textStart: spans.documentAt(natural.start),
-        textEnd: spans.documentAt(natural.end),
-        layoutStart: natural.start,
-      };
-      lines.push({
-        x: natural.x,
-        y: natural.y,
-        width: natural.width,
-        height: natural.height,
-        baseline: natural.baseline,
-        texts: [text],
-        textStart: text.textStart,
-        textEnd: text.textEnd,
-        atomics: [],
-      });
-      widest = Math.max(widest, natural.width);
-    }
+    const widest = emitLayout(layout, spans, 0, 0, lines);
     return { lines, height: layout.height, width: widest };
   }
 
@@ -341,6 +335,160 @@ export function layoutInline(block: Box, options: InlineOptions): InlineResult {
 }
 
 const EMPTY: InlineResult = { lines: [], height: 0, width: 0 };
+
+/** Append one layout's lines as LineBoxes at an offset; returns the widest. */
+function emitLayout(
+  layout: TextLayoutLike,
+  spans: SpanMap,
+  xOff: number,
+  yOff: number,
+  lines: LineBox[],
+): number {
+  let widest = 0;
+  for (let i = 0; i < layout.lines.length; i += 1) {
+    const natural = layout.lines[i];
+    const text: LineText = {
+      layout,
+      layoutLine: i,
+      drawX: xOff,
+      drawY: yOff,
+      textStart: spans.documentAt(natural.start),
+      textEnd: spans.documentAt(natural.end),
+      layoutStart: natural.start,
+    };
+    lines.push({
+      x: xOff + natural.x,
+      y: yOff + natural.y,
+      width: natural.width,
+      height: natural.height,
+      baseline: natural.baseline,
+      texts: [text],
+      textStart: text.textStart,
+      textEnd: text.textEnd,
+      atomics: [],
+    });
+    widest = Math.max(widest, natural.width);
+  }
+  return widest;
+}
+
+/** Chunking kicks in past this much text (with hard breaks in it). The
+ *  chunk bounds are sized to the *drawing*, not the layout: a chunk is one
+ *  glyph batch, an expose submits every batch it touches whole, and a strip
+ *  two lines tall should not pay for five hundred — 64 hard lines is a
+ *  couple of viewports, measured at well under a millisecond a batch. */
+const CHUNK_TRIGGER_CHARS = 16384;
+const CHUNK_MAX_CHARS = 8192;
+const CHUNK_MAX_HARD_LINES = 64;
+
+/**
+ * A long hard-broken text — a `<pre>` holding a log, a wall of `<br>`s — laid
+ * out as a sequence of layouts split at newline boundaries.
+ *
+ * Two reasons, and either would suffice. A single `TextLayout` spanning
+ * hundreds of thousands of pixels cannot be *drawn*: ntk emits a layout as
+ * one glyph batch, X carries the positions as Int16, and the skip guard that
+ * keeps that from crashing would keep the whole thing blank instead. And a
+ * monolithic layout defeats viewport culling — every paint would hold the
+ * one object every line shares. Splitting at hard breaks is exact (line
+ * breaking never crosses a required break), so the chunk seams are
+ * invisible; each chunk stays a single batch a viewport can keep whole.
+ */
+function layoutChunked(
+  items: Extract<Item, { kind: 'text' }>[],
+  base: Record<string, unknown>,
+  style: ComputedStyle,
+  width: number,
+  lineHeightMul: number,
+  align: string,
+  fonts: FontsLike,
+): InlineResult {
+  const lines: LineBox[] = [];
+  let widest = 0;
+  let y = 0;
+
+  let chunkRuns: TextRun[] = [];
+  let chunkSpans = new SpanMap();
+  let chars = 0;
+  let hardLines = 0;
+
+  const flush = (): void => {
+    if (!chunkRuns.length) return;
+    const layout = fonts.layout(chunkRuns, base, {
+      maxWidth: wraps(style) ? width : undefined,
+      lineHeight: lineHeightMul,
+      align,
+      direction: style.direction,
+    });
+    LAYOUT_RUNS.set(layout, chunkRuns);
+    widest = Math.max(widest, emitLayout(layout, chunkSpans, 0, y, lines));
+    y += layout.height;
+    chunkRuns = [];
+    chunkSpans = new SpanMap();
+    chars = 0;
+    hardLines = 0;
+  };
+
+  for (const item of items) {
+    let text = item.run.text;
+    let docStart = item.box.textStart;
+    while (text.length) {
+      // Scan up to the budgets, remembering the last newline: the split has
+      // to land just after one for the chunking to be exact.
+      let i = 0;
+      let lastBreak = -1;
+      let lines2 = hardLines;
+      let taken = chars;
+      while (
+        i < text.length &&
+        taken < CHUNK_MAX_CHARS &&
+        lines2 < CHUNK_MAX_HARD_LINES
+      ) {
+        if (text.charCodeAt(i) === 10) {
+          lines2 += 1;
+          lastBreak = i;
+        }
+        i += 1;
+        taken += 1;
+      }
+      if (i >= text.length) {
+        // the rest of this run fits the open chunk
+        chunkRuns.push(
+          text === item.run.text ? item.run : { ...item.run, text },
+        );
+        chunkSpans.add(docStart, text.length);
+        chars = taken;
+        hardLines = lines2;
+        break;
+      }
+      if (lastBreak < 0) {
+        if (chunkRuns.length) {
+          // no break inside the budget: close the chunk, retry with room
+          flush();
+          continue;
+        }
+        // a single unbroken stretch larger than a whole chunk: take it to
+        // its next newline (or its end) and let the overflow guard judge it
+        const next = text.indexOf('\n', i);
+        const end = next < 0 ? text.length : next + 1;
+        chunkRuns.push({ ...item.run, text: text.slice(0, end) });
+        chunkSpans.add(docStart, end);
+        flush();
+        docStart += end;
+        text = text.slice(end);
+        continue;
+      }
+      const cut = lastBreak + 1;
+      chunkRuns.push({ ...item.run, text: text.slice(0, cut) });
+      chunkSpans.add(docStart, cut);
+      flush();
+      docStart += cut;
+      text = text.slice(cut);
+    }
+  }
+  flush();
+  return { lines, height: y, width: widest };
+}
 
 // --- the line under construction --------------------------------------------
 

@@ -228,6 +228,36 @@ export class Box {
   boundsWidth = 0;
   boundsHeight = 0;
 
+  /**
+   * The viewport query over a wide child list, built by `computePaintBounds`
+   * past a size threshold: the paintable in-flow children sorted by ink top,
+   * with each entry's document-order position and a running maximum of ink
+   * bottoms. What it buys is the promise this component makes about tall
+   * documents — the cost of a paint is the viewport's, not the document's —
+   * because without it every expose walked all N children of a flat
+   * document to reject N−20 of them.
+   */
+  paintIndex: {
+    boxes: Box[];
+    order: number[];
+    prefixBottom: number[];
+  } | null = null;
+  /** Out-of-flow children in paint order (z-index, then document order),
+   *  precomputed so a paint does not filter and sort per box per frame. */
+  positionedPaint: Box[] | null = null;
+  /** The tallest line box under this box — the slack a binary search over
+   *  the y-sorted lines needs, since a line's bottom is not monotone. */
+  maxLineHeight = 0;
+
+  /**
+   * The document range this box's *subtree* covers, in code units. `[0, 0)`
+   * for a subtree with no text. Assigned once per build; the selection
+   * walks prune on it, which is what keeps "which pixels does this range
+   * cover" from touching the ninety-nine paragraphs a selection is not in.
+   */
+  subtreeTextStart = 0;
+  subtreeTextEnd = 0;
+
   /** Set on a box whose `position` takes it out of flow, so the block pass
    *  can skip it and the positioned pass can find it. */
   outOfFlow = false;
@@ -366,6 +396,7 @@ class Builder {
     // it carries no margins of its own and cannot collapse with anything.
     this._children(root, rootBox, rootStyle, false);
     fixUp(rootBox);
+    assignSubtreeRanges(rootBox);
     return {
       root: rootBox,
       text: this._text,
@@ -724,6 +755,33 @@ function roman(n: number): string {
     }
   }
   return out;
+}
+
+/**
+ * Give every box the document range its subtree covers. Runs after `fixUp`,
+ * because fix-up reparents children into anonymous boxes and the ranges have
+ * to describe the tree the walks will actually traverse. Document order
+ * makes each subtree's range contiguous, so min/max over the children is
+ * exact rather than an approximation.
+ */
+function assignSubtreeRanges(box: Box): { start: number; end: number } {
+  let start = box.textEnd > box.textStart ? box.textStart : Infinity;
+  let end = box.textEnd > box.textStart ? box.textEnd : -Infinity;
+  for (const child of box.children) {
+    const range = assignSubtreeRanges(child);
+    if (range.end > range.start) {
+      start = Math.min(start, range.start);
+      end = Math.max(end, range.end);
+    }
+  }
+  if (end <= start) {
+    box.subtreeTextStart = 0;
+    box.subtreeTextEnd = 0;
+    return { start: 0, end: 0 };
+  }
+  box.subtreeTextStart = start;
+  box.subtreeTextEnd = end;
+  return { start, end };
 }
 
 // --- anonymous boxes --------------------------------------------------------

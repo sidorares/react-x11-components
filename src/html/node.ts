@@ -43,7 +43,7 @@ import type {
   MeasureConstraints,
   MeasuredSize,
 } from 'react-x11/node';
-import type { Rect } from 'react-x11';
+import type { MouseEvent as X11MouseEvent, Rect } from 'react-x11';
 import type { Style } from 'react-x11/style';
 import type { Element } from 'domhandler';
 
@@ -63,7 +63,7 @@ import type { FontsLike } from './layout/inline.js';
 // a layout is built once, on the first selection that needs it.
 import { layoutOffsets as layoutOffsetsOf } from './layout/inline.js';
 import { lineBands as bandsFor } from '../richtext/runs.js';
-import { paintDocument } from './paint.js';
+import { paintDocument, queryChildIndex } from './paint.js';
 import type { PaintContext } from './paint.js';
 import { controlRectsOf, measureControl } from './controls.js';
 import type { ControlRect } from './controls.js';
@@ -142,6 +142,9 @@ export class HtmlViewNode extends Node {
   private _documentHeight = 0;
   private _documentWidth = 0;
   private _textPoints: number[] | null = null;
+  /** Whether code points and code units are the same index — true unless
+   *  the text carries surrogate pairs. null until checked. */
+  private _pointsAreUnits: boolean | null = null;
   private _hovered: Element[] = [];
   private _scriptsSeen = new WeakSet<Element>();
   private _controls: ControlRect[] = [];
@@ -326,6 +329,7 @@ export class HtmlViewNode extends Node {
           measureControl(el, kind, style, this._fonts(), props.look),
       });
       this._textPoints = null;
+      this._pointsAreUnits = null;
       this._laidOutAt = -1;
     }
 
@@ -417,6 +421,23 @@ export class HtmlViewNode extends Node {
     return this._tree?.text ?? '';
   }
 
+  /**
+   * Whether the document's code-point and code-unit indices coincide.
+   *
+   * They differ only where the text carries surrogate pairs (code points
+   * past U+FFFF — emoji, mostly), and the offsets table that converts
+   * between them costs O(text): tens of milliseconds and a table entry per
+   * character on a megabyte-scale document, rebuilt on every DOM change.
+   * A regex scan answers "are there any" in a fraction of that, with no
+   * allocation, so the common all-BMP document never builds the table.
+   */
+  private _identityIndex(): boolean {
+    if (this._pointsAreUnits === null) {
+      this._pointsAreUnits = !/[\uD800-\uDFFF]/.test(this.textContent());
+    }
+    return this._pointsAreUnits;
+  }
+
   private _points(): number[] {
     if (!this._textPoints)
       this._textPoints = codeUnitOffsets(this.textContent());
@@ -424,12 +445,18 @@ export class HtmlViewNode extends Node {
   }
 
   private _toUnits(codePoint: number): number {
+    if (this._identityIndex()) {
+      return Math.max(0, Math.min(codePoint, this.textContent().length));
+    }
     const offsets = this._points();
     const at = Math.max(0, Math.min(codePoint, offsets.length - 1));
     return offsets[at];
   }
 
   private _toPoints(codeUnit: number): number {
+    if (this._identityIndex()) {
+      return Math.max(0, Math.min(codeUnit, this.textContent().length));
+    }
     return codePointAtOffset(this._points(), codeUnit);
   }
 
@@ -547,6 +574,25 @@ export class HtmlViewNode extends Node {
     return { x: x - this.abs.x, y: y - this.abs.y };
   }
 
+  // --- pointer defaults -----------------------------------------------------
+  //
+  // `:hover` is wired at the element rather than through React: the cascade
+  // already knows whether any rule in the document tests it, `setHover`
+  // returns without work when none does, and a document that does use it
+  // re-styles only when the hovered chain actually changed. The restyle is
+  // still document-wide — narrowing it to the affected subtree is the
+  // phase-2 item the PRD records.
+
+  override defaultMouseMove(ev: X11MouseEvent): void {
+    super.defaultMouseMove?.(ev);
+    this.setHover(ev.x, ev.y);
+  }
+
+  override defaultMouseLeave(ev: X11MouseEvent): void {
+    super.defaultMouseLeave?.(ev);
+    this.clearHover();
+  }
+
   // --- paint ----------------------------------------------------------------
 
   override paint(ctx: Context2D): void {
@@ -619,42 +665,116 @@ function sameRects(a: ControlRect[], b: ControlRect[]): boolean {
 
 // --- walks over the laid-out tree -------------------------------------------
 
-/** The code-unit offset nearest a document-space point. */
+/** Distance from a coordinate to an interval, zero inside it. */
+function axisDistance(v: number, lo: number, span: number): number {
+  return v < lo ? lo - v : v > lo + span ? v - (lo + span) : 0;
+}
+
+/**
+ * The code-unit offset nearest a document-space point.
+ *
+ * Two prunes keep this the viewport's cost rather than the document's — it
+ * runs per pointer event during a selection drag, where an unpruned walk of
+ * a big document measured in the tens of milliseconds *per move*:
+ *
+ *  - a subtree whose ink bounds cannot beat the best distance found so far
+ *    is skipped whole (the metric `dy·4 + dx` is monotone in both axis
+ *    distances, so the bounds give an exact lower bound);
+ *  - within a box, lines are y-sorted, so the candidates are found by
+ *    binary search and the scan stops the moment vertical distance alone
+ *    rules a line out.
+ */
 function nearestText(box: Box, x: number, y: number): number | null {
   let best: number | null = null;
   let bestDistance = Infinity;
 
+  const tryLine = (line: NonNullable<Box['lines']>[number]): void => {
+    const dy = axisDistance(y, line.y, line.height);
+    for (const text of line.texts) {
+      const natural = text.layout.lines[text.layoutLine];
+      if (!natural) continue;
+      const left = text.drawX + natural.x;
+      const dx = axisDistance(x, left, natural.width);
+      const distance = dy * 4 + dx;
+      if (distance >= bestDistance) continue;
+      bestDistance = distance;
+      const local = text.layout.indexAt(x - text.drawX, y - text.drawY);
+      const offsets = layoutOffsetsOf(text.layout);
+      const units = offsets.length
+        ? offsets[Math.max(0, Math.min(local, offsets.length - 1))]
+        : local;
+      best = text.textStart + Math.max(0, units - text.layoutStart);
+    }
+  };
+
   const visit = (node: Box): void => {
-    if (node.lines) {
-      for (const line of node.lines) {
-        const dy =
-          y < line.y
-            ? line.y - y
-            : y > line.y + line.height
-              ? y - (line.y + line.height)
-              : 0;
-        for (const text of line.texts) {
-          const natural = text.layout.lines[text.layoutLine];
-          if (!natural) continue;
-          const left = text.drawX + natural.x;
-          const dx =
-            x < left
-              ? left - x
-              : x > left + natural.width
-                ? x - (left + natural.width)
-                : 0;
-          const distance = dy * 4 + dx;
-          if (distance >= bestDistance) continue;
-          bestDistance = distance;
-          const local = text.layout.indexAt(x - text.drawX, y - text.drawY);
-          const offsets = layoutOffsetsOf(text.layout);
-          const units = offsets.length
-            ? offsets[Math.max(0, Math.min(local, offsets.length - 1))]
-            : local;
-          best = text.textStart + Math.max(0, units - text.layoutStart);
-        }
-        for (const placed of line.atomics) visit(placed.box);
+    const boundsDistance =
+      axisDistance(y, node.boundsY, node.boundsHeight) * 4 +
+      axisDistance(x, node.boundsX, node.boundsWidth);
+    if (boundsDistance >= bestDistance) return;
+
+    const lines = node.lines;
+    if (lines?.length) {
+      // The line nearest in y, by binary search; then outward both ways
+      // while vertical distance alone could still beat the best.
+      let lo = 0;
+      let hi = lines.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (lines[mid].y > y) hi = mid;
+        else lo = mid + 1;
       }
+      for (let i = lo - 1; i >= 0; i -= 1) {
+        if (axisDistance(y, lines[i].y, lines[i].height) * 4 >= bestDistance)
+          break;
+        tryLine(lines[i]);
+      }
+      for (let i = lo; i < lines.length; i += 1) {
+        if (axisDistance(y, lines[i].y, lines[i].height) * 4 >= bestDistance)
+          break;
+        tryLine(lines[i]);
+      }
+    }
+    // Atomics are ordinary children of the box, so the child walk below
+    // reaches them; a per-line atomics pass would visit each twice.
+    //
+    // A wide child list goes through the sorted index, outward from the
+    // pointer's y — the bounds prune alone still *visits* every child to
+    // reject it, and twenty thousand rejections per pointer move is the
+    // cost being avoided. The expansion stops the moment vertical distance
+    // alone cannot beat the best hit.
+    const index = node.paintIndex;
+    if (index) {
+      const sorted = index.boxes;
+      let lo = 0;
+      let hi = sorted.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (sorted[mid].boundsY > y) hi = mid;
+        else lo = mid + 1;
+      }
+      for (let i = lo - 1; i >= 0; i -= 1) {
+        const child = sorted[i];
+        if (
+          axisDistance(y, child.boundsY, child.boundsHeight) * 4 >=
+          bestDistance
+        )
+          break;
+        visit(child);
+      }
+      for (let i = lo; i < sorted.length; i += 1) {
+        const child = sorted[i];
+        if (
+          axisDistance(y, child.boundsY, child.boundsHeight) * 4 >=
+          bestDistance
+        )
+          break;
+        visit(child);
+      }
+      if (node.positionedPaint) {
+        for (const child of node.positionedPaint) visit(child);
+      }
+      return;
     }
     for (const child of node.children) {
       if (child.kind === 'text' || child.kind === 'break') continue;
@@ -665,7 +785,9 @@ function nearestText(box: Box, x: number, y: number): number | null {
   return best;
 }
 
-/** Where a caret at a code-unit offset stands, in document coordinates. */
+/** Where a caret at a code-unit offset stands, in document coordinates.
+ *  Subtrees whose text range cannot hold the offset are skipped whole, so
+ *  the walk is the path to one paragraph, not the document. */
 function caretAt(
   box: Box,
   units: number,
@@ -673,8 +795,22 @@ function caretAt(
   let found: { x: number; y: number; height: number } | null = null;
   const visit = (node: Box): void => {
     if (found) return;
-    if (node.lines) {
-      for (const line of node.lines) {
+    if (node.subtreeTextEnd <= node.subtreeTextStart) return;
+    if (units < node.subtreeTextStart || units > node.subtreeTextEnd) return;
+    const lines = node.lines;
+    if (lines?.length) {
+      // Lines are in document order, so their text starts are sorted:
+      // binary search the last line starting at or before the offset.
+      let lo = 0;
+      let hi = lines.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (lines[mid].textStart > units) hi = mid;
+        else lo = mid + 1;
+      }
+      for (let i = Math.max(0, lo - 1); i < lines.length; i += 1) {
+        const line = lines[i];
+        if (line.textStart > units) break;
         for (const text of line.texts) {
           if (units < text.textStart || units > text.textEnd) continue;
           const offsets = layoutOffsetsOf(text.layout);
@@ -682,15 +818,9 @@ function caretAt(
           const caret = text.layout.caretPosition(
             codePointAtOffset(offsets, layoutUnits),
           );
-          found = {
-            x: text.drawX + caret.x,
-            y: line.y,
-            height: line.height,
-          };
+          found = { x: text.drawX + caret.x, y: line.y, height: line.height };
           return;
         }
-        for (const placed of line.atomics) visit(placed.box);
-        if (found) return;
       }
     }
     for (const child of node.children) {
@@ -703,7 +833,9 @@ function caretAt(
   return found;
 }
 
-/** Every band a document range covers, in window coordinates. */
+/** Every band a document range covers, in window coordinates. The subtree
+ *  text ranges prune the walk to the boxes the range actually crosses, so a
+ *  drag's small range costs its own paragraphs; only Ctrl+A pays for all. */
 function collectBands(
   box: Box,
   from: number,
@@ -712,8 +844,22 @@ function collectBands(
   dy: number,
   out: Rect[],
 ): void {
+  if (box.subtreeTextEnd <= box.subtreeTextStart) return;
+  if (box.subtreeTextEnd <= from || box.subtreeTextStart >= to) return;
   if (box.lines) {
-    for (const line of box.lines) {
+    const lines = box.lines;
+    // First line whose text can reach `from`, by binary search over the
+    // sorted text starts; stop at the first line past `to`.
+    let lo = 0;
+    let hi = lines.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (lines[mid].textEnd > from) hi = mid;
+      else lo = mid + 1;
+    }
+    for (let i = lo; i < lines.length; i += 1) {
+      const line = lines[i];
+      if (line.textStart >= to) break;
       if (line.textEnd > from && line.textStart < to) {
         for (const text of line.texts) {
           const natural = text.layout.lines[text.layoutLine];
@@ -738,10 +884,9 @@ function collectBands(
           }
         }
       }
-      for (const placed of line.atomics)
-        collectBands(placed.box, from, to, dx, dy, out);
     }
   }
+  // Atomics are ordinary children, reached below.
   for (const child of box.children) {
     if (child.kind === 'text' || child.kind === 'break') continue;
     collectBands(child, from, to, dx, dy, out);
@@ -752,7 +897,13 @@ function collectBands(
 function deepestAt(box: Box, x: number, y: number): Element | null {
   let found: Element | null = box.el;
   const visit = (node: Box): void => {
-    for (const child of node.children) {
+    // The paint index answers a point query too — the wide level of a flat
+    // document is the root's child list, and a hit test that walked all of
+    // it would run per pointer move once hover is in the picture.
+    const candidates = node.paintIndex
+      ? queryChildIndex(node.paintIndex, y, y + 1)
+      : node.children;
+    for (const child of candidates) {
       if (child.kind === 'text' || child.kind === 'break') continue;
       if (
         x >= child.x &&
@@ -762,6 +913,19 @@ function deepestAt(box: Box, x: number, y: number): Element | null {
       ) {
         if (child.el) found = child.el;
         visit(child);
+      }
+    }
+    if (node.paintIndex && node.positionedPaint) {
+      for (const child of node.positionedPaint) {
+        if (
+          x >= child.x &&
+          x < child.x + child.width &&
+          y >= child.y &&
+          y < child.y + child.height
+        ) {
+          if (child.el) found = child.el;
+          visit(child);
+        }
       }
     }
     if (node.lines) {

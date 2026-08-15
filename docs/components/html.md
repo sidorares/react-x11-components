@@ -157,11 +157,18 @@ opened for a node whose body is a form. A drawn control would take no focus,
 say nothing to a screen reader, and have to reimplement every keyboard
 convention the platform already has.
 
-**The application scrolls it.** The element sizes to its content; put it in a
-`<box overflow="scroll">`, the same shape `<Markdown>` uses. That keeps the
-mounted controls scrolling with the document for free, and core's scroller
-already blits. A document taller than X11's 16-bit coordinate space needs the
-element to scroll itself, which is phase-2 work — see [the PRD](../prd-html.md).
+**The application scrolls it, and height does not frighten it.** The element
+sizes to its content; put it in a `<box overflow="scroll">`, the same shape
+`<Markdown>` uses. That keeps the mounted controls scrolling with the
+document for free, and core's scroller already blits. Tall is fine — a
+multi-hundred-thousand-pixel document renders correctly at any scroll
+position, because everything the paint path submits is bounded by the
+viewport: fills are clamped to the damage (X carries them as 16-bit numbers,
+so an unclamped one is a protocol error, not a clipped rectangle), long
+hard-broken text is laid out in chunks so no single glyph batch spans more
+than the Int16 envelope, and wide child lists and line arrays are searched,
+not scanned. What phase 2 adds is cheaper _layout_ for such documents, not
+the ability to show them.
 
 **A fragment gets an implied body.** `<p>hi</p>` has no `<body>` element, so
 the root box takes the style a `<body>` would have had: the user-agent
@@ -227,9 +234,13 @@ least:
 Nothing in a computed style depends on the width — percentages and `auto`
 survive unresolved into layout — which is what makes a resize skip the
 cascade. Every box carries the ink bounds of everything it and its
-descendants draw, so an expose of a 40-pixel strip in a very tall document
-touches only the boxes that overlap it. And a paragraph is one glyph batch:
-ntk's text layout draws all of its lines in a single composite.
+descendants draw, and past a size threshold a child list carries a sorted
+viewport index, so an expose of a 40-pixel strip in a very tall document
+finds the boxes that overlap it by binary search rather than by scanning
+the document. The selection walks prune the same way — by each subtree's
+document range, and by ink-bounds distance for hit testing — so a drag costs
+the paragraphs it crosses. And a paragraph is one glyph batch: ntk's text
+layout draws all of its lines in a single composite.
 
 ## Types
 

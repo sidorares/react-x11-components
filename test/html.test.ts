@@ -679,6 +679,112 @@ test('a degenerately nested document is capped, not crashed', async () => {
   void result;
 });
 
+metric('a tall document renders at any scroll depth', async () => {
+  // The whole promise: viewport-bounded painting, whatever the height. The
+  // background fill, the borders and every glyph batch have to survive X's
+  // Int16 coordinates while the element sits hundreds of thousands of
+  // pixels tall — scrolled to the middle, there must be ink on screen.
+  const para =
+    '<p>The quick brown fox jumps over the lazy dog and keeps going for a while longer.</p>';
+  const result = await renderX11(
+    h(
+      'box',
+      {
+        style: { width: 500, height: 400, overflow: 'scroll' },
+        'data-testname': 'scroller',
+      },
+      h(
+        'box',
+        { style: { flexDirection: 'column' } },
+        h(Html, {
+          source: '<style>body{background:#f4f6f8}</style>' + para.repeat(2500),
+          partial: false,
+          'data-testname': 'doc',
+        }),
+      ),
+    ),
+    { width: 540, height: 440, fonts: FONTS! },
+  );
+  const scroller = screen.getByTestName('scroller') as DrawnNode & {
+    scrollTo(to: { y: number }): void;
+  };
+  const doc = view(screen.getByTestName('doc') as DrawnNode);
+  const height = (doc as unknown as { abs: { height: number } }).abs.height;
+  assert.ok(height > 60000, `the document is genuinely tall (${height}px)`);
+  await act(async () => {
+    scroller.scrollTo({ y: Math.round(height / 2) });
+  });
+  const { countPixels, settle } = await import('react-x11/test');
+  await settle(result.app, 3);
+  const ink = await countPixels(
+    result.ctx,
+    { x: 0, y: 0, width: 500, height: 400 },
+    '#2d3436',
+    60,
+  );
+  assert.ok(ink > 1000, `text is on screen at half-scroll (${ink} ink pixels)`);
+});
+
+metric('a huge <pre> is chunked, renders deep, and still selects', async () => {
+  // One box, thousands of hard-broken lines: a single TextLayout would be
+  // one glyph batch taller than X can address, so it is laid out in chunks
+  // split at newlines — invisible seams, drawable pieces. The selection
+  // accessors must agree across the chunk boundaries.
+  const LINES = 5000;
+  const log = Array.from(
+    { length: LINES },
+    (_, i) => `line ${i} of the log`,
+  ).join('\n');
+  const { node } = await render(`<pre>${log}</pre>`, 500);
+  const el = view(node);
+  const text = el.textContent();
+  assert.ok(text.includes('line 4999'), 'every line is in the document text');
+
+  const tree = (
+    el as unknown as {
+      _tree: { root: { children: { lines: { texts: unknown[] }[] | null }[] } };
+    }
+  )._tree;
+  const pre = tree.root.children.find((b) => b.lines && b.lines.length > 1000);
+  assert.ok(pre?.lines, 'the pre laid out');
+  const layouts = new Set<unknown>();
+  for (const line of pre.lines) {
+    for (const t of line.texts) layouts.add((t as { layout: unknown }).layout);
+  }
+  assert.ok(
+    layouts.size > 10,
+    `the text is many layouts, not one (${layouts.size})`,
+  );
+
+  // A caret deep in the pre round-trips through a chunk that is not the first.
+  const at = text.indexOf('line 3000');
+  const caret = el.textCaretRect(at);
+  assert.ok(caret, 'a deep caret resolves');
+  const back = el.textIndexAt(caret.x + 1, caret.y + caret.height / 2);
+  assert.ok(Math.abs(back - at) <= 1, `round-tripped to ${back}, wanted ${at}`);
+
+  // A range crossing a chunk boundary yields bands on both sides.
+  const boundary = text.indexOf('line 63'); // chunks are 64 hard lines
+  const bands = el.textRangeRects(boundary, text.indexOf('line 65'));
+  assert.ok(bands.length >= 2, `bands across the seam (${bands.length})`);
+});
+
+metric('non-BMP text still maps points to units both ways', async () => {
+  // The identity shortcut must step aside when surrogate pairs exist: two
+  // emoji before a word shift its code-unit offsets by two.
+  const { node } = await render('<p>\u{1F600}\u{1F680} rocket</p>', 400);
+  const el = view(node);
+  const points = [...el.textContent()];
+  const wordAt = points.indexOf('r'); // code-point index of "rocket"
+  const caret = el.textCaretRect(wordAt);
+  assert.ok(caret, 'caret after the emoji resolves');
+  const back = el.textIndexAt(caret.x + 1, caret.y + caret.height / 2);
+  assert.ok(
+    Math.abs(back - wordAt) <= 1,
+    `code-point round trip through surrogates (${back} vs ${wordAt})`,
+  );
+});
+
 // --- selection and hit testing ----------------------------------------------
 
 metric('the caret and the selection bands agree with the glyphs', async () => {

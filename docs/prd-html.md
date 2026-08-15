@@ -235,15 +235,16 @@ gradients are ignored; `position: sticky` is treated as `relative`;
 
 **Phase 2, in the order they are worth doing:**
 
-1. **The element scrolls itself.** Today it sizes to its content and the
-   application puts it in a `<box overflow="scroll">` — which is the right
-   default (the mounted controls scroll with it for free, and core's scroller
-   already blits) and does not survive a document taller than X11's 16-bit
-   coordinate space. `Scrollable(Node)` plus `scrollContents` for the
-   server-side blit gets both that and real virtualization: only the lines
-   that intersect the viewport painted, only the visible controls mounted.
-   The cost it introduces is that controls must be repositioned per scroll
-   step, which is why it is not the default now.
+1. **Virtualized layout.** Painting a tall document is already the
+   viewport's cost, whatever the height: fills clamp to the damage, long
+   hard-broken text is chunked so no glyph batch outgrows X's Int16
+   coordinates, and wide child lists carry a sorted index the paint and hit
+   walks query instead of scanning. What still scales with the document is
+   _layout_ — a resize re-breaks every paragraph's lines. The element
+   scrolling itself (`Scrollable(Node)` plus `scrollContents` for the
+   server-side blit) is what would let layout touch only the visible band
+   plus estimates, at the cost of repositioning the mounted controls per
+   scroll step — which is why it is phase 2 and not the default.
 2. **Targeted restyle on `:hover`.** Today a pointer move restyles the
    document — but only when the document contains a `:hover` selector at all,
    which most do not. Restyling from the nearest common ancestor of the old

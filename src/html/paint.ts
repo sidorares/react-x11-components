@@ -108,7 +108,85 @@ export function computePaintBounds(box: Box): Rect {
   box.boundsY = y1;
   box.boundsWidth = x2 - x1;
   box.boundsHeight = y2 - y1;
+
+  if (box.lines) {
+    let tallest = 0;
+    for (const line of box.lines) tallest = Math.max(tallest, line.height);
+    box.maxLineHeight = tallest;
+  }
+  buildChildIndexes(box);
+
   return { x: x1, y: y1, width: box.boundsWidth, height: box.boundsHeight };
+}
+
+/** Children lists past this size get the sorted viewport index; below it a
+ *  linear scan is cheaper than keeping one. */
+const PAINT_INDEX_MIN = 64;
+
+function buildChildIndexes(box: Box): void {
+  box.paintIndex = null;
+  box.positionedPaint = null;
+  let positioned: Box[] | null = null;
+  let paintable = 0;
+  for (const child of box.children) {
+    if (child.kind === 'text' || child.kind === 'break') continue;
+    if (child.outOfFlow) (positioned ??= []).push(child);
+    else paintable += 1;
+  }
+  if (positioned) {
+    // Pre-sorted once per layout instead of filtered and sorted per paint.
+    positioned.sort(byZIndex);
+    box.positionedPaint = positioned;
+  }
+  if (paintable < PAINT_INDEX_MIN) return;
+  const boxes: Box[] = [];
+  for (const child of box.children) {
+    if (child.kind === 'text' || child.kind === 'break' || child.outOfFlow)
+      continue;
+    boxes.push(child);
+  }
+  const order = boxes.map((_, i) => i);
+  order.sort((a, b) => boxes[a].boundsY - boxes[b].boundsY);
+  const sorted = order.map((i) => boxes[i]);
+  const prefixBottom: number[] = new Array<number>(sorted.length);
+  let running = -Infinity;
+  for (let i = 0; i < sorted.length; i += 1) {
+    running = Math.max(running, sorted[i].boundsY + sorted[i].boundsHeight);
+    prefixBottom[i] = running;
+  }
+  box.paintIndex = { boxes: sorted, order, prefixBottom };
+}
+
+/**
+ * The children whose ink can touch `[top, bottom)`, in document order.
+ * The prefix maximum of bottoms is monotone, so the first candidate is a
+ * binary search; the scan stops at the first sorted top past the bottom.
+ */
+export function queryChildIndex(
+  index: NonNullable<Box['paintIndex']>,
+  top: number,
+  bottom: number,
+): Box[] {
+  const { boxes, order, prefixBottom } = index;
+  let lo = 0;
+  let hi = boxes.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (prefixBottom[mid] > top) hi = mid;
+    else lo = mid + 1;
+  }
+  const hits: { at: number; box: Box }[] = [];
+  for (let i = lo; i < boxes.length; i += 1) {
+    const child = boxes[i];
+    if (child.boundsY >= bottom) break;
+    if (child.boundsY + child.boundsHeight > top)
+      hits.push({ at: order[i], box: child });
+  }
+  // Paint order is document order; the handful of visible children sort in
+  // no time, where sorting the whole list per paint was the point of not
+  // filtering per paint.
+  hits.sort((a, b) => a.at - b.at);
+  return hits.map((h) => h.box);
 }
 
 /** Paint a laid-out document. */
@@ -139,18 +217,27 @@ function paintBox(ctx: PaintContext, box: Box, options: PaintOptions): void {
   // positioned ones — a flattening of CSS's painting order that is right for
   // everything short of a document that puts a negative z-index under its own
   // parent's background.
-  for (const child of box.children) {
-    if (child.kind === 'text' || child.kind === 'break') continue;
-    if (child.outOfFlow) continue;
-    paintBox(ctx, child, options);
+  const damage = options.damage;
+  if (box.paintIndex && damage) {
+    for (const child of queryChildIndex(
+      box.paintIndex,
+      damage.y - options.originY,
+      damage.y + damage.height - options.originY,
+    )) {
+      paintBox(ctx, child, options);
+    }
+  } else {
+    for (const child of box.children) {
+      if (child.kind === 'text' || child.kind === 'break') continue;
+      if (child.outOfFlow) continue;
+      paintBox(ctx, child, options);
+    }
   }
 
   if (box.lines && visible) paintLines(ctx, box, options);
 
-  const positioned = box.children.filter((c) => c.outOfFlow);
-  if (positioned.length) {
-    positioned.sort(byZIndex);
-    for (const child of positioned) paintBox(ctx, child, options);
+  if (box.positionedPaint) {
+    for (const child of box.positionedPaint) paintBox(ctx, child, options);
   }
 }
 
@@ -174,6 +261,39 @@ function intersects(box: Box, options: PaintOptions): boolean {
   );
 }
 
+/**
+ * A fill rectangle clamped to the neighbourhood of the damage.
+ *
+ * Load-bearing, not an optimization: the X protocol carries a fill's
+ * position as Int16 and its size as Uint16, so the background of a box
+ * hundreds of thousands of pixels tall *thrown at the server whole* dies in
+ * the request encoder — the pixels beyond the viewport were never going to
+ * exist, but the numbers still had to fit. The margin keeps rounded corners
+ * and antialiasing outside the damage honest; with no damage at all the
+ * Int16 envelope itself is the clamp.
+ */
+const CLAMP_PAD = 64;
+
+function clampRect(
+  options: PaintOptions,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+): { x: number; y: number; w: number; h: number } | null {
+  const damage = options.damage;
+  const left = damage ? damage.x - CLAMP_PAD : -COORD_LIMIT;
+  const top = damage ? damage.y - CLAMP_PAD : -COORD_LIMIT;
+  const right = damage ? damage.x + damage.width + CLAMP_PAD : COORD_LIMIT;
+  const bottom = damage ? damage.y + damage.height + CLAMP_PAD : COORD_LIMIT;
+  const x1 = Math.max(x, left);
+  const y1 = Math.max(y, top);
+  const x2 = Math.min(x + w, right);
+  const y2 = Math.min(y + h, bottom);
+  if (x2 <= x1 || y2 <= y1) return null;
+  return { x: x1, y: y1, w: x2 - x1, h: y2 - y1 };
+}
+
 function paintBackground(
   ctx: PaintContext,
   box: Box,
@@ -181,20 +301,26 @@ function paintBackground(
 ): void {
   const color = box.style.backgroundColor;
   if (isTransparent(color)) return;
-  const x = Math.round(box.x + options.originX);
-  const y = Math.round(box.y + options.originY);
-  const w = Math.ceil(box.width);
-  const h = Math.ceil(box.height);
-  if (w <= 0 || h <= 0) return;
+  const rect = clampRect(
+    options,
+    Math.round(box.x + options.originX),
+    Math.round(box.y + options.originY),
+    Math.ceil(box.width),
+    Math.ceil(box.height),
+  );
+  if (!rect) return;
   ctx.fillStyle = inkColor(color as string, box.style.color);
   const radii = box.style.borderRadius;
   if (radii.some((r) => r > 0) && ctx.roundRect && ctx.fill && ctx.beginPath) {
+    // The clamp can only have cut edges further than CLAMP_PAD outside the
+    // damage, and a sane radius is smaller than that — so a corner that
+    // survives the cut is whole, and a cut edge is offscreen.
     ctx.beginPath();
-    ctx.roundRect(x, y, w, h, radii.slice());
+    ctx.roundRect(rect.x, rect.y, rect.w, rect.h, radii.slice());
     ctx.fill();
     return;
   }
-  ctx.fillRect(x, y, w, h);
+  ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
 }
 
 /**
@@ -219,43 +345,55 @@ function paintBorders(
   const h = Math.ceil(box.height);
   if (w <= 0 || h <= 0) return;
 
+  const edge = (
+    ex: number,
+    ey: number,
+    ew: number,
+    eh: number,
+    style: ComputedStyle['borderTopStyle'],
+    color: string,
+    horizontal: boolean,
+  ): void => {
+    const rect = clampRect(options, ex, ey, ew, eh);
+    if (!rect) return;
+    ctx.fillStyle = inkColor(color, s.color);
+    // The un-clamped start is the dash phase's origin, so the pattern does
+    // not crawl as the viewport moves along a long edge.
+    fillEdge(ctx, rect, horizontal ? ex : ey, style, horizontal);
+  };
   if (box.borderTop > 0 && !isTransparent(s.borderTopColor)) {
-    ctx.fillStyle = inkColor(s.borderTopColor, s.color);
-    fillEdge(ctx, x, y, w, box.borderTop, s.borderTopStyle, true);
+    edge(x, y, w, box.borderTop, s.borderTopStyle, s.borderTopColor, true);
   }
   if (box.borderBottom > 0 && !isTransparent(s.borderBottomColor)) {
-    ctx.fillStyle = inkColor(s.borderBottomColor, s.color);
-    fillEdge(
-      ctx,
+    edge(
       x,
       y + h - box.borderBottom,
       w,
       box.borderBottom,
       s.borderBottomStyle,
+      s.borderBottomColor,
       true,
     );
   }
   if (box.borderLeft > 0 && !isTransparent(s.borderLeftColor)) {
-    ctx.fillStyle = inkColor(s.borderLeftColor, s.color);
-    fillEdge(
-      ctx,
+    edge(
       x,
       y + box.borderTop,
       box.borderLeft,
       h - box.borderTop - box.borderBottom,
       s.borderLeftStyle,
+      s.borderLeftColor,
       false,
     );
   }
   if (box.borderRight > 0 && !isTransparent(s.borderRightColor)) {
-    ctx.fillStyle = inkColor(s.borderRightColor, s.color);
-    fillEdge(
-      ctx,
+    edge(
       x + w - box.borderRight,
       y + box.borderTop,
       box.borderRight,
       h - box.borderTop - box.borderBottom,
       s.borderRightStyle,
+      s.borderRightColor,
       false,
     );
   }
@@ -263,23 +401,28 @@ function paintBorders(
 
 function fillEdge(
   ctx: PaintContext,
-  x: number,
-  y: number,
-  a: number,
-  b: number,
+  rect: { x: number; y: number; w: number; h: number },
+  phaseOrigin: number,
   style: ComputedStyle['borderTopStyle'],
   horizontal: boolean,
 ): void {
-  const length = horizontal ? a : b;
-  const thickness = horizontal ? b : a;
+  const { x, y, w, h } = rect;
+  const length = horizontal ? w : h;
+  const thickness = horizontal ? h : w;
   if (length <= 0 || thickness <= 0) return;
   if (style === 'dashed' || style === 'dotted') {
     const period = style === 'dotted' ? thickness * 2 : thickness * 3;
     const on = style === 'dotted' ? thickness : thickness * 2;
-    for (let i = 0; i < length; i += period) {
-      const run = Math.min(on, length - i);
-      if (horizontal) ctx.fillRect(x + i, y, run, thickness);
-      else ctx.fillRect(x, y + i, thickness, run);
+    const from = horizontal ? x : y;
+    // Start on the pattern boundary at or before the clamped start, so the
+    // dash the viewport cuts into is the same dash it always was.
+    let i = Math.floor((from - phaseOrigin) / period) * period + phaseOrigin;
+    for (; i < from + length; i += period) {
+      const start = Math.max(i, from);
+      const run = Math.min(i + on, from + length) - start;
+      if (run <= 0) continue;
+      if (horizontal) ctx.fillRect(start, y, run, thickness);
+      else ctx.fillRect(x, start, thickness, run);
     }
     return;
   }
@@ -294,7 +437,7 @@ function fillEdge(
     }
     return;
   }
-  ctx.fillRect(x, y, a, b);
+  ctx.fillRect(x, y, w, h);
 }
 
 /** A list item's bullet or number, in the margin. */
@@ -354,9 +497,28 @@ function paintLines(ctx: PaintContext, box: Box, options: PaintOptions): void {
   // painted for every line first, then the ink once per layout, then the
   // rules over it.
   const visible: LineBox[] = [];
-  for (const line of lines) {
-    if (damage && !lineInDamage(line, dx, dy, damage)) continue;
-    visible.push(line);
+  if (damage) {
+    // Lines are built top to bottom, so `y` is monotone; a line's *bottom*
+    // is not (heights vary), which is what the tallest-line slack is for.
+    // Start at the first line that could reach the damage, stop at the
+    // first one past it: the cost is the visible lines, not the box's.
+    const top = damage.y - dy;
+    const bottom = top + damage.height;
+    let lo = 0;
+    let hi = lines.length;
+    const slack = top - box.maxLineHeight;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (lines[mid].y > slack) hi = mid;
+      else lo = mid + 1;
+    }
+    for (let i = lo; i < lines.length; i += 1) {
+      const line = lines[i];
+      if (line.y >= bottom) break;
+      if (line.y + line.height > top) visible.push(line);
+    }
+  } else {
+    visible.push(...lines);
   }
   if (!visible.length) return;
 
@@ -398,16 +560,6 @@ function paintLines(ctx: PaintContext, box: Box, options: PaintOptions): void {
     }
     for (const placed of line.atomics) paintBox(ctx, placed.box, options);
   }
-}
-
-function lineInDamage(
-  line: LineBox,
-  dx: number,
-  dy: number,
-  damage: Rect,
-): boolean {
-  const y = line.y + dy;
-  return y < damage.y + damage.height && y + line.height > damage.y;
 }
 
 /**
