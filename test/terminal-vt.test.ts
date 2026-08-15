@@ -771,10 +771,14 @@ test('a pty of your own: bytes in, split wherever the network split them', async
 
 test('write() is real at last, and typing reaches the pty', async () => {
   const { pty, ref } = await mountVt();
+  const node = vtNode();
+  // `mountVt` resolves on `openPty`, a beat before the commit that hands the
+  // emulator to the node — and a key pressed in that gap is dropped at the
+  // `!term` guard, not queued. Hold typing until the node can see its screen.
+  await waitFor(() => assert.notEqual(node.serialize(), null));
   assert.equal(ref.current?.write('ls\r'), true);
   assert.equal(pty.last?.written, 'ls\r');
 
-  const node = vtNode();
   let prevented = false;
   node.defaultKeyDown({
     keysym: undefined,
@@ -787,13 +791,15 @@ test('write() is real at last, and typing reaches the pty', async () => {
       prevented = true;
     },
   } as unknown as Parameters<VtTermNode['defaultKeyDown']>[0]);
-  assert.equal(pty.last?.written, 'ls\ra');
+  await waitFor(() => assert.equal(pty.last?.written, 'ls\ra'));
   assert.ok(prevented, 'a key the terminal consumed is not also a focus move');
 });
 
 test('Escape arms one pass-through Tab, and Escape still reaches the program', async () => {
   const { pty } = await mountVt();
   const node = vtNode();
+  // Same gap as above: no keys until the emulator has reached the node.
+  await waitFor(() => assert.notEqual(node.serialize(), null));
   const press = (over: Record<string, unknown>): boolean => {
     let prevented = false;
     node.defaultKeyDown({
