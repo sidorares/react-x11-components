@@ -72,6 +72,9 @@ const COMPONENTS = [
   { exportName: 'Tree', dir: 'tree', marker: 'treeitem' },
   // the element name rather than `flow`, which "overflow" contains
   { exportName: 'Flow', dir: 'flow', marker: 'flowgraph' },
+  // `<Formula>` reaches katex only through a dynamic import, so the marker
+  // is a face name only its own font table writes
+  { exportName: 'Formula', dir: 'formula', marker: 'KaTeX_Size4' },
   // `<Timeline>` is box-and-text composition and shares nothing at all, which
   // leaves it short of a marker: the export pulled is the *item* rather than
   // the root, because the root shakes so well that nothing distinctive

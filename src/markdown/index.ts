@@ -89,6 +89,17 @@ registerRichText();
 
 // --- props -----------------------------------------------------------------
 
+/** What a fence renderer is handed — see `MarkdownProps.fences`. */
+export interface FenceInfo {
+  /** The fence's info string, lowercased — the key it was looked up by. */
+  lang: string;
+  /** The fence's content, as it stands. */
+  text: string;
+  /** True while this fence is the live tail of a streaming document —
+   *  its `text` is still growing. */
+  partial: boolean;
+}
+
 export interface MarkdownProps {
   /** The markdown text. Append to it as chunks stream in. */
   source: string;
@@ -116,6 +127,19 @@ export interface MarkdownProps {
   selectionColor?: string;
   /** Syntax colouring in fenced code (via ntk's highlighter). Default true. */
   highlight?: boolean;
+  /**
+   * Custom renderers for fenced blocks, keyed by the fence's language
+   * (lowercased). A fence whose language has an entry renders through it
+   * instead of as a code block — how a ```math fence becomes a `<Formula>`
+   * — and the seam is a map so this component never imports the components
+   * it hosts. Streaming keeps working: the live tail's fence re-renders as
+   * its text grows, with `partial` true until the document ends. The
+   * renderer's text joins the document's selection if what it returns
+   * answers core's text accessors (docs/extending.md); it is handed a
+   * keyed slot, so it does not need a `key` of its own. Give the map a
+   * stable identity — a new object per render defeats the block cache.
+   */
+  fences?: Record<string, (fence: FenceInfo) => ReactNode>;
   /** The root `<box>`'s style — width, padding, margins, `overflow`. */
   style?: Style | Style[];
   'data-testname'?: string;
@@ -188,6 +212,9 @@ interface RenderCtx {
   look: Look;
   /** `app.fonts`, when real — table column sizing measures through it. */
   fonts: FontsMeasureLike | null;
+  fences?: MarkdownProps['fences'];
+  /** True while rendering the live tail block of a streaming document. */
+  live?: boolean;
 }
 
 interface FontsMeasureLike {
@@ -290,6 +317,16 @@ function renderCode(
   ctx: RenderCtx,
   key: number,
 ): ReactNode {
+  const custom = ctx.fences?.[lang];
+  if (custom) {
+    // the fragment carries the key, so a renderer returns bare elements —
+    // the same courtesy `<Tree>`'s render seams extend
+    return h(
+      React.Fragment,
+      { key },
+      custom({ lang, text, partial: ctx.live === true }),
+    );
+  }
   const code = ctx.look.code;
   const runs = codeBlockRuns(text, code, {
     lang,
@@ -547,7 +584,20 @@ export function Markdown(props: MarkdownProps): ReactElement {
   // and the retained nodes keep their layout caches.
   const cacheRef = React.useRef<BlockCache | null>(null);
   const fonts = app?.fonts ?? null;
-  const epoch = `${look.key}|${fonts ? 'f' : '-'}`;
+  // The fences map cannot be part of a string key, so its *identity* is
+  // counted instead: a new map is a new epoch, and every cached block that
+  // might have rendered through it is re-derived.
+  const fencesRef = React.useRef<{
+    fences: MarkdownProps['fences'];
+    gen: number;
+  }>({ fences: props.fences, gen: 0 });
+  if (fencesRef.current.fences !== props.fences) {
+    fencesRef.current = {
+      fences: props.fences,
+      gen: fencesRef.current.gen + 1,
+    };
+  }
+  const epoch = `${look.key}|${fonts ? 'f' : '-'}|${fencesRef.current.gen}`;
   if (!cacheRef.current || cacheRef.current.epoch !== epoch) {
     cacheRef.current = { epoch, map: new Map() };
   }
@@ -556,7 +606,7 @@ export function Markdown(props: MarkdownProps): ReactElement {
   const children: ReactNode[] = [];
   {
     const nextMap = new Map<string, ReactNode>();
-    const ctx: RenderCtx = { look, fonts };
+    const ctx: RenderCtx = { look, fonts, fences: props.fences };
     for (let i = 0; i < doc.blocks.length; i += 1) {
       const live = partial && i === doc.blocks.length - 1;
       const cacheKey = `${i}|${live ? 'L' : '.'}|${doc.raws[i]}`;
@@ -566,7 +616,11 @@ export function Markdown(props: MarkdownProps): ReactElement {
         nextMap.set(cacheKey, hit);
         continue;
       }
-      const element = renderBlock(doc.blocks[i], ctx, i);
+      const element = renderBlock(
+        doc.blocks[i],
+        live ? { ...ctx, live } : ctx,
+        i,
+      );
       children.push(element);
       nextMap.set(cacheKey, element);
     }
