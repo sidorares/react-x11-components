@@ -413,21 +413,21 @@ so CDP first is the right order.
 
 ### The API: one prop, and the transport is a seam
 
-The ladder rule holds — CDP is an orthogonal opt-in on the same element, not
-a second API and not a wrapper component:
+The ladder rule holds — the protocol is an orthogonal opt-in on the same
+element, not a second API and not a wrapper component:
 
 ```tsx
-import { useHtmlCdp } from '@react-x11/components/html-cdp';
+import { useHtmlInspector } from '@react-x11/components/html-inspector';
 
-const cdp = useHtmlCdp(); // owns sessions, ids, domains
-<Html source={html} onResource={mine} cdp={cdp.bridge} />;
+const inspector = useHtmlInspector(); // owns sessions, ids, domains
+<Html source={html} onResource={mine} inspector={inspector.bridge} />;
 
 // in-process client, zero sockets anywhere:
-const browser = await puppeteer.connect({ transport: cdp.transport() });
+const browser = await puppeteer.connect({ transport: inspector.transport() });
 
 // remote attach is the app's ten lines, with the app's own `ws`:
 wss.on('connection', (socket) =>
-  cdp.attach({
+  inspector.attach({
     send: (m) => socket.send(m),
     onmessage: (fn) => socket.on('message', fn),
     close: () => socket.close(),
@@ -435,29 +435,38 @@ wss.on('connection', (socket) =>
 );
 ```
 
+**The name is the seam's role, not the wire's vendor.** `inspector` is what
+Node calls its own CDP subset (`node --inspect`, `node:inspector`) — the
+exact precedent: a non-browser runtime exposing the protocol partially. A
+prop named `cdp` would be wrong on arrival if a WebDriver BiDi face is ever
+added beside it, and `debugger` is a reserved word — legal as a JSX
+attribute, but `const { debugger } = props` is a syntax error, which bites
+everyone who destructures. The docs still say plainly that the wire is the
+Chrome DevTools Protocol; only the API surface stays vendor-neutral.
+
 Decisions inside that shape, each with its reason:
 
 - **The transport is a seam, never a listener.** The package opens no TCP
-  port and depends on no WebSocket library; `cdp.transport()` returns the
-  four-method object `puppeteer.connect({ transport })` is documented to
+  port and depends on no WebSocket library; `inspector.transport()` returns
+  the four-method object `puppeteer.connect({ transport })` is documented to
   take (verified against puppeteer-core's published types —
   `ConnectionTransport`: `send`, `close`, `onmessage`, `onclose`), and
-  `cdp.attach(duplex)` accepts whatever pipe the app brings — a WebSocket,
-  the isolated-mode IPC channel, a test harness. This is the same posture as
-  every other seam here: the host owns the outside world.
+  `inspector.attach(duplex)` accepts whatever pipe the app brings — a
+  WebSocket, the isolated-mode IPC channel, a test harness. This is the same
+  posture as every other seam here: the host owns the outside world.
 - **A prop rather than a wrapper component or a context**, because the one
   thing the adapter cannot do from outside is _compose interception with the
   host's own handler_: `Fetch.continueRequest` means "do what you would have
-  done", and only the component knows what that is. `cdp` slots in front of
-  the app's `onResource`; no client attached, zero overhead — the bridge is
-  inert until a session exists.
-- **`<Html>` never imports the adapter.** The `cdp` prop is typed
+  done", and only the component knows what that is. `inspector` slots in
+  front of the app's `onResource`; no client attached, zero overhead — the
+  bridge is inert until a session exists.
+- **`<Html>` never imports the adapter.** The `inspector` prop is typed
   structurally (a `bind`/`unbind` pair the component calls with its node and
   inner handlers), the hook lives on its own subpath, and the tree-shaking
-  contract holds: an app that never imports `/html-cdp` ships none of it.
-  This is the richtext registration pattern pointed the other way.
-- Non-React hosts get `createHtmlCdp()` — the hook is `useMemo` sugar over
-  it.
+  contract holds: an app that never imports `/html-inspector` ships none of
+  it. This is the richtext registration pattern pointed the other way.
+- Non-React hosts get `createHtmlInspector()` — the hook is `useMemo` sugar
+  over it.
 
 ### What the seams need to grow — each independently useful
 
@@ -489,7 +498,8 @@ adapter is written once for both.
 
 Roughly: the seam growth above (~150 lines, in `src/html/`), the adapter
 (sessions, Target/Browser boilerplate, Fetch/Network/Page/DOM/CSS, ~1.5–2k
-lines in `src/html-cdp/`), conformance tests driven through puppeteer-core
+lines in `src/html-inspector/`), conformance tests driven through
+puppeteer-core
 as a devDependency (no browser download). A follow-up PR the size of the
 isolated mode, and the recommended order is: seam growth → adapter →
 isolated mode riding the same protocol.
