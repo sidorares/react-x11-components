@@ -29,20 +29,21 @@ no `<html>` successor.
 
 ## Props
 
-| Prop             | Type                                          | Notes                                                                                            |
-| ---------------- | --------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| `source`         | `string`                                      | The markdown text. Append to it as chunks stream in. Required.                                   |
-| `partial`        | `boolean`                                     | Whether more source may still arrive. Default **true** — set it false when the stream ends.      |
-| `selectable`     | `boolean`                                     | Mouse selection, Ctrl+A / Ctrl+C, PRIMARY. Default true.                                         |
-| `onLink`         | `(href: string, ev: X11MouseEvent) => void`   | A link was activated. Absent means clicks do nothing — this component never navigates by itself. |
-| `fontSize`       | `number`                                      | Base text size. Default: the theme's (14).                                                       |
-| `fontFamily`     | `string`                                      | Default `sans-serif`.                                                                            |
-| `monoFamily`     | `string`                                      | Code font. Default `'monospace'` — there is no theme token for it.                               |
-| `selectionColor` | `string`                                      | Selection band fill. Default: the theme accent at 35% opacity.                                   |
-| `highlight`      | `boolean`                                     | Syntax colouring in fenced code. Default true.                                                   |
-| `fences`         | `Record<string, (f: FenceInfo) => ReactNode>` | Custom renderers for fenced blocks, by language — see "Custom fences" below.                     |
-| `style`          | `Style \| Style[]`                            | The root box — width, padding, margins, `overflow`.                                              |
-| `data-testname`  | `string`                                      | For `react-x11/test` queries.                                                                    |
+| Prop              | Type                                          | Notes                                                                                                                                                                   |
+| ----------------- | --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `source`          | `string`                                      | The markdown text. Append to it as chunks stream in. Required.                                                                                                          |
+| `partial`         | `boolean`                                     | Whether more source may still arrive. Default **true** — set it false when the stream ends.                                                                             |
+| `selectable`      | `boolean`                                     | Mouse selection, Ctrl+A / Ctrl+C, PRIMARY. Default true.                                                                                                                |
+| `onLink`          | `(href: string, ev: X11MouseEvent) => void`   | A link was activated. Absent means clicks do nothing — this component never navigates by itself.                                                                        |
+| `fontSize`        | `number`                                      | Base text size. Default: the theme's (14).                                                                                                                              |
+| `fontFamily`      | `string`                                      | Default `sans-serif`.                                                                                                                                                   |
+| `monoFamily`      | `string`                                      | Code font. Default `'monospace'` — there is no theme token for it.                                                                                                      |
+| `selectionColor`  | `string`                                      | Selection band fill. Default: the theme accent at 35% opacity.                                                                                                          |
+| `highlight`       | `boolean`                                     | Syntax colouring in fenced code. Default true.                                                                                                                          |
+| `resolveLanguage` | `(tag) => Language \| null`                   | A `Language` for a fence tag the built-ins do not cover — [`hljsLanguage`](code-language.md#highlightjs-for-breadth) goes here. Needs a stable identity, like `fences`. |
+| `fences`          | `Record<string, (f: FenceInfo) => ReactNode>` | Custom renderers for fenced blocks, by language — see "Custom fences" below.                                                                                            |
+| `style`           | `Style \| Style[]`                            | The root box — width, padding, margins, `overflow`.                                                                                                                     |
+| `data-testname`   | `string`                                      | For `react-x11/test` queries.                                                                                                                                           |
 
 ## What it renders
 
@@ -61,8 +62,8 @@ GFM, parsed by `src/markdown/parse.ts`:
 - tables with per-column alignment and measured column widths;
 - thematic breaks;
 - fenced and indented code, highlighted through the same
-  [language seam](code-language.md) `<CodeEditor>` uses, with ntk's
-  highlighter as the fallback for tags the built-ins do not cover.
+  [language seam](code-language.md) `<CodeEditor>` uses; `resolveLanguage`
+  is where tags the built-ins do not cover come from.
 
 ### The deliberate deviations
 

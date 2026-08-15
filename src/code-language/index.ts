@@ -15,6 +15,8 @@ export { shell } from './languages/shell.js';
 export { sql } from './languages/sql.js';
 export type { SqlOptions } from './languages/sql.js';
 
+export { hljsLanguage } from './hljs.js';
+export type { HljsLanguageOptions, HljsLike } from './hljs.js';
 export { lezerLanguage } from './lezer.js';
 export type { LezerLanguageOptions, LezerParserLike } from './lezer.js';
 export { textMateLanguage } from './textmate.js';

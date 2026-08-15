@@ -12,8 +12,9 @@ import { sql } from './languages/sql.js';
 
 /**
  * The `Language` for a markdown fence tag (`js`, `tsx`, `bash`, …), or
- * null for a tag nothing here tokenizes. Callers decide what null means —
- * `<Markdown>` falls back to ntk's highlighter, then to plain text.
+ * null for a tag nothing here tokenizes. Callers decide what null means:
+ * `codeRuns` consults `resolveLanguage` first — `hljsLanguage` is what goes
+ * there for breadth — and paints plain text when that answers null too.
  */
 export function languageForTag(tag: string): Language | null {
   switch (tag.toLowerCase()) {

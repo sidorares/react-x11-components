@@ -2,12 +2,25 @@
 // TextLayout-shaped consumer (`<richtext>` speaks exactly this shape,
 // structurally — this module deliberately imports nothing from it).
 //
-// The chain is: built-in tokenizer for the tag, else ntk's highlight.js
-// adapter when this ntk still ships it (it lives beside the deprecated
-// widgets, so it is reached for by name and allowed to be absent), else
-// one plain run. Every step degrades to readable.
-import * as ntk from 'react-x11/ntk';
-
+// The chain is: an explicit `language`, else `resolveLanguage(tag)` if the
+// caller supplied one, else a built-in tokenizer for the tag, else one plain
+// run. Every step degrades to readable.
+//
+// The third step used to be ntk's `highlightCode` — a MarkdownView-internal
+// this module reached for by name, so that a fence tagged `python` got
+// highlighted without the app arranging anything. ntk's document widgets are
+// being decommissioned and it goes with them; `resolveLanguage` is what
+// replaces it, and `hljsLanguage` (./hljs.ts) is the same highlight.js
+// breadth as a `Language` the app opts into:
+//
+// ```ts
+// import hljs from 'highlight.js/lib/common';
+// codeRuns(text, tag, { …, resolveLanguage: (t) => hljsLanguage({hljs, name: t}) })
+// ```
+//
+// Explicit rather than automatic, because the alternative is this package
+// depending on highlight.js for every app that renders a fence — see
+// AGENTS.md on tree-shaking, and `textmate.ts` for the same shape.
 import { languageForTag, tokenizeText } from './registry.js';
 import { tokenStyleFor } from './theme.js';
 import type { Language, TokenStyles } from './types.js';
@@ -19,30 +32,6 @@ export interface CodeRun {
   weight?: number;
   style?: 'normal' | 'italic';
 }
-
-/** ntk's fence tokenizer — a maintained adapter over highlight.js, already
- *  in ntk's dependency closure. Loose-typed like the rest of `ntk.d.ts`. */
-interface HljsToken {
-  text: string;
-  kind: string;
-}
-const hljsTokenize = (
-  ntk as unknown as {
-    highlightCode?: (code: string, lang: string) => HljsToken[];
-  }
-).highlightCode;
-
-/** highlight.js kinds → the token vocabulary in `types.ts`. */
-const HLJS_KINDS: Record<string, string> = {
-  keyword: 'keyword',
-  literal: 'atom',
-  string: 'string',
-  number: 'number',
-  comment: 'comment',
-  tag: 'typeName',
-  attr: 'propertyName',
-  function: 'function',
-};
 
 export interface CodeRunOptions {
   /** Token palette; `autoTokenStyles(background)` picks a built-in one. */
@@ -56,6 +45,13 @@ export interface CodeRunOptions {
   /** An explicit `Language` (a Lezer or TextMate adapter, say) — takes
    *  precedence over whatever the tag would have resolved to. */
   language?: Language;
+  /**
+   * A `Language` for a fence tag the built-ins do not cover — the seam for
+   * highlight.js (`hljsLanguage`), a Lezer grammar per tag, or a lookup of
+   * the app's own. Consulted before {@link languageForTag}, so it can also
+   * override a built-in; `null` for a tag it does not know.
+   */
+  resolveLanguage?: (tag: string) => Language | null;
 }
 
 function runColor(
@@ -80,7 +76,9 @@ export function codeRuns(
 ): CodeRun[] {
   if (text.length === 0) return [{ text: '', color: opts.color }];
 
-  const language = opts.language ?? (tag ? languageForTag(tag) : null);
+  const language =
+    opts.language ??
+    (tag ? (opts.resolveLanguage?.(tag) ?? languageForTag(tag)) : null);
   if (language) {
     const perLine = tokenizeText(language, text);
     const lines = text.split('\n');
@@ -97,17 +95,6 @@ export function codeRuns(
       if (at < line.length) push(out, line.slice(at), undefined, opts);
     }
     return out;
-  }
-
-  if (tag && hljsTokenize) {
-    try {
-      const tokens = hljsTokenize(text, tag);
-      const out: CodeRun[] = [];
-      for (const t of tokens) push(out, t.text, HLJS_KINDS[t.kind], opts);
-      if (out.length > 0) return out;
-    } catch {
-      // an unknown language name is not an error, just plain text
-    }
   }
 
   return [{ text, color: opts.color }];
