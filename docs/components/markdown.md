@@ -29,19 +29,20 @@ no `<html>` successor.
 
 ## Props
 
-| Prop             | Type                                        | Notes                                                                                            |
-| ---------------- | ------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| `source`         | `string`                                    | The markdown text. Append to it as chunks stream in. Required.                                   |
-| `partial`        | `boolean`                                   | Whether more source may still arrive. Default **true** — set it false when the stream ends.      |
-| `selectable`     | `boolean`                                   | Mouse selection, Ctrl+A / Ctrl+C, PRIMARY. Default true.                                         |
-| `onLink`         | `(href: string, ev: X11MouseEvent) => void` | A link was activated. Absent means clicks do nothing — this component never navigates by itself. |
-| `fontSize`       | `number`                                    | Base text size. Default: the theme's (14).                                                       |
-| `fontFamily`     | `string`                                    | Default `sans-serif`.                                                                            |
-| `monoFamily`     | `string`                                    | Code font. Default `'monospace'` — there is no theme token for it.                               |
-| `selectionColor` | `string`                                    | Selection band fill. Default: the theme accent at 35% opacity.                                   |
-| `highlight`      | `boolean`                                   | Syntax colouring in fenced code. Default true.                                                   |
-| `style`          | `Style \| Style[]`                          | The root box — width, padding, margins, `overflow`.                                              |
-| `data-testname`  | `string`                                    | For `react-x11/test` queries.                                                                    |
+| Prop             | Type                                          | Notes                                                                                            |
+| ---------------- | --------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `source`         | `string`                                      | The markdown text. Append to it as chunks stream in. Required.                                   |
+| `partial`        | `boolean`                                     | Whether more source may still arrive. Default **true** — set it false when the stream ends.      |
+| `selectable`     | `boolean`                                     | Mouse selection, Ctrl+A / Ctrl+C, PRIMARY. Default true.                                         |
+| `onLink`         | `(href: string, ev: X11MouseEvent) => void`   | A link was activated. Absent means clicks do nothing — this component never navigates by itself. |
+| `fontSize`       | `number`                                      | Base text size. Default: the theme's (14).                                                       |
+| `fontFamily`     | `string`                                      | Default `sans-serif`.                                                                            |
+| `monoFamily`     | `string`                                      | Code font. Default `'monospace'` — there is no theme token for it.                               |
+| `selectionColor` | `string`                                      | Selection band fill. Default: the theme accent at 35% opacity.                                   |
+| `highlight`      | `boolean`                                     | Syntax colouring in fenced code. Default true.                                                   |
+| `fences`         | `Record<string, (f: FenceInfo) => ReactNode>` | Custom renderers for fenced blocks, by language — see "Custom fences" below.                     |
+| `style`          | `Style \| Style[]`                            | The root box — width, padding, margins, `overflow`.                                              |
+| `data-testname`  | `string`                                      | For `react-x11/test` queries.                                                                    |
 
 ## What it renders
 
@@ -91,6 +92,36 @@ All of that is core's `selectable` (react-x11#291). What this component adds
 is **which parts are chrome**, so copied text is clean: list markers stay
 behind, and the separators come from the layout — which for a table is
 exactly cells joined with tabs and rows with newlines.
+
+## Custom fences
+
+A fenced block whose language has an entry in `fences` renders through it
+instead of as a code block:
+
+```jsx
+import { Formula } from '@react-x11/components/formula';
+
+const FENCES = {
+  math: ({ text, partial }) => <Formula tex={text} display partial={partial} />,
+};
+
+<Markdown source={doc} partial={streaming} fences={FENCES} />;
+```
+
+The renderer gets `{ lang, text, partial }` — `partial` is true while the
+fence is the live tail of a streaming document and its text is still
+growing. The seam is a map so this component never imports the components
+it hosts (the no-lateral-imports rule); the returned element lands in a
+keyed slot, so it needs no `key` of its own. Whatever it returns joins the
+document's selection if it answers core's text accessors, which core's own
+elements and everything in this package already do — so **do not** also
+make the fence's component its own selection surface (`<Formula>` inside a
+document stays `selectable={false}`, the default).
+
+Two things to hold: the map's identity is an epoch for the block cache, so
+define it at module scope (or memoize) rather than inline in JSX; and the
+key is matched against the fence's info string lowercased, first word only
+(` ```Math title` looks up `math`).
 
 ## Streaming
 
