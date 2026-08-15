@@ -152,7 +152,12 @@ input, button, select, textarea, meter, progress {
   font-family: ${look.fontFamily};
   font-size: 1em;
   vertical-align: middle;
+  margin: 3px 2px;
 }
+/* Chrome's own UA margins for the checkables, near enough: they are the
+   controls that sit hard against their label text otherwise. */
+input[type=checkbox] { margin: 3px 4px 3px 4px; }
+input[type=radio] { margin: 3px 4px 3px 5px; }
 input[type=hidden] { display: none; }
 textarea { vertical-align: top; }
 fieldset { margin: 0 2px; padding: 0.35em 0.75em 0.6em; border: 1px solid ${look.borderColor}; }

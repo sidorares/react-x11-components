@@ -785,6 +785,77 @@ metric('non-BMP text still maps points to units both ways', async () => {
   );
 });
 
+metric('an authored space before an inline atomic survives', async () => {
+  // ntk strips a line's trailing whitespace; a fragment that ends before an
+  // atomic is not a line end, so the stripped advance is measured back. The
+  // probe is an <img> because images carry no UA margin — the gap this
+  // asserts is the space itself.
+  const { node } = await render(
+    '<style>p{margin:0}img{margin:0}</style>' +
+      '<p>Name <img src="x.png" width="20" height="10"> tail</p>',
+  );
+  const tree = (
+    view(node) as unknown as {
+      _tree: {
+        root: {
+          children: {
+            lines:
+              | {
+                  texts: {
+                    drawX: number;
+                    layout: { lines: { width: number }[] };
+                    layoutLine: number;
+                  }[];
+                  atomics: { box: { x: number } }[];
+                }[]
+              | null;
+          }[];
+        };
+      };
+    }
+  )._tree;
+  const line = tree.root.children[0].lines?.[0];
+  assert.ok(line && line.atomics.length === 1);
+  const label = line.texts[0];
+  const inkEnd = label.drawX + label.layout.lines[label.layoutLine].width;
+  const gap = line.atomics[0].box.x - inkEnd;
+  assert.ok(
+    gap > 2,
+    `the image sits a space past the label (gap ${gap.toFixed(1)}px)`,
+  );
+});
+
+metric('form controls carry default margins from the UA sheet', async () => {
+  const { node } = await render('<p>a <input size="4"> b</p>');
+  const tree = (
+    view(node) as unknown as {
+      _tree: {
+        root: {
+          children: {
+            children: {
+              replaced: string;
+              marginTop: number;
+              marginLeft: number;
+            }[];
+          }[];
+        };
+      };
+    }
+  )._tree;
+  const input = tree.root.children[0].children.find(
+    (c) => c.replaced === 'input',
+  );
+  assert.ok(input, 'the input box exists');
+  assert.ok(
+    input.marginTop >= 2,
+    `vertical breathing room (${input.marginTop})`,
+  );
+  assert.ok(
+    input.marginLeft >= 1,
+    `horizontal breathing room (${input.marginLeft})`,
+  );
+});
+
 // --- selection and hit testing ----------------------------------------------
 
 metric('the caret and the selection bands agree with the glyphs', async () => {

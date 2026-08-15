@@ -319,6 +319,28 @@ export function layoutInline(block: Box, options: InlineOptions): InlineResult {
 
     if (!fragment.truncated) {
       // It fitted: the cursor stays on this line for whatever comes next.
+      //
+      // With one correction first. ntk strips a line's trailing whitespace —
+      // right at a real line end, wrong here, where the "line" is only a
+      // fragment and an atomic follows on the same one: `Name <input>` laid
+      // the space out to width zero and the control sat flush against the
+      // label (nbsp included; ntk's whitespace set has U+00A0 in it). The
+      // stripped advance is measured back and added to the cursor.
+      if (segment.nextIndex < items.length) {
+        let trailing = '';
+        for (let i = segment.runs.length - 1; i >= 0; i -= 1) {
+          const text = segment.runs[i].text;
+          const m = /[ \t\u00A0]+$/.exec(text);
+          if (!m) break;
+          trailing = m[0] + trailing;
+          if (m[0].length < text.length) break;
+        }
+        if (trailing) {
+          open.x +=
+            spaceAdvance(fonts, segment.runs[segment.runs.length - 1]) *
+            trailing.length;
+        }
+      }
       index = segment.nextIndex;
       offset = 0;
       continue;
@@ -750,6 +772,37 @@ function advance(
     i += 1;
   }
   return { index: i, offset: 0 };
+}
+
+/**
+ * One space's advance in a run's style, measured as the difference between
+ * `x x` and `xx` — ntk strips a lone trailing space from a line, so it
+ * cannot be measured directly. Cached per font manager per style; the
+ * measurement itself hits ntk's shaping memo.
+ */
+const SPACE_ADVANCE = new WeakMap<FontsLike, Map<string, number>>();
+
+function spaceAdvance(fonts: FontsLike, run: TextRun): number {
+  let cache = SPACE_ADVANCE.get(fonts);
+  if (!cache) {
+    cache = new Map();
+    SPACE_ADVANCE.set(fonts, cache);
+  }
+  const key = `${run.family}|${run.size}|${run.weight}|${run.style}`;
+  const hit = cache.get(key);
+  if (hit !== undefined) return hit;
+  const style = {
+    family: run.family,
+    size: run.size,
+    weight: run.weight,
+    style: run.style,
+  };
+  const measure = (text: string): number =>
+    fonts.layout([{ ...style, text }], style, {}).lines[0]?.width ?? 0;
+  const advance = Math.max(0, measure('x x') - measure('xx'));
+  if (cache.size > 64) cache.clear();
+  cache.set(key, advance);
+  return advance;
 }
 
 // --- style questions --------------------------------------------------------
