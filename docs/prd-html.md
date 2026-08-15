@@ -327,4 +327,176 @@ so that the renderer half is already process-portable — it takes a source
 string and a look, and reports back through callbacks — so the follow-up adds
 a runner and a channel and changes nothing here.
 
+## Audit: the seams as a Chrome DevTools Protocol surface
+
+Could `onResource` and the seams around it be shaped so CDP clients —
+puppeteer, chrome-remote-interface, the DevTools frontend — can talk to the
+control? Audited 2026-08-15; the verdict in one line each:
+
+- **As an adapter speaking unmodified CDP over an injected transport:
+  practical, and the fit is unusually good** — close to mechanical for the
+  resource seam.
+- **As a literal reshaping of the in-process seams into CDP types: no.**
+  Wire shapes make bad in-process APIs, and the seams stay CDP-_compatible_
+  without wearing the ceremony (see the layering argument below).
+- **Runtime/Debugger: never.** The control does not evaluate scripts, so the
+  half of CDP that assumes a JavaScript engine is out by design, not by
+  omission — which bounds _which_ clients work, precisely.
+
+### Why the fit is structural, not coincidental
+
+`onResource` was shaped by "the host owns fetch policy; the engine only
+asks." CDP's **Fetch domain** was shaped by the same inversion: the client
+owns the request, the browser only asks — `Fetch.requestPaused` in,
+`fulfillRequest`/`failRequest`/`continueRequest` back. The two are the same
+seam with the asker and answerer renamed:
+
+| this control                        | CDP                                                                                      | fit                                                                                                                                                 |
+| ----------------------------------- | ---------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `onResource(request)` asked         | `Fetch.requestPaused` event                                                              | 1:1 — `kind` is `resourceType` (`Image`/`Stylesheet`, `@import` included), the element rides as context                                             |
+| return `{bytes}`/`{text}`           | `Fetch.fulfillRequest` (base64 body)                                                     | 1:1                                                                                                                                                 |
+| return `null`                       | `Fetch.failRequest`                                                                      | 1:1                                                                                                                                                 |
+| —                                   | `Fetch.continueRequest`                                                                  | "as you were": delegate to the host's own inner `onResource`, since the engine has no fetcher of its own                                            |
+| `ResourceStore` entry lifecycle     | `Network.requestWillBeSent` / `loadingFinished` / `loadingFailed`                        | needs request ids and an outcome tap the store almost has                                                                                           |
+| `source` prop / `complete`          | `Page.navigate`, `lifecycleEvent`, `loadEventFired`                                      | load = parse complete **and** no resource pending — needs the store's settle signal                                                                 |
+| `handle.document` (domhandler)      | `DOM.getDocument`, `querySelector`, `getOuterHTML`, `setAttributeValue`, `setOuterHTML`… | `querySelector` is css-select — the engine's own matcher; `getOuterHTML` is dom-serializer, already in the closure via domutils                     |
+| streaming node identity             | `DOM` nodeIds                                                                            | the append-keeps-identity guarantee is exactly what makes stable nodeIds possible                                                                   |
+| `handle.refresh()`                  | `DOM.documentUpdated`                                                                    | CDP's own word for "re-pull the tree" — the coarse invalidation the handle already is                                                               |
+| `Cascade.styleFor`'s candidate list | `CSS.getMatchedStylesForNode`                                                            | the cascade computes matched rules with specificity and origin (UA vs author) and throws them away; an explain call would keep them for one element |
+| `ComputedStyle`                     | `CSS.getComputedStyleForNode`                                                            | serialization to CSS property names                                                                                                                 |
+| render-to-PNG (the harness path)    | `Page.captureScreenshot`                                                                 | host supplies the capture — pixels belong to the window, which is the app's                                                                         |
+| `elementAt(x, y)` + box geometry    | `Overlay` inspect mode                                                                   | hover-to-inspect over a real X11 window is within reach; phase 3                                                                                    |
+
+The one-round-trip trace, to make "mechanical" concrete — the engine asks,
+the adapter forwards, puppeteer answers:
+
+```
+engine → adapter   onResource({ url: "logo.png", kind: "image", element })
+adapter → client   { method: "Fetch.requestPaused", params: { requestId: "r7",
+                     request: { url: "app://doc/logo.png", method: "GET" },
+                     resourceType: "Image", frameId: "F0" } }
+client → adapter   { id: 41, method: "Fetch.fulfillRequest",
+                     params: { requestId: "r7", responseCode: 200,
+                     body: "<base64>" } }
+adapter → engine   resolve({ kind: "image", bytes })
+```
+
+`page.setRequestInterception(true)` + `request.respond(...)` — puppeteer's
+request-mocking API — rides exactly this, unmodified.
+
+### What a real client gets, and the boundary
+
+**chrome-remote-interface**: everything implemented, per domain — it is a
+thin pipe and partial servers are normal CDP citizens (`node --inspect`
+serves two domains; unknown methods answer JSON-RPC −32601).
+
+**puppeteer-core**: `connect`, `goto` (lifecycle events), `screenshot`,
+request interception, `waitForResponse`, DOM reads through the CDP session.
+**Not** `$`/`evaluate`/`waitForSelector` — those inject JavaScript through
+`Runtime.callFunctionOn`, and there is no Runtime. The adapter must say so
+loudly (a clean protocol error), because "CDP endpoint" invites the
+assumption.
+
+**DevTools frontend**: the Elements panel and the Styles pane are honestly
+answerable — DOM domain plus `CSS.getMatchedStylesForNode` from the
+cascade's own candidates, UA origin flagged as `user-agent`. That is a
+debugging story this engine cannot offer any other way, and it is the
+strongest carrot in the audit.
+
+**Playwright: no.** Its Chromium driver injects utility scripts for
+everything; without Runtime it does not reach first base. Not a target.
+
+**WebDriver BiDi**, for the record: the ecosystem's standardized future, and
+the subset argument transfers (its `network` module has the same intercept
+shape) — but puppeteer and the DevTools frontend speak CDP natively today,
+so CDP first is the right order.
+
+### The API: one prop, and the transport is a seam
+
+The ladder rule holds — CDP is an orthogonal opt-in on the same element, not
+a second API and not a wrapper component:
+
+```tsx
+import { useHtmlCdp } from '@react-x11/components/html-cdp';
+
+const cdp = useHtmlCdp(); // owns sessions, ids, domains
+<Html source={html} onResource={mine} cdp={cdp.bridge} />;
+
+// in-process client, zero sockets anywhere:
+const browser = await puppeteer.connect({ transport: cdp.transport() });
+
+// remote attach is the app's ten lines, with the app's own `ws`:
+wss.on('connection', (socket) =>
+  cdp.attach({
+    send: (m) => socket.send(m),
+    onmessage: (fn) => socket.on('message', fn),
+    close: () => socket.close(),
+  }),
+);
+```
+
+Decisions inside that shape, each with its reason:
+
+- **The transport is a seam, never a listener.** The package opens no TCP
+  port and depends on no WebSocket library; `cdp.transport()` returns the
+  four-method object `puppeteer.connect({ transport })` is documented to
+  take (verified against puppeteer-core's published types —
+  `ConnectionTransport`: `send`, `close`, `onmessage`, `onclose`), and
+  `cdp.attach(duplex)` accepts whatever pipe the app brings — a WebSocket,
+  the isolated-mode IPC channel, a test harness. This is the same posture as
+  every other seam here: the host owns the outside world.
+- **A prop rather than a wrapper component or a context**, because the one
+  thing the adapter cannot do from outside is _compose interception with the
+  host's own handler_: `Fetch.continueRequest` means "do what you would have
+  done", and only the component knows what that is. `cdp` slots in front of
+  the app's `onResource`; no client attached, zero overhead — the bridge is
+  inert until a session exists.
+- **`<Html>` never imports the adapter.** The `cdp` prop is typed
+  structurally (a `bind`/`unbind` pair the component calls with its node and
+  inner handlers), the hook lives on its own subpath, and the tree-shaking
+  contract holds: an app that never imports `/html-cdp` ships none of it.
+  This is the richtext registration pattern pointed the other way.
+- Non-React hosts get `createHtmlCdp()` — the hook is `useMemo` sugar over
+  it.
+
+### What the seams need to grow — each independently useful
+
+1. **Request identity and outcome** on `ResourceStore` — an id per request
+   and an observer for settled/failed. CDP needs it for `Network.*`; a host
+   needs it today for a loading indicator.
+2. **A settled signal** (pending count reaching zero) — `loadEventFired`,
+   and equally "show the spinner until the document is whole".
+3. **A cascade explain call** — the matched rules for one element, which
+   `styleFor` computes and discards. `CSS.getMatchedStylesForNode`, and
+   equally a "why is this element styled like this" debugging hook.
+4. **Computed-style serialization** to CSS property names. Trivial; useful
+   for tests regardless.
+
+None of these reshape an existing seam; all are additions the audit would
+want even with CDP struck from it.
+
+### The isolated mode should speak this protocol
+
+The PRD above specifies the isolated-mode channel as bespoke IPC: source
+deltas down, seam calls up, a mirrored `handle.document` with an operation
+log. That is CDP's DOM/Fetch/Page semantics described without the names —
+`documentUpdated` _is_ the mirror-handle honesty, `Fetch.requestPaused` _is_
+the seam proxied parent-ward. Making the child's channel literally be CDP
+means the isolated mode is debuggable with off-the-shelf tooling, and the
+adapter is written once for both.
+
+### Cost, and what it is not
+
+Roughly: the seam growth above (~150 lines, in `src/html/`), the adapter
+(sessions, Target/Browser boilerplate, Fetch/Network/Page/DOM/CSS, ~1.5–2k
+lines in `src/html-cdp/`), conformance tests driven through puppeteer-core
+as a devDependency (no browser download). A follow-up PR the size of the
+isolated mode, and the recommended order is: seam growth → adapter →
+isolated mode riding the same protocol.
+
+What it is not: a browser. The adapter answers for what the engine truly
+does — documents, resources, DOM, cascade — and refuses the rest by
+protocol error rather than emulation, which is the same posture `onScript`
+takes about evaluation.
+
 [ntk#106]: https://github.com/sidorares/ntk/issues/106

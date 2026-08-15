@@ -60,7 +60,8 @@ parts.
   virtualization it shares with the tree.
 - [An HTML control worth having](prd-html.md) — the pipeline behind
   `<Html>`, why the element draws a document rather than composing one, the
-  resource and script seams, and the isolated-process mode.
+  resource and script seams, the isolated-process mode, and the audit of
+  exposing the seams as a Chrome DevTools Protocol surface.
 
 ## Conventions these pages follow
 
