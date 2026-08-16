@@ -2,9 +2,9 @@
 //
 // This is the one formatting context here that is *not* written out, and the
 // reason is that the engine is already in the process. react-x11 lays every
-// box out with Yoga, ntk owns the instance, and `react-x11/ntk` re-exports it
-// precisely so an extension does not bring a second copy — "two copies means
-// two Yoga instances and two font caches", in core's own words. So a flex
+// box out with Yoga and exports it as `react-x11/yoga` precisely so a package
+// doing layout of its own does not bring a second copy — a node created by
+// one instance cannot be inserted into a tree owned by another. So a flex
 // container builds a small Yoga tree, asks it, and reads the answer back.
 //
 // Flexbox is also the algorithm where writing it out would be the *worst*
@@ -22,7 +22,8 @@
 // measure seam already answers the only question the outer pass asks. What
 // the leaf shape costs is stretch — a stretched item's box grows but its
 // contents are not re-laid at the stretched height.
-import { Yoga } from 'react-x11/ntk';
+import { Yoga, layoutLoaded } from 'react-x11/yoga';
+import type { Node as YogaNode } from 'react-x11/yoga';
 
 import { AUTO, isPct, resolveOrNull } from '../css/values.js';
 import type { ComputedStyle } from '../css/style.js';
@@ -30,109 +31,30 @@ import { Box } from './boxes.js';
 import { moveTo, resolveEdges } from './block.js';
 import type { LayoutContext } from './block.js';
 
-/** The slice of Yoga this uses. ntk ships no declarations for it and
- *  `react-x11/ntk` types it as a loose record, so the shape is written out
- *  here rather than asserted at every call. */
-interface YogaNode {
-  insertChild(child: YogaNode, index: number): void;
-  setMeasureFunc(
-    fn:
-      | ((
-          w: number,
-          wm: number,
-          h: number,
-          hm: number,
-        ) => { width: number; height: number })
-      | null,
-  ): void;
-  setFlexDirection(v: number): void;
-  setFlexWrap(v: number): void;
-  setJustifyContent(v: number): void;
-  setAlignItems(v: number): void;
-  setAlignSelf(v: number): void;
-  setAlignContent(v: number): void;
-  setFlexGrow(v: number): void;
-  setFlexShrink(v: number): void;
-  setFlexBasis(v: number): void;
-  setFlexBasisPercent(v: number): void;
-  setFlexBasisAuto(): void;
-  setWidth(v: number): void;
-  setWidthPercent(v: number): void;
-  setWidthAuto(): void;
-  setHeight(v: number): void;
-  setHeightPercent(v: number): void;
-  setHeightAuto(): void;
-  setMinWidth(v: number): void;
-  setMaxWidth(v: number): void;
-  setMinHeight(v: number): void;
-  setMaxHeight(v: number): void;
-  setMargin(edge: number, v: number): void;
-  setPadding(edge: number, v: number): void;
-  setBorder(edge: number, v: number): void;
-  setGap(gutter: number, v: number): void;
-  setDisplay(v: number): void;
-  calculateLayout(width: number, height: number, direction: number): void;
-  getComputedLeft(): number;
-  getComputedTop(): number;
-  getComputedWidth(): number;
-  getComputedHeight(): number;
-  freeRecursive(): void;
-}
-
-interface YogaApi {
-  Node: { create(): YogaNode };
-  FLEX_DIRECTION_ROW: number;
-  FLEX_DIRECTION_ROW_REVERSE: number;
-  FLEX_DIRECTION_COLUMN: number;
-  FLEX_DIRECTION_COLUMN_REVERSE: number;
-  WRAP_NO_WRAP: number;
-  WRAP_WRAP: number;
-  WRAP_WRAP_REVERSE: number;
-  JUSTIFY_FLEX_START: number;
-  JUSTIFY_FLEX_END: number;
-  JUSTIFY_CENTER: number;
-  JUSTIFY_SPACE_BETWEEN: number;
-  JUSTIFY_SPACE_AROUND: number;
-  JUSTIFY_SPACE_EVENLY: number;
-  ALIGN_AUTO: number;
-  ALIGN_FLEX_START: number;
-  ALIGN_FLEX_END: number;
-  ALIGN_CENTER: number;
-  ALIGN_STRETCH: number;
-  ALIGN_BASELINE: number;
-  ALIGN_SPACE_BETWEEN: number;
-  ALIGN_SPACE_AROUND: number;
-  EDGE_TOP: number;
-  EDGE_RIGHT: number;
-  EDGE_BOTTOM: number;
-  EDGE_LEFT: number;
-  GUTTER_ROW: number;
-  GUTTER_COLUMN: number;
-  DIRECTION_LTR: number;
-  DIRECTION_RTL: number;
-  MEASURE_MODE_UNDEFINED: number;
-  MEASURE_MODE_EXACTLY: number;
-  MEASURE_MODE_AT_MOST: number;
-  DISPLAY_FLEX: number;
-  DISPLAY_NONE: number;
-}
-
-const Y = Yoga as unknown as YogaApi;
+// `react-x11/yoga` re-exports yoga's own declarations, so the node shape and
+// the enum constants are typed rather than written out here and cast at every
+// call, which is what this had to do while the engine was reached through
+// `react-x11/ntk` (a deliberately loose record).
+const Y = Yoga;
 
 /**
  * Lay out a flex container's children. Returns the content height.
  *
- * Falls back to nothing — that is, the caller's block path never sees this —
- * when Yoga's assembly has not loaded. ntk loads it during `createClient()`,
- * so the only way to reach that is a mock backend with no client at all,
- * where there are no pixels to be wrong about anyway.
+ * Falls back to the block path when the engine's assembly has not loaded.
+ * `createRoot()` awaits it, so the only way to reach that is a mock backend
+ * with no root at all, where there are no pixels to be wrong about anyway.
+ *
+ * `layoutLoaded()` rather than probing `Yoga.Node`: until the assembly lands
+ * that property is a getter that **throws** with a message about the engine
+ * not being loaded, so the probe this used to do could not fall back — it
+ * raised the very error it was written to avoid.
  */
 export function layoutFlex(
   box: Box,
   ctx: LayoutContext,
   contentWidth: number,
 ): number {
-  if (!Y?.Node?.create) return layoutAsBlockFallback(box, ctx, contentWidth);
+  if (!layoutLoaded()) return layoutAsBlockFallback(box, ctx, contentWidth);
 
   const root = Y.Node.create();
   applyContainer(root, box.style);
