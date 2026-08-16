@@ -645,6 +645,95 @@ dotted branch edge. Its glyphs are **drawn in the example**, which is the same
 line core's icon set draws: affordances are core's (the twisty's chevron is
 `<Icon>`), nouns are the app's.
 
+## An HTML renderer that draws
+
+`src/html/` is the largest thing here and the one that breaks the most house
+rules, so each break is recorded with its reason.
+
+**It draws a document instead of composing one, and the rule is new.**
+"Drawing beats composing when the viewport is a transform" was `<Flow>`'s
+rule. This adds a second: **ask whether the feature brings its own layout
+model.** react-x11 lays out with yoga, which is flexbox; CSS block flow with
+margin collapsing, an inline formatting context, floats and table column
+sizing are not flexbox and cannot be expressed in it. Composing onto `<box>`
+would mean _approximating the layout model_, which is exactly what makes
+ntk's `HtmlView` untrustworthy — the markup is standard, the rendering is
+not, and nothing tells an author which is which. Cost matters too (a document
+is thousands of elements), but the model is the load-bearing reason.
+
+**It is the first thing here with regular `dependencies`**, and that is a
+fact rather than a preference. ntk already depends on `htmlparser2`,
+`domhandler`, `domutils` and `css-select` for its own deprecated `HtmlView`,
+and ntk is react-x11's dependency — so every app that can use this package
+has all four installed already. Declaring them adds no packages to an
+install; it makes the resolution correct under pnpm's strict layout instead
+of relying on npm hoisting. **Check that this is still true before adding a
+fifth.** If ntk drops them when the document widgets go, the closure argument
+goes with it and the four become this package's to justify alone.
+
+What is still written out, and why the line falls there: the **CSS parser**
+(postcss is a tooling parser — positions, comments and raws, none of which
+survives into a render, and the cascade wants rules pre-split with
+specificity already computed) and the **rule index** (bucketing rules by
+their rightmost simple selector is the difference between a 3 ms and a 300 ms
+first paint on a document with a framework stylesheet). Flexbox is **Yoga's**,
+reached through `react-x11/ntk` so there is one instance in the process. The
+line is not "is there a library" but **"would a bug be visible"**: flexbox is
+long, subtle and silently wrong when wrong; block flow and floats are none of
+those.
+
+**Three phases, three invalidation reasons, and the split is the component.**
+Boxes depend on the DOM and the stylesheets; layout depends on the width;
+paint depends on neither. So a resize skips the cascade and an expose skips
+layout — which is only true because **no computed style depends on the
+width** (percentages and `auto` survive into layout as unresolved `Len`s) and
+**no box depends on the scroll** (layout writes absolute document
+coordinates). Both are properties of the data shapes in `css/values.ts` and
+`layout/boxes.ts`. Breaking either turns every resize into a full restyle,
+silently and only on large documents. `@media` is the deliberate exception:
+the widths at which some rule changes its mind are collected at parse time,
+so a resize restyles only when it crossed one.
+
+**Form controls are real widgets, mounted beside the element.** `<Flow>`'s
+escape hatch, and the same reason: a drawn control takes no focus, says
+nothing to an assistive technology, blinks no caret and opens no menu. The
+cost is that the box in the flow has to be the size the widget will be
+_before the widget exists_, which is why `controls.ts` measures against the
+same font metrics and the same palette tokens (`paddingY`, `borderWidth`,
+`radius`) core's own widgets read. `<textinput>` and `<textarea>` are
+elements rather than components and draw no frame of their own, so the
+component supplies one from those tokens — a form in a document and a form in
+the window around it have to be the same height.
+
+**Nothing is fetched and nothing is executed, by construction.**
+`onResource` is the only way anything loads and `onScript` never runs
+anything. Both are the same call `src/desktop-calendar/` makes about
+credentials: the host already did the work of knowing its policy, and a
+component that silently made requests would turn "render this HTML" into
+"make these requests". A declined resource is an ordinary state, not an
+error. **Do not add a convenience default that fetches**; the absence is the
+feature.
+
+Two things it changed elsewhere, both extractions rather than copies:
+
+- **`src/richtext/runs.ts`** is new: the per-run decoration painter and the
+  bidi-correct selection bands, lifted out of `node.ts` so `<Html>` can draw
+  the same decorations against its own line placement. `<richtext>`'s `paint`
+  is now a loop over its lines calling them, so the two cannot drift.
+  `useLinkClicks` lost its `instanceof RichTextNode` at the same time — it
+  asks for `hrefAtPoint` structurally, which also stops the hook importing
+  the element.
+- **`src/internal/text.ts`** is `src/richtext/internal.ts` promoted, now that
+  two directories need the code-point/code-unit conversions. Exactly the
+  promotion path "Layout" describes for `src/internal/`.
+
+**The isolated mode is designed and not built.** `<Html isolated>` — a child
+process rendering into an XEmbed window — is specified in `docs/prd-html.md`,
+including why the seams stay the parent's and why `handle.document` would
+have to say it is a mirror rather than the live tree. The engine is written
+so the renderer half is already process-portable; the follow-up adds a runner
+over `src/embed/`'s existing lifecycle and changes nothing in `src/html/`.
+
 ## Commands
 
 ```bash
@@ -661,6 +750,7 @@ npm run examples:calendar    # needs a real $DISPLAY (and a bus, for events)
 npm run examples:charts      # needs a real $DISPLAY
 npm run examples:code        # needs a real $DISPLAY
 npm run examples:code-editor # needs a real $DISPLAY
+npm run examples:html        # needs a real $DISPLAY
 npm run examples:markdown    # needs a real $DISPLAY
 npm run examples:terminal    # needs a real $DISPLAY and an emulator installed
 npm run examples:terminal-vt # needs a real $DISPLAY and a pty module (node-pty)
@@ -841,13 +931,22 @@ what came with them.
 `src/markdown/` is a from-scratch successor (its own GFM parser, tolerant
 of streaming-truncated input; rendering is box/`<richtext>` composition),
 because ntk's `MarkdownView` and `HtmlView` widgets are being deprecated
-and neither supported selection. There is deliberately **no `<html>`
-successor**: nothing in this package renders through an HTML pass. The
-reuse question was asked against Vercel's Streamdown first and answered
-"behaviour yes, code no" — its pipeline is remark→rehype→DOM, but its
-`remend` package's unterminated-markdown rules are implemented natively by
+and neither supported selection. The reuse question was asked against
+Vercel's Streamdown first and answered "behaviour yes, code no" — its
+pipeline is remark→rehype→DOM, but its `remend` package's
+unterminated-markdown rules are implemented natively by
 `src/markdown/parse.ts` (as parser tolerance, not a repair pre-pass; the
 handlers were read, not imported).
+
+**And `HtmlView`, which this file previously said would never be replaced.**
+That line — "there is deliberately no `<html>` successor: nothing in this
+package renders through an HTML pass" — was answering a different question,
+and the distinction is the thing to keep rather than the conclusion.
+_Markdown does not go through HTML_, and that stays true: it has its own AST
+and box composition is better for it. `src/html/` exists because HTML arrives
+as an **input in its own right** — mail, release notes, a CMS, an exported
+report, a model's output — with no markdown upstream of it to render instead.
+See "An HTML renderer that draws" above and `docs/prd-html.md`.
 
 And core's own `<Tree>`, which is the first _core widget_ replaced rather than
 moved: `src/tree/` is a successor that imports none of it, because core is
@@ -856,7 +955,7 @@ one is written is in "Replacing a core widget rather than moving it" above.
 
 | Candidate                                        | Where it is now                                          | Status                                                                                                                                                                                                                                                                                                                                                                                 |
 | ------------------------------------------------ | -------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `<markdown>`, `<html>`                           | replaced by `src/markdown/` here (see above)             | **Done** for markdown, **never** for html. ntk's document widgets are deprecated; see [ntk#106](https://github.com/sidorares/ntk/issues/106).                                                                                                                                                                                                                                          |
+| `<markdown>`, `<html>`                           | replaced by `src/markdown/` and `src/html/` here         | **Done** for both. ntk's document widgets are deprecated ([ntk#106](https://github.com/sidorares/ntk/issues/106)); `<html>` was recorded here as "never" and is not — see the note above and `docs/prd-html.md` for why the distinction changed rather than the rule.                                                                                                                  |
 | MDX in `<Markdown>`                              | reserved seams only (`component` AST node)               | **Planned.** Composition-friendly by construction; the parser is the only part that grows. Streaming-compatible in principle.                                                                                                                                                                                                                                                          |
 | `<svg>`                                          | ntk (`SvgView`), wrapped in react-x11                    | **Staying in ntk**, per ntk#106. Recorded here so it is not reopened.                                                                                                                                                                                                                                                                                                                  |
 | `<tex>`                                          | replaced by `src/formula/` here                          | **Done.** The last ntk document widget planned for decommission: `layoutTex` rendered one opaque drawing, so nothing inside it selected. `<Formula>` is a from-scratch successor (KaTeX's virtual DOM + its own CSS-subset layout, none of ntk's tex.js), selectable via the text accessors, fed by `<Markdown>`'s `fences` seam. `katex` is an optionalDependency here; ntk drops it. |

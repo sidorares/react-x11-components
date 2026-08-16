@@ -120,6 +120,7 @@ import type { CodeEditorProps } from '@react-x11/components';
 | `Code`           | `@react-x11/components/code`             | A static code block: highlighted, selectable.                |
 | `CodeEditor`     | `@react-x11/components/code-editor`      | Multiline code editing: highlighting, completion.            |
 | `Flow`           | `@react-x11/components/flow`             | A directed-graph editor: nodes, edges, pan and zoom.         |
+| `Html`           | `@react-x11/components/html`             | A static HTML + CSS document, selectable, with seams.        |
 | `Markdown`       | `@react-x11/components/markdown`         | Streaming-friendly GFM with cross-block selection.           |
 | `MediaPlayer`    | `@react-x11/components/media-player`     | mpv or VLC, embedded, with real transport control.           |
 | `Table`          | `@react-x11/components/table`            | A data table: sortable, virtualized, any row height.         |
@@ -285,6 +286,59 @@ in live.
 MDX is on the roadmap, not in the box: the AST reserves a `component` node
 and the renderer is ordinary React composition, so user components can
 interleave — including mid-stream — once the parser learns the syntax.
+
+## HTML
+
+```jsx
+import { Html } from '@react-x11/components/html';
+
+<box style={{ overflow: 'scroll', flexGrow: 1 }}>
+  <Html
+    source={html}
+    partial={false}
+    onLink={(href) => openInBrowser(href)}
+    onResource={(r) => (r.kind === 'image' ? readImage(r.url) : null)}
+  />
+</box>;
+```
+
+A document an application is _handed_ — mail, release notes, a help page, an
+exported report — rendered with selectable text and real widgets for its form
+controls. Block flow with margin collapsing, an inline formatting context
+with full shaping and bidi, floats, lists, tables and positioning are this
+package's; `display: flex` is Yoga's, which is already in the process.
+
+**Nothing is fetched and nothing is executed**, and neither is a setting.
+`onResource` is asked for every `<img>`, `<link rel=stylesheet>` and
+`@import` — absent, images draw a frame at their attribute size and linked
+sheets are skipped. `onScript` is handed a `<script>`'s type, `src` and text
+verbatim; there is no parser and no sandbox, because a renderer that
+half-runs a script is one nobody can reason about. An application that wants
+scripting brings an engine and drives the result through the DOM handle.
+
+The form controls are the point where this differs from every HTML widget
+that came before it here: a `<select>` in a document drops the same menu as a
+`<Select>` in the window around it, because it **is** one. They mount as
+positioned siblings of the element at the rectangles layout reserved — the
+escape hatch `<Flow>` opened for a node whose body is a form.
+
+Unlike every other document surface in this package, `<Html>` **draws** the
+document rather than composing it from `<box>` and `<richtext>`. Partly for
+cost — a document is thousands of elements — but mainly because CSS layout is
+not the host's layout: block flow, floats and table column sizing are not
+flexbox, and composing would mean approximating the model. What it reuses
+from `/richtext` is everything that was never about the element — the
+`TextRun` vocabulary, the per-run decoration painter, the bidi-correct
+selection bands.
+
+`handle.document` is the live DOM ([domhandler]'s tree, which [domutils]
+speaks); mutate it and call `handle.refresh()`. That is explicit rather than
+observed on purpose: watching a plain object graph costs a proxy per node,
+and the budget went on the static render instead. `npm run examples:html`
+drives both seams for real.
+
+[domhandler]: https://github.com/fb55/domhandler
+[domutils]: https://github.com/fb55/domutils
 
 ## Code
 
@@ -990,12 +1044,17 @@ Candidates to move here:
 core's tree; whether core's remainder is stripped down or removed outright
 is core's decision, still open — `docs/prd-table.md` records the contract.
 
-`<Markdown>` above **replaces** core's ntk-backed `<markdown>` element
-(ntk's `MarkdownView` and `HtmlView` widgets are being deprecated). There
-is no `<html>` successor here and no plan for one: rendering is
-box-and-text composition, never an HTML pass. `<svg>` and `<tex>` stay in
-ntk; mermaid was dropped rather than extracted — 155 MB of install closure
-for a grammar.
+`<Markdown>` above **replaces** core's ntk-backed `<markdown>` element, and
+`<Html>` now replaces `HtmlView` and core's `<html>` (ntk's document widgets
+are being deprecated). That reverses a decision this README used to record —
+"no `<html>` successor and no plan for one" — and the reasoning is worth
+keeping straight: markdown still does **not** render through an HTML pass,
+because it has an AST of its own and box-and-text composition is better for
+it. `<Html>` exists because HTML turns up as an _input_ in its own right —
+mail, release notes, a CMS, an exported report — with no markdown upstream of
+it to render instead. See [docs/prd-html.md](docs/prd-html.md). `<svg>` and
+`<tex>` stay in ntk; mermaid was dropped rather than extracted — 155 MB of
+install closure for a grammar.
 
 ## Contributing
 

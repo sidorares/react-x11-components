@@ -1,8 +1,13 @@
-// The bits `<Markdown>` needs that react-x11 has but does not export.
-// Same situation, and the same shape, as `src/calendar/internal.ts` — each
-// is small and pure, and if core ever puts one on its exports map, delete
-// it from here and import it. `tint` was the first to go that way: it is
-// `react-x11/style`'s now, and the surfaces here import it from there.
+// The bits `<richtext>` and `<Html>` need that react-x11 has but does not
+// export. Same situation, and the same shape, as `src/calendar/internal.ts` —
+// each is small and pure, and if core ever puts one on its exports map,
+// delete it from here and import it. `tint` was the first to go that way: it
+// is `react-x11/style`'s now, and the surfaces here import it from there.
+//
+// It sits in `src/internal/` rather than in `src/richtext/` because two
+// things share it now — the shared module and `src/html/`'s own layout — and
+// that is exactly what this directory is for (AGENTS.md, "the half-step below
+// a shared module").
 
 // --- code points vs code units ---------------------------------------------
 //
