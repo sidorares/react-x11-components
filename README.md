@@ -267,8 +267,8 @@ CommonMark delimiter algorithm, inline code, links and autolinks, images
 (rendered as their alt text, linked to the source — no remote fetches),
 nested and task lists, blockquotes, tables with alignment and measured
 column widths, thematic breaks, fenced code highlighted through the same
-language seam as `<CodeEditor>` (with ntk's highlighter as a fallback for
-tags the built-ins do not cover). The parser is this package's own — no
+language seam as `<CodeEditor>` (`resolveLanguage` is where tags the
+built-ins do not cover come from — `hljsLanguage` wraps highlight.js). The parser is this package's own — no
 markdown→HTML pass anywhere — and is exported (`parseMarkdown`) with the
 AST types.
 

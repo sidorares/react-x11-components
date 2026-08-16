@@ -106,6 +106,9 @@ export interface CodeBlockRunOptions {
   lang?: string;
   /** An explicit `Language`; takes precedence over `lang`. */
   language?: Language;
+  /** A `Language` for a `lang` the built-ins do not cover — `hljsLanguage`
+   *  goes here for highlight.js's breadth. Null for a tag it does not know. */
+  resolveLanguage?: (tag: string) => Language | null;
   /** False leaves the code unhighlighted, tag or no tag. */
   highlight?: boolean;
 }
@@ -117,11 +120,12 @@ export function codeBlockRuns(
   look: CodeBlockLook,
   options: CodeBlockRunOptions = {},
 ): TextRun[] {
-  const { lang = '', language, highlight = true } = options;
+  const { lang = '', language, resolveLanguage, highlight = true } = options;
   return codeRuns(source, highlight ? lang : '', {
     styles: look.styles,
     color: look.color,
     ...(highlight && language ? { language } : null),
+    ...(highlight && resolveLanguage ? { resolveLanguage } : null),
     resolveToken: look.resolveToken,
   }).map((run) => ({ ...run, family: look.family, size: look.size }));
 }

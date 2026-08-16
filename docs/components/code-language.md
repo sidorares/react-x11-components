@@ -88,13 +88,41 @@ mode that tokenizes a whole line at once rather than through a stream.
 ```ts
 lezerLanguage({ name, parser }); // any @lezer/<lang> parser
 textMateLanguage({ name, grammar }); // an initialized TextMate grammar
+hljsLanguage({ hljs, name }); // highlight.js, by language name or alias
 ```
 
-Neither grammar ships with this package — install the one you want. TextMate
-grammars come through `vscode-textmate` or shiki's core; their tokenizer is
-line-state shaped too, so it drops straight in. `LezerParserLike` and
-`TextMateGrammarLike` are structural types, so no version of either library
-is pinned by this package.
+None of the three ships with this package — install the one you want.
+TextMate grammars come through `vscode-textmate` or shiki's core; their
+tokenizer is line-state shaped too, so it drops straight in.
+`LezerParserLike`, `TextMateGrammarLike` and `HljsLike` are structural types,
+so no version of any of those libraries is pinned by this package.
+
+### highlight.js, for breadth
+
+The built-in tokenizers cover the languages worth writing by hand.
+`hljsLanguage` covers the rest — about thirty more in highlight.js's `common`
+build, at an accuracy nobody wants to re-derive — which is what a document
+full of arbitrary fences needs:
+
+```ts
+import hljs from 'highlight.js/lib/common';
+import { hljsLanguage } from '@react-x11/components/code-language';
+
+<Markdown resolveLanguage={(tag) => hljsLanguage({ hljs, name: tag })} />;
+```
+
+It returns `null` for a name this build of highlight.js does not know, which
+is the answer `resolveLanguage` expects — the fence then falls through to the
+built-ins and finally to plain text. The app picks the build: `lib/common`,
+or `lib/core` plus its own registrations, or the full one.
+
+highlight.js has no incremental mode, so the adapter highlights the whole
+document and slices it per line, re-running on edit. That is right for a
+fence, a `<Code>` block or a file of a few hundred lines, and wrong for a
+megabyte under a caret — put a Lezer grammar behind `<CodeEditor>` there.
+
+`scopeTypes` re-aims a scope (`{ attribute: 'variableName' }`), and `data`
+supplies the `lineComment` and friends that highlight.js does not describe.
 
 ## Token palettes
 
@@ -126,6 +154,8 @@ codeRuns(text, tag, opts); // straight to <richtext> runs
 `codeRuns` is what `<Code>` and `<Markdown>` use, through
 [`codeblock`](codeblock.md)'s `codeBlockRuns`. Its `CodeRunOptions` carries
 the palette (`styles`), the plain-text `color` for gaps and unstyled tokens,
-an optional `resolveToken` for `'$token'` colour names, and an explicit
-`language` that takes precedence over the tag. An empty `tag` with no
-`language` is how "do not highlight this" is said.
+an optional `resolveToken` for `'$token'` colour names, an explicit
+`language` that takes precedence over the tag, and a `resolveLanguage(tag)`
+consulted before the built-in registry — the seam `hljsLanguage` goes
+through. An empty `tag` with no `language` is how "do not highlight this" is
+said.

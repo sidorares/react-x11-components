@@ -18,20 +18,21 @@ inside one window.
 
 ## Props
 
-| Prop             | Type               | Notes                                                                                                                                 |
-| ---------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
-| `source`         | `string`           | The code, verbatim. Required.                                                                                                         |
-| `lang`           | `string`           | A fence-style tag — `'js'`, `'tsx'`, `'bash'`, `'sql'`. Unknown tags fall back to ntk's highlighter when present, then to plain text. |
-| `language`       | `Language`         | An explicit language (a Lezer or TextMate adapter, say). Takes precedence over `lang`.                                                |
-| `lineNumbers`    | `boolean`          | A gutter. Ignored when `wrap` is on — a wrapped source line would put the numbering out of register.                                  |
-| `wrap`           | `boolean`          | Wrap long lines instead of scrolling horizontally. Default false.                                                                     |
-| `selectable`     | `boolean`          | Mouse selection, Ctrl+A / Ctrl+C, PRIMARY. Default true.                                                                              |
-| `fontSize`       | `number`           | Default: 0.9 × the theme `fontSize`, matching `<Markdown>`'s blocks.                                                                  |
-| `monoFamily`     | `string`           | Default `'monospace'` — there is no theme token for it.                                                                               |
-| `tokenStyles`    | `TokenStyles`      | Palette override. The default follows the theme background, and `'$token'` colours in a custom palette resolve against the theme.     |
-| `selectionColor` | `string`           | Selection band fill. Default: the theme accent at 35% opacity.                                                                        |
-| `style`          | `Style \| Style[]` | The root box — width, margins, `flexGrow`.                                                                                            |
-| `data-testname`  | `string`           | For `react-x11/test` queries.                                                                                                         |
+| Prop              | Type                        | Notes                                                                                                                             |
+| ----------------- | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `source`          | `string`                    | The code, verbatim. Required.                                                                                                     |
+| `lang`            | `string`                    | A fence-style tag — `'js'`, `'tsx'`, `'bash'`, `'sql'`. A tag `resolveLanguage` and the built-ins both decline paints plain.      |
+| `language`        | `Language`                  | An explicit language (a Lezer or TextMate adapter, say). Takes precedence over `lang`.                                            |
+| `resolveLanguage` | `(tag) => Language \| null` | A `Language` for a `lang` the built-ins do not cover — [`hljsLanguage`](code-language.md#highlightjs-for-breadth) goes here.      |
+| `lineNumbers`     | `boolean`                   | A gutter. Ignored when `wrap` is on — a wrapped source line would put the numbering out of register.                              |
+| `wrap`            | `boolean`                   | Wrap long lines instead of scrolling horizontally. Default false.                                                                 |
+| `selectable`      | `boolean`                   | Mouse selection, Ctrl+A / Ctrl+C, PRIMARY. Default true.                                                                          |
+| `fontSize`        | `number`                    | Default: 0.9 × the theme `fontSize`, matching `<Markdown>`'s blocks.                                                              |
+| `monoFamily`      | `string`                    | Default `'monospace'` — there is no theme token for it.                                                                           |
+| `tokenStyles`     | `TokenStyles`               | Palette override. The default follows the theme background, and `'$token'` colours in a custom palette resolve against the theme. |
+| `selectionColor`  | `string`                    | Selection band fill. Default: the theme accent at 35% opacity.                                                                    |
+| `style`           | `Style \| Style[]`          | The root box — width, margins, `flexGrow`.                                                                                        |
+| `data-testname`   | `string`                    | For `react-x11/test` queries.                                                                                                     |
 
 ## Copied code pastes clean
 

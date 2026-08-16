@@ -64,6 +64,7 @@ import {
   codeTextStyle,
 } from '../codeblock/index.js';
 import type { CodeBlockLook } from '../codeblock/index.js';
+import type { Language } from '../code-language/index.js';
 
 import { parse } from './parse.js';
 import { runsOf, plainTextOf } from './spans.js';
@@ -125,8 +126,23 @@ export interface MarkdownProps {
   monoFamily?: string;
   /** Selection band fill. Default: theme accent at 35% opacity. */
   selectionColor?: string;
-  /** Syntax colouring in fenced code (via ntk's highlighter). Default true. */
+  /** Syntax colouring in fenced code. Default true. */
   highlight?: boolean;
+  /**
+   * A `Language` for a fence tag the built-in tokenizers do not cover —
+   * js/ts/jsx/tsx, json, shell, sql and glsl are built in, and this is where
+   * everything else comes from. `hljsLanguage` is the ready-made one:
+   *
+   * ```tsx
+   * import hljs from 'highlight.js/lib/common';
+   * <Markdown resolveLanguage={(tag) => hljsLanguage({ hljs, name: tag })} />
+   * ```
+   *
+   * A tag it does not know is `null`, and the fence paints plain. Give it a
+   * stable identity — a new closure per render defeats the block cache, the
+   * same way a new `fences` map does.
+   */
+  resolveLanguage?: (tag: string) => Language | null;
   /**
    * Custom renderers for fenced blocks, keyed by the fence's language
    * (lowercased). A fence whose language has an entry renders through it
@@ -213,6 +229,7 @@ interface RenderCtx {
   /** `app.fonts`, when real — table column sizing measures through it. */
   fonts: FontsMeasureLike | null;
   fences?: MarkdownProps['fences'];
+  resolveLanguage?: MarkdownProps['resolveLanguage'];
   /** True while rendering the live tail block of a streaming document. */
   live?: boolean;
 }
@@ -331,6 +348,7 @@ function renderCode(
   const runs = codeBlockRuns(text, code, {
     lang,
     highlight: ctx.look.highlight,
+    ...(ctx.resolveLanguage ? { resolveLanguage: ctx.resolveLanguage } : null),
   });
   // The block scrolls horizontally rather than wrapping — code is code.
   return hx(
@@ -584,20 +602,29 @@ export function Markdown(props: MarkdownProps): ReactElement {
   // and the retained nodes keep their layout caches.
   const cacheRef = React.useRef<BlockCache | null>(null);
   const fonts = app?.fonts ?? null;
-  // The fences map cannot be part of a string key, so its *identity* is
-  // counted instead: a new map is a new epoch, and every cached block that
-  // might have rendered through it is re-derived.
-  const fencesRef = React.useRef<{
+  // Neither the fences map nor `resolveLanguage` can be part of a string
+  // key, so their *identity* is counted instead: a new one is a new epoch,
+  // and every cached block that might have rendered through it is re-derived.
+  const seamsRef = React.useRef<{
     fences: MarkdownProps['fences'];
+    resolveLanguage: MarkdownProps['resolveLanguage'];
     gen: number;
-  }>({ fences: props.fences, gen: 0 });
-  if (fencesRef.current.fences !== props.fences) {
-    fencesRef.current = {
+  }>({
+    fences: props.fences,
+    resolveLanguage: props.resolveLanguage,
+    gen: 0,
+  });
+  if (
+    seamsRef.current.fences !== props.fences ||
+    seamsRef.current.resolveLanguage !== props.resolveLanguage
+  ) {
+    seamsRef.current = {
       fences: props.fences,
-      gen: fencesRef.current.gen + 1,
+      resolveLanguage: props.resolveLanguage,
+      gen: seamsRef.current.gen + 1,
     };
   }
-  const epoch = `${look.key}|${fonts ? 'f' : '-'}|${fencesRef.current.gen}`;
+  const epoch = `${look.key}|${fonts ? 'f' : '-'}|${seamsRef.current.gen}`;
   if (!cacheRef.current || cacheRef.current.epoch !== epoch) {
     cacheRef.current = { epoch, map: new Map() };
   }
@@ -606,7 +633,12 @@ export function Markdown(props: MarkdownProps): ReactElement {
   const children: ReactNode[] = [];
   {
     const nextMap = new Map<string, ReactNode>();
-    const ctx: RenderCtx = { look, fonts, fences: props.fences };
+    const ctx: RenderCtx = {
+      look,
+      fonts,
+      fences: props.fences,
+      resolveLanguage: props.resolveLanguage,
+    };
     for (let i = 0; i < doc.blocks.length; i += 1) {
       const live = partial && i === doc.blocks.length - 1;
       const cacheKey = `${i}|${live ? 'L' : '.'}|${doc.raws[i]}`;

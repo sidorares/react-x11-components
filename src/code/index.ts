@@ -47,6 +47,9 @@ export interface CodeProps {
   /** An explicit `Language` (a Lezer or TextMate adapter, say). Takes
    *  precedence over `lang`. */
   language?: Language;
+  /** A `Language` for a `lang` the built-ins do not cover —
+   *  `hljsLanguage` goes here. Null for a tag it does not know. */
+  resolveLanguage?: (tag: string) => Language | null;
   /** A line-number gutter. Numbers are not part of the selection, so
    *  copied code pastes clean. Ignored when `wrap` is on — a wrapped
    *  source line would put the numbering out of register. */
@@ -81,6 +84,7 @@ export function Code(props: CodeProps): ReactElement {
     source,
     lang = '',
     language,
+    resolveLanguage,
     wrap = false,
     selectable = true,
     selectionColor,
@@ -102,8 +106,8 @@ export function Code(props: CodeProps): ReactElement {
   );
 
   const runs: TextRun[] = React.useMemo(
-    () => codeBlockRuns(source, look, { lang, language }),
-    [source, lang, language, look],
+    () => codeBlockRuns(source, look, { lang, language, resolveLanguage }),
+    [source, lang, language, resolveLanguage, look],
   );
 
   const lineCount = React.useMemo(() => source.split('\n').length, [source]);
