@@ -164,8 +164,9 @@ and a 300 ms first paint on a document with a framework stylesheet attached:
 rules are bucketed by their rightmost simple selector, so an element tries the
 handful that could possibly match rather than all of them.
 
-**Flexbox is Yoga's.** It is already in the process, `react-x11/ntk`
-re-exports it precisely so an extension does not bring a second copy, and it
+**Flexbox is Yoga's.** It is already in the process, `react-x11/yoga`
+exports it precisely so a package doing layout of its own does not bring a
+second copy — a node from one instance cannot enter another's tree — and it
 is the algorithm where writing it out would be the worst trade — long, subtle,
 and silently wrong when wrong. Block flow, floats and margin collapsing are
 none of those things, which is where the line falls: **not "is there a
