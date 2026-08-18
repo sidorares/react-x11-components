@@ -159,10 +159,20 @@ function findSurface(node: any): any {
 
 /**
  * From here on frames happen only when the test asks for one, so command
- * counts are exact; then drain the wire so a clear removes whole frames.
+ * counts are exact. Noop-ing requestFrame blocks *new* schedules, but a
+ * frame the loop already queued through the window's rAF still fires —
+ * `_frameScheduled` is that queue's flag, so the counts are only exact once
+ * it has drained (it cannot re-arm: re-arming goes through the noop). Then
+ * settle the wire so a tap reset removes whole frames. Without the drain
+ * this races, and on Node 20's timing it lost: a stale frame landed inside
+ * the counted window as a third CallList.
  */
 async function quiesce(surface: any, app: any) {
   surface.requestFrame = () => {};
+  await waitFor(
+    () => surface._frameScheduled !== true,
+    'the frame clock to drain',
+  );
   await settle(app);
 }
 
