@@ -286,7 +286,19 @@ export function Canvas({
       } else {
         kit.renderer = new IndirectRenderer();
       }
-      kit.store.setState({ gl, backend });
+      // [react-x11 gap] useSupports('shaders') reads ntk's resolved
+      // *capability* (addon + DRI3), not the effective policy: under
+      // `NTK_GL_POLICY=indirect` on a DRI3-capable machine it answers true
+      // while this context is indirect — and it can flip false→true after
+      // caps resolve without re-rendering subscribers. The context in hand
+      // is the ground truth, so the store follows it; the guard that keeps
+      // direct-only elements off an indirect scene then agrees with
+      // `useThree((s) => s.supportsShaders)` whatever the hook said.
+      kit.store.setState({
+        gl,
+        backend,
+        supportsShaders: backend === 'direct',
+      });
       onCreated?.(kit.store.getState());
     },
     // handleError is stable enough (fallback/onError changes reroute later
