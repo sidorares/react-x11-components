@@ -79,6 +79,7 @@ function fakeGL({ compileFails = false } = {}) {
     DEPTH_ATTACHMENT: 0x8d00,
     DEPTH_COMPONENT16: 0x81a5,
     FRAMEBUFFER_COMPLETE: 0x8cd5,
+    LINES: 1,
     TRIANGLE_STRIP: 5,
   };
   for (const name of [
@@ -230,6 +231,44 @@ test('meshStandardMaterial draws through the shared phong mapping', () => {
     (call: Call) => call.name === 'uniform3fv' && call.args[0] === 'u:specular',
   );
   assert.ok(specular, 'roughness/metalness became specular terms');
+});
+
+test('wireframe draws a unique-edge index as LINES — ES 2 has no polygon mode', () => {
+  const gl = fakeGL();
+  const renderer = new DirectRenderer();
+  const { scene, mesh, camera } = phongScene();
+  (mesh.material as MeshPhongMaterial).wireframe = true;
+
+  renderer.render(gl, scene, camera, SIZE);
+  assert.equal(
+    count(gl.calls, 'bufferData'),
+    5,
+    'position, normal, uv, index — and the edge index',
+  );
+  let draws = gl.calls.filter((call: Call) => call.name === 'drawElements');
+  assert.equal(draws.length, 1);
+  assert.equal(draws[0].args[0], gl.LINES, 'drawn as lines');
+  assert.equal(
+    draws[0].args[1],
+    60,
+    'a box is 30 unique edges (each face: 4 sides and a diagonal), two indices each',
+  );
+
+  // off again: the filled draw is back and nothing was re-uploaded
+  gl.calls.length = 0;
+  (mesh.material as MeshPhongMaterial).wireframe = false;
+  renderer.render(gl, scene, camera, SIZE);
+  draws = gl.calls.filter((call: Call) => call.name === 'drawElements');
+  assert.equal(draws[0].args[0], gl.TRIANGLES, 'filled again');
+  assert.equal(count(gl.calls, 'bufferData'), 0, 'no geometry re-sent');
+
+  // and back on: the edge index is cached with the geometry's buffers
+  gl.calls.length = 0;
+  (mesh.material as MeshPhongMaterial).wireframe = true;
+  renderer.render(gl, scene, camera, SIZE);
+  draws = gl.calls.filter((call: Call) => call.name === 'drawElements');
+  assert.equal(draws[0].args[0], gl.LINES);
+  assert.equal(count(gl.calls, 'bufferData'), 0, 'edge index not rebuilt');
 });
 
 test('a shader material compiles once per source and takes { value } uniforms', () => {

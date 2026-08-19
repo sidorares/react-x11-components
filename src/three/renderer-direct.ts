@@ -248,6 +248,9 @@ interface GeometryBuffers {
   uv: unknown;
   index: unknown;
   count: number;
+  /** Lazily built unique-edge index — how wireframe draws where ES 2 has no
+   * `glPolygonMode`. Rides the entry so it releases and rebuilds with it. */
+  wire: { index: unknown; count: number } | null;
 }
 
 export interface CompiledProgram {
@@ -283,6 +286,7 @@ export class DirectRenderer {
     { texture: unknown; unit: number }
   >();
   private failed = new Set<string>();
+  private wireWarned = new WeakSet<BufferGeometry>();
   private _usable: boolean | undefined;
 
   camera: FrameCamera | null = null;
@@ -483,8 +487,13 @@ export class DirectRenderer {
     );
     this.bindAttributes(gl, program, buffers);
 
+    const wire =
+      primitive === 'triangles' && material?.wireframe
+        ? this.wireframeFor(gl, geometry, buffers)
+        : null;
+
     if (!(mesh instanceof InstancedMesh)) {
-      this.drawOne(gl, program, buffers, world, primitive);
+      this.drawOne(gl, program, buffers, world, primitive, wire);
       return;
     }
 
@@ -505,6 +514,7 @@ export class DirectRenderer {
         buffers,
         multiply(world, instanceMatrix(instance)),
         primitive,
+        wire,
       );
     }
   }
@@ -516,6 +526,7 @@ export class DirectRenderer {
     buffers: GeometryBuffers,
     world: Mat4,
     primitive: Primitive,
+    wire: { index: unknown; count: number } | null = null,
   ): void {
     const modelView = multiply(this.camera!.view, world);
     gl.uniformMatrix4fv(program.uniform('modelViewMatrix'), false, modelView);
@@ -525,6 +536,11 @@ export class DirectRenderer {
       false,
       normalMatrix(modelView),
     );
+    if (wire) {
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, wire.index);
+      gl.drawElements(gl.LINES, wire.count, gl.UNSIGNED_SHORT, 0);
+      return;
+    }
     const mode = PRIMITIVE_MODE(gl, primitive);
     if (buffers.index) {
       gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, buffers.index);
@@ -599,6 +615,7 @@ export class DirectRenderer {
       uv: upload(uvs, vertexCount * 2),
       index: null,
       count: vertexCount,
+      wire: null,
     };
 
     if (index && index.length) {
@@ -651,6 +668,64 @@ export class DirectRenderer {
       if (entry[key]) gl.deleteBuffer(entry[key]);
       entry[key] = null;
     }
+    if (entry.wire) {
+      gl.deleteBuffer(entry.wire.index);
+      entry.wire = null;
+    }
+  }
+
+  /**
+   * The unique-edge index that draws `node` as a wireframe. The indirect
+   * backend flips one server-side switch (`PolygonMode LINE`); ES 2 has no
+   * polygon modes, so this backend does what three.js's `WireframeGeometry`
+   * does — every triangle edge once, drawn as `LINES` over the same vertex
+   * buffers. Built on first use, cached until the geometry rebuilds.
+   */
+  private wireframeFor(
+    gl: GL,
+    node: BufferGeometry,
+    buffers: GeometryBuffers,
+  ): { index: unknown; count: number } | null {
+    if (buffers.wire) return buffers.wire;
+    // no index means consecutive-triplet triangles (including the >0xffff
+    // soup, whose vertices a 16-bit edge index cannot name)
+    if (!buffers.index && buffers.count > 0xffff) {
+      if (!this.wireWarned.has(node)) {
+        this.wireWarned.add(node);
+        warn(
+          `wireframe needs a 16-bit index and this geometry expanded to ` +
+            `${buffers.count} vertices — drawing it filled`,
+        );
+      }
+      return null;
+    }
+    const source = buffers.index ? node.data({ normals: true }).index : null;
+    const seen = new Set<number>();
+    const edges: number[] = [];
+    const push = (a: number, b: number) => {
+      const key = a < b ? a * 0x10000 + b : b * 0x10000 + a;
+      if (seen.has(key)) return;
+      seen.add(key);
+      edges.push(a, b);
+    };
+    const triangles = source ? source.length / 3 : buffers.count / 3;
+    for (let t = 0; t < triangles; t++) {
+      const a = source ? source[t * 3] : t * 3;
+      const b = source ? source[t * 3 + 1] : t * 3 + 1;
+      const c = source ? source[t * 3 + 2] : t * 3 + 2;
+      push(a, b);
+      push(b, c);
+      push(c, a);
+    }
+    const index = gl.createBuffer();
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, index);
+    gl.bufferData(
+      gl.ELEMENT_ARRAY_BUFFER,
+      new Uint16Array(edges),
+      gl.STATIC_DRAW,
+    );
+    buffers.wire = { index, count: edges.length };
+    return buffers.wire;
   }
 
   /** Compile once per material configuration, reuse for every mesh using it. */
