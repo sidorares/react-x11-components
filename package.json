@@ -104,6 +104,18 @@
       "types": "./dist/terminal-output/index.d.ts",
       "default": "./dist/terminal-output/index.js"
     },
+    "./three": {
+      "types": "./dist/three/index.d.ts",
+      "default": "./dist/three/index.js"
+    },
+    "./three/jsx-runtime": {
+      "types": "./dist/three/jsx-runtime.d.ts",
+      "default": "./dist/three/jsx-runtime.js"
+    },
+    "./three/jsx-dev-runtime": {
+      "types": "./dist/three/jsx-dev-runtime.d.ts",
+      "default": "./dist/three/jsx-dev-runtime.js"
+    },
     "./timeline": {
       "types": "./dist/timeline/index.d.ts",
       "default": "./dist/timeline/index.js"
@@ -146,6 +158,8 @@
     "examples:terminal-output": "tsx examples/terminal-output.tsx",
     "examples:terminal-vt": "tsx examples/terminal-vt.tsx",
     "examples:terminal-ssh": "tsx examples/terminal-ssh.tsx",
+    "examples:three": "tsx examples/three.tsx",
+    "examples:three-effects": "tsx examples/three-effects.tsx",
     "examples:timeline": "tsx examples/timeline.tsx",
     "examples:tray-host": "tsx examples/tray-host.tsx",
     "examples:tree": "tsx examples/tree.tsx",
@@ -155,7 +169,8 @@
     "css-select": "^7.0.0",
     "domhandler": "^6.0.0",
     "domutils": "^4.0.0",
-    "htmlparser2": "^12.0.0"
+    "htmlparser2": "^12.0.0",
+    "react-reconciler": "^0.33.0"
   },
   "peerDependencies": {
     "@lezer/highlight": "^1.0.0",
@@ -185,7 +200,7 @@
     "globals": "^17.8.0",
     "prettier": "^3.6.0",
     "react": "^19.2.8",
-    "react-x11": "github:sidorares/react-x11#3722ea55d162bcb8a0970126887eca485d22bd39",
+    "react-x11": "github:sidorares/react-x11#343c3f20e8e7f6108342f1ffe7e54f018a4b055b",
     "tsx": "^4.23.1",
     "typescript": "^7.0.2"
   },
