@@ -232,6 +232,19 @@ export function Canvas({
     }
   }, [frameloop, kit]);
 
+  // Until a context exists the hook is the best prediction there is, and
+  // it can settle false→true after the kit captured it (caps resolve on
+  // their own clock). Keep the store following the hook so a direct-only
+  // element mounting on that flip is judged by the fresh value — declared
+  // before the scene-root effects so it lands first. The created context
+  // overwrites this with the backend that actually arrived.
+  useLayoutEffect(() => {
+    const state = kit.store.getState();
+    if (!state.backend && state.supportsShaders !== supportsShaders) {
+      kit.store.setState({ supportsShaders });
+    }
+  }, [kit, supportsShaders]);
+
   // The scene root: created once, fed the children every render, torn down
   // with the canvas. `useLayoutEffect` so the scene exists before the
   // surface's first frame asks it to draw.
@@ -286,14 +299,11 @@ export function Canvas({
       } else {
         kit.renderer = new IndirectRenderer();
       }
-      // [react-x11 gap] useSupports('shaders') reads ntk's resolved
-      // *capability* (addon + DRI3), not the effective policy: under
-      // `NTK_GL_POLICY=indirect` on a DRI3-capable machine it answers true
-      // while this context is indirect — and it can flip false→true after
-      // caps resolve without re-rendering subscribers. The context in hand
-      // is the ground truth, so the store follows it; the guard that keeps
-      // direct-only elements off an indirect scene then agrees with
-      // `useThree((s) => s.supportsShaders)` whatever the hook said.
+      // The context in hand outranks any prediction: once a backend has
+      // actually arrived, `useThree((s) => s.supportsShaders)` and the
+      // direct-only mount guard follow it. (Since react-x11#358 the
+      // useSupports('shaders') hook is policy-aware and agrees with this;
+      // writing it here keeps the store truthful on any core version.)
       kit.store.setState({
         gl,
         backend,

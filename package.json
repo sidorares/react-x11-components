@@ -200,7 +200,7 @@
     "globals": "^17.8.0",
     "prettier": "^3.6.0",
     "react": "^19.2.8",
-    "react-x11": "github:sidorares/react-x11#3722ea55d162bcb8a0970126887eca485d22bd39",
+    "react-x11": "github:sidorares/react-x11#343c3f20e8e7f6108342f1ffe7e54f018a4b055b",
     "tsx": "^4.23.1",
     "typescript": "^7.0.2"
   },

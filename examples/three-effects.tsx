@@ -108,11 +108,8 @@ function App(): ReactElement {
   const [fxaa, setFxaa] = useState(true);
   const [backend, setBackend] = useState('…');
   // FBOs exist only on the direct backend; an indirect connection keeps
-  // the scene and loses the composer (mounting it there would throw).
-  // [react-x11 gap] useSupports('shaders') alone is not enough: it reports
-  // the machine's capability, so `NTK_GL_POLICY=indirect` on a DRI3-capable
-  // box still answers true. The context's own backend settles it.
-  const post = useSupports('shaders') && backend === 'direct';
+  // the scene and loses the composer (mounting it there would throw)
+  const post = useSupports('shaders');
 
   return (
     <window

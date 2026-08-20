@@ -191,12 +191,6 @@ typings up and the pragma stops being necessary.
   RGBA bytes.
 - **Removed props keep their value** rather than resetting to a default
   (write the value you want, or key the element).
-- **`useSupports('shaders')` answers for the machine, not the policy** (a
-  react-x11 gap): under `NTK_GL_POLICY=indirect` on a DRI3-capable box it
-  is `true` while the backend is indirect. Inside a scene,
-  `useThree((s) => s.supportsShaders)` follows the actual context; outside
-  one, gate direct-only mounts on the settled backend too, as the examples
-  do (`useSupports('shaders') && backend === 'direct'`).
 
 ## Why this lives here, and how
 

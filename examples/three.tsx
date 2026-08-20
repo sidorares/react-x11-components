@@ -164,11 +164,8 @@ function App(): ReactElement {
   const [picked, setPicked] = useState<string | null>(null);
   const [backend, setBackend] = useState<string>('…');
   // shaders exist only on the direct backend; the scene degrades rather
-  // than fails where they cannot. [react-x11 gap] useSupports('shaders')
-  // reports capability, not the effective policy — NTK_GL_POLICY=indirect
-  // on a DRI3-capable box still answers true — so the context's own
-  // backend settles it before the shader plane mounts.
-  const shaders = useSupports('shaders') && backend === 'direct';
+  // than fails where they cannot
+  const shaders = useSupports('shaders');
 
   return (
     <window width={620} height={520} title="react-x11 components — three">
