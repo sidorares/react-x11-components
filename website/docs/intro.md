@@ -12,11 +12,12 @@ Everything here is built on react-x11's public API — the built-in host
 elements, or the `registerElement` seam in `react-x11/host`. Nothing here
 needs a change to core to exist, and core does not grow to carry it.
 
-:::note Not published yet
+:::note Installable now
 
-This package needs react-x11 2.0.0, which is not on npm — the subpath exports
-it imports (`react-x11/host`, `/node`, `/style`, `/test`) are on core's
-`master`, unreleased. Until then, use it from a checkout.
+react-x11 2.0.0 is on npm, so the peer range this package declares resolves
+and `npm install` just works. The published release is `0.1.0`; `master`
+carries components added since, so use a checkout if you want what is not in
+that release yet.
 
 :::
 
