@@ -23,7 +23,7 @@ export type {
 export { DatePicker } from './DatePicker.js';
 export type { DatePickerProps } from './DatePicker.js';
 
-export type { WidgetChangeEvent } from './internal.js';
+export type { WidgetChangeEvent } from '../internal/widget.js';
 
 export {
   addDays,

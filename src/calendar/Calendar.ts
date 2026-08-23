@@ -22,10 +22,10 @@ import {
   XK_UP,
 } from 'react-x11/keysyms';
 
-import { hx } from './hx.js';
-import type { Host } from './hx.js';
-import { changeEvent } from './internal.js';
-import type { WidgetChangeEvent } from './internal.js';
+import { hx } from '../internal/hx.js';
+import type { Host } from '../internal/hx.js';
+import { changeEvent } from '../internal/widget.js';
+import type { WidgetChangeEvent } from '../internal/widget.js';
 import {
   addDays,
   addMonths,

@@ -117,6 +117,7 @@ import type { CodeEditorProps } from '@react-x11/components';
 | `Calendar`       | `@react-x11/components/calendar`         | A month grid: one date or a range, any day blockable.        |
 | `DatePicker`     | `@react-x11/components/calendar`         | That calendar on a popup, behind a field.                    |
 | `LineChart` …    | `@react-x11/components/charts`           | Cartesian charts; a million points is a normal input.        |
+| `ColorPicker` …  | `@react-x11/components/color-picker`     | A colour input: field, hue, alpha, swatches, eyedropper.     |
 | `Code`           | `@react-x11/components/code`             | A static code block: highlighted, selectable.                |
 | `CodeEditor`     | `@react-x11/components/code-editor`      | Multiline code editing: highlighting, completion.            |
 | `Flow`           | `@react-x11/components/flow`             | A directed-graph editor: nodes, edges, pan and zoom.         |
