@@ -1,12 +1,18 @@
-// The bits of react-x11 that `<Calendar>` needs and react-x11 does not export.
+// The bits of react-x11 that a value widget needs and react-x11 does not
+// export — the change event every one of them emits, and the dismiss-on-blur
+// subscription every popup one needs.
 //
-// Everything else the widget stands on is public — `useTheme`, `createStyles`,
-// `useAnchor`/`useAnchorTracking`, the `XK_*` keysyms, the host elements, and
-// `tint` off `react-x11/style`, which used to be vendored here and is not any
-// more. These two are what is left, and they are collected here rather than
-// scattered so the list stays short and visible. Each is small and pure; if
-// core ever puts one on its exports map, delete it from here and import it,
-// the way `tint` was deleted.
+// It lived in `src/calendar/` while the calendar was the only widget out
+// here; `<ColorPicker>` is the second, which is exactly the promotion
+// `AGENTS.md` describes for `src/internal/`.
+//
+// Everything else these widgets stand on is public — `useTheme`,
+// `createStyles`, `useAnchor`/`useAnchorTracking`, the `XK_*` keysyms, the
+// host elements, and `tint` off `react-x11/style`, which used to be vendored
+// here and is not any more. These two are what is left, and they are
+// collected here rather than scattered so the list stays short and visible.
+// Each is small and pure; if core ever puts one on its exports map, delete it
+// from here and import it, the way `tint` was deleted.
 
 import { useEffect, useRef } from 'react';
 import type { RefObject } from 'react';

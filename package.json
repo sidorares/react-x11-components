@@ -60,6 +60,10 @@
       "types": "./dist/codeblock/index.d.ts",
       "default": "./dist/codeblock/index.js"
     },
+    "./color-picker": {
+      "types": "./dist/color-picker/index.d.ts",
+      "default": "./dist/color-picker/index.js"
+    },
     "./desktop-calendar": {
       "types": "./dist/desktop-calendar/index.d.ts",
       "default": "./dist/desktop-calendar/index.js"
@@ -146,6 +150,7 @@
     "examples:calendar": "tsx examples/calendar.tsx",
     "examples:charts": "tsx examples/charts.tsx",
     "examples:code": "tsx examples/code.tsx",
+    "examples:color-picker": "tsx examples/color-picker.tsx",
     "examples:code-editor": "tsx examples/code-editor.tsx",
     "examples:flow": "tsx examples/flow.tsx",
     "examples:flow-stress": "tsx examples/flow-stress.tsx",
@@ -200,7 +205,7 @@
     "globals": "^17.8.0",
     "prettier": "^3.6.0",
     "react": "^19.2.8",
-    "react-x11": "github:sidorares/react-x11#343c3f20e8e7f6108342f1ffe7e54f018a4b055b",
+    "react-x11": "github:sidorares/react-x11#aba5b63d6e6f726f24186dd14d5b3ea9b6d2fa8a",
     "tsx": "^4.23.1",
     "typescript": "^7.0.2"
   },

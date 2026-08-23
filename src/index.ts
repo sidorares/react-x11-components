@@ -47,6 +47,42 @@ export type {
   WidgetChangeEvent,
 } from './calendar/index.js';
 
+// The colour input, the calendar's closest sibling: the same composed shape,
+// the same controlled/uncontrolled grammar, and a value that is a CSS colour
+// string for the same reason a day is a `'YYYY-MM-DD'` one.
+export {
+  ColorPicker,
+  ColorField,
+  COLOR_PICKER_WIDTH,
+  colorPickerHeight,
+  // The colour vocabulary the props speak — an app rendering a picker ends up
+  // measuring a contrast or formatting a value soon enough.
+  channelsFromHsl,
+  channelsFromHsv,
+  channelsFromRgb,
+  contrastGrade,
+  contrastRatio,
+  formatColor,
+  formatOf,
+  hslOf,
+  hsvToRgb,
+  opaqueHex,
+  parseColor,
+  relativeLuminance,
+  rgbToHsv,
+  wrapHue,
+} from './color-picker/index.js';
+export type {
+  ColorPickerProps,
+  ColorPickerHandle,
+  ColorPickerPart,
+  ColorFieldProps,
+  ColorChangeEvent,
+  ColorChannels,
+  ColorFormat,
+  ColorSwatch,
+} from './color-picker/index.js';
+
 // Charts: shadcn-shaped composition over one element that paints with cost
 // bounded by pixels, not points — docs/prd-charts.md is the design record.
 export {

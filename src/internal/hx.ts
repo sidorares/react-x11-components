@@ -2,7 +2,9 @@
 //
 // The library writes `h(...)` rather than JSX — a convention inherited from
 // core, and worth keeping so moving code between the two repos stays a
-// rename. But `React.createElement`'s own overloads are `@types/react`'s, and
+// rename. Shared by every composed widget out here (`<Calendar>`,
+// `<DatePicker>`, `<ColorPicker>`, `<ColorField>`), which is why it sits in
+// `src/internal/` rather than in one of them. But `React.createElement`'s own overloads are `@types/react`'s, and
 // they describe the DOM: a `<box onKeyDown>` handler is checked against
 // React's `KeyboardEvent`, not react-x11's, and the whole props object is
 // measured against `DOMAttributes`. Everything interesting fails.

@@ -83,7 +83,10 @@ element.
   neither component registers nothing.
 - `src/internal/` is the half-step **below** a shared module: code two
   components share — the height index and layout tick under `<Tree>` and
-  `<Table>` — that no app needs yet. Deliberately without an `index.ts`,
+  `<Table>`, the typed `hx()` every composed widget writes its elements
+  with, and the change event and dismiss-on-blur subscription under
+  `<Calendar>`/`<DatePicker>` and `<ColorPicker>`/`<ColorField>` — that no
+  app needs yet. Deliberately without an `index.ts`,
   so it has no subpath and no docs page; `test/docs.test.ts` and
   `scripts/check-package.ts` both key on `src/<name>/index.ts`, and that
   is the seam this uses. Giving it an `index.ts` and the full
@@ -123,8 +126,13 @@ module scope the way a component does.
 `<CodeEditor>` does; `<Calendar>` does not. A calendar is a composition of
 `<box>`, `<text>` and `<canvas>` — there is nothing for the reconciler to
 learn, so `src/calendar/` has no `registerElement` call, no JSX augmentation
-and **no side effect at import time at all**. Both shapes belong here; the
-`registerElement` seam is a tool, not an entry requirement.
+and **no side effect at import time at all**. `src/color-picker/` is the same
+shape and the sharper example of it: a saturation/value field _looks_ like an
+element that should draw itself, and it is three `<canvas>` panes and a
+couple of absolutely positioned `<box>` thumbs, because ntk's gradients do
+the drawing server-side and a thumb that is a node is a thumb whose drag
+repaints nothing else. Both shapes belong here; the `registerElement` seam is
+a tool, not an entry requirement.
 
 ### Drawing beats composing when the viewport is a transform
 
@@ -168,7 +176,7 @@ transform.** If it is, the element draws, and anything that has to be a real
 widget is mounted beside it rather than inside it. If it is not — a calendar,
 a date picker — compose.
 
-`src/calendar/hx.ts` is what makes the no-JSX rule survive TypeScript.
+`src/internal/hx.ts` is what makes the no-JSX rule survive TypeScript.
 `React.createElement`'s own overloads are `@types/react`'s and describe the
 DOM, so a `<box onKeyDown>` handler gets checked against React's
 `KeyboardEvent` rather than react-x11's. `hx('box', …)` looks the name up in
@@ -177,10 +185,13 @@ it in any component that writes more than a couple of elements.
 
 ### Vendored from core
 
-`src/calendar/dates.ts` and `src/calendar/internal.ts` are copies of code that
+`src/calendar/dates.ts` and `src/internal/widget.ts` are copies of code that
 is still in react-x11 today — the day arithmetic, `changeEvent`,
 `useDismissOnWindowBlur`. They were copied rather than imported because they
 are not on core's exports map, and they are pure, so the copy is cheap.
+(`widget.ts` started as `src/calendar/internal.ts` and moved when
+`<ColorPicker>` became its second consumer — the promotion `src/internal/`
+exists for.)
 
 **Core is expected to drop `<Calendar>` and `<DatePicker>`, so divergence here
 is intended rather than drift.** This package is the owner now. Until that

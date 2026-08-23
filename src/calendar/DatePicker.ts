@@ -13,9 +13,9 @@ import type {
 } from 'react-x11';
 import { XK_DOWN, XK_ESCAPE, XK_RETURN, XK_UP } from 'react-x11/keysyms';
 
-import { hx } from './hx.js';
-import { useDismissOnWindowBlur } from './internal.js';
-import type { WidgetChangeEvent } from './internal.js';
+import { hx } from '../internal/hx.js';
+import { useDismissOnWindowBlur } from '../internal/widget.js';
+import type { WidgetChangeEvent } from '../internal/widget.js';
 import { CALENDAR_HEIGHT, CALENDAR_WIDTH, Calendar } from './Calendar.js';
 import type {
   CalendarHandle,
