@@ -247,6 +247,28 @@ interface TableHandle<Row> {
 }
 ```
 
+### Following a live tail
+
+The pattern a log, a console or a packet trace wants — rows arrive, and the
+newest one stays in view — is `scrollToRow` in an effect on the rows:
+
+```tsx
+useEffect(() => {
+  const last = rows.at(-1);
+  if (last) table.current?.scrollToRow(last.id);
+}, [rows]);
+```
+
+That row does not exist on screen yet when you ask for it, and the scroll
+pane can only scroll as far as the content it has already laid out, so the
+request is **kept and finished on the layout that admits the new rows** —
+however many updates arrive between two frames, and whether the newest row
+was appended, or arrived as the whole list replaced. A scroll of the user's
+own drops the request rather than fighting it: reaching for the wheel stops
+the tail, and the next update's `scrollToRow` starts it again — so an app
+that wants "follow unless the user has scrolled away" decides that itself,
+by not calling `scrollToRow`.
+
 The row model is importable on its own —
 `orderRows`, `resolveWidths`, `columnValue`, `defaultCompare`,
 `resolveGetId` from `@react-x11/components/table` — for an app that does the
@@ -272,6 +294,12 @@ test asserting order).
 - **`estimatedRowHeight` is both the guess and the floor** while measuring.
   One knob moves both, and an estimate that is also a floor can never
   over-report a row it has already seen.
+- **`scrollToRow` outlives the frame it was asked in**, and the visible slice
+  is re-read from the pane after every layout rather than trusted to
+  `onScroll`. Both exist because a scroll pane moves without saying so — it
+  clamps an offset the content has outgrown, and resolves a queued reveal —
+  and a virtualizer that believes the last event it heard draws rows where
+  the viewport no longer is. See [Following a live tail](#following-a-live-tail).
 
 ## Migrating from core's `<Table>`
 
