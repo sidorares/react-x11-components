@@ -59,6 +59,7 @@ import type { Host } from './hx.js';
 // header of src/internal/heights.ts says why.
 import { RowHeights } from '../internal/heights.js';
 import { afterLayout, cancelAfterLayout } from '../internal/timers.js';
+import { useReveal } from '../internal/scroll.js';
 import { typeAheadChar, useTypeAhead } from './internal.js';
 import {
   branchEdges,
@@ -571,32 +572,46 @@ export function Tree<T = TreeItem>({
   );
 
   /**
-   * Put a row in view.
-   *
-   * A mounted row can say where it is, and `scrollIntoView` then works
-   * whatever height it turned out to be — which is what a tree that is *not*
-   * virtualizing wants, since nothing has measured its rows. A row that is not
-   * mounted has no geometry to ask about, and while virtualizing that is the
-   * normal case, so the height index answers instead: where the row starts,
-   * and how tall it is or is estimated to be.
+   * The scroll the tree owes a row, and the pane's real offset read back
+   * after every layout — the two halves of `../internal/scroll.ts`, which
+   * says why a reveal cannot be a one-shot and why `onScroll` is not the
+   * whole story. A tree grows and shrinks under its own hands: opening a
+   * branch is a content that got taller between the ask and the layout, in
+   * exactly the way an arriving row is.
    */
-  const reveal = useCallback((at: number): void => {
+  const reveal = useReveal({
+    box: scroller,
+    rows: rowsRef,
+    nodes: rowNodes,
+    heights,
+  });
+
+  /** Put a row in view, by the index its call site already has. */
+  const revealAt = useCallback(
+    (at: number): void => {
+      const row = rowsRef.current[at];
+      if (row) reveal.to(row.id);
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- `reveal` is a
+      // stable handle
+    },
+    [reveal],
+  );
+
+  /**
+   * Re-read the offset the pane is *actually* at.
+   *
+   * It moves silently — a queued reveal resolves during layout, and an offset
+   * the content outgrew or outshrank is re-clamped there — and a slice built
+   * from the offset before those is drawn where the viewport is not: a blank
+   * band where the rows should be, until a scroll of your own re-syncs it by
+   * accident.
+   */
+  const syncScroll = useCallback((): void => {
     const box = scroller.current;
-    const row = rowsRef.current[at];
-    if (!box || !row) return;
-    const drawn = rowNodes.current.get(row.id);
-    if (drawn) {
-      box.scrollIntoView(drawn.node);
-      return;
-    }
-    const top = heights.offsetAt(at);
-    const rowH = heights.heightAt(at);
-    const height = viewRef.current.height;
-    if (top < box.scrollY) box.scrollTo({ y: top });
-    else if (height > 0 && top + rowH > box.scrollY + height) {
-      box.scrollTo({ y: top + rowH - height });
-    }
-  }, []);
+    if (!box || !virtualizing) return;
+    const y = box.scrollY;
+    setView((prev) => (prev.top === y ? prev : { ...prev, top: y }));
+  }, [virtualizing]);
 
   /**
    * Read back what the rows on screen actually laid out at.
@@ -633,14 +648,25 @@ export function Tree<T = TreeItem>({
     }
     if (!changed) return;
     if (shift !== 0 && box) {
-      box.scrollTo({ y: Math.max(0, box.scrollY + shift) });
+      reveal.scrollTo(box.scrollY + shift);
     }
     setMeasured((n) => n + 1);
   }, [virtualizing]);
 
+  /**
+   * The one tick after layout, and everything that can only be known there:
+   * what the rows measured, whether an owed scroll can go further now that
+   * the rows it was waiting for are laid out, and where the pane actually
+   * ended up. In that order — each step can move the offset the next one
+   * reads.
+   */
   useEffect(() => {
     if (!virtualizing) return undefined;
-    const id = afterLayout(measureRows);
+    const id = afterLayout(() => {
+      measureRows();
+      reveal.retry();
+      syncScroll();
+    });
     return () => cancelAfterLayout(id);
   });
 
@@ -650,9 +676,9 @@ export function Tree<T = TreeItem>({
       currentRef.current = row.id;
       if (selected === undefined) setOwnSelected(row.id);
       onSelect?.(row.id, row.item);
-      reveal(row.index);
+      revealAt(row.index);
     },
-    [selected, onSelect, reveal],
+    [selected, onSelect, revealAt],
   );
 
   const activate = useCallback(
@@ -799,13 +825,13 @@ export function Tree<T = TreeItem>({
       scrollToItem: (id) => {
         const row = rowsRef.current.find((r) => r.id === id);
         if (!row) return false;
-        reveal(row.index);
+        revealAt(row.index);
         return true;
       },
       handleKey,
       rows: () => rowsRef.current,
     }),
-    [goTo, toggleId, reveal, handleKey, selected, accessors],
+    [goTo, toggleId, revealAt, handleKey, selected, accessors],
   );
 
   // --- rendering -----------------------------------------------------------
@@ -1071,9 +1097,18 @@ export function Tree<T = TreeItem>({
         setView((prev) =>
           prev.height === ev.height ? prev : { ...prev, height: ev.height },
         );
+        // The content just changed size, which is both the moment an owed
+        // scroll can reach further than the clamp let it and the moment the
+        // pane may have re-clamped its offset without saying so.
+        reveal.retry();
+        syncScroll();
         onViewport?.(ev);
       },
       onScroll: (ev) => {
+        // A scroll this component did not ask for is the user taking over,
+        // and an owed reveal must not yank the tree back out from under them
+        // on the next layout.
+        reveal.heard(ev.scrollY);
         if (virtualizing) {
           setView((prev) =>
             prev.top === ev.scrollY ? prev : { ...prev, top: ev.scrollY },

@@ -64,6 +64,7 @@ import type { Host } from './hx.js';
 // header of src/internal/heights.ts says why.
 import { RowHeights } from '../internal/heights.js';
 import { afterLayout, cancelAfterLayout } from '../internal/timers.js';
+import { useReveal } from '../internal/scroll.js';
 import {
   MIN_COLUMN,
   columnValue,
@@ -533,22 +534,6 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
   const drag = useRef<{ id: string; from: number; width: number } | null>(null);
   const userWidthsRef = useRef(userWidths);
   userWidthsRef.current = userWidths;
-  /**
-   * A row this component still owes a scroll to, kept by id.
-   *
-   * `scrollTo` clamps against the content height the **last layout**
-   * measured, so a row appended in the commit now being laid out is past the
-   * bottom the clamp knows about, and the request lands short — the live
-   * tail's bug, where a table that scrolls to its newest row on every update
-   * settles one update behind and stays there. The request is not a one-shot
-   * for that reason: it is re-tried on the layout that admits the new rows,
-   * and dropped the moment the row is in view, leaves the list, or the user
-   * scrolls somewhere else.
-   */
-  const owedReveal = useRef<TableRowId | null>(null);
-  /** The offset the last scroll *this component* asked for, so the
-   *  `onScroll` that answers it is not read as the user taking over. */
-  const selfScroll = useRef<number | null>(null);
 
   /** Declared uniform: divide, never measure — core's model. */
   const uniform = rowHeight !== undefined;
@@ -594,35 +579,26 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
   );
 
   /**
-   * Ask the body for an offset, and remember having asked.
-   *
-   * Every scroll the component performs goes through here, so the `onScroll`
-   * that answers it can be told apart from the user reaching for the wheel —
-   * and the offset is clamped here rather than left to the container, so what
-   * arrives back is the number that was asked for.
+   * The scroll the table owes a row, and the pane's real offset read back
+   * after every layout — the two halves of `../internal/scroll.ts`, which
+   * says why a reveal cannot be a one-shot and why `onScroll` is not the
+   * whole story.
    */
-  const scrollBody = useCallback((box: ScrollableNode, y: number): void => {
-    const to = Math.min(
-      Math.max(0, y),
-      Math.max(0, box.contentHeight - box.abs.height),
-    );
-    if (to === box.scrollY) return;
-    selfScroll.current = to;
-    box.scrollTo({ y: to });
-  }, []);
+  const reveal = useReveal({
+    box: body,
+    rows: orderedRef,
+    nodes: rowNodes,
+    heights,
+  });
 
   /**
    * Re-read the offset the body is *actually* at.
    *
-   * `onScroll` is not the whole story, and a virtualizer that believes it is
-   * builds the wrong slice: the container also moves **silently, during
-   * layout** — a queued `scrollIntoView` resolves there, and an offset past
-   * the end of a content that grew or shrank is re-clamped there — and
-   * neither fires an event. A slice built from the offset before those is
-   * the reported bug: rows drawn where the viewport no longer is, a blank
-   * band where they should be, and no way back until a scroll of your own
-   * re-syncs it by accident. Read after every layout, which is the one
-   * moment those silent moves have all happened.
+   * The pane moves silently — it resolves a queued reveal during layout, and
+   * re-clamps an offset the content outgrew or outshrank — and a slice built
+   * from the offset before those is drawn where the viewport is not: a blank
+   * band where the rows should be, and no way back until a scroll of your own
+   * re-syncs it by accident.
    */
   const syncScroll = useCallback((): void => {
     const box = body.current;
@@ -635,56 +611,6 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
     if (virtualizing)
       setView((prev) => (prev.top === y ? prev : { ...prev, top: y }));
   }, [virtualizing]);
-
-  /**
-   * One attempt at the scroll this component owes a row (see `owedReveal`).
-   *
-   * The row's own geometry answers when it is mounted — it knows what it
-   * really laid out at — and the height index answers when it is not. An
-   * attempt that finds the row in view settles the debt; one that cannot
-   * move any further leaves it standing, because the layout that admits the
-   * rows just appended is the one that will make the rest of the move
-   * possible.
-   */
-  const attemptReveal = useCallback((): void => {
-    const box = body.current;
-    const id = owedReveal.current;
-    if (!box || id === null) return;
-    const rows = orderedRef.current;
-    const at = rows.findIndex((r) => r.id === id);
-    if (at < 0) {
-      owedReveal.current = null; // the row left the list
-      return;
-    }
-    const viewH = box.abs.height;
-    if (viewH <= 0) return; // nothing has been laid out to scroll inside yet
-    const drawn = rowNodes.current.get(id);
-    const placed =
-      drawn && drawn.node.abs.height > 0 && rows[drawn.at]?.id === id
-        ? {
-            top: drawn.node.abs.y - box.abs.y + box.scrollY,
-            height: drawn.node.abs.height,
-          }
-        : { top: heights.offsetAt(at), height: heights.heightAt(at) };
-    let want: number | null = null;
-    if (placed.height >= viewH) {
-      // A row taller than the viewport is never *fully* in view, and asking
-      // for both its edges in turn is a debt that alternates forever. Its top
-      // is the part worth showing — a wrapped cell reads from the first line —
-      // and arriving there settles it.
-      if (box.scrollY !== placed.top) want = placed.top;
-    } else if (placed.top < box.scrollY) want = placed.top;
-    else if (placed.top + placed.height > box.scrollY + viewH) {
-      want = placed.top + placed.height - viewH;
-    }
-    if (want === null) {
-      owedReveal.current = null; // as far in view as it can be: nothing owed
-      return;
-    }
-    scrollBody(box, want);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- `heights` is a
-    // stable instance
-  }, [scrollBody]);
 
   /**
    * Read back what the rows on screen actually laid out at.
@@ -731,7 +657,7 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
     }
     if (!changed) return;
     if (shift !== 0 && box) {
-      scrollBody(box, box.scrollY + shift);
+      reveal.scrollTo(box.scrollY + shift);
     }
     setMeasured((n) => n + 1);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `heights` is a
@@ -753,29 +679,21 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
     if (!virtualizing) return undefined;
     const id = afterLayout(() => {
       measureRows();
-      attemptReveal();
+      reveal.retry();
       syncScroll();
     });
     return () => cancelAfterLayout(id);
   });
 
-  /**
-   * Put a row in view — now if the geometry allows it, and on the layout
-   * that allows it otherwise.
-   *
-   * The debt is recorded before the attempt rather than after it, because
-   * the interesting case is the one that cannot succeed yet: a row appended
-   * in the commit being laid out lies past the bottom the container's clamp
-   * knows about, and only the pass that admits it can finish the move.
-   */
-  const reveal = useCallback(
+  /** Put a row in view, by the index its call site already has. */
+  const revealAt = useCallback(
     (at: number): void => {
       const row = orderedRef.current[at];
-      if (!row) return;
-      owedReveal.current = row.id;
-      attemptReveal();
+      if (row) reveal.to(row.id);
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- `reveal` is a
+      // stable handle
     },
-    [attemptReveal],
+    [reveal],
   );
 
   const commitSingle = useCallback(
@@ -808,7 +726,7 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
       if (selectionMode === 'none') return;
       if (selectionMode === 'single') {
         commitSingle(row);
-        reveal(row.index);
+        revealAt(row.index);
         return;
       }
       cursorRef.current = row.id;
@@ -834,9 +752,9 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
         anchorRef.current = row.id;
         commitMulti([row.id], { type: 'replace', id: row.id, row: row.row });
       }
-      reveal(row.index);
+      revealAt(row.index);
     },
-    [selectionMode, commitSingle, commitMulti, reveal],
+    [selectionMode, commitSingle, commitMulti, revealAt],
   );
 
   const activate = useCallback(
@@ -1000,13 +918,13 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
       scrollToRow: (id) => {
         const row = orderedRef.current.find((r) => r.id === id);
         if (!row) return false;
-        reveal(row.index);
+        revealAt(row.index);
         return true;
       },
       handleKey,
       rows: () => orderedRef.current,
     }),
-    [tap, handleKey, reveal, selectionMode, selected],
+    [tap, handleKey, revealAt, selectionMode, selected],
   );
 
   // --- rendering -----------------------------------------------------------
@@ -1306,8 +1224,7 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
           // A scroll this component did not ask for is the user taking over,
           // and an owed `scrollToRow` must not yank the list back out from
           // under them on the next layout.
-          if (ev.scrollY !== selfScroll.current) owedReveal.current = null;
-          selfScroll.current = null;
+          reveal.heard(ev.scrollY);
           setScrollX((prev) => (prev === ev.scrollX ? prev : ev.scrollX));
           if (virtualizing) {
             setView((prev) =>
@@ -1336,7 +1253,7 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
           // The content just changed size, which is both the moment an owed
           // scroll can reach further than the clamp let it and the moment the
           // container may have re-clamped the offset without saying so.
-          attemptReveal();
+          reveal.retry();
           syncScroll();
           onViewport?.(ev);
         },

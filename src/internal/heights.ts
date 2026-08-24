@@ -1,10 +1,11 @@
 // Where every row starts, when rows are not all the same height.
 //
-// **Shared between `<Tree>` and `<Table>`** — the one piece of machinery
-// both virtualizers stand on, promoted here from the vendored copy the
-// table briefly carried (docs/prd-table.md records the decision). "No
-// component imports another component" holds: this is shared code, not a
-// component, and both import it.
+// **Shared between `<Tree>` and `<Table>`** — the first piece of machinery
+// both virtualizers stand on (`./timers.ts` and `./scroll.ts` are the other
+// two), promoted here from the vendored copy the table briefly carried
+// (docs/prd-table.md records the decision). "No component imports another
+// component" holds: this is shared code, not a component, and both import
+// it.
 //
 // **Deliberately not a shared *module*.** The directory has no `index.ts`,
 // so it has no subpath, no docs page, and is not public API — the repo's
