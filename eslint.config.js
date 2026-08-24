@@ -15,12 +15,19 @@ import globals from 'globals';
 export default [
   // Build output. Never linted, never formatted, never committed.
   //
+  // `.claude/` holds agent worktrees — whole checkouts of this repo, build
+  // output and all. Git ignores them locally, CI never sees them, and eslint
+  // walking them buries a real failure under hundreds of lines from minified
+  // vendor bundles. The ignores below are relative to this config, so they
+  // never match the copies nested under a worktree; only this entry does.
+  //
   // The docs site is its own project with its own dependencies, its own
   // module system (Docusaurus config is CommonJS) and JSX in `src/pages/` —
   // none of which this flat config describes. It is not published, and
   // `npm run docs:build` is what actually checks it.
   {
     ignores: [
+      '.claude/**',
       'dist/**',
       'website/node_modules/**',
       'website/build/**',

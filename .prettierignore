@@ -8,3 +8,5 @@ website/package-lock.json
 website/build
 website/.docusaurus
 website/docs/reference
+# agent worktrees: full checkouts of this repo, build output included
+.claude/
