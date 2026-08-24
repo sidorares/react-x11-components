@@ -670,6 +670,43 @@ function maxScroll(): number {
   );
 }
 
+/**
+ * The newest row is built, and all of it is in the pane.
+ *
+ * That is what a tail promises. Not `scrollY === maxScroll()`: in a measured
+ * list the bottom moves for a reason that has nothing to do with the tail —
+ * measuring a row *above* the viewport grows the content, and the scroll
+ * offset absorbs the difference on purpose so that what is on screen does not
+ * jump. The distance to the bottom grows; the view is exactly where it was.
+ * Where nothing is ever measured — `rowHeight` declared — the exact bottom is
+ * asserted instead.
+ */
+async function assertTailShows(what: string, position: number): Promise<void> {
+  // Given a few frames, not one: with rows measured, reaching the newest row
+  // takes as many passes as the heights around it take to settle, and a
+  // loaded machine fits fewer of those into a fixed wait.
+  let under = 0;
+  for (let round = 0; round < 8; round++) {
+    const drawn = rowNodes().map(retained);
+    const last = drawn[drawn.length - 1];
+    assert.ok(last, `${what}: nothing was built`);
+    assert.strictEqual(
+      Number(last.props['aria-posinset']),
+      position,
+      `${what}: the newest row is not the last one built`,
+    );
+    const pane = retained(bodyPane());
+    assert.ok(
+      last.abs.y >= pane.abs.y - 1,
+      `${what}: the newest row starts above the pane`,
+    );
+    under = last.abs.y + last.abs.height - (pane.abs.y + pane.abs.height);
+    if (under <= 1) return;
+    await settle();
+  }
+  assert.fail(`${what}: the newest row is ${under}px below the fold`);
+}
+
 function lastDrawnPosition(): number {
   const drawn = rowNodes().map(retained);
   return Number(drawn[drawn.length - 1].props['aria-posinset']);
@@ -681,8 +718,7 @@ test('a tail reaches the newest row, however fast the rows arrive', async () => 
   await settle();
   // the mount's own scroll counts: it is asked for before there is any
   // laid-out content to scroll through
-  assert.strictEqual(bodyPane().scrollY, maxScroll(), 'pinned on mount');
-  assert.strictEqual(lastDrawnPosition(), 300);
+  await assertTailShows('on mount', 300);
 
   // a burst: many updates in one frame, each one scrolling to its newest row
   for (let burst = 0; burst < 4; burst++) {
@@ -690,17 +726,7 @@ test('a tail reaches the newest row, however fast the rows arrive', async () => 
       for (let i = 0; i < 12; i++) hooks.append?.(4);
     });
     await settle();
-    const n = 300 + (burst + 1) * 48;
-    assert.strictEqual(
-      bodyPane().scrollY,
-      maxScroll(),
-      `burst ${burst}: the tail fell ${maxScroll() - bodyPane().scrollY}px behind`,
-    );
-    assert.strictEqual(
-      lastDrawnPosition(),
-      n,
-      `burst ${burst}: newest row built`,
-    );
+    await assertTailShows(`burst ${burst}`, 300 + (burst + 1) * 48);
     assertCoversViewport(`burst ${burst}`);
   }
 });

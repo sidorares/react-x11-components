@@ -38,10 +38,12 @@
 // the offset differs (a slice to rebuild, a header to shift), but it is the
 // other half of the same fix and both components run it on the same tick.
 
-import { useCallback, useRef } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import type { DrawnNode, ScrollableNode } from 'react-x11';
 
 import type { RowHeights, RowKey } from './heights.js';
+import { afterLayout, cancelAfterLayout } from './timers.js';
+import type { LayoutTick } from './timers.js';
 
 /** All a reveal needs of a row: `<TreeRow>` and `<TableRow>` are both this. */
 interface Keyed {
@@ -72,8 +74,18 @@ export interface RevealSources {
 export interface Reveal {
   /** Owe a scroll to this row, and try to pay it now. */
   to(id: RowKey): void;
-  /** Try again: after a layout, or when the content changed size. */
-  retry(): void;
+  /**
+   * Try again: after a layout, or when the content changed size.
+   *
+   * Pass `provisional` on a pass where the height index just moved. The rows
+   * are still laid out at the heights it no longer believes, so a row that
+   * looks in view is not proof of anything yet — a row measured taller than
+   * the guess pushes everything after it down, and the row that was reached a
+   * moment ago ends up under the fold. The debt is kept until a pass that
+   * measured nothing new confirms it, which is exactly when the heights have
+   * converged.
+   */
+  retry(provisional?: boolean): void;
   /** Scroll the pane, recording that this component is the one that asked. */
   scrollTo(y: number): void;
   /** An `onScroll` arrived. One this component did not ask for is the user
@@ -93,9 +105,31 @@ export function useReveal(sources: RevealSources): Reveal {
   src.current = sources;
   /** The row still owed a scroll, by id. */
   const owed = useRef<RowKey | null>(null);
+  /**
+   * The row the last reveal settled on, kept for one reason: a measurement
+   * pass can move the heights that settlement was judged against. A row that
+   * was in view when the debt was paid is not in view any more once the rows
+   * around it turn out taller than the index believed, and the honest answer
+   * to "is that still true?" is to owe it again and look. Measurement
+   * converges, so this stops asking.
+   */
+  const settled = useRef<RowKey | null>(null);
   /** The offset the last scroll *this component* asked for, so the
    *  `onScroll` that answers it is not read as the user taking over. */
   const asked = useRef<number | null>(null);
+  /**
+   * What the pane looked like at the last attempt that could not move.
+   *
+   * An attempt clamped by a content height that is a layout out of date has
+   * to be looked at again — and nothing else will schedule that look: the
+   * scroll that did not happen renders nothing, so the component's own tick
+   * after layout never comes. One is queued here instead, and only while the
+   * pane keeps changing under it: an attempt that finds the same offset and
+   * the same content as the last one has nothing new to try, and stops.
+   */
+  const stuck = useRef<{ y: number; content: number } | null>(null);
+  const look = useRef<LayoutTick>(null);
+  useEffect(() => () => cancelAfterLayout(look.current), []);
 
   const scrollTo = useCallback((y: number): void => {
     const box = src.current.box.current;
@@ -111,33 +145,42 @@ export function useReveal(sources: RevealSources): Reveal {
     box.scrollTo({ y: to });
   }, []);
 
-  const retry = useCallback((): void => {
-    const { box: boxRef, rows: rowsRef, nodes, heights } = src.current;
-    const box = boxRef.current;
-    const id = owed.current;
-    if (!box || id === null) return;
-    const rows = rowsRef.current;
-    const at = rows.findIndex((r) => r.id === id);
-    if (at < 0) {
-      owed.current = null; // the row left the list
-      return;
-    }
-    const viewport = box.abs.height;
-    if (viewport <= 0) return; // nothing laid out to scroll inside yet
+  const retry = useCallback(
+    (provisional?: boolean): void => {
+      const { box: boxRef, rows: rowsRef, nodes, heights } = src.current;
+      const box = boxRef.current;
+      // The heights just moved, so what the last reveal settled on was settled
+      // against numbers that have changed: owe it again until it can be
+      // confirmed at the new ones.
+      if (provisional && owed.current === null) owed.current = settled.current;
+      const id = owed.current;
+      if (!box || id === null) return;
+      const rows = rowsRef.current;
+      const at = rows.findIndex((r) => r.id === id);
+      if (at < 0) {
+        // the row left the list
+        owed.current = null;
+        settled.current = null;
+        return;
+      }
+      const viewport = box.abs.height;
+      if (viewport <= 0) return; // nothing laid out to scroll inside yet
 
-    // How far the row is outside the pane, in pixels of scrolling. The row's
-    // own rect answers when it is mounted — it knows what it really laid out
-    // at, and the arithmetic stays in screen coordinates, so a pane with
-    // padding on it needs no correction. The height index answers when the
-    // row is not mounted, which while virtualizing is the normal case.
-    const drawn = nodes.current.get(id);
-    const placed =
-      drawn && drawn.node.abs.height > 0 && rows[drawn.at]?.id === id
+      // How far the row is outside the pane, in pixels of scrolling. The row's
+      // own rect answers when it is mounted — it knows what it really laid out
+      // at, and the arithmetic stays in screen coordinates, so a pane with
+      // padding on it needs no correction. The height index answers when the
+      // row is not mounted, which while virtualizing is the normal case.
+      const drawn = nodes.current.get(id);
+      const mounted =
+        drawn && drawn.node.abs.height > 0 && rows[drawn.at]?.id === id
+          ? drawn.node
+          : null;
+      const placed = mounted
         ? {
-            above: box.abs.y - drawn.node.abs.y,
-            below:
-              drawn.node.abs.y + drawn.node.abs.height - (box.abs.y + viewport),
-            height: drawn.node.abs.height,
+            above: box.abs.y - mounted.abs.y,
+            below: mounted.abs.y + mounted.abs.height - (box.abs.y + viewport),
+            height: mounted.abs.height,
           }
         : {
             above: box.scrollY - heights.offsetAt(at),
@@ -147,38 +190,97 @@ export function useReveal(sources: RevealSources): Reveal {
               (box.scrollY + viewport),
             height: heights.heightAt(at),
           };
+      /**
+       * Whether this is worth *settling* on, or only worth acting on.
+       *
+       * Two ways a row can look in view and not stay there. Its own placement
+       * may be a guess — the index's answer for a row nothing has measured —
+       * and "in view" judged from a guess is how a tail lands short of a bottom
+       * that has not been measured yet. Or a row *between* the viewport and it
+       * may still be a guess, and every one of those that turns out taller than
+       * the index believed pushes this row down by the difference, out of the
+       * view it had just been brought into.
+       *
+       * Both are settled by the same thing: measurement converges, so the rows
+       * that matter stop being guesses. A component that measures nothing at all
+       * has no guesses to wait on — `hasMeasurements` is how that is told
+       * apart, and it is what keeps a declared-uniform table from owing a debt
+       * for ever.
+       */
+      let certain = mounted !== null || heights.isMeasured(at);
+      if (certain && heights.hasMeasurements()) {
+        const from = Math.min(at, heights.indexAt(box.scrollY));
+        const to = Math.max(at, heights.indexAt(box.scrollY + viewport));
+        for (let i = from; i <= to && certain; i++) {
+          certain = heights.isMeasured(i);
+        }
+      }
 
-    let move = 0;
-    if (placed.height >= viewport) {
-      // A row taller than the pane is never *fully* in view, and asking for
-      // both its edges in turn is a debt that alternates for ever. Its top is
-      // the part worth showing — a wrapped row reads from its first line —
-      // and arriving there settles it.
-      move = -placed.above;
-    } else if (placed.above > 0) move = -placed.above;
-    else if (placed.below > 0) move = placed.below;
+      let move = 0;
+      if (placed.height >= viewport) {
+        // A row taller than the pane is never *fully* in view, and asking for
+        // both its edges in turn is a debt that alternates for ever. Its top is
+        // the part worth showing — a wrapped row reads from its first line —
+        // and arriving there settles it.
+        move = -placed.above;
+      } else if (placed.above > 0) move = -placed.above;
+      else if (placed.below > 0) move = placed.below;
 
-    if (move === 0) {
-      owed.current = null; // as far in view as it can be: nothing owed
-      return;
-    }
-    // A move the pane cannot make yet leaves the debt standing: the layout
-    // that admits the rows just appended is the one that will let it finish.
-    scrollTo(box.scrollY + move);
-  }, [scrollTo]);
+      if (move === 0) {
+        // As far in view as it can be — settled, unless what that was judged
+        // against is still moving: a placement that came from a guess, or a
+        // pass that has just changed the heights under it.
+        if (certain && !provisional) {
+          settled.current = id;
+          owed.current = null;
+        }
+        return;
+      }
+      // A move the pane cannot make yet leaves the debt standing: the layout
+      // that admits the rows just appended is the one that will let it finish.
+      const was = box.scrollY;
+      scrollTo(was + move);
+      if (box.scrollY !== was) {
+        stuck.current = null; // it moved; the scroll it caused brings us back
+        return;
+      }
+      const seen = stuck.current;
+      const now = { y: box.scrollY, content: box.contentHeight };
+      stuck.current = now;
+      if (seen && seen.y === now.y && seen.content === now.content) return;
+      cancelAfterLayout(look.current);
+      look.current = afterLayout(() => {
+        look.current = null;
+        retryRef.current?.();
+      });
+    },
+    [scrollTo],
+  );
+
+  /** `retry` referring to itself through a ref, so the queued look calls the
+   *  current one rather than closing over the render that queued it. */
+  const retryRef = useRef<(() => void) | null>(null);
+  retryRef.current = retry;
 
   const to = useCallback(
     (id: RowKey): void => {
       // Recorded before the attempt rather than after it, because the
       // interesting case is the one that cannot succeed yet.
       owed.current = id;
+      settled.current = null;
+      stuck.current = null;
       retry();
     },
     [retry],
   );
 
   const heard = useCallback((scrollY: number): void => {
-    if (scrollY !== asked.current) owed.current = null;
+    // A scroll this component did not ask for ends the whole chase, not just
+    // the outstanding half of it.
+    if (scrollY !== asked.current) {
+      owed.current = null;
+      settled.current = null;
+    }
     asked.current = null;
   }, []);
 

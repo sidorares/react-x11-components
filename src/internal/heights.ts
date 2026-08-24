@@ -189,6 +189,16 @@ export class RowHeights {
     return Math.max(0, Math.min(n - 1, index));
   }
 
+  /**
+   * Whether anything has ever been measured — O(1), and the question a
+   * component that may not measure at all has to ask before it waits on a
+   * measurement. `measuredCount` answers a different, costlier question:
+   * how many of the rows *currently indexed* have one.
+   */
+  hasMeasurements(): boolean {
+    return this.measured.size > 0;
+  }
+
   /** How many of the current rows have a real measurement. */
   measuredCount(): number {
     let count = 0;

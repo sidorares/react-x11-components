@@ -626,8 +626,8 @@ export function Tree<T = TreeItem>({
    * reports no change, so the second pass over the same rows costs a map walk
    * and re-renders nothing, and measure → render → measure terminates.
    */
-  const measureRows = useCallback((): void => {
-    if (!virtualizing) return;
+  const measureRows = useCallback((): boolean => {
+    if (!virtualizing) return false;
     const box = scroller.current;
     const rows = rowsRef.current;
     const idx = heights;
@@ -646,11 +646,12 @@ export function Tree<T = TreeItem>({
       changed = true;
       if (at < anchor) shift += height - was;
     }
-    if (!changed) return;
+    if (!changed) return false;
     if (shift !== 0 && box) {
       reveal.scrollTo(box.scrollY + shift);
     }
     setMeasured((n) => n + 1);
+    return true;
   }, [virtualizing]);
 
   /**
@@ -663,8 +664,10 @@ export function Tree<T = TreeItem>({
   useEffect(() => {
     if (!virtualizing) return undefined;
     const id = afterLayout(() => {
-      measureRows();
-      reveal.retry();
+      // `measureRows` first, and its answer handed on: a pass that moved the
+      // heights has not settled anything, and an owed scroll judged against
+      // the layout it is about to invalidate is not owed any less.
+      reveal.retry(measureRows());
       syncScroll();
     });
     return () => cancelAfterLayout(id);
@@ -1099,8 +1102,10 @@ export function Tree<T = TreeItem>({
         );
         // The content just changed size, which is both the moment an owed
         // scroll can reach further than the clamp let it and the moment the
-        // pane may have re-clamped its offset without saying so.
-        reveal.retry();
+        // pane may have re-clamped its offset without saying so. It is not a
+        // moment anything can be *settled* in: this runs from layout, a tick
+        // before the pass that reads the rows it just drew back.
+        reveal.retry(virtualizing);
         syncScroll();
         onViewport?.(ev);
       },

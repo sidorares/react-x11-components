@@ -984,17 +984,48 @@ function treePane(): ScrollableNode {
   return scrolling(screen.all((n) => retained(n).props.role === 'tree')[0]);
 }
 
-function maxScroll(): number {
-  return Math.max(
-    0,
-    treePane().contentHeight - retained(treePane()).abs.height,
-  );
-}
-
+/** The rows on screen, by their position in the whole tree. */
 function drawnPositions(): number[] {
   return rowNodes()
     .map((n) => Number(retained(n).props['aria-posinset']))
     .sort((a, b) => a - b);
+}
+
+/**
+ * The newest row is built, and all of it is in the pane.
+ *
+ * That is what a tail promises. Not `scrollY === maxScroll()`: in a measured
+ * list the bottom moves for a reason that has nothing to do with the tail —
+ * measuring a row *above* the viewport grows the content, and the scroll
+ * offset absorbs the difference on purpose so that what is on screen does not
+ * jump. The distance to the bottom grows; the view is exactly where it was.
+ * Where nothing is ever measured — `rowHeight` declared — the exact bottom is
+ * asserted instead.
+ */
+async function assertTailShows(what: string, position: number): Promise<void> {
+  // Given a few frames, not one: with rows measured, reaching the newest row
+  // takes as many passes as the heights around it take to settle, and a
+  // loaded machine fits fewer of those into a fixed wait.
+  let under = 0;
+  for (let round = 0; round < 8; round++) {
+    const drawn = rowNodes().map(retained);
+    const last = drawn[drawn.length - 1];
+    assert.ok(last, `${what}: nothing was built`);
+    assert.strictEqual(
+      Number(last.props['aria-posinset']),
+      position,
+      `${what}: the newest row is not the last one built`,
+    );
+    const pane = retained(treePane());
+    assert.ok(
+      last.abs.y >= pane.abs.y - 1,
+      `${what}: the newest row starts above the pane`,
+    );
+    under = last.abs.y + last.abs.height - (pane.abs.y + pane.abs.height);
+    if (under <= 1) return;
+    await settle();
+  }
+  assert.fail(`${what}: the newest row is ${under}px below the fold`);
 }
 
 /** A tree whose rows arrive over time, scrolling to the newest one — a log,
@@ -1002,6 +1033,8 @@ function drawnPositions(): number[] {
 function GrowingTree(props: {
   start: number;
   hooks: { add?: (n: number) => void };
+  /** Deliberately wrong, in the test that wants the guess to be wrong. */
+  estimate?: number;
 }): ReactNode {
   const [items, setItems] = React.useState<TreeItem[]>(() =>
     Array.from({ length: props.start }, (_, i) => ({
@@ -1027,7 +1060,7 @@ function GrowingTree(props: {
   return h(
     'box',
     { style: { width: 240, height: 200, minHeight: 0 } },
-    h(Tree, { ref, items, virtual: true }),
+    h(Tree, { ref, items, virtual: true, estimatedRowHeight: props.estimate }),
   );
 }
 
@@ -1037,25 +1070,47 @@ test('rows arriving in bursts leave the newest one in view', async () => {
   await settle();
   // the mount's own scroll counts: it is asked for before there is any
   // laid-out content to scroll through
-  assert.strictEqual(treePane().scrollY, maxScroll(), 'pinned on mount');
-  assert.strictEqual(drawnPositions().at(-1), 300);
+  await assertTailShows('on mount', 300);
 
   for (let burst = 0; burst < 3; burst++) {
     await act(() => {
       for (let i = 0; i < 10; i++) hooks.add?.(4);
     });
     await settle();
-    assert.strictEqual(
-      treePane().scrollY,
-      maxScroll(),
-      `burst ${burst}: the tail fell ${maxScroll() - treePane().scrollY}px behind`,
-    );
-    assert.strictEqual(
-      drawnPositions().at(-1),
-      300 + (burst + 1) * 40,
-      `burst ${burst}: the newest row is built`,
-    );
+    await assertTailShows(`burst ${burst}`, 300 + (burst + 1) * 40);
   }
+});
+
+test('a tail whose rows are taller than the guess still ends on the newest', async () => {
+  // `estimatedRowHeight` deliberately half a row: every row measures taller
+  // than the index believed, so the content grows under the scroll that was
+  // just made and the bottom moves after the tail reached it. What must not
+  // happen is the tail settling for a row that is *not* the newest — the
+  // reveal is judged against a guess there, and a guess is not something to
+  // settle on.
+  const hooks: { add?: (n: number) => void } = {};
+  await renderX11(h(GrowingTree, { start: 300, hooks, estimate: 12 }));
+  await settle();
+  await assertTailShows('on mount, guessing low', 300);
+
+  await act(() => {
+    for (let i = 0; i < 10; i++) hooks.add?.(4);
+  });
+  await settle();
+  if (process.env.TAIL_DEBUG) {
+    for (let i = 0; i < 6; i++) {
+      const drawn = rowNodes().map((n) => retained(n));
+      const last = drawn[drawn.length - 1];
+      const pane = retained(treePane());
+      console.log(
+        `[tail] round ${i}: pos=${last.props['aria-posinset']} ` +
+          `bottom=${last.abs.y + last.abs.height} paneBottom=${pane.abs.y + pane.abs.height} ` +
+          `scrollY=${treePane().scrollY} content=${treePane().contentHeight}`,
+      );
+      await settle();
+    }
+  }
+  await assertTailShows('after a burst, guessing low', 340);
 });
 
 test('the slice follows the offset even when nothing said it moved', async () => {
@@ -1071,8 +1126,7 @@ test('the slice follows the offset even when nothing said it moved', async () =>
     await act(() => hooks.add?.(1));
     await settle();
   }
-  assert.strictEqual(treePane().scrollY, maxScroll(), 'still pinned');
-  assert.strictEqual(drawnPositions().at(-1), 308, 'the newest row is built');
+  await assertTailShows('after eight single rows', 308);
   assert.ok(
     drawnPositions()[0] > started,
     `the slice froze at row ${started} instead of moving`,
@@ -1098,6 +1152,9 @@ test('a row revealed in the branch that just opened is reached', async () => {
       h(Tree, {
         ref,
         virtual: true,
+        // the guess is wrong on purpose: the index places this row from it,
+        // and the rows drawn on the way there are measured taller afterwards
+        estimatedRowHeight: 12,
         items: [
           { id: 'top', label: 'top' },
           { id: 'branch', label: 'branch', children: kids },

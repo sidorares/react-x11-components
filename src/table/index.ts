@@ -622,12 +622,12 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
    * the viewport anchor shift the scroll offset by their delta, or
    * measuring a row already scrolled past yanks the list under the pointer.
    */
-  const measureRows = useCallback((): void => {
-    if (uniform || !virtualizing) return;
+  const measureRows = useCallback((): boolean => {
+    if (uniform || !virtualizing) return false;
     // Before the first `onViewport` the flex columns sit on their floors and
     // every row is laid out against a width that is about to change — there
     // is nothing honest to measure yet.
-    if (viewRef.current.width <= 0) return;
+    if (viewRef.current.width <= 0) return false;
     // A row laid out at a width the columns no longer resolve to is a
     // measurement of the wrong table, and it must not be recorded — a row
     // that scrolls out before the corrected pass would keep a wrong-width
@@ -655,11 +655,12 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
       changed = true;
       if (at < anchor) shift += height - was;
     }
-    if (!changed) return;
+    if (!changed) return false;
     if (shift !== 0 && box) {
       reveal.scrollTo(box.scrollY + shift);
     }
     setMeasured((n) => n + 1);
+    return true;
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `heights` is a
     // stable instance
   }, [uniform, virtualizing]);
@@ -678,8 +679,10 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
   useEffect(() => {
     if (!virtualizing) return undefined;
     const id = afterLayout(() => {
-      measureRows();
-      reveal.retry();
+      // `measureRows` first, and its answer handed on: a pass that moved the
+      // heights has not settled anything, and an owed scroll judged against
+      // the layout it is about to invalidate is not owed any less.
+      reveal.retry(measureRows());
       syncScroll();
     });
     return () => cancelAfterLayout(id);
@@ -1252,8 +1255,11 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
           );
           // The content just changed size, which is both the moment an owed
           // scroll can reach further than the clamp let it and the moment the
-          // container may have re-clamped the offset without saying so.
-          reveal.retry();
+          // container may have re-clamped the offset without saying so. It is
+          // not a moment anything can be *settled* in while rows are still
+          // being measured: this runs from layout, a tick before the pass that
+          // reads those rows back.
+          reveal.retry(virtualizing && !uniform);
           syncScroll();
           onViewport?.(ev);
         },
