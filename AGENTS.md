@@ -280,54 +280,51 @@ copy and the render happens in the other, and the symptom is an element that
 lays out correctly, reports a sensible rect, and never paints, with no error
 anywhere.
 
-### Current status: core is unreleased
+### Current status: core is released, and the git pin is gone
 
-The subpaths this package imports — `react-x11/host`, `/node`, `/style`,
-`/test` — do not exist in the published react-x11 1.2.0. They are on
-`master`, unreleased. So:
+react-x11 **2.0.0 is published on npm**, and it carries every subpath this
+package imports — `react-x11/host`, `/node`, `/style`, `/test`. Both specs
+are now ordinary registry ranges:
 
-- `peerDependencies.react-x11` is `^2.0.0` — the version core will cut next
-  (there are breaking changes queued on master, so release-please will go to
-  2.0.0, not 1.3.0).
-- `devDependencies.react-x11` is `github:sidorares/react-x11#<commit>` — a
-  **full commit sha, not `#master`**, which is what makes the suite runnable
-  and CI green today.
+- `peerDependencies.react-x11` is `^2.0.0` — what a consumer must supply.
+- `devDependencies.react-x11` is `^2.0.0` — what the suite runs against.
 
-**When core publishes 2.0.0, change the devDependency to `^2.0.0` and drop
-the git URL.** Nothing else should need touching.
+Keep them the same range. They are one decision written twice, and a
+devDependency that drifts above the peer range means the suite passes
+against a core that consumers are not required to have.
 
-**The spec names the commit, because the lockfile alone does not hold a
-floating one.** `#master` plus a locked commit reads like it pins, and does
-on npm 10 — but npm 11 (Node 24) re-resolves the branch and installs
-whatever master is now, so `npm ci` gave the matrix two different cores and
-only the Node 24 leg failed. Naming the sha is what makes every `npm ci`,
-on every npm, install the thing the tree was written against.
+Needing something core landed after 2.0.0 is now a normal release wait, not
+a pin bump: it ships in 2.1.0, and both ranges pick it up. Do not reach back
+for a `github:` spec to get at unreleased core — cut a core release instead.
 
-So depending on something core landed since that commit is two edits, not
-one: use it, and move the pin.
+<details>
+<summary>Why the git pin named a full sha (history, for when this recurs)</summary>
 
-```bash
-npm install --package-lock-only --save-dev "github:sidorares/react-x11#<sha>"
-npm ci        # what CI installs, and now what it installs everywhere
-```
+Before 2.0.0 the devDependency was `github:sidorares/react-x11#<full sha>`,
+never `#master`. A branch spec plus a locked commit reads like it pins, and
+does on npm 10 — but npm 11 (Node 24) re-resolves the branch and installs
+whatever master is now, so `npm ci` gave the CI matrix two different cores
+and only the Node 24 leg failed. The lockfile alone does not hold a floating
+ref; naming the sha is what made every `npm ci` install the same thing.
 
-Skipping the bump is the failure that looks like nothing: a working tree that
-already has the newer core installed passes everything locally, and every CI
-job fails on an import that is not there yet. `src/tray-host/` needed this for
-`serverTime()`, and `src/richtext/` for the selection service (#291) and the
-edit menu (#289).
+That made using a new core feature two edits, not one — use it, and move the
+pin — and skipping the second was the failure that looks like nothing: a
+working tree with the newer core already installed passed everything
+locally, and every CI job failed on an import that was not there yet.
 
-**The pin is also how far up master this package has migrated.** It sits at
-`ceb9da51` — master's tip after react-x11#296 (the scroll-blit claim-race
-fix) and the ntk 7.6.1 bump (react-x11#300, carrying ntk#260's stroke
-hairpin fix) — and the theme break it rode in behind is migrated: `49fb2b30`
+If this package ever has to track an unreleased core again, that is the
+shape to return to.
+
+</details>
+
+**Palette tokens still need a grep, not a `tsc` run.** The 2.0.0 theme break
 (react-x11#290, `feat(theme)!`) renamed `dim`/`dimActive` to
 `textMuted`/`textMutedActive`, and both the `theme.dim` reads and the
 `'$dim'` style tokens here moved with it. The `'$dim'` half is the one to
-remember: string tokens type-check against any palette and fail only at
-mount, in DEV, as an unknown-token throw — so a palette migration is a
-repo-wide grep for the token, `examples/` and `test/` included, not a
-`tsc` run. `49fb2b30` also grew base-class selection members
+remember for the next such rename: string tokens type-check against any
+palette and fail only at mount, in DEV, as an unknown-token throw — so a
+palette migration is a repo-wide grep for the token, `examples/` and `test/`
+included. The same change also grew base-class selection members
 (`selectAll(): this` et al., react-x11#294's declarations), which a
 registered element here must `override` with matching return types or stop
 being structurally a `DrawnNode`.
@@ -539,9 +536,9 @@ Four decisions in it that are load-bearing:
   what taking a manager selection at startup is; `lastInputTime(app)` is the
   other half, for something the user did. Never substitute `0` for either —
   that is `CurrentTime`, which ICCCM forbids and which leaves two clients
-  racing for one selection unable to be ordered. **This needed the lockfile
-  pin bumped**, because core is a `github:…#master` git spec: see "react-x11
-  is a peer dependency".
+  racing for one selection unable to be ordered. **This needed a core bump
+  when it landed**, back when core was a git spec; `serverTime` is in 2.0.0
+  now, so it is just there. See "react-x11 is a peer dependency".
 - **`X.on('event')` here is deliberate, not a gap.** Core has an
   element-scoped ClientMessage seam, and an application should use it — but
   `onClientMessage` is a **`<window>`** prop, and the tray's manager window is
@@ -1065,9 +1062,10 @@ jumping to 1.0.0. Stay in 0.x until the API has actually been used.
 
 Two one-time setup steps, neither of which the workflow can do:
 
-1. **The first publish must be manual.** Trusted publishing binds to a
-   package that already exists on the registry, so `npm publish
---access public` has to be run once by hand before the automation works.
+1. ~~**The first publish must be manual.**~~ **Done** — `0.1.0` is on the
+   registry (published 2026-08-09), which is the precondition trusted
+   publishing binds to. Kept here because it is the step that is invisible
+   once it has happened.
 2. The `@react-x11` npm scope must exist and this repo + workflow must be
    configured as a trusted publisher for `@react-x11/components`.
 
@@ -1078,8 +1076,10 @@ compile failure is its own red step. What this means for the manual first
 publish is that it has to happen after an `npm ci` in a clean checkout, not
 from a tree where `dist/` was left over from something else.
 
-Do not publish before react-x11 2.0.0 is on npm — the peer range cannot be
-satisfied until then.
+**That gate has cleared.** The rule used to be "do not publish before
+react-x11 2.0.0 is on npm", because the peer range could not be satisfied.
+Core 2.0.0 shipped, so releases are unblocked — and `0.1.0`, published while
+the range was still unsatisfiable, became installable the moment it landed.
 
 ## Gotchas
 

@@ -11,10 +11,10 @@ needs a change to core to exist, and core does not grow to carry it.
 reference page per component, rendered from [`docs/`](docs/README.md). This
 README is the tour; that is the detail.
 
-> **Not published yet.** This package needs react-x11 2.0.0, which is not on
-> npm — the subpath exports it imports (`react-x11/host`, `/node`, `/style`,
-> `/test`) are on core's `master`, unreleased. Until then, use it from a
-> checkout.
+> **Installable now.** react-x11 2.0.0 is on npm, so the peer range this
+> package declares resolves and `npm install` just works. The published
+> release is `0.1.0`; `master` carries components added since, so use a
+> checkout if you want what is not in that release yet.
 
 ## What is here, and what is in core
 
@@ -44,12 +44,15 @@ and it belongs here.
 ## Install
 
 ```bash
-npm install @react-x11/components
+npm install @react-x11/components react react-x11
 ```
 
 `react` and `react-x11` are peer dependencies — deliberately. Registering a
 host element mutates state inside react-x11, so a second copy of the renderer
 would leave you with an element that lays out correctly and never paints.
+
+Core must be **2.0.0 or newer**: that is the release the subpaths this
+package imports (`react-x11/host`, `/node`, `/style`) arrived in.
 
 ## Usage
 

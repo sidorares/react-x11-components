@@ -21,7 +21,13 @@ sensible rect, and never paints, with no error anywhere.
 npm install react react-x11
 ```
 
-Until react-x11 2.0.0 is on npm, install core from a checkout or a git spec.
+Core needs to be **2.0.0 or newer** — that is the release the subpaths this
+package imports (`react-x11/host`, `/node`, `/style`) arrived in.
+
+TypeScript users also want `@types/react`, since React ships no types of its
+own. If you set `skipLibCheck: false`, core's own declarations need
+`"lib": ["esnext"]` — they reference `Symbol.asyncDispose`. The default
+`skipLibCheck: true` sidesteps it.
 
 ## Use a component
 
