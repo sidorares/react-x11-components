@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.2.1](https://github.com/sidorares/react-x11-components/compare/v0.2.0...v0.2.1) (2026-08-24)
+
+
+### Bug Fixes
+
+* **table, tree:** a live tail lands on the newest row, and the slice follows the pane ([4684c7d](https://github.com/sidorares/react-x11-components/commit/4684c7dd0cad8eb88b57154522347a51b5086e9c))
+* **table, tree:** a tail settles on the newest row, not on a guess about it ([2462481](https://github.com/sidorares/react-x11-components/commit/24624816c2006929a2068ece2612ebfa097f506b))
+* **table:** a live tail lands on the newest row, and the slice follows the pane ([9564274](https://github.com/sidorares/react-x11-components/commit/9564274aa15e290d5e46e03c5f467729bb50ef76))
+* **tree:** the same reveal &lt;Table&gt; got, promoted to src/internal/ ([8794a48](https://github.com/sidorares/react-x11-components/commit/8794a4887b8d6c7a74ec7ee5770a02b519807180))
+
 ## [0.2.0](https://github.com/sidorares/react-x11-components/compare/v0.1.0...v0.2.0) (2026-08-24)
 
 
