@@ -7,6 +7,7 @@
 import { test, afterEach } from 'node:test';
 import assert from 'node:assert';
 import React from 'react';
+import type { ReactNode } from 'react';
 
 import { renderX11, cleanup, screen, userEvent, act } from 'react-x11/test';
 import {
@@ -969,6 +970,229 @@ test('the keyboard reaches a row that is not built yet', async () => {
 });
 
 // --- the handle ------------------------------------------------------------
+
+// --- following a tree that grows -------------------------------------------
+//
+// A tree grows under its own hands — a branch opens, a watcher adds rows —
+// and the scroll pane can only reach as far as the content the *last* layout
+// measured. It also moves without saying so, re-clamping an offset the
+// content outgrew. Neither is visible until something asks to be scrolled to
+// in the same breath as the growth. See `src/internal/scroll.ts`.
+
+/** The tree's pane, as a scroller. */
+function treePane(): ScrollableNode {
+  return scrolling(screen.all((n) => retained(n).props.role === 'tree')[0]);
+}
+
+/** The rows on screen, by their position in the whole tree. */
+function drawnPositions(): number[] {
+  return rowNodes()
+    .map((n) => Number(retained(n).props['aria-posinset']))
+    .sort((a, b) => a - b);
+}
+
+/**
+ * The newest row is built, and all of it is in the pane.
+ *
+ * That is what a tail promises. Not `scrollY === maxScroll()`: in a measured
+ * list the bottom moves for a reason that has nothing to do with the tail —
+ * measuring a row *above* the viewport grows the content, and the scroll
+ * offset absorbs the difference on purpose so that what is on screen does not
+ * jump. The distance to the bottom grows; the view is exactly where it was.
+ * Where nothing is ever measured — `rowHeight` declared — the exact bottom is
+ * asserted instead.
+ */
+async function assertTailShows(what: string, position: number): Promise<void> {
+  // Given a few frames, not one: with rows measured, reaching the newest row
+  // takes as many passes as the heights around it take to settle, and a
+  // loaded machine fits fewer of those into a fixed wait.
+  let under = 0;
+  for (let round = 0; round < 8; round++) {
+    const drawn = rowNodes().map(retained);
+    const last = drawn[drawn.length - 1];
+    assert.ok(last, `${what}: nothing was built`);
+    assert.strictEqual(
+      Number(last.props['aria-posinset']),
+      position,
+      `${what}: the newest row is not the last one built`,
+    );
+    const pane = retained(treePane());
+    assert.ok(
+      last.abs.y >= pane.abs.y - 1,
+      `${what}: the newest row starts above the pane`,
+    );
+    under = last.abs.y + last.abs.height - (pane.abs.y + pane.abs.height);
+    if (under <= 1) return;
+    await settle();
+  }
+  assert.fail(`${what}: the newest row is ${under}px below the fold`);
+}
+
+/** A tree whose rows arrive over time, scrolling to the newest one — a log,
+ *  a watcher, a build tailing its own output. */
+function GrowingTree(props: {
+  start: number;
+  hooks: { add?: (n: number) => void };
+  /** Deliberately wrong, in the test that wants the guess to be wrong. */
+  estimate?: number;
+}): ReactNode {
+  const [items, setItems] = React.useState<TreeItem[]>(() =>
+    Array.from({ length: props.start }, (_, i) => ({
+      id: `n${i}`,
+      label: `row ${i}`,
+    })),
+  );
+  const ref = React.useRef<TreeHandle | null>(null);
+  const next = React.useRef(props.start);
+  props.hooks.add = (n: number) => {
+    setItems((prev) => [
+      ...prev,
+      ...Array.from({ length: n }, () => {
+        const i = next.current++;
+        return { id: `n${i}`, label: `row ${i}` };
+      }),
+    ]);
+  };
+  React.useEffect(() => {
+    const last = items[items.length - 1];
+    if (last) ref.current?.scrollToItem(last.id);
+  }, [items]);
+  return h(
+    'box',
+    { style: { width: 240, height: 200, minHeight: 0 } },
+    h(Tree, { ref, items, virtual: true, estimatedRowHeight: props.estimate }),
+  );
+}
+
+test('rows arriving in bursts leave the newest one in view', async () => {
+  const hooks: { add?: (n: number) => void } = {};
+  await renderX11(h(GrowingTree, { start: 300, hooks }));
+  await settle();
+  // the mount's own scroll counts: it is asked for before there is any
+  // laid-out content to scroll through
+  await assertTailShows('on mount', 300);
+
+  for (let burst = 0; burst < 3; burst++) {
+    await act(() => {
+      for (let i = 0; i < 10; i++) hooks.add?.(4);
+    });
+    await settle();
+    await assertTailShows(`burst ${burst}`, 300 + (burst + 1) * 40);
+  }
+});
+
+test('a tail whose rows are taller than the guess still ends on the newest', async () => {
+  // `estimatedRowHeight` deliberately half a row: every row measures taller
+  // than the index believed, so the content grows under the scroll that was
+  // just made and the bottom moves after the tail reached it. What must not
+  // happen is the tail settling for a row that is *not* the newest — the
+  // reveal is judged against a guess there, and a guess is not something to
+  // settle on.
+  const hooks: { add?: (n: number) => void } = {};
+  await renderX11(h(GrowingTree, { start: 300, hooks, estimate: 12 }));
+  await settle();
+  await assertTailShows('on mount, guessing low', 300);
+
+  await act(() => {
+    for (let i = 0; i < 10; i++) hooks.add?.(4);
+  });
+  await settle();
+  if (process.env.TAIL_DEBUG) {
+    for (let i = 0; i < 6; i++) {
+      const drawn = rowNodes().map((n) => retained(n));
+      const last = drawn[drawn.length - 1];
+      const pane = retained(treePane());
+      console.log(
+        `[tail] round ${i}: pos=${last.props['aria-posinset']} ` +
+          `bottom=${last.abs.y + last.abs.height} paneBottom=${pane.abs.y + pane.abs.height} ` +
+          `scrollY=${treePane().scrollY} content=${treePane().contentHeight}`,
+      );
+      await settle();
+    }
+  }
+  await assertTailShows('after a burst, guessing low', 340);
+});
+
+test('the slice follows the offset even when nothing said it moved', async () => {
+  // One row at a time, with the newest row already on screen — the reveal
+  // resolves inside layout, which fires no event. The slice used to freeze
+  // there: the rendered rows piled up and the newest ones stopped being built.
+  const hooks: { add?: (n: number) => void } = {};
+  await renderX11(h(GrowingTree, { start: 300, hooks }));
+  await settle();
+  const started = drawnPositions()[0];
+  const built = rowNodes().length;
+  for (let i = 0; i < 8; i++) {
+    await act(() => hooks.add?.(1));
+    await settle();
+  }
+  await assertTailShows('after eight single rows', 308);
+  assert.ok(
+    drawnPositions()[0] > started,
+    `the slice froze at row ${started} instead of moving`,
+  );
+  assert.ok(
+    rowNodes().length <= built + 1,
+    `the slice grew instead of moving: ${built} → ${rowNodes().length}`,
+  );
+});
+
+test('a row revealed in the branch that just opened is reached', async () => {
+  // The reveal path the tail tests never take: a row that has never been
+  // mounted, placed by the height index rather than by its own geometry.
+  const kids = Array.from({ length: 300 }, (_, i) => ({
+    id: `k${i}`,
+    label: `child ${i}`,
+  }));
+  const ref = React.createRef<TreeHandle>();
+  await renderX11(
+    h(
+      'box',
+      { style: { width: 240, height: 200, minHeight: 0 } },
+      h(Tree, {
+        ref,
+        virtual: true,
+        // the guess is wrong on purpose: the index places this row from it,
+        // and the rows drawn on the way there are measured taller afterwards
+        estimatedRowHeight: 12,
+        items: [
+          { id: 'top', label: 'top' },
+          { id: 'branch', label: 'branch', children: kids },
+        ],
+      }),
+    ),
+  );
+  await settle();
+  await act(() => {
+    ref.current?.setExpanded('branch', true);
+  });
+  // A row 280 deep in a branch that was closed a moment ago: it is in the
+  // model, it has never been drawn, and the height index is the only thing
+  // that knows where it is.
+  assert.strictEqual(ref.current?.scrollToItem('k280'), true);
+  await settle();
+  const row = rowNodes()
+    .map((n) => retained(n))
+    .find((n) => textIn(n as unknown as DrawnNode) === 'child 280');
+  assert.ok(row, 'the row asked for was never built');
+  const pane = retained(treePane());
+  assert.ok(
+    row.abs.y >= pane.abs.y - 1 &&
+      row.abs.y + row.abs.height <= pane.abs.y + pane.abs.height + 1,
+    `the row is at ${row.abs.y}..${row.abs.y + row.abs.height}, ` +
+      `outside the pane's ${pane.abs.y}..${pane.abs.y + pane.abs.height}`,
+  );
+});
+
+test('a scroll of the user’s own ends the chase rather than fighting it', async () => {
+  const hooks: { add?: (n: number) => void } = {};
+  await renderX11(h(GrowingTree, { start: 300, hooks }));
+  await settle();
+  treePane().scrollTo({ y: 0 });
+  await settle();
+  assert.strictEqual(treePane().scrollY, 0, 'the user is at the top');
+  assert.strictEqual(drawnPositions()[0], 1, 'and the first rows are built');
+});
 
 test('the handle drives the tree from outside it', async () => {
   const ref = React.createRef<TreeHandle<TreeItem>>();

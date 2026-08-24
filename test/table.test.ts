@@ -497,6 +497,26 @@ test('the header tracks horizontal scroll and never vertical', async () => {
   );
 });
 
+test('clicking a row keeps the columns where they are', async () => {
+  // Revealing the row it selected used to be `scrollIntoView`, which brings a
+  // node fully into view on *both* axes — and a row is as wide as the whole
+  // content, so a table scrolled sideways snapped back to the first column on
+  // every click. A reveal is vertical; that is all it ever meant.
+  const wide: TableColumn<File>[] = [
+    { id: 'name', label: 'Name', width: 300 },
+    { id: 'bytes', label: 'Size', width: 300 },
+  ];
+  await mount({ columns: wide, rows: many(300), rowHeight: 24 }, 400, 200);
+  await settle();
+  bodyPane().scrollTo({ x: 150 });
+  await settle();
+  assert.strictEqual(bodyPane().scrollX, 150);
+
+  await userEvent.click(rowNodes()[2]);
+  await settle();
+  assert.strictEqual(bodyPane().scrollX, 150, 'the click moved the columns');
+});
+
 // --- resize ----------------------------------------------------------------
 
 test('the grip resizes by keyboard, reports, and converts to fixed', async () => {
@@ -554,6 +574,283 @@ test('renderHeader, renderRow and renderEmpty each replace their part', async ()
   );
   assert.strictEqual(empty.length, 1);
   assert.strictEqual(rowNodes().length, 0);
+});
+
+// --- a live tail -----------------------------------------------------------
+//
+// The pattern a log, a console or a packet trace is: rows arrive, and the app
+// scrolls to the newest one. What made that hard is that neither half of it
+// is synchronous — layout runs a frame after the commit, and the scroll
+// container moves *silently* when it resolves a queued `scrollIntoView` or
+// re-clamps an offset the content outgrew or outshrank.
+
+/** A table that appends rows and scrolls to the last one, the way a log
+ *  viewer does. `append` is handed back through the ref-shaped argument. */
+function Tail(props: {
+  start: number;
+  cap?: number;
+  hooks: { append?: (n: number) => void };
+  rowHeight?: number;
+  wrap?: boolean;
+}): ReactNode {
+  const [rows, setRows] = React.useState<File[]>(() => many(props.start));
+  const ref = React.useRef<TableHandle<File> | null>(null);
+  const next = React.useRef(props.start);
+  props.hooks.append = (n: number) => {
+    setRows((prev) => {
+      const grown = [
+        ...prev,
+        ...Array.from({ length: n }, () => {
+          const i = next.current++;
+          return { id: i, name: `row ${i}`, bytes: i };
+        }),
+      ];
+      return props.cap
+        ? grown.slice(Math.max(0, grown.length - props.cap))
+        : grown;
+    });
+  };
+  React.useEffect(() => {
+    const last = rows[rows.length - 1];
+    if (last) ref.current?.scrollToRow(last.id);
+  }, [rows]);
+  return h(
+    'box',
+    { style: { width: 400, height: 220, minHeight: 0 } },
+    h(Table<File>, {
+      ref,
+      rows,
+      virtual: true,
+      rowHeight: props.rowHeight,
+      columns: props.wrap
+        ? [
+            {
+              id: 'name',
+              label: 'Name',
+              // a cell that wraps: rows are not one height, so the height
+              // index has to be measured and the total moves as rows drop
+              render: (f: File) =>
+                h(
+                  'text',
+                  { key: 't' },
+                  `${f.name} — a summary long enough to wrap across more than one line of this column`,
+                ),
+            },
+          ]
+        : COLUMNS,
+    } as TableProps<File>),
+  );
+}
+
+/** The whole point of a virtualized slice: the rows that were built have to
+ *  be the rows the viewport is looking at. A gap at either end is the bug —
+ *  a blank band where rows should be. */
+function assertCoversViewport(what: string): void {
+  const box = bodyPane();
+  const drawn = rowNodes().map(retained);
+  assert.ok(drawn.length > 0, `${what}: nothing was built`);
+  const top = drawn[0].abs.y;
+  const bottom =
+    drawn[drawn.length - 1].abs.y + drawn[drawn.length - 1].abs.height;
+  assert.ok(
+    top <= retained(box).abs.y + 1,
+    `${what}: ${retained(box).abs.y - top}px of blank above the rows`,
+  );
+  assert.ok(
+    bottom >= retained(box).abs.y + retained(box).abs.height - 1,
+    `${what}: blank below the rows`,
+  );
+}
+
+/** How far the body can go — the bottom a tail is trying to sit at. */
+function maxScroll(): number {
+  return Math.max(
+    0,
+    bodyPane().contentHeight - retained(bodyPane()).abs.height,
+  );
+}
+
+/**
+ * The newest row is built, and all of it is in the pane.
+ *
+ * That is what a tail promises. Not `scrollY === maxScroll()`: in a measured
+ * list the bottom moves for a reason that has nothing to do with the tail —
+ * measuring a row *above* the viewport grows the content, and the scroll
+ * offset absorbs the difference on purpose so that what is on screen does not
+ * jump. The distance to the bottom grows; the view is exactly where it was.
+ * Where nothing is ever measured — `rowHeight` declared — the exact bottom is
+ * asserted instead.
+ */
+async function assertTailShows(what: string, position: number): Promise<void> {
+  // Given a few frames, not one: with rows measured, reaching the newest row
+  // takes as many passes as the heights around it take to settle, and a
+  // loaded machine fits fewer of those into a fixed wait.
+  let under = 0;
+  for (let round = 0; round < 8; round++) {
+    const drawn = rowNodes().map(retained);
+    const last = drawn[drawn.length - 1];
+    assert.ok(last, `${what}: nothing was built`);
+    assert.strictEqual(
+      Number(last.props['aria-posinset']),
+      position,
+      `${what}: the newest row is not the last one built`,
+    );
+    const pane = retained(bodyPane());
+    assert.ok(
+      last.abs.y >= pane.abs.y - 1,
+      `${what}: the newest row starts above the pane`,
+    );
+    under = last.abs.y + last.abs.height - (pane.abs.y + pane.abs.height);
+    if (under <= 1) return;
+    await settle();
+  }
+  assert.fail(`${what}: the newest row is ${under}px below the fold`);
+}
+
+function lastDrawnPosition(): number {
+  const drawn = rowNodes().map(retained);
+  return Number(drawn[drawn.length - 1].props['aria-posinset']);
+}
+
+test('a tail reaches the newest row, however fast the rows arrive', async () => {
+  const hooks: { append?: (n: number) => void } = {};
+  await renderX11(h(Tail, { start: 300, hooks }));
+  await settle();
+  // the mount's own scroll counts: it is asked for before there is any
+  // laid-out content to scroll through
+  await assertTailShows('on mount', 300);
+
+  // a burst: many updates in one frame, each one scrolling to its newest row
+  for (let burst = 0; burst < 4; burst++) {
+    await act(() => {
+      for (let i = 0; i < 12; i++) hooks.append?.(4);
+    });
+    await settle();
+    await assertTailShows(`burst ${burst}`, 300 + (burst + 1) * 48);
+    assertCoversViewport(`burst ${burst}`);
+  }
+});
+
+test('the slice follows the offset even when nothing said it moved', async () => {
+  // One row at a time, with the newest row already mounted — so the reveal
+  // resolves as a `scrollIntoView` inside layout, which fires no event. The
+  // slice used to freeze there: `first` stopped moving, the rendered rows
+  // piled up, and the newest rows stopped being built at all.
+  const hooks: { append?: (n: number) => void } = {};
+  await renderX11(h(Tail, { start: 300, hooks, rowHeight: 24 }));
+  await settle();
+  const firstDrawn = (): number =>
+    Number(retained(rowNodes()[0]).props['aria-posinset']);
+  const started = firstDrawn();
+  const built = rowNodes().length;
+  for (let i = 0; i < 8; i++) {
+    await act(() => hooks.append?.(1));
+    await settle();
+  }
+  assert.strictEqual(bodyPane().scrollY, maxScroll(), 'still pinned');
+  assert.strictEqual(lastDrawnPosition(), 308, 'the newest row is built');
+  assert.strictEqual(firstDrawn(), started + 8, 'the slice moved with it');
+  assert.ok(
+    rowNodes().length <= built + 1,
+    `the slice grew instead of moving: ${built} → ${rowNodes().length}`,
+  );
+  assertCoversViewport('one row at a time');
+});
+
+test('a capped tail of unequal rows keeps the viewport full', async () => {
+  // The buffer is capped, so rows drop off the front and the content height
+  // *shrinks* — the container re-clamps its offset with nothing said about
+  // it, and a slice built from the offset before that is drawn where the
+  // viewport is not.
+  const hooks: { append?: (n: number) => void } = {};
+  await renderX11(h(Tail, { start: 400, cap: 400, hooks, wrap: true }));
+  await settle();
+  for (let burst = 0; burst < 6; burst++) {
+    await act(() => {
+      for (let i = 0; i < 6; i++) hooks.append?.(5);
+    });
+    await settle();
+    assertCoversViewport(`capped burst ${burst}`);
+    assert.strictEqual(
+      lastDrawnPosition(),
+      400,
+      `capped burst ${burst}: the newest row is built`,
+    );
+  }
+});
+
+test('a row taller than the viewport is revealed by its top, once', async () => {
+  // Neither edge of such a row can be brought into view without pushing the
+  // other one out, and a reveal that keeps asking for both takes turns
+  // forever. The top is the part worth showing, and reaching it settles it.
+  const tall = Array.from(
+    { length: 40 },
+    (_, i) => `line ${i} of one row`,
+  ).join(' ');
+  const rows: File[] = many(400).map((f) =>
+    f.id === 250 ? { ...f, name: tall } : f,
+  );
+  const ref = React.createRef<TableHandle<File>>();
+  let scrolls = 0;
+  await renderX11(
+    h(
+      'box',
+      { style: { width: 240, height: 160, minHeight: 0 } },
+      h(Table<File>, {
+        ref,
+        rows,
+        virtual: true,
+        columns: [
+          {
+            id: 'name',
+            label: 'Name',
+            render: (f: File) => h('text', { key: 't' }, f.name),
+          },
+        ],
+        onScroll: () => {
+          scrolls++;
+        },
+      } as TableProps<File>),
+    ),
+  );
+  await settle();
+  ref.current?.scrollToRow(250);
+  await settle();
+  // asked again, now that the row has been measured at its real height
+  ref.current?.scrollToRow(250);
+  await settle();
+  const at = bodyPane().scrollY;
+  const quiet = scrolls;
+  await settle();
+  assert.strictEqual(bodyPane().scrollY, at, 'the offset is still moving');
+  assert.strictEqual(scrolls, quiet, 'and it is still scrolling');
+  const row = rowNodes()
+    .map(retained)
+    .find((n) => Number(n.props['aria-posinset']) === 251);
+  assert.ok(row, 'the tall row is built');
+  assert.strictEqual(
+    row.abs.y,
+    retained(bodyPane()).abs.y,
+    'the row starts at the top of the pane',
+  );
+  assert.ok(
+    row.abs.height > retained(bodyPane()).abs.height,
+    'the row really is taller than the viewport',
+  );
+});
+
+test('a scroll of the user’s own ends the tail rather than fighting it', async () => {
+  const hooks: { append?: (n: number) => void } = {};
+  await renderX11(h(Tail, { start: 300, hooks, rowHeight: 24 }));
+  await settle();
+  bodyPane().scrollTo({ y: 0 });
+  await settle();
+  assert.strictEqual(bodyPane().scrollY, 0, 'the user is at the top');
+  assert.strictEqual(
+    Number(retained(rowNodes()[0]).props['aria-posinset']),
+    1,
+    'and the first rows are the ones built',
+  );
 });
 
 // --- the handle ------------------------------------------------------------

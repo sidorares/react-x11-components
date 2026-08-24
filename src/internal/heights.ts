@@ -1,10 +1,11 @@
 // Where every row starts, when rows are not all the same height.
 //
-// **Shared between `<Tree>` and `<Table>`** — the one piece of machinery
-// both virtualizers stand on, promoted here from the vendored copy the
-// table briefly carried (docs/prd-table.md records the decision). "No
-// component imports another component" holds: this is shared code, not a
-// component, and both import it.
+// **Shared between `<Tree>` and `<Table>`** — the first piece of machinery
+// both virtualizers stand on (`./timers.ts` and `./scroll.ts` are the other
+// two), promoted here from the vendored copy the table briefly carried
+// (docs/prd-table.md records the decision). "No component imports another
+// component" holds: this is shared code, not a component, and both import
+// it.
 //
 // **Deliberately not a shared *module*.** The directory has no `index.ts`,
 // so it has no subpath, no docs page, and is not public API — the repo's
@@ -186,6 +187,16 @@ export class RowHeights {
       }
     }
     return Math.max(0, Math.min(n - 1, index));
+  }
+
+  /**
+   * Whether anything has ever been measured — O(1), and the question a
+   * component that may not measure at all has to ask before it waits on a
+   * measurement. `measuredCount` answers a different, costlier question:
+   * how many of the rows *currently indexed* have one.
+   */
+  hasMeasurements(): boolean {
+    return this.measured.size > 0;
   }
 
   /** How many of the current rows have a real measurement. */

@@ -64,6 +64,7 @@ import type { Host } from './hx.js';
 // header of src/internal/heights.ts says why.
 import { RowHeights } from '../internal/heights.js';
 import { afterLayout, cancelAfterLayout } from '../internal/timers.js';
+import { useReveal } from '../internal/scroll.js';
 import {
   MIN_COLUMN,
   columnValue,
@@ -578,6 +579,40 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
   );
 
   /**
+   * The scroll the table owes a row, and the pane's real offset read back
+   * after every layout — the two halves of `../internal/scroll.ts`, which
+   * says why a reveal cannot be a one-shot and why `onScroll` is not the
+   * whole story.
+   */
+  const reveal = useReveal({
+    box: body,
+    rows: orderedRef,
+    nodes: rowNodes,
+    heights,
+  });
+
+  /**
+   * Re-read the offset the body is *actually* at.
+   *
+   * The pane moves silently — it resolves a queued reveal during layout, and
+   * re-clamps an offset the content outgrew or outshrank — and a slice built
+   * from the offset before those is drawn where the viewport is not: a blank
+   * band where the rows should be, and no way back until a scroll of your own
+   * re-syncs it by accident.
+   */
+  const syncScroll = useCallback((): void => {
+    const box = body.current;
+    if (!box) return;
+    const { scrollX: x, scrollY: y } = box;
+    setScrollX((prev) => (prev === x ? prev : x));
+    // Only a virtualizing table reads the vertical offset — a whole one has
+    // no slice to rebuild, and re-rendering it on a scroll it already drew
+    // would be work for nothing.
+    if (virtualizing)
+      setView((prev) => (prev.top === y ? prev : { ...prev, top: y }));
+  }, [virtualizing]);
+
+  /**
    * Read back what the rows on screen actually laid out at.
    *
    * Runs a tick after the commit because layout runs on the frame flush —
@@ -587,12 +622,12 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
    * the viewport anchor shift the scroll offset by their delta, or
    * measuring a row already scrolled past yanks the list under the pointer.
    */
-  const measureRows = useCallback((): void => {
-    if (uniform || !virtualizing) return;
+  const measureRows = useCallback((): boolean => {
+    if (uniform || !virtualizing) return false;
     // Before the first `onViewport` the flex columns sit on their floors and
     // every row is laid out against a width that is about to change — there
     // is nothing honest to measure yet.
-    if (viewRef.current.width <= 0) return;
+    if (viewRef.current.width <= 0) return false;
     // A row laid out at a width the columns no longer resolve to is a
     // measurement of the wrong table, and it must not be recorded — a row
     // that scrolls out before the corrected pass would keep a wrong-width
@@ -620,45 +655,49 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
       changed = true;
       if (at < anchor) shift += height - was;
     }
-    if (!changed) return;
+    if (!changed) return false;
     if (shift !== 0 && box) {
-      box.scrollTo({ y: Math.max(0, box.scrollY + shift) });
+      reveal.scrollTo(box.scrollY + shift);
     }
     setMeasured((n) => n + 1);
+    return true;
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `heights` is a
     // stable instance
   }, [uniform, virtualizing]);
 
+  /**
+   * The one tick after layout, and everything that can only be known there:
+   * what the rows measured, whether an owed scroll can go further now that
+   * the new rows are laid out, and where the body actually ended up. In that
+   * order — each step can move the offset the next one reads.
+   *
+   * Scheduled for every render a virtualized table makes, because every one
+   * of them can move the offset its next slice is built from. A whole table
+   * needs none of it: `onViewport` is when its content can have been
+   * re-clamped, and it rebuilds no slice anyway.
+   */
   useEffect(() => {
-    if (uniform || !virtualizing) return undefined;
-    const id = afterLayout(measureRows);
+    if (!virtualizing) return undefined;
+    const id = afterLayout(() => {
+      // `measureRows` first, and its answer handed on: a pass that moved the
+      // heights has not settled anything, and an owed scroll judged against
+      // the layout it is about to invalidate is not owed any less.
+      reveal.retry(measureRows());
+      syncScroll();
+    });
     return () => cancelAfterLayout(id);
   });
 
-  /**
-   * Put a row in view. A mounted row can say where it is, and
-   * `scrollIntoView` then works whatever height it turned out to be; a row
-   * that is not mounted has no geometry to ask, so the height index answers
-   * instead.
-   */
-  const reveal = useCallback((at: number): void => {
-    const box = body.current;
-    const row = orderedRef.current[at];
-    if (!box || !row) return;
-    const drawn = rowNodes.current.get(row.id);
-    if (drawn) {
-      box.scrollIntoView(drawn.node);
-      return;
-    }
-    const top = heights.offsetAt(at);
-    const rowH = heights.heightAt(at);
-    const height = viewRef.current.height;
-    if (top < box.scrollY) box.scrollTo({ y: top });
-    else if (height > 0 && top + rowH > box.scrollY + height) {
-      box.scrollTo({ y: top + rowH - height });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  /** Put a row in view, by the index its call site already has. */
+  const revealAt = useCallback(
+    (at: number): void => {
+      const row = orderedRef.current[at];
+      if (row) reveal.to(row.id);
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- `reveal` is a
+      // stable handle
+    },
+    [reveal],
+  );
 
   const commitSingle = useCallback(
     (row: TableRow<Row>): void => {
@@ -690,7 +729,7 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
       if (selectionMode === 'none') return;
       if (selectionMode === 'single') {
         commitSingle(row);
-        reveal(row.index);
+        revealAt(row.index);
         return;
       }
       cursorRef.current = row.id;
@@ -716,9 +755,9 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
         anchorRef.current = row.id;
         commitMulti([row.id], { type: 'replace', id: row.id, row: row.row });
       }
-      reveal(row.index);
+      revealAt(row.index);
     },
-    [selectionMode, commitSingle, commitMulti, reveal],
+    [selectionMode, commitSingle, commitMulti, revealAt],
   );
 
   const activate = useCallback(
@@ -882,13 +921,13 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
       scrollToRow: (id) => {
         const row = orderedRef.current.find((r) => r.id === id);
         if (!row) return false;
-        reveal(row.index);
+        revealAt(row.index);
         return true;
       },
       handleKey,
       rows: () => orderedRef.current,
     }),
-    [tap, handleKey, reveal, selectionMode, selected],
+    [tap, handleKey, revealAt, selectionMode, selected],
   );
 
   // --- rendering -----------------------------------------------------------
@@ -1185,6 +1224,10 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
         ref: body,
         style: s.body,
         onScroll: (ev) => {
+          // A scroll this component did not ask for is the user taking over,
+          // and an owed `scrollToRow` must not yank the list back out from
+          // under them on the next layout.
+          reveal.heard(ev.scrollY);
           setScrollX((prev) => (prev === ev.scrollX ? prev : ev.scrollX));
           if (virtualizing) {
             setView((prev) =>
@@ -1210,6 +1253,14 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
               ? prev
               : { ...prev, height: ev.height, width: ev.width },
           );
+          // The content just changed size, which is both the moment an owed
+          // scroll can reach further than the clamp let it and the moment the
+          // container may have re-clamped the offset without saying so. It is
+          // not a moment anything can be *settled* in while rows are still
+          // being measured: this runs from layout, a tick before the pass that
+          // reads those rows back.
+          reveal.retry(virtualizing && !uniform);
+          syncScroll();
           onViewport?.(ev);
         },
       },

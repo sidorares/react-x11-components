@@ -82,8 +82,9 @@ element.
   its element in its own index.ts" keeps holding and an app that imports
   neither component registers nothing.
 - `src/internal/` is the half-step **below** a shared module: code two
-  components share — the height index and layout tick under `<Tree>` and
-  `<Table>`, the typed `hx()` every composed widget writes its elements
+  components share — the height index, layout tick and scroll-reveal under
+  `<Tree>` and `<Table>`, the typed `hx()` every composed widget writes its
+  elements
   with, and the change event and dismiss-on-blur subscription under
   `<Calendar>`/`<DatePicker>` and `<ColorPicker>`/`<ColorField>` — that no
   app needs yet. Deliberately without an `index.ts`,

@@ -158,6 +158,12 @@ which is the one thing to know about it:
 - **Measuring a row above the viewport does not move what is on screen.** The
   scroll offset absorbs the difference, or every late measurement would yank
   the list under the pointer.
+- **The slice is built from the offset the pane is really at**, re-read after
+  every layout rather than trusted to `onScroll`. A pane moves without saying
+  so — it resolves a queued reveal during layout, and re-clamps an offset the
+  content outgrew or outshrank — and a slice built from the offset before
+  those is drawn where the viewport is not: rows at one edge, a blank band
+  where the rest should be, and nothing to put it right until you scroll.
 
 One thing virtualizing still costs, and the reason the threshold exists rather
 than doing it always: **only the built rows are in the accessibility tree**,
@@ -327,6 +333,17 @@ than a change event reporting an expansion of `undefined`.
 
 `scrollToItem` returns `false` for a row a collapsed ancestor is hiding: there
 is nothing to scroll to.
+
+A row it _can_ reach may still be somewhere the pane cannot go yet — rows that
+arrived in the update you are reacting to lie past the bottom the scroll pane
+last measured — so the request is **kept and finished on the layout that
+admits them**, rather than landing short. That is what makes a tree that
+follows its own newest row (a watcher, a build log, a trace) stay on it
+however fast the rows arrive. A scroll of the user's own drops the request
+rather than fighting it: reaching for the wheel stops the chase, and the next
+`scrollToItem` starts it again. `<Table>` says the same thing at more length
+under [Following a live tail](table.md#following-a-live-tail); the machinery
+is one piece, shared.
 
 ## The row model
 
