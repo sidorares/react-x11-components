@@ -159,6 +159,7 @@
     "examples:markdown": "tsx examples/markdown.tsx",
     "examples:media-player": "tsx examples/media-player.tsx",
     "examples:table": "tsx examples/table.tsx",
+    "examples:table-non-virtual": "tsx examples/table-non-virtual.tsx",
     "examples:terminal": "tsx examples/terminal.tsx",
     "examples:terminal-output": "tsx examples/terminal-output.tsx",
     "examples:terminal-vt": "tsx examples/terminal-vt.tsx",

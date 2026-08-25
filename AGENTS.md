@@ -765,6 +765,7 @@ npm run examples:terminal    # needs a real $DISPLAY and an emulator installed
 npm run examples:terminal-vt # needs a real $DISPLAY and a pty module (node-pty)
 npm run examples:media-player -- <file>   # needs a real $DISPLAY and mpv/VLC
 npm run examples:table       # needs a real $DISPLAY
+npm run examples:table-non-virtual [-- <rows>]  # the no-Table control group
 npm run examples:tray-host   # needs a real $DISPLAY with no tray on it yet
 npm run examples:tree -- <dir>  # needs a real $DISPLAY; defaults to cwd
 npm run examples:tree -- --stress[=rows]  # generated 100k-row tree instead
