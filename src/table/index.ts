@@ -1396,6 +1396,83 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
     );
   });
 
+  /**
+   * The row *elements*, reused by identity while nothing they depend on has
+   * changed. The memo already skips re-rendering an unchanged row, but the
+   * skip still costs a `createElement` and a props compare per row per
+   * notch — the burst profile put bare `createElement` at a tenth of a
+   * flick's CPU. Handing React the identical element object instead takes
+   * the cheapest path it has: the fiber is reused with no compare at all.
+   * The cache empties whenever any shared input changes identity, and
+   * per-row entries revalidate on the row object and its selection.
+   */
+  const rowElems = useRef(
+    new Map<
+      TableRowId,
+      { entry: TableRow<Row>; selected: boolean; el: ReactElement }
+    >(),
+  );
+  const rowElemDeps = useRef<readonly unknown[]>([]);
+  {
+    const deps = [
+      columns,
+      widths,
+      theme,
+      uniform,
+      rowHeight,
+      estimate,
+      selectable,
+      rowStyleProp,
+      cellStyleProp,
+      renderRow,
+      Boolean(onRowContextMenu),
+      tap,
+      activate,
+      rowMenu,
+      registerRow,
+      ordered.length,
+    ];
+    const prev = rowElemDeps.current;
+    if (prev.length !== deps.length || deps.some((d, at) => d !== prev[at])) {
+      rowElems.current.clear();
+      rowElemDeps.current = deps;
+    }
+  }
+
+  const rowElement = (entry: TableRow<Row>): ReactElement => {
+    const isSelected = selectedIds.has(entry.id);
+    const cached = rowElems.current.get(entry.id);
+    if (cached && cached.entry === entry && cached.selected === isSelected) {
+      return cached.el;
+    }
+    const el = React.createElement(
+      MemoTableRow as (p: TableRowViewProps<Row>) => ReactElement,
+      {
+        key: String(entry.id),
+        entry,
+        columns,
+        widths,
+        setSize: ordered.length,
+        isSelected,
+        selectable,
+        uniform,
+        rowHeight,
+        estimate,
+        theme,
+        rowStyle: rowStyleProp,
+        cellStyle: cellStyleProp,
+        renderRow,
+        hasMenu: Boolean(onRowContextMenu),
+        onTap: tap,
+        onOpen: activate,
+        onMenu: rowMenu,
+        register: registerRow,
+      },
+    );
+    rowElems.current.set(entry.id, { entry, selected: isSelected, el });
+    return el;
+  };
+
   const bodyChildren: ReactNode[] = [];
   if (ordered.length === 0) {
     if (renderEmpty) {
@@ -1417,30 +1494,7 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
       bodyChildren.push(
         win.skeletons.has(entry.id)
           ? renderSkeletonRow(entry)
-          : React.createElement(
-              MemoTableRow as (p: TableRowViewProps<Row>) => ReactElement,
-              {
-                key: String(entry.id),
-                entry,
-                columns,
-                widths,
-                setSize: ordered.length,
-                isSelected: selectedIds.has(entry.id),
-                selectable,
-                uniform,
-                rowHeight,
-                estimate,
-                theme,
-                rowStyle: rowStyleProp,
-                cellStyle: cellStyleProp,
-                renderRow,
-                hasMenu: Boolean(onRowContextMenu),
-                onTap: tap,
-                onOpen: activate,
-                onMenu: rowMenu,
-                register: registerRow,
-              },
-            ),
+          : rowElement(entry),
       );
     }
     if (virtualizing && last < ordered.length) {
@@ -1450,6 +1504,12 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
           style: [s.spacer, { height: below }],
         }),
       );
+    }
+    // Rows that left the window leave the cache too, once it has grown
+    // well past the window — a scrub across a long list would otherwise
+    // hold an element for every row it passed.
+    if (rowElems.current.size > (last - first) * 3 + 64) {
+      rowElems.current.clear();
     }
   }
 

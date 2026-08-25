@@ -1193,13 +1193,60 @@ export function Tree<T = TreeItem>({
     [],
   );
 
-  const renderOneRow = (row: TreeRow<T>): ReactElement =>
-    React.createElement(
+  /**
+   * The row *elements*, reused by identity while nothing they depend on has
+   * changed. The memo already skips re-rendering an unchanged row, but the
+   * skip still costs a `createElement` and a props compare per row per
+   * notch — the burst profile put bare `createElement` at a tenth of a
+   * flick's CPU. Handing React the identical element object instead takes
+   * the cheapest path it has: the fiber is reused with no compare at all.
+   */
+  const rowElems = useRef(
+    new Map<
+      TreeItemId,
+      { row: TreeRow<T>; selected: boolean; el: ReactElement }
+    >(),
+  );
+  const rowElemDeps = useRef<readonly unknown[]>([]);
+  {
+    const deps = [
+      indent,
+      rowHeight,
+      rtl,
+      theme,
+      renderToggle,
+      renderGuide,
+      renderLabel,
+      renderContent,
+      rowStyleProp,
+      guideStyleProp,
+      styles?.toggle,
+      styles?.label,
+      accessors,
+      toggleId,
+      goTo,
+      activate,
+      registerRow,
+    ];
+    const prev = rowElemDeps.current;
+    if (prev.length !== deps.length || deps.some((d, at) => d !== prev[at])) {
+      rowElems.current.clear();
+      rowElemDeps.current = deps;
+    }
+  }
+
+  const renderOneRow = (row: TreeRow<T>): ReactElement => {
+    const isSelected = row.id === current;
+    const cached = rowElems.current.get(row.id);
+    if (cached && cached.row === row && cached.selected === isSelected) {
+      return cached.el;
+    }
+    const el = React.createElement(
       MemoTreeRow as (p: TreeRowViewProps<T>) => ReactElement,
       {
         key: String(row.id),
         row,
-        isSelected: row.id === current,
+        isSelected,
         indent,
         rowHeight,
         rtl,
@@ -1219,6 +1266,9 @@ export function Tree<T = TreeItem>({
         register: registerRow,
       },
     );
+    rowElems.current.set(row.id, { row, selected: isSelected, el });
+    return el;
+  };
 
   /**
    * A row the window said not to build in full yet: the box at its indexed
@@ -1334,6 +1384,12 @@ export function Tree<T = TreeItem>({
           style: [s.spacer, { height: below }],
         }),
       );
+    }
+    // Rows that left the window leave the cache too, once it has grown
+    // well past the window — a scrub across a long list would otherwise
+    // hold an element for every row it passed.
+    if (rowElems.current.size > (last - first) * 3 + 64) {
+      rowElems.current.clear();
     }
   }
 
