@@ -58,7 +58,13 @@ import type { Host } from './hx.js';
 // Shared with <Table> — internal, deliberately not a shared *module*; the
 // header of src/internal/heights.ts says why.
 import { RowHeights } from '../internal/heights.js';
-import { afterLayout, cancelAfterLayout } from '../internal/timers.js';
+import {
+  afterLayout,
+  cancelAfterLayout,
+  cancelLater,
+  later,
+} from '../internal/timers.js';
+import type { DelayTick } from '../internal/timers.js';
 import { useReveal } from '../internal/scroll.js';
 import {
   DEFAULT_OVERSCAN,
@@ -313,10 +319,12 @@ export interface TreeProps<T = TreeItem>
    * virtualizing. Defaults to `rowHeight`.
    *
    * Only the rows on screen have ever been laid out, so the scrollbar is
-   * this guess for everything else, and it converges as you scroll. Set it
-   * when rows are typically much taller than `rowHeight` — a tree of
-   * two-line rows with the default guess starts with a scrollbar that thinks
-   * the tree is half its real length.
+   * this guess for everything else; it converges as you scroll, and once
+   * enough rows have been measured the guess itself is re-learnt from their
+   * mean. Set it when rows are typically much taller than `rowHeight` — a
+   * tree of two-line rows with the default guess starts with a scrollbar
+   * that thinks the tree is half its real length, until the re-learning
+   * corrects it.
    */
   estimatedRowHeight?: number;
 
@@ -637,22 +645,70 @@ export function Tree<T = TreeItem>({
   }, [virtualizing]);
 
   /**
+   * Let the estimate learn from the rows that have been measured — the
+   * scrollbar of a measured tree starts as a guess times the row count, and
+   * the measured mean is a far better guess for the rows not yet seen. Idle
+   * only: every unmeasured offset moves when it applies, and the anchor
+   * arithmetic keeping the screen still is `measureRows`'s.
+   */
+  const adaptEstimate = useCallback((): boolean => {
+    if (!virtualizing) return false;
+    const box = scroller.current;
+    if (!box) return false;
+    const anchor = heights.indexAt(box.scrollY);
+    const before = heights.offsetAt(anchor);
+    if (!heights.adapt()) return false;
+    reveal.nudge(heights.offsetAt(anchor) - before);
+    setMeasured((n) => n + 1);
+    return true;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `heights` and
+    // `reveal` are stable instances
+  }, [virtualizing]);
+
+  /**
    * The one tick after layout, and everything that can only be known there:
    * what the rows measured, whether an owed scroll can go further now that
    * the rows it was waiting for are laid out, and where the pane actually
    * ended up. In that order — each step can move the offset the next one
    * reads.
    */
+  /** Whether some drawn row has no size yet — a commit can land between
+   *  frame flushes, and a measure pass over it reads zeros. */
+  const rowsPendingLayout = useCallback((): boolean => {
+    const rows = rowsRef.current;
+    for (const [id, { node, at }] of rowNodes.current) {
+      if (rows[at]?.id === id && !(node.abs.height > 0)) return true;
+    }
+    return false;
+  }, []);
+
   useEffect(() => {
     if (!virtualizing) return undefined;
-    const id = afterLayout(() => {
+    let look: DelayTick = null;
+    let tries = 0;
+    const pass = (): void => {
       // `measureRows` first, and its answer handed on: a pass that moved the
       // heights has not settled anything, and an owed scroll judged against
-      // the layout it is about to invalidate is not owed any less.
-      reveal.retry(measureRows());
+      // the layout it is about to invalidate is not owed any less. During a
+      // flick nothing is measured at all — every correction at that speed is
+      // invalidated by the next event — and the settle tick that follows any
+      // burst is where the deferred passes catch up.
+      const moved = win.fast() ? false : measureRows();
+      const adapted = !win.scrolling() && adaptEstimate();
+      reveal.retry(moved || adapted);
       syncScroll();
-    });
-    return () => cancelAfterLayout(id);
+      // A commit can land between frame flushes: its rows report zero size
+      // until the flush, this tick has already run, and nothing else would
+      // come back for them — a window that just finished growing renders
+      // nothing further, and the missed measurements would stand for good.
+      // Look again, briefly, while any drawn row is still unsized.
+      if (rowsPendingLayout() && tries++ < 8) look = later(pass, 16);
+    };
+    const id = afterLayout(pass);
+    return () => {
+      cancelAfterLayout(id);
+      cancelLater(look);
+    };
   });
 
   const goTo = useCallback(

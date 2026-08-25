@@ -40,3 +40,42 @@ test('a shuffle mid-measurement re-indexes rather than corrupting offsets', () =
   assert.strictEqual(h.heightAt(2), 60, 'a is row 2 now, and it is 60 tall');
   assert.strictEqual(h.total(), 24 * 2 + 60);
 });
+
+test('adapt learns the measured mean and re-prices the unmeasured rows', () => {
+  const h = new RowHeights(24);
+  const rows = rowsOf(Array.from({ length: 100 }, (_, i) => i));
+  h.sync(rows, 24);
+  for (let i = 0; i < 10; i++) h.measure(i, i, 60);
+  assert.strictEqual(h.total(), 10 * 60 + 90 * 24);
+
+  assert.strictEqual(h.adapt(), true, 'ten samples are enough to learn from');
+  assert.strictEqual(h.total(), 100 * 60, 'every unmeasured row re-priced');
+  assert.strictEqual(h.adapt(), false, 'and learning the same thing twice is free');
+
+  // the learnt estimate survives a rebuild for a new row list
+  h.sync(rowsOf(Array.from({ length: 100 }, (_, i) => i)), 24);
+  assert.strictEqual(h.total(), 100 * 60, 'the learnt estimate survived sync');
+
+  // a caller changing their declared estimate wins back over adaptation
+  h.sync(rows, 30);
+  assert.strictEqual(h.total(), 10 * 60 + 90 * 30, 'the caller took it back');
+});
+
+test('adapt refuses to learn from too few rows', () => {
+  const h = new RowHeights(24);
+  h.sync(rowsOf(Array.from({ length: 50 }, (_, i) => i)), 24);
+  for (let i = 0; i < 7; i++) h.measure(i, i, 60);
+  assert.strictEqual(h.adapt(), false, 'seven rows say nothing about fifty');
+  h.measure(7, 7, 60);
+  assert.strictEqual(h.adapt(), true, 'the eighth tips it');
+});
+
+test('reset forgets the adaptation with the measurements it came from', () => {
+  const h = new RowHeights(24);
+  h.sync(rowsOf(Array.from({ length: 50 }, (_, i) => i)), 24);
+  for (let i = 0; i < 10; i++) h.measure(i, i, 60);
+  h.adapt();
+  h.reset();
+  h.sync(rowsOf(Array.from({ length: 50 }, (_, i) => i)), 24);
+  assert.strictEqual(h.total(), 50 * 24, 'back to the declared estimate');
+});

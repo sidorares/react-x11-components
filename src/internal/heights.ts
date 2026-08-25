@@ -68,8 +68,14 @@ export class RowHeights {
   private rows: readonly Keyed[] = [];
   /** Fenwick tree over the heights, 1-based. */
   private tree: number[] = [0];
-  /** What an unmeasured row is assumed to be. */
+  /** What an unmeasured row is assumed to be, effectively: the caller's
+   *  `base`, until `adapt` has seen enough real rows to know better. */
   private estimate = 1;
+  /** The estimate the caller declared. A caller changing it is a caller
+   *  changing their mind, and it wins back over adaptation. */
+  private base = 1;
+  /** Running sum of the measured map's values, so `adapt` is O(1). */
+  private sum = 0;
   /** Largest power of two <= n, for the O(log n) descent in `indexAt`. */
   private power = 0;
   /** Set when a measurement could not be applied in place, so the next
@@ -77,7 +83,8 @@ export class RowHeights {
   private dirty = false;
 
   constructor(estimate: number) {
-    this.estimate = Math.max(1, estimate);
+    this.base = Math.max(1, estimate);
+    this.estimate = this.base;
   }
 
   private heightOf(index: number): number {
@@ -95,11 +102,23 @@ export class RowHeights {
    */
   sync(rows: readonly Keyed[], estimate: number): void {
     const next = Math.max(1, estimate);
-    if (!this.dirty && this.rows === rows && next === this.estimate) return;
-    this.dirty = false;
+    if (next !== this.base) {
+      // The caller changed their declared estimate: that wins back over
+      // whatever `adapt` had learnt — it is the same caller telling us the
+      // rows changed character.
+      this.base = next;
+      this.estimate = next;
+      this.dirty = true;
+    }
+    if (!this.dirty && this.rows === rows) return;
     this.rows = rows;
-    this.estimate = next;
-    const n = rows.length;
+    this.rebuild();
+  }
+
+  /** Rebuild the tree from the measured map and the current estimate. */
+  private rebuild(): void {
+    this.dirty = false;
+    const n = this.rows.length;
     // Build in O(n): write each height at its own slot, then push every slot
     // into its parent. The textbook loop of point-updates is O(n log n) and
     // arrives at the same tree.
@@ -123,6 +142,7 @@ export class RowHeights {
     const before = this.measured.get(id);
     if (before === height) return false;
     this.measured.set(id, height);
+    this.sum += height - (before ?? 0);
     if (this.rows[index]?.id !== id) {
       // The caller's index is stale — the rows moved under a measurement
       // that was already in flight. Applying a delta at the wrong slot would
@@ -207,6 +227,34 @@ export class RowHeights {
   }
 
   /**
+   * Let the estimate learn from the rows that have been measured.
+   *
+   * The fixed guess is why a measured list converges slowly: every row not
+   * yet seen is assumed `estimate`, the scrollbar believes the sum, and each
+   * newly measured row moves everything. Once enough rows have real numbers,
+   * their mean is a far better guess for the rest — one O(n) rebuild brings
+   * every unmeasured offset close to where measuring will find it, so the
+   * corrections that follow are small.
+   *
+   * Returns whether anything changed. **Every offset of every unmeasured row
+   * moves when it does** — the caller owns keeping what is on screen still,
+   * the same anchor arithmetic a measurement pass does. Deliberately not
+   * called from `measure`: the caller decides when a wholesale move is safe
+   * to make, which is while nothing is scrolling.
+   */
+  adapt(): boolean {
+    const n = this.measured.size;
+    if (n < 8) return false; // too few rows to say anything about the rest
+    const mean = Math.round(this.sum / n);
+    // ±1 is noise — the mean drifts by that much as single rows arrive, and
+    // a rebuild per drift would run at the measure rate for no visible gain.
+    if (Math.abs(mean - this.estimate) <= 1) return false;
+    this.estimate = Math.max(1, mean);
+    this.rebuild();
+    return true;
+  }
+
+  /**
    * Forget every measurement, keeping the row list.
    *
    * For a change that invalidates heights wholesale rather than row by row.
@@ -217,6 +265,9 @@ export class RowHeights {
    */
   reset(): void {
     this.measured.clear();
+    this.sum = 0;
+    // adaptation came from the measurements just forgotten
+    this.estimate = this.base;
     this.dirty = true;
   }
 }

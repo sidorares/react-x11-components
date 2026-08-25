@@ -87,6 +87,10 @@ const LEAD_MS = 50;
 /** Velocity is an EMA of the per-event slope; a gap longer than this between
  *  events is a stop, not a very slow scroll. */
 const VEL_GAP_MS = 250;
+/** Above this the scroll is a flick, not a read — px/ms, about three rows a
+ *  frame. What `fast()` answers with, for work worth deferring to the
+ *  settle. */
+const FAST_V = 1.5;
 
 /** More rows than this entering the window in one render is a flood — a
  *  teleport or a hard flick — and floods build skeletons first. An ordinary
@@ -176,6 +180,13 @@ export interface VirtualWindow {
    *  not run out since. What the growth pauses on, and what a component may
    *  defer non-urgent per-render work on. */
   scrolling(): boolean;
+  /**
+   * Scrolling, and too fast to be reading: work whose payoff is precision —
+   * measuring rows, adapting estimates — is churn at this speed, every
+   * correction invalidated by the next event. The settle tick that follows
+   * any burst is where deferred work catches up.
+   */
+  fast(): boolean;
 }
 
 /**
@@ -283,6 +294,11 @@ export function useVirtualWindow(inputs: VirtualWindowInputs): VirtualWindow {
 
   const scrolling = useCallback((): boolean => active.current, []);
 
+  const fast = useCallback(
+    (): boolean => active.current && Math.abs(vel.current.v) >= FAST_V,
+    [],
+  );
+
   // The idle clock has to start somewhere even when nothing ever scrolls —
   // a table that mounts and sits still owes itself the band. After any
   // render that still wants growth, make sure a tick is coming — and while
@@ -359,14 +375,27 @@ export function useVirtualWindow(inputs: VirtualWindowInputs): VirtualWindow {
       wantsGrowth.current = growableUp() || last < targetLast;
 
       // The budget: the core plus a full band each side. Trim the trailing
-      // side first — those rows are the furthest from coming back.
+      // side first — those rows are the furthest from coming back. The
+      // top-side cut stops at the first row the index has no real height
+      // for, the same rule growth follows and for the reverse reason: a
+      // row laid out taller than the index believes contributes its real
+      // height while mounted and its guessed one once dropped, so cutting
+      // it silently shrinks the content above the viewport and the view
+      // yanks up by the difference with no debt left to put it right. Held
+      // a render or two longer, it gets measured, and the next trim takes
+      // it cleanly.
       const budget = coreLast - coreFirst + 2 * prefetch;
       let excess = last - first - budget;
       if (excess > 0) {
+        const cutAbove = (want: number): number => {
+          let k = 0;
+          while (k < want && (exact || heights.isMeasured(first + k))) k++;
+          return k;
+        };
         const aboveExtra = coreFirst - first;
         const belowExtra = last - coreLast;
         if (vel.current.v >= 0) {
-          const cut = Math.min(aboveExtra, excess);
+          const cut = cutAbove(Math.min(aboveExtra, excess));
           first += cut;
           excess -= cut;
           last -= Math.min(belowExtra, excess);
@@ -374,7 +403,7 @@ export function useVirtualWindow(inputs: VirtualWindowInputs): VirtualWindow {
           const cut = Math.min(belowExtra, excess);
           last -= cut;
           excess -= cut;
-          first += Math.min(aboveExtra, excess);
+          first += cutAbove(Math.min(aboveExtra, excess));
         }
       }
     }
@@ -453,5 +482,6 @@ export function useVirtualWindow(inputs: VirtualWindowInputs): VirtualWindow {
     sized,
     sync,
     scrolling,
+    fast,
   };
 }

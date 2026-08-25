@@ -770,30 +770,56 @@ test('a virtualized tree measures its rows and totals them honestly', async () =
 
   // The unmeasured guess is 400 × 22. Every wrapped row that has been drawn
   // is taller than that, so a total still sitting on the guess would mean no
-  // measurement reached the index at all.
+  // measurement reached the index at all. Waited out rather than sampled
+  // once: the idle band keeps measuring and the estimate re-learns from the
+  // mean, until a whole settle changes nothing.
   const guess = 400 * 22;
-  const measured = tree().contentHeight;
+  let measured = tree().contentHeight;
+  for (let round = 0; round < 10; round++) {
+    await idle(200);
+    if (tree().contentHeight === measured) break;
+    measured = tree().contentHeight;
+  }
   assert.ok(
     measured > guess,
     `the total is still the flat guess: ${measured} vs ${guess}`,
   );
 
-  // it stops: a second settle over the same rows finds nothing new, which is
-  // what keeps measure → render → measure from spinning
-  await settle();
+  // it stops: a stretch longer than any of the idle clocks finds nothing
+  // new, which is what keeps measure → render → measure from spinning
+  await idle(200);
   assert.strictEqual(tree().contentHeight, measured, 'it converged');
 
-  // scrolling measures rows nobody had drawn yet, and the total gets more
-  // honest rather than drifting
-  tree().scrollTo({ y: 4000 });
-  await settle();
+  // The estimate has learnt the measured mean of this half-and-half mix, so
+  // the total speaks for the rows nobody has visited: within a couple of
+  // pixels a row of "the rest look like the ones we have seen".
+  const drawn = rowNodes().map((n) => retained(n));
+  const short = drawn.find((n) => n.abs.height > 0 && n.abs.height <= 30);
+  const tall = drawn.find((n) => n.abs.height > 30);
+  assert.ok(short && tall, 'both row shapes should be on screen');
+  const expected = 200 * short.abs.height + 200 * tall.abs.height;
   assert.ok(
-    tree().contentHeight > measured,
-    `scrolling should have measured more rows: ${measured} -> ${tree().contentHeight}`,
+    Math.abs(measured - expected) <= 800,
+    `the total ${measured} strays from ${expected}`,
   );
 
-  // only a slice is built — plus at most the idle band — which is the point
-  // of virtualizing at all
+  // scrolling into territory nobody had drawn still ends in full rows
+  // covering the viewport, with the window still a slice
+  tree().scrollTo({ y: 4000 });
+  await settle();
+  await idle(300);
+  const pane = retained(tree());
+  const rows = rowNodes()
+    .map((n) => retained(n))
+    .filter((n) => n.abs.height > 0)
+    .sort((a, b) => a.abs.y - b.abs.y);
+  assert.ok(rows.length > 0, 'nothing was built after the jump');
+  assert.ok(
+    rows[0].abs.y <= pane.abs.y + 1 &&
+      rows[rows.length - 1].abs.y + rows[rows.length - 1].abs.height >=
+        pane.abs.y + pane.abs.height - 1,
+    'the viewport is not covered by rows after the jump',
+  );
   assert.ok(rowNodes().length < 180, `built ${rowNodes().length} of 400`);
 });
 
@@ -829,11 +855,10 @@ test('measuring a row above the viewport does not move what is on screen', async
     id: i,
     label: `${LONG} ${i}`,
   }));
-  // prefetch: 0, so nothing above the viewport is measured except what the
-  // slice itself drew — with the band on, rows above measure while idle and
-  // the offset legitimately absorbs their growth (asserted in table.test.ts,
-  // 'the idle band measures above the viewport…'). This test wants the
-  // sharper invariant: nothing changed, so nothing may move.
+  // prefetch: 0, so nothing beyond the slice is built — the band's own
+  // behaviour is asserted in table.test.ts ('the idle band grows without
+  // moving what is on screen'). This test wants the narrow invariant:
+  // measuring the rows the slice drew never moves the row under the pointer.
   await renderX11(
     h(
       'box',
@@ -847,7 +872,6 @@ test('measuring a row above the viewport does not move what is on screen', async
 
   tree().scrollTo({ y: 4000 });
   await settle();
-  const at = tree().scrollY;
   /** The id of the row drawn at the top of the viewport. */
   const topRow = (): string => {
     const rows = rowNodes()
@@ -860,8 +884,10 @@ test('measuring a row above the viewport does not move what is on screen', async
   const wasShowing = topRow();
 
   await settle();
-  assert.strictEqual(tree().scrollY, at, 'the offset held still');
-  assert.strictEqual(topRow(), wasShowing, 'and so did the row under it');
+  // The offset itself may move — the estimate re-learning from the measured
+  // mean rebuilds every unmeasured offset, and the nudge absorbs the
+  // difference. What must hold still is what is on screen.
+  assert.strictEqual(topRow(), wasShowing, 'the row under the pointer moved');
 });
 
 // --- virtualization --------------------------------------------------------

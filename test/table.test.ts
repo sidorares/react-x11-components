@@ -460,27 +460,38 @@ test('measured rows total honestly, converge, and stay a slice', async () => {
   );
   await settle();
   const guess = 400 * 24;
-  const measured = bodyPane().contentHeight;
+  // Wait out the moving parts — the idle band measuring, the estimate
+  // re-learning from the mean — until a stretch longer than any of their
+  // clocks changes nothing.
+  let measured = bodyPane().contentHeight;
+  for (let round = 0; round < 10; round++) {
+    await idle(200);
+    if (bodyPane().contentHeight === measured) break;
+    measured = bodyPane().contentHeight;
+  }
   assert.ok(
     measured > guess,
     `the total is still the flat guess: ${measured} vs ${guess}`,
   );
-  await settle();
+  await idle(200);
   assert.strictEqual(bodyPane().contentHeight, measured, 'it converged');
 
-  // Far enough that the idle band around the top cannot already have
-  // measured the destination — the band converges the scrollbar while the
-  // table sits still, which is the point of it. Given a few rounds, not
-  // one: after a jump this size the rows arrive as skeletons and fill in
-  // over the catch-up ticks, and a loaded machine fits fewer of those into
-  // a fixed wait.
+  // The estimate has learnt the measured mean, so the scrollbar now speaks
+  // for the rows nobody has visited: the total sits within a pixel a row of
+  // "every row is like the ones we have seen" — without the re-learning it
+  // would still carry the flat guess for three hundred of them.
+  const rowH = retained(rowNodes()[3]).abs.height;
+  assert.ok(
+    Math.abs(measured - 400 * rowH) <= 400,
+    `the total ${measured} strays from 400 × ${rowH}`,
+  );
+
+  // And a jump into unvisited territory still ends in full rows covering
+  // the viewport, with the window still a slice.
   bodyPane().scrollTo({ y: 8000 });
-  let grew = false;
-  for (let round = 0; round < 8 && !grew; round++) {
-    await settle();
-    grew = bodyPane().contentHeight > measured;
-  }
-  assert.ok(grew, 'scrolling should have measured more rows');
+  await settle();
+  await idle(300);
+  assertCoversViewport('after the jump');
   assert.ok(rowNodes().length < 180, `built ${rowNodes().length} of 400`);
 });
 
@@ -565,12 +576,11 @@ test('a teleport shows skeleton rows first, then fills them in', async () => {
   );
 });
 
-test('the idle band measures above the viewport without moving what is on screen', async () => {
-  // The end-to-end shape of `reveal.nudge`: rows above the viewport measure
-  // taller than the guess while the table sits idle, the content above
-  // grows, and the offset absorbs every pixel of it — near the bottom of
-  // the list that takes more than one layout, because the pane clamps
-  // against a content height that has not admitted the growth yet.
+test('the idle band grows without moving what is on screen', async () => {
+  // The band works while the user is not looking, and nothing it does —
+  // building rows, measuring them, re-learning the estimate — may move the
+  // row under the pointer. Where a correction is owed, `reveal.nudge`
+  // absorbs it into the offset, over as many layouts as the clamp takes.
   const LONG =
     'a name much too long for one line of a narrow column, kept long enough to wrap twice';
   await mount(
@@ -601,12 +611,9 @@ test('the idle band measures above the viewport without moving what is on screen
     return Number(top?.props['aria-posinset'] ?? -1);
   };
   const was = topRow();
-  const content = bodyPane().contentHeight;
+  const built = rowNodes().length;
   await idle(500);
-  assert.ok(
-    bodyPane().contentHeight > content,
-    'the band never measured anything',
-  );
+  assert.ok(rowNodes().length > built, 'the band never grew');
   assert.strictEqual(topRow(), was, 'the row at the top of the viewport moved');
 });
 
@@ -968,10 +975,20 @@ test('a row taller than the viewport is revealed by its top, once', async () => 
   await settle();
   // asked again, now that the row has been measured at its real height
   ref.current?.scrollToRow(250);
-  await settle();
+  // The reveal, the idle band measuring around it and the estimate
+  // re-learning each move the offset for a while; what must never happen is
+  // the alternation that goes on forever. So: wait for a whole idle stretch
+  // with no scroll in it, boundedly, then hold it to staying quiet.
+  let quiet = scrolls;
+  let rounds = 0;
+  for (; rounds < 10; rounds++) {
+    await idle(200);
+    if (scrolls === quiet) break;
+    quiet = scrolls;
+  }
+  assert.ok(rounds < 10, 'the offset never went quiet');
   const at = bodyPane().scrollY;
-  const quiet = scrolls;
-  await settle();
+  await idle(200);
   assert.strictEqual(bodyPane().scrollY, at, 'the offset is still moving');
   assert.strictEqual(scrolls, quiet, 'and it is still scrolling');
   const row = rowNodes()
