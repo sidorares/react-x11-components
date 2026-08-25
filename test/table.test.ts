@@ -470,13 +470,17 @@ test('measured rows total honestly, converge, and stay a slice', async () => {
 
   // Far enough that the idle band around the top cannot already have
   // measured the destination — the band converges the scrollbar while the
-  // table sits still, which is the point of it.
+  // table sits still, which is the point of it. Given a few rounds, not
+  // one: after a jump this size the rows arrive as skeletons and fill in
+  // over the catch-up ticks, and a loaded machine fits fewer of those into
+  // a fixed wait.
   bodyPane().scrollTo({ y: 8000 });
-  await settle();
-  assert.ok(
-    bodyPane().contentHeight > measured,
-    'scrolling should have measured more rows',
-  );
+  let grew = false;
+  for (let round = 0; round < 8 && !grew; round++) {
+    await settle();
+    grew = bodyPane().contentHeight > measured;
+  }
+  assert.ok(grew, 'scrolling should have measured more rows');
   assert.ok(rowNodes().length < 180, `built ${rowNodes().length} of 400`);
 });
 
@@ -531,6 +535,34 @@ test('a scroll inside the band lands on rows already built', async () => {
   }
   // and the rows scrolled past stay mounted, for the way back
   assert.ok(posts().includes(1), 'the trailing rows were dropped');
+});
+
+test('a teleport shows skeleton rows first, then fills them in', async () => {
+  // A thumb dragged across the list outruns any band: the whole window is
+  // new. The first commit answers with skeletons — the row boxes, none of
+  // the content — because a cheap commit lands frames sooner than the full
+  // rows could, and the catch-up ticks fill them in.
+  await mount({ rows: many(400), rowHeight: 24 }, 400, 220);
+  await settle();
+  const skeletons = (): number =>
+    screen.all((n) => retained(n).props['aria-hidden'] === true).length;
+
+  bodyPane().scrollTo({ y: 6000 });
+  await act();
+  assert.ok(
+    skeletons() > 0,
+    'the first commit after a teleport should be skeletons-first',
+  );
+  await settle();
+  await idle(300);
+  assert.strictEqual(skeletons(), 0, 'the skeletons never filled in');
+  const posts = rowNodes().map((n) =>
+    Number(retained(n).props['aria-posinset']),
+  );
+  assert.ok(
+    posts.some((p) => (p - 1) * 24 >= 6000 && (p - 1) * 24 < 6220),
+    'the viewport should be covered by full rows',
+  );
 });
 
 test('the idle band measures above the viewport without moving what is on screen', async () => {

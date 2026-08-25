@@ -558,7 +558,10 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
   const win = useVirtualWindow({
     box: body,
     heights,
-    count: ordered.length,
+    rows: ordered,
+    // declared uniform: every height is exact, so the idle band may grow
+    // upward freely — see `exact` on the inputs
+    exact: uniform,
     virtualizing,
     overscan,
     prefetch,
@@ -1046,6 +1049,38 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
     );
   };
 
+  /**
+   * A row the window said not to build in full yet: the box at its indexed
+   * height and none of its content. Cheap on purpose — no cells, no text, no
+   * seams — so the commit answering a flood lands frames before the full
+   * rows could, and what blits in reads as rows arriving rather than a
+   * void. `styles.row` still applies, so zebra striping and row backgrounds
+   * hold. Not registered in `rowNodes`: a skeleton must not be measured
+   * into the height index, and cannot satisfy a reveal.
+   */
+  const renderSkeletonRow = (entry: TableRow<Row>): ReactElement => {
+    const isSelected = selectedIds.has(entry.id);
+    const state: TableRowState<Row> = {
+      ...entry,
+      selected: isSelected,
+      color: isSelected ? theme.hoverText : theme.text,
+    };
+    return hx('box', {
+      key: String(entry.id),
+      'aria-hidden': true,
+      style: [
+        s.row,
+        // Exactly what the index believes, so the spacers and the scrollbar
+        // agree with the rows on where everything is.
+        { height: heights.heightAt(entry.index) },
+        {
+          backgroundColor: isSelected ? theme.hoverBackground : 'transparent',
+        },
+        typeof rowStyleProp === 'function' ? rowStyleProp(state) : rowStyleProp,
+      ],
+    });
+  };
+
   const headerCells = columns.map((column, at) => {
     const canSort = column.sortable !== false;
     const headerState: TableHeaderCellState<Row> = {
@@ -1155,8 +1190,14 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
         }),
       );
     }
-    for (let i = first; i < last; i++)
-      bodyChildren.push(renderOneRow(ordered[i]));
+    for (let i = first; i < last; i++) {
+      const entry = ordered[i];
+      bodyChildren.push(
+        win.skeletons.has(entry.id)
+          ? renderSkeletonRow(entry)
+          : renderOneRow(entry),
+      );
+    }
     if (virtualizing && last < ordered.length) {
       bodyChildren.push(
         hx('box', {

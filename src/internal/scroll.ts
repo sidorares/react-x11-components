@@ -173,6 +173,12 @@ export function useReveal(sources: RevealSources): Reveal {
 
   const nudge = useCallback(
     (px: number): void => {
+      // Either the reveal owns the pane or the anchor does. While a row is
+      // owed — or settled and still being confirmed — the reveal re-places
+      // it against the heights as they settle, so preserving the anchor
+      // would fight it: a remainder paid out after the reveal has already
+      // put its row where it belongs scrolls straight past it.
+      if (owed.current !== null || settled.current !== null) return;
       if (px === 0) return;
       owedShift.current += px;
       payShift();
@@ -308,6 +314,8 @@ export function useReveal(sources: RevealSources): Reveal {
       owed.current = id;
       settled.current = null;
       stuck.current = null;
+      // the reveal owns the pane now — see `nudge`
+      owedShift.current = 0;
       retry();
     },
     [retry],

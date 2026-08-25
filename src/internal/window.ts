@@ -31,6 +31,13 @@
 //     rows still mounted instead of rebuilding them. The budget caps what a
 //     render can be asked to carry: the on-screen slice plus `prefetch` rows
 //     each side.
+//   - **Skeletons.** A scroll that outruns everything — a thumb dragged
+//     across the list, a flick past the band — floods the window with rows
+//     no single render can build in time. Those render as *skeletons*: the
+//     row box at its indexed height, none of its content. A skeleton commit
+//     is cheap, so it lands frames sooner than the full rows would, and
+//     what blits in reads as rows arriving rather than a void. Upgrades
+//     follow viewport-first, a budget per render, until none remain.
 //
 // A row outside the viewport costs its share of layout and nothing on the
 // wire — the pane clips it — so the band is cheap to hold and pays for
@@ -38,9 +45,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ScrollableNode } from 'react-x11';
 
-import type { RowHeights } from './heights.js';
+import type { RowHeights, RowKey } from './heights.js';
 import { cancelLater, later } from './timers.js';
 import type { DelayTick } from './timers.js';
+
+/** All this needs of a row — `TreeRow` and `TableRow` are both this. */
+interface Keyed {
+  id: RowKey;
+}
+
+const EMPTY_KEYS: ReadonlySet<RowKey> = new Set();
 
 /** Rows kept either side of the viewport, so a fast scroll does not show a
  *  gap before the next frame catches up. The components' default. */
@@ -74,6 +88,18 @@ const LEAD_MS = 50;
  *  events is a stop, not a very slow scroll. */
 const VEL_GAP_MS = 250;
 
+/** More rows than this entering the window in one render is a flood — a
+ *  teleport or a hard flick — and floods build skeletons first. An ordinary
+ *  notch brings in a handful and never trips this. */
+const SKELETON_THRESHOLD = 16;
+/** New full rows built per render while a flood is being caught up with —
+ *  enough to fill most of a viewport, small enough to commit fast. */
+const BURST_BUDGET = 12;
+/** The same, once the scroll has stopped: bigger steps, still paced, so a
+ *  settle after a long flood is a few quick commits rather than one big
+ *  one. */
+const SETTLE_BUDGET = 24;
+
 export interface VirtualViewport {
   /** The pane's vertical offset. */
   top: number;
@@ -97,8 +123,19 @@ export interface VirtualWindowInputs {
   box: { readonly current: ScrollableNode | null };
   /** The height index, already `sync`ed to the rows this render draws. */
   heights: RowHeights;
-  /** How many rows there are. */
-  count: number;
+  /** The rows in display order — the same list the component draws from. */
+  rows: readonly Keyed[];
+  /**
+   * Every height in the index is exact — the table's declared-uniform model.
+   * What it buys here: the idle band may grow *upward* freely. A measured
+   * component may only grow upward over rows the index has real numbers
+   * for: an unmeasured row laid out above the viewport lands at a height
+   * the spacer did not anticipate, and everything on screen jumps by the
+   * difference until the measure tick pays it back — a wobble that is
+   * masked while scrolling and glaring while idle. Unmeasured territory
+   * above is left to the overscan, which meets it during a scroll.
+   */
+  exact: boolean;
   virtualizing: boolean;
   overscan: number;
   /** The idle band's target, rows beyond the overscan each side. `0` turns
@@ -113,6 +150,13 @@ export interface VirtualWindow {
    *  `onViewport` and the re-render it causes — what a measure tick reads. */
   viewRef: { readonly current: VirtualViewport };
   slice: WindowSlice;
+  /**
+   * Rows in the slice to draw as skeletons this render — the box at its
+   * indexed height, no content, `aria-hidden`, and **not registered as a
+   * mounted row**: a skeleton must not be measured into the height index or
+   * satisfy a reveal. Empty except while a flood is being caught up with.
+   */
+  skeletons: ReadonlySet<RowKey>;
   /** An `onScroll` arrived. */
   scrolled(top: number): void;
   /** An `onViewport` arrived. The ref is updated at event time — the measure
@@ -166,9 +210,18 @@ export function useVirtualWindow(inputs: VirtualWindowInputs): VirtualWindow {
    *  the idle tick rather than by a clock read at render time, so a render's
    *  output never depends on when it ran. */
   const active = useRef(false);
-  /** Whether the slice this render produced still wants growing — read by
-   *  the idle tick to decide whether another step is worth a re-render. */
+  /** Whether the slice this render produced still wants another step — band
+   *  growth left to do, or skeletons left to upgrade — read by the idle tick
+   *  to decide whether a re-render is worth it. */
   const wantsGrowth = useRef(false);
+  /** Skeletons the slice this render carries — the tick shortens its own
+   *  clock while any remain, so a flood is caught up with at `GROW_MS` pace
+   *  rather than waiting out the idle delay. */
+  const hasSkeletons = useRef(false);
+  /** The rows currently built in full, by id — everything else in the slice
+   *  is a skeleton. Ids, not indexes, so a re-sort moves the rows without
+   *  demoting them. */
+  const real = useRef<Set<RowKey>>(new Set());
   const idleTimer = useRef<DelayTick>(null);
 
   const tick = useCallback((): void => {
@@ -232,19 +285,28 @@ export function useVirtualWindow(inputs: VirtualWindowInputs): VirtualWindow {
 
   // The idle clock has to start somewhere even when nothing ever scrolls —
   // a table that mounts and sits still owes itself the band. After any
-  // render that still wants growth, make sure a tick is coming.
+  // render that still wants growth, make sure a tick is coming — and while
+  // skeletons remain, a *near* one: they are on screen, and waiting out the
+  // idle delay to fill them in would be a visible pause.
   useEffect(() => {
-    if (wantsGrowth.current && idleTimer.current === null) {
+    if (hasSkeletons.current) {
+      cancelLater(idleTimer.current);
+      idleTimer.current = later(tick, GROW_MS);
+    } else if (wantsGrowth.current && idleTimer.current === null) {
       idleTimer.current = later(tick, IDLE_MS);
     }
   });
   useEffect(() => () => cancelLater(idleTimer.current), []);
 
-  const { heights, count, virtualizing, overscan, prefetch } = inputs;
+  const { heights, rows, exact, virtualizing, overscan, prefetch } = inputs;
+  const count = rows.length;
 
   let first = 0;
   let last = count;
   wantsGrowth.current = false;
+  /** Skeletons are still being filled in from the last render — the band
+   *  must not grow while they are, or the debt outruns the catch-up. */
+  const catchingUp = hasSkeletons.current;
   if (virtualizing) {
     // The core: what is on screen plus the overscan — extended, while a
     // burst is in flight, by where that burst will be in a few frames. The
@@ -280,15 +342,21 @@ export function useVirtualWindow(inputs: VirtualWindowInputs): VirtualWindow {
       }
 
       // Grown while idle, one chunk per side per tick — never during a
-      // burst, whose renders have rows of their own to build.
+      // burst, whose renders have rows of their own to build, and never
+      // while skeletons are still filling in, whose catch-up comes first.
+      // Upward growth stops at the first row the index has no real height
+      // for — see `exact` on the inputs for why building one would make
+      // the view wobble while idle.
       const targetFirst = Math.max(0, coreFirst - prefetch);
       const targetLast = Math.min(count, coreLast + prefetch);
-      if (!active.current) {
-        if (first > targetFirst)
-          first = Math.max(targetFirst, first - GROW_CHUNK);
+      const growableUp = (): boolean =>
+        first > targetFirst && (exact || heights.isMeasured(first - 1));
+      if (!active.current && !catchingUp) {
+        const stop = Math.max(targetFirst, first - GROW_CHUNK);
+        while (first > stop && growableUp()) first--;
         if (last < targetLast) last = Math.min(targetLast, last + GROW_CHUNK);
       }
-      wantsGrowth.current = first > targetFirst || last < targetLast;
+      wantsGrowth.current = growableUp() || last < targetLast;
 
       // The budget: the core plus a full band each side. Trim the trailing
       // side first — those rows are the furthest from coming back.
@@ -315,6 +383,62 @@ export function useVirtualWindow(inputs: VirtualWindowInputs): VirtualWindow {
     built.current = null;
   }
 
+  // The skeleton tier: which of the slice's rows are worth building in full
+  // *this* render. All of them, almost always — a flood is the exception.
+  let skeletons: ReadonlySet<RowKey> = EMPTY_KEYS;
+  hasSkeletons.current = false;
+  if (virtualizing) {
+    const prev = real.current;
+    const next = new Set<RowKey>();
+    let entering = 0;
+    for (let i = first; i < last; i++) {
+      if (prev.has(rows[i].id)) next.add(rows[i].id);
+      else entering++;
+    }
+    // A window with nothing carried over and no scroll in flight is a mount
+    // or a wholesale data change, not a flood — those build in full, or the
+    // first paint would be skeletons.
+    const flood =
+      entering > SKELETON_THRESHOLD && (active.current || next.size > 0);
+    if (!flood) {
+      for (let i = first; i < last; i++) next.add(rows[i].id);
+    } else {
+      // Viewport rows first — they are the ones being looked at — then
+      // outward, up to the budget; the rest are skeletons until the ticks
+      // catch up.
+      let budget = active.current ? BURST_BUDGET : SETTLE_BUDGET;
+      const vFirst = heights.indexAt(view.top);
+      const vLast =
+        view.height > 0 ? heights.indexAt(view.top + view.height) : vFirst;
+      const take = (i: number): void => {
+        if (i < first || i >= last || budget <= 0) return;
+        if (!next.has(rows[i].id)) {
+          next.add(rows[i].id);
+          budget--;
+        }
+      };
+      for (let i = vFirst; i <= vLast && i < last; i++) take(i);
+      for (
+        let d = 1;
+        budget > 0 && (vFirst - d >= first || vLast + d < last);
+        d++
+      ) {
+        take(vLast + d);
+        take(vFirst - d);
+      }
+      const skel = new Set<RowKey>();
+      for (let i = first; i < last; i++) {
+        if (!next.has(rows[i].id)) skel.add(rows[i].id);
+      }
+      skeletons = skel;
+      hasSkeletons.current = skel.size > 0;
+      if (skel.size > 0) wantsGrowth.current = true;
+    }
+    real.current = next;
+  } else if (real.current.size > 0) {
+    real.current = new Set();
+  }
+
   /** Where the slice starts, and how much of the list is below it — the two
    *  spacers that keep the scrollbar measuring the whole list. */
   const above = virtualizing ? heights.offsetAt(first) : 0;
@@ -324,6 +448,7 @@ export function useVirtualWindow(inputs: VirtualWindowInputs): VirtualWindow {
     view,
     viewRef,
     slice: { first, last, above, below },
+    skeletons,
     scrolled,
     sized,
     sync,

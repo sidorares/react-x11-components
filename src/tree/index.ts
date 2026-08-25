@@ -533,7 +533,10 @@ export function Tree<T = TreeItem>({
   const win = useVirtualWindow({
     box: scroller,
     heights,
-    count: rows.length,
+    rows,
+    // tree rows are always measured, so the idle band above the viewport
+    // only re-builds territory already visited — see `exact` on the inputs
+    exact: false,
     virtualizing,
     overscan,
     prefetch,
@@ -990,6 +993,44 @@ export function Tree<T = TreeItem>({
     );
   };
 
+  /**
+   * A row the window said not to build in full yet: the box at its indexed
+   * height and none of its content — no guides, no twisty, no label — so
+   * the commit answering a flood lands frames before the full rows could.
+   * `styles.row` still applies, so row backgrounds hold. Not registered in
+   * `rowNodes`: a skeleton must not be measured into the height index, and
+   * cannot satisfy a reveal.
+   */
+  const renderSkeletonRow = (row: TreeRow<T>): ReactElement => {
+    const isSelected = row.id === current;
+    const color = row.disabled
+      ? theme.textMuted
+      : isSelected
+        ? theme.hoverText
+        : theme.text;
+    const state: TreeRowState<T> = {
+      ...row,
+      selected: isSelected,
+      color,
+      toggle: (open?: boolean) => toggleId(row.id, row.item, open),
+      select: () => goTo(row),
+    };
+    return hx('box', {
+      key: String(row.id),
+      'aria-hidden': true,
+      style: [
+        s.row,
+        // Exactly what the index believes, so the spacers and the scrollbar
+        // agree with the rows on where everything is.
+        { height: index.heightAt(row.index) },
+        {
+          backgroundColor: isSelected ? theme.hoverBackground : 'transparent',
+        },
+        typeof rowStyleProp === 'function' ? rowStyleProp(state) : rowStyleProp,
+      ],
+    });
+  };
+
   /** `layout="nested"`: the same rows, wrapped group by group. */
   const renderGroup = (group: TreeGroup<T>, key: string): ReactNode => {
     const children = group.rows.map((node, i) =>
@@ -1034,7 +1075,13 @@ export function Tree<T = TreeItem>({
         }),
       );
     }
-    for (let i = first; i < last; i++) body.push(renderOneRow(rows[i]));
+    for (let i = first; i < last; i++) {
+      body.push(
+        win.skeletons.has(rows[i].id)
+          ? renderSkeletonRow(rows[i])
+          : renderOneRow(rows[i]),
+      );
+    }
     if (virtualizing && last < rows.length) {
       body.push(
         hx('box', {
