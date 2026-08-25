@@ -161,6 +161,15 @@ export interface VirtualWindow {
    * satisfy a reveal. Empty except while a flood is being caught up with.
    */
   skeletons: ReadonlySet<RowKey>;
+  /**
+   * How many of the rows **on screen** are skeletons this render — the
+   * measure of "the user is looking at rows that have no content yet".
+   * `0` the moment the viewport is fully real again, even while the band
+   * beyond it is still catching up: it is the signal a scroll-position
+   * overlay shows on, and an overlay that lingered past the last visible
+   * skeleton would be announcing a delay nobody can see.
+   */
+  pending: number;
   /** An `onScroll` arrived. */
   scrolled(top: number): void;
   /** An `onViewport` arrived. The ref is updated at event time — the measure
@@ -415,6 +424,7 @@ export function useVirtualWindow(inputs: VirtualWindowInputs): VirtualWindow {
   // The skeleton tier: which of the slice's rows are worth building in full
   // *this* render. All of them, almost always — a flood is the exception.
   let skeletons: ReadonlySet<RowKey> = EMPTY_KEYS;
+  let pending = 0;
   hasSkeletons.current = false;
   if (virtualizing) {
     const prev = real.current;
@@ -457,7 +467,10 @@ export function useVirtualWindow(inputs: VirtualWindowInputs): VirtualWindow {
       }
       const skel = new Set<RowKey>();
       for (let i = first; i < last; i++) {
-        if (!next.has(rows[i].id)) skel.add(rows[i].id);
+        if (!next.has(rows[i].id)) {
+          skel.add(rows[i].id);
+          if (i >= vFirst && i <= vLast) pending++;
+        }
       }
       skeletons = skel;
       hasSkeletons.current = skel.size > 0;
@@ -478,6 +491,7 @@ export function useVirtualWindow(inputs: VirtualWindowInputs): VirtualWindow {
     viewRef,
     slice: { first, last, above, below },
     skeletons,
+    pending,
     scrolled,
     sized,
     sync,

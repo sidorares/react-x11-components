@@ -38,7 +38,7 @@
 // the offset differs (a slice to rebuild, a header to shift), but it is the
 // other half of the same fix and both components run it on the same tick.
 
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import type { DrawnNode, ScrollableNode } from 'react-x11';
 
 import type { RowHeights, RowKey } from './heights.js';
@@ -332,5 +332,13 @@ export function useReveal(sources: RevealSources): Reveal {
     asked.current = null;
   }, []);
 
-  return { to, retry, scrollTo, nudge, heard };
+  // One stable object, not a fresh literal per render: callbacks built on
+  // this handle (`revealAt`, and the row handlers behind it) keep their
+  // identity, which is what lets a memoized row bail out of a scroll
+  // render. A literal here made every row re-render on every notch — the
+  // exact cost the memo exists to remove — with nothing anywhere naming it.
+  return useMemo(
+    () => ({ to, retry, scrollTo, nudge, heard }),
+    [to, retry, scrollTo, nudge, heard],
+  );
 }

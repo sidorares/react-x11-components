@@ -45,6 +45,7 @@ import type {
   KeyboardEvent,
   MouseEvent,
   ScrollableNode,
+  Theme,
 } from 'react-x11';
 import {
   XK_DOWN,
@@ -378,6 +379,172 @@ interface TableAllProps<Row> extends TableBaseProps<Row> {
 }
 
 const EMPTY_SET: ReadonlySet<TableRowId> = new Set();
+
+/**
+ * One row, as its own memoized component.
+ *
+ * The reason is the CPU profile of a fast scroll: every notch re-renders
+ * the window, and re-creating a hundred rows' elements per notch — then
+ * reconciling them and re-applying identical props to every node — was
+ * over half the burst. Every prop here is identity-stable across a scroll
+ * render (the row model is memoized, the widths resolve once, the handlers
+ * are stable callbacks), so React bails out on the rows that did not
+ * change and a notch pays only for the rows it brought in.
+ */
+interface TableRowViewProps<Row> {
+  entry: TableRow<Row>;
+  columns: readonly TableColumn<Row>[];
+  widths: readonly number[];
+  /** How many rows the table has — `aria-setsize`. */
+  setSize: number;
+  isSelected: boolean;
+  selectable: boolean;
+  uniform: boolean;
+  rowHeight: number | undefined;
+  estimate: number;
+  theme: Theme;
+  rowStyle: TableStyles<Row>['row'];
+  cellStyle: TableStyles<Row>['cell'];
+  renderRow?: (state: TableRowState<Row>, content: ReactNode[]) => ReactNode;
+  /** Whether the app passed `onRowContextMenu` — the prop itself stays out
+   *  of the row so a re-created handler does not re-render every row. */
+  hasMenu: boolean;
+  onTap: (
+    entry: TableRow<Row>,
+    mods: { ctrl: boolean; shift: boolean },
+  ) => void;
+  onOpen: (entry: TableRow<Row>) => void;
+  onMenu: (entry: TableRow<Row>, ev: MouseEvent) => void;
+  register: (id: TableRowId, at: number, node: DrawnNode | null) => void;
+}
+
+function TableRowView<Row>(props: TableRowViewProps<Row>): ReactElement {
+  const {
+    entry,
+    columns,
+    widths,
+    setSize,
+    isSelected,
+    selectable,
+    uniform,
+    rowHeight,
+    estimate,
+    theme,
+    rowStyle,
+    cellStyle,
+    renderRow,
+    hasMenu,
+    onTap,
+    onOpen,
+    onMenu,
+    register,
+  } = props;
+  const color = isSelected ? theme.hoverText : theme.text;
+  const state: TableRowState<Row> = { ...entry, selected: isSelected, color };
+
+  const content: ReactNode[] = columns.map((column, at) => {
+    const cellState: TableCellState<Row> = { ...state, column };
+    return hx(
+      'box',
+      {
+        key: column.id,
+        role: 'cell',
+        style: [
+          s.cell,
+          { width: widths[at] },
+          uniform && { height: rowHeight },
+          column.align === 'end' && {
+            alignItems: 'flex-end',
+            paddingEnd: 8,
+          },
+          column.align === 'center' && { alignItems: 'center' },
+          typeof cellStyle === 'function' ? cellStyle(cellState) : cellStyle,
+        ],
+      },
+      column.render
+        ? // A cell that draws itself still has to know it is on the
+          // selected row — see the doc comment. Keyed by the component,
+          // the way every seam's return is.
+          React.createElement(
+            React.Fragment,
+            { key: 'content' },
+            column.render(entry.row, cellState),
+          )
+        : hx(
+            'text',
+            { style: [s.cellText, { color }] },
+            String(columnValue(entry.row, column) ?? ''),
+          ),
+    );
+  });
+
+  return hx(
+    'box',
+    {
+      role: 'row',
+      'aria-selected': selectable ? isSelected : undefined,
+      'aria-posinset': entry.index + 1,
+      'aria-setsize': setSize,
+      // The index the row was drawn at travels with the node, so measuring
+      // does not have to search the row list for it. It can go stale — the
+      // rows may move before the tick that measures — and both this and
+      // the height index check it rather than trust it.
+      ref: (node: DrawnNode | null) => {
+        register(entry.id, entry.index, node);
+      },
+      onClick: (ev: MouseEvent) => {
+        // A right-click also arrives here as a click; the selection it
+        // implies is `onContextMenu`'s to make (select-unless-selected),
+        // not the left button's replace.
+        if (ev.button !== 1) return;
+        onTap(entry, { ctrl: ev.ctrlKey, shift: ev.shiftKey });
+        // Select on the first click, open on the second — the gesture
+        // every file list has. `detail` is the click count the renderer
+        // already counts for text selection.
+        if (ev.detail === 2) onOpen(entry);
+      },
+      onContextMenu: hasMenu
+        ? (ev: MouseEvent) => {
+            onMenu(entry, ev);
+          }
+        : undefined,
+      style: [
+        s.row,
+        // Declared uniform: exactly this tall, content clipped — core's
+        // row. Measured: a floor, and the row grows to whatever its
+        // content needs; the height index reads back what it became.
+        uniform
+          ? { height: rowHeight, alignItems: 'center' }
+          : { minHeight: estimate },
+        selectable && { cursor: 'pointer' },
+        {
+          backgroundColor: isSelected ? theme.hoverBackground : 'transparent',
+          // The row's ink, said once: `color` inherits, so default cells
+          // take it without being handed it.
+          color,
+        },
+        selectable && {
+          // pressed even on the selected row: a re-press on the row that
+          // is already current is the one click in the table that would
+          // otherwise look ignored
+          ':active': {
+            backgroundColor: isSelected
+              ? theme.accentActive
+              : theme.surfaceActive,
+          },
+        },
+        selectable &&
+          !isSelected && {
+            ':hover': { backgroundColor: theme.surfaceHover },
+          },
+        typeof rowStyle === 'function' ? rowStyle(state) : rowStyle,
+      ],
+    },
+    renderRow ? renderRow(state, content) : content,
+  );
+}
+
+const MemoTableRow = React.memo(TableRowView) as typeof TableRowView;
 
 /**
  * `<Table columns rows />` — a data table with a header that stays put.
@@ -987,124 +1154,28 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
   const headerCellStyleProp = styles?.headerCell;
   const selectable = selectionMode !== 'none';
 
-  const renderOneRow = (entry: TableRow<Row>): ReactElement => {
-    const isSelected = selectedIds.has(entry.id);
-    const color = isSelected ? theme.hoverText : theme.text;
-    const state: TableRowState<Row> = { ...entry, selected: isSelected, color };
-
-    const content: ReactNode[] = columns.map((column, at) => {
-      const cellState: TableCellState<Row> = { ...state, column };
-      return hx(
-        'box',
-        {
-          key: column.id,
-          role: 'cell',
-          style: [
-            s.cell,
-            { width: widths[at] },
-            uniform && { height: rowHeight },
-            column.align === 'end' && {
-              alignItems: 'flex-end',
-              paddingEnd: 8,
-            },
-            column.align === 'center' && { alignItems: 'center' },
-            typeof cellStyleProp === 'function'
-              ? cellStyleProp(cellState)
-              : cellStyleProp,
-          ],
-        },
-        column.render
-          ? // A cell that draws itself still has to know it is on the
-            // selected row — see the doc comment. Keyed by the component,
-            // the way every seam's return is.
-            React.createElement(
-              React.Fragment,
-              { key: 'content' },
-              column.render(entry.row, cellState),
-            )
-          : hx(
-              'text',
-              { style: [s.cellText, { color }] },
-              String(columnValue(entry.row, column) ?? ''),
-            ),
-      );
-    });
-
-    return hx(
-      'box',
-      {
-        key: String(entry.id),
-        role: 'row',
-        'aria-selected': selectable ? isSelected : undefined,
-        'aria-posinset': entry.index + 1,
-        'aria-setsize': ordered.length,
-        // The index the row was drawn at travels with the node, so measuring
-        // does not have to search the row list for it. It can go stale — the
-        // rows may move before the tick that measures — and both this and
-        // the height index check it rather than trust it.
-        ref: (node: DrawnNode | null) => {
-          if (node) rowNodes.current.set(entry.id, { node, at: entry.index });
-          else rowNodes.current.delete(entry.id);
-        },
-        onClick: (ev: MouseEvent) => {
-          // A right-click also arrives here as a click; the selection it
-          // implies is `onContextMenu`'s to make (select-unless-selected),
-          // not the left button's replace.
-          if (ev.button !== 1) return;
-          tap(entry, { ctrl: ev.ctrlKey, shift: ev.shiftKey });
-          // Select on the first click, open on the second — the gesture
-          // every file list has. `detail` is the click count the renderer
-          // already counts for text selection.
-          if (ev.detail === 2) activate(entry);
-        },
-        onContextMenu: onRowContextMenu
-          ? (ev: MouseEvent) => {
-              // The menu applies to what is under the pointer, so the row is
-              // selected first — unless it is already part of the selection,
-              // which a menu over "the selected files" must not collapse.
-              if (selectable && !selectedRef.current.has(entry.id)) {
-                tap(entry, { ctrl: false, shift: false });
-              }
-              onRowContextMenu(entry.id, entry.row, ev);
-            }
-          : undefined,
-        style: [
-          s.row,
-          // Declared uniform: exactly this tall, content clipped — core's
-          // row. Measured: a floor, and the row grows to whatever its
-          // content needs; the height index reads back what it became.
-          uniform
-            ? { height: rowHeight, alignItems: 'center' }
-            : { minHeight: estimate },
-          selectable && { cursor: 'pointer' },
-          {
-            backgroundColor: isSelected ? theme.hoverBackground : 'transparent',
-            // The row's ink, said once: `color` inherits, so default cells
-            // take it without being handed it.
-            color,
-          },
-          selectable && {
-            // pressed even on the selected row: a re-press on the row that
-            // is already current is the one click in the table that would
-            // otherwise look ignored
-            ':active': {
-              backgroundColor: isSelected
-                ? theme.accentActive
-                : theme.surfaceActive,
-            },
-          },
-          selectable &&
-            !isSelected && {
-              ':hover': { backgroundColor: theme.surfaceHover },
-            },
-          typeof rowStyleProp === 'function'
-            ? rowStyleProp(state)
-            : rowStyleProp,
-        ],
-      },
-      renderRow ? renderRow(state, content) : content,
-    );
-  };
+  // The row component's stable halves — `MemoTableRow` bails out of a
+  // re-render only if every prop kept its identity, and these are the two
+  // that would otherwise be rebuilt per row per render.
+  const registerRow = useCallback(
+    (id: TableRowId, at: number, node: DrawnNode | null): void => {
+      if (node) rowNodes.current.set(id, { node, at });
+      else rowNodes.current.delete(id);
+    },
+    [],
+  );
+  const rowMenu = useCallback(
+    (entry: TableRow<Row>, ev: MouseEvent): void => {
+      // The menu applies to what is under the pointer, so the row is
+      // selected first — unless it is already part of the selection,
+      // which a menu over "the selected files" must not collapse.
+      if (selectable && !selectedRef.current.has(entry.id)) {
+        tap(entry, { ctrl: false, shift: false });
+      }
+      onRowContextMenu?.(entry.id, entry.row, ev);
+    },
+    [selectable, tap, onRowContextMenu],
+  );
 
   /**
    * A row the window said not to build in full yet: the box at its indexed
@@ -1252,7 +1323,30 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
       bodyChildren.push(
         win.skeletons.has(entry.id)
           ? renderSkeletonRow(entry)
-          : renderOneRow(entry),
+          : React.createElement(
+              MemoTableRow as (p: TableRowViewProps<Row>) => ReactElement,
+              {
+                key: String(entry.id),
+                entry,
+                columns,
+                widths,
+                setSize: ordered.length,
+                isSelected: selectedIds.has(entry.id),
+                selectable,
+                uniform,
+                rowHeight,
+                estimate,
+                theme,
+                rowStyle: rowStyleProp,
+                cellStyle: cellStyleProp,
+                renderRow,
+                hasMenu: Boolean(onRowContextMenu),
+                onTap: tap,
+                onOpen: activate,
+                onMenu: rowMenu,
+                register: registerRow,
+              },
+            ),
       );
     }
     if (virtualizing && last < ordered.length) {

@@ -40,7 +40,12 @@ import type { ReactElement, ReactNode, Ref } from 'react';
 import { createStyles } from 'react-x11/style';
 import type { StyleProp } from 'react-x11';
 import { Icon, useDirection, useTheme } from 'react-x11';
-import type { DrawnNode, KeyboardEvent, ScrollableNode } from 'react-x11';
+import type {
+  DrawnNode,
+  KeyboardEvent,
+  ScrollableNode,
+  Theme,
+} from 'react-x11';
 import {
   XK_DOWN,
   XK_END,
@@ -392,6 +397,224 @@ function labelNode(label: ReactNode, style: StyleProp): ReactNode {
     ? hx('text', { key: 'label', style }, String(label))
     : label;
 }
+
+/**
+ * One row, as its own memoized component.
+ *
+ * The reason is the CPU profile of a fast scroll: every notch re-renders
+ * the window, and re-creating a hundred rows' elements per notch — then
+ * reconciling them and re-applying identical props to every node — was
+ * over half the burst. Every prop here is identity-stable across a scroll
+ * render (the row model is memoized, the accessors and handlers are stable
+ * callbacks), so React bails out on the rows that did not change and a
+ * notch pays only for the rows it brought in.
+ */
+interface TreeRowViewProps<T> {
+  row: TreeRow<T>;
+  isSelected: boolean;
+  indent: number;
+  rowHeight: number;
+  rtl: boolean;
+  theme: Theme;
+  renderToggle?: (state: TreeToggleState<T>) => ReactNode;
+  renderGuide?: (state: TreeGuideState<T>) => ReactNode;
+  renderLabel?: (state: TreeRowState<T>) => ReactNode;
+  renderContent?: (state: TreeRowState<T>, content: ReactNode[]) => ReactNode;
+  rowStyle: TreeStyles<T>['row'];
+  guideStyle: TreeStyles<T>['guide'];
+  toggleStyle: StyleProp | undefined;
+  labelStyle: StyleProp | undefined;
+  getLabel: (item: T) => ReactNode;
+  onToggle: (id: TreeItemId, item: T, open?: boolean) => void;
+  onGo: (row: TreeRow<T>) => void;
+  onOpen: (row: TreeRow<T>) => void;
+  register: (id: TreeItemId, at: number, node: DrawnNode | null) => void;
+}
+
+function TreeRowView<T>(props: TreeRowViewProps<T>): ReactElement {
+  const {
+    row,
+    isSelected,
+    indent,
+    rowHeight,
+    rtl,
+    theme,
+    renderToggle,
+    renderGuide,
+    renderLabel,
+    renderContent,
+    rowStyle,
+    guideStyle,
+    toggleStyle,
+    labelStyle,
+    getLabel,
+    onToggle,
+    onGo,
+    onOpen,
+    register,
+  } = props;
+  const color = row.disabled
+    ? theme.textMuted
+    : isSelected
+      ? theme.hoverText
+      : theme.text;
+  const state: TreeRowState<T> = {
+    ...row,
+    selected: isSelected,
+    color,
+    toggle: (open?: boolean) => onToggle(row.id, row.item, open),
+    select: () => onGo(row),
+  };
+
+  const content: ReactNode[] = [];
+
+  // The indent. With no guide seam it is one padding value rather than
+  // `depth` empty boxes — a tree ten deep would otherwise build ten nodes
+  // per row to draw nothing.
+  if (renderGuide && row.depth > 0) {
+    const edges = branchEdges(row);
+    for (let level = 0; level < row.depth; level++) {
+      const guide: TreeGuideState<T> = {
+        row: state,
+        level,
+        continues: edges[level],
+        own: level === row.depth - 1,
+        width: indent,
+        height: rowHeight,
+      };
+      content.push(
+        hx(
+          'box',
+          {
+            key: `guide${level}`,
+            style: [
+              s.guide,
+              { width: indent },
+              typeof guideStyle === 'function' ? guideStyle(guide) : guideStyle,
+            ],
+          },
+          renderGuide(guide),
+        ),
+      );
+    }
+  }
+
+  const toggleState: TreeToggleState<T> = { ...state, size: TWISTY_GLYPH };
+  content.push(
+    hx(
+      'box',
+      {
+        key: 'toggle',
+        style: [s.twisty, toggleStyle],
+        // The twisty is its own hit target: clicking it opens the branch
+        // without moving the selection, the way a file browser lets you
+        // peek inside a folder you have not chosen.
+        onClick: row.branch
+          ? (ev) => {
+              ev.stopPropagation();
+              onToggle(row.id, row.item);
+            }
+          : undefined,
+      },
+      renderToggle
+        ? renderToggle(toggleState)
+        : row.branch
+          ? React.createElement(Icon, {
+              name: row.open
+                ? 'chevronDown'
+                : rtl
+                  ? 'chevronLeft'
+                  : 'chevronRight',
+              size: TWISTY_GLYPH,
+              // dimmer than the label on a resting row, and the row's own
+              // ink once it is selected
+              style: isSelected ? undefined : { color: theme.textMuted },
+            })
+          : null,
+    ),
+  );
+
+  content.push(
+    renderLabel
+      ? // Keyed here rather than by the app, for the reason `renderSubtree`
+        // is: the label sits in an array beside the guides and the twisty,
+        // and "add a key to the box you return" is not something a render
+        // prop should have to know.
+        React.createElement(
+          React.Fragment,
+          { key: 'label' },
+          renderLabel(state),
+        )
+      : labelNode(getLabel(row.item), [s.label, labelStyle]),
+  );
+
+  return hx(
+    'box',
+    {
+      role: 'treeitem',
+      'aria-level': row.depth + 1,
+      'aria-selected': isSelected,
+      'aria-expanded': row.branch ? row.open : undefined,
+      'aria-posinset': row.posInSet,
+      'aria-setsize': row.setSize,
+      // `disabled` rather than `aria-disabled`: on a react-x11 node it is
+      // the real thing — it clears the AT-SPI ENABLED/SENSITIVE states and
+      // selects the `:disabled` style block — and there is no aria spelling
+      // of it to write instead.
+      disabled: row.disabled || undefined,
+      // The index the row was drawn at travels with the node, so measuring
+      // does not have to search a hundred thousand rows for where it is.
+      // It can go stale — the rows may move before the tick that measures —
+      // and both this and the height index check it rather than trust it.
+      ref: (node: DrawnNode | null) => {
+        register(row.id, row.index, node);
+      },
+      onClick: (ev) => {
+        if (row.disabled) return;
+        onGo(row);
+        // Select on the first click, open on the second — the gesture every
+        // file list has. `detail` is the click count the renderer already
+        // counts for text selection.
+        if (ev.detail === 2) onOpen(row);
+      },
+      style: [
+        s.row,
+        // A floor, not a height. The row grows to whatever its content
+        // needs — a wrapped label, two lines, a thumbnail — and the height
+        // index reads back what it actually became.
+        { minHeight: rowHeight },
+        // The indent is what says "inside", so it is measured from the edge
+        // the row's label begins at.
+        { paddingStart: renderGuide ? 4 : 4 + row.depth * indent },
+        {
+          backgroundColor: isSelected ? theme.hoverBackground : 'transparent',
+          // The row's ink, said once: `color` inherits, so the label takes
+          // it without being handed it.
+          color,
+        },
+        !row.disabled && {
+          ':hover': {
+            backgroundColor: isSelected
+              ? theme.hoverBackground
+              : theme.surfaceHover,
+          },
+          // The selection only moves on the release, and `:active` marks
+          // the whole press chain, so a press on the label or the twisty
+          // still darkens the row it is in.
+          ':active': {
+            backgroundColor: isSelected
+              ? theme.accentActive
+              : theme.surfaceActive,
+          },
+        },
+        typeof rowStyle === 'function' ? rowStyle(state) : rowStyle,
+      ],
+    },
+    renderContent ? renderContent(state, content) : content,
+  );
+}
+
+const MemoTreeRow = React.memo(TreeRowView) as typeof TreeRowView;
 
 /**
  * `<Tree items />` — a disclosure tree.
@@ -880,174 +1103,43 @@ export function Tree<T = TreeItem>({
   const rowStyleProp = styles?.row;
   const guideStyleProp = styles?.guide;
 
-  const renderOneRow = (row: TreeRow<T>): ReactElement => {
-    const isSelected = row.id === current;
-    const color = row.disabled
-      ? theme.textMuted
-      : isSelected
-        ? theme.hoverText
-        : theme.text;
-    const state: TreeRowState<T> = {
-      ...row,
-      selected: isSelected,
-      color,
-      toggle: (open?: boolean) => toggleId(row.id, row.item, open),
-      select: () => goTo(row),
-    };
+  // The row component's stable half — `MemoTreeRow` bails out of a
+  // re-render only if every prop kept its identity, and this one would
+  // otherwise be rebuilt per row per render.
+  const registerRow = useCallback(
+    (id: TreeItemId, at: number, node: DrawnNode | null): void => {
+      if (node) rowNodes.current.set(id, { node, at });
+      else rowNodes.current.delete(id);
+    },
+    [],
+  );
 
-    const content: ReactNode[] = [];
-
-    // The indent. With no guide seam it is one padding value rather than
-    // `depth` empty boxes — a tree ten deep would otherwise build ten nodes
-    // per row to draw nothing.
-    if (renderGuide && row.depth > 0) {
-      const edges = branchEdges(row);
-      for (let level = 0; level < row.depth; level++) {
-        const guide: TreeGuideState<T> = {
-          row: state,
-          level,
-          continues: edges[level],
-          own: level === row.depth - 1,
-          width: indent,
-          height: rowHeight,
-        };
-        content.push(
-          hx(
-            'box',
-            {
-              key: `guide${level}`,
-              style: [
-                s.guide,
-                { width: indent },
-                typeof guideStyleProp === 'function'
-                  ? guideStyleProp(guide)
-                  : guideStyleProp,
-              ],
-            },
-            renderGuide(guide),
-          ),
-        );
-      }
-    }
-
-    const toggleState: TreeToggleState<T> = { ...state, size: TWISTY_GLYPH };
-    content.push(
-      hx(
-        'box',
-        {
-          key: 'toggle',
-          style: [s.twisty, styles?.toggle],
-          // The twisty is its own hit target: clicking it opens the branch
-          // without moving the selection, the way a file browser lets you
-          // peek inside a folder you have not chosen.
-          onClick: row.branch
-            ? (ev) => {
-                ev.stopPropagation();
-                toggleId(row.id, row.item);
-              }
-            : undefined,
-        },
-        renderToggle
-          ? renderToggle(toggleState)
-          : row.branch
-            ? React.createElement(Icon, {
-                name: row.open
-                  ? 'chevronDown'
-                  : rtl
-                    ? 'chevronLeft'
-                    : 'chevronRight',
-                size: TWISTY_GLYPH,
-                // dimmer than the label on a resting row, and the row's own
-                // ink once it is selected
-                style: isSelected ? undefined : { color: theme.textMuted },
-              })
-            : null,
-      ),
-    );
-
-    content.push(
-      renderLabel
-        ? // Keyed here rather than by the app, for the reason `renderSubtree`
-          // is: the label sits in an array beside the guides and the twisty,
-          // and "add a key to the box you return" is not something a render
-          // prop should have to know.
-          React.createElement(
-            React.Fragment,
-            { key: 'label' },
-            renderLabel(state),
-          )
-        : labelNode(accessors.getLabel(row.item), [s.label, styles?.label]),
-    );
-
-    return hx(
-      'box',
+  const renderOneRow = (row: TreeRow<T>): ReactElement =>
+    React.createElement(
+      MemoTreeRow as (p: TreeRowViewProps<T>) => ReactElement,
       {
         key: String(row.id),
-        role: 'treeitem',
-        'aria-level': row.depth + 1,
-        'aria-selected': isSelected,
-        'aria-expanded': row.branch ? row.open : undefined,
-        'aria-posinset': row.posInSet,
-        'aria-setsize': row.setSize,
-        // `disabled` rather than `aria-disabled`: on a react-x11 node it is
-        // the real thing — it clears the AT-SPI ENABLED/SENSITIVE states and
-        // selects the `:disabled` style block — and there is no aria spelling
-        // of it to write instead.
-        disabled: row.disabled || undefined,
-        // The index the row was drawn at travels with the node, so measuring
-        // does not have to search a hundred thousand rows for where it is.
-        // It can go stale — the rows may move before the tick that measures —
-        // and both this and the height index check it rather than trust it.
-        ref: (node: DrawnNode | null) => {
-          if (node) rowNodes.current.set(row.id, { node, at: row.index });
-          else rowNodes.current.delete(row.id);
-        },
-        onClick: (ev) => {
-          if (row.disabled) return;
-          goTo(row);
-          // Select on the first click, open on the second — the gesture every
-          // file list has. `detail` is the click count the renderer already
-          // counts for text selection.
-          if (ev.detail === 2) activate(row);
-        },
-        style: [
-          s.row,
-          // A floor, not a height. The row grows to whatever its content
-          // needs — a wrapped label, two lines, a thumbnail — and the height
-          // index reads back what it actually became.
-          { minHeight: rowHeight },
-          // The indent is what says "inside", so it is measured from the edge
-          // the row's label begins at.
-          { paddingStart: renderGuide ? 4 : 4 + row.depth * indent },
-          {
-            backgroundColor: isSelected ? theme.hoverBackground : 'transparent',
-            // The row's ink, said once: `color` inherits, so the label takes
-            // it without being handed it.
-            color,
-          },
-          !row.disabled && {
-            ':hover': {
-              backgroundColor: isSelected
-                ? theme.hoverBackground
-                : theme.surfaceHover,
-            },
-            // The selection only moves on the release, and `:active` marks
-            // the whole press chain, so a press on the label or the twisty
-            // still darkens the row it is in.
-            ':active': {
-              backgroundColor: isSelected
-                ? theme.accentActive
-                : theme.surfaceActive,
-            },
-          },
-          typeof rowStyleProp === 'function'
-            ? rowStyleProp(state)
-            : rowStyleProp,
-        ],
+        row,
+        isSelected: row.id === current,
+        indent,
+        rowHeight,
+        rtl,
+        theme,
+        renderToggle,
+        renderGuide,
+        renderLabel,
+        renderContent,
+        rowStyle: rowStyleProp,
+        guideStyle: guideStyleProp,
+        toggleStyle: styles?.toggle,
+        labelStyle: styles?.label,
+        getLabel: accessors.getLabel,
+        onToggle: toggleId,
+        onGo: goTo,
+        onOpen: activate,
+        register: registerRow,
       },
-      renderContent ? renderContent(state, content) : content,
     );
-  };
 
   /**
    * A row the window said not to build in full yet: the box at its indexed
