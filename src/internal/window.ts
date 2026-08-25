@@ -493,8 +493,7 @@ export function useVirtualWindow(inputs: VirtualWindowInputs): VirtualWindow {
     // A window with nothing carried over and no scroll in flight is a mount
     // or a wholesale data change, not a flood — those build in full, or the
     // first paint would be skeletons.
-    const flood =
-      entering > threshold && (active.current || next.size > 0);
+    const flood = entering > threshold && (active.current || next.size > 0);
     if (!flood) {
       for (let i = first; i < last; i++) next.add(rows[i].id);
     } else {
