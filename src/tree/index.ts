@@ -72,9 +72,12 @@ import {
 import type { DelayTick } from '../internal/timers.js';
 import { useReveal } from '../internal/scroll.js';
 import {
+  BURST_BUDGET,
   DEFAULT_OVERSCAN,
   DEFAULT_PREFETCH,
   SCROLL_HINT_DELAY_MS,
+  SKELETON_THRESHOLD,
+  SETTLE_BUDGET,
   useVirtualWindow,
 } from '../internal/window.js';
 import { typeAheadChar, useTypeAhead } from './internal.js';
@@ -452,6 +455,14 @@ export interface TreeProps<T = TreeItem>
    * catch-up engages.
    */
   scrollHintDelay?: number;
+  /**
+   * Tuning for the catch-up pacing — how a scroll that outruns the built
+   * rows is absorbed. All optional, all in rows: `threshold` (default 16)
+   * is how many rows entering in one render count as a flood, `burst`
+   * (default 24) and `settle` (default 48) are the full rows built per
+   * render mid-scroll and after it. See the same prop on `<Table>`.
+   */
+  catchup?: { threshold?: number; burst?: number; settle?: number };
 
   styles?: TreeStyles<T>;
   style?: StyleProp;
@@ -744,6 +755,7 @@ export function Tree<T = TreeItem>({
   renderSubtree,
   renderScrollHint,
   scrollHintDelay = SCROLL_HINT_DELAY_MS,
+  catchup,
   styles,
   style,
   ref,
@@ -846,6 +858,9 @@ export function Tree<T = TreeItem>({
     virtualizing,
     overscan,
     prefetch,
+    threshold: catchup?.threshold ?? SKELETON_THRESHOLD,
+    burstBudget: catchup?.burst ?? BURST_BUDGET,
+    settleBudget: catchup?.settle ?? SETTLE_BUDGET,
   });
   const { view, viewRef } = win;
   /** Whether the fast-scroll pill is up — kept across renders so it does not

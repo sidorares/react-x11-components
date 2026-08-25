@@ -651,6 +651,51 @@ test('a teleport shows skeleton rows first, then fills them in', async () => {
   );
 });
 
+test('catchup={threshold} past the window turns the skeleton tier off', async () => {
+  // The experiment knob: a table of cheap rows can declare floods
+  // impossible, and every teleport then builds in full — no skeletons, no
+  // hint, ever.
+  const seen: number[] = [];
+  await mount(
+    {
+      rows: many(400),
+      rowHeight: 24,
+      catchup: { threshold: 100_000 },
+      scrollHintDelay: 0,
+      renderScrollHint: (state: { pending: number }) => {
+        seen.push(state.pending);
+        return null;
+      },
+    },
+    400,
+    640,
+  );
+  await settle();
+  bodyPane().scrollTo({ y: 6000 });
+  for (let i = 0; i < 4; i++) {
+    await act();
+    assert.strictEqual(
+      screen.all((n) => retained(n).props['aria-hidden'] === true).length,
+      0,
+      'a skeleton appeared with the threshold maxed',
+    );
+  }
+  await settle();
+  // The jump-hint may still fire (that path is the scrub's, not the
+  // skeleton tier's) — but it must never have seen a placeholder.
+  assert.ok(
+    seen.every((p) => p === 0),
+    `placeholders appeared with the threshold maxed: ${seen}`,
+  );
+  const posts = rowNodes().map((n) =>
+    Number(retained(n).props['aria-posinset']),
+  );
+  assert.ok(
+    posts.some((p) => (p - 1) * 24 >= 6000 && (p - 1) * 24 < 6220),
+    'the viewport should be covered by full rows',
+  );
+});
+
 test('the default show-delay keeps a quick catch-up quiet', async () => {
   // The other half of the delay: with the default in force, a single
   // absorbed teleport never shows the hint — it is for the delay you can

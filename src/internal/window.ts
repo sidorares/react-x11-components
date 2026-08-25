@@ -100,18 +100,18 @@ const FAST_V = 1.5;
 /** More rows than this entering the window in one render is a flood — a
  *  teleport or a hard flick — and floods build skeletons first. An ordinary
  *  notch brings in a handful and never trips this. */
-const SKELETON_THRESHOLD = 16;
+export const SKELETON_THRESHOLD = 16;
 /** New full rows built per render while a flood is being caught up with.
  *  Measured (rowcost probe, 300-row commits, warm caches): a default-shape
  *  row costs ~0.11ms against a skeleton's ~0.06ms — about 2×, not the 10×
  *  the original pacing assumed — so the budgets lean generous and the
  *  skeleton tier is there for heavy `render` seams and for the look of
  *  rows arriving, not because full rows are ruinous. */
-const BURST_BUDGET = 24;
+export const BURST_BUDGET = 24;
 /** The same, once the scroll has stopped: bigger steps, still paced, so a
  *  settle after a long flood is a few quick commits rather than one big
  *  one. */
-const SETTLE_BUDGET = 48;
+export const SETTLE_BUDGET = 48;
 
 export interface VirtualViewport {
   /** The pane's vertical offset. */
@@ -155,6 +155,14 @@ export interface VirtualWindowInputs {
    *  prefetch and the retained band off — the slice is exactly
    *  viewport-plus-overscan again. */
   prefetch: number;
+  /** Rows entering the window in one render that count as a flood — below
+   *  it everything builds in full. The component resolves it from its
+   *  `catchup` prop; `SKELETON_THRESHOLD` is the default. */
+  threshold: number;
+  /** Full rows built per render while a flood is in flight / once it has
+   *  settled. `BURST_BUDGET` / `SETTLE_BUDGET` are the defaults. */
+  burstBudget: number;
+  settleBudget: number;
 }
 
 export interface VirtualWindow {
@@ -350,7 +358,17 @@ export function useVirtualWindow(inputs: VirtualWindowInputs): VirtualWindow {
   });
   useEffect(() => () => cancelLater(idleTimer.current), []);
 
-  const { heights, rows, exact, virtualizing, overscan, prefetch } = inputs;
+  const {
+    heights,
+    rows,
+    exact,
+    virtualizing,
+    overscan,
+    prefetch,
+    threshold,
+    burstBudget,
+    settleBudget,
+  } = inputs;
   const count = rows.length;
 
   let first = 0;
@@ -476,14 +494,14 @@ export function useVirtualWindow(inputs: VirtualWindowInputs): VirtualWindow {
     // or a wholesale data change, not a flood — those build in full, or the
     // first paint would be skeletons.
     const flood =
-      entering > SKELETON_THRESHOLD && (active.current || next.size > 0);
+      entering > threshold && (active.current || next.size > 0);
     if (!flood) {
       for (let i = first; i < last; i++) next.add(rows[i].id);
     } else {
       // Viewport rows first — they are the ones being looked at — then
       // outward, up to the budget; the rest are skeletons until the ticks
       // catch up.
-      let budget = active.current ? BURST_BUDGET : SETTLE_BUDGET;
+      let budget = active.current ? burstBudget : settleBudget;
       const vFirst = heights.indexAt(view.top);
       const vLast =
         view.height > 0 ? heights.indexAt(view.top + view.height) : vFirst;

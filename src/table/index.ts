@@ -73,9 +73,12 @@ import {
 import type { DelayTick } from '../internal/timers.js';
 import { useReveal } from '../internal/scroll.js';
 import {
+  BURST_BUDGET,
   DEFAULT_OVERSCAN,
   DEFAULT_PREFETCH,
   SCROLL_HINT_DELAY_MS,
+  SKELETON_THRESHOLD,
+  SETTLE_BUDGET,
   useVirtualWindow,
 } from '../internal/window.js';
 import {
@@ -388,6 +391,23 @@ interface TableBaseProps<Row> extends Omit<
    * catch-up engages.
    */
   scrollHintDelay?: number;
+  /**
+   * Tuning for the catch-up pacing — how a scroll that outruns the built
+   * rows is absorbed. All optional, all in rows:
+   *
+   * - `threshold` (default 16): more rows than this entering the window in
+   *   one render is a flood, and floods build skeletons first. Raise it
+   *   past the window size to never show skeletons; `0` skeletons every
+   *   scroll.
+   * - `burst` (default 24): full rows built per render while the scroll is
+   *   still moving.
+   * - `settle` (default 48): the same once it has stopped.
+   *
+   * The defaults follow the measured cost of a default-shape row (about
+   * twice a skeleton, warm); tables with heavy `render` seams may want
+   * smaller budgets, and cheap tables may raise the threshold instead.
+   */
+  catchup?: { threshold?: number; burst?: number; settle?: number };
 
   styles?: TableStyles<Row>;
   style?: StyleProp;
@@ -670,6 +690,7 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
     renderEmpty,
     renderScrollHint,
     scrollHintDelay = SCROLL_HINT_DELAY_MS,
+    catchup,
     styles,
     style,
     focusable = true,
@@ -817,6 +838,9 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
     virtualizing,
     overscan,
     prefetch,
+    threshold: catchup?.threshold ?? SKELETON_THRESHOLD,
+    burstBudget: catchup?.burst ?? BURST_BUDGET,
+    settleBudget: catchup?.settle ?? SETTLE_BUDGET,
   });
   const { view, viewRef } = win;
   const { first, last, above, below } = win.slice;

@@ -88,6 +88,7 @@ taught.
 | `prefetch`                              | `number`                           | Rows built beyond the overscan while the table sits idle, per side. Default 40; `0` turns the band off. See "What a scroll costs".                            |
 | `renderScrollHint`                      | `(state) => ReactNode`             | The fast-scroll overlay. Default: a centred pill reading "2,345 / 100,000" while placeholders cover the viewport; return `null` for none. See below.          |
 | `scrollHintDelay`                       | `number`                           | How long the viewport must have shown unresolved content before the overlay appears, ms. Default 250; `0` shows it the moment a catch-up engages.             |
+| `catchup`                               | `{ threshold?, burst?, settle? }`  | Catch-up pacing, in rows: what counts as a flood (default 16), and full rows built per render mid-scroll / after it (defaults 24 / 48). See below.            |
 | `renderRow` / `renderEmpty`             |                                    | Seams — see below.                                                                                                                                            |
 | `styles`                                | `TableStyles`                      | Per-part style overrides; row/cell entries may be functions of row state.                                                                                     |
 | `focusable`                             | `boolean`                          | Whether the table is a tab stop. Default true; `false` for a table inside a popup that owns the focus.                                                        |
@@ -195,7 +196,10 @@ virtualization window works toward exactly that:
   direction reversal lands on rows still there.
 - **Skeleton rows.** A scroll that outruns everything — a thumb dragged
   across the list — floods the window with more rows than one render can
-  build in time. Those commit as _skeletons_ first: the row box at its
+  build in time (`catchup.threshold`, default 16 entering rows; the build
+  pace is `catchup.burst` / `catchup.settle` rows per render — raise the
+  threshold past the window size to never see skeletons, or shrink the
+  budgets for tables whose `render` seams are expensive). Those commit as _skeletons_ first: the row box at its
   indexed height with `styles.row` applied and none of its content, so what
   blits in reads as rows arriving rather than a void. They are
   `aria-hidden`, and they fill in viewport-first over the next few ticks.
