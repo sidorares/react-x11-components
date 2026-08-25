@@ -165,6 +165,9 @@ function mount(
         ...props,
       } as TableProps<File>),
     ),
+    // the harness window is 640×480 by default; a pane taller than that
+    // needs the window grown with it
+    height > 440 ? { width: width + 40, height: height + 60 } : {},
   );
 }
 
@@ -612,6 +615,16 @@ test('a teleport shows skeleton rows first, then fills them in', async () => {
     skeletons() > 0,
     'the first commit after a teleport should be skeletons-first',
   );
+  // and a placeholder is not blank: each row carries its bar
+  const barred = screen.all((n) => {
+    const r = retained(n);
+    return (
+      r.props['aria-hidden'] === true &&
+      r.children.length === 1 &&
+      (r.children[0] as RetainedNode).kind === 'box'
+    );
+  });
+  assert.ok(barred.length > 0, 'skeleton rows should carry their bar');
   await settle();
   await idle(300);
   assert.strictEqual(skeletons(), 0, 'the skeletons never filled in');
@@ -622,6 +635,76 @@ test('a teleport shows skeleton rows first, then fills them in', async () => {
     posts.some((p) => (p - 1) * 24 >= 6000 && (p - 1) * 24 < 6220),
     'the viewport should be covered by full rows',
   );
+});
+
+test('a catch-up shows the fast-scroll pill, and the view going whole hides it', async () => {
+  // A pane tall enough that one catch-up commit cannot fill it: the pill
+  // shows only when placeholders would otherwise cover half the screen.
+  await mount({ rows: many(400), rowHeight: 24 }, 400, 640);
+  await settle();
+  const pill = (): number =>
+    screen.all(
+      (n) =>
+        retained(n).kind === 'text' &&
+        / \/ 400$/.test(String(retained(n).props.children)),
+    ).length;
+  assert.strictEqual(pill(), 0, 'the pill showed with nothing to catch up');
+
+  // a teleport floods the window — placeholders cover the viewport, and the
+  // pill says where the user is while they fill in
+  bodyPane().scrollTo({ y: 6000 });
+  await act();
+  assert.strictEqual(pill(), 1, 'the pill should be up during the catch-up');
+
+  await settle();
+  await idle(300);
+  assert.strictEqual(pill(), 0, 'the pill should go when the view is whole');
+});
+
+test('renderScrollHint replaces the pill, and returning null disables it', async () => {
+  const seen: number[] = [];
+  await mount(
+    {
+      rows: many(400),
+      rowHeight: 24,
+      renderScrollHint: (state: { from: number; count: number }) => {
+        seen.push(state.from);
+        return h('text', { key: 'h' }, `near row ${state.from}`);
+      },
+    },
+    400,
+    640,
+  );
+  await settle();
+  bodyPane().scrollTo({ y: 6000 });
+  await act();
+  assert.ok(
+    screen.all(
+      (n) =>
+        retained(n).kind === 'text' &&
+        /^near row /.test(String(retained(n).props.children)),
+    ).length === 1,
+    'the custom hint should replace the pill',
+  );
+  assert.ok(seen.length > 0 && seen[0] > 200, `hint saw from=${seen[0]}`);
+  await settle();
+  await idle(300);
+
+  await cleanup();
+  await mount(
+    { rows: many(400), rowHeight: 24, renderScrollHint: () => null },
+    400,
+    640,
+  );
+  await settle();
+  bodyPane().scrollTo({ y: 6000 });
+  await act();
+  const texts = screen.all(
+    (n) =>
+      retained(n).kind === 'text' &&
+      / \/ 400$/.test(String(retained(n).props.children)),
+  );
+  assert.strictEqual(texts.length, 0, 'null should disable the overlay');
 });
 
 test('the idle band grows without moving what is on screen', async () => {

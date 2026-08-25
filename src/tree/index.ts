@@ -174,6 +174,39 @@ const s = createStyles({
   },
   subtree: { flexShrink: 0 },
   spacer: { flexShrink: 0 },
+  /** The bar inside a skeleton row — a line of "text" with no text, so a
+   *  band of placeholders reads as rows arriving rather than a void. */
+  skeletonBar: {
+    height: 8,
+    borderRadius: 4,
+    alignSelf: 'center',
+    flexShrink: 0,
+  },
+  /** The box the scroll pane and the fast-scroll pill share — it exists so
+   *  the pill can float *outside* the pane, where a scroll cannot move it. */
+  outer: { flexGrow: 1, minHeight: 0 },
+  /** The lane the fast-scroll pill floats in: absolute against the outer
+   *  box so the pane scrolls under it, full-width so the pill centres
+   *  itself, and transparent to the pointer so the rows beneath stay
+   *  clickable. */
+  scrollHintLane: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 12,
+    flexDirection: 'row',
+    justifyContent: 'center',
+    pointerEvents: 'none',
+  },
+  scrollHint: {
+    paddingStart: 10,
+    paddingEnd: 10,
+    paddingTop: 5,
+    paddingBottom: 5,
+    borderRadius: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
 });
 
 // --- what the seams are told -----------------------------------------------
@@ -226,6 +259,24 @@ export interface TreeGuideState<T> {
    *  A `<canvas cacheKey>` need not name it: the paint cache already keys on
    *  the node's laid-out size. */
   height: number;
+}
+
+/**
+ * What `renderScrollHint` is told: where the viewport is, while a fast
+ * scroll is still being caught up with. The top row itself is included so a
+ * hint can show what is *at* this position rather than a number.
+ */
+export interface TreeScrollHintState<T> {
+  /** The first row in view, in draw order. */
+  row: TreeRow<T>;
+  /** Its position, 1-based — "row `from` of `count`". */
+  from: number;
+  /** The last row in view, 1-based. */
+  to: number;
+  /** How many rows the tree is showing. */
+  count: number;
+  /** How many of the rows in view are still placeholders. */
+  pending: number;
 }
 
 /** What `renderSubtree` is told, in `layout="nested"`. */
@@ -380,6 +431,15 @@ export interface TreeProps<T = TreeItem>
   renderContent?: (state: TreeRowState<T>, content: ReactNode[]) => ReactNode;
   /** The subtree container, in `layout="nested"`. */
   renderSubtree?: (state: TreeSubtreeState<T>, rows: ReactNode) => ReactNode;
+  /**
+   * The fast-scroll overlay. Shown only while a scroll has outrun the rows
+   * far enough that placeholders cover a meaningful part of the viewport —
+   * a scroll the tree absorbs within a frame never shows it — and hidden
+   * the moment the view is whole again. The default is a pill reading
+   * "2,345 / 100,000"; return something else to replace it, or null for no
+   * overlay at all.
+   */
+  renderScrollHint?: (state: TreeScrollHintState<T>) => ReactNode;
 
   styles?: TreeStyles<T>;
   style?: StyleProp;
@@ -670,6 +730,7 @@ export function Tree<T = TreeItem>({
   renderLabel,
   renderContent,
   renderSubtree,
+  renderScrollHint,
   styles,
   style,
   ref,
@@ -772,7 +833,10 @@ export function Tree<T = TreeItem>({
     overscan,
     prefetch,
   });
-  const { viewRef } = win;
+  const { view, viewRef } = win;
+  /** Whether the fast-scroll pill is up — kept across renders so it does not
+   *  flicker through a catch-up, only appearing and disappearing once. */
+  const hintShown = useRef(false);
   const { first, last, above, below } = win.slice;
 
   const setExpandedSet = useCallback(
@@ -1163,20 +1227,38 @@ export function Tree<T = TreeItem>({
       toggle: (open?: boolean) => toggleId(row.id, row.item, open),
       select: () => goTo(row),
     };
-    return hx('box', {
-      key: String(row.id),
-      'aria-hidden': true,
-      style: [
-        s.row,
-        // Exactly what the index believes, so the spacers and the scrollbar
-        // agree with the rows on where everything is.
-        { height: index.heightAt(row.index) },
-        {
-          backgroundColor: isSelected ? theme.hoverBackground : 'transparent',
-        },
-        typeof rowStyleProp === 'function' ? rowStyleProp(state) : rowStyleProp,
-      ],
-    });
+    return hx(
+      'box',
+      {
+        key: String(row.id),
+        'aria-hidden': true,
+        style: [
+          s.row,
+          // Exactly what the index believes, so the spacers and the
+          // scrollbar agree with the rows on where everything is.
+          { height: index.heightAt(row.index) },
+          {
+            backgroundColor: isSelected ? theme.hoverBackground : 'transparent',
+          },
+          typeof rowStyleProp === 'function'
+            ? rowStyleProp(state)
+            : rowStyleProp,
+        ],
+      },
+      // A line of "text" with no text, at the row's own indent, so a band
+      // of placeholders reads as the tree arriving rather than a void.
+      hx('box', {
+        key: 'bar',
+        style: [
+          s.skeletonBar,
+          {
+            width: 72 + ((row.index * 37) % 89),
+            marginStart: 4 + row.depth * indent + TWISTY + 4,
+            backgroundColor: theme.track,
+          },
+        ],
+      }),
+    );
   };
 
   /** `layout="nested"`: the same rows, wrapped group by group. */
@@ -1240,56 +1322,134 @@ export function Tree<T = TreeItem>({
     }
   }
 
+  /**
+   * The fast-scroll overlay — shown only while placeholders cover enough of
+   * the viewport that the user would otherwise be looking at blank rows.
+   * The half-viewport threshold keeps a near-miss quiet: a scroll the next
+   * frame will absorb is not worth announcing. Once up it stays until the
+   * view is whole again, so it does not flicker through the catch-up.
+   *
+   * A sibling of the scroll pane, never a child: everything inside the pane
+   * — absolute children included — is shifted by the scroll, so a pill in
+   * there rides away with the very flick it is meant to narrate. Outside,
+   * it is painted after the pane on every repaint frame, which is what a
+   * scrub produces (a jump past the viewport cannot take the blit fast
+   * path), so it stays put while the content flies.
+   */
+  let scrollHint: ReactNode = null;
+  if (virtualizing && rows.length > 0 && view.height > 0) {
+    const vFirst = index.indexAt(view.top);
+    const vLast = Math.min(
+      rows.length - 1,
+      index.indexAt(view.top + view.height),
+    );
+    // Latched for the whole burst once triggered: `pending` bounces to
+    // zero between catch-up commits, and a pill that blinked with it would
+    // read as a glitch. It goes when the burst does.
+    const show =
+      win.pending > 0
+        ? hintShown.current || win.pending * 2 >= vLast - vFirst + 1
+        : hintShown.current && win.scrolling();
+    hintShown.current = show;
+    if (show) {
+      const hintState: TreeScrollHintState<T> = {
+        row: rows[vFirst],
+        from: vFirst + 1,
+        to: vLast + 1,
+        count: rows.length,
+        pending: win.pending,
+      };
+      const content = renderScrollHint
+        ? renderScrollHint(hintState)
+        : hx(
+            'text',
+            { style: { fontSize: 11, color: theme.hoverText } },
+            `${hintState.from.toLocaleString()} / ${hintState.count.toLocaleString()}`,
+          );
+      if (content !== null && content !== undefined && content !== false) {
+        scrollHint = hx(
+          'box',
+          {
+            key: 'scroll-hint',
+            // The pill duplicates what the scrollbar already tells an
+            // assistive technology, and it comes and goes with the
+            // catch-up — chatter, not content.
+            'aria-hidden': true,
+            style: s.scrollHintLane,
+          },
+          hx(
+            'box',
+            {
+              style: [s.scrollHint, { backgroundColor: theme.hoverBackground }],
+            },
+            content,
+          ),
+        );
+      }
+    }
+  } else {
+    hintShown.current = false;
+  }
+
+  // The wrapper exists for the overlay: the scroll pane keeps the role, the
+  // focus, the refs and the events — everything a `<Tree>` has always put
+  // on its root — and the caller's `style` lands out here, where the
+  // tree's place in the layout is decided.
   return hx(
     'box',
-    {
-      theme,
-      role: 'tree',
-      // The tree takes the focus, not the row — see the doc comment.
-      focusable: true,
-      ...boxProps,
-      ref: scroller,
-      style: [s.root, style],
-      /**
-       * `preventDefault` is the load-bearing half.
-       *
-       * The tree's root is a scroll container **and** the focused node, and a
-       * focused scroller has default key actions of its own: Down and Up
-       * scroll by a wheel notch, the Page keys by a viewport, Home and End to
-       * the ends, Space by a page. Without this, every arrow did both — moved
-       * the selection *and* scrolled the list under it — which reads as the
-       * tree scrolling whenever you use the keyboard rather than only when
-       * the selection would otherwise leave the viewport.
-       *
-       * `handleKey` reports whether the tree took the key, so a key it did
-       * not take (a letter that matched nothing) still gets the default.
-       */
-      onKeyDown: (ev) => {
-        if (handleKey(ev)) ev.preventDefault();
+    { style: [s.outer, style] },
+    hx(
+      'box',
+      {
+        theme,
+        role: 'tree',
+        // The tree takes the focus, not the row — see the doc comment.
+        focusable: true,
+        ...boxProps,
+        ref: scroller,
+        style: s.root,
+        /**
+         * `preventDefault` is the load-bearing half.
+         *
+         * The tree's root is a scroll container **and** the focused node, and a
+         * focused scroller has default key actions of its own: Down and Up
+         * scroll by a wheel notch, the Page keys by a viewport, Home and End to
+         * the ends, Space by a page. Without this, every arrow did both — moved
+         * the selection *and* scrolled the list under it — which reads as the
+         * tree scrolling whenever you use the keyboard rather than only when
+         * the selection would otherwise leave the viewport.
+         *
+         * `handleKey` reports whether the tree took the key, so a key it did
+         * not take (a letter that matched nothing) still gets the default.
+         */
+        onKeyDown: (ev) => {
+          if (handleKey(ev)) ev.preventDefault();
+        },
+        // Layout, not scrolling, is what first tells a list how much of it is
+        // worth building — and it is also where a page key gets its distance,
+        // so this is measured whether or not the tree virtualizes.
+        onViewport: (ev) => {
+          win.sized(ev.width, ev.height);
+          // The content just changed size, which is both the moment an owed
+          // scroll can reach further than the clamp let it and the moment the
+          // pane may have re-clamped its offset without saying so. It is not a
+          // moment anything can be *settled* in: this runs from layout, a tick
+          // before the pass that reads the rows it just drew back.
+          reveal.retry(virtualizing);
+          syncScroll();
+          onViewport?.(ev);
+        },
+        onScroll: (ev) => {
+          // A scroll this component did not ask for is the user taking over,
+          // and an owed reveal must not yank the tree back out from under them
+          // on the next layout.
+          reveal.heard(ev.scrollY);
+          win.scrolled(ev.scrollY);
+          onScroll?.(ev);
+        },
       },
-      // Layout, not scrolling, is what first tells a list how much of it is
-      // worth building — and it is also where a page key gets its distance,
-      // so this is measured whether or not the tree virtualizes.
-      onViewport: (ev) => {
-        win.sized(ev.width, ev.height);
-        // The content just changed size, which is both the moment an owed
-        // scroll can reach further than the clamp let it and the moment the
-        // pane may have re-clamped its offset without saying so. It is not a
-        // moment anything can be *settled* in: this runs from layout, a tick
-        // before the pass that reads the rows it just drew back.
-        reveal.retry(virtualizing);
-        syncScroll();
-        onViewport?.(ev);
-      },
-      onScroll: (ev) => {
-        // A scroll this component did not ask for is the user taking over,
-        // and an owed reveal must not yank the tree back out from under them
-        // on the next layout.
-        reveal.heard(ev.scrollY);
-        win.scrolled(ev.scrollY);
-        onScroll?.(ev);
-      },
-    },
-    body,
+      body,
+    ),
+    scrollHint,
   );
 }

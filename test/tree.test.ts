@@ -823,6 +823,36 @@ test('a virtualized tree measures its rows and totals them honestly', async () =
   assert.ok(rowNodes().length < 180, `built ${rowNodes().length} of 400`);
 });
 
+test('a catch-up shows the fast-scroll pill, and settling hides it', async () => {
+  const items: TreeItem[] = Array.from({ length: 400 }, (_, i) => ({
+    id: i,
+    label: `row ${i}`,
+  }));
+  await renderX11(
+    h(
+      'box',
+      { style: { width: 200, height: 640, minHeight: 0 } },
+      h(Tree, { items, virtual: true }),
+    ),
+    // the harness window is 480 tall by default; the pill only shows when
+    // one catch-up commit cannot fill the pane, which needs a tall one
+    { height: 700 },
+  );
+  await settle();
+  const pill = (): number =>
+    screen.all(
+      (n) =>
+        retained(n).kind === 'text' &&
+        / \/ 400$/.test(String(retained(n).props.children)),
+    ).length;
+  treePane().scrollTo({ y: 6000 });
+  await act();
+  assert.strictEqual(pill(), 1, 'the pill should be up during the catch-up');
+  await settle();
+  await idle(300);
+  assert.strictEqual(pill(), 0, 'the pill should go when the view is whole');
+});
+
 test('the idle band grows past the overscan while the tree sits still', async () => {
   // The band itself is asserted in detail against <Table>; this holds the
   // tree to the same machinery: rows accumulate beyond the slice while

@@ -193,6 +193,37 @@ const s = createStyles({
   },
   cellText: { fontSize: 12, textWrap: 'nowrap', textBoxTrim: 'cap-alphabetic' },
   spacer: { flexShrink: 0 },
+  /** The bar inside a skeleton row — a line of "text" with no text, so a
+   *  band of placeholders reads as rows arriving rather than a void. */
+  skeletonBar: {
+    height: 8,
+    borderRadius: 4,
+    marginStart: 8,
+    alignSelf: 'center',
+    flexShrink: 0,
+  },
+  /** The lane the fast-scroll pill floats in: absolute against the table's
+   *  root so the body pane scrolls under it, full-width so the pill centres
+   *  itself, and transparent to the pointer so the rows beneath stay
+   *  clickable. */
+  scrollHintLane: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 12,
+    flexDirection: 'row',
+    justifyContent: 'center',
+    pointerEvents: 'none',
+  },
+  scrollHint: {
+    paddingStart: 10,
+    paddingEnd: 10,
+    paddingTop: 5,
+    paddingBottom: 5,
+    borderRadius: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
   sortMark: { marginStart: 4 },
   empty: {
     flexGrow: 1,
@@ -201,6 +232,25 @@ const s = createStyles({
     padding: 16,
   },
 });
+
+/**
+ * What `renderScrollHint` is told: where the viewport is, while a fast
+ * scroll is still being caught up with. The top row itself is included so a
+ * hint can show what is *at* this position — a date, a group, a name — the
+ * way a photo library's scrubber shows the month.
+ */
+export interface TableScrollHintState<Row = any> {
+  /** The first row in view, in display order. */
+  row: TableRow<Row>;
+  /** Its position, 1-based — "row `from` of `count`". */
+  from: number;
+  /** The last row in view, 1-based. */
+  to: number;
+  /** How many rows the table has. */
+  count: number;
+  /** How many of the rows in view are still placeholders. */
+  pending: number;
+}
 
 /** The selection that just changed, alongside the whole set. `id`/`row` name
  *  the row the gesture landed on; a select-all has no single row to name. */
@@ -316,6 +366,16 @@ interface TableBaseProps<Row> extends Omit<
   /** The body's content when the rows resolve empty. Nothing by default —
    *  the header still shows. */
   renderEmpty?: () => ReactNode;
+  /**
+   * The fast-scroll overlay. Shown only while a scroll has outrun the rows
+   * far enough that placeholders cover a meaningful part of the viewport —
+   * a scroll the table absorbs within a frame never shows it — and hidden
+   * the moment the view is whole again. The default is a pill reading
+   * "2,345 / 100,000"; return something else to replace it (the state
+   * carries the top row, so a hint can show a date or a name instead of a
+   * number), or null for no overlay at all.
+   */
+  renderScrollHint?: (state: TableScrollHintState<Row>) => ReactNode;
 
   styles?: TableStyles<Row>;
   style?: StyleProp;
@@ -596,6 +656,7 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
     prefetch = DEFAULT_PREFETCH,
     renderRow,
     renderEmpty,
+    renderScrollHint,
     styles,
     style,
     focusable = true,
@@ -709,6 +770,9 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
     new Map<TableRowId, { node: DrawnNode; at: number }>(),
   );
   const drag = useRef<{ id: string; from: number; width: number } | null>(null);
+  /** Whether the fast-scroll pill is up — kept across renders so it does not
+   *  flicker through a catch-up, only appearing and disappearing once. */
+  const hintShown = useRef(false);
   const userWidthsRef = useRef(userWidths);
   userWidthsRef.current = userWidths;
 
@@ -1193,20 +1257,37 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
       selected: isSelected,
       color: isSelected ? theme.hoverText : theme.text,
     };
-    return hx('box', {
-      key: String(entry.id),
-      'aria-hidden': true,
-      style: [
-        s.row,
-        // Exactly what the index believes, so the spacers and the scrollbar
-        // agree with the rows on where everything is.
-        { height: heights.heightAt(entry.index) },
-        {
-          backgroundColor: isSelected ? theme.hoverBackground : 'transparent',
-        },
-        typeof rowStyleProp === 'function' ? rowStyleProp(state) : rowStyleProp,
-      ],
-    });
+    return hx(
+      'box',
+      {
+        key: String(entry.id),
+        'aria-hidden': true,
+        style: [
+          s.row,
+          // Exactly what the index believes, so the spacers and the
+          // scrollbar agree with the rows on where everything is.
+          { height: heights.heightAt(entry.index) },
+          {
+            backgroundColor: isSelected ? theme.hoverBackground : 'transparent',
+          },
+          typeof rowStyleProp === 'function'
+            ? rowStyleProp(state)
+            : rowStyleProp,
+        ],
+      },
+      // A line of "text" with no text. Width varied by index, so a band of
+      // placeholders reads as rows arriving rather than a repeated tile.
+      hx('box', {
+        key: 'bar',
+        style: [
+          s.skeletonBar,
+          {
+            width: 96 + ((entry.index * 37) % 89),
+            backgroundColor: theme.track,
+          },
+        ],
+      }),
+    );
   };
 
   const headerCells = columns.map((column, at) => {
@@ -1359,6 +1440,68 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
     }
   }
 
+  /**
+   * The fast-scroll overlay — shown only while placeholders cover enough of
+   * the viewport that the user would otherwise be looking at blank rows.
+   * The half-viewport threshold keeps a near-miss quiet: a scroll the next
+   * frame will absorb is not worth announcing. Once up it stays until the
+   * view is whole again, so it does not flicker through the catch-up.
+   */
+  let scrollHint: ReactNode = null;
+  if (virtualizing && ordered.length > 0 && view.height > 0) {
+    const vFirst = heights.indexAt(view.top);
+    const vLast = Math.min(
+      ordered.length - 1,
+      heights.indexAt(view.top + view.height),
+    );
+    // Latched for the whole burst once triggered: `pending` bounces to
+    // zero between catch-up commits, and a pill that blinked with it would
+    // read as a glitch. It goes when the burst does.
+    const show =
+      win.pending > 0
+        ? hintShown.current || win.pending * 2 >= vLast - vFirst + 1
+        : hintShown.current && win.scrolling();
+    hintShown.current = show;
+    if (show) {
+      const hintState: TableScrollHintState<Row> = {
+        row: ordered[vFirst],
+        from: vFirst + 1,
+        to: vLast + 1,
+        count: ordered.length,
+        pending: win.pending,
+      };
+      const content = renderScrollHint
+        ? renderScrollHint(hintState)
+        : hx(
+            'text',
+            { style: { fontSize: 11, color: theme.hoverText } },
+            `${hintState.from.toLocaleString()} / ${hintState.count.toLocaleString()}`,
+          );
+      if (content !== null && content !== undefined && content !== false) {
+        scrollHint = hx(
+          'box',
+          {
+            key: 'scroll-hint',
+            // The pill duplicates what the scrollbar already tells an
+            // assistive technology, and it comes and goes with the catch-up
+            // — chatter, not content.
+            'aria-hidden': true,
+            style: s.scrollHintLane,
+          },
+          hx(
+            'box',
+            {
+              style: [s.scrollHint, { backgroundColor: theme.hoverBackground }],
+            },
+            content,
+          ),
+        );
+      }
+    }
+  } else {
+    hintShown.current = false;
+  }
+
   return hx(
     'box',
     {
@@ -1433,5 +1576,6 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
       },
       hx('box', { style: [s.rowsBox, { width: total }] }, bodyChildren),
     ),
+    scrollHint,
   );
 }

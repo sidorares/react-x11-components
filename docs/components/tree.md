@@ -76,6 +76,7 @@ and the keyboard steps over it.
 | `renderLabel`                                                      | `(state: TreeRowState<T>) => ReactNode`           | The label cell. An icon in front of the text goes here.                                                                                                |
 | `renderContent`                                                    | `(state, content: ReactNode[]) => ReactNode`      | Everything inside the row box, given what would have been there.                                                                                       |
 | `renderSubtree`                                                    | `(state: TreeSubtreeState<T>, rows) => ReactNode` | The subtree container, in `layout="nested"`.                                                                                                           |
+| `renderScrollHint`                                                 | `(state: TreeScrollHintState<T>) => ReactNode`    | The fast-scroll overlay. Default: a centred pill reading "2,345 / 100,000" while placeholders cover the viewport; return `null` for none.              |
 | `styles`                                                           | `TreeStyles<T>`                                   | `{ row, toggle, guide, label, subtree }`. `row` and `guide` also take a function of the state.                                                         |
 | `style`                                                            | `StyleProp`                                       | The scroll container.                                                                                                                                  |
 | `ref`                                                              | `Ref<TreeHandle<T>>`                              | See below.                                                                                                                                             |
@@ -388,3 +389,9 @@ tree — 100,000 rows by default, `--stress=1000000` for more — fully expanded
 from the start, every seventh name long enough to wrap. It is the shape the
 virtualization window is tuned against, so it is the place to feel out a
 fast scroll, a scrollbar drag across the whole list, and a reversal.
+
+A scroll that outruns the built rows commits skeleton rows first — the row
+box at its indexed height carrying a muted bar at the row's indent — and
+floats the fast-scroll pill over the pane while they fill in; see
+[`<Table>`](table.md)'s "What a scroll costs" for the full story and
+`renderScrollHint` for replacing the pill.
