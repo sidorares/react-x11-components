@@ -194,11 +194,16 @@ function App(): ReactElement {
   useEffect(() => {
     if (!tail.current) return;
     tail.current = false;
-    const last = entries[entries.length - 1];
+    // The last row **in display order**, off the handle — not the last row
+    // appended. The logs sort by source, so an appended row lands mid-list
+    // and revealing *it* reads as "scrolled to the middle"; a tail follows
+    // the bottom of the view, whatever the sort did.
+    const shown = logs.current?.rows() ?? [];
+    const last = shown[shown.length - 1];
     if (last) logs.current?.scrollToRow(last.id);
   }, [entries]);
   return (
-    <window title="Table — the ladder" style={{ width: 980, height: 560 }}>
+    <window title="Table — the ladder">
       <box
         style={{
           flexShrink: 0,
