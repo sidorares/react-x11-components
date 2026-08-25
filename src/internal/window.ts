@@ -162,6 +162,14 @@ export interface VirtualWindow {
    */
   skeletons: ReadonlySet<RowKey>;
   /**
+   * The window teleported this render: nothing it had built overlaps where
+   * the viewport is now. One jump is a scrollbar page; a *run* of them
+   * while a burst is in flight is a thumb scrub, where every commit chases
+   * a viewport that has already left — the case a scroll-position overlay
+   * exists for, because nothing else useful can be on screen.
+   */
+  jumped: boolean;
+  /**
    * How many of the rows **on screen** are skeletons this render — the
    * measure of "the user is looking at rows that have no content yet".
    * `0` the moment the viewport is fully real again, even while the band
@@ -264,6 +272,7 @@ export function useVirtualWindow(inputs: VirtualWindowInputs): VirtualWindow {
       // one has no slice to rebuild, and re-rendering it on a scroll it
       // already drew would be work for nothing.
       if (!inp.current.virtualizing) return;
+      (globalThis as any).__scrolls = ((globalThis as any).__scrolls ?? 0) + 1;
       const now = Date.now();
       const s = vel.current;
       const dt = now - s.t;
@@ -328,6 +337,7 @@ export function useVirtualWindow(inputs: VirtualWindowInputs): VirtualWindow {
 
   let first = 0;
   let last = count;
+  let jumped = false;
   wantsGrowth.current = false;
   /** Skeletons are still being filled in from the last render — the band
    *  must not grow while they are, or the debt outruns the catch-up. */
@@ -337,7 +347,15 @@ export function useVirtualWindow(inputs: VirtualWindowInputs): VirtualWindow {
     // burst is in flight, by where that burst will be in a few frames. The
     // lead goes on the edge being exposed; the overscan already covers the
     // trailing one.
-    const lead = active.current ? vel.current.v * LEAD_MS : 0;
+    //
+    // **Clamped to one viewport.** A scrollbar scrub moves millions of
+    // pixels a second, and an unclamped `v × LEAD_MS` asked the slice for
+    // tens of thousands of rows — one commit mounting them froze the app
+    // for seconds, the very thing a virtualized list exists to prevent. A
+    // viewport ahead is all a lead can usefully buy: anything further is
+    // out of sight again before it finishes landing.
+    const rawLead = active.current ? vel.current.v * LEAD_MS : 0;
+    const lead = Math.max(-view.height, Math.min(view.height, rawLead));
     const topEdge = Math.max(0, view.top + Math.min(0, lead));
     const coreFirst = Math.max(0, heights.indexAt(topEdge) - overscan);
     let coreLast: number;
@@ -363,6 +381,8 @@ export function useVirtualWindow(inputs: VirtualWindowInputs): VirtualWindow {
         if (bl > bf && bl >= first && bf <= last) {
           first = Math.min(first, bf);
           last = Math.max(last, bl);
+        } else if (bl > bf) {
+          jumped = true;
         }
       }
 
@@ -491,6 +511,7 @@ export function useVirtualWindow(inputs: VirtualWindowInputs): VirtualWindow {
     viewRef,
     slice: { first, last, above, below },
     skeletons,
+    jumped,
     pending,
     scrolled,
     sized,

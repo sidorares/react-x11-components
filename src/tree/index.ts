@@ -747,6 +747,7 @@ export function Tree<T = TreeItem>({
   onViewport,
   ...boxProps
 }: TreeProps<T>): ReactElement {
+  (globalThis as any).__renders = ((globalThis as any).__renders ?? 0) + 1;
   const theme = useTheme();
   const rtl = useDirection() === 'rtl';
   const [ownExpanded, setOwnExpanded] = useState<ReadonlySet<TreeItemId>>(
@@ -974,6 +975,7 @@ export function Tree<T = TreeItem>({
     let look: DelayTick = null;
     let tries = 0;
     const pass = (): void => {
+      (globalThis as any).__ticks = ((globalThis as any).__ticks ?? 0) + 1;
       // `measureRows` first, and its answer handed on: a pass that moved the
       // heights has not settled anything, and an owed scroll judged against
       // the layout it is about to invalidate is not owed any less. During a
@@ -1343,13 +1345,17 @@ export function Tree<T = TreeItem>({
       rows.length - 1,
       index.indexAt(view.top + view.height),
     );
-    // Latched for the whole burst once triggered: `pending` bounces to
-    // zero between catch-up commits, and a pill that blinked with it would
-    // read as a glitch. It goes when the burst does.
+    // Two ways in: placeholders covering enough of the viewport that it
+    // would otherwise read as blank, or a scrub — the window teleporting
+    // while the burst is still in flight, where every commit chases a
+    // viewport that has already left and nothing useful can be on screen.
+    // Latched once triggered: `pending` bounces to zero between catch-up
+    // commits, and a pill that blinked with it would read as a glitch. It
+    // goes when the burst does.
     const show =
-      win.pending > 0
-        ? hintShown.current || win.pending * 2 >= vLast - vFirst + 1
-        : hintShown.current && win.scrolling();
+      (win.pending > 0 && win.pending * 2 >= vLast - vFirst + 1) ||
+      (win.jumped && win.scrolling()) ||
+      (hintShown.current && (win.pending > 0 || win.scrolling()));
     hintShown.current = show;
     if (show) {
       const hintState: TreeScrollHintState<T> = {

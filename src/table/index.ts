@@ -1454,13 +1454,17 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
       ordered.length - 1,
       heights.indexAt(view.top + view.height),
     );
-    // Latched for the whole burst once triggered: `pending` bounces to
-    // zero between catch-up commits, and a pill that blinked with it would
-    // read as a glitch. It goes when the burst does.
+    // Two ways in: placeholders covering enough of the viewport that it
+    // would otherwise read as blank, or a scrub — the window teleporting
+    // while the burst is still in flight, where every commit chases a
+    // viewport that has already left and nothing useful can be on screen.
+    // Latched once triggered: `pending` bounces to zero between catch-up
+    // commits, and a pill that blinked with it would read as a glitch. It
+    // goes when the burst does.
     const show =
-      win.pending > 0
-        ? hintShown.current || win.pending * 2 >= vLast - vFirst + 1
-        : hintShown.current && win.scrolling();
+      (win.pending > 0 && win.pending * 2 >= vLast - vFirst + 1) ||
+      (win.jumped && win.scrolling()) ||
+      (hintShown.current && (win.pending > 0 || win.scrolling()));
     hintShown.current = show;
     if (show) {
       const hintState: TableScrollHintState<Row> = {

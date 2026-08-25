@@ -824,6 +824,10 @@ test('a virtualized tree measures its rows and totals them honestly', async () =
 });
 
 test('a catch-up shows the fast-scroll pill, and settling hides it', async () => {
+  // Observed through the seam rather than the painted tree — the catch-up
+  // can complete within a single act under the test clock, so the painted
+  // pill's lifetime is a race; the decision to show is not.
+  const seen: number[] = [];
   const items: TreeItem[] = Array.from({ length: 400 }, (_, i) => ({
     id: i,
     label: `row ${i}`,
@@ -832,25 +836,32 @@ test('a catch-up shows the fast-scroll pill, and settling hides it', async () =>
     h(
       'box',
       { style: { width: 200, height: 640, minHeight: 0 } },
-      h(Tree, { items, virtual: true }),
+      h(Tree, {
+        items,
+        virtual: true,
+        renderScrollHint: (state: { from: number; pending: number }) => {
+          seen.push(state.from);
+          return h('text', { key: 'p' }, `at ${state.from}`);
+        },
+      }),
     ),
     // the harness window is 480 tall by default; the pill only shows when
     // one catch-up commit cannot fill the pane, which needs a tall one
     { height: 700 },
   );
   await settle();
-  const pill = (): number =>
-    screen.all(
-      (n) =>
-        retained(n).kind === 'text' &&
-        / \/ 400$/.test(String(retained(n).props.children)),
-    ).length;
+  await idle(300);
+  assert.strictEqual(seen.length, 0, 'the hint fired with nothing to catch up');
   treePane().scrollTo({ y: 6000 });
-  await act();
-  assert.strictEqual(pill(), 1, 'the pill should be up during the catch-up');
   await settle();
   await idle(300);
-  assert.strictEqual(pill(), 0, 'the pill should go when the view is whole');
+  assert.ok(seen.length > 0 && seen[0] > 200, `the hint saw from=${seen[0]}`);
+  const painted = screen.all(
+    (n) =>
+      retained(n).kind === 'text' &&
+      /^at \d+$/.test(String(retained(n).props.children)),
+  ).length;
+  assert.strictEqual(painted, 0, 'the pill should go when the view is whole');
 });
 
 test('the idle band grows past the overscan while the tree sits still', async () => {
