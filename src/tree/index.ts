@@ -60,6 +60,7 @@ import type { Host } from './hx.js';
 import { RowHeights } from '../internal/heights.js';
 import { afterLayout, cancelAfterLayout } from '../internal/timers.js';
 import { useReveal } from '../internal/scroll.js';
+import { DEFAULT_OVERSCAN, useVirtualWindow } from '../internal/window.js';
 import { typeAheadChar, useTypeAhead } from './internal.js';
 import {
   branchEdges,
@@ -107,16 +108,6 @@ const TWISTY = 12;
  *  is half of that, so `size` for one reads as its width. */
 const TWISTY_GLYPH = 10;
 const ROW_HEIGHT = 22;
-/** Rows kept either side of the viewport, so a fast scroll does not show a
- *  gap before the next frame catches up. */
-const OVERSCAN = 6;
-/**
- * What to build before the viewport has been measured. `onViewport` cannot
- * arrive until layout has run, which is a frame after the first commit, so
- * there is always one render that has to guess — and guessing "all of them"
- * puts a hundred thousand rows in the tree for a frame.
- */
-const ASSUMED_ROWS = 40;
 /**
  * Where `virtual="auto"` starts virtualizing.
  *
@@ -427,7 +418,7 @@ export function Tree<T = TreeItem>({
   rowHeight = ROW_HEIGHT,
   estimatedRowHeight,
   virtual = 'auto',
-  overscan = OVERSCAN,
+  overscan = DEFAULT_OVERSCAN,
   layout = 'flat',
   renderToggle,
   renderGuide,
@@ -458,7 +449,6 @@ export function Tree<T = TreeItem>({
   const [ownSelected, setOwnSelected] = useState<TreeItemId | null>(
     defaultSelected ?? null,
   );
-  const [view, setView] = useState({ top: 0, height: 0 });
   // Bumped by a measurement pass that found a row taller or shorter than the
   // index believed. It is the only reason the component re-renders for a
   // measurement, and a pass that finds nothing new does not bump it, which is
@@ -512,8 +502,6 @@ export function Tree<T = TreeItem>({
   rowsRef.current = rows;
   const itemsRef = useRef(items);
   itemsRef.current = items;
-  const viewRef = useRef(view);
-  viewRef.current = view;
 
   const virtualizing =
     layout === 'flat' &&
@@ -526,30 +514,17 @@ export function Tree<T = TreeItem>({
   const index = heights;
   index.sync(rows, estimate);
 
-  // The slice worth building: what is on screen, plus a little either side.
-  // Which rows those are is a question for the height index now — with rows
-  // of different heights there is no division that answers it.
-  const first = virtualizing
-    ? Math.max(0, index.indexAt(view.top) - overscan)
-    : 0;
-  let last = rows.length;
-  if (virtualizing) {
-    if (view.height > 0) {
-      last = Math.min(
-        rows.length,
-        index.indexAt(view.top + view.height) + 1 + overscan,
-      );
-    } else {
-      // Before the first layout there is no viewport to measure against, and
-      // guessing "all of them" would put a hundred thousand rows in the tree
-      // for a frame.
-      last = Math.min(rows.length, first + ASSUMED_ROWS);
-    }
-  }
-  /** Where the slice starts, and how much of the list is below it — the two
-   *  spacers that keep the scrollbar measuring the whole tree. */
-  const above = virtualizing ? index.offsetAt(first) : 0;
-  const below = virtualizing ? index.total() - index.offsetAt(last) : 0;
+  /** The viewport, and the slice worth building from it — the machinery
+   *  shared with `<Table>` (`../internal/window.ts`). */
+  const win = useVirtualWindow({
+    box: scroller,
+    heights,
+    count: rows.length,
+    virtualizing,
+    overscan,
+  });
+  const { viewRef } = win;
+  const { first, last, above, below } = win.slice;
 
   const setExpandedSet = useCallback(
     (next: ReadonlySet<TreeItemId>, change: TreeExpandChange<T>): void => {
@@ -597,21 +572,9 @@ export function Tree<T = TreeItem>({
     [reveal],
   );
 
-  /**
-   * Re-read the offset the pane is *actually* at.
-   *
-   * It moves silently — a queued reveal resolves during layout, and an offset
-   * the content outgrew or outshrank is re-clamped there — and a slice built
-   * from the offset before those is drawn where the viewport is not: a blank
-   * band where the rows should be, until a scroll of your own re-syncs it by
-   * accident.
-   */
-  const syncScroll = useCallback((): void => {
-    const box = scroller.current;
-    if (!box || !virtualizing) return;
-    const y = box.scrollY;
-    setView((prev) => (prev.top === y ? prev : { ...prev, top: y }));
-  }, [virtualizing]);
+  /** Re-read the offset the pane is *actually* at — the window's `sync`; see
+   *  `../internal/window.ts` for why the pane moves silently. */
+  const syncScroll = win.sync;
 
   /**
    * Read back what the rows on screen actually laid out at.
@@ -1097,9 +1060,7 @@ export function Tree<T = TreeItem>({
       // worth building — and it is also where a page key gets its distance,
       // so this is measured whether or not the tree virtualizes.
       onViewport: (ev) => {
-        setView((prev) =>
-          prev.height === ev.height ? prev : { ...prev, height: ev.height },
-        );
+        win.sized(ev.width, ev.height);
         // The content just changed size, which is both the moment an owed
         // scroll can reach further than the clamp let it and the moment the
         // pane may have re-clamped its offset without saying so. It is not a
@@ -1114,11 +1075,7 @@ export function Tree<T = TreeItem>({
         // and an owed reveal must not yank the tree back out from under them
         // on the next layout.
         reveal.heard(ev.scrollY);
-        if (virtualizing) {
-          setView((prev) =>
-            prev.top === ev.scrollY ? prev : { ...prev, top: ev.scrollY },
-          );
-        }
+        win.scrolled(ev.scrollY);
         onScroll?.(ev);
       },
     },

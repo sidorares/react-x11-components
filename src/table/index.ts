@@ -65,6 +65,7 @@ import type { Host } from './hx.js';
 import { RowHeights } from '../internal/heights.js';
 import { afterLayout, cancelAfterLayout } from '../internal/timers.js';
 import { useReveal } from '../internal/scroll.js';
+import { DEFAULT_OVERSCAN, useVirtualWindow } from '../internal/window.js';
 import {
   MIN_COLUMN,
   columnValue,
@@ -120,16 +121,6 @@ const HALF = 3;
 const GRIP = HALF + RULE + HALF;
 /** What one Left/Right on a focused grip is worth. */
 const STEP = 16;
-/** Rows kept either side of the viewport, so a fast scroll does not show a
- *  gap before the next frame catches up. */
-const OVERSCAN = 6;
-/**
- * What to build before the viewport has been measured. `onViewport` cannot
- * arrive until layout has run, which is a frame after the first commit, so
- * there is always one render that has to guess — and guessing "all of them"
- * puts a hundred thousand rows in the tree for a frame.
- */
-const ASSUMED_ROWS = 40;
 /**
  * Where `virtual="auto"` starts virtualizing.
  *
@@ -413,7 +404,7 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
     rowHeight,
     estimatedRowHeight,
     virtual = 'auto',
-    overscan = OVERSCAN,
+    overscan = DEFAULT_OVERSCAN,
     renderRow,
     renderEmpty,
     styles,
@@ -473,7 +464,6 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
     Readonly<Record<string, number>>
   >({});
   const [scrollX, setScrollX] = useState(0);
-  const [view, setView] = useState({ top: 0, height: 0, width: 0 });
   // Bumped by a measurement pass that found a row taller or shorter than the
   // index believed. It is the only reason the component re-renders for a
   // measurement, and a pass that finds nothing new does not bump it — which
@@ -519,8 +509,6 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
   selectedRef.current = selectedIds;
   const cursorRef = useRef(cursor);
   cursorRef.current = cursor;
-  const viewRef = useRef(view);
-  viewRef.current = view;
   /** Where a Shift range grows from — the last plain click or plain step. */
   const anchorRef = useRef<TableRowId | null>(null);
 
@@ -551,25 +539,17 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
     virtual === true ||
     (virtual === 'auto' && ordered.length > VIRTUAL_THRESHOLD);
 
-  // The slice worth building: what is on screen, plus a little either side.
-  const first = virtualizing
-    ? Math.max(0, heights.indexAt(view.top) - overscan)
-    : 0;
-  let last = ordered.length;
-  if (virtualizing) {
-    if (view.height > 0) {
-      last = Math.min(
-        ordered.length,
-        heights.indexAt(view.top + view.height) + 1 + overscan,
-      );
-    } else {
-      last = Math.min(ordered.length, first + ASSUMED_ROWS);
-    }
-  }
-  /** Where the slice starts, and how much of the list is below it — the two
-   *  spacers that keep the scrollbar measuring the whole table. */
-  const above = virtualizing ? heights.offsetAt(first) : 0;
-  const below = virtualizing ? heights.total() - heights.offsetAt(last) : 0;
+  /** The viewport, and the slice worth building from it — the machinery
+   *  shared with `<Tree>` (`../internal/window.ts`). */
+  const win = useVirtualWindow({
+    box: body,
+    heights,
+    count: ordered.length,
+    virtualizing,
+    overscan,
+  });
+  const { view, viewRef } = win;
+  const { first, last, above, below } = win.slice;
 
   /** Columns resolve to pixels once, at the table level, per (columns,
    *  viewport, resizes) — every row agrees on the grid by construction. */
@@ -592,25 +572,19 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
   });
 
   /**
-   * Re-read the offset the body is *actually* at.
-   *
-   * The pane moves silently — it resolves a queued reveal during layout, and
-   * re-clamps an offset the content outgrew or outshrank — and a slice built
-   * from the offset before those is drawn where the viewport is not: a blank
-   * band where the rows should be, and no way back until a scroll of your own
-   * re-syncs it by accident.
+   * Re-read the offset the body is *actually* at — the window's `sync` (see
+   * `../internal/window.ts` for why the pane moves silently), plus the
+   * horizontal half only this component has: the header is shifted by
+   * `scrollX`, so the sideways offset is re-read on the same tick.
    */
+  const winSync = win.sync;
   const syncScroll = useCallback((): void => {
     const box = body.current;
     if (!box) return;
-    const { scrollX: x, scrollY: y } = box;
+    const x = box.scrollX;
     setScrollX((prev) => (prev === x ? prev : x));
-    // Only a virtualizing table reads the vertical offset — a whole one has
-    // no slice to rebuild, and re-rendering it on a scroll it already drew
-    // would be work for nothing.
-    if (virtualizing)
-      setView((prev) => (prev.top === y ? prev : { ...prev, top: y }));
-  }, [virtualizing]);
+    winSync();
+  }, [winSync]);
 
   /**
    * Read back what the rows on screen actually laid out at.
@@ -1229,11 +1203,7 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
           // under them on the next layout.
           reveal.heard(ev.scrollY);
           setScrollX((prev) => (prev === ev.scrollX ? prev : ev.scrollX));
-          if (virtualizing) {
-            setView((prev) =>
-              prev.top === ev.scrollY ? prev : { ...prev, top: ev.scrollY },
-            );
-          }
+          win.scrolled(ev.scrollY);
           onScroll?.(ev);
         },
         // Layout, not scrolling, is what first tells a table how much of it
@@ -1241,18 +1211,7 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
         // columns resolve against, so this is measured whether or not the
         // table virtualizes.
         onViewport: (ev) => {
-          // The ref first, at event time: the measure tick runs before the
-          // re-render this setState causes, and it must see this viewport.
-          viewRef.current = {
-            ...viewRef.current,
-            height: ev.height,
-            width: ev.width,
-          };
-          setView((prev) =>
-            prev.height === ev.height && prev.width === ev.width
-              ? prev
-              : { ...prev, height: ev.height, width: ev.width },
-          );
+          win.sized(ev.width, ev.height);
           // The content just changed size, which is both the moment an owed
           // scroll can reach further than the clamp let it and the moment the
           // container may have re-clamped the offset without saying so. It is
