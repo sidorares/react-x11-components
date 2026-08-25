@@ -6,9 +6,9 @@
 //
 // A react-three-fiber-shaped scene that picks the best GL backend the
 // server offers: `glPolicy: 'auto'` uses direct rendering (GPU, shaders)
-// where DRI3 and the x11-dri addon exist, and indirect GLX (display lists
-// over the wire) anywhere else — the same JSX renders on both, and the
-// status line says which one you got.
+// where DRI3 (Linux) or Apple-DRI (macOS/XQuartz) and the x11-dri addon
+// exist, and indirect GLX (display lists over the wire) anywhere else —
+// the same JSX renders on both, and the status line says which one you got.
 //
 // The r3f idioms on show: `useFrame` mutating through a ref (no re-render
 // per frame), pointer events raycast against the geometry, a
@@ -134,8 +134,9 @@ function Shapes({
   );
 }
 
-/** Xwayland and stock Xorg have indirect GLX off, and without DRI3 there is
- * no direct backend either — this is what that machine shows. */
+/** Xwayland and stock Xorg have indirect GLX off, and without DRI3 (or
+ * Apple-DRI on XQuartz) there is no direct backend either — this is what
+ * that machine shows. */
 function NoGL({ error }: { error: Error & { hint?: string } }): ReactElement {
   return (
     <box
