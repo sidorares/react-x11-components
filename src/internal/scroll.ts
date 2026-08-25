@@ -75,6 +75,17 @@ export interface Reveal {
   /** Owe a scroll to this row, and try to pay it now. */
   to(id: RowKey): void;
   /**
+   * The content above the viewport just changed size by `px` — measurements
+   * came in — and the offset must absorb the difference or what is on screen
+   * jumps. A debt rather than a one-shot for the same reason a reveal is:
+   * the pane clamps against the content height of the *last* layout, so a
+   * nudge made just after rows above grew taller lands short — near the
+   * bottom of the list, all of it lands short — and the remainder must be
+   * re-tried once the layout that admits the growth has run. Retried by
+   * `retry`, dropped by `heard`: a user mid-scroll keeps the pane.
+   */
+  nudge(px: number): void;
+  /**
    * Try again: after a layout, or when the content changed size.
    *
    * Pass `provisional` on a pass where the height index just moved. The rows
@@ -130,6 +141,9 @@ export function useReveal(sources: RevealSources): Reveal {
   const stuck = useRef<{ y: number; content: number } | null>(null);
   const look = useRef<LayoutTick>(null);
   useEffect(() => () => cancelAfterLayout(look.current), []);
+  /** Pixels the pane still owes the content that grew or shrank above the
+   *  viewport — the unpaid remainder of `nudge`. */
+  const owedShift = useRef(0);
 
   const scrollTo = useCallback((y: number): void => {
     const box = src.current.box.current;
@@ -145,10 +159,35 @@ export function useReveal(sources: RevealSources): Reveal {
     box.scrollTo({ y: to });
   }, []);
 
+  /** Pay as much of the owed shift as the pane will take right now. What it
+   *  refuses — a clamp still measuring the last layout's content — stays
+   *  owed, and the `retry` after the next layout tries again. */
+  const payShift = useCallback((): void => {
+    const box = src.current.box.current;
+    const want = owedShift.current;
+    if (!box || want === 0) return;
+    const was = box.scrollY;
+    scrollTo(was + want);
+    owedShift.current = want - (box.scrollY - was);
+  }, [scrollTo]);
+
+  const nudge = useCallback(
+    (px: number): void => {
+      if (px === 0) return;
+      owedShift.current += px;
+      payShift();
+    },
+    [payShift],
+  );
+
   const retry = useCallback(
     (provisional?: boolean): void => {
       const { box: boxRef, rows: rowsRef, nodes, heights } = src.current;
       const box = boxRef.current;
+      // The shift first: the reveal below judges placement from the offset,
+      // and an offset still owing the content above it is the wrong one to
+      // judge anything from.
+      payShift();
       // The heights just moved, so what the last reveal settled on was settled
       // against numbers that have changed: owe it again until it can be
       // confirmed at the new ones.
@@ -254,7 +293,7 @@ export function useReveal(sources: RevealSources): Reveal {
         retryRef.current?.();
       });
     },
-    [scrollTo],
+    [scrollTo, payShift],
   );
 
   /** `retry` referring to itself through a ref, so the queued look calls the
@@ -280,9 +319,10 @@ export function useReveal(sources: RevealSources): Reveal {
     if (scrollY !== asked.current) {
       owed.current = null;
       settled.current = null;
+      owedShift.current = 0;
     }
     asked.current = null;
   }, []);
 
-  return { to, retry, scrollTo, heard };
+  return { to, retry, scrollTo, nudge, heard };
 }

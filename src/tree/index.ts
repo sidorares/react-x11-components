@@ -60,7 +60,11 @@ import type { Host } from './hx.js';
 import { RowHeights } from '../internal/heights.js';
 import { afterLayout, cancelAfterLayout } from '../internal/timers.js';
 import { useReveal } from '../internal/scroll.js';
-import { DEFAULT_OVERSCAN, useVirtualWindow } from '../internal/window.js';
+import {
+  DEFAULT_OVERSCAN,
+  DEFAULT_PREFETCH,
+  useVirtualWindow,
+} from '../internal/window.js';
 import { typeAheadChar, useTypeAhead } from './internal.js';
 import {
   branchEdges,
@@ -326,6 +330,15 @@ export interface TreeProps<T = TreeItem>
   virtual?: boolean | 'auto';
   /** Rows built either side of the viewport. */
   overscan?: number;
+  /**
+   * Rows built *beyond* the overscan while the tree sits idle, per side.
+   * Default 40. The pane blits a scroll before React can run, so the only
+   * scroll with no blank frame is one that lands on rows already built —
+   * this band is that, grown in small steps while nobody is scrolling, and
+   * kept behind the viewport so a reversal lands on rows still mounted.
+   * `0` turns the band off: the slice is exactly viewport-plus-overscan.
+   */
+  prefetch?: number;
 
   /**
    * `'flat'` (the default) makes every row a sibling — which is what lets the
@@ -419,6 +432,7 @@ export function Tree<T = TreeItem>({
   estimatedRowHeight,
   virtual = 'auto',
   overscan = DEFAULT_OVERSCAN,
+  prefetch = DEFAULT_PREFETCH,
   layout = 'flat',
   renderToggle,
   renderGuide,
@@ -522,6 +536,7 @@ export function Tree<T = TreeItem>({
     count: rows.length,
     virtualizing,
     overscan,
+    prefetch,
   });
   const { viewRef } = win;
   const { first, last, above, below } = win.slice;
@@ -610,9 +625,10 @@ export function Tree<T = TreeItem>({
       if (at < anchor) shift += height - was;
     }
     if (!changed) return false;
-    if (shift !== 0 && box) {
-      reveal.scrollTo(box.scrollY + shift);
-    }
+    // A debt, not a one-shot: the pane clamps against the last layout's
+    // content height, so a shift from rows measured above the viewport can
+    // land short until the layout that admits the growth has run.
+    reveal.nudge(shift);
     setMeasured((n) => n + 1);
     return true;
   }, [virtualizing]);

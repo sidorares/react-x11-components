@@ -107,6 +107,15 @@ async function settle(): Promise<void> {
   }
 }
 
+/** Sit still long enough for the idle band to notice and grow — its clock
+ *  starts ~120ms after the last scroll and steps every ~40ms. */
+async function idle(ms: number): Promise<void> {
+  for (let waited = 0; waited < ms; waited += 40) {
+    await new Promise((res) => setTimeout(res, 40));
+    await act();
+  }
+}
+
 /** Mount without React's report of an escaping error on stderr. */
 async function rejectsQuietly(
   fn: () => Promise<unknown>,
@@ -414,7 +423,8 @@ test('declared-uniform rows virtualize by arithmetic: nothing is measured', asyn
   await settle();
   // the scrollbar measures the whole list exactly — 400 × 24, no estimates
   assert.strictEqual(bodyPane().contentHeight, 400 * 24 + 0);
-  assert.ok(rowNodes().length < 60, `built ${rowNodes().length} of 400`);
+  // a slice plus at most the idle band — never the whole list
+  assert.ok(rowNodes().length < 180, `built ${rowNodes().length} of 400`);
 
   bodyPane().scrollTo({ y: 5000 });
   await settle();
@@ -458,13 +468,114 @@ test('measured rows total honestly, converge, and stay a slice', async () => {
   await settle();
   assert.strictEqual(bodyPane().contentHeight, measured, 'it converged');
 
-  bodyPane().scrollTo({ y: 4000 });
+  // Far enough that the idle band around the top cannot already have
+  // measured the destination — the band converges the scrollbar while the
+  // table sits still, which is the point of it.
+  bodyPane().scrollTo({ y: 8000 });
   await settle();
   assert.ok(
     bodyPane().contentHeight > measured,
     'scrolling should have measured more rows',
   );
-  assert.ok(rowNodes().length < 60, `built ${rowNodes().length} of 400`);
+  assert.ok(rowNodes().length < 180, `built ${rowNodes().length} of 400`);
+});
+
+// --- the idle band ---------------------------------------------------------
+//
+// The pane blits a scroll before React can run, so the only scroll with no
+// blank frame is one that lands on rows already built. The band is those
+// rows: grown while the table sits still, kept behind the viewport for the
+// way back, and off entirely at prefetch={0}.
+
+test('the idle band grows past the overscan while the table sits still', async () => {
+  await mount({ rows: many(400), rowHeight: 24 }, 400, 220);
+  await settle();
+  await idle(400);
+  // the viewport holds ~10 rows and the overscan 6 more — anything well past
+  // that is the band, built while nobody was scrolling
+  assert.ok(
+    rowNodes().length > 40,
+    `the band never grew: ${rowNodes().length} rows built`,
+  );
+  assert.ok(rowNodes().length < 180, `built ${rowNodes().length} of 400`);
+});
+
+test('prefetch={0} keeps the slice at viewport plus overscan', async () => {
+  await mount({ rows: many(400), rowHeight: 24, prefetch: 0 }, 400, 220);
+  await settle();
+  await idle(400);
+  assert.ok(
+    rowNodes().length < 40,
+    `the band grew with prefetch off: ${rowNodes().length} rows built`,
+  );
+});
+
+test('a scroll inside the band lands on rows already built', async () => {
+  await mount({ rows: many(400), rowHeight: 24 }, 400, 220);
+  await settle();
+  await idle(400);
+  const posts = (): number[] =>
+    rowNodes().map((n) => Number(retained(n).props['aria-posinset']));
+  const before = new Set(posts());
+  assert.ok(Math.max(...before) > 40, 'the band should reach past row 40');
+
+  // one viewport down — inside the band, so every row now on screen must
+  // have been built before the scroll: that is what the band is *for*
+  bodyPane().scrollTo({ y: 240 });
+  await act();
+  for (const p of posts()) {
+    const y = (p - 1) * 24;
+    if (y >= 240 && y < 240 + 220) {
+      assert.ok(before.has(p), `row ${p} scrolled in unbuilt`);
+    }
+  }
+  // and the rows scrolled past stay mounted, for the way back
+  assert.ok(posts().includes(1), 'the trailing rows were dropped');
+});
+
+test('the idle band measures above the viewport without moving what is on screen', async () => {
+  // The end-to-end shape of `reveal.nudge`: rows above the viewport measure
+  // taller than the guess while the table sits idle, the content above
+  // grows, and the offset absorbs every pixel of it — near the bottom of
+  // the list that takes more than one layout, because the pane clamps
+  // against a content height that has not admitted the growth yet.
+  const LONG =
+    'a name much too long for one line of a narrow column, kept long enough to wrap twice';
+  await mount(
+    {
+      rows: many(400),
+      columns: [
+        {
+          id: 'name',
+          label: 'Name',
+          render: (f: File) => h('text', { key: 't' }, `${LONG} ${f.id}`),
+        },
+      ],
+      virtual: true,
+    },
+    240,
+    220,
+  );
+  await settle();
+  bodyPane().scrollTo({ y: 4000 });
+  await settle();
+  const topRow = (): number => {
+    const pane = retained(bodyPane());
+    const top = rowNodes()
+      .map(retained)
+      .filter((n) => n.abs.height > 0)
+      .sort((a, b) => a.abs.y - b.abs.y)
+      .find((n) => n.abs.y + n.abs.height > pane.abs.y);
+    return Number(top?.props['aria-posinset'] ?? -1);
+  };
+  const was = topRow();
+  const content = bodyPane().contentHeight;
+  await idle(500);
+  assert.ok(
+    bodyPane().contentHeight > content,
+    'the band never measured anything',
+  );
+  assert.strictEqual(topRow(), was, 'the row at the top of the viewport moved');
 });
 
 test('virtual={false} keeps a big table whole', async () => {
@@ -592,6 +703,9 @@ function Tail(props: {
   hooks: { append?: (n: number) => void };
   rowHeight?: number;
   wrap?: boolean;
+  /** `0` in the tests whose invariant is "the slice moves rather than
+   *  grows" — the idle band deliberately keeps rows behind the viewport. */
+  prefetch?: number;
 }): ReactNode {
   const [rows, setRows] = React.useState<File[]>(() => many(props.start));
   const ref = React.useRef<TableHandle<File> | null>(null);
@@ -622,6 +736,7 @@ function Tail(props: {
       rows,
       virtual: true,
       rowHeight: props.rowHeight,
+      prefetch: props.prefetch,
       columns: props.wrap
         ? [
             {
@@ -737,7 +852,10 @@ test('the slice follows the offset even when nothing said it moved', async () =>
   // slice used to freeze there: `first` stopped moving, the rendered rows
   // piled up, and the newest rows stopped being built at all.
   const hooks: { append?: (n: number) => void } = {};
-  await renderX11(h(Tail, { start: 300, hooks, rowHeight: 24 }));
+  // prefetch: 0 — the invariant here is that the slice *moves* rather than
+  // grows, and the idle band exists precisely to keep rows behind the
+  // viewport. Its own behaviour is asserted separately.
+  await renderX11(h(Tail, { start: 300, hooks, rowHeight: 24, prefetch: 0 }));
   await settle();
   const firstDrawn = (): number =>
     Number(retained(rowNodes()[0]).props['aria-posinset']);

@@ -666,6 +666,15 @@ async function settle(): Promise<void> {
   }
 }
 
+/** Sit still long enough for the idle band to notice and grow — its clock
+ *  starts ~120ms after the last scroll and steps every ~40ms. */
+async function idle(ms: number): Promise<void> {
+  for (let waited = 0; waited < ms; waited += 40) {
+    await new Promise((res) => setTimeout(res, 40));
+    await act();
+  }
+}
+
 test('a row grows to hold a label that wraps', async () => {
   // The whole point of measuring rows. Before this, a wrapped label was two
   // lines inside a 22px box and its second line was drawn over the row below.
@@ -783,8 +792,33 @@ test('a virtualized tree measures its rows and totals them honestly', async () =
     `scrolling should have measured more rows: ${measured} -> ${tree().contentHeight}`,
   );
 
-  // only a slice is built, which is the point of virtualizing at all
-  assert.ok(rowNodes().length < 60, `built ${rowNodes().length} of 400`);
+  // only a slice is built — plus at most the idle band — which is the point
+  // of virtualizing at all
+  assert.ok(rowNodes().length < 180, `built ${rowNodes().length} of 400`);
+});
+
+test('the idle band grows past the overscan while the tree sits still', async () => {
+  // The band itself is asserted in detail against <Table>; this holds the
+  // tree to the same machinery: rows accumulate beyond the slice while
+  // nothing scrolls, so the next notch lands on rows already built.
+  const items: TreeItem[] = Array.from({ length: 400 }, (_, i) => ({
+    id: i,
+    label: `row ${i}`,
+  }));
+  await renderX11(
+    h(
+      'box',
+      { style: { width: 200, height: 220, minHeight: 0 } },
+      h(Tree, { items, virtual: true }),
+    ),
+  );
+  await settle();
+  await idle(400);
+  assert.ok(
+    rowNodes().length > 40,
+    `the band never grew: ${rowNodes().length} rows built`,
+  );
+  assert.ok(rowNodes().length < 180, `built ${rowNodes().length} of 400`);
 });
 
 test('measuring a row above the viewport does not move what is on screen', async () => {
@@ -795,11 +829,16 @@ test('measuring a row above the viewport does not move what is on screen', async
     id: i,
     label: `${LONG} ${i}`,
   }));
+  // prefetch: 0, so nothing above the viewport is measured except what the
+  // slice itself drew — with the band on, rows above measure while idle and
+  // the offset legitimately absorbs their growth (asserted in table.test.ts,
+  // 'the idle band measures above the viewport…'). This test wants the
+  // sharper invariant: nothing changed, so nothing may move.
   await renderX11(
     h(
       'box',
       { style: { width: 200, height: 220, minHeight: 0 } },
-      h(Tree, { items, virtual: true }),
+      h(Tree, { items, virtual: true, prefetch: 0 }),
     ),
   );
   const tree = () =>
@@ -1035,6 +1074,9 @@ function GrowingTree(props: {
   hooks: { add?: (n: number) => void };
   /** Deliberately wrong, in the test that wants the guess to be wrong. */
   estimate?: number;
+  /** `0` in the test whose invariant is "the slice moves rather than
+   *  grows" — the idle band deliberately keeps rows behind the viewport. */
+  prefetch?: number;
 }): ReactNode {
   const [items, setItems] = React.useState<TreeItem[]>(() =>
     Array.from({ length: props.start }, (_, i) => ({
@@ -1060,7 +1102,13 @@ function GrowingTree(props: {
   return h(
     'box',
     { style: { width: 240, height: 200, minHeight: 0 } },
-    h(Tree, { ref, items, virtual: true, estimatedRowHeight: props.estimate }),
+    h(Tree, {
+      ref,
+      items,
+      virtual: true,
+      estimatedRowHeight: props.estimate,
+      prefetch: props.prefetch,
+    }),
   );
 }
 
@@ -1118,7 +1166,7 @@ test('the slice follows the offset even when nothing said it moved', async () =>
   // resolves inside layout, which fires no event. The slice used to freeze
   // there: the rendered rows piled up and the newest ones stopped being built.
   const hooks: { add?: (n: number) => void } = {};
-  await renderX11(h(GrowingTree, { start: 300, hooks }));
+  await renderX11(h(GrowingTree, { start: 300, hooks, prefetch: 0 }));
   await settle();
   const started = drawnPositions()[0];
   const built = rowNodes().length;
