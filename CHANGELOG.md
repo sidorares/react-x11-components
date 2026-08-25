@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.3.0](https://github.com/sidorares/react-x11-components/compare/v0.2.1...v0.3.0) (2026-08-25)
+
+
+### Features
+
+* **examples:** table-non-virtual — the control group with no Table in it ([322719b](https://github.com/sidorares/react-x11-components/commit/322719b490d7142535f25aa7c1efd8b1f3ad6caa))
+* **table, tree:** rows built ahead of the scroll — velocity lead, idle prefetch, and a kept band ([a3fd681](https://github.com/sidorares/react-x11-components/commit/a3fd681b327a3b94eb66a90e36e92c230a3c58de))
+* **table, tree:** skeleton rows answer a flood, and the idle band stops wobbling the view ([2bf5e73](https://github.com/sidorares/react-x11-components/commit/2bf5e7397f1b7859db679a166d2f11f1ac8c36ee))
+* **table, tree:** the catch-up pacing is a prop ([40253ad](https://github.com/sidorares/react-x11-components/commit/40253ad9db5576ef2a88ab20c5b89c6e6d286210))
+* **table, tree:** the estimate learns the measured mean, and flicks defer measuring to the settle ([9cde90f](https://github.com/sidorares/react-x11-components/commit/9cde90fd596f15b8e5ddd63712227836f1c39f12))
+* **table, tree:** the fast-scroll pill, and skeleton rows that read as rows ([4f4f9ca](https://github.com/sidorares/react-x11-components/commit/4f4f9ca16e0accc85d9f2d7d527f5590f78a6167))
+* **table, tree:** the scroll hint waits out a show-delay, and the catch-up budgets follow the measurements ([70901d1](https://github.com/sidorares/react-x11-components/commit/70901d16e17f7beb232137095f304e148c38d32c))
+* **tree:** a --stress flag on the example — the generated tree the window is tuned against ([f5dac53](https://github.com/sidorares/react-x11-components/commit/f5dac535b1ba783e5c8fe155ebebe762657129cd))
+
+
+### Bug Fixes
+
+* **examples:** the table tail follows display order, not the appended id ([3e20cba](https://github.com/sidorares/react-x11-components/commit/3e20cba411e29cac48dfa43084f525e4577d1b6a))
+* **table, tree:** clamp the velocity lead — a scrollbar scrub froze the app for seconds ([8e2456b](https://github.com/sidorares/react-x11-components/commit/8e2456bcaf8196a2e3d9b1b72bba2684a2dc2372))
+
+
+### Performance Improvements
+
+* **table, tree:** a scroll notch pays only for the rows it brought in ([cb521f2](https://github.com/sidorares/react-x11-components/commit/cb521f22fea073f46d79d50128bcc605dc8d517e))
+* **table, tree:** row elements reused by identity — a notch stops paying even the memo's toll ([5306cd9](https://github.com/sidorares/react-x11-components/commit/5306cd9c84ca2b8d7a099397265eeca36a6e20b0))
+
 ## [0.2.1](https://github.com/sidorares/react-x11-components/compare/v0.2.0...v0.2.1) (2026-08-24)
 
 
