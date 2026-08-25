@@ -37,14 +37,19 @@ pipelines.
 
 ## The two backends
 
-|                 | **indirect** (GLX)                                                 | **direct** (DRI3)                                    |
-| --------------- | ------------------------------------------------------------------ | ---------------------------------------------------- |
-| how it draws    | GL 1.x commands encoded into the X connection                      | OpenGL ES 2 on the GPU, frames as dma-bufs           |
-| reaches         | any server that allows indirect contexts, including over a network | a local Linux server with DRI3 + the `x11-dri` addon |
-| geometry        | compiled into server-side display lists, once                      | vertex buffers on the GPU, once                      |
-| lighting        | per vertex, 8 fixed-function light units                           | per fragment (same 8-light cap, so scenes match)     |
-| shaders         | none — the protocol encodes no shader objects                      | **yes** — `<shaderMaterial>`, GLSL ES 1.00           |
-| post-processing | none — no framebuffer objects to encode                            | **yes** — `<effectComposer>` and passes              |
+|                 | **indirect** (GLX)                                                 | **direct** (DRI3 / Apple-DRI)                            |
+| --------------- | ------------------------------------------------------------------ | -------------------------------------------------------- |
+| how it draws    | GL 1.x commands encoded into the X connection                      | OpenGL ES 2 on the GPU, frames as dma-bufs               |
+| reaches         | any server that allows indirect contexts, including over a network | a local session with the `x11-dri` addon — either flavor |
+| geometry        | compiled into server-side display lists, once                      | vertex buffers on the GPU, once                          |
+| lighting        | per vertex, 8 fixed-function light units                           | per fragment (same 8-light cap, so scenes match)         |
+| shaders         | none — the protocol encodes no shader objects                      | **yes** — `<shaderMaterial>`, GLSL ES 1.00               |
+| post-processing | none — no framebuffer objects to encode                            | **yes** — `<effectComposer>` and passes                  |
+
+The direct backend comes in two flavors, and nothing above the `<glarea>`
+tells them apart: **DRI3** on Linux (GBM/EGL) and **Apple-DRI** on
+macOS/XQuartz (CGL, and `x11-dri` ≥ 0.5.0). Both want the addon and a local
+session — neither survives a network connection.
 
 **The scene graph is identical**; the indirect feature set is a subset of
 the direct one. Ask for the best available at the root and the same JSX
@@ -74,6 +79,21 @@ const shaders = useThree((s) => s.supportsShaders); // or useSupports('shaders')
   );
 }
 ```
+
+### macOS differences
+
+Apple-DRI renders the same scenes; a few properties of the platform show
+through:
+
+- **GL resources are per-glarea.** Apple-DRI holds a CGL context per
+  window, where Linux DRI3 shares one EGL context per connection — never
+  share GL objects across glareas.
+- **No 32-bit ARGB visual.** `glx={{ ALPHA_SIZE: 1 }}` fails on XQuartz.
+- **Animations pace to a ~60fps fallback.** XQuartz's RandR modes carry no
+  timing data, so the frame clock cannot read the display's real rate.
+- **`'auto'` needs the local session.** Over SSH there is no WindowServer
+  session, so direct rendering is unavailable and `'auto'` degrades to
+  indirect GLX.
 
 ## `<Canvas>`
 

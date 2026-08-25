@@ -4,10 +4,11 @@
 //
 // The direct-only side of the scene graph: `<effectComposer>` and its
 // passes, which exist only where there are framebuffer objects to render
-// into — a DRI3 connection with the x11-dri addon. The GLX protocol
-// encodes no FBOs, so on an indirect connection this example keeps the
-// scene and drops the composer, saying so in the status line; the branch
-// is the `useSupports('shaders')` one the docs name for degrading scenes.
+// into — a direct connection (DRI3 on Linux, Apple-DRI on macOS/XQuartz)
+// with the x11-dri addon. The GLX protocol encodes no FBOs, so on an
+// indirect connection this example keeps the scene and drops the composer,
+// saying so in the status line; the branch is the `useSupports('shaders')`
+// one the docs name for degrading scenes.
 //
 // On show: `<bloomPass>` fed by an unlit "core" that outshines the
 // threshold, a custom `<shaderPass>` (rolling scanlines animated through
