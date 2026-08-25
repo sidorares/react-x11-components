@@ -60,6 +60,11 @@ const EMPTY_KEYS: ReadonlySet<RowKey> = new Set();
  *  gap before the next frame catches up. The components' default. */
 export const DEFAULT_OVERSCAN = 6;
 
+/** How long the viewport must have been showing unresolved content before
+ *  the fast-scroll pill appears. A catch-up the next few frames absorb is
+ *  not worth announcing — the pill is for the delay you can feel. */
+export const SCROLL_HINT_DELAY_MS = 250;
+
 /** How far past the overscan the idle band grows, rows per side — the
  *  components' default for their `prefetch` prop. Roughly two viewports of
  *  ordinary rows: enough that a flick lands inside it, small enough that
@@ -96,13 +101,17 @@ const FAST_V = 1.5;
  *  teleport or a hard flick — and floods build skeletons first. An ordinary
  *  notch brings in a handful and never trips this. */
 const SKELETON_THRESHOLD = 16;
-/** New full rows built per render while a flood is being caught up with —
- *  enough to fill most of a viewport, small enough to commit fast. */
-const BURST_BUDGET = 12;
+/** New full rows built per render while a flood is being caught up with.
+ *  Measured (rowcost probe, 300-row commits, warm caches): a default-shape
+ *  row costs ~0.11ms against a skeleton's ~0.06ms — about 2×, not the 10×
+ *  the original pacing assumed — so the budgets lean generous and the
+ *  skeleton tier is there for heavy `render` seams and for the look of
+ *  rows arriving, not because full rows are ruinous. */
+const BURST_BUDGET = 24;
 /** The same, once the scroll has stopped: bigger steps, still paced, so a
  *  settle after a long flood is a few quick commits rather than one big
  *  one. */
-const SETTLE_BUDGET = 24;
+const SETTLE_BUDGET = 48;
 
 export interface VirtualViewport {
   /** The pane's vertical offset. */
@@ -169,6 +178,13 @@ export interface VirtualWindow {
    * exists for, because nothing else useful can be on screen.
    */
   jumped: boolean;
+  /**
+   * When the viewport first stopped being whole — placeholders on screen,
+   * or a scrub outrunning the built rows — epoch milliseconds, `null` while
+   * everything in view is real. What a hint's show-delay is measured from,
+   * and cleared the moment the catch-up ends.
+   */
+  catchupSince: number | null;
   /**
    * How many of the rows **on screen** are skeletons this render — the
    * measure of "the user is looking at rows that have no content yet".
@@ -250,6 +266,8 @@ export function useVirtualWindow(inputs: VirtualWindowInputs): VirtualWindow {
    *  is a skeleton. Ids, not indexes, so a re-sort moves the rows without
    *  demoting them. */
   const real = useRef<Set<RowKey>>(new Set());
+  /** When the current catch-up began — see `catchupSince` on the result. */
+  const catchupStart = useRef<number | null>(null);
   const idleTimer = useRef<DelayTick>(null);
 
   const tick = useCallback((): void => {
@@ -501,6 +519,18 @@ export function useVirtualWindow(inputs: VirtualWindowInputs): VirtualWindow {
     real.current = new Set();
   }
 
+  // The catch-up clock: started the first render the viewport stops being
+  // whole — placeholders in view, or a scrub outrunning the built rows —
+  // and cleared when the catch-up ends, on the same condition a hint's
+  // latch releases. Renders keep coming while it runs (the skeleton ticks,
+  // the scrub's own events), so a deadline measured against it is
+  // re-evaluated within a tick of passing.
+  if (virtualizing && (pending > 0 || (jumped && active.current))) {
+    catchupStart.current ??= Date.now();
+  } else if (pending === 0 && !active.current) {
+    catchupStart.current = null;
+  }
+
   /** Where the slice starts, and how much of the list is below it — the two
    *  spacers that keep the scrollbar measuring the whole list. */
   const above = virtualizing ? heights.offsetAt(first) : 0;
@@ -512,6 +542,7 @@ export function useVirtualWindow(inputs: VirtualWindowInputs): VirtualWindow {
     slice: { first, last, above, below },
     skeletons,
     jumped,
+    catchupSince: catchupStart.current,
     pending,
     scrolled,
     sized,

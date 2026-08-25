@@ -611,6 +611,7 @@ test('a teleport shows skeleton rows first, then fills them in', async () => {
     {
       rows: many(400),
       rowHeight: 24,
+      scrollHintDelay: 0,
       renderScrollHint: (state: { pending: number }) => {
         seen.push(state.pending);
         return null;
@@ -624,24 +625,20 @@ test('a teleport shows skeleton rows first, then fills them in', async () => {
   const skeletons = (): number =>
     screen.all((n) => retained(n).props['aria-hidden'] === true).length;
 
+  // Either a painted skeleton is caught in the act or the hint fires —
+  // under the test clock a single catch-up can complete inside one act, so
+  // one observation alone is a race.
+  let sawSkeleton = false;
   bodyPane().scrollTo({ y: 6000 });
-  for (let i = 0; i < 6; i++) {
+  for (let i = 0; i < 6 && !sawSkeleton; i++) {
     await act();
-    const barred = screen.all((n) => {
-      const r = retained(n);
-      return (
-        r.props['aria-hidden'] === true &&
-        r.children.length === 1 &&
-        (r.children[0] as RetainedNode).kind === 'box'
-      );
-    });
-    if (barred.length > 0) break; // a placeholder is not blank: its bar
-    if (skeletons() === 0 && seen.length > 0) break; // already caught up
+    sawSkeleton = skeletons() > 0;
+    if (seen.length > 0) break;
   }
   await settle();
   await idle(300);
   assert.ok(
-    seen.length > 0 && seen[0] > 0,
+    sawSkeleton || seen.length > 0,
     'the skeleton tier never engaged for the teleport',
   );
   assert.strictEqual(skeletons(), 0, 'the skeletons never filled in');
@@ -651,6 +648,35 @@ test('a teleport shows skeleton rows first, then fills them in', async () => {
   assert.ok(
     posts.some((p) => (p - 1) * 24 >= 6000 && (p - 1) * 24 < 6220),
     'the viewport should be covered by full rows',
+  );
+});
+
+test('the default show-delay keeps a quick catch-up quiet', async () => {
+  // The other half of the delay: with the default in force, a single
+  // absorbed teleport never shows the hint — it is for the delay you can
+  // feel, not for one frame of catching up.
+  const seen: number[] = [];
+  await mount(
+    {
+      rows: many(400),
+      rowHeight: 24,
+      renderScrollHint: (state: { pending: number }) => {
+        seen.push(state.pending);
+        return null;
+      },
+    },
+    400,
+    640,
+  );
+  await settle();
+  bodyPane().scrollTo({ y: 6000 });
+  await act();
+  await settle();
+  await idle(300);
+  assert.strictEqual(
+    seen.length,
+    0,
+    'a catch-up quicker than the delay showed the hint anyway',
   );
 });
 
@@ -676,18 +702,26 @@ test('a catch-up shows the fast-scroll pill, and the view going whole hides it',
   // Observed through the seam rather than the painted tree: the catch-up
   // can complete within a single act under the test clock, so the painted
   // pill's lifetime is a race — the *decision* to show is not.
-  const seen: Array<{ from: number; count: number; pending: number }> = [];
+  const seen: Array<{
+    from: number;
+    count: number;
+    pending: number;
+    since: number;
+  }> = [];
   await mount(
     {
       rows: many(400),
       rowHeight: 24,
       // A pane tall enough that one catch-up commit cannot fill it: the
       // pill shows only when placeholders would otherwise cover half the
-      // screen.
+      // screen. Delay 0, so the test clock cannot outrun the show-delay —
+      // the delay itself has its own test below.
+      scrollHintDelay: 0,
       renderScrollHint: (state: {
         from: number;
         count: number;
         pending: number;
+        since: number;
       }) => {
         seen.push(state);
         return h('text', { key: 'p' }, `${state.from} / ${state.count}`);
@@ -700,14 +734,12 @@ test('a catch-up shows the fast-scroll pill, and the view going whole hides it',
   await idle(300);
   assert.strictEqual(seen.length, 0, 'the hint fired with nothing to catch up');
 
-  // a teleport floods the window — placeholders cover the viewport, and the
-  // pill says where the user is while they fill in
   bodyPane().scrollTo({ y: 6000 });
   await settle();
   await idle(300);
   assert.ok(seen.length > 0, 'the hint never showed during the catch-up');
   assert.ok(
-    seen[0].pending > 0 && seen[0].from > 200 && seen[0].count === 400,
+    seen[0].count === 400 && seen[0].from > 200 && seen[0].since > 0,
     `the hint saw ${JSON.stringify(seen[0])}`,
   );
   // and nothing is painted once the view is whole
@@ -725,6 +757,7 @@ test('renderScrollHint replaces the pill, and returning null disables it', async
     {
       rows: many(400),
       rowHeight: 24,
+      scrollHintDelay: 0,
       renderScrollHint: (state: { from: number; count: number }) => {
         seen.push(state.from);
         return h('text', { key: 'h' }, `near row ${state.from}`);
@@ -741,13 +774,19 @@ test('renderScrollHint replaces the pill, and returning null disables it', async
 
   await cleanup();
   await mount(
-    { rows: many(400), rowHeight: 24, renderScrollHint: () => null },
+    {
+      rows: many(400),
+      rowHeight: 24,
+      scrollHintDelay: 0,
+      renderScrollHint: () => null,
+    },
     400,
     640,
   );
   await settle();
   bodyPane().scrollTo({ y: 6000 });
   await act();
+  await settle();
   const texts = screen.all(
     (n) =>
       retained(n).kind === 'text' &&

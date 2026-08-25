@@ -74,6 +74,7 @@ import { useReveal } from '../internal/scroll.js';
 import {
   DEFAULT_OVERSCAN,
   DEFAULT_PREFETCH,
+  SCROLL_HINT_DELAY_MS,
   useVirtualWindow,
 } from '../internal/window.js';
 import { typeAheadChar, useTypeAhead } from './internal.js';
@@ -277,6 +278,10 @@ export interface TreeScrollHintState<T> {
   count: number;
   /** How many of the rows in view are still placeholders. */
   pending: number;
+  /** When the viewport first stopped being whole, epoch ms — what the
+   *  show-delay was measured against. `Date.now() - since` is how long the
+   *  user has been looking at unresolved content. */
+  since: number;
 }
 
 /** What `renderSubtree` is told, in `layout="nested"`. */
@@ -440,6 +445,13 @@ export interface TreeProps<T = TreeItem>
    * overlay at all.
    */
   renderScrollHint?: (state: TreeScrollHintState<T>) => ReactNode;
+  /**
+   * How long the viewport must have been showing unresolved content before
+   * the overlay appears, in milliseconds. Default 250: a catch-up the next
+   * few frames absorb is never announced. `0` shows it the moment a
+   * catch-up engages.
+   */
+  scrollHintDelay?: number;
 
   styles?: TreeStyles<T>;
   style?: StyleProp;
@@ -731,6 +743,7 @@ export function Tree<T = TreeItem>({
   renderContent,
   renderSubtree,
   renderScrollHint,
+  scrollHintDelay = SCROLL_HINT_DELAY_MS,
   styles,
   style,
   ref,
@@ -1349,12 +1362,20 @@ export function Tree<T = TreeItem>({
     // would otherwise read as blank, or a scrub — the window teleporting
     // while the burst is still in flight, where every commit chases a
     // viewport that has already left and nothing useful can be on screen.
-    // Latched once triggered: `pending` bounces to zero between catch-up
-    // commits, and a pill that blinked with it would read as a glitch. It
-    // goes when the burst does.
-    const show =
+    // Either way only once the catch-up has already *lasted*: a jump the
+    // next few frames absorb is not worth announcing, so the pill waits
+    // out the show-delay against the catch-up clock. Latched once
+    // triggered: `pending` bounces to zero between catch-up commits, and a
+    // pill that blinked with it would read as a glitch. It goes when the
+    // burst does.
+    const engaged =
       (win.pending > 0 && win.pending * 2 >= vLast - vFirst + 1) ||
-      (win.jumped && win.scrolling()) ||
+      (win.jumped && win.scrolling());
+    const lasted =
+      win.catchupSince !== null &&
+      Date.now() - win.catchupSince >= scrollHintDelay;
+    const show =
+      (engaged && lasted) ||
       (hintShown.current && (win.pending > 0 || win.scrolling()));
     hintShown.current = show;
     if (show) {
@@ -1364,6 +1385,7 @@ export function Tree<T = TreeItem>({
         to: vLast + 1,
         count: rows.length,
         pending: win.pending,
+        since: win.catchupSince ?? Date.now(),
       };
       const content = renderScrollHint
         ? renderScrollHint(hintState)

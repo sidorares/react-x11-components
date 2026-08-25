@@ -839,6 +839,7 @@ test('a catch-up shows the fast-scroll pill, and settling hides it', async () =>
       h(Tree, {
         items,
         virtual: true,
+        scrollHintDelay: 0,
         renderScrollHint: (state: { from: number; pending: number }) => {
           seen.push(state.from);
           return h('text', { key: 'p' }, `at ${state.from}`);
