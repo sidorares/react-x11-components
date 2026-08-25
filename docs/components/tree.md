@@ -382,3 +382,9 @@ filesystem: lazily listed, with lucide-shaped folder glyphs through
 `renderLabel` and a dotted branch edge through `renderGuide`. Its glyphs are
 drawn in the example, which is the line core's icon set draws — affordances
 are core's (the twisty's chevron is `<Icon>`), nouns are the app's.
+
+`npm run examples:tree -- --stress` swaps the filesystem for a generated
+tree — 100,000 rows by default, `--stress=1000000` for more — fully expanded
+from the start, every seventh name long enough to wrap. It is the shape the
+virtualization window is tuned against, so it is the place to feel out a
+fast scroll, a scrollbar drag across the whole list, and a reversal.

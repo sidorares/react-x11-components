@@ -1,8 +1,13 @@
 // Run with: npm run examples:tree [-- <directory>]   (needs a real $DISPLAY)
+//       or: npm run examples:tree -- --stress[=rows]
 //
 // A file explorer: `<Tree>` as the left panel over the real filesystem, and
 // whatever is selected on the right. Point it at a directory, or leave it on
-// the working one.
+// the working one. `--stress` swaps the filesystem for a generated tree —
+// 100,000 rows by default, `--stress=1000000` for more — fully expanded from
+// the start, with every seventh name long enough to wrap: the shape the
+// virtualization window, the idle band and the measured heights are tuned
+// against, so the example doubles as their test bench.
 //
 // It is here to exercise the parts of `<Tree>` that a synthetic tree of
 // objects would not:
@@ -259,18 +264,67 @@ const edges = Object.freeze({
   },
 });
 
+// --- stress data ------------------------------------------------------------
+
+/**
+ * `--stress[=rows]`: a generated tree instead of the filesystem.
+ *
+ * Branches of fifty, everything expanded from the start, every seventh name
+ * long enough to wrap in a narrow pane — so the rows are *not* one height,
+ * and the height index, the idle prefetch band and the skeleton tier all
+ * have real work to do. A quick flick, a scrollbar drag across the whole
+ * list, and a reversal are the gestures worth trying.
+ */
+function stressEntries(total: number): { items: Entry[]; expanded: string[] } {
+  const items: Entry[] = [];
+  const expanded: string[] = [];
+  let made = 0;
+  for (let b = 0; made < total; b++) {
+    const branchPath = `/stress/branch-${b}`;
+    const children: Entry[] = [];
+    for (let i = 0; i < 50 && made < total; i++, made++) {
+      children.push({
+        path: `${branchPath}/leaf-${i}`,
+        name:
+          i % 7 === 0
+            ? `leaf ${i} of branch ${b}, with a name long enough to wrap once the pane gets narrow`
+            : `leaf ${i} of branch ${b}`,
+        dir: false,
+      });
+    }
+    made++;
+    items.push({ path: branchPath, name: `branch ${b}`, dir: true, children });
+    expanded.push(branchPath);
+  }
+  return { items, expanded };
+}
+
 // --- the app ---------------------------------------------------------------
 
-const ROOT = path.resolve(process.argv[2] ?? process.cwd());
+const ARGS = process.argv.slice(2);
+const STRESS_ARG = ARGS.find((a) => a.startsWith('--stress'));
+const STRESS = STRESS_ARG
+  ? Number(STRESS_ARG.split('=')[1] ?? '') || 100_000
+  : 0;
+/** Built once, at module scope — a million entries is not a per-render
+ *  thing. `null` outside stress mode. */
+const STRESS_DATA = STRESS ? stressEntries(STRESS) : null;
+
+const ROOT = path.resolve(
+  ARGS.find((a) => !a.startsWith('--')) ?? process.cwd(),
+);
 
 function App(): ReactElement {
-  const [items, setItems] = useState<Entry[]>([]);
-  const [expanded, setExpanded] = useState<string[]>([]);
+  const [items, setItems] = useState<Entry[]>(() => STRESS_DATA?.items ?? []);
+  const [expanded, setExpanded] = useState<string[]>(
+    () => STRESS_DATA?.expanded ?? [],
+  );
   const [selected, setSelected] = useState<string | null>(null);
   const [details, setDetails] = useState('');
   const [error, setError] = useState('');
 
   useEffect(() => {
+    if (STRESS_DATA) return;
     listDir(ROOT).then(setItems, (err: Error) => setError(err.message));
   }, []);
 
@@ -306,7 +360,11 @@ function App(): ReactElement {
     <window
       width={880}
       height={560}
-      title={`@react-x11/components — file explorer (${ROOT})`}
+      title={
+        STRESS_DATA
+          ? `@react-x11/components — tree stress (${STRESS.toLocaleString()} rows)`
+          : `@react-x11/components — file explorer (${ROOT})`
+      }
     >
       {/* Core's `<SplitPane>` rather than a hand-rolled row, and it is worth
           knowing why beyond the draggable divider: it gives **both** panes
@@ -338,7 +396,9 @@ function App(): ReactElement {
               paddingBottom: 4,
             }}
           >
-            {path.basename(ROOT) || ROOT}
+            {STRESS_DATA
+              ? `generated · ${STRESS.toLocaleString()} rows`
+              : path.basename(ROOT) || ROOT}
           </text>
 
           <Tree<Entry>
@@ -357,7 +417,8 @@ function App(): ReactElement {
             onSelect={(id, item) => {
               setSelected(String(id));
               setDetails('');
-              if (!item.dir) {
+              // a generated row has no file behind it to stat
+              if (!item.dir && !STRESS_DATA) {
                 stat(item.path).then(
                   (st) =>
                     setDetails(
