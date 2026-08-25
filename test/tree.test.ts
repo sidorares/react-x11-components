@@ -1244,7 +1244,18 @@ test('a row revealed in the branch that just opened is reached', async () => {
   // model, it has never been drawn, and the height index is the only thing
   // that knows where it is.
   assert.strictEqual(ref.current?.scrollToItem('k280'), true);
+  // Convergence here is the heaviest a reveal gets: every row measures
+  // taller than the guess, the estimate re-learns wholesale, and the debt
+  // is re-judged after each change. Wait for the offset to go quiet —
+  // boundedly — before holding the row to its place.
   await settle();
+  let lastY = -1;
+  for (let round = 0; round < 10; round++) {
+    await idle(200);
+    const y = treePane().scrollY;
+    if (y === lastY) break;
+    lastY = y;
+  }
   const row = rowNodes()
     .map((n) => retained(n))
     .find((n) => textIn(n as unknown as DrawnNode) === 'child 280');
