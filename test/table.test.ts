@@ -548,6 +548,54 @@ test('a scroll inside the band lands on rows already built', async () => {
   assert.ok(posts().includes(1), 'the trailing rows were dropped');
 });
 
+test('a wheel burst then idle: the view stays where the user left it', async () => {
+  // The recipe of the original report: a flick of notches, then hands off.
+  // During the burst measuring defers, the lead builds ahead, and on the
+  // settle everything catches up — the band grows, the deferred rows get
+  // measured, the estimate re-learns. None of it may move the row at the
+  // top of the viewport: the corrections land in the offset, not the view.
+  const LONG =
+    'a message long enough to wrap over more than one line of this column';
+  await mount(
+    {
+      rows: many(400),
+      columns: [
+        {
+          id: 'name',
+          label: 'Name',
+          render: (f: File) => h('text', { key: 't' }, `${LONG} ${f.id}`),
+        },
+      ],
+      virtual: true,
+    },
+    240,
+    220,
+  );
+  await idle(600);
+  for (let i = 0; i < 12; i++) {
+    bodyPane().scrollTo({ y: bodyPane().scrollY + 48 });
+    await new Promise((res) => setTimeout(res, 15));
+    await act();
+  }
+  const topRow = (): number => {
+    const pane = retained(bodyPane());
+    const top = rowNodes()
+      .map(retained)
+      .filter((n) => n.abs.height > 0)
+      .sort((a, b) => a.abs.y - b.abs.y)
+      .find((n) => n.abs.y + n.abs.height > pane.abs.y);
+    return Number(top?.props['aria-posinset'] ?? -1);
+  };
+  await act();
+  const was = topRow();
+  await idle(1000);
+  const now = topRow();
+  assert.ok(
+    Math.abs(now - was) <= 1,
+    `the view drifted while idle: top row ${was} -> ${now}`,
+  );
+});
+
 test('a teleport shows skeleton rows first, then fills them in', async () => {
   // A thumb dragged across the list outruns any band: the whole window is
   // new. The first commit answers with skeletons — the row boxes, none of

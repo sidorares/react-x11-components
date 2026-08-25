@@ -50,7 +50,11 @@ test('adapt learns the measured mean and re-prices the unmeasured rows', () => {
 
   assert.strictEqual(h.adapt(), true, 'ten samples are enough to learn from');
   assert.strictEqual(h.total(), 100 * 60, 'every unmeasured row re-priced');
-  assert.strictEqual(h.adapt(), false, 'and learning the same thing twice is free');
+  assert.strictEqual(
+    h.adapt(),
+    false,
+    'and learning the same thing twice is free',
+  );
 
   // the learnt estimate survives a rebuild for a new row list
   h.sync(rowsOf(Array.from({ length: 100 }, (_, i) => i)), 24);
