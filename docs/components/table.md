@@ -82,9 +82,13 @@ taught.
 | `onRowContextMenu`                      | `(id, row, ev) => void`            | Right-click. The row is selected first unless it is already part of the selection, so a menu always applies to what is under the pointer.                     |
 | `onColumnResize`                        | `(id, width) => void`              | A grip was dragged or keyed.                                                                                                                                  |
 | `rowHeight`                             | `number`                           | Declares every row exactly this tall — core's model, nothing measured. **Omit it and rows are measured instead.** `rowHeight={24}` is core's exact behaviour. |
-| `estimatedRowHeight`                    | `number`                           | What an unmeasured row is assumed — and floored — at, while measuring. Default 24.                                                                            |
+| `estimatedRowHeight`                    | `number`                           | What an unmeasured row is assumed — and floored — at, while measuring. Default 24. Once enough rows are measured, the guess is re-learnt from their mean.     |
 | `virtual`                               | `boolean \| 'auto'`                | Build only the rows on screen. `'auto'` (the default) turns it on past 200 rows.                                                                              |
 | `overscan`                              | `number`                           | Rows built either side of the viewport. Default 6.                                                                                                            |
+| `prefetch`                              | `number`                           | Rows built beyond the overscan while the table sits idle, per side. Default 40; `0` turns the band off. See "What a scroll costs".                            |
+| `renderScrollHint`                      | `(state) => ReactNode`             | The fast-scroll overlay. Default: a centred pill reading "2,345 / 100,000" while placeholders cover the viewport; return `null` for none. See below.          |
+| `scrollHintDelay`                       | `number`                           | How long the viewport must have shown unresolved content before the overlay appears, ms. Default 250; `0` shows it the moment a catch-up engages.             |
+| `catchup`                               | `{ threshold?, burst?, settle? }`  | Catch-up pacing, in rows: what counts as a flood (default 16), and full rows built per render mid-scroll / after it (defaults 24 / 48). See below.            |
 | `renderRow` / `renderEmpty`             |                                    | Seams — see below.                                                                                                                                            |
 | `styles`                                | `TableStyles`                      | Per-part style overrides; row/cell entries may be functions of row state.                                                                                     |
 | `focusable`                             | `boolean`                          | Whether the table is a tab stop. Default true; `false` for a table inside a popup that owns the focus.                                                        |
@@ -160,15 +164,48 @@ table did not take keeps its default, which is also what
   `render` seam may wrap text or stack lines — and the [tree's height
   index](tree.md#virtualization) reads back what each drawn row became.
   `estimatedRowHeight` is what the scrollbar assumes for rows not yet seen
-  (and the floor a row cannot shrink under), and the guess converges as you
-  scroll. Id-keying means a re-sort permutes offsets without remeasuring a
-  single row.
+  (and the floor a row cannot shrink under). The guess converges as you
+  scroll — and once enough rows have real numbers, the guess itself is
+  re-learnt from their mean, so the scrollbar lands near the truth without
+  the whole list ever being visited. Id-keying means a re-sort permutes
+  offsets without remeasuring a single row.
 
 `virtual="auto"` (the default) starts windowing past 200 rows; below that
 every row is real. The honest caveat, the same one the tree carries: while
 virtualizing, **only the rendered rows are in the accessibility tree** — the
 same rows a sighted user can see. `virtual={false}` keeps a table whole
 regardless, for a screenshot or a test that wants every row.
+
+## What a scroll costs, and what is done about it
+
+The renderer blits a scroll and repaints the exposed strip **before React
+runs**, so whatever is mounted in that strip is what the user sees; rows
+built by the re-render land a frame later at the earliest. The only scroll
+with no blank frame at all is one that lands on rows already built, and the
+virtualization window works toward exactly that:
+
+- **Idle prefetch.** While nothing is scrolling, the window grows in small
+  steps past the overscan, up to `prefetch` rows each side — prep work done
+  while nobody is watching, so the next notch lands on rows that are already
+  there. In the measured model the idle band also measures as it grows,
+  which is what feeds the estimate re-learning above.
+- **Velocity lead.** While scrolling, the window extends in the direction of
+  travel by roughly where the scroll will be a few frames on.
+- **A kept band.** Rows already built stay mounted until a budget (the
+  slice plus `prefetch` per side) forces them out, trailing side first — a
+  direction reversal lands on rows still there.
+- **Skeleton rows.** A scroll that outruns everything — a thumb dragged
+  across the list — floods the window with more rows than one render can
+  build in time (`catchup.threshold`, default 16 entering rows; the build
+  pace is `catchup.burst` / `catchup.settle` rows per render — raise the
+  threshold past the window size to never see skeletons, or shrink the
+  budgets for tables whose `render` seams are expensive). Those commit as _skeletons_ first: the row box at its
+  indexed height with `styles.row` applied and none of its content, so what
+  blits in reads as rows arriving rather than a void. They are
+  `aria-hidden`, and they fill in viewport-first over the next few ticks.
+
+None of this needs configuring; `prefetch={0}` turns the band off and
+returns the slice to exactly viewport-plus-overscan.
 
 ## Laying one out
 

@@ -38,7 +38,7 @@
 // the offset differs (a slice to rebuild, a header to shift), but it is the
 // other half of the same fix and both components run it on the same tick.
 
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import type { DrawnNode, ScrollableNode } from 'react-x11';
 
 import type { RowHeights, RowKey } from './heights.js';
@@ -74,6 +74,17 @@ export interface RevealSources {
 export interface Reveal {
   /** Owe a scroll to this row, and try to pay it now. */
   to(id: RowKey): void;
+  /**
+   * The content above the viewport just changed size by `px` — measurements
+   * came in — and the offset must absorb the difference or what is on screen
+   * jumps. A debt rather than a one-shot for the same reason a reveal is:
+   * the pane clamps against the content height of the *last* layout, so a
+   * nudge made just after rows above grew taller lands short — near the
+   * bottom of the list, all of it lands short — and the remainder must be
+   * re-tried once the layout that admits the growth has run. Retried by
+   * `retry`, dropped by `heard`: a user mid-scroll keeps the pane.
+   */
+  nudge(px: number): void;
   /**
    * Try again: after a layout, or when the content changed size.
    *
@@ -130,6 +141,9 @@ export function useReveal(sources: RevealSources): Reveal {
   const stuck = useRef<{ y: number; content: number } | null>(null);
   const look = useRef<LayoutTick>(null);
   useEffect(() => () => cancelAfterLayout(look.current), []);
+  /** Pixels the pane still owes the content that grew or shrank above the
+   *  viewport — the unpaid remainder of `nudge`. */
+  const owedShift = useRef(0);
 
   const scrollTo = useCallback((y: number): void => {
     const box = src.current.box.current;
@@ -145,10 +159,41 @@ export function useReveal(sources: RevealSources): Reveal {
     box.scrollTo({ y: to });
   }, []);
 
+  /** Pay as much of the owed shift as the pane will take right now. What it
+   *  refuses — a clamp still measuring the last layout's content — stays
+   *  owed, and the `retry` after the next layout tries again. */
+  const payShift = useCallback((): void => {
+    const box = src.current.box.current;
+    const want = owedShift.current;
+    if (!box || want === 0) return;
+    const was = box.scrollY;
+    scrollTo(was + want);
+    owedShift.current = want - (box.scrollY - was);
+  }, [scrollTo]);
+
+  const nudge = useCallback(
+    (px: number): void => {
+      // Either the reveal owns the pane or the anchor does. While a row is
+      // owed — or settled and still being confirmed — the reveal re-places
+      // it against the heights as they settle, so preserving the anchor
+      // would fight it: a remainder paid out after the reveal has already
+      // put its row where it belongs scrolls straight past it.
+      if (owed.current !== null || settled.current !== null) return;
+      if (px === 0) return;
+      owedShift.current += px;
+      payShift();
+    },
+    [payShift],
+  );
+
   const retry = useCallback(
     (provisional?: boolean): void => {
       const { box: boxRef, rows: rowsRef, nodes, heights } = src.current;
       const box = boxRef.current;
+      // The shift first: the reveal below judges placement from the offset,
+      // and an offset still owing the content above it is the wrong one to
+      // judge anything from.
+      payShift();
       // The heights just moved, so what the last reveal settled on was settled
       // against numbers that have changed: owe it again until it can be
       // confirmed at the new ones.
@@ -254,7 +299,7 @@ export function useReveal(sources: RevealSources): Reveal {
         retryRef.current?.();
       });
     },
-    [scrollTo],
+    [scrollTo, payShift],
   );
 
   /** `retry` referring to itself through a ref, so the queued look calls the
@@ -269,6 +314,8 @@ export function useReveal(sources: RevealSources): Reveal {
       owed.current = id;
       settled.current = null;
       stuck.current = null;
+      // the reveal owns the pane now — see `nudge`
+      owedShift.current = 0;
       retry();
     },
     [retry],
@@ -280,9 +327,18 @@ export function useReveal(sources: RevealSources): Reveal {
     if (scrollY !== asked.current) {
       owed.current = null;
       settled.current = null;
+      owedShift.current = 0;
     }
     asked.current = null;
   }, []);
 
-  return { to, retry, scrollTo, heard };
+  // One stable object, not a fresh literal per render: callbacks built on
+  // this handle (`revealAt`, and the row handlers behind it) keep their
+  // identity, which is what lets a memoized row bail out of a scroll
+  // render. A literal here made every row re-render on every notch — the
+  // exact cost the memo exists to remove — with nothing anywhere naming it.
+  return useMemo(
+    () => ({ to, retry, scrollTo, nudge, heard }),
+    [to, retry, scrollTo, nudge, heard],
+  );
 }

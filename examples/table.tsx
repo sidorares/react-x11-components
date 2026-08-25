@@ -12,13 +12,18 @@
 //
 // Nothing on the right rewrote the left: every rung is a prop added to the
 // same `<Table>`.
-import { useMemo, useState } from 'react';
-import type { ReactElement } from 'react';
+//
+// The toolbar above both panes is the live-tail stress: "Append 500 rows &
+// scroll to last" grows the log and reveals the newest row — the shape a
+// protocol visualiser or a build log has, and the reveal follows the row
+// wherever the active sort puts it.
+import { useEffect, useMemo, useRef, useState } from 'react';
+import type { ReactElement, Ref } from 'react';
 import { execFileSync } from 'node:child_process';
-import { Icon, SplitPane, createRoot, useTheme } from 'react-x11';
+import { Button, Icon, SplitPane, createRoot, useTheme } from 'react-x11';
 
 import { Table } from '../src/index.js';
-import type { TableColumn, TableRowId } from '../src/index.js';
+import type { TableColumn, TableHandle, TableRowId } from '../src/index.js';
 
 // --- rung one: the app's data, two columns, nothing else -------------------
 
@@ -73,20 +78,24 @@ const PHRASES = [
   'layout pass converged in two rounds after the viewport report arrived late',
 ];
 
-function makeEntries(n: number): Entry[] {
+/** `n` entries with ids starting at `from`, so an append continues the
+ *  numbering — the same generator serves the initial hundred thousand and
+ *  every press of the tail button. */
+function makeEntries(n: number, from = 0): Entry[] {
   const entries: Entry[] = [];
-  let seed = 0x5eed;
+  let seed = (0x5eed + from) & 0x7fffffff;
   const rand = (): number => {
     seed = (seed * 1103515245 + 12345) & 0x7fffffff;
     return seed / 0x7fffffff;
   };
   for (let i = 0; i < n; i++) {
     const roll = rand();
+    const id = from + i;
     entries.push({
-      id: i,
+      id,
       level: roll < 0.82 ? 'info' : roll < 0.95 ? 'warn' : 'error',
       source: SOURCES[Math.floor(rand() * SOURCES.length)],
-      message: `${PHRASES[Math.floor(rand() * PHRASES.length)]} (#${i})`,
+      message: `${PHRASES[Math.floor(rand() * PHRASES.length)]} (#${id})`,
     });
   }
   return entries;
@@ -98,9 +107,14 @@ const LEVEL_COLOR: Record<Entry['level'], string> = {
   error: '#e01b24',
 };
 
-function Logs(): ReactElement {
+function Logs({
+  entries,
+  tableRef,
+}: {
+  entries: readonly Entry[];
+  tableRef: Ref<TableHandle<Entry>>;
+}): ReactElement {
   const theme = useTheme();
-  const entries = useMemo(() => makeEntries(100_000), []);
   const [picked, setPicked] = useState<readonly TableRowId[]>([]);
 
   const columns = useMemo(
@@ -131,6 +145,7 @@ function Logs(): ReactElement {
   return (
     <box style={{ flexGrow: 1, minHeight: 0 }}>
       <Table<Entry>
+        ref={tableRef}
         rows={entries}
         columns={columns}
         selectionMode="multiple"
@@ -171,8 +186,46 @@ function Logs(): ReactElement {
 
 function App(): ReactElement {
   const processes = useMemo(listProcesses, []);
+  const [entries, setEntries] = useState<Entry[]>(() => makeEntries(100_000));
+  const logs = useRef<TableHandle<Entry>>(null);
+  /** Set by the tail button, so the reveal follows the commit that grew the
+   *  rows — the append-then-scroll a log viewer does on every batch. */
+  const tail = useRef(false);
+  useEffect(() => {
+    if (!tail.current) return;
+    tail.current = false;
+    // The last row **in display order**, off the handle — not the last row
+    // appended. The logs sort by source, so an appended row lands mid-list
+    // and revealing *it* reads as "scrolled to the middle"; a tail follows
+    // the bottom of the view, whatever the sort did.
+    const shown = logs.current?.rows() ?? [];
+    const last = shown[shown.length - 1];
+    if (last) logs.current?.scrollToRow(last.id);
+  }, [entries]);
   return (
-    <window title="Table — the ladder" style={{ width: 980, height: 560 }}>
+    <window title="Table — the ladder">
+      <box
+        style={{
+          flexShrink: 0,
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 8,
+          padding: 8,
+          borderBottomWidth: 1,
+          borderColor: '$border',
+        }}
+      >
+        <Button
+          label="Append 500 rows & scroll to last"
+          onPress={() => {
+            tail.current = true;
+            setEntries((prev) => [...prev, ...makeEntries(500, prev.length)]);
+          }}
+        />
+        <text style={{ fontSize: 11, color: '$textMuted' }}>
+          the live-tail shape: a batch arrives, the newest row is revealed
+        </text>
+      </box>
       <SplitPane defaultSize={340} style={{ flexGrow: 1, minHeight: 0 }}>
         <box style={{ flexGrow: 1, minHeight: 0 }}>
           {/* the whole left pane is this one element */}
@@ -186,7 +239,7 @@ function App(): ReactElement {
             style={{ flexGrow: 1, minHeight: 0 }}
           />
         </box>
-        <Logs />
+        <Logs entries={entries} tableRef={logs} />
       </SplitPane>
     </window>
   );

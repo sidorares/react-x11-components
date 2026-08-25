@@ -55,29 +55,33 @@ and the keyboard steps over it.
 
 ## Props
 
-| Prop                                                               | Type                                              | Notes                                                                                                     |
-| ------------------------------------------------------------------ | ------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| `items`                                                            | `readonly T[]`                                    | The roots. Default `[]`.                                                                                  |
-| `expanded` / `defaultExpanded`                                     | `readonly TreeItemId[]`                           | Controlled and uncontrolled open sets.                                                                    |
-| `onExpandedChange`                                                 | `(expanded, change: TreeExpandChange<T>) => void` | The whole set, plus the one row that changed. The second argument is what lazy loading reads.             |
-| `selected` / `defaultSelected`                                     | `TreeItemId \| null`                              | One row — see "Selection is one row" below.                                                               |
-| `onSelect`                                                         | `(id, item: T) => void`                           | A click, or the keyboard moving the cursor.                                                               |
-| `onActivate`                                                       | `(id, item: T) => void`                           | The _open_ gesture on top of selection: a double click, `Enter`, or `Space`. On a branch it also toggles. |
-| `indent`                                                           | `number`                                          | One level of indent. Default 14. `0` puts the whole indent in `renderSubtree`'s hands.                    |
-| `rowHeight`                                                        | `number`                                          | The **shortest** a row may be. Default 22; rows grow past it to fit their content.                        |
-| `estimatedRowHeight`                                               | `number`                                          | What an unmeasured row is assumed to be while virtualizing. Defaults to `rowHeight`.                      |
-| `virtual`                                                          | `boolean \| 'auto'`                               | Build only the rows on screen. Default `'auto'`: on past 200 visible rows.                                |
-| `overscan`                                                         | `number`                                          | Rows built either side of the viewport. Default 6.                                                        |
-| `layout`                                                           | `'flat'` (default) \| `'nested'`                  | Whether rows are siblings or grouped into subtree containers. See below.                                  |
-| `getId` `getLabel` `getText` `getChildren` `isBranch` `isDisabled` | accessors over `T`                                | How to read the app's own node type. Default to `TreeItem`'s shape. **Memoize them** — see below.         |
-| `renderToggle`                                                     | `(state: TreeToggleState<T>) => ReactNode`        | The open/close control, inside its hit box.                                                               |
-| `renderGuide`                                                      | `(state: TreeGuideState<T>) => ReactNode`         | One column of the indent — the branch edge. Nothing by default.                                           |
-| `renderLabel`                                                      | `(state: TreeRowState<T>) => ReactNode`           | The label cell. An icon in front of the text goes here.                                                   |
-| `renderContent`                                                    | `(state, content: ReactNode[]) => ReactNode`      | Everything inside the row box, given what would have been there.                                          |
-| `renderSubtree`                                                    | `(state: TreeSubtreeState<T>, rows) => ReactNode` | The subtree container, in `layout="nested"`.                                                              |
-| `styles`                                                           | `TreeStyles<T>`                                   | `{ row, toggle, guide, label, subtree }`. `row` and `guide` also take a function of the state.            |
-| `style`                                                            | `StyleProp`                                       | The scroll container.                                                                                     |
-| `ref`                                                              | `Ref<TreeHandle<T>>`                              | See below.                                                                                                |
+| Prop                                                               | Type                                              | Notes                                                                                                                                                  |
+| ------------------------------------------------------------------ | ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `items`                                                            | `readonly T[]`                                    | The roots. Default `[]`.                                                                                                                               |
+| `expanded` / `defaultExpanded`                                     | `readonly TreeItemId[]`                           | Controlled and uncontrolled open sets.                                                                                                                 |
+| `onExpandedChange`                                                 | `(expanded, change: TreeExpandChange<T>) => void` | The whole set, plus the one row that changed. The second argument is what lazy loading reads.                                                          |
+| `selected` / `defaultSelected`                                     | `TreeItemId \| null`                              | One row — see "Selection is one row" below.                                                                                                            |
+| `onSelect`                                                         | `(id, item: T) => void`                           | A click, or the keyboard moving the cursor.                                                                                                            |
+| `onActivate`                                                       | `(id, item: T) => void`                           | The _open_ gesture on top of selection: a double click, `Enter`, or `Space`. On a branch it also toggles.                                              |
+| `indent`                                                           | `number`                                          | One level of indent. Default 14. `0` puts the whole indent in `renderSubtree`'s hands.                                                                 |
+| `rowHeight`                                                        | `number`                                          | The **shortest** a row may be. Default 22; rows grow past it to fit their content.                                                                     |
+| `estimatedRowHeight`                                               | `number`                                          | What an unmeasured row is assumed to be while virtualizing. Defaults to `rowHeight`; re-learnt from the measured mean once enough rows have been seen. |
+| `virtual`                                                          | `boolean \| 'auto'`                               | Build only the rows on screen. Default `'auto'`: on past 200 visible rows.                                                                             |
+| `overscan`                                                         | `number`                                          | Rows built either side of the viewport. Default 6.                                                                                                     |
+| `prefetch`                                                         | `number`                                          | Rows built beyond the overscan while the tree sits idle, per side. Default 40; `0` turns the band off.                                                 |
+| `layout`                                                           | `'flat'` (default) \| `'nested'`                  | Whether rows are siblings or grouped into subtree containers. See below.                                                                               |
+| `getId` `getLabel` `getText` `getChildren` `isBranch` `isDisabled` | accessors over `T`                                | How to read the app's own node type. Default to `TreeItem`'s shape. **Memoize them** — see below.                                                      |
+| `renderToggle`                                                     | `(state: TreeToggleState<T>) => ReactNode`        | The open/close control, inside its hit box.                                                                                                            |
+| `renderGuide`                                                      | `(state: TreeGuideState<T>) => ReactNode`         | One column of the indent — the branch edge. Nothing by default.                                                                                        |
+| `renderLabel`                                                      | `(state: TreeRowState<T>) => ReactNode`           | The label cell. An icon in front of the text goes here.                                                                                                |
+| `renderContent`                                                    | `(state, content: ReactNode[]) => ReactNode`      | Everything inside the row box, given what would have been there.                                                                                       |
+| `renderSubtree`                                                    | `(state: TreeSubtreeState<T>, rows) => ReactNode` | The subtree container, in `layout="nested"`.                                                                                                           |
+| `renderScrollHint`                                                 | `(state: TreeScrollHintState<T>) => ReactNode`    | The fast-scroll overlay. Default: a centred pill reading "2,345 / 100,000" while placeholders cover the viewport; return `null` for none.              |
+| `scrollHintDelay`                                                  | `number`                                          | How long the viewport must have shown unresolved content before the overlay appears, ms. Default 250; `0` shows it immediately.                        |
+| `catchup`                                                          | `{ threshold?, burst?, settle? }`                 | Catch-up pacing, in rows — what counts as a flood and the build pace per render. Same prop as `<Table>`'s.                                             |
+| `styles`                                                           | `TreeStyles<T>`                                   | `{ row, toggle, guide, label, subtree }`. `row` and `guide` also take a function of the state.                                                         |
+| `style`                                                            | `StyleProp`                                       | The scroll container.                                                                                                                                  |
+| `ref`                                                              | `Ref<TreeHandle<T>>`                              | See below.                                                                                                                                             |
 
 Everything `<box>` takes passes through to the container, including
 `aria-label` and `onScroll`.
@@ -151,7 +155,9 @@ which is the one thing to know about it:
 - **The scrollbar is an estimate until the rows have been seen.** Only rows
   that have been drawn have been measured. If rows are typically much taller
   than `rowHeight`, set `estimatedRowHeight` so the first guess is close;
-  otherwise a long tree starts out claiming to be shorter than it is.
+  otherwise a long tree starts out claiming to be shorter than it is — until
+  enough rows have been measured for the guess to be re-learnt from their
+  mean, which corrects most of the error without visiting the rest.
 - **Measured heights survive.** They are keyed by item id, so collapsing a
   branch and opening it again, or sorting, does not re-estimate rows you have
   already looked at and shift the list under you.
@@ -164,6 +170,18 @@ which is the one thing to know about it:
   content outgrew or outshrank — and a slice built from the offset before
   those is drawn where the viewport is not: rows at one edge, a blank band
   where the rest should be, and nothing to put it right until you scroll.
+
+**The slice works ahead of the scroll.** The renderer blits a scroll before
+React can run, so the only scroll with no blank frame is one that lands on
+rows already built. While the tree sits idle the window grows past the
+overscan up to `prefetch` rows per side; while scrolling it extends in the
+direction of travel; rows already built stay mounted until a budget forces
+them out, so a reversal lands on rows still there. A scroll that outruns all
+of that — a thumb dragged across the list — commits _skeleton_ rows first
+(the row box at its indexed height, `styles.row` applied, no content,
+`aria-hidden`) and fills them in viewport-first over the next few ticks. The
+mechanics are shared with [`<Table>`](table.md), where they are described in
+full.
 
 One thing virtualizing still costs, and the reason the threshold exists rather
 than doing it always: **only the built rows are in the accessibility tree**,
@@ -367,3 +385,15 @@ filesystem: lazily listed, with lucide-shaped folder glyphs through
 `renderLabel` and a dotted branch edge through `renderGuide`. Its glyphs are
 drawn in the example, which is the line core's icon set draws — affordances
 are core's (the twisty's chevron is `<Icon>`), nouns are the app's.
+
+`npm run examples:tree -- --stress` swaps the filesystem for a generated
+tree — 100,000 rows by default, `--stress=1000000` for more — fully expanded
+from the start, every seventh name long enough to wrap. It is the shape the
+virtualization window is tuned against, so it is the place to feel out a
+fast scroll, a scrollbar drag across the whole list, and a reversal.
+
+A scroll that outruns the built rows commits skeleton rows first — the row
+box at its indexed height carrying a muted bar at the row's indent — and
+floats the fast-scroll pill over the pane while they fill in; see
+[`<Table>`](table.md)'s "What a scroll costs" for the full story and
+`renderScrollHint` for replacing the pill.

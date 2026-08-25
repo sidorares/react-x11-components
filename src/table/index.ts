@@ -45,6 +45,7 @@ import type {
   KeyboardEvent,
   MouseEvent,
   ScrollableNode,
+  Theme,
 } from 'react-x11';
 import {
   XK_DOWN,
@@ -63,8 +64,23 @@ import type { Host } from './hx.js';
 // Shared with <Tree> — internal, deliberately not a shared *module*; the
 // header of src/internal/heights.ts says why.
 import { RowHeights } from '../internal/heights.js';
-import { afterLayout, cancelAfterLayout } from '../internal/timers.js';
+import {
+  afterLayout,
+  cancelAfterLayout,
+  cancelLater,
+  later,
+} from '../internal/timers.js';
+import type { DelayTick } from '../internal/timers.js';
 import { useReveal } from '../internal/scroll.js';
+import {
+  BURST_BUDGET,
+  DEFAULT_OVERSCAN,
+  DEFAULT_PREFETCH,
+  SCROLL_HINT_DELAY_MS,
+  SKELETON_THRESHOLD,
+  SETTLE_BUDGET,
+  useVirtualWindow,
+} from '../internal/window.js';
 import {
   MIN_COLUMN,
   columnValue,
@@ -120,16 +136,6 @@ const HALF = 3;
 const GRIP = HALF + RULE + HALF;
 /** What one Left/Right on a focused grip is worth. */
 const STEP = 16;
-/** Rows kept either side of the viewport, so a fast scroll does not show a
- *  gap before the next frame catches up. */
-const OVERSCAN = 6;
-/**
- * What to build before the viewport has been measured. `onViewport` cannot
- * arrive until layout has run, which is a frame after the first commit, so
- * there is always one render that has to guess — and guessing "all of them"
- * puts a hundred thousand rows in the tree for a frame.
- */
-const ASSUMED_ROWS = 40;
 /**
  * Where `virtual="auto"` starts virtualizing.
  *
@@ -191,6 +197,37 @@ const s = createStyles({
   },
   cellText: { fontSize: 12, textWrap: 'nowrap', textBoxTrim: 'cap-alphabetic' },
   spacer: { flexShrink: 0 },
+  /** The bar inside a skeleton row — a line of "text" with no text, so a
+   *  band of placeholders reads as rows arriving rather than a void. */
+  skeletonBar: {
+    height: 8,
+    borderRadius: 4,
+    marginStart: 8,
+    alignSelf: 'center',
+    flexShrink: 0,
+  },
+  /** The lane the fast-scroll pill floats in: absolute against the table's
+   *  root so the body pane scrolls under it, full-width so the pill centres
+   *  itself, and transparent to the pointer so the rows beneath stay
+   *  clickable. */
+  scrollHintLane: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 12,
+    flexDirection: 'row',
+    justifyContent: 'center',
+    pointerEvents: 'none',
+  },
+  scrollHint: {
+    paddingStart: 10,
+    paddingEnd: 10,
+    paddingTop: 5,
+    paddingBottom: 5,
+    borderRadius: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
   sortMark: { marginStart: 4 },
   empty: {
     flexGrow: 1,
@@ -199,6 +236,29 @@ const s = createStyles({
     padding: 16,
   },
 });
+
+/**
+ * What `renderScrollHint` is told: where the viewport is, while a fast
+ * scroll is still being caught up with. The top row itself is included so a
+ * hint can show what is *at* this position — a date, a group, a name — the
+ * way a photo library's scrubber shows the month.
+ */
+export interface TableScrollHintState<Row = any> {
+  /** The first row in view, in display order. */
+  row: TableRow<Row>;
+  /** Its position, 1-based — "row `from` of `count`". */
+  from: number;
+  /** The last row in view, 1-based. */
+  to: number;
+  /** How many rows the table has. */
+  count: number;
+  /** How many of the rows in view are still placeholders. */
+  pending: number;
+  /** When the viewport first stopped being whole, epoch ms — what the
+   *  show-delay was measured against. `Date.now() - since` is how long the
+   *  user has been looking at unresolved content. */
+  since: number;
+}
 
 /** The selection that just changed, alongside the whole set. `id`/`row` name
  *  the row the gesture landed on; a select-all has no single row to name. */
@@ -283,14 +343,25 @@ interface TableBaseProps<Row> extends Omit<
    */
   rowHeight?: number;
   /** What an unmeasured row is assumed — and floored — at, while measuring.
-   *  Default 24. The scrollbar is this guess for every row not yet seen, and
-   *  it converges as you scroll. */
+   *  Default 24. The scrollbar is this guess for every row not yet seen; it
+   *  converges as you scroll, and once enough rows have been measured the
+   *  guess itself is re-learnt from their mean, so the scrollbar lands near
+   *  the truth without visiting the whole list. */
   estimatedRowHeight?: number;
   /** Build only the rows on screen. `'auto'` (the default) turns it on past
    *  200 rows. */
   virtual?: boolean | 'auto';
   /** Rows built either side of the viewport. */
   overscan?: number;
+  /**
+   * Rows built *beyond* the overscan while the table sits idle, per side.
+   * Default 40. The pane blits a scroll before React can run, so the only
+   * scroll with no blank frame is one that lands on rows already built —
+   * this band is that, grown in small steps while nobody is scrolling, and
+   * kept behind the viewport so a reversal lands on rows still mounted.
+   * `0` turns the band off: the slice is exactly viewport-plus-overscan.
+   */
+  prefetch?: number;
 
   /**
    * Everything inside the row box, given what would have been there.
@@ -303,6 +374,40 @@ interface TableBaseProps<Row> extends Omit<
   /** The body's content when the rows resolve empty. Nothing by default —
    *  the header still shows. */
   renderEmpty?: () => ReactNode;
+  /**
+   * The fast-scroll overlay. Shown only while a scroll has outrun the rows
+   * far enough that placeholders cover a meaningful part of the viewport —
+   * a scroll the table absorbs within a frame never shows it — and hidden
+   * the moment the view is whole again. The default is a pill reading
+   * "2,345 / 100,000"; return something else to replace it (the state
+   * carries the top row, so a hint can show a date or a name instead of a
+   * number), or null for no overlay at all.
+   */
+  renderScrollHint?: (state: TableScrollHintState<Row>) => ReactNode;
+  /**
+   * How long the viewport must have been showing unresolved content before
+   * the overlay appears, in milliseconds. Default 250: a catch-up the next
+   * few frames absorb is never announced. `0` shows it the moment a
+   * catch-up engages.
+   */
+  scrollHintDelay?: number;
+  /**
+   * Tuning for the catch-up pacing — how a scroll that outruns the built
+   * rows is absorbed. All optional, all in rows:
+   *
+   * - `threshold` (default 16): more rows than this entering the window in
+   *   one render is a flood, and floods build skeletons first. Raise it
+   *   past the window size to never show skeletons; `0` skeletons every
+   *   scroll.
+   * - `burst` (default 24): full rows built per render while the scroll is
+   *   still moving.
+   * - `settle` (default 48): the same once it has stopped.
+   *
+   * The defaults follow the measured cost of a default-shape row (about
+   * twice a skeleton, warm); tables with heavy `render` seams may want
+   * smaller budgets, and cheap tables may raise the threshold instead.
+   */
+  catchup?: { threshold?: number; burst?: number; settle?: number };
 
   styles?: TableStyles<Row>;
   style?: StyleProp;
@@ -368,6 +473,172 @@ interface TableAllProps<Row> extends TableBaseProps<Row> {
 const EMPTY_SET: ReadonlySet<TableRowId> = new Set();
 
 /**
+ * One row, as its own memoized component.
+ *
+ * The reason is the CPU profile of a fast scroll: every notch re-renders
+ * the window, and re-creating a hundred rows' elements per notch — then
+ * reconciling them and re-applying identical props to every node — was
+ * over half the burst. Every prop here is identity-stable across a scroll
+ * render (the row model is memoized, the widths resolve once, the handlers
+ * are stable callbacks), so React bails out on the rows that did not
+ * change and a notch pays only for the rows it brought in.
+ */
+interface TableRowViewProps<Row> {
+  entry: TableRow<Row>;
+  columns: readonly TableColumn<Row>[];
+  widths: readonly number[];
+  /** How many rows the table has — `aria-setsize`. */
+  setSize: number;
+  isSelected: boolean;
+  selectable: boolean;
+  uniform: boolean;
+  rowHeight: number | undefined;
+  estimate: number;
+  theme: Theme;
+  rowStyle: TableStyles<Row>['row'];
+  cellStyle: TableStyles<Row>['cell'];
+  renderRow?: (state: TableRowState<Row>, content: ReactNode[]) => ReactNode;
+  /** Whether the app passed `onRowContextMenu` — the prop itself stays out
+   *  of the row so a re-created handler does not re-render every row. */
+  hasMenu: boolean;
+  onTap: (
+    entry: TableRow<Row>,
+    mods: { ctrl: boolean; shift: boolean },
+  ) => void;
+  onOpen: (entry: TableRow<Row>) => void;
+  onMenu: (entry: TableRow<Row>, ev: MouseEvent) => void;
+  register: (id: TableRowId, at: number, node: DrawnNode | null) => void;
+}
+
+function TableRowView<Row>(props: TableRowViewProps<Row>): ReactElement {
+  const {
+    entry,
+    columns,
+    widths,
+    setSize,
+    isSelected,
+    selectable,
+    uniform,
+    rowHeight,
+    estimate,
+    theme,
+    rowStyle,
+    cellStyle,
+    renderRow,
+    hasMenu,
+    onTap,
+    onOpen,
+    onMenu,
+    register,
+  } = props;
+  const color = isSelected ? theme.hoverText : theme.text;
+  const state: TableRowState<Row> = { ...entry, selected: isSelected, color };
+
+  const content: ReactNode[] = columns.map((column, at) => {
+    const cellState: TableCellState<Row> = { ...state, column };
+    return hx(
+      'box',
+      {
+        key: column.id,
+        role: 'cell',
+        style: [
+          s.cell,
+          { width: widths[at] },
+          uniform && { height: rowHeight },
+          column.align === 'end' && {
+            alignItems: 'flex-end',
+            paddingEnd: 8,
+          },
+          column.align === 'center' && { alignItems: 'center' },
+          typeof cellStyle === 'function' ? cellStyle(cellState) : cellStyle,
+        ],
+      },
+      column.render
+        ? // A cell that draws itself still has to know it is on the
+          // selected row — see the doc comment. Keyed by the component,
+          // the way every seam's return is.
+          React.createElement(
+            React.Fragment,
+            { key: 'content' },
+            column.render(entry.row, cellState),
+          )
+        : hx(
+            'text',
+            { style: [s.cellText, { color }] },
+            String(columnValue(entry.row, column) ?? ''),
+          ),
+    );
+  });
+
+  return hx(
+    'box',
+    {
+      role: 'row',
+      'aria-selected': selectable ? isSelected : undefined,
+      'aria-posinset': entry.index + 1,
+      'aria-setsize': setSize,
+      // The index the row was drawn at travels with the node, so measuring
+      // does not have to search the row list for it. It can go stale — the
+      // rows may move before the tick that measures — and both this and
+      // the height index check it rather than trust it.
+      ref: (node: DrawnNode | null) => {
+        register(entry.id, entry.index, node);
+      },
+      onClick: (ev: MouseEvent) => {
+        // A right-click also arrives here as a click; the selection it
+        // implies is `onContextMenu`'s to make (select-unless-selected),
+        // not the left button's replace.
+        if (ev.button !== 1) return;
+        onTap(entry, { ctrl: ev.ctrlKey, shift: ev.shiftKey });
+        // Select on the first click, open on the second — the gesture
+        // every file list has. `detail` is the click count the renderer
+        // already counts for text selection.
+        if (ev.detail === 2) onOpen(entry);
+      },
+      onContextMenu: hasMenu
+        ? (ev: MouseEvent) => {
+            onMenu(entry, ev);
+          }
+        : undefined,
+      style: [
+        s.row,
+        // Declared uniform: exactly this tall, content clipped — core's
+        // row. Measured: a floor, and the row grows to whatever its
+        // content needs; the height index reads back what it became.
+        uniform
+          ? { height: rowHeight, alignItems: 'center' }
+          : { minHeight: estimate },
+        selectable && { cursor: 'pointer' },
+        {
+          backgroundColor: isSelected ? theme.hoverBackground : 'transparent',
+          // The row's ink, said once: `color` inherits, so default cells
+          // take it without being handed it.
+          color,
+        },
+        selectable && {
+          // pressed even on the selected row: a re-press on the row that
+          // is already current is the one click in the table that would
+          // otherwise look ignored
+          ':active': {
+            backgroundColor: isSelected
+              ? theme.accentActive
+              : theme.surfaceActive,
+          },
+        },
+        selectable &&
+          !isSelected && {
+            ':hover': { backgroundColor: theme.surfaceHover },
+          },
+        typeof rowStyle === 'function' ? rowStyle(state) : rowStyle,
+      ],
+    },
+    renderRow ? renderRow(state, content) : content,
+  );
+}
+
+const MemoTableRow = React.memo(TableRowView) as typeof TableRowView;
+
+/**
  * `<Table columns rows />` — a data table with a header that stays put.
  *
  *     <Table
@@ -413,9 +684,13 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
     rowHeight,
     estimatedRowHeight,
     virtual = 'auto',
-    overscan = OVERSCAN,
+    overscan = DEFAULT_OVERSCAN,
+    prefetch = DEFAULT_PREFETCH,
     renderRow,
     renderEmpty,
+    renderScrollHint,
+    scrollHintDelay = SCROLL_HINT_DELAY_MS,
+    catchup,
     styles,
     style,
     focusable = true,
@@ -473,7 +748,6 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
     Readonly<Record<string, number>>
   >({});
   const [scrollX, setScrollX] = useState(0);
-  const [view, setView] = useState({ top: 0, height: 0, width: 0 });
   // Bumped by a measurement pass that found a row taller or shorter than the
   // index believed. It is the only reason the component re-renders for a
   // measurement, and a pass that finds nothing new does not bump it — which
@@ -519,8 +793,6 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
   selectedRef.current = selectedIds;
   const cursorRef = useRef(cursor);
   cursorRef.current = cursor;
-  const viewRef = useRef(view);
-  viewRef.current = view;
   /** Where a Shift range grows from — the last plain click or plain step. */
   const anchorRef = useRef<TableRowId | null>(null);
 
@@ -532,6 +804,9 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
     new Map<TableRowId, { node: DrawnNode; at: number }>(),
   );
   const drag = useRef<{ id: string; from: number; width: number } | null>(null);
+  /** Whether the fast-scroll pill is up — kept across renders so it does not
+   *  flicker through a catch-up, only appearing and disappearing once. */
+  const hintShown = useRef(false);
   const userWidthsRef = useRef(userWidths);
   userWidthsRef.current = userWidths;
 
@@ -551,25 +826,24 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
     virtual === true ||
     (virtual === 'auto' && ordered.length > VIRTUAL_THRESHOLD);
 
-  // The slice worth building: what is on screen, plus a little either side.
-  const first = virtualizing
-    ? Math.max(0, heights.indexAt(view.top) - overscan)
-    : 0;
-  let last = ordered.length;
-  if (virtualizing) {
-    if (view.height > 0) {
-      last = Math.min(
-        ordered.length,
-        heights.indexAt(view.top + view.height) + 1 + overscan,
-      );
-    } else {
-      last = Math.min(ordered.length, first + ASSUMED_ROWS);
-    }
-  }
-  /** Where the slice starts, and how much of the list is below it — the two
-   *  spacers that keep the scrollbar measuring the whole table. */
-  const above = virtualizing ? heights.offsetAt(first) : 0;
-  const below = virtualizing ? heights.total() - heights.offsetAt(last) : 0;
+  /** The viewport, and the slice worth building from it — the machinery
+   *  shared with `<Tree>` (`../internal/window.ts`). */
+  const win = useVirtualWindow({
+    box: body,
+    heights,
+    rows: ordered,
+    // declared uniform: every height is exact, so the idle band may grow
+    // upward freely — see `exact` on the inputs
+    exact: uniform,
+    virtualizing,
+    overscan,
+    prefetch,
+    threshold: catchup?.threshold ?? SKELETON_THRESHOLD,
+    burstBudget: catchup?.burst ?? BURST_BUDGET,
+    settleBudget: catchup?.settle ?? SETTLE_BUDGET,
+  });
+  const { view, viewRef } = win;
+  const { first, last, above, below } = win.slice;
 
   /** Columns resolve to pixels once, at the table level, per (columns,
    *  viewport, resizes) — every row agrees on the grid by construction. */
@@ -592,25 +866,19 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
   });
 
   /**
-   * Re-read the offset the body is *actually* at.
-   *
-   * The pane moves silently — it resolves a queued reveal during layout, and
-   * re-clamps an offset the content outgrew or outshrank — and a slice built
-   * from the offset before those is drawn where the viewport is not: a blank
-   * band where the rows should be, and no way back until a scroll of your own
-   * re-syncs it by accident.
+   * Re-read the offset the body is *actually* at — the window's `sync` (see
+   * `../internal/window.ts` for why the pane moves silently), plus the
+   * horizontal half only this component has: the header is shifted by
+   * `scrollX`, so the sideways offset is re-read on the same tick.
    */
+  const winSync = win.sync;
   const syncScroll = useCallback((): void => {
     const box = body.current;
     if (!box) return;
-    const { scrollX: x, scrollY: y } = box;
+    const x = box.scrollX;
     setScrollX((prev) => (prev === x ? prev : x));
-    // Only a virtualizing table reads the vertical offset — a whole one has
-    // no slice to rebuild, and re-rendering it on a scroll it already drew
-    // would be work for nothing.
-    if (virtualizing)
-      setView((prev) => (prev.top === y ? prev : { ...prev, top: y }));
-  }, [virtualizing]);
+    winSync();
+  }, [winSync]);
 
   /**
    * Read back what the rows on screen actually laid out at.
@@ -656,13 +924,35 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
       if (at < anchor) shift += height - was;
     }
     if (!changed) return false;
-    if (shift !== 0 && box) {
-      reveal.scrollTo(box.scrollY + shift);
-    }
+    // A debt, not a one-shot: the pane clamps against the last layout's
+    // content height, so a shift from rows measured above the viewport can
+    // land short until the layout that admits the growth has run.
+    reveal.nudge(shift);
     setMeasured((n) => n + 1);
     return true;
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `heights` is a
     // stable instance
+  }, [uniform, virtualizing]);
+
+  /**
+   * Let the estimate learn from the rows that have been measured — the
+   * scrollbar of a measured table starts as a guess times the row count,
+   * and the measured mean is a far better guess for the rows not yet seen.
+   * Idle only: every unmeasured offset moves when it applies, and the
+   * anchor arithmetic keeping the screen still is `measureRows`'s.
+   */
+  const adaptEstimate = useCallback((): boolean => {
+    if (uniform || !virtualizing) return false;
+    const box = body.current;
+    if (!box) return false;
+    const anchor = heights.indexAt(box.scrollY);
+    const before = heights.offsetAt(anchor);
+    if (!heights.adapt()) return false;
+    reveal.nudge(heights.offsetAt(anchor) - before);
+    setMeasured((n) => n + 1);
+    return true;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `heights` and
+    // `reveal` are stable instances
   }, [uniform, virtualizing]);
 
   /**
@@ -676,16 +966,44 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
    * needs none of it: `onViewport` is when its content can have been
    * re-clamped, and it rebuilds no slice anyway.
    */
+  /** Whether some drawn row has no size yet — a commit can land between
+   *  frame flushes, and a measure pass over it reads zeros. */
+  const rowsPendingLayout = useCallback((): boolean => {
+    if (uniform) return false;
+    const rows = orderedRef.current;
+    for (const [id, { node, at }] of rowNodes.current) {
+      if (rows[at]?.id === id && !(node.abs.height > 0)) return true;
+    }
+    return false;
+  }, [uniform]);
+
   useEffect(() => {
     if (!virtualizing) return undefined;
-    const id = afterLayout(() => {
+    let look: DelayTick = null;
+    let tries = 0;
+    const pass = (): void => {
       // `measureRows` first, and its answer handed on: a pass that moved the
       // heights has not settled anything, and an owed scroll judged against
-      // the layout it is about to invalidate is not owed any less.
-      reveal.retry(measureRows());
+      // the layout it is about to invalidate is not owed any less. During a
+      // flick nothing is measured at all — every correction at that speed is
+      // invalidated by the next event — and the settle tick that follows any
+      // burst is where the deferred passes catch up.
+      const moved = win.fast() ? false : measureRows();
+      const adapted = !win.scrolling() && adaptEstimate();
+      reveal.retry(moved || adapted);
       syncScroll();
-    });
-    return () => cancelAfterLayout(id);
+      // A commit can land between frame flushes: its rows report zero size
+      // until the flush, this tick has already run, and nothing else would
+      // come back for them — a window that just finished growing renders
+      // nothing further, and the missed measurements would stand for good.
+      // Look again, briefly, while any drawn row is still unsized.
+      if (rowsPendingLayout() && tries++ < 8) look = later(pass, 16);
+    };
+    const id = afterLayout(pass);
+    return () => {
+      cancelAfterLayout(id);
+      cancelLater(look);
+    };
   });
 
   /** Put a row in view, by the index its call site already has. */
@@ -937,122 +1255,75 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
   const headerCellStyleProp = styles?.headerCell;
   const selectable = selectionMode !== 'none';
 
-  const renderOneRow = (entry: TableRow<Row>): ReactElement => {
+  // The row component's stable halves — `MemoTableRow` bails out of a
+  // re-render only if every prop kept its identity, and these are the two
+  // that would otherwise be rebuilt per row per render.
+  const registerRow = useCallback(
+    (id: TableRowId, at: number, node: DrawnNode | null): void => {
+      if (node) rowNodes.current.set(id, { node, at });
+      else rowNodes.current.delete(id);
+    },
+    [],
+  );
+  const rowMenu = useCallback(
+    (entry: TableRow<Row>, ev: MouseEvent): void => {
+      // The menu applies to what is under the pointer, so the row is
+      // selected first — unless it is already part of the selection,
+      // which a menu over "the selected files" must not collapse.
+      if (selectable && !selectedRef.current.has(entry.id)) {
+        tap(entry, { ctrl: false, shift: false });
+      }
+      onRowContextMenu?.(entry.id, entry.row, ev);
+    },
+    [selectable, tap, onRowContextMenu],
+  );
+
+  /**
+   * A row the window said not to build in full yet: the box at its indexed
+   * height and none of its content. Cheap on purpose — no cells, no text, no
+   * seams — so the commit answering a flood lands frames before the full
+   * rows could, and what blits in reads as rows arriving rather than a
+   * void. `styles.row` still applies, so zebra striping and row backgrounds
+   * hold. Not registered in `rowNodes`: a skeleton must not be measured
+   * into the height index, and cannot satisfy a reveal.
+   */
+  const renderSkeletonRow = (entry: TableRow<Row>): ReactElement => {
     const isSelected = selectedIds.has(entry.id);
-    const color = isSelected ? theme.hoverText : theme.text;
-    const state: TableRowState<Row> = { ...entry, selected: isSelected, color };
-
-    const content: ReactNode[] = columns.map((column, at) => {
-      const cellState: TableCellState<Row> = { ...state, column };
-      return hx(
-        'box',
-        {
-          key: column.id,
-          role: 'cell',
-          style: [
-            s.cell,
-            { width: widths[at] },
-            uniform && { height: rowHeight },
-            column.align === 'end' && {
-              alignItems: 'flex-end',
-              paddingEnd: 8,
-            },
-            column.align === 'center' && { alignItems: 'center' },
-            typeof cellStyleProp === 'function'
-              ? cellStyleProp(cellState)
-              : cellStyleProp,
-          ],
-        },
-        column.render
-          ? // A cell that draws itself still has to know it is on the
-            // selected row — see the doc comment. Keyed by the component,
-            // the way every seam's return is.
-            React.createElement(
-              React.Fragment,
-              { key: 'content' },
-              column.render(entry.row, cellState),
-            )
-          : hx(
-              'text',
-              { style: [s.cellText, { color }] },
-              String(columnValue(entry.row, column) ?? ''),
-            ),
-      );
-    });
-
+    const state: TableRowState<Row> = {
+      ...entry,
+      selected: isSelected,
+      color: isSelected ? theme.hoverText : theme.text,
+    };
     return hx(
       'box',
       {
         key: String(entry.id),
-        role: 'row',
-        'aria-selected': selectable ? isSelected : undefined,
-        'aria-posinset': entry.index + 1,
-        'aria-setsize': ordered.length,
-        // The index the row was drawn at travels with the node, so measuring
-        // does not have to search the row list for it. It can go stale — the
-        // rows may move before the tick that measures — and both this and
-        // the height index check it rather than trust it.
-        ref: (node: DrawnNode | null) => {
-          if (node) rowNodes.current.set(entry.id, { node, at: entry.index });
-          else rowNodes.current.delete(entry.id);
-        },
-        onClick: (ev: MouseEvent) => {
-          // A right-click also arrives here as a click; the selection it
-          // implies is `onContextMenu`'s to make (select-unless-selected),
-          // not the left button's replace.
-          if (ev.button !== 1) return;
-          tap(entry, { ctrl: ev.ctrlKey, shift: ev.shiftKey });
-          // Select on the first click, open on the second — the gesture
-          // every file list has. `detail` is the click count the renderer
-          // already counts for text selection.
-          if (ev.detail === 2) activate(entry);
-        },
-        onContextMenu: onRowContextMenu
-          ? (ev: MouseEvent) => {
-              // The menu applies to what is under the pointer, so the row is
-              // selected first — unless it is already part of the selection,
-              // which a menu over "the selected files" must not collapse.
-              if (selectable && !selectedRef.current.has(entry.id)) {
-                tap(entry, { ctrl: false, shift: false });
-              }
-              onRowContextMenu(entry.id, entry.row, ev);
-            }
-          : undefined,
+        'aria-hidden': true,
         style: [
           s.row,
-          // Declared uniform: exactly this tall, content clipped — core's
-          // row. Measured: a floor, and the row grows to whatever its
-          // content needs; the height index reads back what it became.
-          uniform
-            ? { height: rowHeight, alignItems: 'center' }
-            : { minHeight: estimate },
-          selectable && { cursor: 'pointer' },
+          // Exactly what the index believes, so the spacers and the
+          // scrollbar agree with the rows on where everything is.
+          { height: heights.heightAt(entry.index) },
           {
             backgroundColor: isSelected ? theme.hoverBackground : 'transparent',
-            // The row's ink, said once: `color` inherits, so default cells
-            // take it without being handed it.
-            color,
           },
-          selectable && {
-            // pressed even on the selected row: a re-press on the row that
-            // is already current is the one click in the table that would
-            // otherwise look ignored
-            ':active': {
-              backgroundColor: isSelected
-                ? theme.accentActive
-                : theme.surfaceActive,
-            },
-          },
-          selectable &&
-            !isSelected && {
-              ':hover': { backgroundColor: theme.surfaceHover },
-            },
           typeof rowStyleProp === 'function'
             ? rowStyleProp(state)
             : rowStyleProp,
         ],
       },
-      renderRow ? renderRow(state, content) : content,
+      // A line of "text" with no text. Width varied by index, so a band of
+      // placeholders reads as rows arriving rather than a repeated tile.
+      hx('box', {
+        key: 'bar',
+        style: [
+          s.skeletonBar,
+          {
+            width: 96 + ((entry.index * 37) % 89),
+            backgroundColor: theme.track,
+          },
+        ],
+      }),
     );
   };
 
@@ -1149,6 +1420,83 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
     );
   });
 
+  /**
+   * The row *elements*, reused by identity while nothing they depend on has
+   * changed. The memo already skips re-rendering an unchanged row, but the
+   * skip still costs a `createElement` and a props compare per row per
+   * notch — the burst profile put bare `createElement` at a tenth of a
+   * flick's CPU. Handing React the identical element object instead takes
+   * the cheapest path it has: the fiber is reused with no compare at all.
+   * The cache empties whenever any shared input changes identity, and
+   * per-row entries revalidate on the row object and its selection.
+   */
+  const rowElems = useRef(
+    new Map<
+      TableRowId,
+      { entry: TableRow<Row>; selected: boolean; el: ReactElement }
+    >(),
+  );
+  const rowElemDeps = useRef<readonly unknown[]>([]);
+  {
+    const deps = [
+      columns,
+      widths,
+      theme,
+      uniform,
+      rowHeight,
+      estimate,
+      selectable,
+      rowStyleProp,
+      cellStyleProp,
+      renderRow,
+      Boolean(onRowContextMenu),
+      tap,
+      activate,
+      rowMenu,
+      registerRow,
+      ordered.length,
+    ];
+    const prev = rowElemDeps.current;
+    if (prev.length !== deps.length || deps.some((d, at) => d !== prev[at])) {
+      rowElems.current.clear();
+      rowElemDeps.current = deps;
+    }
+  }
+
+  const rowElement = (entry: TableRow<Row>): ReactElement => {
+    const isSelected = selectedIds.has(entry.id);
+    const cached = rowElems.current.get(entry.id);
+    if (cached && cached.entry === entry && cached.selected === isSelected) {
+      return cached.el;
+    }
+    const el = React.createElement(
+      MemoTableRow as (p: TableRowViewProps<Row>) => ReactElement,
+      {
+        key: String(entry.id),
+        entry,
+        columns,
+        widths,
+        setSize: ordered.length,
+        isSelected,
+        selectable,
+        uniform,
+        rowHeight,
+        estimate,
+        theme,
+        rowStyle: rowStyleProp,
+        cellStyle: cellStyleProp,
+        renderRow,
+        hasMenu: Boolean(onRowContextMenu),
+        onTap: tap,
+        onOpen: activate,
+        onMenu: rowMenu,
+        register: registerRow,
+      },
+    );
+    rowElems.current.set(entry.id, { entry, selected: isSelected, el });
+    return el;
+  };
+
   const bodyChildren: ReactNode[] = [];
   if (ordered.length === 0) {
     if (renderEmpty) {
@@ -1165,8 +1513,14 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
         }),
       );
     }
-    for (let i = first; i < last; i++)
-      bodyChildren.push(renderOneRow(ordered[i]));
+    for (let i = first; i < last; i++) {
+      const entry = ordered[i];
+      bodyChildren.push(
+        win.skeletons.has(entry.id)
+          ? renderSkeletonRow(entry)
+          : rowElement(entry),
+      );
+    }
     if (virtualizing && last < ordered.length) {
       bodyChildren.push(
         hx('box', {
@@ -1175,6 +1529,87 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
         }),
       );
     }
+    // Rows that left the window leave the cache too, once it has grown
+    // well past the window — a scrub across a long list would otherwise
+    // hold an element for every row it passed.
+    if (rowElems.current.size > (last - first) * 3 + 64) {
+      rowElems.current.clear();
+    }
+  }
+
+  /**
+   * The fast-scroll overlay — shown only while placeholders cover enough of
+   * the viewport that the user would otherwise be looking at blank rows.
+   * The half-viewport threshold keeps a near-miss quiet: a scroll the next
+   * frame will absorb is not worth announcing. Once up it stays until the
+   * view is whole again, so it does not flicker through the catch-up.
+   */
+  let scrollHint: ReactNode = null;
+  if (virtualizing && ordered.length > 0 && view.height > 0) {
+    const vFirst = heights.indexAt(view.top);
+    const vLast = Math.min(
+      ordered.length - 1,
+      heights.indexAt(view.top + view.height),
+    );
+    // Two ways in: placeholders covering enough of the viewport that it
+    // would otherwise read as blank, or a scrub — the window teleporting
+    // while the burst is still in flight, where every commit chases a
+    // viewport that has already left and nothing useful can be on screen.
+    // Either way only once the catch-up has already *lasted*: a jump the
+    // next few frames absorb is not worth announcing, so the pill waits
+    // out the show-delay against the catch-up clock. Latched once
+    // triggered: `pending` bounces to zero between catch-up commits, and a
+    // pill that blinked with it would read as a glitch. It goes when the
+    // burst does.
+    const engaged =
+      (win.pending > 0 && win.pending * 2 >= vLast - vFirst + 1) ||
+      (win.jumped && win.scrolling());
+    const lasted =
+      win.catchupSince !== null &&
+      Date.now() - win.catchupSince >= scrollHintDelay;
+    const show =
+      (engaged && lasted) ||
+      (hintShown.current && (win.pending > 0 || win.scrolling()));
+    hintShown.current = show;
+    if (show) {
+      const hintState: TableScrollHintState<Row> = {
+        row: ordered[vFirst],
+        from: vFirst + 1,
+        to: vLast + 1,
+        count: ordered.length,
+        pending: win.pending,
+        since: win.catchupSince ?? Date.now(),
+      };
+      const content = renderScrollHint
+        ? renderScrollHint(hintState)
+        : hx(
+            'text',
+            { style: { fontSize: 11, color: theme.hoverText } },
+            `${hintState.from.toLocaleString()} / ${hintState.count.toLocaleString()}`,
+          );
+      if (content !== null && content !== undefined && content !== false) {
+        scrollHint = hx(
+          'box',
+          {
+            key: 'scroll-hint',
+            // The pill duplicates what the scrollbar already tells an
+            // assistive technology, and it comes and goes with the catch-up
+            // — chatter, not content.
+            'aria-hidden': true,
+            style: s.scrollHintLane,
+          },
+          hx(
+            'box',
+            {
+              style: [s.scrollHint, { backgroundColor: theme.hoverBackground }],
+            },
+            content,
+          ),
+        );
+      }
+    }
+  } else {
+    hintShown.current = false;
   }
 
   return hx(
@@ -1229,11 +1664,7 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
           // under them on the next layout.
           reveal.heard(ev.scrollY);
           setScrollX((prev) => (prev === ev.scrollX ? prev : ev.scrollX));
-          if (virtualizing) {
-            setView((prev) =>
-              prev.top === ev.scrollY ? prev : { ...prev, top: ev.scrollY },
-            );
-          }
+          win.scrolled(ev.scrollY);
           onScroll?.(ev);
         },
         // Layout, not scrolling, is what first tells a table how much of it
@@ -1241,18 +1672,7 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
         // columns resolve against, so this is measured whether or not the
         // table virtualizes.
         onViewport: (ev) => {
-          // The ref first, at event time: the measure tick runs before the
-          // re-render this setState causes, and it must see this viewport.
-          viewRef.current = {
-            ...viewRef.current,
-            height: ev.height,
-            width: ev.width,
-          };
-          setView((prev) =>
-            prev.height === ev.height && prev.width === ev.width
-              ? prev
-              : { ...prev, height: ev.height, width: ev.width },
-          );
+          win.sized(ev.width, ev.height);
           // The content just changed size, which is both the moment an owed
           // scroll can reach further than the clamp let it and the moment the
           // container may have re-clamped the offset without saying so. It is
@@ -1266,5 +1686,6 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
       },
       hx('box', { style: [s.rowsBox, { width: total }] }, bodyChildren),
     ),
+    scrollHint,
   );
 }

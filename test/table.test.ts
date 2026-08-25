@@ -107,6 +107,15 @@ async function settle(): Promise<void> {
   }
 }
 
+/** Sit still long enough for the idle band to notice and grow — its clock
+ *  starts ~120ms after the last scroll and steps every ~40ms. */
+async function idle(ms: number): Promise<void> {
+  for (let waited = 0; waited < ms; waited += 40) {
+    await new Promise((res) => setTimeout(res, 40));
+    await act();
+  }
+}
+
 /** Mount without React's report of an escaping error on stderr. */
 async function rejectsQuietly(
   fn: () => Promise<unknown>,
@@ -156,6 +165,9 @@ function mount(
         ...props,
       } as TableProps<File>),
     ),
+    // the harness window is 640×480 by default; a pane taller than that
+    // needs the window grown with it
+    height > 440 ? { width: width + 40, height: height + 60 } : {},
   );
 }
 
@@ -414,7 +426,8 @@ test('declared-uniform rows virtualize by arithmetic: nothing is measured', asyn
   await settle();
   // the scrollbar measures the whole list exactly — 400 × 24, no estimates
   assert.strictEqual(bodyPane().contentHeight, 400 * 24 + 0);
-  assert.ok(rowNodes().length < 60, `built ${rowNodes().length} of 400`);
+  // a slice plus at most the idle band — never the whole list
+  assert.ok(rowNodes().length < 180, `built ${rowNodes().length} of 400`);
 
   bodyPane().scrollTo({ y: 5000 });
   await settle();
@@ -450,21 +463,423 @@ test('measured rows total honestly, converge, and stay a slice', async () => {
   );
   await settle();
   const guess = 400 * 24;
-  const measured = bodyPane().contentHeight;
+  // Wait out the moving parts — the idle band measuring, the estimate
+  // re-learning from the mean — until a stretch longer than any of their
+  // clocks changes nothing.
+  let measured = bodyPane().contentHeight;
+  for (let round = 0; round < 10; round++) {
+    await idle(200);
+    if (bodyPane().contentHeight === measured) break;
+    measured = bodyPane().contentHeight;
+  }
   assert.ok(
     measured > guess,
     `the total is still the flat guess: ${measured} vs ${guess}`,
   );
-  await settle();
+  await idle(200);
   assert.strictEqual(bodyPane().contentHeight, measured, 'it converged');
 
+  // The estimate has learnt the measured mean, so the scrollbar now speaks
+  // for the rows nobody has visited: the total sits within a pixel a row of
+  // "every row is like the ones we have seen" — without the re-learning it
+  // would still carry the flat guess for three hundred of them.
+  const rowH = retained(rowNodes()[3]).abs.height;
+  assert.ok(
+    Math.abs(measured - 400 * rowH) <= 400,
+    `the total ${measured} strays from 400 × ${rowH}`,
+  );
+
+  // And a jump into unvisited territory still ends in full rows covering
+  // the viewport, with the window still a slice.
+  bodyPane().scrollTo({ y: 8000 });
+  await settle();
+  await idle(300);
+  assertCoversViewport('after the jump');
+  assert.ok(rowNodes().length < 180, `built ${rowNodes().length} of 400`);
+});
+
+// --- the idle band ---------------------------------------------------------
+//
+// The pane blits a scroll before React can run, so the only scroll with no
+// blank frame is one that lands on rows already built. The band is those
+// rows: grown while the table sits still, kept behind the viewport for the
+// way back, and off entirely at prefetch={0}.
+
+test('the idle band grows past the overscan while the table sits still', async () => {
+  await mount({ rows: many(400), rowHeight: 24 }, 400, 220);
+  await settle();
+  await idle(400);
+  // the viewport holds ~10 rows and the overscan 6 more — anything well past
+  // that is the band, built while nobody was scrolling
+  assert.ok(
+    rowNodes().length > 40,
+    `the band never grew: ${rowNodes().length} rows built`,
+  );
+  assert.ok(rowNodes().length < 180, `built ${rowNodes().length} of 400`);
+});
+
+test('prefetch={0} keeps the slice at viewport plus overscan', async () => {
+  await mount({ rows: many(400), rowHeight: 24, prefetch: 0 }, 400, 220);
+  await settle();
+  await idle(400);
+  assert.ok(
+    rowNodes().length < 40,
+    `the band grew with prefetch off: ${rowNodes().length} rows built`,
+  );
+});
+
+test('a scroll inside the band lands on rows already built', async () => {
+  await mount({ rows: many(400), rowHeight: 24 }, 400, 220);
+  await settle();
+  await idle(400);
+  const posts = (): number[] =>
+    rowNodes().map((n) => Number(retained(n).props['aria-posinset']));
+  const before = new Set(posts());
+  assert.ok(Math.max(...before) > 40, 'the band should reach past row 40');
+
+  // one viewport down — inside the band, so every row now on screen must
+  // have been built before the scroll: that is what the band is *for*
+  bodyPane().scrollTo({ y: 240 });
+  await act();
+  for (const p of posts()) {
+    const y = (p - 1) * 24;
+    if (y >= 240 && y < 240 + 220) {
+      assert.ok(before.has(p), `row ${p} scrolled in unbuilt`);
+    }
+  }
+  // and the rows scrolled past stay mounted, for the way back
+  assert.ok(posts().includes(1), 'the trailing rows were dropped');
+});
+
+test('a wheel burst then idle: the view stays where the user left it', async () => {
+  // The recipe of the original report: a flick of notches, then hands off.
+  // During the burst measuring defers, the lead builds ahead, and on the
+  // settle everything catches up — the band grows, the deferred rows get
+  // measured, the estimate re-learns. None of it may move the row at the
+  // top of the viewport: the corrections land in the offset, not the view.
+  const LONG =
+    'a message long enough to wrap over more than one line of this column';
+  await mount(
+    {
+      rows: many(400),
+      columns: [
+        {
+          id: 'name',
+          label: 'Name',
+          render: (f: File) => h('text', { key: 't' }, `${LONG} ${f.id}`),
+        },
+      ],
+      virtual: true,
+    },
+    240,
+    220,
+  );
+  await idle(600);
+  for (let i = 0; i < 12; i++) {
+    bodyPane().scrollTo({ y: bodyPane().scrollY + 48 });
+    await new Promise((res) => setTimeout(res, 15));
+    await act();
+  }
+  const topRow = (): number => {
+    const pane = retained(bodyPane());
+    const top = rowNodes()
+      .map(retained)
+      .filter((n) => n.abs.height > 0)
+      .sort((a, b) => a.abs.y - b.abs.y)
+      .find((n) => n.abs.y + n.abs.height > pane.abs.y);
+    return Number(top?.props['aria-posinset'] ?? -1);
+  };
+  await act();
+  const was = topRow();
+  await idle(1000);
+  const now = topRow();
+  assert.ok(
+    Math.abs(now - was) <= 1,
+    `the view drifted while idle: top row ${was} -> ${now}`,
+  );
+});
+
+test('a teleport shows skeleton rows first, then fills them in', async () => {
+  // A thumb dragged across the list outruns any band: the whole window is
+  // new, and the first commits answer with skeletons. Engagement is
+  // observed through the hint seam — it fires only while placeholders
+  // cover the viewport — because under the test clock the catch-up can
+  // complete inside a single act, making any painted-skeleton observation
+  // a race. The paint is still checked when it can be caught.
+  const seen: number[] = [];
+  await mount(
+    {
+      rows: many(400),
+      rowHeight: 24,
+      scrollHintDelay: 0,
+      renderScrollHint: (state: { pending: number }) => {
+        seen.push(state.pending);
+        return null;
+      },
+    },
+    400,
+    640,
+  );
+  await settle();
+  await idle(300);
+  const skeletons = (): number =>
+    screen.all((n) => retained(n).props['aria-hidden'] === true).length;
+
+  // Either a painted skeleton is caught in the act or the hint fires —
+  // under the test clock a single catch-up can complete inside one act, so
+  // one observation alone is a race.
+  let sawSkeleton = false;
+  bodyPane().scrollTo({ y: 6000 });
+  for (let i = 0; i < 6 && !sawSkeleton; i++) {
+    await act();
+    sawSkeleton = skeletons() > 0;
+    if (seen.length > 0) break;
+  }
+  await settle();
+  await idle(300);
+  assert.ok(
+    sawSkeleton || seen.length > 0,
+    'the skeleton tier never engaged for the teleport',
+  );
+  assert.strictEqual(skeletons(), 0, 'the skeletons never filled in');
+  const posts = rowNodes().map((n) =>
+    Number(retained(n).props['aria-posinset']),
+  );
+  assert.ok(
+    posts.some((p) => (p - 1) * 24 >= 6000 && (p - 1) * 24 < 6220),
+    'the viewport should be covered by full rows',
+  );
+});
+
+test('catchup={threshold} past the window turns the skeleton tier off', async () => {
+  // The experiment knob: a table of cheap rows can declare floods
+  // impossible, and every teleport then builds in full — no skeletons, no
+  // hint, ever.
+  const seen: number[] = [];
+  await mount(
+    {
+      rows: many(400),
+      rowHeight: 24,
+      catchup: { threshold: 100_000 },
+      scrollHintDelay: 0,
+      renderScrollHint: (state: { pending: number }) => {
+        seen.push(state.pending);
+        return null;
+      },
+    },
+    400,
+    640,
+  );
+  await settle();
+  bodyPane().scrollTo({ y: 6000 });
+  for (let i = 0; i < 4; i++) {
+    await act();
+    assert.strictEqual(
+      screen.all((n) => retained(n).props['aria-hidden'] === true).length,
+      0,
+      'a skeleton appeared with the threshold maxed',
+    );
+  }
+  await settle();
+  // The jump-hint may still fire (that path is the scrub's, not the
+  // skeleton tier's) — but it must never have seen a placeholder.
+  assert.ok(
+    seen.every((p) => p === 0),
+    `placeholders appeared with the threshold maxed: ${seen}`,
+  );
+  const posts = rowNodes().map((n) =>
+    Number(retained(n).props['aria-posinset']),
+  );
+  assert.ok(
+    posts.some((p) => (p - 1) * 24 >= 6000 && (p - 1) * 24 < 6220),
+    'the viewport should be covered by full rows',
+  );
+});
+
+test('the default show-delay keeps a quick catch-up quiet', async () => {
+  // The other half of the delay: with the default in force, a single
+  // absorbed teleport never shows the hint — it is for the delay you can
+  // feel, not for one frame of catching up.
+  const seen: number[] = [];
+  await mount(
+    {
+      rows: many(400),
+      rowHeight: 24,
+      renderScrollHint: (state: { pending: number }) => {
+        seen.push(state.pending);
+        return null;
+      },
+    },
+    400,
+    640,
+  );
+  await settle();
+  bodyPane().scrollTo({ y: 6000 });
+  await act();
+  await settle();
+  await idle(300);
+  assert.strictEqual(
+    seen.length,
+    0,
+    'a catch-up quicker than the delay showed the hint anyway',
+  );
+});
+
+test('a scrollbar scrub keeps the slice a slice', async () => {
+  // The regression this pins: scrub velocity reaches thousands of px/ms,
+  // and an unclamped velocity lead asked the slice for tens of thousands
+  // of rows — one commit mounting them froze the app for seconds, the very
+  // thing a virtualized list exists to prevent.
+  await mount({ rows: many(10_000), rowHeight: 24 }, 400, 220);
+  await settle();
+  for (const y of [60_000, 140_000, 220_000]) {
+    bodyPane().scrollTo({ y });
+    await new Promise((res) => setTimeout(res, 12));
+    await act();
+    const built =
+      rowNodes().length +
+      screen.all((n) => retained(n).props['aria-hidden'] === true).length;
+    assert.ok(built < 250, `the slice exploded: ${built} nodes built`);
+  }
+});
+
+test('a catch-up shows the fast-scroll pill, and the view going whole hides it', async () => {
+  // Observed through the seam rather than the painted tree: the catch-up
+  // can complete within a single act under the test clock, so the painted
+  // pill's lifetime is a race — the *decision* to show is not.
+  const seen: Array<{
+    from: number;
+    count: number;
+    pending: number;
+    since: number;
+  }> = [];
+  await mount(
+    {
+      rows: many(400),
+      rowHeight: 24,
+      // A pane tall enough that one catch-up commit cannot fill it: the
+      // pill shows only when placeholders would otherwise cover half the
+      // screen. Delay 0, so the test clock cannot outrun the show-delay —
+      // the delay itself has its own test below.
+      scrollHintDelay: 0,
+      renderScrollHint: (state: {
+        from: number;
+        count: number;
+        pending: number;
+        since: number;
+      }) => {
+        seen.push(state);
+        return h('text', { key: 'p' }, `${state.from} / ${state.count}`);
+      },
+    },
+    400,
+    640,
+  );
+  await settle();
+  await idle(300);
+  assert.strictEqual(seen.length, 0, 'the hint fired with nothing to catch up');
+
+  bodyPane().scrollTo({ y: 6000 });
+  await settle();
+  await idle(300);
+  assert.ok(seen.length > 0, 'the hint never showed during the catch-up');
+  assert.ok(
+    seen[0].count === 400 && seen[0].from > 200 && seen[0].since > 0,
+    `the hint saw ${JSON.stringify(seen[0])}`,
+  );
+  // and nothing is painted once the view is whole
+  const pill = screen.all(
+    (n) =>
+      retained(n).kind === 'text' &&
+      / \/ 400$/.test(String(retained(n).props.children)),
+  ).length;
+  assert.strictEqual(pill, 0, 'the pill should go when the view is whole');
+});
+
+test('renderScrollHint replaces the pill, and returning null disables it', async () => {
+  const seen: number[] = [];
+  await mount(
+    {
+      rows: many(400),
+      rowHeight: 24,
+      scrollHintDelay: 0,
+      renderScrollHint: (state: { from: number; count: number }) => {
+        seen.push(state.from);
+        return h('text', { key: 'h' }, `near row ${state.from}`);
+      },
+    },
+    400,
+    640,
+  );
+  await settle();
+  bodyPane().scrollTo({ y: 6000 });
+  await settle();
+  await idle(300);
+  assert.ok(seen.length > 0 && seen[0] > 200, `hint saw from=${seen[0]}`);
+
+  await cleanup();
+  await mount(
+    {
+      rows: many(400),
+      rowHeight: 24,
+      scrollHintDelay: 0,
+      renderScrollHint: () => null,
+    },
+    400,
+    640,
+  );
+  await settle();
+  bodyPane().scrollTo({ y: 6000 });
+  await act();
+  await settle();
+  const texts = screen.all(
+    (n) =>
+      retained(n).kind === 'text' &&
+      / \/ 400$/.test(String(retained(n).props.children)),
+  );
+  assert.strictEqual(texts.length, 0, 'null should disable the overlay');
+});
+
+test('the idle band grows without moving what is on screen', async () => {
+  // The band works while the user is not looking, and nothing it does —
+  // building rows, measuring them, re-learning the estimate — may move the
+  // row under the pointer. Where a correction is owed, `reveal.nudge`
+  // absorbs it into the offset, over as many layouts as the clamp takes.
+  const LONG =
+    'a name much too long for one line of a narrow column, kept long enough to wrap twice';
+  await mount(
+    {
+      rows: many(400),
+      columns: [
+        {
+          id: 'name',
+          label: 'Name',
+          render: (f: File) => h('text', { key: 't' }, `${LONG} ${f.id}`),
+        },
+      ],
+      virtual: true,
+    },
+    240,
+    220,
+  );
+  await settle();
   bodyPane().scrollTo({ y: 4000 });
   await settle();
-  assert.ok(
-    bodyPane().contentHeight > measured,
-    'scrolling should have measured more rows',
-  );
-  assert.ok(rowNodes().length < 60, `built ${rowNodes().length} of 400`);
+  const topRow = (): number => {
+    const pane = retained(bodyPane());
+    const top = rowNodes()
+      .map(retained)
+      .filter((n) => n.abs.height > 0)
+      .sort((a, b) => a.abs.y - b.abs.y)
+      .find((n) => n.abs.y + n.abs.height > pane.abs.y);
+    return Number(top?.props['aria-posinset'] ?? -1);
+  };
+  const was = topRow();
+  await idle(500);
+  // the band exists — well past viewport-plus-overscan — whether it grew
+  // during this idle or had already finished during the settle above
+  assert.ok(rowNodes().length > 40, `no band: ${rowNodes().length} rows`);
+  assert.strictEqual(topRow(), was, 'the row at the top of the viewport moved');
 });
 
 test('virtual={false} keeps a big table whole', async () => {
@@ -592,6 +1007,9 @@ function Tail(props: {
   hooks: { append?: (n: number) => void };
   rowHeight?: number;
   wrap?: boolean;
+  /** `0` in the tests whose invariant is "the slice moves rather than
+   *  grows" — the idle band deliberately keeps rows behind the viewport. */
+  prefetch?: number;
 }): ReactNode {
   const [rows, setRows] = React.useState<File[]>(() => many(props.start));
   const ref = React.useRef<TableHandle<File> | null>(null);
@@ -622,6 +1040,7 @@ function Tail(props: {
       rows,
       virtual: true,
       rowHeight: props.rowHeight,
+      prefetch: props.prefetch,
       columns: props.wrap
         ? [
             {
@@ -737,7 +1156,10 @@ test('the slice follows the offset even when nothing said it moved', async () =>
   // slice used to freeze there: `first` stopped moving, the rendered rows
   // piled up, and the newest rows stopped being built at all.
   const hooks: { append?: (n: number) => void } = {};
-  await renderX11(h(Tail, { start: 300, hooks, rowHeight: 24 }));
+  // prefetch: 0 — the invariant here is that the slice *moves* rather than
+  // grows, and the idle band exists precisely to keep rows behind the
+  // viewport. Its own behaviour is asserted separately.
+  await renderX11(h(Tail, { start: 300, hooks, rowHeight: 24, prefetch: 0 }));
   await settle();
   const firstDrawn = (): number =>
     Number(retained(rowNodes()[0]).props['aria-posinset']);
@@ -818,10 +1240,20 @@ test('a row taller than the viewport is revealed by its top, once', async () => 
   await settle();
   // asked again, now that the row has been measured at its real height
   ref.current?.scrollToRow(250);
-  await settle();
+  // The reveal, the idle band measuring around it and the estimate
+  // re-learning each move the offset for a while; what must never happen is
+  // the alternation that goes on forever. So: wait for a whole idle stretch
+  // with no scroll in it, boundedly, then hold it to staying quiet.
+  let quiet = scrolls;
+  let rounds = 0;
+  for (; rounds < 10; rounds++) {
+    await idle(200);
+    if (scrolls === quiet) break;
+    quiet = scrolls;
+  }
+  assert.ok(rounds < 10, 'the offset never went quiet');
   const at = bodyPane().scrollY;
-  const quiet = scrolls;
-  await settle();
+  await idle(200);
   assert.strictEqual(bodyPane().scrollY, at, 'the offset is still moving');
   assert.strictEqual(scrolls, quiet, 'and it is still scrolling');
   const row = rowNodes()

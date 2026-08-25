@@ -767,6 +767,7 @@ npm run examples:media-player -- <file>   # needs a real $DISPLAY and mpv/VLC
 npm run examples:table       # needs a real $DISPLAY
 npm run examples:tray-host   # needs a real $DISPLAY with no tray on it yet
 npm run examples:tree -- <dir>  # needs a real $DISPLAY; defaults to cwd
+npm run examples:tree -- --stress[=rows]  # generated 100k-row tree instead
 ```
 
 `pretest` and `pretypecheck` both build, and both have to. `package.test.ts`

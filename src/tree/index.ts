@@ -40,7 +40,12 @@ import type { ReactElement, ReactNode, Ref } from 'react';
 import { createStyles } from 'react-x11/style';
 import type { StyleProp } from 'react-x11';
 import { Icon, useDirection, useTheme } from 'react-x11';
-import type { DrawnNode, KeyboardEvent, ScrollableNode } from 'react-x11';
+import type {
+  DrawnNode,
+  KeyboardEvent,
+  ScrollableNode,
+  Theme,
+} from 'react-x11';
 import {
   XK_DOWN,
   XK_END,
@@ -58,8 +63,23 @@ import type { Host } from './hx.js';
 // Shared with <Table> — internal, deliberately not a shared *module*; the
 // header of src/internal/heights.ts says why.
 import { RowHeights } from '../internal/heights.js';
-import { afterLayout, cancelAfterLayout } from '../internal/timers.js';
+import {
+  afterLayout,
+  cancelAfterLayout,
+  cancelLater,
+  later,
+} from '../internal/timers.js';
+import type { DelayTick } from '../internal/timers.js';
 import { useReveal } from '../internal/scroll.js';
+import {
+  BURST_BUDGET,
+  DEFAULT_OVERSCAN,
+  DEFAULT_PREFETCH,
+  SCROLL_HINT_DELAY_MS,
+  SKELETON_THRESHOLD,
+  SETTLE_BUDGET,
+  useVirtualWindow,
+} from '../internal/window.js';
 import { typeAheadChar, useTypeAhead } from './internal.js';
 import {
   branchEdges,
@@ -107,16 +127,6 @@ const TWISTY = 12;
  *  is half of that, so `size` for one reads as its width. */
 const TWISTY_GLYPH = 10;
 const ROW_HEIGHT = 22;
-/** Rows kept either side of the viewport, so a fast scroll does not show a
- *  gap before the next frame catches up. */
-const OVERSCAN = 6;
-/**
- * What to build before the viewport has been measured. `onViewport` cannot
- * arrive until layout has run, which is a frame after the first commit, so
- * there is always one render that has to guess — and guessing "all of them"
- * puts a hundred thousand rows in the tree for a frame.
- */
-const ASSUMED_ROWS = 40;
 /**
  * Where `virtual="auto"` starts virtualizing.
  *
@@ -168,6 +178,39 @@ const s = createStyles({
   },
   subtree: { flexShrink: 0 },
   spacer: { flexShrink: 0 },
+  /** The bar inside a skeleton row — a line of "text" with no text, so a
+   *  band of placeholders reads as rows arriving rather than a void. */
+  skeletonBar: {
+    height: 8,
+    borderRadius: 4,
+    alignSelf: 'center',
+    flexShrink: 0,
+  },
+  /** The box the scroll pane and the fast-scroll pill share — it exists so
+   *  the pill can float *outside* the pane, where a scroll cannot move it. */
+  outer: { flexGrow: 1, minHeight: 0 },
+  /** The lane the fast-scroll pill floats in: absolute against the outer
+   *  box so the pane scrolls under it, full-width so the pill centres
+   *  itself, and transparent to the pointer so the rows beneath stay
+   *  clickable. */
+  scrollHintLane: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 12,
+    flexDirection: 'row',
+    justifyContent: 'center',
+    pointerEvents: 'none',
+  },
+  scrollHint: {
+    paddingStart: 10,
+    paddingEnd: 10,
+    paddingTop: 5,
+    paddingBottom: 5,
+    borderRadius: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
 });
 
 // --- what the seams are told -----------------------------------------------
@@ -220,6 +263,28 @@ export interface TreeGuideState<T> {
    *  A `<canvas cacheKey>` need not name it: the paint cache already keys on
    *  the node's laid-out size. */
   height: number;
+}
+
+/**
+ * What `renderScrollHint` is told: where the viewport is, while a fast
+ * scroll is still being caught up with. The top row itself is included so a
+ * hint can show what is *at* this position rather than a number.
+ */
+export interface TreeScrollHintState<T> {
+  /** The first row in view, in draw order. */
+  row: TreeRow<T>;
+  /** Its position, 1-based — "row `from` of `count`". */
+  from: number;
+  /** The last row in view, 1-based. */
+  to: number;
+  /** How many rows the tree is showing. */
+  count: number;
+  /** How many of the rows in view are still placeholders. */
+  pending: number;
+  /** When the viewport first stopped being whole, epoch ms — what the
+   *  show-delay was measured against. `Date.now() - since` is how long the
+   *  user has been looking at unresolved content. */
+  since: number;
 }
 
 /** What `renderSubtree` is told, in `layout="nested"`. */
@@ -318,10 +383,12 @@ export interface TreeProps<T = TreeItem>
    * virtualizing. Defaults to `rowHeight`.
    *
    * Only the rows on screen have ever been laid out, so the scrollbar is
-   * this guess for everything else, and it converges as you scroll. Set it
-   * when rows are typically much taller than `rowHeight` — a tree of
-   * two-line rows with the default guess starts with a scrollbar that thinks
-   * the tree is half its real length.
+   * this guess for everything else; it converges as you scroll, and once
+   * enough rows have been measured the guess itself is re-learnt from their
+   * mean. Set it when rows are typically much taller than `rowHeight` — a
+   * tree of two-line rows with the default guess starts with a scrollbar
+   * that thinks the tree is half its real length, until the re-learning
+   * corrects it.
    */
   estimatedRowHeight?: number;
 
@@ -335,6 +402,15 @@ export interface TreeProps<T = TreeItem>
   virtual?: boolean | 'auto';
   /** Rows built either side of the viewport. */
   overscan?: number;
+  /**
+   * Rows built *beyond* the overscan while the tree sits idle, per side.
+   * Default 40. The pane blits a scroll before React can run, so the only
+   * scroll with no blank frame is one that lands on rows already built —
+   * this band is that, grown in small steps while nobody is scrolling, and
+   * kept behind the viewport so a reversal lands on rows still mounted.
+   * `0` turns the band off: the slice is exactly viewport-plus-overscan.
+   */
+  prefetch?: number;
 
   /**
    * `'flat'` (the default) makes every row a sibling — which is what lets the
@@ -363,6 +439,30 @@ export interface TreeProps<T = TreeItem>
   renderContent?: (state: TreeRowState<T>, content: ReactNode[]) => ReactNode;
   /** The subtree container, in `layout="nested"`. */
   renderSubtree?: (state: TreeSubtreeState<T>, rows: ReactNode) => ReactNode;
+  /**
+   * The fast-scroll overlay. Shown only while a scroll has outrun the rows
+   * far enough that placeholders cover a meaningful part of the viewport —
+   * a scroll the tree absorbs within a frame never shows it — and hidden
+   * the moment the view is whole again. The default is a pill reading
+   * "2,345 / 100,000"; return something else to replace it, or null for no
+   * overlay at all.
+   */
+  renderScrollHint?: (state: TreeScrollHintState<T>) => ReactNode;
+  /**
+   * How long the viewport must have been showing unresolved content before
+   * the overlay appears, in milliseconds. Default 250: a catch-up the next
+   * few frames absorb is never announced. `0` shows it the moment a
+   * catch-up engages.
+   */
+  scrollHintDelay?: number;
+  /**
+   * Tuning for the catch-up pacing — how a scroll that outruns the built
+   * rows is absorbed. All optional, all in rows: `threshold` (default 16)
+   * is how many rows entering in one render count as a flood, `burst`
+   * (default 24) and `settle` (default 48) are the full rows built per
+   * render mid-scroll and after it. See the same prop on `<Table>`.
+   */
+  catchup?: { threshold?: number; burst?: number; settle?: number };
 
   styles?: TreeStyles<T>;
   style?: StyleProp;
@@ -380,6 +480,224 @@ function labelNode(label: ReactNode, style: StyleProp): ReactNode {
     ? hx('text', { key: 'label', style }, String(label))
     : label;
 }
+
+/**
+ * One row, as its own memoized component.
+ *
+ * The reason is the CPU profile of a fast scroll: every notch re-renders
+ * the window, and re-creating a hundred rows' elements per notch — then
+ * reconciling them and re-applying identical props to every node — was
+ * over half the burst. Every prop here is identity-stable across a scroll
+ * render (the row model is memoized, the accessors and handlers are stable
+ * callbacks), so React bails out on the rows that did not change and a
+ * notch pays only for the rows it brought in.
+ */
+interface TreeRowViewProps<T> {
+  row: TreeRow<T>;
+  isSelected: boolean;
+  indent: number;
+  rowHeight: number;
+  rtl: boolean;
+  theme: Theme;
+  renderToggle?: (state: TreeToggleState<T>) => ReactNode;
+  renderGuide?: (state: TreeGuideState<T>) => ReactNode;
+  renderLabel?: (state: TreeRowState<T>) => ReactNode;
+  renderContent?: (state: TreeRowState<T>, content: ReactNode[]) => ReactNode;
+  rowStyle: TreeStyles<T>['row'];
+  guideStyle: TreeStyles<T>['guide'];
+  toggleStyle: StyleProp | undefined;
+  labelStyle: StyleProp | undefined;
+  getLabel: (item: T) => ReactNode;
+  onToggle: (id: TreeItemId, item: T, open?: boolean) => void;
+  onGo: (row: TreeRow<T>) => void;
+  onOpen: (row: TreeRow<T>) => void;
+  register: (id: TreeItemId, at: number, node: DrawnNode | null) => void;
+}
+
+function TreeRowView<T>(props: TreeRowViewProps<T>): ReactElement {
+  const {
+    row,
+    isSelected,
+    indent,
+    rowHeight,
+    rtl,
+    theme,
+    renderToggle,
+    renderGuide,
+    renderLabel,
+    renderContent,
+    rowStyle,
+    guideStyle,
+    toggleStyle,
+    labelStyle,
+    getLabel,
+    onToggle,
+    onGo,
+    onOpen,
+    register,
+  } = props;
+  const color = row.disabled
+    ? theme.textMuted
+    : isSelected
+      ? theme.hoverText
+      : theme.text;
+  const state: TreeRowState<T> = {
+    ...row,
+    selected: isSelected,
+    color,
+    toggle: (open?: boolean) => onToggle(row.id, row.item, open),
+    select: () => onGo(row),
+  };
+
+  const content: ReactNode[] = [];
+
+  // The indent. With no guide seam it is one padding value rather than
+  // `depth` empty boxes — a tree ten deep would otherwise build ten nodes
+  // per row to draw nothing.
+  if (renderGuide && row.depth > 0) {
+    const edges = branchEdges(row);
+    for (let level = 0; level < row.depth; level++) {
+      const guide: TreeGuideState<T> = {
+        row: state,
+        level,
+        continues: edges[level],
+        own: level === row.depth - 1,
+        width: indent,
+        height: rowHeight,
+      };
+      content.push(
+        hx(
+          'box',
+          {
+            key: `guide${level}`,
+            style: [
+              s.guide,
+              { width: indent },
+              typeof guideStyle === 'function' ? guideStyle(guide) : guideStyle,
+            ],
+          },
+          renderGuide(guide),
+        ),
+      );
+    }
+  }
+
+  const toggleState: TreeToggleState<T> = { ...state, size: TWISTY_GLYPH };
+  content.push(
+    hx(
+      'box',
+      {
+        key: 'toggle',
+        style: [s.twisty, toggleStyle],
+        // The twisty is its own hit target: clicking it opens the branch
+        // without moving the selection, the way a file browser lets you
+        // peek inside a folder you have not chosen.
+        onClick: row.branch
+          ? (ev) => {
+              ev.stopPropagation();
+              onToggle(row.id, row.item);
+            }
+          : undefined,
+      },
+      renderToggle
+        ? renderToggle(toggleState)
+        : row.branch
+          ? React.createElement(Icon, {
+              name: row.open
+                ? 'chevronDown'
+                : rtl
+                  ? 'chevronLeft'
+                  : 'chevronRight',
+              size: TWISTY_GLYPH,
+              // dimmer than the label on a resting row, and the row's own
+              // ink once it is selected
+              style: isSelected ? undefined : { color: theme.textMuted },
+            })
+          : null,
+    ),
+  );
+
+  content.push(
+    renderLabel
+      ? // Keyed here rather than by the app, for the reason `renderSubtree`
+        // is: the label sits in an array beside the guides and the twisty,
+        // and "add a key to the box you return" is not something a render
+        // prop should have to know.
+        React.createElement(
+          React.Fragment,
+          { key: 'label' },
+          renderLabel(state),
+        )
+      : labelNode(getLabel(row.item), [s.label, labelStyle]),
+  );
+
+  return hx(
+    'box',
+    {
+      role: 'treeitem',
+      'aria-level': row.depth + 1,
+      'aria-selected': isSelected,
+      'aria-expanded': row.branch ? row.open : undefined,
+      'aria-posinset': row.posInSet,
+      'aria-setsize': row.setSize,
+      // `disabled` rather than `aria-disabled`: on a react-x11 node it is
+      // the real thing — it clears the AT-SPI ENABLED/SENSITIVE states and
+      // selects the `:disabled` style block — and there is no aria spelling
+      // of it to write instead.
+      disabled: row.disabled || undefined,
+      // The index the row was drawn at travels with the node, so measuring
+      // does not have to search a hundred thousand rows for where it is.
+      // It can go stale — the rows may move before the tick that measures —
+      // and both this and the height index check it rather than trust it.
+      ref: (node: DrawnNode | null) => {
+        register(row.id, row.index, node);
+      },
+      onClick: (ev) => {
+        if (row.disabled) return;
+        onGo(row);
+        // Select on the first click, open on the second — the gesture every
+        // file list has. `detail` is the click count the renderer already
+        // counts for text selection.
+        if (ev.detail === 2) onOpen(row);
+      },
+      style: [
+        s.row,
+        // A floor, not a height. The row grows to whatever its content
+        // needs — a wrapped label, two lines, a thumbnail — and the height
+        // index reads back what it actually became.
+        { minHeight: rowHeight },
+        // The indent is what says "inside", so it is measured from the edge
+        // the row's label begins at.
+        { paddingStart: renderGuide ? 4 : 4 + row.depth * indent },
+        {
+          backgroundColor: isSelected ? theme.hoverBackground : 'transparent',
+          // The row's ink, said once: `color` inherits, so the label takes
+          // it without being handed it.
+          color,
+        },
+        !row.disabled && {
+          ':hover': {
+            backgroundColor: isSelected
+              ? theme.hoverBackground
+              : theme.surfaceHover,
+          },
+          // The selection only moves on the release, and `:active` marks
+          // the whole press chain, so a press on the label or the twisty
+          // still darkens the row it is in.
+          ':active': {
+            backgroundColor: isSelected
+              ? theme.accentActive
+              : theme.surfaceActive,
+          },
+        },
+        typeof rowStyle === 'function' ? rowStyle(state) : rowStyle,
+      ],
+    },
+    renderContent ? renderContent(state, content) : content,
+  );
+}
+
+const MemoTreeRow = React.memo(TreeRowView) as typeof TreeRowView;
 
 /**
  * `<Tree items />` — a disclosure tree.
@@ -427,13 +745,17 @@ export function Tree<T = TreeItem>({
   rowHeight = ROW_HEIGHT,
   estimatedRowHeight,
   virtual = 'auto',
-  overscan = OVERSCAN,
+  overscan = DEFAULT_OVERSCAN,
+  prefetch = DEFAULT_PREFETCH,
   layout = 'flat',
   renderToggle,
   renderGuide,
   renderLabel,
   renderContent,
   renderSubtree,
+  renderScrollHint,
+  scrollHintDelay = SCROLL_HINT_DELAY_MS,
+  catchup,
   styles,
   style,
   ref,
@@ -450,6 +772,7 @@ export function Tree<T = TreeItem>({
   onViewport,
   ...boxProps
 }: TreeProps<T>): ReactElement {
+  (globalThis as any).__renders = ((globalThis as any).__renders ?? 0) + 1;
   const theme = useTheme();
   const rtl = useDirection() === 'rtl';
   const [ownExpanded, setOwnExpanded] = useState<ReadonlySet<TreeItemId>>(
@@ -458,7 +781,6 @@ export function Tree<T = TreeItem>({
   const [ownSelected, setOwnSelected] = useState<TreeItemId | null>(
     defaultSelected ?? null,
   );
-  const [view, setView] = useState({ top: 0, height: 0 });
   // Bumped by a measurement pass that found a row taller or shorter than the
   // index believed. It is the only reason the component re-renders for a
   // measurement, and a pass that finds nothing new does not bump it, which is
@@ -512,8 +834,6 @@ export function Tree<T = TreeItem>({
   rowsRef.current = rows;
   const itemsRef = useRef(items);
   itemsRef.current = items;
-  const viewRef = useRef(view);
-  viewRef.current = view;
 
   const virtualizing =
     layout === 'flat' &&
@@ -526,30 +846,27 @@ export function Tree<T = TreeItem>({
   const index = heights;
   index.sync(rows, estimate);
 
-  // The slice worth building: what is on screen, plus a little either side.
-  // Which rows those are is a question for the height index now — with rows
-  // of different heights there is no division that answers it.
-  const first = virtualizing
-    ? Math.max(0, index.indexAt(view.top) - overscan)
-    : 0;
-  let last = rows.length;
-  if (virtualizing) {
-    if (view.height > 0) {
-      last = Math.min(
-        rows.length,
-        index.indexAt(view.top + view.height) + 1 + overscan,
-      );
-    } else {
-      // Before the first layout there is no viewport to measure against, and
-      // guessing "all of them" would put a hundred thousand rows in the tree
-      // for a frame.
-      last = Math.min(rows.length, first + ASSUMED_ROWS);
-    }
-  }
-  /** Where the slice starts, and how much of the list is below it — the two
-   *  spacers that keep the scrollbar measuring the whole tree. */
-  const above = virtualizing ? index.offsetAt(first) : 0;
-  const below = virtualizing ? index.total() - index.offsetAt(last) : 0;
+  /** The viewport, and the slice worth building from it — the machinery
+   *  shared with `<Table>` (`../internal/window.ts`). */
+  const win = useVirtualWindow({
+    box: scroller,
+    heights,
+    rows,
+    // tree rows are always measured, so the idle band above the viewport
+    // only re-builds territory already visited — see `exact` on the inputs
+    exact: false,
+    virtualizing,
+    overscan,
+    prefetch,
+    threshold: catchup?.threshold ?? SKELETON_THRESHOLD,
+    burstBudget: catchup?.burst ?? BURST_BUDGET,
+    settleBudget: catchup?.settle ?? SETTLE_BUDGET,
+  });
+  const { view, viewRef } = win;
+  /** Whether the fast-scroll pill is up — kept across renders so it does not
+   *  flicker through a catch-up, only appearing and disappearing once. */
+  const hintShown = useRef(false);
+  const { first, last, above, below } = win.slice;
 
   const setExpandedSet = useCallback(
     (next: ReadonlySet<TreeItemId>, change: TreeExpandChange<T>): void => {
@@ -597,21 +914,9 @@ export function Tree<T = TreeItem>({
     [reveal],
   );
 
-  /**
-   * Re-read the offset the pane is *actually* at.
-   *
-   * It moves silently — a queued reveal resolves during layout, and an offset
-   * the content outgrew or outshrank is re-clamped there — and a slice built
-   * from the offset before those is drawn where the viewport is not: a blank
-   * band where the rows should be, until a scroll of your own re-syncs it by
-   * accident.
-   */
-  const syncScroll = useCallback((): void => {
-    const box = scroller.current;
-    if (!box || !virtualizing) return;
-    const y = box.scrollY;
-    setView((prev) => (prev.top === y ? prev : { ...prev, top: y }));
-  }, [virtualizing]);
+  /** Re-read the offset the pane is *actually* at — the window's `sync`; see
+   *  `../internal/window.ts` for why the pane moves silently. */
+  const syncScroll = win.sync;
 
   /**
    * Read back what the rows on screen actually laid out at.
@@ -647,11 +952,33 @@ export function Tree<T = TreeItem>({
       if (at < anchor) shift += height - was;
     }
     if (!changed) return false;
-    if (shift !== 0 && box) {
-      reveal.scrollTo(box.scrollY + shift);
-    }
+    // A debt, not a one-shot: the pane clamps against the last layout's
+    // content height, so a shift from rows measured above the viewport can
+    // land short until the layout that admits the growth has run.
+    reveal.nudge(shift);
     setMeasured((n) => n + 1);
     return true;
+  }, [virtualizing]);
+
+  /**
+   * Let the estimate learn from the rows that have been measured — the
+   * scrollbar of a measured tree starts as a guess times the row count, and
+   * the measured mean is a far better guess for the rows not yet seen. Idle
+   * only: every unmeasured offset moves when it applies, and the anchor
+   * arithmetic keeping the screen still is `measureRows`'s.
+   */
+  const adaptEstimate = useCallback((): boolean => {
+    if (!virtualizing) return false;
+    const box = scroller.current;
+    if (!box) return false;
+    const anchor = heights.indexAt(box.scrollY);
+    const before = heights.offsetAt(anchor);
+    if (!heights.adapt()) return false;
+    reveal.nudge(heights.offsetAt(anchor) - before);
+    setMeasured((n) => n + 1);
+    return true;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `heights` and
+    // `reveal` are stable instances
   }, [virtualizing]);
 
   /**
@@ -661,16 +988,44 @@ export function Tree<T = TreeItem>({
    * ended up. In that order — each step can move the offset the next one
    * reads.
    */
+  /** Whether some drawn row has no size yet — a commit can land between
+   *  frame flushes, and a measure pass over it reads zeros. */
+  const rowsPendingLayout = useCallback((): boolean => {
+    const rows = rowsRef.current;
+    for (const [id, { node, at }] of rowNodes.current) {
+      if (rows[at]?.id === id && !(node.abs.height > 0)) return true;
+    }
+    return false;
+  }, []);
+
   useEffect(() => {
     if (!virtualizing) return undefined;
-    const id = afterLayout(() => {
+    let look: DelayTick = null;
+    let tries = 0;
+    const pass = (): void => {
+      (globalThis as any).__ticks = ((globalThis as any).__ticks ?? 0) + 1;
       // `measureRows` first, and its answer handed on: a pass that moved the
       // heights has not settled anything, and an owed scroll judged against
-      // the layout it is about to invalidate is not owed any less.
-      reveal.retry(measureRows());
+      // the layout it is about to invalidate is not owed any less. During a
+      // flick nothing is measured at all — every correction at that speed is
+      // invalidated by the next event — and the settle tick that follows any
+      // burst is where the deferred passes catch up.
+      const moved = win.fast() ? false : measureRows();
+      const adapted = !win.scrolling() && adaptEstimate();
+      reveal.retry(moved || adapted);
       syncScroll();
-    });
-    return () => cancelAfterLayout(id);
+      // A commit can land between frame flushes: its rows report zero size
+      // until the flush, this tick has already run, and nothing else would
+      // come back for them — a window that just finished growing renders
+      // nothing further, and the missed measurements would stand for good.
+      // Look again, briefly, while any drawn row is still unsized.
+      if (rowsPendingLayout() && tries++ < 8) look = later(pass, 16);
+    };
+    const id = afterLayout(pass);
+    return () => {
+      cancelAfterLayout(id);
+      cancelLater(look);
+    };
   });
 
   const goTo = useCallback(
@@ -842,7 +1197,103 @@ export function Tree<T = TreeItem>({
   const rowStyleProp = styles?.row;
   const guideStyleProp = styles?.guide;
 
+  // The row component's stable half — `MemoTreeRow` bails out of a
+  // re-render only if every prop kept its identity, and this one would
+  // otherwise be rebuilt per row per render.
+  const registerRow = useCallback(
+    (id: TreeItemId, at: number, node: DrawnNode | null): void => {
+      if (node) rowNodes.current.set(id, { node, at });
+      else rowNodes.current.delete(id);
+    },
+    [],
+  );
+
+  /**
+   * The row *elements*, reused by identity while nothing they depend on has
+   * changed. The memo already skips re-rendering an unchanged row, but the
+   * skip still costs a `createElement` and a props compare per row per
+   * notch — the burst profile put bare `createElement` at a tenth of a
+   * flick's CPU. Handing React the identical element object instead takes
+   * the cheapest path it has: the fiber is reused with no compare at all.
+   */
+  const rowElems = useRef(
+    new Map<
+      TreeItemId,
+      { row: TreeRow<T>; selected: boolean; el: ReactElement }
+    >(),
+  );
+  const rowElemDeps = useRef<readonly unknown[]>([]);
+  {
+    const deps = [
+      indent,
+      rowHeight,
+      rtl,
+      theme,
+      renderToggle,
+      renderGuide,
+      renderLabel,
+      renderContent,
+      rowStyleProp,
+      guideStyleProp,
+      styles?.toggle,
+      styles?.label,
+      accessors,
+      toggleId,
+      goTo,
+      activate,
+      registerRow,
+    ];
+    const prev = rowElemDeps.current;
+    if (prev.length !== deps.length || deps.some((d, at) => d !== prev[at])) {
+      rowElems.current.clear();
+      rowElemDeps.current = deps;
+    }
+  }
+
   const renderOneRow = (row: TreeRow<T>): ReactElement => {
+    const isSelected = row.id === current;
+    const cached = rowElems.current.get(row.id);
+    if (cached && cached.row === row && cached.selected === isSelected) {
+      return cached.el;
+    }
+    const el = React.createElement(
+      MemoTreeRow as (p: TreeRowViewProps<T>) => ReactElement,
+      {
+        key: String(row.id),
+        row,
+        isSelected,
+        indent,
+        rowHeight,
+        rtl,
+        theme,
+        renderToggle,
+        renderGuide,
+        renderLabel,
+        renderContent,
+        rowStyle: rowStyleProp,
+        guideStyle: guideStyleProp,
+        toggleStyle: styles?.toggle,
+        labelStyle: styles?.label,
+        getLabel: accessors.getLabel,
+        onToggle: toggleId,
+        onGo: goTo,
+        onOpen: activate,
+        register: registerRow,
+      },
+    );
+    rowElems.current.set(row.id, { row, selected: isSelected, el });
+    return el;
+  };
+
+  /**
+   * A row the window said not to build in full yet: the box at its indexed
+   * height and none of its content — no guides, no twisty, no label — so
+   * the commit answering a flood lands frames before the full rows could.
+   * `styles.row` still applies, so row backgrounds hold. Not registered in
+   * `rowNodes`: a skeleton must not be measured into the height index, and
+   * cannot satisfy a reveal.
+   */
+  const renderSkeletonRow = (row: TreeRow<T>): ReactElement => {
     const isSelected = row.id === current;
     const color = row.disabled
       ? theme.textMuted
@@ -856,158 +1307,37 @@ export function Tree<T = TreeItem>({
       toggle: (open?: boolean) => toggleId(row.id, row.item, open),
       select: () => goTo(row),
     };
-
-    const content: ReactNode[] = [];
-
-    // The indent. With no guide seam it is one padding value rather than
-    // `depth` empty boxes — a tree ten deep would otherwise build ten nodes
-    // per row to draw nothing.
-    if (renderGuide && row.depth > 0) {
-      const edges = branchEdges(row);
-      for (let level = 0; level < row.depth; level++) {
-        const guide: TreeGuideState<T> = {
-          row: state,
-          level,
-          continues: edges[level],
-          own: level === row.depth - 1,
-          width: indent,
-          height: rowHeight,
-        };
-        content.push(
-          hx(
-            'box',
-            {
-              key: `guide${level}`,
-              style: [
-                s.guide,
-                { width: indent },
-                typeof guideStyleProp === 'function'
-                  ? guideStyleProp(guide)
-                  : guideStyleProp,
-              ],
-            },
-            renderGuide(guide),
-          ),
-        );
-      }
-    }
-
-    const toggleState: TreeToggleState<T> = { ...state, size: TWISTY_GLYPH };
-    content.push(
-      hx(
-        'box',
-        {
-          key: 'toggle',
-          style: [s.twisty, styles?.toggle],
-          // The twisty is its own hit target: clicking it opens the branch
-          // without moving the selection, the way a file browser lets you
-          // peek inside a folder you have not chosen.
-          onClick: row.branch
-            ? (ev) => {
-                ev.stopPropagation();
-                toggleId(row.id, row.item);
-              }
-            : undefined,
-        },
-        renderToggle
-          ? renderToggle(toggleState)
-          : row.branch
-            ? React.createElement(Icon, {
-                name: row.open
-                  ? 'chevronDown'
-                  : rtl
-                    ? 'chevronLeft'
-                    : 'chevronRight',
-                size: TWISTY_GLYPH,
-                // dimmer than the label on a resting row, and the row's own
-                // ink once it is selected
-                style: isSelected ? undefined : { color: theme.textMuted },
-              })
-            : null,
-      ),
-    );
-
-    content.push(
-      renderLabel
-        ? // Keyed here rather than by the app, for the reason `renderSubtree`
-          // is: the label sits in an array beside the guides and the twisty,
-          // and "add a key to the box you return" is not something a render
-          // prop should have to know.
-          React.createElement(
-            React.Fragment,
-            { key: 'label' },
-            renderLabel(state),
-          )
-        : labelNode(accessors.getLabel(row.item), [s.label, styles?.label]),
-    );
-
     return hx(
       'box',
       {
         key: String(row.id),
-        role: 'treeitem',
-        'aria-level': row.depth + 1,
-        'aria-selected': isSelected,
-        'aria-expanded': row.branch ? row.open : undefined,
-        'aria-posinset': row.posInSet,
-        'aria-setsize': row.setSize,
-        // `disabled` rather than `aria-disabled`: on a react-x11 node it is
-        // the real thing — it clears the AT-SPI ENABLED/SENSITIVE states and
-        // selects the `:disabled` style block — and there is no aria spelling
-        // of it to write instead.
-        disabled: row.disabled || undefined,
-        // The index the row was drawn at travels with the node, so measuring
-        // does not have to search a hundred thousand rows for where it is.
-        // It can go stale — the rows may move before the tick that measures —
-        // and both this and the height index check it rather than trust it.
-        ref: (node: DrawnNode | null) => {
-          if (node) rowNodes.current.set(row.id, { node, at: row.index });
-          else rowNodes.current.delete(row.id);
-        },
-        onClick: (ev) => {
-          if (row.disabled) return;
-          goTo(row);
-          // Select on the first click, open on the second — the gesture every
-          // file list has. `detail` is the click count the renderer already
-          // counts for text selection.
-          if (ev.detail === 2) activate(row);
-        },
+        'aria-hidden': true,
         style: [
           s.row,
-          // A floor, not a height. The row grows to whatever its content
-          // needs — a wrapped label, two lines, a thumbnail — and the height
-          // index reads back what it actually became.
-          { minHeight: rowHeight },
-          // The indent is what says "inside", so it is measured from the edge
-          // the row's label begins at.
-          { paddingStart: renderGuide ? 4 : 4 + row.depth * indent },
+          // Exactly what the index believes, so the spacers and the
+          // scrollbar agree with the rows on where everything is.
+          { height: index.heightAt(row.index) },
           {
             backgroundColor: isSelected ? theme.hoverBackground : 'transparent',
-            // The row's ink, said once: `color` inherits, so the label takes
-            // it without being handed it.
-            color,
-          },
-          !row.disabled && {
-            ':hover': {
-              backgroundColor: isSelected
-                ? theme.hoverBackground
-                : theme.surfaceHover,
-            },
-            // The selection only moves on the release, and `:active` marks
-            // the whole press chain, so a press on the label or the twisty
-            // still darkens the row it is in.
-            ':active': {
-              backgroundColor: isSelected
-                ? theme.accentActive
-                : theme.surfaceActive,
-            },
           },
           typeof rowStyleProp === 'function'
             ? rowStyleProp(state)
             : rowStyleProp,
         ],
       },
-      renderContent ? renderContent(state, content) : content,
+      // A line of "text" with no text, at the row's own indent, so a band
+      // of placeholders reads as the tree arriving rather than a void.
+      hx('box', {
+        key: 'bar',
+        style: [
+          s.skeletonBar,
+          {
+            width: 72 + ((row.index * 37) % 89),
+            marginStart: 4 + row.depth * indent + TWISTY + 4,
+            backgroundColor: theme.track,
+          },
+        ],
+      }),
     );
   };
 
@@ -1055,7 +1385,13 @@ export function Tree<T = TreeItem>({
         }),
       );
     }
-    for (let i = first; i < last; i++) body.push(renderOneRow(rows[i]));
+    for (let i = first; i < last; i++) {
+      body.push(
+        win.skeletons.has(rows[i].id)
+          ? renderSkeletonRow(rows[i])
+          : renderOneRow(rows[i]),
+      );
+    }
     if (virtualizing && last < rows.length) {
       body.push(
         hx('box', {
@@ -1064,64 +1400,155 @@ export function Tree<T = TreeItem>({
         }),
       );
     }
+    // Rows that left the window leave the cache too, once it has grown
+    // well past the window — a scrub across a long list would otherwise
+    // hold an element for every row it passed.
+    if (rowElems.current.size > (last - first) * 3 + 64) {
+      rowElems.current.clear();
+    }
   }
 
+  /**
+   * The fast-scroll overlay — shown only while placeholders cover enough of
+   * the viewport that the user would otherwise be looking at blank rows.
+   * The half-viewport threshold keeps a near-miss quiet: a scroll the next
+   * frame will absorb is not worth announcing. Once up it stays until the
+   * view is whole again, so it does not flicker through the catch-up.
+   *
+   * A sibling of the scroll pane, never a child: everything inside the pane
+   * — absolute children included — is shifted by the scroll, so a pill in
+   * there rides away with the very flick it is meant to narrate. Outside,
+   * it is painted after the pane on every repaint frame, which is what a
+   * scrub produces (a jump past the viewport cannot take the blit fast
+   * path), so it stays put while the content flies.
+   */
+  let scrollHint: ReactNode = null;
+  if (virtualizing && rows.length > 0 && view.height > 0) {
+    const vFirst = index.indexAt(view.top);
+    const vLast = Math.min(
+      rows.length - 1,
+      index.indexAt(view.top + view.height),
+    );
+    // Two ways in: placeholders covering enough of the viewport that it
+    // would otherwise read as blank, or a scrub — the window teleporting
+    // while the burst is still in flight, where every commit chases a
+    // viewport that has already left and nothing useful can be on screen.
+    // Either way only once the catch-up has already *lasted*: a jump the
+    // next few frames absorb is not worth announcing, so the pill waits
+    // out the show-delay against the catch-up clock. Latched once
+    // triggered: `pending` bounces to zero between catch-up commits, and a
+    // pill that blinked with it would read as a glitch. It goes when the
+    // burst does.
+    const engaged =
+      (win.pending > 0 && win.pending * 2 >= vLast - vFirst + 1) ||
+      (win.jumped && win.scrolling());
+    const lasted =
+      win.catchupSince !== null &&
+      Date.now() - win.catchupSince >= scrollHintDelay;
+    const show =
+      (engaged && lasted) ||
+      (hintShown.current && (win.pending > 0 || win.scrolling()));
+    hintShown.current = show;
+    if (show) {
+      const hintState: TreeScrollHintState<T> = {
+        row: rows[vFirst],
+        from: vFirst + 1,
+        to: vLast + 1,
+        count: rows.length,
+        pending: win.pending,
+        since: win.catchupSince ?? Date.now(),
+      };
+      const content = renderScrollHint
+        ? renderScrollHint(hintState)
+        : hx(
+            'text',
+            { style: { fontSize: 11, color: theme.hoverText } },
+            `${hintState.from.toLocaleString()} / ${hintState.count.toLocaleString()}`,
+          );
+      if (content !== null && content !== undefined && content !== false) {
+        scrollHint = hx(
+          'box',
+          {
+            key: 'scroll-hint',
+            // The pill duplicates what the scrollbar already tells an
+            // assistive technology, and it comes and goes with the
+            // catch-up — chatter, not content.
+            'aria-hidden': true,
+            style: s.scrollHintLane,
+          },
+          hx(
+            'box',
+            {
+              style: [s.scrollHint, { backgroundColor: theme.hoverBackground }],
+            },
+            content,
+          ),
+        );
+      }
+    }
+  } else {
+    hintShown.current = false;
+  }
+
+  // The wrapper exists for the overlay: the scroll pane keeps the role, the
+  // focus, the refs and the events — everything a `<Tree>` has always put
+  // on its root — and the caller's `style` lands out here, where the
+  // tree's place in the layout is decided.
   return hx(
     'box',
-    {
-      theme,
-      role: 'tree',
-      // The tree takes the focus, not the row — see the doc comment.
-      focusable: true,
-      ...boxProps,
-      ref: scroller,
-      style: [s.root, style],
-      /**
-       * `preventDefault` is the load-bearing half.
-       *
-       * The tree's root is a scroll container **and** the focused node, and a
-       * focused scroller has default key actions of its own: Down and Up
-       * scroll by a wheel notch, the Page keys by a viewport, Home and End to
-       * the ends, Space by a page. Without this, every arrow did both — moved
-       * the selection *and* scrolled the list under it — which reads as the
-       * tree scrolling whenever you use the keyboard rather than only when
-       * the selection would otherwise leave the viewport.
-       *
-       * `handleKey` reports whether the tree took the key, so a key it did
-       * not take (a letter that matched nothing) still gets the default.
-       */
-      onKeyDown: (ev) => {
-        if (handleKey(ev)) ev.preventDefault();
+    { style: [s.outer, style] },
+    hx(
+      'box',
+      {
+        theme,
+        role: 'tree',
+        // The tree takes the focus, not the row — see the doc comment.
+        focusable: true,
+        ...boxProps,
+        ref: scroller,
+        style: s.root,
+        /**
+         * `preventDefault` is the load-bearing half.
+         *
+         * The tree's root is a scroll container **and** the focused node, and a
+         * focused scroller has default key actions of its own: Down and Up
+         * scroll by a wheel notch, the Page keys by a viewport, Home and End to
+         * the ends, Space by a page. Without this, every arrow did both — moved
+         * the selection *and* scrolled the list under it — which reads as the
+         * tree scrolling whenever you use the keyboard rather than only when
+         * the selection would otherwise leave the viewport.
+         *
+         * `handleKey` reports whether the tree took the key, so a key it did
+         * not take (a letter that matched nothing) still gets the default.
+         */
+        onKeyDown: (ev) => {
+          if (handleKey(ev)) ev.preventDefault();
+        },
+        // Layout, not scrolling, is what first tells a list how much of it is
+        // worth building — and it is also where a page key gets its distance,
+        // so this is measured whether or not the tree virtualizes.
+        onViewport: (ev) => {
+          win.sized(ev.width, ev.height);
+          // The content just changed size, which is both the moment an owed
+          // scroll can reach further than the clamp let it and the moment the
+          // pane may have re-clamped its offset without saying so. It is not a
+          // moment anything can be *settled* in: this runs from layout, a tick
+          // before the pass that reads the rows it just drew back.
+          reveal.retry(virtualizing);
+          syncScroll();
+          onViewport?.(ev);
+        },
+        onScroll: (ev) => {
+          // A scroll this component did not ask for is the user taking over,
+          // and an owed reveal must not yank the tree back out from under them
+          // on the next layout.
+          reveal.heard(ev.scrollY);
+          win.scrolled(ev.scrollY);
+          onScroll?.(ev);
+        },
       },
-      // Layout, not scrolling, is what first tells a list how much of it is
-      // worth building — and it is also where a page key gets its distance,
-      // so this is measured whether or not the tree virtualizes.
-      onViewport: (ev) => {
-        setView((prev) =>
-          prev.height === ev.height ? prev : { ...prev, height: ev.height },
-        );
-        // The content just changed size, which is both the moment an owed
-        // scroll can reach further than the clamp let it and the moment the
-        // pane may have re-clamped its offset without saying so. It is not a
-        // moment anything can be *settled* in: this runs from layout, a tick
-        // before the pass that reads the rows it just drew back.
-        reveal.retry(virtualizing);
-        syncScroll();
-        onViewport?.(ev);
-      },
-      onScroll: (ev) => {
-        // A scroll this component did not ask for is the user taking over,
-        // and an owed reveal must not yank the tree back out from under them
-        // on the next layout.
-        reveal.heard(ev.scrollY);
-        if (virtualizing) {
-          setView((prev) =>
-            prev.top === ev.scrollY ? prev : { ...prev, top: ev.scrollY },
-          );
-        }
-        onScroll?.(ev);
-      },
-    },
-    body,
+      body,
+    ),
+    scrollHint,
   );
 }

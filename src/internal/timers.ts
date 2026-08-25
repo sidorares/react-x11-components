@@ -42,3 +42,16 @@ export function cancelAfterLayout(tick: LayoutTick): void {
   if (tick.immediate) g.clearImmediate?.(tick.id);
   else g.clearTimeout?.(tick.id);
 }
+
+export type DelayTick = { id: unknown } | null;
+
+/** Run `fn` after `ms` — the idle clock prefetch paces itself on. Typed here
+ *  for the same reason `afterLayout` is: `src/` compiles with `types: []`,
+ *  and a bare `setTimeout` would demand `@types/node`. */
+export function later(fn: () => void, ms: number): DelayTick {
+  return g.setTimeout ? { id: g.setTimeout(fn, ms) } : null;
+}
+
+export function cancelLater(tick: DelayTick): void {
+  if (tick) g.clearTimeout?.(tick.id);
+}
