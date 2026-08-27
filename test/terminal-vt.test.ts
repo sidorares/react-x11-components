@@ -73,7 +73,12 @@ import { PtyUnavailableError } from '../src/terminal/vt/pty.js';
 import { loadXterm } from '../src/terminal/vt/xterm.js';
 import type { XtermCell, XtermTerminal } from '../src/terminal/vt/xterm.js';
 import type { VtTermNode } from '../src/terminal/vt/node.js';
-import { defaultShell, nodePtyHost } from '../src/terminal/vt/pty.js';
+import {
+  bunPtyHost,
+  defaultPtyHost,
+  defaultShell,
+  nodePtyHost,
+} from '../src/terminal/vt/pty.js';
 import type { PtyHost } from '../src/terminal/vt/pty.js';
 import { FakePtyHost } from './fake-pty.js';
 import { FakeHost } from './fake-host.js';
@@ -1179,6 +1184,25 @@ test(
     await waitFor(() => assert.equal(ref.current?.status, 'exited'));
   },
 );
+
+// The runtime's own pty (Bun 1.4's `Bun.spawn({ terminal })`) is preferred
+// over node-pty wherever it exists, so a Bun app needs no native module at
+// all. This suite runs under Node, where the *interesting* assertion is the
+// negative one: the Bun host must not claim a pty it cannot open, and the
+// default must fall through to node-pty rather than to nothing.
+test('the bun pty host is honest about not being under bun', async () => {
+  const underBun = typeof (globalThis as { Bun?: unknown }).Bun === 'object';
+  assert.equal(
+    await bunPtyHost().available(),
+    underBun,
+    'available() tracks the runtime, not the wish',
+  );
+  // Whichever runtime this is, the default resolves to the host that can
+  // actually open a pty here.
+  assert.equal(defaultPtyHost(), underBun ? bunPtyHost() : nodePtyHost());
+  // The seam is still the seam: an explicit host wins over both.
+  assert.notEqual(bunPtyHost(), nodePtyHost());
+});
 
 test('a pty seam that has nothing to load says which', async () => {
   const err = new PtyUnavailableError();

@@ -33,7 +33,7 @@ import type { EmbedStatus, ExitInfo } from '../../embed/index.js';
 import type { TerminalColors } from '../backends.js';
 import { ELEMENT, VtTermNode } from './node.js';
 import type { VtTermProps } from './node.js';
-import { PtyUnavailableError, nodePtyHost } from './pty.js';
+import { PtyUnavailableError, defaultPtyHost } from './pty.js';
 import type { PtyHost, PtySession } from './pty.js';
 import { startTimeout, stopTimeout } from '../../embed/timers.js';
 import type { TimerId } from '../../embed/timers.js';
@@ -45,6 +45,8 @@ export type { VtTermProps };
 export {
   PTY_MODULES,
   PtyUnavailableError,
+  bunPtyHost,
+  defaultPtyHost,
   defaultShell,
   nodePtyHost,
   ptyLoadError,
@@ -203,7 +205,7 @@ export function VtTerminal(props: VtTerminalProps): ReactElement {
         );
         return;
       }
-      const host = handlers.current.pty ?? nodePtyHost();
+      const host = handlers.current.pty ?? defaultPtyHost();
       if (!(await host.available())) {
         // The message separates "nothing installed" from "installed but it
         // would not load" — a native module built for another Node ABI looks

@@ -180,9 +180,11 @@ as real input.
 - The pty is an **optional peer** — either `node-pty` or `@lydell/node-pty`,
   probed in that order. node-pty unpacks to 64 MB and builds a native addon,
   which is not something a package a calendar app installed may drag in.
+- **Under Bun, neither is needed.** Bun 1.4 has a pty of its own, and the
+  backend prefers it over both peers — nothing native is probed or loaded.
 
 ```bash
-npm i node-pty              # or: npm i @lydell/node-pty
+npm i node-pty              # or: npm i @lydell/node-pty — not under Bun
 ```
 
 With neither present, `status` is `'unavailable'` and `fallback` renders — an
