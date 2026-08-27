@@ -67,17 +67,19 @@ The barrel and the subpath are the same module either way.
 Nothing below is required to install the package, and nothing below throws
 when it is missing — each has a `status` and a `fallback` instead.
 
-| You want                                 | Install                                | Without it                                                     |
-| ---------------------------------------- | -------------------------------------- | -------------------------------------------------------------- |
-| `<Terminal backend="vt">`                | `npm i node-pty` or `@lydell/node-pty` | `status` is `'unavailable'`, `fallback` renders                |
-| `<Terminal>` on an embedded emulator     | xterm, urxvt or alacritty on `PATH`    | `backend="auto"` falls through to `vt`                         |
-| `<MediaPlayer>`                          | mpv or VLC on `PATH`                   | `fallback` renders, `onError` names what it looked for         |
-| Recurring events in the desktop calendar | `npm i ical.js`                        | `status` is `'unavailable'`; the calendar renders without dots |
+| You want                                 | Install                                                          | Without it                                                     |
+| ---------------------------------------- | ---------------------------------------------------------------- | -------------------------------------------------------------- |
+| `<Terminal backend="vt">`                | `npm i node-pty` or `@lydell/node-pty` (nothing under Bun ≥ 1.4) | `status` is `'unavailable'`, `fallback` renders                |
+| `<Terminal>` on an embedded emulator     | xterm, urxvt or alacritty on `PATH`                              | `backend="auto"` falls through to `vt`                         |
+| `<MediaPlayer>`                          | mpv or VLC on `PATH`                                             | `fallback` renders, `onError` names what it looked for         |
+| Recurring events in the desktop calendar | `npm i ical.js`                                                  | `status` is `'unavailable'`; the calendar renders without dots |
 
 `@xterm/headless` is an optional **dependency**, not a peer: it is 2 MB and
 installs by default, because nothing else would bring it. The pty is an
 optional peer because node-pty unpacks to 64 MB and builds a native addon,
-which is not something a package a calendar app installed may drag in.
+which is not something a package a calendar app installed may drag in. Under
+Bun 1.4 or newer there is nothing to install at all: the runtime has its own
+pty, and the vt backend prefers it over both peers.
 
 ## TypeScript
 

@@ -891,6 +891,12 @@ app installed may drag in. So an app installs the one it wants:
 npm i node-pty              # or: npm i @lydell/node-pty
 ```
 
+**Under Bun 1.4 or newer, install neither.** Bun ships a pty of its own
+(`Bun.spawn(argv, { terminal })`), so the vt backend uses it and no native
+module is probed, loaded or installed — the terminal works on a machine with
+no C toolchain. An app that wants node-pty back under Bun passes
+`pty={nodePtyHost()}`.
+
 With neither present, `status` is `'unavailable'` and `fallback` renders — an
 ordinary state of a healthy machine, never a throw. `onError` says _which_
 half is missing, and separates "nothing installed" from "installed but it

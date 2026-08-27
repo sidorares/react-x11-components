@@ -332,3 +332,246 @@ export function nodePtyHost(): PtyHost {
   sharedHost = host;
   return host;
 }
+
+// --- the Bun implementation ------------------------------------------------
+
+/**
+ * Bun's built-in pty, as of Bun 1.4: `Bun.spawn(argv, { terminal })` hands
+ * back a `Terminal` on the subprocess.
+ *
+ * This exists for the reason the whole file exists in the first place — a pty
+ * should not cost 64 MB and a native build. Under Bun it costs nothing: the
+ * pty is the runtime's, so `node-pty` is not installed, not probed, and not
+ * loaded, and the vt backend works out of the box on a machine with no C
+ * toolchain. Same argument as `@xterm/headless` being lazy: an app should not
+ * pay for what its runtime already provides.
+ *
+ * Written structurally, like `NodePty` above and for the same two reasons:
+ * `src/` may not name another runtime's types, and `@types/bun` is not
+ * installed here (nor in a Node app that merely imports this package).
+ */
+interface BunTerminalHandle {
+  write(data: string | Uint8Array): void;
+  resize(cols: number, rows: number): void;
+  close(): void;
+}
+
+interface BunSubprocess {
+  readonly pid: number;
+  readonly exitCode: number | null;
+  readonly signalCode: string | null;
+  readonly exited: Promise<number>;
+  readonly terminal?: BunTerminalHandle | null;
+  kill(signal?: string | number): void;
+}
+
+interface BunRuntime {
+  /** The pty class. Present from 1.4 — this is the feature detector. */
+  Terminal?: unknown;
+  spawn(
+    argv: readonly string[],
+    options: {
+      cwd?: string;
+      env?: Record<string, string | undefined>;
+      terminal?: {
+        cols?: number;
+        rows?: number;
+        data?(terminal: BunTerminalHandle, chunk: Uint8Array): void;
+      };
+    },
+  ): BunSubprocess;
+}
+
+/**
+ * The Bun runtime, if this is Bun *and* its Bun is new enough to have a pty.
+ *
+ * `Bun.Terminal` rather than a parse of `Bun.version`: the `terminal` option
+ * is ignored rather than rejected by a Bun that predates it, so a version
+ * comparison is the difference between falling through to node-pty and
+ * spawning a child whose output goes nowhere.
+ */
+function bunRuntime(): BunRuntime | null {
+  const bun = (globalThis as { Bun?: BunRuntime }).Bun;
+  if (!bun || typeof bun.spawn !== 'function') return null;
+  return typeof bun.Terminal === 'function' ? bun : null;
+}
+
+class BunPtySession implements PtySession {
+  #proc: BunSubprocess;
+  #term: BunTerminalHandle;
+  #alive = true;
+  // Bun takes the output callback as a *spawn option*, so bytes can land
+  // before `openPty` has even returned — let alone before the caller has
+  // called `onData`. Anything that arrives in that window is held here and
+  // flushed on attach; without it the shell's first prompt is a coin flip.
+  #backlog: Uint8Array[] = [];
+  #data: ((chunk: Uint8Array) => void) | null = null;
+  // Same race, one step later: a program that exits immediately settles
+  // `exited` before `onExit` is attached.
+  #exit: ExitInfo | null = null;
+  #onExit: ((info: ExitInfo) => void) | null = null;
+
+  constructor(proc: BunSubprocess, term: BunTerminalHandle) {
+    this.#proc = proc;
+    this.#term = term;
+    void proc.exited.then(() => {
+      this.#alive = false;
+      // Bun reports the signal by *name* (`'SIGTERM'`) and nulls `exitCode`
+      // when one ended the child — which is `ExitInfo` exactly, so unlike the
+      // node-pty path there is no number to stringify and no name table to
+      // get wrong per platform.
+      const info: ExitInfo = {
+        code: proc.signalCode ? null : (proc.exitCode ?? 0),
+        signal: proc.signalCode ?? null,
+      };
+      if (this.#onExit) this.#onExit(info);
+      else this.#exit = info;
+    });
+  }
+
+  /** Called from the spawn-time `data` callback. */
+  receive(chunk: Uint8Array): void {
+    if (this.#data) this.#data(chunk);
+    else this.#backlog.push(chunk);
+  }
+
+  get pid(): number | null {
+    return this.#alive ? this.#proc.pid : null;
+  }
+
+  write(data: string): void {
+    if (!this.#alive) return;
+    try {
+      this.#term.write(data);
+    } catch {
+      // the child exited between the keystroke and this write
+    }
+  }
+
+  resize(cols: number, rows: number): void {
+    if (!this.#alive || cols <= 0 || rows <= 0) return;
+    try {
+      this.#term.resize(cols, rows);
+    } catch {
+      // same race as write
+    }
+  }
+
+  kill(signal = 'SIGTERM'): boolean {
+    if (!this.#alive) return false;
+    try {
+      this.#proc.kill(signal);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  onData(listener: (chunk: Uint8Array) => void): void {
+    this.#data = listener;
+    // Bytes, not a string: Bun hands over a `Buffer`, and the emulator's
+    // decoder is stateful across chunks. Decoding here would split a
+    // multi-byte character on whatever boundary the pty read returned.
+    const held = this.#backlog;
+    this.#backlog = [];
+    for (const chunk of held) listener(chunk);
+  }
+
+  onExit(listener: (info: ExitInfo) => void): void {
+    this.#onExit = listener;
+    if (this.#exit) {
+      const info = this.#exit;
+      this.#exit = null;
+      listener(info);
+    }
+  }
+
+  // No `pause`/`resume`: Bun's terminal has no flow control to expose, and
+  // the interface makes them optional for exactly this case. The emulator's
+  // own write queue still bounds parse work per tick; only the pipe's
+  // buffered bytes grow.
+}
+
+let sharedBunHost: PtyHost | null = null;
+
+/**
+ * The runtime's own pty. Null-free: callers reach it through
+ * `defaultPtyHost()`, and `available()` answers honestly under Node.
+ */
+export function bunPtyHost(): PtyHost {
+  if (sharedBunHost) return sharedBunHost;
+
+  const host: PtyHost = {
+    environment() {
+      return nodeProcess()?.env ?? {};
+    },
+
+    async available() {
+      return bunRuntime() !== null;
+    },
+
+    async openPty(argv, options) {
+      const bun = bunRuntime();
+      if (!bun) throw new PtyUnavailableError();
+      const ambient = host.environment?.() ?? {};
+      const merged: Record<string, string> = {};
+      for (const [key, value] of Object.entries({
+        ...ambient,
+        ...options.env,
+      })) {
+        // An explicit `undefined` removes a variable, as `SpawnOptions` says
+        if (value !== undefined) merged[key] = String(value);
+      }
+      // Bun sets no `TERM` of its own — the pty is a device, not a profile —
+      // so the honest advertisement is made here, as the node-pty path makes
+      // it through node-pty's `name`.
+      merged.TERM ??= 'xterm-256color';
+      const file = argv[0] ?? defaultShell(ambient);
+      let session: BunPtySession | null = null;
+      const proc = bun.spawn([file, ...argv.slice(1)], {
+        cwd: options.cwd,
+        env: merged,
+        terminal: {
+          cols: options.cols,
+          rows: options.rows,
+          data(_terminal, chunk) {
+            session?.receive(chunk);
+          },
+        },
+      });
+      const term = proc.terminal;
+      if (!term) {
+        // A Bun that has `Terminal` but did not give us one back: kill the
+        // child rather than leak it, and report it as a load failure so the
+        // caller renders `fallback` instead of an empty terminal.
+        try {
+          proc.kill();
+        } catch {
+          // already gone
+        }
+        throw new PtyUnavailableError(
+          new Error('Bun.spawn returned no terminal for a pty request'),
+        );
+      }
+      session = new BunPtySession(proc, term);
+      return session;
+    },
+  };
+
+  sharedBunHost = host;
+  return host;
+}
+
+/**
+ * The pty the current runtime should use: Bun's own where there is one,
+ * `node-pty` otherwise.
+ *
+ * Bun wins on purpose even when node-pty is installed and would load (Bun's
+ * N-API support is good enough that it does). The built-in needs no native
+ * build, no ABI match and no 64 MB, and "use what the runtime provides" is
+ * the same call this package makes everywhere else. An app that wants the
+ * other one back passes `pty={nodePtyHost()}`, which is what the seam is for.
+ */
+export function defaultPtyHost(): PtyHost {
+  return bunRuntime() ? bunPtyHost() : nodePtyHost();
+}

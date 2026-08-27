@@ -457,7 +457,10 @@ somewhere else:
   and the terminal is a flagship); the pty is an optional _peer_, `node-pty`
   or `@lydell/node-pty`, probed in that order and never installed for anyone.
   node-pty alone unpacks to 64 MB with a native build, which is more than
-  react-x11's entire closure. Both absences are `status: 'unavailable'` plus
+  react-x11's entire closure. **Under Bun neither is probed**: `defaultPtyHost()`
+  prefers `bunPtyHost()` (Bun 1.4's `Bun.spawn({ terminal })`, feature-detected
+  on `Bun.Terminal`) over both, because a runtime that ships the capability
+  should not make an app install a binary for it. Both absences are `status: 'unavailable'` plus
   `fallback`, never a throw — the same call the calendar makes about a desktop
   with no Evolution Data Server.
 - **Their types are ours.** `vt/xterm.ts` and `vt/pty.ts` write out the slice
