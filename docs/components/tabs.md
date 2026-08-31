@@ -148,16 +148,28 @@ Every variant is styled out of the box:
 - **`subtle`** — a rounded wash of the accent behind the selected label.
 - **`enclosed`** — the strip is a muted chip and the selected trigger is a
   raised segment of it, filled with the `ground`.
-- **`outline`** — the classic notebook: the selected trigger carries a
-  border on three edges and stays open toward the panel, so tab and panel
-  read as one surface.
+- **`outline`** — the classic notebook: the selected trigger is a bordered
+  tab with rounded shoulders (the same radius as the `enclosed` chip) that
+  stays open toward the panel, so tab and panel read as one surface.
 - **`plain`** — nothing at all except ink. This is the variant to pair with
   `<TabsIndicator>`, or to style entirely from the app.
 
-The rule, the marker and the open edge are absolutely positioned boxes and
-per-side border widths rather than anything cleverer, because borders here
-are all-edges and these marks each have to sit on one side. Two consequences
-are deliberate:
+The rule and the marker are absolutely positioned boxes rather than borders,
+because borders here are all-edges and these marks each have to sit on one
+side. The `outline` tab's shape is built from boxes too, and the reason is
+worth spelling out because it is two renderer rules deep. `borderRadius` is
+one number and requires a uniform border (a per-side width paints square, by
+core's own rule) — so the shape wants a full rounded border with its panel
+edge covered over. And a node's own border cannot be the thing covered: this
+renderer paints a border _after_ the node's children, so nothing inside the
+tab can lie over it (the retained tree looks right and the pixels are not —
+the bug class the pixel test in `test/tabs.test.ts` exists for). The stroke
+therefore lives on a _frame_ child (an inset-0 box carrying the rounded
+border), and a _skirt_ sibling after it lays ground over the frame's panel
+edge — the border, and the two corners that would curl toward the panel —
+redrawing the straight side walls over itself. Both are painted before the
+label, so a descender dips over them rather than being cut. Two more
+consequences are deliberate:
 
 - **Every selected fill is opaque.** The `subtle` wash and the `enclosed`
   chip are mixed against `ground` with the renderer's own `interpolate`

@@ -13,7 +13,7 @@ import { test, afterEach } from 'node:test';
 import assert from 'node:assert';
 import React from 'react';
 
-import { renderX11, cleanup, screen, userEvent } from 'react-x11/test';
+import { renderX11, cleanup, screen, userEvent, pixelAt } from 'react-x11/test';
 import { ThemeProvider } from 'react-x11';
 import { XK_DOWN, XK_END, XK_HOME, XK_LEFT, XK_RIGHT } from 'react-x11/keysyms';
 import type { Node as RetainedNode } from 'react-x11/node';
@@ -365,20 +365,74 @@ test('enclosed: the strip is a chip, the selected trigger is the ground', async 
   );
 });
 
-test('outline: three edges, open toward the panel', async () => {
-  await mount(view({ defaultValue: 'members', variant: 'outline' }));
-
-  const selected = retained(tab('members'));
-  assert.strictEqual(selected.style.borderWidth, 1);
-  assert.strictEqual(
-    selected.style.borderBottomWidth,
-    0,
-    'the side facing the panel stays open, so tab and panel read as one',
+test('outline: rounded shoulders, open toward the panel', async () => {
+  const { ctx } = await mount(
+    view({ defaultValue: 'members', variant: 'outline' }),
   );
+
+  // The trigger itself is deliberately borderless — a node's own border
+  // paints *after* its children, so a border here could never be opened.
+  // The stroke lives on the frame child; the skirt after it is what covers
+  // the frame's panel edge and the two corners that would curl toward it.
+  const selected = retained(tab('members'));
+  assert.strictEqual(selected.style.borderWidth, undefined);
+  assert.strictEqual(selected.style.borderRadius, 6, 'the fill rounds too');
+
+  const boxes = selected.children.filter((c) => c.kind === 'box');
+  const frame = boxes.find((c) => c.style.borderWidth === 1) as RetainedNode;
+  const skirt = boxes.find(
+    (c) => c.style.borderStartWidth === 1,
+  ) as RetainedNode;
+  assert.ok(frame, 'the frame carries the rounded border');
+  assert.strictEqual(frame.style.borderRadius, 6);
+  assert.ok(skirt, 'and the skirt opens it');
+  assert.ok(
+    boxes.indexOf(skirt) > boxes.indexOf(frame),
+    'the skirt can only cover a sibling painted before it',
+  );
+  assert.strictEqual(skirt.abs.width, selected.abs.width);
+  assert.strictEqual(
+    skirt.abs.y + skirt.abs.height,
+    selected.abs.y + selected.abs.height,
+    'flush with the panel edge',
+  );
+
+  // What the eye actually checks, checked in pixels: the shoulder line is
+  // there and the panel edge is not. (This is the assertion that caught the
+  // border-over-children paint order — the retained tree looked right while
+  // the tab painted closed.)
+  const cx = Math.round(selected.abs.x + selected.abs.width / 2);
+  const top = await pixelAt(ctx as never, cx, selected.abs.y);
+  const bottom = await pixelAt(
+    ctx as never,
+    cx,
+    selected.abs.y + selected.abs.height - 1,
+  );
+  assert.ok(
+    top[0] < 250,
+    `the top edge carries the frame's stroke, got rgb(${top.join()})`,
+  );
+  assert.deepStrictEqual(
+    bottom,
+    [255, 255, 255],
+    'the bottom edge is open — pure ground, no stroke and no rule',
+  );
+
   assert.strictEqual(
     retained(tab('projects')).style.borderWidth,
     undefined,
     'unselected triggers carry no border',
+  );
+
+  // …and the same holds after the shape moves to a clicked tab, which is
+  // the path the eye first caught it on.
+  await userEvent.click(tab('projects'));
+  const next = retained(tab('projects'));
+  const nx = Math.round(next.abs.x + next.abs.width / 2);
+  assert.deepStrictEqual(
+    await pixelAt(ctx as never, nx, next.abs.y + next.abs.height - 1),
+    [255, 255, 255],
+    'open at the bottom on the re-render path too',
   );
 });
 

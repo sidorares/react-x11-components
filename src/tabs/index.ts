@@ -54,6 +54,9 @@ const RULE = 1;
 const TRIGGER_GAP = 6;
 /** Between a strip and its panel. */
 const PANEL_GAP = 8;
+/** The `enclosed` strip's chip, and an `outline` tab's shoulders — one
+ *  radius, so the two variants agree about how round this notebook is. */
+const CORNER = 6;
 
 export type TabsVariant = 'line' | 'subtle' | 'enclosed' | 'outline' | 'plain';
 export type TabsSize = 'sm' | 'md' | 'lg';
@@ -67,15 +70,16 @@ interface SizeSpec {
   step: number;
 }
 
-// The paddings are Chakra's proportions tightened for the desktop — a tab in
-// an application window is a control, not a navigation bar read at arm's
-// length. The type steps off the theme's own `fontSize` rather than a fixed
-// scale, so a theme that sets 16 gets tabs in 16 (the same call `/timeline`
-// makes).
+// Chakra's proportions, and looser than a first guess would make them: the
+// labels are cap-trimmed, so `py` is the *whole* visible gap over the caps
+// and under the baseline — padding sized for an untrimmed line box reads as
+// cramped once the box is the letters. The type steps off the theme's own
+// `fontSize` rather than a fixed scale, so a theme that sets 16 gets tabs in
+// 16 (the same call `/timeline` makes).
 const SIZES: Record<TabsSize, SizeSpec> = {
-  sm: { px: 10, py: 4, step: -1 },
-  md: { px: 12, py: 6, step: 0 },
-  lg: { px: 16, py: 8, step: 1 },
+  sm: { px: 12, py: 8, step: -1 },
+  md: { px: 16, py: 10, step: 0 },
+  lg: { px: 20, py: 12, step: 1 },
 };
 
 // --- shared state -----------------------------------------------------------
@@ -485,7 +489,7 @@ export function TabsList(props: TabsListProps): ReactElement {
           // Chakra's `bg.muted` chip, mixed from the palette this theme
           // actually has — opaque, for the reason `over` gives.
           backgroundColor: over(look.ground, look.text, 0.07),
-          borderRadius: 6,
+          borderRadius: CORNER,
           padding: 3,
           gap: 2,
         }
@@ -600,13 +604,13 @@ export function TabsTrigger(props: TabsTriggerProps): ReactElement {
         variantStyle.push({
           // The fill is the ground, so the tab and its panel read as one
           // surface — and it is what covers the strip's rule underneath.
+          // Rounded so the fill stays inside the frame's shoulders, but
+          // deliberately **borderless**: this renderer paints a node's
+          // border *after* its children (`Node.paint` — children, then
+          // `_paintBorder`), so a border here could never be opened by a
+          // child laid over it. The frame below carries the stroke instead.
           backgroundColor: look.ground,
-          borderWidth: 1,
-          borderColor: '$border',
-          // The side facing the panel stays open. A longhand overrides the
-          // shorthand, which is the whole trick: three edges, no rule for a
-          // fourth to sit on.
-          ...(vertical ? { borderEndWidth: 0 } : { borderBottomWidth: 0 }),
+          borderRadius: CORNER,
         });
       else
         Object.assign(hover, {
@@ -614,6 +618,63 @@ export function TabsTrigger(props: TabsTriggerProps): ReactElement {
         });
       break;
   }
+
+  // The `outline` tab's shape, from two stacked children — a shape the style
+  // vocabulary cannot say in one box. `borderRadius` is one number and
+  // requires a uniform border, so "rounded shoulders, open bottom" is drawn
+  // as: a *frame* (inset-0 box carrying the full rounded border) and, after
+  // it, a *skirt* (a strip of ground over the frame's panel edge, covering
+  // the border and the two corners that would curl toward the panel, and
+  // redrawing the straight side walls over itself). The skirt can cover the
+  // frame only because they are siblings — a node's own border paints over
+  // its children, which is why the frame is not the trigger's border.
+  // Both are written before the label, so a descender that dips below the
+  // baseline paints over them rather than being cut.
+  const outlineShape =
+    look.variant === 'outline' && selected
+      ? [
+          hx('box', {
+            key: 'frame',
+            style: {
+              position: 'absolute',
+              top: 0,
+              bottom: 0,
+              start: 0,
+              end: 0,
+              borderWidth: 1,
+              borderColor: '$border',
+              borderRadius: CORNER,
+            },
+          }),
+          hx('box', {
+            key: 'skirt',
+            style: [
+              {
+                position: 'absolute',
+                backgroundColor: look.ground,
+                borderColor: '$border',
+              },
+              vertical
+                ? {
+                    top: 0,
+                    bottom: 0,
+                    end: 0,
+                    width: CORNER + 1,
+                    borderTopWidth: 1,
+                    borderBottomWidth: 1,
+                  }
+                : {
+                    start: 0,
+                    end: 0,
+                    bottom: 0,
+                    height: CORNER + 1,
+                    borderStartWidth: 1,
+                    borderEndWidth: 1,
+                  },
+            ],
+          }),
+        ]
+      : null;
 
   // The selected marker in the `line` variant: a 2px box riding the panel
   // edge of the trigger, over the strip's 1px rule.
@@ -701,6 +762,7 @@ export function TabsTrigger(props: TabsTriggerProps): ReactElement {
       'data-testname': props['data-testname'],
     },
     chip,
+    outlineShape,
     withText(props.children, CAP_TRIM),
     marker,
   );
