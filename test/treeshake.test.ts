@@ -33,6 +33,9 @@ const ROOT = path.resolve(fileURLToPath(import.meta.url), '../..');
  */
 const COMPONENTS = [
   { exportName: 'ChartContainer', dir: 'charts', marker: 'chartplot' },
+  // The QML engine's marker is the unknown-type error only its registry
+  // throws.
+  { exportName: 'QmlView', dir: 'qml', marker: 'Unknown QML type' },
   { exportName: 'CodeEditor', dir: 'code-editor', marker: 'codeeditor' },
   { exportName: 'Calendar', dir: 'calendar', marker: 'Previous month' },
   {

@@ -636,3 +636,26 @@ export type {
   ThreeSize,
   ThreeViewport,
 } from './three/index.js';
+export {
+  QmlView,
+  QmlNode,
+  Qt,
+  parseQml,
+  instantiateDocument,
+  registerQmlModule,
+  registerReactComponent,
+  registerControls,
+  createFileResolver,
+  geometryStyle,
+  captureNode,
+  qmlColor,
+} from './qml/index.js';
+export type {
+  QmlViewProps,
+  QmlViewHandle,
+  QmlDocument,
+  QmlTypeDef,
+  QmlFacade,
+  QmlInstance,
+  QmlResolver,
+} from './qml/index.js';

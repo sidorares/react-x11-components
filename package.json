@@ -92,6 +92,10 @@
       "types": "./dist/media-player/index.d.ts",
       "default": "./dist/media-player/index.js"
     },
+    "./qml": {
+      "types": "./dist/qml/index.d.ts",
+      "default": "./dist/qml/index.js"
+    },
     "./richtext": {
       "types": "./dist/richtext/index.d.ts",
       "default": "./dist/richtext/index.js"
@@ -158,6 +162,7 @@
     "examples:html": "tsx examples/html.tsx",
     "examples:markdown": "tsx examples/markdown.tsx",
     "examples:media-player": "tsx examples/media-player.tsx",
+    "examples:qml": "tsx examples/qml/qml.tsx",
     "examples:table": "tsx examples/table.tsx",
     "examples:terminal": "tsx examples/terminal.tsx",
     "examples:terminal-output": "tsx examples/terminal-output.tsx",
