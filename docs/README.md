@@ -26,6 +26,7 @@ component.
 | [MediaPlayer](components/media-player.md)              | `@react-x11/components/media-player`     | mpv or VLC, embedded, with real transport control.           |
 | [QML](components/qml.md)                               | `@react-x11/components/qml`              | Qt's QML language as an authoring layer. No Qt.              |
 | [Table](components/table.md)                           | `@react-x11/components/table`            | A data table: sortable, virtualized, any row height.         |
+| [Tabs](components/tabs.md)                             | `@react-x11/components/tabs`             | One visible panel at a time, five strip styles.              |
 | [Terminal](components/terminal.md)                     | `@react-x11/components/terminal`         | A real terminal: an embedded emulator, or its own.           |
 | [TerminalOutput](components/terminal-output.md)        | `@react-x11/components/terminal-output`  | A captured session, rendered. `<Terminal>`'s static sibling. |
 | [Three](components/three.md)                           | `@react-x11/components/three`            | A three-fiber-shaped 3D scene over either GL backend.        |

@@ -104,6 +104,10 @@
       "types": "./dist/table/index.d.ts",
       "default": "./dist/table/index.js"
     },
+    "./tabs": {
+      "types": "./dist/tabs/index.d.ts",
+      "default": "./dist/tabs/index.js"
+    },
     "./terminal": {
       "types": "./dist/terminal/index.d.ts",
       "default": "./dist/terminal/index.js"
@@ -164,6 +168,7 @@
     "examples:media-player": "tsx examples/media-player.tsx",
     "examples:qml": "tsx examples/qml/qml.tsx",
     "examples:table": "tsx examples/table.tsx",
+    "examples:tabs": "tsx examples/tabs.tsx",
     "examples:terminal": "tsx examples/terminal.tsx",
     "examples:terminal-output": "tsx examples/terminal-output.tsx",
     "examples:terminal-vt": "tsx examples/terminal-vt.tsx",

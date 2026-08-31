@@ -92,6 +92,9 @@ const COMPONENTS = [
     dir: 'timeline',
     marker: 'inside a <Timeline>',
   },
+  // `<Tabs>` is box-and-text composition like `<Timeline>`; the marker is
+  // the `tablist` role, which nothing else in this package writes.
+  { exportName: 'TabsList', dir: 'tabs', marker: 'tablist' },
   // `<Table>` shares the internal height index with `<Tree>`
   // (src/internal/ — shared code, not a component import); the role is the
   // one string only the table writes, and this loop is what proves the

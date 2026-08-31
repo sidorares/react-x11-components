@@ -482,6 +482,27 @@ export type {
   TimelineVariant,
 } from './timeline/index.js';
 
+// One visible panel at a time. Chakra UI's Tabs with the parts spelled flat,
+// like `<Timeline>` — `Tabs.Root` is `<Tabs>`, `Tabs.Trigger` is
+// `<TabsTrigger>`. Successor to react-x11's own items-array `<Tabs>`.
+export {
+  Tabs,
+  TabsContent,
+  TabsIndicator,
+  TabsList,
+  TabsTrigger,
+} from './tabs/index.js';
+export type {
+  TabsContentProps,
+  TabsIndicatorProps,
+  TabsListProps,
+  TabsProps,
+  TabsSize,
+  TabsTriggerProps,
+  TabsValueChange,
+  TabsVariant,
+} from './tabs/index.js';
+
 export {
   TrayHost,
   TrayManager,
