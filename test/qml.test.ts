@@ -7,6 +7,9 @@
 import { test, describe, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import React from 'react';
 
 import {
@@ -31,8 +34,10 @@ import {
   QmlView,
   registerControls,
   registerReactComponent,
+  createFileResolver,
   Qt,
   type QmlFacade,
+  type QmlResolver,
   type QmlViewHandle,
 } from '../src/qml/index.js';
 
@@ -403,6 +408,279 @@ describe('QML language semantics (headless)', () => {
     assert.equal(ld.slot('item').peek(), null);
     root.destroy();
   });
+});
+
+describe('QML file components (the resolver seam)', () => {
+  // A resolver is any object with the QmlResolver shape; tests hand the
+  // engine a plain in-memory one — no filesystem, same semantics.
+  const mock = (files: Record<string, string>): QmlResolver => ({
+    rootDir: '/app',
+    load(dir, name) {
+      const file = `${dir}/${name}.qml`;
+      const source = files[file];
+      return source === undefined ? null : { source, fileName: file };
+    },
+    join(dir, relative) {
+      const out: string[] = [];
+      for (const part of `${dir}/${relative}`.split('/')) {
+        if (!part || part === '.') continue;
+        if (part === '..') out.pop();
+        else out.push(part);
+      }
+      return `/${out.join('/')}`;
+    },
+  });
+
+  const headlessWith = (
+    files: Record<string, string>,
+    main: string,
+    extras: Record<string, unknown> | null = null,
+  ) =>
+    instantiateDocument(parseQml(main, { fileName: '/app/main.qml' }), {
+      resolver: mock(files),
+      extras,
+    });
+
+  test('the implicit same-directory import, with use-site composition', () => {
+    const seen: string[] = [];
+    const { root, context } = headlessWith(
+      {
+        '/app/MyBackdrop.qml': `
+          import QtQuick 2.15
+          Rectangle {
+            id: inner
+            width: 200; height: 100
+            color: "teal"
+            property string label: "backdrop"
+            signal poked(string what)
+            function greet() { return "hi " + label }
+          }
+        `,
+      },
+      `
+        import QtQuick 2.15
+        Item {
+          id: root
+          property int base: 200
+          MyBackdrop {
+            id: background
+            width: root.base * 2
+            onPoked: (what) => root.note(what)
+            Text { id: caption; text: "on top of " + background.label }
+          }
+          function note(s) { }
+        }
+      `,
+    );
+    root.methods.set('note', (s) => seen.push(String(s)));
+    const background = context.ids.get('background')!;
+    // Site members won and evaluated in the *site's* scope.
+    assert.equal(background.slot('width').peek(), 400);
+    // The component file's own members hold underneath.
+    assert.equal(background.slot('height').peek(), 100);
+    assert.equal(background.slot('color').peek(), 'teal');
+    assert.equal(
+      background.typeInfo.name,
+      'Rectangle',
+      'root type shows through',
+    );
+    // File internals are private: `inner` is not a site id…
+    assert.equal(context.ids.get('inner'), undefined);
+    // …while the site child was appended and sees site names.
+    const caption = context.ids.get('caption')!;
+    assert.equal(caption.slot('text').peek(), 'on top of backdrop');
+    assert.equal(caption.parentInst, background);
+    // Declared signal, site handler; declared method through the facade.
+    background.facade.poked('ouch');
+    flushBindings();
+    assert.deepEqual(seen, ['ouch']);
+    assert.equal(background.facade.greet(), 'hi backdrop');
+    // Site bindings stay live.
+    root.facade.base = 10;
+    flushBindings();
+    assert.equal(background.slot('width').peek(), 20);
+    root.destroy();
+  });
+
+  test('a local <Name>.qml shadows a module type, as in Qt', () => {
+    const { root } = headlessWith(
+      {
+        '/app/Rectangle.qml': `
+          import QtQuick 2.15
+          Item { property string flavour: "local" }
+        `,
+      },
+      `
+        import QtQuick 2.15
+        Item { Rectangle { id: r } }
+      `,
+    );
+    assert.equal(root.children[0].facade.flavour, 'local');
+    root.destroy();
+  });
+
+  test('a quoted directory import, and components nesting components', () => {
+    const { root } = headlessWith(
+      {
+        '/app/widgets/Fancy.qml': `
+          import QtQuick 2.15
+          Item { property string who: "fancy"; Plain { id: p } }
+        `,
+        '/app/widgets/Plain.qml': `
+          import QtQuick 2.15
+          Item { property int depth: 2 }
+        `,
+      },
+      `
+        import QtQuick 2.15
+        import "./widgets"
+        Item { Fancy { id: f } }
+      `,
+    );
+    const f = root.children[0];
+    assert.equal(f.facade.who, 'fancy');
+    assert.equal(f.children[0].facade.depth, 2, 'components nest');
+    root.destroy();
+  });
+
+  test('context properties reach inside file components', () => {
+    const { root } = headlessWith(
+      {
+        '/app/Greeting.qml': `
+          import QtQuick 2.15
+          Item { property string text: "hello " + userName }
+        `,
+      },
+      'import QtQuick 2.15\nItem { Greeting { id: g } }',
+      { userName: 'ada' },
+    );
+    assert.equal(root.children[0].facade.text, 'hello ada');
+    root.destroy();
+  });
+
+  test('a component cycle fails with the chain in the message', () => {
+    assert.throws(
+      () =>
+        headlessWith(
+          {
+            '/app/Alpha.qml': 'import QtQuick 2.15\nItem { Beta { } }',
+            '/app/Beta.qml': 'import QtQuick 2.15\nItem { Alpha { } }',
+          },
+          'import QtQuick 2.15\nItem { Alpha { } }',
+        ),
+      /circular component reference.*Alpha\.qml.*Beta\.qml/s,
+    );
+  });
+
+  test('Loader.source loads a component document through the resolver', () => {
+    const { context } = headlessWith(
+      {
+        '/app/widgets/Panel.qml': `
+          import QtQuick 2.15
+          Rectangle { width: 33; height: 7; property string tag: "panel" }
+        `,
+      },
+      `
+        import QtQuick 2.15
+        Item { Loader { id: ld; source: "widgets/Panel.qml" } }
+      `,
+    );
+    const ld = context.ids.get('ld')!;
+    assert.equal((ld.slot('item').peek() as QmlFacade).tag, 'panel');
+    assert.equal(ld.slot('width').peek(), 33, 'Loader takes the item size');
+    context.root!.destroy();
+  });
+
+  test('without a resolver, the unknown-type error says how to get one', () => {
+    assert.throws(
+      () => headless('import QtQuick 2.15\nMyBackdrop { }'),
+      /createFileResolver/,
+    );
+  });
+
+  test('createFileResolver: the standard filesystem helper, end to end', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'qml-resolver-'));
+    try {
+      await writeFile(
+        join(dir, 'background.qml'),
+        'import QtQuick 2.15\nMyBackdrop {\n  id: background\n}\n',
+      );
+      await writeFile(
+        join(dir, 'MyBackdrop.qml'),
+        `import QtQuick 2.15
+         import "./widgets"
+         Rectangle {
+           width: 300; height: 120; color: "#204080"
+           property alias meterWidth: m.width
+           Meter { id: m }
+         }`,
+      );
+      await mkdir(join(dir, 'widgets'), { recursive: true });
+      await writeFile(
+        join(dir, 'widgets', 'Meter.qml'),
+        'import QtQuick 2.15\nRectangle { width: 55; height: 10; color: "gold" }\n',
+      );
+      const resolver = await createFileResolver(dir);
+      const { root, context } = instantiateDocument(
+        parseQml('import QtQuick 2.15\nMyBackdrop {\n  id: background\n}\n', {
+          fileName: join(dir, 'background.qml'),
+        }),
+        { resolver },
+      );
+      const background = context.ids.get('background')!;
+      assert.equal(background.slot('width').peek(), 300);
+      assert.equal(background.slot('color').peek(), '#204080');
+      assert.equal(
+        background.facade.meterWidth,
+        55,
+        'quoted import resolved from inside the component file',
+      );
+      root.destroy();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test(
+    'a file component renders: pixels from the component, site child on top',
+    { skip: !FONTS },
+    async () => {
+      const resolver = mock({
+        '/app/Card.qml': `
+          import QtQuick 2.15
+          Rectangle {
+            width: 200; height: 120; color: "#16a085"
+            Rectangle { x: 10; y: 10; width: 40; height: 40; color: "#0b3d34" }
+          }
+        `,
+      });
+      const ref = React.createRef<QmlViewHandle>();
+      const { ctx } = await renderX11(
+        h(QmlView, {
+          ref,
+          source: `
+            import QtQuick 2.15
+            Card {
+              id: card
+              Rectangle { x: 150; y: 80; width: 30; height: 30; color: "#e67e22" }
+            }
+          `,
+          resolver,
+        }),
+        { width: 300, height: 200, fonts: FONTS ?? undefined },
+      );
+      await waitFor(() => assert.ok(ref.current));
+      await expectPixel(ctx, 100, 60, '#16a085', {
+        message: 'component body painted',
+      });
+      await expectPixel(ctx, 30, 30, '#0b3d34', {
+        message: 'component-internal child painted',
+      });
+      await expectPixel(ctx, 165, 95, '#e67e22', {
+        message: 'use-site child painted on top',
+      });
+    },
+  );
 });
 
 const mountQml = async (source: string, { width = 400, height = 300 } = {}) => {

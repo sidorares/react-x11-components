@@ -73,4 +73,8 @@ export interface QmlDocument {
   imports: QmlImport[];
   pragmas: string[];
   root: ObjectIR;
+  /** How this document was loaded — set by the engine when a resolver is
+   * in play, so the type names it uses can resolve `.qml` files relative
+   * to it (resolver.ts). */
+  load?: import('./resolver.js').DocLoad;
 }

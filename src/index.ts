@@ -645,6 +645,8 @@ export {
   registerQmlModule,
   registerReactComponent,
   registerControls,
+  createFileResolver,
+  geometryStyle,
   qmlColor,
 } from './qml/index.js';
 export type {
@@ -653,4 +655,6 @@ export type {
   QmlDocument,
   QmlTypeDef,
   QmlFacade,
+  QmlInstance,
+  QmlResolver,
 } from './qml/index.js';

@@ -162,7 +162,7 @@
     "examples:html": "tsx examples/html.tsx",
     "examples:markdown": "tsx examples/markdown.tsx",
     "examples:media-player": "tsx examples/media-player.tsx",
-    "examples:qml": "tsx examples/qml.tsx",
+    "examples:qml": "tsx examples/qml/qml.tsx",
     "examples:table": "tsx examples/table.tsx",
     "examples:terminal": "tsx examples/terminal.tsx",
     "examples:terminal-output": "tsx examples/terminal-output.tsx",

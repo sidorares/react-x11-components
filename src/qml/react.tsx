@@ -32,6 +32,7 @@ import {
 } from './objects.js';
 import { flushBindings } from './slots.js';
 import { afterLayout, cancelAfterLayout } from '../internal/timers.js';
+import type { QmlResolver } from './resolver.js';
 
 export function useQmlVersion(inst: QmlInstance): number {
   return useSyncExternalStore(
@@ -74,11 +75,21 @@ export interface QmlViewProps {
   /** Subscriptions to the root object's signals, by signal name. */
   onSignal?: Record<string, (...args: unknown[]) => void>;
   hotReload?: boolean;
+  /** Enables `.qml`-file resolution — the implicit same-directory import
+   * and quoted-path imports. `createFileResolver(dir)` is the standard
+   * filesystem one; any object with the `QmlResolver` shape works
+   * (resolver.ts). Fixed for the lifetime of the view. */
+  resolver?: QmlResolver;
+  /** Rebuild (with the same state migration a `source` change gets) when
+   * this value changes — how a watcher of *sibling* `.qml` files triggers
+   * a hot reload the unchanged root source cannot. */
+  reloadToken?: unknown;
   style?: Style | Style[];
 }
 
 interface Mounted {
   source: string;
+  token: unknown;
   res: InstantiateResult;
 }
 
@@ -92,18 +103,34 @@ interface Mounted {
  * window" behavior.
  */
 export const QmlView = forwardRef(function QmlView(
-  { source, file, context, onSignal, hotReload = true, style }: QmlViewProps,
+  {
+    source,
+    file,
+    context,
+    onSignal,
+    hotReload = true,
+    resolver,
+    reloadToken,
+    style,
+  }: QmlViewProps,
   ref: Ref<QmlViewHandle>,
 ): ReactElement {
   const state = useRef<Mounted | null>(null);
-  if (!state.current || state.current.source !== source) {
+  if (
+    !state.current ||
+    state.current.source !== source ||
+    !Object.is(state.current.token, reloadToken)
+  ) {
     const doc = parseQml(source, { fileName: file ?? '<inline>' });
-    const next = instantiateDocument(doc, { extras: { ...context } });
+    const next = instantiateDocument(doc, {
+      extras: { ...context },
+      resolver: resolver ?? null,
+    });
     if (state.current) {
       if (hotReload) migrateUserState(state.current.res.context, next.context);
       state.current.res.root.destroy();
     }
-    state.current = { source, res: next };
+    state.current = { source, token: reloadToken, res: next };
   }
   const { res } = state.current;
   const root = res.root;

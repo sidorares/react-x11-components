@@ -43,6 +43,7 @@ export type {
   ValueSourceHookup,
   InstantiateResult,
   QtNamespace,
+  TemplateRef,
 } from './objects.js';
 export { Slot, flushBindings } from './slots.js';
 export {
@@ -58,5 +59,8 @@ export type {
   RegisterReactComponentOptions,
 } from './react.js';
 export { qmlColor, registerQtQuick } from './qtquick.js';
+export { createFileResolver } from './resolver.js';
+export type { QmlResolver, DocLoad } from './resolver.js';
+export { geometryStyle } from './react.js';
 export { registerControls } from './controls.js';
 export type { ControlsWidgets } from './controls.js';

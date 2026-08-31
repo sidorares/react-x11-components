@@ -14,13 +14,13 @@
 // durations, and the renderer eases. The divergence (properties jump,
 // pixels ease) is the documented one.
 
-import type { ObjectIR } from './ir.js';
 import {
   QmlInstance,
   instanceOf,
   instantiateTemplate,
   makeHandlerFor,
   type QmlTypeDef,
+  type TemplateRef,
 } from './objects.js';
 import { Slot, flushBindings } from './slots.js';
 import { warn } from './globals.js';
@@ -41,19 +41,15 @@ interface StateEngine {
 
 /** Wire `states:`/`transitions:` on an Item, when the document has them. */
 export function setupStates(inst: QmlInstance): void {
-  const stateTpls = inst.state['templates:states'] as ObjectIR[] | undefined;
+  const stateTpls = inst.state['templates:states'] as TemplateRef[] | undefined;
   if (!stateTpls?.length) return;
   const transTpls =
-    (inst.state['templates:transitions'] as ObjectIR[] | undefined) ?? [];
+    (inst.state['templates:transitions'] as TemplateRef[] | undefined) ?? [];
 
   const engine: StateEngine = {
     token: {},
-    stateInsts: stateTpls.map(
-      (tpl) => instantiateTemplate(tpl, inst.doc, inst.context, inst).inst,
-    ),
-    transInsts: transTpls.map(
-      (tpl) => instantiateTemplate(tpl, inst.doc, inst.context, inst).inst,
-    ),
+    stateInsts: stateTpls.map((tpl) => instantiateTemplate(tpl, inst).inst),
+    transInsts: transTpls.map((tpl) => instantiateTemplate(tpl, inst).inst),
     targets: new Set([inst]),
     applied: [],
     current: '',

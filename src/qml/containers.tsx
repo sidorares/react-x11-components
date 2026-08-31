@@ -10,7 +10,9 @@ import type { ScrollableNode } from 'react-x11';
 
 import {
   QmlInstance,
+  instantiateComponentDoc,
   instantiateTemplate,
+  resolveComponentByPath,
   type QmlTypeDef,
 } from './objects.js';
 import { renderQmlChildren, geometryStyle } from './react.js';
@@ -93,13 +95,7 @@ function repeaterRebuild(inst: QmlInstance): void {
   const { rows } = resolveModel(inst.slot('model').peek());
   const items = rows.map(
     (_, index) =>
-      instantiateTemplate(
-        tpl,
-        inst.doc,
-        inst.context,
-        parent,
-        delegateExtras(rows, index),
-      ).inst,
+      instantiateTemplate(tpl, parent, delegateExtras(rows, index)).inst,
   );
   const at = parent.children.indexOf(inst);
   parent.children.splice(at + 1, 0, ...items);
@@ -194,13 +190,7 @@ function listViewInit(lv: QmlInstance): void {
     const ensure = (i: number): QmlInstance => {
       let it = items.get(i);
       if (!it) {
-        it = instantiateTemplate(
-          tpl,
-          lv.doc,
-          lv.context,
-          lv,
-          delegateExtras(rows, i),
-        ).inst;
+        it = instantiateTemplate(tpl, lv, delegateExtras(rows, i)).inst;
         items.set(i, it);
         lv.children.push(it);
       }
@@ -281,29 +271,41 @@ function loaderInit(ld: QmlInstance): void {
       ld.slot('implicitHeight').assign(0);
     }
     const tpl = ld.templates.get('sourceComponent');
+    const sourcePath = String(ld.slot('source').peek() ?? '');
     const active = ld.slot('active').peek() !== false;
+    let loaded: QmlInstance | null = null;
     if (!ld.destroyed && active && tpl) {
-      const loaded = instantiateTemplate(tpl, ld.doc, ld.context, ld).inst;
+      loaded = instantiateTemplate(tpl, ld).inst;
+    } else if (!ld.destroyed && active && sourcePath) {
+      // `source: "widgets/Meter.qml"` — a component document through the
+      // resolver seam, relative to the document that names it.
+      const compDoc = resolveComponentByPath(ld.doc, sourcePath);
+      if (compDoc) {
+        loaded = instantiateComponentDoc(compDoc, ld.context, ld).inst;
+      } else {
+        warn(
+          `QML: Loader.source '${sourcePath}' did not resolve — ` +
+            (ld.doc.load
+              ? 'no such .qml file relative to this document.'
+              : 'pass a resolver (createFileResolver) to QmlView.'),
+        );
+      }
+    }
+    if (loaded) {
       child = loaded;
-      ld.children.push(loaded);
-      ld.slot('item').assign(loaded.facade);
-      ld.slot('implicitWidth').setBinding(() =>
-        num(loaded.slot('width').get()),
-      );
+      const item = loaded;
+      ld.children.push(item);
+      ld.slot('item').assign(item.facade);
+      ld.slot('implicitWidth').setBinding(() => num(item.slot('width').get()));
       ld.slot('implicitHeight').setBinding(() =>
-        num(loaded.slot('height').get()),
+        num(item.slot('height').get()),
       );
       ld.emit('loaded');
     }
     ld._structChanged();
   };
-  if (ld.slots.has('source') && ld.slot('source').peek()) {
-    warn(
-      'QML: Loader.source (a url) needs the document resolver planned with ' +
-        'directory imports; use sourceComponent for now.',
-    );
-  }
   ld.slot('active').watch(sync);
+  ld.slot('source').watch(sync);
   sync();
 }
 
