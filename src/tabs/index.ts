@@ -161,17 +161,30 @@ function over(ground: string, accent: string, amount: number): string {
 }
 
 /**
+ * A single-line label's box trimmed to its letters — core's `capTrim`, the
+ * rule every core widget label follows (`labelContent` in
+ * `components/theme.js`). A line box is the font's ascent plus descent plus
+ * line gap, and the space over a capital differs from the space under the
+ * baseline by `(ascent - capHeight) - descent` — so a centred untrimmed
+ * label sits visibly low beside the icon centred on its own middle. Trimming
+ * makes the box *be* the letters, and centring centres what can be seen.
+ * Labels only: the icon is a `<canvas>` and panel prose is a paragraph,
+ * and neither wants it.
+ */
+const CAP_TRIM: Style = { textBoxTrim: 'cap-alphabetic' };
+
+/**
  * Strings and numbers are only legal inside `<text>`, and a trigger's label
  * is prose — `<TabsTrigger value="a">Members</TabsTrigger>` is the shortest
  * thing that works and has to keep working. A primitive child is wrapped; an
  * element child is left exactly as written, and inherits the same ink.
  */
-function withText(children: ReactNode): ReactNode {
+function withText(children: ReactNode, style?: Style): ReactNode {
   let wrapped = false;
   const mapped = React.Children.map(children, (child) => {
     if (typeof child !== 'string' && typeof child !== 'number') return child;
     wrapped = true;
-    return hx('text', null, child);
+    return hx('text', style ? { style } : null, child);
   });
   return wrapped ? mapped : children;
 }
@@ -688,7 +701,7 @@ export function TabsTrigger(props: TabsTriggerProps): ReactElement {
       'data-testname': props['data-testname'],
     },
     chip,
-    withText(props.children),
+    withText(props.children, CAP_TRIM),
     marker,
   );
 }

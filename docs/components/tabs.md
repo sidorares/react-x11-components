@@ -200,7 +200,15 @@ merged over it.
 
 A trigger's label is prose — a bare string child is wrapped in `<text>`, so
 `<TabsTrigger value="a">Members</TabsTrigger>` is the shortest thing that
-works. An element child is left exactly as written and inherits the same
+works. The wrapped label is **cap-trimmed** (`textBoxTrim:
+'cap-alphabetic'`), the rule every core widget label follows: a line box
+carries more space over a capital than under the baseline, so an untrimmed
+label centred beside an icon sits visibly low. Trimming makes the box the
+letters, and centring centres what can be seen — an app that brings its own
+`<text>` element as the label should apply the same trim. Panel prose is a
+paragraph, not a label, and keeps its line boxes.
+
+An element child is left exactly as written and inherits the same
 ink, which changes with selection; an
 [`<Icon>`](https://github.com/sidorares/react-x11/blob/master/docs/components.md)
 beside the label follows it with no colour of its own, but its `size` does

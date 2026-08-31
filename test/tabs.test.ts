@@ -449,12 +449,18 @@ test('prose is legal wherever a part takes children', async () => {
 
   // A bare string is only legal inside `<text>`; the parts wrap one, so
   // `<TabsTrigger value="a">Members</TabsTrigger>` renders rather than
-  // throwing — and the wrapper carries no style, because the ink inherits.
+  // throwing. A trigger's label is cap-trimmed — core's `labelContent` rule:
+  // the line box carries more space over a capital than under the baseline,
+  // so an untrimmed label centred beside an icon sits visibly low.
   const texts = retained(tab('members')).children.filter(
     (c) => c.kind === 'text',
   );
   assert.strictEqual(texts.length, 1);
-  assert.deepStrictEqual(texts[0].props.style, undefined);
+  assert.strictEqual(texts[0].style.textBoxTrim, 'cap-alphabetic');
+  // Panel prose is a paragraph, not a label: its wrapper carries no style,
+  // because the ink inherits and a paragraph keeps its line boxes.
+  const prose = panel('members').children.filter((c) => c.kind === 'text');
+  assert.deepStrictEqual(prose[0].props.style, undefined);
 });
 
 test('a part outside <Tabs> says what is wrong', async () => {
