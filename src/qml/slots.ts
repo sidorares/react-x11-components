@@ -218,6 +218,22 @@ export class Slot {
     this.owner?._changed?.(this);
   }
 
+  /**
+   * Layout read-back: reflect an externally computed value — yoga's answer
+   * for a Layout-managed item — into the slot without disturbing its
+   * binding, default or user flags. A later binding evaluation may
+   * overwrite it; the next layout pass reflects again. Expressions reading
+   * the slot see the laid-out number either way.
+   */
+  reflect(value: unknown): void {
+    const layer = this.overrides.length
+      ? this.overrides[this.overrides.length - 1]
+      : this.base;
+    if (Object.is(layer.value, value) && Object.is(this.value, value)) return;
+    layer.value = value;
+    this._settle();
+  }
+
   watch(fn: () => void): () => void {
     (this.watchers ??= new Set()).add(fn);
     return () => this.watchers?.delete(fn);

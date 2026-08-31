@@ -36,6 +36,7 @@ import {
   keyFocusProps,
 } from './interaction.js';
 import { containerTypes } from './containers.js';
+import { layoutTypes } from './layouts.js';
 import { modelTypes } from './models.js';
 import { stateTypes } from './states.js';
 import { cancel, schedule, warn } from './globals.js';
@@ -406,6 +407,7 @@ export function registerQtQuick(): void {
       ...interactionTypes,
     },
   });
+  registerQmlModule('QtQuick.Layouts', { version: '1.15', types: layoutTypes });
 }
 
 export { qmlColor };

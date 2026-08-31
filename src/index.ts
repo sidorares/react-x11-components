@@ -647,6 +647,7 @@ export {
   registerControls,
   createFileResolver,
   geometryStyle,
+  captureNode,
   qmlColor,
 } from './qml/index.js';
 export type {

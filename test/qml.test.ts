@@ -1175,3 +1175,122 @@ describe('QML rendered through react-x11', () => {
     },
   );
 });
+
+describe('QtQuick.Layouts over yoga', () => {
+  test('implicit size of a layout comes from its children (headless)', () => {
+    const { context, root } = headless(`
+      import QtQuick 2.15
+      import QtQuick.Layouts 1.15
+      Item {
+        RowLayout {
+          id: lay
+          spacing: 10
+          Item { Layout.preferredWidth: 50; Layout.preferredHeight: 20 }
+          Item { Layout.preferredWidth: 30; Layout.preferredHeight: 40 }
+        }
+      }
+    `);
+    const lay = context.ids.get('lay')!;
+    assert.equal(lay.slot('implicitWidth').peek(), 90, '50 + 10 + 30');
+    assert.equal(lay.slot('implicitHeight').peek(), 40, 'tallest child');
+    assert.equal(lay.slot('width').peek(), 90, 'width tracks the hint');
+    root.destroy();
+  });
+
+  test(
+    'RowLayout places, fills, and reflects geometry back to expressions',
+    { skip: !FONTS },
+    async () => {
+      const { ctx, ref } = await mountQml(`
+        import QtQuick 2.15
+        import QtQuick.Layouts 1.15
+        Rectangle {
+          width: 400; height: 130; color: "#000000"
+          RowLayout {
+            x: 0; y: 0; width: 400; height: 100
+            spacing: 10
+            Rectangle { id: a; Layout.preferredWidth: 50; Layout.preferredHeight: 40; color: "#e74c3c" }
+            Rectangle { id: b; Layout.preferredWidth: 70; Layout.preferredHeight: 40; color: "#2ecc71" }
+            Rectangle { id: c; Layout.fillWidth: true; Layout.preferredHeight: 40; color: "#3498db" }
+          }
+          Text { x: 4; y: 104; color: "white"; text: "cw=" + c.width }
+        }
+      `);
+      // Yoga's placement, in pixels: 50 + 10 + 70 + 10, the rest fills.
+      await expectPixel(ctx, 25, 50, '#e74c3c');
+      await expectPixel(ctx, 95, 50, '#2ecc71');
+      await expectPixel(ctx, 200, 50, '#3498db');
+      await expectPixel(ctx, 25, 10, '#000000', {
+        message: 'default alignment centers the shorter items',
+      });
+      // The read-back: expressions see yoga's answers.
+      await waitFor(() => {
+        assert.equal(ref.current!.id('b')!.x, 60);
+        assert.equal(ref.current!.id('a')!.y, 30, 'centered: (100 - 40) / 2');
+        assert.equal(ref.current!.id('c')!.width, 260, '400 - 140 fills');
+      });
+      await waitFor(() => assert.ok(screen.getByText('cw=260')));
+    },
+  );
+
+  test('nested layouts and Layout.alignment', { skip: !FONTS }, async () => {
+    const { ctx, ref } = await mountQml(`
+        import QtQuick 2.15
+        import QtQuick.Layouts 1.15
+        Rectangle {
+          width: 300; height: 200; color: "#000000"
+          ColumnLayout {
+            x: 0; y: 0; width: 300; height: 200
+            spacing: 0
+            Rectangle { id: badge; Layout.preferredWidth: 60; Layout.preferredHeight: 30; Layout.alignment: Qt.AlignRight; color: "#f1c40f" }
+            RowLayout {
+              Layout.fillWidth: true
+              Layout.preferredHeight: 40
+              spacing: 0
+              Rectangle { Layout.fillWidth: true; Layout.fillHeight: true; color: "#9b59b6" }
+              Rectangle { Layout.preferredWidth: 100; Layout.fillHeight: true; color: "#1abc9c" }
+            }
+          }
+        }
+      `);
+    await expectPixel(ctx, 270, 15, '#f1c40f', {
+      message: 'AlignRight pushed the badge to the edge',
+    });
+    await expectPixel(ctx, 30, 15, '#000000');
+    await expectPixel(ctx, 100, 50, '#9b59b6', {
+      message: 'the nested row fills the remaining width',
+    });
+    await expectPixel(ctx, 250, 50, '#1abc9c');
+    await waitFor(() =>
+      assert.equal(ref.current!.id('badge')!.x, 240, 'read-back: 300 - 60'),
+    );
+  });
+
+  test(
+    'a Repeater inside a RowLayout: spliced children are flex items',
+    { skip: !FONTS },
+    async () => {
+      const { ctx } = await mountQml(`
+        import QtQuick 2.15
+        import QtQuick.Layouts 1.15
+        Rectangle {
+          width: 300; height: 80; color: "#000000"
+          RowLayout {
+            x: 0; y: 0; width: 300; height: 80
+            spacing: 10
+            Repeater {
+              model: ["#e74c3c", "#2ecc71", "#3498db"]
+              Rectangle { Layout.preferredWidth: 40; Layout.preferredHeight: 40; color: modelData }
+            }
+          }
+        }
+      `);
+      await expectPixel(ctx, 20, 40, '#e74c3c');
+      await expectPixel(ctx, 70, 40, '#2ecc71');
+      await expectPixel(ctx, 120, 40, '#3498db');
+      await expectPixel(ctx, 160, 40, '#000000', {
+        message: 'nothing after the third',
+      });
+    },
+  );
+});

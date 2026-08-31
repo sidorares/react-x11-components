@@ -92,6 +92,9 @@ export interface QmlTypeDef {
   /** `on<Signal>` members are collected, not attached — the type wires
    * them itself (`Connections`). */
   deferHandlers?: boolean;
+  /** RowLayout/ColumnLayout: children render as flex items (yoga decides
+   * geometry, read back into their slots) instead of absolutely. */
+  managesChildLayout?: boolean;
   properties?: Record<string, QmlPropertyDef>;
   signals?: Record<string, string[]>;
   enums?: Record<string, number>;
@@ -109,6 +112,7 @@ export interface QmlTypeInfo {
   capture: string | null;
   dynamicProperties: boolean;
   deferHandlers: boolean;
+  managesChildLayout: boolean;
   properties: Record<string, QmlPropertyDef>;
   signals: Record<string, string[]>;
   enums: Record<string, number>;
@@ -154,6 +158,8 @@ function resolveTypeInfo(name: string, def: QmlTypeDef): QmlTypeInfo {
     dynamicProperties:
       def.dynamicProperties ?? base?.dynamicProperties ?? false,
     deferHandlers: def.deferHandlers ?? base?.deferHandlers ?? false,
+    managesChildLayout:
+      def.managesChildLayout ?? base?.managesChildLayout ?? false,
     init: def.init ?? base?.init ?? null,
     dispose: def.dispose ?? base?.dispose ?? null,
     onStructure: def.onStructure ?? base?.onStructure ?? null,

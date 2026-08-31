@@ -11,6 +11,11 @@
 //    registered below with registerQmlModule — no file involved;
 //  - `Button`    — QtQuick.Controls over core's Button (registerControls).
 //
+// Placement is QtQuick.Layouts almost everywhere — ColumnLayout/RowLayout
+// on the renderer's own flex engine, geometry readable back in bindings —
+// with absolute x/y only for Backdrop's chrome and the Behavior-animated
+// Meter.
+//
 // The resolver is the standard filesystem one (createFileResolver); any
 // object with the QmlResolver shape works — a bundle, a cache, a test's
 // in-memory map.
@@ -26,6 +31,7 @@ import { createRoot, Button } from 'react-x11';
 
 import {
   QmlView,
+  captureNode,
   createFileResolver,
   geometryStyle,
   registerControls,
@@ -57,6 +63,10 @@ registerQmlModule('Demo', {
         );
         return (
           <box
+            // captureNode lets QtQuick.Layouts reflect yoga's geometry back
+            // into this item's slots — which is where `width` below comes
+            // from when the Gauge sits in a layout with Layout.fillWidth.
+            ref={captureNode(inst)}
             style={{
               ...geometryStyle(inst),
               backgroundColor: String(inst.slot('track').peek()),

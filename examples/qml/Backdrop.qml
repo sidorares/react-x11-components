@@ -5,7 +5,7 @@ import QtQuick 2.15
 
 Rectangle {
     id: chrome
-    color: "#101418"
+    color: '#1e252c'
     radius: 10
 
     property string title: "QML on react-x11"

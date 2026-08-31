@@ -38,8 +38,9 @@ run with no server at all.
 press state, hover, wheel), `Row`/`Column`, `Repeater`, `Timer`,
 `QtObject`, `Flickable`, `ListView` (windowed — see below), `TextInput`
 and `TextEdit` (two-way over core's editors), `Loader` (`sourceComponent`,
-and `source` paths through the resolver), `Connections`, `Binding`,
-`ListModel`/`ListElement`,
+and `source` paths through the resolver), `RowLayout`/`ColumnLayout` with
+the `Layout.*` attached properties (see "Layouts"), `Connections`,
+`Binding`, `ListModel`/`ListElement`,
 `states` + `PropertyChanges` + `Transition`, `Behavior`,
 `NumberAnimation`/`ColorAnimation` (as value sources and inside
 Behaviors/Transitions), the `Keys` attached handlers, `focus`/
@@ -55,6 +56,36 @@ object's own properties, script-block bindings re-evaluate, an unset
 `width` tracks `implicitWidth`, delegates see `index`/`modelData` and
 ListModel roles as context properties, and `Component.onCompleted` runs
 leaf-first.
+
+## Layouts: QtQuick.Layouts on the flex engine
+
+`import QtQuick.Layouts 1.15` brings `RowLayout` and `ColumnLayout`,
+lowered directly onto the renderer's own flex layout — this package never
+re-implements what yoga already does. The `Layout.*` attached properties
+map one to one: `fillWidth`/`fillHeight` are grow/stretch,
+`preferredWidth`/`preferredHeight` are the basis (falling back to an
+author-set `width` — friendlier than Qt, which ignores it — then the
+implicit size), `minimumWidth`…`maximumHeight` clamp,
+`horizontalStretchFactor`/`verticalStretchFactor` weight the growth,
+`alignment` places the item on the cross axis (Qt's defaults: centered in
+a row, left in a column), and `margins` and the per-side margins are
+margins. A layout's own implicit size sums its children's hints, so a
+content-sized layout works inside a plain Item, and layouts nest as flex
+does. A `Repeater` inside a layout splices its delegates in as flex
+items.
+
+The QML-shaped half of the deal is **readable geometry**: after each
+layout pass the container reflects yoga's answers back into its
+children's `x`/`y`/`width`/`height` slots — a write that disturbs no
+binding and no flag — so `otherItem.width` in a binding sees the laid-out
+number. Two consequences worth knowing: `Behavior` on a geometry property
+of a layout-managed item does not animate (the layout owns that geometry;
+reflow is immediate — animate absolute items, as the example's meter
+does), and a custom `registerQmlModule` view participates in read-back
+only if it captures its node (`ref={captureNode(inst)}`).
+
+`GridLayout` is not here yet: the flex engine has no grid, and a
+half-true one would be worse than the clear unknown-type error.
 
 ## Imports and the resolver seam
 
@@ -179,6 +210,9 @@ messages are pinned by tests.
   plus a buffer of live delegates out of any model size, repositioned as
   `contentY` moves. Rows without a measurable height fall back to full
   instantiation with stacked heights.
+- **Layouts are the flex engine, with geometry reflected back.** The
+  section above; the read-back is what keeps `item.x` an ordinary
+  property other bindings consume, Qt's contract.
 - **A state is an override layer, not a mutation.** `PropertyChanges`
   pushes live bindings above the document's own; leaving the state pops
   them and the originals — still tracked underneath — are current

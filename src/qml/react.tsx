@@ -276,6 +276,12 @@ export function geometryStyle(
   inst: QmlInstance,
   { contentSized = false } = {},
 ): Style {
+  // Inside a RowLayout/ColumnLayout the item is a flex item: yoga decides
+  // its geometry from the Layout.* attached properties, and the container
+  // reflects the answers back into x/y/width/height afterwards.
+  if (inst.parentInst?.typeInfo.managesChildLayout) {
+    return layoutChildStyle(inst);
+  }
   const s = inst.slots;
   const style: Style = {
     position: 'absolute',
@@ -290,6 +296,141 @@ export function geometryStyle(
   if (s.get('clip')?.peek() === true) style.overflow = 'hidden';
   const z = s.get('z')?.peek();
   if (typeof z === 'number' && z) style.zIndex = z;
+  warnUnrenderable(inst);
+  return style;
+}
+
+// --- QtQuick.Layouts: the flex-item half -----------------------------------
+
+// Qt.AlignmentFlag values (the subset Layout.alignment uses).
+const ALIGN = {
+  left: 1,
+  right: 2,
+  hcenter: 4,
+  top: 32,
+  bottom: 64,
+  vcenter: 128,
+} as const;
+
+const layoutNumOf = (v: unknown): number | null =>
+  typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null;
+
+/**
+ * An item's size hint on one axis, in Qt's order: `Layout.preferredWidth`,
+ * then an author-set `width` (friendlier than Qt, which ignores it — ours
+ * reads as a preferred size), then `implicitWidth`. `read` decides
+ * tracking: `.get` inside the container's implicit-size bindings, `.peek`
+ * during render.
+ */
+export function preferredSpan(
+  inst: QmlInstance,
+  horizontal: boolean,
+  read: (slot: NonNullable<ReturnType<QmlInstance['slots']['get']>>) => unknown,
+  filling = false,
+): number | null {
+  const pref = inst.slots.get(
+    horizontal ? 'Layout.preferredWidth' : 'Layout.preferredHeight',
+  );
+  if (pref) {
+    const v = layoutNumOf(read(pref));
+    if (v !== null) return v;
+  }
+  if (!filling) {
+    const own = inst.slots.get(horizontal ? 'width' : 'height');
+    if (own && !own.isDefault) {
+      const v = layoutNumOf(read(own));
+      if (v !== null && v > 0) return v;
+    }
+  }
+  const implicit = inst.slots.get(
+    horizontal ? 'implicitWidth' : 'implicitHeight',
+  );
+  if (implicit) {
+    const v = layoutNumOf(read(implicit));
+    if (v !== null && v > 0) return v;
+  }
+  return null;
+}
+
+function layoutChildStyle(inst: QmlInstance): Style {
+  const parent = inst.parentInst;
+  const horizontal = parent?.typeInfo.name === 'RowLayout';
+  const style: Style = {};
+  const la = (name: string): unknown =>
+    inst.slots.get(`Layout.${name}`)?.peek();
+  const peek = (slot: { peek(): unknown }): unknown => slot.peek();
+
+  const fillMain = la(horizontal ? 'fillWidth' : 'fillHeight') === true;
+  const fillCross = la(horizontal ? 'fillHeight' : 'fillWidth') === true;
+  const stretchRaw = la(
+    horizontal ? 'horizontalStretchFactor' : 'verticalStretchFactor',
+  );
+  const stretch = layoutNumOf(stretchRaw) ?? 0;
+
+  // Main axis: preferred size is the flex basis; `fillWidth` grows.
+  const basis = preferredSpan(inst, horizontal, peek, fillMain);
+  if (fillMain) {
+    style.flexGrow = stretch > 0 ? stretch : 1;
+    style.flexBasis = basis ?? 0;
+  } else {
+    style.flexGrow = 0;
+    style.flexShrink = 0;
+    if (basis !== null) {
+      if (horizontal) style.width = basis;
+      else style.height = basis;
+    }
+  }
+
+  // Cross axis: fill stretches; otherwise the preferred size holds and
+  // `Layout.alignment` places the item (Qt's defaults: vertically centered
+  // in a row, left in a column).
+  const crossPref = preferredSpan(inst, !horizontal, peek, fillCross);
+  if (fillCross) {
+    style.alignSelf = 'stretch';
+  } else {
+    if (crossPref !== null) {
+      if (horizontal) style.height = crossPref;
+      else style.width = crossPref;
+    }
+    const alignment = layoutNumOf(la('alignment')) ?? 0;
+    const startFlag = horizontal ? ALIGN.top : ALIGN.left;
+    const endFlag = horizontal ? ALIGN.bottom : ALIGN.right;
+    const centerFlag = horizontal ? ALIGN.vcenter : ALIGN.hcenter;
+    style.alignSelf =
+      alignment & startFlag
+        ? 'flex-start'
+        : alignment & endFlag
+          ? 'flex-end'
+          : alignment & centerFlag
+            ? 'center'
+            : horizontal
+              ? 'center'
+              : 'flex-start';
+  }
+
+  const minW = layoutNumOf(la('minimumWidth'));
+  if (minW !== null) style.minWidth = minW;
+  const minH = layoutNumOf(la('minimumHeight'));
+  if (minH !== null) style.minHeight = minH;
+  const maxW = layoutNumOf(la('maximumWidth'));
+  if (maxW !== null) style.maxWidth = maxW;
+  const maxH = layoutNumOf(la('maximumHeight'));
+  if (maxH !== null) style.maxHeight = maxH;
+
+  const margins = layoutNumOf(la('margins')) ?? 0;
+  const side = (name: string): number => layoutNumOf(la(name)) ?? margins;
+  if (margins || la('leftMargin') !== undefined) {
+    style.marginLeft = side('leftMargin');
+  }
+  if (margins || la('rightMargin') !== undefined)
+    style.marginRight = side('rightMargin');
+  if (margins || la('topMargin') !== undefined)
+    style.marginTop = side('topMargin');
+  if (margins || la('bottomMargin') !== undefined)
+    style.marginBottom = side('bottomMargin');
+
+  if (inst.slots.get('visible')?.peek() === false) style.display = 'none';
+  if (inst.slots.get('clip')?.peek() === true) style.overflow = 'hidden';
   warnUnrenderable(inst);
   return style;
 }

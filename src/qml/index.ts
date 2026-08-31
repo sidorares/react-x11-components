@@ -61,6 +61,7 @@ export type {
 export { qmlColor, registerQtQuick } from './qtquick.js';
 export { createFileResolver } from './resolver.js';
 export type { QmlResolver, DocLoad } from './resolver.js';
-export { geometryStyle } from './react.js';
+export { geometryStyle, preferredSpan } from './react.js';
+export { captureNode, hostNode } from './view-utils.js';
 export { registerControls } from './controls.js';
 export type { ControlsWidgets } from './controls.js';
