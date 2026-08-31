@@ -942,6 +942,44 @@ describe('QML rendered through react-x11', () => {
   );
 
   test(
+    'a root with no declared size fills the app-sized view',
+    { skip: !FONTS },
+    async () => {
+      const ref = React.createRef<QmlViewHandle>();
+      const { ctx } = await renderX11(
+        h(QmlView, {
+          ref,
+          source: `
+            import QtQuick 2.15
+            Rectangle {
+              id: root
+              color: "#204080"
+              Rectangle {
+                x: Math.max(0, root.width - 50); y: 0
+                width: 50; height: 50; color: "#e67e22"
+              }
+            }
+          `,
+          style: { width: 300, height: 220 },
+        }),
+        { width: 400, height: 300, fonts: FONTS ?? undefined },
+      );
+      await waitFor(() => {
+        // The wrapper's laid-out size fed back into the root's implicit
+        // size; the default width binding picked it up.
+        assert.equal(ref.current!.root.width, 300);
+        assert.equal(ref.current!.root.height, 220);
+      });
+      await expectPixel(ctx, 150, 110, '#204080', {
+        message: 'the root painted at the view size',
+      });
+      await expectPixel(ctx, 280, 25, '#e67e22', {
+        message: 'a binding on root.width placed the corner box',
+      });
+    },
+  );
+
+  test(
     'Behavior rides the style transition engine, on the frame clock',
     { skip: !FONTS },
     async () => {

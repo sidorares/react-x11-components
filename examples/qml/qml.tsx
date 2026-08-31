@@ -23,7 +23,7 @@
 // While it runs, edit qml-demo.qml, Backdrop.qml or widgets/Meter.qml:
 // every .qml file here is watched, the tree rebuilds, and interactive
 // state (the `count` you clicked up) is carried across by id.
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useReducer, useState } from 'react';
 import fs from 'node:fs';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -101,6 +101,10 @@ export function App(): React.ReactElement {
   // unchanged; bumping `reloadToken` is what tells QmlView to rebuild —
   // with the same by-id state migration a source change gets.
   const [generation, setGeneration] = useState(0);
+  // Window resizes change yoga's answer without any React state changing;
+  // one re-render is what lets QmlView's size feedback read the new
+  // wrapper geometry and reflow the document.
+  const [, onViewport] = useReducer((c: number) => c + 1, 0);
   useEffect(() => {
     const reload = (): void => {
       try {
@@ -118,13 +122,19 @@ export function App(): React.ReactElement {
       title="QML on react-x11"
       width={600}
       height={460}
+      minWidth={430}
+      minHeight={360}
+      onResize={onViewport}
       style={{ backgroundColor: '#0b0e12', padding: 20 }}
     >
+      {/* No size here and none on the QML root: flexGrow fills the padded
+          window, and the root document stretches with it. */}
       <QmlView
         source={source}
         file={QML_FILE}
         resolver={resolver}
         reloadToken={generation}
+        style={{ flexGrow: 1 }}
       />
     </window>
   );

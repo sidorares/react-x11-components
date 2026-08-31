@@ -15,10 +15,11 @@ import QtQuick.Layouts 1.15
 import "./widgets"
 import Demo 1.0
 
+// No width/height on the root: it stretches to the view (QmlView feeds
+// the wrapper's laid-out size back into the root's implicit size), so
+// resizing the window reflows the whole layout tree below.
 Backdrop {
     id: root
-    width: 560
-    height: 430
     title: "QML on react-x11"
 
     property int count: 0
@@ -48,8 +49,8 @@ Backdrop {
     // Everything below: QtQuick.Layouts.
     RowLayout {
         x: 20; y: 128
-        width: root.width - 40
-        height: root.height - 148
+        width: Math.max(0, root.width - 40)
+        height: Math.max(0, root.height - 148)
         spacing: 16
 
         ColumnLayout {
