@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.4.0](https://github.com/sidorares/react-x11-components/compare/v0.3.0...v0.4.0) (2026-09-01)
+
+
+### Features
+
+* **qml:** imports resolve .qml files through a resolver seam ([287c383](https://github.com/sidorares/react-x11-components/commit/287c383c105ba9d4bb256be88680a399f17ed118))
+* **qml:** QML as an authoring layer over react-x11 ([6a0b21e](https://github.com/sidorares/react-x11-components/commit/6a0b21e9a328bb23172a405d962ede7139ccf98b))
+* **qml:** QML as an authoring layer over react-x11 ([b1b4d87](https://github.com/sidorares/react-x11-components/commit/b1b4d87646271c0902c56f65567945154aee347c))
+* **qml:** QtQuick.Layouts over the flex engine, and a layouts-first example ([7d949f3](https://github.com/sidorares/react-x11-components/commit/7d949f3117af769760b6772eaf9d8350c8a7ee9b))
+* **qml:** the example root stretches to the window ([2de542a](https://github.com/sidorares/react-x11-components/commit/2de542ae2e58962f82913580c67d971523852899))
+* **tabs:** Chakra-shaped &lt;Tabs&gt; with all five variants ([367aebe](https://github.com/sidorares/react-x11-components/commit/367aebe2d7cd3db00a8a17fa67abc17f7b3146dd))
+* **tabs:** Chakra-shaped &lt;Tabs&gt; with all five variants ([f80abb4](https://github.com/sidorares/react-x11-components/commit/f80abb4575131d604e8ee073702cf6e401143f6e))
+* **terminal:** the vt backend uses Bun's own pty when there is one ([a5fcf28](https://github.com/sidorares/react-x11-components/commit/a5fcf28902d006aa59d2e7e4b7e109266c0e8edc))
+* **terminal:** the vt backend uses Bun's own pty when there is one ([54fb37b](https://github.com/sidorares/react-x11-components/commit/54fb37b757a7bc1427a9d0cab5f073981bb7c6bb))
+
+
+### Bug Fixes
+
+* **tabs:** breathing room in the strip, and rounded shoulders on outline ([f55203e](https://github.com/sidorares/react-x11-components/commit/f55203e46904159397afca7f8cd8fd208df2f70b))
+* **tabs:** cap-trim trigger labels so they centre beside their icons ([ef51b73](https://github.com/sidorares/react-x11-components/commit/ef51b7340f958938d5ce64a422028c028f9ab49c))
+
 ## [0.3.0](https://github.com/sidorares/react-x11-components/compare/v0.2.1...v0.3.0) (2026-08-25)
 
 
