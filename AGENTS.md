@@ -177,6 +177,22 @@ transform.** If it is, the element draws, and anything that has to be a real
 widget is mounted beside it rather than inside it. If it is not — a calendar,
 a date picker — compose.
 
+**And whichever it is, know which unit you are in.** react-x11 hands a
+registered element two (its `docs/scale.md`): `abs`, `contentBox()`,
+`this.style`, the paint context, `paintDamage()`, a rect handed to
+`invalidate` or `scrollContents` and an a11y scene rect are _device_ pixels,
+while a synthetic event's `x`/`y`, every style length an app writes and so
+the boxes `<Flow>` mounts bodies in are _logical_ ones. On a 1x display —
+the in-process server the suite runs on, XQuartz — the two coincide, which
+is how `<Flow>` compared `ev.x` with `contentBox()` and passed everything,
+then hovered at half the distance, panned at half speed and framed the graph
+at half size the day react-x11's native macOS backend reported a retina
+panel. The pane now thinks in logical pixels and converts at the crossings —
+`_pane()`, `_screenRect()`'s device-grid rounding, `_claim()`, the blit, the
+grid tile and the painter — and `test/flow.test.ts` runs its gestures at
+`scale: 2`. A drawn element that compares `ev.x` with `this.abs` has the
+same bug; `<CodeEditor>`, the vt terminal and `<Html>` still do.
+
 `src/internal/hx.ts` is what makes the no-JSX rule survive TypeScript.
 `React.createElement`'s own overloads are `@types/react`'s and describe the
 DOM, so a `<box onKeyDown>` handler gets checked against React's

@@ -14,12 +14,16 @@ import React from 'react';
 import {
   act,
   cleanup,
+  expectPixel,
   fireEvent,
+  isNear,
   nodeUtterance,
+  pixelAt,
   renderX11,
   screen,
   userEvent,
 } from 'react-x11/test';
+import type { RenderX11Options } from 'react-x11/test';
 import { drawnKinds, knownElements } from 'react-x11/host';
 import { isStyleProp } from 'react-x11/style';
 import { keysymOf, XK_DELETE, XK_ESCAPE, XK_RIGHT } from 'react-x11/keysyms';
@@ -85,7 +89,9 @@ function pane(): RetainedNode {
 /** A window coordinate as the offset from the pane's centre that
  *  `fireEvent` wants. The pane fills the test window, and the default
  *  viewport is the identity, so window coordinates *are* graph
- *  coordinates. */
+ *  coordinates. (At the 1x scale the suite runs at, `abs` and the injected
+ *  offsets are device pixels that happen to be logical ones too — see
+ *  `at2x` below for the case where they are not.) */
 function at(x: number, y: number): { dx: number; dy: number } {
   const { abs } = pane();
   return { dx: x - (abs.x + abs.width / 2), dy: y - (abs.y + abs.height / 2) };
@@ -1504,4 +1510,169 @@ test('the pane names itself to a screen reader', async () => {
   await mount({ 'aria-label': 'build pipeline' });
   assert.strictEqual(pane().props['aria-label'], 'build pipeline');
   assert.strictEqual(pane().props.role, 'group');
+});
+
+// --- the display scale -------------------------------------------------------
+//
+// react-x11 hands a registered element two units (its docs/scale.md): `abs`,
+// `contentBox()`, the paint context and every damage rect are device pixels,
+// while a synthetic event's `x`/`y`, every style length and therefore the
+// sibling boxes the bodies mount in are logical ones. At 1x — every other
+// test in this file — the two coincide, which is how a pane that mixed them
+// passed all of it and then hovered, panned and framed at half size on a
+// retina panel. These run at 2x and pin the pane to logical pixels.
+
+/** `renderX11` forwards `scale` to `createRoot`, but its options type does
+ *  not list it yet (react-x11#430 adds it) — the same "declaration narrower
+ *  than the runtime" shape AGENTS.md records for core, worked around the
+ *  same way. */
+const AT_2X = {
+  scale: 2,
+  width: 400,
+  height: 300,
+  screen: { width: 1000, height: 800 },
+} as unknown as RenderX11Options;
+
+/** `at()` for the 2x pane: `fireEvent` offsets are device pixels from the
+ *  pane's device centre, and the point asked for is a logical one. */
+function at2x(x: number, y: number): { dx: number; dy: number } {
+  const { abs } = pane();
+  return {
+    dx: x * 2 - (abs.x + abs.width / 2),
+    dy: y * 2 - (abs.y + abs.height / 2),
+  };
+}
+
+test('at a display scale of 2 the pane hits, pans and frames in logical pixels', async () => {
+  const recorded: Recorded = {
+    nodeChanges: [],
+    edgeChanges: [],
+    connections: [],
+  };
+  const flow: { current: FlowInstance | null } = { current: null };
+  await renderX11(
+    h(TypedFlow, {
+      ref: flow,
+      nodes: nodes(),
+      edges: edges(),
+      onNodesChange: (c: NodeChange[]) => void recorded.nodeChanges.push(c),
+    }),
+    AT_2X,
+  );
+  const node = pane() as unknown as DrawnNode;
+  const { abs } = pane();
+  assert.deepStrictEqual(
+    { width: abs.width, height: abs.height },
+    { width: 800, height: 600 },
+    'a 400×300 logical window is 800×600 device pixels, and `abs` is device',
+  );
+
+  // Node `a` is the box (100,100)–(220,140) in graph units, which with the
+  // identity viewport is where it is in *logical* window pixels. Read in
+  // device pixels it would be at half those numbers — where there is only
+  // empty pane, which a click reports as nothing.
+  await userEvent.click(node, at2x(80, 60));
+  assert.deepStrictEqual(ofType(recorded.nodeChanges, 'select'), []);
+  await userEvent.click(node, at2x(160, 120));
+  assert.deepStrictEqual(
+    ofType(recorded.nodeChanges, 'select').map((c) => c.id),
+    ['a'],
+  );
+
+  // A pan moves the viewport by the logical distance the pointer travelled:
+  // 50×30 here is 100×60 on the wire.
+  await act(() => {
+    fireEvent.mouseDown(node, at2x(300, 60));
+    fireEvent.mouseMove(node, at2x(350, 90));
+    fireEvent.mouseUp(node, at2x(350, 90));
+  });
+  assert.deepStrictEqual(flow.current?.getViewport(), {
+    x: 50,
+    y: 30,
+    zoom: 1,
+  });
+
+  // `fitView` frames the graph in the pane's logical size: 400×300 around a
+  // 120×240 graph is a zoom of 1.25, where the device size gave 2.5.
+  await cleanup();
+  await renderX11(
+    h(TypedFlow, {
+      ref: flow,
+      nodes: nodes(),
+      edges: edges(),
+      fitView: true,
+      fitViewOptions: { padding: 0 },
+    }),
+    AT_2X,
+  );
+  await act();
+  assert.strictEqual(flow.current?.getViewport().zoom, 1.25);
+});
+
+test('at a display scale of 2 the card lands on device pixels and its body on logical ones', async () => {
+  const { ctx } = await renderX11(
+    h(TypedFlow, {
+      nodes: [
+        {
+          id: 'a',
+          position: { x: 100, y: 100 },
+          width: 120,
+          height: 40,
+          style: { background: '#ff0000', borderColor: '#ff0000' },
+        },
+        {
+          id: 'form',
+          type: 'form',
+          position: { x: 100, y: 200 },
+          width: 200,
+          height: 120,
+        },
+      ],
+      edges: [],
+      nodeTypes: { form: mountedType },
+    }),
+    AT_2X,
+  );
+  await act();
+
+  // The card is the logical box (100,100)–(220,140): on the panel, device
+  // pixels (200,200)–(440,280). Sampled inside its corners, clear of the
+  // rounding, the border and the label in the middle.
+  await expectPixel(ctx, 215, 215, '#ff0000', {
+    message: 'the card is drawn at its device position',
+  });
+  await expectPixel(ctx, 425, 265, '#ff0000', {
+    message: 'and at its device size',
+  });
+  assert.ok(
+    !isNear(await pixelAt(ctx, 160, 120), '#ff0000'),
+    'nothing of it at the logical numbers read as device ones',
+  );
+  assert.ok(
+    !isNear(await pixelAt(ctx, 450, 290), '#ff0000'),
+    'and it ends where its logical size says',
+  );
+
+  // The body's box is a sibling laid out in logical pixels, like any style:
+  // x = 100 + inset(5), y = 200 + header(20); 200 − 2×5 wide, 120 − 20 − 5
+  // tall. Doubled numbers here were the body sitting a node's width away
+  // from its card.
+  const wrapper = pane().parent!;
+  const box = wrapper.children.find((c) => c.kind === 'box');
+  assert.ok(box, 'the overlay box is mounted');
+  const style = retained(box).props.style as {
+    left?: number;
+    top?: number;
+    width?: number;
+    height?: number;
+  };
+  assert.deepStrictEqual(
+    {
+      left: style.left,
+      top: style.top,
+      width: style.width,
+      height: style.height,
+    },
+    { left: 105, top: 220, width: 190, height: 95 },
+  );
 });

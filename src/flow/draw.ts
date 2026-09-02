@@ -9,6 +9,17 @@
 // returns `null` there, the pane skips its drawing, and a custom node type
 // written against `FlowPainter` never has to know (see `src/sparkline/`,
 // which makes the same check for one stroke).
+//
+// It is also where the display scale is applied. The pane, and every node
+// type drawing through this, think in logical pixels — the unit a style
+// length is in, the unit an event's `x`/`y` arrive in — while ntk's context
+// draws on the device grid, which on a retina panel is two pixels to the
+// logical one (react-x11's docs/scale.md). The multiply happens here, once,
+// on the way into the context: geometry by `scale`, and text by shaping at
+// `size * scale` so a label on a 2x panel is sharper rather than twice as
+// big or half as small. Deliberately not a `ctx.scale()`: ntk positions
+// glyphs through the transform but sizes them from the font, and a
+// non-identity transform forfeits every server-side fast path a fill has.
 import type {
   FlowPainter,
   ShapeOptions,
@@ -47,7 +58,8 @@ interface LayoutLike {
   draw(ctx: unknown, x: number, y: number): void;
 }
 
-/** One shaped string, kept between frames. */
+/** One shaped string, kept between frames. `width` and `height` are
+ * logical; the layout itself was shaped at device size. */
 export interface CachedText {
   width: number;
   height: number;
@@ -69,6 +81,13 @@ export interface PainterOptions {
   family: string;
   /** Ink for text that names no colour. */
   color: string;
+  /**
+   * Device pixels per logical pixel — the display scale the pane's window
+   * resolved to. Everything handed to the painter is logical; this is the
+   * one multiply on the way to the context, and the one divide on the way
+   * back from a measured layout.
+   */
+  scale: number;
   /**
    * Laid-out text, keyed by face, size, weight, colour and the string.
    *
@@ -92,13 +111,30 @@ function isCanvas(ctx: unknown): ctx is CanvasLike {
 /** Bound, so a pathological graph cannot turn the width cache into a leak. */
 const CACHE_LIMIT = 4000;
 
+/**
+ * A logical value on the device grid.
+ *
+ * A value the pane already put on whole device pixels has to *arrive* as the
+ * integer it is: `x * 1.5` is not always one in floating point, and ntk's
+ * fast paths for a rounded box, a stroke and a blit are all gated on
+ * integral geometry. Anything else is left alone — the sub-pixel position
+ * of a bezier's control point is not something to snap.
+ */
+export function toDevice(value: number, scale: number): number {
+  const out = value * scale;
+  const whole = Math.round(out);
+  return Math.abs(out - whole) < 1e-6 ? whole : out;
+}
+
 function fontStyle(
   opts: PainterOptions,
   options: TextOptions | undefined,
 ): Record<string, unknown> {
   return {
     family: options?.family ?? opts.family,
-    size: options?.size ?? 13,
+    // `app.fonts` takes device sizes — core hands it `fontSize * scale`
+    // for the same reason — so the face is shaped for the panel's grid.
+    size: (options?.size ?? 13) * opts.scale,
     weight: options?.weight ?? 400,
     style: 'normal',
     color: options?.color ?? opts.color,
@@ -121,15 +157,17 @@ function shape(
   const size = options?.size ?? 13;
   const family = options?.family ?? opts.family;
   // The colour is part of the key: it is baked into the layout, so two
-  // labels that differ only in ink are two shaped runs.
+  // labels that differ only in ink are two shaped runs. The scale is not:
+  // it is constant for the life of the pane that owns the cache.
   const key = `${family}|${size}|${options?.weight ?? 400}|${options?.color ?? opts.color}|${text}`;
   const hit = cache.get(key);
   if (hit) return hit;
   const layout = fonts.layout(text, fontStyle(opts, options));
   if (cache.size >= CACHE_LIMIT) cache.clear();
+  const s = opts.scale;
   const entry = {
-    width: layout.width,
-    height: layout.height || size * 1.3,
+    width: layout.width / s,
+    height: layout.height ? layout.height / s : size * 1.3,
     layout,
   };
   cache.set(key, entry);
@@ -153,6 +191,7 @@ export function measureText(
 
 class Painter implements FlowPainter {
   readonly raw: unknown;
+  readonly scale: number;
   private readonly ctx: CanvasLike;
   private readonly opts: PainterOptions;
 
@@ -160,6 +199,12 @@ class Painter implements FlowPainter {
     this.ctx = ctx;
     this.raw = ctx;
     this.opts = opts;
+    this.scale = opts.scale;
+  }
+
+  /** A logical coordinate or length as the context wants it. */
+  private d(value: number): number {
+    return toDevice(value, this.scale);
   }
 
   save(): void {
@@ -174,9 +219,9 @@ class Painter implements FlowPainter {
     const { ctx } = this;
     ctx.beginPath();
     if (radius > 0 && typeof ctx.roundRect === 'function') {
-      ctx.roundRect(x, y, w, h, radius);
+      ctx.roundRect(this.d(x), this.d(y), this.d(w), this.d(h), this.d(radius));
     } else {
-      ctx.rect(x, y, w, h);
+      ctx.rect(this.d(x), this.d(y), this.d(w), this.d(h));
     }
     ctx.clip();
   }
@@ -184,10 +229,12 @@ class Painter implements FlowPainter {
   private applyStroke(options: StrokeOptions): void {
     const { ctx } = this;
     ctx.strokeStyle = options.stroke ?? this.opts.color;
-    ctx.lineWidth = options.lineWidth ?? 1;
+    ctx.lineWidth = this.d(options.lineWidth ?? 1);
     if (typeof ctx.setLineDash === 'function') {
-      ctx.setLineDash(options.dash ? [...options.dash] : []);
-      if ('lineDashOffset' in ctx) ctx.lineDashOffset = options.dashOffset ?? 0;
+      ctx.setLineDash(options.dash ? options.dash.map((v) => this.d(v)) : []);
+      if ('lineDashOffset' in ctx) {
+        ctx.lineDashOffset = this.d(options.dashOffset ?? 0);
+      }
     }
   }
 
@@ -215,12 +262,21 @@ class Painter implements FlowPainter {
     // single server-side rectangle rather than a path to rasterize.
     if (!rounded && !options.stroke && options.fill) {
       ctx.fillStyle = options.fill;
-      ctx.fillRect(x, y, w, h);
+      ctx.fillRect(this.d(x), this.d(y), this.d(w), this.d(h));
       return;
     }
     ctx.beginPath();
-    if (rounded) ctx.roundRect!(x, y, w, h, radius);
-    else ctx.rect(x, y, w, h);
+    if (rounded) {
+      ctx.roundRect!(
+        this.d(x),
+        this.d(y),
+        this.d(w),
+        this.d(h),
+        this.d(radius),
+      );
+    } else {
+      ctx.rect(this.d(x), this.d(y), this.d(w), this.d(h));
+    }
     if (options.fill) {
       ctx.fillStyle = options.fill;
       ctx.fill();
@@ -239,14 +295,19 @@ class Painter implements FlowPainter {
         ctx.beginPath();
         if (rounded) {
           ctx.roundRect!(
-            x + inset,
-            y + inset,
-            w - pen,
-            h - pen,
-            Math.max(0, radius - inset),
+            this.d(x + inset),
+            this.d(y + inset),
+            this.d(w - pen),
+            this.d(h - pen),
+            this.d(Math.max(0, radius - inset)),
           );
         } else {
-          ctx.rect(x + inset, y + inset, w - pen, h - pen);
+          ctx.rect(
+            this.d(x + inset),
+            this.d(y + inset),
+            this.d(w - pen),
+            this.d(h - pen),
+          );
         }
       }
       this.applyStroke(options);
@@ -259,7 +320,7 @@ class Painter implements FlowPainter {
     if (r <= 0) return;
     const { ctx } = this;
     ctx.beginPath();
-    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.arc(this.d(x), this.d(y), this.d(r), 0, Math.PI * 2);
     if (options.fill) {
       ctx.fillStyle = options.fill;
       ctx.fill();
@@ -271,13 +332,20 @@ class Painter implements FlowPainter {
     }
   }
 
+  private trace(points: readonly XYPosition[], close: boolean): void {
+    const { ctx } = this;
+    ctx.moveTo(this.d(points[0].x), this.d(points[0].y));
+    for (let i = 1; i < points.length; i++) {
+      ctx.lineTo(this.d(points[i].x), this.d(points[i].y));
+    }
+    if (close) ctx.closePath();
+  }
+
   polyline(points: readonly XYPosition[], options: StrokeOptions): void {
     if (points.length < 2) return;
     const { ctx } = this;
     ctx.beginPath();
-    ctx.moveTo(points[0].x, points[0].y);
-    for (let i = 1; i < points.length; i++)
-      ctx.lineTo(points[i].x, points[i].y);
+    this.trace(points, false);
     this.applyStroke(options);
     ctx.lineJoin = 'round';
     ctx.lineCap = 'round';
@@ -295,8 +363,7 @@ class Painter implements FlowPainter {
     for (const run of runs) {
       if (run.length < 2) continue;
       any = true;
-      ctx.moveTo(run[0].x, run[0].y);
-      for (let i = 1; i < run.length; i++) ctx.lineTo(run[i].x, run[i].y);
+      this.trace(run, false);
     }
     if (!any) return;
     this.applyStroke(options);
@@ -308,8 +375,11 @@ class Painter implements FlowPainter {
     if (centres.length === 0 || size <= 0) return;
     const { ctx } = this;
     const half = size / 2;
+    const side = this.d(size);
     ctx.beginPath();
-    for (const c of centres) ctx.rect(c.x - half, c.y - half, size, size);
+    for (const c of centres) {
+      ctx.rect(this.d(c.x - half), this.d(c.y - half), side, side);
+    }
     ctx.fillStyle = color;
     ctx.fill();
   }
@@ -324,10 +394,7 @@ class Painter implements FlowPainter {
     for (const points of shapes) {
       if (points.length < 3) continue;
       any = true;
-      ctx.moveTo(points[0].x, points[0].y);
-      for (let i = 1; i < points.length; i++)
-        ctx.lineTo(points[i].x, points[i].y);
-      ctx.closePath();
+      this.trace(points, true);
     }
     if (!any) return;
     if (options.fill) {
@@ -345,10 +412,7 @@ class Painter implements FlowPainter {
     if (points.length < 3) return;
     const { ctx } = this;
     ctx.beginPath();
-    ctx.moveTo(points[0].x, points[0].y);
-    for (let i = 1; i < points.length; i++)
-      ctx.lineTo(points[i].x, points[i].y);
-    ctx.closePath();
+    this.trace(points, true);
     if (options.fill) {
       ctx.fillStyle = options.fill;
       ctx.fill();
@@ -401,7 +465,12 @@ class Painter implements FlowPainter {
           ? -layout.width
           : 0;
     const dy = options?.baseline === 'middle' ? -layout.height / 2 : 0;
-    entry.layout.draw(this.raw, Math.round(x + dx), Math.round(y + dy));
+    // Rounded on the device grid, where the glyphs land.
+    entry.layout.draw(
+      this.raw,
+      Math.round(this.d(x + dx)),
+      Math.round(this.d(y + dy)),
+    );
   }
 }
 

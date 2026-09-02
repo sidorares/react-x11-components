@@ -40,6 +40,8 @@ const jobType: FlowNodeType<Job> = {
     painter.rect(rect.x, rect.y, rect.width, rect.height, 4 * zoom, {
       fill: palette.nodeBackground,
     });
+    // `raw` draws in device pixels, and this is the factor it needs
+    void (painter.scale satisfies number);
     // the generic reached the paint callback: `cost` is a number here
     painter.text(
       `${node.data?.label} ${(node.data?.cost ?? 0).toFixed(1)}`,
