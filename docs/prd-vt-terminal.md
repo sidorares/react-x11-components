@@ -45,6 +45,12 @@ Promotions of the escape hatches the renderer starts on — each filed from the 
 - [ ] sidorares/ntk#254 — `Font.glyphIdFor(codepoint)` + documented/frozen `drawGlyphs` run contract
 - [ ] sidorares/react-x11#284 — `altKey` / `metaKey` on synthetic events
 
+Backend parity, filed 2026-09-02 when react-x11 2.3.0's native macOS backend became the default on a Mac — the same seams, missing from a second engine rather than undocumented in the first. Until they land `FontSet.glyphRuns` is false there and the node paints nothing, with a one-time development warning:
+
+- [ ] windowkit/appkit#1 — CoreText natives: glyph id for a codepoint, advances, a fallback face, `ctxDrawGlyphs`
+- [ ] sidorares/react-x11#432 — the Cocoa face grows `glyphIdFor`/`advanceOf`/`shape` and ntk's metric names, the manager `fallbackFor`, the ctx `drawGlyphs`/`createSolidPicture`/`Render.PictOp`
+- [ ] sidorares/react-x11#433 — an offscreen `Surface` on Cocoa through `react-x11/ntk`, for the retained renderer's scroll copy
+
 None of them blocks **M1** (the DirectRenderer milestone is public-API-only by design); **M2** ships on the hatches and upgrades in place as these land.
 
 ---
