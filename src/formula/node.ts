@@ -39,7 +39,8 @@ export interface FormulaElementProps {
   /** KaTeX's virtual DOM for the expression. Stable identity per source —
    *  the layout cache keys off it. */
   tree: KatexNode;
-  /** Pixels per em at the formula's base size. */
+  /** Logical pixels per em at the formula's base size — the unit a
+   *  `fontSize` is written in. The node shapes at `size × scale`. */
   size: number;
   /** Ink color for everything the expression does not color itself. */
   color: string;
@@ -133,7 +134,7 @@ function registerKatexFonts(
 
 export class FormulaNode extends Node {
   private _layout: FormulaLayout | null = null;
-  private _layoutOf: { tree: KatexNode; size: number; color: string } | null =
+  private _layoutOf: { tree: KatexNode; em: number; color: string } | null =
     null;
   private _widths = new Map<string, number>();
   private _minis = new Map<string, MiniLayout | null>();
@@ -179,26 +180,44 @@ export class FormulaNode extends Node {
     };
   }
 
+  // --- units ---------------------------------------------------------------
+  //
+  // The layout, `abs`, the paint and the four text accessors are device
+  // pixels (react-x11's docs/scale.md). `size` is pixels per em the way a
+  // `fontSize` is written — logical — and, unlike a style length, nothing
+  // in core multiplies it on the way in; `_ensureLayout` does, so the
+  // glyphs are shaped at `size * scale` and a 17 on a 2x panel is the size
+  // the text beside it is, sharper rather than smaller. Everything below
+  // reads that one layout, which is what keeps a caret rect, a selection
+  // band and the ink agreeing.
+
+  /** Device pixels per logical pixel — the display scale this element's
+   *  window resolved to, constant for the node's life. */
+  private get _scale(): number {
+    return this.scale > 0 ? this.scale : 1;
+  }
+
   private _ensureLayout(): FormulaLayout | null {
     const { tree, size = 14, color = 'black' } = this._props();
     if (!tree) return null;
+    const em = size * this._scale;
     const prev = this._layoutOf;
     if (
       this._layout &&
       prev &&
       prev.tree === tree &&
-      prev.size === size &&
+      prev.em === em &&
       prev.color === color
     ) {
       return this._layout;
     }
     const fonts = this._fonts();
     this._layout = layoutFormula(tree, {
-      em: size,
+      em,
       color,
       shaper: fonts ? this._shaper(fonts) : null,
     });
-    this._layoutOf = { tree, size, color };
+    this._layoutOf = { tree, em, color };
     return this._layout;
   }
 

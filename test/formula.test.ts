@@ -8,6 +8,7 @@ import { existsSync } from 'node:fs';
 import React from 'react';
 
 import { renderX11, cleanup, screen, fireEvent, act } from 'react-x11/test';
+import type { RenderX11Options } from 'react-x11/test';
 import { drawnKinds, registeredElements } from 'react-x11/host';
 import type { DrawnNode } from 'react-x11';
 
@@ -290,6 +291,102 @@ test(
         selected.includes('2') &&
         selected.includes('='),
       `the formula's glyphs join the copy, got ${JSON.stringify(selected)}`,
+    );
+  },
+);
+
+// --- the display scale -------------------------------------------------------
+//
+// react-x11 hands a registered element two units (its docs/scale.md): `abs`,
+// the layout and the four text accessors are device pixels, while `size` —
+// pixels per em, a length the application wrote — is logical, and nothing
+// in core multiplies it on the way in. At 1x, every other test here, the two
+// coincide, which is how a layout built at `em: size` drew every formula at
+// half the size of the text beside it the day a retina panel reported 2.
+// This runs at 2x, holding every number to `abs` and a core-shaped `<text>`
+// ruler rather than to another answer of the formula's.
+
+test(
+  'at a display scale of 2 the mathematics keeps its size beside body text',
+  {
+    skip: !engine || !FONTS || !engine.fonts,
+  },
+  async () => {
+    const doc = (scale: number): Promise<unknown> =>
+      renderX11(
+        h(
+          'box',
+          {
+            style: {
+              flexGrow: 1,
+              padding: 10,
+              flexDirection: 'column',
+              gap: 6,
+            },
+          },
+          h(
+            'text',
+            { style: { fontSize: 20 }, 'data-testname': 'ruler' },
+            'x2+1',
+          ),
+          h(Formula, { tex: 'x^2 + 1', size: 20 }),
+        ),
+        // A pinned display scale (react-x11's docs/scale.md): the headless
+        // server resolves to exactly 1 on its own.
+        { fonts: FONTS!, width: 420, height: 200, scale } as RenderX11Options,
+      );
+
+    await doc(1);
+    await flushEngine();
+    const ruler1 = screen.getByTestName('ruler').abs.height;
+    const [one] = formulaNodes();
+    const box1 = { width: one.abs.width, height: one.abs.height };
+    const caret1 = one.textCaretRect(0)!.height;
+    await cleanup();
+
+    await doc(2);
+    await flushEngine();
+    const ruler2 = screen.getByTestName('ruler').abs.height;
+    const [two] = formulaNodes();
+
+    // the ruler is core's: a 20-pixel `fontSize` shaped at 40 device pixels
+    assert.ok(
+      ruler2 >= ruler1 * 1.8,
+      `the ruler doubled: ${ruler2} against ${ruler1} at 1x`,
+    );
+    // ...and 20 logical pixels per em is the same 40 on that grid
+    assert.ok(
+      two.abs.height >= box1.height * 1.8 && two.abs.width >= box1.width * 1.8,
+      `the formula is shaped on the device grid: ${two.abs.width}×${two.abs.height} against ${box1.width}×${box1.height} at 1x`,
+    );
+    const beside1 = box1.height / ruler1;
+    const beside2 = two.abs.height / ruler2;
+    assert.ok(
+      Math.abs(beside2 - beside1) < 0.1,
+      `the mathematics holds its proportion to the text beside it: ${beside2.toFixed(2)} against ${beside1.toFixed(2)} at 1x`,
+    );
+
+    // the accessors are core's device-pixel contract: the glyph band
+    // doubles, and the box's own edges resolve to its first and last glyphs.
+    // The formula sits inside padding and below the ruler — at an `abs`
+    // origin of (0, 0) a wrong unit would cancel out. (The mouse-drag path
+    // is core's, and stops short at 2x over its own <text> too, so what is
+    // held here is the seam the formula answers.)
+    assert.ok(two.abs.x > 0 && two.abs.y > 0);
+    const first = two.textCaretRect(0)!;
+    assert.ok(
+      first.height >= caret1 * 1.8,
+      `the caret band doubled: ${first.height} against ${caret1} at 1x`,
+    );
+    const midY = two.abs.y + two.abs.height / 2;
+    assert.equal(
+      two.textIndexAt(two.abs.x + 1, midY),
+      0,
+      'the left edge of the box is the first glyph',
+    );
+    assert.ok(
+      two.textIndexAt(two.abs.x + two.abs.width - 1, midY) >= 3,
+      'the right edge of the box is the last glyph',
     );
   },
 );
