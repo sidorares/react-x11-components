@@ -317,7 +317,14 @@ export function layoutInline(block: Box, options: InlineOptions): InlineResult {
     open.x += first.width;
     open.left = band.left;
 
-    if (!fragment.truncated) {
+    // Did the segment wrap? ntk answers with `truncated`. A layout that does
+    // not carry the flag — react-x11's Cocoa engine reports none — is asked
+    // the same of its line ends instead: it wrapped if anything but
+    // whitespace follows the first line. Read as "fitted", a cut fragment
+    // advanced past the whole segment, and a paragraph beside a float lost
+    // every line after its first.
+    const wrapped = fragment.truncated ?? inkBeyond(segment.runs, first.end);
+    if (!wrapped) {
       // It fitted: the cursor stays on this line for whatever comes next.
       //
       // With one correction first. ntk strips a line's trailing whitespace —
@@ -803,6 +810,21 @@ function spaceAdvance(fonts: FontsLike, run: TextRun): number {
   if (cache.size > 64) cache.clear();
   cache.set(key, advance);
   return advance;
+}
+
+/** Whether anything but whitespace lies past a code-unit offset into the
+ *  runs' joined text — "did `maxLines` drop content", for a layout that
+ *  does not say. */
+function inkBeyond(runs: TextRun[], offset: number): boolean {
+  let at = 0;
+  for (const run of runs) {
+    const next = at + run.text.length;
+    if (next > offset && /\S/.test(run.text.slice(Math.max(0, offset - at)))) {
+      return true;
+    }
+    at = next;
+  }
+  return false;
 }
 
 // --- style questions --------------------------------------------------------

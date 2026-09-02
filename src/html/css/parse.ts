@@ -51,13 +51,17 @@ export interface Stylesheet {
   breakpoints: number[];
 }
 
-/** The width tests this evaluates. Anything else — `prefers-color-scheme`,
- *  `orientation`, `print` — is decided once, at parse time, by `staticPass`. */
+/** The tests this evaluates live: a width, a colour scheme, or both.
+ *  Anything else — `orientation`, `print`, `prefers-reduced-motion` — is
+ *  decided once, at parse time, by `staticPass`. */
 export interface MediaCondition {
   min?: number;
   max?: number;
-  /** Set when the query could not be evaluated as a width test: `true` keeps
-   *  the rule, `false` drops it, and neither depends on the viewport. */
+  /** `prefers-color-scheme`, answered from the palette in force. */
+  scheme?: 'light' | 'dark';
+  /** Set when the query could not be evaluated as a width or scheme test:
+   *  `true` keeps the rule, `false` drops it, and neither depends on the
+   *  viewport or the theme. */
   staticPass?: boolean;
 }
 
@@ -403,10 +407,10 @@ function importUrl(prelude: string): string | null {
 }
 
 /**
- * A `@media` prelude, reduced to the width tests this can honour. Each comma
- * group is one condition and they are OR-ed; within a group, `and` means the
- * tests intersect, so a group with a feature this does not understand is
- * decided statically by that feature alone.
+ * A `@media` prelude, reduced to the width and colour-scheme tests this can
+ * honour. Each comma group is one condition and they are OR-ed; within a
+ * group, `and` means the tests intersect, so a group with a feature this
+ * does not understand is decided statically by that feature alone.
  */
 export function parseMediaQuery(prelude: string): MediaCondition[] {
   const out: MediaCondition[] = [];
@@ -432,14 +436,23 @@ export function parseMediaQuery(prelude: string): MediaCondition[] {
         } else if (key === 'max-width' && px !== null) {
           condition.max = Math.min(condition.max ?? Infinity, px);
           sawWidth = true;
-        } else if (
-          key === 'prefers-color-scheme' ||
-          key === 'prefers-reduced-motion'
-        ) {
-          // The host decides the palette, so a document's own preference
-          // query is not this renderer's to answer: the light branch is the
-          // one whose declarations are least likely to fight the theme.
-          pass = feature[2].trim().toLowerCase() === 'light';
+        } else if (key === 'prefers-color-scheme') {
+          // Answered live, from the palette in force: a document dropped
+          // into a dark application takes its dark branch, and follows the
+          // desktop when that changes. The two schemes are the whole
+          // vocabulary; anything else never matches.
+          const scheme = feature[2].trim().toLowerCase();
+          if (scheme === 'light' || scheme === 'dark') {
+            if (condition.scheme && condition.scheme !== scheme) pass = false;
+            condition.scheme = scheme;
+          } else {
+            pass = false;
+          }
+        } else if (key === 'prefers-reduced-motion') {
+          // Nothing here moves, so there is nothing to reduce: the branch an
+          // animated page keeps for this preference is not one this
+          // renderer needs.
+          pass = false;
         } else if (key === 'orientation') {
           pass = feature[2].trim().toLowerCase() === 'landscape';
         }
@@ -450,8 +463,13 @@ export function parseMediaQuery(prelude: string): MediaCondition[] {
       if (type === 'print' || type === 'speech') pass = false;
     }
     if (negated) {
-      // `not` over a width range is not expressible as one range; the honest
-      // reduction is to decide it statically rather than invert it wrongly.
+      // `not` over a scheme is the other scheme. `not` over a width range
+      // is not expressible as one range; the honest reduction is to decide
+      // it statically rather than invert it wrongly.
+      if (!sawWidth && pass && condition.scheme) {
+        out.push({ scheme: condition.scheme === 'dark' ? 'light' : 'dark' });
+        continue;
+      }
       out.push({ staticPass: !sawWidth && pass ? false : !pass });
       continue;
     }
@@ -461,6 +479,7 @@ export function parseMediaQuery(prelude: string): MediaCondition[] {
     }
     if (
       !sawWidth &&
+      condition.scheme === undefined &&
       condition.min === undefined &&
       condition.max === undefined
     ) {
@@ -477,10 +496,12 @@ export function parseMediaQuery(prelude: string): MediaCondition[] {
  *  thresholds parse at scale 1 whatever panel the document lands on. */
 const ZERO_UNITS = { em: 16, rem: 16, vw: 0, vh: 0, scale: 1 };
 
-/** Whether a rule's `@media` blocks all hold at this viewport width. */
+/** Whether a rule's `@media` blocks all hold at this viewport width, under
+ *  this colour scheme. */
 export function mediaMatches(
   media: MediaCondition[][] | null,
   width: number,
+  scheme: 'light' | 'dark' = 'light',
 ): boolean {
   if (!media) return true;
   for (const block of media) {
@@ -492,7 +513,8 @@ export function mediaMatches(
       }
       if (
         (c.min === undefined || width >= c.min) &&
-        (c.max === undefined || width <= c.max)
+        (c.max === undefined || width <= c.max) &&
+        (c.scheme === undefined || c.scheme === scheme)
       ) {
         any = true;
       }

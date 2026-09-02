@@ -362,7 +362,7 @@ export class Cascade {
       if (!bucket) return;
       for (const indexed of bucket) {
         const rule = indexed.rule;
-        if (!mediaMatches(rule.media, width)) continue;
+        if (!mediaMatches(rule.media, width, this.look.colorScheme)) continue;
         if (!indexed.compiled) {
           indexed.compiled = true;
           try {

@@ -181,6 +181,7 @@ function deriveLook(
     borderColor: String(theme.border ?? '#b2bec3'),
     mutedColor: String(theme.textMuted ?? '#7f8c8d'),
     background: String(theme.background ?? 'white'),
+    colorScheme: theme.scheme === 'dark' ? 'dark' : 'light',
     surface: String(theme.surface ?? theme.background ?? 'white'),
     controlPadY: Number(theme.paddingY ?? 6),
     controlBorder: Number(theme.borderWidth ?? 1),

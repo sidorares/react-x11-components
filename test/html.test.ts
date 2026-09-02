@@ -22,10 +22,15 @@ import {
 import type { RenderX11Options } from 'react-x11/test';
 import { drawnKinds, registeredElements } from 'react-x11/host';
 import type { DrawnNode } from 'react-x11';
+import { ThemeProvider } from 'react-x11';
 
 import { Html } from '../src/index.js';
 import { HtmlViewNode } from '../src/html/index.js';
+import type { FontsLike } from '../src/html/layout/inline.js';
+import { cocoaShapedLayout } from './cocoa-shaped.js';
+import type { ShapedLayout } from './cocoa-shaped.js';
 import {
+  mediaMatches,
   parseStylesheet,
   parseDeclarations,
   specificityOf,
@@ -1261,3 +1266,218 @@ metric(
     assert.deepStrictEqual(clicks, ['https://example.test/x']);
   },
 );
+
+// --- the shape of a laid-out run is the engine's ----------------------------
+//
+// ntk hands every run back with the span it came from and the face it was
+// shaped with; react-x11's Cocoa engine (2.3.x) hands back geometry alone,
+// and a layout it cut at `maxLines` carries no `truncated`. Both are
+// reproduced here on ntk's own layouts, so the suite needs no macOS.
+
+/** Every text layout in the tree, replaced by a view of it in the Cocoa
+ *  engine's shape — with the ink stubbed, since the recorder has no window
+ *  to draw into. One view per layout, so paint still draws each once. */
+function cocoaShaped(el: HtmlViewNode): void {
+  const tree = (el as unknown as { _tree: unknown })._tree as {
+    root: {
+      children: unknown[];
+      lines: { texts: { layout: ShapedLayout }[] }[] | null;
+    };
+  };
+  const views = new Map<ShapedLayout, ShapedLayout>();
+  const strip = (box: typeof tree.root): void => {
+    for (const line of box.lines ?? []) {
+      for (const text of line.texts) {
+        let view = views.get(text.layout);
+        if (!view) {
+          view = { ...cocoaShapedLayout(text.layout), draw: () => {} };
+          views.set(text.layout, view);
+        }
+        text.layout = view;
+      }
+    }
+    for (const child of box.children) strip(child as typeof tree.root);
+  };
+  strip(tree.root);
+}
+
+metric(
+  "runs that come back without their spans (react-x11's Cocoa engine) paint and hit-test without throwing",
+  async () => {
+    const { node } = await render(
+      '<style>p{margin:0}.hl{background:#ffee55}</style>' +
+        '<p><span class="hl">lit</span> <a href="https://example.test/x">a link here</a> after</p>',
+    );
+    const el = view(node);
+    // The point is taken first: the caret lookup keys off the original
+    // layouts' identity, and the positions do not change.
+    const caret = el.textCaretRect(7);
+    assert.ok(caret, 'the paragraph is laid out');
+    const x = caret.x + 1;
+    const y = caret.y + caret.height / 2;
+    assert.strictEqual(el.hrefAtPoint(x, y), 'https://example.test/x');
+    cocoaShaped(el);
+
+    const { paintDocument } = await import('../src/html/paint.js');
+    const fills: unknown[] = [];
+    let fillStyle: unknown = null;
+    paintDocument(
+      {
+        set fillStyle(v: unknown) {
+          fillStyle = v;
+        },
+        get fillStyle() {
+          return fillStyle;
+        },
+        save() {},
+        restore() {},
+        fillRect() {
+          fills.push(fillStyle);
+        },
+      } as never,
+      (el as unknown as { _tree: never })._tree,
+      {
+        originX: 0,
+        originY: 0,
+        damage: null,
+        selection: null,
+        selectionColor: null,
+        imageFor: () => null,
+      },
+    );
+    assert.ok(
+      !fills.includes('#ffee55'),
+      'a highlight has no span to read its colour from',
+    );
+
+    // Inside the link: no span, so no href, and the element under the point
+    // is the paragraph rather than the anchor.
+    assert.strictEqual(el.hrefAtPoint(x, y), null);
+    assert.strictEqual(el.elementAtPoint(x, y)?.name, 'p');
+  },
+);
+
+metric(
+  'a layout that does not say whether it was cut is asked the same of its line ends',
+  async () => {
+    // Beside a float the paragraph is laid out a line at a time, and each
+    // fragment's `truncated` is what says the segment wrapped. An engine that
+    // reports none must not read as "fitted" — that dropped every line after
+    // the first. The same tree is laid out twice: with the flag, and with it
+    // hidden.
+    const source =
+      '<style>p{margin:0}.f{float:left;width:100px;height:40px}</style>' +
+      '<div class="f"></div><p>' +
+      'word '.repeat(40) +
+      '</p>';
+    const { result, node } = await render(source, 240);
+    const el = view(node);
+    const tree = (el as unknown as { _tree: unknown })._tree as {
+      root: { children: { lines: { textEnd: number }[] | null }[] };
+    };
+    const control = tree.root.children[1].lines ?? [];
+    assert.ok(
+      control.length > 2,
+      `the paragraph wraps (${control.length} lines)`,
+    );
+
+    const fonts = (result.app as unknown as { fonts: FontsLike }).fonts;
+    const silent: FontsLike = {
+      layout: (...args) => {
+        const layout = fonts.layout(...args);
+        delete (layout as { truncated?: boolean }).truncated;
+        return layout;
+      },
+      match: (...args) => fonts.match(...args),
+    };
+    const { layoutDocument } = await import('../src/html/layout/block.js');
+    layoutDocument(tree as never, silent, 240, 600);
+    const again = tree.root.children[1].lines ?? [];
+    assert.strictEqual(
+      again.length,
+      control.length,
+      'every line of the paragraph is laid out',
+    );
+    assert.strictEqual(
+      again[again.length - 1].textEnd,
+      control[control.length - 1].textEnd,
+      'down to the last word',
+    );
+  },
+);
+
+// --- colour scheme ----------------------------------------------------------
+
+test('prefers-color-scheme is a live condition, alone and beside a width', () => {
+  const sheet = parseStylesheet(
+    '@media (prefers-color-scheme: dark) { p { color: red } }' +
+      '@media (prefers-color-scheme: light) and (max-width: 520px) { p { color: blue } }' +
+      '@media not (prefers-color-scheme: dark) { p { color: green } }' +
+      '@media (prefers-color-scheme: no-preference) { p { color: gray } }',
+  );
+  assert.deepStrictEqual(
+    sheet.rules.map((r) => r.media),
+    [
+      [[{ scheme: 'dark' }]],
+      [[{ max: 520, scheme: 'light' }]],
+      [[{ scheme: 'light' }]],
+      [[{ staticPass: false }]],
+    ],
+  );
+  // a scheme is not a width: the only breakpoint is the width test's
+  assert.deepStrictEqual(sheet.breakpoints, [521]);
+
+  assert.ok(mediaMatches([[{ scheme: 'dark' }]], 800, 'dark'));
+  assert.ok(!mediaMatches([[{ scheme: 'dark' }]], 800, 'light'));
+  assert.ok(mediaMatches([[{ max: 520, scheme: 'light' }]], 400, 'light'));
+  assert.ok(!mediaMatches([[{ max: 520, scheme: 'light' }]], 600, 'light'));
+  assert.ok(!mediaMatches([[{ max: 520, scheme: 'light' }]], 400, 'dark'));
+  // with no scheme given the light branch holds, as before
+  assert.ok(mediaMatches([[{ scheme: 'light' }]], 400));
+});
+
+test('the palette in force answers prefers-color-scheme, and a switch re-cascades', async () => {
+  const source =
+    '<style>p{margin:0;color:#ff0000}' +
+    '@media (prefers-color-scheme: dark){p{color:#00ff00}}</style><p>x</p>';
+  // The window is the test's own, so the same tree can be rendered again
+  // with the provider switched: the harness's raw `root.render` does not
+  // wrap, and a window is the one thing a root may hold.
+  const doc = (scheme: 'light' | 'dark') =>
+    h(
+      'window',
+      { width: 340, height: 200 } as Record<string, unknown>,
+      h(
+        ThemeProvider,
+        { colorScheme: scheme },
+        h(
+          'box',
+          { style: { width: 300, flexDirection: 'column' } },
+          h(Html, { source, partial: false, 'data-testname': 'doc' }),
+        ),
+      ),
+    );
+  const result = await renderX11(
+    doc('light'),
+    FONTS ? { fonts: FONTS, wrap: false } : { backend: 'mock', wrap: false },
+  );
+  const colorOf = (): string | undefined => {
+    const el = view(screen.getByTestName('doc') as DrawnNode);
+    const tree = (
+      el as unknown as {
+        _tree: { root: { children: { style: { color: string } }[] } } | null;
+      }
+    )._tree;
+    return tree?.root.children[0]?.style.color;
+  };
+  assert.strictEqual(colorOf(), '#ff0000', 'the light branch under light');
+
+  // The provider switches scheme: the look changes, and with it the answer
+  // to the query — a restyle, not a re-parse.
+  await act(async () => {
+    result.root.render(doc('dark'));
+  });
+  await waitFor(() =>
+    assert.strictEqual(colorOf(), '#00ff00', 'the dark branch under dark'),
+  );
+});
