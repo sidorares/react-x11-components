@@ -155,6 +155,15 @@ export interface SeriesEnv {
   yScale: LinearScale;
   stats: FrameStatsSink;
   host: RenderHost;
+  /** Device pixels per logical pixel. The plot and the scales are device;
+   *  a spec's `strokeWidth`, `dot`, `barRadius` and `size` are lengths the
+   *  application wrote, so they are logical and multiply here. Default 1. */
+  scale?: number;
+}
+
+/** A spec length on the device grid. */
+function px(env: SeriesEnv, logical: number): number {
+  return logical * (env.scale ?? 1);
 }
 
 /** Caches and capabilities only the retained node can provide. */
@@ -503,7 +512,7 @@ export function renderLineArea(env: SeriesEnv, g: SeriesGeometry): void {
 
     ctx.save();
     ctx.strokeStyle = g.color;
-    ctx.lineWidth = g.spec.strokeWidth;
+    ctx.lineWidth = px(env, g.spec.strokeWidth);
     if (count <= ROUND_JOIN_MAX) {
       if (ctx.lineJoin !== undefined) ctx.lineJoin = 'round';
       if (ctx.lineCap !== undefined) ctx.lineCap = 'round';
@@ -518,7 +527,7 @@ export function renderLineArea(env: SeriesEnv, g: SeriesGeometry): void {
     stats.estimatedWireBytes += count * BYTES_PER_SEGMENT;
 
     if (g.spec.dot !== false && g.spec.dot > 0) {
-      renderDots(env, runsX, runsY, g.spec.dot, g.color);
+      renderDots(env, runsX, runsY, px(env, g.spec.dot), g.color);
     }
     stats.series.push({ id: g.spec.id, mode: 'polyline', points: count });
     return;
@@ -529,7 +538,7 @@ export function renderLineArea(env: SeriesEnv, g: SeriesGeometry): void {
   const yv = g.y.values;
   const strokeRects: number[] = [];
   const fillRectsArr: number[] = [];
-  const half = Math.max(0, (g.spec.strokeWidth - 1) / 2);
+  const half = Math.max(0, (px(env, g.spec.strokeWidth) - 1) / 2);
   const baseConst =
     typeof g.base === 'number' ? Math.round(yScale.scale(g.base)) : null;
   const basePyr =
@@ -707,8 +716,9 @@ export function renderBars(env: SeriesEnv, g: SeriesGeometry): void {
   const slot = band.bandwidth / g.group.count;
   const gap = g.group.count > 1 && slot > 3 ? 1 : 0;
   const w = Math.max(1, Math.round(slot - gap));
+  const barRadius = px(env, g.spec.barRadius);
   const rounded =
-    g.spec.barRadius > 0 &&
+    barRadius > 0 &&
     n <= BAR_RADIUS_MAX &&
     canPath(ctx) &&
     typeof ctx.roundRect === 'function' &&
@@ -726,7 +736,7 @@ export function renderBars(env: SeriesEnv, g: SeriesGeometry): void {
     const top = Math.round(Math.min(y0, y1));
     const h = Math.max(1, Math.round(Math.abs(y1 - y0)));
     if (rounded) {
-      const r = Math.min(g.spec.barRadius, w / 2, h);
+      const r = Math.min(barRadius, w / 2, h);
       ctx.beginPath!();
       // round the value end only — the stack seam and the axis stay square
       const radii = y0 <= y1 ? [r, r, 0, 0] : [0, 0, r, r];
@@ -823,7 +833,7 @@ export function renderScatter(env: SeriesEnv, g: SeriesGeometry): void {
   const { ctx, plot, yScale, stats } = env;
   const n = g.x ? Math.min(g.y.n, g.x.n) : g.y.n;
   stats.pointsSpanned += n;
-  const size = Math.max(1, Math.round(g.spec.size));
+  const size = Math.max(1, Math.round(px(env, g.spec.size)));
   const yv = g.y.values;
 
   if (n <= DIRECT_SCATTER_MAX) {

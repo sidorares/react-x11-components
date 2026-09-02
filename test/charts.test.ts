@@ -19,6 +19,7 @@ import {
   textOf,
   pixelAt,
 } from 'react-x11/test';
+import type { RenderX11Options } from 'react-x11/test';
 import { drawnKinds, knownElements } from 'react-x11/host';
 import type { Node as RetainedNode } from 'react-x11/node';
 
@@ -1530,5 +1531,122 @@ test('a press hides the bubble; release re-mounts it above', async () => {
     nestedWindows().length,
     1,
     'release re-mounts the popup — freshly created, above its siblings',
+  );
+});
+
+// --- the display scale -------------------------------------------------------
+//
+// react-x11 hands a registered element two units (its docs/scale.md): `abs`,
+// `contentBox()` and so the plot rect and the scales are device pixels, while
+// a synthetic event's `x` and every style length are logical. At 1x — every
+// other test in this file — the two coincide, which is how a `hitAt` that
+// clamped `ev.x` into the device plot passed all of it and then snapped the
+// crosshair to the wrong point on a retina panel. These run at 2x.
+
+/** The harness at a display scale of 2 (react-x11's docs/scale.md): the
+ *  headless server resolves to exactly 1 on its own, which is why every
+ *  other test here can read its numbers literally. */
+function atScale2(over: RenderX11Options = {}): RenderX11Options {
+  return { ...over, scale: 2 };
+}
+
+test('at a display scale of 2 plotRect and hitAt speak logical pixels', async () => {
+  await renderX11(chart(sampleRows(50)), atScale2({ backend: 'mock' }));
+  await act();
+  const node = plotNode();
+  assert.ok(
+    node.abs.width > 600,
+    `a 420-logical-pixel chart is ${node.abs.width} device pixels wide, and abs is device`,
+  );
+  const logicalWidth = node.abs.width / 2;
+  const plot = node.plotRect();
+  assert.ok(plot, 'layout is available');
+  assert.ok(
+    plot.x + plot.width <= logicalWidth + 1,
+    `the plot rect is logical: it ends at ${plot.x + plot.width} in a ${logicalWidth}-wide element`,
+  );
+  assert.ok(
+    plot.width > logicalWidth / 2,
+    'and is most of the element, not the device rect divided twice',
+  );
+
+  const hit = node.hitAt(plot.x + plot.width / 2);
+  assert.ok(hit, 'a hit lands mid-plot');
+  assert.ok(
+    Math.abs(hit.index - 24.5) <= 1.5,
+    `mid-plot snaps to the middle of the data, got ${hit.index}`,
+  );
+  assert.ok(
+    hit.px >= plot.x && hit.px <= plot.x + plot.width,
+    `the snap position ${hit.px} is logical too`,
+  );
+  assert.deepStrictEqual(hit.plot, plot);
+  // The marker positions are logical too: none sits below the logical plot
+  // (a device y would be twice as far down). Not "inside the band" — the
+  // sample's second series overshoots the nice y domain a little, at 1x
+  // just the same, and its marker rides a pixel above the plot.
+  for (const p of hit.points) {
+    assert.ok(
+      p.py <= plot.y + plot.height + 1,
+      `marker y ${p.py} is above the logical plot's bottom edge`,
+    );
+  }
+  assert.ok(
+    hit.points.some((p) => p.py > plot.y + plot.height / 4),
+    'and one of them is well inside the plot, so the check has teeth',
+  );
+  // A device x read as a logical one is past the right edge: it clamps to
+  // the last point, where the device plot's midpoint used to be.
+  assert.strictEqual(node.hitAt(plot.x + plot.width * 2)?.index, 49);
+});
+
+// fireEvent needs the in-process X server, so this one runs on the default
+// backend rather than the mock.
+test('at a display scale of 2 the crosshair lands under the pointer', async () => {
+  // Offset in its window: with the plot at the origin a device pixel and a
+  // logical one read the same, and the mistake being pinned cancels out.
+  await renderX11(
+    h(
+      'box',
+      { style: { padding: 20 } },
+      chart(sampleRows(50), { tooltip: true }),
+    ),
+    atScale2({ width: 500, height: 320 }),
+  );
+  await act();
+  const node = plotNode();
+  assert.ok(
+    node.abs.x >= 40,
+    `the plot is offset from the window's origin (abs.x ${node.abs.x})`,
+  );
+  const pointerX = node.abs.x + node.abs.width / 2 + 40; // device
+  fireEvent.mouseMove(
+    node as unknown as Parameters<typeof fireEvent.mouseMove>[0],
+    { dx: 40, dy: 0 },
+  );
+  await act();
+
+  const overlays = screen.all((n) => {
+    const r = retained(n);
+    return r.kind === 'box' && r.style.pointerEvents === 'none';
+  });
+  assert.ok(overlays.length >= 2, 'crosshair and markers are up');
+  const crosshair = overlays.reduce((tallest, n) =>
+    n.abs.height > tallest.abs.height ? n : tallest,
+  );
+  const hit = node.hitAt(pointerX / 2);
+  assert.ok(hit, 'the pointer is over the data');
+  // The crosshair's `left` is `hit.px` less the element's logical origin — a
+  // logical length core lands on the device grid at twice the number, so the
+  // box stands on the snapped point's device x.
+  assert.ok(
+    Math.abs(crosshair.abs.x - hit.px * 2) <= 2,
+    `the crosshair at device x ${crosshair.abs.x} stands on the snapped point ${hit.px} × 2`,
+  );
+  const plot = node.plotRect();
+  assert.ok(plot);
+  assert.ok(
+    Math.abs(crosshair.abs.x - pointerX) <= (plot.width / 49) * 2 + 2,
+    `and within a data step of the pointer at ${pointerX}`,
   );
 });

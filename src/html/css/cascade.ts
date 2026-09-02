@@ -219,10 +219,15 @@ export class Cascade {
   private _pointer: PointerState = NO_POINTER;
   readonly initial: ComputedStyle;
   readonly look: RootLook;
-  /** Viewport width the media queries were evaluated at. */
+  /** Viewport width the media queries were evaluated at, in device pixels
+   *  like every other length here. */
   viewportWidth: number;
   viewportHeight: number;
-  /** Every width at which some `@media` rule changes its mind. */
+  /** Device pixels per CSS pixel. Every computed length is device; a
+   *  `@media` width is the one CSS-pixel comparison left, and it divides. */
+  readonly scale: number;
+  /** Every width at which some `@media` rule changes its mind, in CSS
+   *  pixels — the unit the author wrote them in. */
   readonly breakpoints: number[];
 
   constructor(
@@ -230,11 +235,13 @@ export class Cascade {
     look: RootLook,
     viewportWidth: number,
     viewportHeight: number,
+    scale = 1,
   ) {
     this.look = look;
     this.initial = initialStyle(look);
     this.viewportWidth = viewportWidth;
     this.viewportHeight = viewportHeight;
+    this.scale = scale;
     const breakpoints = new Set<number>();
     for (const sheet of sheets) {
       for (const rule of sheet.rules) this._index.add(rule);
@@ -266,12 +273,14 @@ export class Cascade {
     this._pointer = pointer;
   }
 
-  /** Which media band a width falls in. Two widths in the same band produce
-   *  identical styles, which is what lets a resize skip restyling. */
+  /** Which media band a device-pixel width falls in. Two widths in the same
+   *  band produce identical styles, which is what lets a resize skip
+   *  restyling. */
   mediaBand(width: number): number {
+    const cssWidth = width / this.scale;
     let band = 0;
     for (const bp of this.breakpoints) {
-      if (width >= bp) band += 1;
+      if (cssWidth >= bp) band += 1;
       else break;
     }
     return band;
@@ -299,6 +308,7 @@ export class Cascade {
       rem: this.initial.fontSize,
       vw: this.viewportWidth,
       vh: this.viewportHeight,
+      scale: this.scale,
     };
     for (const c of candidates) {
       for (const d of pick(c)) {
@@ -345,7 +355,8 @@ export class Cascade {
 
   private _candidates(el: Element): Candidate[] {
     const out: Candidate[] = [];
-    const width = this.viewportWidth;
+    // A media query's width is CSS pixels; the viewport is kept in device.
+    const width = this.viewportWidth / this.scale;
 
     const consider = (bucket: IndexedRule[] | undefined): void => {
       if (!bucket) return;

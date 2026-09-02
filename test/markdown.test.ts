@@ -8,6 +8,7 @@ import { existsSync } from 'node:fs';
 import React from 'react';
 
 import { renderX11, cleanup, screen, fireEvent, act } from 'react-x11/test';
+import type { RenderX11Options } from 'react-x11/test';
 import { drawnKinds, registeredElements } from 'react-x11/host';
 import type { DrawnNode } from 'react-x11';
 
@@ -528,5 +529,68 @@ test(
       before[0],
       'the settled block kept its retained node across the append',
     );
+  },
+);
+
+// --- the display scale -------------------------------------------------------
+//
+// react-x11 hands a registered element two units (its docs/scale.md): `abs`
+// and the layout are device pixels, while a synthetic event's `x`/`y` and a
+// `TextRun.size` are logical. At 1x — every other test here — the two
+// coincide, which is how a `hrefAtPoint` that subtracted `abs` from `ev.x`
+// followed every link and then followed none on a retina panel, where the
+// runs were also shaped at half their size. This runs at 2x.
+
+test(
+  'at a display scale of 2 a link click lands, and the text is its logical size',
+  { skip: !FONTS },
+  async () => {
+    const seen: string[] = [];
+    const doc = (scale: number): Promise<unknown> =>
+      renderX11(
+        h(
+          'box',
+          { style: { flexGrow: 1, padding: 10 } },
+          h(Markdown, {
+            source: '[go somewhere](https://dest.example) trailing text',
+            onLink: (href: string) => seen.push(href),
+          }),
+        ),
+        // A pinned display scale (react-x11's docs/scale.md): the headless
+        // server resolves to exactly 1 on its own.
+        { fonts: FONTS!, width: 420, height: 200, scale } as RenderX11Options,
+      );
+    await doc(1);
+    const [one] = mdNodes();
+    const heightAt1x = one.abs.height;
+    await cleanup();
+
+    await doc(2);
+    const [para] = mdNodes();
+    assert.ok(
+      para.abs.height >= heightAt1x * 1.8,
+      `a 14-pixel run is shaped at 28 device pixels: ${para.abs.height} tall against ${heightAt1x} at 1x`,
+    );
+
+    // The link's second character, from core's caret rect — device pixels,
+    // the selection seam's contract.
+    const caret = para.textCaretRect(1);
+    assert.ok(caret, 'the paragraph is laid out');
+    const x = caret.x + 1;
+    const y = caret.y + caret.height / 2;
+    assert.strictEqual(
+      para.hrefAtPoint(x / 2, y / 2),
+      'https://dest.example',
+      'hrefAtPoint takes the logical point a mouse event carries',
+    );
+
+    const node = drawn(para);
+    const dx = x - (node.abs.x + node.abs.width / 2);
+    const dy = y - (node.abs.y + node.abs.height / 2);
+    await act(async () => {
+      fireEvent.mouseDown(node, { dx, dy });
+      fireEvent.mouseUp(node, { dx, dy });
+    });
+    assert.deepEqual(seen, ['https://dest.example']);
   },
 );

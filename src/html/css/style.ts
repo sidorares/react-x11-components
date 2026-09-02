@@ -1063,7 +1063,9 @@ function alignKeyword(value: string): string | null {
 
 function borderWidth(value: string, ctx: UnitContext): number | null {
   const kw = BORDER_WIDTH_KEYWORDS[value.trim().toLowerCase()];
-  if (kw !== undefined) return kw;
+  // The keywords are CSS pixels that never pass through `parseLength`, so
+  // they take the display scale here.
+  if (kw !== undefined) return kw * ctx.scale;
   const len = parseLength(value, ctx);
   return typeof len === 'number' ? Math.max(0, len) : null;
 }

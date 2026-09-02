@@ -191,7 +191,20 @@ panel. The pane now thinks in logical pixels and converts at the crossings —
 `_pane()`, `_screenRect()`'s device-grid rounding, `_claim()`, the blit, the
 grid tile and the painter — and `test/flow.test.ts` runs its gestures at
 `scale: 2`. A drawn element that compares `ev.x` with `this.abs` has the
-same bug; `<CodeEditor>`, the vt terminal and `<Html>` still do.
+same bug. The vt terminal, `<Html>`, `<RichText>` and the chart plot had it
+and convert now — the terminal reads the event back through
+`ev.nativeEvent` (core's own idiom, `_devicePoint`), the other three take
+logical points at their public queries (`elementAtPoint`, `hrefAtPoint`,
+`hitAt`) and multiply once inside — and each has a `scale: 2` test that
+failed before. The same audit found the second shape of the bug, **a
+constant that never passes through a style**: the terminal's default font
+size, every CSS pixel `<Html>` lays out, a `TextRun.size`, a chart's gutters
+and stroke widths were all drawn as device pixels and came out half size at
+2x; each now multiplies by `this.scale` where it enters. Core's
+`textIndexAt`/`textCaretRect`/`textRangeRects` seam is the deliberate
+exception — it speaks device pixels, and the accessors here answer it that
+way. `<CodeEditor>`'s `_posAt(ev.x, ev.y)` and `<ColorPicker>`'s
+`fractionIn` still compare a logical event with a device `abs`.
 
 `src/internal/hx.ts` is what makes the no-JSX rule survive TypeScript.
 `React.createElement`'s own overloads are `@types/react`'s and describe the

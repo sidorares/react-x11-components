@@ -8,7 +8,18 @@ import assert from 'node:assert';
 import { existsSync } from 'node:fs';
 import React from 'react';
 
-import { renderX11, cleanup, screen, fireEvent, act } from 'react-x11/test';
+import {
+  renderX11,
+  cleanup,
+  screen,
+  fireEvent,
+  act,
+  expectPixel,
+  isNear,
+  pixelAt,
+  waitFor,
+} from 'react-x11/test';
+import type { RenderX11Options } from 'react-x11/test';
 import { drawnKinds, registeredElements } from 'react-x11/host';
 import type { DrawnNode } from 'react-x11';
 
@@ -128,7 +139,7 @@ test('a broken rule does not eat the rest of the sheet', () => {
 // --- values -----------------------------------------------------------------
 
 test('lengths resolve the units a computed style can, and keep the ones it cannot', () => {
-  const ctx = { em: 20, rem: 16, vw: 1000, vh: 500 };
+  const ctx = { em: 20, rem: 16, vw: 1000, vh: 500, scale: 1 };
   assert.strictEqual(parseLength('10px', ctx), 10);
   assert.strictEqual(parseLength('2em', ctx), 40);
   assert.strictEqual(parseLength('2rem', ctx), 32);
@@ -139,6 +150,20 @@ test('lengths resolve the units a computed style can, and keep the ones it canno
   // a bare number is not a length, which is what keeps `line-height: 1.5`
   // from being read as 1.5 pixels
   assert.strictEqual(parseLength('1.5', ctx), null);
+});
+
+test('at a display scale of 2 the absolute units are two device pixels each', () => {
+  // `em`, `rem` and the viewport arrive device already (react-x11's
+  // docs/scale.md), so only the CSS-pixel units carry the factor.
+  const ctx = { em: 40, rem: 32, vw: 2000, vh: 1000, scale: 2 };
+  assert.strictEqual(parseLength('10px', ctx), 20);
+  assert.strictEqual(parseLength('12pt', ctx), 32);
+  assert.strictEqual(parseLength('1in', ctx), 192);
+  assert.strictEqual(parseLength('2em', ctx), 80);
+  assert.strictEqual(parseLength('2rem', ctx), 64);
+  assert.strictEqual(parseLength('10vw', ctx), 200);
+  assert.strictEqual(parseLength('600', ctx, true), 1200);
+  assert.deepStrictEqual(parseLength('50%', ctx), { pct: 50 });
 });
 
 test('splitValue keeps functions and quotes whole', () => {
@@ -1020,3 +1045,219 @@ test('a document with no seams renders anyway', async () => {
   );
   assert.ok(view(node).textContent().includes('still here'));
 });
+
+// --- the display scale -------------------------------------------------------
+//
+// react-x11 hands a registered element two units (its docs/scale.md): `abs`,
+// the paint context and every box the engine lays out are device pixels,
+// while a synthetic event's `x`/`y` and every style length are logical. At
+// 1x — every other test in this file — the two coincide, which is how a view
+// that compared `ev.x` with `abs` and laid a `16px` out as sixteen device
+// pixels passed all of it. These run at 2x, with the document offset in its
+// window so that a device origin and a logical one differ — with `abs` at
+// (0, 0) the mistake being pinned cancels out.
+
+/** The harness at a display scale of 2 (react-x11's docs/scale.md): the
+ *  headless server resolves to exactly 1 on its own, which is why every
+ *  other test here can read its numbers literally. */
+function atScale2(over: RenderX11Options): RenderX11Options {
+  return { ...over, scale: 2 };
+}
+
+async function render2x(
+  source: string,
+  width = 300,
+  props: Record<string, unknown> = {},
+): Promise<{ result: Awaited<ReturnType<typeof renderX11>>; node: DrawnNode }> {
+  const result = await renderX11(
+    h(
+      'box',
+      { style: { width: width + 40, padding: 20, flexDirection: 'column' } },
+      h(Html, {
+        source,
+        partial: false,
+        'data-testname': 'doc',
+        ...props,
+      }),
+    ),
+    atScale2({ width: width + 80, height: 300, fonts: FONTS! }),
+  );
+  return { result, node: screen.getByTestName('doc') as DrawnNode };
+}
+
+interface LaidBox {
+  el: { attribs: Record<string, string> } | null;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  children: LaidBox[];
+}
+
+/** The box the engine laid an element out in — device pixels, document
+ *  coordinates. */
+function boxOf(el: HtmlViewNode, id: string): LaidBox {
+  const root = (el as unknown as { _tree: { root: LaidBox } })._tree.root;
+  const find = (box: LaidBox): LaidBox | null => {
+    if (box.el?.attribs.id === id) return box;
+    for (const child of box.children) {
+      const hit = find(child);
+      if (hit) return hit;
+    }
+    return null;
+  };
+  const found = find(root);
+  assert.ok(found, `#${id} has a box`);
+  return found;
+}
+
+metric(
+  'at a display scale of 2 the document lays out in CSS pixels, on the device grid',
+  async () => {
+    const { result, node } = await render2x(
+      '<style>body{margin:0}div{width:100px;height:50px;margin:0}' +
+        '#a{background:#ff0000}#b{background:#0000ff}</style>' +
+        '<div id="a"></div><div id="b"></div>',
+    );
+    const el = view(node);
+    const { abs } = el as unknown as DrawnNode;
+    assert.strictEqual(
+      abs.x,
+      40,
+      'a 20-logical-pixel padding is 40 device pixels, and `abs` is device',
+    );
+    const a = boxOf(el, 'a');
+    const b = boxOf(el, 'b');
+    assert.deepStrictEqual(
+      { width: a.width, height: a.height, by: b.y },
+      { width: 200, height: 100, by: 100 },
+      'a 100×50 CSS box is 200×100 device pixels, and the next block starts below it',
+    );
+    assert.strictEqual(
+      abs.height,
+      200,
+      'the element measures to the device document',
+    );
+    await waitFor(() =>
+      expectPixel(result.ctx, abs.x + 190, abs.y + 90, '#ff0000', {
+        message: 'the box is painted at its device size',
+      }),
+    );
+    await expectPixel(result.ctx, abs.x + 190, abs.y + 110, '#0000ff', {
+      message: 'and the next one where it ends',
+    });
+    assert.ok(
+      !isNear(await pixelAt(result.ctx, abs.x + 210, abs.y + 90), '#ff0000'),
+      'nothing of it past 100 CSS pixels',
+    );
+
+    // The point queries take the logical point a mouse event carries.
+    const centre = (box: LaidBox): [number, number] => [
+      (abs.x + box.x + box.width / 2) / 2,
+      (abs.y + box.y + box.height / 2) / 2,
+    ];
+    assert.strictEqual(el.elementAtPoint(...centre(b))?.attribs.id, 'b');
+    assert.strictEqual(el.elementAtPoint(...centre(a))?.attribs.id, 'a');
+  },
+);
+
+metric(
+  'at a display scale of 2 the pointer hovers the element under it',
+  async () => {
+    const { result, node } = await render2x(
+      '<style>body{margin:0}p{margin:0;height:40px}p:hover{background:#ff0000}</style>' +
+        '<p id="a">one</p><p id="b">two</p>',
+    );
+    const el = view(node);
+    const { abs } = el as unknown as DrawnNode;
+    const a = boxOf(el, 'a');
+    const b = boxOf(el, 'b');
+    // Sampled inside each paragraph's box, past the end of its text.
+    const sample = (box: LaidBox): [number, number] => [
+      abs.x + box.x + box.width - 8,
+      abs.y + box.y + box.height / 2,
+    ];
+    await act();
+    assert.ok(
+      !isNear(await pixelAt(result.ctx, ...sample(b)), '#ff0000'),
+      'nothing is hovered before the pointer arrives',
+    );
+
+    // The pointer to the centre of #b: a device offset from the element's
+    // device centre. Read as a device point, the logical one core hands the
+    // element lands on #a.
+    fireEvent.mouseMove(el as unknown as DrawnNode, {
+      dx: b.x + b.width / 2 - abs.width / 2,
+      dy: b.y + b.height / 2 - abs.height / 2,
+    });
+    await waitFor(() =>
+      expectPixel(result.ctx, ...sample(b), '#ff0000', {
+        message: '#b lights up under the pointer',
+      }),
+    );
+    assert.ok(
+      !isNear(await pixelAt(result.ctx, ...sample(a)), '#ff0000'),
+      'and #a does not',
+    );
+  },
+);
+
+metric(
+  'at a display scale of 2 a form control is mounted on the box the document reserved',
+  async () => {
+    const { node } = await render2x('<p>Agree <input type="checkbox"></p>');
+    const el = view(node);
+    await act();
+    const { abs } = el as unknown as DrawnNode;
+    const reserved = (el as unknown as { _tree: { controls: LaidBox[] } })._tree
+      .controls[0];
+    assert.ok(reserved, 'the document reserved a box');
+    const widget = screen.getByRole('checkbox');
+    // The rect is reported in logical pixels — it becomes the widget's style —
+    // so the real widget lands on the device box. Reported in device pixels
+    // it sat twice as far from the origin, and twice as big.
+    assert.ok(
+      Math.abs(widget.abs.x - (abs.x + reserved.x)) <= 2 &&
+        Math.abs(widget.abs.y - (abs.y + reserved.y)) <= 2,
+      `the widget at (${widget.abs.x}, ${widget.abs.y}) sits on the reserved box at (${
+        abs.x + reserved.x
+      }, ${abs.y + reserved.y})`,
+    );
+    assert.ok(
+      Math.abs(widget.abs.width - reserved.width) <= 2,
+      `and is its size: ${widget.abs.width} for a ${reserved.width} box`,
+    );
+  },
+);
+
+metric(
+  'at a display scale of 2 a click on a link reports its href',
+  async () => {
+    const clicks: string[] = [];
+    const { node } = await render2x(
+      '<p><a href="https://example.test/x">a link here</a></p>',
+      400,
+      { onLink: (href: string) => clicks.push(href) },
+    );
+    const el = view(node);
+    // Core's caret rect is device pixels — the selection seam's contract.
+    const caret = el.textCaretRect(2);
+    assert.ok(caret, 'the link text is laid out');
+    const x = caret.x + 1;
+    const y = caret.y + caret.height / 2;
+    assert.strictEqual(
+      el.hrefAtPoint(x / 2, y / 2),
+      'https://example.test/x',
+      'hrefAtPoint takes the logical point a mouse event carries',
+    );
+
+    const target = el as unknown as DrawnNode;
+    const dx = x - (target.abs.x + target.abs.width / 2);
+    const dy = y - (target.abs.y + target.abs.height / 2);
+    await act(async () => {
+      fireEvent.mouseDown(target, { dx, dy });
+      fireEvent.mouseUp(target, { dx, dy });
+    });
+    assert.deepStrictEqual(clicks, ['https://example.test/x']);
+  },
+);

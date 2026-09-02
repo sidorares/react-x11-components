@@ -472,7 +472,10 @@ export function parseMediaQuery(prelude: string): MediaCondition[] {
   return out.length ? out : [{ staticPass: true }];
 }
 
-const ZERO_UNITS = { em: 16, rem: 16, vw: 0, vh: 0 };
+/** A `@media` width is compared with the viewport in CSS pixels — the
+ *  cascade divides the device width by the scale before asking — so the
+ *  thresholds parse at scale 1 whatever panel the document lands on. */
+const ZERO_UNITS = { em: 16, rem: 16, vw: 0, vh: 0, scale: 1 };
 
 /** Whether a rule's `@media` blocks all hold at this viewport width. */
 export function mediaMatches(

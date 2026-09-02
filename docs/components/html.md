@@ -58,12 +58,12 @@ links[0].attribs.href = '#changed';
 handle.refresh();
 ```
 
-| Member            | What it is                                                            |
-| ----------------- | --------------------------------------------------------------------- |
-| `document`        | The live DOM — [domhandler]'s tree, which [domutils] speaks natively. |
-| `refresh()`       | The DOM changed: restyle, re-lay-out, repaint.                        |
-| `elementAt(x, y)` | The element under a point, in the window's coordinates.               |
-| `title`           | The document's `<title>`, if it had one.                              |
+| Member            | What it is                                                                                               |
+| ----------------- | -------------------------------------------------------------------------------------------------------- |
+| `document`        | The live DOM — [domhandler]'s tree, which [domutils] speaks natively.                                    |
+| `refresh()`       | The DOM changed: restyle, re-lay-out, repaint.                                                           |
+| `elementAt(x, y)` | The element under a point, in the window's logical coordinates — the ones a mouse event's `x`/`y` carry. |
+| `title`           | The document's `<title>`, if it had one.                                                                 |
 
 `refresh()` is explicit rather than observed, and that is a decision — see
 [Manipulating the DOM](#manipulating-the-dom).
