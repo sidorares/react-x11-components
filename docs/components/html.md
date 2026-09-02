@@ -146,7 +146,12 @@ it. Composing would mean approximating the layout model.
 What it reuses from `<richtext>` is everything that was not about the
 element: the `TextRun` vocabulary ntk's text layout takes, the per-run
 decoration painter, and the bidi-correct selection bands. See
-[richtext](richtext.md).
+[richtext](richtext.md) — including its caveat about react-x11's Cocoa text
+engine, which hands runs back without their spans: there, inline
+`background` and `text-decoration` draw nothing and a point inside a
+paragraph resolves to the block rather than the `<a>` or `<span>` under
+it, so `hrefAtPoint` answers `null`. The document still lays out, draws
+and selects.
 
 **Form controls are real widgets, not pictures of them.** A `<select>` in a
 document drops the same menu as a `<Select>` in the window around it, because

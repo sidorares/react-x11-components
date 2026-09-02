@@ -29,15 +29,26 @@ export function canFill(ctx: unknown): ctx is FillContext {
   return typeof (ctx as Partial<FillContext> | null)?.fillRect === 'function';
 }
 
-/** One run of one laid-out line, as much of it as decoration reads. */
+/**
+ * One run of one laid-out line, as much of it as decoration reads.
+ *
+ * `span` and `run` are what ntk's layout hands back and what every
+ * decoration is read from: the span the run came from, markers and all, and
+ * the face it was shaped with. Both are optional because react-x11's Cocoa
+ * engine (2.3.x) reports only a run's geometry — `{ x, width, start, end }`
+ * — and a paint that assumed the rest threw on the first paragraph on
+ * macOS. A run without its span has no decoration to draw; a run without
+ * its face takes its vertical extent from the line, which both engines
+ * report.
+ */
 export interface LaidRun {
   x: number;
   width: number;
   /** Extent within the laid-out text, in **code units** (ntk's vocabulary). */
   start: number;
   end: number;
-  span: TextRun;
-  run: {
+  span?: TextRun;
+  run?: {
     font: { metrics(size: number): { ascent: number; descent: number } };
     size: number;
     direction?: 'ltr' | 'rtl';
@@ -50,6 +61,11 @@ export interface LaidLine {
   y: number;
   height: number;
   baseline: number;
+  /** The tallest face on the line, above and below `baseline`. Both engines
+   *  report them; they stand in for a run's own metrics when the engine did
+   *  not hand the run's face back. */
+  ascent?: number;
+  descent?: number;
   start: number;
   end: number;
   runs: LaidRun[];
@@ -63,6 +79,49 @@ export interface CaretSource {
     height: number;
     line: number;
   };
+}
+
+/**
+ * The vertical extent of a run's ink, above and below the baseline: the
+ * run's own face when the engine handed it back, otherwise the line's.
+ */
+function inkExtent(
+  r: LaidRun,
+  line: LaidLine,
+): { ascent: number; descent: number } {
+  if (r.run) return r.run.font.metrics(r.run.size);
+  return {
+    ascent: line.ascent ?? line.baseline - line.y,
+    descent: line.descent ?? line.y + line.height - line.baseline,
+  };
+}
+
+let warnedSpanless = false;
+
+/**
+ * Say so, once, when a laid-out run arrives without the span it came from:
+ * every decoration is read off that span, so none will be drawn, and a
+ * document that suddenly has no code chips or link underlines should not be
+ * a mystery. react-x11's Cocoa engine (2.3.x) is the one that does this.
+ *
+ * `process` and `console` come off `globalThis` because `src/` compiles
+ * with `types: []` — a Node global that wandered in would fail the build
+ * rather than become an implicit `@types/node` dependency.
+ */
+function warnSpanless(): void {
+  if (warnedSpanless) return;
+  warnedSpanless = true;
+  const g = globalThis as {
+    process?: { env?: Record<string, string | undefined> };
+    console?: { warn(message: string): void };
+  };
+  if (g.process?.env?.NODE_ENV === 'production') return;
+  g.console?.warn(
+    '@react-x11/components: the text engine handed back laid-out runs ' +
+      'without their spans, so run decorations (backgrounds, underlines, ' +
+      "strikethrough) and inline link hit-testing are off. react-x11's " +
+      "Cocoa text engine (2.3.x) does this; ntk's does not.",
+  );
 }
 
 /**
@@ -83,10 +142,15 @@ export function paintRunBackgrounds(
 ): void {
   const inset = Math.round(2 * scale);
   for (const r of line.runs) {
-    const bg = r.span.bg;
+    const span = r.span;
+    if (!span) {
+      warnSpanless();
+      continue;
+    }
+    const bg = span.bg;
     if (!bg) continue;
     ctx.fillStyle = bg;
-    if (r.span.bgFill === 'line') {
+    if (span.bgFill === 'line') {
       // Both edges are rounded from absolute positions rather than the left
       // being rounded and the width ceiled, so two adjacent runs agree on the
       // pixel between them: no seam, and no overlap either.
@@ -100,7 +164,7 @@ export function paintRunBackgrounds(
       );
       continue;
     }
-    const m = r.run.font.metrics(r.run.size);
+    const m = inkExtent(r, line);
     ctx.fillRect(
       Math.round(dx + line.x + r.x - inset),
       Math.round(dy + line.baseline - m.ascent),
@@ -122,7 +186,9 @@ export function paintRunRules(
 ): void {
   const t = ruleThickness(scale);
   for (const r of line.runs) {
-    const { underline, strike } = r.span;
+    const span = r.span;
+    if (!span) continue;
+    const { underline, strike } = span;
     if (underline) {
       ctx.fillStyle = underline;
       underlineRule(
@@ -130,12 +196,12 @@ export function paintRunRules(
         Math.round(dx + line.x + r.x),
         Math.round(dy + line.baseline + 2 * t),
         Math.ceil(r.width),
-        r.span.underlineStyle ?? 'single',
+        span.underlineStyle ?? 'single',
         t,
       );
     }
     if (strike) {
-      const m = r.run.font.metrics(r.run.size);
+      const m = inkExtent(r, line);
       ctx.fillStyle = strike;
       ctx.fillRect(
         Math.round(dx + line.x + r.x),

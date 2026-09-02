@@ -124,9 +124,11 @@ export interface TextLayoutLike {
       end: number;
       /** The span as handed in — a richtext `TextRun`, which is how the
        *  decoration a `<span>` carried reaches the paint pass on the same
-       *  object the glyphs did. */
-      span: TextRun;
-      run: {
+       *  object the glyphs did. Optional, with `run`, for the reason
+       *  `src/richtext/runs.ts` gives: react-x11's Cocoa engine hands back
+       *  a run's geometry and nothing else. */
+      span?: TextRun;
+      run?: {
         font: { metrics(size: number): { ascent: number; descent: number } };
         size: number;
         direction?: 'ltr' | 'rtl';

@@ -131,8 +131,10 @@ interface LaidRunLike {
   /** Extent within the paragraph, in **code units** (ntk's run vocabulary). */
   start: number;
   end: number;
-  span: TextRun;
-  run: {
+  /** Optional for the same reason as `runs.ts`'s `LaidRun`: react-x11's
+   *  Cocoa engine hands back a run's geometry and nothing else. */
+  span?: TextRun;
+  run?: {
     font: { metrics(size: number): FontMetricsLike };
     size: number;
     direction?: 'ltr' | 'rtl';
@@ -387,7 +389,7 @@ export class RichTextNode extends Node {
     for (const line of layout.lines) {
       if (ly < line.y || ly >= line.y + line.height) continue;
       for (const r of line.runs) {
-        const href = r.span.href;
+        const href = r.span?.href;
         if (href == null) continue;
         if (lx >= line.x + r.x && lx <= line.x + r.x + r.width) return href;
       }

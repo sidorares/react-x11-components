@@ -72,6 +72,16 @@ rows. `<TerminalOutput>` is why the field exists.
 rectangles rather than a stroked path, because the mock backend has no path
 API and a hairline on a text baseline does not need one.
 
+**The decorations are read off what the engine hands back.** ntk returns
+every laid-out run with the span it came from, markers and all, which is how
+the painter finds the chips, the rules and the link targets. react-x11's
+Cocoa text engine (2.3.x) returns a run's geometry and nothing else, so on
+that backend the text still shapes, draws and selects, but `bg`,
+`underline`, `strike` and `hrefAtPoint` have nothing to read and degrade
+to none rather than throwing; a development build says so once on the
+console. The gap is the engine's to close, and nothing here changes when it
+does.
+
 ## Selection is core's
 
 Since react-x11#291, selection lives in core: a `selectable` prop on a box

@@ -1043,7 +1043,8 @@ function deepestAt(box: Box, x: number, y: number): Element | null {
             for (const run of natural.runs) {
               const left = text.drawX + natural.x + run.x;
               if (x >= left && x < left + run.width) {
-                const owner = (run.span as { element?: Element }).element;
+                const owner = (run.span as { element?: Element } | undefined)
+                  ?.element;
                 if (owner) found = owner;
               }
             }

@@ -15,6 +15,8 @@ import type { DrawnNode } from 'react-x11';
 import { Markdown, RichTextNode, parseMarkdown } from '../src/index.js';
 import { parseInline } from '../src/markdown/index.js';
 import type { BlockNode, InlineNode } from '../src/index.js';
+import { cocoaShapedLayout } from './cocoa-shaped.js';
+import type { ShapedLayout } from './cocoa-shaped.js';
 
 const h = React.createElement;
 
@@ -592,5 +594,48 @@ test(
       fireEvent.mouseUp(node, { dx, dy });
     });
     assert.deepEqual(seen, ['https://dest.example']);
+  },
+);
+
+test(
+  "a paragraph whose runs came back without their spans (react-x11's Cocoa engine) still answers hrefAtPoint, and selects",
+  { skip: !FONTS },
+  async () => {
+    // ntk hands every laid-out run back with the span it came from; the
+    // Cocoa engine hands back geometry alone. The paragraph's cached layouts
+    // are replaced by views in that shape, so this runs on the in-process X
+    // server with no macOS anywhere.
+    await renderX11(
+      h(Markdown, {
+        source: '[go somewhere](https://dest.example) trailing text',
+        'data-testname': 'md',
+      }),
+      { fonts: FONTS!, width: 420, height: 200 },
+    );
+    const [para] = mdNodes();
+    const caret = para.textCaretRect(1);
+    assert.ok(caret, 'the paragraph is laid out');
+    const x = caret.x + 1;
+    const y = caret.y + caret.height / 2;
+    assert.strictEqual(
+      para.hrefAtPoint(x, y),
+      'https://dest.example',
+      "with ntk's runs the link is found",
+    );
+
+    const layouts = (para as unknown as { _layouts: Map<string, unknown> })
+      ._layouts;
+    for (const [key, layout] of layouts) {
+      if (layout) layouts.set(key, cocoaShapedLayout(layout as ShapedLayout));
+    }
+    assert.strictEqual(
+      para.hrefAtPoint(x, y),
+      null,
+      'without spans there is no href to find — and no throw',
+    );
+    assert.ok(
+      para.textRangeRects(0, 3).length >= 1,
+      "a selection band needs only a run's geometry",
+    );
   },
 );
