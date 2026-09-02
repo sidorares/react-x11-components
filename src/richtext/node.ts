@@ -252,9 +252,10 @@ export class RichTextNode extends Node {
     const fonts = (this.app as { fonts?: FontsLike } | null)?.fonts;
     let layout: TextLayoutLike | null = null;
     if (fonts) {
+      const s = this._scale;
       layout = fonts.layout(
-        this._runs(),
-        { family: 'sans-serif', size: 14 },
+        this._deviceRuns(s),
+        { family: 'sans-serif', size: 14 * s },
         {
           maxWidth: Number.isFinite(maxWidth) ? maxWidth : undefined,
           lineHeight: this.style.lineHeight,
@@ -265,6 +266,34 @@ export class RichTextNode extends Node {
     if (this._layouts.size > 32) this._layouts.clear();
     this._layouts.set(key, layout);
     return layout;
+  }
+
+  // --- units ---------------------------------------------------------------
+  //
+  // The layout, `abs` and the paint are device pixels (react-x11's
+  // docs/scale.md). A `TextRun.size` is a length the application wrote, so
+  // like every style length it is logical, and unlike a style length nothing
+  // in core multiplies it on the way in — `_deviceRuns` does, so the runs are
+  // shaped at `size * scale` and a 14 on a 2x panel is the size a
+  // `fontSize: 14` is, sharper rather than smaller. A synthetic event's
+  // `x`/`y` are logical too, which is what `hrefAtPoint` is handed; the four
+  // selection accessors are core's device-pixel contract and stay device.
+
+  /** Device pixels per logical pixel — the display scale this element's
+   *  window resolved to, constant for the node's life. */
+  private get _scale(): number {
+    return this.scale > 0 ? this.scale : 1;
+  }
+
+  /** The runs with their sizes on the device grid. The array identity is
+   *  what the layout cache keys on, so at 1x the props' own array is
+   *  returned untouched. */
+  private _deviceRuns(scale: number): TextRun[] {
+    const runs = this._runs();
+    if (scale === 1) return runs;
+    return runs.map((r) =>
+      typeof r.size === 'number' ? { ...r, size: r.size * scale } : r,
+    );
   }
 
   /**
@@ -302,8 +331,9 @@ export class RichTextNode extends Node {
   // The four accessors from react-x11#291. Implementing them is the whole of
   // joining a `selectable` document: core walks the subtree, asks, and pushes
   // back a `selectionRange` for `paint` to fill. Indices are **code points**
-  // and rectangles are in the **owning window's** coordinates, which is the
-  // space `abs` and a mouse event's `x`/`y` are already in.
+  // and rectangles are in the **owning window's** coordinates in **device**
+  // pixels — the space `abs` is in, and the one core asks in (it reads the
+  // point back off the native event; a synthetic `x`/`y` is logical).
 
   override textContent(): string {
     if (this._text === null) {
@@ -344,14 +374,16 @@ export class RichTextNode extends Node {
     }));
   }
 
-  /** The run's link target under a point, if any — for click-to-follow.
-   *  Not part of the selection seam: core deliberately left hover and
-   *  `cursorAt` out of #291, so following a link stays this package's. */
+  /** The run's link target under a **logical** window point — the one a
+   *  mouse event carries — if any, for click-to-follow. Not part of the
+   *  selection seam: core deliberately left hover and `cursorAt` out of
+   *  #291, so following a link stays this package's. */
   hrefAtPoint(x: number, y: number): string | null {
     const layout = this._paintLayout();
     if (!layout) return null;
-    const lx = x - this.abs.x;
-    const ly = y - this.abs.y;
+    const s = this._scale;
+    const lx = x * s - this.abs.x;
+    const ly = y * s - this.abs.y;
     for (const line of layout.lines) {
       if (ly < line.y || ly >= line.y + line.height) continue;
       for (const r of line.runs) {
@@ -370,12 +402,13 @@ export class RichTextNode extends Node {
     const layout = this._paintLayout();
     if (!layout || !canFill(ctx)) return;
     const { x, y } = this.abs;
+    const s = this._scale;
 
     ctx.save();
 
     // 1. run decorations that sit under everything: the code chip, and the
     //    terminal's cell backgrounds
-    for (const line of layout.lines) paintRunBackgrounds(ctx, line, x, y);
+    for (const line of layout.lines) paintRunBackgrounds(ctx, line, x, y, s);
 
     // 2. the band the document selection has claimed of this element's text,
     //    translucent so the ink keeps its contrast on either palette (the
@@ -399,7 +432,7 @@ export class RichTextNode extends Node {
     layout.draw(ctx, x, y);
 
     // 4. rules over the ink: link underlines, strikethrough
-    for (const line of layout.lines) paintRunRules(ctx, line, x, y);
+    for (const line of layout.lines) paintRunRules(ctx, line, x, y, s);
 
     ctx.restore();
   }

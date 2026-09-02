@@ -88,12 +88,14 @@ export interface ChartPlotProps {
   style?: Style | Style[];
 }
 
-/** What the tooltip layer gets for a pointer position. */
+/** What the tooltip layer gets for a pointer position. Every pixel in it is
+ *  a logical window pixel — the unit a mouse event's `x` arrives in and a
+ *  style length is written in. */
 export interface ChartHit {
   index: number;
   /** The x value at that index — a label for band axes. */
   xValue: number | string;
-  /** Snap position for the crosshair, window coordinates. */
+  /** Snap position for the crosshair, logical window coordinates. */
   px: number;
   /** The x domain's width (0 for band axes) — what a time-axis tooltip
    * sizes its default header format to, exactly as the ticks do. */
@@ -366,6 +368,21 @@ export class ChartPlotNode extends Node {
   }
 
   // --- layout --------------------------------------------------------------
+  //
+  // Everything from here down is device pixels — `contentBox()`, the plot
+  // rect, the scales, the label metrics (shaped from `resolvedTextStyle()`,
+  // which core hands over already multiplied) and the paint context
+  // (react-x11's docs/scale.md). Two kinds of number are not, and each is
+  // converted once: the gutter constants and a spec's `width`/`height`,
+  // which are logical lengths and multiply on the way in; and the tooltip's
+  // questions (`plotRect`, `hitAt`), asked and answered in logical pixels
+  // because a mouse event's `x` and a style length both are.
+
+  /** Device pixels per logical pixel — the display scale this element's
+   *  window resolved to, constant for the node's life. */
+  private get _scale(): number {
+    return this.scale > 0 ? this.scale : 1;
+  }
 
   private _themeRecord(): Record<string, unknown> | null {
     return this.theme;
@@ -536,30 +553,33 @@ export class ChartPlotNode extends Node {
     const yTickValues = spec.y.hide ? [] : linearTicks(yD0, yD1, spec.y.ticks);
     const yTickLabels = yTickValues.map((v) => fmtY(v));
 
-    // -- gutters (the y gutter measures its own labels; fixed on the mock)
+    // -- gutters (the y gutter measures its own labels; fixed on the mock).
+    // The constants and a spec's own gutter sizes are logical pixels; the
+    // box they are subtracted from is device.
+    const s = this._scale;
     let left = 0;
     if (!spec.y.hide) {
       if (spec.y.width !== 'auto') {
-        left = spec.y.width;
+        left = spec.y.width * s;
       } else {
         let max = 0;
         for (const text of yTickLabels) {
           const l = this._label(text, labelSize, labelColor);
           if (!l) {
-            max = 34;
+            max = 34 * s;
             break;
           }
           if (l.width > max) max = l.width;
         }
-        left = Math.ceil(max) + TICK_GAP + 2;
+        left = Math.ceil(max) + (TICK_GAP + 2) * s;
       }
     }
-    const bottom = spec.x.hide ? 0 : spec.x.height || X_AXIS_HEIGHT;
+    const bottom = spec.x.hide ? 0 : (spec.x.height || X_AXIS_HEIGHT) * s;
     const plot: PlotRect = {
       x: box.x + left,
-      y: box.y + PAD_TOP,
-      width: Math.max(1, box.width - left - PAD_RIGHT),
-      height: Math.max(1, box.height - PAD_TOP - bottom),
+      y: box.y + PAD_TOP * s,
+      width: Math.max(1, box.width - left - PAD_RIGHT * s),
+      height: Math.max(1, box.height - PAD_TOP * s - bottom),
     };
 
     const yScale = linearScale(yD0, yD1, plot.y + plot.height, plot.y);
@@ -736,6 +756,7 @@ export class ChartPlotNode extends Node {
       yScale: layout.yScale,
       stats,
       host: this._host(),
+      scale: this._scale,
     };
     for (const geom of layout.geoms) renderSeries(env, geom);
     if (clipped) c.restore();
@@ -771,6 +792,9 @@ export class ChartPlotNode extends Node {
       9,
       Math.round(this.resolvedTextStyle().size * 0.8),
     );
+    // A rule is one logical pixel; the label offsets are logical too.
+    const s = this._scale;
+    const rule = Math.max(1, Math.round(s));
 
     // grid: 1px rules batched into one request per direction
     if (spec.grid) {
@@ -779,7 +803,7 @@ export class ChartPlotNode extends Node {
         for (const t of yTicks) {
           const y = Math.round(t.px);
           if (y > plot.y && y < plot.y + plot.height) {
-            rects.push(plot.x, y, plot.width, 1);
+            rects.push(plot.x, y, plot.width, rule);
           }
         }
       }
@@ -787,7 +811,7 @@ export class ChartPlotNode extends Node {
         for (const t of xTicks) {
           const x = Math.round(t.px);
           if (x > plot.x && x < plot.x + plot.width) {
-            rects.push(x, plot.y, 1, plot.height);
+            rects.push(x, plot.y, rule, plot.height);
           }
         }
       }
@@ -810,9 +834,11 @@ export class ChartPlotNode extends Node {
     // axis lines
     const axisRects: number[] = [];
     if (!spec.x.hide) {
-      axisRects.push(plot.x, plot.y + plot.height, plot.width, 1);
+      axisRects.push(plot.x, plot.y + plot.height, plot.width, rule);
     }
-    if (!spec.y.hide) axisRects.push(plot.x - 1, plot.y, 1, plot.height + 1);
+    if (!spec.y.hide) {
+      axisRects.push(plot.x - rule, plot.y, rule, plot.height + rule);
+    }
     if (axisRects.length) {
       ctx.save();
       ctx.fillStyle = lineColor;
@@ -837,19 +863,19 @@ export class ChartPlotNode extends Node {
       for (const t of yTicks) {
         const l = this._label(t.label, labelSize, labelColor);
         if (!l) continue;
-        l.draw(ctx, plot.x - TICK_GAP - l.width, t.px - l.height / 2);
+        l.draw(ctx, plot.x - TICK_GAP * s - l.width, t.px - l.height / 2);
         stats.commands++;
       }
     }
     if (!spec.x.hide) {
-      const baseY = plot.y + plot.height + 4;
+      const baseY = plot.y + plot.height + 4 * s;
       let lastRight = -Infinity;
       for (const t of xTicks) {
         const l = this._label(t.label, labelSize, labelColor);
         if (!l) continue;
         const x = t.px - l.width / 2;
         // drop labels that would collide rather than letting them smear
-        if (x < lastRight + 4) continue;
+        if (x < lastRight + 4 * s) continue;
         lastRight = x + l.width;
         l.draw(ctx, x, baseY);
         stats.commands++;
@@ -858,23 +884,45 @@ export class ChartPlotNode extends Node {
   }
 
   // --- the tooltip's questions --------------------------------------------
+  //
+  // Asked and answered in **logical** window pixels: the x a caller has is a
+  // mouse event's, and what it does with the answer is position a style or
+  // anchor a popup. The layout is device, so the question is multiplied on
+  // the way in and every pixel in the answer divided on the way out. At 1x
+  // that is the identity, which is how a tooltip that compared the two
+  // directly worked everywhere until a 2x panel snapped it to the plot's
+  // left edge whatever the pointer did.
 
-  /** The plot rectangle in window coordinates, for overlay positioning. */
+  /** The plot rectangle in logical window coordinates, for overlay
+   *  positioning. */
   plotRect(): PlotRect | null {
-    return this._layout()?.plot ?? null;
+    const plot = this._layout()?.plot;
+    return plot ? this._logicalRect(plot) : null;
+  }
+
+  private _logicalRect(rect: PlotRect): PlotRect {
+    const s = this._scale;
+    if (s === 1) return rect;
+    return {
+      x: rect.x / s,
+      y: rect.y / s,
+      width: rect.width / s,
+      height: rect.height / s,
+    };
   }
 
   /**
-   * What is under a window-coordinate pointer x: the snapped index, its x
-   * value, and every series' value and pixel position there. Null outside
-   * the data or before layout. O(log n) against sorted data.
+   * What is under a logical window x: the snapped index, its x value, and
+   * every series' value and pixel position there. Null outside the data or
+   * before layout. O(log n) against sorted data.
    */
   hitAt(winX: number): ChartHit | null {
     const layout = this._layout();
     const { spec } = this._props();
     if (!layout || !spec || layout.geoms.length === 0) return null;
     const { plot, xScale, yScale } = layout;
-    const clamped = Math.max(plot.x, Math.min(plot.x + plot.width, winX));
+    const s = this._scale;
+    const clamped = Math.max(plot.x, Math.min(plot.x + plot.width, winX * s));
 
     let index: number;
     let px: number;
@@ -922,11 +970,18 @@ export class ChartPlotNode extends Node {
         label: geom.spec.label,
         color: geom.color,
         value,
-        py: yScale.scale(Number.isNaN(painted) ? value : painted),
+        py: yScale.scale(Number.isNaN(painted) ? value : painted) / s,
       });
     }
     if (points.length === 0) return null;
     const xSpan = xScale.kind === 'band' ? 0 : xScale.d1 - xScale.d0;
-    return { index, xValue, px, xSpan, plot, points };
+    return {
+      index,
+      xValue,
+      px: px / s,
+      xSpan,
+      plot: this._logicalRect(plot),
+      points,
+    };
   }
 }

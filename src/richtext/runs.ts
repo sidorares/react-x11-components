@@ -70,14 +70,18 @@ export interface CaretSource {
  * terminal's cell backgrounds, a highlighted `<span>`.
  *
  * `dx`/`dy` translate the line's own coordinates into the target space, so a
- * caller that placed this line itself passes where it placed it.
+ * caller that placed this line itself passes where it placed it. `scale` is
+ * the display scale: the chip's two-pixel inset is a logical length that
+ * never passes through a style, and grows with it.
  */
 export function paintRunBackgrounds(
   ctx: FillContext,
   line: LaidLine,
   dx: number,
   dy: number,
+  scale = 1,
 ): void {
+  const inset = Math.round(2 * scale);
   for (const r of line.runs) {
     const bg = r.span.bg;
     if (!bg) continue;
@@ -98,21 +102,25 @@ export function paintRunBackgrounds(
     }
     const m = r.run.font.metrics(r.run.size);
     ctx.fillRect(
-      Math.round(dx + line.x + r.x - 2),
+      Math.round(dx + line.x + r.x - inset),
       Math.round(dy + line.baseline - m.ascent),
-      Math.ceil(r.width + 4),
+      Math.ceil(r.width + inset * 2),
       Math.ceil(m.ascent + m.descent),
     );
   }
 }
 
-/** The rules that sit **over** the glyphs: link underlines, strikethrough. */
+/** The rules that sit **over** the glyphs: link underlines, strikethrough.
+ *  A rule is one logical pixel thick — `scale` device pixels, so a link on a
+ *  2x panel is underlined as heavily as on a 1x one, not with a hairline. */
 export function paintRunRules(
   ctx: FillContext,
   line: LaidLine,
   dx: number,
   dy: number,
+  scale = 1,
 ): void {
+  const t = ruleThickness(scale);
   for (const r of line.runs) {
     const { underline, strike } = r.span;
     if (underline) {
@@ -120,9 +128,10 @@ export function paintRunRules(
       underlineRule(
         ctx,
         Math.round(dx + line.x + r.x),
-        Math.round(dy + line.baseline + 2),
+        Math.round(dy + line.baseline + 2 * t),
         Math.ceil(r.width),
         r.span.underlineStyle ?? 'single',
+        t,
       );
     }
     if (strike) {
@@ -132,20 +141,27 @@ export function paintRunRules(
         Math.round(dx + line.x + r.x),
         Math.round(dy + line.baseline - m.ascent * 0.38),
         Math.ceil(r.width),
-        1,
+        t,
       );
     }
   }
 }
 
+/** One logical pixel on the device grid, never less than one device pixel. */
+function ruleThickness(scale: number): number {
+  return Math.max(1, Math.round(scale));
+}
+
 /**
  * The rule under a run, in one of SGR 4's five styles.
  *
- * All five are built from 1px rectangles rather than a stroked path: the mock
- * backend has no path API, and a hairline stroke on a text baseline is not
- * worth an antialiased path even where there is one. The curl is a two-level
- * square wave — at a text size it reads as a squiggle, which is the entire
- * job.
+ * All five are built from rectangles `t` pixels thick — one logical pixel —
+ * rather than a stroked path: the mock backend has no path API, and a
+ * hairline stroke on a text baseline is not worth an antialiased path even
+ * where there is one. The curl is a two-level square wave — at a text size
+ * it reads as a squiggle, which is the entire job. The dot pitch and the
+ * dash length scale with the thickness, so the pattern is the pattern at
+ * any display scale.
  */
 export function underlineRule(
   ctx: FillContext,
@@ -153,31 +169,34 @@ export function underlineRule(
   y: number,
   width: number,
   style: NonNullable<TextRun['underlineStyle']>,
+  t = 1,
 ): void {
   switch (style) {
     case 'double':
-      ctx.fillRect(x, y, width, 1);
-      ctx.fillRect(x, y + 2, width, 1);
+      ctx.fillRect(x, y, width, t);
+      ctx.fillRect(x, y + 2 * t, width, t);
       return;
     case 'dotted':
-      for (let i = 0; i < width; i += 2) ctx.fillRect(x + i, y, 1, 1);
+      for (let i = 0; i < width; i += 2 * t) {
+        ctx.fillRect(x + i, y, Math.min(t, width - i), t);
+      }
       return;
     case 'dashed':
-      for (let i = 0; i < width; i += 6)
-        ctx.fillRect(x + i, y, Math.min(3, width - i), 1);
+      for (let i = 0; i < width; i += 6 * t)
+        ctx.fillRect(x + i, y, Math.min(3 * t, width - i), t);
       return;
     case 'curly':
-      for (let i = 0; i < width; i += 2) {
+      for (let i = 0; i < width; i += 2 * t) {
         ctx.fillRect(
           x + i,
-          y + (i % 4 === 0 ? 0 : 1),
-          Math.min(2, width - i),
-          1,
+          y + (i % (4 * t) === 0 ? 0 : t),
+          Math.min(2 * t, width - i),
+          t,
         );
       }
       return;
     default:
-      ctx.fillRect(x, y, width, 1);
+      ctx.fillRect(x, y, width, t);
       return;
   }
 }

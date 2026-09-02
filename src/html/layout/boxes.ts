@@ -339,8 +339,13 @@ export interface BoxTree {
 
 export interface BuildOptions {
   cascade: Cascade;
-  /** Intrinsic size for an image the host has already loaded. `null` when it
-   *  has not: the box takes the attribute size, or a placeholder. */
+  /** Device pixels per CSS pixel. An image's pixels and a `width="600"`
+   *  attribute are CSS pixels; every box is device, so both are multiplied
+   *  on the way in. Default 1. */
+  scale?: number;
+  /** Intrinsic size for an image the host has already loaded, in the
+   *  image's own pixels. `null` when it has not: the box takes the attribute
+   *  size, or a placeholder. */
   imageSize(el: Element): { width: number; height: number } | null;
   /** The size a real widget wants, so the box in the flow is the size the
    *  control will be drawn at. */
@@ -495,17 +500,20 @@ class Builder {
     else if (style.float !== 'none') box.isFloat = true;
 
     if (replaced === 'image') {
+      // Both sources are CSS pixels — an image pixel is one, and so is an
+      // attribute — and the box is device.
+      const scale = this._options.scale ?? 1;
       const loaded = this._options.imageSize(el);
       if (loaded) {
-        box.intrinsicWidth = loaded.width;
-        box.intrinsicHeight = loaded.height;
+        box.intrinsicWidth = loaded.width * scale;
+        box.intrinsicHeight = loaded.height * scale;
       } else {
         // An image that has not arrived still needs a box, or the document
         // reflows under the reader when it does. The attributes are the
         // author telling us the size in advance; without them the box is a
         // small placeholder rather than nothing.
-        box.intrinsicWidth = numberAttr(el, 'width') ?? 0;
-        box.intrinsicHeight = numberAttr(el, 'height') ?? 0;
+        box.intrinsicWidth = (numberAttr(el, 'width') ?? 0) * scale;
+        box.intrinsicHeight = (numberAttr(el, 'height') ?? 0) * scale;
       }
       // The alt text joins the document text, so a document read with the
       // images blocked still copies as prose.

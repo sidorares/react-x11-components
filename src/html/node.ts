@@ -101,7 +101,8 @@ export interface HtmlViewProps {
     request: ResourceRequest,
   ) => Promise<ResourceResult | null> | ResourceResult | null;
   onScript?: (script: ScriptRequest) => void;
-  /** Where the real widgets go, in the element's own coordinates. */
+  /** Where the real widgets go, in the element's own coordinates and in
+   *  logical pixels — the unit the style that mounts each one is in. */
   onControls?: (rects: ControlRect[]) => void;
   /** The parsed document, once per parse — the DOM handle. */
   onDocument?: (document: Document) => void;
@@ -168,6 +169,70 @@ export class HtmlViewNode extends Node {
     return this.props as unknown as HtmlViewProps;
   }
 
+  // --- units ----------------------------------------------------------------
+  //
+  // The whole pipeline — the cascade's lengths, the box tree, the paint, the
+  // walks the accessors run — works in **device pixels**, the unit `abs`,
+  // `contentBox()`, the paint context and `paintDamage()` arrive in (core's
+  // `docs/scale.md`). Three things cross into that unit and each converts
+  // once, here:
+  //
+  //  - a CSS pixel: every `px` the author wrote, the UA sheet's, an image's
+  //    own pixels, a `width="600"` attribute, the theme's font size and
+  //    control chrome in `look`. `UnitContext.scale` and `_deviceLook()`
+  //    multiply them on the way in;
+  //  - a synthetic event's `x`/`y`, and so the public point queries
+  //    (`elementAtPoint`, `hrefAtPoint`, `setHover`): logical, multiplied in
+  //    `_toDocument`. The selection seam (`textIndexAt` and the two rect
+  //    accessors) is core's device-pixel contract and stays device;
+  //  - a control rect on its way out to `onControls`: divided, because it
+  //    becomes a style.
+  //
+  // At 1x every conversion is the identity, which is how a view that
+  // compared `ev.x` with `abs` and laid `16px` out as sixteen device pixels
+  // passed every test and then hovered the wrong element and drew the
+  // document at half size on a retina panel.
+
+  /** Device pixels per logical pixel — the display scale this element's
+   *  window resolved to, constant for the node's life. */
+  private get _scale(): number {
+    return this.scale > 0 ? this.scale : 1;
+  }
+
+  private _deviceLookFor: RootLook | null = null;
+  private _deviceLookAt = 0;
+  private _deviceLookValue: RootLook | null = null;
+
+  /** The look with its lengths on the device grid: the theme's font size and
+   *  the control chrome are logical pixels, and the cascade's initial style
+   *  and `measureControl` want device ones. Memoized on the look's identity
+   *  so the cascade and the control measurer see one object. */
+  private _deviceLook(): RootLook {
+    const look = this._props().look;
+    const s = this._scale;
+    if (
+      this._deviceLookValue &&
+      this._deviceLookFor === look &&
+      this._deviceLookAt === s
+    ) {
+      return this._deviceLookValue;
+    }
+    const scaled =
+      s === 1
+        ? look
+        : {
+            ...look,
+            fontSize: look.fontSize * s,
+            controlPadY: look.controlPadY * s,
+            controlBorder: look.controlBorder * s,
+            controlRadius: look.controlRadius * s,
+          };
+    this._deviceLookFor = look;
+    this._deviceLookAt = s;
+    this._deviceLookValue = scaled;
+    return scaled;
+  }
+
   // --- the pipeline ---------------------------------------------------------
 
   private _invalidate(stale: Stale): void {
@@ -232,7 +297,8 @@ export class HtmlViewNode extends Node {
   /** Rebuild the cascade — the document's sheets plus the host's. */
   private _restyle(width: number): void {
     const props = this._props();
-    const sheets: Stylesheet[] = [uaStylesheet(props.look)];
+    const look = this._deviceLook();
+    const sheets: Stylesheet[] = [uaStylesheet(look)];
     let order = 0;
     for (const ref of this._source.facts().sheets) {
       const text =
@@ -267,9 +333,10 @@ export class HtmlViewNode extends Node {
     }
     this._cascade = new Cascade(
       sheets,
-      props.look,
+      look,
       width,
       this._viewportHeight(),
+      this._scale,
     );
     this._cascade.setPointer({
       hovered: new Set(this._hovered),
@@ -321,12 +388,13 @@ export class HtmlViewNode extends Node {
     cascade.viewportHeight = this._viewportHeight();
 
     if (this._stale >= Stale.Boxes || !this._tree) {
-      const props = this._props();
+      const look = this._deviceLook();
       this._tree = buildBoxes(this._source.document, {
         cascade,
+        scale: this._scale,
         imageSize: (el) => this._resources.imageSize(attr(el, 'src') ?? ''),
         controlSize: (el, kind, style) =>
-          measureControl(el, kind, style, this._fonts(), props.look),
+          measureControl(el, kind, style, this._fonts(), look),
       });
       this._textPoints = null;
       this._pointsAreUnits = null;
@@ -355,7 +423,20 @@ export class HtmlViewNode extends Node {
     const tree = this._tree;
     const report = this._props().onControls;
     if (!tree || !report) return;
-    const rects = controlRectsOf(tree);
+    // The boxes are device pixels; each rect becomes the style of a widget
+    // mounted beside this element, and a style is logical.
+    const s = this._scale;
+    const rects = controlRectsOf(tree).map((r) =>
+      s === 1
+        ? r
+        : {
+            ...r,
+            x: r.x / s,
+            y: r.y / s,
+            width: r.width / s,
+            height: r.height / s,
+          },
+    );
     if (sameRects(rects, this._controls)) return;
     this._controls = rects;
     report(rects);
@@ -463,7 +544,9 @@ export class HtmlViewNode extends Node {
   override textIndexAt(x: number, y: number): number {
     const tree = this._tree;
     if (!tree) return 0;
-    const local = this._toDocument(x, y);
+    // Core's contract: a device-pixel point, the same space the two rect
+    // accessors below answer in.
+    const local = { x: x - this.abs.x, y: y - this.abs.y };
     const hit = nearestText(tree.root, local.x, local.y);
     if (!hit) return 0;
     return this._toPoints(hit);
@@ -495,10 +578,15 @@ export class HtmlViewNode extends Node {
   }
 
   // --- pointer --------------------------------------------------------------
+  //
+  // The three point queries take **logical** window pixels — what a synthetic
+  // event's `x`/`y` carry and what `useLinkClicks` and an application's
+  // handler hand over — and are the one place the two units meet on the way
+  // in. `_toDocument` multiplies.
 
-  /** The link under a point, if any. Not part of the selection seam: core
-   *  deliberately left hover and `cursorAt` out of #291, so following a link
-   *  stays this package's. */
+  /** The link under a logical window point, if any. Not part of the
+   *  selection seam: core deliberately left hover and `cursorAt` out of
+   *  #291, so following a link stays this package's. */
   hrefAtPoint(x: number, y: number): string | null {
     const el = this.elementAtPoint(x, y);
     let node: Element | null = el;
@@ -510,7 +598,7 @@ export class HtmlViewNode extends Node {
     return null;
   }
 
-  /** The deepest element whose box contains a window-space point. */
+  /** The deepest element whose box contains a logical window point. */
   elementAtPoint(x: number, y: number): Element | null {
     const tree = this._tree;
     if (!tree) return null;
@@ -519,9 +607,10 @@ export class HtmlViewNode extends Node {
   }
 
   /**
-   * The pointer moved. Returns true when the cascade's answer could have
-   * changed, so the caller knows whether to invalidate — which it only ever
-   * does for a document that actually contains a `:hover` rule.
+   * The pointer moved, to a logical window point. Returns true when the
+   * cascade's answer could have changed, so the caller knows whether to
+   * invalidate — which it only ever does for a document that actually
+   * contains a `:hover` rule.
    */
   setHover(x: number, y: number): boolean {
     const cascade = this._cascade;
@@ -570,8 +659,10 @@ export class HtmlViewNode extends Node {
     return this._source.facts().title;
   }
 
+  /** A logical window point in document (device) coordinates. */
   private _toDocument(x: number, y: number): { x: number; y: number } {
-    return { x: x - this.abs.x, y: y - this.abs.y };
+    const s = this._scale;
+    return { x: x * s - this.abs.x, y: y * s - this.abs.y };
   }
 
   // --- pointer defaults -----------------------------------------------------
@@ -618,6 +709,7 @@ export class HtmlViewNode extends Node {
     paintDocument(ctx as PaintContext, tree, {
       originX: this.abs.x,
       originY: this.abs.y,
+      scale: this._scale,
       damage,
       selection: range
         ? { start: this._toUnits(range.start), end: this._toUnits(range.end) }

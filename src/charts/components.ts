@@ -210,7 +210,9 @@ export interface TooltipData {
  * tooltip itself uses. It is also the primitive an app builds pan and zoom
  * gestures on — the hit carries the plot rect (for pixels→domain-units)
  * and the x value under any window x, so a drag handler needs nothing
- * else from the chart's internals.
+ * else from the chart's internals. The x asked for and every pixel in the
+ * answer are **logical** window pixels — the unit a mouse event's `x`
+ * arrives in, whatever the display scale.
  */
 export interface ChartPlotHandle {
   hitAt(x: number): ChartHit | null;
@@ -370,8 +372,9 @@ export interface CartesianChartProps {
 
 interface HoverState {
   hit: ChartHit;
-  /** the element's window rect when the hit was taken — overlays are
-   * positioned relative to the plot wrapper, which the element fills */
+  /** the element's window rect when the hit was taken, in logical pixels —
+   * overlays are positioned relative to the plot wrapper, which the element
+   * fills, and a style length is logical */
   originX: number;
   originY: number;
   width: number;
@@ -445,12 +448,16 @@ function makeCartesianChart(
       // snap so sitting on a point does not flip it back and forth
       if (x > hit.px + SIDE_HYSTERESIS) sideRef.current = 'left';
       else if (x < hit.px - SIDE_HYSTERESIS) sideRef.current = 'right';
+      // Everything in a HoverState becomes a style length or an anchor
+      // point, so it is logical pixels: the hit already is, and `abs` is
+      // device (react-x11's docs/scale.md) — divided here, once.
+      const s = node.scale > 0 ? node.scale : 1;
       setHover({
         hit,
-        originX: node.abs.x,
-        originY: node.abs.y,
-        width: node.abs.width,
-        height: node.abs.height,
+        originX: node.abs.x / s,
+        originY: node.abs.y / s,
+        width: node.abs.width / s,
+        height: node.abs.height / s,
         pointerY: y,
         side: sideRef.current,
       });

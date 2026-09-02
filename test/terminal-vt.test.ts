@@ -22,10 +22,12 @@ import {
   cleanup,
   act,
   expectPixel,
+  fireEvent,
   screen,
   userEvent,
   waitFor,
 } from 'react-x11/test';
+import type { RenderX11Options } from 'react-x11/test';
 import type { DrawnNode } from 'react-x11';
 import {
   XK_BACKSPACE,
@@ -1216,3 +1218,132 @@ test('a pty seam that has nothing to load says which', async () => {
   assert.match(broken.message, /installed but would not load/);
   assert.match(broken.message, /NODE_MODULE_VERSION/);
 });
+
+// --- 7. the display scale ---------------------------------------------------
+//
+// react-x11 hands a registered element two units (its docs/scale.md):
+// `contentBox()`, `this.style.fontSize` and so the cell metrics shaped from
+// it are device pixels, while a synthetic event's `x`/`y` are logical. At 1x
+// — every other test here — the two coincide, which is how a `_cellAt` that
+// subtracted `contentBox()` from `ev.x` passed all of them and then reported
+// the cell half as far from the corner as the pointer on a retina panel.
+// These run at 2x and pin the grid to device pixels and a click to the cell
+// under it.
+
+/** The harness at a pinned display scale (react-x11's docs/scale.md): the
+ *  headless server resolves to exactly 1 on its own, which is why every
+ *  other test here can read its numbers literally. */
+function atScale(scale: number, over: RenderX11Options): RenderX11Options {
+  return { ...over, scale };
+}
+
+/** The centre of a cell as the device offset from the node's centre that
+ *  `fireEvent` wants. `abs`, the content box and the metrics are all
+ *  device, so no unit crosses here. */
+function cellCentre(
+  node: VtTermNode,
+  col: number,
+  row: number,
+): { dx: number; dy: number } {
+  const box = node.contentBox();
+  const fonts = (
+    node as unknown as {
+      _fontSet(): { metrics: { cellWidth: number; cellHeight: number } } | null;
+    }
+  )._fontSet();
+  assert.ok(fonts, 'the font set is built');
+  const { abs } = node as unknown as DrawnNode;
+  return {
+    dx: box.x + (col + 0.5) * fonts.metrics.cellWidth - (abs.x + abs.width / 2),
+    dy:
+      box.y + (row + 0.5) * fonts.metrics.cellHeight - (abs.y + abs.height / 2),
+  };
+}
+
+test(
+  'at a display scale of 2 a click reports the cell under the pointer',
+  { skip: !FONTS },
+  async () => {
+    const pty = new FakePtyHost();
+    await renderX11(
+      h(Terminal, {
+        backend: 'vt',
+        pty,
+        fontFamily: 'monospace',
+        fontSize: 16,
+        cursorBlink: false,
+      }),
+      atScale(2, { fonts: FONTS!, width: 400, height: 200 }),
+    );
+    await waitFor(() => assert.ok(pty.last));
+    const node = vtNode();
+    const drawn = node as unknown as DrawnNode;
+    assert.strictEqual(
+      drawn.abs.width,
+      800,
+      'a 400-logical-pixel window is 800 device pixels wide, and `abs` is device',
+    );
+    // The program asks for clicks, SGR-encoded so the cell is readable.
+    await act(async () => {
+      pty.last!.feed('\x1b[?1000h\x1b[?1006h');
+    });
+    const term = (node as unknown as { _term: XtermTerminal | null })._term;
+    await waitFor(() =>
+      assert.strictEqual(term?.modes.mouseTrackingMode, 'vt200'),
+    );
+    await waitFor(() => assert.ok(node.cols > 4, 'the grid has been painted'));
+
+    // Cell (3, 1). Read in logical pixels its centre is half as far from the
+    // corner — cell (1, 0), which is what the previous node reported.
+    const at = cellCentre(node, 3, 1);
+    await act(async () => {
+      fireEvent.mouseDown(drawn, { ...at, button: 1 });
+      fireEvent.mouseUp(drawn, { ...at, button: 1 });
+    });
+    const written = pty.last!.written;
+    assert.ok(
+      written.includes('\x1b[<0;4;2M'),
+      `the press is reported on column 4, row 2 (1-based): ${JSON.stringify(
+        written,
+      )}`,
+    );
+    assert.ok(
+      written.includes('\x1b[<0;4;2m'),
+      'and the release on the same cell',
+    );
+  },
+);
+
+test(
+  'at a display scale of 2 a bare terminal fits the grid a 1x window of the same logical size does',
+  { skip: !FONTS },
+  async () => {
+    // No `fontSize`: the default is a logical 13, and a default is a constant
+    // that never passes through a style — so the node multiplies it itself.
+    const gridAt = async (
+      scale: number,
+    ): Promise<{ cols: number; rows: number }> => {
+      const pty = new FakePtyHost();
+      await renderX11(
+        h(Terminal, { backend: 'vt', pty, fontFamily: 'monospace' }),
+        atScale(scale, { fonts: FONTS!, width: 400, height: 200 }),
+      );
+      await waitFor(() => assert.ok(pty.last));
+      const grid = vtNode().gridSize();
+      await cleanup();
+      return grid;
+    };
+    const one = await gridAt(1);
+    const two = await gridAt(2);
+    assert.ok(
+      one.cols > 20 && one.rows > 5,
+      `a real grid at 1x: ${one.cols}×${one.rows}`,
+    );
+    // Shaped at 26 rather than 13 device pixels, the same cells fit — give or
+    // take the rounding of a glyph advance. Left at 13, twice as many would.
+    assert.ok(
+      Math.abs(two.cols - one.cols) <= 2 && Math.abs(two.rows - one.rows) <= 1,
+      `the 2x grid is ${two.cols}×${two.rows}, the 1x grid ${one.cols}×${one.rows}`,
+    );
+  },
+);

@@ -284,6 +284,42 @@ export class VtTermNode extends Node {
   // --- metrics and layout --------------------------------------------------
 
   /**
+   * Device pixels per logical pixel — the display scale (core's
+   * `docs/scale.md`).
+   *
+   * Everything this node computes with is device pixels: `contentBox()`,
+   * `this.style.fontSize` (core multiplies a style length before handing it
+   * over) and so the cell metrics shaped from it, the paint context and the
+   * renderer's surface. Two things are not, and each is converted once where
+   * it enters: a synthetic event's `x`/`y` (`_devicePoint`), and the
+   * constants below that never pass through a style — `DEFAULT_SIZE` and the
+   * cell guesses `measureContent` makes before there is a font.
+   */
+  private get _scale(): number {
+    return this.scale > 0 ? this.scale : 1;
+  }
+
+  /**
+   * A pointer event in the grid's own pixels.
+   *
+   * The native X event carries the device position the synthetic `x`/`y`
+   * were divided from, so it is the exact answer where there is one — core's
+   * own drawn elements read it the same way — and `x * scale` is the answer
+   * for an event synthesized without one.
+   */
+  private _devicePoint(ev: { x: number; y: number; nativeEvent?: unknown }): {
+    x: number;
+    y: number;
+  } {
+    const native = ev.nativeEvent as { x?: unknown; y?: unknown } | null;
+    const s = this._scale;
+    return {
+      x: typeof native?.x === 'number' ? native.x : ev.x * s,
+      y: typeof native?.y === 'number' ? native.y : ev.y * s,
+    };
+  }
+
+  /**
    * The font, off the **style** rather than off a prop of its own.
    *
    * `fontFamily` and `fontSize` are style properties, and core throws in
@@ -291,12 +327,17 @@ export class VtTermNode extends Node {
    * reason: a terminal inheriting the font from the tree above it is what
    * makes `<box style={{ fontSize: 15 }}>` mean what it says. `<Terminal>`'s
    * `fontFamily`/`fontSize` props are folded into this element's style.
+   *
+   * The size answered is in device pixels — the unit the glyphs are shaped
+   * at. A `fontSize` from the style arrives already multiplied; the default
+   * is a logical 13 and is multiplied here, so a bare `<Terminal>` on a 2x
+   * panel is the size it is on a 1x one, sharper rather than smaller.
    */
   private _fontStyle(): { family: string; size: number } {
     const style = this.style as { fontFamily?: string; fontSize?: number };
     return {
       family: style.fontFamily ?? DEFAULT_FAMILY,
-      size: Number(style.fontSize ?? DEFAULT_SIZE),
+      size: Number(style.fontSize ?? DEFAULT_SIZE * this._scale),
     };
   }
 
@@ -320,8 +361,11 @@ export class VtTermNode extends Node {
    */
   override measureContent({ width, height }: MeasureConstraints): MeasuredSize {
     const fonts = this._fontSet();
-    const cellWidth = fonts?.metrics.cellWidth ?? DEFAULT_SIZE * 0.6;
-    const cellHeight = fonts?.metrics.cellHeight ?? DEFAULT_SIZE * 1.2;
+    // The constraints and the answer are device pixels, like the metrics;
+    // the guesses made without a font (the mock backend) are scaled to match.
+    const s = this._scale;
+    const cellWidth = fonts?.metrics.cellWidth ?? DEFAULT_SIZE * 0.6 * s;
+    const cellHeight = fonts?.metrics.cellHeight ?? DEFAULT_SIZE * 1.2 * s;
     return {
       width: Math.min(PREFERRED_COLS * cellWidth, width),
       height: Math.min(PREFERRED_ROWS * cellHeight, height),
@@ -763,13 +807,18 @@ export class VtTermNode extends Node {
 
   // --- input: pointer ------------------------------------------------------
 
-  private _cellAt(ev: { x: number; y: number }): Grid {
+  /** The cell under a pointer event. `contentBox()` and the cell metrics are
+   *  device pixels, so the event is read in the same unit — a synthetic
+   *  `x`/`y` is logical, and comparing it directly put a 2x click on the
+   *  cell half as far from the corner as the pointer. */
+  private _cellAt(ev: { x: number; y: number; nativeEvent?: unknown }): Grid {
     const fonts = this._fontSet();
     const box = this.contentBox();
     const cellWidth = fonts?.metrics.cellWidth ?? 1;
     const cellHeight = fonts?.metrics.cellHeight ?? 1;
-    const col = Math.floor((ev.x - box.x) / cellWidth);
-    const row = Math.floor((ev.y - box.y) / cellHeight);
+    const p = this._devicePoint(ev);
+    const col = Math.floor((p.x - box.x) / cellWidth);
+    const row = Math.floor((p.y - box.y) / cellHeight);
     return {
       col: Math.max(0, Math.min(this._cols - 1, col)),
       row: Math.max(0, Math.min(this._rows - 1, row)),
@@ -875,10 +924,12 @@ export class VtTermNode extends Node {
       }
       return;
     }
-    // Dragging past an edge scrolls the scrollback under the pointer.
+    // Dragging past an edge scrolls the scrollback under the pointer. The
+    // box is device pixels; so is the point compared with it.
     const box = this.contentBox();
-    if (ev.y < box.y) term.scrollLines(-1);
-    else if (ev.y > box.y + box.height) term.scrollLines(1);
+    const { y } = this._devicePoint(ev);
+    if (y < box.y) term.scrollLines(-1);
+    else if (y > box.y + box.height) term.scrollLines(1);
     this._head = { line: this._absLine(row), col };
     this._updateSelection();
   }

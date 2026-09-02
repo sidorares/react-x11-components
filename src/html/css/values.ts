@@ -54,7 +54,18 @@ export function resolveOrNull(len: Len, base: number): number | null {
   return Number.isFinite(base) ? (len.pct / 100) * base : null;
 }
 
-/** The font-relative context a length parses against. */
+/**
+ * The context a length parses against.
+ *
+ * Every length that comes out of `parseLength` is in **device pixels** —
+ * the unit the box tree, the paint and the hit tests all share. `em`, `rem`,
+ * `vw` and `vh` are already device (the root font size and the viewport are
+ * handed over that way); the absolute units are CSS pixels the author wrote,
+ * and `scale` is how many device pixels one of those is (core's
+ * `docs/scale.md`). At 1x it is the identity, which is how a renderer that
+ * never multiplied passed every test and drew a `16px` heading eight logical
+ * pixels tall on a retina panel.
+ */
 export interface UnitContext {
   /** The element's own `font-size`, already computed. */
   em: number;
@@ -63,6 +74,8 @@ export interface UnitContext {
   /** Viewport, for `vw`/`vh`/`vmin`/`vmax`. */
   vw: number;
   vh: number;
+  /** Device pixels per CSS pixel — the display scale. */
+  scale: number;
 }
 
 const LENGTH_RE =
@@ -89,31 +102,34 @@ export function parseLength(
   if (!m) return null;
   const n = Number(m[1]);
   const unit = m[2];
-  if (!unit) return bareIsPx ? n : null;
+  if (!unit) return bareIsPx ? n * ctx.scale : null;
   if (unit === '%') return { pct: n };
   return n * unitScale(unit, ctx);
 }
 
+/** Device pixels per one of `unit`. The absolute units are CSS pixels and
+ *  multiples of them, so they carry the display scale; the relative ones
+ *  resolve against values that are device already. */
 function unitScale(unit: string, ctx: UnitContext): number {
   switch (unit) {
     case 'px':
-      return 1;
+      return ctx.scale;
     case 'em':
       return ctx.em;
     case 'rem':
       return ctx.rem;
     case 'pt':
-      return 96 / 72;
+      return (96 / 72) * ctx.scale;
     case 'pc':
-      return 16;
+      return 16 * ctx.scale;
     case 'in':
-      return 96;
+      return 96 * ctx.scale;
     case 'cm':
-      return 96 / 2.54;
+      return (96 / 2.54) * ctx.scale;
     case 'mm':
-      return 96 / 25.4;
+      return (96 / 25.4) * ctx.scale;
     case 'q':
-      return 96 / 101.6;
+      return (96 / 101.6) * ctx.scale;
     // Approximations rather than font queries: both are within a few percent
     // for every text face, and asking the font manager here would make the
     // cascade depend on font loading.

@@ -54,6 +54,9 @@ export interface PaintOptions {
   /** Where the document's origin sits in the window. Scrolling is this. */
   originX: number;
   originY: number;
+  /** Device pixels per logical pixel, for the run rules — a link's
+   *  underline is a logical pixel thick, not a device one. Default 1. */
+  scale?: number;
   /** The rectangle being repainted, in window coordinates, or null for all. */
   damage: Rect | null;
   /** The document range the selection covers, in code units, or null. */
@@ -526,7 +529,13 @@ function paintLines(ctx: PaintContext, box: Box, options: PaintOptions): void {
     for (const text of line.texts) {
       const natural = text.layout.lines[text.layoutLine];
       if (natural)
-        paintRunBackgrounds(ctx, natural, text.drawX + dx, text.drawY + dy);
+        paintRunBackgrounds(
+          ctx,
+          natural,
+          text.drawX + dx,
+          text.drawY + dy,
+          options.scale ?? 1,
+        );
     }
     paintSelection(ctx, line, options);
   }
@@ -556,7 +565,13 @@ function paintLines(ctx: PaintContext, box: Box, options: PaintOptions): void {
     for (const text of line.texts) {
       const natural = text.layout.lines[text.layoutLine];
       if (natural)
-        paintRunRules(ctx, natural, text.drawX + dx, text.drawY + dy);
+        paintRunRules(
+          ctx,
+          natural,
+          text.drawX + dx,
+          text.drawY + dy,
+          options.scale ?? 1,
+        );
     }
     for (const placed of line.atomics) paintBox(ctx, placed.box, options);
   }

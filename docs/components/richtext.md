@@ -147,7 +147,10 @@ module's.
 ## Also exported
 
 - `RichTextNode` — the node class, for a component that wants to subclass or
-  to type a ref. `hrefAtPoint(x, y)` is what `useLinkClicks` reads.
+  to type a ref. `hrefAtPoint(x, y)` is what `useLinkClicks` reads; it takes
+  the logical window point a mouse event carries, whatever the display
+  scale, while the four selection accessors keep core's device-pixel
+  contract.
 - `NtkApp`, `TextLayoutLike` — the structural types the node speaks. ntk is
   deliberately loose in react-x11's declarations, so an element says what it
   needs rather than importing a wide type.

@@ -35,7 +35,10 @@ export interface ControlChrome {
   borderColor: string;
 }
 
-/** Where a control goes, in the element's own coordinate space. */
+/** Where a control goes, in the element's own coordinate space. Inside the
+ *  engine (`controlRectsOf`) these are device pixels like every box; what
+ *  `onControls` reports is the same rect in logical pixels, because it
+ *  becomes the style of a widget. */
 export interface ControlRect {
   element: Element;
   kind: ReplacedKind;
