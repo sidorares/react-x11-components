@@ -115,6 +115,14 @@ on: setting it does **not** fire `onChange`. Read-only members:
 `toggleLineComment()`, `copySelection(sel?)`, `pasteFrom(sel?)`,
 `scrollBy(dx, dy)`, `caretRect()`, `focus()`, `blur()`.
 
+Every length the handle takes or answers is in **logical pixels**, the unit
+a style is written in: `caretRect()` is the caret in the editor's own
+coordinates, which is exactly what a `<popup anchor={{ at }}>` takes, and
+`scrollBy(dx, dy)` moves by the same unit a `<box>`'s `scrollBy` does. So
+are the node's `metrics()` and `measureText()`, for an app laying out its
+own overlay against the text. On a 2x panel the editor shapes, hits and
+paints its text on the device grid itself; nothing an app touches changes.
+
 ## `CodeEditorEvent`
 
 ```ts

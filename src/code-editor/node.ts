@@ -17,6 +17,21 @@
 // `onKeyDown` handler that consumes the keys the popup owns (arrows,
 // Return, Tab-accept, Escape-close) and, by consuming them, keeps this
 // node's default action from also acting on them.
+//
+// **Units.** Everything this node measures is a device-pixel quantity:
+// `this.style` and `this.abs` arrive already multiplied by the display
+// scale (react-x11's docs/scale.md), so the layouts `app.fonts` shapes at
+// that `fontSize`, the line height and column width read off them, the
+// scroll offsets and everything painted are all on the panel's grid. The
+// pointer is the exception — a synthetic event's `x`/`y` are logical — so
+// it is converted on the way in (`_devicePoint`), and the geometry the
+// handle answers is converted on the way out (`caretRect`, `metrics`,
+// `measureText`, `scrollBy`), because a `<popup anchor>` and a style length
+// are logical. The paint constants below never pass through a style, so
+// each use multiplies by `_scale`. At 1x every conversion is the identity,
+// which is how a press that handed `ev.x` to a hit test measured in glyph
+// metrics passed every test and then landed at half the pointer's distance
+// the day a native backend reported a retina panel.
 import { CARET_BLINK_MS, Node } from 'react-x11/node';
 import type {
   Context2D,
@@ -82,6 +97,9 @@ export const ELEMENT = 'codeeditor';
 
 const UNDO_LIMIT = 200;
 const DEFAULT_ROWS = 6;
+// Logical pixels, like every length an app writes. None of these pass
+// through a style, so each use multiplies by `_scale` — the way core's own
+// caret width does (see "Units" above).
 const PREFERRED_WIDTH = 360;
 const GUTTER_PAD = 8; // each side of the line numbers
 const CARET_MARGIN = 24; // keep this many px visible beside the caret
@@ -119,7 +137,10 @@ export interface CodeEditorHandle {
   toggleLineComment(): void;
   copySelection(selection?: string): void;
   pasteFrom(selection?: string): void;
+  /** Logical pixels, like a style length; true when the offset moved. */
   scrollBy(dx: number, dy: number): boolean;
+  /** The caret in the editor's own coordinates, logical pixels — what a
+   * `<popup anchor={{ at }}>` takes. */
   caretRect(): { x: number; y: number; height: number };
   focus(): void;
   blur(): void;
@@ -274,11 +295,17 @@ export interface EditorKeyEvent {
 }
 
 export interface EditorMouseEvent {
+  /** Window-relative, in logical pixels — what a synthetic event carries. */
   x: number;
   y: number;
   button?: number;
   detail?: number;
   shiftKey: boolean;
+  /** The X event underneath, when there is one. Its `x`/`y` are the device
+   * pixels `abs` is in, and the editor reads those when present — core's
+   * own idiom for its fields. A caller synthesizing an event leaves it out,
+   * and the logical `x`/`y` are multiplied by the display scale instead. */
+  nativeEvent?: unknown;
   capturePointer?(): void;
   releasePointer?(): void;
   preventDefault?(): void;
@@ -360,8 +387,10 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
    */
   override measureContent({ width }: MeasureConstraints): MeasuredSize {
     const rows = Math.max(1, Number(this.props.rows ?? DEFAULT_ROWS));
+    // Device pixels, like the constraints: the line height already is, and
+    // the preferred width is a constant that never passed through a style.
     return {
-      width: Math.min(PREFERRED_WIDTH, width),
+      width: Math.min(PREFERRED_WIDTH * this._scale, width),
       height: Math.ceil(this._lineHeight() * rows),
     };
   }
@@ -451,6 +480,33 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
 
   // --- metrics & style -----------------------------------------------------
 
+  /**
+   * Device pixels per logical pixel — the display scale this editor's
+   * window resolved to (react-x11's docs/scale.md): `1` on an ordinary
+   * display, `2` on a retina panel, fractional on a desktop set to 1.5.
+   * Resolved once by `createRoot` and constant for the node's life; `1`
+   * when the node reports nothing usable, the guard the terminal keeps.
+   */
+  private get _scale(): number {
+    return this.scale > 0 ? this.scale : 1;
+  }
+
+  /**
+   * A pointer event's position in device pixels — the unit `abs`, the
+   * content rect and every glyph metric here are in. The X event underneath
+   * carries it already; a caller that synthesized the event without one
+   * wrote logical coordinates, which multiply.
+   */
+  private _devicePoint(ev: EditorMouseEvent): { x: number; y: number } {
+    const native = ev.nativeEvent as
+      { x?: unknown; y?: unknown } | null | undefined;
+    const s = this._scale;
+    return {
+      x: typeof native?.x === 'number' ? native.x : ev.x * s,
+      y: typeof native?.y === 'number' ? native.y : ev.y * s,
+    };
+  }
+
   private _textStyle(): Record<string, unknown> {
     const s = this.style as Record<string, unknown>;
     return {
@@ -501,9 +557,9 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
 
   /**
    * The content box: `abs` inset by border and padding, computed from the
-   * flattened style. [react-x11 gap] built-in fields read an internal
-   * `contentBox()`; a public equivalent would remove this arithmetic —
-   * filed as react-x11#254.
+   * flattened style — device pixels, since both of those are. [react-x11
+   * gap] built-in fields read an internal `contentBox()`; a public
+   * equivalent would remove this arithmetic — filed as react-x11#254.
    */
   private _contentRect(): {
     x: number;
@@ -534,7 +590,7 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
     if (!this.props.lineNumbers) return 0;
     this._metrics();
     const digits = Math.max(2, String(this._lines.length).length);
-    return Math.ceil(digits * this._charW) + GUTTER_PAD * 2;
+    return Math.ceil(digits * this._charW) + GUTTER_PAD * this._scale * 2;
   }
 
   private _tabSize(): number {
@@ -634,7 +690,7 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
     return entry;
   }
 
-  /** Caret x (display pixels from the text origin) for a position. */
+  /** Caret x (device pixels from the text origin) for a position. */
   private _caretX(pos: Position): number {
     const entry = this._lineEntry(pos.line);
     if (!entry.layout) return 0;
@@ -642,7 +698,7 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
     return entry.layout.caretPosition(utf16ToCp(entry.display, disp)).x;
   }
 
-  /** Window coordinates → document position. */
+  /** Window coordinates, device pixels → document position. */
   private _posAt(x: number, y: number): Position {
     this._metrics();
     const content = this._contentRect();
@@ -661,7 +717,9 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
     return clampPos(this._lines, { line, ch: entry.map.toRaw(disp) });
   }
 
-  /** Font facts the completion popup sizes itself with. */
+  /** Font facts the completion popup sizes itself with — logical pixels,
+   * because they become style lengths (`height`, `fontSize`) on its rows.
+   * The face was shaped at the device size, so a 2x panel divides. */
   metrics(): {
     lineHeight: number;
     charWidth: number;
@@ -670,37 +728,47 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
   } {
     this._metrics();
     const s = this._textStyle();
+    const scale = this._scale;
     return {
-      lineHeight: this._lineH,
-      charWidth: this._charW,
+      lineHeight: this._lineH / scale,
+      charWidth: this._charW / scale,
       family: String(s.family),
-      size: Number(s.size),
+      size: Number(s.size) / scale,
     };
   }
 
-  /** Text width in this editor's font. The built-in completion popup no
-   * longer needs it — a `<popup anchor>` measures its own rows — but an app
-   * laying out its own overlay against the text still does. */
+  /** Text width in this editor's font, in logical pixels. The built-in
+   * completion popup no longer needs it — a `<popup anchor>` measures its
+   * own rows — but an app laying out its own overlay against the text still
+   * does, and an overlay is laid out in style lengths. */
   measureText(text: string): number {
     const fonts = this._fonts();
-    if (!fonts) return text.length * this._charW;
-    return fonts.layout(text, this._textStyle()).width;
+    const width = fonts
+      ? fonts.layout(text, this._textStyle()).width
+      : text.length * this._charW;
+    return width / this._scale;
   }
 
-  /** Caret geometry relative to this node's origin — node coordinates, which
-   * is exactly what a `<popup anchor={{at}}>` takes, so the completion popup
-   * hands this straight through and nothing here has to know where the
-   * editor sits on screen. */
+  /** Caret geometry relative to this node's origin — node coordinates, in
+   * logical pixels, which is exactly what a `<popup anchor={{at}}>` takes,
+   * so the completion popup hands this straight through and nothing here
+   * has to know where the editor sits on screen, or on what panel. */
   caretRect(): { x: number; y: number; height: number } {
     this._syncProps();
     this._metrics();
     const content = this._contentRect();
     const textX = content.x + this._gutterWidth() - this.abs.x;
+    // everything above is device; the anchor is logical, so divide once
+    const s = this._scale;
     return {
-      x: textX + this._caretX(this._caret) - this._scrollX,
+      x: (textX + this._caretX(this._caret) - this._scrollX) / s,
       y:
-        content.y - this.abs.y + this._caret.line * this._lineH - this._scrollY,
-      height: this._lineH,
+        (content.y -
+          this.abs.y +
+          this._caret.line * this._lineH -
+          this._scrollY) /
+        s,
+      height: this._lineH / s,
     };
   }
 
@@ -717,18 +785,26 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
   private _maxScrollX(): number {
     const content = this._contentRect();
     const textW = content.width - this._gutterWidth();
-    return Math.max(0, this._widest + CARET_MARGIN - textW);
+    return Math.max(0, this._widest + CARET_MARGIN * this._scale - textW);
   }
 
-  /** Wheel notches (deltaX/deltaY arrive as ±1 per notch) → pixels. */
+  /** Wheel notches (deltaX/deltaY arrive as ±1 per notch) → three lines a
+   * notch, in the device pixels the offsets are kept in. */
   handleWheel(ev: { deltaX: number; deltaY: number }): boolean {
     const step = this._lineHeight() * 3;
-    return this.scrollBy(ev.deltaX * step, ev.deltaY * step);
+    return this._scrollByDevice(ev.deltaX * step, ev.deltaY * step);
   }
 
-  /** Returns true when the offset moved (the component consumes the wheel
-   * event exactly then, so an unscrollable editor lets the page scroll). */
+  /** Logical pixels, like core's own `scrollBy`: application code writes
+   * the unit it writes its styles in. Returns true when the offset moved
+   * (the component consumes the wheel event exactly then, so an
+   * unscrollable editor lets the page scroll). */
   scrollBy(dx: number, dy: number): boolean {
+    const s = this._scale;
+    return this._scrollByDevice(dx * s, dy * s);
+  }
+
+  private _scrollByDevice(dx: number, dy: number): boolean {
     const nx = Math.max(0, Math.min(this._scrollX + dx, this._maxScrollX()));
     const ny = Math.max(0, Math.min(this._scrollY + dy, this._maxScrollY()));
     if (nx === this._scrollX && ny === this._scrollY) return false;
@@ -749,11 +825,12 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
     }
     const textW = content.width - this._gutterWidth();
     const x = this._caretX(this._caret);
-    if (x < this._scrollX + CARET_MARGIN) {
-      this._scrollX = Math.max(0, x - CARET_MARGIN);
+    const margin = CARET_MARGIN * this._scale;
+    if (x < this._scrollX + margin) {
+      this._scrollX = Math.max(0, x - margin);
     }
-    if (x > this._scrollX + textW - CARET_MARGIN) {
-      this._scrollX = x - textW + CARET_MARGIN;
+    if (x > this._scrollX + textW - margin) {
+      this._scrollX = x - textW + margin;
     }
     this._scrollY = Math.max(0, Math.min(this._scrollY, this._maxScrollY()));
     this._scrollX = Math.max(0, this._scrollX);
@@ -1422,7 +1499,8 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
   handleMouseDown(ev: EditorMouseEvent): boolean {
     this._syncProps();
     this.breakUndoRun();
-    const pos = this._posAt(ev.x, ev.y);
+    const at = this._devicePoint(ev);
+    const pos = this._posAt(at.x, at.y);
     if (ev.button === 3) {
       const [a, b] = this._selectionRange();
       if (comparePos(pos, a) < 0 || comparePos(pos, b) > 0) {
@@ -1455,7 +1533,8 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
 
   handleMouseMove(ev: EditorMouseEvent): boolean {
     if (!this._drag) return false;
-    const pos = this._posAt(ev.x, ev.y);
+    const at = this._devicePoint(ev);
+    const pos = this._posAt(at.x, at.y);
     if (this._drag === 'char') this.moveCaret(pos, true);
     else if (this._drag === 'word')
       this._selectWordRange(this._dragOrigin, pos);
@@ -1598,6 +1677,9 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
     const lineH = this._lineH;
     const gutterW = this._gutterWidth();
     const textX = content.x + gutterW - this._scrollX;
+    // the context draws in device pixels, like everything measured above;
+    // the hairlines, insets and minimums below are logical constants
+    const s = this._scale;
     const props = this.props as unknown as CodeEditorProps;
     const styles = this._textStyle();
     const baseColor = styles.color as string;
@@ -1685,7 +1767,12 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
           i === b.line
             ? this._caretX({ line: i, ch: b.ch })
             : (entry.layout?.width ?? 0) + this._charW * 0.5; // the newline
-        c.fillRect(textX + startX, lineY(i), Math.max(2, endX - startX), lineH);
+        c.fillRect(
+          textX + startX,
+          lineY(i),
+          Math.max(2 * s, endX - startX),
+          lineH,
+        );
       }
     }
 
@@ -1700,7 +1787,7 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
           if (pos.line < first || pos.line > last) continue;
           const x0 = this._caretX(pos);
           const x1 = this._caretX({ line: pos.line, ch: pos.ch + 1 });
-          c.fillRect(textX + x0, lineY(pos.line), Math.max(1, x1 - x0), lineH);
+          c.fillRect(textX + x0, lineY(pos.line), Math.max(s, x1 - x0), lineH);
         }
       }
     }
@@ -1763,7 +1850,7 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
           lineY(i) +
           (lineH - (entry.layout?.height || lineH)) / 2 +
           (entry.layout?.height || lineH);
-        const y = Math.min(lineY(i) + lineH - 2, glyphBottom - 1);
+        const y = Math.min(lineY(i) + lineH - 2 * s, glyphBottom - s);
         const width = Math.max(this._charW * 0.6, x1 - x0);
         if (
           typeof c.beginPath === 'function' &&
@@ -1772,34 +1859,35 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
           typeof c.stroke === 'function'
         ) {
           c.beginPath();
-          const step = 4;
+          // a hairline zig-zag, 4px a step and 2px tall, on the panel's grid
+          const step = 4 * s;
           let up = true;
           for (let x = 0; x <= width; x += step) {
             const px = textX + x0 + x;
-            const py = y + (up ? 0 : 2);
+            const py = y + (up ? 0 : 2 * s);
             if (x === 0) c.moveTo(px, py);
             else c.lineTo(px, py);
             up = !up;
           }
           c.strokeStyle = color;
-          c.lineWidth = 1;
+          c.lineWidth = s;
           c.stroke();
         } else {
           c.fillStyle = color;
-          c.fillRect(textX + x0, y + 1, width, 1);
+          c.fillRect(textX + x0, y + s, width, s);
         }
       }
     }
 
-    // caret — 2px, in the (theme-resolved) text colour
+    // caret — 2 logical px, in the (theme-resolved) text colour
     if (this._focused && this._caretOn) {
       const x = this._caretX(this._caret);
       c.fillStyle = this._resolveColor(props.caretColor) ?? baseColor;
       c.fillRect(
         Math.round(textX + x),
-        lineY(this._caret.line) + 1,
-        2,
-        lineH - 2,
+        lineY(this._caret.line) + s,
+        2 * s,
+        lineH - 2 * s,
       );
     }
 
@@ -1826,40 +1914,46 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
           );
           layout.draw(
             ctx,
-            content.x + gutterW - GUTTER_PAD - layout.width,
+            content.x + gutterW - GUTTER_PAD * s - layout.width,
             lineY(i) + (lineH - layout.height) / 2,
           );
         }
       }
     }
 
-    // scroll thumbs — minimal, panel-style
+    // scroll thumbs — minimal, panel-style: a 3px bar inset 4px, never
+    // shorter than 24px, every one of those logical
     const maxY = this._maxScrollY();
     if (maxY > 0) {
       const trackH = content.height;
       const thumbH = Math.max(
-        24,
+        24 * s,
         (trackH * trackH) / (this._lines.length * lineH),
       );
       const yOff = (this._scrollY / maxY) * (trackH - thumbH);
       c.fillStyle = 'rgba(128,128,128,0.35)';
-      c.fillRect(content.x + content.width - 4, content.y + yOff, 3, thumbH);
+      c.fillRect(
+        content.x + content.width - 4 * s,
+        content.y + yOff,
+        3 * s,
+        thumbH,
+      );
     }
     const maxX = this._maxScrollX();
     if (maxX > 0) {
       const textW = content.width - gutterW;
       const trackW = textW;
       const thumbW = Math.max(
-        24,
-        (trackW * trackW) / (this._widest + CARET_MARGIN),
+        24 * s,
+        (trackW * trackW) / (this._widest + CARET_MARGIN * s),
       );
       const xOff = (this._scrollX / maxX) * (trackW - thumbW);
       c.fillStyle = 'rgba(128,128,128,0.35)';
       c.fillRect(
         content.x + gutterW + xOff,
-        content.y + content.height - 4,
+        content.y + content.height - 4 * s,
         thumbW,
-        3,
+        3 * s,
       );
     }
 
