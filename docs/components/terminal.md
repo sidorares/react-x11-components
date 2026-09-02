@@ -159,6 +159,13 @@ Rendering draws with XRender glyph runs into a retained offscreen surface,
 scrolls with a server-side copy, and coalesces onto react-x11's vblank-paced
 frame clock.
 
+That is the X11 backend. On react-x11's native macOS backend (2.3.x, the
+default on a Mac) the text engine has no glyph-run seams yet, so the vt
+terminal paints nothing there and says so once in development — run under
+X11 (`REACT_X11_BACKEND=x11` with XQuartz) in the meantime. The seams are
+filed as sidorares/react-x11#432 and #433, over windowkit/appkit#1; nothing
+in this package changes when they land.
+
 Keyboard, mouse and selection are what a terminal user expects:
 xterm-compatible key encoding (application cursor and keypad modes, the
 modifier parameter scheme, `Alt` as an ESC prefix), mouse reporting in the

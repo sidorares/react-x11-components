@@ -68,6 +68,31 @@ const PREFERRED_COLS = 80;
 const PREFERRED_ROWS = 24;
 /** Wheel notches to lines, the way every terminal counts them. */
 const WHEEL_LINES = 3;
+
+/**
+ * Said once per process: the engine behind `app.fonts` has no glyph-run
+ * seams, so this element paints nothing. `process` and `console` come off
+ * `globalThis` because `src/` compiles with `types: []` — see `warnVtOnly`
+ * in `../index.ts`.
+ */
+let warnedNoGlyphRuns = false;
+function warnNoGlyphRuns(): void {
+  if (warnedNoGlyphRuns) return;
+  warnedNoGlyphRuns = true;
+  const g = globalThis as {
+    process?: { env?: Record<string, string | undefined> };
+    console?: { warn(message: string): void };
+  };
+  if (g.process?.env?.NODE_ENV === 'production') return;
+  g.console?.warn(
+    '@react-x11/components: <Terminal backend="vt"> — the text engine behind ' +
+      'app.fonts has no glyph-run seams (glyphIdFor/advanceOf on a face, ' +
+      'drawGlyphs on the context), so the terminal paints nothing. ' +
+      "react-x11's Cocoa backend is the known case, tracked as " +
+      'sidorares/react-x11#432; run under X11 (REACT_X11_BACKEND=x11, or ' +
+      "createRoot({ backend: 'x11' })) in the meantime.",
+  );
+}
 /** OSC 52 payloads bigger than this are a program misbehaving, not a copy. */
 const MAX_OSC52 = 1_000_000;
 /** What counts as part of a word for double-click selection. */
@@ -341,16 +366,32 @@ export class VtTermNode extends Node {
     };
   }
 
+  /**
+   * The faces for the current family and size, or null when there is no
+   * engine to build them from.
+   *
+   * Null is cached per font key when the engine answered but cannot build
+   * glyph runs — `app.fonts` is not ntk's, which is react-x11's Cocoa backend
+   * as of 2.3.x (sidorares/react-x11#432) — so the probe runs once, not on
+   * every measure and paint. A box with no `app.fonts` at all (the mock
+   * backend) is not cached: it never had an engine to ask.
+   */
   private _fontSet(): FontSet | null {
     const { family, size } = this._fontStyle();
     const key = `${family}|${size}`;
-    if (this._fonts && key === this._fontKey) return this._fonts;
+    if (key === this._fontKey) return this._fonts;
     const fonts = (this.app as { fonts?: NtkFonts } | null | undefined)?.fonts;
     if (!fonts) return null;
+    const set = new FontSet(fonts, family, size);
     this._fontKey = key;
-    this._fonts = new FontSet(fonts, family, size);
     this._mirror.invalidate();
-    return this._fonts;
+    if (!set.glyphRuns) {
+      warnNoGlyphRuns();
+      this._fonts = null;
+      return null;
+    }
+    this._fonts = set;
+    return set;
   }
 
   /**

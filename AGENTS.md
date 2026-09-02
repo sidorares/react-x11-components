@@ -523,6 +523,18 @@ somewhere else:
   the two things still missing (mouse _encoding_ and underline colour, both in
   `@xterm/headless`) are worked around through its public parser instead, and
   filed.
+- **A foreign text engine degrades; it does not throw.** `FontSet`
+  feature-detects the glyph-run seams (`hasGlyphRuns`: `glyphIdFor` and
+  `advanceOf` on a face) and reads line height under either engine's name
+  (`lineGap`, or CoreText's `leading`). A face with `metrics` and `hasGlyph`
+  and nothing else — react-x11's Cocoa backend as of 2.3.x, the default on a
+  Mac — makes `_fontSet()` answer null, cached per font key, with a one-time
+  development warning; the node then paints its background and nothing else,
+  the same posture as the mock backend's missing pixel API. Filed upstream as
+  sidorares/react-x11#432 (the face and ctx seams) and #433 (an offscreen
+  `Surface`), over windowkit/appkit#1 (the CoreText natives). When they land,
+  adoption is a react-x11 floor bump and nothing in `renderer.ts` or
+  `fonts.ts` changes, because both already speak the documented contract.
 - **`PtyHost` is public because it is a feature**, exactly as `ProcessHost` is:
   "run the shell in a container / over ssh / in a sandbox" is a real thing to
   want. `test/fake-pty.ts` drives it, which is how CI tests a terminal with no

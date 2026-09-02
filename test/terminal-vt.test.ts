@@ -21,6 +21,7 @@ import {
   renderX11,
   cleanup,
   act,
+  createMockApp,
   expectPixel,
   fireEvent,
   screen,
@@ -70,6 +71,8 @@ import {
   readViewport,
 } from '../src/terminal/vt/diff.js';
 import type { CursorState } from '../src/terminal/vt/diff.js';
+import { FontSet, hasGlyphRuns } from '../src/terminal/vt/fonts.js';
+import type { FontMetrics, NtkFonts } from '../src/terminal/vt/fonts.js';
 import { createRenderer } from '../src/terminal/vt/renderer.js';
 import { PtyUnavailableError } from '../src/terminal/vt/pty.js';
 import { loadXterm } from '../src/terminal/vt/xterm.js';
@@ -517,6 +520,108 @@ test('a context with no pixel API paints nothing rather than throwing', () => {
   assert.equal(createRenderer(null, {} as never, null), null);
 });
 
+// --- 3c. the faces, on an engine that is not ntk's --------------------------
+
+/**
+ * react-x11's Cocoa face, as 2.3.x answers `fonts.match()`: metrics under
+ * CoreText's names and a coverage bool — no glyph ids, no advances, and a
+ * manager with `layout` but no `fallbackFor`.
+ */
+function cocoaFonts(): NtkFonts {
+  const face = {
+    metrics: () => ({
+      ascent: 12,
+      descent: 3,
+      leading: 1,
+      capHeight: 9,
+      xHeight: 7,
+      size: 14,
+    }),
+    hasGlyph: () => true,
+  };
+  const manager = {
+    match: () => face,
+    layout: () => ({
+      width: 0,
+      height: 0,
+      lines: [],
+      draw: () => {},
+      indexAt: () => 0,
+      caretPosition: () => ({ x: 0, y: 0, height: 0 }),
+    }),
+  };
+  return manager;
+}
+
+/** An ntk-shaped face: ASCII covered, a fixed 8px advance, no clusters. */
+function ntkFonts(metrics: FontMetrics): NtkFonts {
+  const font = {
+    metrics: () => metrics,
+    hasGlyph: (cp: number) => cp < 0x80,
+    glyphIdFor: (cp: number) => (cp < 0x80 ? cp : null),
+    advanceOf: () => 8,
+    shape: () => ({ glyphs: [] }),
+  };
+  return { match: () => font };
+}
+
+test('a face without the glyph-run seams builds no runs and throws nothing', () => {
+  const set = new FontSet(cocoaFonts(), 'monospace', 14);
+  assert.equal(set.glyphRuns, false);
+  assert.equal(set.run('a', 'regular'), null);
+  assert.equal(set.run('é', 'bold'), null);
+  // ascent + descent + leading, the gap under CoreText's name
+  assert.equal(set.metrics.cellHeight, 16);
+  // no advance to read: the 0.6em guess, which is what "no fonts" gets too
+  assert.equal(set.metrics.cellWidth, 8);
+  assert.ok(Number.isFinite(set.metrics.baseline));
+});
+
+test('hasGlyphRuns is the probe: ntk faces pass, foreign faces do not', () => {
+  assert.equal(hasGlyphRuns(cocoaFonts().match('monospace')), false);
+  const ntk = ntkFonts({ ascent: 12, descent: 3, lineHeight: 16 });
+  assert.equal(hasGlyphRuns(ntk.match('monospace')), true);
+  assert.equal(hasGlyphRuns(null), false);
+});
+
+test('an ntk face builds runs, and the cell is the advance of a digit', () => {
+  const set = new FontSet(
+    ntkFonts({ ascent: 12, descent: 3, lineGap: 1, lineHeight: 16 }),
+    'monospace',
+    14,
+  );
+  assert.equal(set.glyphRuns, true);
+  assert.equal(set.metrics.cellWidth, 8);
+  assert.equal(set.metrics.cellHeight, 16);
+  const run = set.run('a', 'regular');
+  assert.ok(run);
+  assert.deepEqual(run.glyphs, [{ id: 0x61, ax: 8, dx: 0, dy: 0 }]);
+  // uncovered, on a manager with no `fallbackFor`: nothing to draw, no throw
+  assert.equal(set.run('€', 'regular'), null);
+});
+
+test('line height reads under either engine name, and never goes NaN', () => {
+  const gap = new FontSet(
+    ntkFonts({ ascent: 12, descent: 3, lineGap: 2 }),
+    'monospace',
+    14,
+  );
+  assert.equal(gap.metrics.cellHeight, 17);
+  const leading = new FontSet(
+    ntkFonts({ ascent: 12, descent: 3, leading: 2 }),
+    'monospace',
+    14,
+  );
+  assert.equal(leading.metrics.cellHeight, 17);
+  const broken = new FontSet(
+    ntkFonts({ ascent: NaN, descent: NaN, lineHeight: NaN }),
+    'monospace',
+    14,
+  );
+  assert.ok(broken.metrics.cellHeight > 0);
+  assert.ok(Number.isFinite(broken.metrics.baseline));
+});
+
 // --- 4. the diff ------------------------------------------------------------
 
 const NO_CURSOR: CursorState = { col: 0, row: -1, shape: 'none' };
@@ -962,6 +1067,39 @@ test('a selection copies out, and PRIMARY carries it', async () => {
   node.selectAll();
   const text = node.selectionText();
   assert.match(text ?? '', /hello world/);
+});
+
+test('an engine without glyph runs mounts, runs the pty, warns once, and paints nothing', async () => {
+  // react-x11's Cocoa backend: `app.fonts` is there, and it is not ntk's.
+  // Before the probe existed this was a TypeError from inside paint, on
+  // every frame.
+  const mock = createMockApp();
+  (mock as unknown as { fonts?: NtkFonts }).fonts = cocoaFonts();
+  const g = globalThis as { console: { warn: (message: string) => void } };
+  const original = g.console.warn;
+  const warnings: string[] = [];
+  g.console.warn = (message: string) => {
+    if (String(message).includes('glyph-run')) warnings.push(String(message));
+    else original.call(g.console, message);
+  };
+  try {
+    const pty = new FakePtyHost();
+    const ref = React.createRef<TerminalHandle>();
+    await renderX11(h(Terminal, { backend: 'vt', pty, ref }), {
+      app: mock,
+      backend: 'mock',
+    });
+    await waitFor(() => assert.ok(pty.last, 'the pty was opened'));
+    await act(async () => {
+      pty.last!.feed('hello\r\n');
+    });
+    // Still a terminal — the emulator ran; only the pixels are missing.
+    await waitFor(() => assert.match(ref.current?.serialize() ?? '', /hello/));
+    assert.equal(warnings.length, 1, 'said once, not once per paint');
+    assert.match(warnings[0], /react-x11#432/);
+  } finally {
+    g.console.warn = original;
+  }
 });
 
 // --- 6. pixels --------------------------------------------------------------
