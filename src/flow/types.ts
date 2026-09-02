@@ -30,7 +30,9 @@ export interface XYPosition {
   y: number;
 }
 
-/** A box in graph space unless the field it is on says screen pixels. */
+/** A box in graph space unless the field it is on says window pixels —
+ * which are *logical* pixels, the unit every style length is in, whatever
+ * the display's scale (see {@link FlowPainter}). */
 export interface FlowRect {
   x: number;
   y: number;
@@ -40,8 +42,10 @@ export interface FlowRect {
 
 /**
  * The pane's transform: graph point `p` is drawn at `p * zoom + (x, y)`,
- * relative to the pane's top-left corner. Translate-then-scale, the same
- * order react-flow uses, so a viewport copied from one lands in the other.
+ * relative to the pane's top-left corner, in logical pixels. Translate-
+ * then-scale, the same order react-flow uses, so a viewport copied from one
+ * lands in the other — and one graph unit at zoom 1 is one logical pixel,
+ * so a node sized `{ width: 168 }` is as wide as a `<box>` styled the same.
  */
 export interface Viewport {
   x: number;
@@ -276,7 +280,7 @@ export interface TextOptions {
   /** Where `y` is measured: the top of the line, or its middle. Default
    * `'top'`. */
   baseline?: 'top' | 'middle';
-  /** Ellipsize past this many pixels. */
+  /** Ellipsize past this many (logical) pixels. */
   maxWidth?: number;
 }
 
@@ -292,9 +296,12 @@ export interface ShapeOptions extends StrokeOptions {
 }
 
 /**
- * What a custom node type draws through. Everything is in **screen pixels**,
- * already scaled by the zoom — a node type multiplies its own sizes by
- * `zoom` and otherwise ignores the viewport.
+ * What a custom node type draws through. Everything is in **logical window
+ * pixels**, already scaled by the zoom — the unit a style length is in, so
+ * a `13 * zoom` label is the size a `fontSize: 13` label is at zoom 1. A
+ * node type multiplies its own sizes by `zoom` and otherwise ignores the
+ * viewport, and never thinks about the display: on a 2x panel the painter
+ * shapes text and lands geometry on the device grid itself.
  *
  * It is a facade rather than ntk's context because the mock backend used by
  * headless tests has no path API: a node type written against this one is
@@ -303,8 +310,12 @@ export interface ShapeOptions extends StrokeOptions {
  */
 export interface FlowPainter {
   /** ntk's 2d context, for anything the facade does not offer. Null on a
-   * backend that cannot draw paths. */
+   * backend that cannot draw paths. It draws in **device** pixels — the
+   * one place in this API that does — so multiply by {@link scale} there. */
   readonly raw: unknown;
+  /** Device pixels per logical pixel: `1` on an ordinary display, `2` on a
+   * retina panel. Applied by every method here; only `raw` needs it. */
+  readonly scale: number;
   save(): void;
   restore(): void;
   clipRect(x: number, y: number, w: number, h: number, radius?: number): void;
@@ -346,16 +357,16 @@ export interface FlowPainter {
 /** What a node type is handed to draw one node. */
 export interface NodePaintContext<Data = FlowNodeData> {
   node: FlowNode<Data>;
-  /** The node's box, in screen pixels. */
+  /** The node's box, in logical window pixels. */
   rect: FlowRect;
   zoom: number;
   selected: boolean;
   hovered: boolean;
   palette: FlowPalette;
   painter: FlowPainter;
-  /** The node's handles, resolved and in screen pixels. Drawn by the pane
-   * after `paint` returns, so a type that wants them somewhere else moves
-   * them with `handles`, not by drawing its own. */
+  /** The node's handles, resolved and in logical window pixels. Drawn by
+   * the pane after `paint` returns, so a type that wants them somewhere
+   * else moves them with `handles`, not by drawing its own. */
   handles: readonly HandleAnchor[];
 }
 

@@ -38,7 +38,7 @@ import {
   XK_UP,
 } from 'react-x11/keysyms';
 
-import { createPainter, measureText } from './draw.js';
+import { createPainter, measureText, toDevice } from './draw.js';
 import type { CachedText, FontsLike, PainterOptions } from './draw.js';
 import {
   boundsOf,
@@ -608,6 +608,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
         this._themeString('fontFamily') ??
         'sans-serif',
       color: this._palette().text,
+      scale: this._scale,
       cache: this._textCache,
     };
   }
@@ -892,16 +893,74 @@ export class FlowGraphNode extends Node implements FlowInstance {
   }
 
   /**
+   * Device pixels per logical pixel — the display scale this pane's window
+   * resolved to (react-x11's docs/scale.md): `1` on an ordinary display,
+   * `2` on a retina panel, fractional on a desktop configured to 1.5.
+   *
+   * The pane thinks in logical pixels throughout. They are the unit its API
+   * speaks (a viewport, a node's size, a `NodeBodyRect`), the unit a
+   * synthetic event's `x`/`y` arrive in, and the unit the sibling boxes
+   * `<Flow>` mounts bodies in are laid out in. What core hands this element
+   * is device pixels — `abs`, `contentBox()`, `this.style`, the paint
+   * context, `paintDamage()`, a rect given to `invalidate` or
+   * `scrollContents`, an a11y scene rect — so each of those crossings
+   * converts, once, in the helpers below, and nothing in between knows the
+   * factor. At 1x every conversion is the identity, which is how a pane
+   * that compared `ev.x` with `contentBox()` passed every test and then
+   * hovered at half the distance, panned at half speed and framed the graph
+   * at half size the day a native backend reported a retina panel.
+   *
+   * `scale` is on every node at runtime; the cast is for a `Node`
+   * declaration that does not list it yet (react-x11#430 adds it).
+   */
+  private get _scale(): number {
+    const s = (this as unknown as { scale?: number }).scale;
+    return typeof s === 'number' && s > 0 ? s : 1;
+  }
+
+  /** A logical rect on the device grid, grown outward to whole pixels —
+   * what a damage claim has to cover for an antialiased edge to repaint. */
+  private _device(rect: FlowRect): FlowRect {
+    const s = this._scale;
+    const x = Math.floor(toDevice(rect.x, s));
+    const y = Math.floor(toDevice(rect.y, s));
+    return {
+      x,
+      y,
+      width: Math.ceil(toDevice(rect.x + rect.width, s)) - x,
+      height: Math.ceil(toDevice(rect.y + rect.height, s)) - y,
+    };
+  }
+
+  /** One of core's device rects in the pane's logical units. */
+  private _logical(rect: FlowRect): FlowRect {
+    const s = this._scale;
+    return {
+      x: rect.x / s,
+      y: rect.y / s,
+      width: rect.width / s,
+      height: rect.height / s,
+    };
+  }
+
+  /** Claim a logical rect as damage. Every partial repaint the pane asks
+   * for goes through here; the full ones pass `abs`, which is device
+   * already. */
+  private _claim(rect: FlowRect, reason: string): void {
+    this.invalidate(false, this._device(rect), reason);
+  }
+
+  /**
    * The pane proper: `abs` inset by border and padding, off core's own
    * resolved layout (react-x11#254) — so a `<Flow style={{ borderWidth: 1,
    * padding: 8 }}>` keeps its border, and its padding means what it does on
-   * a `<box>`.
+   * a `<box>`. In logical pixels, like everything the pane computes.
    */
   private _pane(): FlowRect {
-    return this.contentBox();
+    return this._logical(this.contentBox());
   }
 
-  /** Graph point to window pixels. */
+  /** Graph point to logical window pixels. */
   private _toScreen(p: XYPosition): XYPosition {
     const v = this._viewport();
     const pane = this._pane();
@@ -911,7 +970,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
     };
   }
 
-  /** Window pixels to graph point. */
+  /** Logical window pixels to graph point. */
   private _toGraph(x: number, y: number): XYPosition {
     const v = this._viewport();
     const pane = this._pane();
@@ -978,7 +1037,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
   }
 
   /**
-   * A node's box on screen, **on whole pixels**.
+   * A node's box on screen, **on whole device pixels**.
    *
    * The rounding is not cosmetic. ntk draws a rounded box as cached corner
    * glyphs plus `FillRectangles` when its geometry is integral, and
@@ -987,22 +1046,26 @@ export class FlowGraphNode extends Node implements FlowInstance {
    * six hundred mask uploads a frame and about four megabytes on the wire;
    * `react-x11/debug`'s trace names it as `fell back … fractional`.
    *
-   * Hit testing reads the same rect, so what is drawn and what is clicked
-   * still agree to the pixel.
+   * The grid is the panel's, not the logical one: at 2x a logical half is
+   * a whole pixel, and at 1.5x a logical integer is not always one. Hit
+   * testing reads the same rect, so what is drawn and what is clicked still
+   * agree to the pixel.
    */
   private _screenRect(entry: NodeEntry): FlowRect {
     const v = this._viewport();
     const rect = this.rectOf(entry);
     const p = this._toScreen(rect);
-    const x = Math.round(p.x);
-    const y = Math.round(p.y);
+    const s = this._scale;
+    const grid = (value: number): number => Math.round(value * s) / s;
+    const x = grid(p.x);
+    const y = grid(p.y);
     return {
       x,
       y,
       // rounded as edges rather than as a size, so two nodes that share a
       // column still share it after rounding
-      width: Math.round(p.x + rect.width * v.zoom) - x,
-      height: Math.round(p.y + rect.height * v.zoom) - y,
+      width: grid(p.x + rect.width * v.zoom) - x,
+      height: grid(p.y + rect.height * v.zoom) - y,
     };
   }
 
@@ -1051,8 +1114,8 @@ export class FlowGraphNode extends Node implements FlowInstance {
    * panels repaint in place.
    *
    * Still a full repaint when:
-   *  - the zoom moved (scaling is not a blit) or the shift is fractional —
-   *    every real pan gesture is whole pixels;
+   *  - the zoom moved (scaling is not a blit) or the shift is fractional on
+   *    the device grid — every real pan gesture is whole device pixels;
    *  - mounted node bodies exist: they are core-owned siblings whose
    *    gesture-time commits claim *inside* the rect every step, which
    *    declines the blit anyway — bailing early skips the churn;
@@ -1062,10 +1125,16 @@ export class FlowGraphNode extends Node implements FlowInstance {
   private _blitPan(previous: Viewport, next: Viewport): boolean {
     if (next.zoom !== previous.zoom) return false;
     if (this._bodiesKey !== '') return false;
-    const dx = Math.round(next.x - previous.x);
-    const dy = Math.round(next.y - previous.y);
+    // Device pixels: the blit copies the backing store, and its grid is the
+    // panel's. A pointer step lands on it whatever the scale — it came off
+    // the wire as whole device pixels — so every real pan gesture blits.
+    const s = this._scale;
+    const shiftX = toDevice(next.x - previous.x, s);
+    const shiftY = toDevice(next.y - previous.y, s);
+    const dx = Math.round(shiftX);
+    const dy = Math.round(shiftY);
     if (dx === 0 && dy === 0) return true; // sub-pixel: nothing to show yet
-    if (next.x - previous.x !== dx || next.y - previous.y !== dy) return false;
+    if (shiftX !== dx || shiftY !== dy) return false;
     const pane = this._pane();
 
     // The horizontal bands the furniture lives in. Full-width, because the
@@ -1100,32 +1169,39 @@ export class FlowGraphNode extends Node implements FlowInstance {
         this._controlsOptions()?.position ?? 'bottom-left',
       );
     }
+    // From here on, device pixels: `scrollContents` and the claims speak
+    // core's units. The bands round *up* and the blit is what is left, so
+    // the three sit edge to edge on whole pixels — a claim overlapping the
+    // blit rect by a pixel is a foreign claim, and declines the blit.
+    const box = this.contentBox();
+    const top = Math.ceil(toDevice(topBand, s));
+    const bottom = Math.ceil(toDevice(bottomBand, s));
     const blit: FlowRect = {
-      x: pane.x,
-      y: pane.y + topBand,
-      width: pane.width,
-      height: pane.height - topBand - bottomBand,
+      x: box.x,
+      y: box.y + top,
+      width: box.width,
+      height: box.height - top - bottom,
     };
-    if (blit.width < 64 || blit.height < 64) return false;
+    if (blit.width < 64 * s || blit.height < 64 * s) return false;
     if (Math.abs(dx) >= blit.width || Math.abs(dy) >= blit.height) {
       return false;
     }
     this.scrollContents(blit, dx, dy);
-    if (topBand > 0) {
+    if (top > 0) {
       this.invalidate(
         false,
-        { x: pane.x, y: pane.y, width: pane.width, height: topBand },
+        { x: box.x, y: box.y, width: box.width, height: top },
         'scroll',
       );
     }
-    if (bottomBand > 0) {
+    if (bottom > 0) {
       this.invalidate(
         false,
         {
-          x: pane.x,
+          x: box.x,
           y: blit.y + blit.height,
-          width: pane.width,
-          height: bottomBand,
+          width: box.width,
+          height: bottom,
         },
         'scroll',
       );
@@ -1881,8 +1957,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
         // The box outline is all that moves this step; a node crossing the
         // boundary changes `selected`, and that repaints through the
         // controlled round trip like any other selection change.
-        this.invalidate(
-          false,
+        this._claim(
           inflateRect(unionRects(oldBox, selectBoxRect(gesture)), CULL_MARGIN),
           'style-state',
         );
@@ -2093,7 +2168,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
     }
     this._emitNodes(changes);
     if (damage) {
-      this.invalidate(false, inflateRect(damage, CULL_MARGIN), 'content');
+      this._claim(inflateRect(damage, CULL_MARGIN), 'content');
     } else {
       this._repaint();
     }
@@ -2152,7 +2227,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
       });
     }
     this._emitNodes(changes);
-    this.invalidate(false, inflateRect(damage, CULL_MARGIN), 'content');
+    this._claim(inflateRect(damage, CULL_MARGIN), 'content');
     this._emitBodies();
   }
 
@@ -2213,8 +2288,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
     const target = to ? this._byId.get(to.nodeId) : null;
     if (target) box = unionRects(box, this._screenRect(target));
     gesture.box = box;
-    this.invalidate(
-      false,
+    this._claim(
       inflateRect(oldBox ? unionRects(oldBox, box) : box, CULL_MARGIN),
       'style-state',
     );
@@ -2346,7 +2420,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
     );
     this._hover = next;
     if (damage) {
-      this.invalidate(false, inflateRect(damage, CULL_MARGIN), 'style-state');
+      this._claim(inflateRect(damage, CULL_MARGIN), 'style-state');
     } else {
       this._repaint('style-state');
     }
@@ -2357,7 +2431,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
     const damage = this._hoverDamage(this._hover);
     this._hover = NO_HOVER;
     if (damage) {
-      this.invalidate(false, inflateRect(damage, CULL_MARGIN), 'style-state');
+      this._claim(inflateRect(damage, CULL_MARGIN), 'style-state');
     } else {
       this._repaint('style-state');
     }
@@ -2403,7 +2477,8 @@ export class FlowGraphNode extends Node implements FlowInstance {
       const degree = out.length;
       items.push({
         id: entry.node.id,
-        rect,
+        // the scene's rects are `abs`'s space — device pixels
+        rect: this._device(rect),
         role: 'listitem',
         name: data?.label ?? entry.node.id,
         description:
@@ -2611,7 +2686,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
       }
     }
     if (damage === 'full') this._repaint('props');
-    else if (damage) this.invalidate(false, damage, 'props');
+    else if (damage) this._claim(damage, 'props');
     // Core re-reads the scene for aria-prop commits; a `nodes`/`edges`
     // change is invisible to it, so the re-read is asked for by name.
     // Free when no assistive technology is listening.
@@ -2631,7 +2706,11 @@ export class FlowGraphNode extends Node implements FlowInstance {
         this._dashPhase += ANIMATION_SPEED;
         // the box the last paint saw animated edges in, not the pane: a
         // marching dash should not cost a full grid repaint per tick
-        this.invalidate(false, this._animBox ?? this.abs, 'animation');
+        this.invalidate(
+          false,
+          this._animBox ? this._device(this._animBox) : this.abs,
+          'animation',
+        );
       }, ANIMATION_MS) ?? null;
   }
 
@@ -2688,7 +2767,13 @@ export class FlowGraphNode extends Node implements FlowInstance {
         this._fit(this._prop<FitViewOptions>('fitViewOptions'));
       }
     }
-    this._frameClip = this._fitPending ? this._pane() : clip;
+    // `paintDamage()` speaks device pixels, like `abs`; the culling below
+    // speaks logical ones, like everything the pane draws.
+    this._frameClip = this._fitPending
+      ? this._pane()
+      : clip
+        ? this._logical(clip)
+        : null;
 
     const palette = this._palette();
     const { x, y, width, height } = this._pane();
@@ -2698,11 +2783,14 @@ export class FlowGraphNode extends Node implements FlowInstance {
     // clip is the content box rather than `abs` because the border has been
     // stroked already, inside the box, and drawing over it would leave a
     // `borderWidth: 1` looking like half of one.
-    const radius = Math.max(
-      0,
-      ((this.style.borderRadius as number | undefined) ?? 0) -
-        ((this.style.borderWidth as number | undefined) ?? 0),
-    );
+    // `this.style` arrives in device pixels (react-x11's docs/scale.md);
+    // the painter takes logical ones.
+    const radius =
+      Math.max(
+        0,
+        ((this.style.borderRadius as number | undefined) ?? 0) -
+          ((this.style.borderWidth as number | undefined) ?? 0),
+      ) / this._scale;
     // The rounded clip only when this pass can actually reach a corner: a
     // non-rectangular clip forfeits ntk's rounded-box fast path for every
     // fill under it, which multiplies a rounded *pane* into a per-card
@@ -2793,8 +2881,8 @@ export class FlowGraphNode extends Node implements FlowInstance {
       if (width <= 1 || height <= 1) continue;
       bodies.push({
         id: entry.node.id,
-        // pane-relative, because that is what an absolutely positioned box
-        // beside the pane is laid out against
+        // pane-relative and logical, because that is what an absolutely
+        // positioned box beside the pane is laid out against, and in
         x: Math.round(rect.x + inset - pane.x),
         y: Math.round(rect.y + header - pane.y),
         width: Math.round(width),
@@ -2916,8 +3004,13 @@ export class FlowGraphNode extends Node implements FlowInstance {
     color: string,
     region: FlowRect,
   ): boolean {
-    const tileSize = Math.round(step);
-    if (Math.abs(step - tileSize) > 0.01 || tileSize < 2) return false;
+    // The tile is a pixmap on the panel's grid, so the pitch has to be a
+    // whole number of *device* pixels, and the phase is where the viewport
+    // origin lands on that grid.
+    const s = this._scale;
+    const pitch = toDevice(step, s);
+    const tileSize = Math.round(pitch);
+    if (Math.abs(pitch - tileSize) > 0.01 || tileSize < 2) return false;
     const raw = painter.raw as {
       createPattern?: (source: unknown, repetition: string) => PatternLike;
       fillStyle?: unknown;
@@ -2928,9 +3021,11 @@ export class FlowGraphNode extends Node implements FlowInstance {
     const v = this._viewport();
     const pane = this._pane();
     const mod = (a: number, m: number): number => ((a % m) + m) % m;
-    const px = Math.round(mod(pane.x + v.x, tileSize)) % tileSize;
-    const py = Math.round(mod(pane.y + v.y, tileSize)) % tileSize;
-    const key = `${options.variant}|${Math.round(options.size * v.zoom * 4)}|${color}|${px},${py}`;
+    const px = Math.round(mod(toDevice(pane.x + v.x, s), tileSize)) % tileSize;
+    const py = Math.round(mod(toDevice(pane.y + v.y, s), tileSize)) % tileSize;
+    // device pixels per graph unit — what a mark's size is drawn in
+    const unit = v.zoom * s;
+    const key = `${options.variant}|${Math.round(options.size * unit * 4)}|${color}|${px},${py}`;
 
     let tile = this._gridTile;
     if (!tile || tile.size !== tileSize) {
@@ -2947,10 +3042,11 @@ export class FlowGraphNode extends Node implements FlowInstance {
     }
     if (tile.key !== key) {
       tile.key = key;
-      this._renderGridTile(tile, options, v.zoom, color, px, py);
+      this._renderGridTile(tile, options, unit, color, px, py);
     }
     raw.fillStyle = tile.pattern;
-    raw.fillRect?.(region.x, region.y, region.width, region.height);
+    const fill = this._device(region);
+    raw.fillRect?.(fill.x, fill.y, fill.width, fill.height);
     return true;
   }
 
@@ -2969,11 +3065,12 @@ export class FlowGraphNode extends Node implements FlowInstance {
   }
 
   /** Draw one grid cell with the mark at the phase point, wrapped — a mark
-   * near an edge is drawn again a tile over, so the seam never cuts it. */
+   * near an edge is drawn again a tile over, so the seam never cuts it.
+   * Device pixels throughout: `unit` is how many of them a graph unit is. */
   private _renderGridTile(
     tile: { size: number; surface: SurfaceLike },
     options: { variant: BackgroundVariant; size: number },
-    zoom: number,
+    unit: number,
     color: string,
     px: number,
     py: number,
@@ -2990,11 +3087,11 @@ export class FlowGraphNode extends Node implements FlowInstance {
             if (j === 0) ctx.fillRect(cx - 0.5, 0, 1, t);
             if (i === 0) ctx.fillRect(0, cy - 0.5, t, 1);
           } else if (options.variant === 'cross') {
-            const arm = Math.max(2, options.size * 3 * zoom);
+            const arm = Math.max(2, options.size * 3 * unit);
             ctx.fillRect(cx - arm, cy - 0.5, arm * 2, 1);
             ctx.fillRect(cx - 0.5, cy - arm, 1, arm * 2);
           } else {
-            const dot = Math.max(1, Math.round(options.size * 2 * zoom));
+            const dot = Math.max(1, Math.round(options.size * 2 * unit));
             ctx.fillRect(cx - dot / 2, cy - dot / 2, dot, dot);
           }
         }

@@ -181,12 +181,17 @@ const nodeTypes = {
 };
 ```
 
-Everything the callback is handed is in **screen pixels already** — a type
-multiplies its own sizes by `zoom` and otherwise never thinks about the
-viewport. `painter` is a facade over ntk's context (`rect`, `circle`,
-`polyline`, `polygon`, `text`, `measureText`, batched `strokeRuns` and `dots`,
-and `raw` for anything it does not cover), which is also what lets a node type
-run on the mock backend headless tests use.
+Everything the callback is handed is in **logical window pixels already**,
+scaled by the zoom — the unit every style length is in, so a `13 * zoom`
+label is the size a `fontSize: 13` label is at zoom 1. A type multiplies its
+own sizes by `zoom` and otherwise never thinks about the viewport, or about
+the display: on a 2x panel the painter shapes text and lands geometry on the
+device grid itself. `painter` is a facade over ntk's context (`rect`,
+`circle`, `polyline`, `polygon`, `text`, `measureText`, batched `strokeRuns`
+and `dots`, and `raw` for anything it does not cover), which is also what
+lets a node type run on the mock backend headless tests use. `raw` is the
+context itself and draws in device pixels — multiply by `painter.scale`
+there, and only there.
 
 This costs nothing to pan past and scales with the zoom. It is the right
 answer for the nodes there are a lot of.
@@ -321,11 +326,12 @@ Everything drawn ends up as X protocol, and the trace in
 `react-x11/debug` is how that is kept honest. Two rules came out of
 measuring, and they pull in opposite directions:
 
-- **Geometry lands on whole pixels.** ntk draws a rounded box as cached
-  corner glyphs plus `FillRectangles` when its coordinates are integral, and
-  rasterizes a mask it has to upload when they are not — and any zoom that
-  is not 1 makes every box fractional. Rounding moved three hundred mask
-  uploads a frame onto the fast path.
+- **Geometry lands on whole device pixels.** ntk draws a rounded box as
+  cached corner glyphs plus `FillRectangles` when its coordinates are
+  integral, and rasterizes a mask it has to upload when they are not — and
+  any zoom that is not 1 makes every box fractional. Rounding moved three
+  hundred mask uploads a frame onto the fast path. The grid rounded to is
+  the panel's: at 2x a logical half-pixel is a whole one.
 - **Batching pays for edges and for nothing else.** A path's mask is its
   bounding box, so collapsing many draws into one path trades many small
   masks for one the size of the pane — about three quarters of a megabyte.
