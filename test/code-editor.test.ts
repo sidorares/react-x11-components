@@ -5,8 +5,11 @@
 import { test, afterEach } from 'node:test';
 import assert from 'node:assert';
 import React from 'react';
+import type { ReactElement } from 'react';
 
 import {
+  act,
+  fireEvent,
   renderX11,
   cleanup,
   screen,
@@ -22,6 +25,7 @@ import {
   XK_TAB,
   XK_UP,
 } from 'react-x11/test';
+import type { RenderX11Options } from 'react-x11/test';
 import { screenRect } from 'react-x11';
 import type { DrawnNode } from 'react-x11';
 
@@ -36,6 +40,8 @@ import type {
   CodeEditorNode,
   CompletionSource,
   Language,
+  Position,
+  Selection,
   Token,
   Tokenizer,
 } from '../src/index.js';
@@ -573,4 +579,239 @@ test('bare element: a press places the caret and takes focus', async () => {
     node.lines[line].length,
     'End went to the end of the clicked line',
   );
+});
+
+// --- the display scale -------------------------------------------------------
+//
+// react-x11 hands a registered element two units (its docs/scale.md): `abs`,
+// `this.style`, the paint context and the layouts `app.fonts` shapes are
+// device pixels, while a synthetic event's `x`/`y`, a style length and a
+// `<popup anchor>`'s rect are logical ones. At 1x — every other test in this
+// file — the two coincide, which is how an editor that handed `ev.x` to a hit
+// test measured in glyph metrics passed all of it, and then put the caret at
+// half the pointer's distance on a retina panel. These run at 2x, and check
+// every number against the one honest reference a 2x render has — `abs`, and
+// a `<text>` core shaped in the same face — never against another answer of
+// the editor's, which could be wrong by the same factor twice over.
+
+/** A 400×300 logical window on a 2x panel: 800×600 device pixels, and
+ *  every `abs` in those. */
+const AT_2X: RenderX11Options = {
+  scale: 2,
+  width: 400,
+  height: 300,
+  screen: { width: 1000, height: 800 },
+};
+
+/** Ten columns of the editor's face, as a `<text>` beside it: the honest
+ *  ruler for what a column is on the panel. */
+const RULER = '0123456789';
+
+/** The editor beside the ruler, left-aligned so the editor keeps the width
+ *  it measured rather than the window's. */
+function editorWithRuler(
+  props: Parameters<typeof CodeEditor>[0],
+): ReactElement {
+  return h(
+    'box',
+    { style: { flexDirection: 'column', alignItems: 'flex-start' } },
+    h(CodeEditor, props),
+    h('text', { style: { fontFamily: 'monospace', fontSize: 13 } }, RULER),
+  );
+}
+
+/** A logical window point as the offset `fireEvent` and `userEvent` take:
+ *  device pixels from the centre of the editor's device `abs`. */
+function offsetTo(
+  node: CodeEditorNode,
+  x: number,
+  y: number,
+  scale: number,
+): { dx: number; dy: number } {
+  const { abs } = node as unknown as DrawnNode;
+  return {
+    dx: x * scale - (abs.x + abs.width / 2),
+    dy: y * scale - (abs.y + abs.height / 2),
+  };
+}
+
+/** The harness's window on the screen — what the editor's device `abs` is
+ *  measured from, and the unit a popup window's position is in. */
+function rootWindow(): { x: number; y: number } {
+  const [root] = screen.all(
+    (n: DrawnNode) => n.kind === 'window',
+  ) as unknown as Array<{ window: { x: number; y: number } | null }>;
+  assert.ok(root?.window, 'the root window has reached the server');
+  return { x: root.window.x, y: root.window.y };
+}
+
+function near(
+  actual: number,
+  expected: number,
+  what: string,
+  tolerance = 1,
+): void {
+  assert.ok(
+    Math.abs(actual - expected) <= tolerance,
+    `${what}: ${actual}, expected about ${expected}`,
+  );
+}
+
+test('at a display scale of 2 a press and a drag land on the characters under the pointer', async () => {
+  // Twenty columns a line in a monospace face, behind a 12-logical-pixel
+  // inset (padding 10, border 2). The targets are chosen from the 1x
+  // editor's own metrics — a quarter of a column and half a line inside a
+  // cell, clear of every boundary — and kept as logical window points. At 2x
+  // the same points are twice as many device pixels from the window's origin
+  // and must land on the same characters; on the previous node they landed
+  // at half the distance, which is line 0 and a column or two in.
+  const value = Array.from({ length: 6 }, () => '0123456789abcdefghij').join(
+    '\n',
+  );
+  const props = {
+    defaultValue: value,
+    style: { padding: 10, borderWidth: 2 },
+  };
+  await renderX11(editorWithRuler(props), { width: 400, height: 300 });
+  const origin = (editorNode() as unknown as DrawnNode).abs; // 1x: logical
+  const { lineHeight, charWidth } = editorNode().metrics();
+  const point = (column: number, line: number): { x: number; y: number } => ({
+    x: origin.x + 12 + charWidth * (column + 0.25),
+    y: origin.y + 12 + lineHeight * (line + 0.5),
+  });
+  const press = point(8, 2);
+  const from = point(3, 1);
+  const to = point(12, 3);
+
+  const gestures = async (
+    scale: number,
+  ): Promise<{ pressed: Position; dragged: Selection }> => {
+    const node = editorNode();
+    const drawn = node as unknown as DrawnNode;
+    await userEvent.click(drawn, offsetTo(node, press.x, press.y, scale));
+    const pressed = { ...node.selection.head };
+    await act(() => {
+      fireEvent.mouseDown(drawn, offsetTo(node, from.x, from.y, scale));
+      fireEvent.mouseMove(drawn, offsetTo(node, to.x, to.y, scale));
+      fireEvent.mouseUp(drawn, offsetTo(node, to.x, to.y, scale));
+    });
+    return { pressed, dragged: node.selection };
+  };
+
+  const at1x = await gestures(1);
+  assert.deepStrictEqual(
+    at1x,
+    {
+      pressed: { line: 2, ch: 8 },
+      dragged: { anchor: { line: 1, ch: 3 }, head: { line: 3, ch: 12 } },
+    },
+    'the targets, read at 1x',
+  );
+
+  await cleanup();
+  await renderX11(editorWithRuler(props), AT_2X);
+  const { abs } = editorNode() as unknown as DrawnNode;
+  assert.deepStrictEqual(
+    { x: abs.x, y: abs.y },
+    { x: origin.x * 2, y: origin.y * 2 },
+    'the editor sits at the same logical origin, so its device `abs` is at twice it',
+  );
+  assert.deepStrictEqual(
+    await gestures(2),
+    at1x,
+    'the same logical points land on the same characters',
+  );
+});
+
+test('at a display scale of 2 the handle answers in logical pixels', async () => {
+  const value = Array.from({ length: 20 }, (_, i) => `line ${i}`).join('\n');
+  await renderX11(
+    editorWithRuler({
+      defaultValue: value,
+      rows: 4,
+      style: { padding: 10, borderWidth: 2 },
+    }),
+    AT_2X,
+  );
+  const node = editorNode();
+  const { abs } = node as unknown as DrawnNode;
+  // `abs` is device: the 12-logical inset is 24 a side, and the four rows
+  // are what is left. This and the ruler are what every answer is held to.
+  const lineHeight = (abs.height - 48) / 2 / 4;
+  const ruler = (screen.getByText(RULER) as unknown as DrawnNode).abs.width / 2;
+  assert.strictEqual(
+    abs.width,
+    768,
+    'the preferred 360 logical width plus the inset, in device pixels',
+  );
+
+  const m = node.metrics();
+  near(m.lineHeight, lineHeight, 'metrics().lineHeight');
+  near(m.charWidth * RULER.length, ruler, 'ten of metrics().charWidth');
+  assert.strictEqual(m.size, 13, 'metrics().size is the size the app wrote');
+  near(node.measureText(RULER), ruler, 'measureText() of the ruler');
+
+  node.moveCaret({ line: 2, ch: 0 }, false);
+  const caret = node.caretRect();
+  near(caret.x, 12, 'caretRect().x, at the inset');
+  near(caret.y, 12 + 2 * lineHeight, 'caretRect().y, two lines down');
+  near(caret.height, lineHeight, 'caretRect().height');
+
+  assert.ok(node.scrollBy(0, 3), 'twenty lines in four rows scroll');
+  near(
+    node.caretRect().y,
+    12 + 2 * lineHeight - 3,
+    'scrollBy(0, 3) moved the caret rect by three logical pixels',
+  );
+});
+
+test('at a display scale of 2 the completion popup opens at the caret', async () => {
+  await renderX11(
+    editorWithRuler({
+      defaultValue: '',
+      language: sql(),
+      completionSources: [keywordCompletionSource()],
+      rows: 8,
+    }),
+    AT_2X,
+  );
+  const node = editorNode();
+  await userEvent.type(node as unknown as DrawnNode, 'sel');
+  await waitFor(() => screen.getByText('select'));
+  const first = await waitFor(completionPopup);
+
+  // The editor's device position on the panel is the root window's plus its
+  // `abs`; the caret is three columns past the default 9-logical inset
+  // (padding 8, border 1), and the ruler says what a column is on the panel.
+  // A `caretRect()` handed over in device pixels put the list a caret's
+  // distance to the right of the caret.
+  const win = rootWindow();
+  const { abs } = node as unknown as DrawnNode;
+  const column =
+    (screen.getByText(RULER) as unknown as DrawnNode).abs.width / RULER.length;
+  near(
+    first.x,
+    win.x + abs.x + 18 + 3 * column,
+    'the list opens at the caret, on the panel',
+    2,
+  );
+  const lineHeight = (abs.height - 36) / 8; // device: eight rows inside the inset
+  const lineBottom = win.y + abs.y + 18 + lineHeight;
+  assert.ok(
+    first.y >= lineBottom - 1 && first.y <= lineBottom + 6,
+    `the list opens just under the first line, which ends at ${lineBottom}: ${first.y}`,
+  );
+
+  // three lines down, and the list is three device line heights down with it
+  await userEvent.key(XK_ESCAPE);
+  await waitFor(() => {
+    assert.equal(screen.queryByText('select', { selector: 'text' }), null);
+  });
+  for (let i = 0; i < 3; i++) await userEvent.key(XK_RETURN);
+  await userEvent.type(node as unknown as DrawnNode, 'sel', {
+    skipClick: true,
+  });
+  await waitFor(() => screen.getByText('select'));
+  const moved = await waitFor(completionPopup);
+  near(moved.y - first.y, 3 * lineHeight, 'the list dropped three lines', 2);
 });

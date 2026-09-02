@@ -203,8 +203,16 @@ and stroke widths were all drawn as device pixels and came out half size at
 2x; each now multiplies by `this.scale` where it enters. Core's
 `textIndexAt`/`textCaretRect`/`textRangeRects` seam is the deliberate
 exception — it speaks device pixels, and the accessors here answer it that
-way. `<CodeEditor>`'s `_posAt(ev.x, ev.y)` and `<ColorPicker>`'s
-`fractionIn` still compare a logical event with a device `abs`.
+way. `<CodeEditor>` is the terminal's shape again — device pixels inside,
+because every measurement it makes is a layout `app.fonts` shaped at the
+device font size: `_devicePoint()` on the way in, `caretRect()`,
+`metrics()`, `measureText()` and `scrollBy()` divided on the way out, the
+caret, gutter pad and scroll thumbs multiplied where they are drawn — and
+`test/code-editor.test.ts` clicks, drags and opens the completion popup at
+`scale: 2`, holding every number to `abs` and a core-shaped `<text>` ruler
+rather than to another answer of the editor's, which a doubled `metrics()`
+would have made pass. `<ColorPicker>`'s `fractionIn` still compares a
+logical event with a device `abs`.
 
 `src/internal/hx.ts` is what makes the no-JSX rule survive TypeScript.
 `React.createElement`'s own overloads are `@types/react`'s and describe the
