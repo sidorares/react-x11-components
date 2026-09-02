@@ -909,13 +909,9 @@ export class FlowGraphNode extends Node implements FlowInstance {
    * that compared `ev.x` with `contentBox()` passed every test and then
    * hovered at half the distance, panned at half speed and framed the graph
    * at half size the day a native backend reported a retina panel.
-   *
-   * `scale` is on every node at runtime; the cast is for a `Node`
-   * declaration that does not list it yet (react-x11#430 adds it).
    */
   private get _scale(): number {
-    const s = (this as unknown as { scale?: number }).scale;
-    return typeof s === 'number' && s > 0 ? s : 1;
+    return this.scale > 0 ? this.scale : 1;
   }
 
   /** A logical rect on the device grid, grown outward to whole pixels —
