@@ -200,7 +200,11 @@ failed before. The same audit found the second shape of the bug, **a
 constant that never passes through a style**: the terminal's default font
 size, every CSS pixel `<Html>` lays out, a `TextRun.size`, a chart's gutters
 and stroke widths were all drawn as device pixels and came out half size at
-2x; each now multiplies by `this.scale` where it enters. Core's
+2x; each now multiplies by `this.scale` where it enters. `<Formula>`'s `size`
+was the same shape — pixels per em that no style ever scales — so the
+mathematics came out half the size of the text beside it; the node builds
+its layout at `size × scale`, and everything downstream of the layout (`abs`,
+the accessors, the paint) stays device. Core's
 `textIndexAt`/`textCaretRect`/`textRangeRects` seam is the deliberate
 exception — it speaks device pixels, and the accessors here answer it that
 way. `<CodeEditor>` is the terminal's shape again — device pixels inside,

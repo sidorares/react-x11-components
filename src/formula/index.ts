@@ -88,8 +88,10 @@ export interface FormulaProps {
    * ends: from then on a parse error renders KaTeX's error text.
    */
   partial?: boolean;
-  /** Pixels per em. Default: theme `fontSize` × 1.21, which is the ratio
-   *  katex.css uses so mathematics holds its own beside body text. */
+  /** Logical pixels per em — the unit a `fontSize` is written in; on a
+   *  retina panel the element shapes at `size` × the display scale, like
+   *  any style length. Default: theme `fontSize` × 1.21, which is the
+   *  ratio katex.css uses so mathematics holds its own beside body text. */
   size?: number;
   /** Ink color. Default: theme `text`. */
   color?: string;
