@@ -214,6 +214,9 @@ export interface RootLook {
   borderColor: string;
   mutedColor: string;
   background: string;
+  /** Which scheme the palette is — what `@media (prefers-color-scheme)`
+   *  is answered from. */
+  colorScheme: 'light' | 'dark';
   /**
    * The palette's own control chrome, carried here because the **box in the
    * flow has to be the size the widget will be** and layout runs long before

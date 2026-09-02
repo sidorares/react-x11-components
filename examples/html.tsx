@@ -10,6 +10,10 @@
 //   - `onScript` reports what it was handed. Nothing runs it, and the panel
 //     showing the script's own text is the proof: the document says
 //     `document.body.style.background = 'red'` and the window is not red.
+//   - The stylesheet is light on its own and re-tints under
+//     `@media (prefers-color-scheme: dark)`, which `<Html>` answers from
+//     the react-x11 palette in force: run this on a dark desktop, or pin one
+//     with `<ThemeProvider colorScheme="dark">`, and the boxes follow.
 //
 // Select across the whole document with the mouse (double-click a word,
 // triple-click a block), Ctrl+A / Ctrl+C, or middle-click-paste the PRIMARY
@@ -58,6 +62,19 @@ const DOCUMENT = `<!doctype html>
     form p { margin: 8px 0; }
     a { text-decoration: underline; }
     @media (max-width: 520px) { .row { display: block } }
+    /* The values above are the document's light face. A dark host answers
+       this query and the same boxes re-tint, the way they would in a
+       browser — nothing here reads the palette directly. */
+    @media (prefers-color-scheme: dark) {
+      h1 { border-bottom-color: #5aa4e6; }
+      .lead { color: #ec6a5e; }
+      .note { border-left-color: #5aa4e6; background: #232a33; }
+      .pull { background: #2a3038; border-color: #454d55; }
+      .row > div { background: #2a3038; }
+      th, td { border-color: #454d55; }
+      th { background: #2a3038; }
+      code { background: #2f3640; }
+    }
   </style>
   <script>
     // Never evaluated. If it were, this window would be red.

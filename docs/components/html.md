@@ -122,8 +122,11 @@ all five rule styles.
 
 **Selectors:** everything [css-select] supports — combinators, attribute
 operators, `:nth-child(an+b)`, `:not()` — plus `:hover`, which is answered
-from this renderer's own pointer state. `@media` width queries are
-evaluated; `@import` goes through the resource seam.
+from this renderer's own pointer state. `@media` width and
+`prefers-color-scheme` queries are evaluated — the scheme is the react-x11
+palette's in force, so a `<ThemeProvider colorScheme>` above the element
+answers it and a desktop that switches schemes re-cascades the document.
+`@import` goes through the resource seam.
 
 **Not implemented:** CSS grid (degrades to block stacking), transforms,
 animations and transitions, multi-column, shadows, gradients, and
@@ -263,7 +266,9 @@ npm run examples:html
 Needs a real `$DISPLAY`. It renders a document with headings, floats, tables,
 a flex row and a working form, and drives both seams for real: a resource
 loader that reads from a whitelist directory, and a script hook that reports
-what it was handed without running it.
+what it was handed without running it. Its stylesheet is light on its own and
+re-tints under `@media (prefers-color-scheme: dark)`, so the same document
+follows a dark desktop.
 
 [domhandler]: https://github.com/fb55/domhandler
 [domutils]: https://github.com/fb55/domutils

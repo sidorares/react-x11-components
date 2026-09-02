@@ -22,6 +22,7 @@ import {
 import type { RenderX11Options } from 'react-x11/test';
 import { drawnKinds, registeredElements } from 'react-x11/host';
 import type { DrawnNode } from 'react-x11';
+import { ThemeProvider } from 'react-x11';
 
 import { Html } from '../src/index.js';
 import { HtmlViewNode } from '../src/html/index.js';
@@ -29,6 +30,7 @@ import type { FontsLike } from '../src/html/layout/inline.js';
 import { cocoaShapedLayout } from './cocoa-shaped.js';
 import type { ShapedLayout } from './cocoa-shaped.js';
 import {
+  mediaMatches,
   parseStylesheet,
   parseDeclarations,
   specificityOf,
@@ -1403,3 +1405,79 @@ metric(
     );
   },
 );
+
+// --- colour scheme ----------------------------------------------------------
+
+test('prefers-color-scheme is a live condition, alone and beside a width', () => {
+  const sheet = parseStylesheet(
+    '@media (prefers-color-scheme: dark) { p { color: red } }' +
+      '@media (prefers-color-scheme: light) and (max-width: 520px) { p { color: blue } }' +
+      '@media not (prefers-color-scheme: dark) { p { color: green } }' +
+      '@media (prefers-color-scheme: no-preference) { p { color: gray } }',
+  );
+  assert.deepStrictEqual(
+    sheet.rules.map((r) => r.media),
+    [
+      [[{ scheme: 'dark' }]],
+      [[{ max: 520, scheme: 'light' }]],
+      [[{ scheme: 'light' }]],
+      [[{ staticPass: false }]],
+    ],
+  );
+  // a scheme is not a width: the only breakpoint is the width test's
+  assert.deepStrictEqual(sheet.breakpoints, [521]);
+
+  assert.ok(mediaMatches([[{ scheme: 'dark' }]], 800, 'dark'));
+  assert.ok(!mediaMatches([[{ scheme: 'dark' }]], 800, 'light'));
+  assert.ok(mediaMatches([[{ max: 520, scheme: 'light' }]], 400, 'light'));
+  assert.ok(!mediaMatches([[{ max: 520, scheme: 'light' }]], 600, 'light'));
+  assert.ok(!mediaMatches([[{ max: 520, scheme: 'light' }]], 400, 'dark'));
+  // with no scheme given the light branch holds, as before
+  assert.ok(mediaMatches([[{ scheme: 'light' }]], 400));
+});
+
+test('the palette in force answers prefers-color-scheme, and a switch re-cascades', async () => {
+  const source =
+    '<style>p{margin:0;color:#ff0000}' +
+    '@media (prefers-color-scheme: dark){p{color:#00ff00}}</style><p>x</p>';
+  // The window is the test's own, so the same tree can be rendered again
+  // with the provider switched: the harness's raw `root.render` does not
+  // wrap, and a window is the one thing a root may hold.
+  const doc = (scheme: 'light' | 'dark') =>
+    h(
+      'window',
+      { width: 340, height: 200 } as Record<string, unknown>,
+      h(
+        ThemeProvider,
+        { colorScheme: scheme },
+        h(
+          'box',
+          { style: { width: 300, flexDirection: 'column' } },
+          h(Html, { source, partial: false, 'data-testname': 'doc' }),
+        ),
+      ),
+    );
+  const result = await renderX11(
+    doc('light'),
+    FONTS ? { fonts: FONTS, wrap: false } : { backend: 'mock', wrap: false },
+  );
+  const colorOf = (): string | undefined => {
+    const el = view(screen.getByTestName('doc') as DrawnNode);
+    const tree = (
+      el as unknown as {
+        _tree: { root: { children: { style: { color: string } }[] } } | null;
+      }
+    )._tree;
+    return tree?.root.children[0]?.style.color;
+  };
+  assert.strictEqual(colorOf(), '#ff0000', 'the light branch under light');
+
+  // The provider switches scheme: the look changes, and with it the answer
+  // to the query — a restyle, not a re-parse.
+  await act(async () => {
+    result.root.render(doc('dark'));
+  });
+  await waitFor(() =>
+    assert.strictEqual(colorOf(), '#00ff00', 'the dark branch under dark'),
+  );
+});
