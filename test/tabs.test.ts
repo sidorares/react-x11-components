@@ -794,14 +794,21 @@ test('line: the hover is a wash, standing clear of the strip rule', async () => 
         child.style.borderRadius === 4,
     ) as RetainedNode | undefined;
 
-  // The pointer is wherever the last test left it and the X server is shared,
-  // so where it lands in a freshly mounted tree is whatever the tab widths
-  // happen to be — park it off the strip before claiming anything about a
-  // trigger that has not been hovered.
-  await userEvent.hover(screen.getByTestName('panel-members'));
-  await waitFor(() =>
-    assert.strictEqual(washOf('projects'), undefined, 'nothing until hovered'),
-  );
+  // Both "no wash" checks put the pointer somewhere of their own choosing
+  // first, rather than trusting where it is. Going in, it is wherever the
+  // previous test left it and the X server is shared, so where it lands in a
+  // freshly mounted tree depends on how wide the labels came out; coming out,
+  // `unhover` leaves it at the trigger's own edge, which is a coordinate this
+  // test would rather not be deciding hit-testing questions about. The panel
+  // is nowhere near the strip either way.
+  const park = async (why: string): Promise<void> => {
+    await userEvent.hover(screen.getByTestName('panel-members'));
+    await waitFor(() =>
+      assert.strictEqual(Boolean(washOf('projects')), false, why),
+    );
+  };
+
+  await park('nothing until hovered');
 
   await userEvent.hover(tab('projects'));
   // Laid out, not merely mounted: the box appears on the render the hover
@@ -834,8 +841,7 @@ test('line: the hover is a wash, standing clear of the strip rule', async () => 
     'and the far side is flush: the room came out of the panel side',
   );
 
-  await userEvent.unhover(tab('projects'));
-  await waitFor(() => assert.strictEqual(washOf('projects'), undefined));
+  await park('and it goes with the pointer');
 });
 
 test('fitted: a strip with no room stops sharing, and settles there', async () => {
