@@ -88,9 +88,9 @@ function warnNoGlyphRuns(): void {
     '@react-x11/components: <Terminal backend="vt"> — the text engine behind ' +
       'app.fonts has no glyph-run seams (glyphIdFor/advanceOf on a face, ' +
       'drawGlyphs on the context), so the terminal paints nothing. ' +
-      "react-x11's Cocoa backend is the known case, tracked as " +
-      'sidorares/react-x11#432; run under X11 (REACT_X11_BACKEND=x11, or ' +
-      "createRoot({ backend: 'x11' })) in the meantime.",
+      "react-x11's Cocoa backend before 2.4.0 was the known case " +
+      '(sidorares/react-x11#432); every backend of react-x11 2.5.0 and ' +
+      'later has them, so check which engine app.fonts is.',
   );
 }
 /** OSC 52 payloads bigger than this are a program misbehaving, not a copy. */
@@ -371,9 +371,10 @@ export class VtTermNode extends Node {
    * engine to build them from.
    *
    * Null is cached per font key when the engine answered but cannot build
-   * glyph runs — `app.fonts` is not ntk's, which is react-x11's Cocoa backend
-   * as of 2.3.x (sidorares/react-x11#432) — so the probe runs once, not on
-   * every measure and paint. A box with no `app.fonts` at all (the mock
+   * glyph runs — an `app.fonts` that is not ntk's and has not grown its
+   * seams, which react-x11's Cocoa backend was before 2.4.0
+   * (sidorares/react-x11#432) — so the probe runs once, not on every
+   * measure and paint. A box with no `app.fonts` at all (the mock
    * backend) is not cached: it never had an engine to ask.
    */
   private _fontSet(): FontSet | null {

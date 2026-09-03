@@ -24,6 +24,8 @@ import {
   createMockApp,
   expectPixel,
   fireEvent,
+  isNear,
+  pixelAt,
   screen,
   userEvent,
   waitFor,
@@ -765,6 +767,22 @@ function vtNode(): VtTermNode {
   return node as unknown as VtTermNode;
 }
 
+/** The cell the node shaped its grid from — device pixels, like
+ *  `contentBox()`, so a pixel probe or a synthetic click can be aimed at a
+ *  cell. Reached structurally: the font set is the node's own business. */
+function cellMetrics(node: VtTermNode): {
+  cellWidth: number;
+  cellHeight: number;
+} {
+  const fonts = (
+    node as unknown as {
+      _fontSet(): { metrics: { cellWidth: number; cellHeight: number } } | null;
+    }
+  )._fontSet();
+  assert.ok(fonts, 'the font set is built');
+  return fonts.metrics;
+}
+
 /** Mount a vt terminal on the mock backend and wait for its pty. */
 async function mountVt(
   props: Record<string, unknown> = {},
@@ -1240,38 +1258,54 @@ test(
 );
 
 test(
-  'scrolling moves the surviving band server-side',
+  'scrolling moves the surviving band server-side, top row included',
   { skip: !FONTS },
   async () => {
     const pty = new FakePtyHost();
-    await renderX11(
+    const r = await renderX11(
       h(Terminal, {
         backend: 'vt',
         pty,
         fontFamily: 'monospace',
         fontSize: 16,
         cursorBlink: false,
-        colors: { background: '#000000', foreground: '#ffffff' },
+        colors: {
+          background: '#000000',
+          foreground: '#ffffff',
+          palette: ['#000000', '#ff0000'],
+        },
       }),
       { fonts: FONTS!, width: 400, height: 200 },
     );
     await waitFor(() => assert.ok(pty.last));
     const node = vtNode();
     const { rows } = node.gridSize();
+    assert.ok(rows >= 3, `a grid tall enough to scroll, not ${rows} rows`);
     // Fill the screen first and let it *paint*: a copy needs a mirror of
     // something, and the very first frame has none. Waiting for the pixels
     // rather than for the parse is the whole of it — on a slower machine the
     // two feeds otherwise coalesce into one frame, which repaints instead of
-    // copying and is the coalescing working correctly.
+    // copying and is the coalescing working correctly. Line 1 is four cells
+    // of red background and nothing else: the marker the scroll has to carry
+    // into the top row.
     await act(async () => {
       pty.last!.feed(
-        Array.from({ length: rows }, (_, i) => `line ${i}`).join('\r\n'),
+        Array.from({ length: rows }, (_, i) =>
+          i === 1 ? '\x1b[41m    \x1b[m' : `line ${i}`,
+        ).join('\r\n'),
       );
     });
     await waitFor(() =>
       assert.match(node.serialize() ?? '', new RegExp(`line ${rows - 1}`)),
     );
     await settle(node);
+    const { cellWidth, cellHeight } = cellMetrics(node);
+    const box = node.contentBox();
+    const probe = (col: number, row: number): [number, number] => [
+      Math.floor(box.x + (col + 0.5) * cellWidth),
+      Math.floor(box.y + (row + 0.5) * cellHeight),
+    ];
+    await waitFor(() => expectPixel(r.ctx, ...probe(1, 1), '#ff0000'));
     // Now push it up by one.
     await act(async () => {
       pty.last!.feed('\r\none more');
@@ -1282,6 +1316,21 @@ test(
         'a scroll became a server-side copy, not a screenful of glyphs',
       );
     });
+    // The copy has to land the band one row up — top row included. Handing
+    // `Surface.copyWithin` the *source* rows as its rect moved rows 2… into
+    // 1… and never wrote row 0, while the mirror, shifted as a block, believed
+    // the old row 1 was there: the first line stayed stale after every scroll
+    // (issue #60). `copies > 0` alone never saw it; the marker's pixels do.
+    await waitFor(() =>
+      expectPixel(r.ctx, ...probe(1, 0), '#ff0000', {
+        message: 'the scrolled band reached the top row',
+      }),
+    );
+    // …and it moved rather than being duplicated: row 1 holds what was row 2.
+    assert.ok(
+      !isNear(await pixelAt(r.ctx, ...probe(1, 1)), '#ff0000'),
+      'row 1 shows the line that was below the marker',
+    );
   },
 );
 
@@ -1384,17 +1433,11 @@ function cellCentre(
   row: number,
 ): { dx: number; dy: number } {
   const box = node.contentBox();
-  const fonts = (
-    node as unknown as {
-      _fontSet(): { metrics: { cellWidth: number; cellHeight: number } } | null;
-    }
-  )._fontSet();
-  assert.ok(fonts, 'the font set is built');
+  const { cellWidth, cellHeight } = cellMetrics(node);
   const { abs } = node as unknown as DrawnNode;
   return {
-    dx: box.x + (col + 0.5) * fonts.metrics.cellWidth - (abs.x + abs.width / 2),
-    dy:
-      box.y + (row + 0.5) * fonts.metrics.cellHeight - (abs.y + abs.height / 2),
+    dx: box.x + (col + 0.5) * cellWidth - (abs.x + abs.width / 2),
+    dy: box.y + (row + 0.5) * cellHeight - (abs.y + abs.height / 2),
   };
 }
 

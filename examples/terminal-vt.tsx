@@ -3,11 +3,11 @@
 // backend, and the pty it does need is already a devDependency here —
 // `@lydell/node-pty`, 220 KB.)
 //
-// **On macOS, run it as `REACT_X11_BACKEND=x11 …` under XQuartz.** react-x11
-// 2.3 picks its native Cocoa backend there by default, and that backend's
-// text engine has no glyph-run seams yet (sidorares/react-x11#432): the
-// terminal paints nothing on it and says so once in the console, rather than
-// throwing from inside paint.
+// On macOS it runs on react-x11's native Cocoa backend, the default there
+// since 2.3: the glyph-run seams and the offscreen Surface this renderer
+// needs arrived in react-x11 2.4.0 and 2.5.0 (sidorares/react-x11#432 and
+// #433), which is this package's floor. `REACT_X11_BACKEND=x11 …` under
+// XQuartz is the A/B run.
 //
 // **`npm install node-pty` in this repo installs nothing**, and exits 0 while
 // doing it: this package *declares* node-pty as an optional peer dependency,

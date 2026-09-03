@@ -425,15 +425,25 @@ export class RetainedRenderer extends BatchingRenderer {
     const metrics = this._metrics;
     if (!surface || !metrics || count <= 0 || srcRow === dstRow) return false;
     const h = metrics.cellHeight;
+    const delta = dstRow - srcRow;
+    // `copyWithin(rect, dx, dy)` is `scrollRegion` for a surface: it shifts
+    // the pixels *within* `rect` and writes nothing outside it — the band
+    // that survives is `rect ∩ (rect + delta)`. So the rect is the union of
+    // the source rows and the destination rows, not the source alone. Handed
+    // only the source, a scroll up by one moved rows 2… into rows 1… and
+    // never wrote row 0, while the mirror — shifted as a block — believed
+    // the old row 1 had landed there, so the top line stayed stale after
+    // every scroll (issue #60). With the union, the surviving band is exactly
+    // `dstRow…dstRow+count`, sourced from exactly `srcRow…srcRow+count`.
     const ok = surface.copyWithin(
       {
         x: 0,
-        y: srcRow * h,
+        y: Math.min(srcRow, dstRow) * h,
         width: this._cols * metrics.cellWidth,
-        height: count * h,
+        height: (count + Math.abs(delta)) * h,
       },
       0,
-      (dstRow - srcRow) * h,
+      delta * h,
     );
     if (ok) this.count('copies');
     return ok;

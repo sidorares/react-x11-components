@@ -13,11 +13,11 @@
 // normal screen never touches.
 //
 // Not every backend's text engine has those seams. react-x11's Cocoa backend
-// (2.3.x) answers `fonts.match()` with a face that has `metrics` and
-// `hasGlyph` and nothing else — sidorares/react-x11#432 is that engine
-// growing the rest — so everything here feature-detects (`hasGlyphRuns`),
-// and a `FontSet` over such an engine is a valid object that builds no runs
-// rather than a `TypeError` thrown from inside paint.
+// up to 2.3.x answered `fonts.match()` with a face that has `metrics` and
+// `hasGlyph` and nothing else (it grew the rest in 2.4.0,
+// sidorares/react-x11#432), so everything here feature-detects
+// (`hasGlyphRuns`), and a `FontSet` over such an engine is a valid object
+// that builds no runs rather than a `TypeError` thrown from inside paint.
 
 /** What every backend's face answers: metrics and coverage. */
 export interface EngineFont {
@@ -69,7 +69,7 @@ export interface NtkFonts {
 /**
  * Whether a face can build glyph runs: `glyphIdFor` to find the glyph and
  * `advanceOf` to measure it. A face without them still answers metrics and
- * coverage, which is all react-x11's Cocoa backend offers today.
+ * coverage, which is all react-x11's Cocoa backend offered before 2.4.0.
  */
 export function hasGlyphRuns(
   font: EngineFont | null | undefined,
@@ -119,7 +119,7 @@ export class FontSet {
    * Whether this engine's faces can build glyph runs at all.
    *
    * `false` when `match()` answered a face with metrics and coverage but
-   * none of the glyph-run seams — react-x11's Cocoa backend as of 2.3.x
+   * none of the glyph-run seams — react-x11's Cocoa backend before 2.4.0
    * (sidorares/react-x11#432). `run()` is then always null, and the node
    * paints nothing rather than half a terminal. A box with no fonts at all
    * is a different state and stays `true`: the engine is ntk's, it just
