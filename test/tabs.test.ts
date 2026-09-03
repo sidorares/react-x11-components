@@ -794,9 +794,14 @@ test('line: the hover is a wash, standing clear of the strip rule', async () => 
   assert.strictEqual(washOf('projects'), undefined, 'nothing until hovered');
 
   await userEvent.hover(tab('projects'));
+  // Laid out, not merely mounted: the box appears on the render the hover
+  // causes and is placed on the layout pass after it, and a run that reads
+  // it in between gets a rect of zeroes — which is a whole trigger's worth
+  // of "distance to the rule" and passes for a real number.
   const wash = await waitFor(() => {
     const found = washOf('projects');
     assert.ok(found, 'a hovered `line` trigger wears the wash');
+    assert.ok(found.abs.height > 0, 'and layout has placed it');
     return found;
   });
   // The wash is the size a `subtle` fill is — the label with the same padding
