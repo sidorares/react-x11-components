@@ -30,6 +30,10 @@ same tree with the dots removed. `asChild` is the one part of the surface
 deliberately absent: it exists to merge props into somebody else's DOM
 element, and there is no DOM here.
 
+`overflow` is the one prop with no counterpart there, and it is on by
+default: a horizontal strip narrower than its tabs keeps the ones that fit
+and drops the rest into a menu, rather than running off its own edge.
+
 The behaviour is that of react-x11's own `<Tabs>`, **which this component
 supersedes**: the keyboard model, the RTL handling and the manual activation
 mode carry over, the items-array API does not — triggers and panels are
@@ -66,6 +70,7 @@ Every part takes `style` (`Style | Style[]`) and `data-testname`.
 | `activationMode` | `'automatic' \| 'manual'`                                  | `automatic` (default) selects as the arrows move; `manual` moves focus only and commits on Enter or Space.                           |
 | `fitted`         | `boolean`                                                  | Triggers share the strip equally, filling its length.                                                                                |
 | `justify`        | `'start' \| 'center' \| 'end'`                             | Where the triggers sit along the strip. Default `'start'`.                                                                           |
+| `overflow`       | `'menu' \| 'clip'`                                         | What a horizontal strip does with more tabs than it has room for. Default `'menu'` — see below.                                      |
 | `lazyMount`      | `boolean`                                                  | Build a panel the first time its tab is selected rather than up front.                                                               |
 | `unmountOnExit`  | `boolean`                                                  | Unmount a panel when its tab is deselected, giving up its state.                                                                     |
 | `accent`         | `string`                                                   | The colour the selection takes — Chakra's `colorPalette`, as one colour. A `$token` resolves against the palette. Default `$accent`. |
@@ -117,6 +122,57 @@ later, would be worse than asking for one line. Pass `defaultValue`.
 While nothing is selected every trigger is in the tab order, since there is
 no selected trigger to be the strip's one stop.
 
+## Tabs that do not fit go in a menu
+
+A horizontal strip narrower than its tabs keeps the ones that fit, puts a
+button at its end, and drops the rest as a menu under it. Nothing to write —
+`overflow` defaults to `'menu'`, and `overflow="clip"` is the way back to a
+strip that simply runs off its own edge.
+
+Three decisions inside it are worth knowing:
+
+- **The button is a stop on the strip like any other**, drawn from the same
+  chrome the triggers are. So when the selected tab is one of the ones behind
+  it, the button wears the selected look — the accent marker under a `line`
+  strip, the chip on a `subtle` one — and the menu draws a mark beside the row
+  it stands for. That is what picking a tab out of the menu does, rather than
+  displacing a tab that fitted: which tabs are on the strip is a question
+  about room and nothing else, so the strip does not reshuffle itself every
+  time a tab is chosen. The button also takes the strip's tab stop while it
+  holds the selection, since the trigger that would normally have it is not on
+  the strip.
+- **The menu draws the trigger's own children**, so a tab with an
+  [`<Icon>`](https://github.com/sidorares/react-x11/blob/master/docs/components.md)
+  beside its label keeps both, and there is nowhere to write the label twice.
+  Anything in the strip that is _not_ a `<TabsTrigger>` stays on the strip and
+  is not counted — the arithmetic is about tabs. A row is announced as a
+  `menuitemradio`, which is the only place a screen reader hears about a tab
+  that is not on the strip to carry `role="tab"`.
+- **The arrows reach the button** like any tab, and it selects nothing on the
+  way past. Down opens the menu, Down and Up walk it, Enter or Space commits,
+  Escape closes it.
+
+It works off measurement, which costs a frame: a tab whose width is not known
+yet — a first render, a tab just added, a label just changed — puts the strip
+back to showing everything for one pass, which is what measures it, and the
+pass after that is the one that decides. The strip clips while `overflow` is
+`'menu'`, so that pass is a strip cut off at its edge rather than one spilling
+over the panel. What is hidden is then a pure function of the measured widths
+and the room, which is what keeps it from hunting.
+
+Those same measurements size the menu. A row is the tab it stands for with the
+row's padding instead of the tab's — same label, same face, same glyph — so
+the sheet's size is arithmetic rather than something the popup works out about
+itself, and where it lands is a number this component can see.
+
+A `fitted` strip stops sharing its width out the moment anything is in the
+menu, and that is not cosmetic: a grown trigger lays out at its share of the
+strip rather than at its label, so hiding one tab would leave the rest looking
+wider, and the next pass would hide another.
+
+A **vertical** strip ignores `overflow` entirely. It runs out of room
+downward, where a menu is the wrong answer.
+
 ## The keyboard walks the strip, not the markup
 
 The strip is a single tab stop: the selected trigger takes the focus, and
@@ -144,7 +200,13 @@ needs.
 Every variant is styled out of the box:
 
 - **`line`** (default) — a 1px rule along the strip with a 2px accent marker
-  under the selected trigger; the selected label takes the accent.
+  under the selected trigger; the selected label takes the accent. Hovering a
+  tab washes it the way `subtle` does, and at the same size: the label with
+  the same padding round it, standing that same distance again off the panel
+  edge — a `line` trigger carries the extra as padding, which is why its strip
+  is a little taller than the others'. The wash is a box rather than a
+  background because the strip's rule runs under the triggers, and a
+  background would break the line under whichever tab the pointer was on.
 - **`subtle`** — a rounded wash of the accent behind the selected label.
 - **`enclosed`** — the strip is a muted chip and the selected trigger is a
   raised segment of it, filled with the `ground`.
@@ -238,5 +300,6 @@ not inherit and has to be named:
 `npm run examples:tabs` renders the five variants (one with a disabled
 trigger, `plain` wearing a `<TabsIndicator>`), the three sizes and a
 `fitted` strip, and the behaviours: a panel that keeps its state while
-hidden beside one that gives it up on `unmountOnExit`, and a controlled
-vertical strip in `manual` mode.
+hidden beside one that gives it up on `unmountOnExit`, a controlled
+vertical strip in `manual` mode, and a strip of seven tabs on a width you
+can drag, so the menu fills and empties as you do.

@@ -13,9 +13,27 @@ import { test, afterEach } from 'node:test';
 import assert from 'node:assert';
 import React from 'react';
 
-import { renderX11, cleanup, screen, userEvent, pixelAt } from 'react-x11/test';
+import {
+  renderX11,
+  cleanup,
+  screen,
+  userEvent,
+  pixelAt,
+  act,
+  roleOf,
+  textOf,
+  waitFor,
+} from 'react-x11/test';
 import { ThemeProvider } from 'react-x11';
-import { XK_DOWN, XK_END, XK_HOME, XK_LEFT, XK_RIGHT } from 'react-x11/keysyms';
+import {
+  XK_DOWN,
+  XK_END,
+  XK_HOME,
+  XK_LEFT,
+  XK_RETURN,
+  XK_RIGHT,
+} from 'react-x11/keysyms';
+import type { DrawnNode } from 'react-x11';
 import type { Node as RetainedNode } from 'react-x11/node';
 
 import {
@@ -548,4 +566,327 @@ test('a part outside <Tabs> says what is wrong', async () => {
   }
 
   assert.match(errors[0] ?? '', /<TabsTrigger> has to be inside a <Tabs>/);
+});
+
+// --- overflow ---------------------------------------------------------------
+//
+// The strip decides what fits from what layout actually did, which takes a
+// pass to measure and a pass to settle — so every assertion here is inside a
+// `waitFor`, which `act`s between attempts.
+
+/** Seven tabs off a repository's own navigation, which is where the shape of
+ *  this feature comes from. */
+const MANY: Item[] = [
+  { value: 'code' },
+  { value: 'issues' },
+  { value: 'pulls', label: 'Pull requests' },
+  { value: 'discussions' },
+  { value: 'actions' },
+  { value: 'projects' },
+  { value: 'wiki' },
+];
+
+/** The same tabs in a window narrow enough that they cannot all fit. */
+function narrow(
+  width: number,
+  rootProps: TabsProps = {},
+  items: Item[] = MANY,
+  more: TabsProps = {},
+): React.ReactElement {
+  return h(
+    'window',
+    { width, height: 200 } as Record<string, unknown>,
+    h(
+      ThemeProvider,
+      { value: {}, colorScheme: 'light' },
+      h(
+        Tabs,
+        {
+          'data-testname': 'tabs',
+          defaultValue: 'code',
+          ...rootProps,
+          ...more,
+        },
+        h(
+          TabsList,
+          { 'data-testname': 'list' },
+          items.map((item) =>
+            h(
+              TabsTrigger,
+              {
+                key: item.value,
+                value: item.value,
+                disabled: item.disabled,
+                'data-testname': `tab-${item.value}`,
+              },
+              item.label ?? item.value,
+            ),
+          ),
+        ),
+        items.map((item) =>
+          h(
+            TabsContent,
+            {
+              key: item.value,
+              value: item.value,
+              'data-testname': `panel-${item.value}`,
+            },
+            `${item.value} panel`,
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
+/** Which tabs are on the strip, in the order layout put them. */
+const onStrip = (): string[] =>
+  MANY.map((item) => item.value).filter((value) =>
+    Boolean(screen.queryByTestName(`tab-${value}`)),
+  );
+
+const more = () => screen.getByTestName('tabs-more');
+
+/** The rows of the open overflow menu, in order. */
+const rows = () => screen.all((node) => roleOf(node) === 'menuitemradio');
+
+/** An accent-coloured mark inside a node — the `line` marker under the
+ *  overflow button, or the bar beside the menu row that is selected. */
+const marked = (node: DrawnNode): boolean =>
+  retained(node).children.some(
+    (child) =>
+      child.kind === 'box' && child.style.backgroundColor === ACCENT_HEX,
+  );
+
+const props = (node: DrawnNode): Record<string, unknown> =>
+  retained(node).props;
+
+const ACCENT_HEX = '#2980b9';
+const ACCENT = { accent: ACCENT_HEX };
+
+test('a strip with no room keeps what fits and offers the rest', async () => {
+  await mount(narrow(260));
+
+  await waitFor(() => {
+    assert.ok(more(), 'a strip that overflowed grows a button');
+    const shown = onStrip();
+    assert.ok(shown.length > 0, 'the tabs that fit stay on the strip');
+    assert.ok(shown.length < MANY.length, 'the ones that do not are gone');
+    // …and what is left really does fit, which is the whole claim
+    const list = retained(screen.getByTestName('list'));
+    const last = retained(screen.getByTestName('tabs-more'));
+    assert.ok(
+      last.abs.x + last.abs.width <= list.abs.x + list.abs.width + 1,
+      'the button is inside the strip it was added to',
+    );
+  });
+
+  // the strip is still one tab stop, and the button is the last of them
+  assert.strictEqual(more().kind, 'box');
+});
+
+test('a selected tab stays in the menu, and the button wears its mark', async () => {
+  await mount(narrow(260, { defaultValue: 'wiki' }, MANY, ACCENT));
+
+  await waitFor(() => {
+    assert.ok(more());
+    assert.ok(
+      !onStrip().includes('wiki'),
+      'the last tab does not displace one that fitted just for being selected',
+    );
+    assert.ok(
+      marked(more()),
+      'the button carries the selected mark instead, in the accent',
+    );
+  });
+
+  // …and it takes the strip's one tab stop, since the trigger that would
+  // normally hold it is not on the strip to hold anything
+  assert.strictEqual(props(more()).tabIndex, 0);
+  for (const value of onStrip()) {
+    assert.strictEqual(props(tab(value)).tabIndex, -1);
+  }
+});
+
+test('picking a tab out of the menu leaves the strip as it was', async () => {
+  const changes: TabsValueChange[] = [];
+  await mount(
+    narrow(260, { onValueChange: (c) => changes.push(c) }, MANY, ACCENT),
+  );
+  await waitFor(() => assert.ok(more()));
+
+  const shown = onStrip();
+  const missing = MANY.find((item) => !shown.includes(item.value));
+  assert.ok(missing, 'something is in the menu to pick');
+  const label = missing.label ?? missing.value;
+
+  await userEvent.click(more());
+  const row = await waitFor(() => {
+    const found = rows().find((node) => textOf(node) === label);
+    assert.ok(found, `the menu offers ${label}`);
+    return found;
+  });
+
+  await userEvent.click(row);
+  assert.deepStrictEqual(changes, [{ value: missing.value }]);
+  await waitFor(() => {
+    assert.strictEqual(rows().length, 0, 'the menu is gone');
+    assert.deepStrictEqual(
+      onStrip(),
+      shown,
+      'and the strip is exactly the tabs that fitted, still',
+    );
+    assert.ok(marked(more()), 'the button says where the selection went');
+  });
+
+  // reopened, the menu marks the row it stands for
+  await userEvent.click(more());
+  await waitFor(() => {
+    const again = rows().find((node) => textOf(node) === label);
+    assert.ok(again);
+    assert.strictEqual(props(again)['aria-checked'], true);
+    assert.ok(marked(again), 'and draws the accent bar beside it');
+  });
+});
+
+test('the strip takes its tabs back when the window makes room', async () => {
+  const view = await mount(narrow(260));
+  await waitFor(() => assert.ok(more()));
+  const cramped = onStrip().length;
+
+  // A resize re-lays out without re-rendering anything, which is the path
+  // the window's own `onAnchorChange` is subscribed for.
+  await view.rerender(narrow(900));
+  await waitFor(() => {
+    assert.strictEqual(
+      screen.queryByTestName('tabs-more'),
+      null,
+      'nothing is left over, so there is no button',
+    );
+    assert.strictEqual(onStrip().length, MANY.length);
+  });
+  assert.ok(cramped < MANY.length);
+});
+
+test('overflow="clip" leaves the strip to spill, as it always did', async () => {
+  await mount(narrow(260, { overflow: 'clip' }));
+  await waitFor(() => assert.strictEqual(onStrip().length, MANY.length));
+  assert.strictEqual(screen.queryByTestName('tabs-more'), null);
+});
+
+test('a vertical strip overflows downward and grows no button', async () => {
+  await mount(narrow(260, { orientation: 'vertical' }));
+  await waitFor(() => assert.strictEqual(onStrip().length, MANY.length));
+  assert.strictEqual(screen.queryByTestName('tabs-more'), null);
+});
+
+test('line: the hover is a wash, standing clear of the strip rule', async () => {
+  // `clip`, because this is a test about what a hovered trigger looks like:
+  // whether three short labels happen to fit the strip in whatever face the
+  // machine resolved is not a variable it should have.
+  await mount(view({ defaultValue: 'members', overflow: 'clip' }, THREE));
+
+  const washOf = (value: string) =>
+    retained(tab(value)).children.find(
+      (child) =>
+        child.kind === 'box' &&
+        child.style.position === 'absolute' &&
+        child.style.borderRadius === 4,
+    ) as RetainedNode | undefined;
+
+  // Both "no wash" checks put the pointer somewhere of their own choosing
+  // first, rather than trusting where it is. Going in, it is wherever the
+  // previous test left it and the X server is shared, so where it lands in a
+  // freshly mounted tree depends on how wide the labels came out; coming out,
+  // `unhover` leaves it at the trigger's own edge, which is a coordinate this
+  // test would rather not be deciding hit-testing questions about. The panel
+  // is nowhere near the strip either way.
+  const park = async (why: string): Promise<void> => {
+    await userEvent.hover(screen.getByTestName('panel-members'));
+    await waitFor(() =>
+      assert.strictEqual(Boolean(washOf('projects')), false, why),
+    );
+  };
+
+  await park('nothing until hovered');
+
+  await userEvent.hover(tab('projects'));
+  // Laid out, not merely mounted: the box appears on the render the hover
+  // causes and is placed on the layout pass after it, and a run that reads
+  // it in between gets a rect of zeroes — which is a whole trigger's worth
+  // of "distance to the rule" and passes for a real number.
+  const wash = await waitFor(() => {
+    const found = washOf('projects');
+    assert.ok(found, 'a hovered `line` trigger wears the wash');
+    assert.ok(found.abs.height > 0, 'and layout has placed it');
+    return found;
+  });
+  // The wash is the size a `subtle` fill is — the label with the same padding
+  // round it — and it keeps that same distance again off the panel edge.
+  const trigger = retained(tab('projects'));
+  const label = trigger.children.find((child) => child.kind === 'text');
+  assert.ok(label);
+  const pad = label.abs.y - wash.abs.y;
+  const below =
+    trigger.abs.y + trigger.abs.height - (wash.abs.y + wash.abs.height);
+  assert.ok(pad > 0, 'the wash stands off the label');
+  assert.strictEqual(
+    below,
+    pad,
+    `text to wash edge is wash edge to rule (${pad}/${below})`,
+  );
+  assert.strictEqual(
+    wash.abs.y,
+    trigger.abs.y,
+    'and the far side is flush: the room came out of the panel side',
+  );
+
+  await park('and it goes with the pointer');
+});
+
+test('fitted: a strip with no room stops sharing, and settles there', async () => {
+  await mount(narrow(260, { fitted: true }));
+  await waitFor(() => assert.ok(more()));
+
+  // The oscillation this guards against: a `fitted` trigger grows to its
+  // share of the strip, so measuring one after a tab has been taken away
+  // reads the space it left as the label needing it — and every pass hides
+  // one more. Two more layout passes have to give the same answer.
+  const settled = onStrip();
+  await act();
+  await act();
+  assert.deepStrictEqual(onStrip(), settled);
+  assert.ok(settled.length > 0 && settled.length < MANY.length);
+});
+
+test('the overflow button is the last stop on the walk, and takes the keys', async () => {
+  const changes: TabsValueChange[] = [];
+  await mount(narrow(260, { onValueChange: (c) => changes.push(c) }));
+  await waitFor(() => assert.ok(more()));
+
+  await userEvent.click(tab('code'));
+  changes.length = 0;
+  await userEvent.key(XK_END);
+  assert.ok(more().focused, 'End walks past the last tab, to the button');
+  assert.strictEqual(
+    changes.length,
+    0,
+    'and selects nothing: the button is the way to the tabs, not one of them',
+  );
+
+  const shown = onStrip();
+  await userEvent.key(XK_DOWN);
+  await waitFor(() => assert.ok(rows().length > 0, 'Down drops the menu'));
+
+  await userEvent.key(XK_RETURN);
+  await waitFor(() => {
+    assert.strictEqual(
+      rows().length,
+      0,
+      'Enter commits the row the cursor is on and shuts the menu',
+    );
+    assert.strictEqual(changes.length, 1);
+    assert.deepStrictEqual(onStrip(), shown, 'the strip is unchanged');
+    assert.ok(marked(more()), 'and the button is holding the selection');
+  });
 });
