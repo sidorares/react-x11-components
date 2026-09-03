@@ -781,7 +781,10 @@ test('a vertical strip overflows downward and grows no button', async () => {
 });
 
 test('line: the hover is a wash, standing clear of the strip rule', async () => {
-  await mount(view({ defaultValue: 'members' }, THREE));
+  // `clip`, because this is a test about what a hovered trigger looks like:
+  // whether three short labels happen to fit the strip in whatever face the
+  // machine resolved is not a variable it should have.
+  await mount(view({ defaultValue: 'members', overflow: 'clip' }, THREE));
 
   const washOf = (value: string) =>
     retained(tab(value)).children.find(
@@ -791,7 +794,14 @@ test('line: the hover is a wash, standing clear of the strip rule', async () => 
         child.style.borderRadius === 4,
     ) as RetainedNode | undefined;
 
-  assert.strictEqual(washOf('projects'), undefined, 'nothing until hovered');
+  // The pointer is wherever the last test left it and the X server is shared,
+  // so where it lands in a freshly mounted tree is whatever the tab widths
+  // happen to be — park it off the strip before claiming anything about a
+  // trigger that has not been hovered.
+  await userEvent.hover(screen.getByTestName('panel-members'));
+  await waitFor(() =>
+    assert.strictEqual(washOf('projects'), undefined, 'nothing until hovered'),
+  );
 
   await userEvent.hover(tab('projects'));
   // Laid out, not merely mounted: the box appears on the render the hover
