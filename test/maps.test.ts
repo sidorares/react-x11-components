@@ -1545,6 +1545,38 @@ test('a marker with no title is announced by its position', async () => {
   assert.match(node.a11yScene()[0].name ?? '', /51\.5080, -0\.1281/);
 });
 
+test('a map that cannot rasterize stops asking for frames', async () => {
+  // The spin this pins: `paint` asks for another frame while any tile is
+  // still pending, and a backend with no offscreen `Surface` — the mock one
+  // the headless suite runs on — can never make a tile drawable. Counted as
+  // pending, that is a repaint at the refresh rate, forever, of a map that
+  // cannot change.
+  const frames: number[] = [];
+  const source: MapSource = {
+    id: 'x',
+    minZoom: 0,
+    maxZoom: 14,
+    tileSize: 512,
+    load: () => ({ kind: 'vector', data: tileBytes([]) }),
+  };
+  await renderX11(
+    React.createElement(MapView, {
+      sources: [source],
+      defaultCamera: { center: LONDON, zoom: 6 },
+      onFrame: (stats) => frames.push(stats.pending),
+      'data-testname': 'map',
+    }),
+    HEADLESS,
+  );
+  await act(async () => {});
+  await act(async () => {});
+  assert.ok(frames.length > 0, 'it painted');
+  assert.ok(
+    frames.every((pending) => pending === 0),
+    `nothing may be left pending on a backend with no surfaces: ${frames}`,
+  );
+});
+
 // --- the display scale -----------------------------------------------------
 //
 // The trap react-x11's docs/scale.md describes and this repo has been

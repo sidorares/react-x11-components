@@ -132,6 +132,20 @@ const timers = globalThis as {
   clearTimeout?(id: unknown): void;
 };
 
+/**
+ * The settle timer, unref'd where the runtime allows it.
+ *
+ * A map that has just been panned holds a 140 ms timer, and an unref'd one
+ * does not keep a process alive on its own — which matters for a script or
+ * a test that renders a map and expects to exit, and is the call core's
+ * caret blink makes for the same reason.
+ */
+function arm(tick: () => void): unknown {
+  const handle = timers.setTimeout?.(tick, SETTLE_MS) ?? null;
+  (handle as { unref?(): void } | null)?.unref?.();
+  return handle;
+}
+
 function clamp(value: number, low: number, high: number): number {
   return value < low ? low : value > high ? high : value;
 }
@@ -526,7 +540,7 @@ export class MapViewNode extends Node {
     const tick = (): void => {
       this._settleTimer = null;
       if (Date.now() < this._settleAt) {
-        this._settleTimer = timers.setTimeout?.(tick, SETTLE_MS) ?? null;
+        this._settleTimer = arm(tick);
         return;
       }
       // The gesture is over: sharpen. A full repaint, because every tile on
@@ -534,7 +548,7 @@ export class MapViewNode extends Node {
       this._prop<(camera: MapCamera) => void>('onMoveEnd')?.(this.camera());
       this._repaint('content');
     };
-    this._settleTimer = timers.setTimeout?.(tick, SETTLE_MS) ?? null;
+    this._settleTimer = arm(tick);
   }
 
   private get _gesturing(): boolean {
@@ -814,7 +828,12 @@ export class MapViewNode extends Node {
 
     // Tiles left to rasterize: come back next frame and spend another
     // budget on them. This is the whole of the progressive fill-in.
-    if (stats.pending > 0) this._repaint('content');
+    //
+    // Only when a next frame could make progress. With no budget — during a
+    // gesture, or because an application pinned `rasterBudgetMs` to 0 — the
+    // next frame would draw exactly this one again, and asking for it is a
+    // spin. The gesture's own settle timer is what brings the map back.
+    if (stats.pending > 0 && budget > 0) this._repaint('content');
 
     if (!this._sceneAnnounced) {
       this._sceneAnnounced = true;
@@ -903,7 +922,13 @@ export class MapViewNode extends Node {
             );
           }
         }
-        if (cached.progress !== -1) stats.pending++;
+        // "Pending" means *there is work left that this map could still
+        // do*, and nothing weaker — because `paint` asks for another frame
+        // while it is non-zero. A tile with no surface (a backend that has
+        // none, so `prepareSurface` declined) never becomes drawable, and
+        // counting it would spin the frame clock at the refresh rate
+        // forever, repainting a map that cannot change.
+        if (cached.surface && cached.progress !== -1) stats.pending++;
       }
 
       if (
