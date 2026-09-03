@@ -309,6 +309,16 @@ export function Flow<N = FlowNodeData, E = unknown>(
         const node = byId.get(body.id);
         const type = node && nodeTypes?.[node.type ?? 'default'];
         if (!node || !type?.render) return null;
+        // The two boxes are two units. The outer one is the pane's: it is
+        // positioned and clipped in the same logical window pixels the pane
+        // painted the card in, so the body lands on the card exactly. The
+        // inner one is the body's, and `scale` is what makes the difference
+        // between them the zoom (react-x11#449, core 2.6): every length
+        // under it is multiplied by that factor, so a body sized in graph
+        // units comes out at the size the card is drawn at, with its text
+        // shaped at that size rather than stretched.
+        const width = body.width / body.zoom;
+        const height = body.height / body.zoom;
         return React.createElement(
           'box',
           {
@@ -319,22 +329,32 @@ export function Flow<N = FlowNodeData, E = unknown>(
               top: body.y,
               width: body.width,
               height: body.height,
-              // The box follows the zoom; what is inside it does not, so
-              // this is what stops a zoomed-out node spilling its form over
-              // the graph.
+              // A body is free to overflow what it was given — a popup's
+              // fallback, a long line — and this is what stops it spilling
+              // over the graph.
               overflow: 'hidden',
             },
           },
-          React.createElement(FlowNodeBody, {
-            type: type as FlowNodeType<unknown>,
-            node: node as FlowNode<unknown>,
-            selected: body.selected,
-            zoom: body.zoom,
-            x: body.x,
-            y: body.y,
-            width: body.width,
-            height: body.height,
-          }),
+          React.createElement(
+            'box',
+            {
+              scale: body.zoom,
+              // Sized in the unit it establishes, which is what makes it
+              // fill the outer box at every zoom.
+              style: { width, height },
+            },
+            React.createElement(FlowNodeBody, {
+              type: type as FlowNodeType<unknown>,
+              node: node as FlowNode<unknown>,
+              selected: body.selected,
+              zoom: body.zoom,
+              // Graph units, like everything else the body sees.
+              x: body.x / body.zoom,
+              y: body.y / body.zoom,
+              width,
+              height,
+            }),
+          ),
         );
       })
     : null;

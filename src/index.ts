@@ -250,6 +250,7 @@ export type {
   NodeChange,
   NodeMouseHandler,
   NodePaintContext,
+  NodeRenderContext,
   PanePosition,
   Viewport,
   XYPosition,

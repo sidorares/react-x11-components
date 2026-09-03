@@ -12,7 +12,9 @@
 //   `notes` — a `render`. Real `<Checkbox>`, `<Button>` and `<textarea>`,
 //             laid out by yoga inside a box the pane places over the node.
 //             It is interactive, it re-renders as the viewport moves, and
-//             it does not scale — see README.md, "The graph editor".
+//             it zooms with the pane — the box carries core's `scale`, so
+//             everything below is written in graph units and never mentions
+//             the zoom. See README.md, "The graph editor".
 //
 // The `notes` node is also `resizable`: drag any of the eight grips on its
 // border while it is selected, and the textarea inside grows with it.

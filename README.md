@@ -707,10 +707,11 @@ states. Three things follow, and all three are the point:
 
 - **It re-renders as the viewport moves.** That is the cost the drawn path
   exists to avoid, so it is paid by the nodes that ask for it and no others.
-- **It does not scale with the zoom.** The box does; there is no transform
-  here. Content is laid out to the zoomed box at its natural size and
-  clipped, and below `zoom` 0.6 it is not mounted at all — the pane draws the
-  card instead.
+- **It zooms with the pane.** The subtree is mounted under a `scale` box, so
+  everything in it is written in graph units — a plain `fontSize: 11`, no
+  `zoom` anywhere — and comes out at the size the card is drawn at, text
+  shaped at that size rather than stretched. Below `zoom` 0.6 it is not
+  mounted at all: too small to read, and the pane draws the card instead.
 - **`headerHeight` is what keeps the node draggable.** The body starts below
   it, so there is always somewhere to grab that is not a text field.
 

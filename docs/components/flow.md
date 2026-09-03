@@ -241,10 +241,16 @@ the focus, not the node. Three things follow, and all three are the point:
   selection, the zoom and its size, so the per-step cost is one style-only
   commit on one box. `render` is re-invoked only when what it shows could
   have changed.
-- **It does not scale with the zoom.** The box does; there is no transform
-  here. Content is laid out to the zoomed box at its natural size and clipped,
-  and below `zoom` 0.6 it is not mounted at all — the pane draws the card
-  instead.
+- **It zooms with the pane.** The subtree is mounted in a box carrying
+  core's `scale` prop (react-x11 2.6), which multiplies every length under it
+  — CSS `zoom` semantics rather than a transform, so text is _shaped_ at the
+  size it is drawn at and stays crisp. The body is therefore written in
+  **graph units**: the `fontSize: 11` above is 11 at every zoom, and
+  `render` never multiplies by anything. `zoom` is still in the context, for
+  a body that wants to show less of itself when it is small. Below `zoom`
+  0.6 it is not mounted at all — nobody could read it, and one real subtree
+  per card is the cost a zoomed-out overview cannot pay, so the pane draws
+  the card instead.
 - **`headerHeight` is what keeps the node draggable.** The body starts below
   the strip, so there is always somewhere to grab that is not a text field.
   `0` hands the whole box over, and then only the keyboard can move the node.
@@ -304,7 +310,12 @@ react-flow gives every node a DOM subtree and pans and zooms with a CSS
 transform, so the browser moves ten thousand boxes for free. This renderer has
 no transform — `style` is yoga plus paint — so the same design here would
 re-render every node through React and re-lay-out every node through yoga on
-every pointer step of a pan, and zoom could not scale text at all.
+every pointer step of a pan.
+
+Core's `scale` prop _does_ zoom a subtree, and a mounted `render` body rides
+on it — but it zooms by restyling that subtree and re-shaping its text, which
+is exactly the cost a pan cannot pay once per node per frame. It is affordable
+for the handful of nodes that asked to be real, and for nothing else.
 
 So one element draws the graph, the way `<codeeditor>` draws a whole text
 editor. Panning is two numbers and one node's damage rect, zoom is arithmetic,

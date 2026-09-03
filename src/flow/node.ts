@@ -2887,8 +2887,14 @@ export class FlowGraphNode extends Node implements FlowInstance {
         selected: entry.node.selected ?? false,
       });
     }
+    // The zoom is in the key as well as the rect it produced: it is the
+    // body's subtree scale now, and two zooms a rounding apart can leave a
+    // box on the same integers while the text inside it should have moved.
     const key = bodies
-      .map((b) => `${b.id}:${b.x},${b.y},${b.width},${b.height},${b.selected}`)
+      .map(
+        (b) =>
+          `${b.id}:${b.x},${b.y},${b.width},${b.height},${b.zoom},${b.selected}`,
+      )
       .join('|');
     if (key === this._bodiesKey) return;
     this._bodiesKey = key;
