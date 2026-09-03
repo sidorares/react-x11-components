@@ -144,10 +144,11 @@ export interface TileDraw {
    *    mean fewer uploads over the same pixels, so the number wants to be
    *    large — a whole layer in one path.
    *  - On the **Cocoa** backend the path goes to `CGContextStrokePath`,
-   *    whose cost is superlinear in the number of subpaths: 2,800 streets
-   *    in one path measured 375 ms and the same streets in batches of a few
-   *    hundred vertices measured a fraction of that. There the number wants
-   *    to be small.
+   *    whose cost is superlinear in the number of subpaths: a tile's two
+   *    thousand building rings in one path measured 347 ms and the same
+   *    rings in batches of 512 vertices measured a fifth of that. There the
+   *    number wants to be small. Filed as react-x11#456; the batch size is
+   *    a legitimate caller-side choice either way.
    *
    * `<Map>` picks it from the backend it is on. See `docs/prd-maps.md`.
    */

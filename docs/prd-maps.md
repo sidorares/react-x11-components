@@ -319,24 +319,30 @@ uninterruptible. The remaining 44–55 ms maximum is the same shape one level
 down: a single layer that is one enormous multipolygon. Splitting inside a
 layer is the next thing to do if it matters.
 
-## Two gaps, upstream
+## One gap, upstream
 
-Both were found by the profile, both are core's rather than this package's,
-and neither is worked around here — which is the rule `AGENTS.md` states as
-"no escape hatches".
+Found by the profile, core's rather than this package's, and not worked
+around here — which is the rule `AGENTS.md` states as "no escape hatches".
 
-- **The Cocoa 2d context makes one native call per path operation.**
-  `moveTo`, `lineTo` and `closePath` each cross the napi boundary
-  (`react-x11/src/cocoa/context2d.js`), so a 45,000-vertex path is 45,000
-  crossings. A batched submission — `ctxPolyline(state, Float64Array)`, or
-  a polygon list — would collapse that to one call per path. This is the
-  same shape as the glyph-run seams filed as react-x11#432/#433, which
-  landed in 2.4 and 2.5.
-- **`CGContextStrokePath` is superlinear in subpath count.** Even with the
-  per-call cost removed, one path holding 2,800 streets measured 375 ms and
-  the same streets in batches measured a fifth of that. Worth reporting to
-  core so the backend can batch on the _native_ side, where it can pick the
-  right size rather than having every caller guess.
+**`CGContextStrokePath` is superlinear in the number of subpaths**
+([react-x11#456](https://github.com/sidorares/react-x11/issues/456)). One path
+holding a zoom-14 tile's `buildings` layer — a _single_ MVT feature with
+26,314 vertices in about two thousand rings — measured **347 ms**; the same
+rings flushed in batches of 512 vertices measured a fifth of that. A CPU
+profile of the Cocoa raster stage put **76.2%** of all samples inside that
+one native call. Reported so the backend can chunk on the _native_ side,
+where it can pick the size rather than having every caller guess it.
+
+**And a thing that looks like a second gap and is not**, recorded because it
+was the first hypothesis and the measurement refuted it. The Cocoa 2d
+context makes one napi call per path operation — `moveTo`, `lineTo` and
+`closePath` each cross the boundary
+(`react-x11/src/cocoa/context2d.js`) — so a 45,000-vertex path is 45,000
+crossings, and batching them looked like the obvious fix. It is not where
+the time goes: in the same profile `lineTo` is **18 ms of 3,143**, 0.6%, and
+flushing the path in batches — which does not reduce the number of `lineTo`
+calls at all — still gave a five-fold improvement. The crossings are cheap;
+the stroke is not.
 
 ## What is not here
 

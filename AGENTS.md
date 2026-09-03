@@ -858,10 +858,16 @@ subpaths — 512 measured best and 12,000 measured **three times worse**.
 default; a prop overrides it, because a capability probe standing in for a
 rasterizer's shape is a guess that should be correctable without a release.
 
-**Two gaps are filed rather than worked around**, per "no escape hatches":
-the Cocoa 2d context makes one napi call per `moveTo`/`lineTo`, and
-`CGContextStrokePath` is superlinear in subpath count. Both are core's, both
-are in `docs/prd-maps.md`, and neither has a hack in `src/maps/`.
+**One gap is filed rather than worked around**, per "no escape hatches":
+`CGContextStrokePath` is superlinear in the number of subpaths
+(react-x11#456), so one path
+holding a tile's two thousand building rings measured 347 ms and the same
+rings batched measured a fifth of that. It is core's, it is in
+`docs/prd-maps.md`, and there is no hack for it in `src/maps/` — only the
+per-backend batch size, which is a legitimate caller-side choice. The
+hypothesis it replaced is worth keeping as a method note: "the Cocoa context
+makes one napi call per `lineTo`" is _true_ and is **not** where the time
+goes (0.6% of the profile), and only measuring told the two apart.
 
 **Nothing fetches**, which is `<Html>`'s `onResource` rule and is stated at
 the top of `src/maps/sources.ts`: a component whose default made requests
