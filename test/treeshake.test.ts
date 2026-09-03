@@ -75,6 +75,9 @@ const COMPONENTS = [
   { exportName: 'Tree', dir: 'tree', marker: 'treeitem' },
   // the element name rather than `flow`, which "overflow" contains
   { exportName: 'Flow', dir: 'flow', marker: 'flowgraph' },
+  // `<Map>` shares nothing with anything here; the element name is a string
+  // no other module writes.
+  { exportName: 'Map', dir: 'maps', marker: 'mapview' },
   // `<Formula>` reaches katex only through a dynamic import, so the marker
   // is a face name only its own font table writes
   { exportName: 'Formula', dir: 'formula', marker: 'KaTeX_Size4' },

@@ -125,6 +125,7 @@ import type { CodeEditorProps } from '@react-x11/components';
 | `CodeEditor`     | `@react-x11/components/code-editor`      | Multiline code editing: highlighting, completion.            |
 | `Flow`           | `@react-x11/components/flow`             | A directed-graph editor: nodes, edges, pan and zoom.         |
 | `Html`           | `@react-x11/components/html`             | A static HTML + CSS document, selectable, with seams.        |
+| `Map`            | `@react-x11/components/maps`             | A 2D vector-tile map: pan, zoom, markers, overlays.          |
 | `Markdown`       | `@react-x11/components/markdown`         | Streaming-friendly GFM with cross-block selection.           |
 | `MediaPlayer`    | `@react-x11/components/media-player`     | mpv or VLC, embedded, with real transport control.           |
 | `Table`          | `@react-x11/components/table`            | A data table: sortable, virtualized, any row height.         |
@@ -726,6 +727,77 @@ else. `minWidth`/`minHeight` are the floor.
 loop, and a live count of X requests and bytes per frame.
 
 [rf]: https://reactflow.dev/
+
+## The map
+
+A slippy map: vector tiles decoded and drawn, panned, zoomed, with markers
+you can click and lines, areas and circles over the top.
+
+```jsx
+import { Map, osmVectorSource } from '@react-x11/components/maps';
+
+// Nothing in this package fetches. You supply the request; the adapter
+// supplies the URL, the schema and the attribution.
+const source = osmVectorSource({
+  fetch: async (url, signal) => {
+    const response = await fetch(url, { signal });
+    if (response.status === 404) return null;
+    return new Uint8Array(await response.arrayBuffer());
+  },
+});
+
+<Map
+  sources={[source]}
+  defaultCamera={{ center: { lon: -0.1281, lat: 51.508 }, zoom: 13 }}
+  markers={[{ id: 'home', position: { lon: -0.1281, lat: 51.508 } }]}
+  onMarkerClick={(marker) => select(marker.id)}
+  style={{ height: 400 }}
+/>;
+```
+
+The format is [Mapbox Vector Tile][mvt] — what Mapbox, MapTiler, Protomaps,
+Esri, TomTom, Azure Maps and OpenStreetMap's own tile server all serve — and
+the default style is written against **Shortbread**, the schema OSM cuts its
+own tiles in, so `osmVectorSource()` and nothing else is a working map.
+Raster tiles work too, as pixels you decode.
+
+**Nothing here fetches**, and that is the feature rather than an omission.
+A component whose default made requests would decide, on your behalf, whose
+servers your application talks to, what its user agent says and whose usage
+policy it is now bound by. So a source is a `load` function you write, the
+way `<Html onResource>` is — and the attribution a source carries is drawn
+in the corner, because for open data that is a licence condition rather
+than a nicety.
+
+It is one element that draws the whole map, for the reason `<Flow>` is: pan
+and zoom are a transform, this renderer has none, and a composed map would
+re-render every road through React on every pointer step. What a map adds
+to that case is that the scene arrives a tile at a time and a dense city
+tile is 50-140 ms to rasterize — real work for a software rasterizer over a
+hundred thousand vertices. So the component is built so that cost is never
+_in_ a frame: each tile is rasterized once into its own surface, a **pan
+composites those surfaces at new offsets and a fractional zoom composites
+them scaled**, and rasterization itself is budgeted and resumable, a style
+layer at a time. Measured on real OpenStreetMap tiles for central London and
+Tokyo, a pan and a zoom rasterize _nothing_ and paint in 0-11 ms a frame on
+both the X11 and the macOS backends; a cold dense city view fills in over
+about a second, in frames that are individually cheap.
+
+Markers are the client API you actually reach for, and the only thing on
+the map that is an object rather than cartography — which is why markers,
+and only markers, are what a screen reader meets. `overlays` covers the
+rest: a route (`decodePolyline` reads what every routing engine answers
+with), a traffic segment, a transit shape, a GeoJSON layer
+(`geoJsonOverlays`).
+
+`npm run examples:maps` is a working map over the real network — try
+`-- tokyo` or `-- --dark`. [docs/prd-maps.md](docs/prd-maps.md) is the
+design record: which formats and providers are actually usable (Google's
+vector schema is not published; Apple has no tile endpoint at all), what
+"traffic, routes and transit" reduce to, and every measurement behind the
+architecture.
+
+[mvt]: https://github.com/mapbox/vector-tile-spec
 
 ## The user's real calendar
 

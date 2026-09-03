@@ -289,6 +289,57 @@ export type {
   TableStyles,
 } from './table/index.js';
 
+// A 2D map: vector tiles the application supplies, drawn into one element
+// that owns the viewport. `docs/prd-maps.md` is the design record — what
+// the formats are, who serves them, and what each of the three caches
+// underneath this is for. `Map` shadows the built-in of that name inside a
+// module that imports it, so `import { Map as MapView }` is there for a
+// module that needs both.
+export { Map, MapViewNode, MAPVIEW_ELEMENT } from './maps/index.js';
+// The projection and the tile grid, which an application doing its own
+// geography — clustering markers, deciding what to fetch — needs the same
+// arithmetic for. Qualified on the way through the barrel where a bare name
+// would be ambiguous beside a calendar and a terminal.
+export {
+  boundsOf as boundsOfPositions,
+  cameraForBounds,
+  distanceMetres,
+  metresPerPixel,
+  tileBounds,
+  tileCover,
+  tileOf,
+  wrapLon,
+} from './maps/index.js';
+// The tile sources, the default style, and the two format helpers every
+// map application ends up writing.
+export {
+  OSM_ATTRIBUTION,
+  decodePolyline,
+  geoJsonOverlays,
+  osmRasterSource,
+  osmVectorSource,
+  shortbreadStyle,
+} from './maps/index.js';
+export type {
+  FitBoundsOptions as MapFitBoundsOptions,
+  LngLat,
+  LngLatBounds,
+  MapCamera,
+  MapFrameStats,
+  MapHandle,
+  MapMarker,
+  MapOverlay,
+  MapPointerEvent,
+  MapProps,
+  MapSource,
+  MapStyle,
+  MapStyleLayer,
+  MapViewProps,
+  TileData,
+  TileId,
+  TileRequest,
+} from './maps/index.js';
+
 export { Markdown, parse as parseMarkdown } from './markdown/index.js';
 export type {
   MarkdownProps,

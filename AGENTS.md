@@ -801,6 +801,86 @@ have to say it is a mirror rather than the live tree. The engine is written
 so the renderer half is already process-portable; the follow-up adds a runner
 over `src/embed/`'s existing lifecycle and changes nothing in `src/html/`.
 
+## A map, and the three caches under it
+
+`src/maps/` is the third element that draws a whole scene, after `<Flow>`
+and `<Html>`, and it is here because it adds the case neither of those has:
+**the scene arrives a piece at a time and each piece costs tens of
+milliseconds to draw.** A dense city tile is 50-140 ms to rasterize on
+either backend — that is a software rasterizer over a hundred thousand
+vertices, and no arrangement of the component makes it free. What the
+component does instead is make sure it is never _in a frame_.
+`docs/prd-maps.md` has the format survey, the provider table and every
+measurement; what follows is what the next scene element should take from
+it.
+
+**Three caches, layered, and the layering is the whole argument.** Tile
+data, keyed on `source/z/x/y` and valid forever. A rendered `Surface` per
+tile, valid for a zoom _level_ and a style but **not for a camera
+position** — so a pan composites the same surfaces at new offsets and a
+fractional zoom composites them scaled, and neither rasterizes anything. A
+label placement in **world** pixels, valid for a zoom and a set of loaded
+tiles, so a pan translates it rather than recomputing it. Get the second
+one wrong — key a surface on the camera — and every frame of a drag redraws
+the world.
+
+**Rasterization is budgeted and resumable, and the unit has to be small
+enough.** A frame spends at most `rasterBudgetMs` on it and remembers where
+it stopped. The first cut resumed between _style runs_, which measured a
+median of 47 ms and a maximum of 192 ms per frame, because a road network
+is one run of fourteen layers and one of those layers is 90 ms on its own.
+Resuming between **layers** brought that to 13 ms median and 55 ms maximum.
+The rule to carry: a budget that can only interrupt at a boundary the data
+never reaches is not a budget.
+
+**A gesture rasterizes nothing.** Any camera change — a drag step, a wheel,
+a programmatic `panBy` in an animation loop — sets the budget to zero for
+140 ms. The map sharpens when it stops, which is also when `onMoveEnd`
+fires.
+
+**The uncontrolled camera lives on the element.** Not in a `useState` above
+it: that is the difference between a drag step costing two numbers and a
+damage strip, and costing a render, a commit and a full-pane claim. The
+component passes `defaultCamera` down once and `camera` only when the
+application is controlling it. `<Flow>` has the same fork; this is the case
+where it is load-bearing rather than tidy.
+
+**The path flush size is per backend, and the two backends want opposite
+things.** This is the finding most likely to recur for anything else that
+draws a lot of geometry. On X11 a fill or stroke becomes an a8 coverage
+mask over the path's bounding box, uploaded with one `PutImage`, so a
+bigger path is fewer uploads over the same pixels — 12,000 vertices
+measured best and 500 measured 25% worse. On the Cocoa backend the path
+goes to `CGContextStrokePath`, whose cost is superlinear in the number of
+subpaths — 512 measured best and 12,000 measured **three times worse**.
+`app.nativeBezels` is core's own probe for the Cocoa backend
+(`src/appcontext.js`, `src/components/native.js`) and is what picks the
+default; a prop overrides it, because a capability probe standing in for a
+rasterizer's shape is a guess that should be correctable without a release.
+
+**Two gaps are filed rather than worked around**, per "no escape hatches":
+the Cocoa 2d context makes one napi call per `moveTo`/`lineTo`, and
+`CGContextStrokePath` is superlinear in subpath count. Both are core's, both
+are in `docs/prd-maps.md`, and neither has a hack in `src/maps/`.
+
+**Nothing fetches**, which is `<Html>`'s `onResource` rule and is stated at
+the top of `src/maps/sources.ts`: a component whose default made requests
+would decide, for the application, whose servers it talks to and whose usage
+policy it is bound by. The two OpenStreetMap adapters supply the URL, the
+schema and the attribution _around_ a `load` the application still writes.
+The attribution is the part that is not merely tidy — for open data it is a
+licence condition, so a source carries it and the map draws it.
+
+**Two traps specific to real tile data**, both found by running the decoder
+over half a million real features and both now pinned by tests. `extent` is
+**per layer**, not per tile: OSM's Shortbread cuts `streets`, `land`,
+`ocean` and `water_polygons` at 2048 and its other twenty layers at 4096, so
+a renderer that reads it once draws half of them at twice their size. And a
+single _feature_ can be an enormous multipolygon — the low-zoom `land`
+layer, the high-zoom `buildings` layer — so per-feature culling never culls
+it and a per-feature path flush never flushes it. Both wanted per-**part**
+handling.
+
 ## Commands
 
 ```bash
@@ -818,6 +898,7 @@ npm run examples:charts      # needs a real $DISPLAY
 npm run examples:code        # needs a real $DISPLAY
 npm run examples:code-editor # needs a real $DISPLAY
 npm run examples:html        # needs a real $DISPLAY
+npm run examples:maps        # needs a real $DISPLAY and a network
 npm run examples:markdown    # needs a real $DISPLAY
 npm run examples:terminal    # needs a real $DISPLAY and an emulator installed
 npm run examples:terminal-vt # needs a real $DISPLAY and a pty module (node-pty)
@@ -1032,6 +1113,7 @@ one is written is in "Replacing a core widget rather than moving it" above.
 | `<Tree>`                                         | superseded by `src/tree/` here (see above)               | **Done.** Core's `src/components/Tree.js` is being retired; this is a successor, not a wrapper, and imports none of it. See "Replacing a core widget rather than moving it".                                                                                                                                                                                                           |
 | `<Table>`                                        | superseded by `src/table/` here                          | **Done.** Same successor relationship as `<Tree>`; prop-compatible with core's, plus accessors, variable-height virtualization, multi-select and seams. Core's remainder — stripped or removed — is an open core-side decision. `docs/prd-table.md` is the design record.                                                                                                              |
 | 3D scene graph, Three.js / r3f layer, `Canvas3D` | react-x11 `src/scene3d.js`, `src/components/Canvas3D.js` | **Candidate**, with `<glarea>` staying in core. See "The boundary can run through a feature".                                                                                                                                                                                                                                                                                          |
+| A 2D map                                         | `src/maps/` here                                         | **Done.** `<Map>`: MVT tiles, a GL-style-shaped style subset, markers and overlays, over one element that draws the map. The third scene element, and the first where the scene arrives a tile at a time — see "A map, and the three caches under it" and `docs/prd-maps.md`.                                                                                                          |
 | react-flow clone                                 | `src/flow/` here                                         | **Done.** `<Flow>`: react-flow's surface API over one element that draws the graph, with a `render` seam for bodies that must be real widgets. See "Drawing beats composing".                                                                                                                                                                                                          |
 | `<Terminal>`, `<MediaPlayer>`                    | new, here (`src/terminal/`, `src/media-player/`)         | **Done.** Built on core's `<foreign>`; the wrapper is here because a binary dependency can never be core's. See "Running someone else's program".                                                                                                                                                                                                                                      |
 | `<TrayHost>`                                     | new, here (`src/tray-host/`)                             | **Done** (issue #17). XEmbed's third consumer here, and the other side of it. Core keeps the _plug_ side — `createRoot({ embedInto })` is renderer internals.                                                                                                                                                                                                                          |

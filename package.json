@@ -84,6 +84,10 @@
       "types": "./dist/html/index.d.ts",
       "default": "./dist/html/index.js"
     },
+    "./maps": {
+      "types": "./dist/maps/index.d.ts",
+      "default": "./dist/maps/index.js"
+    },
     "./markdown": {
       "types": "./dist/markdown/index.d.ts",
       "default": "./dist/markdown/index.js"
@@ -164,6 +168,7 @@
     "examples:flow-stress": "tsx examples/flow-stress.tsx",
     "examples:formula": "tsx examples/formula.tsx",
     "examples:html": "tsx examples/html.tsx",
+    "examples:maps": "tsx examples/maps.tsx",
     "examples:markdown": "tsx examples/markdown.tsx",
     "examples:media-player": "tsx examples/media-player.tsx",
     "examples:qml": "tsx examples/qml/qml.tsx",
