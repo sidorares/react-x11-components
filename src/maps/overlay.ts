@@ -118,16 +118,18 @@ export function drawOverlays(
   ctx: MapCanvas,
   overlays: readonly MapOverlay[],
   transform: Transform,
-  pane: { x: number; y: number },
+  pane: { x: number; y: number; width: number; height: number },
   scale: number,
   palette: OverlayPalette,
 ): void {
+  const clip = clipOf(pane, scale);
   for (const overlay of byZ(overlays)) {
     const opacity = overlay.opacity ?? 1;
     if (opacity <= 0) continue;
     ctx.save();
     if (ctx.globalAlpha !== undefined && opacity < 1) ctx.globalAlpha = opacity;
     if (overlay.kind === 'line') {
+      const points = projectPath(overlay.path, transform, pane, scale);
       const width = (overlay.width ?? 3) * scale;
       if (overlay.casing !== undefined) {
         ctx.strokeStyle = overlay.casing;
@@ -137,7 +139,7 @@ export function drawOverlays(
         );
         ctx.lineCap = overlay.cap ?? 'round';
         ctx.lineJoin = overlay.join ?? 'round';
-        strokePath(ctx, overlay.path, transform, pane, scale);
+        strokeClipped(ctx, points, clip);
       }
       ctx.strokeStyle = overlay.color ?? palette.accent;
       ctx.lineWidth = width;
@@ -146,18 +148,26 @@ export function drawOverlays(
       if (overlay.dash && ctx.setLineDash) {
         ctx.setLineDash(overlay.dash.map((d) => d * scale));
       }
-      strokePath(ctx, overlay.path, transform, pane, scale);
+      strokeClipped(ctx, points, clip);
       if (overlay.dash && ctx.setLineDash) ctx.setLineDash([]);
     } else if (overlay.kind === 'polygon') {
       ctx.beginPath();
-      for (const ring of overlay.rings)
-        appendPath(ctx, ring, transform, pane, scale, true);
-      ctx.fillStyle = overlay.fill ?? palette.accent;
-      ctx.fill();
-      if (overlay.outline !== undefined) {
-        ctx.strokeStyle = overlay.outline;
-        ctx.lineWidth = (overlay.outlineWidth ?? 1) * scale;
-        ctx.stroke();
+      let any = false;
+      for (const ring of overlay.rings) {
+        const clipped = clipRing(
+          projectPath(ring, transform, pane, scale),
+          clip,
+        );
+        if (appendRing(ctx, clipped)) any = true;
+      }
+      if (any) {
+        ctx.fillStyle = overlay.fill ?? palette.accent;
+        ctx.fill();
+        if (overlay.outline !== undefined) {
+          ctx.strokeStyle = overlay.outline;
+          ctx.lineWidth = (overlay.outlineWidth ?? 1) * scale;
+          ctx.stroke();
+        }
       }
     } else {
       // A circle in ground metres is an ellipse on a Mercator map, and at
@@ -176,18 +186,39 @@ export function drawOverlays(
       const pixelsPerMetre =
         Math.abs(centre.y - north.y) / (0.01 * metresPerDegree);
       const radius = overlay.radiusMetres * pixelsPerMetre * scale;
-      if (radius > 0.5) {
-        ctx.beginPath();
-        const cx = (pane.x + centre.x) * scale;
-        const cy = (pane.y + centre.y) * scale;
-        ctx.moveTo(cx + radius, cy);
-        ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+      const cx = (pane.x + centre.x) * scale;
+      const cy = (pane.y + centre.y) * scale;
+      const outside =
+        cx + radius < clip.minX ||
+        cx - radius > clip.maxX ||
+        cy + radius < clip.minY ||
+        cy - radius > clip.maxY;
+      if (radius > 0.5 && !outside) {
         ctx.fillStyle = overlay.fill ?? palette.accent;
-        ctx.fill();
-        if (overlay.outline !== undefined) {
-          ctx.strokeStyle = overlay.outline;
-          ctx.lineWidth = (overlay.outlineWidth ?? 1) * scale;
-          ctx.stroke();
+        if (radius <= MAX_ARC_RADIUS) {
+          ctx.beginPath();
+          ctx.moveTo(cx + radius, cy);
+          ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+          ctx.fill();
+          if (overlay.outline !== undefined) {
+            ctx.strokeStyle = overlay.outline;
+            ctx.lineWidth = (overlay.outlineWidth ?? 1) * scale;
+            ctx.stroke();
+          }
+        } else {
+          // Past the arc's safe range the circle becomes a ring and is
+          // clipped like any other polygon. The segment count keeps the
+          // sagitta under half a pixel, and for a circle this large the
+          // visible arc is very nearly straight anyway.
+          ctx.beginPath();
+          if (appendRing(ctx, clipRing(circleRing(cx, cy, radius), clip))) {
+            ctx.fill();
+            if (overlay.outline !== undefined) {
+              ctx.strokeStyle = overlay.outline;
+              ctx.lineWidth = (overlay.outlineWidth ?? 1) * scale;
+              ctx.stroke();
+            }
+          }
         }
       }
     }
@@ -195,35 +226,253 @@ export function drawOverlays(
   }
 }
 
-function appendPath(
-  ctx: MapCanvas,
-  path: readonly LngLat[],
-  transform: Transform,
-  pane: { x: number; y: number },
-  scale: number,
-  close: boolean,
-): void {
-  for (let i = 0; i < path.length; i++) {
-    const point = projectLngLat(transform, path[i]);
-    const x = (pane.x + point.x) * scale;
-    const y = (pane.y + point.y) * scale;
-    if (i === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
-  }
-  if (close && path.length > 0) ctx.closePath();
+/**
+ * Everything below this line exists because **an overlay's coordinates are
+ * unbounded and the renderer's are not.**
+ *
+ * A route is geography, so its far end stays where it is when the camera
+ * zooms in on one corner of it. World pixels are `512 · 2^zoom`, which at
+ * zoom 20 is 134 million, so a vertex a fraction of a degree outside the
+ * pane is already tens of thousands of pixels away — and ntk hands a
+ * stroke's geometry to XRender as 16.16 fixed point, which overflows a
+ * signed 32-bit word at 32,768. The symptom is a `RangeError` out of
+ * `x11/lib/ext/render.js` a few zoom steps in, from inside `paint`, which
+ * is not a place an application can catch it.
+ *
+ * So geometry is clipped to the viewport before it reaches the context.
+ * That is the fix; the fact that it also stops the renderer rasterizing
+ * megametres of off-screen line is a bonus rather than the reason.
+ */
+
+/** The clip window, in the same target pixels the path is built in. */
+interface ClipRect {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
 }
 
-function strokePath(
-  ctx: MapCanvas,
+/**
+ * How far outside the pane geometry is still kept.
+ *
+ * Not zero: a line clipped exactly at the edge would have its join and its
+ * cap drawn at the boundary rather than outside it, which shows as a blunt
+ * end against the pane's edge. A margin wider than any stroke this draws
+ * puts those artefacts off-screen, and is still far inside the range that
+ * overflows.
+ */
+const CLIP_MARGIN = 256;
+
+function clipOf(
+  pane: { x: number; y: number; width: number; height: number },
+  scale: number,
+): ClipRect {
+  return {
+    minX: (pane.x - CLIP_MARGIN) * scale,
+    minY: (pane.y - CLIP_MARGIN) * scale,
+    maxX: (pane.x + pane.width + CLIP_MARGIN) * scale,
+    maxY: (pane.y + pane.height + CLIP_MARGIN) * scale,
+  };
+}
+
+/** A path projected into target pixels, as a flat `[x0, y0, x1, y1, …]`. */
+function projectPath(
   path: readonly LngLat[],
   transform: Transform,
   pane: { x: number; y: number },
   scale: number,
+): number[] {
+  const out: number[] = [];
+  for (const position of path) {
+    const point = projectLngLat(transform, position);
+    out.push((pane.x + point.x) * scale, (pane.y + point.y) * scale);
+  }
+  return out;
+}
+
+const INSIDE = 0;
+const LEFT = 1;
+const RIGHT = 2;
+const BOTTOM = 4;
+const TOP = 8;
+
+function outcode(x: number, y: number, clip: ClipRect): number {
+  let code = INSIDE;
+  if (x < clip.minX) code |= LEFT;
+  else if (x > clip.maxX) code |= RIGHT;
+  if (y < clip.minY) code |= BOTTOM;
+  else if (y > clip.maxY) code |= TOP;
+  return code;
+}
+
+/**
+ * Cohen-Sutherland: the visible piece of one segment, or null.
+ *
+ * Chosen over Liang-Barsky because the common case here is a segment wholly
+ * inside or wholly outside, and both are answered by one `&`/`|` of the two
+ * endpoints' codes with no arithmetic at all.
+ */
+function clipSegment(
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number,
+  clip: ClipRect,
+): [number, number, number, number] | null {
+  let x0 = ax;
+  let y0 = ay;
+  let x1 = bx;
+  let y1 = by;
+  let code0 = outcode(x0, y0, clip);
+  let code1 = outcode(x1, y1, clip);
+  for (;;) {
+    if ((code0 | code1) === 0) return [x0, y0, x1, y1]; // both inside
+    if ((code0 & code1) !== 0) return null; // both beyond one edge
+    const code = code0 !== 0 ? code0 : code1;
+    let x = 0;
+    let y = 0;
+    if (code & TOP) {
+      x = x0 + ((x1 - x0) * (clip.maxY - y0)) / (y1 - y0);
+      y = clip.maxY;
+    } else if (code & BOTTOM) {
+      x = x0 + ((x1 - x0) * (clip.minY - y0)) / (y1 - y0);
+      y = clip.minY;
+    } else if (code & RIGHT) {
+      y = y0 + ((y1 - y0) * (clip.maxX - x0)) / (x1 - x0);
+      x = clip.maxX;
+    } else {
+      y = y0 + ((y1 - y0) * (clip.minX - x0)) / (x1 - x0);
+      x = clip.minX;
+    }
+    if (code === code0) {
+      x0 = x;
+      y0 = y;
+      code0 = outcode(x0, y0, clip);
+    } else {
+      x1 = x;
+      y1 = y;
+      code1 = outcode(x1, y1, clip);
+    }
+  }
+}
+
+/**
+ * Stroke a projected path, clipped.
+ *
+ * A polyline that leaves and re-enters the window becomes several subpaths,
+ * which is why this cannot be a `ctx.clip()` and a single path: the clip
+ * would keep the coordinates, and the coordinates are the problem.
+ */
+function strokeClipped(
+  ctx: MapCanvas,
+  points: readonly number[],
+  clip: ClipRect,
 ): void {
-  if (path.length < 2) return;
+  if (points.length < 4) return;
   ctx.beginPath();
-  appendPath(ctx, path, transform, pane, scale, false);
-  ctx.stroke();
+  let open = false;
+  let drew = false;
+  for (let i = 0; i + 3 < points.length; i += 2) {
+    const piece = clipSegment(
+      points[i],
+      points[i + 1],
+      points[i + 2],
+      points[i + 3],
+      clip,
+    );
+    if (!piece) {
+      open = false;
+      continue;
+    }
+    const [x0, y0, x1, y1] = piece;
+    // A new subpath unless this segment continues exactly where the last
+    // one ended — which is the whole-segment-visible case, and the one that
+    // has to keep its joins.
+    if (!open) {
+      ctx.moveTo(x0, y0);
+      open = true;
+    }
+    ctx.lineTo(x1, y1);
+    drew = true;
+    // The segment was cut short at the far end, so the next one does not
+    // continue from here.
+    if (x1 !== points[i + 2] || y1 !== points[i + 3]) open = false;
+  }
+  if (drew) ctx.stroke();
+}
+
+/**
+ * Sutherland-Hodgman: a ring clipped to the rectangle, in place of the
+ * original.
+ *
+ * Rings rather than segments, because a fill needs a closed boundary: the
+ * part of a polygon that crosses the window has to come back along the
+ * window's edge, which segment clipping cannot produce. Winding is
+ * preserved, so an interior ring stays an interior ring and the non-zero
+ * fill still puts a hole where one belongs.
+ */
+function clipRing(points: readonly number[], clip: ClipRect): number[] {
+  let output = [...points];
+  const edges: [
+    (x: number, y: number) => boolean,
+    (ax: number, ay: number, bx: number, by: number) => [number, number],
+  ][] = [
+    [
+      (x) => x >= clip.minX,
+      (ax, ay, bx, by) => [
+        clip.minX,
+        ay + ((by - ay) * (clip.minX - ax)) / (bx - ax),
+      ],
+    ],
+    [
+      (x) => x <= clip.maxX,
+      (ax, ay, bx, by) => [
+        clip.maxX,
+        ay + ((by - ay) * (clip.maxX - ax)) / (bx - ax),
+      ],
+    ],
+    [
+      (_x, y) => y >= clip.minY,
+      (ax, ay, bx, by) => [
+        ax + ((bx - ax) * (clip.minY - ay)) / (by - ay),
+        clip.minY,
+      ],
+    ],
+    [
+      (_x, y) => y <= clip.maxY,
+      (ax, ay, bx, by) => [
+        ax + ((bx - ax) * (clip.maxY - ay)) / (by - ay),
+        clip.maxY,
+      ],
+    ],
+  ];
+  for (const [inside, intersect] of edges) {
+    const input = output;
+    output = [];
+    if (input.length < 6) return [];
+    for (let i = 0; i < input.length; i += 2) {
+      const ax = input[i];
+      const ay = input[i + 1];
+      const bx = input[(i + 2) % input.length];
+      const by = input[(i + 3) % input.length];
+      const aIn = inside(ax, ay);
+      const bIn = inside(bx, by);
+      if (aIn) output.push(ax, ay);
+      if (aIn !== bIn) {
+        const [ix, iy] = intersect(ax, ay, bx, by);
+        output.push(ix, iy);
+      }
+    }
+  }
+  return output;
+}
+
+function appendRing(ctx: MapCanvas, ring: readonly number[]): boolean {
+  if (ring.length < 6) return false;
+  ctx.moveTo(ring[0], ring[1]);
+  for (let i = 2; i < ring.length; i += 2) ctx.lineTo(ring[i], ring[i + 1]);
+  ctx.closePath();
+  return true;
 }
 
 /** Where a marker's ink lands, in pane-local logical pixels. Shared by the
@@ -522,4 +771,30 @@ export function geoJsonOverlays(
   };
   walk(geojson, geojson);
   return { overlays, markers };
+}
+
+/**
+ * Beyond this radius in target pixels a circle is drawn as a clipped ring
+ * rather than an arc.
+ *
+ * The bound is the renderer's rather than the geometry's: ntk hands a
+ * stroke's geometry to XRender in 16.16 fixed point, which overflows a
+ * signed 32-bit word at 32,768, so an arc whose control geometry reaches
+ * that far is a `RangeError` from inside `paint`. Comfortably under it.
+ */
+const MAX_ARC_RADIUS = 8192;
+
+/** A circle as a ring, with the sagitta held under half a pixel. */
+function circleRing(cx: number, cy: number, radius: number): number[] {
+  const step = 2 * Math.acos(Math.max(-1, 1 - 0.5 / radius));
+  const segments = Math.min(
+    4096,
+    Math.max(24, Math.ceil((Math.PI * 2) / step)),
+  );
+  const out: number[] = [];
+  for (let i = 0; i < segments; i++) {
+    const angle = (i / segments) * Math.PI * 2;
+    out.push(cx + Math.cos(angle) * radius, cy + Math.sin(angle) * radius);
+  }
+  return out;
 }

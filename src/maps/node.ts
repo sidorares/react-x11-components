@@ -57,6 +57,7 @@ import type {
   MapCamera,
   ScreenRect,
   TileCoverEntry,
+  TileId,
   Transform,
 } from './proj.js';
 import { TileCache, pyramid } from './tiles.js';
@@ -222,6 +223,14 @@ export class MapViewNode extends Node {
     this.defaultCursor = 'grab';
     this._cache = new TileCache({
       surfaceBudget: this._prop<number>('surfaceBudget'),
+      onError: (entry) => {
+        this._prop<
+          (error: unknown, tile: TileId & { sourceId: string }) => void
+        >('onTileError')?.(entry.error, {
+          ...entry.tile,
+          sourceId: entry.sourceId,
+        });
+      },
       onChange: () => {
         // A tile landed. Its own box is the honest claim, but the tile is
         // not yet rasterized and the label placement may change, so the
@@ -740,6 +749,7 @@ export class MapViewNode extends Node {
       fromAncestor: 0,
       pending: 0,
       labels: 0,
+      errors: 0,
       surfaceBytes: 0,
       draw: { features: 0, vertices: 0, decimated: 0, culled: 0, batches: 0 },
     };
@@ -867,6 +877,7 @@ export class MapViewNode extends Node {
       const cached = this._cache.want(source, sourceId, entry.tile);
       if (!onScreen) continue;
       stats.tiles++;
+      if (cached.status === 'error') stats.errors++;
 
       if (cached.status === 'ready') {
         const plan = this._rasterPlan(entry, source, zoom);

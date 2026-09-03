@@ -136,6 +136,17 @@ The attribution is the part that is not merely tidy. For OpenStreetMap-derived
 tiles it is a licence condition, so a source carries it, the map draws it,
 and `attribution=""` is how an application says it has put it elsewhere.
 
+Two things the first cut of this seam got wrong, both found by running the
+example against the real network rather than against the test corpus, and
+both now pinned by tests. The `signal` handed to `load` was a plain object
+with an `aborted` getter; `fetch` checks `instanceof AbortSignal` and throws
+`TypeError` on anything else, so **every load failed** in exactly the way the
+documentation told people to write. And there was no way to see that: a
+failed tile draws nothing, so a map whose every tile fails is pixel-identical
+to one that is still loading. `onTileError` and `MapFrameStats.errors` exist
+because of that, and the retry is on a backoff (0.5 s doubling to 30 s)
+because the same bug had every visible tile re-asked once a frame.
+
 ### The style is a subset of the GL style spec
 
 Shaped after Mapbox/MapLibre's specification because every provider
@@ -343,6 +354,32 @@ the time goes: in the same profile `lineTo` is **18 ms of 3,143**, 0.6%, and
 flushing the path in batches — which does not reduce the number of `lineTo`
 calls at all — still gave a five-fold improvement. The crossings are cheap;
 the stroke is not.
+
+## Three bugs the test corpus could not have found
+
+Recorded because each was invisible to a suite that passed, and each was
+found by running the thing.
+
+- **The `signal` handed to a source was not an `AbortSignal`.** It was a
+  plain object with an `aborted` getter, and `fetch` checks
+  `instanceof AbortSignal` and throws `TypeError` on anything else — so
+  every load failed in exactly the way the documentation prescribed. The
+  headless tests never saw it because their sources answer synchronously
+  and never call `fetch`.
+- **Nothing reported that.** A failed tile draws nothing, so a map whose
+  every tile fails is pixel-identical to one that is still loading. There
+  was no signal at any layer — no callback, no counter, no log — and the
+  first report was a screenshot of an empty map. `onTileError` and
+  `MapFrameStats.errors` exist because of it, and the retry moved to a
+  backoff because the same bug had every visible tile re-asked once a frame.
+- **Overlay geometry was not clipped.** Three or four zoom steps in, `paint`
+  threw `RangeError` out of `x11/lib/ext/render.js`: an overlay is
+  geography, a world is `512 · 2^zoom` pixels (134 million at zoom 20), and
+  ntk hands a stroke to XRender in 16.16 fixed point, which overflows a
+  signed 32-bit word at 32,768. Every headless test framed its overlays, so
+  none of them had a vertex far enough out. Lines are now cut segment by
+  segment, rings clipped as rings, and an over-large circle drawn as a
+  clipped ring.
 
 ## What is not here
 

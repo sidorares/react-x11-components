@@ -45,6 +45,7 @@ import {
   tileOf,
   tileTransform,
   transformFor,
+  unprojectPoint,
   visibleBounds,
   wrapLon,
   wrapTileX,
@@ -54,8 +55,10 @@ import type {
   MapMarker,
   MapSource,
   TileData,
+  MapOverlay,
 } from '../src/maps/index.js';
 import { GeomType } from '../src/maps/mvt.js';
+import { drawOverlays } from '../src/maps/overlay.js';
 import { prepareStyle } from '../src/maps/paint.js';
 import { TileCache } from '../src/maps/tiles.js';
 
@@ -851,6 +854,214 @@ test('a GeoJSON style callback colours by property', () => {
   assert.equal((overlays[0] as { color?: string }).color, '#d00');
 });
 
+// --- clipping --------------------------------------------------------------
+//
+// An overlay is geography, so its far end stays where it is when the camera
+// zooms in on one corner of it — and world pixels are `512 · 2^zoom`, which
+// at zoom 20 is 134 million. ntk hands a stroke's geometry to XRender as
+// 16.16 fixed point, which overflows a signed 32-bit word at 32,768, so an
+// unclipped overlay is a `RangeError` from inside `paint` a few zoom steps
+// in. These are the tests for not doing that.
+
+/** A canvas that records every coordinate it is asked to draw at. */
+function recordingCanvas(): {
+  ctx: Record<string, unknown>;
+  xs: number[];
+  ys: number[];
+  strokes: number;
+  fills: number;
+} {
+  const xs: number[] = [];
+  const ys: number[] = [];
+  const state = { strokes: 0, fills: 0 };
+  const at = (x: number, y: number): void => {
+    xs.push(x);
+    ys.push(y);
+  };
+  const ctx = {
+    fillStyle: '',
+    strokeStyle: '',
+    lineWidth: 1,
+    lineCap: 'butt',
+    lineJoin: 'miter',
+    globalAlpha: 1,
+    save: () => undefined,
+    restore: () => undefined,
+    beginPath: () => undefined,
+    closePath: () => undefined,
+    moveTo: at,
+    lineTo: at,
+    rect: (x: number, y: number, w: number, h: number) => {
+      at(x, y);
+      at(x + w, y + h);
+    },
+    arc: (x: number, y: number, r: number) => {
+      at(x - r, y - r);
+      at(x + r, y + r);
+    },
+    fill: () => {
+      state.fills++;
+    },
+    stroke: () => {
+      state.strokes++;
+    },
+    clip: () => undefined,
+    fillRect: () => undefined,
+    setLineDash: () => undefined,
+  };
+  return {
+    ctx: ctx as unknown as Record<string, unknown>,
+    xs,
+    ys,
+    get strokes() {
+      return state.strokes;
+    },
+    get fills() {
+      return state.fills;
+    },
+  };
+}
+
+/** What XRender's 16.16 fixed point can hold. */
+const FIXED_LIMIT = 32_768;
+
+test('an overlay far outside the view is clipped, not handed to the renderer', () => {
+  const pane = { x: 0, y: 0, width: 800, height: 600 };
+  // Zoom 20 over London, with a route running to Tokyo and a zone and a
+  // geofence around the planet: every one of these is millions of pixels
+  // across at this zoom.
+  const transform = transformFor({ center: LONDON, zoom: 20 }, pane);
+  const overlays: MapOverlay[] = [
+    {
+      kind: 'line',
+      id: 'route',
+      path: [LONDON, TOKYO, { lon: -73.98, lat: 40.75 }],
+    },
+    {
+      kind: 'polygon',
+      id: 'zone',
+      rings: [
+        [
+          { lon: -170, lat: -80 },
+          { lon: 170, lat: -80 },
+          { lon: 170, lat: 80 },
+          { lon: -170, lat: 80 },
+        ],
+      ],
+      outline: '#000',
+    },
+    {
+      kind: 'circle',
+      id: 'fence',
+      center: LONDON,
+      radiusMetres: 500_000,
+      outline: '#000',
+    },
+  ];
+  const recorder = recordingCanvas();
+  drawOverlays(recorder.ctx as never, overlays, transform, pane, 2, {
+    accent: '#00f',
+    background: '#fff',
+    text: '#000',
+  });
+  assert.ok(recorder.xs.length > 0, 'something was drawn');
+  for (let i = 0; i < recorder.xs.length; i++) {
+    assert.ok(
+      Math.abs(recorder.xs[i]) < FIXED_LIMIT &&
+        Math.abs(recorder.ys[i]) < FIXED_LIMIT,
+      `(${recorder.xs[i]}, ${recorder.ys[i]}) would overflow 16.16 fixed point`,
+    );
+  }
+});
+
+test('clipping keeps the part of an overlay that is visible', () => {
+  const pane = { x: 0, y: 0, width: 400, height: 300 };
+  const transform = transformFor({ center: LONDON, zoom: 14 }, pane);
+  const east = unprojectPoint(transform, 5_000, 150);
+  const west = unprojectPoint(transform, -5_000, 150);
+  const recorder = recordingCanvas();
+  drawOverlays(
+    recorder.ctx as never,
+    // A line straight across the pane whose ends are far outside it.
+    [{ kind: 'line', id: 'across', path: [west, east] }],
+    transform,
+    pane,
+    1,
+    { accent: '#00f', background: '#fff', text: '#000' },
+  );
+  assert.equal(recorder.strokes, 1, 'the visible part was stroked');
+  // It really does cross the pane rather than being culled with its ends.
+  assert.ok(Math.min(...recorder.xs) < 0, 'it starts left of the pane');
+  assert.ok(Math.max(...recorder.xs) > 400, 'and ends right of it');
+  for (const x of recorder.xs) assert.ok(Math.abs(x) < FIXED_LIMIT);
+});
+
+test('an overlay entirely off screen draws nothing at all', () => {
+  const pane = { x: 0, y: 0, width: 400, height: 300 };
+  const transform = transformFor({ center: LONDON, zoom: 14 }, pane);
+  const recorder = recordingCanvas();
+  drawOverlays(
+    recorder.ctx as never,
+    [
+      { kind: 'line', id: 'far', path: [TOKYO, { lon: 139.8, lat: 35.7 }] },
+      { kind: 'circle', id: 'far-fence', center: TOKYO, radiusMetres: 100 },
+    ],
+    transform,
+    pane,
+    1,
+    { accent: '#00f', background: '#fff', text: '#000' },
+  );
+  assert.equal(recorder.strokes, 0);
+  assert.equal(recorder.fills, 0);
+});
+
+test('a map paints without throwing at the zoom where coordinates overflow', async () => {
+  // The integration form of the above, and the one that reproduces the
+  // original report: a few zoom steps in, `paint` threw a `RangeError` out
+  // of x11's render extension and there was no way for an application to
+  // catch it.
+  const ref = React.createRef<MapHandle>();
+  await renderX11(
+    React.createElement(MapView, {
+      ref,
+      defaultCamera: { center: LONDON, zoom: 14 },
+      markers: [{ id: 'a', position: LONDON }],
+      overlays: [
+        { kind: 'line', id: 'route', path: [LONDON, TOKYO], casing: '#fff' },
+        {
+          kind: 'polygon',
+          id: 'zone',
+          rings: [
+            [
+              { lon: -1, lat: 51 },
+              { lon: 1, lat: 51 },
+              { lon: 1, lat: 52 },
+              { lon: -1, lat: 52 },
+            ],
+          ],
+        },
+        {
+          kind: 'circle',
+          id: 'fence',
+          center: LONDON,
+          radiusMetres: 2_000_000,
+        },
+      ],
+      'data-testname': 'map',
+    }),
+    { backend: 'xserver', width: 500, height: 380 },
+  );
+  const handle = ref.current as MapHandle;
+  for (let step = 0; step < 8; step++) {
+    handle.zoomIn(1);
+    await act(async () => {});
+  }
+  assert.ok(
+    handle.getCamera().zoom >= 20,
+    `reached ${handle.getCamera().zoom}`,
+  );
+});
+
 // --- the tile cache --------------------------------------------------------
 
 function fakeSource(
@@ -885,10 +1096,68 @@ test('the cache loads once, remembers, and treats no data as an answer', async (
   cache.destroy();
 });
 
-test('a source that throws leaves an error the next frame retries', async () => {
+test('the signal a source is handed is a real AbortSignal', async () => {
+  // The bug this pins, and it broke every documented use of the component:
+  // `fetch` checks `instanceof AbortSignal` and throws `TypeError` on
+  // anything else, so handing a source a look-alike with an `aborted`
+  // getter made every `fetch(url, { signal })` fail before it left the
+  // process — which looks exactly like a map that is still loading.
+  let seen: unknown;
+  const source: MapSource = {
+    id: 's',
+    // Never settles, so the load is still in flight when the cache is
+    // destroyed below.
+    load: (request) => {
+      seen = request.signal;
+      return new Promise<TileData>(() => {});
+    },
+  };
+  const cache = new TileCache();
+  cache.beginFrame();
+  cache.want(source, 's', { z: 1, x: 0, y: 0 });
+  assert.ok(seen instanceof AbortSignal, `signal was ${typeof seen}`);
+  assert.equal((seen as AbortSignal).aborted, false);
+  cache.destroy();
+  assert.equal(
+    (seen as AbortSignal).aborted,
+    true,
+    'dropping a tile aborts the request it has in flight',
+  );
+});
+
+test('a failed load is reported, and retried on a backoff rather than per frame', async () => {
   let attempts = 0;
   const source: MapSource = {
-    id: 'flaky',
+    id: 'down',
+    load: () => {
+      attempts++;
+      throw new Error('502');
+    },
+  };
+  const failures: string[] = [];
+  const cache = new TileCache({
+    onError: (entry) => failures.push(String(entry.error)),
+  });
+  for (let frame = 0; frame < 20; frame++) {
+    cache.beginFrame();
+    cache.want(source, 'down', { z: 1, x: 0, y: 0 });
+  }
+  // Twenty frames, one attempt: without the backoff a source that is down
+  // is asked for every visible tile sixty times a second, which is a retry
+  // storm pointed at somebody else's servers.
+  assert.equal(attempts, 1, `asked ${attempts} times in 20 frames`);
+  assert.equal(failures.length, 1);
+  assert.match(failures[0], /502/);
+  const entry = cache.peek('down', { z: 1, x: 0, y: 0 });
+  assert.equal(entry?.status, 'error');
+  assert.ok((entry?.retryAt ?? 0) > Date.now(), 'a retry is scheduled');
+  cache.destroy();
+});
+
+test('a load that succeeds after failing clears the backoff', async () => {
+  let attempts = 0;
+  const source: MapSource = {
+    id: 'flappy',
     load: () => {
       attempts++;
       if (attempts === 1) throw new Error('nope');
@@ -897,14 +1166,52 @@ test('a source that throws leaves an error the next frame retries', async () => 
   };
   const cache = new TileCache();
   cache.beginFrame();
-  const entry = cache.want(source, 'flaky', { z: 1, x: 0, y: 0 });
-  assert.equal(entry.status, 'error');
+  const entry = cache.want(source, 'flappy', { z: 1, x: 0, y: 0 });
+  assert.equal(entry.attempts, 1);
+  // Past the backoff.
+  entry.retryAt = 0;
   cache.beginFrame();
-  cache.want(source, 'flaky', { z: 1, x: 0, y: 0 });
+  cache.want(source, 'flappy', { z: 1, x: 0, y: 0 });
   await Promise.resolve();
   assert.equal(entry.status, 'ready');
-  assert.equal(attempts, 2);
+  assert.equal(
+    entry.attempts,
+    0,
+    'the counter resets so the next blip is quick',
+  );
   cache.destroy();
+});
+
+test('a tile that fails reaches onTileError and the frame stats', async () => {
+  const seen: string[] = [];
+  const source: MapSource = {
+    id: 'bad',
+    minZoom: 0,
+    maxZoom: 14,
+    tileSize: 512,
+    load: () => {
+      throw new Error('unauthorized');
+    },
+  };
+  const ref = React.createRef<MapHandle>();
+  await renderX11(
+    React.createElement(MapView, {
+      ref,
+      sources: [source],
+      defaultCamera: { center: LONDON, zoom: 4 },
+      onTileError: (error, tile) =>
+        seen.push(
+          `${tile.sourceId} ${tile.z}/${tile.x}/${tile.y} ${String(error)}`,
+        ),
+      'data-testname': 'map',
+    }),
+    { backend: 'xserver', width: 400, height: 300 },
+  );
+  await act(async () => {});
+  assert.ok(seen.length > 0, 'the failure was reported');
+  assert.match(seen[0], /bad 4\/\d+\/\d+ Error: unauthorized/);
+  const stats = (ref.current as MapHandle).stats();
+  assert.ok(stats && stats.errors > 0, 'and counted in the frame stats');
 });
 
 test('an ancestor with a surface is what covers a hole', () => {

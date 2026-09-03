@@ -57,6 +57,18 @@ pixels, or `null` for "there is no tile here" — which is an ordinary
 answer, not an error, and is what an ocean tile in a land-only pyramid
 returns.
 
+`request.signal` is a **real `AbortSignal`**, so it goes straight to
+`fetch`; it is aborted when the tile leaves the view before it arrives. In
+TypeScript it needs a cast — `signal as AbortSignal` — because `src/`
+compiles with no DOM lib and cannot name the class.
+
+**A `load` that throws is an error, and errors are on a backoff.** The tile
+is retried 0.5 s later, then 1, 2, 4 … up to 30 s, rather than on every
+frame; `onTileError` fires each time. Wire that prop up early, because
+nothing is drawn for a failed tile and **a map whose tiles all fail looks
+exactly like a map that is still loading** — an empty background and nothing
+else. `MapFrameStats.errors` is the same information per frame.
+
 Two adapters ship, both for OpenStreetMap's own keyless endpoints:
 `osmVectorSource()` (the Shortbread schema, which `shortbreadStyle()` is
 written against) and `osmRasterSource()` (the classic raster layer).
@@ -120,7 +132,8 @@ looking for the missing prop:
 | `surfaceBudget`  | Bytes of rendered tile surfaces to keep. 128 MB by default.                                                                                       |
 | `batchVertices`  | The rasterizer's path-flush size. Chosen from the backend by default — set it only with a profile in hand, and read the PRD first.                |
 | `attribution`    | Overrides what the sources say. `''` removes it.                                                                                                  |
-| `onFrame`        | Called once per painted frame with `MapFrameStats` — what it cost, how many tiles are still sharpening.                                           |
+| `onFrame`        | Called once per painted frame with `MapFrameStats` — what it cost, how many tiles are still sharpening, how many failed.                          |
+| `onTileError`    | Called per failed tile load, with whatever the source threw. Worth wiring up first: a map whose tiles fail looks identical to one still loading.  |
 | `style`          | react-x11's, on the box around the pane. Fills its parent unless you give it a height or a `flexGrow`.                                            |
 | `children`       | Anything absolutely positioned over the map — a legend, a control panel.                                                                          |
 
@@ -302,7 +315,20 @@ stops sharpening past it.
 
 **A missing tile, a 404 and an empty ocean are the same answer.** `null`
 from `load`, and the map draws its background there. Only a `load` that
-_throws_ is an error, and the next frame that wants the tile retries it.
+_throws_ is an error, and it is retried on a backoff rather than on the next
+frame — a source that is down would otherwise be asked for every visible
+tile sixty times a second, which is a retry storm pointed at somebody
+else's servers.
+
+**Overlay geometry is clipped to the viewport, and it has to be.** An
+overlay is geography, so a route's far end stays where it is when the camera
+zooms in on one corner of it — and a world is `512 · 2^zoom` pixels across,
+which at zoom 20 is 134 million. ntk hands a stroke's geometry to XRender in
+16.16 fixed point, which overflows a signed 32-bit word at 32,768, so an
+unclipped overlay is a `RangeError` thrown from inside `paint` a few zoom
+steps in. Lines are cut segment by segment, rings are clipped as rings (so a
+fill keeps a closed boundary), and a circle too large to draw as an arc
+becomes a clipped ring.
 
 ## Running it
 

@@ -101,6 +101,10 @@ export interface CachedTile {
   lastUsed: number;
   /** Cancels an in-flight load. */
   abort: (() => void) | null;
+  /** How many times this tile's load has failed in a row. */
+  attempts: number;
+  /** `Date.now()` before which a failed tile is not asked for again. */
+  retryAt: number;
 }
 
 function emptyEntry(sourceId: string, tile: TileId, key: string): CachedTile {
@@ -121,6 +125,8 @@ function emptyEntry(sourceId: string, tile: TileId, key: string): CachedTile {
     progressLayer: 0,
     lastUsed: 0,
     abort: null,
+    attempts: 0,
+    retryAt: 0,
   };
 }
 
@@ -138,6 +144,9 @@ export interface TileCacheOptions {
   dataBudget?: number;
   /** Called when a load finishes, so the element can ask for a repaint. */
   onChange?: (entry: CachedTile) => void;
+  /** Called once per failed load. A map whose tiles all fail looks exactly
+   *  like a map that is still loading, so somebody has to be told. */
+  onError?: (entry: CachedTile) => void;
 }
 
 const DEFAULT_SURFACE_BUDGET = 128 * 1024 * 1024;
@@ -207,7 +216,14 @@ export class TileCache {
       this._entries.set(key, entry);
     }
     entry.lastUsed = this._frame;
-    if (entry.status === 'idle' || entry.status === 'error') {
+    if (entry.status === 'idle') {
+      this._load(source, entry);
+    } else if (entry.status === 'error' && Date.now() >= entry.retryAt) {
+      // A failed tile is retried, but on a backoff rather than on every
+      // frame. Without it a source that is down — or an application whose
+      // `load` throws on the first call, which is how this was found — is
+      // asked for every visible tile sixty times a second, which is a
+      // retry storm pointed at somebody else's servers.
       this._load(source, entry);
     }
     return entry;
@@ -216,14 +232,40 @@ export class TileCache {
   private _load(source: MapSource, entry: CachedTile): void {
     entry.status = 'loading';
     entry.error = null;
+    // A **real** `AbortController` where the runtime has one. A look-alike
+    // is not good enough: `fetch` checks `instanceof AbortSignal` and
+    // throws `TypeError` on anything else, so handing a source a plain
+    // object with an `aborted` getter fails every load a source makes the
+    // documented way — which is exactly what it did.
+    const Controller = (
+      globalThis as {
+        AbortController?: new () => {
+          abort(): void;
+          signal: { readonly aborted: boolean };
+        };
+      }
+    ).AbortController;
     let aborted = false;
-    const signal = {
-      get aborted(): boolean {
-        return aborted;
-      },
-    };
+    const controller = Controller ? new Controller() : null;
+    const signal = controller
+      ? controller.signal
+      : {
+          get aborted(): boolean {
+            return aborted;
+          },
+        };
     entry.abort = (): void => {
       aborted = true;
+      controller?.abort();
+    };
+    const fail = (error: unknown): void => {
+      entry.status = 'error';
+      entry.error = error;
+      entry.attempts++;
+      // 0.5s, 1, 2, 4, 8, 16, then 30s — long enough that a dead source
+      // costs nothing, short enough that a blip repairs itself.
+      entry.retryAt =
+        Date.now() + Math.min(30_000, 500 * 2 ** (entry.attempts - 1));
     };
     const settle = (fn: () => void): void => {
       // A load that finished after its tile was evicted must not resurrect
@@ -232,20 +274,20 @@ export class TileCache {
       if (aborted || this._entries.get(entry.key) !== entry) return;
       entry.abort = null;
       fn();
+      if (entry.status === 'error') this._options.onError?.(entry);
       this._options.onChange?.(entry);
     };
     let result: TileData | Promise<TileData>;
     try {
       result = source.load({ ...entry.tile, sourceId: entry.sourceId, signal });
     } catch (error) {
-      settle(() => {
-        entry.status = 'error';
-        entry.error = error;
-      });
+      settle(() => fail(error));
       return;
     }
     const accept = (data: TileData): void =>
       settle(() => {
+        entry.attempts = 0;
+        entry.retryAt = 0;
         if (data === null) {
           entry.status = 'empty';
           return;
@@ -255,8 +297,7 @@ export class TileCache {
             entry.vector = parseTile(data.data);
             entry.status = 'ready';
           } catch (error) {
-            entry.status = 'error';
-            entry.error = error;
+            fail(error);
           }
           return;
         }
@@ -265,10 +306,7 @@ export class TileCache {
       });
     if (result && typeof (result as Promise<TileData>).then === 'function') {
       (result as Promise<TileData>).then(accept, (error: unknown) =>
-        settle(() => {
-          entry.status = 'error';
-          entry.error = error;
-        }),
+        settle(() => fail(error)),
       );
     } else {
       accept(result as TileData);

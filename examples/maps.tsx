@@ -1,9 +1,10 @@
 // `<Map>` in anger: OpenStreetMap's own vector tiles, over the real
 // network, with markers you can click and a route drawn over them.
 //
-//   npm run examples:maps
-//   npm run examples:maps -- --dark
-//   npm run examples:maps -- tokyo
+//   npm run examples:maps                    # London, light
+//   npm run examples:maps -- tokyo           # or manhattan
+//   npm run examples:maps -- tokyo --dark
+//   npm run examples:maps -- --help
 //
 // Needs a real `$DISPLAY` and a network. The `fetch` below is the whole of
 // what this package will not do for you: it is where the user agent, the
@@ -89,6 +90,13 @@ const PLACES: Record<
   },
 };
 
+if (process.argv.includes('--help')) {
+  process.stdout.write(
+    'usage: npm run examples:maps -- [place] [--dark]\n' +
+      `  place: ${Object.keys(PLACES).join(', ')} (default london)\n`,
+  );
+  process.exit(0);
+}
 const dark = process.argv.includes('--dark');
 const which =
   process.argv.slice(2).find((a) => !a.startsWith('--')) ?? 'london';
@@ -215,6 +223,18 @@ function App(): React.ReactElement {
             )
           }
           onMoveEnd={(camera) => setStatus(`zoom ${camera.zoom.toFixed(2)}`)}
+          // Without this, a source that is down, rate-limited or
+          // misconfigured looks exactly like one that is slow: nothing is
+          // drawn for a failed tile, and an empty map is what both look
+          // like. Every application wants some version of this.
+          onTileError={(error, tile) => {
+            const message =
+              error instanceof Error ? error.message : String(error);
+            setStatus(`tile ${tile.z}/${tile.x}/${tile.y} failed: ${message}`);
+            process.stderr.write(
+              `tile ${tile.z}/${tile.x}/${tile.y}: ${message}\n`,
+            );
+          }}
           style={{ flexGrow: 1 }}
         />
       </box>

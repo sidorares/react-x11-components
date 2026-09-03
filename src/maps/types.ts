@@ -8,7 +8,7 @@
 import type { Style } from 'react-x11/style';
 import type { ReactNode, Ref } from 'react';
 
-import type { LngLat, LngLatBounds, MapCamera } from './proj.js';
+import type { LngLat, LngLatBounds, MapCamera, TileId } from './proj.js';
 import type { MapSource } from './sources.js';
 import type { MapStyle } from './style.js';
 import type { MapMarker, MapOverlay } from './overlay.js';
@@ -64,6 +64,14 @@ export interface MapFrameStats {
   pending: number;
   /** Labels placed, and labels drawn. */
   labels: number;
+  /**
+   * Tiles in the cover whose load failed and are waiting on a retry.
+   *
+   * Here because a map whose tiles all fail looks exactly like a map that
+   * is still loading — an empty background and nothing else — and the
+   * difference is not something a user can see.
+   */
+  errors: number;
   /** Bytes of rendered surfaces the cache is holding. */
   surfaceBytes: number;
   /** What the rasterizer did, summed over the tiles drawn this frame. */
@@ -189,6 +197,15 @@ export interface MapViewProps {
   attribution?: string;
   /** Called once per painted frame with what it cost. */
   onFrame?: (stats: MapFrameStats) => void;
+  /**
+   * Called once per failed tile load, with whatever the source threw.
+   *
+   * Nothing is drawn for a failed tile, so without this a source that is
+   * misconfigured, rate-limited or down is indistinguishable from one that
+   * is slow. The tile is retried on a backoff (0.5 s doubling to 30 s), so
+   * this fires again for each retry rather than once and forever.
+   */
+  onTileError?: (error: unknown, tile: TileId & { sourceId: string }) => void;
   style?: Style;
   role?: string;
   'aria-label'?: string;

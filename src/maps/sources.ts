@@ -29,9 +29,15 @@ export interface TileRequest extends TileId {
   /**
    * Aborted when the tile leaves the view before it arrives.
    *
-   * Typed structurally rather than as the DOM's `AbortSignal`: `src/`
-   * compiles with no DOM lib, and an application passing this straight to
-   * `fetch` needs it to be the real thing, which it is.
+   * **This is a real `AbortSignal`** on every runtime that has one, which
+   * is what makes `fetch(url, { signal })` work — `fetch` rejects anything
+   * that is not an instance of it (`TypeError: Expected signal … to be an
+   * instance of AbortSignal`), so a look-alike would fail every load.
+   * `undefined` on a runtime with no `AbortController`.
+   *
+   * It is *typed* structurally because `src/` compiles with no DOM lib and
+   * cannot name the class, which is why an application in TypeScript casts:
+   * `fetch(url, { signal: signal as AbortSignal })`.
    */
   signal: { readonly aborted: boolean; addEventListener?: unknown } | undefined;
 }

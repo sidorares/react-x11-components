@@ -877,6 +877,30 @@ schema and the attribution _around_ a `load` the application still writes.
 The attribution is the part that is not merely tidy — for open data it is a
 licence condition, so a source carries it and the map draws it.
 
+**Two things the seam got wrong that only a real network found**, both now
+pinned by tests, and both the same lesson: a component whose data arrives
+asynchronously has to be _runnable_ against the real thing before it is
+believed. The `signal` handed to a source was a plain object with an
+`aborted` getter; `fetch` checks `instanceof AbortSignal` and throws
+`TypeError` on anything else, so **every load failed** in exactly the way
+the documentation told people to write — and nothing showed it, because a
+failed tile draws nothing and a map whose every tile fails is
+pixel-identical to one still loading. Hence `onTileError`,
+`MapFrameStats.errors`, and a retry backoff (the same bug had every visible
+tile re-asked once a frame, pointed at somebody else's servers).
+
+**And a third that only a deep zoom found: clip overlay geometry.** An
+overlay is geography, so its far end stays put as the camera zooms into one
+corner of it, and a world is `512 · 2^zoom` pixels — 134 million at zoom 20.
+ntk hands a stroke's geometry to XRender in 16.16 fixed point, which
+overflows a signed 32-bit word at 32,768, so an unclipped route is a
+`RangeError` out of `x11/lib/ext/render.js` thrown from inside `paint`,
+where no application can catch it. `src/maps/overlay.ts` clips lines
+segment-wise, rings as rings (a fill needs a closed boundary, which segment
+clipping cannot give it) and an over-large circle as a clipped ring. **Any
+element that draws application-supplied geometry in a zoomable viewport has
+this bug until it clips.**
+
 **Two traps specific to real tile data**, both found by running the decoder
 over half a million real features and both now pinned by tests. `extent` is
 **per layer**, not per tile: OSM's Shortbread cuts `streets`, `land`,
