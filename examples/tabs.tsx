@@ -7,12 +7,13 @@
 //    and `plain` shows what a `<TabsIndicator>` is for;
 //  - the three sizes, and a `fitted` strip;
 //  - the behaviours: panels that keep their state while hidden (type into
-//    one, switch away and back), `unmountOnExit` giving it up, a vertical
-//    `manual` strip that selects on Enter/Space rather than as the arrows
-//    move.
+//    one, switch away and back), `unmountOnExit` giving it up, a strip on a
+//    width you can drag so the overflow menu fills and empties, and a
+//    vertical `manual` strip that selects on Enter/Space rather than as the
+//    arrows move.
 import { useState } from 'react';
 import type { ReactElement, ReactNode } from 'react';
-import { Button, Icon, ThemeProvider, createRoot } from 'react-x11';
+import { Button, Icon, Slider, ThemeProvider, createRoot } from 'react-x11';
 
 import {
   Tabs,
@@ -31,6 +32,18 @@ const VARIANTS: TabsVariant[] = [
   'plain',
 ];
 const SIZES: TabsSize[] = ['sm', 'md', 'lg'];
+
+/** A repository's own navigation, which is where the overflow menu's shape
+ *  comes from. */
+const NAV = [
+  'Code',
+  'Issues',
+  'Pull requests',
+  'Discussions',
+  'Actions',
+  'Projects',
+  'Wiki',
+];
 
 function Caption({ children }: { children: ReactNode }): ReactElement {
   return <text style={{ fontSize: 11, color: '$textMuted' }}>{children}</text>;
@@ -52,6 +65,9 @@ function Sample({
       variant={variant}
       size={size}
       fitted={fitted}
+      // The gallery is about the variants; the pane below is where the
+      // overflow menu has the floor.
+      overflow="clip"
       style={{ flexGrow: 0, width: 300 }}
     >
       <TabsList>
@@ -110,6 +126,41 @@ function KeptState(): ReactElement {
           <Counter label="Count" />
         </TabsContent>
         <TabsContent value="b">Switch back — the count is zero.</TabsContent>
+      </Tabs>
+    </box>
+  );
+}
+
+/** Seven tabs on a width the slider moves, so the menu fills and empties.
+ *  A real app resizes its window instead; this one is a strip in a pane. */
+function Overflow(): ReactElement {
+  const [width, setWidth] = useState(560);
+  return (
+    <box style={{ gap: 4 }}>
+      <Caption>
+        overflow: drag the width — the tabs that stop fitting go in the menu,
+        and the selected one always keeps its place ({String(width)}px)
+      </Caption>
+      <Slider
+        min={200}
+        max={620}
+        value={width}
+        onChange={(ev) => setWidth(ev.value)}
+        style={{ width: 340 }}
+      />
+      <Tabs defaultValue="code" style={{ flexGrow: 0, width }}>
+        <TabsList>
+          {NAV.map((label) => (
+            <TabsTrigger key={label} value={label.toLowerCase()}>
+              {label}
+            </TabsTrigger>
+          ))}
+        </TabsList>
+        {NAV.map((label) => (
+          <TabsContent key={label} value={label.toLowerCase()}>
+            {label}, in a strip that may not have room for it.
+          </TabsContent>
+        ))}
       </Tabs>
     </box>
   );
@@ -197,6 +248,7 @@ function App({
               BEHAVIOUR
             </text>
             <KeptState />
+            <Overflow />
             <VerticalManual />
           </box>
         </box>
