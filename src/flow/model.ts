@@ -53,8 +53,10 @@ export const NODE_HEADER = 26;
 /** How far a `render` node's body is inset from its own border, so the
  * resize grips and the border stay the pane's to hit. */
 export const NODE_BODY_INSET = 5;
-/** Below this the mounted body is not worth showing: it is laid out at its
- * natural size, so a small box would show a corner of a form. */
+/** Below this the mounted body is not worth showing. It scales with the
+ * zoom now, so this is no longer about a form clipped to a corner of its
+ * card — it is that nobody can read a form a third of its size, and that a
+ * real subtree per card is the one cost a zoomed-out overview cannot pay. */
 export const RENDER_ZOOM = 0.6;
 /** How far outside a handle a press still counts as grabbing it. */
 export const HANDLE_SLOP = 5;

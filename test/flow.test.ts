@@ -50,6 +50,7 @@ import type {
   FlowProps,
   NodeBodyRect,
   NodeChange,
+  NodeRenderContext,
 } from '../src/index.js';
 import {
   boundsOf,
@@ -981,12 +982,147 @@ test('the mounted body follows the viewport, and leaves below a zoom', async () 
     pane().abs.x + 140 + 5,
   );
 
-  // The box follows the zoom but its content does not, so below a threshold
-  // there would be nothing readable to show: the pane draws the card instead.
+  // Below a threshold there is nothing worth mounting — a form a third of
+  // its size is unreadable, and one real subtree per card is what a
+  // zoomed-out overview cannot pay for: the pane draws the card instead.
   await act(() => flow.current!.setViewport({ zoom: 0.3 }));
   assert.strictEqual(screen.queryByText('body of a'), null);
   await act(() => flow.current!.setViewport({ zoom: 1 }));
   screen.getByText('body of a');
+});
+
+/** A body with a fixed-size mark in it. What the zoom did to a shaped
+ *  string is a font metric; what it did to a `width: 40` box is arithmetic,
+ *  and that is what these assert on. */
+const sizedType: FlowNodeType = {
+  size: { width: 200, height: 120 },
+  headerHeight: 20,
+  render: () =>
+    h(
+      'box',
+      { style: { flexGrow: 1 } },
+      h('text', { style: { width: 40, height: 20 } }, 'mark'),
+    ),
+};
+
+/** The one node `sizedType`/`mountedType` are given below: 200×120 at
+ *  (100, 100), so with the identity viewport every number in the tests is
+ *  the graph one. */
+function bodyNode(): FlowNode[] {
+  return [
+    {
+      id: 'a',
+      type: 'form',
+      position: { x: 100, y: 100 },
+      width: 200,
+      height: 120,
+    },
+  ];
+}
+
+test('the mounted body zooms with the pane, rather than being clipped by it', async () => {
+  const { flow } = await mount({
+    nodes: bodyNode(),
+    edges: [],
+    nodeTypes: { form: sizedType },
+  });
+  const mark = (): { width: number; height: number } => {
+    const { width, height } = retained(screen.getByText('mark')).abs;
+    return { width, height };
+  };
+  assert.deepStrictEqual(mark(), { width: 40, height: 20 });
+
+  // The whole point: core's `scale` prop multiplies every length in the
+  // subtree (react-x11#449), so the mark grows with the card instead of
+  // staying its own size in a bigger box and being cut off.
+  await act(() => flow.current!.setViewport({ x: 0, y: 0, zoom: 2 }));
+  assert.deepStrictEqual(mark(), { width: 80, height: 40 });
+  await act(() => flow.current!.setViewport({ x: 0, y: 0, zoom: 0.75 }));
+  assert.deepStrictEqual(mark(), { width: 30, height: 15 });
+
+  // And the box it is laid out in still covers exactly the part of the card
+  // the pane left for it: inset from the border, below the header, both of
+  // them zoomed. A body sized in its own unit that did not track this would
+  // show as the scaled box drifting off the card.
+  await act(() => flow.current!.setViewport({ x: 0, y: 0, zoom: 2 }));
+  const body = retained(screen.getByText('mark')).parent!;
+  assert.deepStrictEqual(
+    {
+      x: body.abs.x - pane().abs.x,
+      y: body.abs.y - pane().abs.y,
+      width: body.abs.width,
+      height: body.abs.height,
+    },
+    {
+      x: 100 * 2 + 5 * 2,
+      y: 100 * 2 + 20 * 2,
+      width: (200 - 5 * 2) * 2,
+      height: (120 - 20 - 5) * 2,
+    },
+  );
+});
+
+test('a zoom too small to move the box still reaches the body', async () => {
+  const { flow } = await mount({
+    nodes: bodyNode(),
+    edges: [],
+    nodeTypes: { form: sizedType },
+  });
+  const bodyScale = (): unknown => {
+    const overlay = pane().parent!.children.find((c) => c.kind === 'box');
+    assert.ok(overlay, 'the overlay box is mounted');
+    return retained(retained(overlay).children[0]).props.scale;
+  };
+  assert.strictEqual(bodyScale(), 1);
+
+  // The pane snaps the box it emits to whole pixels, and this zoom is
+  // inside the window where all four numbers snap to the ones zoom 1 gave.
+  // The list it hands React is therefore unchanged as a *rect* and changed
+  // as a scale, so the emission has to be keyed on both: keyed on the rect
+  // alone the body would keep the old factor. The error is sub-pixel by
+  // construction — the window is only as wide as the rounding — but the
+  // field is load-bearing now and a key that omits one is a bug waiting for
+  // the next change to it.
+  await act(() => flow.current!.setViewport({ x: 0, y: 0, zoom: 1.0016 }));
+  assert.strictEqual(bodyScale(), 1.0016);
+});
+
+test('`render` is handed graph units, so the zoom does not move its rect', async () => {
+  const seen: NodeRenderContext[] = [];
+  const recording: FlowNodeType = {
+    size: { width: 200, height: 120 },
+    headerHeight: 20,
+    render: (context) => {
+      seen.push(context);
+      return h('text', null, `body of ${context.node.id}`);
+    },
+  };
+  const { flow } = await mount({
+    nodes: bodyNode(),
+    edges: [],
+    nodeTypes: { form: recording },
+  });
+  const last = (): NodeRenderContext => seen[seen.length - 1];
+  // Inset from the border, below the header — in graph units, which with the
+  // identity viewport is where the node itself is.
+  assert.deepStrictEqual(last().rect, {
+    x: 105,
+    y: 120,
+    width: 190,
+    height: 95,
+  });
+
+  await act(() => flow.current!.setViewport({ x: 0, y: 0, zoom: 2 }));
+  assert.deepStrictEqual(
+    last().rect,
+    { x: 105, y: 120, width: 190, height: 95 },
+    'the same box: the zoom is on the subtree, not on the numbers in it',
+  );
+  assert.strictEqual(
+    last().zoom,
+    2,
+    'the zoom is still there for a body that wants to show less of itself',
+  );
 });
 
 test('a graph with no `render` type mounts nothing and is one node deep', async () => {
@@ -1607,6 +1743,25 @@ test('at a display scale of 2 the pane hits, pans and frames in logical pixels',
   );
   await act();
   assert.strictEqual(flow.current?.getViewport().zoom, 1.25);
+});
+
+test('the display scale is the floor the body zoom multiplies', async () => {
+  await renderX11(
+    h(TypedFlow, {
+      nodes: bodyNode(),
+      edges: [],
+      nodeTypes: { form: sizedType },
+      defaultViewport: { x: 0, y: 0, zoom: 1.5 },
+    }),
+    AT_2X,
+  );
+  await act();
+  // Two factors, and they multiply rather than one of them winning: a 40
+  // graph unit mark is 60 logical pixels at this zoom, and 120 device ones
+  // on a 2x panel. A body that took only the zoom would be half this and
+  // one that took only the panel two thirds of it.
+  const { width, height } = retained(screen.getByText('mark')).abs;
+  assert.deepStrictEqual({ width, height }, { width: 120, height: 60 });
 });
 
 test('at a display scale of 2 the card lands on device pixels and its body on logical ones', async () => {

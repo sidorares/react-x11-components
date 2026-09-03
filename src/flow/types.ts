@@ -370,14 +370,24 @@ export interface NodePaintContext<Data = FlowNodeData> {
   handles: readonly HandleAnchor[];
 }
 
-/** What {@link FlowNodeType.render} is handed. */
+/**
+ * What {@link FlowNodeType.render} is handed.
+ *
+ * Unlike {@link NodePaintContext}, everything here is in **graph units** —
+ * the unit the node's own `position` and `width` are in, unscaled by the
+ * viewport. The body is mounted in a subtree the zoom scales, so a
+ * `fontSize: 11` is 11 graph units at every zoom and the body never
+ * multiplies by anything. `zoom` is there for a body that wants to show
+ * less of itself when it is small, not for sizing.
+ */
 export interface NodeRenderContext<Data = FlowNodeData> {
   node: FlowNode<Data>;
   selected: boolean;
   zoom: number;
-  /** The box the returned tree is mounted in and laid out to, in pixels
-   * relative to the pane's top-left corner. Its size is the useful half;
-   * the position is there for a body that wants to know where it is. */
+  /** The box the returned tree is mounted in and laid out to, in graph
+   * units relative to the pane's top-left corner. Its size is the useful
+   * half; the position is there for a body that wants to know where it
+   * is. */
   rect: FlowRect;
 }
 
@@ -422,11 +432,12 @@ export interface FlowNodeType<Data = FlowNodeData> {
    * - **The node re-renders as the viewport moves.** This is the cost the
    *   drawn path exists to avoid, so it is paid only by the nodes that ask
    *   for it, and only while they are on screen.
-   * - **It does not scale with the zoom.** The *box* does — there is no
-   *   transform in this renderer, which is the whole reason `paint` is the
-   *   default — so content is laid out to the zoomed box at its natural
-   *   size, and clipped. Below `zoom` 0.6 it is not mounted at all and the
-   *   node is drawn instead.
+   * - **It zooms with the pane.** The subtree is mounted under a `scale`
+   *   box (react-x11 2.6), so it is written in graph units — plain style
+   *   lengths, no `zoom` in them — and comes out at the size the card is
+   *   drawn at, text shaped at that size rather than stretched. Below
+   *   `zoom` 0.6 it is not mounted at all: too small to read, and a
+   *   mounted subtree per card is what an overview cannot afford.
    *
    * `headerHeight` is what leaves the node draggable: the body starts below
    * it, so there is always somewhere to grab that is not a text field.
@@ -493,6 +504,9 @@ export interface FitViewOptions {
  */
 export interface NodeBodyRect extends FlowRect {
   id: string;
+  /** The viewport zoom the rect was measured at — the scale `<Flow>` gives
+   * the box it mounts, so that the body inside it is laid out in graph
+   * units. */
   zoom: number;
   selected: boolean;
 }
