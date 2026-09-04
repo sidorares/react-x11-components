@@ -94,6 +94,22 @@ export function isMapCanvas(ctx: unknown): ctx is MapCanvas {
   return typeof c?.beginPath === 'function' && typeof c?.fill === 'function';
 }
 
+const globals = globalThis as { performance?: { now(): number } };
+
+/**
+ * The clock a rasterization budget is measured on.
+ *
+ * `performance.now()` rather than `Date.now()`, because a budget is a
+ * sub-frame quantity and `Date.now()` counts whole milliseconds: an 8 ms
+ * budget measured on it carries 12% of error, and anything under 1 ms
+ * rounds to a deadline that has already passed — so `rasterBudgetMs: 0.5`
+ * would silently mean "never rasterize", which is not what it says.
+ * Reached through `globalThis` because `src/` compiles with `types: []`.
+ */
+export function now(): number {
+  return globals.performance?.now() ?? Date.now();
+}
+
 /** Vertices after which the accumulated path is flushed. Large enough that
  *  a whole ordinary layer is one path, small enough that the 130,000-vertex
  *  outlier is a few rather than one enormous request. */
@@ -355,7 +371,7 @@ export function drawTileRun(
     /** Skip this many of the run's active layers — where a previous frame
      *  stopped. */
     fromLayer?: number;
-    /** Stop after the layer that crosses this, in `Date.now()` terms. */
+    /** Stop after the layer that crosses this, on {@link now}'s clock. */
     deadline?: number;
   },
 ): number {
@@ -410,11 +426,7 @@ export function drawTileRun(
   // scratch across frames.
   for (let j = from; j < active.length; j++) {
     drawLayer(ctx, source, active[j], draw, scratch, buckets[j]);
-    if (
-      deadline !== undefined &&
-      j + 1 < active.length &&
-      Date.now() >= deadline
-    ) {
+    if (deadline !== undefined && j + 1 < active.length && now() >= deadline) {
       return j + 1;
     }
   }

@@ -196,7 +196,22 @@ Around them:
   right, and `selfDamagedProps` keeps the commit from claiming the pane.
 - **Rasterization is budgeted and resumable**, by style layer. A frame
   spends at most `rasterBudgetMs` (8 by default) on it and remembers where
-  it stopped.
+  it stopped — but **always draws at least one tile**, because a budget
+  smaller than one unit of work is not "do less" but "do nothing", and a
+  frame that finished nothing asks for another one, forever. The budget is
+  measured on `performance.now()`: `Date.now()` counts whole milliseconds,
+  which is 12% of error on an 8 ms budget and rounds anything under 1 ms to
+  a deadline that has already passed.
+- **A tile is composited when it is finished**, not while it is being drawn.
+  Composited as soon as its surface exists, a dense tile arrives as water,
+  then landuse, then casings, then roads, across a dozen frames — honest
+  about the renderer and unlike any other map. `progressive` opts back in.
+  What waiting costs is a transition that invalidates every surface at once
+  (a style change, `refresh()`, a scale change): no finished tile _and_ no
+  finished ancestor, so the map shows its background until the new tiles
+  land. Holding the old picture through that needs a second surface per
+  tile — draw into a draft, swap on completion — which doubles the surface
+  memory of every tile being redrawn and is deliberately not done here.
 - **A gesture rasterizes nothing.** Any camera move sets the budget to zero
   for 140 ms, so a drag or a wheel is composites only and the map sharpens
   when it stops.

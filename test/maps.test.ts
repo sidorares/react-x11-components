@@ -51,11 +51,13 @@ import {
   wrapTileX,
 } from '../src/maps/index.js';
 import type {
+  MapFrameStats,
   MapHandle,
   MapMarker,
-  MapSource,
-  TileData,
   MapOverlay,
+  MapSource,
+  MapStyle,
+  TileData,
 } from '../src/maps/index.js';
 import { GeomType } from '../src/maps/mvt.js';
 import { drawOverlays } from '../src/maps/overlay.js';
@@ -1015,6 +1017,125 @@ test('an overlay entirely off screen draws nothing at all', () => {
   assert.equal(recorder.fills, 0);
 });
 
+/** A tile with data in three source layers, so a style with three runs
+ *  takes three passes to draw. */
+function threeLayerTile(): Uint8Array {
+  const square = [
+    ...command(1, 1),
+    zigzag(0),
+    zigzag(0),
+    ...command(2, 3),
+    zigzag(4096),
+    zigzag(0),
+    zigzag(0),
+    zigzag(4096),
+    zigzag(-4096),
+    zigzag(0),
+    ...command(7, 0),
+  ];
+  return tileBytes(
+    ['ocean', 'land', 'buildings'].map((name) =>
+      layer({
+        name,
+        keys: [],
+        values: [],
+        features: [{ type: GeomType.Polygon, tags: [], geometry: square }],
+      }),
+    ),
+  );
+}
+
+const THREE_RUN_STYLE: MapStyle = {
+  background: '#eee',
+  layers: [
+    { id: 'ocean', type: 'fill', sourceLayer: 'ocean', color: '#aad' },
+    { id: 'land', type: 'fill', sourceLayer: 'land', color: '#cec' },
+    { id: 'buildings', type: 'fill', sourceLayer: 'buildings', color: '#ddd' },
+  ],
+};
+
+/** The middle of tile `3/4/4`, so a small pane sees that tile and no
+ *  other. */
+const ONE_TILE_CENTRE = { lon: 22.5, lat: latFromMercatorY(0.5625) };
+
+/** Frames from a map whose budget is small enough that only the
+ *  forward-progress guarantee gets any work done, so a tile takes a frame
+ *  of its own. */
+async function slowTileFrames(
+  progressive: boolean,
+  rasterBudgetMs = 0.0001,
+): Promise<MapFrameStats[]> {
+  const frames: MapFrameStats[] = [];
+  const source: MapSource = {
+    id: 'slow',
+    minZoom: 0,
+    maxZoom: 14,
+    tileSize: 512,
+    load: () => ({ kind: 'vector', data: threeLayerTile() }),
+  };
+  await renderX11(
+    React.createElement(MapView, {
+      sources: [source],
+      mapStyle: THREE_RUN_STYLE,
+      // Deliberately a viewport that sees **one** tile: at zoom 3 a tile is
+      // 512 logical pixels on screen, so a 200-pixel pane centred in one
+      // covers nothing else, and `pending` and `ready` are then facts about
+      // that tile rather than sums over four of them. (Off-screen tiles the
+      // cover keeps warm are loaded but never rasterized, so they do not
+      // reach the counters either.)
+      defaultCamera: { center: ONE_TILE_CENTRE, zoom: 3 },
+      progressive,
+      rasterBudgetMs,
+      onFrame: (stats) => frames.push({ ...stats }),
+      'data-testname': 'map',
+    }),
+    { backend: 'xserver', width: 200, height: 200 },
+  );
+  for (let i = 0; i < 30; i++) await act(async () => {});
+  return frames;
+}
+
+test('a budget too small for one tile still finishes the map', async () => {
+  // A budget smaller than one unit of work is not "do less", it is "do
+  // nothing" — and a frame with tiles still pending asks for another one,
+  // so the map would spin at the refresh rate forever. The first tile of a
+  // frame ignores the deadline for exactly this reason.
+  const frames = await slowTileFrames(false, 0.0001);
+  assert.ok(
+    frames.some((f) => f.pending === 0 && f.ready > 0),
+    'the map finished despite a budget of a ten-thousandth of a millisecond',
+  );
+});
+
+test('a tile is not shown until it is finished', async () => {
+  const frames = await slowTileFrames(false);
+  const building = frames.filter((f) => f.pending > 0);
+  assert.ok(building.length > 1, `the tile took ${building.length} frames`);
+  // One tile in view, so `pending > 0` means *this* tile is unfinished —
+  // and nothing of it is composited while that is true. There is no
+  // ancestor on a cold map either, so the map shows its background rather
+  // than a half-drawn tile.
+  for (const frame of building) {
+    assert.equal(
+      frame.ready,
+      0,
+      `a half-drawn tile was composited: ${JSON.stringify(frame)}`,
+    );
+  }
+  assert.ok(
+    frames.some((f) => f.pending === 0 && f.ready > 0),
+    'and it is composited once it is done',
+  );
+});
+
+test('progressive shows a tile as it is drawn', async () => {
+  const frames = await slowTileFrames(true);
+  assert.ok(
+    frames.some((f) => f.pending > 0 && f.ready > 0),
+    'the opt-in composites a tile that is still being drawn',
+  );
+});
+
 test('tiles composite without overflowing at extreme overzoom', async () => {
   // The second overflow, and a different limit from the overlay one:
   // XRender takes *composite* coordinates as int16, and an overzoomed tile
@@ -1070,15 +1191,23 @@ test('tiles composite without overflowing at extreme overzoom', async () => {
   const handle = ref.current as MapHandle;
   for (let step = 0; step < 10; step++) {
     handle.zoomIn(1);
-    await act(async () => {});
-    await act(async () => {});
+    for (let i = 0; i < 6; i++) await act(async () => {});
   }
   assert.ok(
     handle.getCamera().zoom >= 22,
     `reached ${handle.getCamera().zoom}`,
   );
+  // Past the settle window: a camera move suspends rasterization for 140 ms
+  // so that a gesture is composites only, and the whole zoom loop above runs
+  // well inside one. Without this wait the map is still mid-gesture and has
+  // deliberately drawn nothing yet.
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  for (let i = 0; i < 12; i++) await act(async () => {});
   const stats = handle.stats();
-  assert.ok(stats && stats.ready + stats.fromAncestor > 0, 'tiles composited');
+  assert.ok(
+    stats && stats.ready + stats.fromAncestor > 0,
+    `nothing composited at zoom 22: ${JSON.stringify(stats)}`,
+  );
 });
 
 test('a map paints without throwing at the zoom where coordinates overflow', async () => {

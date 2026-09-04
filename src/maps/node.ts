@@ -37,6 +37,7 @@ import {
   DrawScratch,
   drawTileRun,
   isMapCanvas,
+  now,
   prepareStyle,
 } from './paint.js';
 import type { MapCanvas, PreparedStyle } from './paint.js';
@@ -220,6 +221,9 @@ export class MapViewNode extends Node {
   private _settleAt = 0;
   private _settleTimer: unknown = null;
   private _painting = false;
+  /** Whether any tile has been rasterized in the frame being painted — the
+   *  forward-progress guarantee below. */
+  private _rastered = false;
   private _frameClip: ScreenRect | null = null;
   private _stats: MapFrameStats | null = null;
   private _sceneAnnounced = false;
@@ -534,8 +538,9 @@ export class MapViewNode extends Node {
   /** Suspend rasterization for the length of a gesture, and arrange for it
    *  to resume. */
   private _touchGesture(): void {
-    const now = Date.now();
-    this._settleAt = now + SETTLE_MS;
+    // Wall-clock here, not the budget clock: this is a 140 ms window, and
+    // it is compared inside a timer callback.
+    this._settleAt = Date.now() + SETTLE_MS;
     if (this._settleTimer !== null) return;
     const tick = (): void => {
       this._settleTimer = null;
@@ -730,7 +735,7 @@ export class MapViewNode extends Node {
     super.paint(ctx);
     if (!this._visible() || !isMapCanvas(ctx)) return;
 
-    const started = Date.now();
+    const started = now();
     this._painting = true;
     const scale = this._scale;
     this._frameClip = damage
@@ -794,6 +799,7 @@ export class MapViewNode extends Node {
       ? 0
       : (this._prop<number>('rasterBudgetMs') ?? 8);
     const deadline = started + budget;
+    this._rastered = false;
 
     const sources = this._sources();
     for (let i = 0; i < sources.length; i++) {
@@ -805,6 +811,7 @@ export class MapViewNode extends Node {
         pane,
         style,
         stats,
+        budget > 0,
         deadline,
       );
     }
@@ -819,7 +826,7 @@ export class MapViewNode extends Node {
     ctx.restore();
     this._cache.sweep();
     stats.surfaceBytes = this._cache.surfaceBytes;
-    stats.drawMs = Date.now() - started - stats.rasterMs;
+    stats.drawMs = now() - started - stats.rasterMs;
     this._stats = stats;
     this._painting = false;
     this._frameClip = null;
@@ -868,12 +875,15 @@ export class MapViewNode extends Node {
     pane: ScreenRect,
     style: PreparedStyle,
     stats: MapFrameStats,
+    /** False for the length of a gesture, when nothing is rasterized. */
+    mayRaster: boolean,
     deadline: number,
   ): void {
     const scale = this._scale;
     const cover = tileCover(transform, pyramid(source), COVER_PADDING);
     const zoom = transform.zoom;
     const styleZoom = Math.floor(zoom);
+    const progressive = this._prop<boolean>('progressive') === true;
     for (const entry of cover) {
       // The cover is padded, so some of it is off screen: those tiles are
       // wanted (so they load) but not drawn.
@@ -910,7 +920,14 @@ export class MapViewNode extends Node {
         if (needsDrawing && cached.surface) {
           if (cached.raster) {
             this._uploadRaster(cached);
-          } else if (Date.now() < deadline) {
+          } else if (mayRaster && (!this._rastered || now() < deadline)) {
+            // **At least one tile per frame, whatever the budget.** A
+            // budget smaller than one unit of work is not "do less", it is
+            // "do nothing" — and since the frame then still has tiles
+            // pending it asks for another one, forever, at the refresh
+            // rate. So the first tile of a frame ignores the deadline and
+            // every tile after it respects it, which bounds a frame at one
+            // tile's overrun and guarantees the map finishes.
             this._rasterize(
               cached,
               style,
@@ -931,14 +948,25 @@ export class MapViewNode extends Node {
         if (cached.surface && cached.progress !== -1) stats.pending++;
       }
 
-      if (
-        cached.surface &&
-        cached.progress !== -1 &&
-        cached.surfaceSize === 0
-      ) {
-        continue;
-      }
-      if (cached.surface) {
+      // A tile is shown when it is **finished**, unless the application
+      // asked to watch it arrive.
+      //
+      // Rasterization is resumable a style layer at a time, so a surface
+      // that exists is not a surface that is done: composited as soon as it
+      // exists, a dense tile appears as water, then landuse, then road
+      // casings, then roads, over a dozen frames. That is honest about what
+      // the renderer is doing and it does not look like a map — every other
+      // client pops a tile in whole — so the default is to wait, and an
+      // unfinished tile falls through to the coarser ancestor below, which
+      // is already required to be finished itself.
+      //
+      // What waiting costs is a transition that invalidates every surface
+      // at once — a style change, `refresh()`, a display-scale change —
+      // where there is no finished ancestor either and the map drops to its
+      // background until the tiles land. Keeping the old picture up through
+      // that needs a second surface per tile to draw into, which is a
+      // different change; see `docs/prd-maps.md`.
+      if (cached.surface && (progressive || cached.progress === -1)) {
         this._composite(
           ctx,
           cached.surface,
@@ -1004,7 +1032,8 @@ export class MapViewNode extends Node {
       cached.progress = -1;
       return;
     }
-    const started = Date.now();
+    const started = now();
+    this._rastered = true;
     const pixels = plan.pixelsPerLogical;
     this._scratch.resetStats();
     const draw = {
@@ -1043,7 +1072,7 @@ export class MapViewNode extends Node {
       }
       run++;
       layer = 0;
-      if (Date.now() >= deadline) break;
+      if (now() >= deadline) break;
     }
     this._cache.advance(cached, run, layer, style);
     const drawn = this._scratch.stats;
@@ -1052,7 +1081,7 @@ export class MapViewNode extends Node {
     stats.draw.decimated += drawn.decimated;
     stats.draw.culled += drawn.culled;
     stats.draw.batches += drawn.batches;
-    stats.rasterMs += Date.now() - started;
+    stats.rasterMs += now() - started;
   }
 
   /**

@@ -127,6 +127,7 @@ looking for the missing prop:
 | `onMarkerClick`  | …and the marker, when there was one under it.                                                                                                     |
 | `onMarkerHover`  | The marker under the pointer, or `null`. The event is `null` for the leave that comes from the pointer leaving the map.                           |
 | `interactive`    | `false` freezes the camera — no drag, no wheel, no keys. The map still draws and still reports clicks.                                            |
+| `progressive`    | Show a tile as it is drawn rather than when it is finished. `false` by default, which is what every other map client does.                        |
 | `rasterBudgetMs` | Milliseconds a frame may spend rasterizing tiles. 8 by default; `0` suspends it. See "Why a map fills in".                                        |
 | `rasterScale`    | Device pixels per logical pixel for the tile surfaces. The display's by default; 1 on a retina panel is ~1.6× quicker and correspondingly softer. |
 | `surfaceBudget`  | Bytes of rendered tile surfaces to keep. 128 MB by default.                                                                                       |
@@ -272,13 +273,29 @@ numbers, blits the band that survives and repaints the strip that was
 exposed. Routed through `useState` instead, every pointer step would be a
 render, a commit and a full-pane damage claim.
 
+**A tile appears whole, not layer by layer.** Rasterization is resumable a
+style layer at a time, so a surface that exists is not a surface that is
+done — composited as soon as it exists, a dense tile arrives as water, then
+landuse, then road casings, then roads, over a dozen frames. That is honest
+about what the renderer is doing and it does not look like a map, so a tile
+is shown when it is finished and the coarser one already in the cache is
+scaled up until then. `progressive` turns the reveal back on.
+
+The one thing waiting costs is a transition that invalidates _every_ surface
+at once — a `mapStyle` change, `refresh()`, a display-scale change — where
+there is no finished tile and no finished ancestor either, so the map drops
+to its background colour until the new tiles land. Keeping the old picture
+up through that needs a second surface per tile to draw into; see the PRD.
+
 **Why a map fills in.** A dense city tile is 50–140 ms to rasterize (the
 PRD has the measurements, on both backends). That is a software rasterizer
 drawing a hundred thousand vertices, and no arrangement of this component
 makes it free. What it does instead is make sure it is never _in a frame_:
 rasterization is resumable by style layer and a frame spends at most
-`rasterBudgetMs` on it, so a slow tile fills in over a dozen frames and no
-frame is late. While a tile is incomplete the map shows the coarser
+`rasterBudgetMs` on it, so a slow tile is drawn over a dozen frames and no
+frame is late. **At least one tile is drawn per frame whatever the budget**,
+because a budget smaller than one unit of work is not "do less" but "do
+nothing", and a frame that finished nothing asks for another one. While a tile is incomplete the map shows the coarser
 ancestor already in the cache, scaled — which is why zooming in sharpens
 rather than flashing empty.
 

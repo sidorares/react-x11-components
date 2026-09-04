@@ -55,7 +55,8 @@ export interface MapFrameStats {
   drawMs: number;
   /** Tiles the cover asked for. */
   tiles: number;
-  /** …of which had a finished surface to composite. */
+  /** …of which were composited from their own finished surface. Under
+   *  `progressive` this also counts the half-drawn ones. */
   ready: number;
   /** …and how many were drawn from a coarser ancestor instead. */
   fromAncestor: number;
@@ -161,6 +162,23 @@ export interface MapViewProps {
   /** `false` freezes the camera: no drag, no wheel, no keys. The map still
    *  draws and still reports clicks. */
   interactive?: boolean;
+  /**
+   * Show a tile as it is drawn rather than when it is finished.
+   *
+   * `false` by default, which is what every other map client does: a tile
+   * appears whole, and until it does the coarser one already in the cache
+   * is scaled up in its place. `true` composites a tile's surface as soon
+   * as it exists — so a dense tile arrives as water, then landuse, then
+   * road casings, then roads, across a dozen frames — which is honest about
+   * what the renderer is doing and does not look like a map.
+   *
+   * The one thing the default costs is a transition that invalidates every
+   * surface at once: a `mapStyle` change, `refresh()`, or a display-scale
+   * change leaves no finished tile *and* no finished ancestor, so the map
+   * drops to its background colour until the new tiles land. `true` shows
+   * it repainting instead.
+   */
+  progressive?: boolean;
   /**
    * Milliseconds a frame may spend rasterizing tiles. 8 by default, which
    * leaves the rest of a 60 Hz frame for everything else; a tile that takes
