@@ -4,3 +4,7 @@ dist/
 *.log
 .DS_Store
 *.tgz
+
+# debug captures from examples/maps.tsx
+maps-backing.bmp
+maps-screen.png

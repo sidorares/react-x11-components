@@ -680,3 +680,101 @@ function App(): React.ReactElement {
 
 const root = await createRoot();
 root.render(<App />);
+
+/**
+ * `MAPS_DEBUG_SHOT=1` writes the same instant twice: once as the backing
+ * store and once as the screen.
+ *
+ * They are different pictures, and which one carries an artefact says which
+ * half of the pipeline to look in. `getImageData` reads the backing pixmap —
+ * valid even where the window is occluded — so it is what this component
+ * *drew*. `Window.snapshot` goes through the compositor, so it is what was
+ * *presented*. A strip that is in the second and not the first was drawn
+ * correctly and never reached the display; a strip in both was drawn wrong.
+ *
+ * Nothing here may touch the window: the artefact this exists for clears on
+ * any interaction, and a capture that disturbs it measures its own repaint.
+ */
+import { writeFileSync } from 'node:fs';
+
+/** A 24-bit BMP, so the capture needs no image library and no types for
+ *  one: bottom-up rows of BGR, padded to four bytes. Preview opens it. */
+function writeBmp(
+  path: string,
+  width: number,
+  height: number,
+  rgba: Uint8ClampedArray,
+): void {
+  const rowSize = (width * 3 + 3) & ~3;
+  const size = 54 + rowSize * height;
+  const out = Buffer.alloc(size);
+  out.write('BM', 0);
+  out.writeUInt32LE(size, 2);
+  out.writeUInt32LE(54, 10);
+  out.writeUInt32LE(40, 14);
+  out.writeInt32LE(width, 18);
+  out.writeInt32LE(height, 22);
+  out.writeUInt16LE(1, 26);
+  out.writeUInt16LE(24, 28);
+  out.writeUInt32LE(rowSize * height, 34);
+  for (let y = 0; y < height; y++) {
+    let p = 54 + (height - 1 - y) * rowSize;
+    for (let x = 0; x < width; x++) {
+      const i = (y * width + x) * 4;
+      out[p++] = rgba[i + 2];
+      out[p++] = rgba[i + 1];
+      out[p++] = rgba[i];
+    }
+  }
+  writeFileSync(path, out);
+}
+
+if (process.env.MAPS_DEBUG_SHOT) {
+  const at = Number(process.env.MAPS_DEBUG_SHOT) || 6000;
+  setTimeout(() => {
+    void (async () => {
+      const app = root.app as unknown as {
+        _windows: Map<
+          unknown,
+          {
+            snapshot?(path: string): void;
+            getContext(kind: string): {
+              getImageData(
+                x: number,
+                y: number,
+                w: number,
+                h: number,
+              ): Promise<{ data: Uint8ClampedArray }>;
+            };
+          }
+        >;
+      };
+      const wnd = [...app._windows.values()][0];
+      if (!wnd) {
+        process.stderr.write('no window to capture\n');
+        return;
+      }
+      const width = 1100 * 2;
+      const height = 760 * 2;
+      try {
+        const image = await wnd
+          .getContext('2d')
+          .getImageData(0, 0, width, height);
+        writeBmp('maps-backing.bmp', width, height, image.data);
+        process.stderr.write('wrote maps-backing.bmp (what was drawn)\n');
+      } catch (error) {
+        process.stderr.write(`backing capture failed: ${String(error)}\n`);
+      }
+      if (typeof wnd.snapshot === 'function') {
+        try {
+          wnd.snapshot('maps-screen.png');
+          process.stderr.write('wrote maps-screen.png (what was presented)\n');
+        } catch (error) {
+          process.stderr.write(`screen capture failed: ${String(error)}\n`);
+        }
+      } else {
+        process.stderr.write('no snapshot() on this backend\n');
+      }
+    })();
+  }, at).unref?.();
+}
