@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.5.0](https://github.com/sidorares/react-x11-components/compare/v0.4.0...v0.5.0) (2026-09-04)
+
+
+### Features
+
+* **flow:** a mounted node body zooms with the pane ([5f4ce96](https://github.com/sidorares/react-x11-components/commit/5f4ce961371f6207b1939dd73f2765ee877ee08d))
+* **flow:** a mounted node body zooms with the pane ([337a0de](https://github.com/sidorares/react-x11-components/commit/337a0de4408ae74a2a1c88bf86a991ecdc87152f))
+* **html:** answer [@media](https://github.com/media) (prefers-color-scheme) from the palette in force ([67373f1](https://github.com/sidorares/react-x11-components/commit/67373f1931775dbebf13c59894b361611339482e))
+* **maps:** a 2D vector-tile map ([#64](https://github.com/sidorares/react-x11-components/issues/64)) ([5c21b4d](https://github.com/sidorares/react-x11-components/commit/5c21b4dd98cc44ce7c164835dd0f18d737d01856))
+* **tabs:** an overflow menu for the tabs that do not fit, and a wash on a line hover ([4073eba](https://github.com/sidorares/react-x11-components/commit/4073eba45c6935a59199b700298f86fc2a5d67a5))
+* **tabs:** the tabs that do not fit go in a menu, and a line hover wears a wash ([a65630f](https://github.com/sidorares/react-x11-components/commit/a65630f916d2e31756cbd663e35170efa5342f72))
+
+
+### Bug Fixes
+
+* **code-editor:** a press lands under the pointer, whatever the display scale ([478011b](https://github.com/sidorares/react-x11-components/commit/478011b5796fae6eea839b4f8a1c2b4be2bb2ced))
+* **code-editor:** a press lands under the pointer, whatever the display scale ([41fcb36](https://github.com/sidorares/react-x11-components/commit/41fcb3625728effbd6f2b57226e6271f8c29f912))
+* **flow:** the pane thinks in logical pixels, whatever the display scale ([c83f3e1](https://github.com/sidorares/react-x11-components/commit/c83f3e14566d5b0042bfac53cb861b00c3beac52))
+* **flow:** the pane thinks in logical pixels, whatever the display scale ([c324bb9](https://github.com/sidorares/react-x11-components/commit/c324bb922a786be418fcf0140f42530e683b9de0))
+* **formula:** the mathematics is shaped at its logical size on a retina panel ([171da0b](https://github.com/sidorares/react-x11-components/commit/171da0b0cb19a66e9cb776c3583adcbb1d2c767f))
+* **formula:** the mathematics is shaped at its logical size on a retina panel ([eb2c8bb](https://github.com/sidorares/react-x11-components/commit/eb2c8bb03956db1754e3c153a388f6ba1f76a8b2))
+* **html, richtext:** degrade on the Cocoa text engine's run shape instead of throwing ([77de3af](https://github.com/sidorares/react-x11-components/commit/77de3af6bcaff621feb4dd26447cf05db3f07088))
+* **terminal, html, richtext, charts:** drawn elements know which pixel unit they are in ([27c48ad](https://github.com/sidorares/react-x11-components/commit/27c48ad83e67d53943df99eab920b99eca48ccd5))
+* **terminal, html, richtext, charts:** drawn elements know which pixel unit they are in ([a8bfdb2](https://github.com/sidorares/react-x11-components/commit/a8bfdb2e6eeb7a95b37389ca6c523c8e5f281507))
+* **terminal:** a text engine without glyph runs degrades instead of throwing ([760b9fe](https://github.com/sidorares/react-x11-components/commit/760b9fe81b9f972ed183d62832ea7d30b0969c1f))
+* **terminal:** a text engine without glyph runs degrades instead of throwing ([b83c775](https://github.com/sidorares/react-x11-components/commit/b83c77546d4533a9edebfeda5263a031a8f0a3d3))
+* **terminal:** the scroll copy lands the top row ([9be0c59](https://github.com/sidorares/react-x11-components/commit/9be0c592ccfa761911897be13616b6a40cbd963a)), closes [#60](https://github.com/sidorares/react-x11-components/issues/60)
+* **terminal:** the scroll copy lands the top row, on react-x11 2.5.0 ([540ad89](https://github.com/sidorares/react-x11-components/commit/540ad897223c66ea106b558861df9b9461ebc404))
+
 ## [0.4.0](https://github.com/sidorares/react-x11-components/compare/v0.3.0...v0.4.0) (2026-09-01)
 
 
