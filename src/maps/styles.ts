@@ -617,3 +617,424 @@ function scaleWidth(base: Zoomed<number>, add: number): Zoomed<number> {
   if (typeof base === 'number') return base + add;
   return { stops: base.stops.map(([z, v]) => [z, v + add] as const) };
 }
+
+// --- OpenMapTiles -----------------------------------------------------------
+
+/**
+ * Road classes as **OpenMapTiles** names them.
+ *
+ * Not the same words as Shortbread's, which is the whole reason this second
+ * style exists: `transportation.class` is `minor` where Shortbread says
+ * `residential`, `unclassified` and `living_street`, and rail lives in the
+ * same layer under `class: 'rail'` rather than beside the roads. Point
+ * {@link shortbreadStyle} at an OpenMapTiles source and it matches nothing
+ * and draws an empty map.
+ */
+const OMT_RAIL = ['rail', 'transit'] as const;
+
+/** Landcover classes that read as green space. */
+const OMT_GREEN = ['wood', 'grass', 'farmland', 'wetland'] as const;
+
+/** Landuse classes that read as built-up. */
+const OMT_BUILT = [
+  'residential',
+  'commercial',
+  'industrial',
+  'retail',
+  'railway',
+  'cemetery',
+  'quarry',
+] as const;
+
+/** Landuse classes for an institutional site. */
+const OMT_SITES = [
+  'hospital',
+  'school',
+  'university',
+  'college',
+  'kindergarten',
+  'stadium',
+  'pitch',
+  'playground',
+] as const;
+
+export interface OpenMapTilesStyleOptions extends ShortbreadStyleOptions {}
+
+/**
+ * The same cartography over the **OpenMapTiles** schema.
+ *
+ * OpenMapTiles is the other open schema, and between them the two cover
+ * nearly every provider worth pointing this at: Shortbread is what
+ * OpenStreetMap's own server and VersaTiles cut, OpenMapTiles is what
+ * MapTiler, Stadia, Geoapify, OpenFreeMap and most self-hosted planets cut.
+ *
+ * Deliberately the same palette, the same layer ids where they mean the
+ * same thing, and the same casing-then-fill ordering, so switching a source
+ * between the two schemas changes which style you pass and nothing else
+ * about how the map looks.
+ */
+export function openMapTilesStyle(
+  options: OpenMapTilesStyleOptions = {},
+): MapStyle {
+  const p: MapPalette = {
+    ...(options.dark ? DARK_PALETTE : LIGHT_PALETTE),
+    ...options.palette,
+  };
+  const name = options.nameField ?? 'name';
+  const layers: MapStyleLayer[] = [
+    // One `water` layer for everything wet, with `class` telling the sea
+    // from a lake — where Shortbread has `ocean` and `water_polygons`.
+    { id: 'ocean', type: 'fill', sourceLayer: 'water', color: p.water },
+    {
+      id: 'landuse-green',
+      type: 'fill',
+      sourceLayer: 'landcover',
+      filter: ['in', 'class', ...OMT_GREEN],
+      color: p.green,
+    },
+    { id: 'park', type: 'fill', sourceLayer: 'park', color: p.green },
+    {
+      id: 'landuse-built',
+      type: 'fill',
+      sourceLayer: 'landuse',
+      filter: ['in', 'class', ...OMT_BUILT],
+      color: p.built,
+    },
+    {
+      id: 'sites',
+      type: 'fill',
+      sourceLayer: 'landuse',
+      minZoom: 13,
+      filter: ['in', 'class', ...OMT_SITES],
+      color: p.site,
+    },
+    {
+      id: 'water-lines',
+      type: 'line',
+      sourceLayer: 'waterway',
+      color: p.water,
+      width: width([
+        [6, 0.5],
+        [10, 1.2],
+        [14, 3],
+        [18, 8],
+      ]),
+    },
+  ];
+
+  if (options.buildings !== false) {
+    layers.push({
+      id: 'buildings',
+      type: 'fill',
+      sourceLayer: 'building',
+      minZoom: 14,
+      color: p.building,
+      outlineColor: p.buildingEdge,
+    });
+  }
+
+  const roads: {
+    id: string;
+    classes: readonly string[];
+    fill: string;
+    casing: string;
+    fillWidth: Zoomed<number>;
+    minZoom?: number;
+  }[] = [
+    {
+      id: 'motorway',
+      classes: ['motorway'],
+      fill: p.motorway,
+      casing: p.motorwayCasing,
+      fillWidth: width([
+        [5, 0.6],
+        [8, 1.4],
+        [10, 2.4],
+        [13, 5],
+        [16, 12],
+        [20, 40],
+      ]),
+    },
+    {
+      id: 'trunk',
+      classes: ['trunk'],
+      fill: p.trunk,
+      casing: p.motorwayCasing,
+      fillWidth: width([
+        [6, 0.5],
+        [9, 1.2],
+        [12, 2.6],
+        [16, 9],
+        [20, 30],
+      ]),
+    },
+    {
+      id: 'primary',
+      classes: ['primary'],
+      fill: p.primary,
+      casing: p.minorCasing,
+      minZoom: 7,
+      fillWidth: width([
+        [7, 0.5],
+        [10, 1.3],
+        [13, 3],
+        [16, 8],
+        [20, 26],
+      ]),
+    },
+    {
+      id: 'secondary',
+      classes: ['secondary'],
+      fill: p.secondary,
+      casing: p.minorCasing,
+      minZoom: 9,
+      fillWidth: width([
+        [9, 0.5],
+        [12, 1.6],
+        [15, 5],
+        [20, 20],
+      ]),
+    },
+    {
+      id: 'tertiary',
+      classes: ['tertiary'],
+      fill: p.minor,
+      casing: p.minorCasing,
+      minZoom: 11,
+      fillWidth: width([
+        [11, 0.6],
+        [14, 2.4],
+        [17, 7],
+        [20, 18],
+      ]),
+    },
+    {
+      // `minor` is OpenMapTiles' one word for residential, unclassified and
+      // living_street, which Shortbread keeps apart.
+      id: 'minor',
+      classes: ['minor'],
+      fill: p.minor,
+      casing: p.minorCasing,
+      minZoom: 12,
+      fillWidth: width([
+        [12, 0.5],
+        [14, 1.8],
+        [17, 6],
+        [20, 16],
+      ]),
+    },
+    {
+      id: 'service',
+      classes: ['service', 'track'],
+      fill: p.minor,
+      casing: p.minorCasing,
+      minZoom: 14,
+      fillWidth: width([
+        [14, 0.8],
+        [17, 3],
+        [20, 9],
+      ]),
+    },
+  ];
+
+  for (const road of roads) {
+    layers.push({
+      id: `${road.id}-casing`,
+      type: 'line',
+      sourceLayer: 'transportation',
+      minZoom: road.minZoom,
+      filter: ['in', 'class', ...road.classes],
+      color: road.casing,
+      width: scaleWidth(road.fillWidth, 2),
+      cap: 'round',
+      join: 'round',
+    });
+  }
+  for (const road of roads) {
+    layers.push({
+      id: road.id,
+      type: 'line',
+      sourceLayer: 'transportation',
+      minZoom: road.minZoom,
+      filter: ['in', 'class', ...road.classes],
+      color: road.fill,
+      width: road.fillWidth,
+      cap: 'round',
+      join: 'round',
+    });
+  }
+
+  layers.push(
+    {
+      id: 'paths',
+      type: 'line',
+      sourceLayer: 'transportation',
+      minZoom: 15,
+      filter: ['in', 'class', 'path', 'pedestrian'],
+      color: p.path,
+      width: width([
+        [15, 0.8],
+        [18, 1.6],
+        [20, 3],
+      ]),
+      dash: [3, 2],
+    },
+    {
+      id: 'rail',
+      type: 'line',
+      sourceLayer: 'transportation',
+      minZoom: 9,
+      filter: ['in', 'class', ...OMT_RAIL],
+      color: p.rail,
+      width: width([
+        [9, 0.5],
+        [13, 1],
+        [17, 2],
+        [20, 3],
+      ]),
+    },
+    {
+      id: 'ferries',
+      type: 'line',
+      sourceLayer: 'transportation',
+      minZoom: 9,
+      filter: ['==', 'class', 'ferry'],
+      color: p.boundary,
+      width: 1,
+      dash: [4, 3],
+    },
+    {
+      id: 'boundaries-country',
+      type: 'line',
+      sourceLayer: 'boundary',
+      filter: ['<=', 'admin_level', 2],
+      color: p.boundary,
+      width: width([
+        [2, 0.6],
+        [6, 1.1],
+        [12, 1.6],
+      ]),
+      dash: [5, 3],
+    },
+    {
+      id: 'boundaries-region',
+      type: 'line',
+      sourceLayer: 'boundary',
+      minZoom: 6,
+      filter: ['>', 'admin_level', 2],
+      color: p.boundary,
+      width: width([
+        [6, 0.5],
+        [12, 1],
+      ]),
+      dash: [3, 3],
+    },
+  );
+
+  if (options.labels !== false) {
+    layers.push(
+      {
+        id: 'place-labels-city',
+        type: 'symbol',
+        sourceLayer: 'place',
+        filter: ['in', 'class', 'city'],
+        textField: name,
+        textColor: p.text,
+        textHaloColor: p.halo,
+        textHaloWidth: 1.5,
+        textSize: {
+          stops: [
+            [3, 12],
+            [8, 15],
+            [12, 18],
+            [16, 20],
+          ],
+        },
+        rank: 100,
+      },
+      {
+        id: 'place-labels-town',
+        type: 'symbol',
+        sourceLayer: 'place',
+        minZoom: 7,
+        filter: ['in', 'class', 'town'],
+        textField: name,
+        textColor: p.text,
+        textHaloColor: p.halo,
+        textHaloWidth: 1.5,
+        textSize: {
+          stops: [
+            [7, 11],
+            [12, 14],
+            [16, 16],
+          ],
+        },
+        rank: 80,
+      },
+      {
+        id: 'place-labels-suburb',
+        type: 'symbol',
+        sourceLayer: 'place',
+        minZoom: 11,
+        filter: [
+          'in',
+          'class',
+          'suburb',
+          'quarter',
+          'neighbourhood',
+          'village',
+        ],
+        textField: name,
+        textColor: p.textMinor,
+        textHaloColor: p.halo,
+        textHaloWidth: 1.2,
+        textSize: {
+          stops: [
+            [11, 10],
+            [15, 13],
+          ],
+        },
+        rank: 60,
+      },
+      {
+        id: 'place-labels-locality',
+        type: 'symbol',
+        sourceLayer: 'place',
+        minZoom: 13,
+        filter: ['in', 'class', 'hamlet', 'isolated_dwelling', 'island'],
+        textField: name,
+        textColor: p.textMinor,
+        textHaloColor: p.halo,
+        textHaloWidth: 1.2,
+        textSize: 10,
+        rank: 40,
+      },
+      {
+        id: 'water-labels',
+        type: 'symbol',
+        sourceLayer: 'water_name',
+        minZoom: 9,
+        textField: name,
+        textColor: p.textMinor,
+        textHaloColor: p.halo,
+        textHaloWidth: 1,
+        textSize: 11,
+        rank: 30,
+      },
+      {
+        id: 'street-labels',
+        type: 'symbol',
+        sourceLayer: 'transportation_name',
+        minZoom: 14,
+        textField: name,
+        textColor: p.textMinor,
+        textHaloColor: p.halo,
+        textHaloWidth: 1,
+        textSize: 11,
+        rank: 20,
+      },
+    );
+  }
+
+  return { background: p.land, layers };
+}

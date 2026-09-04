@@ -84,21 +84,29 @@ that serves MVT over `{z}/{x}/{y}` is a `load` of a few lines.
 
 Keyless, no registration, free:
 
-| provider          | schema            | notes                                                                                                                                                                                                                     |
-| ----------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **OpenStreetMap** | Shortbread, z0–14 | What the two adapters point at. Read the tile usage policy before shipping.                                                                                                                                               |
-| **VersaTiles**    | Shortbread, z0–14 | `https://tiles.versatiles.org/tiles/osm/{z}/{x}/{y}`. Same schema, so `shortbreadStyle()` reads it unchanged — the example has it as a second layer. Its tileset merges ESA WorldCover, which the attribution has to say. |
-| **OpenFreeMap**   | OpenMapTiles      | No key, no limits. The tile URL lives in its style JSON and is versioned, so fetch that first. Needs an OpenMapTiles-shaped style.                                                                                        |
+| provider          | schema              | notes                                                                                                                                                                                                                     |
+| ----------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **OpenStreetMap** | Shortbread, z0–14   | What the two adapters point at. Read the tile usage policy before shipping.                                                                                                                                               |
+| **VersaTiles**    | Shortbread, z0–14   | `https://tiles.versatiles.org/tiles/osm/{z}/{x}/{y}`. Same schema, so `shortbreadStyle()` reads it unchanged — the example has it as a second layer. Its tileset merges ESA WorldCover, which the attribution has to say. |
+| **OpenFreeMap**   | OpenMapTiles, z0–14 | No key, no limits. Its tile URL is dated (`…/planet/20260830_080001_pt/…`) and lives in a TileJSON at `https://tiles.openfreemap.org/planet`, so read it at startup — the example does. Pair with `openMapTilesStyle()`.  |
 
 Free tiers behind a key — MapTiler, Stadia, Geoapify, Thunderforest, Azure
 Maps, Mapbox, TomTom — are all the same four lines plus an environment
 variable; the example carries MapTiler's behind `MAPTILER_KEY`.
 
-**The schema matters more than the provider.** `shortbreadStyle()` is
-written against Shortbread, so pointing it at an **OpenMapTiles** source
-(MapTiler, Stadia, OpenFreeMap) finds none of its layer names and draws an
-empty map. That is the one failure to expect, and it is a style to write
-rather than a bug.
+**The schema matters more than the provider**, and there is a style for
+each of the two open ones:
+
+- **`shortbreadStyle()`** — OpenStreetMap's own server, VersaTiles.
+- **`openMapTilesStyle()`** — MapTiler, Stadia, Geoapify, OpenFreeMap, and
+  most self-hosted planets.
+
+Same palette, same layer ids where they mean the same thing, same
+casing-then-fill ordering, so moving a source between schemas changes which
+style you pass and nothing else about how the map looks. Passing the
+_wrong_ one matches no layer names and draws an empty map — no error,
+because a style naming a layer a tile does not have is ordinary — and that
+is the one failure to expect when pointing this at a new provider.
 
 ### Nothing here fetches, and that is the feature
 

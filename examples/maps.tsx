@@ -16,6 +16,7 @@ import * as ntk from 'react-x11/ntk';
 
 import {
   Map,
+  openMapTilesStyle,
   osmRasterSource,
   osmVectorSource,
   shortbreadStyle,
@@ -185,16 +186,64 @@ const versatiles: MapSource = {
 };
 
 /**
+ * OpenFreeMap — keyless, unlimited, and the **other** open schema.
+ *
+ * OpenMapTiles rather than Shortbread, so it wants `openMapTilesStyle()`.
+ * Between the two schemas the styles here cover nearly every provider worth
+ * pointing this at: Shortbread is OSM's own server and VersaTiles,
+ * OpenMapTiles is MapTiler, Stadia, Geoapify, OpenFreeMap and most
+ * self-hosted planets.
+ *
+ * Its tile URL is **dated** (`…/planet/20260830_080001_pt/…`) and lives in
+ * a TileJSON rather than being a documented constant, so it is read at
+ * startup the way MapLibre reads it. A failure here is not fatal: the layer
+ * is simply left out of the picker.
+ */
+async function openFreeMap(): Promise<MapSource | null> {
+  try {
+    const response = await fetch('https://tiles.openfreemap.org/planet');
+    if (!response.ok) return null;
+    const tileJson = (await response.json()) as {
+      tiles: string[];
+      minzoom?: number;
+      maxzoom?: number;
+    };
+    const template = tileJson.tiles?.[0];
+    if (!template) return null;
+    return {
+      id: 'openfreemap',
+      minZoom: tileJson.minzoom ?? 0,
+      maxZoom: tileJson.maxzoom ?? 14,
+      tileSize: 512,
+      attribution: 'OpenFreeMap © OpenMapTiles · Data from OpenStreetMap',
+      load: async (request) => {
+        const bytes = await fetching.fetch(
+          template
+            .replace('{z}', String(request.z))
+            .replace('{x}', String(request.x))
+            .replace('{y}', String(request.y)),
+          request.signal,
+        );
+        return bytes && bytes.length > 0
+          ? { kind: 'vector', data: bytes }
+          : null;
+      },
+    };
+  } catch {
+    return null;
+  }
+}
+
+const openfreemap = await openFreeMap();
+
+/**
  * …and the keyed ones, which is most of the rest of the industry.
  *
  * MapTiler, Stadia, Geoapify, Thunderforest, Azure Maps, Mapbox and
  * TomTom all have a free tier and all want a key in the URL, so they are a
  * `MapSource` of four lines and an environment variable rather than
- * anything this package has to know about. MapTiler and Stadia serve the
- * **OpenMapTiles** schema rather than Shortbread, so they also want a style
- * written against that — `shortbreadStyle()` would find none of its layer
- * names and draw an empty map, which is the one thing to expect if you
- * point this at one and see nothing.
+ * anything this package has to know about. MapTiler serves OpenMapTiles,
+ * so it takes the same style OpenFreeMap does.
  *
  *   MAPTILER_KEY=… npm run examples:maps
  */
@@ -310,13 +359,23 @@ const LAYERS: Layer[] = [
     label: 'Raster — OSM standard',
     sources: [raster],
   },
+  ...(openfreemap
+    ? [
+        {
+          id: 'openfreemap',
+          label: 'Vector — OpenFreeMap',
+          sources: [openfreemap],
+          style: openMapTilesStyle(),
+        },
+      ]
+    : []),
   ...(maptiler
     ? [
         {
           id: 'maptiler',
-          label: 'Vector — MapTiler (needs a style)',
+          label: 'Vector — MapTiler',
           sources: [maptiler],
-          style: shortbreadStyle(),
+          style: openMapTilesStyle(),
         },
       ]
     : []),

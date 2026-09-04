@@ -34,6 +34,7 @@ import {
   mercatorXFromLon,
   mercatorYFromLat,
   metresPerPixel,
+  openMapTilesStyle,
   osmVectorSource,
   parseTile,
   parseVectorTile,
@@ -775,6 +776,60 @@ test('the default style is written against the schema it names', () => {
   );
   assert.equal(
     shortbreadStyle({ labels: false }).layers.some((l) => l.type === 'symbol'),
+    false,
+  );
+});
+
+test('the OpenMapTiles style names that schema, not Shortbread', () => {
+  const style = openMapTilesStyle();
+  const ids = style.layers.map((l) => l.id);
+  // Same cartography, same layer ids where they mean the same thing, so
+  // switching a source between the two schemas changes which style is
+  // passed and nothing else about how the map looks.
+  for (const id of ['ocean', 'buildings', 'motorway', 'motorway-casing']) {
+    assert.ok(ids.includes(id), `${id} is in both styles`);
+  }
+  assert.ok(
+    ids.indexOf('motorway-casing') < ids.indexOf('motorway'),
+    'casings still precede fills',
+  );
+  // …but every source layer is OpenMapTiles', and none of them is one
+  // Shortbread has. Pointing the wrong style at a source is the one failure
+  // to expect, and it draws an empty map rather than erroring.
+  const openMapTiles = new Set([
+    'water',
+    'waterway',
+    'landcover',
+    'landuse',
+    'park',
+    'building',
+    'transportation',
+    'transportation_name',
+    'place',
+    'water_name',
+    'boundary',
+  ]);
+  const shortbread = new Set(
+    shortbreadStyle().layers.map((l) => l.sourceLayer),
+  );
+  for (const layer of style.layers) {
+    assert.ok(
+      openMapTiles.has(layer.sourceLayer),
+      `unknown OpenMapTiles layer ${layer.sourceLayer}`,
+    );
+    assert.ok(
+      !shortbread.has(layer.sourceLayer),
+      `${layer.sourceLayer} is in both schemas — check the filters too`,
+    );
+  }
+  assert.notEqual(
+    openMapTilesStyle({ dark: true }).background,
+    style.background,
+  );
+  assert.equal(
+    openMapTilesStyle({ buildings: false }).layers.some(
+      (l) => l.id === 'buildings',
+    ),
     false,
   );
 });

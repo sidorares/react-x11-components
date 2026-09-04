@@ -61,7 +61,15 @@ and what their fields mean, and they are not interchangeable.
   **TomTom Orbis** — each a vendor's own, each documented, each different.
 
 Nothing about the component is tied to a schema: a style names source
-layers and fields, so a second schema is a second style.
+layers and fields, so a second schema is a second style — and both of the
+open ones ship. `shortbreadStyle()` reads OpenStreetMap's own server and
+VersaTiles; `openMapTilesStyle()` reads MapTiler, Stadia, Geoapify,
+OpenFreeMap and most self-hosted planets. They are deliberately the same
+palette and the same layer ids where those mean the same thing, so moving a
+source between schemas changes which style is passed and nothing about how
+the map looks. Passing the wrong one matches nothing and draws an empty map,
+which is the one failure to expect and is not an error: a style naming a
+layer a tile does not have is ordinary.
 
 ### Providers
 

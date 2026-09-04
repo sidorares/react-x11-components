@@ -318,6 +318,7 @@ export {
   geoJsonOverlays,
   osmRasterSource,
   osmVectorSource,
+  openMapTilesStyle,
   shortbreadStyle,
 } from './maps/index.js';
 export type {

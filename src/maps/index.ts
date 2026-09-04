@@ -231,7 +231,12 @@ export {
 
 export { setGunzip } from './gzip.js';
 
-export { DARK_PALETTE, LIGHT_PALETTE, shortbreadStyle } from './styles.js';
+export {
+  DARK_PALETTE,
+  LIGHT_PALETTE,
+  openMapTilesStyle,
+  shortbreadStyle,
+} from './styles.js';
 
 export { compileFilter, resolveZoomed } from './style.js';
 
@@ -277,7 +282,11 @@ export type {
   SymbolLayer,
   Zoomed,
 } from './style.js';
-export type { MapPalette, ShortbreadStyleOptions } from './styles.js';
+export type {
+  MapPalette,
+  OpenMapTilesStyleOptions,
+  ShortbreadStyleOptions,
+} from './styles.js';
 export type {
   FeatureValue,
   GeometryData,
