@@ -480,16 +480,40 @@ const LAYERS: Layer[] = [
  * pixels, or null for an unbounded frame. Rows no frame ever claimed are
  * rows nothing has drawn.
  */
-const covered = new Set<number>();
-let debugRows = 0;
+const CELL = 16;
+const covered = new Set<string>();
+/** The pane, learned from the claims themselves: a repaint of the whole map
+ *  claims exactly it, and that is the widest rect that ever arrives. */
+let paneRect: { x: number; y: number; width: number; height: number } | null =
+  null;
+const learnPane = (d: {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}): void => {
+  if (!paneRect || d.width * d.height > paneRect.width * paneRect.height) {
+    paneRect = { x: d.x, y: d.y, width: d.width, height: d.height };
+  }
+};
 const debugDamage = process.env.MAPS_DEBUG_DAMAGE
   ? (stats: MapFrameStats): void => {
       const d = stats.damage;
-      if (!d) {
-        for (let y = 0; y < debugRows; y++) covered.add(y);
-      } else {
-        debugRows = Math.max(debugRows, d.y + d.height);
-        for (let y = Math.max(0, d.y); y < d.y + d.height; y++) covered.add(y);
+      if (d) learnPane(d);
+      const box = paneRect;
+      if (box) {
+        const r = d ?? box;
+        const cx0 = Math.floor(Math.max(box.x, r.x) / CELL);
+        const cy0 = Math.floor(Math.max(box.y, r.y) / CELL);
+        const cx1 = Math.ceil(
+          Math.min(box.x + box.width, r.x + r.width) / CELL,
+        );
+        const cy1 = Math.ceil(
+          Math.min(box.y + box.height, r.y + r.height) / CELL,
+        );
+        for (let cy = cy0; cy < cy1; cy++) {
+          for (let cx = cx0; cx < cx1; cx++) covered.add(`${cx},${cy}`);
+        }
       }
       process.stderr.write(
         `frame damage=${d ? `${d.x},${d.y} ${d.width}x${d.height}` : 'full'} ` +
@@ -500,23 +524,37 @@ const debugDamage = process.env.MAPS_DEBUG_DAMAGE
   : undefined;
 
 if (debugDamage) {
-  // From module load rather than from the first frame: the report has to
-  // arrive even if the map never draws, which is itself a finding.
+  // Two dimensions, because a hole against the right edge sits inside rows
+  // that other claims covered — the first version of this reported "none"
+  // for a pane that visibly had one.
   const report = (): void => {
-    const missing: number[] = [];
-    for (let y = 0; y < debugRows; y++) if (!covered.has(y)) missing.push(y);
-    const groups: string[] = [];
-    let start = -1;
-    for (let k = 0; k < missing.length; k++) {
-      if (start === -1) start = missing[k];
-      if (k === missing.length - 1 || missing[k + 1] !== missing[k] + 1) {
-        groups.push(`${start}..${missing[k]} (${missing[k] - start + 1}px)`);
-        start = -1;
+    const box = paneRect;
+    if (!box) {
+      process.stderr.write('\nno pane geometry yet\n');
+      return;
+    }
+    const cx0 = Math.floor(box.x / CELL);
+    const cy0 = Math.floor(box.y / CELL);
+    const cx1 = Math.ceil((box.x + box.width) / CELL);
+    const cy1 = Math.ceil((box.y + box.height) / CELL);
+    const holes: string[] = [];
+    for (let cy = cy0; cy < cy1; cy++) {
+      let run = -1;
+      for (let cx = cx0; cx <= cx1; cx++) {
+        const miss = cx < cx1 && !covered.has(`${cx},${cy}`);
+        if (miss && run === -1) run = cx;
+        if (!miss && run !== -1) {
+          holes.push(
+            `x=${run * CELL}..${cx * CELL} y=${cy * CELL}..${(cy + 1) * CELL}`,
+          );
+          run = -1;
+        }
       }
     }
     process.stderr.write(
-      `\nrows of ${debugRows} that no frame ever claimed: ` +
-        `${groups.length ? groups.join(', ') : 'none'}\n`,
+      `\npane ${box.x},${box.y} ${box.width}x${box.height} — ` +
+        `${holes.length} unclaimed cell rows` +
+        (holes.length ? `:\n  ${holes.slice(0, 24).join('\n  ')}\n` : '\n'),
     );
   };
   for (const at of [8000, 20000]) setTimeout(report, at).unref?.();
