@@ -197,7 +197,7 @@
     "@lydell/node-pty": "^1.0.0",
     "node-pty": "^1.0.0",
     "react": "^19.0.0",
-    "react-x11": "^2.6.0"
+    "react-x11": "^2.6.1"
   },
   "peerDependenciesMeta": {
     "@lezer/highlight": {
@@ -220,7 +220,7 @@
     "globals": "^17.8.0",
     "prettier": "^3.6.0",
     "react": "^19.2.8",
-    "react-x11": "^2.6.0",
+    "react-x11": "^2.6.1",
     "tsx": "^4.23.1",
     "typescript": "^7.0.2"
   },

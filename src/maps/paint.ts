@@ -152,21 +152,15 @@ export interface TileDraw {
    * Vertices after which the accumulated path is flushed, if not
    * {@link BATCH_VERTICES}.
    *
-   * **This is the one number whose best value differs by backend**, and it
-   * differs because the two rasterizers fail in opposite directions:
-   *
-   *  - On **X11** a fill or stroke becomes an a8 coverage mask over the
-   *    path's bounding box, uploaded with one `PutImage`. Bigger batches
-   *    mean fewer uploads over the same pixels, so the number wants to be
-   *    large — a whole layer in one path.
-   *  - On the **Cocoa** backend the path goes to `CGContextStrokePath`,
-   *    whose cost is superlinear in the number of subpaths: a tile's two
-   *    thousand building rings in one path measured 347 ms and the same
-   *    rings in batches of 512 vertices measured a fifth of that. There the
-   *    number wants to be small. Filed as react-x11#456; the batch size is
-   *    a legitimate caller-side choice either way.
-   *
-   * `<Map>` picks it from the backend it is on. See `docs/prd-maps.md`.
+   * One number for both backends since react-x11 2.6.1, and it was not
+   * before that. On **X11** a fill or stroke becomes an a8 coverage mask
+   * over the path's bounding box, uploaded with one `PutImage`, so a bigger
+   * path is fewer uploads over the same pixels — the number wants to be
+   * large. On the **Cocoa** backend `CGContextStrokePath` used to be
+   * quadratic in the number of subpaths, so it wanted the opposite, and
+   * `<Map>` probed the backend to pick. Core chunks that stroke itself now
+   * (react-x11#457), at a size it can choose and a caller cannot, so
+   * batching small there only defeats it.
    */
   batchVertices?: number;
 }

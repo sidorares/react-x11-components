@@ -211,13 +211,16 @@ export interface MapViewProps {
   /** Bytes of rendered tile surfaces to keep. 128 MB by default. */
   surfaceBudget?: number;
   /**
-   * Vertices after which the rasterizer flushes its path, if not the
-   * backend's own answer.
+   * Vertices after which the rasterizer flushes its path. 12,000 by
+   * default.
    *
-   * The default is chosen from the backend, because the two rasterizers
-   * fail in opposite directions and the measurements are three to five
-   * times apart either way — see `docs/prd-maps.md`. Set it only with a
-   * profile in hand.
+   * A real trade on X11, where a fill becomes one coverage-mask upload and
+   * a bigger path is fewer of them over the same pixels. It used to be a
+   * per-backend trade — `CGContextStrokePath` was quadratic in the number
+   * of subpaths, so the Cocoa backend wanted the opposite value and this
+   * element probed for it — and react-x11 2.6.1 chunks that stroke inside
+   * the backend instead (react-x11#457). Set it only with a profile in
+   * hand.
    */
   batchVertices?: number;
   /** What the licence requires, drawn in the corner. Taken from the

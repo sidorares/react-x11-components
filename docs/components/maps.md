@@ -131,7 +131,7 @@ looking for the missing prop:
 | `rasterBudgetMs` | Milliseconds a frame may spend rasterizing tiles. 8 by default; `0` suspends it. See "Why a map fills in".                                        |
 | `rasterScale`    | Device pixels per logical pixel for the tile surfaces. The display's by default; 1 on a retina panel is ~1.6× quicker and correspondingly softer. |
 | `surfaceBudget`  | Bytes of rendered tile surfaces to keep. 128 MB by default.                                                                                       |
-| `batchVertices`  | The rasterizer's path-flush size. Chosen from the backend by default — set it only with a profile in hand, and read the PRD first.                |
+| `batchVertices`  | The rasterizer's path-flush size, 12,000. A real trade on X11; set it only with a profile in hand.                                                |
 | `attribution`    | Overrides what the sources say. `''` removes it.                                                                                                  |
 | `onFrame`        | Called once per painted frame with `MapFrameStats` — what it cost, how many tiles are still sharpening, how many failed.                          |
 | `onTileError`    | Called per failed tile load, with whatever the source threw. Worth wiring up first: a map whose tiles fail looks identical to one still loading.  |

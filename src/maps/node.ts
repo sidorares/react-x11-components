@@ -34,6 +34,7 @@ import { Surface } from 'react-x11/ntk';
 
 import { GeometryBuffer } from './mvt.js';
 import {
+  BATCH_VERTICES,
   DrawScratch,
   drawTileRun,
   isMapCanvas,
@@ -1119,25 +1120,23 @@ export class MapViewNode extends Node {
   }
 
   /**
-   * How large a path to accumulate before flushing it, chosen from the
-   * backend.
+   * How large a path to accumulate before flushing it.
    *
-   * The two rasterizers fail in opposite directions and the measurements
-   * are three to five times apart either way: on X11 a fill becomes an a8
-   * coverage mask uploaded with one `PutImage`, so a bigger path is fewer
-   * uploads over the same pixels; on the Cocoa backend the path goes to
-   * `CGContextStrokePath`, whose cost is superlinear in the number of
-   * subpaths. `app.nativeBezels` is core's own probe for "this is the
-   * Cocoa backend" (`src/appcontext.js`, `src/components/native.js`).
+   * One number for both backends, which it was not until react-x11 2.6.1.
+   * Before it, the two rasterizers wanted opposite things — X11 turns a
+   * fill into one a8 coverage mask upload, so a bigger path is fewer
+   * uploads over the same pixels, while `CGContextStrokePath` was quadratic
+   * in the number of subpaths — and this element probed the backend and
+   * picked 512 or 12,000. Core chunks a Cocoa stroke itself now
+   * (react-x11#457), at a size it can choose and a caller cannot, so
+   * batching small on that backend only defeats it: on the profiling corpus
+   * 12,000 measures 114 ms against 512's 142 ms at zoom 8, and 96 against
+   * 101 at zoom 12.
    *
-   * A prop overrides it, because a probe standing in for a rasterizer's
-   * shape is a guess that should be correctable without a release.
+   * The prop stays, because the number is still a real X11 trade.
    */
   private _batchVertices(): number {
-    const given = this._prop<number>('batchVertices');
-    if (given !== undefined) return given;
-    const app = this.app as { nativeBezels?: unknown } | undefined;
-    return app?.nativeBezels ? 512 : 12_000;
+    return this._prop<number>('batchVertices') ?? BATCH_VERTICES;
   }
 
   private _uploadRaster(cached: CachedTile, render: TileRender): void {

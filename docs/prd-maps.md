@@ -313,15 +313,15 @@ What produced the difference, in the order the profiler found it:
    headers and tags fourteen times over.
 5. **A tag cache on the feature cursor**, so those fourteen filters read
    decoded integers rather than re-decoding varints.
-6. **The path flush size is per backend, and the two want opposite
-   things.** On X11 a fill becomes an a8 coverage mask uploaded with one
-   `PutImage`, so a bigger path is fewer uploads over the same pixels:
-   12,000 vertices measured best, and 500 measured 25% worse. On the Cocoa
-   backend the path goes to `CGContextStrokePath`, whose cost is
-   superlinear in the number of subpaths: 512 measured best, and 12,000
-   measured **three times worse**. `batchVertices` is the prop, and
-   `app.nativeBezels` — core's own probe for the Cocoa backend — is the
-   default.
+6. **The path flush size was per backend, until core fixed the reason.**
+   On X11 a fill becomes an a8 coverage mask uploaded with one `PutImage`,
+   so a bigger path is fewer uploads over the same pixels: 12,000 vertices
+   measured best, 500 measured 25% worse. On the Cocoa backend the path went
+   to `CGContextStrokePath`, whose cost was quadratic in the number of
+   subpaths: 512 measured best and 12,000 measured **three times worse**, so
+   this element probed the backend and picked. react-x11 2.6.1 chunks that
+   stroke inside the backend, which is where the knowledge belongs, and one
+   constant now serves both — see "The gap, upstream" below.
 7. **The flush has to be able to interrupt a single feature.** The finding
    that fixed Cocoa's zoom 14: `buildings` in a central London tile is _one_
    feature with 26,314 vertices, and flushing only between features left it
@@ -353,30 +353,50 @@ uninterruptible. The remaining 44–55 ms maximum is the same shape one level
 down: a single layer that is one enormous multipolygon. Splitting inside a
 layer is the next thing to do if it matters.
 
-## One gap, upstream
+## The gap, upstream, and how it closed
 
-Found by the profile, core's rather than this package's, and not worked
-around here — which is the rule `AGENTS.md` states as "no escape hatches".
+**`CGContextStrokePath` was superlinear in the number of subpaths**
+([react-x11#456](https://github.com/sidorares/react-x11/issues/456)). One
+path holding a zoom-14 tile's `buildings` layer — a _single_ MVT feature
+with 26,314 vertices in about two thousand rings — measured **347 ms**; the
+same rings flushed in batches of 512 vertices measured a fifth of that. A
+CPU profile of the Cocoa raster stage put **76.2%** of all samples inside
+that one native call.
 
-**`CGContextStrokePath` is superlinear in the number of subpaths**
-([react-x11#456](https://github.com/sidorares/react-x11/issues/456)). One path
-holding a zoom-14 tile's `buildings` layer — a _single_ MVT feature with
-26,314 vertices in about two thousand rings — measured **347 ms**; the same
-rings flushed in batches of 512 vertices measured a fifth of that. A CPU
-profile of the Cocoa raster stage put **76.2%** of all samples inside that
-one native call. Reported so the backend can chunk on the _native_ side,
-where it can pick the size rather than having every caller guess it.
+Core fixed it in **2.6.1**
+([react-x11#457](https://github.com/sidorares/react-x11/pull/457)): the
+Cocoa context splits a stroke at subpath boundaries, at 512 points or 128
+subpaths, with the hairline and compositing cases left whole because
+splitting those is a loss. Core measured it quadratic — 500 rings 20 ms,
+4,000 rings 986 ms, against 14 ms and 113 ms chunked.
 
-**And a thing that looks like a second gap and is not**, recorded because it
-was the first hypothesis and the measurement refuted it. The Cocoa 2d
+**And the fix is why this package no longer batches per backend.** The
+right chunk is a fact about CoreGraphics that no caller can know, and the
+two backends wanted opposite values, so a caller that batched for one
+pessimized the other. With the chunking in the backend, the X11-shaped
+number is the only one needed — re-measured on this corpus against 2.6.1:
+
+| tile (cocoa)   | caller batch 12,000 | caller batch 512 |
+| -------------- | ------------------: | ---------------: |
+| `8/227/100`    |          **114 ms** |           142 ms |
+| `10/511/340`   |          **114 ms** |           145 ms |
+| `12/3638/1612` |           **96 ms** |           101 ms |
+| `14/8185/5447` |               87 ms |        **82 ms** |
+
+So batching small on Cocoa now costs 20-25% at the zooms that hurt, by
+cutting the path before core can chunk it well. `batchVertices` stays as a
+prop because the number is still a real X11 trade; its default is one
+constant.
+
+**And a thing that looked like a second gap and was not**, recorded because
+it was the first hypothesis and the measurement refuted it. The Cocoa 2d
 context makes one napi call per path operation — `moveTo`, `lineTo` and
-`closePath` each cross the boundary
-(`react-x11/src/cocoa/context2d.js`) — so a 45,000-vertex path is 45,000
+`closePath` each cross the boundary — so a 45,000-vertex path is 45,000
 crossings, and batching them looked like the obvious fix. It is not where
 the time goes: in the same profile `lineTo` is **18 ms of 3,143**, 0.6%, and
 flushing the path in batches — which does not reduce the number of `lineTo`
 calls at all — still gave a five-fold improvement. The crossings are cheap;
-the stroke is not.
+the stroke was not.
 
 ## Three bugs the test corpus could not have found
 

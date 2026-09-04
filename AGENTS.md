@@ -328,15 +328,18 @@ react-x11 **2.0.0 is published on npm**, and it carries every subpath this
 package imports — `react-x11/host`, `/node`, `/style`, `/test`. Both specs
 are now ordinary registry ranges:
 
-- `peerDependencies.react-x11` is `^2.0.0` — what a consumer must supply.
-- `devDependencies.react-x11` is `^2.0.0` — what the suite runs against.
+- `peerDependencies.react-x11` is `^2.6.1` — what a consumer must supply.
+- `devDependencies.react-x11` is `^2.6.1` — what the suite runs against.
 
 Keep them the same range. They are one decision written twice, and a
 devDependency that drifts above the peer range means the suite passes
 against a core that consumers are not required to have.
 
-Needing something core landed after 2.0.0 is now a normal release wait, not
-a pin bump: it ships in 2.1.0, and both ranges pick it up. Do not reach back
+Needing something core landed after the current floor is a normal release
+wait, not a pin bump: it ships in the next core release and both ranges pick
+it up. The floor has moved twice for exactly that — `^2.5.0` for the Cocoa
+glyph-run seams, and `^2.6.1` for the chunked Cocoa stroke `<Map>` profiling
+asked for (react-x11#456/#457). Do not reach back
 for a `github:` spec to get at unreleased core — cut a core release instead.
 
 <details>
@@ -848,29 +851,34 @@ component passes `defaultCamera` down once and `camera` only when the
 application is controlling it. `<Flow>` has the same fork; this is the case
 where it is load-bearing rather than tidy.
 
-**The path flush size is per backend, and the two backends want opposite
-things.** This is the finding most likely to recur for anything else that
-draws a lot of geometry. On X11 a fill or stroke becomes an a8 coverage
-mask over the path's bounding box, uploaded with one `PutImage`, so a
-bigger path is fewer uploads over the same pixels — 12,000 vertices
-measured best and 500 measured 25% worse. On the Cocoa backend the path
-goes to `CGContextStrokePath`, whose cost is superlinear in the number of
-subpaths — 512 measured best and 12,000 measured **three times worse**.
-`app.nativeBezels` is core's own probe for the Cocoa backend
-(`src/appcontext.js`, `src/components/native.js`) and is what picks the
-default; a prop overrides it, because a capability probe standing in for a
-rasterizer's shape is a guess that should be correctable without a release.
+**A per-backend constant is a smell, and this one is gone.** Worth keeping
+as a worked example, because it is the finding most likely to recur for
+anything else that draws a lot of geometry. On X11 a fill or stroke becomes
+an a8 coverage mask over the path's bounding box, uploaded with one
+`PutImage`, so a bigger path is fewer uploads over the same pixels — 12,000
+vertices measured best and 500 measured 25% worse. On the Cocoa backend the
+path went to `CGContextStrokePath`, whose cost was _quadratic_ in the number
+of subpaths — 512 measured best and 12,000 measured **three times worse** —
+so `<Map>` probed `app.nativeBezels` and picked one or the other.
 
-**One gap is filed rather than worked around**, per "no escape hatches":
-`CGContextStrokePath` is superlinear in the number of subpaths
-(react-x11#456), so one path
-holding a tile's two thousand building rings measured 347 ms and the same
-rings batched measured a fifth of that. It is core's, it is in
-`docs/prd-maps.md`, and there is no hack for it in `src/maps/` — only the
-per-backend batch size, which is a legitimate caller-side choice. The
-hypothesis it replaced is worth keeping as a method note: "the Cocoa context
-makes one napi call per `lineTo`" is _true_ and is **not** where the time
-goes (0.6% of the profile), and only measuring told the two apart.
+That was the wrong place for the knowledge, and filing it said so
+(react-x11#456): the right chunk is a fact about CoreGraphics that no caller
+can know, and with the two backends wanting opposite values a caller that
+batched for one pessimized the other. Core chunks the stroke itself now
+(react-x11#457, in 2.6.1), so the probe is gone and one constant serves
+both — and batching small on Cocoa now _costs_ 20-25% at the zooms that
+hurt, because it cuts the path before core can chunk it well. **The rule to
+carry: when a constant has to be chosen per backend, the constant is usually
+in the wrong repository.**
+
+**The gap was filed rather than worked around, and it closed**, per "no
+escape hatches": `CGContextStrokePath` was quadratic in the number of
+subpaths (react-x11#456), so one path holding a tile's two thousand building
+rings measured 347 ms and the same rings batched measured a fifth of that.
+Fixed in core 2.6.1 (react-x11#457), and this package's floor moved with it.
+The hypothesis it replaced is worth keeping as a method note: "the Cocoa
+context makes one napi call per `lineTo`" is _true_ and is **not** where the
+time goes (0.6% of the profile), and only measuring told the two apart.
 
 **Nothing fetches**, which is `<Html>`'s `onResource` rule and is stated at
 the top of `src/maps/sources.ts`: a component whose default made requests
