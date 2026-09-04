@@ -11,7 +11,7 @@ import { test } from 'node:test';
 import assert from 'node:assert';
 import React from 'react';
 
-import { cleanup, renderX11, userEvent, act } from 'react-x11/test';
+import { cleanup, renderX11, userEvent, act, waitFor } from 'react-x11/test';
 import type { RenderX11Options } from 'react-x11/test';
 import { drawnKinds, knownElements } from 'react-x11/host';
 import { isStyleProp } from 'react-x11/style';
@@ -1516,7 +1516,14 @@ test('hovering a marker reports it, and leaving the map reports null', async () 
     DRIVEN,
   );
   await userEvent.hover(node, { dy: -6 });
-  assert.deepEqual(seen, ['home']);
+  // `waitFor` rather than a bare assertion: pointer motion is dispatched at
+  // continuous priority and arrives over the wire, so on a loaded machine
+  // it can land after the `act()` inside `hover` has already returned.
+  // `waitFor` flushes between attempts, which is the difference between
+  // this passing everywhere and passing on a fast one.
+  await waitFor(() => {
+    assert.deepEqual(seen, ['home']);
+  });
   assert.deepEqual(events, ['event']);
   // The pointer leaving the map is the other way a hover ends, and it is
   // the one that carries no position — there is no place on the map to
