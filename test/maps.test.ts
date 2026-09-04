@@ -29,6 +29,7 @@ import {
   decodePolyline,
   distanceMetres,
   geoJsonOverlays,
+  googleTileSource,
   latFromMercatorY,
   lonFromMercatorX,
   mercatorXFromLon,
@@ -2205,6 +2206,111 @@ test('a source that answers nothing is an ordinary state', async () => {
     await source.load({ z: 0, x: 0, y: 0, sourceId: 'osm', signal: undefined }),
     null,
   );
+});
+
+// Google's is the only source here that has to talk to its server before it
+// can ask for a tile, so the session is what these check: created once,
+// shared by concurrent callers, and replaced when it goes stale. None of it
+// needs a key, which is the point of keeping the key in the callbacks.
+const googleFake = (): {
+  source: MapSource;
+  urls: string[];
+  bodies: Record<string, unknown>[];
+  expiry: { at: number };
+} => {
+  const urls: string[] = [];
+  const bodies: Record<string, unknown>[] = [];
+  const expiry = { at: 0 };
+  let n = 0;
+  const source = googleTileSource({
+    createSession: async (body) => {
+      bodies.push(body);
+      n += 1;
+      return {
+        session: `tok-${n}`,
+        tileWidth: 256,
+        tileHeight: 256,
+        expiry: expiry.at ? String(expiry.at) : undefined,
+      };
+    },
+    fetch: (url) => {
+      urls.push(url);
+      return new Uint8Array([1]);
+    },
+    decode: () => ({ width: 256, height: 256, data: new Uint8Array(4) }),
+  });
+  return { source, urls, bodies, expiry };
+};
+
+const googleTile = (source: MapSource, z: number, x: number, y: number) =>
+  source.load({ z, x, y, sourceId: 'google', signal: undefined });
+
+test('the Google adapter creates one session and spends it on every tile', async () => {
+  const { source, urls, bodies } = googleFake();
+  await googleTile(source, 4, 3, 5);
+  await googleTile(source, 4, 4, 5);
+  assert.equal(bodies.length, 1);
+  assert.deepEqual(bodies[0], {
+    mapType: 'roadmap',
+    language: 'en-US',
+    region: 'US',
+  });
+  assert.deepEqual(urls, [
+    'https://tile.googleapis.com/v1/2dtiles/4/3/5?session=tok-1',
+    'https://tile.googleapis.com/v1/2dtiles/4/4/5?session=tok-1',
+  ]);
+  // The key is the application's and stays in its callbacks: this
+  // component never sees one and so cannot put one in a URL.
+  assert.ok(!urls.some((url) => url.includes('key=')));
+  assert.equal(source.tileSize, 256);
+  assert.equal(source.maxZoom, 22);
+  assert.match(source.attribution ?? '', /Google/);
+});
+
+test('concurrent first tiles share one session request', async () => {
+  const { source, bodies } = googleFake();
+  await Promise.all([
+    googleTile(source, 4, 3, 5),
+    googleTile(source, 4, 4, 5),
+    googleTile(source, 4, 5, 5),
+  ]);
+  assert.equal(bodies.length, 1);
+});
+
+test('an expired Google session is replaced', async () => {
+  const { source, urls, expiry } = googleFake();
+  // Inside the minute of slack, so this one counts as already stale.
+  expiry.at = Math.floor(Date.now() / 1000) + 30;
+  await googleTile(source, 4, 3, 5);
+  await googleTile(source, 4, 4, 5);
+  assert.deepEqual(
+    urls.map((url) => url.slice(url.indexOf('session='))),
+    ['session=tok-1', 'session=tok-2'],
+  );
+});
+
+test('Google satellite is a mapType, not a style', async () => {
+  const bodies: Record<string, unknown>[] = [];
+  const source = googleTileSource({
+    mapType: 'satellite',
+    layerTypes: ['layerRoadmap'],
+    language: 'fr-FR',
+    region: 'FR',
+    createSession: async (body) => {
+      bodies.push(body);
+      return { session: 'tok' };
+    },
+    fetch: () => new Uint8Array([1]),
+    decode: () => ({ width: 256, height: 256, data: new Uint8Array(4) }),
+  });
+  await googleTile(source, 1, 0, 0);
+  assert.deepEqual(bodies[0], {
+    mapType: 'satellite',
+    language: 'fr-FR',
+    region: 'FR',
+    layerTypes: ['layerRoadmap'],
+  });
+  assert.equal(source.id, 'google-satellite');
 });
 
 // --- a real frame ----------------------------------------------------------

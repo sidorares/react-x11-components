@@ -73,17 +73,21 @@ layer a tile does not have is ordinary.
 
 ### Providers
 
-| provider                                       | 2D tiles                                                 | usable here                                                                                                                                                                                                                     |
-| ---------------------------------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **OpenStreetMap**                              | Shortbread vector, and the classic raster style          | **Yes**, keyless, open licence. Both adapters ship.                                                                                                                                                                             |
-| **MapTiler, Stadia, Protomaps, Thunderforest** | OpenMapTiles or their own MVT                            | Yes — a URL template and a key, which is a `MapSource` of five lines.                                                                                                                                                           |
-| **Microsoft Azure Maps**                       | MVT (`microsoft.base`, `.labels`, `.hybrid`) plus raster | Yes, with a subscription key. Documents its schema.                                                                                                                                                                             |
-| **Google Maps**                                | Map Tiles API: 2D raster and vector "roadmap" tiles      | Only through their API, under their terms: a session token per set of display options, valid two weeks, and tiles that may not be cached or re-served. The vector schema is not published, so a style cannot be written for it. |
-| **Apple**                                      | MapKit / MapKit JS only                                  | **No.** There is no documented tile endpoint, and their terms forbid scraping one.                                                                                                                                              |
+| provider                                       | 2D tiles                                                         | usable here                                                                                                                                                                                                                                                                        |
+| ---------------------------------------------- | ---------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **OpenStreetMap**                              | Shortbread vector, and the classic raster style                  | **Yes**, keyless, open licence. Both adapters ship.                                                                                                                                                                                                                                |
+| **MapTiler, Stadia, Protomaps, Thunderforest** | OpenMapTiles or their own MVT                                    | Yes — a URL template and a key, which is a `MapSource` of five lines.                                                                                                                                                                                                              |
+| **Microsoft Azure Maps**                       | MVT (`microsoft.base`, `.labels`, `.hybrid`) plus raster         | Yes, with a subscription key. Documents its schema.                                                                                                                                                                                                                                |
+| **Google Maps**                                | Map Tiles API: 2D **raster** tiles — roadmap, satellite, terrain | **Yes**, as raster, and `googleTileSource()` ships. A session token carries the display options, so `mapType` and `language` replace a style. No vector endpoint and no published schema, so no style could be written; their attribution and caching terms are the application's. |
+| **Apple**                                      | MapKit / MapKit JS only                                          | **No.** There is no documented tile endpoint, and their terms forbid scraping one.                                                                                                                                                                                                 |
 
-The two closed ones are recorded here so the question is not reopened:
-Google's tiles are reachable but their vector schema is not documented, and
-Apple's are not reachable at all.
+The two closed ones are recorded here so the question is not reopened.
+Google's tiles are reachable and now have an adapter, but only as finished
+images: what their docs call vector "roadmap" tiles are rasterized
+server-side and arrive as PNG, so the schema question is moot rather than
+merely unanswered — there is no vector wire format to have a schema for.
+Apple's are not reachable at all: MapKit JS is a rendered map, not a tile
+service.
 
 ### The layers everyone asks for
 

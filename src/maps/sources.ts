@@ -251,3 +251,175 @@ export function osmRasterSource(
 export function parseVectorTile(bytes: Uint8Array): VectorTile {
   return parseTile(gunzipIfNeeded(bytes));
 }
+
+// --- Google Maps ------------------------------------------------------------
+
+/**
+ * What Google's Map Tiles API hands back for a session request.
+ *
+ * Written out structurally rather than imported: this package has no Google
+ * dependency and is not about to grow one.
+ */
+export interface GoogleSession {
+  /** The token every tile request carries. */
+  session: string;
+  /** Usually 256. */
+  tileWidth?: number;
+  tileHeight?: number;
+  /** `'png'` or `'jpeg'`. */
+  imageFormat?: string;
+  /** Seconds since the epoch, as a string, per the API. */
+  expiry?: string;
+}
+
+export interface GoogleTileSourceOptions {
+  /**
+   * Fetch one tile URL. The application's, exactly as every other source
+   * here — see the note at the top of this file.
+   */
+  fetch: (
+    url: string,
+    signal: TileRequest['signal'],
+    tile: TileId,
+  ) => Promise<Uint8Array | null> | Uint8Array | null;
+  /**
+   * Create a session, by POSTing `body` as JSON to
+   * `https://tile.googleapis.com/v1/createSession?key=…`, and hand back
+   * what it answered.
+   *
+   * A separate callback from `fetch` because it is a POST with a JSON body
+   * and a key in the query, which the tile-fetching shape cannot express —
+   * and because it is where the API key lives, which is the application's
+   * secret and not something to hand a component.
+   *
+   * Called lazily on the first tile and again when the session expires;
+   * Google's are good for two weeks.
+   */
+  createSession: (body: Record<string, unknown>) => Promise<GoogleSession>;
+  /**
+   * Decode the PNG or JPEG. Google's 2D tiles are **raster** — there is no
+   * public vector endpoint and no published schema — so a codec is needed
+   * exactly as it is for `osmRasterSource`.
+   */
+  decode: (bytes: Uint8Array) => {
+    width: number;
+    height: number;
+    data: Uint8Array;
+  };
+  /** `'roadmap'` (the default), `'satellite'` or `'terrain'`. Satellite is
+   *  the one thing OpenStreetMap has no answer for at all. */
+  mapType?: 'roadmap' | 'satellite' | 'terrain';
+  /** `'layerRoadmap'` over satellite or terrain, `'layerStreetview'`. */
+  layerTypes?: readonly string[];
+  /** IETF language tag and CLDR region — Google's cartography is localized
+   *  server-side, which is the other thing you cannot do with a style. */
+  language?: string;
+  region?: string;
+  /** `'scaleFactor1x'`, `'scaleFactor2x'`, `'scaleFactor4x'`. */
+  scale?: string;
+  highDpi?: boolean;
+  id?: string;
+  maxZoom?: number;
+  /**
+   * What is drawn in the corner. **Do not remove it.** Google's Map Tiles
+   * API policies require the Google Maps logo, or the text "Google Maps"
+   * where space is limited, together with the data providers — and require
+   * that it is not obscured by anyone else's attribution. This component
+   * draws attribution as text, so the text form is what it can satisfy;
+   * a logo is an overlay of your own (`<Map>` takes `children`).
+   */
+  attribution?: string;
+}
+
+/**
+ * Google's Map Tiles API, as a `MapSource`.
+ *
+ * **Raster, and that is not a limitation of this adapter.** Google publishes
+ * no vector tile endpoint and no schema, so there is nothing for a
+ * `mapStyle` to name: what arrives is Google's own cartography, already
+ * drawn. `mapType` and `language` are the styling controls, and they are
+ * applied server-side when the session is created.
+ *
+ * Three things about it that differ from every other source here, and each
+ * is the API's rather than this package's:
+ *
+ * - **A session token comes first.** One POST, reused for every tile,
+ *   good for two weeks, and it is what carries the display options — so
+ *   changing `mapType` means a new session, which this handles by making a
+ *   new source.
+ * - **A key is required**, and it is yours: it goes in `createSession` and
+ *   in the tile URL, both of which are the application's callbacks.
+ * - **The terms restrict caching.** `<Map>` keeps parsed tiles and rendered
+ *   surfaces in memory for the session, which is what any renderer does;
+ *   writing tiles to disk is a different thing and the policies forbid it.
+ *   Read them before shipping — they also govern showing Google's tiles
+ *   beside another map's.
+ */
+export function googleTileSource(options: GoogleTileSourceOptions): MapSource {
+  let session: GoogleSession | null = null;
+  let pending: Promise<GoogleSession> | null = null;
+  let tileSize = 256;
+
+  const ensure = async (): Promise<GoogleSession> => {
+    const expiry = Number(session?.expiry ?? 0);
+    // A minute of slack, so a token does not expire between being chosen
+    // and being used.
+    if (session && (!expiry || expiry * 1000 > Date.now() + 60_000)) {
+      return session;
+    }
+    if (!pending) {
+      pending = Promise.resolve(
+        options.createSession({
+          mapType: options.mapType ?? 'roadmap',
+          language: options.language ?? 'en-US',
+          region: options.region ?? 'US',
+          ...(options.layerTypes
+            ? { layerTypes: [...options.layerTypes] }
+            : {}),
+          ...(options.scale ? { scale: options.scale } : {}),
+          ...(options.highDpi !== undefined
+            ? { highDpi: options.highDpi }
+            : {}),
+        }),
+      )
+        .then((answer) => {
+          session = answer;
+          if (answer.tileWidth && answer.tileWidth > 0) {
+            tileSize = answer.tileWidth;
+          }
+          return answer;
+        })
+        .finally(() => {
+          pending = null;
+        });
+    }
+    return pending;
+  };
+
+  return {
+    id: options.id ?? `google-${options.mapType ?? 'roadmap'}`,
+    minZoom: 0,
+    // Google serves to 22, deeper than any vector pyramid here — and since
+    // these are finished images there is nothing to sub-tile past it.
+    maxZoom: options.maxZoom ?? 22,
+    get tileSize(): number {
+      return tileSize;
+    },
+    attribution: options.attribution ?? 'Google Maps',
+    async load(request) {
+      const token = await ensure();
+      const url =
+        `https://tile.googleapis.com/v1/2dtiles/${request.z}/${request.x}/${request.y}` +
+        `?session=${encodeURIComponent(token.session)}`;
+      const bytes = await options.fetch(url, request.signal, request);
+      if (!bytes || bytes.length === 0) return null;
+      const image = options.decode(bytes);
+      return {
+        kind: 'raster',
+        width: image.width,
+        height: image.height,
+        data: image.data,
+      };
+    },
+  };
+}

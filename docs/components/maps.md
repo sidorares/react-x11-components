@@ -92,7 +92,11 @@ Keyless, no registration, free:
 
 Free tiers behind a key — MapTiler, Stadia, Geoapify, Thunderforest, Azure
 Maps, Mapbox, TomTom — are all the same four lines plus an environment
-variable; the example carries MapTiler's behind `MAPTILER_KEY`.
+variable; the example carries MapTiler's behind `MAPTILER_KEY`. **Satellite
+imagery is only ever one of these**: OpenStreetMap is map data and has
+none, so imagery means a provider you have the rights to — Google's
+`mapType: 'satellite'` below, Esri, Bing, Maxar, or OpenAerialMap, which is
+open (CC BY 4.0) but per-image rather than a global pyramid.
 
 **The schema matters more than the provider**, and there is a style for
 each of the two open ones:
@@ -107,6 +111,73 @@ style you pass and nothing else about how the map looks. Passing the
 _wrong_ one matches no layer names and draws an empty map — no error,
 because a style naming a layer a tile does not have is ordinary — and that
 is the one failure to expect when pointing this at a new provider.
+
+### Google, and the other closed providers
+
+`googleTileSource()` reads Google's Map Tiles API. It sits apart from
+everything above for one reason: **Google publishes no vector tiles and no
+schema.** Its own documentation describes roadmap tiles as "image tiles
+based on vector topographic data with Google's cartographic styling" — the
+vector data is Google's, the rasterizing happens on their servers, and what
+crosses the wire is a PNG. So there is nothing for a `mapStyle` to name, and
+passing one changes nothing.
+
+What you choose instead is `mapType` — `roadmap`, `satellite` or `terrain`,
+optionally with `layerTypes: ['layerRoadmap']` for the hybrid — plus
+`language` and `region`, because Google localizes its cartography
+server-side. All of it is fixed when the **session** is created, which is
+the other thing this API does that no other source here does: one POST
+returns a token, good for two weeks, spent on every tile. `googleTileSource`
+creates it lazily, shares it between concurrent first tiles, and replaces it
+when it expires.
+
+```ts
+const google = googleTileSource({
+  mapType: 'satellite',
+  layerTypes: ['layerRoadmap'],
+  createSession: (body) =>
+    fetch(`https://tile.googleapis.com/v1/createSession?key=${KEY}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then((r) => r.json()),
+  fetch: (url, signal) => fetchBytes(`${url}&key=${KEY}`, signal),
+  decode: decodeImage,
+});
+```
+
+The key lives in those two callbacks and never reaches the component. The
+example carries roadmap, satellite and hybrid behind `GOOGLE_MAPS_KEY`.
+
+**Three obligations come with it, and they are the application's**, because
+they are about what is on screen rather than what this code does:
+
+- **Attribution is required and specific.** The Google Maps logo, or the
+  text "Google Maps" where space is limited, plus the data providers
+  ("Map data: Google, Maxar Technologies"), not obscured by anyone else's
+  attribution. This component draws attribution as _text_, so the text form
+  is what it can satisfy; a logo is an overlay of your own — `<Map>` takes
+  `children` for exactly this.
+- **The terms restrict caching.** `<Map>` holds decoded tiles and rendered
+  surfaces in memory for the session, which is what any renderer must do to
+  put a tile on screen. Persisting tiles to disk is a different thing, and
+  the policies forbid it — do not point the bench corpus scripts at Google.
+- **Showing it beside another map is governed too.** The terms cover
+  displaying Google content "on, next to, or in a manner that is visually
+  associated with" another map, so a side-by-side comparison or a
+  Google basemap under a non-Google overlay is a question for the terms
+  rather than for this component.
+
+Apple and Microsoft land in the same place for the same reason. Apple's
+MapKit JS is a rendered map rather than a tile service and has no server
+tile endpoint to point at. Azure Maps _does_ serve MVT to `{z}/{x}/{y}` in
+its own schema — neither Shortbread nor OpenMapTiles — so it needs a style
+written against `microsoft.maps.*` layer names, which is a `MapStyle`
+literal and no new code here.
+
+Read the terms before shipping any of them:
+[Map Tiles API policies](https://developers.google.com/maps/documentation/tile/policies)
+and the [Maps Platform terms](https://developers.google.com/maps/terms).
 
 ### Nothing here fetches, and that is the feature
 

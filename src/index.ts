@@ -316,6 +316,7 @@ export {
   OSM_ATTRIBUTION,
   decodePolyline,
   geoJsonOverlays,
+  googleTileSource,
   osmRasterSource,
   osmVectorSource,
   openMapTilesStyle,

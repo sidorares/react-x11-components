@@ -222,6 +222,7 @@ export {
   OSM_ATTRIBUTION,
   OSM_RASTER_URL,
   OSM_VECTOR_URL,
+  googleTileSource,
   osmRasterSource,
   osmVectorSource,
   parseVectorTile,
@@ -270,7 +271,13 @@ export type {
   TileRaster,
   Transform,
 } from './proj.js';
-export type { MapSource, TileData, TileRequest } from './sources.js';
+export type {
+  GoogleSession,
+  GoogleTileSourceOptions,
+  MapSource,
+  TileData,
+  TileRequest,
+} from './sources.js';
 export type { MapMarker, MapOverlay, GeoJsonLike } from './overlay.js';
 export type {
   CircleLayer,

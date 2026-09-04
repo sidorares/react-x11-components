@@ -17,6 +17,7 @@ import * as ntk from 'react-x11/ntk';
 import {
   Map,
   openMapTilesStyle,
+  googleTileSource,
   osmRasterSource,
   osmVectorSource,
   shortbreadStyle,
@@ -297,6 +298,68 @@ const raster = osmRasterSource({
 });
 
 /**
+ * Google, which is the one provider here that is *only* raster.
+ *
+ * Google publishes no vector tile endpoint and no schema — its own docs
+ * describe roadmap tiles as "image tiles based on vector topographic data
+ * with Google's cartographic styling", meaning it rasterizes server-side —
+ * so there is no `style` to pass and no `mapStyle` that could apply. What
+ * you choose instead is `mapType`, and it is chosen when the session is
+ * created rather than per tile.
+ *
+ * That session is the one thing this API asks for that no other source
+ * here does: a POST that returns a token, reused for two weeks. It is a
+ * POST with a JSON body and the key in the query, so it is a callback of
+ * its own rather than the tile `fetch`.
+ *
+ *   GOOGLE_MAPS_KEY=… npm run examples:maps
+ *
+ * The key never reaches the component: it lives in these two callbacks.
+ * Google's attribution and caching terms are the application's to honour —
+ * see `docs/components/maps.md` before shipping one of these.
+ */
+const googleKey = process.env.GOOGLE_MAPS_KEY;
+
+const google = (
+  mapType: 'roadmap' | 'satellite',
+  layerTypes?: string[],
+): MapSource | null =>
+  googleKey
+    ? googleTileSource({
+        mapType,
+        layerTypes,
+        id: `google-${mapType}${layerTypes ? '-hybrid' : ''}`,
+        attribution: 'Google Maps',
+        createSession: async (body) => {
+          const response = await fetch(
+            `https://tile.googleapis.com/v1/createSession?key=${googleKey}`,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(body),
+            },
+          );
+          if (!response.ok) {
+            throw new Error(
+              `createSession: ${response.status} ${await response.text()}`,
+            );
+          }
+          return (await response.json()) as { session: string };
+        },
+        fetch: (url, signal) =>
+          fetching.fetch(`${url}&key=${googleKey}`, signal),
+        decode: (bytes) => {
+          const image = decodeImage(bytes);
+          return { width: image.width, height: image.height, data: image.data };
+        },
+      })
+    : null;
+
+const googleRoadmap = google('roadmap');
+const googleSatellite = google('satellite');
+const googleHybrid = google('satellite', ['layerRoadmap']);
+
+/**
  * The layers this example can show.
  *
  * **OpenStreetMap has no satellite layer**, and that is worth knowing
@@ -376,6 +439,34 @@ const LAYERS: Layer[] = [
           label: 'Vector — MapTiler',
           sources: [maptiler],
           style: openMapTilesStyle(),
+        },
+      ]
+    : []),
+  // No `style` on any of these: they arrive already drawn.
+  ...(googleRoadmap
+    ? [
+        {
+          id: 'google',
+          label: 'Raster — Google roadmap',
+          sources: [googleRoadmap],
+        },
+      ]
+    : []),
+  ...(googleSatellite
+    ? [
+        {
+          id: 'google-satellite',
+          label: 'Raster — Google satellite',
+          sources: [googleSatellite],
+        },
+      ]
+    : []),
+  ...(googleHybrid
+    ? [
+        {
+          id: 'google-hybrid',
+          label: 'Raster — Google hybrid',
+          sources: [googleHybrid],
         },
       ]
     : []),
