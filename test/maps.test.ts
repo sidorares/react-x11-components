@@ -39,6 +39,8 @@ import {
   osmVectorSource,
   parseTile,
   parseVectorTile,
+  projectPoint,
+  pyramidOf,
   rasterFor,
   resolveZoomed,
   shortbreadStyle,
@@ -48,8 +50,10 @@ import {
   tileCover,
   tileOf,
   tileTransform,
+  tileCountAt,
   transformFor,
   unprojectPoint,
+  zoomOffsetFor,
   visibleBounds,
   wrapLon,
   wrapTileX,
@@ -2159,6 +2163,101 @@ test('panning by a distance moves the same way at scale 2', async () => {
   const two = await move(2);
   assert.ok(one > 0);
   assert.ok(Math.abs(one - two) < 1e-9, `${one} vs ${two}`);
+});
+
+// A tile grid and a projection are two ways of saying where the world is,
+// and they have to agree — react-x11-components#65, where they did not.
+//
+// `tileCover` places tiles at `paneX + (ix - centerX * n) * size`, so the
+// world its grid is laid out on is `n * size`. Everything else in the pane —
+// markers, overlays, labels, `project()`, and the pixel shift a pan asks the
+// blit for — is placed with `transform.world`. When a source's tiles were
+// 256 px those two were a factor of two apart, and the visible result was a
+// raster map whose tiles panned half as far as the pointer while the markers
+// on top of them kept up.
+test('the tile grid is laid out on the same world as the projection', () => {
+  const transform = transformFor(
+    { center: LONDON, zoom: 12.4 },
+    { width: 800, height: 600 },
+  );
+  for (const tileSize of [256, 512]) {
+    for (const zoom of [0, 3, 12.4, 14, 18.7]) {
+      const t = transformFor(
+        { center: LONDON, zoom },
+        { width: 800, height: 600 },
+      );
+      const pyramid = pyramidOf({
+        id: 's',
+        tileSize,
+        minZoom: 0,
+        maxZoom: 22,
+        load: () => null,
+      });
+      const cover = tileCover(t, pyramid);
+      assert.ok(cover.length > 0, `${tileSize}px at z${zoom} covers nothing`);
+      const n = tileCountAt(cover[0].tile.z);
+      const gridWorld = n * cover[0].size;
+      assert.ok(
+        Math.abs(gridWorld - t.world) < 1e-6,
+        `${tileSize}px tiles at zoom ${zoom}: the grid spans ${gridWorld} ` +
+          `pixels of world where the projection spans ${t.world}`,
+      );
+    }
+  }
+  // …and concretely: a tile's own corner lands where projecting that
+  // corner's mercator position puts it.
+  for (const tileSize of [256, 512]) {
+    const pyramid = pyramidOf({
+      id: 's',
+      tileSize,
+      minZoom: 0,
+      maxZoom: 22,
+      load: () => null,
+    });
+    const entry = tileCover(transform, pyramid)[0];
+    const n = tileCountAt(entry.tile.z);
+    const corner = projectPoint(transform, {
+      x: entry.tile.x / n,
+      y: entry.tile.y / n,
+    });
+    assert.ok(
+      Math.abs(corner.x - entry.x) < 1e-6 &&
+        Math.abs(corner.y - entry.y) < 1e-6,
+      `${tileSize}px: the cover puts the tile at (${entry.x}, ${entry.y}) ` +
+        `and the projection at (${corner.x}, ${corner.y})`,
+    );
+  }
+});
+
+test('a 256px source is read one level deeper, at its natural size', () => {
+  const t = transformFor(
+    { center: LONDON, zoom: 12 },
+    { width: 800, height: 600 },
+  );
+  const raster = pyramidOf({
+    id: 'r',
+    tileSize: 256,
+    minZoom: 0,
+    maxZoom: 19,
+    load: () => null,
+  });
+  const vector = pyramidOf({
+    id: 'v',
+    tileSize: 512,
+    minZoom: 0,
+    maxZoom: 14,
+    load: () => null,
+  });
+  assert.equal(zoomOffsetFor(t, raster), 1);
+  assert.equal(zoomOffsetFor(t, vector), 0);
+  const r = tileCover(t, raster)[0];
+  const v = tileCover(t, vector)[0];
+  // The same ground, a finer grid: a 256px source answers zoom 12 with its
+  // level 13, and each image is drawn at 256 rather than stretched to 512.
+  assert.equal(r.tile.z, 13);
+  assert.equal(v.tile.z, 12);
+  assert.equal(r.size, 256);
+  assert.equal(v.size, 512);
 });
 
 // --- sources ---------------------------------------------------------------

@@ -42,14 +42,14 @@ decision here.
 `sources` is an array, drawn in order, so a basemap and an overlay pyramid
 are two entries. A source is an object with a `load` function:
 
-| field         |                                                                                   |
-| ------------- | --------------------------------------------------------------------------------- |
-| `load`        | `(request) => TileData \| Promise<TileData>`. The whole seam.                     |
-| `id`          | Distinguishes this source's cache entries. Its index by default.                  |
-| `minZoom`     | Shallowest level it has data for. 0 by default.                                   |
-| `maxZoom`     | Deepest. 14 by default; a view past it **overzooms**, scaling the coarser tiles.  |
-| `tileSize`    | Logical pixels per tile edge — 512 for vector, 256 for the older raster services. |
-| `attribution` | What the licence requires. Drawn in the corner; see below.                        |
+| field         |                                                                                                                                                                                                                                                                                                                                          |
+| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `load`        | `(request) => TileData \| Promise<TileData>`. The whole seam.                                                                                                                                                                                                                                                                            |
+| `id`          | Distinguishes this source's cache entries. Its index by default.                                                                                                                                                                                                                                                                         |
+| `minZoom`     | Shallowest level it has data for. 0 by default.                                                                                                                                                                                                                                                                                          |
+| `maxZoom`     | Deepest. 14 by default; a view past it **overzooms**, scaling the coarser tiles.                                                                                                                                                                                                                                                         |
+| `tileSize`    | Logical pixels per tile edge — 512 for vector, 256 for the older raster services. **Says which level is read**, not just how big the image is: a 256-px source answers a zoom-12 view with its level 13, so each image is drawn at its own size rather than stretched to twice it. Get it wrong and the map is misplaced, not just soft. |
+| `attribution` | What the licence requires. Drawn in the corner; see below.                                                                                                                                                                                                                                                                               |
 
 `TileData` is `{ kind: 'vector', data }` for MVT bytes (gzip is unwrapped
 for you), `{ kind: 'raster', width, height, data }` for straight RGBA
@@ -178,6 +178,20 @@ literal and no new code here.
 Read the terms before shipping any of them:
 [Map Tiles API policies](https://developers.google.com/maps/documentation/tile/policies)
 and the [Maps Platform terms](https://developers.google.com/maps/terms).
+
+### Tile size decides which level is read
+
+A source's `tileSize` is not a rendering detail. Zoom here is defined against
+a 512-px cell, the way MapLibre and every vector style define it, so a source
+whose tiles are 256 px covers one cell with two of them each way and is read
+**one level deeper**: a zoom-12 view asks a 256-px raster service for its
+level 13. The ground shown is identical; the grid is finer and each image
+lands at its natural size.
+
+The practical consequence is at the deep end. `osmRasterSource` cuts to
+level 19, so the sharpest view of it is zoom **18**, and past that its tiles
+upscale the way an overzoomed vector tile does. A 512-px vector source
+cutting to 14 is sharp to zoom 14 and sub-tiles past it.
 
 ### Nothing here fetches, and that is the feature
 

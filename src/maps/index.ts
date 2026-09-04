@@ -214,6 +214,7 @@ export {
   unprojectPoint,
   visibleBounds,
   worldSize,
+  zoomOffsetFor,
   wrapLon,
   wrapTileX,
 } from './proj.js';

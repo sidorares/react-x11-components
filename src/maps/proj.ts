@@ -376,6 +376,23 @@ export interface TileRaster {
  * moment it crosses 15 the finer level takes over. Rounding instead would
  * load z15 at 14.5 and draw it at 0.7× — more data, downsampled.
  */
+/**
+ * How many levels deeper than the view a source is read, because its tiles
+ * are smaller than the transform's cell.
+ *
+ * 0 for the 512-px vector sources this defaults to, 1 for the 256-px raster
+ * services, and it falls out of the arithmetic rather than being a special
+ * case: a tile is drawn at its natural size when
+ * `t.tileSize * 2^(zoom - z) === pyramid.tileSize`.
+ */
+export function zoomOffsetFor(
+  t: Pick<Transform, 'tileSize'>,
+  pyramid: Pick<TilePyramid, 'tileSize'>,
+): number {
+  if (!(pyramid.tileSize > 0) || !(t.tileSize > 0)) return 0;
+  return Math.round(Math.log2(t.tileSize / pyramid.tileSize));
+}
+
 export function sourceZoomFor(
   zoom: number,
   pyramid: TilePyramid,
@@ -468,11 +485,28 @@ export function tileCover(
   pyramid: TilePyramid,
   padding = 0,
 ): TileCoverEntry[] {
-  const z = sourceZoomFor(t.zoom, pyramid);
+  // A source whose tiles are 256 px covers the transform's 512-px cell with
+  // two of them each way, so it is read one level **deeper** for the same
+  // view: the same ground, a finer grid, and each image drawn at its own
+  // natural size instead of stretched to twice it. This is the convention
+  // every web map uses, and getting it wrong is not a blurry map but a
+  // wrong one — see below.
+  const z = sourceZoomFor(t.zoom + zoomOffsetFor(t, pyramid), pyramid);
   const n = tileCountAt(z);
-  // Screen size of one tile of this level. Not `t.tileSize`: an overzoomed
-  // pyramid draws its coarse tiles larger, an underzoomed one smaller.
-  const size = pyramid.tileSize * Math.pow(2, t.zoom - z);
+  // Screen size of one tile of this level, from **the transform's** world
+  // and not the pyramid's tile size.
+  //
+  // The distinction is the whole of react-x11-components#65. Placement below
+  // is `paneX + (ix - fx) * size` with `fx = centerX * n`, so the world this
+  // grid is laid out on is `n * size`. That has to be `t.world`, because
+  // `t.world` is what places every *other* thing in the pane — markers,
+  // overlays, labels, `project()`, and the shift a pan blit asks for. Using
+  // the pyramid's tile size here made `n * size` the world of a 256-px
+  // pyramid while everything else used a 512-px one, so on a raster source
+  // the tiles moved half as far as the pointer and the markers slid across
+  // them. `t.tileSize * 2^(zoom - z)` keeps `n * size === t.world` by
+  // construction, at every level, overzoomed or not.
+  const size = t.tileSize * Math.pow(2, t.zoom - z);
   // The pane's edges as fractional tile coordinates. `centerX * n` is where
   // the camera sits in this level's grid.
   const fx = t.centerX * n;
