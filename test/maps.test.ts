@@ -1058,6 +1058,15 @@ const THREE_RUN_STYLE: MapStyle = {
  *  other. */
 const ONE_TILE_CENTRE = { lon: 22.5, lat: latFromMercatorY(0.5625) };
 
+/** The middle of tile `14/8192/8192`. The one above is a tile *corner* at
+ *  zoom 14 — 0.5625 · 2^14 is a whole number — so a pane centred there sees
+ *  four tiles, not one, which is exactly the sort of thing that makes a
+ *  test about counting frames say something it did not mean. */
+const ONE_TILE_CENTRE_14 = {
+  lon: lonFromMercatorX(8192.5 / 16384),
+  lat: latFromMercatorY(8192.5 / 16384),
+};
+
 /** Frames from a map whose budget is small enough that only the
  *  forward-progress guarantee gets any work done, so a tile takes a frame
  *  of its own. */
@@ -1181,6 +1190,67 @@ test('a tile being redrawn keeps showing the old picture', async () => {
       );
     }
   }
+});
+
+test('a frame that only continues a redraw claims a pixel, not the pane', async () => {
+  // What a burst of flashes at the end of a zoom actually was. A tile being
+  // redrawn is a second surface nobody is looking at, so nothing on screen
+  // changes until it lands — but every one of those frames used to claim
+  // the whole pane, so the renderer repainted the whole map at the refresh
+  // rate for the several frames a redraw takes. Invisible on X11, a visible
+  // burst on the Cocoa backend, which paints many more frames a second.
+  const source: MapSource = {
+    id: 'wake',
+    minZoom: 0,
+    maxZoom: 14,
+    tileSize: 512,
+    load: () => ({ kind: 'vector', data: threeLayerTile() }),
+  };
+  const ref = React.createRef<MapHandle>();
+  let frames: MapFrameStats[] = [];
+  await renderX11(
+    React.createElement(MapView, {
+      ref,
+      sources: [source],
+      mapStyle: THREE_RUN_STYLE,
+      defaultCamera: { center: ONE_TILE_CENTRE_14, zoom: 14 },
+      rasterBudgetMs: 0.0001,
+      onFrame: (stats) => frames.push({ ...stats }),
+      'data-testname': 'map',
+    }),
+    { backend: 'xserver', width: 200, height: 200 },
+  );
+  const settle = async (): Promise<void> => {
+    for (let i = 0; i < 20; i++) {
+      await act(async () => {});
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  };
+  await settle();
+  assert.equal(frames[frames.length - 1].tiles, 1, 'one tile in view');
+
+  frames = [];
+  (ref.current as MapHandle).zoomTo(15);
+  await settle();
+  const redrawing = frames.filter((f) => f.pending > 0);
+  assert.ok(
+    redrawing.length >= 3,
+    `the redraw took ${redrawing.length} frames`,
+  );
+  // At most two frames repaint anything: the zoom's own (the view really
+  // did change) and the one where the new tile lands.
+  const large = frames.filter(
+    (f) => f.damage === null || f.damage.width * f.damage.height > 4096,
+  );
+  assert.ok(
+    large.length <= 2,
+    `${large.length} frames repainted the pane: ` +
+      frames
+        .map((f) =>
+          f.damage ? `${f.damage.width}x${f.damage.height}` : 'FULL',
+        )
+        .join(' '),
+  );
 });
 
 test('progressive shows a tile as it is drawn', async () => {

@@ -75,6 +75,17 @@ export interface MapFrameStats {
   errors: number;
   /** Bytes of rendered surfaces the cache is holding. */
   surfaceBytes: number;
+  /**
+   * What this pass repainted, in device pixels, or `null` for a full one.
+   *
+   * The number to watch when a map looks busy: a frame that is only
+   * continuing a rasterization should claim almost nothing, because the
+   * tile being drawn is a second surface nobody is looking at. A run of
+   * full-pane damage while tiles are still landing means something is
+   * asking for repaints it does not need — which on a backend that paints
+   * many frames a second reads as flashing.
+   */
+  damage: { x: number; y: number; width: number; height: number } | null;
   /** What the rasterizer did, summed over the tiles drawn this frame. */
   draw: {
     features: number;

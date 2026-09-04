@@ -406,12 +406,15 @@ export class TileCache {
     );
   }
 
-  /** The finished draft becomes what is on screen, and the old one goes. */
-  promote(entry: CachedTile): void {
-    if (!entry.drawing || entry.drawing.progress !== -1) return;
+  /** The finished draft becomes what is on screen, and the old one goes.
+   *  True when that happened, which is the one moment a tile's pixels
+   *  change and therefore the one moment worth claiming damage for. */
+  promote(entry: CachedTile): boolean {
+    if (!entry.drawing || entry.drawing.progress !== -1) return false;
     if (entry.shown) this._release(entry.shown);
     entry.shown = entry.drawing;
     entry.drawing = null;
+    return true;
   }
 
   /** Note where a tile's rasterization stopped: at run `run`, having

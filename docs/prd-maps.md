@@ -217,6 +217,12 @@ Around them:
 - **A gesture rasterizes nothing.** Any camera move sets the budget to zero
   for 140 ms, so a drag or a wheel is composites only and the map sharpens
   when it stops.
+- **A frame that only continues a rasterization claims one pixel**, not the
+  pane. Damage is the only "call me next frame" an element has, and nothing
+  on screen changes while a tile is being drawn into its second surface —
+  the frame where it lands claims that tile's box instead. Measured over a
+  wheel-shaped zoom on the Cocoa backend: ten post-gesture frames, of which
+  **one** repaints anything, where every one of them used to.
 - **A hole is covered by an ancestor.** A tile with no surface yet borrows
   the nearest coarser one that has, scaled up, which is why zooming in
   sharpens rather than flashing empty.

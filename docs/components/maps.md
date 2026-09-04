@@ -298,6 +298,16 @@ has no old picture to keep. The coarser ancestor already in the cache is
 scaled up in its place, which is why zooming in sharpens rather than
 flashing empty; a cold map with no ancestor at all shows its background.
 
+**A frame that only continues a redraw claims one pixel.** There is no "call
+me next frame" on the element seam — damage is what schedules a paint — so a
+rasterization in progress asks for its next frame with a single-pixel claim.
+Nothing on screen changes until the tile lands (it is being drawn into a
+second surface), and the frame where it does lands claims that tile's box.
+Claiming the pane instead repaints the whole map at the refresh rate for the
+several frames a redraw takes: invisible work on X11, and a visible burst of
+repaints at the end of every zoom on the Cocoa backend, which paints many
+more frames a second. `MapFrameStats.damage` is how to see this.
+
 **Why a map fills in.** A dense city tile is 50–140 ms to rasterize (the
 PRD has the measurements, on both backends). That is a software rasterizer
 drawing a hundred thousand vertices, and no arrangement of this component

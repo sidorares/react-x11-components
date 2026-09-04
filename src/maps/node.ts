@@ -403,6 +403,26 @@ export class MapViewNode extends Node {
     this.invalidate(false, this.abs, reason);
   }
 
+  /**
+   * Ask for another frame without asking for a repaint.
+   *
+   * There is no "call me next frame" on the element seam — damage is what
+   * schedules a paint — so this claims a single pixel. That is the honest
+   * claim for a frame whose only job is to continue a rasterization: the
+   * tile being drawn is a second surface nobody is looking at, so *nothing
+   * on screen changes* until it lands, and the one thing that does change
+   * pixels claims its own box when it does.
+   *
+   * Claiming the pane instead repaints the whole map at the refresh rate
+   * for the several frames a redraw takes. On X11 that is wasted work; on
+   * the Cocoa backend, which paints many more frames a second, it is a
+   * visible burst of repaints at the end of every zoom.
+   */
+  private _wake(reason = 'content'): void {
+    const box = this.contentBox();
+    this.invalidate(false, { x: box.x, y: box.y, width: 1, height: 1 }, reason);
+  }
+
   // --- camera --------------------------------------------------------------
 
   /**
@@ -548,10 +568,12 @@ export class MapViewNode extends Node {
         this._settleTimer = arm(tick);
         return;
       }
-      // The gesture is over: sharpen. A full repaint, because every tile on
-      // screen may need re-rasterizing at the settled zoom.
+      // The gesture is over: sharpen. A wake-up, not a repaint — nothing
+      // has moved since the last frame, so what is on screen is still
+      // right; what is needed is a frame to start rasterizing in, and each
+      // tile claims its own box as it lands.
       this._prop<(camera: MapCamera) => void>('onMoveEnd')?.(this.camera());
-      this._repaint('content');
+      this._wake('content');
     };
     this._settleTimer = arm(tick);
   }
@@ -770,6 +792,7 @@ export class MapViewNode extends Node {
       labels: 0,
       errors: 0,
       surfaceBytes: 0,
+      damage: damage ? { ...damage } : null,
       draw: { features: 0, vertices: 0, decimated: 0, culled: 0, batches: 0 },
     };
 
@@ -840,7 +863,17 @@ export class MapViewNode extends Node {
     // gesture, or because an application pinned `rasterBudgetMs` to 0 — the
     // next frame would draw exactly this one again, and asking for it is a
     // spin. The gesture's own settle timer is what brings the map back.
-    if (stats.pending > 0 && budget > 0) this._repaint('content');
+    //
+    // And the claim is **one pixel**, not the pane. A frame that only
+    // continues a rasterization changes nothing on screen — the tile being
+    // drawn is a second surface nobody is looking at — so claiming the pane
+    // asks the renderer to repaint the whole map, at the refresh rate, for
+    // the several frames a redraw takes. On X11 that is wasted work; on the
+    // Cocoa backend, which paints many more frames a second, it is a
+    // visible burst of repaints at the end of every zoom. The one thing
+    // that *does* change pixels is a tile finishing, and that claims its
+    // own box above.
+    if (stats.pending > 0 && budget > 0) this._wake('content');
 
     if (!this._sceneAnnounced) {
       this._sceneAnnounced = true;
@@ -885,24 +918,22 @@ export class MapViewNode extends Node {
     const styleZoom = Math.floor(zoom);
     const progressive = this._prop<boolean>('progressive') === true;
     for (const entry of cover) {
-      // The cover is padded, so some of it is off screen: those tiles are
-      // wanted (so they load) but not drawn.
-      const onScreen = rectsOverlap(
-        {
-          x: pane.x + entry.x,
-          y: pane.y + entry.y,
-          width: entry.size,
-          height: entry.size,
-        },
-        this._frameClip
-          ? {
-              x: pane.x + this._frameClip.x - pane.x,
-              y: pane.y + this._frameClip.y - pane.y,
-              width: this._frameClip.width,
-              height: this._frameClip.height,
-            }
-          : pane,
-      );
+      const box = {
+        x: pane.x + entry.x,
+        y: pane.y + entry.y,
+        width: entry.size,
+        height: entry.size,
+      };
+      // Two different questions, and conflating them was a bug worth
+      // spelling out. **Whether to work on a tile** is about the pane: the
+      // cover is padded, so some of it is off screen and those tiles are
+      // wanted (so they load) but never drawn. **Whether to composite it**
+      // is about this pass's damage rect, which may be far smaller —
+      // including the deliberately tiny claim a rasterization continuation
+      // makes, which must still let the rasterizer run.
+      const onScreen = rectsOverlap(box, pane);
+      const inPass =
+        this._frameClip === null || rectsOverlap(box, this._frameClip);
       const cached = this._cache.want(source, sourceId, entry.tile);
       if (!onScreen) continue;
       stats.tiles++;
@@ -941,8 +972,10 @@ export class MapViewNode extends Node {
           }
           // Finished this frame: the new picture replaces the old one, and
           // the swap is what the whole pair exists for — the tile never
-          // goes blank between them.
-          this._cache.promote(cached);
+          // goes blank between them. Claim the box it occupies, because
+          // *that* is the pixel change this whole sequence of frames was
+          // for; the frames before it claimed almost nothing.
+          if (this._cache.promote(cached)) this._claim(box, 'content');
         }
         // "Pending" means *there is work left that this map could still
         // do*, and nothing weaker — because `paint` asks for another frame
@@ -965,6 +998,7 @@ export class MapViewNode extends Node {
       const showing =
         progressive && cached.drawing ? cached.drawing : cached.shown;
       if (showing) {
+        if (!inPass) continue;
         this._composite(
           ctx,
           showing.surface,
@@ -983,6 +1017,7 @@ export class MapViewNode extends Node {
       // help. Borrow the ancestor that is already drawn, scaled up: that is
       // the difference between a map that fills in and one that flashes
       // empty on every zoom.
+      if (!inPass) continue;
       const ancestor = this._cache.ancestorWithSurface(sourceId, entry.tile);
       if (ancestor?.shown) {
         const up = entry.tile.z - ancestor.tile.z;
