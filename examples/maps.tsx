@@ -157,6 +157,68 @@ const fetching = {
 const source = osmVectorSource(fetching);
 
 /**
+ * VersaTiles — a second, keyless source of the **same schema**.
+ *
+ * Here to answer "does this work with anything but OSM's own server", and
+ * it does with no new code at all: VersaTiles cuts Shortbread too, so
+ * `shortbreadStyle()` reads it unchanged and the only difference is the
+ * URL and the attribution. Zoom 0-14 like OSM's, no key, no registration.
+ *
+ * Its `osm` tileset is OSM merged with ESA WorldCover, so the attribution
+ * has to say both — which is exactly why attribution belongs on the source
+ * rather than on the map.
+ */
+const versatiles: MapSource = {
+  id: 'versatiles',
+  minZoom: 0,
+  maxZoom: 14,
+  tileSize: 512,
+  attribution: '© OpenStreetMap contributors · © ESA WorldCover project 2021',
+  load: async (request) => {
+    const bytes = await fetching.fetch(
+      `https://tiles.versatiles.org/tiles/osm/${request.z}/${request.x}/${request.y}`,
+      request.signal,
+    );
+    // Gzip is unwrapped by the decoder, so the compressed body is fine.
+    return bytes && bytes.length > 0 ? { kind: 'vector', data: bytes } : null;
+  },
+};
+
+/**
+ * …and the keyed ones, which is most of the rest of the industry.
+ *
+ * MapTiler, Stadia, Geoapify, Thunderforest, Azure Maps, Mapbox and
+ * TomTom all have a free tier and all want a key in the URL, so they are a
+ * `MapSource` of four lines and an environment variable rather than
+ * anything this package has to know about. MapTiler and Stadia serve the
+ * **OpenMapTiles** schema rather than Shortbread, so they also want a style
+ * written against that — `shortbreadStyle()` would find none of its layer
+ * names and draw an empty map, which is the one thing to expect if you
+ * point this at one and see nothing.
+ *
+ *   MAPTILER_KEY=… npm run examples:maps
+ */
+const maptilerKey = process.env.MAPTILER_KEY;
+const maptiler: MapSource | null = maptilerKey
+  ? {
+      id: 'maptiler',
+      minZoom: 0,
+      maxZoom: 14,
+      tileSize: 512,
+      attribution: '© MapTiler © OpenStreetMap contributors',
+      load: async (request) => {
+        const bytes = await fetching.fetch(
+          `https://api.maptiler.com/tiles/v3/${request.z}/${request.x}/${request.y}.pbf?key=${maptilerKey}`,
+          request.signal,
+        );
+        return bytes && bytes.length > 0
+          ? { kind: 'vector', data: bytes }
+          : null;
+      },
+    }
+  : null;
+
+/**
  * OSM's own raster style, which is the other thing the Foundation serves.
  *
  * A raster tile is pixels, so somebody has to decode the PNG — this package
@@ -238,10 +300,26 @@ const LAYERS: Layer[] = [
     style: shortbreadStyle({ buildings: false }),
   },
   {
+    id: 'versatiles',
+    label: 'Vector — VersaTiles',
+    sources: [versatiles],
+    style: shortbreadStyle(),
+  },
+  {
     id: 'raster',
     label: 'Raster — OSM standard',
     sources: [raster],
   },
+  ...(maptiler
+    ? [
+        {
+          id: 'maptiler',
+          label: 'Vector — MapTiler (needs a style)',
+          sources: [maptiler],
+          style: shortbreadStyle(),
+        },
+      ]
+    : []),
 ];
 
 function App(): React.ReactElement {

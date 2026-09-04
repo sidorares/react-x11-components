@@ -76,6 +76,30 @@ Anything else — MapTiler, Protomaps, Azure Maps, a local tile server, a
 PMTiles archive — is a `load` of your own; `tileUrl()` does the `{z}/{x}/{y}`
 substitution.
 
+### Providers that work
+
+`osmVectorSource` and `osmRasterSource` ship because OpenStreetMap's own
+endpoints need no key and no signup, but nothing is tied to them. Anything
+that serves MVT over `{z}/{x}/{y}` is a `load` of a few lines.
+
+Keyless, no registration, free:
+
+| provider          | schema            | notes                                                                                                                                                                                                                     |
+| ----------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **OpenStreetMap** | Shortbread, z0–14 | What the two adapters point at. Read the tile usage policy before shipping.                                                                                                                                               |
+| **VersaTiles**    | Shortbread, z0–14 | `https://tiles.versatiles.org/tiles/osm/{z}/{x}/{y}`. Same schema, so `shortbreadStyle()` reads it unchanged — the example has it as a second layer. Its tileset merges ESA WorldCover, which the attribution has to say. |
+| **OpenFreeMap**   | OpenMapTiles      | No key, no limits. The tile URL lives in its style JSON and is versioned, so fetch that first. Needs an OpenMapTiles-shaped style.                                                                                        |
+
+Free tiers behind a key — MapTiler, Stadia, Geoapify, Thunderforest, Azure
+Maps, Mapbox, TomTom — are all the same four lines plus an environment
+variable; the example carries MapTiler's behind `MAPTILER_KEY`.
+
+**The schema matters more than the provider.** `shortbreadStyle()` is
+written against Shortbread, so pointing it at an **OpenMapTiles** source
+(MapTiler, Stadia, OpenFreeMap) finds none of its layer names and draws an
+empty map. That is the one failure to expect, and it is a style to write
+rather than a bug.
+
 ### Nothing here fetches, and that is the feature
 
 A component that fetched by default would decide, on your behalf, whose
