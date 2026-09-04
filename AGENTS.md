@@ -328,15 +328,18 @@ react-x11 **2.0.0 is published on npm**, and it carries every subpath this
 package imports — `react-x11/host`, `/node`, `/style`, `/test`. Both specs
 are now ordinary registry ranges:
 
-- `peerDependencies.react-x11` is `^2.0.0` — what a consumer must supply.
-- `devDependencies.react-x11` is `^2.0.0` — what the suite runs against.
+- `peerDependencies.react-x11` is `^2.6.1` — what a consumer must supply.
+- `devDependencies.react-x11` is `^2.6.1` — what the suite runs against.
 
 Keep them the same range. They are one decision written twice, and a
 devDependency that drifts above the peer range means the suite passes
 against a core that consumers are not required to have.
 
-Needing something core landed after 2.0.0 is now a normal release wait, not
-a pin bump: it ships in 2.1.0, and both ranges pick it up. Do not reach back
+Needing something core landed after the current floor is a normal release
+wait, not a pin bump: it ships in the next core release and both ranges pick
+it up. The floor has moved twice for exactly that — `^2.5.0` for the Cocoa
+glyph-run seams, and `^2.6.1` for the chunked Cocoa stroke `<Map>` profiling
+asked for (react-x11#456/#457). Do not reach back
 for a `github:` spec to get at unreleased core — cut a core release instead.
 
 <details>
@@ -801,6 +804,159 @@ have to say it is a mirror rather than the live tree. The engine is written
 so the renderer half is already process-portable; the follow-up adds a runner
 over `src/embed/`'s existing lifecycle and changes nothing in `src/html/`.
 
+## A map, and the three caches under it
+
+`src/maps/` is the third element that draws a whole scene, after `<Flow>`
+and `<Html>`, and it is here because it adds the case neither of those has:
+**the scene arrives a piece at a time and each piece costs tens of
+milliseconds to draw.** A dense city tile is 50-140 ms to rasterize on
+either backend — that is a software rasterizer over a hundred thousand
+vertices, and no arrangement of the component makes it free. What the
+component does instead is make sure it is never _in a frame_.
+`docs/prd-maps.md` has the format survey, the provider table and every
+measurement; what follows is what the next scene element should take from
+it.
+
+**Overzoom is sub-tiling, not stretching.** The obvious implementation
+clamps the tile cover to the source's own depth and lets the composite
+scale what it finds, which is what every simple client does and is visibly
+wrong two levels in: OSM cuts to zoom 14, so a zoom-21 view was one tile
+rasterized at 2,048 pixels and stretched to 131,072. Instead the cover runs
+up to six levels _past_ the source, and those tiles take their data from the
+ancestor at the cut level — one fetch, 4,096 possible renderings, each at
+its natural size. It is affordable because a feature whose box misses the
+cell is skipped before it becomes a path (a deep cell measures _cheaper_
+than a whole tile: 6 ms against 56), and it is correct because the geometry
+is **clipped** as well as culled — a tile-wide polygon is sixty-four tiles
+wide in the cell's pixels, which overflows the same 16.16 fixed point an
+unclipped overlay did. `src/maps/clip.ts` is the pair of algorithms both
+paths share. The cap is six because the _data_ runs out there, not the
+renderer.
+
+**A hole is covered from whichever side has pixels, and there are two.**
+Zooming _in_, the tile already drawn is the target's ancestor — one
+composite, scaled up. Zooming _out_, the tiles already drawn are its
+descendants, and walking up the pyramid finds nothing, so the first cut
+showed the background (with the labels and markers still over it) for as
+long as the coarser tile took to fetch and rasterize. Both directions are
+covered now, descendants preferred when they tile the square. The rule
+generalises past maps: **a pyramid cache has two neighbours, and code that
+only knows one of them is half a cache.**
+
+**Three caches, layered, and the layering is the whole argument.** Tile
+data, keyed on `source/z/x/y` and valid forever. Up to two rendered
+`Surface`s per tile — the one on screen and the one being drawn, swapped
+only when the new one is finished, because redrawing in place blanks a tile
+for the several frames a redraw takes and above a source's `maxZoom` that is
+_every_ integer zoom — each valid for a zoom _level_ and a style but **not
+for a camera position** — so a pan composites the same surfaces at new offsets and a
+fractional zoom composites them scaled, and neither rasterizes anything. A
+label placement in **world** pixels, valid for a zoom and a set of loaded
+tiles, so a pan translates it rather than recomputing it. Get the second
+one wrong — key a surface on the camera — and every frame of a drag redraws
+the world.
+
+**Rasterization is budgeted and resumable, and the unit has to be small
+enough.** A frame spends at most `rasterBudgetMs` on it and remembers where
+it stopped. The first cut resumed between _style runs_, which measured a
+median of 47 ms and a maximum of 192 ms per frame, because a road network
+is one run of fourteen layers and one of those layers is 90 ms on its own.
+Resuming between **layers** brought that to 13 ms median and 55 ms maximum.
+The rule to carry: a budget that can only interrupt at a boundary the data
+never reaches is not a budget.
+
+**A gesture rasterizes nothing.** Any camera change — a drag step, a wheel,
+a programmatic `panBy` in an animation loop — sets the budget to zero for
+140 ms. The map sharpens when it stops, which is also when `onMoveEnd`
+fires.
+
+**The uncontrolled camera lives on the element.** Not in a `useState` above
+it: that is the difference between a drag step costing two numbers and a
+damage strip, and costing a render, a commit and a full-pane claim. The
+component passes `defaultCamera` down once and `camera` only when the
+application is controlling it. `<Flow>` has the same fork; this is the case
+where it is load-bearing rather than tidy.
+
+**A per-backend constant is a smell, and this one is gone.** Worth keeping
+as a worked example, because it is the finding most likely to recur for
+anything else that draws a lot of geometry. On X11 a fill or stroke becomes
+an a8 coverage mask over the path's bounding box, uploaded with one
+`PutImage`, so a bigger path is fewer uploads over the same pixels — 12,000
+vertices measured best and 500 measured 25% worse. On the Cocoa backend the
+path went to `CGContextStrokePath`, whose cost was _quadratic_ in the number
+of subpaths — 512 measured best and 12,000 measured **three times worse** —
+so `<Map>` probed `app.nativeBezels` and picked one or the other.
+
+That was the wrong place for the knowledge, and filing it said so
+(react-x11#456): the right chunk is a fact about CoreGraphics that no caller
+can know, and with the two backends wanting opposite values a caller that
+batched for one pessimized the other. Core chunks the stroke itself now
+(react-x11#457, in 2.6.1), so the probe is gone and one constant serves
+both — and batching small on Cocoa now _costs_ 20-25% at the zooms that
+hurt, because it cuts the path before core can chunk it well. **The rule to
+carry: when a constant has to be chosen per backend, the constant is usually
+in the wrong repository.**
+
+**The gap was filed rather than worked around, and it closed**, per "no
+escape hatches": `CGContextStrokePath` was quadratic in the number of
+subpaths (react-x11#456), so one path holding a tile's two thousand building
+rings measured 347 ms and the same rings batched measured a fifth of that.
+Fixed in core 2.6.1 (react-x11#457), and this package's floor moved with it.
+The hypothesis it replaced is worth keeping as a method note: "the Cocoa
+context makes one napi call per `lineTo`" is _true_ and is **not** where the
+time goes (0.6% of the profile), and only measuring told the two apart.
+
+**Nothing fetches**, which is `<Html>`'s `onResource` rule and is stated at
+the top of `src/maps/sources.ts`: a component whose default made requests
+would decide, for the application, whose servers it talks to and whose usage
+policy it is bound by. The two OpenStreetMap adapters supply the URL, the
+schema and the attribution _around_ a `load` the application still writes.
+The attribution is the part that is not merely tidy — for open data it is a
+licence condition, so a source carries it and the map draws it.
+
+**Two things the seam got wrong that only a real network found**, both now
+pinned by tests, and both the same lesson: a component whose data arrives
+asynchronously has to be _runnable_ against the real thing before it is
+believed. The `signal` handed to a source was a plain object with an
+`aborted` getter; `fetch` checks `instanceof AbortSignal` and throws
+`TypeError` on anything else, so **every load failed** in exactly the way
+the documentation told people to write — and nothing showed it, because a
+failed tile draws nothing and a map whose every tile fails is
+pixel-identical to one still loading. Hence `onTileError`,
+`MapFrameStats.errors`, and a retry backoff (the same bug had every visible
+tile re-asked once a frame, pointed at somebody else's servers).
+
+**And a third that only a deep zoom found: clip everything, and know which
+limit you are near.** Two of them, in XRender, reached in ordinary use — a
+tile composite's coordinates are **int16**, and a stroke's geometry is
+**16.16 fixed point**, so 32,767 either way but for different reasons and on
+different paths. An overzoomed tile is the first: at zoom 22 against a z14
+pyramid a tile is 131,072 logical pixels across, so one that overlaps the
+pane starts 73,000 pixels outside it. Overlay geometry is the second. An
+overlay is geography, so its far end stays put as the camera zooms into one
+corner of it, and a world is `512 · 2^zoom` pixels — 134 million at zoom 20.
+ntk hands a stroke's geometry to XRender in 16.16 fixed point, which
+overflows a signed 32-bit word at 32,768, so an unclipped route is a
+`RangeError` out of `x11/lib/ext/render.js` thrown from inside `paint`,
+where no application can catch it. `src/maps/overlay.ts` clips lines
+segment-wise, rings as rings (a fill needs a closed boundary, which segment
+clipping cannot give it) and an over-large circle as a clipped ring;
+`MapViewNode._composite` clips the destination rectangle and moves the
+source rectangle to match, which leaves the scale factor untouched. **Any
+element that draws application-supplied geometry in a zoomable viewport has
+both bugs until it clips**, and a test that only ever frames what it draws
+will never find either — the regressions here zoom until they would throw.
+
+**Two traps specific to real tile data**, both found by running the decoder
+over half a million real features and both now pinned by tests. `extent` is
+**per layer**, not per tile: OSM's Shortbread cuts `streets`, `land`,
+`ocean` and `water_polygons` at 2048 and its other twenty layers at 4096, so
+a renderer that reads it once draws half of them at twice their size. And a
+single _feature_ can be an enormous multipolygon — the low-zoom `land`
+layer, the high-zoom `buildings` layer — so per-feature culling never culls
+it and a per-feature path flush never flushes it. Both wanted per-**part**
+handling.
+
 ## Commands
 
 ```bash
@@ -818,6 +974,7 @@ npm run examples:charts      # needs a real $DISPLAY
 npm run examples:code        # needs a real $DISPLAY
 npm run examples:code-editor # needs a real $DISPLAY
 npm run examples:html        # needs a real $DISPLAY
+npm run examples:maps        # needs a real $DISPLAY and a network
 npm run examples:markdown    # needs a real $DISPLAY
 npm run examples:terminal    # needs a real $DISPLAY and an emulator installed
 npm run examples:terminal-vt # needs a real $DISPLAY and a pty module (node-pty)
@@ -1032,6 +1189,7 @@ one is written is in "Replacing a core widget rather than moving it" above.
 | `<Tree>`                                         | superseded by `src/tree/` here (see above)               | **Done.** Core's `src/components/Tree.js` is being retired; this is a successor, not a wrapper, and imports none of it. See "Replacing a core widget rather than moving it".                                                                                                                                                                                                           |
 | `<Table>`                                        | superseded by `src/table/` here                          | **Done.** Same successor relationship as `<Tree>`; prop-compatible with core's, plus accessors, variable-height virtualization, multi-select and seams. Core's remainder — stripped or removed — is an open core-side decision. `docs/prd-table.md` is the design record.                                                                                                              |
 | 3D scene graph, Three.js / r3f layer, `Canvas3D` | react-x11 `src/scene3d.js`, `src/components/Canvas3D.js` | **Candidate**, with `<glarea>` staying in core. See "The boundary can run through a feature".                                                                                                                                                                                                                                                                                          |
+| A 2D map                                         | `src/maps/` here                                         | **Done.** `<Map>`: MVT tiles, a GL-style-shaped style subset, markers and overlays, over one element that draws the map. The third scene element, and the first where the scene arrives a tile at a time — see "A map, and the three caches under it" and `docs/prd-maps.md`.                                                                                                          |
 | react-flow clone                                 | `src/flow/` here                                         | **Done.** `<Flow>`: react-flow's surface API over one element that draws the graph, with a `render` seam for bodies that must be real widgets. See "Drawing beats composing".                                                                                                                                                                                                          |
 | `<Terminal>`, `<MediaPlayer>`                    | new, here (`src/terminal/`, `src/media-player/`)         | **Done.** Built on core's `<foreign>`; the wrapper is here because a binary dependency can never be core's. See "Running someone else's program".                                                                                                                                                                                                                                      |
 | `<TrayHost>`                                     | new, here (`src/tray-host/`)                             | **Done** (issue #17). XEmbed's third consumer here, and the other side of it. Core keeps the _plug_ side — `createRoot({ embedInto })` is renderer internals.                                                                                                                                                                                                                          |

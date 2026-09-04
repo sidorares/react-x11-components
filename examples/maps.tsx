@@ -1,0 +1,780 @@
+// `<Map>` in anger: OpenStreetMap's own vector tiles, over the real
+// network, with markers you can click and a route drawn over them.
+//
+//   npm run examples:maps                    # London, light
+//   npm run examples:maps -- tokyo           # or manhattan
+//   npm run examples:maps -- tokyo --dark
+//   npm run examples:maps -- --help
+//
+// Needs a real `$DISPLAY` and a network. The `fetch` below is the whole of
+// what this package will not do for you: it is where the user agent, the
+// caching and the error policy live, because those are the application's to
+// decide (see `docs/components/maps.md`).
+import { useMemo, useRef, useState } from 'react';
+import { Button, Select, createRoot, useTheme } from 'react-x11';
+import * as ntk from 'react-x11/ntk';
+
+import {
+  Map,
+  openMapTilesStyle,
+  googleTileSource,
+  osmRasterSource,
+  osmVectorSource,
+  shortbreadStyle,
+} from '../src/maps/index.js';
+import type {
+  LngLat,
+  MapFrameStats,
+  MapHandle,
+  MapMarker,
+  MapSource,
+  MapStyle,
+} from '../src/maps/index.js';
+
+const PLACES: Record<
+  string,
+  { name: string; centre: LngLat; markers: MapMarker[] }
+> = {
+  london: {
+    name: 'London',
+    centre: { lon: -0.1281, lat: 51.508 },
+    markers: [
+      {
+        id: 'trafalgar',
+        position: { lon: -0.1281, lat: 51.508 },
+        title: 'Trafalgar Square',
+      },
+      {
+        id: 'stpauls',
+        position: { lon: -0.0984, lat: 51.5138 },
+        title: "St Paul's",
+      },
+      {
+        id: 'tower',
+        position: { lon: -0.0759, lat: 51.5081 },
+        title: 'Tower of London',
+      },
+      {
+        id: 'eye',
+        position: { lon: -0.1195, lat: 51.5033 },
+        title: 'London Eye',
+      },
+    ],
+  },
+  tokyo: {
+    name: 'Tokyo',
+    centre: { lon: 139.7004, lat: 35.69 },
+    markers: [
+      {
+        id: 'shinjuku',
+        position: { lon: 139.7004, lat: 35.69 },
+        title: 'Shinjuku Station',
+      },
+      {
+        id: 'shibuya',
+        position: { lon: 139.7016, lat: 35.6595 },
+        title: 'Shibuya Crossing',
+      },
+      {
+        id: 'palace',
+        position: { lon: 139.7528, lat: 35.6852 },
+        title: 'Imperial Palace',
+      },
+    ],
+  },
+  manhattan: {
+    name: 'Manhattan',
+    centre: { lon: -73.9855, lat: 40.758 },
+    markers: [
+      {
+        id: 'times',
+        position: { lon: -73.9855, lat: 40.758 },
+        title: 'Times Square',
+      },
+      {
+        id: 'central',
+        position: { lon: -73.9654, lat: 40.7829 },
+        title: 'Central Park',
+      },
+      {
+        id: 'empire',
+        position: { lon: -73.9857, lat: 40.7484 },
+        title: 'Empire State Building',
+      },
+    ],
+  },
+};
+
+if (process.argv.includes('--help')) {
+  process.stdout.write(
+    'usage: npm run examples:maps -- [place] [--dark]\n' +
+      `  place: ${Object.keys(PLACES).join(', ')} (default london)\n`,
+  );
+  process.exit(0);
+}
+const dark = process.argv.includes('--dark');
+const which =
+  process.argv.slice(2).find((a) => !a.startsWith('--')) ?? 'london';
+const place = PLACES[which] ?? PLACES.london;
+
+/**
+ * The application's own tile loader.
+ *
+ * A one-entry-per-tile promise cache in front of it, because React can ask
+ * for the same tile twice before the first answer lands, and OSM's usage
+ * policy is not something to be casual about. A real application would put
+ * a disk cache here too.
+ */
+// A plain object rather than a `Map`, because this module imports a
+// component of that name — the one real cost of calling it `Map`, and the
+// reason `import { Map as MapView }` is documented.
+const inFlight: Record<string, Promise<Uint8Array | null>> = {};
+
+const fetching = {
+  fetch: (url: string, signal: { readonly aborted: boolean } | undefined) => {
+    const hit = inFlight[url];
+    if (hit) return hit;
+    const request = fetch(url, {
+      signal: signal as AbortSignal | undefined,
+      headers: {
+        // Identifying the application is the first line of OSM's tile usage
+        // policy, and a shared default is what gets a whole runtime blocked.
+        'user-agent':
+          'react-x11-components-example/0.1 (+https://github.com/sidorares/react-x11-components)',
+      },
+    })
+      .then(async (response) => {
+        if (response.status === 404 || response.status === 204) return null;
+        if (!response.ok) throw new Error(`HTTP ${response.status} for ${url}`);
+        return new Uint8Array(await response.arrayBuffer());
+      })
+      .catch((error: unknown) => {
+        delete inFlight[url];
+        throw error;
+      });
+    inFlight[url] = request;
+    return request;
+  },
+};
+
+const source = osmVectorSource(fetching);
+
+/**
+ * VersaTiles — a second, keyless source of the **same schema**.
+ *
+ * Here to answer "does this work with anything but OSM's own server", and
+ * it does with no new code at all: VersaTiles cuts Shortbread too, so
+ * `shortbreadStyle()` reads it unchanged and the only difference is the
+ * URL and the attribution. Zoom 0-14 like OSM's, no key, no registration.
+ *
+ * Its `osm` tileset is OSM merged with ESA WorldCover, so the attribution
+ * has to say both — which is exactly why attribution belongs on the source
+ * rather than on the map.
+ */
+const versatiles: MapSource = {
+  id: 'versatiles',
+  minZoom: 0,
+  maxZoom: 14,
+  tileSize: 512,
+  attribution: '© OpenStreetMap contributors · © ESA WorldCover project 2021',
+  load: async (request) => {
+    const bytes = await fetching.fetch(
+      `https://tiles.versatiles.org/tiles/osm/${request.z}/${request.x}/${request.y}`,
+      request.signal,
+    );
+    // Gzip is unwrapped by the decoder, so the compressed body is fine.
+    return bytes && bytes.length > 0 ? { kind: 'vector', data: bytes } : null;
+  },
+};
+
+/**
+ * OpenFreeMap — keyless, unlimited, and the **other** open schema.
+ *
+ * OpenMapTiles rather than Shortbread, so it wants `openMapTilesStyle()`.
+ * Between the two schemas the styles here cover nearly every provider worth
+ * pointing this at: Shortbread is OSM's own server and VersaTiles,
+ * OpenMapTiles is MapTiler, Stadia, Geoapify, OpenFreeMap and most
+ * self-hosted planets.
+ *
+ * Its tile URL is **dated** (`…/planet/20260830_080001_pt/…`) and lives in
+ * a TileJSON rather than being a documented constant, so it is read at
+ * startup the way MapLibre reads it. A failure here is not fatal: the layer
+ * is simply left out of the picker.
+ */
+async function openFreeMap(): Promise<MapSource | null> {
+  try {
+    const response = await fetch('https://tiles.openfreemap.org/planet');
+    if (!response.ok) return null;
+    const tileJson = (await response.json()) as {
+      tiles: string[];
+      minzoom?: number;
+      maxzoom?: number;
+    };
+    const template = tileJson.tiles?.[0];
+    if (!template) return null;
+    return {
+      id: 'openfreemap',
+      minZoom: tileJson.minzoom ?? 0,
+      maxZoom: tileJson.maxzoom ?? 14,
+      tileSize: 512,
+      attribution: 'OpenFreeMap © OpenMapTiles · Data from OpenStreetMap',
+      load: async (request) => {
+        const bytes = await fetching.fetch(
+          template
+            .replace('{z}', String(request.z))
+            .replace('{x}', String(request.x))
+            .replace('{y}', String(request.y)),
+          request.signal,
+        );
+        return bytes && bytes.length > 0
+          ? { kind: 'vector', data: bytes }
+          : null;
+      },
+    };
+  } catch {
+    return null;
+  }
+}
+
+const openfreemap = await openFreeMap();
+
+/**
+ * …and the keyed ones, which is most of the rest of the industry.
+ *
+ * MapTiler, Stadia, Geoapify, Thunderforest, Azure Maps, Mapbox and
+ * TomTom all have a free tier and all want a key in the URL, so they are a
+ * `MapSource` of four lines and an environment variable rather than
+ * anything this package has to know about. MapTiler serves OpenMapTiles,
+ * so it takes the same style OpenFreeMap does.
+ *
+ *   MAPTILER_KEY=… npm run examples:maps
+ */
+const maptilerKey = process.env.MAPTILER_KEY;
+const maptiler: MapSource | null = maptilerKey
+  ? {
+      id: 'maptiler',
+      minZoom: 0,
+      maxZoom: 14,
+      tileSize: 512,
+      attribution: '© MapTiler © OpenStreetMap contributors',
+      load: async (request) => {
+        const bytes = await fetching.fetch(
+          `https://api.maptiler.com/tiles/v3/${request.z}/${request.x}/${request.y}.pbf?key=${maptilerKey}`,
+          request.signal,
+        );
+        return bytes && bytes.length > 0
+          ? { kind: 'vector', data: bytes }
+          : null;
+      },
+    }
+  : null;
+
+/**
+ * OSM's own raster style, which is the other thing the Foundation serves.
+ *
+ * A raster tile is pixels, so somebody has to decode the PNG — this package
+ * will not grow a codec or guess which format a provider serves. ntk has
+ * one and every react-x11 application already has ntk.
+ *
+ * Two things about reaching it that are easy to get wrong: `decodeImage` is
+ * a **named** export of `react-x11/ntk` (which re-exports ntk with
+ * `export *`), not a property of the default one — and it is not in the
+ * declarations, so the namespace is cast structurally, the way this repo
+ * works around every other narrow react-x11 declaration.
+ */
+const { decodeImage } = ntk as unknown as {
+  decodeImage(bytes: Uint8Array): {
+    width: number;
+    height: number;
+    data: Uint8Array;
+  };
+};
+
+const raster = osmRasterSource({
+  ...fetching,
+  decode: (bytes) => {
+    const image = decodeImage(bytes);
+    return { width: image.width, height: image.height, data: image.data };
+  },
+});
+
+/**
+ * Google, which is the one provider here that is *only* raster.
+ *
+ * Google publishes no vector tile endpoint and no schema — its own docs
+ * describe roadmap tiles as "image tiles based on vector topographic data
+ * with Google's cartographic styling", meaning it rasterizes server-side —
+ * so there is no `style` to pass and no `mapStyle` that could apply. What
+ * you choose instead is `mapType`, and it is chosen when the session is
+ * created rather than per tile.
+ *
+ * That session is the one thing this API asks for that no other source
+ * here does: a POST that returns a token, reused for two weeks. It is a
+ * POST with a JSON body and the key in the query, so it is a callback of
+ * its own rather than the tile `fetch`.
+ *
+ *   GOOGLE_MAPS_KEY=… npm run examples:maps
+ *
+ * The key never reaches the component: it lives in these two callbacks.
+ * Google's attribution and caching terms are the application's to honour —
+ * see `docs/components/maps.md` before shipping one of these.
+ */
+const googleKey = process.env.GOOGLE_MAPS_KEY;
+
+const google = (
+  mapType: 'roadmap' | 'satellite',
+  layerTypes?: string[],
+): MapSource | null =>
+  googleKey
+    ? googleTileSource({
+        mapType,
+        layerTypes,
+        id: `google-${mapType}${layerTypes ? '-hybrid' : ''}`,
+        attribution: 'Google Maps',
+        createSession: async (body) => {
+          const response = await fetch(
+            `https://tile.googleapis.com/v1/createSession?key=${googleKey}`,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(body),
+            },
+          );
+          if (!response.ok) {
+            throw new Error(
+              `createSession: ${response.status} ${await response.text()}`,
+            );
+          }
+          return (await response.json()) as { session: string };
+        },
+        fetch: (url, signal) =>
+          fetching.fetch(`${url}&key=${googleKey}`, signal),
+        decode: (bytes) => {
+          const image = decodeImage(bytes);
+          return { width: image.width, height: image.height, data: image.data };
+        },
+      })
+    : null;
+
+const googleRoadmap = google('roadmap');
+const googleSatellite = google('satellite');
+const googleHybrid = google('satellite', ['layerRoadmap']);
+
+/**
+ * The layers this example can show.
+ *
+ * **OpenStreetMap has no satellite layer**, and that is worth knowing
+ * rather than working around: OSM is map *data*, and the Foundation serves
+ * the vector tiles and the standard raster style and nothing else. Every
+ * aerial image you have seen in an OSM editor comes from a third party —
+ * Esri, Bing, Maxar, Mapbox — under terms that permit *tracing for OSM*
+ * rather than redisplay, or from OpenAerialMap, which is genuinely open
+ * (CC BY 4.0) and patchy per-image rather than a global pyramid.
+ *
+ * So an imagery layer is a `MapSource` of your own, pointed at whichever
+ * provider you have the rights to use, with their attribution:
+ *
+ * ```ts
+ * const imagery: MapSource = {
+ *   id: 'imagery', tileSize: 256, maxZoom: 19,
+ *   attribution: 'whoever you are licensed from',
+ *   load: async ({ z, x, y, signal }) => {
+ *     const bytes = await fetchTile(`https://…/${z}/${y}/${x}`, signal);
+ *     const image = decodeImage(bytes);
+ *     return { kind: 'raster', width: image.width, height: image.height, data: image.data };
+ *   },
+ * };
+ * ```
+ */
+interface Layer {
+  id: string;
+  label: string;
+  sources: MapSource[];
+  style?: MapStyle;
+}
+
+const LAYERS: Layer[] = [
+  {
+    id: 'vector',
+    label: 'Vector — light',
+    sources: [source],
+    style: shortbreadStyle(),
+  },
+  {
+    id: 'vector-dark',
+    label: 'Vector — dark',
+    sources: [source],
+    style: shortbreadStyle({ dark: true }),
+  },
+  {
+    id: 'vector-plain',
+    label: 'Vector — no buildings',
+    sources: [source],
+    style: shortbreadStyle({ buildings: false }),
+  },
+  {
+    id: 'versatiles',
+    label: 'Vector — VersaTiles',
+    sources: [versatiles],
+    style: shortbreadStyle(),
+  },
+  {
+    id: 'raster',
+    label: 'Raster — OSM standard',
+    sources: [raster],
+  },
+  ...(openfreemap
+    ? [
+        {
+          id: 'openfreemap',
+          label: 'Vector — OpenFreeMap',
+          sources: [openfreemap],
+          style: openMapTilesStyle(),
+        },
+      ]
+    : []),
+  ...(maptiler
+    ? [
+        {
+          id: 'maptiler',
+          label: 'Vector — MapTiler',
+          sources: [maptiler],
+          style: openMapTilesStyle(),
+        },
+      ]
+    : []),
+  // No `style` on any of these: they arrive already drawn.
+  ...(googleRoadmap
+    ? [
+        {
+          id: 'google',
+          label: 'Raster — Google roadmap',
+          sources: [googleRoadmap],
+        },
+      ]
+    : []),
+  ...(googleSatellite
+    ? [
+        {
+          id: 'google-satellite',
+          label: 'Raster — Google satellite',
+          sources: [googleSatellite],
+        },
+      ]
+    : []),
+  ...(googleHybrid
+    ? [
+        {
+          id: 'google-hybrid',
+          label: 'Raster — Google hybrid',
+          sources: [googleHybrid],
+        },
+      ]
+    : []),
+];
+
+/**
+ * Track the union of every damage rect, and say what it missed.
+ *
+ * `MapFrameStats.damage` is the rect the frame was clipped to, in device
+ * pixels, or null for an unbounded frame. Rows no frame ever claimed are
+ * rows nothing has drawn.
+ */
+const CELL = 16;
+const covered = new Set<string>();
+/** The pane, learned from the claims themselves: a repaint of the whole map
+ *  claims exactly it, and that is the widest rect that ever arrives. */
+let paneRect: { x: number; y: number; width: number; height: number } | null =
+  null;
+const learnPane = (d: {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}): void => {
+  if (!paneRect || d.width * d.height > paneRect.width * paneRect.height) {
+    paneRect = { x: d.x, y: d.y, width: d.width, height: d.height };
+  }
+};
+const debugDamage = process.env.MAPS_DEBUG_DAMAGE
+  ? (stats: MapFrameStats): void => {
+      const d = stats.damage;
+      if (d) learnPane(d);
+      const box = paneRect;
+      if (box) {
+        const r = d ?? box;
+        const cx0 = Math.floor(Math.max(box.x, r.x) / CELL);
+        const cy0 = Math.floor(Math.max(box.y, r.y) / CELL);
+        const cx1 = Math.ceil(
+          Math.min(box.x + box.width, r.x + r.width) / CELL,
+        );
+        const cy1 = Math.ceil(
+          Math.min(box.y + box.height, r.y + r.height) / CELL,
+        );
+        for (let cy = cy0; cy < cy1; cy++) {
+          for (let cx = cx0; cx < cx1; cx++) covered.add(`${cx},${cy}`);
+        }
+      }
+      process.stderr.write(
+        `frame damage=${d ? `${d.x},${d.y} ${d.width}x${d.height}` : 'full'} ` +
+          `tiles=${stats.tiles} ready=${stats.ready} pending=${stats.pending} ` +
+          `errors=${stats.errors}\n`,
+      );
+    }
+  : undefined;
+
+if (debugDamage) {
+  // Two dimensions, because a hole against the right edge sits inside rows
+  // that other claims covered — the first version of this reported "none"
+  // for a pane that visibly had one.
+  const report = (): void => {
+    const box = paneRect;
+    if (!box) {
+      process.stderr.write('\nno pane geometry yet\n');
+      return;
+    }
+    const cx0 = Math.floor(box.x / CELL);
+    const cy0 = Math.floor(box.y / CELL);
+    const cx1 = Math.ceil((box.x + box.width) / CELL);
+    const cy1 = Math.ceil((box.y + box.height) / CELL);
+    const holes: string[] = [];
+    for (let cy = cy0; cy < cy1; cy++) {
+      let run = -1;
+      for (let cx = cx0; cx <= cx1; cx++) {
+        const miss = cx < cx1 && !covered.has(`${cx},${cy}`);
+        if (miss && run === -1) run = cx;
+        if (!miss && run !== -1) {
+          holes.push(
+            `x=${run * CELL}..${cx * CELL} y=${cy * CELL}..${(cy + 1) * CELL}`,
+          );
+          run = -1;
+        }
+      }
+    }
+    process.stderr.write(
+      `\npane ${box.x},${box.y} ${box.width}x${box.height} — ` +
+        `${holes.length} unclaimed cell rows` +
+        (holes.length ? `:\n  ${holes.slice(0, 24).join('\n  ')}\n` : '\n'),
+    );
+  };
+  for (const at of [8000, 20000]) setTimeout(report, at).unref?.();
+}
+
+function App(): React.ReactElement {
+  const theme = useTheme();
+  const map = useRef<MapHandle>(null);
+  const [selected, setSelected] = useState<string | null>(null);
+  const [hovered, setHovered] = useState<string | null>(null);
+  const [status, setStatus] = useState('');
+
+  const [layerId, setLayerId] = useState(dark ? 'vector-dark' : 'vector');
+  const layer = LAYERS.find((l) => l.id === layerId) ?? LAYERS[0];
+  const markers = useMemo(
+    () =>
+      place.markers.map((marker) => ({
+        ...marker,
+        selected: marker.id === selected,
+        size: marker.id === hovered ? 18 : 14,
+      })),
+    [selected, hovered],
+  );
+
+  // A route between the markers, as a routing engine would hand one over —
+  // except that this one is the straight lines between them, since the
+  // example is about drawing a route rather than about finding one.
+  const overlays = useMemo(
+    () => [
+      {
+        kind: 'line' as const,
+        id: 'route',
+        path: place.markers.map((m) => m.position),
+        color: dark ? '#7aa2f7' : '#2d6cdf',
+        width: 4,
+        casing: dark ? '#0b0d12' : '#ffffff',
+        casingWidth: 8,
+      },
+    ],
+    [],
+  );
+
+  return (
+    <window
+      width={1100}
+      height={760}
+      title={`react-x11 maps — ${place.name}`}
+      theme={dark ? { background: '#14161a', text: '#d7dae0' } : undefined}
+    >
+      <box style={{ flexDirection: 'column', flexGrow: 1 }}>
+        <box
+          style={{
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 12,
+            padding: 10,
+            backgroundColor: theme.background,
+          }}
+        >
+          <text style={{ fontWeight: 600 }}>{place.name}</text>
+          <Button onClick={() => map.current?.zoomIn()}>Zoom in</Button>
+          <Button onClick={() => map.current?.zoomOut()}>Zoom out</Button>
+          <Button
+            onClick={() => map.current?.fitMarkers(undefined, { padding: 60 })}
+          >
+            Fit markers
+          </Button>
+          <Select
+            value={layerId}
+            options={LAYERS.map((l) => ({ value: l.id, label: l.label }))}
+            onChange={(event) => setLayerId(event.value)}
+            style={{ width: 200 }}
+          />
+          <text style={{ color: theme.textMuted }}>{status}</text>
+        </box>
+        <Map
+          ref={map}
+          // Both change together, and both are stable objects, so
+          // switching layers is one prop change rather than a re-render
+          // storm: the element drops its rendered tiles and rebuilds them.
+          sources={layer.sources}
+          mapStyle={layer.style}
+          defaultCamera={{ center: place.centre, zoom: 14 }}
+          markers={markers}
+          overlays={overlays}
+          onMarkerClick={(marker) => setSelected(marker.id)}
+          onMarkerHover={(marker) => setHovered(marker?.id ?? null)}
+          onMapClick={(event) =>
+            setStatus(
+              `${event.lngLat.lat.toFixed(5)}, ${event.lngLat.lon.toFixed(5)}` +
+                (event.marker
+                  ? ` — ${event.marker.title ?? event.marker.id}`
+                  : ''),
+            )
+          }
+          onMoveEnd={(camera) => setStatus(`zoom ${camera.zoom.toFixed(2)}`)}
+          // `MAPS_DEBUG_DAMAGE=1` reports which rows of the pane no frame
+          // ever claimed. A map is drawn by *damage*: a frame paints the
+          // rect it was given and nothing else, so a region that no claim
+          // ever covers keeps whatever was under it — which on the first
+          // frames of a startup is nothing at all. That is invisible in a
+          // screenshot (it looks like a missing strip of tiles) and obvious
+          // here, which is the point.
+          onFrame={debugDamage}
+          // Without this, a source that is down, rate-limited or
+          // misconfigured looks exactly like one that is slow: nothing is
+          // drawn for a failed tile, and an empty map is what both look
+          // like. Every application wants some version of this.
+          onTileError={(error, tile) => {
+            const message =
+              error instanceof Error ? error.message : String(error);
+            setStatus(`tile ${tile.z}/${tile.x}/${tile.y} failed: ${message}`);
+            process.stderr.write(
+              `tile ${tile.z}/${tile.x}/${tile.y}: ${message}\n`,
+            );
+          }}
+          style={{ flexGrow: 1 }}
+        />
+      </box>
+    </window>
+  );
+}
+
+const root = await createRoot();
+root.render(<App />);
+
+/**
+ * `MAPS_DEBUG_SHOT=1` writes the same instant twice: once as the backing
+ * store and once as the screen.
+ *
+ * They are different pictures, and which one carries an artefact says which
+ * half of the pipeline to look in. `getImageData` reads the backing pixmap —
+ * valid even where the window is occluded — so it is what this component
+ * *drew*. `Window.snapshot` goes through the compositor, so it is what was
+ * *presented*. A strip that is in the second and not the first was drawn
+ * correctly and never reached the display; a strip in both was drawn wrong.
+ *
+ * Nothing here may touch the window: the artefact this exists for clears on
+ * any interaction, and a capture that disturbs it measures its own repaint.
+ */
+import { writeFileSync } from 'node:fs';
+
+/** A 24-bit BMP, so the capture needs no image library and no types for
+ *  one: bottom-up rows of BGR, padded to four bytes. Preview opens it. */
+function writeBmp(
+  path: string,
+  width: number,
+  height: number,
+  rgba: Uint8ClampedArray,
+): void {
+  const rowSize = (width * 3 + 3) & ~3;
+  const size = 54 + rowSize * height;
+  const out = Buffer.alloc(size);
+  out.write('BM', 0);
+  out.writeUInt32LE(size, 2);
+  out.writeUInt32LE(54, 10);
+  out.writeUInt32LE(40, 14);
+  out.writeInt32LE(width, 18);
+  out.writeInt32LE(height, 22);
+  out.writeUInt16LE(1, 26);
+  out.writeUInt16LE(24, 28);
+  out.writeUInt32LE(rowSize * height, 34);
+  for (let y = 0; y < height; y++) {
+    let p = 54 + (height - 1 - y) * rowSize;
+    for (let x = 0; x < width; x++) {
+      const i = (y * width + x) * 4;
+      out[p++] = rgba[i + 2];
+      out[p++] = rgba[i + 1];
+      out[p++] = rgba[i];
+    }
+  }
+  writeFileSync(path, out);
+}
+
+if (process.env.MAPS_DEBUG_SHOT) {
+  const at = Number(process.env.MAPS_DEBUG_SHOT) || 6000;
+  setTimeout(() => {
+    void (async () => {
+      const app = root.app as unknown as {
+        _windows: Map<
+          unknown,
+          {
+            snapshot?(path: string): void;
+            getContext(kind: string): {
+              getImageData(
+                x: number,
+                y: number,
+                w: number,
+                h: number,
+              ): Promise<{ data: Uint8ClampedArray }>;
+            };
+          }
+        >;
+      };
+      const wnd = [...app._windows.values()][0];
+      if (!wnd) {
+        process.stderr.write('no window to capture\n');
+        return;
+      }
+      const width = 1100 * 2;
+      const height = 760 * 2;
+      try {
+        const image = await wnd
+          .getContext('2d')
+          .getImageData(0, 0, width, height);
+        writeBmp('maps-backing.bmp', width, height, image.data);
+        process.stderr.write('wrote maps-backing.bmp (what was drawn)\n');
+      } catch (error) {
+        process.stderr.write(`backing capture failed: ${String(error)}\n`);
+      }
+      if (typeof wnd.snapshot === 'function') {
+        try {
+          wnd.snapshot('maps-screen.png');
+          process.stderr.write('wrote maps-screen.png (what was presented)\n');
+        } catch (error) {
+          process.stderr.write(`screen capture failed: ${String(error)}\n`);
+        }
+      } else {
+        process.stderr.write('no snapshot() on this backend\n');
+      }
+    })();
+  }, at).unref?.();
+}

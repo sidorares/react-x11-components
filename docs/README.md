@@ -22,6 +22,7 @@ component.
 | [Flow](components/flow.md)                             | `@react-x11/components/flow`             | A directed-graph editor: nodes, edges, pan and zoom.         |
 | [Formula](components/formula.md)                       | `@react-x11/components/formula`          | TeX mathematics: KaTeX layout, native ink, selectable.       |
 | [Html](components/html.md)                             | `@react-x11/components/html`             | A static HTML + CSS document, selectable, with seams.        |
+| [Map](components/maps.md)                              | `@react-x11/components/maps`             | A 2D vector-tile map: pan, zoom, markers, overlays.          |
 | [Markdown](components/markdown.md)                     | `@react-x11/components/markdown`         | Streaming-friendly GFM with cross-block selection.           |
 | [MediaPlayer](components/media-player.md)              | `@react-x11/components/media-player`     | mpv or VLC, embedded, with real transport control.           |
 | [QML](components/qml.md)                               | `@react-x11/components/qml`              | Qt's QML language as an authoring layer. No Qt.              |
@@ -67,6 +68,9 @@ parts.
   `<Html>`, why the element draws a document rather than composing one, the
   resource and script seams, the isolated-process mode, and the audit of
   exposing the seams as a Chrome DevTools Protocol surface.
+- [Maps](prd-maps.md) — the format and provider survey (who serves vector
+  tiles and who does not), the three-cache rendering architecture, and the
+  profile that produced it on both the X11 and the Cocoa backends.
 - [A colour picker](prd-color-picker.md) — implemented: why the panel belongs
   here and the screen sampler does not, the CSS-colour value model against
   what this renderer can actually parse, and the server-side gradients the

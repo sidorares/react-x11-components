@@ -84,6 +84,10 @@
       "types": "./dist/html/index.d.ts",
       "default": "./dist/html/index.js"
     },
+    "./maps": {
+      "types": "./dist/maps/index.d.ts",
+      "default": "./dist/maps/index.js"
+    },
     "./markdown": {
       "types": "./dist/markdown/index.d.ts",
       "default": "./dist/markdown/index.js"
@@ -164,6 +168,7 @@
     "examples:flow-stress": "tsx examples/flow-stress.tsx",
     "examples:formula": "tsx examples/formula.tsx",
     "examples:html": "tsx examples/html.tsx",
+    "examples:maps": "tsx examples/maps.tsx",
     "examples:markdown": "tsx examples/markdown.tsx",
     "examples:media-player": "tsx examples/media-player.tsx",
     "examples:qml": "tsx examples/qml/qml.tsx",
@@ -192,7 +197,7 @@
     "@lydell/node-pty": "^1.0.0",
     "node-pty": "^1.0.0",
     "react": "^19.0.0",
-    "react-x11": "^2.6.0"
+    "react-x11": "^2.6.1"
   },
   "peerDependenciesMeta": {
     "@lezer/highlight": {
@@ -215,7 +220,7 @@
     "globals": "^17.8.0",
     "prettier": "^3.6.0",
     "react": "^19.2.8",
-    "react-x11": "^2.6.0",
+    "react-x11": "^2.6.1",
     "tsx": "^4.23.1",
     "typescript": "^7.0.2"
   },
