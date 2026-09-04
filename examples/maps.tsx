@@ -24,6 +24,7 @@ import {
 } from '../src/maps/index.js';
 import type {
   LngLat,
+  MapFrameStats,
   MapHandle,
   MapMarker,
   MapSource,
@@ -472,6 +473,55 @@ const LAYERS: Layer[] = [
     : []),
 ];
 
+/**
+ * Track the union of every damage rect, and say what it missed.
+ *
+ * `MapFrameStats.damage` is the rect the frame was clipped to, in device
+ * pixels, or null for an unbounded frame. Rows no frame ever claimed are
+ * rows nothing has drawn.
+ */
+const covered = new Set<number>();
+let debugRows = 0;
+const debugDamage = process.env.MAPS_DEBUG_DAMAGE
+  ? (stats: MapFrameStats): void => {
+      const d = stats.damage;
+      if (!d) {
+        for (let y = 0; y < debugRows; y++) covered.add(y);
+      } else {
+        debugRows = Math.max(debugRows, d.y + d.height);
+        for (let y = Math.max(0, d.y); y < d.y + d.height; y++) covered.add(y);
+      }
+      process.stderr.write(
+        `frame damage=${d ? `${d.x},${d.y} ${d.width}x${d.height}` : 'full'} ` +
+          `tiles=${stats.tiles} ready=${stats.ready} pending=${stats.pending} ` +
+          `errors=${stats.errors}\n`,
+      );
+    }
+  : undefined;
+
+if (debugDamage) {
+  // From module load rather than from the first frame: the report has to
+  // arrive even if the map never draws, which is itself a finding.
+  const report = (): void => {
+    const missing: number[] = [];
+    for (let y = 0; y < debugRows; y++) if (!covered.has(y)) missing.push(y);
+    const groups: string[] = [];
+    let start = -1;
+    for (let k = 0; k < missing.length; k++) {
+      if (start === -1) start = missing[k];
+      if (k === missing.length - 1 || missing[k + 1] !== missing[k] + 1) {
+        groups.push(`${start}..${missing[k]} (${missing[k] - start + 1}px)`);
+        start = -1;
+      }
+    }
+    process.stderr.write(
+      `\nrows of ${debugRows} that no frame ever claimed: ` +
+        `${groups.length ? groups.join(', ') : 'none'}\n`,
+    );
+  };
+  for (const at of [8000, 20000]) setTimeout(report, at).unref?.();
+}
+
 function App(): React.ReactElement {
   const theme = useTheme();
   const map = useRef<MapHandle>(null);
@@ -563,6 +613,14 @@ function App(): React.ReactElement {
             )
           }
           onMoveEnd={(camera) => setStatus(`zoom ${camera.zoom.toFixed(2)}`)}
+          // `MAPS_DEBUG_DAMAGE=1` reports which rows of the pane no frame
+          // ever claimed. A map is drawn by *damage*: a frame paints the
+          // rect it was given and nothing else, so a region that no claim
+          // ever covers keeps whatever was under it — which on the first
+          // frames of a startup is nothing at all. That is invisible in a
+          // screenshot (it looks like a missing strip of tiles) and obvious
+          // here, which is the point.
+          onFrame={debugDamage}
           // Without this, a source that is down, rate-limited or
           // misconfigured looks exactly like one that is slow: nothing is
           // drawn for a failed tile, and an empty map is what both look
