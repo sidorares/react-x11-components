@@ -55,6 +55,35 @@ export type TileStatus =
   /** The source threw. Retried on the next camera change that wants it. */
   | 'error';
 
+/**
+ * One rendering of a tile: a surface, the context that draws into it, and
+ * what it was drawn for.
+ *
+ * A tile has up to two — the one on screen and the one being drawn — which
+ * is what stops a re-rasterization blanking the map. See
+ * {@link CachedTile.shown}.
+ */
+export interface TileRender {
+  surface: SurfaceLike;
+  /** Held for the life of the surface rather than made per frame: a context
+   *  is a real resource on X11 (a GC, a Picture and a listener on the
+   *  pixmap), and rasterization is resumable, so a tile that fills in over a
+   *  dozen frames would otherwise make and destroy a dozen of them. */
+  context: unknown;
+  /** Edge length in device pixels. */
+  size: number;
+  /** The zoom its style was resolved at. */
+  zoom: number;
+  /** The cache generation it was drawn under. */
+  generation: number;
+  /** The next style run to draw, or `-1` when it is finished. */
+  progress: number;
+  /** …and how far into that run's active layers, because a run is not a
+   *  small enough unit on its own: a road network is one run of fourteen
+   *  layers and one of those layers alone measured 90 ms. */
+  progressLayer: number;
+}
+
 /** One tile in the cache. */
 export interface CachedTile {
   readonly key: string;
@@ -64,38 +93,23 @@ export interface CachedTile {
   error: unknown;
   vector: VectorTile | null;
   raster: { width: number; height: number; data: Uint8Array } | null;
-  /** The rasterized picture, or null until one is made. */
-  surface: SurfaceLike | null;
   /**
-   * Its 2d context, held for the life of the surface rather than made per
-   * frame.
+   * The rendering that is on screen. **Always finished**, which is the
+   * whole point of the pair.
    *
-   * A context is a real resource on X11 — a GC and a Picture, and a
-   * listener on the pixmap — and rasterization is resumable, so a tile that
-   * fills in over a dozen frames would make and destroy a dozen of them.
-   * (It is also what a `MaxListenersExceededWarning` about a Pixmap is
-   * telling you.) On the Cocoa backend a surface has one context for its
-   * whole life anyway and `destroy()` is a no-op, so holding it is what
-   * both backends want.
+   * A tile is re-rasterized whenever its size, its style zoom or the cache
+   * generation moves — and above a source's `maxZoom` that is *every*
+   * integer zoom, because the same z14 tile serves 15, 16, 17 and on. Drawn
+   * in place, each of those clears the surface and leaves the tile blank
+   * for the six or so frames it takes to redraw: a visible flash per zoom
+   * step, and many more of them on a backend that paints more frames.
+   *
+   * So the new rendering goes into {@link drawing} and this one keeps being
+   * composited until it is ready to be replaced.
    */
-  context: unknown;
-  /** Its edge length in device pixels. */
-  surfaceSize: number;
-  /** The zoom its style was resolved at, and the style generation it was
-   *  drawn with — either moving means it has to be drawn again. */
-  surfaceZoom: number;
-  surfaceGeneration: number;
-  /**
-   * The next style run to draw into the surface, or `-1` when it is
-   * finished. This is what makes rasterization resumable across frames.
-   */
-  progress: number;
-  /**
-   * …and how far into that run's active layers the last frame got, because
-   * a run is not a small enough unit on its own: a road network is one run
-   * of fourteen layers and one of those layers alone measured 90 ms.
-   */
-  progressLayer: number;
+  shown: TileRender | null;
+  /** The rendering being drawn, or null when there is nothing to draw. */
+  drawing: TileRender | null;
   /** Frame counter of the last frame that wanted it — what eviction sorts
    *  on. */
   lastUsed: number;
@@ -116,13 +130,8 @@ function emptyEntry(sourceId: string, tile: TileId, key: string): CachedTile {
     error: null,
     vector: null,
     raster: null,
-    surface: null,
-    context: null,
-    surfaceSize: 0,
-    surfaceZoom: -1,
-    surfaceGeneration: -1,
-    progress: 0,
-    progressLayer: 0,
+    shown: null,
+    drawing: null,
     lastUsed: 0,
     abort: null,
     attempts: 0,
@@ -333,69 +342,88 @@ export class TileCache {
     let y = tile.y >> 1;
     for (let up = 0; up < levels && z >= 0; up++, z--, x >>= 1, y >>= 1) {
       const entry = this._entries.get(this.key(sourceId, { z, x, y }));
-      if (entry?.surface && entry.progress === -1) return entry;
+      // `shown` is finished by construction, so an ancestor is never a
+      // half-drawn picture.
+      if (entry?.shown) return entry;
     }
     return null;
   }
 
   /**
-   * Give this tile a surface of `size` device pixels, ready to be drawn
-   * into, and say whether it needs drawing.
+   * The rendering this tile should be drawn into, or null when what is on
+   * screen is already right.
    *
-   * The size, the zoom and the style generation are all part of what makes
-   * a surface valid: a surface drawn at the wrong size would be composited
-   * blurry, and one drawn at another zoom would carry the wrong road widths
-   * and the wrong layers.
+   * The size, the zoom and the cache generation are all part of what makes
+   * a rendering valid: one drawn at the wrong size composites blurry, and
+   * one drawn at another zoom carries the wrong road widths and the wrong
+   * layers.
+   *
+   * When something is already on screen and a *new* rendering is needed,
+   * this hands back a second surface and leaves the first one composited
+   * until {@link promote} swaps them. That is the whole of the
+   * double-buffering: without it a re-rasterization clears the surface and
+   * the tile is blank for the several frames it takes to redraw, which
+   * above a source's `maxZoom` happens at every integer zoom — the same
+   * z14 tile serves 15, 16, 17 and on.
    */
-  prepareSurface(
+  beginRender(
     entry: CachedTile,
     size: number,
     zoom: number,
     make: SurfaceFactory,
+  ): TileRender | null {
+    if (this._matches(entry.shown, size, zoom)) return null;
+    if (this._matches(entry.drawing, size, zoom)) return entry.drawing;
+    // A draft for something else — an intermediate zoom the camera swept
+    // past — is thrown away rather than finished.
+    if (entry.drawing) this._release(entry.drawing);
+    entry.drawing = null;
+    const surface = make(size);
+    if (!surface) return null;
+    this._surfaceBytes += size * size * 4;
+    entry.drawing = {
+      surface,
+      context: surface.getContext('2d'),
+      size,
+      zoom,
+      generation: this._generation,
+      progress: 0,
+      progressLayer: 0,
+    };
+    return entry.drawing;
+  }
+
+  private _matches(
+    render: TileRender | null,
+    size: number,
+    zoom: number,
   ): boolean {
-    if (
-      entry.surface &&
-      entry.surfaceSize === size &&
-      entry.surfaceZoom === zoom &&
-      entry.surfaceGeneration === this._generation
-    ) {
-      return entry.progress !== -1;
-    }
-    if (entry.surface && entry.surface.width !== size) {
-      this._surfaceBytes -= entry.surfaceSize * entry.surfaceSize * 4;
-      (entry.context as { destroy?(): void } | null)?.destroy?.();
-      entry.context = null;
-      entry.surface.destroy();
-      entry.surface = null;
-    }
-    if (!entry.surface) {
-      const surface = make(size);
-      if (!surface) return false;
-      entry.surface = surface;
-      entry.context = surface.getContext('2d');
-      this._surfaceBytes += size * size * 4;
-    } else {
-      // Reused at the same size: everything on it is from the old zoom.
-      entry.surface.clear();
-    }
-    entry.surfaceSize = size;
-    entry.surfaceZoom = zoom;
-    entry.surfaceGeneration = this._generation;
-    entry.progress = 0;
-    entry.progressLayer = 0;
-    return true;
+    return (
+      render !== null &&
+      render.size === size &&
+      render.zoom === zoom &&
+      render.generation === this._generation
+    );
+  }
+
+  /** The finished draft becomes what is on screen, and the old one goes. */
+  promote(entry: CachedTile): void {
+    if (!entry.drawing || entry.drawing.progress !== -1) return;
+    if (entry.shown) this._release(entry.shown);
+    entry.shown = entry.drawing;
+    entry.drawing = null;
   }
 
   /** Note where a tile's rasterization stopped: at run `run`, having
    *  finished `layer` of its active layers (`-1` for all of them). */
   advance(
-    entry: CachedTile,
+    render: TileRender,
     run: number,
     layer: number,
     style: PreparedStyle,
   ): void {
-    entry.progress = run >= style.runs.length ? -1 : run;
-    entry.progressLayer = layer < 0 ? 0 : layer;
+    render.progress = run >= style.runs.length ? -1 : run;
+    render.progressLayer = layer < 0 ? 0 : layer;
   }
 
   /**
@@ -412,7 +440,7 @@ export class TileCache {
       (this._options.surfaceBudget ?? DEFAULT_SURFACE_BUDGET)
     ) {
       const withSurfaces = [...this._entries.values()]
-        .filter((entry) => entry.surface !== null)
+        .filter((entry) => entry.shown !== null || entry.drawing !== null)
         .sort((a, b) => a.lastUsed - b.lastUsed);
       const budget = this._options.surfaceBudget ?? DEFAULT_SURFACE_BUDGET;
       for (const entry of withSurfaces) {
@@ -437,16 +465,16 @@ export class TileCache {
   }
 
   private _dropSurface(entry: CachedTile): void {
-    if (!entry.surface) return;
-    this._surfaceBytes -= entry.surfaceSize * entry.surfaceSize * 4;
-    (entry.context as { destroy?(): void } | null)?.destroy?.();
-    entry.context = null;
-    entry.surface.destroy();
-    entry.surface = null;
-    entry.surfaceSize = 0;
-    entry.surfaceZoom = -1;
-    entry.progress = 0;
-    entry.progressLayer = 0;
+    if (entry.shown) this._release(entry.shown);
+    if (entry.drawing) this._release(entry.drawing);
+    entry.shown = null;
+    entry.drawing = null;
+  }
+
+  private _release(render: TileRender): void {
+    this._surfaceBytes -= render.size * render.size * 4;
+    (render.context as { destroy?(): void } | null)?.destroy?.();
+    render.surface.destroy();
   }
 
   private _drop(entry: CachedTile): void {

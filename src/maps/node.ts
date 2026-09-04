@@ -62,7 +62,7 @@ import type {
   Transform,
 } from './proj.js';
 import { TileCache, pyramid } from './tiles.js';
-import type { CachedTile, SurfaceLike } from './tiles.js';
+import type { CachedTile, SurfaceLike, TileRender } from './tiles.js';
 import type { MapSource } from './sources.js';
 import { shortbreadStyle } from './styles.js';
 import type { MapStyle } from './style.js';
@@ -911,15 +911,15 @@ export class MapViewNode extends Node {
       if (cached.status === 'ready') {
         const plan = this._rasterPlan(entry, source, zoom);
         const size = cached.raster ? cached.raster.width : plan.size;
-        const needsDrawing = this._cache.prepareSurface(
+        const drawing = this._cache.beginRender(
           cached,
           size,
           cached.raster ? 0 : styleZoom,
-          (n) => this._makeSurface(n),
+          (edge: number) => this._makeSurface(edge),
         );
-        if (needsDrawing && cached.surface) {
+        if (drawing && drawing.progress !== -1) {
           if (cached.raster) {
-            this._uploadRaster(cached);
+            this._uploadRaster(cached, drawing);
           } else if (mayRaster && (!this._rastered || now() < deadline)) {
             // **At least one tile per frame, whatever the budget.** A
             // budget smaller than one unit of work is not "do less", it is
@@ -930,6 +930,7 @@ export class MapViewNode extends Node {
             // tile's overrun and guarantees the map finishes.
             this._rasterize(
               cached,
+              drawing,
               style,
               entry,
               plan,
@@ -938,39 +939,36 @@ export class MapViewNode extends Node {
               deadline,
             );
           }
+          // Finished this frame: the new picture replaces the old one, and
+          // the swap is what the whole pair exists for — the tile never
+          // goes blank between them.
+          this._cache.promote(cached);
         }
         // "Pending" means *there is work left that this map could still
         // do*, and nothing weaker — because `paint` asks for another frame
-        // while it is non-zero. A tile with no surface (a backend that has
-        // none, so `prepareSurface` declined) never becomes drawable, and
-        // counting it would spin the frame clock at the refresh rate
-        // forever, repainting a map that cannot change.
-        if (cached.surface && cached.progress !== -1) stats.pending++;
+        // while it is non-zero. A tile whose surface could not be made (a
+        // backend that has none) never becomes drawable, and counting it
+        // would spin the frame clock at the refresh rate forever,
+        // repainting a map that cannot change.
+        if (cached.drawing) stats.pending++;
       }
 
-      // A tile is shown when it is **finished**, unless the application
-      // asked to watch it arrive.
+      // What is composited is `shown`, which is **finished by
+      // construction** — a rendering only becomes `shown` when its last
+      // style run is done. So a tile appears whole rather than as water,
+      // then landuse, then road casings, then roads over a dozen frames,
+      // and a *re*-rasterization does not blank it either: the previous
+      // picture stays up until the new one is ready to replace it.
       //
-      // Rasterization is resumable a style layer at a time, so a surface
-      // that exists is not a surface that is done: composited as soon as it
-      // exists, a dense tile appears as water, then landuse, then road
-      // casings, then roads, over a dozen frames. That is honest about what
-      // the renderer is doing and it does not look like a map — every other
-      // client pops a tile in whole — so the default is to wait, and an
-      // unfinished tile falls through to the coarser ancestor below, which
-      // is already required to be finished itself.
-      //
-      // What waiting costs is a transition that invalidates every surface
-      // at once — a style change, `refresh()`, a display-scale change —
-      // where there is no finished ancestor either and the map drops to its
-      // background until the tiles land. Keeping the old picture up through
-      // that needs a second surface per tile to draw into, which is a
-      // different change; see `docs/prd-maps.md`.
-      if (cached.surface && (progressive || cached.progress === -1)) {
+      // `progressive` composites the draft instead, which is the old
+      // behaviour and is honest about what the renderer is doing.
+      const showing =
+        progressive && cached.drawing ? cached.drawing : cached.shown;
+      if (showing) {
         this._composite(
           ctx,
-          cached.surface,
-          cached.surfaceSize,
+          showing.surface,
+          showing.size,
           entry,
           pane,
           scale,
@@ -981,19 +979,20 @@ export class MapViewNode extends Node {
         stats.ready++;
         continue;
       }
-      // Nothing of this tile yet: borrow the ancestor that is already
-      // drawn, scaled up. That is the difference between a map that fills
-      // in and one that flashes empty on every zoom.
+      // Nothing of this tile yet — a first load, which no buffering can
+      // help. Borrow the ancestor that is already drawn, scaled up: that is
+      // the difference between a map that fills in and one that flashes
+      // empty on every zoom.
       const ancestor = this._cache.ancestorWithSurface(sourceId, entry.tile);
-      if (ancestor?.surface) {
+      if (ancestor?.shown) {
         const up = entry.tile.z - ancestor.tile.z;
         const span = 1 << up;
         const fx = entry.tile.x - (ancestor.tile.x << up);
         const fy = entry.tile.y - (ancestor.tile.y << up);
         this._composite(
           ctx,
-          ancestor.surface,
-          ancestor.surfaceSize,
+          ancestor.shown.surface,
+          ancestor.shown.size,
           entry,
           pane,
           scale,
@@ -1015,6 +1014,7 @@ export class MapViewNode extends Node {
    */
   private _rasterize(
     cached: CachedTile,
+    render: TileRender,
     style: PreparedStyle,
     entry: TileCoverEntry,
     plan: { size: number; pixelsPerLogical: number },
@@ -1022,14 +1022,13 @@ export class MapViewNode extends Node {
     stats: MapFrameStats,
     deadline: number,
   ): void {
-    const surface = cached.surface;
     const vector = cached.vector;
-    if (!surface || !vector) return;
-    const context = cached.context;
+    if (!vector) return;
+    const context = render.context;
     if (!isMapCanvas(context)) {
-      // No path API on this surface: mark it finished and empty rather than
+      // No path API on this surface: call it finished and empty rather than
       // asking again every frame.
-      cached.progress = -1;
+      render.progress = -1;
       return;
     }
     const started = now();
@@ -1039,7 +1038,7 @@ export class MapViewNode extends Node {
     const draw = {
       ox: 0,
       oy: 0,
-      span: plan.size,
+      span: render.size,
       pixelsPerLogical: pixels,
       zoom: styleZoom,
       // A vertex closer than two-thirds of a pixel to the last one kept
@@ -1049,8 +1048,8 @@ export class MapViewNode extends Node {
       minFeature: 1.5 * pixels,
       batchVertices: this._batchVertices(),
     };
-    let run = cached.progress;
-    let layer = cached.progressLayer;
+    let run = render.progress;
+    let layer = render.progressLayer;
     while (run < style.runs.length) {
       const stoppedAt = drawTileRun(
         context,
@@ -1074,7 +1073,7 @@ export class MapViewNode extends Node {
       layer = 0;
       if (now() >= deadline) break;
     }
-    this._cache.advance(cached, run, layer, style);
+    this._cache.advance(render, run, layer, style);
     const drawn = this._scratch.stats;
     stats.draw.features += drawn.features;
     stats.draw.vertices += drawn.vertices;
@@ -1106,15 +1105,14 @@ export class MapViewNode extends Node {
     return app?.nativeBezels ? 512 : 12_000;
   }
 
-  private _uploadRaster(cached: CachedTile): void {
-    const surface = cached.surface;
+  private _uploadRaster(cached: CachedTile, render: TileRender): void {
     const raster = cached.raster;
-    if (!surface || !raster) return;
-    const context = cached.context;
+    if (!raster) return;
+    const context = render.context;
     if (isMapCanvas(context) && context.putImageData) {
       context.putImageData(raster, 0, 0);
     }
-    cached.progress = -1;
+    render.progress = -1;
   }
 
   /**

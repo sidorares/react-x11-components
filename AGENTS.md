@@ -815,9 +815,12 @@ measurement; what follows is what the next scene element should take from
 it.
 
 **Three caches, layered, and the layering is the whole argument.** Tile
-data, keyed on `source/z/x/y` and valid forever. A rendered `Surface` per
-tile, valid for a zoom _level_ and a style but **not for a camera
-position** — so a pan composites the same surfaces at new offsets and a
+data, keyed on `source/z/x/y` and valid forever. Up to two rendered
+`Surface`s per tile — the one on screen and the one being drawn, swapped
+only when the new one is finished, because redrawing in place blanks a tile
+for the several frames a redraw takes and above a source's `maxZoom` that is
+_every_ integer zoom — each valid for a zoom _level_ and a style but **not
+for a camera position** — so a pan composites the same surfaces at new offsets and a
 fractional zoom composites them scaled, and neither rasterizes anything. A
 label placement in **world** pixels, valid for a zoom and a set of loaded
 tiles, so a pan translates it rather than recomputing it. Get the second

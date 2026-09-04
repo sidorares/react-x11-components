@@ -1128,6 +1128,61 @@ test('a tile is not shown until it is finished', async () => {
   );
 });
 
+test('a tile being redrawn keeps showing the old picture', async () => {
+  // The flash this pins. A tile is re-rasterized whenever its style zoom
+  // moves, and above a source's `maxZoom` that is *every* integer zoom —
+  // the same z14 tile serves 15, 16, 17 and on. Redrawn in place it goes
+  // blank for the several frames a redraw takes; with two renderings the
+  // old one stays composited until the new one is finished.
+  const source: MapSource = {
+    id: 'over',
+    minZoom: 0,
+    maxZoom: 14,
+    tileSize: 512,
+    load: () => ({ kind: 'vector', data: threeLayerTile() }),
+  };
+  const ref = React.createRef<MapHandle>();
+  let frames: MapFrameStats[] = [];
+  await renderX11(
+    React.createElement(MapView, {
+      ref,
+      sources: [source],
+      mapStyle: THREE_RUN_STYLE,
+      defaultCamera: { center: ONE_TILE_CENTRE, zoom: 14 },
+      rasterBudgetMs: 0.0001,
+      onFrame: (stats) => frames.push({ ...stats }),
+      'data-testname': 'map',
+    }),
+    { backend: 'xserver', width: 200, height: 200 },
+  );
+  const settle = async (): Promise<void> => {
+    for (let i = 0; i < 20; i++) {
+      await act(async () => {});
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  };
+  await settle();
+  assert.ok(
+    frames.some((f) => f.ready > 0),
+    'the tile was drawn at all',
+  );
+  // Now every overzoom level, each of which re-rasterizes the same tile.
+  for (const zoom of [15, 16, 17]) {
+    frames = [];
+    (ref.current as MapHandle).zoomTo(zoom);
+    await settle();
+    const redrawing = frames.filter((f) => f.pending > 0);
+    assert.ok(redrawing.length > 0, `zoom ${zoom} re-rasterized`);
+    for (const frame of redrawing) {
+      assert.ok(
+        frame.ready > 0,
+        `the tile went blank while being redrawn at zoom ${zoom}: ` +
+          JSON.stringify(frame),
+      );
+    }
+  }
+});
+
 test('progressive shows a tile as it is drawn', async () => {
   const frames = await slowTileFrames(true);
   assert.ok(
@@ -1423,13 +1478,15 @@ test('an ancestor with a surface is what covers a hole', () => {
     clear: () => undefined,
     destroy: () => undefined,
   };
-  cache.prepareSurface(parent, 256, 10, () => fake);
+  const drawing = cache.beginRender(parent, 256, 10, () => fake);
+  assert.ok(drawing, 'a rendering was started');
   assert.equal(
     cache.ancestorWithSurface('fake', { z: 12, x: 21, y: 29 }),
     null,
-    'an unfinished surface is not a cover',
+    'a rendering still being drawn is not a cover',
   );
-  parent.progress = -1;
+  drawing.progress = -1;
+  cache.promote(parent);
   assert.equal(
     cache.ancestorWithSurface('fake', { z: 12, x: 21, y: 29 }),
     parent,

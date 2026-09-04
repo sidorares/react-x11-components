@@ -174,10 +174,12 @@ Three caches, layered, and the whole performance argument is the layering.
 
 1. **Tile data**, keyed on `source/z/x/y`, valid forever: a tile's contents
    do not depend on where the camera is.
-2. **A rendered `Surface` per tile**, valid for a zoom _level_ and a style —
-   not for a camera position. So a **pan** composites the same surfaces at
-   new offsets, and a **fractional zoom** composites them scaled. Neither
-   rasterizes anything. Only crossing an integer zoom does.
+2. **Up to two rendered `Surface`s per tile** — the one on screen and the
+   one being drawn — each valid for a zoom _level_ and a style but not for a
+   camera position. So a **pan** composites the same surfaces at new
+   offsets, and a **fractional zoom** composites them scaled. Neither
+   rasterizes anything. Only crossing an integer zoom does, and while it
+   redraws, the previous picture stays up.
 3. **A label placement in world pixels**, valid for a zoom and a set of
    loaded tiles — so a pan translates it rather than recomputing it.
 

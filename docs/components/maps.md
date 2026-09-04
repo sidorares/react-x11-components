@@ -281,11 +281,22 @@ about what the renderer is doing and it does not look like a map, so a tile
 is shown when it is finished and the coarser one already in the cache is
 scaled up until then. `progressive` turns the reveal back on.
 
-The one thing waiting costs is a transition that invalidates _every_ surface
-at once — a `mapStyle` change, `refresh()`, a display-scale change — where
-there is no finished tile and no finished ancestor either, so the map drops
-to its background colour until the new tiles land. Keeping the old picture
-up through that needs a second surface per tile to draw into; see the PRD.
+**And a tile being _re_-drawn keeps showing the old picture.** Each tile has
+up to two renderings — the one on screen and the one being drawn — and they
+swap only when the new one is finished. Without that, every re-rasterization
+blanks the tile for the several frames a redraw takes, and above a source's
+`maxZoom` that is _every_ integer zoom, because the same z14 tile serves 15,
+16, 17 and on: a flash per zoom step, and many more of them on a backend
+that paints more frames a second.
+
+The cost is memory: a tile being redrawn holds two surfaces, so a viewport
+mid-redraw peaks at about twice its resident bytes. `surfaceBudget` counts
+both, and eviction never touches a tile the current frame is using.
+
+What none of this helps is a **first** load — a tile nothing has ever drawn
+has no old picture to keep. The coarser ancestor already in the cache is
+scaled up in its place, which is why zooming in sharpens rather than
+flashing empty; a cold map with no ancestor at all shows its background.
 
 **Why a map fills in.** A dense city tile is 50–140 ms to rasterize (the
 PRD has the measurements, on both backends). That is a software rasterizer
