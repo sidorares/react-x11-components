@@ -58,8 +58,12 @@ export interface MapFrameStats {
   /** …of which were composited from their own finished surface. Under
    *  `progressive` this also counts the half-drawn ones. */
   ready: number;
-  /** …and how many were drawn from a coarser ancestor instead. */
+  /** …and how many were drawn from a coarser ancestor instead, scaled up.
+   *  What covers a hole while zooming *in*. */
   fromAncestor: number;
+  /** …and how many from their finer descendants, scaled down. What covers
+   *  a hole while zooming *out*, where there is no ancestor to borrow. */
+  fromDescendant: number;
   /** Tiles still to rasterize — non-zero means the map is still sharpening
    *  and another frame is already scheduled. */
   pending: number;

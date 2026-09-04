@@ -223,9 +223,16 @@ Around them:
   the frame where it lands claims that tile's box instead. Measured over a
   wheel-shaped zoom on the Cocoa backend: ten post-gesture frames, of which
   **one** repaints anything, where every one of them used to.
-- **A hole is covered by an ancestor.** A tile with no surface yet borrows
-  the nearest coarser one that has, scaled up, which is why zooming in
-  sharpens rather than flashing empty.
+- **A hole is covered from whichever side has pixels.** A tile with no
+  rendering yet borrows the nearest coarser **ancestor**, scaled up — which
+  is why zooming _in_ sharpens rather than flashing empty — or, when there
+  is none, its finer **descendants**, scaled down, which is the zoom-_out_
+  case and the one the first cut missed entirely: walking up the pyramid
+  finds nothing when the tiles in hand are below you, so a zoom out showed
+  the background, labels and markers still drawn over it, until the coarser
+  tile had been fetched, rasterized and composited. Descendants win when
+  they cover the whole square (sharper, and the level being left); the
+  ancestor wins when they do not (complete beats sharp-with-holes).
 
 ### Labels
 

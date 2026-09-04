@@ -294,9 +294,23 @@ mid-redraw peaks at about twice its resident bytes. `surfaceBudget` counts
 both, and eviction never touches a tile the current frame is using.
 
 What none of this helps is a **first** load — a tile nothing has ever drawn
-has no old picture to keep. The coarser ancestor already in the cache is
-scaled up in its place, which is why zooming in sharpens rather than
-flashing empty; a cold map with no ancestor at all shows its background.
+has no old picture of its own to keep. What covers it is whatever _is_
+cached nearby, and which direction that lies in says which way the camera
+moved:
+
+- **Zooming in**, the tile in hand is the target's **ancestor** — one
+  composite, scaled up, blurry but complete.
+- **Zooming out**, the tiles in hand are its **descendants** — several
+  composites, scaled down, sharp but only as complete as the pieces that
+  are cached. Without this a zoom-out shows the background, with the labels
+  and markers still drawn over it, until the coarser tile has been fetched,
+  rasterized and composited.
+
+Descendants win when they cover the whole square, because they are sharper
+and they are the level the camera is coming _from_; the ancestor wins when
+they do not, because a complete blurry picture beats a sharp one with holes
+in it. A cold map with neither shows its background. `MapFrameStats` counts
+both as `fromAncestor` and `fromDescendant`.
 
 **A frame that only continues a redraw claims one pixel.** There is no "call
 me next frame" on the element seam — damage is what schedules a paint — so a

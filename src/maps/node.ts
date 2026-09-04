@@ -789,6 +789,7 @@ export class MapViewNode extends Node {
       tiles: 0,
       ready: 0,
       fromAncestor: 0,
+      fromDescendant: 0,
       pending: 0,
       labels: 0,
       errors: 0,
@@ -1004,7 +1005,7 @@ export class MapViewNode extends Node {
           ctx,
           showing.surface,
           showing.size,
-          entry,
+          box,
           pane,
           scale,
           0,
@@ -1019,7 +1020,29 @@ export class MapViewNode extends Node {
       // the difference between a map that fills in and one that flashes
       // empty on every zoom.
       if (!inPass) continue;
-      const ancestor = this._cache.ancestorWithSurface(sourceId, entry.tile);
+
+      // Nothing of this tile yet — a first load, which no buffering can
+      // help. Two ways to cover it, and which is available says which way
+      // the camera moved.
+      //
+      // **Zooming in**, the tile already in hand is this one's *ancestor*:
+      // one composite, scaled up, blurry but complete. **Zooming out**, the
+      // tiles in hand are its *descendants*: several composites, scaled
+      // down, sharp but only as complete as the pieces that are cached.
+      // Only the first of those existed at first, so a zoom out showed the
+      // background — with the labels and the markers still drawn over it —
+      // until the coarser tile had been fetched, rasterized and composited.
+      //
+      // Descendants win when they cover the whole square, because they are
+      // sharper and they are the level the user is coming *from*; the
+      // ancestor wins when they do not, because a complete blurry picture
+      // beats a sharp one with holes in it.
+      const kids = this._cache.descendantsWithSurface(sourceId, entry.tile);
+      const covered =
+        kids.length > 0 && kids.length === kids[0].span * kids[0].span;
+      const ancestor = covered
+        ? null
+        : this._cache.ancestorWithSurface(sourceId, entry.tile);
       if (ancestor?.shown) {
         const up = entry.tile.z - ancestor.tile.z;
         const span = 1 << up;
@@ -1029,7 +1052,7 @@ export class MapViewNode extends Node {
           ctx,
           ancestor.shown.surface,
           ancestor.shown.size,
-          entry,
+          box,
           pane,
           scale,
           fx,
@@ -1037,6 +1060,27 @@ export class MapViewNode extends Node {
           span,
         );
         stats.fromAncestor++;
+      } else if (kids.length > 0) {
+        for (const kid of kids) {
+          const piece = entry.size / kid.span;
+          this._composite(
+            ctx,
+            kid.entry.shown!.surface,
+            kid.entry.shown!.size,
+            {
+              x: box.x + kid.x * piece,
+              y: box.y + kid.y * piece,
+              width: piece,
+              height: piece,
+            },
+            pane,
+            scale,
+            0,
+            0,
+            1,
+          );
+        }
+        stats.fromDescendant++;
       }
     }
   }
@@ -1177,18 +1221,20 @@ export class MapViewNode extends Node {
     ctx: MapCanvas,
     surface: SurfaceLike,
     size: number,
-    entry: TileCoverEntry,
+    /** Where it lands, in pane-local logical pixels. */
+    dest: ScreenRect,
     pane: ScreenRect,
     scale: number,
+    /** Which sub-square of the surface to take, in `subSpan`ths. */
     subX: number,
     subY: number,
     subSpan: number,
   ): void {
     if (!ctx.drawImage || size <= 0) return;
-    const x0 = Math.round((pane.x + entry.x) * scale);
-    const y0 = Math.round((pane.y + entry.y) * scale);
-    const x1 = Math.round((pane.x + entry.x + entry.size) * scale);
-    const y1 = Math.round((pane.y + entry.y + entry.size) * scale);
+    const x0 = Math.round((pane.x + dest.x) * scale);
+    const y0 = Math.round((pane.y + dest.y) * scale);
+    const x1 = Math.round((pane.x + dest.x + dest.width) * scale);
+    const y1 = Math.round((pane.y + dest.y + dest.height) * scale);
     if (x1 <= x0 || y1 <= y0) return;
 
     // The clip is the content box — device pixels, like everything core

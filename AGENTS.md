@@ -817,6 +817,16 @@ component does instead is make sure it is never _in a frame_.
 measurement; what follows is what the next scene element should take from
 it.
 
+**A hole is covered from whichever side has pixels, and there are two.**
+Zooming _in_, the tile already drawn is the target's ancestor — one
+composite, scaled up. Zooming _out_, the tiles already drawn are its
+descendants, and walking up the pyramid finds nothing, so the first cut
+showed the background (with the labels and markers still over it) for as
+long as the coarser tile took to fetch and rasterize. Both directions are
+covered now, descendants preferred when they tile the square. The rule
+generalises past maps: **a pyramid cache has two neighbours, and code that
+only knows one of them is half a cache.**
+
 **Three caches, layered, and the layering is the whole argument.** Tile
 data, keyed on `source/z/x/y` and valid forever. Up to two rendered
 `Surface`s per tile — the one on screen and the one being drawn, swapped

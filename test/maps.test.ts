@@ -1192,6 +1192,73 @@ test('a tile being redrawn keeps showing the old picture', async () => {
   }
 });
 
+test('zooming out covers the gap with the tiles already in hand', async () => {
+  // The mirror of the ancestor fallback, and the half that was missing.
+  // Zooming *in*, the tile in hand is the target's ancestor — one
+  // composite, scaled up. Zooming *out*, the tiles in hand are its
+  // descendants, and walking up the pyramid finds nothing: the map showed
+  // its background, with the labels and markers still drawn over it, until
+  // the coarser tile had been fetched, rasterized and composited.
+  const source: MapSource = {
+    id: 'every',
+    minZoom: 0,
+    maxZoom: 14,
+    tileSize: 512,
+    // Slow, as a network is — which is what makes the gap last long enough
+    // to matter.
+    load: () =>
+      new Promise((resolve) =>
+        setTimeout(
+          () => resolve({ kind: 'vector', data: threeLayerTile() }),
+          60,
+        ),
+      ),
+  };
+  const ref = React.createRef<MapHandle>();
+  let frames: MapFrameStats[] = [];
+  await renderX11(
+    React.createElement(MapView, {
+      ref,
+      sources: [source],
+      mapStyle: THREE_RUN_STYLE,
+      defaultCamera: { center: ONE_TILE_CENTRE_14, zoom: 14 },
+      onFrame: (stats) => frames.push({ ...stats }),
+      'data-testname': 'map',
+    }),
+    { backend: 'xserver', width: 200, height: 200 },
+  );
+  const settle = async (): Promise<void> => {
+    for (let i = 0; i < 24; i++) {
+      await act(async () => {});
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  };
+  await settle();
+  assert.ok(
+    frames.some((f) => f.ready > 0),
+    'the zoom-14 tile was drawn',
+  );
+
+  frames = [];
+  (ref.current as MapHandle).zoomTo(13);
+  await settle();
+  assert.ok(
+    frames.some((f) => f.fromDescendant > 0),
+    'the finer tiles covered the coarser one while it loaded',
+  );
+  // And every frame that actually repainted showed something: no frame
+  // draws the background where a picture was available.
+  for (const frame of frames) {
+    const repainted =
+      frame.damage === null || frame.damage.width * frame.damage.height > 4096;
+    if (!repainted || frame.tiles === 0) continue;
+    assert.ok(
+      frame.ready + frame.fromAncestor + frame.fromDescendant > 0,
+      `a repaint showed nothing: ${JSON.stringify(frame)}`,
+    );
+  }
+});
+
 test('a frame that only continues a redraw claims a pixel, not the pane', async () => {
   // What a burst of flashes at the end of a zoom actually was. A tile being
   // redrawn is a second surface nobody is looking at, so nothing on screen

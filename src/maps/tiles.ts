@@ -344,9 +344,60 @@ export class TileCache {
       const entry = this._entries.get(this.key(sourceId, { z, x, y }));
       // `shown` is finished by construction, so an ancestor is never a
       // half-drawn picture.
-      if (entry?.shown) return entry;
+      if (entry?.shown) {
+        // Stamped, because for as long as it is covering a hole it is on
+        // screen — and an unstamped entry is the *first* thing eviction
+        // takes, which would drop the only picture the map is showing.
+        entry.lastUsed = this._frame;
+        return entry;
+      }
     }
     return null;
+  }
+
+  /**
+   * The finished **descendants** of a tile, and where each sits inside it.
+   *
+   * The mirror of {@link ancestorWithSurface}, and the half a map needs
+   * when it zooms *out*: the tiles already in hand are then the target's
+   * children, and walking up the pyramid finds nothing. Without this a
+   * zoom-out shows the background — with the labels and markers still drawn
+   * over it, which is exactly as odd as it sounds — until the coarser tile
+   * has been fetched, rasterized and composited.
+   *
+   * `depth` is how many levels down to look, and it is small on purpose: a
+   * level down is 4 tiles, two is 16, and beyond that the pieces are too
+   * small to be worth the composites.
+   */
+  descendantsWithSurface(
+    sourceId: string,
+    tile: TileId,
+    depth = 2,
+  ): { entry: CachedTile; x: number; y: number; span: number }[] {
+    for (let down = 1; down <= depth; down++) {
+      const span = 1 << down;
+      const found: { entry: CachedTile; x: number; y: number; span: number }[] =
+        [];
+      for (let dy = 0; dy < span; dy++) {
+        for (let dx = 0; dx < span; dx++) {
+          const entry = this._entries.get(
+            this.key(sourceId, {
+              z: tile.z + down,
+              x: (tile.x << down) + dx,
+              y: (tile.y << down) + dy,
+            }),
+          );
+          if (entry?.shown) {
+            entry.lastUsed = this._frame;
+            found.push({ entry, x: dx, y: dy, span });
+          }
+        }
+      }
+      // The nearest level that has anything wins: one level down is both
+      // the sharpest and the fewest composites.
+      if (found.length > 0) return found;
+    }
+    return [];
   }
 
   /**
