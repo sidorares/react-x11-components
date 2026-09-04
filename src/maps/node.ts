@@ -46,6 +46,8 @@ import {
   DEFAULT_TILE_SIZE,
   cameraForBounds,
   boundsOf,
+  dataTileFor,
+  subTileOf,
   projectLngLat,
   rasterFor,
   tileCover,
@@ -123,6 +125,19 @@ const WHEEL_ZOOM = 1 / 2.5;
  *  is `4 × size²` bytes, so 2048 is 16 MB and is already more than any
  *  pyramid justifies. */
 const MAX_RASTER = 2048;
+
+/**
+ * How many levels past a source's own depth the cover may go.
+ *
+ * Each level is a factor of two in linear detail and four in the number of
+ * tiles sharing one fetch, so six is 64× sharper than the stretched bitmap
+ * it replaces and 4,096 renderings per source tile at the very bottom —
+ * which is fine, because only the handful on screen are ever built. Beyond
+ * this the data itself is the limit: at zoom 20 one unit of a zoom-14
+ * tile's 4,096-unit grid is already 16 device pixels across, so there is no
+ * more shape to draw.
+ */
+const MAX_OVERZOOM = 6;
 
 /** How far outside the pane tiles are kept warm, in logical pixels. Half a
  *  tile: enough that an ordinary flick has its tiles, not so much that a
@@ -247,7 +262,9 @@ export class MapViewNode extends Node {
           (error: unknown, tile: TileId & { sourceId: string }) => void
         >('onTileError')?.(entry.error, {
           ...entry.tile,
-          sourceId: entry.sourceId,
+          // The data entry is keyed per source, so the id is recoverable
+          // from the key it was built with.
+          sourceId: entry.key.slice(0, entry.key.lastIndexOf(':')),
         });
       },
       onChange: () => {
@@ -724,14 +741,17 @@ export class MapViewNode extends Node {
    *  keeps a road two logical pixels wide at every fractional zoom. */
   private _rasterPlan(
     entry: TileCoverEntry,
-    source: MapSource,
+    pyramid: { minZoom: number; maxZoom: number; tileSize: number },
     zoom: number,
   ): { size: number; pixelsPerLogical: number } {
     const scale = this._prop<number>('rasterScale') ?? this._scale;
+    // The cover level, not the source's: past the source's own depth the
+    // cover synthesizes tiles, and each is rasterized at its own natural
+    // size rather than as a slice of a stretched one.
     const raster = rasterFor(
       zoom,
       entry.tile.z,
-      pyramid(source),
+      { ...pyramid, maxZoom: pyramid.maxZoom + MAX_OVERZOOM },
       scale,
       MAX_RASTER,
     );
@@ -915,7 +935,19 @@ export class MapViewNode extends Node {
     deadline: number,
   ): void {
     const scale = this._scale;
-    const cover = tileCover(transform, pyramid(source), COVER_PADDING);
+    const p = pyramid(source);
+    // The cover goes **deeper than the source cuts**, up to
+    // `MAX_OVERZOOM` levels past it, and the data for those tiles comes
+    // from their ancestor at the deepest cut level. That is what makes an
+    // overzoomed map sharp: instead of one tile rasterized onto a surface
+    // and stretched sixty-four times, there are two hundred and fifty-six
+    // tiles sharing one fetch, each drawn at its own natural size, with
+    // detail limited by the data rather than by a bitmap.
+    const cover = tileCover(
+      { ...transform, zoom: transform.zoom },
+      { ...p, maxZoom: p.maxZoom + MAX_OVERZOOM },
+      COVER_PADDING,
+    );
     const zoom = transform.zoom;
     const styleZoom = Math.floor(zoom);
     const progressive = this._prop<boolean>('progressive') === true;
@@ -936,13 +968,19 @@ export class MapViewNode extends Node {
       const onScreen = rectsOverlap(box, pane);
       const inPass =
         this._frameClip === null || rectsOverlap(box, this._frameClip);
-      const cached = this._cache.want(source, sourceId, entry.tile);
+      const cached = this._cache.want(
+        source,
+        sourceId,
+        entry.tile,
+        dataTileFor(entry.tile, p.maxZoom),
+        subTileOf(entry.tile, p.maxZoom),
+      );
       if (!onScreen) continue;
       stats.tiles++;
       if (cached.status === 'error') stats.errors++;
 
       if (cached.status === 'ready') {
-        const plan = this._rasterPlan(entry, source, zoom);
+        const plan = this._rasterPlan(entry, p, zoom);
         const size = cached.raster ? cached.raster.width : plan.size;
         const drawing = this._cache.beginRender(
           cached,
@@ -1115,10 +1153,18 @@ export class MapViewNode extends Node {
     this._rastered = true;
     const pixels = plan.pixelsPerLogical;
     this._scratch.resetStats();
+    // Where the **data** tile's square lands on this surface. When the
+    // cover has gone deeper than the source cuts, this tile is one cell of
+    // a `span × span` grid over that square, so the square is `span` times
+    // the surface and starts `sub.x` surfaces to the left of it. Everything
+    // outside the surface is clipped by the surface itself, and the cull
+    // below stops it being drawn at all.
+    const sub = cached.sub;
+    const span = render.size * sub.span;
     const draw = {
-      ox: 0,
-      oy: 0,
-      span: render.size,
+      ox: -sub.x * render.size,
+      oy: -sub.y * render.size,
+      span,
       pixelsPerLogical: pixels,
       zoom: styleZoom,
       // A vertex closer than two-thirds of a pixel to the last one kept
@@ -1127,6 +1173,14 @@ export class MapViewNode extends Node {
       tolerance: 0.65 * pixels,
       minFeature: 1.5 * pixels,
       batchVertices: this._batchVertices(),
+      // The surface, in its own coordinates. Only meaningful when this is
+      // one cell of a larger square — and then it is what stops each of the
+      // cells re-drawing the whole tile's features, which would make an
+      // overzoomed frame cost `span²` times what it should.
+      clip:
+        sub.span > 1
+          ? { x: 0, y: 0, width: render.size, height: render.size }
+          : null,
     };
     let run = render.progress;
     let layer = render.progressLayer;
@@ -1294,10 +1348,18 @@ export class MapViewNode extends Node {
     if (key !== this._labelKey) {
       this._labelKey = key;
       const styleZoom = Math.floor(transform.zoom);
+      // Labels come from the tile the **data** came from, at the depth that
+      // source actually cuts — past which many renderings share one tile
+      // and collecting per rendering would place every label `span²` times.
+      const wanted = new Set(
+        this._sources().map((source) =>
+          Math.min(styleZoom, pyramid(source).maxZoom),
+        ),
+      );
       const candidates: LabelCandidate[] = [];
-      for (const cached of this._cache.entries()) {
+      for (const cached of this._cache.dataEntries()) {
         if (cached.status !== 'ready' || !cached.vector) continue;
-        if (cached.tile.z !== styleZoom) continue;
+        if (!wanted.has(cached.tile.z)) continue;
         const at = `${cached.key}|${styleZoom}`;
         let found = this._candidates.get(at);
         if (!found) {

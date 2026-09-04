@@ -11,10 +11,22 @@
 // caching and the error policy live, because those are the application's to
 // decide (see `docs/components/maps.md`).
 import { useMemo, useRef, useState } from 'react';
-import { Button, createRoot, useTheme } from 'react-x11';
+import { Button, Select, createRoot, useTheme } from 'react-x11';
+import * as ntk from 'react-x11/ntk';
 
-import { Map, osmVectorSource, shortbreadStyle } from '../src/maps/index.js';
-import type { LngLat, MapHandle, MapMarker } from '../src/maps/index.js';
+import {
+  Map,
+  osmRasterSource,
+  osmVectorSource,
+  shortbreadStyle,
+} from '../src/maps/index.js';
+import type {
+  LngLat,
+  MapHandle,
+  MapMarker,
+  MapSource,
+  MapStyle,
+} from '../src/maps/index.js';
 
 const PLACES: Record<
   string,
@@ -115,8 +127,8 @@ const place = PLACES[which] ?? PLACES.london;
 // reason `import { Map as MapView }` is documented.
 const inFlight: Record<string, Promise<Uint8Array | null>> = {};
 
-const source = osmVectorSource({
-  fetch: (url, signal) => {
+const fetching = {
+  fetch: (url: string, signal: { readonly aborted: boolean } | undefined) => {
     const hit = inFlight[url];
     if (hit) return hit;
     const request = fetch(url, {
@@ -140,7 +152,97 @@ const source = osmVectorSource({
     inFlight[url] = request;
     return request;
   },
+};
+
+const source = osmVectorSource(fetching);
+
+/**
+ * OSM's own raster style, which is the other thing the Foundation serves.
+ *
+ * A raster tile is pixels, so somebody has to decode the PNG — this package
+ * will not grow a codec or guess which format a provider serves. ntk has
+ * one and every react-x11 application already has ntk.
+ *
+ * Two things about reaching it that are easy to get wrong: `decodeImage` is
+ * a **named** export of `react-x11/ntk` (which re-exports ntk with
+ * `export *`), not a property of the default one — and it is not in the
+ * declarations, so the namespace is cast structurally, the way this repo
+ * works around every other narrow react-x11 declaration.
+ */
+const { decodeImage } = ntk as unknown as {
+  decodeImage(bytes: Uint8Array): {
+    width: number;
+    height: number;
+    data: Uint8Array;
+  };
+};
+
+const raster = osmRasterSource({
+  ...fetching,
+  decode: (bytes) => {
+    const image = decodeImage(bytes);
+    return { width: image.width, height: image.height, data: image.data };
+  },
 });
+
+/**
+ * The layers this example can show.
+ *
+ * **OpenStreetMap has no satellite layer**, and that is worth knowing
+ * rather than working around: OSM is map *data*, and the Foundation serves
+ * the vector tiles and the standard raster style and nothing else. Every
+ * aerial image you have seen in an OSM editor comes from a third party —
+ * Esri, Bing, Maxar, Mapbox — under terms that permit *tracing for OSM*
+ * rather than redisplay, or from OpenAerialMap, which is genuinely open
+ * (CC BY 4.0) and patchy per-image rather than a global pyramid.
+ *
+ * So an imagery layer is a `MapSource` of your own, pointed at whichever
+ * provider you have the rights to use, with their attribution:
+ *
+ * ```ts
+ * const imagery: MapSource = {
+ *   id: 'imagery', tileSize: 256, maxZoom: 19,
+ *   attribution: 'whoever you are licensed from',
+ *   load: async ({ z, x, y, signal }) => {
+ *     const bytes = await fetchTile(`https://…/${z}/${y}/${x}`, signal);
+ *     const image = decodeImage(bytes);
+ *     return { kind: 'raster', width: image.width, height: image.height, data: image.data };
+ *   },
+ * };
+ * ```
+ */
+interface Layer {
+  id: string;
+  label: string;
+  sources: MapSource[];
+  style?: MapStyle;
+}
+
+const LAYERS: Layer[] = [
+  {
+    id: 'vector',
+    label: 'Vector — light',
+    sources: [source],
+    style: shortbreadStyle(),
+  },
+  {
+    id: 'vector-dark',
+    label: 'Vector — dark',
+    sources: [source],
+    style: shortbreadStyle({ dark: true }),
+  },
+  {
+    id: 'vector-plain',
+    label: 'Vector — no buildings',
+    sources: [source],
+    style: shortbreadStyle({ buildings: false }),
+  },
+  {
+    id: 'raster',
+    label: 'Raster — OSM standard',
+    sources: [raster],
+  },
+];
 
 function App(): React.ReactElement {
   const theme = useTheme();
@@ -149,7 +251,8 @@ function App(): React.ReactElement {
   const [hovered, setHovered] = useState<string | null>(null);
   const [status, setStatus] = useState('');
 
-  const style = useMemo(() => shortbreadStyle({ dark }), []);
+  const [layerId, setLayerId] = useState(dark ? 'vector-dark' : 'vector');
+  const layer = LAYERS.find((l) => l.id === layerId) ?? LAYERS[0];
   const markers = useMemo(
     () =>
       place.markers.map((marker) => ({
@@ -203,12 +306,21 @@ function App(): React.ReactElement {
           >
             Fit markers
           </Button>
+          <Select
+            value={layerId}
+            options={LAYERS.map((l) => ({ value: l.id, label: l.label }))}
+            onChange={(event) => setLayerId(event.value)}
+            style={{ width: 200 }}
+          />
           <text style={{ color: theme.textMuted }}>{status}</text>
         </box>
         <Map
           ref={map}
-          sources={[source]}
-          mapStyle={style}
+          // Both change together, and both are stable objects, so
+          // switching layers is one prop change rather than a re-render
+          // storm: the element drops its rendered tiles and rebuilds them.
+          sources={layer.sources}
+          mapStyle={layer.style}
           defaultCamera={{ center: place.centre, zoom: 14 }}
           markers={markers}
           overlays={overlays}

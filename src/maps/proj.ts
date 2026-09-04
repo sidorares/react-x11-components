@@ -376,8 +376,52 @@ export interface TileRaster {
  * moment it crosses 15 the finer level takes over. Rounding instead would
  * load z15 at 14.5 and draw it at 0.7× — more data, downsampled.
  */
-export function sourceZoomFor(zoom: number, pyramid: TilePyramid): number {
-  return clamp(Math.floor(zoom), pyramid.minZoom, pyramid.maxZoom);
+export function sourceZoomFor(
+  zoom: number,
+  pyramid: TilePyramid,
+  overzoom = 0,
+): number {
+  return clamp(
+    Math.floor(zoom),
+    pyramid.minZoom,
+    pyramid.maxZoom + Math.max(0, overzoom),
+  );
+}
+
+/**
+ * The tile whose **data** serves a tile the cover asked for.
+ *
+ * Itself, until the cover goes deeper than the pyramid does — past that,
+ * its ancestor at the deepest level the source cuts. This is what makes
+ * overzoom sharp rather than blurry: instead of drawing one z14 tile onto a
+ * surface and stretching it sixty-four times, the cover asks for z20 tiles,
+ * two hundred and fifty-six of them share that one z14 tile's data, and
+ * each is rasterized at its own natural size. One fetch, one parse, and
+ * detail limited by the data rather than by a bitmap.
+ */
+export function dataTileFor(tile: TileId, maxZoom: number): TileId {
+  if (tile.z <= maxZoom) return tile;
+  const down = tile.z - maxZoom;
+  return { z: maxZoom, x: tile.x >> down, y: tile.y >> down };
+}
+
+/**
+ * Where a tile sits inside the data tile that serves it: cell
+ * `(x, y)` of a `span × span` grid, and `span` is 1 when the tile *is* its
+ * own data.
+ */
+export function subTileOf(
+  tile: TileId,
+  maxZoom: number,
+): { x: number; y: number; span: number } {
+  if (tile.z <= maxZoom) return { x: 0, y: 0, span: 1 };
+  const down = tile.z - maxZoom;
+  const span = 1 << down;
+  return {
+    x: tile.x - ((tile.x >> down) << down),
+    y: tile.y - ((tile.y >> down) << down),
+    span,
+  };
 }
 
 /**

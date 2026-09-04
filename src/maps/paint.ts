@@ -34,6 +34,8 @@
 // context (the direct path). {@link TileDraw} carries the two numbers that
 // make one out of the other, so the same code serves both and neither has a
 // branch in the vertex loop.
+import { clipRing, clipSegment } from './clip.js';
+import type { ClipRect } from './clip.js';
 import type { CompiledFilter, MapStyleLayer, Zoomed } from './style.js';
 import { compileFilter, resolveZoomed } from './style.js';
 import { GeomType, GeometryBuffer } from './mvt.js';
@@ -274,6 +276,9 @@ function str(
  */
 export class DrawScratch {
   buffer = new GeometryBuffer();
+  /** One clipped ring at a time, reused, so the overzoom path allocates
+   *  nothing per part either. */
+  ring: number[] = [];
   stats: DrawStats = emptyStats();
   private _buckets: number[][] = [];
 
@@ -481,7 +486,37 @@ function emitPart(
   toleranceSq: number,
   closed: boolean,
   stats: DrawStats,
+  /**
+   * Clip the geometry to this box, or null to let the target clip it.
+   *
+   * Null on the ordinary path, where a tile is drawn at its own size and a
+   * vertex is a few thousand pixels at worst. Set when a tile is drawn past
+   * its own depth — one source tile rasterized into each cell of a grid
+   * over it — where a tile-wide polygon is `span` tiles wide in the
+   * surface's pixels: at 64 cells that is a hundred thousand, and ntk hands
+   * a stroke to XRender as 16.16 fixed point, which overflows a signed
+   * 32-bit word at 32,768. The surface would clip the *drawing* correctly;
+   * it is the numbers on the way there that do not fit.
+   */
+  clip: ClipRect | null,
+  /** Scratch for the clipped ring, so a fill allocates nothing per part. */
+  scratch: number[],
 ): number {
+  if (clip) {
+    return emitClipped(
+      ctx,
+      coords,
+      from,
+      to,
+      ox,
+      oy,
+      k,
+      closed,
+      clip,
+      scratch,
+      stats,
+    );
+  }
   const count = to - from;
   if (count < 2) return 0;
   let x = ox + coords[from * 2] * k;
@@ -526,6 +561,90 @@ function emitPart(
   return emitted;
 }
 
+/**
+ * One part, clipped to the target before it is emitted.
+ *
+ * A ring goes through Sutherland-Hodgman, because a fill needs a closed
+ * boundary — the part that crosses the window has to come back along the
+ * window's edge. A line goes through Cohen-Sutherland segment by segment,
+ * which turns one polyline into as many subpaths as it has visible
+ * stretches; joins at the boundary are lost, and they are off-screen.
+ *
+ * Simplification is deliberately skipped here: this path only runs for the
+ * handful of features that survive the box cull in an overzoomed cell, and
+ * at that magnification there is nothing to simplify away.
+ */
+function emitClipped(
+  ctx: MapCanvas,
+  coords: Int32Array,
+  from: number,
+  to: number,
+  ox: number,
+  oy: number,
+  k: number,
+  closed: boolean,
+  clip: ClipRect,
+  scratch: number[],
+  stats: DrawStats,
+): number {
+  const count = to - from;
+  if (count < 2) return 0;
+  scratch.length = 0;
+  for (let i = from; i < to; i++) {
+    scratch.push(ox + coords[i * 2] * k, oy + coords[i * 2 + 1] * k);
+  }
+  if (closed) {
+    const ring = clipRing(scratch, clip);
+    if (ring.length < 6) return 0;
+    ctx.moveTo(ring[0], ring[1]);
+    for (let i = 2; i < ring.length; i += 2) ctx.lineTo(ring[i], ring[i + 1]);
+    ctx.closePath();
+    return ring.length / 2;
+  }
+  let emitted = 0;
+  let open = false;
+  for (let i = 0; i + 3 < scratch.length; i += 2) {
+    const piece = clipSegment(
+      scratch[i],
+      scratch[i + 1],
+      scratch[i + 2],
+      scratch[i + 3],
+      clip,
+    );
+    if (!piece) {
+      open = false;
+      continue;
+    }
+    const [x0, y0, x1, y1] = piece;
+    if (!open) {
+      ctx.moveTo(x0, y0);
+      open = true;
+      emitted++;
+    }
+    ctx.lineTo(x1, y1);
+    emitted++;
+    if (x1 !== scratch[i + 2] || y1 !== scratch[i + 3]) open = false;
+  }
+  void stats;
+  return emitted;
+}
+
+/** A draw's clip rectangle in the form the clippers take, inflated so a
+ *  stroke's own width and its joins land outside the surface rather than
+ *  against its edge. */
+function clipRectOf(
+  clip: { x: number; y: number; width: number; height: number } | null,
+): ClipRect | null {
+  if (!clip) return null;
+  const margin = 64;
+  return {
+    minX: clip.x - margin,
+    minY: clip.y - margin,
+    maxX: clip.x + clip.width + margin,
+    maxY: clip.y + clip.height + margin,
+  };
+}
+
 /** Whether a part's box is too small to be worth a path. */
 function partTooSmall(
   bounds: Float64Array,
@@ -538,6 +657,33 @@ function partTooSmall(
   return (
     (bounds[at + 2] - bounds[at]) * k < minFeature &&
     (bounds[at + 3] - bounds[at + 1]) * k < minFeature
+  );
+}
+
+/**
+ * Whether a whole feature lands outside the target at all.
+ *
+ * Only ever true when the target is a *cell* of a larger tile — the
+ * overzoom case, where one tile's data is drawn into each of `span²`
+ * surfaces. Without this each cell would build a path for every feature in
+ * the tile and let the surface clip it, so an overzoomed frame would cost
+ * `span²` times what it should; the box came free from the geometry read,
+ * so the test is four comparisons.
+ */
+function outsideClip(
+  buffer: GeometryBuffer,
+  ox: number,
+  oy: number,
+  k: number,
+  clip: { x: number; y: number; width: number; height: number },
+  /** Slack for a stroke's own width, in target pixels. */
+  slack: number,
+): boolean {
+  return (
+    ox + buffer.maxX * k < clip.x - slack ||
+    ox + buffer.minX * k > clip.x + clip.width + slack ||
+    oy + buffer.maxY * k < clip.y - slack ||
+    oy + buffer.minY * k > clip.y + clip.height + slack
   );
 }
 
@@ -568,6 +714,8 @@ function drawFill(
   const outline = str(layer.outlineColor, draw.zoom);
   const tol = (draw.tolerance ?? 0) * (draw.tolerance ?? 0);
   const minFeature = draw.minFeature ?? 0;
+  const clip = draw.clip ?? null;
+  const clipBox = clipRectOf(clip);
   const cursor = source.feature(0);
   const total = featureCount(source, indices);
   const batch = draw.batchVertices ?? BATCH_VERTICES;
@@ -589,6 +737,10 @@ function drawFill(
     }
     cursor.readGeometry(buffer);
     if (buffer.parts === 0) continue;
+    if (clip && outsideClip(buffer, draw.ox, draw.oy, k, clip, 2)) {
+      stats.culled++;
+      continue;
+    }
     stats.features++;
     for (let part = 0; part < buffer.parts; part++) {
       // Rings go into one path and are filled with the non-zero rule, which
@@ -625,6 +777,8 @@ function drawFill(
         tol,
         true,
         stats,
+        clipBox,
+        scratch.ring,
       );
     }
   }
@@ -659,6 +813,8 @@ function drawLine(
   const width = Math.max(1, logical * draw.pixelsPerLogical);
   const tol = (draw.tolerance ?? 0) * (draw.tolerance ?? 0);
   const minFeature = draw.minFeature ?? 0;
+  const clip = draw.clip ?? null;
+  const clipBox = clipRectOf(clip);
   const cursor = source.feature(0);
   const total = featureCount(source, indices);
   const batch = draw.batchVertices ?? BATCH_VERTICES;
@@ -682,6 +838,10 @@ function drawLine(
     }
     cursor.readGeometry(buffer);
     if (buffer.parts === 0) continue;
+    if (clip && outsideClip(buffer, draw.ox, draw.oy, k, clip, width)) {
+      stats.culled++;
+      continue;
+    }
     stats.features++;
     const closed = cursor.type === GeomType.Polygon;
     for (let part = 0; part < buffer.parts; part++) {
@@ -713,6 +873,8 @@ function drawLine(
         tol,
         closed,
         stats,
+        clipBox,
+        scratch.ring,
       );
     }
   }
@@ -744,6 +906,7 @@ function drawCircle(
   const stroke = str(layer.strokeColor, draw.zoom);
   const strokeWidth =
     num(layer.strokeWidth, draw.zoom, 1) * draw.pixelsPerLogical;
+  const clip = draw.clip ?? null;
   const cursor = source.feature(0);
   const total = featureCount(source, indices);
   const discBatch = Math.min(1024, draw.batchVertices ?? BATCH_VERTICES);
@@ -764,10 +927,30 @@ function drawCircle(
       if (!filter(cursor)) continue;
     }
     cursor.readGeometry(buffer);
+    if (
+      buffer.points > 0 &&
+      clip &&
+      outsideClip(buffer, draw.ox, draw.oy, k, clip, radius)
+    ) {
+      stats.culled++;
+      continue;
+    }
     stats.features++;
     for (let p = 0; p < buffer.points; p++) {
       const x = draw.ox + buffer.coords[p * 2] * k;
       const y = draw.oy + buffer.coords[p * 2 + 1] * k;
+      // A disc is a point, so there is nothing to clip — but a multipoint
+      // feature can straddle the target, and only the whole feature was
+      // culled above. Skip the ones that land outside it.
+      if (
+        clip &&
+        (x + radius < clip.x ||
+          x - radius > clip.x + clip.width ||
+          y + radius < clip.y ||
+          y - radius > clip.y + clip.height)
+      ) {
+        continue;
+      }
       // A fresh subpath per disc: an `arc` continuing from the previous
       // point would join the two with a line.
       ctx.moveTo(x + radius, y);

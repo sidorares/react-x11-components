@@ -89,20 +89,33 @@ looking for the missing prop:
   and it is already installed:
 
   ```ts
-  import ntk from 'react-x11/ntk';
+  import * as ntk from 'react-x11/ntk';
+
+  // A **named** export — `react-x11/ntk` re-exports ntk with `export *`,
+  // so it is not a property of the default one — and it is not in the
+  // declarations either, hence the structural cast.
+  const { decodeImage } = ntk as unknown as {
+    decodeImage(b: Uint8Array): {
+      width: number;
+      height: number;
+      data: Uint8Array;
+    };
+  };
+
   const decode = (bytes: Uint8Array) => {
-    const image = (
-      ntk as {
-        decodeImage(b: Uint8Array): {
-          width: number;
-          height: number;
-          data: Uint8Array;
-        };
-      }
-    ).decodeImage(bytes);
+    const image = decodeImage(bytes);
     return { width: image.width, height: image.height, data: image.data };
   };
   ```
+
+  **OpenStreetMap has no satellite layer**, and neither does this component:
+  OSM is map _data_, and the Foundation serves the vector tiles and the
+  standard raster style and nothing else. Aerial imagery in an OSM editor
+  comes from third parties — Esri, Bing, Maxar, Mapbox — under terms that
+  permit _tracing for OSM_ rather than redisplay, or from OpenAerialMap,
+  which is genuinely open (CC BY 4.0) but per-image rather than a global
+  pyramid. An imagery layer is a `MapSource` of your own, pointed at
+  whichever provider you have the rights to use, carrying their attribution.
 
 - **The attribution is not optional.** For OpenStreetMap-derived tiles it
   is a licence condition, so a source carries it and the map draws it in
@@ -360,10 +373,25 @@ real features and neither is a small one — a rotated viewport changes the
 tile cover, the label placement and every hit test — and the PRD records
 what they would take.
 
-**`maxZoom` on a source is the data, not the map.** OpenStreetMap cuts
-Shortbread to z14; a view at z17 draws z14 tiles at eight times their size,
-which is what every client does with that pyramid and why street detail
-stops sharpening past it.
+**`maxZoom` on a source is the data, not the map — and past it the map
+sub-tiles rather than stretches.** OpenStreetMap cuts Shortbread to z14. A
+view at zoom 20 does not draw one z14 tile at sixty-four times its size: the
+cover synthesizes z20 tiles, 4,096 of them share that one z14 fetch, and
+each is rasterized at its own natural size with the parent's geometry
+clipped to it. So a zoom-20 view is drawn at screen resolution from vector
+data, not upscaled from a bitmap — 1:1 up to about zoom 21, where the
+surface cap finally bites.
+
+What _does_ run out is the data: at zoom 20 one unit of a z14 tile's
+4,096-unit grid is already 16 device pixels across, so there is no more
+shape in the tile to draw. Six levels of synthesis is the cap, for that
+reason rather than for a rendering one.
+
+Cost, measured on a dense central-London tile: the whole z14 tile is 56 ms
+to rasterize; one of its four z15 cells is 37 ms, one of 256 z18 cells is
+7.7 ms, and one of 4,096 z20 cells is 6 ms — because a feature whose box
+misses the cell is skipped before it becomes a path. Deep zoom is _cheaper_
+per tile than shallow zoom, and only the handful on screen are ever built.
 
 **A missing tile, a 404 and an empty ocean are the same answer.** `null`
 from `load`, and the map draws its background there. Only a `load` that

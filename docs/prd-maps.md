@@ -176,7 +176,9 @@ Three caches, layered, and the whole performance argument is the layering.
    do not depend on where the camera is.
 2. **Up to two rendered `Surface`s per tile** — the one on screen and the
    one being drawn — each valid for a zoom _level_ and a style but not for a
-   camera position. So a **pan** composites the same surfaces at new
+   camera position. Past the source's own depth the cover synthesizes
+   tiles, so these are per _synthesized_ tile — 4,096 of them share one
+   zoom-14 fetch at zoom 20, and only the handful on screen are built. So a **pan** composites the same surfaces at new
    offsets, and a **fractional zoom** composites them scaled. Neither
    rasterizes anything. Only crossing an integer zoom does, and while it
    redraws, the previous picture stays up.
@@ -443,6 +445,47 @@ found by running the thing.
   enough out — which is the lesson rather than the fix. **A test that only
   ever looks at what it is drawing cannot find a coordinate-range bug**,
   and both regressions now zoom until they would have thrown.
+
+## Overzoom is sub-tiling, not stretching
+
+The first cut clamped the cover to the source's depth and let the composite
+stretch what it found. That is what every simple client does and it is
+visibly wrong past a couple of levels: OSM cuts Shortbread to zoom 14, so a
+zoom-21 view drew one tile rasterized at 2,048 pixels and stretched to
+131,072 — a **64× bitmap upscale** of data that had far more left in it.
+
+| zoom | before: raster → on screen | after |
+| ---: | -------------------------: | ----: |
+|   15 |         2048 → 2048 (1.0×) |  1.0× |
+|   17 |         2048 → 8192 (4.0×) |  1.0× |
+|   20 |         2048 → 65536 (32×) |  1.0× |
+|   21 |        2048 → 131072 (64×) |  1.0× |
+|   22 |       2048 → 262144 (128×) |  2.0× |
+
+Instead the cover goes up to six levels **deeper than the source cuts**, and
+the data for those tiles comes from their ancestor at the cut level. A
+zoom-20 tile is one cell of a 64×64 grid over one zoom-14 tile: one fetch,
+one parse, 4,096 possible renderings, each rasterized at its own natural
+size with the parent's geometry positioned by a negative origin and a span
+`64 ×` the surface.
+
+Two things make that affordable rather than 4,096 times the work:
+
+- **A feature whose box misses the cell is skipped before it becomes a
+  path.** The box came free from the geometry read. Measured on a dense
+  central-London tile: the whole z14 tile is 56 ms, one of its four z15
+  cells 37 ms, one of 256 z18 cells 7.7 ms, one of 4,096 z20 cells 6 ms. A
+  deep cell is _cheaper_ than a whole tile, and only the handful on screen
+  are ever built.
+- **The geometry is clipped, not just culled.** A feature that spans the
+  cell has vertices far outside it — a tile-wide polygon is 64 tiles wide in
+  the cell's pixels — and those coordinates overflow XRender's 16.16 fixed
+  point at 32,768 exactly as an unclipped overlay did. `src/maps/clip.ts` is
+  the two algorithms both paths now share.
+
+Six levels is the cap because the **data** runs out there: at zoom 20 one
+unit of a zoom-14 tile's 4,096-unit grid is 16 device pixels across, so
+there is no more shape in the tile to draw.
 
 ## What is not here
 

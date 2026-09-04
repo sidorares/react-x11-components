@@ -1,12 +1,16 @@
 // The tile cache: what has been loaded, what has been drawn, and what may
 // be thrown away.
 //
-// Two caches in one, because they are invalidated by different things and
-// a map that conflated them would redraw far too much:
+// Two caches in one, because they are invalidated by different things, are
+// keyed on different tiles, and a map that conflated them would redraw far
+// too much:
 //
 //  - **Data** — the parsed {@link VectorTile}, or a raster tile's pixels.
-//    Keyed on `source/z/x/y` and valid forever: a tile's contents do not
-//    depend on where the camera is.
+//    Keyed on the tile the *source* cuts and valid forever: a tile's
+//    contents do not depend on where the camera is. Past a source's
+//    `maxZoom` many renderings share one of these — 256 zoom-20 tiles are
+//    one zoom-14 fetch — which is what makes overzoom sharp instead of a
+//    stretched bitmap.
 //  - **A rendered `Surface`** — the tile's features rasterized once, at a
 //    size, in a style. Also independent of the camera's *position*, which
 //    is the whole point: panning composites the same surfaces at new
@@ -84,59 +88,91 @@ export interface TileRender {
   progressLayer: number;
 }
 
-/** One tile in the cache. */
-export interface CachedTile {
+/**
+ * What a source answered for one tile, shared by every rendering of it.
+ *
+ * Separate from {@link CachedTile} because past a source's `maxZoom` the
+ * two are not the same tile: a zoom-20 rendering draws a zoom-14 tile's
+ * data, and its two hundred and fifty-five neighbours draw the same one.
+ */
+export interface TileDataEntry {
   readonly key: string;
-  readonly sourceId: string;
   readonly tile: TileId;
   status: TileStatus;
   error: unknown;
   vector: VectorTile | null;
   raster: { width: number; height: number; data: Uint8Array } | null;
-  /**
-   * The rendering that is on screen. **Always finished**, which is the
-   * whole point of the pair.
-   *
-   * A tile is re-rasterized whenever its size, its style zoom or the cache
-   * generation moves — and above a source's `maxZoom` that is *every*
-   * integer zoom, because the same z14 tile serves 15, 16, 17 and on. Drawn
-   * in place, each of those clears the surface and leaves the tile blank
-   * for the six or so frames it takes to redraw: a visible flash per zoom
-   * step, and many more of them on a backend that paints more frames.
-   *
-   * So the new rendering goes into {@link drawing} and this one keeps being
-   * composited until it is ready to be replaced.
-   */
-  shown: TileRender | null;
-  /** The rendering being drawn, or null when there is nothing to draw. */
-  drawing: TileRender | null;
-  /** Frame counter of the last frame that wanted it — what eviction sorts
-   *  on. */
-  lastUsed: number;
   /** Cancels an in-flight load. */
   abort: (() => void) | null;
   /** How many times this tile's load has failed in a row. */
   attempts: number;
   /** `Date.now()` before which a failed tile is not asked for again. */
   retryAt: number;
+  /** Frame counter of the last frame that wanted it. */
+  lastUsed: number;
 }
 
-function emptyEntry(sourceId: string, tile: TileId, key: string): CachedTile {
-  return {
-    key,
-    sourceId,
-    tile,
-    status: 'idle',
-    error: null,
-    vector: null,
-    raster: null,
-    shown: null,
-    drawing: null,
-    lastUsed: 0,
-    abort: null,
-    attempts: 0,
-    retryAt: 0,
-  };
+/**
+ * One tile as the cover asked for it, and its renderings.
+ *
+ * The data behind it is `data`, which is this tile until the cover goes
+ * deeper than the source does. The status accessors read through, so
+ * everything that only wants "is there anything to draw" reads the same
+ * names it always did.
+ */
+export class CachedTile {
+  readonly key: string;
+  readonly sourceId: string;
+  readonly tile: TileId;
+  /** The source tile whose bytes this draws. Itself, or an ancestor. */
+  readonly data: TileDataEntry;
+  /** Where this tile sits inside `data`: cell `(x, y)` of `span × span`. */
+  readonly sub: { x: number; y: number; span: number };
+
+  /**
+   * The rendering that is on screen. **Always finished**, which is the
+   * whole point of the pair.
+   *
+   * A tile is re-rasterized whenever its size, its style zoom or the cache
+   * generation moves. Drawn in place, each of those clears the surface and
+   * leaves the tile blank for the six or so frames it takes to redraw: a
+   * visible flash, and many more of them on a backend that paints more
+   * frames. So the new rendering goes into {@link drawing} and this one
+   * keeps being composited until it is ready to be replaced.
+   */
+  shown: TileRender | null = null;
+  /** The rendering being drawn, or null when there is nothing to draw. */
+  drawing: TileRender | null = null;
+  /** Frame counter of the last frame that wanted it — what eviction sorts
+   *  on. */
+  lastUsed = 0;
+
+  constructor(
+    key: string,
+    sourceId: string,
+    tile: TileId,
+    data: TileDataEntry,
+    sub: { x: number; y: number; span: number },
+  ) {
+    this.key = key;
+    this.sourceId = sourceId;
+    this.tile = tile;
+    this.data = data;
+    this.sub = sub;
+  }
+
+  get status(): TileStatus {
+    return this.data.status;
+  }
+  get error(): unknown {
+    return this.data.error;
+  }
+  get vector(): VectorTile | null {
+    return this.data.vector;
+  }
+  get raster(): { width: number; height: number; data: Uint8Array } | null {
+    return this.data.raster;
+  }
 }
 
 export interface TileCacheOptions {
@@ -152,10 +188,10 @@ export interface TileCacheOptions {
    *  because re-parsing is 5-12 ms. */
   dataBudget?: number;
   /** Called when a load finishes, so the element can ask for a repaint. */
-  onChange?: (entry: CachedTile) => void;
+  onChange?: (entry: TileDataEntry) => void;
   /** Called once per failed load. A map whose tiles all fail looks exactly
    *  like a map that is still loading, so somebody has to be told. */
-  onError?: (entry: CachedTile) => void;
+  onError?: (entry: TileDataEntry) => void;
 }
 
 const DEFAULT_SURFACE_BUDGET = 128 * 1024 * 1024;
@@ -169,6 +205,8 @@ const DEFAULT_DATA_BUDGET = 192;
  */
 export class TileCache {
   private readonly _entries = new Map<string, CachedTile>();
+  /** The source's own tiles, shared by every rendering that draws one. */
+  private readonly _data = new Map<string, TileDataEntry>();
   private readonly _options: TileCacheOptions;
   private _frame = 0;
   private _surfaceBytes = 0;
@@ -212,33 +250,72 @@ export class TileCache {
   }
 
   /**
-   * The entry for a tile, asking the source for it if nothing has yet.
+   * The entry for a tile the cover asked for, and the data behind it,
+   * asking the source for that data if nothing has yet.
    *
-   * Marks it used by the current frame, which is what keeps it out of the
-   * next eviction.
+   * `dataTile` is the tile whose bytes serve this one — itself, until the
+   * cover goes deeper than the source cuts. Marks both used by the current
+   * frame, which is what keeps them out of the next eviction.
    */
-  want(source: MapSource, sourceId: string, tile: TileId): CachedTile {
+  want(
+    source: MapSource,
+    sourceId: string,
+    tile: TileId,
+    dataTile: TileId = tile,
+    sub: { x: number; y: number; span: number } = { x: 0, y: 0, span: 1 },
+  ): CachedTile {
+    const data = this._wantData(source, sourceId, dataTile);
     const key = this.key(sourceId, tile);
     let entry = this._entries.get(key);
     if (!entry) {
-      entry = emptyEntry(sourceId, tile, key);
+      entry = new CachedTile(key, sourceId, tile, data, sub);
       this._entries.set(key, entry);
     }
     entry.lastUsed = this._frame;
-    if (entry.status === 'idle') {
-      this._load(source, entry);
-    } else if (entry.status === 'error' && Date.now() >= entry.retryAt) {
+    return entry;
+  }
+
+  private _wantData(
+    source: MapSource,
+    sourceId: string,
+    tile: TileId,
+  ): TileDataEntry {
+    const key = this.key(sourceId, tile);
+    let data = this._data.get(key);
+    if (!data) {
+      data = {
+        key,
+        tile,
+        status: 'idle',
+        error: null,
+        vector: null,
+        raster: null,
+        abort: null,
+        attempts: 0,
+        retryAt: 0,
+        lastUsed: 0,
+      };
+      this._data.set(key, data);
+    }
+    data.lastUsed = this._frame;
+    if (data.status === 'idle') {
+      this._load(source, sourceId, data);
+    } else if (data.status === 'error' && Date.now() >= data.retryAt) {
       // A failed tile is retried, but on a backoff rather than on every
       // frame. Without it a source that is down — or an application whose
       // `load` throws on the first call, which is how this was found — is
       // asked for every visible tile sixty times a second, which is a
       // retry storm pointed at somebody else's servers.
-      this._load(source, entry);
+      this._load(source, sourceId, data);
     }
-    return entry;
+    return data;
   }
 
-  private _load(source: MapSource, entry: CachedTile): void {
+  private _load(
+    source: MapSource,
+    sourceId: string,
+    entry: TileDataEntry,
+  ): void {
     entry.status = 'loading';
     entry.error = null;
     // A **real** `AbortController` where the runtime has one. A look-alike
@@ -280,7 +357,7 @@ export class TileCache {
       // A load that finished after its tile was evicted must not resurrect
       // it: the entry is gone from the map, so writing to it would leak a
       // surface nothing composites.
-      if (aborted || this._entries.get(entry.key) !== entry) return;
+      if (aborted || this._data.get(entry.key) !== entry) return;
       entry.abort = null;
       fn();
       if (entry.status === 'error') this._options.onError?.(entry);
@@ -288,7 +365,7 @@ export class TileCache {
     };
     let result: TileData | Promise<TileData>;
     try {
-      result = source.load({ ...entry.tile, sourceId: entry.sourceId, signal });
+      result = source.load({ ...entry.tile, sourceId, signal });
     } catch (error) {
       settle(() => fail(error));
       return;
@@ -516,6 +593,16 @@ export class TileCache {
         this._drop(entry);
       }
     }
+    if (this._data.size > dataBudget) {
+      const all = [...this._data.values()].sort(
+        (a, b) => a.lastUsed - b.lastUsed,
+      );
+      for (const data of all) {
+        if (this._data.size <= dataBudget) break;
+        if (data.lastUsed >= this._frame) continue;
+        this._dropData(data);
+      }
+    }
   }
 
   private _dropSurface(entry: CachedTile): void {
@@ -532,21 +619,39 @@ export class TileCache {
   }
 
   private _drop(entry: CachedTile): void {
-    entry.abort?.();
     this._dropSurface(entry);
     this._entries.delete(entry.key);
+  }
+
+  /** Drop a source tile's bytes, and abort a load still in flight for it.
+   *  Only when no rendering still points at it. */
+  private _dropData(data: TileDataEntry): void {
+    for (const entry of this._entries.values()) {
+      if (entry.data === data) return;
+    }
+    data.abort?.();
+    this._data.delete(data.key);
   }
 
   /** Release everything. Called from the element's `destroySubtree`. */
   destroy(): void {
     for (const entry of [...this._entries.values()]) this._drop(entry);
     this._entries.clear();
+    for (const data of this._data.values()) data.abort?.();
+    this._data.clear();
     this._surfaceBytes = 0;
   }
 
   /** Every entry — for a test, and for the `onTiles` diagnostic. */
   entries(): IterableIterator<CachedTile> {
     return this._entries.values();
+  }
+
+  /** Every source tile whose bytes are held. What labels are collected
+   *  from: a label belongs to the tile the data came from, and past a
+   *  source's depth many renderings share one of those. */
+  dataEntries(): IterableIterator<TileDataEntry> {
+    return this._data.values();
   }
 }
 

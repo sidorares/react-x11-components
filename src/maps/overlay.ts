@@ -14,6 +14,8 @@
 // {@link geoJsonOverlays}) kept as pure functions beside it rather than as
 // props of the map. `docs/prd-maps.md` surveys what the real feeds look
 // like and why this is the shape they all reduce to.
+import { clipOf, clipRing, clipSegment } from './clip.js';
+import type { ClipRect } from './clip.js';
 import type { MapCanvas } from './paint.js';
 import { projectLngLat } from './proj.js';
 import type { LngLat, Transform } from './proj.js';
@@ -244,37 +246,6 @@ export function drawOverlays(
  * megametres of off-screen line is a bonus rather than the reason.
  */
 
-/** The clip window, in the same target pixels the path is built in. */
-interface ClipRect {
-  minX: number;
-  minY: number;
-  maxX: number;
-  maxY: number;
-}
-
-/**
- * How far outside the pane geometry is still kept.
- *
- * Not zero: a line clipped exactly at the edge would have its join and its
- * cap drawn at the boundary rather than outside it, which shows as a blunt
- * end against the pane's edge. A margin wider than any stroke this draws
- * puts those artefacts off-screen, and is still far inside the range that
- * overflows.
- */
-const CLIP_MARGIN = 256;
-
-function clipOf(
-  pane: { x: number; y: number; width: number; height: number },
-  scale: number,
-): ClipRect {
-  return {
-    minX: (pane.x - CLIP_MARGIN) * scale,
-    minY: (pane.y - CLIP_MARGIN) * scale,
-    maxX: (pane.x + pane.width + CLIP_MARGIN) * scale,
-    maxY: (pane.y + pane.height + CLIP_MARGIN) * scale,
-  };
-}
-
 /** A path projected into target pixels, as a flat `[x0, y0, x1, y1, …]`. */
 function projectPath(
   path: readonly LngLat[],
@@ -288,72 +259,6 @@ function projectPath(
     out.push((pane.x + point.x) * scale, (pane.y + point.y) * scale);
   }
   return out;
-}
-
-const INSIDE = 0;
-const LEFT = 1;
-const RIGHT = 2;
-const BOTTOM = 4;
-const TOP = 8;
-
-function outcode(x: number, y: number, clip: ClipRect): number {
-  let code = INSIDE;
-  if (x < clip.minX) code |= LEFT;
-  else if (x > clip.maxX) code |= RIGHT;
-  if (y < clip.minY) code |= BOTTOM;
-  else if (y > clip.maxY) code |= TOP;
-  return code;
-}
-
-/**
- * Cohen-Sutherland: the visible piece of one segment, or null.
- *
- * Chosen over Liang-Barsky because the common case here is a segment wholly
- * inside or wholly outside, and both are answered by one `&`/`|` of the two
- * endpoints' codes with no arithmetic at all.
- */
-function clipSegment(
-  ax: number,
-  ay: number,
-  bx: number,
-  by: number,
-  clip: ClipRect,
-): [number, number, number, number] | null {
-  let x0 = ax;
-  let y0 = ay;
-  let x1 = bx;
-  let y1 = by;
-  let code0 = outcode(x0, y0, clip);
-  let code1 = outcode(x1, y1, clip);
-  for (;;) {
-    if ((code0 | code1) === 0) return [x0, y0, x1, y1]; // both inside
-    if ((code0 & code1) !== 0) return null; // both beyond one edge
-    const code = code0 !== 0 ? code0 : code1;
-    let x = 0;
-    let y = 0;
-    if (code & TOP) {
-      x = x0 + ((x1 - x0) * (clip.maxY - y0)) / (y1 - y0);
-      y = clip.maxY;
-    } else if (code & BOTTOM) {
-      x = x0 + ((x1 - x0) * (clip.minY - y0)) / (y1 - y0);
-      y = clip.minY;
-    } else if (code & RIGHT) {
-      y = y0 + ((y1 - y0) * (clip.maxX - x0)) / (x1 - x0);
-      x = clip.maxX;
-    } else {
-      y = y0 + ((y1 - y0) * (clip.minX - x0)) / (x1 - x0);
-      x = clip.minX;
-    }
-    if (code === code0) {
-      x0 = x;
-      y0 = y;
-      code0 = outcode(x0, y0, clip);
-    } else {
-      x1 = x;
-      y1 = y;
-      code1 = outcode(x1, y1, clip);
-    }
-  }
 }
 
 /**
@@ -399,72 +304,6 @@ function strokeClipped(
     if (x1 !== points[i + 2] || y1 !== points[i + 3]) open = false;
   }
   if (drew) ctx.stroke();
-}
-
-/**
- * Sutherland-Hodgman: a ring clipped to the rectangle, in place of the
- * original.
- *
- * Rings rather than segments, because a fill needs a closed boundary: the
- * part of a polygon that crosses the window has to come back along the
- * window's edge, which segment clipping cannot produce. Winding is
- * preserved, so an interior ring stays an interior ring and the non-zero
- * fill still puts a hole where one belongs.
- */
-function clipRing(points: readonly number[], clip: ClipRect): number[] {
-  let output = [...points];
-  const edges: [
-    (x: number, y: number) => boolean,
-    (ax: number, ay: number, bx: number, by: number) => [number, number],
-  ][] = [
-    [
-      (x) => x >= clip.minX,
-      (ax, ay, bx, by) => [
-        clip.minX,
-        ay + ((by - ay) * (clip.minX - ax)) / (bx - ax),
-      ],
-    ],
-    [
-      (x) => x <= clip.maxX,
-      (ax, ay, bx, by) => [
-        clip.maxX,
-        ay + ((by - ay) * (clip.maxX - ax)) / (bx - ax),
-      ],
-    ],
-    [
-      (_x, y) => y >= clip.minY,
-      (ax, ay, bx, by) => [
-        ax + ((bx - ax) * (clip.minY - ay)) / (by - ay),
-        clip.minY,
-      ],
-    ],
-    [
-      (_x, y) => y <= clip.maxY,
-      (ax, ay, bx, by) => [
-        ax + ((bx - ax) * (clip.maxY - ay)) / (by - ay),
-        clip.maxY,
-      ],
-    ],
-  ];
-  for (const [inside, intersect] of edges) {
-    const input = output;
-    output = [];
-    if (input.length < 6) return [];
-    for (let i = 0; i < input.length; i += 2) {
-      const ax = input[i];
-      const ay = input[i + 1];
-      const bx = input[(i + 2) % input.length];
-      const by = input[(i + 3) % input.length];
-      const aIn = inside(ax, ay);
-      const bIn = inside(bx, by);
-      if (aIn) output.push(ax, ay);
-      if (aIn !== bIn) {
-        const [ix, iy] = intersect(ax, ay, bx, by);
-        output.push(ix, iy);
-      }
-    }
-  }
-  return output;
 }
 
 function appendRing(ctx: MapCanvas, ring: readonly number[]): boolean {

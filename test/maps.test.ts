@@ -25,6 +25,7 @@ import {
   MvtError,
   cameraForBounds,
   compileFilter,
+  dataTileFor,
   decodePolyline,
   distanceMetres,
   geoJsonOverlays,
@@ -40,6 +41,7 @@ import {
   resolveZoomed,
   shortbreadStyle,
   sourceZoomFor,
+  subTileOf,
   tileBounds,
   tileCover,
   tileOf,
@@ -280,6 +282,39 @@ test('the raster plan honours the memory cap', () => {
   // which is 256 MB for one tile.
   const raster = rasterFor(17, 14, pyramid, 2, 2048);
   assert.ok(raster.size <= 2048);
+});
+
+test('past its own depth a source is sub-tiled, not stretched', () => {
+  const pyramid = { minZoom: 0, maxZoom: 14, tileSize: DEFAULT_TILE_SIZE };
+  // Without an overzoom allowance the cover stops at the source's depth,
+  // which is what leaves one tile stretched sixty-four times at zoom 20.
+  assert.equal(sourceZoomFor(20, pyramid), 14);
+  // With one, the cover follows the camera and the data comes from the
+  // ancestor: 4,096 renderings of one fetch, each at its own natural size.
+  assert.equal(sourceZoomFor(20, pyramid, 6), 20);
+  const tile = tileOf(LONDON, 20);
+  const data = dataTileFor(tile, 14);
+  assert.equal(data.z, 14);
+  assert.deepEqual(data, tileOf(LONDON, 14));
+  const sub = subTileOf(tile, 14);
+  assert.equal(sub.span, 64, 'a zoom-20 tile is one cell of a 64×64 grid');
+  assert.ok(sub.x >= 0 && sub.x < 64 && sub.y >= 0 && sub.y < 64);
+  // The cell's own address round-trips: it is the cell of the data tile
+  // that contains it.
+  assert.equal((data.x << 6) + sub.x, tile.x);
+  assert.equal((data.y << 6) + sub.y, tile.y);
+  // A tile at or above the source's depth is its own data.
+  assert.deepEqual(dataTileFor(tileOf(LONDON, 12), 14), tileOf(LONDON, 12));
+  assert.equal(subTileOf(tileOf(LONDON, 12), 14).span, 1);
+  // And each of those cells rasterizes at its natural size rather than a
+  // fraction of a stretched one.
+  const deep = { ...pyramid, maxZoom: pyramid.maxZoom + 6 };
+  for (const zoom of [15, 18, 20]) {
+    const z = sourceZoomFor(zoom, deep);
+    const raster = rasterFor(zoom, z, deep, 2, 2048);
+    const screen = DEFAULT_TILE_SIZE * 2 ** (zoom - z) * 2;
+    assert.equal(raster.size, screen, `1:1 at zoom ${zoom}`);
+  }
 });
 
 test('fitBounds frames a box, and a point does not become an infinite zoom', () => {
@@ -1175,18 +1210,21 @@ test('a tile being redrawn keeps showing the old picture', async () => {
     frames.some((f) => f.ready > 0),
     'the tile was drawn at all',
   );
-  // Now every overzoom level, each of which re-rasterizes the same tile.
+  // Now the levels past the source's own depth. Each is a fresh set of
+  // synthesized tiles rather than a redraw of one — that is what makes an
+  // overzoomed map sharp — so what has to hold across them is that
+  // *something* is always on screen: a tile's own finished rendering, or
+  // the ancestor covering it while the finer ones draw.
   for (const zoom of [15, 16, 17]) {
     frames = [];
     (ref.current as MapHandle).zoomTo(zoom);
     await settle();
-    const redrawing = frames.filter((f) => f.pending > 0);
-    assert.ok(redrawing.length > 0, `zoom ${zoom} re-rasterized`);
-    for (const frame of redrawing) {
+    const working = frames.filter((f) => f.pending > 0);
+    assert.ok(working.length > 0, `zoom ${zoom} drew something new`);
+    for (const frame of working) {
       assert.ok(
-        frame.ready > 0,
-        `the tile went blank while being redrawn at zoom ${zoom}: ` +
-          JSON.stringify(frame),
+        frame.ready + frame.fromAncestor + frame.fromDescendant > 0,
+        `the map went blank at zoom ${zoom}: ${JSON.stringify(frame)}`,
       );
     }
   }
@@ -1304,19 +1342,26 @@ test('a frame that only continues a redraw claims a pixel, not the pane', async 
     redrawing.length >= 3,
     `the redraw took ${redrawing.length} frames`,
   );
-  // At most two frames repaint anything: the zoom's own (the view really
-  // did change) and the one where the new tile lands.
+  // Only two kinds of frame repaint anything: the zoom's own, because the
+  // view really did change, and one per tile as it lands. Everything
+  // between them is a wake-up that draws nothing. Zoom 15 against a
+  // zoom-14 source is four synthesized tiles, so the bound is theirs.
+  const tiles = Math.max(...frames.map((f) => f.tiles));
   const large = frames.filter(
     (f) => f.damage === null || f.damage.width * f.damage.height > 4096,
   );
   assert.ok(
-    large.length <= 2,
-    `${large.length} frames repainted the pane: ` +
+    large.length <= 1 + tiles,
+    `${large.length} frames repainted, for ${tiles} tiles: ` +
       frames
         .map((f) =>
           f.damage ? `${f.damage.width}x${f.damage.height}` : 'FULL',
         )
         .join(' '),
+  );
+  assert.ok(
+    frames.length - large.length >= 3,
+    'and most frames drew nothing at all',
   );
 });
 
@@ -1537,7 +1582,7 @@ test('a failed load is reported, and retried on a backoff rather than per frame'
   assert.match(failures[0], /502/);
   const entry = cache.peek('down', { z: 1, x: 0, y: 0 });
   assert.equal(entry?.status, 'error');
-  assert.ok((entry?.retryAt ?? 0) > Date.now(), 'a retry is scheduled');
+  assert.ok((entry?.data.retryAt ?? 0) > Date.now(), 'a retry is scheduled');
   cache.destroy();
 });
 
@@ -1554,15 +1599,15 @@ test('a load that succeeds after failing clears the backoff', async () => {
   const cache = new TileCache();
   cache.beginFrame();
   const entry = cache.want(source, 'flappy', { z: 1, x: 0, y: 0 });
-  assert.equal(entry.attempts, 1);
+  assert.equal(entry.data.attempts, 1);
   // Past the backoff.
-  entry.retryAt = 0;
+  entry.data.retryAt = 0;
   cache.beginFrame();
   cache.want(source, 'flappy', { z: 1, x: 0, y: 0 });
   await Promise.resolve();
   assert.equal(entry.status, 'ready');
   assert.equal(
-    entry.attempts,
+    entry.data.attempts,
     0,
     'the counter resets so the next blip is quick',
   );

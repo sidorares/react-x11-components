@@ -817,6 +817,22 @@ component does instead is make sure it is never _in a frame_.
 measurement; what follows is what the next scene element should take from
 it.
 
+**Overzoom is sub-tiling, not stretching.** The obvious implementation
+clamps the tile cover to the source's own depth and lets the composite
+scale what it finds, which is what every simple client does and is visibly
+wrong two levels in: OSM cuts to zoom 14, so a zoom-21 view was one tile
+rasterized at 2,048 pixels and stretched to 131,072. Instead the cover runs
+up to six levels _past_ the source, and those tiles take their data from the
+ancestor at the cut level — one fetch, 4,096 possible renderings, each at
+its natural size. It is affordable because a feature whose box misses the
+cell is skipped before it becomes a path (a deep cell measures _cheaper_
+than a whole tile: 6 ms against 56), and it is correct because the geometry
+is **clipped** as well as culled — a tile-wide polygon is sixty-four tiles
+wide in the cell's pixels, which overflows the same 16.16 fixed point an
+unclipped overlay did. `src/maps/clip.ts` is the pair of algorithms both
+paths share. The cap is six because the _data_ runs out there, not the
+renderer.
+
 **A hole is covered from whichever side has pixels, and there are two.**
 Zooming _in_, the tile already drawn is the target's ancestor — one
 composite, scaled up. Zooming _out_, the tiles already drawn are its
