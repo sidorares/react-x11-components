@@ -144,6 +144,16 @@ const MAX_OVERZOOM = 6;
  *  window covers four times the tiles it shows. */
 const COVER_PADDING = 256;
 
+/** The overlap of two rects, or null when they do not meet. */
+function intersectRects(a: ScreenRect, b: ScreenRect): ScreenRect | null {
+  const x = Math.max(a.x, b.x);
+  const y = Math.max(a.y, b.y);
+  const right = Math.min(a.x + a.width, b.x + b.width);
+  const bottom = Math.min(a.y + a.height, b.y + b.height);
+  if (right <= x || bottom <= y) return null;
+  return { x, y, width: right - x, height: bottom - y };
+}
+
 const timers = globalThis as {
   setTimeout?(fn: () => void, ms: number): unknown;
   clearTimeout?(id: unknown): void;
@@ -821,7 +831,30 @@ export class MapViewNode extends Node {
     ctx.save();
     ctx.beginPath();
     const box = this.contentBox();
-    ctx.rect(box.x, box.y, box.width, box.height);
+    // **The damage rect, not just the pane.**
+    //
+    // Everything below draws in pane coordinates — a tile at its own box,
+    // the whole label layer, every overlay and marker, the attribution —
+    // and a partial frame must not put any of it outside the rect it
+    // claimed. Core presents the claimed region; pixels drawn beyond it
+    // reach the backing store without reaching the screen, and the two
+    // then disagree until something repaints the lot. That is what a
+    // stale strip of the *previous style* surviving a theme switch is,
+    // and why an app switch or a window drag clears it: those force a
+    // full expose, which presents everything.
+    //
+    // It is also most of the cost of a wake frame. A frame that only
+    // continues a rasterization claims one pixel and used to redraw every
+    // label and marker on the map into it.
+    const clip = this._frameClip
+      ? intersectRects(box, this._deviceRect(this._frameClip))
+      : box;
+    if (!clip) {
+      this._painting = false;
+      this._frameClip = null;
+      return;
+    }
+    ctx.rect(clip.x, clip.y, clip.width, clip.height);
     ctx.clip();
 
     // The style's background under everything: it is what the parts of the

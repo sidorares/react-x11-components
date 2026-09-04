@@ -21,6 +21,7 @@ import {
   DEFAULT_TILE_SIZE,
   GeometryBuffer,
   MAPVIEW_ELEMENT,
+  MapViewNode,
   Map as MapView,
   MvtError,
   cameraForBounds,
@@ -59,6 +60,7 @@ import {
   wrapTileX,
 } from '../src/maps/index.js';
 import type {
+  LngLat,
   MapFrameStats,
   MapHandle,
   MapMarker,
@@ -87,6 +89,12 @@ const DRIVEN: RenderX11Options = {
   height: 480,
 };
 const LONDON = { lon: -0.1281, lat: 51.508 };
+interface ScreenRectLike {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
 const TOKYO = { lon: 139.7004, lat: 35.69 };
 
 // --- the projection --------------------------------------------------------
@@ -2258,6 +2266,129 @@ test('a 256px source is read one level deeper, at its natural size', () => {
   assert.equal(v.tile.z, 12);
   assert.equal(r.size, 256);
   assert.equal(v.size, 512);
+});
+
+// A frame must not draw outside the rect it claimed.
+//
+// Everything in `paint` works in pane coordinates — a tile at its own box,
+// the whole label layer, every overlay and marker, the attribution — so a
+// partial frame that clips only to the pane puts most of that outside its
+// claim. Core presents the claimed region, so those pixels reach the
+// backing store without reaching the screen and the two disagree until
+// something repaints the lot. The visible form is a stale strip that
+// survives a theme switch and clears on an app switch, which is a long way
+// from the code that causes it; this asserts the invariant instead.
+test('a partial frame clips its drawing to what it claimed', async () => {
+  const clips: ScreenRectLike[] = [];
+  const damages: (ScreenRectLike | null)[] = [];
+  const markers: MapMarker[] = [
+    { id: 'a', position: LONDON, shape: 'circle', size: 12 },
+  ];
+  const ref = React.createRef<MapHandle>();
+  // Referentially stable: a new function identity every render is itself a
+  // prop change, and this test is about the smallest claim there is.
+  const onFrame = (stats: MapFrameStats): void => {
+    damages.push(stats.damage ? { ...stats.damage } : null);
+  };
+  // Stable identities throughout: only `markers` may differ between the two
+  // renders, or a prop that is not self-damaged makes the commit claim the
+  // whole node and there is no partial frame to test.
+  const camera = { center: LONDON, zoom: 12 };
+  const render = (at: LngLat) =>
+    React.createElement(MapView, {
+      ref,
+      defaultCamera: camera,
+      'data-testname': 'map',
+      markers: [{ ...markers[0], position: at }],
+      onFrame,
+    });
+  const result = await renderX11(render(LONDON), {
+    backend: 'xserver',
+    width: 400,
+    height: 300,
+  });
+  await act(async () => {});
+
+  // Record the clip each frame installs. `rect` is the call `paint` makes
+  // immediately before `clip()`, so the last one before a clip is the
+  // frame's own.
+  // Recorded only while the map's own `paint` is running, and only the
+  // first clip of each frame — the outermost one, which is the frame's.
+  // Other nodes clip too (the window clips to itself) and so do the marker
+  // and label passes inside, so neither the instance nor a bare prototype
+  // patch says anything on its own.
+  const proto = Object.getPrototypeOf(result.ctx as object) as {
+    rect(x: number, y: number, w: number, h: number): void;
+    clip(...args: unknown[]): void;
+  };
+  const realRect = proto.rect;
+  const realClip = proto.clip;
+  const nodeProto = MapViewNode.prototype as unknown as {
+    paint(ctx: unknown): void;
+  };
+  const realPaint = nodeProto.paint;
+  let painting = false;
+  let first = true;
+  let last: ScreenRectLike | null = null;
+  nodeProto.paint = function patched(this: unknown, ctx: unknown) {
+    painting = true;
+    first = true;
+    try {
+      return realPaint.call(this, ctx);
+    } finally {
+      painting = false;
+    }
+  };
+  proto.rect = function patched(this: unknown, x, y, w, h) {
+    if (painting) last = { x, y, width: w, height: h };
+    return realRect.call(this, x, y, w, h);
+  };
+  proto.clip = function patched(this: unknown, ...args) {
+    if (painting && first && last) {
+      clips.push(last);
+      first = false;
+    }
+    last = null;
+    return realClip.apply(this, args);
+  };
+
+  // Moving one marker claims only the marker's own rects — the smallest
+  // real claim this component makes.
+  damages.length = 0;
+  clips.length = 0;
+  await act(async () => {
+    await result.rerender(render({ lon: LONDON.lon + 0.004, lat: LONDON.lat }));
+  });
+  await act(async () => {});
+
+  proto.rect = realRect;
+  proto.clip = realClip;
+  nodeProto.paint = realPaint;
+
+  const partial = damages.filter(
+    (d): d is ScreenRectLike => d !== null && d.width < 400 && d.height < 300,
+  );
+  assert.ok(partial.length > 0, 'the marker move claimed a partial rect');
+  // The map must install a clip that *is* its claim. Other nodes clip too —
+  // the window clips to itself — so this looks for the map's own, and its
+  // absence is the bug: before this, `paint` clipped to the whole pane and
+  // drew the label layer, the overlays, the markers and the attribution
+  // across all of it on a frame that had claimed a marker.
+  for (const damage of partial) {
+    const match = clips.find(
+      (c) =>
+        Math.abs(c.x - damage.x) <= 1 &&
+        Math.abs(c.y - damage.y) <= 1 &&
+        Math.abs(c.width - damage.width) <= 2 &&
+        Math.abs(c.height - damage.height) <= 2,
+    );
+    assert.ok(
+      match,
+      `no clip matched the ${damage.width}x${damage.height} claim at ` +
+        `${damage.x},${damage.y}; clips were ` +
+        clips.map((c) => `${c.x},${c.y} ${c.width}x${c.height}`).join(' | '),
+    );
+  }
 });
 
 // --- sources ---------------------------------------------------------------
