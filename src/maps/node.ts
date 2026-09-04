@@ -1089,13 +1089,28 @@ export class MapViewNode extends Node {
   }
 
   /**
-   * Composite one tile's surface.
+   * Composite one tile's surface, clipped to the pane.
    *
-   * The destination edges are **rounded independently**, so two tiles that
+   * Two things this has to get right, and they pull in different
+   * directions.
+   *
+   * **The destination edges are rounded independently**, so two tiles that
    * share an edge round it to the same device pixel and abut exactly. Round
    * the origin and the size instead and adjacent tiles differ by a pixel
    * wherever the fractional zoom lands, which draws a grid of hairlines
    * across the map — the classic tiled-renderer seam.
+   *
+   * **And the destination is clipped before it is handed over**, because
+   * XRender takes composite coordinates as **int16** and an overzoomed tile
+   * is far larger than the pane: at zoom 22 against a pyramid that stops at
+   * 14, one tile is `512 · 2^8` = 131,072 logical pixels across, so a tile
+   * that overlaps the pane can start 73,000 pixels outside it. Unclipped
+   * that is a `RangeError` from `x11/lib/ext/render.js` thrown inside
+   * `paint`, which is the same shape of bug as the unclipped overlay and a
+   * different limit — 32,767 rather than the stroke path's 16.16 fixed
+   * point. Clipping the destination and moving the source rectangle to
+   * match keeps the scale factor `sw/dw` exactly what it was, so nothing
+   * about the picture changes.
    */
   private _composite(
     ctx: MapCanvas,
@@ -1114,18 +1129,29 @@ export class MapViewNode extends Node {
     const x1 = Math.round((pane.x + entry.x + entry.size) * scale);
     const y1 = Math.round((pane.y + entry.y + entry.size) * scale);
     if (x1 <= x0 || y1 <= y0) return;
+
+    // The clip is the content box — device pixels, like everything core
+    // hands an element — so what survives is bounded by the window.
+    const box = this.contentBox();
+    const cx0 = Math.max(x0, Math.floor(box.x));
+    const cy0 = Math.max(y0, Math.floor(box.y));
+    const cx1 = Math.min(x1, Math.ceil(box.x + box.width));
+    const cy1 = Math.min(y1, Math.ceil(box.y + box.height));
+    if (cx1 <= cx0 || cy1 <= cy0) return;
+
     const span = size / subSpan;
-    ctx.drawImage(
-      surface,
-      subX * span,
-      subY * span,
-      span,
-      span,
-      x0,
-      y0,
-      x1 - x0,
-      y1 - y0,
-    );
+    // Source pixels per destination pixel. Preserved exactly by the
+    // clipping below, which is what keeps the composite's scale right.
+    const kx = span / (x1 - x0);
+    const ky = span / (y1 - y0);
+    const sx = subX * span + (cx0 - x0) * kx;
+    const sy = subY * span + (cy0 - y0) * ky;
+    // Clamped to the surface: a rounding of the destination edges must not
+    // sample a pixel that is not there.
+    const sw = Math.min((cx1 - cx0) * kx, size - sx);
+    const sh = Math.min((cy1 - cy0) * ky, size - sy);
+    if (!(sw > 0) || !(sh > 0)) return;
+    ctx.drawImage(surface, sx, sy, sw, sh, cx0, cy0, cx1 - cx0, cy1 - cy0);
   }
 
   /**

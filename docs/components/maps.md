@@ -320,7 +320,19 @@ frame — a source that is down would otherwise be asked for every visible
 tile sixty times a second, which is a retry storm pointed at somebody
 else's servers.
 
-**Overlay geometry is clipped to the viewport, and it has to be.** An
+**Everything is clipped to the viewport, and it has to be.** Two separate
+limits, both in XRender and both reached in ordinary use:
+
+- **Tile composites are int16.** An overzoomed tile dwarfs the pane — at
+  zoom 22 against a pyramid that stops at 14, one tile is `512 · 2^8` =
+  131,072 logical pixels across — so a tile that overlaps the pane can start
+  73,000 pixels outside it. The destination rectangle is clipped and the
+  source rectangle moved to match, which leaves the scale factor exactly
+  what it was.
+- **Overlay geometry is 16.16 fixed point**, which overflows a signed 32-bit
+  word at 32,768.
+
+**Overlay geometry, in particular.** An
 overlay is geography, so a route's far end stays where it is when the camera
 zooms in on one corner of it — and a world is `512 · 2^zoom` pixels across,
 which at zoom 20 is 134 million. ntk hands a stroke's geometry to XRender in

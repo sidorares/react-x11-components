@@ -889,7 +889,13 @@ pixel-identical to one still loading. Hence `onTileError`,
 `MapFrameStats.errors`, and a retry backoff (the same bug had every visible
 tile re-asked once a frame, pointed at somebody else's servers).
 
-**And a third that only a deep zoom found: clip overlay geometry.** An
+**And a third that only a deep zoom found: clip everything, and know which
+limit you are near.** Two of them, in XRender, reached in ordinary use — a
+tile composite's coordinates are **int16**, and a stroke's geometry is
+**16.16 fixed point**, so 32,767 either way but for different reasons and on
+different paths. An overzoomed tile is the first: at zoom 22 against a z14
+pyramid a tile is 131,072 logical pixels across, so one that overlaps the
+pane starts 73,000 pixels outside it. Overlay geometry is the second. An
 overlay is geography, so its far end stays put as the camera zooms into one
 corner of it, and a world is `512 · 2^zoom` pixels — 134 million at zoom 20.
 ntk hands a stroke's geometry to XRender in 16.16 fixed point, which
@@ -897,9 +903,12 @@ overflows a signed 32-bit word at 32,768, so an unclipped route is a
 `RangeError` out of `x11/lib/ext/render.js` thrown from inside `paint`,
 where no application can catch it. `src/maps/overlay.ts` clips lines
 segment-wise, rings as rings (a fill needs a closed boundary, which segment
-clipping cannot give it) and an over-large circle as a clipped ring. **Any
+clipping cannot give it) and an over-large circle as a clipped ring;
+`MapViewNode._composite` clips the destination rectangle and moves the
+source rectangle to match, which leaves the scale factor untouched. **Any
 element that draws application-supplied geometry in a zoomable viewport has
-this bug until it clips.**
+both bugs until it clips**, and a test that only ever frames what it draws
+will never find either — the regressions here zoom until they would throw.
 
 **Two traps specific to real tile data**, both found by running the decoder
 over half a million real features and both now pinned by tests. `extent` is

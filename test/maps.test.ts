@@ -1015,6 +1015,72 @@ test('an overlay entirely off screen draws nothing at all', () => {
   assert.equal(recorder.fills, 0);
 });
 
+test('tiles composite without overflowing at extreme overzoom', async () => {
+  // The second overflow, and a different limit from the overlay one:
+  // XRender takes *composite* coordinates as int16, and an overzoomed tile
+  // dwarfs the pane — at zoom 22 against a pyramid that stops at 14 a tile
+  // is 512·2^8 = 131,072 logical pixels across, so a tile that overlaps the
+  // pane can start 73,000 pixels outside it. Real pixels, because the
+  // check that matters lives in the X client's request encoder.
+  const source: MapSource = {
+    id: 'deep',
+    minZoom: 0,
+    maxZoom: 14,
+    tileSize: 512,
+    load: () => ({
+      kind: 'vector',
+      data: tileBytes([
+        layer({
+          name: 'ocean',
+          keys: [],
+          values: [],
+          features: [
+            {
+              type: GeomType.Polygon,
+              tags: [],
+              geometry: [
+                ...command(1, 1),
+                zigzag(0),
+                zigzag(0),
+                ...command(2, 3),
+                zigzag(4096),
+                zigzag(0),
+                zigzag(0),
+                zigzag(4096),
+                zigzag(-4096),
+                zigzag(0),
+                ...command(7, 0),
+              ],
+            },
+          ],
+        }),
+      ]),
+    }),
+  };
+  const ref = React.createRef<MapHandle>();
+  await renderX11(
+    React.createElement(MapView, {
+      ref,
+      sources: [source],
+      defaultCamera: { center: LONDON, zoom: 14 },
+      'data-testname': 'map',
+    }),
+    { backend: 'xserver', width: 500, height: 380 },
+  );
+  const handle = ref.current as MapHandle;
+  for (let step = 0; step < 10; step++) {
+    handle.zoomIn(1);
+    await act(async () => {});
+    await act(async () => {});
+  }
+  assert.ok(
+    handle.getCamera().zoom >= 22,
+    `reached ${handle.getCamera().zoom}`,
+  );
+  const stats = handle.stats();
+  assert.ok(stats && stats.ready + stats.fromAncestor > 0, 'tiles composited');
+});
+
 test('a map paints without throwing at the zoom where coordinates overflow', async () => {
   // The integration form of the above, and the one that reproduces the
   // original report: a few zoom steps in, `paint` threw a `RangeError` out

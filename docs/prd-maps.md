@@ -372,14 +372,27 @@ found by running the thing.
   first report was a screenshot of an empty map. `onTileError` and
   `MapFrameStats.errors` exist because of it, and the retry moved to a
   backoff because the same bug had every visible tile re-asked once a frame.
-- **Overlay geometry was not clipped.** Three or four zoom steps in, `paint`
-  threw `RangeError` out of `x11/lib/ext/render.js`: an overlay is
+- **Nothing was clipped to the viewport**, and it turned out to be two bugs
+  with two different limits, both thrown from inside `paint` where no
+  application can catch them.
+
+  Three or four zoom steps in, an **overlay** overflowed: an overlay is
   geography, a world is `512 · 2^zoom` pixels (134 million at zoom 20), and
   ntk hands a stroke to XRender in 16.16 fixed point, which overflows a
-  signed 32-bit word at 32,768. Every headless test framed its overlays, so
-  none of them had a vertex far enough out. Lines are now cut segment by
-  segment, rings clipped as rings, and an over-large circle drawn as a
-  clipped ring.
+  signed 32-bit word at 32,768. Lines are now cut segment by segment, rings
+  clipped as rings, and an over-large circle drawn as a clipped ring.
+
+  Past zoom 20 the **tile composite** overflowed, on a different limit:
+  XRender takes composite coordinates as int16, and an overzoomed tile
+  dwarfs the pane — at zoom 22 against a pyramid that stops at 14 a tile is
+  131,072 logical pixels across, so one that overlaps the pane starts
+  73,000 pixels outside it. The destination is clipped and the source
+  rectangle moved to match, which leaves `sw/dw` exactly what it was.
+
+  Every headless test framed its content, so none of them had anything far
+  enough out — which is the lesson rather than the fix. **A test that only
+  ever looks at what it is drawing cannot find a coordinate-range bug**,
+  and both regressions now zoom until they would have thrown.
 
 ## What is not here
 
