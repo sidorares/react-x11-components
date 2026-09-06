@@ -420,11 +420,14 @@ export interface ReorderListProps {
   /**
    * The ghost that follows the pointer while an item is held.
    *
-   * `'auto'` (the default, and what `true` means) is a `<popup>`: a window
-   * of its own, so it follows the pointer out of the list, out of the
-   * window, and over other applications. `'inline'` draws it as a box
-   * inside the list instead — clipped to the window, and one fewer window
-   * per drag, which a remote display may prefer. `false` leaves only the
+   * `'auto'` (the default, and what `true` means) is a `<popup>` — a window
+   * of its own, so it follows the pointer out of the list and over other
+   * applications — **except** where the platform owns the drag and would
+   * deliver it to that popup instead of to the list, and then it is drawn
+   * inside the list. See {@link nativeDragSession}, which is where the
+   * reason is written down.
+   *
+   * `'popup'` and `'inline'` pin it either way; `false` leaves only the
    * cursor and the indicator.
    */
   preview?: boolean | 'auto' | 'popup' | 'inline';
@@ -620,12 +623,38 @@ function inertItem(
 // --- helpers ----------------------------------------------------------------
 
 /** What `DrawnNode` does not declare and a drag has to read: the display
- *  scale `abs` is in, and the props a press landed on. The same widening
- *  `<Tabs>` makes to measure its strip: a ref's public contract is geometry
- *  and focus. */
+ *  scale `abs` is in, the props a press landed on, and the owning window —
+ *  which is where "who picks the drop target here?" is answered. The same
+ *  widening `<Tabs>` makes to measure its strip: a ref's public contract is
+ *  geometry and focus. */
 interface OpaqueNode {
   scale?: number;
   props?: Record<string, unknown>;
+  root?: { window?: { beginDrag?: unknown } } | null;
+}
+
+/**
+ * Does the platform own this window's drags — and so pick the window a drop
+ * is delivered to?
+ *
+ * `beginDrag` on the ntk window is the exact condition core's
+ * `DragSession._start` branches on before handing a gesture to AppKit, so
+ * this asks about the code path rather than about a backend's name.
+ *
+ * It decides where the ghost is drawn, and the reason is not cosmetic. Core
+ * gives **every top-level window** drop machinery, a `<popup>` included, so
+ * a preview popup registers itself as a dragging destination. On X11 that is
+ * harmless — core's own router skips a `dragPreview` window when it looks
+ * for the target. On a backend where the platform picks the destination, the
+ * preview is the frontmost window under the pointer for the whole gesture,
+ * so it takes the hover and the drop that the list should have had: no
+ * insertion line, and a drop that lands on nothing. Drawing the ghost inside
+ * the list instead creates no window, so there is nothing to intercept it.
+ * Filed as react-x11#488; when it is fixed this becomes a popup everywhere.
+ */
+function nativeDragSession(node: DrawnNode | null): boolean {
+  const window = (node as (DrawnNode & OpaqueNode) | null)?.root?.window;
+  return typeof window?.beginDrag === 'function';
 }
 
 function scaleOf(node: DrawnNode | null): number {
@@ -1770,9 +1799,14 @@ export function ReorderItem(props: ReorderItemProps): ReactElement {
     y: position.y - grab.current.y,
   };
   if (isDragging && ghostAt) lastGhost.current = ghostAt;
-  // Where the ghost is drawn. A popup can leave the window and draws over
-  // other applications; an in-window copy cannot, and is the opt-in.
-  const mode = list.preview === 'auto' ? 'popup' : list.preview;
+  // Where the ghost is drawn — a popup unless one would take the drop the
+  // list is meant to get. `nativeDragSession` has the whole reason.
+  const mode =
+    list.preview === 'auto'
+      ? nativeDragSession(nodeRef.current)
+        ? 'inline'
+        : 'popup'
+      : list.preview;
   /** The item's own origin on screen, which turns a pointer position into an
    *  offset inside the item — what an inline ghost is placed by, and what the
    *  drop flight eases to zero. */

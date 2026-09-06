@@ -788,6 +788,17 @@ and drop:
   list that would rather not open a window per drag, and `transparent` on the
   preview popup — without it a rounded card shows the window's own ground in
   the corners its radius gives up.
+- **Drive the transport when you cannot drive the backend.** The follow-up
+  bug — a `<popup dragPreview>` registering as a _dragging destination_ on
+  cocoa and swallowing the drop meant for the window under it
+  (react-x11#488) — was found in seconds by rendering `<ReorderList>` into a
+  real `CocoaApp` over the recording fake bridge core's own
+  `test/cocoa-dnd.test.js` uses, and driving `drag-enter`/`drag-over`/
+  `drag-perform` by hand. Trying to drive a real cocoa session with
+  synthetic CGEvents took an afternoon and never separated the product's
+  behaviour from the rig's. Core's cocoa modules are not on its exports map,
+  so a scratch script reaches them by file URL; that is fine for
+  investigation and not for a committed test.
 - **Core arms a drag from the nearest draggable ancestor**, so a press on a
   control inside a draggable drags the ancestor. The layer's answer is to
   remember the press target (`onMouseDownCapture`) and cancel at the

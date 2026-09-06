@@ -597,6 +597,44 @@ pointer on both backends now, and because a popup on cocoa is a
 non-activating panel above other applications' windows, it is also the drag
 image the desktop sees.
 
+And then the same lesson arrived a second time, from the other side. With
+2.8.0 in and the drag visible again, the popup ghost was made the default on
+both backends — and on cocoa the list still would not reorder, the drop
+highlight almost never appeared, and the release stalled for about a second.
+
+The cause is one line's worth of asymmetry, and it is the same `dragPreview`
+prop as before. Core gives **every top-level window** drop machinery, and a
+`<popup>` is one, so the preview registers itself as a dragging destination.
+On X11 that is harmless because core picks the drop target itself and skips
+preview windows (`topLevelAt`). On cocoa AppKit picks it — and the preview,
+following the pointer at the pop-up-menu window level, is the frontmost
+registered window under the pointer for the whole gesture. It takes the
+hover and the drop that the list was meant to get. Filed as
+[react-x11#488](https://github.com/sidorares/react-x11/issues/488).
+
+That was found the way the first one should have been: **headlessly, over the
+recording fake bridge core's own `test/cocoa-dnd.test.js` uses**, driving the
+real `CocoaApp` through a whole drag against a real `<ReorderList>`. It shows
+the second window and the extra registration directly —
+
+```
+preview = popup                       preview = inline
+windows=2 (list=1)                    windows=1 (list=1)
+registerDropTypes: [1, 1, 5]          registerDropTypes: [1, 1]
+  window 5 popup=true  <- the ghost
+```
+
+— and it is repeatable in a second, where driving a real cocoa session with
+synthetic CGEvents took an afternoon and still could not separate the
+product's behaviour from the rig's. **The lesson worth keeping: when a
+backend cannot be driven by hand, drive its transport.** Core's fake-bridge
+tests are the seam for that, and this package can use it without owning it.
+
+So `'auto'` is the popup where react-x11 tracks the drag and the in-window
+box where the platform does, probed on `typeof window.beginDrag ===
+'function'` — the condition `DragSession._start` itself branches on. When
+#488 is fixed the branch collapses back to a popup everywhere.
+
 What survives from the workaround, on merit rather than necessity:
 
 - **`preview: 'auto' | 'popup' | 'inline' | false`.** `'auto'` is the popup
