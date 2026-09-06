@@ -566,35 +566,51 @@ absolutely positioned box inside the item with `pointerEvents: 'none'`,
 easing an offset to zero, which cannot take an input the list should have
 had.
 
-### The ghost cannot be a popup everywhere
+### The ghost, and the drag that could not be seen
 
 The first cut drew the ghost in a `<popup dragPreview>`, which is what
-core's own reference shows and what works on X11. It draws nothing at all on
-the cocoa backend, and the reason is structural rather than a bug to fix
-here: once the press crosses the threshold core hands the gesture to
-AppKit's own dragging session, and from there the pointer's motion belongs
-to the platform — a popup is never told where it went. AppKit carries a
-drag image of its own, and core has not yet given it one, so the drag has no
-visible subject.
+core's reference shows. On the cocoa backend it drew nothing: the gesture
+worked, the drop landed, and the user saw only the cursor.
 
-So `preview` grew from a boolean to `'auto' | 'popup' | 'inline' | false`,
-and the default asks the window which path its drags take —
-`typeof window.beginDrag === 'function'`, the same condition core's
-`DragSession._start` branches on. Probing the _code path_ rather than a
-backend name is the point: what matters is whether this drag will be the
-platform's, and that is the condition that decides it.
+The diagnosis from this side was half right and worth keeping as a method
+note. What was visible from here — `dragPreview` is consulted only on the
+X11 hit-test path, and cocoa's `dragSpec` builds pasteboard items with no
+image — was true, and led to a layer workaround: draw the ghost as a box
+inside the window instead, chosen by probing the code path the drag would
+take. The reasoning was sound and the conclusion was still wrong, because
+the actual cause was one level down: **AppKit's tracking loop owns the
+thread from the threshold to the release**. No timer of ours fires, no frame
+clock ticks, and not even a microtask drains, so _nothing_ an application
+renders during a drag reaches the screen — an in-window box no more than a
+popup. The workaround could not have worked, and the only reason to believe
+it might was that it had not been run on the backend in question.
 
-The in-window ghost is the drop flight's box with a different offset, which
-is why it cost almost nothing to add: absolutely positioned, `pointerEvents:
-'none'`, with the item lifted over its neighbours so the copy is not painted
-under the next row. It cannot leave the window, which a popup can, and that
-is the whole trade — `'popup'` and `'inline'` pin either half of it.
+The lesson is the one this repository keeps relearning: **a fix for a
+platform you cannot run is a hypothesis.** Filing it upstream
+([react-x11#482](https://github.com/sidorares/react-x11/issues/482)) with
+what was actually observed — rather than only shipping the workaround — is
+what got it fixed properly, in core 2.8.0
+([#484](https://github.com/sidorares/react-x11/pull/484)): a drag's frames
+are painted from the callback that reports them, and its renders are
+dispatched at discrete priority and flushed there. The preview follows the
+pointer on both backends now, and because a popup on cocoa is a
+non-activating panel above other applications' windows, it is also the drag
+image the desktop sees.
 
-The half that is genuinely core's is the drag image an item dragged _out_ of
-the application should carry on the cocoa backend; filed as
-[react-x11#482](https://github.com/sidorares/react-x11/issues/482). Nothing
-here is blocked on it: an in-app reorder, which is what this component is
-for, is visible on both backends now.
+What survives from the workaround, on merit rather than necessity:
+
+- **`preview: 'auto' | 'popup' | 'inline' | false`.** `'auto'` is the popup
+  everywhere; `'inline'` stays as the opt-in for a list that would rather
+  not open a window per drag — a remote display — and accepts that the copy
+  stops at the window's edge. It costs one branch, and it is the same box
+  the drop flight already needed.
+- **The popup is `transparent`.** A rounded card in an opaque window shows
+  the window's ground in the corners the radius gives up. Core's own example
+  was fixed the same way in the same release.
+
+The floor is therefore react-x11 **^2.8.0**, and that is a real floor rather
+than tidiness: on 2.7.0 a cocoa drag is invisible whatever this component
+does.
 
 ## Open questions
 

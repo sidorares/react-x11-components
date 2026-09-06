@@ -1840,20 +1840,19 @@ test('preview="inline" draws the ghost in the list, following the pointer', asyn
   assert.ok(screen.queryByTestName('l-a-preview') === null);
 });
 
-test('preview="auto" is a popup where a popup follows the pointer', async () => {
-  // the in-process X server has no native drag session, so `auto` resolves
-  // to the popup — the same answer the X11 backend gives an application
+test('preview="auto" is a popup, and a transparent one', async () => {
   await mount(view(h(List, { name: 'l', items: ['a', 'b'] })));
-  const a = item('l', 'a');
-  await dragTo(a, item('l', 'b'), { dy: 10 });
-  const ghost = screen.getByTestName('l-a-preview');
+  await dragTo(item('l', 'a'), item('l', 'b'), { dy: 10 });
+  const ghost = retained(screen.getByTestName('l-a-preview'));
   // a `<popup>` is a window node placed in screen coordinates — written
   // inside the item's element tree, but a window of its own, which is what
-  // lets it leave the list
-  assert.strictEqual(retained(ghost).kind, 'window');
-  assert.strictEqual(typeof retained(ghost).props.x, 'number');
-  assert.strictEqual(retained(ghost).style.position, undefined);
-  void a;
+  // lets it leave the list and draw over other applications
+  assert.strictEqual(ghost.kind, 'window');
+  assert.strictEqual(typeof ghost.props.x, 'number');
+  assert.strictEqual(ghost.style.position, undefined);
+  // and transparent, because the card inside it is rounded: an opaque
+  // window shows its own ground in the corners the radius gives up
+  assert.strictEqual(ghost.props.transparent, true);
   await release(item('l', 'b'), { dy: 10 });
 });
 

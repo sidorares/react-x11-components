@@ -55,6 +55,11 @@
 //    a drop by less than the animation lands on it instead of on the list.
 //    An absolutely positioned box with `pointerEvents: 'none'` cannot take
 //    an input the list should have had.
+//  - **The ghost popup is `transparent`.** It is a real window, and the card
+//    inside it is rounded, so on an opaque popup the four corners the radius
+//    gives up show the window's own ground — white on a light theme, near
+//    black on a dark one. Where no compositor runs the window fills itself
+//    square, which is what an opaque one looked like anyway.
 //  - **Every item (or its handle) is a tab stop.** An item is arbitrary
 //    content, often with controls of its own; the Tree/Table model of one
 //    tab stop with a cursor would leave a button inside a card unreachable.
@@ -415,11 +420,12 @@ export interface ReorderListProps {
   /**
    * The ghost that follows the pointer while an item is held.
    *
-   * `'auto'` (the default, and what `true` means) draws it in a `<popup>`
-   * that can leave the window, and **inside the list** on a backend whose
-   * drags are the platform's own — where a popup is never told where the
-   * pointer is. `'popup'` and `'inline'` pin it; `false` leaves only the
-   * cursor and the indicator. See "What differs per backend" in the docs.
+   * `'auto'` (the default, and what `true` means) is a `<popup>`: a window
+   * of its own, so it follows the pointer out of the list, out of the
+   * window, and over other applications. `'inline'` draws it as a box
+   * inside the list instead — clipped to the window, and one fewer window
+   * per drag, which a remote display may prefer. `false` leaves only the
+   * cursor and the indicator.
    */
   preview?: boolean | 'auto' | 'popup' | 'inline';
   /** What the ghost shows. Default: the item's children again, on a card. */
@@ -614,32 +620,12 @@ function inertItem(
 // --- helpers ----------------------------------------------------------------
 
 /** What `DrawnNode` does not declare and a drag has to read: the display
- *  scale `abs` is in, the props a press landed on, and the owning window —
- *  which is where the question "will a popup follow the pointer here?" is
- *  answered. The same widening `<Tabs>` makes to measure its strip: a ref's
- *  public contract is geometry and focus. */
+ *  scale `abs` is in, and the props a press landed on. The same widening
+ *  `<Tabs>` makes to measure its strip: a ref's public contract is geometry
+ *  and focus. */
 interface OpaqueNode {
   scale?: number;
   props?: Record<string, unknown>;
-  root?: { window?: { beginDrag?: unknown } } | null;
-}
-
-/**
- * Does this window hand a drag to the platform's own session?
- *
- * `beginDrag` on the ntk window is the exact thing core probes before
- * handing the gesture to AppKit (its `DragSession._start`), and once it
- * does, the pointer's motion belongs to the platform: a `<popup
- * dragPreview>` is never told where the pointer went, and AppKit carries a
- * blank drag image of its own. So on that path the ghost has to be drawn
- * **inside the window**, and this is how a list knows.
- *
- * Probed rather than asked of a backend name: what matters is the code path
- * the drag will take, and this is the same condition that picks it.
- */
-function nativeDragSession(node: DrawnNode | null): boolean {
-  const window = (node as (DrawnNode & OpaqueNode) | null)?.root?.window;
-  return typeof window?.beginDrag === 'function';
 }
 
 function scaleOf(node: DrawnNode | null): number {
@@ -1784,15 +1770,9 @@ export function ReorderItem(props: ReorderItemProps): ReactElement {
     y: position.y - grab.current.y,
   };
   if (isDragging && ghostAt) lastGhost.current = ghostAt;
-  // Where the ghost is drawn. A popup can leave the window; an in-window
-  // copy cannot, but it is the only one that works where the platform owns
-  // the drag — see `nativeDragSession`.
-  const mode =
-    list.preview === 'auto'
-      ? nativeDragSession(nodeRef.current)
-        ? 'inline'
-        : 'popup'
-      : list.preview;
+  // Where the ghost is drawn. A popup can leave the window and draws over
+  // other applications; an in-window copy cannot, and is the opt-in.
+  const mode = list.preview === 'auto' ? 'popup' : list.preview;
   /** The item's own origin on screen, which turns a pointer position into an
    *  offset inside the item — what an inline ghost is placed by, and what the
    *  drop flight eases to zero. */
@@ -1915,6 +1895,8 @@ export function ReorderItem(props: ReorderItemProps): ReactElement {
         {
           key: 'preview',
           dragPreview: true,
+          // a real window, and the card in it is rounded: see the header
+          transparent: true,
           theme,
           x: Math.round(ghostAt.x),
           y: Math.round(ghostAt.y),

@@ -771,17 +771,23 @@ and drop:
   animation's length, and the next press lands on it — a double-click's
   second press hits a ghost. Anything that outlasts a drag should be a box
   with `pointerEvents: 'none'`, in the list's own coordinates.
-- **And a `<popup>` is not a drag preview everywhere.** Core's documented
-  way to draw one — a `<popup dragPreview>` following
-  `useDragSource().position` — draws nothing on the **cocoa** backend: once
-  the threshold is crossed the gesture belongs to AppKit's own session, the
-  popup is never told where the pointer went, and the session's image is
-  blank (react-x11#482). A component that shows something under the pointer
-  needs an in-window fallback, chosen by probing the _code path_ rather than
-  a backend name — `typeof node.root.window.beginDrag === 'function'` is the
-  same condition core's `DragSession._start` branches on. `<ReorderList>`'s
-  `preview` prop is the worked example, and the in-window ghost is the drop
-  flight's box with a different offset.
+- **A drag owns the thread on cocoa, and that is core's to solve.** Nothing
+  an application renders during a drag reached the screen there before
+  react-x11 2.8.0: AppKit's tracking loop holds the thread from the threshold
+  to the release, so no timer, frame tick or microtask of ours runs.
+  `<ReorderList>` shipped a layer workaround for it — draw the ghost
+  in-window rather than in a `<popup dragPreview>` — and **the workaround
+  could not have worked**, because an in-window box needs a frame just as
+  much as a popup does. The reasoning was sound from what was visible here;
+  the missing step was running it on the backend in question, which this
+  machine cannot do without synthetic input. Filing what was actually
+  observed (react-x11#482) is what got it fixed properly in core 2.8.0
+  (#484), where a drag's frames are painted from the callback that reports
+  them. **Treat a fix for a platform you cannot run as a hypothesis, and say
+  so where it ships.** What survived on merit is `preview: 'inline'`, for a
+  list that would rather not open a window per drag, and `transparent` on the
+  preview popup — without it a rounded card shows the window's own ground in
+  the corners its radius gives up.
 - **Core arms a drag from the nearest draggable ancestor**, so a press on a
   control inside a draggable drags the ancestor. The layer's answer is to
   remember the press target (`onMouseDownCapture`) and cancel at the
