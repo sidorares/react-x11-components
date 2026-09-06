@@ -13,18 +13,27 @@ import {
   ReorderList,
   arrayMove,
   closestSlot,
+  insertManyAtSlot,
+  moveManyToSlot,
   moveToSlot,
   useReorderItem,
 } from '../../src/index.js';
 import type {
   ReorderChange,
+  ReorderCombine,
+  ReorderDragEnd,
+  ReorderDragStart,
+  ReorderDragUpdate,
   ReorderDrop,
+  ReorderDropQuery,
   ReorderId,
+  ReorderInput,
   ReorderInsert,
   ReorderItemProps,
   ReorderItemState,
   ReorderListProps,
   ReorderOrientation,
+  ReorderPreviewSize,
   ReorderRemove,
   ReorderStyles,
 } from '../../src/index.js';
@@ -176,3 +185,49 @@ export const reacting = (
     </ReorderItem>
   </ReorderList>
 );
+
+/** The rungs added after the first cut: the gesture's own events, a
+ *  conditional target, merging, a copy palette, a selection, the ghost's
+ *  size and the drop flight. */
+export const everything = (
+  <ReorderList
+    id="todo"
+    group="board"
+    selected={['a', 2]}
+    combine
+    canDrop={(q: ReorderDropQuery) =>
+      q.combine === null && q.index > 0 && q.ids.length < 3 && q.source !== null
+    }
+    onCombine={(e: ReorderCombine) => void [e.into, e.index, e.source.list]}
+    onDragStart={(e: ReorderDragStart) => void [e.id, e.ids, e.index, e.input]}
+    onDragUpdate={(e: ReorderDragUpdate) =>
+      void [e.over?.list, e.over?.index, e.combine]
+    }
+    onDragEnd={(e: ReorderDragEnd) => void [e.reason, e.to?.index]}
+    onInsert={(e) => void (e.action === 'copy')}
+    previewSize={{ width: 120, height: 32 }}
+    dropAnimation={220}
+  >
+    <ReorderItem id="a" dragActions={['copy']} dragFromInteractive>
+      {(s) => <text>{`${s.combining} ${s.accepted} ${s.ids.length}`}</text>}
+    </ReorderItem>
+  </ReorderList>
+);
+
+/** `previewSize` is a size or a function of the state. */
+export const sizes: ReorderPreviewSize[] = [
+  { width: 10, height: 10 },
+  (state: ReorderItemState) => ({ width: state.ids.length * 40, height: 30 }),
+];
+
+/** `dropAnimation` is a switch or a duration. */
+export const drops: ReorderListProps['dropAnimation'][] = [true, false, 120];
+
+/** The input union is closed. */
+export const inputs: ReorderInput[] = ['pointer', 'keyboard'];
+// @ts-expect-error -- a drag comes from a pointer or a keyboard, nothing else
+export const badInput: ReorderInput = 'touch';
+
+/** The set helpers are exported beside the single-item ones. */
+export const set = moveManyToSlot(['a', 'b', 'c'], ['a', 'c'], 3, 'a');
+export const arrived = insertManyAtSlot(['a'], ['x', 'y'], 1);

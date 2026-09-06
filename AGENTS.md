@@ -755,12 +755,41 @@ Four decisions in it that are decisions rather than gaps:
   displaced neighbour is a layout pass; a line at the closest edge answers
   the same question for a rectangle per item. Recorded as a rung if wanted.
 
+Four more, from the round that closed the gaps a survey of
+react-beautiful-dnd's storybook found (`docs/prd-reorder.md`, "The second
+round"), and each is a rule for the next component that drives core's drag
+and drop:
+
+- **`onDragOver` cannot reach the payload.** Only `DropEvent` carries
+  `items`, so a target has no way to write on the dragged object while the
+  pointer is merely over it. A layer that needs a hover channel — "which
+  list is under the pointer, at what index" — needs one module-scope object
+  per gesture, written by the target and read by the source in its own
+  `onDrag` (core dispatches to the target first, by documented order).
+- **A `<popup>` outlives the gesture as a window.** Animating the ghost home
+  after the drop leaves an override-redirect window over the list for the
+  animation's length, and the next press lands on it — a double-click's
+  second press hits a ghost. Anything that outlasts a drag should be a box
+  with `pointerEvents: 'none'`, in the list's own coordinates.
+- **Core arms a drag from the nearest draggable ancestor**, so a press on a
+  control inside a draggable drags the ancestor. The layer's answer is to
+  remember the press target (`onMouseDownCapture`) and cancel at the
+  threshold with `onDragStart`'s `preventDefault()`, which core defines as
+  "the gesture continues as ordinary mouse events".
+- **A keyboard step over a _set_ is not `from + 1`.** That index is inside
+  the run being moved, so the run lands where it already was and the
+  selection appears frozen. A step moves the run past its next non-member.
+
 Two traps found writing its tests: a `<popup dragPreview>` that re-renders
 the item's children re-renders a `<ReorderHandle>` inside them, which must
 find an _inert_ item context rather than throw or register itself; and an
 assertion that hands a `DrawnNode` to `assert.strictEqual(node, null)`
 dies with `RangeError: Invalid string length` formatting the cyclic node —
-compare with `===` and pass a message.
+compare with `===` and pass a message. Two more from the second round: a
+harness helper that seeds `useState(items)` silently ignores later prop
+changes (the mid-drag test that looked like a product bug), and a press
+injected during a live drag never reaches a widget, because the drag owns
+the pointer — drive that state from outside the gesture.
 
 ## An HTML renderer that draws
 

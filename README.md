@@ -495,10 +495,14 @@ import {
 Every rung is a small diff on that: a `<ReorderHandle>` inside an item
 makes the grip the only press target, `group` on several lists makes a
 board (`onInsert` on the list it landed in, `onRemove` on the one it
-left), `dragData` on an item lets a file manager take it, `accept` on the
+left), `canDrop` refuses a drop the group would otherwise take, `combine`
+turns the middle of an item into a merge target, `selected` makes a drag
+carry several rows at once, `dragActions={['copy']}` turns a list into a
+palette, `dragData` on an item lets a file manager take it, `accept` on the
 list lets it take files, and `children` as a function of the item's state
 (or `useReorderItem()` deeper inside) lets the content say what is
-happening to it. `npm run examples:reorder` shows all four;
+happening to it. The list's own `onDragStart` / `onDragUpdate` /
+`onDragEnd` report the gesture from either input. `npm run examples:reorder` shows all four;
 [the reference](docs/components/reorder.md) has the rest, and
 [the PRD](docs/prd-reorder.md) has the survey of dnd-kit, hello-pangea,
 pragmatic-drag-and-drop, React Aria and Framer's `Reorder` it was designed

@@ -39,6 +39,13 @@ export interface ReorderSlot {
   slot: number;
   index: number;
   edge: ReorderEdge;
+  /**
+   * The pointer is inside the item's middle band and combining is on, so a
+   * drop merges *into* `index` rather than landing beside it. Always false
+   * when the caller passes no band, which is what keeps a list that does not
+   * combine reading exactly as it did before.
+   */
+  combine: boolean;
 }
 
 /** Squared distance from a point to a rectangle; zero inside it. */
@@ -54,12 +61,19 @@ function distance2(rect: ReorderRect, p: ReorderPoint): number {
  * The nearest item wins — the one under the pointer when there is one, and
  * on a tie the earlier — and its midpoint along the axis decides the edge.
  * `null` only when there are no items, where the caller's answer is slot 0.
+ *
+ * `combineBand` is the fraction of the item's length at *each* end that
+ * still reads as an edge: 0 (the default) means every point picks an edge,
+ * and 0.25 means the middle half of an item reads as "merge into this one"
+ * — but only for a point genuinely inside it, since a point in the gap
+ * between two items is not over either of them.
  */
 export function closestSlot(
   rects: readonly ReorderRect[],
   point: ReorderPoint,
   orientation: ReorderOrientation,
   direction: 'ltr' | 'rtl' = 'ltr',
+  combineBand = 0,
 ): ReorderSlot | null {
   if (rects.length === 0) return null;
   let index = 0;
@@ -72,16 +86,24 @@ export function closestSlot(
     }
   }
   const rect = rects[index]!;
-  let before: boolean;
-  if (orientation === 'vertical') {
-    before = point.y < rect.y + rect.height / 2;
-  } else {
-    const mid = rect.x + rect.width / 2;
-    // the start edge of an RTL strip is on the right
-    before = direction === 'rtl' ? point.x > mid : point.x < mid;
-  }
+  const vertical = orientation === 'vertical';
+  const start = vertical ? rect.y : rect.x;
+  const length = vertical ? rect.height : rect.width;
+  const along = vertical ? point.y : point.x;
+  let before = along < start + length / 2;
+  // the start edge of an RTL strip is on the right
+  if (!vertical && direction === 'rtl') before = !before;
   const edge: ReorderEdge = before ? 'before' : 'after';
-  return { slot: before ? index : index + 1, index, edge };
+  // `best === 0` is the point being inside the rectangle: a band is about
+  // the item under the pointer, and a gap belongs to neither of its
+  // neighbours' middles.
+  const fraction = length > 0 ? (along - start) / length : 0.5;
+  const combine =
+    combineBand > 0 &&
+    best === 0 &&
+    fraction >= combineBand &&
+    fraction <= 1 - combineBand;
+  return { slot: before ? index : index + 1, index, edge, combine };
 }
 
 /**
@@ -123,10 +145,47 @@ export function moveToSlot(
   id: ReorderId,
   slot: number,
 ): { items: ReorderId[]; from: number; to: number } | null {
-  const from = order.indexOf(id);
-  if (from < 0 || isNoopSlot(from, slot)) return null;
-  const to = slot > from ? slot - 1 : slot;
-  return { items: arrayMove(order, from, to), from, to };
+  const many = moveManyToSlot(order, [id], slot, id);
+  return many && { items: many.items, from: many.from, to: many.to };
+}
+
+/**
+ * The same move with a **set** of items — a multi-drag. The set travels in
+ * the list's own order, whatever order it was selected in, and lands as one
+ * run at `slot`; `from`/`to` are where `primary` (the item actually under
+ * the pointer) started and ended up.
+ *
+ * The slot counts gaps in the *original* order, so the arithmetic has to
+ * discount the members of the set that were before it — which is also why
+ * the single-item no-op rule generalizes rather than being special-cased:
+ * a set that lands where it already was produces the order it started from,
+ * and that is what `null` reports.
+ */
+export function moveManyToSlot(
+  order: readonly ReorderId[],
+  ids: readonly ReorderId[],
+  slot: number,
+  primary: ReorderId = ids[0]!,
+): { items: ReorderId[]; ids: ReorderId[]; from: number; to: number } | null {
+  const taking = new Set(ids);
+  // the set in the list's order, and only the members the list actually has
+  const moving = order.filter((id) => taking.has(id));
+  if (moving.length === 0) return null;
+  const from = order.indexOf(primary);
+  if (from < 0) return null;
+  const rest = order.filter((id) => !taking.has(id));
+  const before = order
+    .slice(0, Math.max(slot, 0))
+    .filter((id) => taking.has(id)).length;
+  const at = Math.min(Math.max(slot - before, 0), rest.length);
+  const items = [...rest.slice(0, at), ...moving, ...rest.slice(at)];
+  if (
+    items.length === order.length &&
+    items.every((id, i) => id === order[i])
+  ) {
+    return null;
+  }
+  return { items, ids: moving, from, to: items.indexOf(primary) };
 }
 
 /** `order` with `id` inserted at `slot` — an item arriving from elsewhere. */
@@ -135,7 +194,16 @@ export function insertAtSlot(
   id: ReorderId,
   slot: number,
 ): ReorderId[] {
+  return insertManyAtSlot(order, [id], slot);
+}
+
+/** The same, with a set arriving together — a multi-drag from another list. */
+export function insertManyAtSlot(
+  order: readonly ReorderId[],
+  ids: readonly ReorderId[],
+  slot: number,
+): ReorderId[] {
   const out = order.slice();
-  out.splice(Math.min(Math.max(slot, 0), out.length), 0, id);
+  out.splice(Math.min(Math.max(slot, 0), out.length), 0, ...ids);
   return out;
 }

@@ -22,6 +22,8 @@ import {
   fireEvent,
   userEvent,
   act,
+  installA11ySpy,
+  waitFor,
 } from 'react-x11/test';
 import type { PointerOptions } from 'react-x11/test';
 import { ThemeProvider } from 'react-x11';
@@ -44,7 +46,9 @@ import {
 } from '../src/index.js';
 import type {
   ReorderChange,
+  ReorderCombine,
   ReorderDrop,
+  ReorderDropQuery,
   ReorderId,
   ReorderInsert,
   ReorderItemState,
@@ -106,15 +110,21 @@ function List(spec: ListSpec): ReactElement {
     onReorder,
     ...rest
   } = spec;
-  const [order, setOrder] = useState(items);
+  // `live` decides who owns the order: the harness applies every change
+  // itself (the default), or the caller drives it through the prop.
+  const [own, setOwn] = useState(items);
+  const order = live ? own : items;
   return h(
     ReorderList,
     {
       'data-testname': name,
       onReorder: (change: ReorderChange) => {
         onReorder?.(change);
-        if (live) setOrder(change.items);
+        if (live) setOwn(change.items);
       },
+      // off by default here: a 180ms flight would otherwise overlap the
+      // assertion after every release. `the drop flies home` turns it on.
+      dropAnimation: false,
       style: { gap: GAP, padding: 10 },
       ...rest,
     },
@@ -196,9 +206,10 @@ async function dragTo(
   to: DrawnNode,
   at: PointerOptions = {},
   threshold: PointerOptions = { dx: 6 },
+  press: PointerOptions = {},
 ): Promise<void> {
   await act(async () => {
-    fireEvent.mouseDown(from);
+    fireEvent.mouseDown(from, press);
   });
   await act(async () => {
     fireEvent.mouseMove(from, threshold);
@@ -257,7 +268,7 @@ test("a drag past the threshold to another item's lower half moves it there", as
   assert.ok(screen.queryByTestName('l-a-preview'), 'a preview window is up');
   await release(c, { dy: 10 });
   assert.deepStrictEqual(changes, [
-    { items: ['b', 'c', 'a'], id: 'a', from: 0, to: 2 },
+    { items: ['b', 'c', 'a'], id: 'a', ids: ['a'], from: 0, to: 2 },
   ]);
   assert.deepStrictEqual(orderOf('l'), ['b', 'c', 'a']);
   assert.ok(screen.queryByTestName('l-c-indicator') === null);
@@ -280,7 +291,7 @@ test('the upper half of an item is the gap before it', async () => {
   assert.ok(screen.queryByTestName('l-a-indicator'));
   await release(a, { dy: -10 });
   assert.deepStrictEqual(changes, [
-    { items: ['c', 'a', 'b'], id: 'c', from: 2, to: 0 },
+    { items: ['c', 'a', 'b'], id: 'c', ids: ['c'], from: 2, to: 0 },
   ]);
 });
 
@@ -361,7 +372,7 @@ test('a handle is the only press target, and the tab stop', async () => {
   await dragTo(grip, item('l', 'c'), { dy: 10 });
   await release(item('l', 'c'), { dy: 10 });
   assert.deepStrictEqual(changes, [
-    { items: ['b', 'c', 'a'], id: 'a', from: 0, to: 2 },
+    { items: ['b', 'c', 'a'], id: 'a', ids: ['a'], from: 0, to: 2 },
   ]);
 });
 
@@ -386,7 +397,7 @@ test('a disabled item does not drag, but is still a slot others land beside', as
   await dragTo(item('l', 'c'), item('l', 'b'), { dy: -10 });
   await release(item('l', 'b'), { dy: -10 });
   assert.deepStrictEqual(changes, [
-    { items: ['a', 'c', 'b'], id: 'c', from: 2, to: 1 },
+    { items: ['a', 'c', 'b'], id: 'c', ids: ['c'], from: 2, to: 1 },
   ]);
 });
 
@@ -416,7 +427,7 @@ test('a horizontal strip reads x, and its indicator stands on a side', async () 
   );
   await release(c, { dx: 20 });
   assert.deepStrictEqual(changes, [
-    { items: ['b', 'c', 'a'], id: 'a', from: 0, to: 2 },
+    { items: ['b', 'c', 'a'], id: 'a', ids: ['a'], from: 0, to: 2 },
   ]);
 });
 
@@ -444,7 +455,7 @@ test('the keyboard: Space lifts, the arrows move and fire per step, Space drops'
   await space();
   await userEvent.key(XK_DOWN);
   assert.deepStrictEqual(changes, [
-    { items: ['a', 'c', 'b'], id: 'b', from: 1, to: 2 },
+    { items: ['a', 'c', 'b'], id: 'b', ids: ['b'], from: 1, to: 2 },
   ]);
   assert.deepStrictEqual(orderOf('l'), ['a', 'c', 'b']);
   // the moved item is the same node, and it kept the focus
@@ -454,6 +465,7 @@ test('the keyboard: Space lifts, the arrows move and fire per step, Space drops'
   assert.deepStrictEqual(changes.at(-1), {
     items: ['b', 'a', 'c'],
     id: 'b',
+    ids: ['b'],
     from: 1,
     to: 0,
   });
@@ -487,6 +499,7 @@ test('the keyboard: Escape puts a lifted item back where it was', async () => {
   assert.deepStrictEqual(changes.at(-1), {
     items: ['a', 'b', 'c'],
     id: 'a',
+    ids: ['a'],
     from: 2,
     to: 0,
   });
@@ -518,6 +531,7 @@ test('the keyboard on a horizontal strip: Left and Right, mirrored under RTL', a
   assert.deepStrictEqual(changes.at(-1), {
     items: ['b', 'a', 'c'],
     id: 'a',
+    ids: ['a'],
     from: 0,
     to: 1,
   });
@@ -525,6 +539,7 @@ test('the keyboard on a horizontal strip: Left and Right, mirrored under RTL', a
   assert.deepStrictEqual(changes.at(-1), {
     items: ['a', 'b', 'c'],
     id: 'a',
+    ids: ['a'],
     from: 1,
     to: 0,
   });
@@ -766,7 +781,7 @@ test('at scale 2 the slot is read in the same unit as the pointer', async () => 
   assert.ok(screen.queryByTestName('l-b-indicator') === null);
   await release(c, { dy: -22 });
   assert.deepStrictEqual(changes, [
-    { items: ['b', 'a', 'c'], id: 'a', from: 0, to: 1 },
+    { items: ['b', 'a', 'c'], id: 'a', ids: ['a'], from: 0, to: 1 },
   ]);
 });
 
@@ -802,7 +817,11 @@ test('function children and useReorderItem() see the drag as it happens', async 
     view(
       h(
         ReorderList,
-        { 'data-testname': 'l', style: { gap: GAP, padding: 10 } },
+        {
+          'data-testname': 'l',
+          dropAnimation: false,
+          style: { gap: GAP, padding: 10 },
+        },
         ['a', 'b', 'c'].map((id) =>
           h(ReorderItem, {
             key: id,
@@ -864,6 +883,7 @@ test('the item seam and renderPreview see the ghost with `preview` set', async (
         ReorderList,
         {
           'data-testname': 'l',
+          dropAnimation: false,
           style: { gap: GAP, padding: 10 },
           styles: {
             item: (state: ReorderItemState) => {
@@ -891,4 +911,883 @@ test('the item seam and renderPreview see the ghost with `preview` set', async (
   assert.ok(seen.has('render:dragging accepted preview'), [...seen].join(', '));
   assert.strictEqual(textOfItem(screen.getByTestName('l-a-preview')), 'ghost');
   await release(item('l', 'b'), { dy: 10 });
+});
+
+// --- the list's own view of the gesture (lifecycle) --------------------------
+
+/** One list, three items, reporting every lifecycle event it is given. */
+function lifecycle(
+  log: string[],
+  props: Partial<ReorderListProps> = {},
+): ReactElement {
+  return h(List, {
+    name: 'l',
+    id: 'todo',
+    items: ['a', 'b', 'c'],
+    onDragStart: (e) =>
+      log.push(`start ${e.id} [${e.ids}] at ${e.index} by ${e.input}`),
+    onDragUpdate: (e) =>
+      log.push(
+        `update ${e.id} over ${e.over ? `${e.over.list}:${e.over.index}` : 'nothing'}` +
+          `${e.combine ? ` combine ${String(e.combine)}` : ''}`,
+      ),
+    onDragEnd: (e) =>
+      log.push(
+        `end ${e.id} ${e.reason} at ${e.to ? `${e.to.list}:${e.to.index}` : 'nowhere'}`,
+      ),
+    ...props,
+  });
+}
+
+test('the list reports the gesture: start, an update per slot, end', async () => {
+  const log: string[] = [];
+  await mount(view(lifecycle(log)));
+
+  await dragTo(item('l', 'a'), item('l', 'b'), { dy: 10 });
+  // the index is where it would *land*, which is what onReorder will say —
+  // past b, and the hole a left behind has closed
+  assert.deepStrictEqual(log, [
+    'start a [a] at 0 by pointer',
+    'update a over todo:1',
+  ]);
+
+  // the same slot again says nothing more
+  await act(async () => {
+    fireEvent.mouseMove(item('l', 'b'), { dy: 12 });
+  });
+  await landed();
+  assert.strictEqual(log.length, 2, log.join(' | '));
+
+  // a new slot is a new update
+  await act(async () => {
+    fireEvent.mouseMove(item('l', 'c'), { dy: 10 });
+  });
+  await landed();
+  assert.deepStrictEqual(log.at(-1), 'update a over todo:2');
+
+  await release(item('l', 'c'), { dy: 10 });
+  assert.deepStrictEqual(log.at(-1), 'end a drop at todo:2');
+});
+
+test('a drag that leaves the list reports nothing under it, then a cancel', async () => {
+  const log: string[] = [];
+  await mount(view(lifecycle(log)));
+  // over a real slot first, so the update to "nothing" is a change rather
+  // than the answer it started with
+  await dragTo(item('l', 'a'), item('l', 'c'), { dy: 10 });
+  assert.deepStrictEqual(log.at(-1), 'update a over todo:2');
+  await act(async () => {
+    fireEvent.mouseMove(screen.getByTestName('outside'));
+  });
+  await landed();
+  assert.deepStrictEqual(log.at(-1), 'update a over nothing');
+  await release(screen.getByTestName('outside'));
+  assert.deepStrictEqual(log.at(-1), 'end a cancel at nowhere');
+});
+
+test('the keyboard reports the same three events', async () => {
+  const log: string[] = [];
+  await mount(view(lifecycle(log)));
+  await userEvent.click(item('l', 'a'));
+  await space();
+  assert.deepStrictEqual(log, ['start a [a] at 0 by keyboard']);
+  await userEvent.key(XK_DOWN);
+  assert.deepStrictEqual(log.at(-1), 'update a over todo:1');
+  await space();
+  assert.deepStrictEqual(log.at(-1), 'end a drop at todo:1');
+
+  // and Escape ends it as a cancel
+  log.length = 0;
+  await space();
+  await userEvent.key(XK_DOWN);
+  await userEvent.key(XK_ESCAPE);
+  assert.deepStrictEqual(log.at(-1), 'end a cancel at nowhere');
+});
+
+// --- canDrop ----------------------------------------------------------------
+
+test('canDrop refuses a position: no indicator, nothing lands, and the source knows', async () => {
+  const inserts: ReorderInsert[] = [];
+  const removes: ReorderRemove[] = [];
+  const asked: string[] = [];
+  await mount(
+    view(
+      h(
+        ReorderList,
+        {
+          id: 'from',
+          group: 'g',
+          'data-testname': 'from',
+          dropAnimation: false,
+          onRemove: (e: ReorderRemove) => removes.push(e),
+          style: { gap: GAP, padding: 10 },
+        },
+        h(ReorderItem, {
+          id: 'a',
+          'data-testname': 'from-a',
+          style: ITEM,
+          children: (s: ReorderItemState) =>
+            h('text', null, `a ${describe(s)}`),
+        }),
+      ),
+      h(
+        ReorderList,
+        {
+          id: 'to',
+          group: 'g',
+          'data-testname': 'to',
+          dropAnimation: false,
+          canDrop: (q: ReorderDropQuery) => {
+            asked.push(`${String(q.id)}@${q.index}`);
+            return false;
+          },
+          onInsert: (e: ReorderInsert) => inserts.push(e),
+          style: { gap: GAP, padding: 10 },
+        },
+        h(
+          ReorderItem,
+          { id: 'x', 'data-testname': 'to-x', style: ITEM },
+          h('text', null, 'x'),
+        ),
+      ),
+    ),
+  );
+
+  const target = screen.getByTestName('to-x');
+  await dragTo(screen.getByTestName('from-a'), target, { dy: 10 });
+  assert.ok(asked.length > 0, 'canDrop was asked');
+  assert.ok(
+    screen.queryByTestName('to-x-indicator') === null,
+    'no slot promised',
+  );
+  // the refusal reaches the source: its ghost is not over anything that
+  // would take it
+  assert.match(
+    textOfItem(screen.getByTestName('from-a')),
+    /dragging(?! accepted)/,
+  );
+
+  await release(target, { dy: 10 });
+  assert.strictEqual(inserts.length, 0);
+  assert.strictEqual(removes.length, 0);
+});
+
+test('canDrop can refuse one slot and allow another', async () => {
+  const changes: ReorderChange[] = [];
+  await mount(
+    view(
+      h(List, {
+        name: 'l',
+        items: ['a', 'b', 'c'],
+        // nothing may land at the very end
+        canDrop: (q: ReorderDropQuery) => q.index !== 3,
+        onReorder: (c) => changes.push(c),
+      }),
+    ),
+  );
+  await dragTo(item('l', 'a'), item('l', 'c'), { dy: 10 });
+  assert.ok(screen.queryByTestName('l-c-indicator') === null);
+  await release(item('l', 'c'), { dy: 10 });
+  assert.strictEqual(changes.length, 0);
+
+  // the gap before c is allowed
+  await dragTo(item('l', 'a'), item('l', 'c'), { dy: -10 });
+  assert.ok(screen.queryByTestName('l-c-indicator'));
+  await release(item('l', 'c'), { dy: -10 });
+  assert.deepStrictEqual(changes, [
+    { items: ['b', 'a', 'c'], id: 'a', ids: ['a'], from: 0, to: 1 },
+  ]);
+});
+
+// --- copy from a palette ----------------------------------------------------
+
+test('a palette copies: the item stays, and the list that took it says so', async () => {
+  const inserts: ReorderInsert[] = [];
+  const removes: ReorderRemove[] = [];
+  await mount(
+    view(
+      h(
+        ReorderList,
+        {
+          id: 'palette',
+          group: 'g',
+          'data-testname': 'p',
+          dropAnimation: false,
+          onRemove: (e: ReorderRemove) => removes.push(e),
+          style: { gap: GAP, padding: 10 },
+        },
+        ['brush', 'pen'].map((id) =>
+          h(
+            ReorderItem,
+            {
+              key: id,
+              id,
+              dragActions: ['copy'] as Array<'copy' | 'move' | 'link'>,
+              'data-testname': `p-${id}`,
+              style: ITEM,
+            },
+            h('text', null, id),
+          ),
+        ),
+      ),
+      h(
+        ReorderList,
+        {
+          id: 'canvas',
+          group: 'g',
+          'data-testname': 'c',
+          dropAnimation: false,
+          onInsert: (e: ReorderInsert) => inserts.push(e),
+          style: { gap: GAP, padding: 10 },
+        },
+        h(
+          ReorderItem,
+          { id: 'here', 'data-testname': 'c-here', style: ITEM },
+          h('text', null, 'here'),
+        ),
+      ),
+    ),
+  );
+
+  const target = screen.getByTestName('c-here');
+  await dragTo(screen.getByTestName('p-brush'), target, { dy: 10 });
+  await release(target, { dy: 10 });
+
+  assert.strictEqual(inserts.length, 1);
+  assert.strictEqual(inserts[0]!.action, 'copy');
+  assert.deepStrictEqual(inserts[0]!.items, ['here', 'brush']);
+  // a copy leaves the palette alone: no removal, and the item is still there
+  assert.strictEqual(removes.length, 0);
+  assert.ok(screen.queryByTestName('p-brush'), 'the palette kept its item');
+});
+
+// --- combine ----------------------------------------------------------------
+
+test('combine: the middle of an item merges into it, its ends still reorder', async () => {
+  const combines: ReorderCombine[] = [];
+  const changes: ReorderChange[] = [];
+  await mount(
+    view(
+      h(List, {
+        name: 'l',
+        items: ['a', 'b', 'c'],
+        combine: true,
+        size: { width: 200, height: 40 },
+        onCombine: (e: ReorderCombine) => combines.push(e),
+        onReorder: (c) => changes.push(c),
+      }),
+    ),
+  );
+
+  // the dead centre of c: a merge, drawn as an outline rather than a line
+  const c = item('l', 'c');
+  await dragTo(item('l', 'a'), c, { dy: 0 });
+  const outline = screen.getByTestName('l-c-indicator');
+  assert.strictEqual(retained(outline).style.borderWidth, 2);
+  assert.strictEqual(retained(outline).style.backgroundColor, undefined);
+  await release(c, { dy: 0 });
+  assert.strictEqual(changes.length, 0, 'a merge is not a reorder');
+  assert.strictEqual(combines.length, 1);
+  assert.deepStrictEqual(
+    { id: combines[0]!.id, into: combines[0]!.into, index: combines[0]!.index },
+    { id: 'a', into: 'c', index: 2 },
+  );
+
+  // 18px below c's centre is past the band: an ordinary edge, and a line
+  await dragTo(item('l', 'a'), item('l', 'c'), { dy: 18 });
+  const line = screen.getByTestName('l-c-indicator');
+  assert.strictEqual(retained(line).style.borderWidth, undefined);
+  await release(item('l', 'c'), { dy: 18 });
+  assert.strictEqual(combines.length, 1, 'still one merge');
+  assert.deepStrictEqual(changes, [
+    { items: ['b', 'c', 'a'], id: 'a', ids: ['a'], from: 0, to: 2 },
+  ]);
+});
+
+test('combine: an item cannot merge into itself', async () => {
+  const combines: ReorderCombine[] = [];
+  await mount(
+    view(
+      h(List, {
+        name: 'l',
+        items: ['a', 'b'],
+        combine: true,
+        size: { width: 200, height: 40 },
+        onCombine: (e: ReorderCombine) => combines.push(e),
+      }),
+    ),
+  );
+  await dragTo(item('l', 'a'), item('l', 'a'), { dy: 0 });
+  assert.ok(screen.queryByTestName('l-a-indicator') === null);
+  await release(item('l', 'a'), { dy: 0 });
+  assert.strictEqual(combines.length, 0);
+});
+
+// --- a press on a control inside an item ------------------------------------
+
+/** A card with a button and a text field in it, so a press has somewhere to
+ *  land that is not the card. */
+function cards(
+  props: Partial<ReorderListProps> = {},
+  interactive = false,
+): ReactElement {
+  return h(
+    ReorderList,
+    {
+      'data-testname': 'l',
+      dropAnimation: false,
+      style: { gap: GAP, padding: 10 },
+      ...props,
+    },
+    ['a', 'b', 'c'].map((id) =>
+      h(
+        ReorderItem,
+        {
+          key: id,
+          id,
+          'data-testname': `l-${id}`,
+          dragFromInteractive: interactive,
+          style: { ...ITEM, flexDirection: 'row', gap: 6 },
+        },
+        h('text', { key: 't' }, `Item ${id}`),
+        h('box', {
+          key: 'b',
+          role: 'button',
+          focusable: true,
+          'data-testname': `l-${id}-button`,
+          style: { width: 40, height: 20 },
+        }),
+        h('textinput', {
+          key: 'i',
+          'data-testname': `l-${id}-field`,
+          style: { width: 60 },
+        }),
+      ),
+    ),
+  );
+}
+
+test('a press on a button or a field inside an item does not drag it', async () => {
+  const changes: ReorderChange[] = [];
+  await mount(view(cards({ onReorder: (c) => changes.push(c) })));
+
+  // from the button
+  await dragTo(screen.getByTestName('l-a-button'), item('l', 'c'), { dy: 10 });
+  assert.ok(
+    screen.queryByTestName('l-a-preview') === null,
+    'no ghost: the press belonged to the button',
+  );
+  assert.ok(screen.getByTestName('l-a-button').focused, 'the button got it');
+  await release(item('l', 'c'), { dy: 10 });
+  assert.strictEqual(changes.length, 0);
+
+  // from the text field
+  await dragTo(screen.getByTestName('l-a-field'), item('l', 'c'), { dy: 10 });
+  assert.ok(screen.queryByTestName('l-a-preview') === null);
+  await release(item('l', 'c'), { dy: 10 });
+  assert.strictEqual(changes.length, 0);
+
+  // and from the card itself — pressed on its label, since the card's own
+  // centre lands on the button in the middle of it
+  await dragTo(
+    item('l', 'a'),
+    item('l', 'c'),
+    { dy: 10 },
+    { dx: 6 },
+    { dx: -90 },
+  );
+  assert.ok(screen.queryByTestName('l-a-preview'), 'the card itself drags');
+  await release(item('l', 'c'), { dy: 10 });
+  assert.deepStrictEqual(changes, [
+    { items: ['b', 'c', 'a'], id: 'a', ids: ['a'], from: 0, to: 2 },
+  ]);
+});
+
+test('dragFromInteractive gives the press back to the item', async () => {
+  const changes: ReorderChange[] = [];
+  await mount(view(cards({ onReorder: (c) => changes.push(c) }, true)));
+  await dragTo(screen.getByTestName('l-a-button'), item('l', 'c'), { dy: 10 });
+  assert.ok(screen.queryByTestName('l-a-preview'), 'the button drags the card');
+  await release(item('l', 'c'), { dy: 10 });
+  assert.deepStrictEqual(changes, [
+    { items: ['b', 'c', 'a'], id: 'a', ids: ['a'], from: 0, to: 2 },
+  ]);
+});
+
+// --- multi-drag -------------------------------------------------------------
+
+test('a selection travels together, and the ghost counts it', async () => {
+  const changes: ReorderChange[] = [];
+  await mount(
+    view(
+      h(List, {
+        name: 'l',
+        items: ['a', 'b', 'c', 'd'],
+        selected: ['a', 'c'],
+        onReorder: (c) => changes.push(c),
+      }),
+    ),
+  );
+  const d = item('l', 'd');
+  await dragTo(item('l', 'a'), d, { dy: 10 });
+  assert.strictEqual(textOfItem(screen.getByTestName('l-a-count')), '2');
+  await release(d, { dy: 10 });
+  assert.deepStrictEqual(changes, [
+    { items: ['b', 'd', 'a', 'c'], id: 'a', ids: ['a', 'c'], from: 0, to: 2 },
+  ]);
+});
+
+test('dragging an item outside the selection carries only that item', async () => {
+  const changes: ReorderChange[] = [];
+  await mount(
+    view(
+      h(List, {
+        name: 'l',
+        items: ['a', 'b', 'c'],
+        selected: ['a', 'c'],
+        onReorder: (c) => changes.push(c),
+      }),
+    ),
+  );
+  await dragTo(item('l', 'b'), item('l', 'c'), { dy: 10 });
+  assert.ok(screen.queryByTestName('l-b-count') === null, 'no badge for one');
+  await release(item('l', 'c'), { dy: 10 });
+  assert.deepStrictEqual(changes, [
+    { items: ['a', 'c', 'b'], id: 'b', ids: ['b'], from: 1, to: 2 },
+  ]);
+});
+
+test('a selection moves between lists as one run', async () => {
+  const inserts: ReorderInsert[] = [];
+  const removes: ReorderRemove[] = [];
+  await mount(
+    view(
+      h(List, {
+        name: 'p',
+        id: 'p',
+        group: 'g',
+        items: ['a', 'b', 'c'],
+        selected: ['a', 'c'],
+        onRemove: (e) => removes.push(e),
+      }),
+      h(List, {
+        name: 'q',
+        id: 'q',
+        group: 'g',
+        items: ['x'],
+        onInsert: (e) => inserts.push(e),
+      }),
+    ),
+  );
+  const x = item('q', 'x');
+  await dragTo(item('p', 'a'), x, { dy: -10 });
+  await release(x, { dy: -10 });
+  assert.strictEqual(inserts.length, 1);
+  assert.deepStrictEqual(inserts[0]!.items, ['a', 'c', 'x']);
+  assert.deepStrictEqual(inserts[0]!.ids, ['a', 'c']);
+  assert.strictEqual(removes.length, 1);
+  assert.deepStrictEqual(removes[0]!.items, ['b']);
+  assert.deepStrictEqual(removes[0]!.ids, ['a', 'c']);
+});
+
+test('the keyboard moves the whole selection too', async () => {
+  const changes: ReorderChange[] = [];
+  await mount(
+    view(
+      h(List, {
+        name: 'l',
+        items: ['a', 'b', 'c', 'd'],
+        selected: ['a', 'b'],
+        onReorder: (c) => changes.push(c),
+      }),
+    ),
+  );
+  await userEvent.click(item('l', 'a'));
+  await space();
+  await userEvent.key(XK_DOWN);
+  assert.deepStrictEqual(changes, [
+    { items: ['c', 'a', 'b', 'd'], id: 'a', ids: ['a', 'b'], from: 0, to: 1 },
+  ]);
+});
+
+// --- the ghost's size, and what a pointer drag says -------------------------
+
+test('previewSize sizes the ghost, whatever the item is', async () => {
+  await mount(
+    view(
+      h(List, {
+        name: 'l',
+        items: ['a', 'b'],
+        previewSize: { width: 64, height: 24 },
+      }),
+    ),
+  );
+  await dragTo(item('l', 'a'), item('l', 'b'), { dy: 10 });
+  const ghost = retained(screen.getByTestName('l-a-preview'));
+  assert.strictEqual(ghost.props.width, 64);
+  assert.strictEqual(ghost.props.height, 24);
+  await release(item('l', 'b'), { dy: 10 });
+});
+
+test('a pointer drag is announced, not only a keyboard one', async () => {
+  const spy = installA11ySpy();
+  await mount(view(h(List, { name: 'l', items: ['a', 'b', 'c'] })));
+  const said = () =>
+    spy
+      .events()
+      .filter((e) => e.type === 'announce')
+      .map((e) => e.text ?? '');
+
+  await dragTo(item('l', 'a'), item('l', 'c'), { dy: 10 });
+  assert.match(said().join(' | '), /Dragging Item a, position 1 of 3/);
+  await release(item('l', 'c'), { dy: 10 });
+  assert.match(said().at(-1) ?? '', /Item a dropped at position 3 of 3/);
+
+  // and a drag that ended nowhere says so
+  spy.clear();
+  await dragTo(item('l', 'a'), screen.getByTestName('outside'));
+  await release(screen.getByTestName('outside'));
+  assert.match(said().at(-1) ?? '', /returned to where it was/);
+});
+
+// --- the drop animation -----------------------------------------------------
+
+test('the drop flies home, takes no input on the way, and then is gone', async () => {
+  await mount(
+    view(h(List, { name: 'l', items: ['a', 'b', 'c'], dropAnimation: 80 })),
+  );
+  await dragTo(item('l', 'a'), item('l', 'c'), { dy: 10 });
+  await release(item('l', 'c'), { dy: 10 });
+
+  const flight = screen.getByTestName('l-a-flight');
+  assert.ok(flight, 'a copy flies to where the item landed');
+  // it is a box in the list, not a window over it: the press that follows a
+  // drop must reach the list
+  assert.strictEqual(retained(flight).kind, 'box');
+  assert.strictEqual(retained(flight).style.pointerEvents, 'none');
+  assert.ok(
+    screen.queryByTestName('l-a-preview') === null,
+    'the ghost is gone',
+  );
+
+  await waitFor(() => {
+    assert.ok(screen.queryByTestName('l-a-flight') === null);
+  });
+});
+
+test('no flight when the desktop asks for reduced motion, or the app does', async () => {
+  await mount(
+    view(h(List, { name: 'l', items: ['a', 'b', 'c'], dropAnimation: false })),
+  );
+  await dragTo(item('l', 'a'), item('l', 'c'), { dy: 10 });
+  await release(item('l', 'c'), { dy: 10 });
+  assert.ok(screen.queryByTestName('l-a-flight') === null);
+});
+
+// --- the cases the first cut never exercised --------------------------------
+
+test('a scrolling list reads the slot off where the rows actually are', async () => {
+  const changes: ReorderChange[] = [];
+  await mount(
+    view(
+      h(List, {
+        name: 'l',
+        items: ['a', 'b', 'c', 'd', 'e', 'f'],
+        onReorder: (c) => changes.push(c),
+        // a viewport two rows tall over six rows
+        style: { gap: GAP, padding: 10, height: 90, overflow: 'scroll' },
+      }),
+    ),
+  );
+  const pane = screen.getByRole('list') as DrawnNode & {
+    scrollTo(to: { y: number }): void;
+    readonly scrollY: number;
+  };
+  await act(async () => {
+    // past the end: the pane clamps to its own content, which is the
+    // bottom of the list whatever the rows measured
+    pane.scrollTo({ y: 1000 });
+  });
+  await landed();
+  assert.ok(pane.scrollY > 0, `the pane did not scroll: ${pane.scrollY}`);
+
+  // Every row moved up by the scroll. A slot read off where the rows *were*
+  // would name a different item for the same point — and every point in
+  // this test is inside the viewport, so the pointer really is over the
+  // item the assertion names.
+  const onScreen = (node: DrawnNode): boolean =>
+    node.abs.y >= pane.abs.y &&
+    node.abs.y + node.abs.height <= pane.abs.y + pane.abs.height;
+  const e = item('l', 'e');
+  assert.ok(onScreen(e), `e is on screen after the scroll: ${e.abs.y}`);
+  assert.ok(onScreen(item('l', 'f')), 'and so is f');
+  await dragTo(item('l', 'f'), e, { dy: -10 });
+  assert.ok(screen.queryByTestName('l-e-indicator'), 'the slot before e');
+  await release(e, { dy: -10 });
+  assert.deepStrictEqual(changes, [
+    {
+      items: ['a', 'b', 'c', 'd', 'f', 'e'],
+      id: 'f',
+      ids: ['f'],
+      from: 5,
+      to: 4,
+    },
+  ]);
+});
+
+test('a list nested inside another list item keeps its items to itself', async () => {
+  const outer: ReorderChange[] = [];
+  const inner: ReorderChange[] = [];
+  await mount(
+    view(
+      h(
+        ReorderList,
+        {
+          'data-testname': 'outer',
+          dropAnimation: false,
+          onReorder: (c: ReorderChange) => outer.push(c),
+          style: { gap: GAP, padding: 10 },
+        },
+        h(
+          ReorderItem,
+          {
+            id: 'group-1',
+            'data-testname': 'outer-group-1',
+            style: { width: 220 },
+          },
+          h('text', null, 'Group one'),
+          h(
+            ReorderList,
+            {
+              'data-testname': 'inner',
+              dropAnimation: false,
+              onReorder: (c: ReorderChange) => inner.push(c),
+              style: { gap: GAP, padding: 6 },
+            },
+            ['x', 'y'].map((id) =>
+              h(
+                ReorderItem,
+                { key: id, id, 'data-testname': `inner-${id}`, style: ITEM },
+                h('text', null, id),
+              ),
+            ),
+          ),
+        ),
+        h(
+          ReorderItem,
+          {
+            id: 'group-2',
+            'data-testname': 'outer-group-2',
+            style: { width: 220, height: 40 },
+          },
+          h('text', null, 'Group two'),
+        ),
+      ),
+    ),
+  );
+
+  // the inner list's own item, dropped inside it: the inner list reorders
+  // and the outer one hears nothing, even though the drag was over both
+  const y = screen.getByTestName('inner-y');
+  await dragTo(screen.getByTestName('inner-x'), y, { dy: 10 });
+  await release(y, { dy: 10 });
+  assert.deepStrictEqual(inner, [
+    { items: ['y', 'x'], id: 'x', ids: ['x'], from: 0, to: 1 },
+  ]);
+  assert.deepStrictEqual(outer, []);
+});
+
+test('a board can reorder its columns as well as the cards in them', async () => {
+  const columns: ReorderChange[] = [];
+  const cardsMoved: ReorderChange[] = [];
+  await mount(
+    view(
+      h(
+        ReorderList,
+        {
+          'data-testname': 'board',
+          orientation: 'horizontal' as const,
+          dropAnimation: false,
+          onReorder: (c: ReorderChange) => columns.push(c),
+          style: { gap: 12, padding: 10 },
+        },
+        ['todo', 'done'].map((column) =>
+          h(
+            ReorderItem,
+            {
+              key: column,
+              id: column,
+              'data-testname': `col-${column}`,
+              style: { width: 150 },
+            },
+            h(ReorderHandle, { 'data-testname': `col-${column}-grip` }),
+            h(
+              ReorderList,
+              {
+                id: column,
+                group: 'cards',
+                'data-testname': `list-${column}`,
+                dropAnimation: false,
+                onReorder: (c: ReorderChange) => cardsMoved.push(c),
+                style: { gap: GAP, minHeight: 60 },
+              },
+              [`${column}-1`, `${column}-2`].map((card) =>
+                h(
+                  ReorderItem,
+                  {
+                    key: card,
+                    id: card,
+                    'data-testname': `card-${card}`,
+                    style: { width: 130, height: 26 },
+                  },
+                  h('text', null, card),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+
+  // a card, inside its column
+  const second = screen.getByTestName('card-todo-2');
+  await dragTo(screen.getByTestName('card-todo-1'), second, { dy: 8 });
+  await release(second, { dy: 8 });
+  assert.deepStrictEqual(cardsMoved, [
+    {
+      items: ['todo-2', 'todo-1'],
+      id: 'todo-1',
+      ids: ['todo-1'],
+      from: 0,
+      to: 1,
+    },
+  ]);
+  assert.deepStrictEqual(columns, [], 'the board did not move');
+
+  // and the column itself, by its grip
+  const done = screen.getByTestName('col-done');
+  await dragTo(screen.getByTestName('col-todo-grip'), done, { dx: 40 });
+  await release(done, { dx: 40 });
+  assert.deepStrictEqual(columns, [
+    {
+      items: ['done', 'todo'],
+      id: 'todo',
+      ids: ['todo'],
+      from: 0,
+      to: 1,
+    },
+  ]);
+  assert.strictEqual(cardsMoved.length, 1, 'no card moved with it');
+});
+
+test('a drop into an empty list lands at nothing, index 0', async () => {
+  const inserts: ReorderInsert[] = [];
+  await mount(
+    view(
+      h(List, { name: 'p', id: 'p', group: 'g', items: ['a'] }),
+      h(List, {
+        name: 'q',
+        id: 'q',
+        group: 'g',
+        items: [],
+        onInsert: (e) => inserts.push(e),
+        style: { gap: GAP, padding: 10, width: 160, height: 120 },
+      }),
+    ),
+  );
+  const empty = screen.getByTestName('q');
+  await dragTo(item('p', 'a'), empty);
+  await release(empty);
+  assert.strictEqual(inserts.length, 1);
+  assert.deepStrictEqual(inserts[0]!.items, ['a']);
+  assert.strictEqual(inserts[0]!.index, 0);
+});
+
+test('items added and removed mid-drag are the ones the drop lands among', async () => {
+  const changes: ReorderChange[] = [];
+  // The change has to come from outside the gesture: a live drag owns the
+  // pointer, so a click on a button in the same window never arrives. This
+  // is the shape of a list whose data updated while a hand was on it.
+  let grow: (() => void) | null = null;
+  function Growing(): ReactElement {
+    const [items, setItems] = useState(['a', 'b']);
+    grow = () => setItems((list) => [...list, 'c', 'd']);
+    return h(List, {
+      name: 'l',
+      items,
+      live: false,
+      onReorder: (c: ReorderChange) => changes.push(c),
+    });
+  }
+  await mount(view(h(Growing)));
+  await dragTo(item('l', 'a'), item('l', 'b'), { dy: 10 });
+
+  // two more items arrive while the pointer is down
+  await act(async () => {
+    grow?.();
+  });
+  await landed();
+  assert.deepStrictEqual(orderOf('l'), ['a', 'b', 'c', 'd']);
+
+  // the drop reads the list as it is now
+  await act(async () => {
+    fireEvent.mouseMove(item('l', 'd'), { dy: 10 });
+  });
+  await landed();
+  await release(item('l', 'd'), { dy: 10 });
+  assert.deepStrictEqual(changes, [
+    { items: ['b', 'c', 'd', 'a'], id: 'a', ids: ['a'], from: 0, to: 3 },
+  ]);
+});
+
+test('a few hundred items still answer one gesture', async () => {
+  const changes: ReorderChange[] = [];
+  const many = Array.from({ length: 300 }, (_, i) => `i${i}`);
+  await mount(
+    view(
+      h(List, {
+        name: 'l',
+        items: many,
+        onReorder: (c) => changes.push(c),
+        size: { width: 160, height: 12 },
+        style: { gap: 0, padding: 4, height: 200, overflow: 'scroll' },
+      }),
+    ),
+  );
+  assert.strictEqual(orderOf('l').length, 300);
+  const started = Date.now();
+  await dragTo(item('l', 'i0'), item('l', 'i5'), { dy: 4 });
+  await release(item('l', 'i5'), { dy: 4 });
+  assert.deepStrictEqual(changes.at(-1)?.to, 5);
+  // a rectangle per item per motion, and nothing else: this is a smoke test
+  // for an accidental O(n²), not a benchmark
+  assert.ok(Date.now() - started < 4000, `${Date.now() - started}ms`);
+});
+
+test('the whole surface still answers at scale 2: combine, multi and the flight', async () => {
+  const combines: ReorderCombine[] = [];
+  const changes: ReorderChange[] = [];
+  await mount(
+    view(
+      h(List, {
+        name: 'l',
+        items: ['a', 'b', 'c'],
+        combine: true,
+        selected: ['a', 'b'],
+        size: { width: 160, height: 40 },
+        onCombine: (e: ReorderCombine) => combines.push(e),
+        onReorder: (c) => changes.push(c),
+      }),
+    ),
+    { scale: 2 },
+  );
+  // the dead centre of c, in device pixels — a merge
+  await dragTo(item('l', 'a'), item('l', 'c'), { dy: 0 });
+  assert.ok(screen.queryByTestName('l-c-indicator'), 'the outline is drawn');
+  await release(item('l', 'c'), { dy: 0 });
+  assert.strictEqual(combines.length, 1);
+  assert.strictEqual(combines[0]!.into, 'c');
+  assert.deepStrictEqual(combines[0]!.ids, ['a', 'b']);
+  assert.strictEqual(changes.length, 0);
 });

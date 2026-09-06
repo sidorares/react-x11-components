@@ -3,13 +3,18 @@
 // A `<ReorderList>` is composition over core's drag and drop, so everything
 // interesting about it is what each rung of the ladder adds. Four panes:
 //
-//  - a todo list — the shortest thing that works, and the keyboard model on
-//    it (Tab to an item, Space, the arrows, Space; Escape puts it back);
+//  - a todo list — the shortest thing that works, the keyboard model on it
+//    (Tab to an item, Space, the arrows, Space; Escape puts it back), a
+//    selection several rows wide that travels as one, and a status line fed
+//    by the list's own onDragStart/onDragUpdate/onDragEnd;
 //  - cards with a grip: a `<ReorderHandle>` is the only press target, so
 //    the button in each card keeps working, one card is `disabled`, and the
 //    detail line reads the drag through `useReorderItem()`;
 //  - a board: three columns sharing `group="board"`, one state object,
-//    `onInsert` on the column it landed in and `onRemove` on the one it left;
+//    `onInsert` on the column it landed in and `onRemove` on the one it
+//    left, and a `canDrop` on Done that takes no more than three;
+//  - a palette whose items are copied rather than moved, dropped onto a
+//    list that merges what lands in the middle of one of its items;
 //  - an inbox that takes files and text dropped from the desktop
 //    (`accept` + `onDrop`), and whose items offer `text/plain` so they can be
 //    dragged *out* — into a terminal, an editor, or the todo list's window;
@@ -26,7 +31,11 @@ import {
   arrayMove,
   useReorderItem,
 } from '../src/index.js';
-import type { ReorderId } from '../src/index.js';
+import type {
+  ReorderDragUpdate,
+  ReorderId,
+  ReorderInsert,
+} from '../src/index.js';
 
 function Caption({ children }: { children: ReactNode }): ReactElement {
   return (
@@ -63,21 +72,149 @@ const TODOS: Todo[] = [
 
 function Todos(): ReactElement {
   const [todos, setTodos] = useState(TODOS);
+  const [selected, setSelected] = useState<ReorderId[]>([]);
+  const [status, setStatus] = useState<string | null>(null);
+
+  const toggle = (id: number): void =>
+    setSelected((chosen) =>
+      chosen.includes(id) ? chosen.filter((x) => x !== id) : [...chosen, id],
+    );
+
   return (
     <box style={{ gap: 8, width: 240 }}>
       <Caption>A LIST</Caption>
       <ReorderList
-        onReorder={(e) => setTodos((list) => arrayMove(list, e.from, e.to))}
+        selected={selected}
+        onReorder={(e) => {
+          // the whole selection travels: `e.items` is the new order of ids
+          const by = new Map(todos.map((t) => [t.id, t]));
+          setTodos(e.items.map((id) => by.get(id as number)!));
+        }}
+        // the gesture, as the list sees it — what a toolbar or a bin would
+        // listen to
+        onDragStart={(e) =>
+          setStatus(
+            `holding ${e.ids.length} ${e.ids.length === 1 ? 'row' : 'rows'} from ${e.index + 1}`,
+          )
+        }
+        onDragUpdate={(e: ReorderDragUpdate) =>
+          setStatus(
+            e.over ? `would land at ${e.over.index + 1}` : 'not over the list',
+          )
+        }
+        onDragEnd={(e) =>
+          setStatus(e.reason === 'drop' ? null : 'put back where it was')
+        }
         style={{ gap: 4 }}
       >
         {todos.map((todo) => (
-          <ReorderItem key={todo.id} id={todo.id} style={row}>
-            <text>{todo.title}</text>
+          <ReorderItem
+            key={todo.id}
+            id={todo.id}
+            style={
+              selected.includes(todo.id)
+                ? [row, { borderColor: '$accent' }]
+                : row
+            }
+          >
+            <box
+              style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}
+              onMouseDown={() => toggle(todo.id)}
+            >
+              <text
+                style={{
+                  color: selected.includes(todo.id) ? '$accent' : '$textMuted',
+                }}
+              >
+                {selected.includes(todo.id) ? '◉' : '○'}
+              </text>
+              <text>{todo.title}</text>
+            </box>
           </ReorderItem>
         ))}
       </ReorderList>
       <text style={{ fontSize: 11, color: '$textMuted' }}>
-        Drag a row, or Tab to one: Space lifts, arrows move, Escape cancels.
+        {status ??
+          'Drag a row, or Tab to one: Space lifts, arrows move, Escape cancels. Pick the dots to drag several.'}
+      </text>
+    </box>
+  );
+}
+
+// --- rung 5: a palette that copies, into a list that merges -------------------
+
+function Palette(): ReactElement {
+  const [tags, setTags] = useState<string[]>([]);
+  const [notes, setNotes] = useState([
+    { id: 'n1', text: 'Ship the release', tags: [] as string[] },
+    { id: 'n2', text: 'Book the room', tags: [] as string[] },
+  ]);
+  return (
+    <box style={{ gap: 8, width: 260 }}>
+      <Caption>COPY OUT, MERGE IN</Caption>
+      <ReorderList
+        id="tags"
+        group="tags"
+        orientation="horizontal"
+        onReorder={(e) => setTags(e.items as string[])}
+        style={{ gap: 6, flexWrap: 'wrap' }}
+      >
+        {['urgent', 'later', 'blocked'].map((tag) => (
+          <ReorderItem
+            key={tag}
+            id={tag}
+            // a palette hands out copies: the tag stays here
+            dragActions={['copy']}
+            style={{
+              paddingLeft: 8,
+              paddingRight: 8,
+              paddingTop: 3,
+              paddingBottom: 3,
+              borderRadius: 10,
+              backgroundColor: '$track',
+            }}
+          >
+            <text style={{ fontSize: 11 }}>{tag}</text>
+          </ReorderItem>
+        ))}
+      </ReorderList>
+      <ReorderList
+        id="notes"
+        group="tags"
+        combine
+        onReorder={(e) => {
+          const by = new Map(notes.map((n) => [n.id, n]));
+          setNotes(e.items.map((id) => by.get(String(id))!).filter(Boolean));
+        }}
+        // dropped onto a note rather than between two: the tag joins it
+        onCombine={(e) =>
+          setNotes((list) =>
+            list.map((n) =>
+              n.id === e.into && !n.tags.includes(String(e.id))
+                ? { ...n, tags: [...n.tags, String(e.id)] }
+                : n,
+            ),
+          )
+        }
+        // a tag dropped *between* two notes is not a note; only notes reorder
+        canDrop={(q) => q.source?.list === 'notes' || q.combine !== null}
+        style={{ gap: 4 }}
+      >
+        {notes.map((note) => (
+          <ReorderItem key={note.id} id={note.id} style={row}>
+            <box style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <text style={{ flexGrow: 1 }}>{note.text}</text>
+              {note.tags.map((tag) => (
+                <text key={tag} style={{ fontSize: 10, color: '$accent' }}>
+                  {tag}
+                </text>
+              ))}
+            </box>
+          </ReorderItem>
+        ))}
+      </ReorderList>
+      <text style={{ fontSize: 11, color: '$textMuted' }}>
+        {tags.length ? '' : 'Drop a tag on the middle of a note to tag it.'}
       </text>
     </box>
   );
@@ -198,10 +335,18 @@ function Board(): ReactElement {
           <box key={column.id} style={{ gap: 6, width: 150 }}>
             <text style={{ fontSize: 11, color: '$textMuted' }}>
               {column.label} · {board[column.id].length}
+              {column.id === 'done' && board.done.length >= 3 ? ' (full)' : ''}
             </text>
             <ReorderList
               id={column.id}
               group="board"
+              // Done is full at three: the last word on a drop, asked per
+              // pointer position, so the column simply never lights up
+              canDrop={(q) =>
+                column.id !== 'done' ||
+                q.source?.list === 'done' ||
+                board.done.length < 3
+              }
               onReorder={(e) =>
                 splice(column.id, (cards) => arrayMove(cards, e.from, e.to))
               }
@@ -259,6 +404,7 @@ function Inbox(): ReactElement {
       <ReorderList
         accept={['files', 'text']}
         onReorder={(e) => setNotes((list) => arrayMove(list, e.from, e.to))}
+        onInsert={(e: ReorderInsert) => void e.action}
         onDrop={(d) => {
           const arrived: Note[] = d.event.files.length
             ? d.event.files.map((f, i) => ({
@@ -321,13 +467,16 @@ function Inbox(): ReactElement {
 
 function App(): ReactElement {
   return (
-    <window title="ReorderList" width={1120} height={560}>
+    <window title="ReorderList" width={1180} height={640}>
       <box style={{ flexDirection: 'row', gap: 28, padding: 20 }}>
         <box style={{ gap: 28 }}>
           <Todos />
           <Inbox />
         </box>
-        <Cards />
+        <box style={{ gap: 28 }}>
+          <Cards />
+          <Palette />
+        </box>
         <Board />
       </box>
     </window>

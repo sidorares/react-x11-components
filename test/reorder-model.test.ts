@@ -9,7 +9,9 @@ import {
   arrayMove,
   closestSlot,
   insertAtSlot,
+  insertManyAtSlot,
   isNoopSlot,
+  moveManyToSlot,
   moveToSlot,
 } from '../src/reorder/index.js';
 import type { ReorderRect } from '../src/reorder/index.js';
@@ -40,21 +42,25 @@ test('closestSlot: the top half of an item is the gap before it, the bottom half
     slot: 0,
     index: 0,
     edge: 'before',
+    combine: false,
   });
   assert.deepStrictEqual(closestSlot(rects, { x: 50, y: 15 }, 'vertical'), {
     slot: 1,
     index: 0,
     edge: 'after',
+    combine: false,
   });
   assert.deepStrictEqual(closestSlot(rects, { x: 50, y: 27 }, 'vertical'), {
     slot: 1,
     index: 1,
     edge: 'before',
+    combine: false,
   });
   assert.deepStrictEqual(closestSlot(rects, { x: 50, y: 66 }, 'vertical'), {
     slot: 3,
     index: 2,
     edge: 'after',
+    combine: false,
   });
 });
 
@@ -67,12 +73,14 @@ test('closestSlot: a point in a gap belongs to the nearer item; past the end, to
     slot: 1,
     index: 1,
     edge: 'before',
+    combine: false,
   });
   // well below the list: the last item, its bottom half
   assert.deepStrictEqual(closestSlot(rects, { x: 50, y: 400 }, 'vertical'), {
     slot: 3,
     index: 2,
     edge: 'after',
+    combine: false,
   });
   // well above it
   assert.strictEqual(
@@ -84,6 +92,7 @@ test('closestSlot: a point in a gap belongs to the nearer item; past the end, to
     slot: 2,
     index: 1,
     edge: 'after',
+    combine: false,
   });
 });
 
@@ -91,21 +100,21 @@ test('closestSlot: horizontal reads x, and RTL puts the start edge on the right'
   const rects = row(3);
   assert.deepStrictEqual(
     closestSlot(rects, { x: 10, y: 10 }, 'horizontal', 'ltr'),
-    { slot: 0, index: 0, edge: 'before' },
+    { slot: 0, index: 0, edge: 'before', combine: false },
   );
   assert.deepStrictEqual(
     closestSlot(rects, { x: 40, y: 10 }, 'horizontal', 'ltr'),
-    { slot: 1, index: 0, edge: 'after' },
+    { slot: 1, index: 0, edge: 'after', combine: false },
   );
   // the same points under RTL: item 0 is the *first* in reading order,
   // and its start edge is its right edge
   assert.deepStrictEqual(
     closestSlot(rects, { x: 40, y: 10 }, 'horizontal', 'rtl'),
-    { slot: 0, index: 0, edge: 'before' },
+    { slot: 0, index: 0, edge: 'before', combine: false },
   );
   assert.deepStrictEqual(
     closestSlot(rects, { x: 10, y: 10 }, 'horizontal', 'rtl'),
-    { slot: 1, index: 0, edge: 'after' },
+    { slot: 1, index: 0, edge: 'after', combine: false },
   );
 });
 
@@ -122,12 +131,14 @@ test('closestSlot: a wrapping grid is the same rule — the nearest item, then i
     slot: 1,
     index: 1,
     edge: 'before',
+    combine: false,
   });
   // over the third cell's lower half: after it
   assert.deepStrictEqual(closestSlot(rects, { x: 10, y: 40 }, 'vertical'), {
     slot: 3,
     index: 2,
     edge: 'after',
+    combine: false,
   });
 });
 
@@ -194,4 +205,152 @@ test('insertAtSlot: a newcomer at a gap, clamped', () => {
   assert.deepStrictEqual(insertAtSlot(order, 'x', 9), ['a', 'b', 'x']);
   assert.deepStrictEqual(insertAtSlot([], 'x', 0), ['x']);
   assert.deepStrictEqual(order, ['a', 'b'], 'the input is untouched');
+});
+
+// --- the combine band -------------------------------------------------------
+
+test('closestSlot: with a band, the middle of an item is a merge and the ends are not', () => {
+  const rects = column(3);
+  const band = 0.25;
+  // row 1 runs y 24..44; its middle half is 29..39
+  const at = (y: number) =>
+    closestSlot(rects, { x: 50, y }, 'vertical', 'ltr', band);
+  assert.deepStrictEqual(at(26), {
+    slot: 1,
+    index: 1,
+    edge: 'before',
+    combine: false,
+  });
+  assert.deepStrictEqual(at(30), {
+    slot: 1,
+    index: 1,
+    edge: 'before',
+    combine: true,
+  });
+  assert.deepStrictEqual(at(38), {
+    slot: 2,
+    index: 1,
+    edge: 'after',
+    combine: true,
+  });
+  assert.deepStrictEqual(at(42), {
+    slot: 2,
+    index: 1,
+    edge: 'after',
+    combine: false,
+  });
+  // the edge answer is unchanged by the band, which is what lets a
+  // combining list still be reordered through
+  assert.strictEqual(at(30)!.slot, at(26)!.slot);
+});
+
+test('closestSlot: a point in the gap between two items never combines', () => {
+  const rects = column(3);
+  // 22 is in the 20..24 gap: nearest is row 0, but the pointer is not on it
+  const hit = closestSlot(rects, { x: 50, y: 22 }, 'vertical', 'ltr', 0.25);
+  assert.strictEqual(hit!.combine, false);
+  // and neither does a point beside the list, level with an item's middle
+  const beside = closestSlot(rects, { x: 400, y: 34 }, 'vertical', 'ltr', 0.25);
+  assert.strictEqual(beside!.combine, false);
+});
+
+test('closestSlot: no band, no combining — the default answers as it always did', () => {
+  const rects = column(3);
+  assert.strictEqual(
+    closestSlot(rects, { x: 50, y: 34 }, 'vertical')!.combine,
+    false,
+  );
+});
+
+// --- moving a set -----------------------------------------------------------
+
+test('moveManyToSlot: the set travels in the list order and lands as one run', () => {
+  const order = ['a', 'b', 'c', 'd', 'e'];
+  // picked up in the order c then a; they land in the list's own order
+  assert.deepStrictEqual(moveManyToSlot(order, ['c', 'a'], 4, 'c'), {
+    items: ['b', 'd', 'a', 'c', 'e'],
+    ids: ['a', 'c'],
+    from: 2,
+    to: 3,
+  });
+  // to the very front
+  assert.deepStrictEqual(moveManyToSlot(order, ['d', 'e'], 0, 'd'), {
+    items: ['d', 'e', 'a', 'b', 'c'],
+    ids: ['d', 'e'],
+    from: 3,
+    to: 0,
+  });
+  // to the very end
+  assert.deepStrictEqual(moveManyToSlot(order, ['a', 'b'], 5, 'b'), {
+    items: ['c', 'd', 'e', 'a', 'b'],
+    ids: ['a', 'b'],
+    from: 1,
+    to: 4,
+  });
+});
+
+test('moveManyToSlot: a set that lands where it already is moves nothing', () => {
+  const order = ['a', 'b', 'c', 'd'];
+  // the contiguous run b,c over its own gaps
+  assert.strictEqual(moveManyToSlot(order, ['b', 'c'], 1, 'b'), null);
+  assert.strictEqual(moveManyToSlot(order, ['b', 'c'], 2, 'b'), null);
+  assert.strictEqual(moveManyToSlot(order, ['b', 'c'], 3, 'b'), null);
+  // but past them is a real move
+  assert.ok(moveManyToSlot(order, ['b', 'c'], 4, 'b'));
+  // a set that is not contiguous always moves: it is gathered. Slot 2 is
+  // the gap after 'b' in the *original* order, and 'b' is what is left
+  // above it once a and c come out.
+  assert.deepStrictEqual(moveManyToSlot(order, ['a', 'c'], 2, 'a'), {
+    items: ['b', 'a', 'c', 'd'],
+    ids: ['a', 'c'],
+    from: 0,
+    to: 1,
+  });
+  // and gathering to the front is slot 0
+  assert.deepStrictEqual(moveManyToSlot(order, ['a', 'c'], 0, 'a'), {
+    items: ['a', 'c', 'b', 'd'],
+    ids: ['a', 'c'],
+    from: 0,
+    to: 0,
+  });
+});
+
+test('moveManyToSlot: ids the list does not hold are ignored; an empty set is null', () => {
+  const order = ['a', 'b', 'c'];
+  assert.deepStrictEqual(moveManyToSlot(order, ['a', 'zz'], 3, 'a'), {
+    items: ['b', 'c', 'a'],
+    ids: ['a'],
+    from: 0,
+    to: 2,
+  });
+  assert.strictEqual(moveManyToSlot(order, [], 1, 'a'), null);
+  assert.strictEqual(moveManyToSlot(order, ['zz'], 1, 'zz'), null);
+});
+
+test('moveToSlot is moveManyToSlot with one id', () => {
+  const order = ['a', 'b', 'c', 'd'];
+  for (let slot = 0; slot <= order.length; slot++) {
+    const one = moveToSlot(order, 'b', slot);
+    const many = moveManyToSlot(order, ['b'], slot, 'b');
+    assert.deepStrictEqual(
+      one,
+      many && { items: many.items, from: many.from, to: many.to },
+      `slot ${slot}`,
+    );
+  }
+});
+
+test('insertManyAtSlot: a run arrives together, clamped', () => {
+  assert.deepStrictEqual(insertManyAtSlot(['a', 'b'], ['x', 'y'], 1), [
+    'a',
+    'x',
+    'y',
+    'b',
+  ]);
+  assert.deepStrictEqual(insertManyAtSlot(['a', 'b'], ['x'], 9), [
+    'a',
+    'b',
+    'x',
+  ]);
+  assert.deepStrictEqual(insertManyAtSlot([], ['x', 'y'], 0), ['x', 'y']);
 });

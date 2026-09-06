@@ -234,27 +234,34 @@ precludes it.
   left open.
 - **Modifier-key copy/move.** Core has no modifier negotiation during a
   drag; the requested action is fixed at start and only a target changes it.
+  `dragActions={['copy']}` is the per-item answer instead.
 - **Nested reorderable trees.** `<Tree>`'s rung, if it comes.
 - **A second engine.** No sensors, no collision strategies. A gap in core's
   drag and drop is filed there.
 
 ## The continuity contract
 
-| When a list needs…                       | …it adds                                            | and nothing else moves                               |
-| ---------------------------------------- | --------------------------------------------------- | ---------------------------------------------------- |
-| items that reorder                       | `<ReorderList onReorder>` + `<ReorderItem id>`      | —                                                    |
-| the app's own objects                    | nothing — `arrayMove(objects, e.from, e.to)`        | `e.items` is the ids, `e.from`/`e.to` are indices    |
-| a grip instead of the whole item         | `<ReorderHandle>` inside the item                   | the item stops being the press target; keys move too |
-| a horizontal strip                       | `orientation="horizontal"`                          | the indicator turns, arrows turn, RTL mirrors        |
-| an item that stays put                   | `disabled` on it                                    | it is still a slot others land beside                |
-| a board                                  | `group` on each list; `onInsert` + `onRemove`       | `onReorder` still handles the move within one list   |
-| naming the column in the events          | `id` on the list                                    | —                                                    |
-| dropping items into other apps / targets | `dragData` (and `dragActions`) on the item          | the reorder payload is offered beside it             |
-| taking files or text from outside        | `accept` + `onDrop` on the list                     | the list still refuses every other foreign drag      |
-| content that reacts to the drag          | `children` as a function; `useReorderItem()` deeper | the state is the one `styles.item` already sees      |
-| a different ghost, or none               | `renderPreview`, or `preview={false}`               | —                                                    |
-| the look                                 | `styles.item/handle/indicator/preview`, `style`     | geometry and behaviour stay the list's               |
-| a name a screen reader can say           | `aria-label` on the item                            | otherwise the item's own text is read                |
+| When a list needs…                       | …it adds                                            | and nothing else moves                                 |
+| ---------------------------------------- | --------------------------------------------------- | ------------------------------------------------------ |
+| items that reorder                       | `<ReorderList onReorder>` + `<ReorderItem id>`      | —                                                      |
+| the app's own objects                    | nothing — `arrayMove(objects, e.from, e.to)`        | `e.items` is the ids, `e.from`/`e.to` are indices      |
+| a grip instead of the whole item         | `<ReorderHandle>` inside the item                   | the item stops being the press target; keys move too   |
+| a horizontal strip                       | `orientation="horizontal"`                          | the indicator turns, arrows turn, RTL mirrors          |
+| an item that stays put                   | `disabled` on it                                    | it is still a slot others land beside                  |
+| a board                                  | `group` on each list; `onInsert` + `onRemove`       | `onReorder` still handles the move within one list     |
+| a target that refuses                    | `canDrop`                                           | `group`/`accept` still decide what is offered at all   |
+| a palette                                | `dragActions={['copy']}` on the item                | the target reads `action`; the source keeps its item   |
+| merging two items                        | `combine` + `onCombine`                             | edges still reorder; the middle is the only new answer |
+| several at once                          | `selected` on the list                              | every event grows `ids`; the app owns the selection    |
+| watching the gesture                     | `onDragStart` / `onDragUpdate` / `onDragEnd`        | the change events are unchanged                        |
+| controls inside an item                  | nothing — a press on one is not a drag              | `dragFromInteractive` turns that off                   |
+| naming the column in the events          | `id` on the list                                    | —                                                      |
+| dropping items into other apps / targets | `dragData` (and `dragActions`) on the item          | the reorder payload is offered beside it               |
+| taking files or text from outside        | `accept` + `onDrop` on the list                     | the list still refuses every other foreign drag        |
+| content that reacts to the drag          | `children` as a function; `useReorderItem()` deeper | the state is the one `styles.item` already sees        |
+| a different ghost, or none               | `renderPreview`, or `preview={false}`               | —                                                      |
+| the look                                 | `styles.item/handle/indicator/preview`, `style`     | geometry and behaviour stay the list's                 |
+| a name a screen reader can say           | `aria-label` on the item                            | otherwise the item's own text is read                  |
 
 The same three rules `prd-table.md` states keep this honest: opt-ins are
 orthogonal, escalation is local, and `docs/components/reorder.md` grows one
@@ -468,10 +475,96 @@ dragging, lifted, disabled, edge }` and merges last, over the wash.
   handle that is the only press target; a disabled item; a horizontal strip;
   the keyboard model end to end; two lists in a group exchanging an item
   (`onInsert` then `onRemove`, with `source` and `to`); a foreign drop taken
-  through `accept` and refused without it; the preview window; and the drag
-  at `scale: 2`.
+  through `accept` and refused without it; the preview window; the state
+  function children and `useReorderItem()` see; and the drag at `scale: 2`.
+  The second round added: the three lifecycle events for both inputs, a
+  `canDrop` that refuses a list and one that refuses a slot, a copy palette,
+  a merge and the outline it draws, a press on a button and on a field
+  inside an item (and `dragFromInteractive` giving it back), a selection
+  moving as one run within a list, between lists and from the keyboard,
+  `previewSize`, the announcement a pointer drag makes, and the drop flight
+  — that it is a box with `pointerEvents: 'none'` rather than a window, and
+  that it goes.
+- The cases the first cut never exercised, added with the second round: a
+  **scrolling** list (the slot is read off where the rows are now), a list
+  **nested** inside another list's item, a **board whose columns reorder**
+  as well as its cards, a drop into an **empty** list, items **added
+  mid-drag**, three hundred items as a smoke test for an accidental O(n²),
+  and combine plus multi-drag at `scale: 2`.
 - `test/types/reorder.tsx` compiles every rung.
 - `test/treeshake.test.ts` — the payload type name is the marker.
+
+## The second round: what the story survey found
+
+The design above shipped, and was then measured against
+[react-beautiful-dnd's storybook](https://react-beautiful-dnd.netlify.app) —
+23 story files, read as the list of use cases a mature list library is
+expected to serve. Most mapped onto what was already here (mixed sizes,
+mixed spacing, a fixed sidebar, portals, function components, multiple
+contexts, nested lists, lists in tables), and two are deliberate non-goals
+that stay non-goals: **virtualization** (`<Table>`'s rung, over this same
+model) and **window scrolling** (core auto-scrolls scroll containers, and a
+desktop window is not a page).
+
+Eight gaps were real, and all eight are closed. What each cost, and the
+decision inside it:
+
+1. **The gesture had no events.** `onDragStart`/`onDragUpdate`/`onDragEnd`
+   on the source list — rbd's three, covering the keyboard as well.
+2. **Acceptance was static.** `canDrop`, asked per position and again at the
+   drop. It can only _refuse_, because core keeps the node whose
+   `dropAccept` matched and lets a handler reject the position; the
+   asymmetry is the engine's, and hiding it would mean re-implementing the
+   matcher.
+3. **Everything was a move.** The target forced `accept('move')`, so a
+   palette lost its items. It honours the offered action now, and
+   `onInsert` reports which it was.
+4. **No merging.** `combine` puts a band in the middle of each item and
+   `onCombine` reports a drop onto one. The model grew one optional
+   argument and one boolean on its answer; the component draws an outline
+   where the line would be.
+5. **A press on a control dragged the card.** Fixed in the layer, because
+   core arms from the nearest draggable ancestor by design: the item
+   records what the press landed on and cancels at the threshold. rbd's
+   `disableInteractiveElementBlocking` is `dragFromInteractive` here.
+6. **One item at a time.** `selected` on the list; the set travels in list
+   order and lands as one run, from the pointer or the keyboard. The
+   keyboard step was the subtle half — `from + 1` lands a run inside
+   itself, so a step moves the whole run past its next _non-member_.
+7. **The ghost could not be sized, and a pointer drag said nothing.**
+   `previewSize`, and `announce` for pointer drags as well as keyboard ones.
+8. **The drop was instant.** `dropAnimation` flies a copy home.
+
+### The hover channel is module state
+
+`onDragOver` hands a target a `DragEvent`, and only `DropEvent` carries
+`items` — so a target physically cannot write on the dragged payload while
+the pointer is merely over it. Without a channel `onDragUpdate` could say
+"somewhere else" but never _which list, at what index_.
+
+The answer is one module-scope object per gesture: the list under the
+pointer writes where a drop would land, the source reads it in its own
+`onDrag` (core tells the target first, which its reference guarantees), and
+it is null between gestures. Nothing reads it at import time, and a second
+copy of the module would only mean two independent gestures — which cannot
+happen, because there is one pointer.
+
+The alternative, a React context above every list in a group (rbd's
+`DragDropContext`), was rejected for the reason the whole API was: a
+provider is ceremony every simple list pays for a feature only boards use,
+and it would make "two lists in a group" a tree relationship rather than a
+prop.
+
+### The drop flight is a box, not the ghost
+
+The obvious implementation keeps the `<popup>` ghost alive and animates its
+`x`/`y` home. It is wrong, and the test that found it is worth keeping: a
+popup is a real override-redirect **window**, so for the animation's
+duration it sits over the list and takes the press that follows the drop —
+the second press of a double-click lands on a ghost. The flight is an
+absolutely positioned box inside the item with `pointerEvents: 'none'`,
+easing an offset to zero, which cannot take an input the list should have
+had.
 
 ## Open questions
 
@@ -479,7 +572,8 @@ dragging, lifted, disabled, edge }` and merges last, over the wash.
   case shorter. If a caller ever needs the order before layout — a keyboard
   move on the first frame — an optional `items` prop is the rung, and
   nothing else changes.
-- **Sliding neighbours.** See above; a `slide` rung if wanted.
+- **Sliding neighbours.** See above; a `slide` rung if wanted, and every
+  rung since has left it buildable in the same place.
 - **A reorderable `<Table>` / `<Tree>`.** The model module was written to be
   promoted to `src/internal/` when a second consumer arrives.
 
