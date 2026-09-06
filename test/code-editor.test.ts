@@ -270,8 +270,14 @@ test('completion: opens while typing, Enter accepts, popup closes', async () => 
   assert.ok(option, 'the popup offers the keyword');
   await userEvent.key(XK_RETURN);
   assert.equal(node.value, 'select');
+  // `ok(!node)`, not `equal(node, null)`: a still-open popup on a failed
+  // attempt would be `util.inspect`ed, tree and all, just to build the
+  // message (see tabs.test.ts, "takes its tabs back").
   await waitFor(() => {
-    assert.equal(screen.queryByText('select', { selector: 'text' }), null);
+    assert.ok(
+      !screen.queryByText('select', { selector: 'text' }),
+      'the popup is gone',
+    );
   });
 });
 
@@ -292,7 +298,10 @@ test('completion: arrows move the highlight, Escape dismisses', async () => {
   assert.equal(node.value, before, 'popup navigation does not move the caret');
   await userEvent.key(XK_ESCAPE);
   await waitFor(() => {
-    assert.equal(screen.queryByText('select', { selector: 'text' }), null);
+    assert.ok(
+      !screen.queryByText('select', { selector: 'text' }),
+      'the popup is gone',
+    );
   });
   assert.equal(node.value, 'se');
 });
@@ -345,7 +354,10 @@ test('completion: the popup opens at the caret, and follows it down a line', asy
   // point of anchoring to a rect inside the node rather than to the node
   await userEvent.key(XK_ESCAPE);
   await waitFor(() => {
-    assert.equal(screen.queryByText('select', { selector: 'text' }), null);
+    assert.ok(
+      !screen.queryByText('select', { selector: 'text' }),
+      'the popup is gone',
+    );
   });
   for (let i = 0; i < 3; i++) await userEvent.key(XK_RETURN);
   assert.equal(node.selection.head.line, 3, 'three lines further down');
@@ -805,7 +817,10 @@ test('at a display scale of 2 the completion popup opens at the caret', async ()
   // three lines down, and the list is three device line heights down with it
   await userEvent.key(XK_ESCAPE);
   await waitFor(() => {
-    assert.equal(screen.queryByText('select', { selector: 'text' }), null);
+    assert.ok(
+      !screen.queryByText('select', { selector: 'text' }),
+      'the popup is gone',
+    );
   });
   for (let i = 0; i < 3; i++) await userEvent.key(XK_RETURN);
   await userEvent.type(node as unknown as DrawnNode, 'sel', {

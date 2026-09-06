@@ -758,9 +758,12 @@ test('the strip takes its tabs back when the window makes room', async () => {
   // the window's own `onAnchorChange` is subscribed for.
   await view.rerender(narrow(900));
   await waitFor(() => {
-    assert.strictEqual(
-      screen.queryByTestName('tabs-more'),
-      null,
+    // `ok(!node)`, not `strictEqual(node, null)`: until the coalesced resize
+    // lands the button is still there, and a failing strictEqual would hand
+    // it to `util.inspect` (depth 1000, and through its parent the whole
+    // window) to draw a diff, which eats most of waitFor's budget under load.
+    assert.ok(
+      !screen.queryByTestName('tabs-more'),
       'nothing is left over, so there is no button',
     );
     assert.strictEqual(onStrip().length, MANY.length);
