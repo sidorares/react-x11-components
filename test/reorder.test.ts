@@ -23,7 +23,6 @@ import {
   userEvent,
   act,
   installA11ySpy,
-  waitFor,
 } from 'react-x11/test';
 import type { PointerOptions } from 'react-x11/test';
 import { ThemeProvider } from 'react-x11';
@@ -1453,8 +1452,9 @@ test('a pointer drag is announced, not only a keyboard one', async () => {
 // --- the drop animation -----------------------------------------------------
 
 test('the drop flies home, takes no input on the way, and then is gone', async () => {
+  const MS = 80;
   await mount(
-    view(h(List, { name: 'l', items: ['a', 'b', 'c'], dropAnimation: 80 })),
+    view(h(List, { name: 'l', items: ['a', 'b', 'c'], dropAnimation: MS })),
   );
   await dragTo(item('l', 'a'), item('l', 'c'), { dy: 10 });
   await release(item('l', 'c'), { dy: 10 });
@@ -1470,9 +1470,20 @@ test('the drop flies home, takes no input on the way, and then is gone', async (
     'the ghost is gone',
   );
 
-  await waitFor(() => {
-    assert.ok(screen.queryByTestName('l-a-flight') === null);
-  });
+  // **Plain time, then one `act()`** — not `waitFor`. The flight is a chain
+  // of real timers, and `waitFor` spends its wait *inside* `act()`, which
+  // round-trips the X connection: on a slow enough runner that occupies the
+  // loop for longer than the animation, the timers never run, and the test
+  // waits for a flight that its own waiting has frozen mid-air. (CI's Node
+  // 20 leg: one `act()` took 28 seconds, and the test hung for 53 minutes.
+  // Node 22 and 24 never showed it.) Sleeping *outside* `act()` lets the
+  // animation run, and one `act()` after it commits the state it ended on.
+  await new Promise((resolve) => setTimeout(resolve, MS * 3));
+  await act();
+  assert.ok(
+    screen.queryByTestName('l-a-flight') === null,
+    'the copy is gone once it has landed',
+  );
 });
 
 test('no flight when the desktop asks for reduced motion, or the app does', async () => {
