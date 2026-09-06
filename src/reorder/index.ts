@@ -412,8 +412,16 @@ export interface ReorderListProps {
   onDragUpdate?: (ev: ReorderDragUpdate) => void;
   /** The gesture is over, after the change events. */
   onDragEnd?: (ev: ReorderDragEnd) => void;
-  /** Whether a ghost follows the pointer. Default true. */
-  preview?: boolean;
+  /**
+   * The ghost that follows the pointer while an item is held.
+   *
+   * `'auto'` (the default, and what `true` means) draws it in a `<popup>`
+   * that can leave the window, and **inside the list** on a backend whose
+   * drags are the platform's own — where a popup is never told where the
+   * pointer is. `'popup'` and `'inline'` pin it; `false` leaves only the
+   * cursor and the indicator. See "What differs per backend" in the docs.
+   */
+  preview?: boolean | 'auto' | 'popup' | 'inline';
   /** What the ghost shows. Default: the item's children again, on a card. */
   renderPreview?: (state: ReorderItemState) => ReactNode;
   /** How big the ghost is. Default: the item's own size. */
@@ -520,7 +528,7 @@ interface ListShared {
   type: string;
   orientation: ReorderOrientation;
   disabled: boolean;
-  preview: boolean;
+  preview: 'auto' | 'popup' | 'inline' | false;
   renderPreview: ((state: ReorderItemState) => ReactNode) | undefined;
   previewSize: ReorderPreviewSize | undefined;
   dropMs: number;
@@ -606,12 +614,32 @@ function inertItem(
 // --- helpers ----------------------------------------------------------------
 
 /** What `DrawnNode` does not declare and a drag has to read: the display
- *  scale `abs` is in, and the props a press landed on. The same widening
- *  `<Tabs>` makes to measure its strip — a ref's public contract is geometry
- *  and focus. */
+ *  scale `abs` is in, the props a press landed on, and the owning window —
+ *  which is where the question "will a popup follow the pointer here?" is
+ *  answered. The same widening `<Tabs>` makes to measure its strip: a ref's
+ *  public contract is geometry and focus. */
 interface OpaqueNode {
   scale?: number;
   props?: Record<string, unknown>;
+  root?: { window?: { beginDrag?: unknown } } | null;
+}
+
+/**
+ * Does this window hand a drag to the platform's own session?
+ *
+ * `beginDrag` on the ntk window is the exact thing core probes before
+ * handing the gesture to AppKit (its `DragSession._start`), and once it
+ * does, the pointer's motion belongs to the platform: a `<popup
+ * dragPreview>` is never told where the pointer went, and AppKit carries a
+ * blank drag image of its own. So on that path the ghost has to be drawn
+ * **inside the window**, and this is how a list knows.
+ *
+ * Probed rather than asked of a backend name: what matters is the code path
+ * the drag will take, and this is the same condition that picks it.
+ */
+function nativeDragSession(node: DrawnNode | null): boolean {
+  const window = (node as (DrawnNode & OpaqueNode) | null)?.root?.window;
+  return typeof window?.beginDrag === 'function';
 }
 
 function scaleOf(node: DrawnNode | null): number {
@@ -755,7 +783,7 @@ export function ReorderList(props: ReorderListProps): ReactElement {
     onDragStart,
     onDragUpdate,
     onDragEnd,
-    preview = true,
+    preview = 'auto',
     renderPreview,
     previewSize,
     dropAnimation = true,
@@ -1308,7 +1336,7 @@ export function ReorderList(props: ReorderListProps): ReactElement {
       type,
       orientation,
       disabled,
-      preview,
+      preview: preview === true ? 'auto' : preview,
       renderPreview,
       previewSize,
       dropMs:
@@ -1388,6 +1416,12 @@ export function ReorderList(props: ReorderListProps): ReactElement {
 /** The item's own look, under its `style`. */
 function itemStyle(state: ReorderItemState, hasHandle: boolean): Style {
   return { cursor: state.disabled || hasHandle ? undefined : 'grab' };
+}
+
+/** An item drawing a ghost of its own has to paint over its neighbours, or
+ *  the copy following the pointer slides under the next row down. */
+function liftStyle(lifted: boolean): Style | null {
+  return lifted ? { zIndex: 3 } : null;
 }
 
 /**
@@ -1741,16 +1775,6 @@ export function ReorderItem(props: ReorderItemProps): ReactElement {
   const previewState: ReorderItemState = { ...state, preview: true };
   const content = typeof children === 'function' ? children(state) : children;
 
-  /** The look: the defaults, then the app's `style`. */
-  const ownStyle: StyleInput[] = [itemStyle(state, hasHandle), style].filter(
-    (s): s is StyleInput => Boolean(s),
-  );
-  /** The state, over the look: the wash, then the seam. */
-  const stateStyle: StyleInput[] = [
-    washStyle(state, theme),
-    list.styles?.item?.(state) || null,
-  ].filter((s): s is StyleInput => Boolean(s));
-
   const size =
     typeof list.previewSize === 'function'
       ? list.previewSize(previewState)
@@ -1760,7 +1784,48 @@ export function ReorderItem(props: ReorderItemProps): ReactElement {
     y: position.y - grab.current.y,
   };
   if (isDragging && ghostAt) lastGhost.current = ghostAt;
-  const showPreview = Boolean(ghostAt) && list.preview;
+  // Where the ghost is drawn. A popup can leave the window; an in-window
+  // copy cannot, but it is the only one that works where the platform owns
+  // the drag — see `nativeDragSession`.
+  const mode =
+    list.preview === 'auto'
+      ? nativeDragSession(nodeRef.current)
+        ? 'inline'
+        : 'popup'
+      : list.preview;
+  /** The item's own origin on screen, which turns a pointer position into an
+   *  offset inside the item — what an inline ghost is placed by, and what the
+   *  drop flight eases to zero. */
+  const originOnScreen = (): { x: number; y: number } | null => {
+    const node = nodeRef.current;
+    if (!node) return null;
+    const scale = scaleOf(node);
+    return {
+      x: windowOrigin.current.x + node.abs.x / scale,
+      y: windowOrigin.current.y + node.abs.y / scale,
+    };
+  };
+  const origin = mode === 'inline' && ghostAt ? originOnScreen() : null;
+  /** The offset the in-window copy is drawn at: the pointer's while the item
+   *  is held, and the flight's easing to zero once it has landed. One box
+   *  either way. */
+  const inlineAt =
+    flight ??
+    (origin && ghostAt
+      ? { x: ghostAt.x - origin.x, y: ghostAt.y - origin.y }
+      : null);
+  const showPopup = Boolean(ghostAt) && mode === 'popup';
+
+  /** The look: the defaults, then the app's `style`. */
+  const ownStyle: StyleInput[] = [itemStyle(state, hasHandle), style].filter(
+    (s): s is StyleInput => Boolean(s),
+  );
+  /** The state, over the look: the lift, the wash, then the seam. */
+  const stateStyle: StyleInput[] = [
+    liftStyle(inlineAt !== null),
+    washStyle(state, theme),
+    list.styles?.item?.(state) || null,
+  ].filter((s): s is StyleInput => Boolean(s));
   /** The ghost's content, drawn twice: once in the popup that follows the
    *  pointer, once in the copy that flies home after the drop. */
   const ghostBody = (): ReactNode =>
@@ -1819,16 +1884,20 @@ export function ReorderItem(props: ReorderItemProps): ReactElement {
           list.styles?.indicator,
         ],
       }),
-    flight !== null &&
+    inlineAt !== null &&
       hx(
         'box',
         {
-          key: 'flight',
-          'data-testname': testname ? `${testname}-flight` : undefined,
+          key: 'ghost',
+          // the same box before and after the release: the preview while the
+          // pointer holds it, the flight once it has landed
+          'data-testname': testname
+            ? `${testname}-${flight ? 'flight' : 'preview'}`
+            : undefined,
           style: {
             position: 'absolute',
-            left: flight.x,
-            top: flight.y,
+            left: inlineAt.x,
+            top: inlineAt.y,
             width: Math.max(1, Math.round(size.width)),
             height: Math.max(1, Math.round(size.height)),
             zIndex: 2,
@@ -1839,7 +1908,7 @@ export function ReorderItem(props: ReorderItemProps): ReactElement {
         },
         ghostBody(),
       ),
-    showPreview &&
+    showPopup &&
       ghostAt &&
       hx(
         'popup',

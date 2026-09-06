@@ -771,6 +771,17 @@ and drop:
   animation's length, and the next press lands on it — a double-click's
   second press hits a ghost. Anything that outlasts a drag should be a box
   with `pointerEvents: 'none'`, in the list's own coordinates.
+- **And a `<popup>` is not a drag preview everywhere.** Core's documented
+  way to draw one — a `<popup dragPreview>` following
+  `useDragSource().position` — draws nothing on the **cocoa** backend: once
+  the threshold is crossed the gesture belongs to AppKit's own session, the
+  popup is never told where the pointer went, and the session's image is
+  blank (react-x11#482). A component that shows something under the pointer
+  needs an in-window fallback, chosen by probing the _code path_ rather than
+  a backend name — `typeof node.root.window.beginDrag === 'function'` is the
+  same condition core's `DragSession._start` branches on. `<ReorderList>`'s
+  `preview` prop is the worked example, and the in-window ghost is the drop
+  flight's box with a different offset.
 - **Core arms a drag from the nearest draggable ancestor**, so a press on a
   control inside a draggable drags the ancestor. The layer's answer is to
   remember the press target (`onMouseDownCapture`) and cancel at the

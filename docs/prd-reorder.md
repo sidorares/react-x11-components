@@ -566,6 +566,36 @@ absolutely positioned box inside the item with `pointerEvents: 'none'`,
 easing an offset to zero, which cannot take an input the list should have
 had.
 
+### The ghost cannot be a popup everywhere
+
+The first cut drew the ghost in a `<popup dragPreview>`, which is what
+core's own reference shows and what works on X11. It draws nothing at all on
+the cocoa backend, and the reason is structural rather than a bug to fix
+here: once the press crosses the threshold core hands the gesture to
+AppKit's own dragging session, and from there the pointer's motion belongs
+to the platform — a popup is never told where it went. AppKit carries a
+drag image of its own, and core has not yet given it one, so the drag has no
+visible subject.
+
+So `preview` grew from a boolean to `'auto' | 'popup' | 'inline' | false`,
+and the default asks the window which path its drags take —
+`typeof window.beginDrag === 'function'`, the same condition core's
+`DragSession._start` branches on. Probing the _code path_ rather than a
+backend name is the point: what matters is whether this drag will be the
+platform's, and that is the condition that decides it.
+
+The in-window ghost is the drop flight's box with a different offset, which
+is why it cost almost nothing to add: absolutely positioned, `pointerEvents:
+'none'`, with the item lifted over its neighbours so the copy is not painted
+under the next row. It cannot leave the window, which a popup can, and that
+is the whole trade — `'popup'` and `'inline'` pin either half of it.
+
+The half that is genuinely core's is the drag image an item dragged _out_ of
+the application should carry on the cocoa backend; filed as
+[react-x11#482](https://github.com/sidorares/react-x11/issues/482). Nothing
+here is blocked on it: an in-app reorder, which is what this component is
+for, is visible on both backends now.
+
 ## Open questions
 
 - **`items` on the list.** Reading the order from the tree makes the basic

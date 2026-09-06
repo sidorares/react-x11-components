@@ -1791,3 +1791,87 @@ test('the whole surface still answers at scale 2: combine, multi and the flight'
   assert.deepStrictEqual(combines[0]!.ids, ['a', 'b']);
   assert.strictEqual(changes.length, 0);
 });
+
+// --- where the ghost is drawn ------------------------------------------------
+
+test('preview="inline" draws the ghost in the list, following the pointer', async () => {
+  await mount(
+    view(
+      h(List, {
+        name: 'l',
+        items: ['a', 'b', 'c'],
+        preview: 'inline' as const,
+        dropAnimation: false,
+      }),
+    ),
+  );
+  const a = item('l', 'a');
+  await dragTo(a, item('l', 'c'), { dy: 10 });
+
+  const ghost = screen.getByTestName('l-a-preview');
+  // a box inside the item, not a window over it
+  assert.strictEqual(retained(ghost).kind, 'box');
+  assert.strictEqual(retained(ghost).style.pointerEvents, 'none');
+  assert.ok(a.contains(ghost), 'it is drawn inside the item');
+  // and it is where the pointer is, not where the item is
+  const far = ghost.abs.y;
+  assert.ok(far > a.abs.y, `the ghost is down at the pointer: ${far}`);
+
+  // it follows: half way back up, it moves with the pointer
+  await act(async () => {
+    fireEvent.mouseMove(item('l', 'b'), { dy: 0 });
+  });
+  await landed();
+  const near = screen.getByTestName('l-a-preview').abs.y;
+  assert.ok(near < far, `the ghost followed the pointer: ${near} < ${far}`);
+
+  await release(item('l', 'b'), { dy: 0 });
+  assert.ok(screen.queryByTestName('l-a-preview') === null);
+});
+
+test('preview="auto" is a popup where a popup follows the pointer', async () => {
+  // the in-process X server has no native drag session, so `auto` resolves
+  // to the popup — the same answer the X11 backend gives an application
+  await mount(view(h(List, { name: 'l', items: ['a', 'b'] })));
+  const a = item('l', 'a');
+  await dragTo(a, item('l', 'b'), { dy: 10 });
+  const ghost = screen.getByTestName('l-a-preview');
+  // a `<popup>` is a window node placed in screen coordinates — written
+  // inside the item's element tree, but a window of its own, which is what
+  // lets it leave the list
+  assert.strictEqual(retained(ghost).kind, 'window');
+  assert.strictEqual(typeof retained(ghost).props.x, 'number');
+  assert.strictEqual(retained(ghost).style.position, undefined);
+  void a;
+  await release(item('l', 'b'), { dy: 10 });
+});
+
+test('an inline ghost paints over the items it passes', async () => {
+  await mount(
+    view(
+      h(List, {
+        name: 'l',
+        items: ['a', 'b', 'c'],
+        preview: 'inline' as const,
+        dropAnimation: false,
+      }),
+    ),
+  );
+  await dragTo(item('l', 'a'), item('l', 'c'), { dy: 10 });
+  // the item carrying the ghost is lifted above its neighbours, or the copy
+  // slides under the next row down
+  assert.strictEqual(retained(item('l', 'a')).style.zIndex, 3);
+  assert.strictEqual(retained(item('l', 'b')).style.zIndex, undefined);
+  await release(item('l', 'c'), { dy: 10 });
+  assert.strictEqual(retained(item('l', 'a')).style.zIndex, undefined);
+});
+
+test('preview={false} draws no ghost either way', async () => {
+  await mount(
+    view(h(List, { name: 'l', items: ['a', 'b'], preview: false as const })),
+  );
+  await dragTo(item('l', 'a'), item('l', 'b'), { dy: 10 });
+  assert.ok(screen.queryByTestName('l-a-preview') === null);
+  assert.ok(screen.queryByTestName('l-b-indicator'), 'the indicator remains');
+  await release(item('l', 'b'), { dy: 10 });
+});

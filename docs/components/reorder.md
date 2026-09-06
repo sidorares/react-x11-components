@@ -52,31 +52,31 @@ Every part takes `style` (`Style | Style[]`) and `data-testname`.
 
 ### `<ReorderList>`
 
-| Prop            | Type                                            | Notes                                                                                                                                      |
-| --------------- | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `onReorder`     | `(change: ReorderChange) => void`               | An item moved within this list. `change.items` is the ids in their new order; `from`/`to` are what `arrayMove` takes.                      |
-| `orientation`   | `'vertical' \| 'horizontal'`                    | Which way the items run: the indicator's edge, the arrow keys, and the root's `flexDirection`. Default `'vertical'`.                       |
-| `group`         | `string`                                        | Lists sharing a group accept each other's items. Without one a list takes only its own.                                                    |
-| `id`            | `string`                                        | Names this list in the events other lists receive — `source.list` on an insert, `to.list` on a removal.                                    |
-| `onInsert`      | `(change: ReorderInsert) => void`               | An item arrived from another list in the group, at `change.index`; `change.source` says where from.                                        |
-| `onRemove`      | `(change: ReorderRemove) => void`               | An item of this list was moved elsewhere — another list (`change.to`), or `to: null`: a dropzone in the app, or another application.       |
-| `onCombine`     | `(change: ReorderCombine) => void`              | A drop _onto_ one of this list's items rather than between two. Needs `combine`.                                                           |
-| `combine`       | `boolean`                                       | Whether the middle of an item is a merge target rather than an edge. Default false.                                                        |
-| `canDrop`       | `(query: ReorderDropQuery) => boolean`          | The last word on whether a drop lands here, asked per pointer position and again at the drop. It can only refuse.                          |
-| `selected`      | `readonly ReorderId[]`                          | The ids a multi-drag picks up together. The app holds the selection.                                                                       |
-| `onDragStart`   | `(ev: ReorderDragStart) => void`                | The drag started: a press past the threshold, or a keyboard lift.                                                                          |
-| `onDragUpdate`  | `(ev: ReorderDragUpdate) => void`               | Where it would land now — one per pointer position that changed the answer, one per keyboard step.                                         |
-| `onDragEnd`     | `(ev: ReorderDragEnd) => void`                  | The gesture is over, after the change events, however it ended.                                                                            |
-| `accept`        | `DropAccept`                                    | Foreign payloads the list takes, in core's `dropAccept` vocabulary: `['files']`, `'text/plain'`, a predicate. Without it they are refused. |
-| `onDrop`        | `(drop: ReorderDrop) => void`                   | A foreign payload landed at `drop.index`; `drop.event` is core's, with `files`, `text` and `getData` on it.                                |
-| `preview`       | `boolean`                                       | Whether a ghost follows the pointer. Default true.                                                                                         |
-| `renderPreview` | `(state: ReorderItemState) => ReactNode`        | What the ghost shows. Default: the item's children again, on a card the item's size. The state has `preview` set.                          |
-| `previewSize`   | `{ width, height }`, or a function of the state | How big the ghost is. Default: the item's own size.                                                                                        |
-| `dropAnimation` | `boolean \| number`                             | Whether the drop flies home, and for how long (default 180ms). Off under the desktop's reduced motion whatever this says.                  |
-| `styles`        | `ReorderStyles`                                 | `item(state)`, `handle`, `indicator`, `preview` — merged over the defaults, under each part's own `style`.                                 |
-| `disabled`      | `boolean`                                       | Nothing drags, nothing lifts, nothing lands.                                                                                               |
-| `style`         | `Style \| Style[]`                              | The root box — `gap`, padding, `overflow: 'scroll'` for a list that scrolls.                                                               |
-| `data-testname` | `string`                                        | For `react-x11/test` queries.                                                                                                              |
+| Prop            | Type                                            | Notes                                                                                                                                                                                            |
+| --------------- | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `onReorder`     | `(change: ReorderChange) => void`               | An item moved within this list. `change.items` is the ids in their new order; `from`/`to` are what `arrayMove` takes.                                                                            |
+| `orientation`   | `'vertical' \| 'horizontal'`                    | Which way the items run: the indicator's edge, the arrow keys, and the root's `flexDirection`. Default `'vertical'`.                                                                             |
+| `group`         | `string`                                        | Lists sharing a group accept each other's items. Without one a list takes only its own.                                                                                                          |
+| `id`            | `string`                                        | Names this list in the events other lists receive — `source.list` on an insert, `to.list` on a removal.                                                                                          |
+| `onInsert`      | `(change: ReorderInsert) => void`               | An item arrived from another list in the group, at `change.index`; `change.source` says where from.                                                                                              |
+| `onRemove`      | `(change: ReorderRemove) => void`               | An item of this list was moved elsewhere — another list (`change.to`), or `to: null`: a dropzone in the app, or another application.                                                             |
+| `onCombine`     | `(change: ReorderCombine) => void`              | A drop _onto_ one of this list's items rather than between two. Needs `combine`.                                                                                                                 |
+| `combine`       | `boolean`                                       | Whether the middle of an item is a merge target rather than an edge. Default false.                                                                                                              |
+| `canDrop`       | `(query: ReorderDropQuery) => boolean`          | The last word on whether a drop lands here, asked per pointer position and again at the drop. It can only refuse.                                                                                |
+| `selected`      | `readonly ReorderId[]`                          | The ids a multi-drag picks up together. The app holds the selection.                                                                                                                             |
+| `onDragStart`   | `(ev: ReorderDragStart) => void`                | The drag started: a press past the threshold, or a keyboard lift.                                                                                                                                |
+| `onDragUpdate`  | `(ev: ReorderDragUpdate) => void`               | Where it would land now — one per pointer position that changed the answer, one per keyboard step.                                                                                               |
+| `onDragEnd`     | `(ev: ReorderDragEnd) => void`                  | The gesture is over, after the change events, however it ended.                                                                                                                                  |
+| `accept`        | `DropAccept`                                    | Foreign payloads the list takes, in core's `dropAccept` vocabulary: `['files']`, `'text/plain'`, a predicate. Without it they are refused.                                                       |
+| `onDrop`        | `(drop: ReorderDrop) => void`                   | A foreign payload landed at `drop.index`; `drop.event` is core's, with `files`, `text` and `getData` on it.                                                                                      |
+| `preview`       | `boolean \| 'auto' \| 'popup' \| 'inline'`      | Where the ghost is drawn. `'auto'` (the default) is a popup that can leave the window, and an in-window copy where the platform owns the drag. `false` leaves only the cursor and the indicator. |
+| `renderPreview` | `(state: ReorderItemState) => ReactNode`        | What the ghost shows. Default: the item's children again, on a card the item's size. The state has `preview` set.                                                                                |
+| `previewSize`   | `{ width, height }`, or a function of the state | How big the ghost is. Default: the item's own size.                                                                                                                                              |
+| `dropAnimation` | `boolean \| number`                             | Whether the drop flies home, and for how long (default 180ms). Off under the desktop's reduced motion whatever this says.                                                                        |
+| `styles`        | `ReorderStyles`                                 | `item(state)`, `handle`, `indicator`, `preview` — merged over the defaults, under each part's own `style`.                                                                                       |
+| `disabled`      | `boolean`                                       | Nothing drags, nothing lifts, nothing lands.                                                                                                                                                     |
+| `style`         | `Style \| Style[]`                              | The root box — `gap`, padding, `overflow: 'scroll'` for a list that scrolls.                                                                                                                     |
+| `data-testname` | `string`                                        | For `react-x11/test` queries.                                                                                                                                                                    |
 
 ### `<ReorderItem>`
 
@@ -496,18 +496,38 @@ position 2 of 5", "Buy milk moved to position 3 of 5", "dropped",
 Focus leaving a lifted item drops it where it is. A pointer drag ends a
 lift.
 
-## What differs per backend
+## Where the ghost is drawn, and why it depends on the backend
 
-The gesture, the indicator, the keyboard model and every event here are the
-same on both. Two things belong to the display rather than to this component:
+Once a press crosses the threshold, react-x11 either tracks the drag itself
+(X11, where it moves an override-redirect `<popup>` under the pointer) or
+hands the gesture to the platform's own session (the **cocoa** backend, where
+AppKit tracks it). On the second path a `dragPreview` popup is never told
+where the pointer went, and AppKit carries a blank drag image of its own — so
+a popup ghost is simply not drawn, and the drag has no visible subject at all.
 
-- **The ghost** is a `<popup>` following the pointer, which is how react-x11
-  draws a drag preview on X11. On the **cocoa** backend AppKit owns the drag
-  image and a `dragPreview` popup does not follow the pointer, so there is no
-  ghost there; the indicator, the drop flight and every event are unchanged.
-- **Dragging in and out of other applications** is XDND on X11 and NSDragging
-  on cocoa. Files from the Finder arrive as `['files']`, which is what
-  `accept` already names.
+`preview` picks between two ways of drawing it, and `'auto'` — the default —
+asks which path this window's drags take and answers accordingly:
+
+| `preview`  | The ghost is                                                                                 |
+| ---------- | -------------------------------------------------------------------------------------------- |
+| `'auto'`   | a popup where the renderer tracks the drag, an in-window copy where the platform does.       |
+| `'popup'`  | always a `<popup>`: it can follow the pointer out of the window and over other applications. |
+| `'inline'` | always a box inside the list: it cannot leave the window, and it works on every backend.     |
+| `false`    | not drawn. The indicator and the cursor are the whole feedback.                              |
+
+The in-window copy is an absolutely positioned box with `pointerEvents:
+'none'`, the same one the [drop flight](#the-drop-flies-home) uses, and the
+item carrying it is lifted over its neighbours so the copy is not painted
+under the next row. What it cannot do is leave the window: drag an item out
+of the application and the ghost stops at the edge, where a popup would have
+carried on. Everything else — the indicator, the keyboard model, `accepted`,
+every event — is the same on both.
+
+**Dragging in and out of other applications** is XDND on X11 and NSDragging
+on cocoa. Files from the Finder arrive as `['files']`, which is what `accept`
+already names. Giving AppKit a real drag image, so an item dragged _out_ of
+the app is visible over other applications, is core's to do
+([react-x11#482](https://github.com/sidorares/react-x11/issues/482)).
 
 ## Example
 
