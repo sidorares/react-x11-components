@@ -630,22 +630,28 @@ product's behaviour from the rig's. **The lesson worth keeping: when a
 backend cannot be driven by hand, drive its transport.** Core's fake-bridge
 tests are the seam for that, and this package can use it without owning it.
 
-So `'auto'` is the popup where react-x11 tracks the drag and the in-window
-box where the platform does, probed on `typeof window.beginDrag ===
-'function'` — the condition `DragSession._start` itself branches on. When
-#488 is fixed the branch collapses back to a popup everywhere.
+For one release `'auto'` was therefore the popup where react-x11 tracks the
+drag and the in-window box where the platform does, probed on `typeof
+window.beginDrag === 'function'` — the condition `DragSession._start` itself
+branches on. **#488 landed in 2.8.1** (`_initDnd` returns early for a window
+whose props say `dragPreview`: no session, no registry entry, no property),
+so the probe is gone and `'auto'` is a popup on both backends again.
+Validated the way the bug was found — over the fake bridge, `registerDropTypes`
+is called for the list's window alone where 2.8.0 called it for the ghost's
+too, and the drop reorders.
 
-And the in-window ghost brought its own lesson, reported from a palette
-dropping into a list beside it: the ghost drew _under_ the notes it was
+The in-window ghost stays as `preview="inline"`, and it brought its own
+lesson while it was the default, reported from a palette dropping into a list
+beside it: the ghost drew _under_ the notes it was
 being dropped on. `zIndex` here sorts a node among its **siblings** —
 `paintOrder()` is per node and there is no stacking context to escape — so
 lifting the ghost inside its item cannot raise it above a different list.
 The list root is lifted for the length of the gesture too, which is what
 covers a palette and its target, a board's columns, any two lists that are
 siblings. It genuinely cannot cover two lists in separate wrappers, and
-saying so in the reference is better than a deeper trick: a popup ghost has
-no stacking limit at all, which is the other half of why `'auto'` prefers
-one.
+saying so in the reference is better than a deeper trick — it is also the
+sharpest argument for why `'auto'` is a window: a popup has no stacking
+limit at all.
 
 That one is pinned in **pixels** (`test/reorder.test.ts`, "an inline ghost
 paints over the list it is being dragged into"): paint order is the whole

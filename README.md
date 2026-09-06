@@ -504,7 +504,7 @@ list lets it take files, and `children` as a function of the item's state
 happening to it. The list's own `onDragStart` / `onDragUpdate` /
 `onDragEnd` report the gesture from either input, and `preview` decides
 whether the ghost is a popup that follows the pointer over other
-applications or a copy drawn inside the list. `npm run examples:reorder` shows all four;
+applications — the default — or a copy drawn inside the list. `npm run examples:reorder` shows all four;
 [the reference](docs/components/reorder.md) has the rest, and
 [the PRD](docs/prd-reorder.md) has the survey of dnd-kit, hello-pangea,
 pragmatic-drag-and-drop, React Aria and Framer's `Reorder` it was designed

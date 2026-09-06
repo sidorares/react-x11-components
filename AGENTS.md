@@ -791,14 +791,18 @@ and drop:
 - **Drive the transport when you cannot drive the backend.** The follow-up
   bug — a `<popup dragPreview>` registering as a _dragging destination_ on
   cocoa and swallowing the drop meant for the window under it
-  (react-x11#488) — was found in seconds by rendering `<ReorderList>` into a
-  real `CocoaApp` over the recording fake bridge core's own
-  `test/cocoa-dnd.test.js` uses, and driving `drag-enter`/`drag-over`/
-  `drag-perform` by hand. Trying to drive a real cocoa session with
-  synthetic CGEvents took an afternoon and never separated the product's
-  behaviour from the rig's. Core's cocoa modules are not on its exports map,
-  so a scratch script reaches them by file URL; that is fine for
-  investigation and not for a committed test.
+  (react-x11#488, fixed in 2.8.1) — was found in seconds by rendering
+  `<ReorderList>` into a real `CocoaApp` over the recording fake bridge
+  core's own `test/cocoa-dnd.test.js` uses, and driving
+  `drag-enter`/`drag-over`/`drag-perform` by hand. Trying to drive a real
+  cocoa session with synthetic CGEvents took an afternoon and never
+  separated the product's behaviour from the rig's. The same rig then
+  validated the upstream fix — `registerDropTypes` called for the list's
+  window alone, where the release before called it for the ghost's too —
+  which is what let the workaround be deleted rather than left in "just in
+  case". Core's cocoa modules are not on its exports map, so a scratch
+  script reaches them by file URL: fine for investigation, not for a
+  committed test, and keep the script outside the repository.
 - **Core arms a drag from the nearest draggable ancestor**, so a press on a
   control inside a draggable drags the ancestor. The layer's answer is to
   remember the press target (`onMouseDownCapture`) and cancel at the
