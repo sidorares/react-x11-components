@@ -128,6 +128,7 @@ import type { CodeEditorProps } from '@react-x11/components';
 | `Map`            | `@react-x11/components/maps`             | A 2D vector-tile map: pan, zoom, markers, overlays.          |
 | `Markdown`       | `@react-x11/components/markdown`         | Streaming-friendly GFM with cross-block selection.           |
 | `MediaPlayer`    | `@react-x11/components/media-player`     | mpv or VLC, embedded, with real transport control.           |
+| `ReorderList` …  | `@react-x11/components/reorder`          | A drag-and-drop list, over core's own drag and drop.         |
 | `Table`          | `@react-x11/components/table`            | A data table: sortable, virtualized, any row height.         |
 | `Terminal`       | `@react-x11/components/terminal`         | A real terminal: an embedded emulator, or its own.           |
 | `TerminalOutput` | `@react-x11/components/terminal-output`  | A captured session, rendered. `<Terminal>`'s static sibling. |
@@ -461,6 +462,47 @@ anyone has to name. `npm run examples:timeline` runs a live release
 pipeline beside galleries of the sizes and variants;
 [the reference](docs/components/timeline.md) has the rest, including why
 every indicator's chip is opaque.
+
+## A drag-and-drop list
+
+`<ReorderList>` is a list the user reorders by dragging its items — or by
+lifting one from the keyboard and walking it with the arrows — and a
+kanban board when several lists share a `group`. It is the sortable layer
+over react-x11's own drag and drop, the position `@dnd-kit/sortable` holds
+over `@dnd-kit/core`: the threshold, the auto-scroll, the preview window
+and the promotion of the same drag to XDND when the pointer leaves the app
+are core's, and what is here is the insertion arithmetic, the indicator,
+the keyboard model and an event vocabulary that speaks list-and-index.
+
+```jsx
+import {
+  ReorderList,
+  ReorderItem,
+  arrayMove,
+} from '@react-x11/components/reorder';
+
+<ReorderList
+  onReorder={(e) => setTodos((list) => arrayMove(list, e.from, e.to))}
+>
+  {todos.map((todo) => (
+    <ReorderItem key={todo.id} id={todo.id}>
+      <text>{todo.title}</text>
+    </ReorderItem>
+  ))}
+</ReorderList>;
+```
+
+Every rung is a small diff on that: a `<ReorderHandle>` inside an item
+makes the grip the only press target, `group` on several lists makes a
+board (`onInsert` on the list it landed in, `onRemove` on the one it
+left), `dragData` on an item lets a file manager take it, `accept` on the
+list lets it take files, and `children` as a function of the item's state
+(or `useReorderItem()` deeper inside) lets the content say what is
+happening to it. `npm run examples:reorder` shows all four;
+[the reference](docs/components/reorder.md) has the rest, and
+[the PRD](docs/prd-reorder.md) has the survey of dnd-kit, hello-pangea,
+pragmatic-drag-and-drop, React Aria and Framer's `Reorder` it was designed
+against.
 
 ## The disclosure tree
 

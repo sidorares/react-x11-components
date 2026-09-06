@@ -100,6 +100,10 @@
       "types": "./dist/qml/index.d.ts",
       "default": "./dist/qml/index.js"
     },
+    "./reorder": {
+      "types": "./dist/reorder/index.d.ts",
+      "default": "./dist/reorder/index.js"
+    },
     "./richtext": {
       "types": "./dist/richtext/index.d.ts",
       "default": "./dist/richtext/index.js"
@@ -172,6 +176,7 @@
     "examples:markdown": "tsx examples/markdown.tsx",
     "examples:media-player": "tsx examples/media-player.tsx",
     "examples:qml": "tsx examples/qml/qml.tsx",
+    "examples:reorder": "tsx examples/reorder.tsx",
     "examples:table": "tsx examples/table.tsx",
     "examples:tabs": "tsx examples/tabs.tsx",
     "examples:terminal": "tsx examples/terminal.tsx",

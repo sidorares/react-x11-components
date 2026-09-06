@@ -557,6 +557,41 @@ export type {
   TabsVariant,
 } from './tabs/index.js';
 
+// A list the user reorders by dragging. The sortable layer over core's own
+// drag and drop — `@dnd-kit/sortable`'s position over `@dnd-kit/core`, with
+// the engine being react-x11's. `docs/prd-reorder.md` is the survey and the
+// design record. The model comes out with it: an app that drives a list
+// from outside does the same slot arithmetic.
+export {
+  ReorderList,
+  ReorderItem,
+  ReorderHandle,
+  REORDER_TYPE,
+  useReorderItem,
+  arrayMove,
+  closestSlot,
+  insertAtSlot,
+  isNoopSlot,
+  moveToSlot,
+} from './reorder/index.js';
+export type {
+  ReorderChange,
+  ReorderDrop,
+  ReorderEdge,
+  ReorderHandleProps,
+  ReorderId,
+  ReorderInsert,
+  ReorderItemProps,
+  ReorderItemState,
+  ReorderListProps,
+  ReorderOrientation,
+  ReorderPoint,
+  ReorderRect,
+  ReorderRemove,
+  ReorderSlot,
+  ReorderStyles,
+} from './reorder/index.js';
+
 export {
   TrayHost,
   TrayManager,

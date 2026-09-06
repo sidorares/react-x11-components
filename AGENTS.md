@@ -715,6 +715,53 @@ dotted branch edge. Its glyphs are **drawn in the example**, which is the same
 line core's icon set draws: affordances are core's (the twisty's chevron is
 `<Icon>`), nouns are the app's.
 
+## A sortable layer over core's drag and drop
+
+`src/reorder/` is the first component here built on **core's drag and
+drop** — the `draggable`/`dragData`/`dropAccept` props, the in-app
+transport, `<popup dragPreview>` — rather than on pointer events of its
+own, and it establishes the rule for the next one: **a drag library out
+here is a layer, never an engine.** Core already has the threshold, click
+suppression, `:dragging`/`:drag-over`, edge auto-scroll, the payload by
+reference on `e.items`, the preview window and the promotion of a drag to
+XDND; a second sensor stack in the process would lose the last of those and
+duplicate the rest. `docs/prd-reorder.md` is the survey (dnd-kit,
+hello-pangea, pragmatic-drag-and-drop, React Aria, Framer) and the record.
+
+Four decisions in it that are decisions rather than gaps:
+
+- **The list is the only drop target.** One `dropAccept` on the root, one
+  `onDragOver` that reads every item's `abs` (device pixels, divided by the
+  node's `scale` once) and finds the closest edge; the item at that edge is
+  told to draw the indicator through a per-item setter, so a pointer motion
+  re-renders two items and never the list. `src/reorder/model.ts` is the
+  arithmetic, pure and asserted on no display, and written to be promoted
+  to `src/internal/` when `<Table>` grows a reorder rung.
+- **Membership is in the payload's type name.** A list accepts
+  `application/x-react-x11-reorder;scope=group:<g>` (or `list:<uid>`),
+  which keeps "who takes this drop" a declarative fact core answers from
+  `dropAccept` data. It has to be: `e.accept()` in `onDragOver` can only
+  override a node whose `dropAccept` already matched — the engine keeps the
+  accepting _node_, not the answer — so an `onDragOver` cannot conjure a
+  target. And `onDragOver` reaches every node on the path whether or not it
+  matched, so the list re-asks the accept question before it marks a slot.
+- **A move between lists is two local handlers**, `onInsert` on the target
+  and `onRemove` on the source (React Aria's model), in the order core
+  already fires `onDrop` then `onDragEnd`. The target writes where the item
+  landed onto the live payload object — a thunk in `dragData` resolves to
+  it at the drop — which is how the source's `onDragEnd`, which carries no
+  destination, can report `to`.
+- **The indicator, not the slide.** No transform in this renderer means a
+  displaced neighbour is a layout pass; a line at the closest edge answers
+  the same question for a rectangle per item. Recorded as a rung if wanted.
+
+Two traps found writing its tests: a `<popup dragPreview>` that re-renders
+the item's children re-renders a `<ReorderHandle>` inside them, which must
+find an _inert_ item context rather than throw or register itself; and an
+assertion that hands a `DrawnNode` to `assert.strictEqual(node, null)`
+dies with `RangeError: Invalid string length` formatting the cyclic node —
+compare with `===` and pass a message.
+
 ## An HTML renderer that draws
 
 `src/html/` is the largest thing here and the one that breaks the most house
@@ -976,6 +1023,7 @@ npm run examples:code-editor # needs a real $DISPLAY
 npm run examples:html        # needs a real $DISPLAY
 npm run examples:maps        # needs a real $DISPLAY and a network
 npm run examples:markdown    # needs a real $DISPLAY
+npm run examples:reorder     # needs a real $DISPLAY
 npm run examples:terminal    # needs a real $DISPLAY and an emulator installed
 npm run examples:terminal-vt # needs a real $DISPLAY and a pty module (node-pty)
 npm run examples:media-player -- <file>   # needs a real $DISPLAY and mpv/VLC

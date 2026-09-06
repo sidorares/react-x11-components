@@ -1,0 +1,495 @@
+# PRD: `src/reorder/` — a drag-and-drop list, and the engine it does not bring
+
+Status: implemented. This document is the design record — the prior-art
+survey, what each library settled, and the decisions the component is built
+on — the way `prd-table.md` is for the table. `docs/components/reorder.md`
+is the reference.
+
+## What it is
+
+A list whose items the user reorders by dragging them, or by lifting one
+from the keyboard and walking it with the arrows: a todo list, a playlist,
+the columns of a settings dialog, a kanban board when several of them share
+a `group`.
+
+```tsx
+import {
+  ReorderList,
+  ReorderItem,
+  arrayMove,
+} from '@react-x11/components/reorder';
+
+<ReorderList
+  onReorder={(e) => setTodos((list) => arrayMove(list, e.from, e.to))}
+>
+  {todos.map((todo) => (
+    <ReorderItem key={todo.id} id={todo.id}>
+      <text>{todo.title}</text>
+    </ReorderItem>
+  ))}
+</ReorderList>;
+```
+
+That is the whole basic setup. It buys: a drag past a 4px threshold (a
+press is still a click), a live preview following the pointer, an
+insertion line where the drop will land, auto-scroll near the edges of a
+scrolling list, a keyboard model with announcements for a screen reader, and
+— because the drag rides react-x11's own drag-and-drop — an item that can
+also be dropped into any `dropAccept` node in the app, or into a file
+manager. Everything else is opt-in on the same two elements; there is no
+second API to graduate to.
+
+## The engine is core's, so this is the sortable layer
+
+The question every drag-and-drop library answers first is where the drag
+comes from — a pointer sensor, the HTML5 protocol, a synthetic event
+system — and the answer here was settled before this component existed.
+react-x11 speaks XDND in both directions and runs an **in-app transport**
+over the same handlers
+([docs/drag-and-drop.md](https://github.com/sidorares/react-x11/blob/master/docs/drag-and-drop.md)):
+
+| the engine already does        | how                                                                           |
+| ------------------------------ | ----------------------------------------------------------------------------- |
+| the gesture                    | `draggable`; 4px threshold; a completed drag suppresses the click             |
+| the source's feedback          | `':dragging'` style state; `onDragStart` / `onDrag` / `onDragEnd`             |
+| the target's feedback          | `':drag-over'` on the path under the pointer; `onDragEnter/Over/Leave`        |
+| who takes the drop             | `dropAccept` — data, matched deepest-first, with no React in the loop         |
+| the payload, in-app            | `dragData` values arrive **by reference** on `e.items`; thunks resolve lazily |
+| the payload, out of the app    | the same drag promotes to XDND when the pointer leaves the app's windows      |
+| what the drop did              | `e.accept('move')` on the target reaches the source's `onDragEnd`             |
+| scrolling a list from the edge | any scroll container a drag rests near, 24px band, no opt-in                  |
+| the preview                    | a `<popup dragPreview>` following `useDragSource().position` — a live tree    |
+| testing                        | `fireEvent.mouseDown/mouseMove/mouseUp` through the in-process X server       |
+
+So the package's first rule — build on the public API, and file a gap
+rather than working around it — decides the shape: **this is the layer
+`@dnd-kit/sortable` is over `@dnd-kit/core`, over an engine that is
+core's.** What is left to write is exactly what a sortable preset is: the
+insertion arithmetic, the indicator, the keyboard model, and an event
+vocabulary that speaks list-and-index rather than node-and-pointer.
+
+## Prior art, and what it settles
+
+The survey behind this design started from
+[Puck's "Top 5 drag-and-drop libraries for React"](https://puckeditor.com/blog/top-5-drag-and-drop-libraries-for-react)
+— Puck, dnd-kit, hello-pangea/dnd, pragmatic-drag-and-drop, Gridstack — and
+added the three the article leaves out that matter here:
+[React Aria's `useDragAndDrop`](https://react-spectrum.adobe.com/react-aria/dnd.html),
+[Framer Motion's `Reorder`](https://motion.dev/docs/react-reorder), and
+[react-dnd](https://react-dnd.github.io/react-dnd/), which core's own
+architecture note names as the ecosystem prize.
+
+Each was read against one question — _what API would work well beside the
+components already here?_ — which resolves to four house rules:
+
+1. **Build on core, never beside it.** Core has the engine; a library that
+   brought its own sensors or collision detection would be a second event
+   system in the process, and would lose XDND.
+2. **Ceremony is additive** (`prd-table.md`, "The continuity contract"). The
+   basic list must be the bottom rung of the real thing, not a starter kit.
+3. **The house grammar.** Compositions are Chakra-shaped with the parts
+   spelled flat (`<Tabs>`/`<TabsTrigger>`, `<Timeline>`/`<TimelineItem>`);
+   content that is arbitrary is _children_, not an items array; controlled
+   events speak React Aria's dialect (`onReorder`, `onInsert`).
+4. **No DOM-merging ceremony.** `asChild`, render props handing back
+   `innerRef`/`draggableProps`, `attributes`/`listeners` spreads — all of it
+   exists to attach behaviour to somebody else's DOM element. There is no
+   DOM; the item _is_ the box.
+
+### Puck, and Gridstack — the layers above and beside
+
+**Puck** is a visual page editor: components registered through a config,
+a JSON document out. It is what one would _build with_ a list like this,
+the way Untitled UI is what one builds with a table, and it marks the layer
+this component stays below. **Gridstack** is a dashboard grid — widgets
+that pack into rows and columns, resize, and snap — with a jQuery-era
+imperative DOM API. It is a different component (2D packing is not a list)
+and a non-goal here. Both are recorded so the question is not reopened.
+
+### dnd-kit — the right layer, the wrong displacement
+
+dnd-kit is two packages: a core (`DndContext`, `useDraggable`,
+`useDroppable`, sensors, collision-detection strategies, `DragOverlay`,
+modifiers, auto-scroll) and a sortable preset (`SortableContext`,
+`useSortable`, `arrayMove`, sorting strategies). The core half duplicates
+what react-x11 already ships: its sensors are the threshold and capture,
+its `DragOverlay` is `<popup dragPreview>`, its auto-scroll is the engine's
+edge band, its collision detection is the hit test `dropAccept` runs on.
+
+The **preset** is the shape taken: a context that knows the items and an
+item that names itself by id — `<ReorderList>` and `<ReorderItem id>`.
+Three things are deliberately not taken:
+
+- **`transform`-based displacement.** dnd-kit moves the _other_ items out of
+  the way with CSS transforms as the pointer crosses them. This renderer has
+  no transform; every displacement would be a layout pass, and the item
+  would still not glide. See "The indicator, not the slide" below.
+- **The `items` array beside the children.** `SortableContext items={ids}`
+  duplicates the order the children already are in. The list reads the
+  order from the tree it rendered, so the caller writes it once.
+- **`attributes` / `listeners` / `setNodeRef`.** They merge behaviour into a
+  DOM element the caller owns. Here the item is the element.
+
+`arrayMove` is taken by name: it is what every `onReorder` handler ends up
+calling, and the name is the one people know.
+
+### hello-pangea/dnd — the vocabulary, not the ceremony
+
+hello-pangea (react-beautiful-dnd's maintained fork) is _strictly_ lists,
+and its **event shape is the best one for that**: `onDragEnd({ source:
+{ droppableId, index }, destination: { droppableId, index } })`. A reorder
+is a list and two indices; a move between lists is two lists and two
+indices; nothing about nodes or pointers. `ReorderChange.from`/`to` and
+`ReorderInsert.source` are that vocabulary.
+
+Its keyboard model is taken too, because it is what screen-reader users have
+learnt from the web: Space lifts, the arrows move the lifted item, Space
+drops, Escape puts it back, and every step is announced. Its component
+ceremony is not — `<DragDropContext>`, `<Droppable>`'s render prop with
+`provided.innerRef` and `placeholder`, `<Draggable index>` with
+`dragHandleProps` — all of which exists to reach a DOM element and to keep
+the DOM's own index in sync.
+
+Its signature feature, the neighbours **sliding** out of the way, is the one
+thing not carried over, and the reason is recorded below rather than left
+as a gap.
+
+### pragmatic-drag-and-drop — the closest analogue to core's own layer
+
+Atlassian's library is headless and framework-agnostic over the browser's
+native drag protocol: `draggable({ element, getInitialData })`,
+`dropTargetForElements({ element, onDrop })`, `monitorForElements`. That is
+_exactly_ the shape of react-x11's `draggable`/`dragData`/`dropAccept`
+props — element-registered, native protocol underneath, auto-scroll in the
+engine, the payload read by whoever monitors the drop. Reading it confirmed
+the split rather than informing it.
+
+What it settled is the **insertion model**. Its hitbox add-on attaches the
+_closest edge_ of the target to the drag data — the pointer is nearer the
+top or the bottom of the item it is over — and its `getReorderDestinationIndex`
+turns that into an index. That model works for a vertical list, a
+horizontal strip, and a wrapping grid alike, needs no measurement of
+anything but the items' own rectangles, and is a pure function; it is
+`src/reorder/model.ts`. Its feedback — a **drop-indicator line** at that
+edge rather than a moving placeholder — is the honest feedback for a
+renderer that cannot transform, and it is the default here.
+
+### React Aria — the dialect this package already speaks
+
+`useDragAndDrop` on Aria's list components is not in the article and is the
+closest thing to a house style: `onReorder` for a move within the list,
+`onInsert` when items arrive from elsewhere, `onRootDrop` for a drop on the
+list itself, and on the source side `onDragEnd` — where the app removes the
+items when `dropOperation === 'move'` and the drop was not internal. **A move
+between two lists is two local handlers**, one on each list, and no
+provider above them.
+
+That is what is taken, with the removal made explicit rather than left to
+the app: `onReorder`, `onInsert`, `onRemove` and `onDrop`, each a prop on
+the list it is about. It is also what core's own events already say —
+`onDrop` on the target, then `onDragEnd({ action, dropped })` on the source,
+"always last" — so the layer adds vocabulary without adding sequencing.
+
+Aria's `getItems` (serialised payloads per item, for the drag to leave the
+component) is core's `dragData`, thunks and all, passed straight through
+on `<ReorderItem>`.
+
+### Framer Motion's `Reorder` — the bottom rung
+
+`<Reorder.Group values onReorder>` and `<Reorder.Item value>` is the
+shortest sortable list in the React ecosystem, and it is what the bottom
+rung here has to be as easy as. It has no handles, no keyboard, no lists
+that exchange items and no drop indicator, which is why it is the floor and
+not the design.
+
+### react-dnd — recorded, not pursued
+
+Core's architecture note calls a react-x11 backend for react-dnd "the one
+real prize": `dnd-core` is DOM-free and its backends are pluggable. A
+backend is core's business, not this package's, and a sortable over
+react-dnd would still need everything in this document. Nothing here
+precludes it.
+
+## Goals and non-goals
+
+### Goals
+
+- **One list is one element and one handler.** `<ReorderList onReorder>`
+  around `<ReorderItem id>`s, and the shortest thing that works is four
+  lines.
+- **The engine's features come for free**, not re-implemented: threshold,
+  click suppression, auto-scroll, the preview window, XDND out of the app.
+- **Every rung is local** — a handle is a part inside the item, a board is
+  `group` on the lists, a look is `styles`.
+- **Keyboard and screen reader**, with the model people know from the web.
+- **Correct at any display scale.** The insertion arithmetic is tested at
+  `scale: 2`, per the package's standing rule.
+
+### Non-goals
+
+- **Virtualization.** A reorderable list of a hundred thousand rows is
+  `<Table>`'s rung, later, on the same `model.ts`; a list is built whole.
+- **A dashboard grid** (Gridstack's shape): 2D packing is another component.
+- **Sliding neighbours.** Recorded below as rejected-for-now, with the door
+  left open.
+- **Modifier-key copy/move.** Core has no modifier negotiation during a
+  drag; the requested action is fixed at start and only a target changes it.
+- **Nested reorderable trees.** `<Tree>`'s rung, if it comes.
+- **A second engine.** No sensors, no collision strategies. A gap in core's
+  drag and drop is filed there.
+
+## The continuity contract
+
+| When a list needs…                       | …it adds                                            | and nothing else moves                               |
+| ---------------------------------------- | --------------------------------------------------- | ---------------------------------------------------- |
+| items that reorder                       | `<ReorderList onReorder>` + `<ReorderItem id>`      | —                                                    |
+| the app's own objects                    | nothing — `arrayMove(objects, e.from, e.to)`        | `e.items` is the ids, `e.from`/`e.to` are indices    |
+| a grip instead of the whole item         | `<ReorderHandle>` inside the item                   | the item stops being the press target; keys move too |
+| a horizontal strip                       | `orientation="horizontal"`                          | the indicator turns, arrows turn, RTL mirrors        |
+| an item that stays put                   | `disabled` on it                                    | it is still a slot others land beside                |
+| a board                                  | `group` on each list; `onInsert` + `onRemove`       | `onReorder` still handles the move within one list   |
+| naming the column in the events          | `id` on the list                                    | —                                                    |
+| dropping items into other apps / targets | `dragData` (and `dragActions`) on the item          | the reorder payload is offered beside it             |
+| taking files or text from outside        | `accept` + `onDrop` on the list                     | the list still refuses every other foreign drag      |
+| content that reacts to the drag          | `children` as a function; `useReorderItem()` deeper | the state is the one `styles.item` already sees      |
+| a different ghost, or none               | `renderPreview`, or `preview={false}`               | —                                                    |
+| the look                                 | `styles.item/handle/indicator/preview`, `style`     | geometry and behaviour stay the list's               |
+| a name a screen reader can say           | `aria-label` on the item                            | otherwise the item's own text is read                |
+
+The same three rules `prd-table.md` states keep this honest: opt-ins are
+orthogonal, escalation is local, and `docs/components/reorder.md` grows one
+list through the rungs.
+
+## Public API
+
+```ts
+type ReorderId = string | number;
+
+interface ReorderListProps {
+  /** Names this list in the events other lists receive. */
+  id?: string;
+  /** Lists sharing a group accept each other's items. */
+  group?: string;
+  orientation?: 'vertical' | 'horizontal'; // default 'vertical'
+  disabled?: boolean;
+  onReorder?: (change: ReorderChange) => void;
+  onInsert?: (change: ReorderInsert) => void;
+  onRemove?: (change: ReorderRemove) => void;
+  /** Foreign payloads the list takes — core's `dropAccept` vocabulary. */
+  accept?: DropAccept;
+  onDrop?: (drop: ReorderDrop) => void;
+  preview?: boolean; // default true
+  renderPreview?: (state: ReorderItemState) => ReactNode;
+  styles?: ReorderStyles;
+  style?: Style | Style[];
+  'data-testname'?: string;
+  children?: ReactNode;
+}
+
+interface ReorderItemProps {
+  id: ReorderId;
+  disabled?: boolean;
+  /** Offered beside the reorder payload — for other targets and other apps. */
+  dragData?: DragSourceProps['dragData'];
+  dragActions?: Array<'copy' | 'move' | 'link'>; // default ['move']
+  'aria-label'?: string;
+  style?: Style | Style[];
+  'data-testname'?: string;
+  children?: ReactNode | ((state: ReorderItemState) => ReactNode);
+}
+
+interface ReorderItemState {
+  id: ReorderId;
+  dragging: boolean; // the pointer holds it
+  lifted: boolean; // the keyboard holds it
+  disabled: boolean;
+  edge: 'before' | 'after' | null; // beside the slot a drag would land in
+  accepted: boolean; // while dragging: the thing under the pointer would take it
+  preview: boolean; // this render is the ghost's copy
+}
+function useReorderItem(): ReorderItemState;
+
+interface ReorderChange {
+  items: ReorderId[];
+  id: ReorderId;
+  from: number;
+  to: number;
+}
+interface ReorderInsert {
+  items: ReorderId[];
+  id: ReorderId;
+  index: number;
+  source: { list: string | undefined; index: number };
+  event: DropEvent;
+}
+interface ReorderRemove {
+  items: ReorderId[];
+  id: ReorderId;
+  index: number;
+  /** Another list (its `id`, and where), or null: another application, or a plain dropzone. */
+  to: { list: string | undefined; index: number } | null;
+  event: DragEndEvent;
+}
+interface ReorderDrop {
+  index: number;
+  event: DropEvent;
+}
+```
+
+`arrayMove(list, from, to)` comes out beside them, as does the model:
+`closestSlot`, `moveToSlot`, `insertAtSlot`.
+
+## Geometry: the closest edge
+
+The list is the only drop target; items are not. Per pointer position the
+root reads the items' rectangles — `abs`, in device pixels, divided by the
+node's `scale` once — finds the item nearest the pointer (distance zero
+when inside it), and asks which half of it, along the list's axis, the
+pointer is in. Nearer the start edge is "before that item", nearer the end
+is "after": a **slot** from `0` to `n`. The item nearest a point below the
+last item is the last item, the pointer is past its middle, and the slot is
+`n`; in a gap between two, the nearer one wins.
+
+The rule is one pure function (`closestSlot`) over rectangles, so it is
+asserted on no display, and it is the same rule for a vertical list, a
+horizontal one, an RTL one (the start edge is on the right, and the node's
+resolved `direction` says so) and a wrapping grid.
+
+A same-list drag whose slot would change nothing — the item's own slot, or
+the one after it — draws no indicator and, on release, fires no event.
+
+## What an item can see
+
+An item reacts on three layers, and the split is the cost model. Core's
+`':dragging'` and `':drag-over'` style states are a repaint with no render,
+so they are the default answer for a wash or a border. The state object —
+`dragging`, `lifted`, `edge`, `accepted`, `preview`, `disabled` — reaches
+`styles.item`, function `children`, `useReorderItem()` and `renderPreview`,
+and it is computed by the item's own render, so a pointer motion re-renders
+the held item (core's `useDragSource` hands it `position` and `accepted` per
+motion) and the one item whose `edge` changed, never the list. `accepted` is
+core's answer — the deepest matching `dropAccept` under the pointer — so a
+ghost can say "not here" over the window background without the list
+knowing what else is in the app. `preview` exists because the default ghost
+is a second render of the same children: a child that renders in both
+places gets to know which one it is.
+
+## The indicator, not the slide
+
+hello-pangea and dnd-kit move the neighbours out of the way as the pointer
+crosses them. Here that would mean: absolutely position every item, measure
+each one after layout (the tick `src/internal/timers.ts` exists for), and
+re-lay-out the list on every crossing — with `transition` on `top` doing the
+glide, which core does support. It is buildable. It is not built, because
+the drop-indicator line answers the same question (where will this land?)
+for a rectangle per item and no measurement, and because the renderer's own
+`<Tabs>` already accepted "moves in one step rather than gliding" for its
+indicator. If a slide comes back it is a rung — `slide` on the list — and
+the model module does not change.
+
+The indicator is a 2px `$accent` box absolutely positioned on the target
+item's edge (`top`/`bottom`, or the logical `start`/`end` when horizontal,
+so RTL costs nothing), inside the item so a scrolling list carries it.
+
+## The preview
+
+The ghost is a `<popup dragPreview>` — a real override-redirect window
+following the pointer, which is how core says a preview is drawn: it can
+leave the list, leave the window, and costs a window move per motion rather
+than a layout pass. It shows the item's `children` again, at the item's
+measured size, inside a surface with a border. **It is a fresh instance** —
+a `<textinput>` in a card comes up empty in the ghost — which is dnd-kit's
+`DragOverlay` trade too; `renderPreview` replaces the content, and
+`preview={false}` leaves only the cursor. The grab offset is kept, so the
+ghost appears exactly under the item rather than jumping to the cursor.
+
+## One payload type, scoped
+
+Every item offers one private type,
+`application/x-react-x11-reorder;scope=<group, or the list's own id>`, and
+every list's `dropAccept` names the scope it belongs to. That is what makes
+"lists in a group take each other's items" a declarative fact core answers
+with no React in the loop — the property the engine was designed around.
+The value behind the type is a thunk, so the source index is read at the
+drop; it resolves to a live object, and the target writes where the item
+landed onto it, which is how the source's `onDragEnd` — which core fires
+last, with `action` and `dropped` but no destination — can report `to`.
+
+An app's `accept` widens the list's `dropAccept` (an array gains the scope;
+a predicate is or-ed with it), so core's own group matching (`'files'`,
+`'text'`, `'uris'`) applies to the foreign half unchanged. A drop whose
+payload is not the live reorder object — another application offering the
+same type name, say — is a foreign drop, and is refused unless `accept`
+took it.
+
+One engine fact shaped this and is worth keeping: `e.accept()` in
+`onDragOver` can override a **matched** node's answer, but it cannot make
+a node whose `dropAccept` said no into the target — the engine keeps the
+accepting node, not the answer. So membership had to be in the type name,
+where `dropAccept` can see it.
+
+## Keyboard and announcements
+
+The item — or its `<ReorderHandle>`, when it has one — is the focus target
+and a tab stop, as hello-pangea's handles are. The Tree/Table model (one
+tab stop, the container holds the cursor) is deliberately not used: an item
+here is arbitrary content, often with controls of its own, and a card whose
+button cannot be reached by Tab because the list ate the stop is worse than
+a list of ten stops.
+
+| Key                                 | What it does                                            |
+| ----------------------------------- | ------------------------------------------------------- |
+| `Space` / `Enter`                   | Lift the item; lift again to drop it.                   |
+| arrows along the axis, while lifted | Move it one slot — `onReorder` fires per step.          |
+| `Home` / `End`, while lifted        | Move it to an end.                                      |
+| `Escape`, while lifted              | Put it back where it was — `onReorder` with that order. |
+| arrows along the axis, not lifted   | Focus the neighbour.                                    |
+
+Every step goes through `announce()` — "Lifted Buy milk, position 2 of 5",
+"Moved to position 3 of 5", "Dropped", "Cancelled" — which is inert where no
+assistive technology is listening. Blur while lifted drops in place.
+
+## Theming
+
+Nothing here has a colour of its own but the indicator (`$accent`) and the
+preview's surface (`$surface`, `$border`, the theme's `radius`). A lifted or
+dragging item takes a `$surfaceHover` wash — over the item's own `style`,
+the way a `:hover` block sits over a base style, so a row painted
+`$surface` still shows which one is held. Everything is a `$token` in a
+style, so it follows the palette; `styles.item(state)` gets `{ id,
+dragging, lifted, disabled, edge }` and merges last, over the wash.
+
+## Testing and guards
+
+- `test/reorder-model.test.ts` — the slot arithmetic, `arrayMove`, the
+  no-op rule; no display.
+- `test/reorder.test.ts` — on the in-process X server: a pointer drag past
+  the threshold to a slot and the event it fires; the indicator's edge; a
+  handle that is the only press target; a disabled item; a horizontal strip;
+  the keyboard model end to end; two lists in a group exchanging an item
+  (`onInsert` then `onRemove`, with `source` and `to`); a foreign drop taken
+  through `accept` and refused without it; the preview window; and the drag
+  at `scale: 2`.
+- `test/types/reorder.tsx` compiles every rung.
+- `test/treeshake.test.ts` — the payload type name is the marker.
+
+## Open questions
+
+- **`items` on the list.** Reading the order from the tree makes the basic
+  case shorter. If a caller ever needs the order before layout — a keyboard
+  move on the first frame — an optional `items` prop is the rung, and
+  nothing else changes.
+- **Sliding neighbours.** See above; a `slide` rung if wanted.
+- **A reorderable `<Table>` / `<Tree>`.** The model module was written to be
+  promoted to `src/internal/` when a second consumer arrives.
+
+## Risks
+
+- **The fresh-instance preview** surprises someone with stateful items.
+  Documented; `renderPreview` is the answer.
+- **Announcement wording** is English and not localisable yet; every
+  string is in one table in `index.ts`.
+- **Two handlers per cross-list move.** An app that handles the move in
+  `onInsert` and also removes in `onRemove` is right; one that does both in
+  one of them double-moves. The docs example shows the split, and
+  `ReorderRemove.to` is there for an app that wants the source side alone.
