@@ -791,6 +791,12 @@ and drop:
   the run being moved, so the run lands where it already was and the
   selection appears frozen. A step moves the run past its next non-member.
 
+One more, learned the expensive way here: **a scratch file written into
+`test/` or `examples/` is swept up by `git add -A`**, and `test/*.test.ts` is
+a glob — a bisect file left behind runs in the suite and fails
+`format:check` in CI long after the question it answered was settled. Delete
+it in the same command that stops needing it.
+
 Two traps found writing its tests: a `<popup dragPreview>` that re-renders
 the item's children re-renders a `<ReorderHandle>` inside them, which must
 find an _inert_ item context rather than throw or register itself; and an
