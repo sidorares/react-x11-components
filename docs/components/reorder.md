@@ -522,9 +522,19 @@ is fixed, `'auto'` becomes a popup everywhere.
 | `false`    | not drawn. The indicator and the cursor are the whole feedback.                   |
 
 The in-window ghost is the same absolutely positioned box, with
-`pointerEvents: 'none'`, that the [drop flight](#the-drop-flies-home) uses,
-and the item carrying it is lifted over its neighbours so it is not painted
-under the next row. What it cannot do is leave the window.
+`pointerEvents: 'none'`, that the [drop flight](#the-drop-flies-home) uses.
+
+Two things follow from it being a box rather than a window, and the second is
+worth knowing before you lay a board out. `zIndex` sorts a node among its
+**siblings** — there is no stacking context to escape — so the item carrying
+the ghost is lifted over its neighbours, and the list itself is lifted over
+_its_ neighbours for the length of the gesture. That is what lets a tag
+dragged from a palette paint over the notes it is being dropped on. What it
+cannot reach is content outside the list's own parent: two lists in separate
+wrappers stack by their wrappers, and the ghost stops at that boundary. Keep
+lists that exchange items as siblings, or use `preview="popup"` where the
+platform allows it — a window has no such limit. Nor can an in-window ghost
+leave the window at all.
 
 The popup is `transparent`, because the card inside it is rounded: on an
 opaque window the four corners the radius gives up show the window's own

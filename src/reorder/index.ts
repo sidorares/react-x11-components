@@ -60,6 +60,15 @@
 //    gives up show the window's own ground — white on a light theme, near
 //    black on a dark one. Where no compositor runs the window fills itself
 //    square, which is what an opaque one looked like anyway.
+//  - **An in-window ghost has to lift its whole list, not just its item.**
+//    `zIndex` sorts a node among its *siblings* — `paintOrder()` is per
+//    node, and there is no stacking context to escape — so a ghost lifted
+//    inside its item still paints under a *different* list, which is what a
+//    board or a palette-plus-target is made of. The item is lifted over its
+//    neighbours and the list root over its own, for the length of the
+//    gesture. What that cannot reach is content outside the list's parent;
+//    a popup ghost has no such limit, which is the other half of why
+//    `'auto'` prefers one.
 //  - **Every item (or its handle) is a tab stop.** An item is arbitrary
 //    content, often with controls of its own; the Tree/Table model of one
 //    tab stop with a cursor would leave a button inside a card unreachable.
@@ -821,6 +830,10 @@ export function ReorderList(props: ReorderListProps): ReactElement {
   const dragging = useRef<ReorderId | null>(null);
   /** What the last `onDragUpdate` said, so one is not sent per motion. */
   const reportedOver = useRef<DragOver | null>(null);
+  /** Whether one of this list's own items is being dragged. State rather
+   *  than a ref because the root's stacking depends on it — set twice a
+   *  gesture, not per motion. */
+  const [holding, setHolding] = useState(false);
   const [lifted, setLifted] = useState<{
     id: ReorderId;
     ids: ReorderId[];
@@ -1267,6 +1280,7 @@ export function ReorderList(props: ReorderListProps): ReactElement {
   const dragStarted = useCallback(
     (itemId: ReorderId): { index: number; ids: ReorderId[] } => {
       dragging.current = itemId;
+      setHolding(true);
       // a pointer drag and a keyboard lift are one gesture's worth of state
       if (liftedRef.current) setLifted(null);
       reportedOver.current = null;
@@ -1308,6 +1322,7 @@ export function ReorderList(props: ReorderListProps): ReactElement {
     (itemId: ReorderId, ev: DragEndEvent, payload: Payload | null): void => {
       dragging.current = null;
       reportedOver.current = null;
+      setHolding(false);
       mark(null);
       const to = payload?.to;
       const moved = ev.dropped && ev.action === 'move';
@@ -1406,6 +1421,13 @@ export function ReorderList(props: ReorderListProps): ReactElement {
     [accept, type, disabled],
   );
 
+  /** Whether this list's ghost is drawn in the window rather than in a
+   *  popup — see {@link nativeDragSession}. */
+  const inlineGhost =
+    preview !== false &&
+    (preview === 'inline' ||
+      (preview !== 'popup' && nativeDragSession(rootRef.current)));
+
   return hx(
     'box',
     {
@@ -1420,6 +1442,10 @@ export function ReorderList(props: ReorderListProps): ReactElement {
       style: [
         { flexDirection: orientation === 'horizontal' ? 'row' : 'column' },
         style,
+        // An in-window ghost is a box inside this list, and `zIndex` only
+        // sorts among siblings — so the list itself has to come forward, or
+        // the ghost paints under the next list along. See the header.
+        holding && inlineGhost ? { zIndex: 1 } : null,
       ],
     },
     h(ListContext.Provider, { value: shared }, children),

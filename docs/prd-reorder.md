@@ -635,6 +635,24 @@ box where the platform does, probed on `typeof window.beginDrag ===
 'function'` — the condition `DragSession._start` itself branches on. When
 #488 is fixed the branch collapses back to a popup everywhere.
 
+And the in-window ghost brought its own lesson, reported from a palette
+dropping into a list beside it: the ghost drew _under_ the notes it was
+being dropped on. `zIndex` here sorts a node among its **siblings** —
+`paintOrder()` is per node and there is no stacking context to escape — so
+lifting the ghost inside its item cannot raise it above a different list.
+The list root is lifted for the length of the gesture too, which is what
+covers a palette and its target, a board's columns, any two lists that are
+siblings. It genuinely cannot cover two lists in separate wrappers, and
+saying so in the reference is better than a deeper trick: a popup ghost has
+no stacking limit at all, which is the other half of why `'auto'` prefers
+one.
+
+That one is pinned in **pixels** (`test/reorder.test.ts`, "an inline ghost
+paints over the list it is being dragged into"): paint order is the whole
+question, so the test samples the pixel under the pointer and fails with the
+target's colour rather than the ghost's when the lift is removed. A
+structural assertion about `zIndex` would have passed either way.
+
 What survives from the workaround, on merit rather than necessity:
 
 - **`preview: 'auto' | 'popup' | 'inline' | false`.** `'auto'` is the popup

@@ -23,6 +23,7 @@ import {
   userEvent,
   act,
   installA11ySpy,
+  expectPixel,
 } from 'react-x11/test';
 import type { PointerOptions } from 'react-x11/test';
 import { ThemeProvider } from 'react-x11';
@@ -1884,4 +1885,69 @@ test('preview={false} draws no ghost either way', async () => {
   assert.ok(screen.queryByTestName('l-a-preview') === null);
   assert.ok(screen.queryByTestName('l-b-indicator'), 'the indicator remains');
   await release(item('l', 'b'), { dy: 10 });
+});
+
+test('an inline ghost paints over the list it is being dragged into', async () => {
+  // The bug this pins: `zIndex` sorts a node among its *siblings*, so a
+  // ghost lifted inside its own item still paints under a different list —
+  // which is exactly a palette dropping into a target. Asserted in pixels,
+  // because paint order is the whole question.
+  const GHOST = '#ff0000';
+  const TARGET = '#0000ff';
+  const { ctx } = await mount(
+    h(
+      'window',
+      { width: 300, height: 300 } as Record<string, unknown>,
+      h(
+        ThemeProvider,
+        { value: {}, colorScheme: 'light' },
+        h(
+          'box',
+          { style: { gap: 0 } },
+          // the palette, written first, so the target below paints over it
+          // unless the list comes forward for the gesture
+          h(
+            ReorderList,
+            {
+              'data-testname': 'p',
+              preview: 'inline' as const,
+              dropAnimation: false,
+              styles: { preview: { backgroundColor: GHOST } },
+              style: { padding: 0 },
+            },
+            h(ReorderItem, {
+              id: 'tag',
+              'data-testname': 'p-tag',
+              style: { width: 200, height: 30 },
+            }),
+          ),
+          h(
+            ReorderList,
+            {
+              'data-testname': 'q',
+              dropAnimation: false,
+              style: { padding: 0 },
+            },
+            h(ReorderItem, {
+              id: 'note',
+              'data-testname': 'q-note',
+              style: { width: 200, height: 60, backgroundColor: TARGET },
+            }),
+          ),
+        ),
+      ),
+    ),
+  );
+
+  const note = screen.getByTestName('q-note');
+  const px = note.abs.x + 100;
+  const py = note.abs.y + 30;
+  // the note is painted where we think it is
+  await expectPixel(ctx as never, px, py, TARGET);
+
+  await dragTo(screen.getByTestName('p-tag'), note, { dy: 0 });
+  // the ghost follows the pointer, which is over the note: it must be the
+  // thing on top there
+  await expectPixel(ctx as never, px, py, GHOST);
+  await release(note, { dy: 0 });
 });
