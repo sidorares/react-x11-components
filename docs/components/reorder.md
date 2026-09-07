@@ -423,13 +423,13 @@ a merge into another item, a copy another list took — leaves the item where
 it started while the drop did something, so flying home there would say the
 opposite of what happened. Those let the ghost go where the pointer left it.
 
-> On the cocoa backend a _refused_ drop takes about a second to reach the
-> application at all: AppKit plays its slide-back animation before reporting
-> the end of the session, on a drag image that react-x11 never supplies, so
-> the pause is spent animating nothing. Filed as
-> [react-x11#494](https://github.com/sidorares/react-x11/issues/494); nothing
-> here can shorten it, because the gesture is not reported as over until
-> then.
+> Needs react-x11 **2.8.3** to be prompt on the cocoa backend. Before it, a
+> _refused_ drop took about a second to reach the application at all: AppKit
+> played its slide-back animation before reporting the end of the session, on
+> a drag image react-x11 never supplies, so the pause was spent animating
+> nothing and the flight could not begin until it finished
+> ([#494](https://github.com/sidorares/react-x11/issues/494),
+> [#495](https://github.com/sidorares/react-x11/pull/495)).
 
 The copy is a box inside the list with `pointerEvents: 'none'`, not the ghost
 popup carried on past the drop. That is deliberate: a popup outlives the
@@ -578,7 +578,7 @@ ground rather than the desktop.
 on cocoa. Files from the Finder arrive as `['files']`, which is what `accept`
 already names.
 
-> Needs react-x11 **2.8.2**, and every part of that floor was earned. Before
+> Needs react-x11 **2.8.3**, and every part of that floor was earned. Before
 > 2.8.0 a drag on the cocoa backend had no visible subject at all: AppKit's
 > tracking loop owns the thread, so nothing rendered in response to `onDrag`
 > reached the screen ([#484](https://github.com/sidorares/react-x11/pull/484)).

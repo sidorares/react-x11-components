@@ -753,11 +753,13 @@ source already reads to report `onRemove`.
 Two upstream limits sit next to this and are worth keeping straight, because
 both look like the component stalling:
 
-- A **refused** drop on cocoa is not reported for about a second, because
-  AppKit plays its slide-back animation before ending the session, on a drag
-  image react-x11 never supplies
-  ([react-x11#494](https://github.com/sidorares/react-x11/issues/494)). The
-  flight cannot start earlier than the event that tells it to.
+- A **refused** drop on cocoa was not reported for about a second, because
+  AppKit played its slide-back animation before ending the session, on a drag
+  image react-x11 never supplies — so the flight could not start earlier than
+  the event that tells it to. Fixed in **2.8.3**, which passes the bridge's
+  `slideBack: false` ([react-x11#494](https://github.com/sidorares/react-x11/issues/494),
+  [#495](https://github.com/sidorares/react-x11/pull/495)); the floor moved
+  with it.
 - A drag's frames on that backend are painted from the callback that reports
   them, because the tracking loop owns the thread (#484). Anything that
   wants to move during a drag has to ride an event.
