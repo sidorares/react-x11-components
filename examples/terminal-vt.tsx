@@ -42,10 +42,16 @@ function App(): ReactElement {
   const [selected, setSelected] = useState('');
 
   return (
+    // `frameRate` is the window's policy, not the terminal's: under a flood
+    // of output (`find ~`) the pacer holds a repaint while recent frames
+    // have spent more than a quarter of the thread, and a keystroke's echo
+    // still paints on the next tick. Off by default — see the terminal
+    // page, "A flood of output, and the window's `frameRate`".
     <window
       width={840}
       height={520}
       title="@react-x11/components — vt Terminal"
+      frameRate="adaptive"
     >
       <box style={{ flexGrow: 1, flexDirection: 'column' }}>
         <box

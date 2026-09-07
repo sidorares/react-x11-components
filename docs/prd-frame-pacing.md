@@ -1,11 +1,27 @@
 # PRD: adaptive frame pacing for elements fed off the input path
 
-> **Status: proposed.** Nothing in this document is implemented; the branch
-> that carries it changes no code. The measurements in §2 and §9 were taken
-> on 2026-09-07 against react-x11 2.6.1 (the pinned version) and re-checked
-> against the 2.8.2 source for the seams §6 names. The numbers are from one
-> machine — an M1 Pro with a 120 Hz panel — and the shape of the result, not
-> its third digit, is what the design rests on.
+> **Status: landed — mostly upstream, the rest adopted.** react-x11 2.9.0
+> (2026-09-07) took the pacer into core as `frameRate` on `<window>`,
+> `<popup>` and `<glarea>`, `createRoot({ frameRate })` and
+> `REACT_X11_FRAME_RATE` ([react-x11#497](https://github.com/sidorares/react-x11/pull/497)),
+> with §11's questions answered there and one refinement over §5.1: a token
+> bucket with a burst, so a single expensive frame among cheap ones never
+> waits (react-x11's `docs/architecture/frame-pacing.md`). The same release
+> closed §6's seams 1 and 2 — `Node.opaqueRect()` (#497) and
+> `globalCompositeOperation` on the Cocoa context with a row memcpy for
+> `copy` ([#501](https://github.com/sidorares/react-x11/pull/501), over
+> `@windowkit/appkit` 0.7.0); seam 4 has a design record
+> ([#502](https://github.com/sidorares/react-x11/pull/502)), and seam 3's
+> tick-skip is not needed with the pacer above the clock. This package
+> adopted all three in the PR that carries this note: `<vtterm>` answers
+> `opaqueRect()`, claims a rect inside it, composites as a `copy`, and
+> subscribes to `onWriteParsed` alone (§5.3's third change). §4's `frameRate`
+> prop on `<Terminal>` and the `<FramePacing>` provider are therefore **not
+> built** — pacing is the window's policy, and `docs/components/terminal.md`
+> says which value to set. Measured after adoption, the §2 setup: macOS
+> `'display'` 1.10 s, `'adaptive'` 0.99 s, X11 0.75 s. The rest of this
+> document is the record of why, as written on 2026-09-07 against react-x11
+> 2.6.1, on one machine — an M1 Pro with a 120 Hz panel.
 
 `<Terminal backend="vt">` repaints whenever the emulator says the screen may
 have changed, and leaves _when_ to react-x11's frame clock. On X11 that is

@@ -22,6 +22,15 @@
 // `ctx.drawGlyphs` per colour (one `CompositeGlyphs` covering every run in
 // the call). That is what keeps "the terminal scrolled" at a handful of
 // requests rather than a few thousand.
+//
+// The retained renderer's composite is a `copy`, not a blend. Every cell of
+// the grid is filled before it is shown, so replacing the window's pixels
+// with the surface's is the same picture as compositing over them — and
+// saying so is what lets the Cocoa backend send it as a row memcpy instead
+// of building a CGImage and blending it (react-x11#501: 0.42ms against 1.37
+// for a 125x45 grid at 2x), and X11 as `PictOp.Src`. Together with the
+// node's `opaqueRect()` it is why a streaming frame no longer pays for
+// pixels nobody sees.
 import type { CellMetrics, GlyphRun } from './fonts.js';
 
 /** What `ctx.drawGlyphs` takes: a run and where its baseline starts. */
@@ -34,6 +43,10 @@ export interface PositionedRun {
 /** The slice of ntk's 2d context the renderers draw through. */
 export interface CellContext {
   fillStyle: unknown;
+  /** Canvas's compositing operator. `'copy'` replaces rather than blends;
+   *  a backend that cannot draw it refuses the assignment, so read it back
+   *  rather than assume. Absent on a context with no notion of it. */
+  globalCompositeOperation?: string;
   fillRect(x: number, y: number, w: number, h: number): void;
   fillRects?(rects: number[]): void;
   drawGlyphs?(op: number, src: unknown, positioned: PositionedRun[]): void;
@@ -459,11 +472,19 @@ export class RetainedRenderer extends BatchingRenderer {
     const width = frame.cols * frame.metrics.cellWidth;
     const height = frame.rows * frame.metrics.cellHeight;
     if (width <= 0 || height <= 0) return;
-    // The whole grid, one composite. It is the whole grid rather than the
-    // frame's dirty bands because `Node.paint` has just filled this node's
-    // background across everything the damage clip covers, and the damage we
-    // claimed is the grid rect — the diff decides what is *rendered*, which
-    // is where the cost is, and the blit is one request either way.
+    // The whole grid, one composite, clipped by the pass: the damage the
+    // node claimed is the grid rect, the diff decided what was *rendered*
+    // into the surface — which is where the cost is — and the composite is
+    // one request either way.
+    //
+    // As a `copy`: the grid is opaque, every cell filled, so replacing the
+    // pixels under it is the same picture as blending over them, and it is
+    // the shape the Cocoa backend turns into a row memcpy (react-x11#501)
+    // and X11 into `PictOp.Src`. Context state, on the window's context, so
+    // it goes back afterwards; a backend that cannot draw it refuses the
+    // assignment and blends, which is the same pixels.
+    const op = ctx.globalCompositeOperation;
+    ctx.globalCompositeOperation = 'copy';
     ctx.drawImage(
       surface,
       0,
@@ -475,6 +496,7 @@ export class RetainedRenderer extends BatchingRenderer {
       width,
       height,
     );
+    ctx.globalCompositeOperation = op ?? 'source-over';
     this.count('blits');
   }
 
