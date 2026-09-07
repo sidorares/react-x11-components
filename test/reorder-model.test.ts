@@ -8,6 +8,7 @@ import assert from 'node:assert';
 import {
   arrayMove,
   closestSlot,
+  slotMark,
   insertAtSlot,
   insertManyAtSlot,
   isNoopSlot,
@@ -353,4 +354,35 @@ test('insertManyAtSlot: a run arrives together, clamped', () => {
     'x',
   ]);
   assert.deepStrictEqual(insertManyAtSlot([], ['x', 'y'], 0), ['x', 'y']);
+});
+
+// --- one insertion point, one mark ------------------------------------------
+
+test('slotMark: every slot names exactly one place, and the ends are covered', () => {
+  // three items: four gaps, four marks, no two the same
+  assert.deepStrictEqual(slotMark(3, 0), { index: 0, edge: 'before' });
+  assert.deepStrictEqual(slotMark(3, 1), { index: 1, edge: 'before' });
+  assert.deepStrictEqual(slotMark(3, 2), { index: 2, edge: 'before' });
+  assert.deepStrictEqual(slotMark(3, 3), { index: 2, edge: 'after' });
+  const marks = [0, 1, 2, 3].map((s) => JSON.stringify(slotMark(3, s)));
+  assert.strictEqual(new Set(marks).size, 4, 'four gaps, four distinct marks');
+  // out of range clamps rather than answering nowhere
+  assert.deepStrictEqual(slotMark(3, 9), { index: 2, edge: 'after' });
+  assert.deepStrictEqual(slotMark(3, -2), { index: 0, edge: 'before' });
+  assert.strictEqual(slotMark(0, 0), null);
+});
+
+test('slotMark: the two halves of one gap are one mark', () => {
+  // the whole point: `closestSlot` reads the gap between items 1 and 2 off
+  // either of them depending on which is nearer, and both must draw in the
+  // same place
+  const rects = column(4);
+  const lower = closestSlot(rects, { x: 50, y: 43 }, 'vertical'); // item 1's lower half
+  const upper = closestSlot(rects, { x: 50, y: 50 }, 'vertical'); // item 2's upper half
+  assert.notStrictEqual(lower.index, upper.index, 'read off different items');
+  assert.strictEqual(lower.slot, upper.slot, 'but the same gap');
+  assert.deepStrictEqual(
+    slotMark(rects.length, lower.slot),
+    slotMark(rects.length, upper.slot),
+  );
 });

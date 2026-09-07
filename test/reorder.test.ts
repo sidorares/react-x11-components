@@ -1951,3 +1951,76 @@ test('an inline ghost paints over the list it is being dragged into', async () =
   await expectPixel(ctx as never, px, py, GHOST);
   await release(note, { dy: 0 });
 });
+
+test('one gap is one insertion point, wherever in it the pointer is', async () => {
+  // The bug this pins: the slot was read off the nearest item, so the lower
+  // half of item b and the upper half of item c — the same gap, the same
+  // resulting order — drew the line on two different items and flipped
+  // between them as the pointer crossed.
+  const changes: ReorderChange[] = [];
+  await mount(
+    view(
+      h(List, {
+        name: 'l',
+        items: ['a', 'b', 'c', 'd'],
+        onReorder: (c) => changes.push(c),
+      }),
+    ),
+  );
+  const b = item('l', 'b');
+  const c = item('l', 'c');
+  const marked = (): string[] =>
+    ['a', 'b', 'c', 'd'].filter(
+      (id) => screen.queryByTestName(`l-${id}-indicator`) !== null,
+    );
+
+  // just inside b's lower half, and just inside c's upper half: one gap
+  await dragTo(item('l', 'a'), b, { dy: 12 });
+  const atB = marked();
+  assert.deepStrictEqual(atB.length, 1, `one mark, got ${atB.join()}`);
+
+  await act(async () => {
+    fireEvent.mouseMove(c, { dy: -12 });
+  });
+  await landed();
+  assert.deepStrictEqual(
+    marked(),
+    atB,
+    'the same mark, either side of the gap',
+  );
+
+  // and it is the same drop either way
+  await release(c, { dy: -12 });
+  assert.deepStrictEqual(changes, [
+    { items: ['b', 'a', 'c', 'd'], id: 'a', ids: ['a'], from: 0, to: 1 },
+  ]);
+});
+
+test('every gap still gets its own mark', async () => {
+  await mount(view(h(List, { name: 'l', items: ['a', 'b', 'c'] })));
+  const marks: string[] = [];
+  const seen = (where: DrawnNode, at: PointerOptions) => {
+    marks.push(
+      ['a', 'b', 'c']
+        .filter((id) => screen.queryByTestName(`l-${id}-indicator`) !== null)
+        .map((id) => {
+          const n = screen.getByTestName(`l-${id}-indicator`);
+          return `${id}:${n.abs.y < item('l', id).abs.y + 2 ? 'before' : 'after'}`;
+        })
+        .join(),
+    );
+    void where;
+    void at;
+  };
+  // drag c and walk it up: the gap above b, then the gap above a
+  await dragTo(item('l', 'c'), item('l', 'b'), { dy: -10 });
+  seen(item('l', 'b'), {});
+  await act(async () => {
+    fireEvent.mouseMove(item('l', 'a'), { dy: -10 });
+  });
+  await landed();
+  seen(item('l', 'a'), {});
+  assert.strictEqual(marks.length, 2);
+  assert.notStrictEqual(marks[0], marks[1], `two gaps, two marks: ${marks}`);
+  await release(item('l', 'a'), { dy: -10 });
+});

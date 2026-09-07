@@ -381,6 +381,21 @@ knowing what else is in the app. `preview` exists because the default ghost
 is a second render of the same children: a child that renders in both
 places gets to know which one it is.
 
+### One gap, one mark
+
+`closestSlot` answers with an item and an edge, and two answers can mean one
+gap: the lower half of item 2 and the upper half of item 3 insert in exactly
+the same place. Drawing the mark from that answer shows one insertion point
+as two — the line jumps from under item 2 to over item 3 as the pointer
+crosses the middle of the gap, which reads as a choice the user does not
+have.
+
+So the mark is a function of the **slot**, through `slotMark`: the start edge
+of the item that would follow it, or the end edge of the last item for the
+slot past the end. One place per gap, and no movement as the pointer crosses.
+It is a pure function beside the rest of the model, and the component test
+walks a pointer across a gap boundary and asserts the mark does not move.
+
 ## The indicator, not the slide
 
 hello-pangea and dnd-kit move the neighbours out of the way as the pointer

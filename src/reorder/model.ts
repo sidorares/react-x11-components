@@ -107,6 +107,29 @@ export function closestSlot(
 }
 
 /**
+ * Where the indicator goes for a slot: the **one** place that names it.
+ *
+ * `closestSlot` answers with the item the pointer is nearest and the half of
+ * it the pointer is in, and two different answers can mean the same gap —
+ * the lower half of item 2 and the upper half of item 3 are both "between
+ * them". Drawing the mark from that answer puts the line in two places for
+ * one insertion point, which reads as two, and flickers between them as the
+ * pointer crosses. So the mark is derived from the slot instead: the start
+ * edge of the item that would follow it, or the end edge of the last item
+ * for the slot past the end.
+ */
+export function slotMark(
+  count: number,
+  slot: number,
+): { index: number; edge: ReorderEdge } | null {
+  if (count <= 0) return null;
+  const at = Math.min(Math.max(slot, 0), count);
+  return at < count
+    ? { index: at, edge: 'before' }
+    : { index: count - 1, edge: 'after' };
+}
+
+/**
  * `list` with the item at `from` moved to `to` — a new array, always, so it
  * can be handed straight to a state setter. Indices past either end clamp.
  * dnd-kit's helper, by its name, because it is what every `onReorder`

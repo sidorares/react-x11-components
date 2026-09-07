@@ -137,7 +137,12 @@ import {
   later,
 } from '../internal/timers.js';
 import type { DelayTick, LayoutTick } from '../internal/timers.js';
-import { closestSlot, insertManyAtSlot, moveManyToSlot } from './model.js';
+import {
+  closestSlot,
+  insertManyAtSlot,
+  moveManyToSlot,
+  slotMark,
+} from './model.js';
 import type {
   ReorderEdge,
   ReorderId,
@@ -153,6 +158,7 @@ export {
   isNoopSlot,
   moveManyToSlot,
   moveToSlot,
+  slotMark,
 } from './model.js';
 export type {
   ReorderEdge,
@@ -945,11 +951,22 @@ export function ReorderList(props: ReorderListProps): ReactElement {
     if (!hit) return { ids, slot: 0, at: null };
     const over = ids[hit.index]!;
     // an item cannot merge into itself, nor into anything travelling with it
-    const combining = hit.combine && !moving.includes(over);
+    if (hit.combine && !moving.includes(over)) {
+      return {
+        ids,
+        slot: hit.slot,
+        at: { id: over, edge: hit.edge, combine: true },
+      };
+    }
+    // The mark comes from the **slot**, not from the item the slot was read
+    // off: the lower half of one item and the upper half of the next are the
+    // same gap, and a mark keyed to the item would draw that one insertion
+    // point in two places and flip between them mid-gap. See `slotMark`.
+    const line = slotMark(ids.length, hit.slot);
     return {
       ids,
       slot: hit.slot,
-      at: { id: over, edge: hit.edge, combine: combining },
+      at: line && { id: ids[line.index]!, edge: line.edge, combine: false },
     };
   };
 

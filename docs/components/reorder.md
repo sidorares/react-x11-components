@@ -436,6 +436,14 @@ so an app driving a list from outside does the same arithmetic.
 A same-list drag over the item's own gap — its own slot, or the one after
 it — draws nothing and, on release, fires nothing.
 
+**One gap is one insertion point.** The closest edge names the item the
+pointer is nearest and the half of it the pointer is in, and two of those
+answers mean the same gap: the lower half of one item and the upper half of
+the next put an item in the same place. The line is therefore drawn from the
+**slot** rather than from the item the slot was read off — the start edge of
+whatever would follow it — so crossing the middle of a gap moves nothing, and
+one insertion point is never shown as two.
+
 ## The indicator, not the slide
 
 hello-pangea and dnd-kit move the neighbours out of the way as the pointer
