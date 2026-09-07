@@ -739,7 +739,10 @@ test('styles: the item seam sees the state, the indicator takes a style', async 
         items: ['a', 'b'],
         styles: {
           item: (state) => {
-            if (state.edge) seen.push(`${state.id}:${state.edge}`);
+            // what the seam sees, not how often — an item re-renders more
+            // than once for one state, and that is not what this is about
+            const at = `${String(state.id)}:${state.edge}`;
+            if (state.edge && !seen.includes(at)) seen.push(at);
             return state.dragging ? { borderWidth: 3 } : null;
           },
           indicator: { height: 6 },
@@ -2023,4 +2026,147 @@ test('every gap still gets its own mark', async () => {
   assert.strictEqual(marks.length, 2);
   assert.notStrictEqual(marks[0], marks[1], `two gaps, two marks: ${marks}`);
   await release(item('l', 'a'), { dy: -10 });
+});
+
+test('the insertion line sits in the middle of the gap, not against an item', async () => {
+  const GAP = 12;
+  await mount(
+    view(
+      h(List, {
+        name: 'l',
+        items: ['a', 'b', 'c'],
+        style: { gap: GAP, padding: 10 },
+      }),
+    ),
+  );
+  // the gap between b and c, marked from either side of its middle
+  const b = item('l', 'b');
+  const c = item('l', 'c');
+  await dragTo(item('l', 'a'), c, { dy: -12 });
+  const line = screen.getByTestName('l-c-indicator');
+  const middle = (b.abs.y + b.abs.height + c.abs.y) / 2;
+  const drawn = line.abs.y + line.abs.height / 2;
+  assert.ok(
+    Math.abs(drawn - middle) <= 1,
+    `the line is centred in the gap: ${drawn} vs ${middle}`,
+  );
+  // and it is not where it used to be — hard against c's edge
+  assert.ok(Math.abs(drawn - c.abs.y) > 2, 'not against the item below it');
+  await release(c, { dy: -12 });
+});
+
+test('at the ends the line stays on the edge, where there is no gap', async () => {
+  await mount(
+    view(
+      h(List, {
+        name: 'l',
+        items: ['a', 'b', 'c'],
+        style: { gap: 12, padding: 10 },
+      }),
+    ),
+  );
+  // above the first item: nothing precedes it, so the line is its own edge
+  const a = item('l', 'a');
+  await dragTo(item('l', 'c'), a, { dy: -12 });
+  const top = screen.getByTestName('l-a-indicator');
+  assert.ok(
+    Math.abs(top.abs.y + top.abs.height / 2 - a.abs.y) <= 1,
+    "centred on the first item's leading edge",
+  );
+  await release(a, { dy: -12 });
+  // that drop reordered the list, so start the second half from a fresh one
+  await cleanup();
+  await mount(
+    view(
+      h(List, {
+        name: 'l',
+        items: ['a', 'b', 'c'],
+        style: { gap: 12, padding: 10 },
+      }),
+    ),
+  );
+
+  // and past the last item, likewise
+  const c = item('l', 'c');
+  await dragTo(item('l', 'a'), c, { dy: 12 });
+  const bottom = screen.getByTestName('l-c-indicator');
+  assert.ok(
+    Math.abs(bottom.abs.y + bottom.abs.height / 2 - (c.abs.y + c.abs.height)) <=
+      1,
+    "centred on the last item's trailing edge",
+  );
+  await release(c, { dy: 12 });
+});
+
+test('a board lifts the whole path: the card, its column and the board', async () => {
+  // The bug this pins: `zIndex` sorts among siblings, so a ghost inside a
+  // card in the first column painted under the second and third columns —
+  // the card was lifted, and nothing above it was.
+  const GHOST = '#ff0000';
+  const COLUMN = '#0000ff';
+  const { ctx } = await mount(
+    h(
+      'window',
+      { width: 420, height: 240 } as Record<string, unknown>,
+      h(
+        ThemeProvider,
+        { value: {}, colorScheme: 'light' },
+        h(
+          ReorderList,
+          {
+            'data-testname': 'board',
+            orientation: 'horizontal' as const,
+            dropAnimation: false,
+            style: { gap: 0, padding: 0 },
+          },
+          ['one', 'two'].map((column) =>
+            h(
+              ReorderItem,
+              {
+                key: column,
+                id: column,
+                'data-testname': `col-${column}`,
+                style: { width: 200, height: 200, backgroundColor: COLUMN },
+              },
+              h(
+                ReorderList,
+                {
+                  id: column,
+                  group: 'cards',
+                  'data-testname': `list-${column}`,
+                  preview: 'inline' as const,
+                  dropAnimation: false,
+                  styles: { preview: { backgroundColor: GHOST } },
+                  style: { gap: 0, padding: 0 },
+                },
+                h(ReorderItem, {
+                  id: `${column}-card`,
+                  'data-testname': `card-${column}`,
+                  style: { width: 180, height: 40 },
+                }),
+              ),
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+
+  const second = screen.getByTestName('col-two');
+  const px = second.abs.x + 60;
+  const py = second.abs.y + 30;
+  await expectPixel(ctx as never, px, py, COLUMN);
+
+  // drag the first column's card over the second column
+  await dragTo(screen.getByTestName('card-one'), second, { dx: -40, dy: -60 });
+  // only the card is being dragged: an ancestor item must not claim the
+  // gesture, or draw a ghost of a whole column
+  assert.strictEqual(
+    screen.queryAllByTestName('col-one-preview').length,
+    0,
+    'the column did not start a drag of its own',
+  );
+  assert.strictEqual(screen.queryAllByTestName('card-one-preview').length, 1);
+  await expectPixel(ctx as never, px, py, GHOST);
+  await release(second, { dx: -40, dy: -60 });
 });

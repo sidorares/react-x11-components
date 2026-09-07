@@ -803,6 +803,15 @@ and drop:
   case". Core's cocoa modules are not on its exports map, so a scratch
   script reaches them by file URL: fine for investigation, not for a
   committed test, and keep the script outside the repository.
+- **A drag's events bubble.** `DragStart`/`onDrag`/`onDragEnd` dispatch
+  capture → target → bubble like every other event, so a draggable node that
+  _contains_ the dragged one sees all of them — and `useDragSource` inside it
+  will happily set a position and render a second preview. Nested lists (a
+  board: a card, in a column's list, in a column, in the board) are where
+  this bites, and the symptom is not only a stray ghost: the outer item's
+  handlers claim the gesture. Check `ev.target` against the node the drag
+  props were spread on before doing anything in a source callback.
+  `preventDefault()` is not the tool — on this event it cancels the drag.
 - **Core arms a drag from the nearest draggable ancestor**, so a press on a
   control inside a draggable drags the ancestor. The layer's answer is to
   remember the press target (`onMouseDownCapture`) and cancel at the

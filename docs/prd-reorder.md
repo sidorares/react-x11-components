@@ -674,12 +674,31 @@ beside it: the ghost drew _under_ the notes it was
 being dropped on. `zIndex` here sorts a node among its **siblings** —
 `paintOrder()` is per node and there is no stacking context to escape — so
 lifting the ghost inside its item cannot raise it above a different list.
-The list root is lifted for the length of the gesture too, which is what
-covers a palette and its target, a board's columns, any two lists that are
-siblings. It genuinely cannot cover two lists in separate wrappers, and
-saying so in the reference is better than a deeper trick — it is also the
-sharpest argument for why `'auto'` is a window: a popup has no stacking
-limit at all.
+The first cut lifted the item and its list, which covered a palette and its
+target — two lists that are siblings — and not a board, where the ghost is
+inside a card, inside a column's list, inside a column, inside the board.
+Reported from that example, and the fix generalises the rule rather than
+adding a case: for the length of a gesture, **every list and item that
+contains the drag lifts itself**, asked as `node.contains(activeDrag.source)`.
+The card, its column and the board come forward together. They learn about
+it by subscribing to a module-level notification, because a list two levels
+up has nothing to re-render it — its children are the application's own
+elements, unchanged.
+
+What that still cannot reach is content outside the outermost list, which is
+the sharpest argument for why `'auto'` prefers a window wherever one works: a
+popup has no stacking limit at all.
+
+**And the board turned up a worse bug than stacking.** `DragStart`, `onDrag`
+and `onDragEnd` dispatch capture → target → bubble like every other event, so
+every `<ReorderItem>` _containing_ the dragged one saw them: `useDragSource`
+inside a column set a position and drew a second ghost — a copy of the whole
+column — and, far worse, the column's handlers claimed the gesture, calling
+`dragStarted` on the board and overwriting `activeDrag` with the column's
+payload, so the hover channel described the wrong item. Each source callback
+now begins by asking whether the event's target is this item's own drag
+source. `preventDefault` is not available for that: on this event it cancels
+the whole drag.
 
 That one is pinned in **pixels** (`test/reorder.test.ts`, "an inline ghost
 paints over the list it is being dragged into"): paint order is the whole

@@ -60,13 +60,30 @@
 //    gives up show the window's own ground — white on a light theme, near
 //    black on a dark one. Where no compositor runs the window fills itself
 //    square, which is what an opaque one looked like anyway.
-//  - **An in-window ghost has to lift its whole list, not just its item.**
+//  - **A drag's events bubble, so an item must check the source is its own.**
+//    `DragStart`, `onDrag` and `onDragEnd` dispatch capture → target →
+//    bubble like every other event, which means a list item that *contains*
+//    the dragged one — a board's column, holding the list the card is in —
+//    sees them all, and `useDragSource` inside it dutifully sets a position
+//    and would draw a second ghost. Worse, its handlers would claim the
+//    gesture: a second `dragStarted` on the outer list, and `activeDrag`
+//    overwritten with the column's payload, so the hover channel described
+//    the wrong item. Every source callback here therefore begins by asking
+//    whether the event's target is this item's own drag source (itself, or
+//    its handle) and returns if not. `preventDefault` is not the tool for
+//    that: on this event it cancels the whole drag.
+//  - **An in-window ghost lifts the whole path, not just its item.**
 //    `zIndex` sorts a node among its *siblings* — `paintOrder()` is per
 //    node, and there is no stacking context to escape — so a ghost lifted
-//    inside its item still paints under a *different* list, which is what a
-//    board or a palette-plus-target is made of. The item is lifted over its
-//    neighbours and the list root over its own, for the length of the
-//    gesture. What that cannot reach is content outside the list's parent;
+//    inside its item paints under the next item, its list under the next
+//    list, its column under the next column. Every `<ReorderList>` and
+//    `<ReorderItem>` therefore asks, for the length of the gesture, whether
+//    the drag is inside it (`node.contains(activeDrag.source)`) and lifts
+//    itself if so: a board's card, its column and the board all come
+//    forward together. They learn about it by subscribing, because a list
+//    two levels up has nothing to re-render it — its children are the
+//    application's own elements, unchanged.
+//    What that cannot reach is content outside the outermost list;
 //    a popup ghost has no such limit, which is why `'auto'` prefers one
 //    wherever a popup works. On the cocoa backend it does not yet: a
 //    preview window there stops the drop reaching the list, before 2.8.1
@@ -532,14 +549,63 @@ interface DragOver {
  * pointer is over, read by the source's own `onDrag`, and null between
  * gestures. One drag at a time is a property of the pointer, not an
  * assumption this makes.
+ *
+ * `source` and `inline` are here for the stacking: an in-window ghost has to
+ * be painted over everything between it and the drop, and `zIndex` only
+ * sorts siblings, so every list and item that *contains* the drag lifts
+ * itself. They ask this.
  */
-let activeDrag: { payload: Payload; over: DragOver | null } | null = null;
+let activeDrag: {
+  payload: Payload;
+  over: DragOver | null;
+  source: DrawnNode | null;
+  inline: boolean;
+} | null = null;
+
+/**
+ * Who to tell when a drag starts or ends.
+ *
+ * A list two levels above the one being dragged in has nothing to re-render
+ * it — its children are the application's elements, unchanged — so it
+ * subscribes instead. Twice a gesture, for as many entries as there are
+ * mounted lists and items, each answering one `contains`.
+ */
+const watchers = new Set<() => void>();
+
+function announceDragChanged(): void {
+  for (const watcher of [...watchers]) watcher();
+}
+
+/**
+ * Whether the drag in flight is inside `ref`, and drawing a ghost this node
+ * has to be painted above. What lifts the whole path from the dragged item
+ * up to the outermost list — a board's card, its column, and the board.
+ */
+function useCarryingDrag(ref: RefObject<DrawnNode | null>): boolean {
+  const [carrying, setCarrying] = useState(false);
+  useEffect(() => {
+    const update = (): void => {
+      const drag = activeDrag;
+      const node = ref.current;
+      const holds = Boolean(
+        drag?.inline && drag.source && node && node.contains(drag.source),
+      );
+      setCarrying(holds);
+    };
+    watchers.add(update);
+    update();
+    return () => {
+      watchers.delete(update);
+    };
+  }, [ref]);
+  return carrying;
+}
 
 /** One item, as the list sees it. */
 interface Entry {
   id: ReorderId;
   node: RefObject<DrawnNode | null>;
-  setMark: (mark: { edge: ReorderEdge; combine: boolean } | null) => void;
+  setMark: (mark: Omit<Mark, 'id'> | null) => void;
   focus: () => void;
   label: () => string;
 }
@@ -549,6 +615,18 @@ interface Mark {
   id: ReorderId;
   edge: ReorderEdge;
   combine: boolean;
+  /**
+   * How far off that edge the line sits, in the item's own logical pixels
+   * along the axis — negative toward the item before it.
+   *
+   * A gap is a space between two items, and the line belongs in the middle
+   * of it. Drawn on the following item's edge it is not: it sits hard
+   * against that item and a whole `gap` away from the one above, which
+   * reads as belonging to the item below rather than to the space. So the
+   * list measures the gap it is marking and hands over half of it. Zero at
+   * the two ends, where there is no gap to be in the middle of.
+   */
+  offset: number;
 }
 
 interface ListShared {
@@ -651,6 +729,16 @@ interface OpaqueNode {
   scale?: number;
   props?: Record<string, unknown>;
   root?: { window?: { beginDrag?: unknown } } | null;
+}
+
+/** Where a list's ghost is drawn, resolved. */
+function ghostMode(
+  preview: 'auto' | 'popup' | 'inline' | false,
+  node: DrawnNode | null,
+): 'popup' | 'inline' | false {
+  if (preview === false) return false;
+  if (preview !== 'auto') return preview;
+  return nativeDragSession(node) ? 'inline' : 'popup';
 }
 
 /**
@@ -842,10 +930,9 @@ export function ReorderList(props: ReorderListProps): ReactElement {
   const dragging = useRef<ReorderId | null>(null);
   /** What the last `onDragUpdate` said, so one is not sent per motion. */
   const reportedOver = useRef<DragOver | null>(null);
-  /** Whether one of this list's own items is being dragged. State rather
-   *  than a ref because the root's stacking depends on it — set twice a
-   *  gesture, not per motion. */
-  const [holding, setHolding] = useState(false);
+  /** Whether the drag in flight is inside this list and drawing an
+   *  in-window ghost — which is what its own stacking depends on. */
+  const carrying = useCarryingDrag(rootRef);
   const [lifted, setLifted] = useState<{
     id: ReorderId;
     ids: ReorderId[];
@@ -953,13 +1040,16 @@ export function ReorderList(props: ReorderListProps): ReactElement {
       next !== null &&
       prev.id === next.id &&
       prev.edge === next.edge &&
-      prev.combine === next.combine;
+      prev.combine === next.combine &&
+      prev.offset === next.offset;
     if (same) return;
     if (prev) entries.current.get(prev.id)?.setMark(null);
     if (next) {
-      entries.current
-        .get(next.id)
-        ?.setMark({ edge: next.edge, combine: next.combine });
+      entries.current.get(next.id)?.setMark({
+        edge: next.edge,
+        combine: next.combine,
+        offset: next.offset,
+      });
     }
     marked.current = next;
   };
@@ -984,7 +1074,7 @@ export function ReorderList(props: ReorderListProps): ReactElement {
       return {
         ids,
         slot: hit.slot,
-        at: { id: over, edge: hit.edge, combine: true },
+        at: { id: over, edge: hit.edge, combine: true, offset: 0 },
       };
     }
     // The mark comes from the **slot**, not from the item the slot was read
@@ -992,10 +1082,28 @@ export function ReorderList(props: ReorderListProps): ReactElement {
     // same gap, and a mark keyed to the item would draw that one insertion
     // point in two places and flip between them mid-gap. See `slotMark`.
     const line = slotMark(ids.length, hit.slot);
+    if (!line) return { ids, slot: hit.slot, at: null };
+    // half the gap it is marking, so the line sits in the space rather than
+    // against the item below it. The ends have no gap: they stay on the edge.
+    const rects = rectsOf(ids);
+    const before = line.edge === 'before' ? line.index - 1 : -1;
+    let offset = 0;
+    if (before >= 0) {
+      const a = rects[before]!;
+      const b = rects[line.index]!;
+      const rtl = (rootRef.current?.direction ?? 'ltr') === 'rtl';
+      const space =
+        orientation === 'vertical'
+          ? b.y - (a.y + a.height)
+          : rtl
+            ? a.x - (b.x + b.width)
+            : b.x - (a.x + a.width);
+      offset = -Math.max(space, 0) / 2;
+    }
     return {
       ids,
       slot: hit.slot,
-      at: line && { id: ids[line.index]!, edge: line.edge, combine: false },
+      at: { id: ids[line.index]!, edge: line.edge, combine: false, offset },
     };
   };
 
@@ -1303,7 +1411,6 @@ export function ReorderList(props: ReorderListProps): ReactElement {
   const dragStarted = useCallback(
     (itemId: ReorderId): { index: number; ids: ReorderId[] } => {
       dragging.current = itemId;
-      setHolding(true);
       // a pointer drag and a keyboard lift are one gesture's worth of state
       if (liftedRef.current) setLifted(null);
       reportedOver.current = null;
@@ -1345,7 +1452,6 @@ export function ReorderList(props: ReorderListProps): ReactElement {
     (itemId: ReorderId, ev: DragEndEvent, payload: Payload | null): void => {
       dragging.current = null;
       reportedOver.current = null;
-      setHolding(false);
       mark(null);
       const to = payload?.to;
       const moved = ev.dropped && ev.action === 'move';
@@ -1444,14 +1550,6 @@ export function ReorderList(props: ReorderListProps): ReactElement {
     [accept, type, disabled],
   );
 
-  /** Whether this list's ghost is a box in the window rather than a popup:
-   *  the only case where the root's own stacking matters. */
-  const inlineGhost =
-    preview === 'inline' ||
-    (preview !== 'popup' &&
-      preview !== false &&
-      nativeDragSession(rootRef.current));
-
   return hx(
     'box',
     {
@@ -1467,9 +1565,10 @@ export function ReorderList(props: ReorderListProps): ReactElement {
         { flexDirection: orientation === 'horizontal' ? 'row' : 'column' },
         style,
         // An in-window ghost is a box inside this list, and `zIndex` only
-        // sorts among siblings — so the list itself has to come forward, or
-        // the ghost paints under the next list along. See the header.
-        holding && inlineGhost ? { zIndex: 1 } : null,
+        // sorts among siblings — so every list that *contains* the drag comes
+        // forward among its own, or the ghost paints under whatever is next.
+        // See the header.
+        carrying ? { zIndex: 1 } : null,
       ],
     },
     h(ListContext.Provider, { value: shared }, children),
@@ -1483,8 +1582,9 @@ function itemStyle(state: ReorderItemState, hasHandle: boolean): Style {
   return { cursor: state.disabled || hasHandle ? undefined : 'grab' };
 }
 
-/** An item drawing a ghost of its own has to paint over its neighbours, or
- *  the copy following the pointer slides under the next row down. */
+/** An item that contains the drag has to paint over its neighbours, or the
+ *  ghost following the pointer slides under the next row — or, for the item
+ *  that is a whole board column, under the next column. */
 function liftStyle(lifted: boolean): Style | null {
   return lifted ? { zIndex: 3 } : null;
 }
@@ -1507,7 +1607,7 @@ function washStyle(state: ReorderItemState, theme: Theme): Style | null {
  *  A combining item is outlined instead — the drop lands *on* it, and a line
  *  beside it would say the opposite. */
 function indicatorStyle(
-  mark: { edge: ReorderEdge; combine: boolean },
+  mark: { edge: ReorderEdge; combine: boolean; offset: number },
   orientation: ReorderOrientation,
   theme: Theme,
 ): Style {
@@ -1529,15 +1629,16 @@ function indicatorStyle(
     };
   }
   const line: Style = { ...base, backgroundColor: theme.accent };
+  // `offset` walks the line back into the middle of the gap; at the ends,
+  // where there is no gap, it is zero and the line is centred on the edge
+  const at = -INDICATOR / 2 + mark.offset;
   if (orientation === 'vertical') {
     return {
       ...line,
       left: 0,
       right: 0,
       height: INDICATOR,
-      ...(mark.edge === 'before'
-        ? { top: -INDICATOR / 2 }
-        : { bottom: -INDICATOR / 2 }),
+      ...(mark.edge === 'before' ? { top: at } : { bottom: at }),
     };
   }
   return {
@@ -1545,9 +1646,7 @@ function indicatorStyle(
     top: 0,
     bottom: 0,
     width: INDICATOR,
-    ...(mark.edge === 'before'
-      ? { start: -INDICATOR / 2 }
-      : { end: -INDICATOR / 2 }),
+    ...(mark.edge === 'before' ? { start: at } : { end: at }),
   };
 }
 
@@ -1600,16 +1699,20 @@ export function ReorderItem(props: ReorderItemProps): ReactElement {
   const theme = useTheme();
   const nodeRef = useRef<DrawnNode | null>(null);
   const handleRef = useRef<RefObject<DrawnNode | null> | null>(null);
-  const [mark, setMark] = useState<{
-    edge: ReorderEdge;
-    combine: boolean;
-  } | null>(null);
+  const [mark, setMark] = useState<Omit<Mark, 'id'> | null>(null);
+  /** Whether the drag in flight is inside this item — this one being
+   *  dragged, or a whole column of a board whose card is. */
+  const carrying = useCarryingDrag(nodeRef);
   const [hasHandle, setHasHandle] = useState(false);
   const disabled = ownDisabled || list.disabled;
   const lifted = list.liftedId === id;
   const liftedRef = useRef(lifted);
   liftedRef.current = lifted;
 
+  /** Whether *this* item is the one being dragged, rather than one that
+   *  merely contains it — see the header. `useDragSource`'s own
+   *  `isDragging` cannot tell, because the events bubble. */
+  const [holdingOwn, setHoldingOwn] = useState(false);
   /** The live payload, from the press that started a drag to its end. */
   const payload = useRef<Payload | null>(null);
   /** Where in the item the press landed, so the ghost appears under it
@@ -1703,10 +1806,17 @@ export function ReorderItem(props: ReorderItemProps): ReactElement {
     [],
   );
 
+  /** Is this event about this item's own drag source — the item box, or the
+   *  handle the drag props were spread on — rather than a descendant's? */
+  const ownSource = (ev: { target: DrawnNode }): boolean =>
+    ev.target === nodeRef.current ||
+    ev.target === (handleRef.current?.current ?? null);
+
   const { dragProps, isDragging, position } = useDragSource({
     data: { [list.type]: () => payload.current, ...dragData },
     actions: dragActions ?? ['move'],
     onDragStart: (ev: DragSourceEvent) => {
+      if (!ownSource(ev)) return;
       // A press on a control inside the item belongs to the control, not to
       // the item around it — core arms from the nearest draggable ancestor,
       // so this is the layer's own answer. Cancelling here leaves the
@@ -1741,13 +1851,25 @@ export function ReorderItem(props: ReorderItemProps): ReactElement {
         ids,
         index,
       };
-      activeDrag = { payload: payload.current, over: null };
+      activeDrag = {
+        payload: payload.current,
+        over: null,
+        source: node,
+        inline: ghostMode(list.preview, node) === 'inline',
+      };
+      setHoldingOwn(true);
+      announceDragChanged();
     },
-    onDrag: () => list.dragMoved(id),
+    onDrag: (ev: DragSourceEvent) => {
+      if (ownSource(ev)) list.dragMoved(id);
+    },
     onDragEnd: (ev: DragEndEvent) => {
+      if (!ownSource(ev)) return;
+      setHoldingOwn(false);
       const carried = payload.current;
       payload.current = null;
       activeDrag = null;
+      announceDragChanged();
       const from = lastGhost.current;
       lastGhost.current = null;
       list.dragEnded(id, ev, carried);
@@ -1812,16 +1934,18 @@ export function ReorderItem(props: ReorderItemProps): ReactElement {
   );
 
   const drag = disabled ? NO_DRAG : dragProps;
+  /** The hook reports a drag anywhere beneath this item; only ours counts. */
+  const dragging = isDragging && holdingOwn;
   const moving =
-    isDragging || lifted ? list.movingIds(id) : ([id] as ReorderId[]);
+    dragging || lifted ? list.movingIds(id) : ([id] as ReorderId[]);
   const state: ReorderItemState = {
     id,
-    dragging: isDragging,
+    dragging,
     lifted,
     disabled,
     edge: mark?.edge ?? null,
     combining: Boolean(mark?.combine),
-    accepted: position?.accepted ?? false,
+    accepted: (holdingOwn && position?.accepted) ?? false,
     preview: false,
     ids: moving,
   };
@@ -1844,19 +1968,15 @@ export function ReorderItem(props: ReorderItemProps): ReactElement {
     typeof list.previewSize === 'function'
       ? list.previewSize(previewState)
       : (list.previewSize ?? grab.current);
-  const ghostAt = position && {
-    x: position.x - grab.current.x,
-    y: position.y - grab.current.y,
-  };
-  if (isDragging && ghostAt) lastGhost.current = ghostAt;
+  const ghostAt = holdingOwn &&
+    position && {
+      x: position.x - grab.current.x,
+      y: position.y - grab.current.y,
+    };
+  if (dragging && ghostAt) lastGhost.current = ghostAt;
   // Where the ghost is drawn — a popup unless one would stop the drop
   // reaching the list. `nativeDragSession` has the whole reason.
-  const mode =
-    list.preview === 'auto'
-      ? nativeDragSession(nodeRef.current)
-        ? 'inline'
-        : 'popup'
-      : list.preview;
+  const mode = ghostMode(list.preview, nodeRef.current);
   /** The item's own origin on screen, which turns a pointer position into an
    *  offset inside the item — what an inline ghost is placed by, and what the
    *  drop flight eases to zero. */
@@ -1886,7 +2006,7 @@ export function ReorderItem(props: ReorderItemProps): ReactElement {
   );
   /** The state, over the look: the lift, the wash, then the seam. */
   const stateStyle: StyleInput[] = [
-    liftStyle(inlineAt !== null),
+    liftStyle(carrying),
     washStyle(state, theme),
     list.styles?.item?.(state) || null,
   ].filter((s): s is StyleInput => Boolean(s));

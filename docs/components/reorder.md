@@ -531,11 +531,14 @@ there.
 
 The in-window ghost is the same absolutely positioned box, with
 `pointerEvents: 'none'`, that the [drop flight](#the-drop-flies-home) uses,
-and it accepts two limits a window does not have. It cannot leave the
-window. And `zIndex` here sorts a node among its **siblings**, with no
-stacking context to escape, so the item carrying it is lifted over its
-neighbours and the list over _its_ neighbours — which covers two lists that
-are siblings, and not two lists in separate wrappers.
+and it accepts one limit a window does not have: it cannot leave the window.
+
+Stacking is handled rather than left to chance. `zIndex` here sorts a node
+among its **siblings**, with no stacking context to escape, so for the length
+of a gesture every `<ReorderList>` and `<ReorderItem>` that _contains_ the
+drag lifts itself: a board's card, the column it is in, and the board all
+come forward together, and the ghost is drawn over the columns beside it.
+What that cannot reach is content outside the outermost list.
 
 The popup is `transparent`, because the card inside it is rounded: on an
 opaque window the four corners the radius gives up show the window's own
