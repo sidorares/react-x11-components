@@ -798,9 +798,15 @@ and drop:
   cocoa session with synthetic CGEvents took an afternoon and never
   separated the product's behaviour from the rig's. The same rig then
   validated the upstream fix — `registerDropTypes` called for the list's
-  window alone, where the release before called it for the ghost's too —
-  which is what let the workaround be deleted rather than left in "just in
-  case". Core's cocoa modules are not on its exports map, so a scratch
+  window alone, where the release before called it for the ghost's too. That
+  reading was **not enough**: it is a fact about react-x11's bookkeeping, and
+  the drop still failed on a real machine, because the window server finds
+  the window under the pointer whether or not it has a destination. The fix
+  that worked was `ignoresMouseEvents` on the preview (2.8.2), and the rig
+  earns its keep by showing the option reaching `createWindow2` — the
+  mechanism itself rather than a proxy for it. **Check the thing that makes
+  the behaviour, not the thing that correlates with it**, and remember that
+  neither is proof of what the OS does with it. Core's cocoa modules are not on its exports map, so a scratch
   script reaches them by file URL: fine for investigation, not for a
   committed test, and keep the script outside the repository.
 - **A drag's events bubble.** `DragStart`/`onDrag`/`onDragEnd` dispatch

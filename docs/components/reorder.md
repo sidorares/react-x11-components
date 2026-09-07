@@ -527,6 +527,113 @@ lift.
 
 ## Where the ghost is drawn
 
+The ghost is a `<popup>`: a window of its own, so it follows the pointer out
+of the list, out of the window, and over other applications. That is what
+`'auto'` uses on both backends — on cocoa a react-x11 popup is a
+non-activating panel above every other application's ordinary windows, so it
+is what the desktop sees while the pointer is over the Finder.
+
+| `preview`  | The ghost is                                                          |
+| ---------- | --------------------------------------------------------------------- |
+| `'auto'`   | a `<popup>`. The default, and what `true` means.                      |
+| `'popup'`  | the same, said explicitly.                                            |
+| `'inline'` | a box inside the list: one fewer window a drag, and the limits below. |
+| `false`    | not drawn. The indicator and the cursor are the whole feedback.       |
+
+`'inline'` is the opt-in for a list that would rather not open a window per
+drag — a remote display, where a window costs round trips. It is the same
+absolutely positioned box, with `pointerEvents: 'none'`, that the
+[drop flight](#the-drop-flies-home) uses, and it accepts one limit a window
+does not have: it cannot leave the window.
+
+Stacking is handled rather than left to chance, for the in-window ghost.
+`zIndex` here sorts a node among its **siblings**, with no stacking context
+to escape, so for the length of a gesture every `<ReorderList>` and
+`<ReorderItem>` that _contains_ the drag lifts itself: a board's card, the
+column it is in, and the board all come forward together. What that cannot
+reach is content outside the outermost list — a popup has no such limit,
+which is why `'auto'` is one.
+
+The popup is `transparent`, because the card inside it is rounded: on an
+opaque window the four corners the radius gives up show the window's own
+ground rather than the desktop.
+
+**Dragging in and out of other applications** is XDND on X11 and NSDragging
+on cocoa. Files from the Finder arrive as `['files']`, which is what `accept`
+already names.
+
+> Needs react-x11 **2.8.2**, and every part of that floor was earned. Before
+> 2.8.0 a drag on the cocoa backend had no visible subject at all: AppKit's
+> tracking loop owns the thread, so nothing rendered in response to `onDrag`
+> reached the screen ([#484](https://github.com/sidorares/react-x11/pull/484)).
+> Then a preview popup there stopped the drop reaching the list, first by
+> registering as a dragging destination (2.8.1) and then simply by being the
+> window under the pointer — the window server finds it whether or not it has
+> a destination. 2.8.2 creates a preview with `ignoresMouseEvents`, so the
+> pointer passes through it
+> ([#488](https://github.com/sidorares/react-x11/issues/488)). That last one
+> needs `@windowkit/appkit` >= 0.6.0, which react-x11 2.8.2 asks for; an
+> older bridge ignores the option without saying so.
+
+## The ghost looks like the item
+
+By default the ghost is the item: the same padding, the same corners, the
+same ground, at the same size. It adds one thing, and only when the item does
+not bring it — a background, since a ghost with nothing behind it is a
+floating label rather than the thing being dragged.
+
+That is worth stating because the obvious alternative is wrong in a way that
+takes a while to see. A default card of its own — a surface, a hairline, the
+theme's radius — replaces a chip's rounded corners with square-ish ones, and
+the border it adds eats two pixels of content box, which is enough to wrap a
+word: `later` comes out as `late` and `r`. So a lifted-card look is opt-in
+rather than the default:
+
+```jsx
+<ReorderList styles={{ preview: { borderWidth: 1, borderColor: '$border' } }}>
+```
+
+`styles.preview` merges over the item's own style, and `renderPreview`
+replaces the content outright.
+
+## The preview is a fresh instance
+
+The ghost is a `<popup dragPreview>` — a real window following the
+pointer, which is how core says a preview is drawn: it can leave the list
+and the window, and it costs a window move per motion rather than a layout
+pass. It renders the item's `children` again at the item's measured size,
+inside a card, with the press offset kept so it appears under the item
+rather than jumping to the cursor. Because it is a second render of the
+same elements, a control inside the item comes up in its initial state in
+the ghost — a typed-into `<textinput>` shows empty there. That is the trade
+dnd-kit's `DragOverlay` makes too; `renderPreview` is the answer when it
+matters. A `<ReorderHandle>` rendered in the ghost draws its grip and does
+nothing else.
+
+## Keyboard
+
+The item — or its handle — is a tab stop, so a list of ten items is ten
+stops. That is hello-pangea's model rather than the Tree's and Table's
+single stop with a cursor, and deliberately: an item here is arbitrary
+content, often with controls of its own, and a card whose button cannot be
+reached by Tab because the list ate the stop is worse than a longer tab
+order.
+
+| Key                                 | What it does                                                          |
+| ----------------------------------- | --------------------------------------------------------------------- |
+| `Space` / `Enter`                   | Lift the item; lift again to drop it.                                 |
+| `Up` / `Down` (or `Left` / `Right`) | Lifted: move it one slot, firing `onReorder`. Not lifted: focus next. |
+| `Home` / `End`, while lifted        | Move it to an end.                                                    |
+| `Escape`, while lifted              | Put it back where it was — `onReorder` with that order.               |
+
+Every step is announced through core's `announce()` — "Lifted Buy milk,
+position 2 of 5", "Buy milk moved to position 3 of 5", "dropped",
+"cancelled" — which is inert where no assistive technology is listening.
+Focus leaving a lifted item drops it where it is. A pointer drag ends a
+lift.
+
+## Where the ghost is drawn
+
 A `<popup>` is the better ghost: a window of its own, so it follows the
 pointer out of the list, out of the window, and over other applications. It
 is what `'auto'` uses wherever react-x11 tracks the drag itself — the X11

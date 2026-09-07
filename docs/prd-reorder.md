@@ -657,16 +657,28 @@ it for the ghost's too, and the drop reorders. On that evidence the probe
 was deleted and `'auto'` made a popup everywhere.
 
 **A real session then still could not drop**, and the probe came back. That
-is the second time a transport-level check has said yes where AppKit said
-no, and the two together sharpen the rule rather than repeating it: _the
-fake bridge proves what react-x11 does with a drag, never what AppKit does
-with a window._ Registering no dragged types is evidently not the same as
-being invisible to the drag — a preview window under the pointer still
-appears to end the search — so the remaining exclusion is probably
-`ignoresMouseEvents` on the preview panel rather than an empty type list.
-That is upstream's to settle; here, `'auto'` uses the ghost that creates no
-window on that path, which is the arrangement drops have actually been seen
-to work in.
+was the second time a transport-level check said yes where AppKit said no,
+and the two together sharpen the rule rather than repeating it: _the fake
+bridge proves what react-x11 does with a drag, never what AppKit does with a
+window._ The inference from it was that registering no dragged types is not
+the same as being invisible to the drag, and that the remaining exclusion had
+to be `ignoresMouseEvents` on the preview panel.
+
+**That is what 2.8.2 does**
+([#492](https://github.com/sidorares/react-x11/pull/492)): the window server
+finds the window under the pointer whether or not it has a destination, so a
+preview with none left the drag with none; the preview is created with
+`ignoresMouseEvents` now, and the hit passes through it. The probe is gone
+and `'auto'` is a popup on both backends.
+
+The validation is worth contrasting with the one that was not enough. Last
+time the rig could only show _that no drop types were registered_ — a fact
+about react-x11's bookkeeping. This time it shows the option itself,
+`createWindow2` receiving `ignoresMouseEvents: true` for the ghost's window,
+which is the mechanism rather than a proxy for it. It is still not proof of
+what AppKit does with that option: the last word belongs to a hand on a real
+mouse, and the floor now includes `@windowkit/appkit` >= 0.6.0, without
+which the option is ignored in silence.
 
 The in-window ghost stays as `preview="inline"`, and it brought its own
 lesson while it was the default, reported from a palette dropping into a list
