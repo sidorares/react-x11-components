@@ -733,6 +733,35 @@ The floor is therefore react-x11 **^2.8.0**, and that is a real floor rather
 than tidiness: on 2.7.0 a cocoa drag is invisible whatever this component
 does.
 
+### The flight is about what happened, not about the ghost
+
+The drop animation ends at where the item is, and for a while it ran on every
+release. That is wrong for half of them, and the report that found it was
+exact: after a tag was merged into a note — a drop that was _taken_, and that
+visibly added the tag — the ghost crawled back to the palette, which is the
+picture a rejection paints.
+
+The rule is now the one the animation actually means: fly only when the item
+did not go anywhere. A move inside the list ends somewhere new and the flight
+shows it; a drag that landed nowhere ends where it began, and flying there
+_is_ "it returned". A merge, or a copy another list took, leaves the item
+where it started while the drop did something, so the ghost is let go at the
+pointer instead. The three endings are told apart by what the drop wrote on
+the payload — the list it landed in, and whether it combined — which the
+source already reads to report `onRemove`.
+
+Two upstream limits sit next to this and are worth keeping straight, because
+both look like the component stalling:
+
+- A **refused** drop on cocoa is not reported for about a second, because
+  AppKit plays its slide-back animation before ending the session, on a drag
+  image react-x11 never supplies
+  ([react-x11#494](https://github.com/sidorares/react-x11/issues/494)). The
+  flight cannot start earlier than the event that tells it to.
+- A drag's frames on that backend are painted from the callback that reports
+  them, because the tracking loop owns the thread (#484). Anything that
+  wants to move during a drag has to ride an event.
+
 ## Open questions
 
 - **`items` on the list.** Reading the order from the tree makes the basic

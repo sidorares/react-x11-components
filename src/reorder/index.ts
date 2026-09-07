@@ -1752,6 +1752,24 @@ export function ReorderItem(props: ReorderItemProps): ReactElement {
   );
 
   /**
+   * Should the drop be animated at all?
+   *
+   * The flight ends at where the item *is*, which is the right picture for
+   * exactly two endings: a move inside this list, where it is somewhere new,
+   * and a drag that landed nowhere, where flying back to an unchanged
+   * position is precisely "it returned". Every other ending leaves the item
+   * where it started while the drop *did* something — a merge into another
+   * item, a copy taken by another list — and flying home there says the
+   * opposite of what happened: it reads as a rejection. Those endings let
+   * the ghost go where the pointer left it.
+   */
+  const flies = (ev: DragEndEvent, carried: Payload | null): boolean => {
+    if (!ev.dropped || ev.action === null) return true; // it went nowhere
+    const to = carried?.to;
+    return Boolean(to && to.listUid === list.uid && to.combine === null);
+  };
+
+  /**
    * Fly a copy of the item from where the pointer let go to where the item
    * landed, then let it go.
    *
@@ -1863,7 +1881,14 @@ export function ReorderItem(props: ReorderItemProps): ReactElement {
       const from = lastGhost.current;
       lastGhost.current = null;
       list.dragEnded(id, ev, carried);
-      if (from && list.dropMs > 0 && list.preview) flyHome(from, list.dropMs);
+      if (
+        from &&
+        list.dropMs > 0 &&
+        list.preview !== false &&
+        flies(ev, carried)
+      ) {
+        flyHome(from, list.dropMs);
+      }
     },
   });
 

@@ -415,6 +415,22 @@ the item landed, and then goes. `dropAnimation={false}` turns it off,
 `dropAnimation={320}` slows it down, and the desktop's **reduced motion**
 setting turns it off whatever the prop says.
 
+**It only flies when the item did not go anywhere.** The flight ends at where
+the item _is_, which is the right picture for two endings: a move inside the
+list, where it is somewhere new, and a drag that landed nowhere, where flying
+back to an unchanged position is exactly "it returned". Every other ending —
+a merge into another item, a copy another list took — leaves the item where
+it started while the drop did something, so flying home there would say the
+opposite of what happened. Those let the ghost go where the pointer left it.
+
+> On the cocoa backend a _refused_ drop takes about a second to reach the
+> application at all: AppKit plays its slide-back animation before reporting
+> the end of the session, on a drag image that react-x11 never supplies, so
+> the pause is spent animating nothing. Filed as
+> [react-x11#494](https://github.com/sidorares/react-x11/issues/494); nothing
+> here can shorten it, because the gesture is not reported as over until
+> then.
+
 The copy is a box inside the list with `pointerEvents: 'none'`, not the ghost
 popup carried on past the drop. That is deliberate: a popup outlives the
 gesture as a real window over the list, and a press landing inside the

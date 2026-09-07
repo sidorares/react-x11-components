@@ -2236,3 +2236,84 @@ test('the ghost is the item: same corners, same ground, same width', async () =>
   );
   await release(item('l', 'urgent'), { dx: 20 });
 });
+
+test('a drop that did something does not fly home; one that did not, does', async () => {
+  // The bug this pins: the flight ends at where the item *is*, so a merge —
+  // which leaves the item where it started — animated it back to the source
+  // and read as a rejection, though the drop had been taken.
+  const MS = 60;
+  const combines: ReorderCombine[] = [];
+  await mount(
+    view(
+      h(List, {
+        name: 'l',
+        items: ['a', 'b', 'c'],
+        combine: true,
+        dropAnimation: MS,
+        size: { width: 200, height: 40 },
+        onCombine: (e: ReorderCombine) => combines.push(e),
+      }),
+    ),
+  );
+
+  // a merge: taken, and the item stays where it was
+  await dragTo(item('l', 'a'), item('l', 'c'), { dy: 0 });
+  await release(item('l', 'c'), { dy: 0 });
+  assert.strictEqual(combines.length, 1, 'the merge happened');
+  assert.ok(
+    screen.queryByTestName('l-a-flight') === null,
+    'no flight home after a drop that was taken',
+  );
+
+  // released over nothing: it really did return, and says so
+  await dragTo(item('l', 'a'), screen.getByTestName('outside'));
+  await release(screen.getByTestName('outside'));
+  assert.ok(
+    screen.queryByTestName('l-a-flight'),
+    'a drag that landed nowhere flies back',
+  );
+  await new Promise((resolve) => setTimeout(resolve, MS * 3));
+  await act();
+  assert.ok(screen.queryByTestName('l-a-flight') === null);
+});
+
+test('a copy taken by another list does not fly home either', async () => {
+  const MS = 60;
+  const inserts: ReorderInsert[] = [];
+  await mount(
+    view(
+      h(
+        ReorderList,
+        {
+          id: 'palette',
+          group: 'g',
+          'data-testname': 'p',
+          dropAnimation: MS,
+          style: { gap: GAP, padding: 10 },
+        },
+        h(ReorderItem, {
+          id: 'tag',
+          dragActions: ['copy'] as Array<'copy' | 'move' | 'link'>,
+          'data-testname': 'p-tag',
+          style: ITEM,
+        }),
+      ),
+      h(List, {
+        name: 'q',
+        id: 'q',
+        group: 'g',
+        items: ['x'],
+        onInsert: (e) => inserts.push(e),
+      }),
+    ),
+  );
+  const x = item('q', 'x');
+  await dragTo(screen.getByTestName('p-tag'), x, { dy: 10 });
+  await release(x, { dy: 10 });
+  assert.strictEqual(inserts.length, 1);
+  assert.strictEqual(inserts[0]!.action, 'copy');
+  assert.ok(
+    screen.queryByTestName('p-tag-flight') === null,
+    'the copy was taken: the ghost does not crawl back to the palette',
+  );
+});
