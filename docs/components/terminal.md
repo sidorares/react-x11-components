@@ -157,16 +157,54 @@ What it buys over the embedded emulators:
 
 Rendering draws with XRender glyph runs into a retained offscreen surface,
 scrolls with a server-side copy, and coalesces onto react-x11's vblank-paced
-frame clock.
+frame clock. The element promises its grid opaque (`opaqueRect()`, react-x11
+2.9.0), so a repaint inside it skips the window and box backgrounds that
+would be under it, and composites the surface as a `copy` rather than a
+blend — XRender's `Src`, and on macOS a row memcpy in place of a CGImage.
 
 That is the X11 backend, and since react-x11 2.5.0 the native macOS backend
 too: the Cocoa face grew ntk's glyph-run seams in 2.4.0
 (sidorares/react-x11#432) and the offscreen `Surface` arrived in 2.5.0
 (#433), so the same renderer draws CoreText glyph runs into a CG bitmap and
-scrolls it in place, unchanged — which is why this package's react-x11 floor
-is `^2.5.0`. A text engine without those seams (a face with metrics and
-coverage and nothing else) is still an ordinary state rather than a throw:
-the terminal paints nothing and says so once in development.
+scrolls it in place, unchanged. The opaque promise and the `copy` composite
+are 2.9.0's (#497, #501, over `@windowkit/appkit` 0.7.0), which is why this
+package's react-x11 floor is `^2.9.0`. A text engine without the glyph-run
+seams (a face with metrics and coverage and nothing else) is still an
+ordinary state rather than a throw: the terminal paints nothing and says so
+once in development.
+
+### A flood of output, and the window's `frameRate`
+
+A program that prints faster than anyone can read — `find ~`, `cat` of a
+large file — claims a repaint per parsed batch, and react-x11's frame clock
+paints as many of them as the display allows. On X11 the server's own
+backpressure bounds that. On the native macOS backend every frame is
+CoreGraphics work on the JS thread, and the program gets what is left of it:
+a 300,000-line flood measured four times slower there than under XQuartz on
+the same machine (docs/prd-frame-pacing.md). Two things bound it, one on
+each side of the package boundary:
+
+- **This package's side is done.** The opaque promise, the `copy` composite
+  and one emulator subscription instead of three took the flood from 3.5s to
+  1.1s on macOS, with the terminal painting at the clock's rate.
+- **The app's side is the window's policy**, react-x11 2.9.0's `frameRate`:
+  `<window frameRate="adaptive">` around the terminal,
+  `createRoot({ frameRate: 'adaptive' })` for every window of a root, or
+  `REACT_X11_FRAME_RATE=adaptive` from the environment. It prices frames in
+  CPU time and holds a claim only while recent frames have spent more than a
+  quarter of the thread; idle claims and cheap frames never wait, so a
+  keystroke's echo is as quick as before. The terminal cannot set it —
+  pacing belongs to the window, and it is `'display'` unless the app says
+  otherwise — which is why the vt example does, and why a terminal-shaped
+  app should.
+
+Measured on an M1 Pro with a 120 Hz panel, a 125×45 grid, 300,000 distinct
+lines into the pty:
+
+| react-x11 | macOS, `'display'` | macOS, `'adaptive'` | XQuartz |
+| --------- | -----------------: | ------------------: | ------: |
+| 2.6.1     |              3.5 s |                   — |  0.85 s |
+| 2.9.0     |              1.1 s |               1.0 s |  0.75 s |
 
 Keyboard, mouse and selection are what a terminal user expects:
 xterm-compatible key encoding (application cursor and keypad modes, the

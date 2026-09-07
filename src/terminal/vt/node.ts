@@ -15,7 +15,7 @@ import type {
   MeasureConstraints,
   MeasuredSize,
 } from 'react-x11/node';
-import type { KeyboardEvent, MouseEvent, WheelEvent } from 'react-x11';
+import type { KeyboardEvent, MouseEvent, Rect, WheelEvent } from 'react-x11';
 import type { Style } from 'react-x11/style';
 import { Surface } from 'react-x11/ntk';
 import {
@@ -127,6 +127,21 @@ interface ClipboardLike {
 
 type Grid = { col: number; row: number };
 
+/** Where the grid is drawn and how big it is — `_gridGeometry`. */
+interface GridGeometry {
+  /** The top-left corner, in window coordinates, on whole pixels. */
+  x: number;
+  y: number;
+  cols: number;
+  rows: number;
+  /** `cols * cellWidth` and `rows * cellHeight`. */
+  width: number;
+  height: number;
+  /** Whether the whole grid lies inside the content box — the condition
+   *  under which it can be promised opaque. */
+  fits: boolean;
+}
+
 export class VtTermNode extends Node {
   private _term: XtermTerminal | null = null;
   private _disposables: XtermDisposable[] = [];
@@ -195,9 +210,11 @@ export class VtTermNode extends Node {
       this._paletteKey = key;
       this._palette = buildPalette(paletteColors(props));
       // The palette generation is a signature input, so the ordinary diff
-      // repaints every cell whose colours actually moved. Nothing else here
-      // needs to know a theme changed.
-      this._repaint();
+      // repaints every cell whose colours actually moved. The one thing
+      // outside the diff's reach is the padding ring around the grid — the
+      // node's own background, and outside the rect `_repaint` claims — so
+      // this is the claim that covers the whole node.
+      this._repaintAll('props');
     }
 
     const { family, size } = this._fontStyle();
@@ -205,7 +222,7 @@ export class VtTermNode extends Node {
       this._fonts = null;
       this._mirror.invalidate();
       this.invalidateMeasure('measure');
-      this._repaint();
+      this._repaintAll('props');
     }
     if (props.cursorBlink !== (prev.cursorBlink as boolean | undefined)) {
       this._syncBlink();
@@ -224,7 +241,17 @@ export class VtTermNode extends Node {
   // --- the emulator --------------------------------------------------------
 
   /**
-   * Subscribe to everything that means "the screen may look different".
+   * Subscribe to what means "the screen may look different".
+   *
+   * One event carries every change program output can make: `onWriteParsed`
+   * fires once per parsed batch, after the text, the scroll and the cursor
+   * move it caused have all landed in the buffer. `onScroll` fires once per
+   * scrolled *line* — a 300,000-line flood was 336,000 claims — and
+   * `onCursorMove` once per parse, and each only ever announced what
+   * `onWriteParsed` was about to; core coalesces the claims, but at 2% of a
+   * flood's wall time they were the untidiest thing in it. The scrolls this
+   * node performs itself — `handleWheel`, `scrollLines`, `_typed`, a drag
+   * past an edge — repaint on their own.
    *
    * Only render-relevant events: the component keeps `onData`, `onTitleChange`
    * and `onBell`, which are about the process rather than about pixels.
@@ -234,14 +261,14 @@ export class VtTermNode extends Node {
     this._term = term;
     this._mirror.invalidate();
     if (!term) return;
-    const dirty = (): void => this._repaint();
     this._disposables.push(
-      term.onWriteParsed(dirty),
-      term.onScroll(dirty),
-      term.onCursorMove(dirty),
+      term.onWriteParsed(() => this._repaint()),
       term.onResize(() => {
         this._mirror.invalidate();
-        this._repaint();
+        // The grid may have changed shape, and the strip a smaller one no
+        // longer covers owes its background — a fill that a claim inside
+        // the opaque rect would skip.
+        this._repaintAll('text');
       }),
       term.buffer.onBufferChange(() => {
         // The alternate screen is a different buffer with a different
@@ -451,18 +478,95 @@ export class VtTermNode extends Node {
 
   // --- painting ------------------------------------------------------------
 
+  /**
+   * The screen may look different: claim the grid.
+   *
+   * The grid rect rather than a tighter one, because which cells are dirty
+   * is not known until the diff runs inside paint — damage is a clip and a
+   * cull bound rather than a promise to redraw everything, and the diff still
+   * decides what is *rendered*, which is where the cost is. And the rect
+   * rather than the node: a node claim is inflated by a pixel of slop that
+   * lies outside `opaqueRect()`, so the fills core skips under an opaque
+   * pass — the window's background and this node's own, 0.7ms of a 6ms
+   * Cocoa frame — would be painted after all. Before the first paint there
+   * is no cover to promise and the node is the claim.
+   */
   private _repaint(): void {
     if (this.destroyed) return;
-    // The grid rect, not a tighter one: which cells are dirty is not known
-    // until the diff runs inside paint. Damage is a clip and a cull bound
-    // rather than a promise to redraw everything, and the diff still decides
-    // what is *rendered* — which is where the cost is.
-    this.invalidate(false, this, 'text');
+    this.invalidate(false, this.opaqueRect() ?? this, 'text');
   }
 
-  override paint(ctx: Context2D): void {
-    // background, border, and the clip to this node's rect
-    super.paint(ctx);
+  /** Everything, ring included: the palette or the grid's shape changed. */
+  private _repaintAll(reason: 'props' | 'text'): void {
+    if (this.destroyed) return;
+    this.invalidate(false, this, reason);
+  }
+
+  /**
+   * Where the grid goes and how big it is, in window coordinates.
+   *
+   * The content box's corner and as many whole cells as fit both the box and
+   * the emulator — which resizes a beat later, through the component and off
+   * the paint stack, so until it catches up the grid is the intersection.
+   * The corner is snapped to whole pixels: cells are integers, the composite
+   * is a copy of whole pixels, and a half-pixel of drift against the box is
+   * invisible where a resampled composite is not. `fits` is whether those
+   * cells lie inside the box on whole pixels, which is the condition for
+   * promising them opaque; a box smaller than one cell still draws one,
+   * clipped, and promises nothing.
+   */
+  private _gridGeometry(fonts: FontSet, term: XtermTerminal): GridGeometry {
+    const box = this.contentBox();
+    const { cellWidth, cellHeight } = fonts.metrics;
+    const cols = Math.max(
+      1,
+      Math.min(Math.floor(box.width / cellWidth), term.cols),
+    );
+    const rows = Math.max(
+      1,
+      Math.min(Math.floor(box.height / cellHeight), term.rows),
+    );
+    const width = cols * cellWidth;
+    const height = rows * cellHeight;
+    return {
+      x: Math.round(box.x),
+      y: Math.round(box.y),
+      cols,
+      rows,
+      width,
+      height,
+      fits:
+        Number.isInteger(box.x) &&
+        Number.isInteger(box.y) &&
+        width <= box.width &&
+        height <= box.height,
+    };
+  }
+
+  /**
+   * The grid — what the renderer writes every pixel of, every paint.
+   *
+   * Core's word for it (react-x11#497): a pass inside this rect is painted
+   * without the fills that would be under it, and the composite in
+   * `present()` replaces those pixels rather than blending over them. Null
+   * until the first paint has built a renderer — the mock backend never
+   * does, and a promise about pixels nothing will draw is a hole where the
+   * background should be — null without fonts or an emulator, when
+   * `paintContent` draws nothing, and null when the grid does not fit the
+   * box on whole pixels, because the answer is taken literally: an
+   * antialiased edge is not opaque.
+   */
+  override opaqueRect(): Rect | null {
+    const term = this._term;
+    if (!term || !this._renderer) return null;
+    const fonts = this._fontSet();
+    if (!fonts) return null;
+    const grid = this._gridGeometry(fonts, term);
+    if (!grid.fits) return null;
+    return { x: grid.x, y: grid.y, width: grid.width, height: grid.height };
+  }
+
+  override paintContent(ctx: Context2D): void {
     const fonts = this._fontSet();
     if (!fonts) return;
     // Before the `term` check on purpose: the component sizes the emulator it
@@ -477,14 +581,8 @@ export class VtTermNode extends Node {
     const renderer = this._ensureRenderer(cell);
     if (!renderer) return; // mock backend: no pixel API, so nothing to draw
 
-    const box = this.contentBox();
-    const { cellWidth, cellHeight } = fonts.metrics;
-    const fitCols = Math.max(1, Math.floor(box.width / cellWidth));
-    const fitRows = Math.max(1, Math.floor(box.height / cellHeight));
-    // The emulator resizes a beat later (through the component, off this
-    // stack), so draw the intersection until it catches up.
-    const cols = Math.max(1, Math.min(fitCols, term.cols));
-    const rows = Math.max(1, Math.min(fitRows, term.rows));
+    const grid = this._gridGeometry(fonts, term);
+    const { cols, rows } = grid;
     this._cols = cols;
     this._rows = rows;
 
@@ -512,8 +610,8 @@ export class VtTermNode extends Node {
 
     const result = this._mirror.diff(snapshot);
     renderer.begin(cell, {
-      originX: box.x,
-      originY: box.y,
+      originX: grid.x,
+      originY: grid.y,
       cols,
       rows,
       metrics: fonts.metrics,
@@ -838,6 +936,7 @@ export class VtTermNode extends Node {
     if (!term) return;
     if (term.buffer.active.viewportY !== term.buffer.active.baseY) {
       term.scrollToBottom();
+      this._repaint();
     }
     if (this._selection) this.clearSelection();
   }

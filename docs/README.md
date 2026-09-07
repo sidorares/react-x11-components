@@ -71,10 +71,10 @@ parts.
 - [Maps](prd-maps.md) — the format and provider survey (who serves vector
   tiles and who does not), the three-cache rendering architecture, and the
   profile that produced it on both the X11 and the Cocoa backends.
-- [Adaptive frame pacing](prd-frame-pacing.md) — proposed: why a pty-fed
-  element must not paint at the display's rate on the Cocoa backend, the
-  `frameRate` prop and its presets, app-wide defaults, and the core seams
-  the rest of the speed-up needs.
+- [Adaptive frame pacing](prd-frame-pacing.md) — landed, mostly upstream:
+  why a pty-fed element must not paint at the display's rate on the Cocoa
+  backend, the `frameRate` vocabulary react-x11 2.9.0 took into core, and
+  the `opaqueRect()` and `copy` seams the vt terminal adopted.
 - [A colour picker](prd-color-picker.md) — implemented: why the panel belongs
   here and the screen sampler does not, the CSS-colour value model against
   what this renderer can actually parse, and the server-side gradients the

@@ -1528,3 +1528,236 @@ test(
     );
   },
 );
+
+// --- 7. what react-x11 2.9.0 unlocked ---------------------------------------
+//
+// `opaqueRect()`, the `copy` composite and one subscription instead of three
+// (sidorares/react-x11#497, #501; docs/prd-frame-pacing.md).
+
+test('the retained renderer composites its surface as a copy, and puts the op back', () => {
+  const { ctx: window, calls } = spyContext();
+  window.globalCompositeOperation = 'source-over';
+  window.drawImage = (_image: unknown, ...args: number[]) =>
+    calls.push(
+      `drawImage ${window.globalCompositeOperation} ${args.join(',')}`,
+    );
+  class FakeSurface {
+    width: number;
+    height: number;
+    readonly ctx = spyContext().ctx;
+    constructor(_app: unknown, options: { width: number; height: number }) {
+      this.width = options.width;
+      this.height = options.height;
+    }
+    getContext(): unknown {
+      return this.ctx;
+    }
+    copyWithin(): boolean {
+      return true;
+    }
+    destroy(): void {}
+  }
+  const renderer = createRenderer(null, window as never, FakeSurface as never);
+  assert.ok(renderer);
+  assert.equal(renderer.kind, 'retained');
+  const metrics = {
+    cellWidth: 8,
+    cellHeight: 16,
+    baseline: 12,
+    underline: 14,
+    ruleHeight: 1,
+  };
+  renderer.ensure(10, 2, metrics);
+  renderer.begin(window as never, {
+    originX: 4,
+    originY: 6,
+    cols: 10,
+    rows: 2,
+    metrics,
+  });
+  renderer.fillCells(0, 0, 10, 0x000000);
+  renderer.end();
+  assert.deepEqual(
+    calls,
+    // The whole grid, source rect to destination rect, under `copy` — the
+    // shape the Cocoa backend sends as a memcpy and X11 as PictOp.Src.
+    ['drawImage copy 0,0,80,32,4,6,80,32'],
+    calls.join('\n'),
+  );
+  assert.equal(
+    window.globalCompositeOperation,
+    'source-over',
+    'context state, on the window: it goes back after the composite',
+  );
+  assert.equal(renderer.stats.blits, 1);
+});
+
+test('a flood of lines is a claim per parsed batch, not one per line', async () => {
+  const { pty } = await mountVt({ cursorBlink: false });
+  const node = vtNode();
+  assert.equal(
+    node.opaqueRect(),
+    null,
+    'nothing is drawn on the mock backend, so nothing is promised opaque',
+  );
+  let claims = 0;
+  const original = node.invalidate.bind(node);
+  (node as unknown as { invalidate: unknown }).invalidate = (
+    layout?: boolean,
+    damage?: never,
+    reason?: string,
+  ) => {
+    claims++;
+    original(layout, damage, reason);
+  };
+  await act(async () => {
+    pty.last!.feed('line\r\n'.repeat(200));
+  });
+  await waitFor(() => assert.match(node.serialize() ?? '', /line/));
+  // `onWriteParsed` once for the batch. `onScroll` would have been two
+  // hundred of these, and `onCursorMove` one more — 336,000 claims for the
+  // 300k-line flood that found this.
+  assert.ok(
+    claims >= 1 && claims <= 4,
+    `two hundred scrolled lines should be a claim or two, not ${claims}`,
+  );
+});
+
+test(
+  'the grid is promised opaque, output claims a rect inside it, a palette change claims the node',
+  { skip: !FONTS },
+  async () => {
+    const pty = new FakePtyHost();
+    const props = {
+      backend: 'vt',
+      pty,
+      fontFamily: 'monospace',
+      fontSize: 16,
+      cursorBlink: false,
+      colors: { background: '#000000', foreground: '#ffffff' },
+    };
+    const r = await renderX11(h(Terminal, props), {
+      fonts: FONTS!,
+      width: 400,
+      height: 200,
+    });
+    await waitFor(() => assert.ok(pty.last));
+    const node = vtNode();
+    await act(async () => {
+      pty.last!.feed('hello');
+    });
+    await waitFor(() => assert.match(node.serialize() ?? '', /hello/));
+    await settle(node);
+    assert.equal(node.rendererStats.kind, 'retained');
+
+    // The promise: the grid, on whole pixels, inside the content box.
+    const cover = node.opaqueRect();
+    assert.ok(cover, 'a painted grid is promised opaque');
+    const box = node.contentBox();
+    const { cellWidth, cellHeight } = cellMetrics(node);
+    assert.deepEqual(cover, {
+      x: box.x,
+      y: box.y,
+      width: node.cols * cellWidth,
+      height: node.rows * cellHeight,
+    });
+    assert.ok(
+      cover.width <= box.width && cover.height <= box.height,
+      'and it lies inside the content box',
+    );
+
+    // The claims: a rect inside the cover for output, so core skips the
+    // fills under it; the node for a palette change, whose padding ring is
+    // outside the cover.
+    const claims: { damage: unknown; reason: unknown }[] = [];
+    const original = node.invalidate.bind(node);
+    (node as unknown as { invalidate: unknown }).invalidate = (
+      layout?: boolean,
+      damage?: never,
+      reason?: string,
+    ) => {
+      claims.push({ damage, reason });
+      original(layout, damage, reason);
+    };
+    await act(async () => {
+      pty.last!.feed(' world');
+    });
+    await waitFor(() => assert.match(node.serialize() ?? '', /hello world/));
+    assert.ok(claims.length > 0, 'output claimed a repaint');
+    for (const claim of claims) {
+      assert.deepEqual(claim.damage, cover, 'output claims the grid rect');
+      assert.equal(claim.reason, 'text');
+    }
+    claims.length = 0;
+    await r.rerender(
+      h(Terminal, {
+        ...props,
+        colors: { background: '#101010', foreground: '#ffffff' },
+      }),
+    );
+    await settle(node);
+    assert.ok(
+      claims.some((claim) => claim.damage === node),
+      'a palette change claims the whole node, ring included',
+    );
+  },
+);
+
+test(
+  'typing scrolls back to the prompt and repaints, with no scroll event to lean on',
+  { skip: !FONTS },
+  async () => {
+    const pty = new FakePtyHost();
+    const ref = React.createRef<TerminalHandle>();
+    await renderX11(
+      h(Terminal, {
+        backend: 'vt',
+        pty,
+        ref,
+        fontFamily: 'monospace',
+        fontSize: 16,
+        cursorBlink: false,
+        scrollback: 100,
+      }),
+      { fonts: FONTS!, width: 400, height: 200 },
+    );
+    await waitFor(() => assert.ok(pty.last));
+    const node = vtNode();
+    await act(async () => {
+      pty.last!.feed(
+        Array.from({ length: 60 }, (_, i) => `line ${i}`).join('\r\n'),
+      );
+    });
+    await waitFor(() => assert.match(node.serialize() ?? '', /line 59/));
+    await settle(node);
+    await act(async () => {
+      ref.current!.scrollLines(-5);
+    });
+    await waitFor(() => assert.doesNotMatch(node.serialize() ?? '', /line 59/));
+    await settle(node);
+    const before = node.rendererStats.totals.cellsFilled;
+
+    // A keystroke: the emulator scrolls to the bottom, and the node used to
+    // learn of it from `onScroll`. It repaints on its own now.
+    await act(async () => {
+      node.defaultKeyDown({
+        keysym: 0x61,
+        codepoint: 0x61,
+        key: 'a',
+        ctrlKey: false,
+        shiftKey: false,
+        altKey: false,
+        metaKey: false,
+        preventDefault() {},
+      } as never);
+    });
+    assert.equal(pty.last!.written, 'a', 'the key reached the program');
+    await waitFor(() => assert.match(node.serialize() ?? '', /line 59/));
+    await waitFor(() =>
+      assert.ok(
+        node.rendererStats.totals.cellsFilled > before,
+        'the viewport moved back to the prompt and was repainted',
+      ),
+    );
+  },
+);

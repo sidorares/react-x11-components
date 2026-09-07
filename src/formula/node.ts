@@ -82,7 +82,12 @@ interface FillContext {
   fillRect(x: number, y: number, w: number, h: number): void;
 }
 
-function canFill(ctx: Context2D): ctx is FillContext {
+// `unknown` rather than `Context2D`: react-x11 2.9.0 types the context as
+// the canvas subset both backends share, and a predicate's type has to be
+// assignable to its parameter's — the structural slice this file needs is
+// narrower than that contract, and narrowing from `unknown` intersects the
+// two, which is what a caller holding a `Context2D` wants.
+function canFill(ctx: unknown): ctx is FillContext {
   return typeof (ctx as Partial<FillContext> | null)?.fillRect === 'function';
 }
 
@@ -437,10 +442,12 @@ export class FormulaNode extends Node {
 
     ctx.save();
 
-    // 1. the band the document selection has claimed of this formula
+    // 1. the band the document selection has claimed of this formula. No
+    //    colour from the surface above means no band, not a band in black.
     const range = this.selectionRange;
-    if (range && range.end > range.start) {
-      ctx.fillStyle = this.selectionColor;
+    const selection = this.selectionColor;
+    if (range && selection && range.end > range.start) {
+      ctx.fillStyle = selection;
       for (const r of this.textRangeRects(range.start, range.end)) {
         ctx.fillRect(
           Math.round(r.x),

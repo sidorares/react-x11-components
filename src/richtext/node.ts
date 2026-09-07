@@ -418,8 +418,9 @@ export class RichTextNode extends Node {
     //    arrive from the surface above; `textRangeRects` is what a custom
     //    element and core's own `<text>` both fill, so they cannot drift.
     const range = this.selectionRange;
-    if (range && range.end > range.start) {
-      ctx.fillStyle = this.selectionColor;
+    const selection = this.selectionColor;
+    if (range && selection && range.end > range.start) {
+      ctx.fillStyle = selection;
       for (const r of this.textRangeRects(range.start, range.end)) {
         ctx.fillRect(
           Math.round(r.x),

@@ -328,8 +328,8 @@ react-x11 **2.0.0 is published on npm**, and it carries every subpath this
 package imports — `react-x11/host`, `/node`, `/style`, `/test`. Both specs
 are now ordinary registry ranges:
 
-- `peerDependencies.react-x11` is `^2.6.1` — what a consumer must supply.
-- `devDependencies.react-x11` is `^2.6.1` — what the suite runs against.
+- `peerDependencies.react-x11` is `^2.9.0` — what a consumer must supply.
+- `devDependencies.react-x11` is `^2.9.0` — what the suite runs against.
 
 Keep them the same range. They are one decision written twice, and a
 devDependency that drifts above the peer range means the suite passes
@@ -337,10 +337,13 @@ against a core that consumers are not required to have.
 
 Needing something core landed after the current floor is a normal release
 wait, not a pin bump: it ships in the next core release and both ranges pick
-it up. The floor has moved twice for exactly that — `^2.5.0` for the Cocoa
-glyph-run seams, and `^2.6.1` for the chunked Cocoa stroke `<Map>` profiling
-asked for (react-x11#456/#457). Do not reach back
-for a `github:` spec to get at unreleased core — cut a core release instead.
+it up. The floor has moved three times for exactly that — `^2.5.0` for the
+Cocoa glyph-run seams, `^2.6.1` for the chunked Cocoa stroke `<Map>`
+profiling asked for (react-x11#456/#457), and `^2.9.0` for `opaqueRect()`,
+the `copy` composite and the window's `frameRate` that the vt terminal's
+flood profiling asked for (react-x11#497/#501, `docs/prd-frame-pacing.md`).
+Do not reach back for a `github:` spec to get at unreleased core — cut a
+core release instead.
 
 <details>
 <summary>Why the git pin named a full sha (history, for when this recurs)</summary>
@@ -551,7 +554,12 @@ somewhere else:
   react-x11 2.4.0 and 2.5.0; adopting them was the floor bump to `^2.5.0`
   and nothing in `renderer.ts` or `fonts.ts`, because both already spoke the
   documented contract. The degrade path stays, for the mock backend and for
-  the next engine.
+  the next engine. The streaming profile of 2026-09-07 asked for two more
+  seams and got them in react-x11 2.9.0 — `Node.opaqueRect()`, which the
+  node answers with its grid and claims a rect inside of, and a `copy`
+  composite the Cocoa backend sends as a memcpy — plus `frameRate`, which is
+  the window's policy and not the terminal's (`docs/prd-frame-pacing.md`,
+  and the terminal page's "A flood of output").
 - **`PtyHost` is public because it is a feature**, exactly as `ProcessHost` is:
   "run the shell in a container / over ssh / in a sandbox" is a real thing to
   want. `test/fake-pty.ts` drives it, which is how CI tests a terminal with no
