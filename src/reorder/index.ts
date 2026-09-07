@@ -67,11 +67,13 @@
 //    board or a palette-plus-target is made of. The item is lifted over its
 //    neighbours and the list root over its own, for the length of the
 //    gesture. What that cannot reach is content outside the list's parent;
-//    a popup ghost has no such limit, which is why `'auto'` is one. (The
-//    in-window ghost was the default on the cocoa backend for exactly one
-//    release, while a preview popup there still registered itself as a
-//    dragging destination and swallowed the drop — react-x11#488, fixed in
-//    2.8.1, which is this package's floor.)
+//    a popup ghost has no such limit, which is why `'auto'` prefers one
+//    wherever a popup works. On the cocoa backend it does not yet: a
+//    preview window there stops the drop reaching the list, before 2.8.1
+//    because it registered as a dragging destination (react-x11#488) and
+//    after it for a reason still being chased. The in-window ghost is what
+//    drops have been seen to work with there, so that is what `'auto'`
+//    uses on that path.
 //  - **Every item (or its handle) is a tab stop.** An item is arbitrary
 //    content, often with controls of its own; the Tree/Table model of one
 //    tab stop with a cursor would leave a button inside a card unreachable.
@@ -438,15 +440,15 @@ export interface ReorderListProps {
   /**
    * The ghost that follows the pointer while an item is held.
    *
-   * `'auto'` (the default, and what `true` means) is a `<popup>`: a window
-   * of its own, so it follows the pointer out of the list, out of the
-   * window, and over other applications, on either backend.
+   * `'auto'` (the default, and what `true` means) is a `<popup>` — a window
+   * of its own, so it follows the pointer out of the list and over other
+   * applications — except where the platform picks the drop target, and
+   * there it is a box inside the list, because a preview window there stops
+   * the drop reaching the list at all. {@link nativeDragSession} has the
+   * whole reason.
    *
-   * `'inline'` draws it as a box inside the list instead — no second window
-   * per drag, which a remote display may prefer, at the cost of a ghost
-   * that stops at the window's edge and cannot paint over anything outside
-   * its own list's parent. `false` leaves only the cursor and the
-   * indicator.
+   * `'popup'` and `'inline'` pin it either way; `false` leaves only the
+   * cursor and the indicator.
    */
   preview?: boolean | 'auto' | 'popup' | 'inline';
   /** What the ghost shows. Default: the item's children again, on a card. */
@@ -641,12 +643,39 @@ function inertItem(
 // --- helpers ----------------------------------------------------------------
 
 /** What `DrawnNode` does not declare and a drag has to read: the display
- *  scale `abs` is in, and the props a press landed on. The same widening
- *  `<Tabs>` makes to measure its strip: a ref's public contract is geometry
- *  and focus. */
+ *  scale `abs` is in, the props a press landed on, and the owning window —
+ *  which is where "who picks the drop target here?" is answered. The same
+ *  widening `<Tabs>` makes to measure its strip: a ref's public contract is
+ *  geometry and focus. */
 interface OpaqueNode {
   scale?: number;
   props?: Record<string, unknown>;
+  root?: { window?: { beginDrag?: unknown } } | null;
+}
+
+/**
+ * Does the platform own this window's drags — and so pick the window a drop
+ * is delivered to?
+ *
+ * `beginDrag` on the ntk window is the condition core's `DragSession._start`
+ * branches on before handing a gesture to AppKit, so this asks about the
+ * code path rather than about a backend's name.
+ *
+ * **Why the ghost is drawn differently there.** A preview popup is a real
+ * window that follows the pointer, so where the platform picks the drop
+ * target it is the frontmost window under the pointer for the whole
+ * gesture. On react-x11 2.8.0 it registered as a dragging destination and
+ * swallowed the drop (react-x11#488); 2.8.1 stops it registering, and a
+ * real session still cannot drop — so registering nothing is evidently not
+ * the same as being invisible to the drag. Until that is settled upstream,
+ * the ghost is a box in the window on that path, which creates no window at
+ * all and is the arrangement drops have actually been seen to work in.
+ * `preview="popup"` overrides it, and is what the fix will make the default
+ * again.
+ */
+function nativeDragSession(node: DrawnNode | null): boolean {
+  const window = (node as (DrawnNode & OpaqueNode) | null)?.root?.window;
+  return typeof window?.beginDrag === 'function';
 }
 
 function scaleOf(node: DrawnNode | null): number {
@@ -1417,7 +1446,11 @@ export function ReorderList(props: ReorderListProps): ReactElement {
 
   /** Whether this list's ghost is a box in the window rather than a popup:
    *  the only case where the root's own stacking matters. */
-  const inlineGhost = preview === 'inline';
+  const inlineGhost =
+    preview === 'inline' ||
+    (preview !== 'popup' &&
+      preview !== false &&
+      nativeDragSession(rootRef.current));
 
   return hx(
     'box',
@@ -1816,9 +1849,14 @@ export function ReorderItem(props: ReorderItemProps): ReactElement {
     y: position.y - grab.current.y,
   };
   if (isDragging && ghostAt) lastGhost.current = ghostAt;
-  // Where the ghost is drawn. A popup can leave the window and draws over
-  // other applications; an in-window copy cannot, and is the opt-in.
-  const mode = list.preview === 'auto' ? 'popup' : list.preview;
+  // Where the ghost is drawn — a popup unless one would stop the drop
+  // reaching the list. `nativeDragSession` has the whole reason.
+  const mode =
+    list.preview === 'auto'
+      ? nativeDragSession(nodeRef.current)
+        ? 'inline'
+        : 'popup'
+      : list.preview;
   /** The item's own origin on screen, which turns a pointer position into an
    *  offset inside the item — what an inline ghost is placed by, and what the
    *  drop flight eases to zero. */

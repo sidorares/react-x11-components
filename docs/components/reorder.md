@@ -506,28 +506,36 @@ lift.
 
 ## Where the ghost is drawn
 
-The ghost is a `<popup>`: a window of its own, so it follows the pointer out
-of the list, out of the window, and over other applications. That is what
-`'auto'` uses on both backends — on cocoa a react-x11 popup is a
-non-activating panel above every other application's ordinary windows, so it
-is what the desktop sees while the pointer is over the Finder.
+A `<popup>` is the better ghost: a window of its own, so it follows the
+pointer out of the list, out of the window, and over other applications. It
+is what `'auto'` uses wherever react-x11 tracks the drag itself — the X11
+backend today.
 
-| `preview`  | The ghost is                                                          |
-| ---------- | --------------------------------------------------------------------- |
-| `'auto'`   | a `<popup>`. The default, and what `true` means.                      |
-| `'popup'`  | the same, said explicitly.                                            |
-| `'inline'` | a box inside the list: one fewer window a drag, and the limits below. |
-| `false`    | not drawn. The indicator and the cursor are the whole feedback.       |
+Where the **platform** picks the drop target — the cocoa backend — `'auto'`
+draws the ghost as a box inside the list instead, because a preview window
+there stops the drop reaching the list at all. Two causes are known and only
+one is fixed: before react-x11 2.8.1 the preview registered itself as a
+dragging destination and answered every question with "no"
+([#488](https://github.com/sidorares/react-x11/issues/488)); 2.8.1 stops it
+registering, and a real session still cannot drop, so registering nothing is
+evidently not the same as being invisible to the drag. The in-window ghost
+creates no window at all, and is what drops have been seen to work with
+there.
 
-`'inline'` is the opt-in for a list that would rather not open a window per
-drag — a remote display, where a window costs round trips. It is the same
-absolutely positioned box, with `pointerEvents: 'none'`, that the
-[drop flight](#the-drop-flies-home) uses, and it accepts two limits a window
-does not have. It cannot leave the window. And `zIndex` here sorts a node
-among its **siblings**, with no stacking context to escape, so the item
-carrying it is lifted over its neighbours and the list over _its_ neighbours,
-which covers two lists that are siblings but not two lists in separate
-wrappers.
+| `preview`  | The ghost is                                                                        |
+| ---------- | ----------------------------------------------------------------------------------- |
+| `'auto'`   | a `<popup>`, or a box inside the list where the platform picks the target. Default. |
+| `'popup'`  | always a `<popup>`. What `'auto'` becomes everywhere once the above is settled.     |
+| `'inline'` | always a box inside the list.                                                       |
+| `false`    | not drawn. The indicator and the cursor are the whole feedback.                     |
+
+The in-window ghost is the same absolutely positioned box, with
+`pointerEvents: 'none'`, that the [drop flight](#the-drop-flies-home) uses,
+and it accepts two limits a window does not have. It cannot leave the
+window. And `zIndex` here sorts a node among its **siblings**, with no
+stacking context to escape, so the item carrying it is lifted over its
+neighbours and the list over _its_ neighbours — which covers two lists that
+are siblings, and not two lists in separate wrappers.
 
 The popup is `transparent`, because the card inside it is rounded: on an
 opaque window the four corners the radius gives up show the window's own
@@ -537,13 +545,10 @@ ground rather than the desktop.
 on cocoa. Files from the Finder arrive as `['files']`, which is what `accept`
 already names.
 
-> Needs react-x11 **2.8.1**, and both halves of that floor are real. Before
-> 2.8.0 a drag on the cocoa backend had no visible subject at all: AppKit's
-> tracking loop owns the thread, so nothing rendered in response to `onDrag`
-> reached the screen ([#484](https://github.com/sidorares/react-x11/pull/484)).
-> And before 2.8.1 a preview popup there registered itself as a dragging
-> destination, so it took the drop meant for the list beneath it
-> ([#488](https://github.com/sidorares/react-x11/issues/488)).
+> Needs react-x11 **2.8.1**. Before 2.8.0 a drag on the cocoa backend had no
+> visible subject at all: AppKit's tracking loop owns the thread, so nothing
+> rendered in response to `onDrag` reached the screen
+> ([#484](https://github.com/sidorares/react-x11/pull/484)).
 
 ## Example
 

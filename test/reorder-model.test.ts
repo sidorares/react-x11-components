@@ -377,8 +377,8 @@ test('slotMark: the two halves of one gap are one mark', () => {
   // either of them depending on which is nearer, and both must draw in the
   // same place
   const rects = column(4);
-  const lower = closestSlot(rects, { x: 50, y: 43 }, 'vertical'); // item 1's lower half
-  const upper = closestSlot(rects, { x: 50, y: 50 }, 'vertical'); // item 2's upper half
+  const lower = closestSlot(rects, { x: 50, y: 43 }, 'vertical')!; // item 1, lower half
+  const upper = closestSlot(rects, { x: 50, y: 50 }, 'vertical')!; // item 2, upper half
   assert.notStrictEqual(lower.index, upper.index, 'read off different items');
   assert.strictEqual(lower.slot, upper.slot, 'but the same gap');
   assert.deepStrictEqual(

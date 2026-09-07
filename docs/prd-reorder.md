@@ -645,15 +645,28 @@ product's behaviour from the rig's. **The lesson worth keeping: when a
 backend cannot be driven by hand, drive its transport.** Core's fake-bridge
 tests are the seam for that, and this package can use it without owning it.
 
-For one release `'auto'` was therefore the popup where react-x11 tracks the
-drag and the in-window box where the platform does, probed on `typeof
-window.beginDrag === 'function'` — the condition `DragSession._start` itself
-branches on. **#488 landed in 2.8.1** (`_initDnd` returns early for a window
-whose props say `dragPreview`: no session, no registry entry, no property),
-so the probe is gone and `'auto'` is a popup on both backends again.
-Validated the way the bug was found — over the fake bridge, `registerDropTypes`
-is called for the list's window alone where 2.8.0 called it for the ghost's
-too, and the drop reorders.
+So `'auto'` is the popup where react-x11 tracks the drag and the in-window
+box where the platform does, probed on `typeof window.beginDrag ===
+'function'` — the condition `DragSession._start` itself branches on.
+
+**#488 landed in 2.8.1** — `_initDnd` returns early for a window whose props
+say `dragPreview`, so the preview gets no session, no registry entry and no
+property — and over the fake bridge that is exactly what happens:
+`registerDropTypes` is called for the list's window alone where 2.8.0 called
+it for the ghost's too, and the drop reorders. On that evidence the probe
+was deleted and `'auto'` made a popup everywhere.
+
+**A real session then still could not drop**, and the probe came back. That
+is the second time a transport-level check has said yes where AppKit said
+no, and the two together sharpen the rule rather than repeating it: _the
+fake bridge proves what react-x11 does with a drag, never what AppKit does
+with a window._ Registering no dragged types is evidently not the same as
+being invisible to the drag — a preview window under the pointer still
+appears to end the search — so the remaining exclusion is probably
+`ignoresMouseEvents` on the preview panel rather than an empty type list.
+That is upstream's to settle; here, `'auto'` uses the ghost that creates no
+window on that path, which is the arrangement drops have actually been seen
+to work in.
 
 The in-window ghost stays as `preview="inline"`, and it brought its own
 lesson while it was the default, reported from a palette dropping into a list
