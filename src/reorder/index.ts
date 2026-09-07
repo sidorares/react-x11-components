@@ -133,6 +133,7 @@ import type {
   MouseEvent,
   Theme,
 } from 'react-x11';
+import { flattenStyle } from 'react-x11/style';
 import type { Style } from 'react-x11/style';
 import {
   XK_DOWN,
@@ -1650,16 +1651,25 @@ function indicatorStyle(
   };
 }
 
-/** The card the default preview draws the item on: a surface with a hairline
- *  so it reads as lifted off the list, whatever the list's own ground is. */
-function previewStyle(theme: Theme): Style {
-  return {
-    flexGrow: 1,
-    backgroundColor: theme.surface,
-    borderWidth: theme.borderWidth,
-    borderColor: theme.border,
-    borderRadius: theme.radius,
-  };
+/**
+ * What the default ghost is drawn on, *under* the item's own style.
+ *
+ * The ghost is the item, so it should look like the item: same padding, same
+ * corners, same ground. An earlier cut drew a card of its own over the top —
+ * a surface, a hairline and the theme's radius — and it was wrong in a way
+ * that is easy to miss until an item has a look of its own. A chip lost its
+ * rounded corners, and the border it gained ate two pixels of content box,
+ * which is enough to wrap a word: "later" came out as "late" and "r".
+ *
+ * So the only thing here is a ground, and only when the item does not bring
+ * one — a ghost with nothing behind it is a floating label, which is not
+ * what anybody meant. `styles.preview` and `renderPreview` are where a
+ * lifted-card look belongs, for an app that wants one.
+ */
+function previewStyle(theme: Theme, hasGround: boolean): Style {
+  return hasGround
+    ? { flexGrow: 1 }
+    : { flexGrow: 1, backgroundColor: theme.surface };
 }
 
 /** The badge a multi-drag's ghost wears: how many are travelling. */
@@ -2004,6 +2014,12 @@ export function ReorderItem(props: ReorderItemProps): ReactElement {
   const ownStyle: StyleInput[] = [itemStyle(state, hasHandle), style].filter(
     (s): s is StyleInput => Boolean(s),
   );
+  /** Whether the item paints its own ground, which decides whether the ghost
+   *  needs one of its own. */
+  //  `flattenStyle` takes one style or a flat list; ours may hold a nested
+  //  one, since `style` itself accepts an array.
+  const hasGround =
+    flattenStyle(ownStyle.flat() as Style[]).backgroundColor !== undefined;
   /** The state, over the look: the lift, the wash, then the seam. */
   const stateStyle: StyleInput[] = [
     liftStyle(carrying),
@@ -2022,8 +2038,10 @@ export function ReorderItem(props: ReorderItemProps): ReactElement {
             'box',
             {
               style: [
+                // the ground goes *under* the item's own style, so a chip
+                // keeps its corners and its width — see `previewStyle`
+                previewStyle(theme, hasGround),
                 ...ownStyle,
-                previewStyle(theme),
                 // the seam sees the ghost too, with `preview` set
                 list.styles?.item?.(previewState) || null,
                 list.styles?.preview,
@@ -2082,8 +2100,8 @@ export function ReorderItem(props: ReorderItemProps): ReactElement {
             position: 'absolute',
             left: inlineAt.x,
             top: inlineAt.y,
-            width: Math.max(1, Math.round(size.width)),
-            height: Math.max(1, Math.round(size.height)),
+            width: Math.max(1, Math.ceil(size.width)),
+            height: Math.max(1, Math.ceil(size.height)),
             zIndex: 2,
             // the copy is a picture of the drop, never a target for the
             // press that follows it
@@ -2104,8 +2122,8 @@ export function ReorderItem(props: ReorderItemProps): ReactElement {
           theme,
           x: Math.round(ghostAt.x),
           y: Math.round(ghostAt.y),
-          width: Math.max(1, Math.round(size.width)),
-          height: Math.max(1, Math.round(size.height)),
+          width: Math.max(1, Math.ceil(size.width)),
+          height: Math.max(1, Math.ceil(size.height)),
           'data-testname': testname ? `${testname}-preview` : undefined,
         },
         ghostBody(),

@@ -14,7 +14,10 @@
 //    `onInsert` on the column it landed in and `onRemove` on the one it
 //    left, and a `canDrop` on Done that takes no more than three;
 //  - a palette whose items are copied rather than moved, dropped onto a
-//    list that merges what lands in the middle of one of its items;
+//    list that merges what lands in the middle of one of its items. Its
+//    tags are chips with a ground and a radius of their own, and the ghost
+//    is the chip: nothing here says how to draw the dragged one, because
+//    the default is the item's own look at the item's own size;
 //  - an inbox that takes files and text dropped from the desktop
 //    (`accept` + `onDrop`), and whose items offer `text/plain` so they can be
 //    dragged *out* — into a terminal, an editor, or the todo list's window;

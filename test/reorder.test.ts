@@ -2170,3 +2170,69 @@ test('a board lifts the whole path: the card, its column and the board', async (
   await expectPixel(ctx as never, px, py, GHOST);
   await release(second, { dx: -40, dy: -60 });
 });
+
+test('the ghost is the item: same corners, same ground, same width', async () => {
+  // The bug this pins: the default ghost drew a card of its own over the
+  // item's style — the theme's radius, a surface, and a hairline border. A
+  // chip lost its rounded corners, and the border ate two pixels of content
+  // box, which is enough to wrap a word.
+  const CHIP = {
+    paddingLeft: 8,
+    paddingRight: 8,
+    paddingTop: 3,
+    paddingBottom: 3,
+    borderRadius: 10,
+    backgroundColor: '#336699',
+  } as const;
+  await mount(
+    view(
+      h(
+        ReorderList,
+        {
+          'data-testname': 'l',
+          orientation: 'horizontal' as const,
+          dropAnimation: false,
+          style: { gap: 6, padding: 8 },
+        },
+        ['later', 'urgent'].map((id) =>
+          h(
+            ReorderItem,
+            { key: id, id, 'data-testname': `l-${id}`, style: CHIP },
+            h('text', { style: { fontSize: 11 } }, id),
+          ),
+        ),
+      ),
+    ),
+  );
+
+  const chip = item('l', 'later');
+  const width = chip.abs.width;
+  const label = screen.getAllByText('later')[0]!;
+  const lines = label.abs.height;
+
+  await dragTo(chip, item('l', 'urgent'), { dx: 20 });
+  const ghost = retained(screen.getByTestName('l-later-preview'));
+  // the popup is at least the item's size, never rounded under it
+  assert.ok(
+    Number(ghost.props.width) >= Math.floor(width),
+    `ghost ${String(ghost.props.width)} >= item ${width}`,
+  );
+  // the body inside it keeps the chip's own look
+  const body = ghost.children[0]!;
+  assert.strictEqual(retained(body).style.borderRadius, 10);
+  assert.strictEqual(retained(body).style.backgroundColor, '#336699');
+  assert.strictEqual(
+    retained(body).style.borderWidth,
+    undefined,
+    'no border of its own to eat the content box',
+  );
+  // and the label inside the ghost is on one line, as it is at rest
+  const copies = screen.getAllByText('later');
+  assert.strictEqual(copies.length, 2, 'the item and its ghost');
+  assert.strictEqual(
+    copies[1]!.abs.height,
+    lines,
+    'the label did not wrap in the ghost',
+  );
+  await release(item('l', 'urgent'), { dx: 20 });
+});

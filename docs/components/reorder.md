@@ -468,6 +468,27 @@ own matching of `'files'`, `'text'` and `'uris'` applies to the foreign
 half unchanged. `REORDER_TYPE` is exported for a dropzone of the app's own
 that wants to take, or refuse, a list item by name.
 
+## The ghost looks like the item
+
+By default the ghost is the item: the same padding, the same corners, the
+same ground, at the same size. It adds one thing, and only when the item does
+not bring it — a background, since a ghost with nothing behind it is a
+floating label rather than the thing being dragged.
+
+That is worth stating because the obvious alternative is wrong in a way that
+takes a while to see. A default card of its own — a surface, a hairline, the
+theme's radius — replaces a chip's rounded corners with square-ish ones, and
+the border it adds eats two pixels of content box, which is enough to wrap a
+word: `later` comes out as `late` and `r`. So a lifted-card look is opt-in
+rather than the default:
+
+```jsx
+<ReorderList styles={{ preview: { borderWidth: 1, borderColor: '$border' } }}>
+```
+
+`styles.preview` merges over the item's own style, and `renderPreview`
+replaces the content outright.
+
 ## The preview is a fresh instance
 
 The ghost is a `<popup dragPreview>` — a real window following the
