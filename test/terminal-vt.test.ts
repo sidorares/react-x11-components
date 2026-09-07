@@ -1628,8 +1628,10 @@ test(
   { skip: !FONTS },
   async () => {
     const pty = new FakePtyHost();
+    // `as const`: an object literal held in a variable widens the literal
+    // to `string`, and `backend` is a closed union.
     const props = {
-      backend: 'vt',
+      backend: 'vt' as const,
       pty,
       fontFamily: 'monospace',
       fontSize: 16,
