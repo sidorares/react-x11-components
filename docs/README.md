@@ -26,6 +26,7 @@ component.
 | [Markdown](components/markdown.md)                     | `@react-x11/components/markdown`         | Streaming-friendly GFM with cross-block selection.           |
 | [MediaPlayer](components/media-player.md)              | `@react-x11/components/media-player`     | mpv or VLC, embedded, with real transport control.           |
 | [QML](components/qml.md)                               | `@react-x11/components/qml`              | Qt's QML language as an authoring layer. No Qt.              |
+| [ReorderList](components/reorder.md)                   | `@react-x11/components/reorder`          | A drag-and-drop list, over core's own drag and drop.         |
 | [Table](components/table.md)                           | `@react-x11/components/table`            | A data table: sortable, virtualized, any row height.         |
 | [Tabs](components/tabs.md)                             | `@react-x11/components/tabs`             | One visible panel at a time, five strip styles.              |
 | [Terminal](components/terminal.md)                     | `@react-x11/components/terminal`         | A real terminal: an embedded emulator, or its own.           |
@@ -75,6 +76,11 @@ parts.
   here and the screen sampler does not, the CSS-colour value model against
   what this renderer can actually parse, and the server-side gradients the
   panes are made of.
+- [A drag-and-drop list](prd-reorder.md) — implemented: the survey of
+  dnd-kit, hello-pangea/dnd, pragmatic-drag-and-drop, React Aria and
+  Framer's `Reorder` against the components here, why the engine is core's
+  and this is the sortable layer, the closest-edge model, and why the
+  indicator rather than the slide.
 
 ## Conventions these pages follow
 

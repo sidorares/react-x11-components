@@ -715,6 +715,135 @@ dotted branch edge. Its glyphs are **drawn in the example**, which is the same
 line core's icon set draws: affordances are core's (the twisty's chevron is
 `<Icon>`), nouns are the app's.
 
+## A sortable layer over core's drag and drop
+
+`src/reorder/` is the first component here built on **core's drag and
+drop** — the `draggable`/`dragData`/`dropAccept` props, the in-app
+transport, `<popup dragPreview>` — rather than on pointer events of its
+own, and it establishes the rule for the next one: **a drag library out
+here is a layer, never an engine.** Core already has the threshold, click
+suppression, `:dragging`/`:drag-over`, edge auto-scroll, the payload by
+reference on `e.items`, the preview window and the promotion of a drag to
+XDND; a second sensor stack in the process would lose the last of those and
+duplicate the rest. `docs/prd-reorder.md` is the survey (dnd-kit,
+hello-pangea, pragmatic-drag-and-drop, React Aria, Framer) and the record.
+
+Four decisions in it that are decisions rather than gaps:
+
+- **The list is the only drop target.** One `dropAccept` on the root, one
+  `onDragOver` that reads every item's `abs` (device pixels, divided by the
+  node's `scale` once) and finds the closest edge; the item at that edge is
+  told to draw the indicator through a per-item setter, so a pointer motion
+  re-renders two items and never the list. `src/reorder/model.ts` is the
+  arithmetic, pure and asserted on no display, and written to be promoted
+  to `src/internal/` when `<Table>` grows a reorder rung.
+- **Membership is in the payload's type name.** A list accepts
+  `application/x-react-x11-reorder;scope=group:<g>` (or `list:<uid>`),
+  which keeps "who takes this drop" a declarative fact core answers from
+  `dropAccept` data. It has to be: `e.accept()` in `onDragOver` can only
+  override a node whose `dropAccept` already matched — the engine keeps the
+  accepting _node_, not the answer — so an `onDragOver` cannot conjure a
+  target. And `onDragOver` reaches every node on the path whether or not it
+  matched, so the list re-asks the accept question before it marks a slot.
+- **A move between lists is two local handlers**, `onInsert` on the target
+  and `onRemove` on the source (React Aria's model), in the order core
+  already fires `onDrop` then `onDragEnd`. The target writes where the item
+  landed onto the live payload object — a thunk in `dragData` resolves to
+  it at the drop — which is how the source's `onDragEnd`, which carries no
+  destination, can report `to`.
+- **The indicator, not the slide.** No transform in this renderer means a
+  displaced neighbour is a layout pass; a line at the closest edge answers
+  the same question for a rectangle per item. Recorded as a rung if wanted.
+
+Four more, from the round that closed the gaps a survey of
+react-beautiful-dnd's storybook found (`docs/prd-reorder.md`, "The second
+round"), and each is a rule for the next component that drives core's drag
+and drop:
+
+- **`onDragOver` cannot reach the payload.** Only `DropEvent` carries
+  `items`, so a target has no way to write on the dragged object while the
+  pointer is merely over it. A layer that needs a hover channel — "which
+  list is under the pointer, at what index" — needs one module-scope object
+  per gesture, written by the target and read by the source in its own
+  `onDrag` (core dispatches to the target first, by documented order).
+- **A `<popup>` outlives the gesture as a window.** Animating the ghost home
+  after the drop leaves an override-redirect window over the list for the
+  animation's length, and the next press lands on it — a double-click's
+  second press hits a ghost. Anything that outlasts a drag should be a box
+  with `pointerEvents: 'none'`, in the list's own coordinates.
+- **A drag owns the thread on cocoa, and that is core's to solve.** Nothing
+  an application renders during a drag reached the screen there before
+  react-x11 2.8.0: AppKit's tracking loop holds the thread from the threshold
+  to the release, so no timer, frame tick or microtask of ours runs.
+  `<ReorderList>` shipped a layer workaround for it — draw the ghost
+  in-window rather than in a `<popup dragPreview>` — and **the workaround
+  could not have worked**, because an in-window box needs a frame just as
+  much as a popup does. The reasoning was sound from what was visible here;
+  the missing step was running it on the backend in question, which this
+  machine cannot do without synthetic input. Filing what was actually
+  observed (react-x11#482) is what got it fixed properly in core 2.8.0
+  (#484), where a drag's frames are painted from the callback that reports
+  them. **Treat a fix for a platform you cannot run as a hypothesis, and say
+  so where it ships.** What survived on merit is `preview: 'inline'`, for a
+  list that would rather not open a window per drag, and `transparent` on the
+  preview popup — without it a rounded card shows the window's own ground in
+  the corners its radius gives up.
+- **Drive the transport when you cannot drive the backend.** The follow-up
+  bug — a `<popup dragPreview>` registering as a _dragging destination_ on
+  cocoa and swallowing the drop meant for the window under it
+  (react-x11#488, fixed in 2.8.1) — was found in seconds by rendering
+  `<ReorderList>` into a real `CocoaApp` over the recording fake bridge
+  core's own `test/cocoa-dnd.test.js` uses, and driving
+  `drag-enter`/`drag-over`/`drag-perform` by hand. Trying to drive a real
+  cocoa session with synthetic CGEvents took an afternoon and never
+  separated the product's behaviour from the rig's. The same rig then
+  validated the upstream fix — `registerDropTypes` called for the list's
+  window alone, where the release before called it for the ghost's too. That
+  reading was **not enough**: it is a fact about react-x11's bookkeeping, and
+  the drop still failed on a real machine, because the window server finds
+  the window under the pointer whether or not it has a destination. The fix
+  that worked was `ignoresMouseEvents` on the preview (2.8.2), and the rig
+  earns its keep by showing the option reaching `createWindow2` — the
+  mechanism itself rather than a proxy for it. **Check the thing that makes
+  the behaviour, not the thing that correlates with it**, and remember that
+  neither is proof of what the OS does with it. Core's cocoa modules are not on its exports map, so a scratch
+  script reaches them by file URL: fine for investigation, not for a
+  committed test, and keep the script outside the repository.
+- **A drag's events bubble.** `DragStart`/`onDrag`/`onDragEnd` dispatch
+  capture → target → bubble like every other event, so a draggable node that
+  _contains_ the dragged one sees all of them — and `useDragSource` inside it
+  will happily set a position and render a second preview. Nested lists (a
+  board: a card, in a column's list, in a column, in the board) are where
+  this bites, and the symptom is not only a stray ghost: the outer item's
+  handlers claim the gesture. Check `ev.target` against the node the drag
+  props were spread on before doing anything in a source callback.
+  `preventDefault()` is not the tool — on this event it cancels the drag.
+- **Core arms a drag from the nearest draggable ancestor**, so a press on a
+  control inside a draggable drags the ancestor. The layer's answer is to
+  remember the press target (`onMouseDownCapture`) and cancel at the
+  threshold with `onDragStart`'s `preventDefault()`, which core defines as
+  "the gesture continues as ordinary mouse events".
+- **A keyboard step over a _set_ is not `from + 1`.** That index is inside
+  the run being moved, so the run lands where it already was and the
+  selection appears frozen. A step moves the run past its next non-member.
+
+One more, learned the expensive way here: **a scratch file written into
+`test/` or `examples/` is swept up by `git add -A`**, and `test/*.test.ts` is
+a glob — a bisect file left behind runs in the suite and fails
+`format:check` in CI long after the question it answered was settled. Delete
+it in the same command that stops needing it.
+
+Two traps found writing its tests: a `<popup dragPreview>` that re-renders
+the item's children re-renders a `<ReorderHandle>` inside them, which must
+find an _inert_ item context rather than throw or register itself; and an
+assertion that hands a `DrawnNode` to `assert.strictEqual(node, null)`
+dies with `RangeError: Invalid string length` formatting the cyclic node —
+compare with `===` and pass a message. Two more from the second round: a
+harness helper that seeds `useState(items)` silently ignores later prop
+changes (the mid-drag test that looked like a product bug), and a press
+injected during a live drag never reaches a widget, because the drag owns
+the pointer — drive that state from outside the gesture.
+
 ## An HTML renderer that draws
 
 `src/html/` is the largest thing here and the one that breaks the most house
@@ -976,6 +1105,7 @@ npm run examples:code-editor # needs a real $DISPLAY
 npm run examples:html        # needs a real $DISPLAY
 npm run examples:maps        # needs a real $DISPLAY and a network
 npm run examples:markdown    # needs a real $DISPLAY
+npm run examples:reorder     # needs a real $DISPLAY
 npm run examples:terminal    # needs a real $DISPLAY and an emulator installed
 npm run examples:terminal-vt # needs a real $DISPLAY and a pty module (node-pty)
 npm run examples:media-player -- <file>   # needs a real $DISPLAY and mpv/VLC

@@ -103,6 +103,13 @@ const COMPONENTS = [
   // one string only the table writes, and this loop is what proves the
   // sharing keeps the two bundles separate.
   { exportName: 'Table', dir: 'table', marker: 'columnheader' },
+  // `<ReorderList>` is box-and-popup composition over core's drag and drop
+  // and shares nothing here; the marker is the payload type only it offers.
+  {
+    exportName: 'ReorderList',
+    dir: 'reorder',
+    marker: 'application/x-react-x11-reorder',
+  },
 ];
 
 async function bundle(contents: string): Promise<string> {
