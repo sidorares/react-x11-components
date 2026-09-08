@@ -1,21 +1,21 @@
-// Run with: npm run examples:calendar   (needs an X server / DISPLAY)
+// Run with: npm run examples:calendar   (needs an X server / DISPLAY, or a Mac)
 //
-// The two halves of this feature together: the grid, and the user's real
-// calendar read off the desktop over D-Bus. If there is no session bus, no
-// Evolution Data Server, or no `ical.js` installed, the dots simply do not
-// appear and the calendar is still a calendar — which is the whole point of
-// `status: 'unavailable'` not being an error.
+// The two halves of this feature together, one from each package: the grid
+// here, and the user's real calendar from **core** — EventKit on a Mac
+// (through the bridge on the cocoa backend, through an `osascript` child
+// under XQuartz), Evolution Data Server on a Linux desktop. Where no rung
+// answers the dots simply do not appear and the calendar is still a
+// calendar, which is the whole point of `status: 'unavailable'` not being an
+// error.
+//
+// The seam between the two packages is a **string format**: the keys
+// `byDay` uses are exactly the `'YYYY-MM-DD'` days `<Calendar dayContent>`
+// is handed. Nothing else crosses.
 import { useState } from 'react';
 import type { ReactElement } from 'react';
-import { createRoot } from 'react-x11';
+import { createRoot, useDesktopCalendarEvents } from 'react-x11';
 
-import {
-  Calendar,
-  DatePicker,
-  monthOf,
-  today,
-  useDesktopCalendarEvents,
-} from '../src/index.js';
+import { Calendar, DatePicker, monthOf, today } from '../src/index.js';
 import type { CalendarDay } from '../src/index.js';
 
 /** The first and last instant of the month being shown. */
@@ -31,11 +31,8 @@ function App(): ReactElement {
 
   // `watch` re-queries when the desktop says the range changed, so accepting
   // an invitation in another app lights a dot up here without a reload.
-  const { byDay, calendars, status, error } = useDesktopCalendarEvents({
-    from,
-    to,
-    watch: true,
-  });
+  const { byDay, calendars, status, backend, error, openSettings } =
+    useDesktopCalendarEvents({ from, to, watch: true });
 
   const events = day ? (byDay.get(day) ?? []) : [];
 
@@ -49,13 +46,25 @@ function App(): ReactElement {
             locale="en-GB"
             onChange={(ev) => setDay(ev.value as CalendarDay | null)}
           />
-          <text style={{ fontSize: 11, color: '$textMuted' }}>
-            {status === 'ready'
-              ? `${calendars.filter((c) => c.enabled).length} desktop calendars`
-              : status === 'loading'
-                ? 'reading desktop calendars…'
-                : (error?.message.split('.')[0] ?? 'no desktop calendars')}
-          </text>
+          {/* `'denied'` is the user's answer and has a Settings switch
+              behind it; `'unavailable'` is the machine's and has none. */}
+          {status === 'denied' ? (
+            <text
+              role="button"
+              onClick={() => void openSettings()}
+              style={{ fontSize: 11, color: '$accent', cursor: 'pointer' }}
+            >
+              calendar access is off — open Settings
+            </text>
+          ) : (
+            <text style={{ fontSize: 11, color: '$textMuted' }}>
+              {status === 'ready'
+                ? `${backend} — ${calendars.filter((c) => c.enabled).length} desktop calendars`
+                : status === 'loading'
+                  ? 'reading desktop calendars…'
+                  : (error?.message.split('.')[0] ?? 'no desktop calendars')}
+            </text>
+          )}
         </box>
 
         <box style={{ flexDirection: 'row', gap: 16, flexGrow: 1 }}>

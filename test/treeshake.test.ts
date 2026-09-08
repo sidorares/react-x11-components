@@ -38,11 +38,6 @@ const COMPONENTS = [
   { exportName: 'QmlView', dir: 'qml', marker: 'Unknown QML type' },
   { exportName: 'CodeEditor', dir: 'code-editor', marker: 'codeeditor' },
   { exportName: 'Calendar', dir: 'calendar', marker: 'Previous month' },
-  {
-    exportName: 'DesktopCalendar',
-    dir: 'desktop-calendar',
-    marker: 'org.gnome.evolution.dataserver',
-  },
   // `<Markdown>`, `<Code>` and `<CodeEditor>` share `src/richtext/` and
   // `src/code-language/`, so their markers name what is theirs alone: the
   // autolink scheme only the markdown parser writes, the gutter label only

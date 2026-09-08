@@ -75,40 +75,23 @@ interface FontsLike {
   ): unknown;
 }
 
-interface FillContext {
-  fillStyle: unknown;
-  save(): void;
-  restore(): void;
-  fillRect(x: number, y: number, w: number, h: number): void;
+// The two guards below used to narrow to local interfaces describing the
+// slice of the context this paints with. react-x11 2.9.0 declares all of it
+// on `Context2D` itself — `fillRect`, the path API, `fill` — so the phantom
+// types are gone and the **runtime** questions stay, which is the half that
+// was ever load-bearing: the mock backend's context implements none of it,
+// and a `paint` that assumed otherwise would throw in every headless test
+// rather than doing nothing.
+
+function canFill(ctx: Context2D): boolean {
+  return typeof ctx?.fillRect === 'function';
 }
 
-function canFill(ctx: Context2D): ctx is FillContext {
-  return typeof (ctx as Partial<FillContext> | null)?.fillRect === 'function';
-}
-
-interface PathContext extends FillContext {
-  beginPath(): void;
-  moveTo(x: number, y: number): void;
-  lineTo(x: number, y: number): void;
-  bezierCurveTo(
-    x1: number,
-    y1: number,
-    x2: number,
-    y2: number,
-    x: number,
-    y: number,
-  ): void;
-  quadraticCurveTo(x1: number, y1: number, x: number, y: number): void;
-  closePath(): void;
-  fill(): void;
-}
-
-function canPath(ctx: FillContext): ctx is PathContext {
-  const c = ctx as Partial<PathContext>;
+function canPath(ctx: Context2D): boolean {
   return (
-    typeof c.beginPath === 'function' &&
-    typeof c.bezierCurveTo === 'function' &&
-    typeof c.fill === 'function'
+    typeof ctx.beginPath === 'function' &&
+    typeof ctx.bezierCurveTo === 'function' &&
+    typeof ctx.fill === 'function'
   );
 }
 
@@ -385,7 +368,7 @@ export class FormulaNode extends Node {
     return mini;
   }
 
-  private _fillPath(ctx: PathContext, p: FormulaPath): void {
+  private _fillPath(ctx: Context2D, p: FormulaPath): void {
     // The transform, per katex.css: `slice` is "scale by height, clip the
     // 400em tail at the box edge" — clamping x in path space renders the
     // same shape as the clip because the tails are horizontal fills.
@@ -439,8 +422,13 @@ export class FormulaNode extends Node {
 
     // 1. the band the document selection has claimed of this formula
     const range = this.selectionRange;
-    if (range && range.end > range.start) {
-      ctx.fillStyle = this.selectionColor;
+    // The colour is the condition, not just the range: core types it
+    // `string | null` and defines it as what to fill the rectangles with
+    // *while a selection is set*, so a null one is "nothing to draw"
+    // rather than a band in the default ink.
+    const selectionColor = this.selectionColor;
+    if (selectionColor && range && range.end > range.start) {
+      ctx.fillStyle = selectionColor;
       for (const r of this.textRangeRects(range.start, range.end)) {
         ctx.fillRect(
           Math.round(r.x),

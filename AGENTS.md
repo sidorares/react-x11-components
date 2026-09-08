@@ -376,39 +376,71 @@ being structurally a `DrawnNode`.
 
 ## Talking to the desktop, and optional dependencies
 
-`src/desktop-calendar/` reads the user's real calendars — Google, Microsoft,
-CalDAV, local — over D-Bus through Evolution Data Server. It is the reason
-`<Calendar dayContent>` exists, and the answer to "how do we get the user's
-events" is: **the desktop already did the OAuth**, so this package never sees
-a credential.
+`src/desktop-calendar/` used to live here: the user's real calendars — Google,
+Microsoft, CalDAV, local — over D-Bus through Evolution Data Server, and the
+reason `<Calendar dayContent>` exists at all. **It moved to react-x11 in
+2.9.1** (sidorares/react-x11#508, over #504), and the move is the most
+instructive worked example in this file of the question at the top of it,
+because the code did not change — where it could be built did.
 
-Two rules it establishes for anything else that talks to the system:
+Three things decided it, and the next feature that talks to the system should
+be held against them before a line is written:
+
+- **A calendar is one of the things an app does _outside_ its own windows**,
+  which is a family core had already claimed one member at a time —
+  notifications, permissions, the tray, the file dialog, the Dock, deep
+  links. Every one of them is a ladder in core with a freedesktop rung and a
+  macOS one, and a seventh built out here would have been the odd one.
+- **The macOS rung cannot be built from this side.** EventKit is reachable
+  only through `@windowkit/appkit`, which react-x11 holds through
+  `CocoaApp._native`, and core's cocoa modules are deliberately off its
+  exports map. The only ways out were exporting the raw bridge or exporting
+  a typed `app.calendars` — and the second _is_ the feature, so the design
+  would have been split with the policy in the wrong package. **When the
+  second clause of the inclusion rule (does it stand on public API) fails on
+  one backend only, the whole feature belongs upstream**, not the failing
+  half.
+- **The grid stayed.** `<Calendar>`, `<DatePicker>` and `dayContent` are
+  composition over public host elements that a small fraction of apps want:
+  every clause points here. The boundary ran through the feature, exactly as
+  it does for 3D — and the seam it left is a **string format**, not a
+  function. `byDay`'s keys are the `'YYYY-MM-DD'` days `dayContent` is
+  handed, which is why one half could move without the other noticing.
+
+`docs/prd-desktop-calendar.md` is the survey and the record.
+
+Two rules it established while it was here still hold, and both now have
+their worked example elsewhere in this package:
 
 - **Never open your own bus.** `useSessionBus()` (or `sessionBus()` off the
   render path) hands over react-x11's shared connection. A second one makes
   the app two names on the bus — the tray under one, the exported service
-  under another — and leaks a connection per mount. `DesktopCalendar` takes
-  its bus as a constructor argument for exactly this reason, which is also
-  what lets `test/desktop-calendar.test.ts` drive it from a fake one.
-- **A heavy parser is an `optionalDependency`, and its types are ours.**
-  `ical.js` is needed only to expand recurrence rules, so it is optional and
-  loaded through a dynamic `import()` that is allowed to fail —
-  `IcalUnavailableError` says which, and the hook reports `'unavailable'`
-  rather than throwing. Its _types_ are written out structurally in
-  `src/desktop-calendar/ical.ts` rather than imported: `import type … from
-'ical.js'` would put it in the type graph and an app that did not install it
-  could no longer type-check against this package, which is the opposite of
-  optional. react-x11 does the same with `dbus-native`.
+  under another — and leaks a connection per mount. The EDS client took its
+  bus as a constructor argument for exactly this reason, which is also what
+  let a fake one drive it in a test; anything here that reaches the bus
+  should be shaped the same way.
+- **A heavy dependency is loaded lazily and its types are ours.** A module
+  that most apps will not touch is reached through a dynamic `import()` that
+  is allowed to fail, and its types are written out structurally rather than
+  imported, because `import type … from '<optional package>'` puts it in the
+  type graph and an app that did not install it can no longer type-check
+  against this package. `src/terminal/vt/xterm.ts` and `vt/pty.ts` are the
+  live examples; `src/embed/host.ts` does it to node's own modules for a
+  different reason (`types: []`). react-x11 does the same with `dbus-native`
+  and `@windowkit/appkit` — but note that it made `ical.js` a **regular**
+  dependency when it took the calendar, because at 268 KB with no
+  dependencies and no native code it did not earn a missing-module state.
+  Optionality is a judgement about weight and reach, not a reflex.
 
-"No bus", "no EDS", and "no `ical.js`" are all ordinary states of a perfectly
-healthy machine. None of them is an error to report — the calendar renders,
-the dots do not.
+"No bus", "no EDS", "no notification daemon" are all ordinary states of a
+perfectly healthy machine. None of them is an error to report — the feature
+degrades, and the calendar still renders without its dots.
 
 `src/code-editor/lezer.ts` follows the same dynamic-import rule with one
 deliberate difference: `@lezer/highlight` is an **optional peer** rather
 than an optional dependency. An optionalDependency installs by default,
-which is the right trade for `ical.js` (nothing else would bring it) and
-the wrong one here — every `@lezer/<lang>` grammar package the app installs
+which is the right trade for `@xterm/headless` (nothing else would bring
+it) and the wrong one here — every `@lezer/<lang>` grammar package the app installs
 already depends on `@lezer/highlight`, so listing it as optionalDeps would
 install ~100 KB for apps that never touch the adapter, and the apps that do
 touch it have it anyway. `peerDependenciesMeta.optional` also keeps the
@@ -439,8 +471,8 @@ a command line, spawn it, watch it, kill it. That is the whole of
 `types: []`, so `src/` cannot name `child_process`, `net`, `fs` or `process`.
 `src/embed/host.ts` writes out the slice it uses structurally and reaches the
 modules through a dynamic `import()` whose specifier is built at run time —
-the same shape `desktop-calendar/ical.ts` uses for an optional dependency,
-for a different reason. `globalThis` is how `process.env` and the timers are
+the same shape `vt/xterm.ts` uses for an optional dependency, for a
+different reason. `globalThis` is how `process.env` and the timers are
 reached (`src/embed/timers.ts`, and `code-language/timers.ts` before it).
 
 **`ProcessHost` is public because it is a feature, not a test double.** It
@@ -453,8 +485,8 @@ under a sandbox" is a real thing to want and should not need a fork.
 installed: both are ordinary states of a healthy machine, so `backend`
 defaults to `'auto'`, detection is a `PATH` probe, and the result is
 `status: 'unavailable'` plus a `fallback` — never a throw and never a
-dependency on a binary. Same call `useDesktopCalendarEvents` makes about a
-desktop with no Evolution Data Server.
+dependency on a binary. Same call react-x11's `useDesktopCalendarEvents`
+makes about a desktop with no calendar service.
 
 Three things about these components that are decisions rather than gaps, so
 they are not re-litigated:
@@ -505,11 +537,11 @@ somewhere else:
   prefers `bunPtyHost()` (Bun 1.4's `Bun.spawn({ terminal })`, feature-detected
   on `Bun.Terminal`) over both, because a runtime that ships the capability
   should not make an app install a binary for it. Both absences are `status: 'unavailable'` plus
-  `fallback`, never a throw — the same call the calendar makes about a desktop
-  with no Evolution Data Server.
+  `fallback`, never a throw — the same call core's calendar makes about a
+  desktop with no calendar service.
 - **Their types are ours.** `vt/xterm.ts` and `vt/pty.ts` write out the slice
-  each package exposes structurally, for the reason `desktop-calendar/ical.ts`
-  does: `import type … from '@xterm/headless'` would make an app that skipped
+  each package exposes structurally, for the reason "Talking to the desktop"
+  gives: `import type … from '@xterm/headless'` would make an app that skipped
   optional dependencies fail to type-check against this package.
   `@xterm/headless` 6.0 also gates `buffer`, `parser` and `modes` behind
   `allowProposedApi: true` — `term.buffer` _throws_ without it — so the
@@ -906,7 +938,7 @@ the window around it have to be the same height.
 
 **Nothing is fetched and nothing is executed, by construction.**
 `onResource` is the only way anything loads and `onScript` never runs
-anything. Both are the same call `src/desktop-calendar/` makes about
+anything. Both are the same call the desktop calendar makes about
 credentials: the host already did the work of knowing its policy, and a
 component that silently made requests would turn "render this HTML" into
 "make these requests". A declined resource is an ordinary state, not an

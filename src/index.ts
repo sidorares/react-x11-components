@@ -672,24 +672,6 @@ export type {
   UseEmbeddedClientOptions,
 } from './embed/index.js';
 
-export {
-  DesktopCalendar,
-  IcalUnavailableError,
-  byDay,
-  parseKeyFile,
-  useDesktopCalendarEvents,
-} from './desktop-calendar/index.js';
-export type {
-  DesktopCalendarChange,
-  DesktopCalendarError,
-  DesktopCalendarInfo,
-  DesktopCalendarStatus,
-  DesktopEvent,
-  EventsResult,
-  UseDesktopCalendarEventsOptions,
-  UseDesktopCalendarEventsResult,
-} from './desktop-calendar/index.js';
-
 // The three-fiber-shaped scene graph. The scene classes come out too —
 // `<primitive object>` takes one, and ported code writes `new Vector3()` —
 // but the renderers stay on the subpath: a `<Canvas>` picks its own.
