@@ -157,6 +157,19 @@ renderer is ordinary React composition, so user components can interleave —
 including mid-stream — once the parser learns the syntax. The reserved seam is
 the only part that exists today.
 
+[`docs/prd-mdx.md`](../prd-mdx.md) is the design. Three things in it are worth
+knowing before the feature exists, because they shape what it will be:
+
+- **A `components` map gates the parser.** Without the prop, `<Chart/>` is
+  literal text exactly as it is now, so nothing you render today can change.
+- **A tag is a component iff its name is a key in that map** — no
+  capitalisation rule, no HTML fallback.
+- **`{…}` is JSON before it is JavaScript.** Attribute values parse as JSON
+  and evaluate nothing; a separate `scope` prop opts into `new Function`.
+  Since this component's usual input is streamed model output, that split is
+  the feature's main constraint: `components` decides what a document may
+  reach, `scope` decides whether it may compute.
+
 ## Example
 
 `npm run examples:markdown` streams a document in live, so the partial-render

@@ -292,6 +292,9 @@ in live.
 MDX is on the roadmap, not in the box: the AST reserves a `component` node
 and the renderer is ordinary React composition, so user components can
 interleave — including mid-stream — once the parser learns the syntax.
+[docs/prd-mdx.md](docs/prd-mdx.md) is the design: a `components` map gates the
+parser, attribute values are JSON until an application opts into expressions,
+and nothing is evaluated for a document you did not write.
 
 ## HTML
 
@@ -1166,7 +1169,9 @@ Candidates to move here:
 - The 3D scene graph and a Three.js / react-three-fiber-shaped layer, with
   `<glarea>` itself staying in core.
 - `<Tabs>`, undecided — it may well stay in core.
-- MDX support in `<Markdown>` — see the note in that section.
+- MDX support in `<Markdown>` — components in the prose, gated on a
+  `components` map so an untrusted document evaluates nothing. Designed in
+  [docs/prd-mdx.md](docs/prd-mdx.md); see also the note in that section.
 - A StatusNotifierItem host, beside `<TrayHost>` rather than inside it: the
   D-Bus way modern applications publish a tray icon. It pairs with core's
   `dbusmenu.js`, and a complete panel wants both.
