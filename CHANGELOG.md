@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.7.0](https://github.com/sidorares/react-x11-components/compare/v0.6.0...v0.7.0) (2026-09-08)
+
+
+### ⚠ BREAKING CHANGES
+
+* **table:** every existing `<Table>` changes shape — the grid is inset four pixels at each edge and rows are rounded rather than full-bleed, so flex columns resolve eight pixels narrower. `rowInset={0}` puts the old grid back.
+* **tree:** every existing `<Tree>` changes shape — rows are inset and rounded rather than full-bleed. `styles={{ row: { marginStart: 0, marginEnd: 0, borderRadius: 0 } }}` puts the old band back.
+* **desktop-calendar:** `@react-x11/components/desktop-calendar` is gone, and the barrel no longer exports `useDesktopCalendarEvents`, `DesktopCalendar`, `byDay`, `parseKeyFile`, `IcalUnavailableError` or their types. Import them from `react-x11` instead, which needs >= 2.9.1. The result shape is the same one, plus `backend` and `openSettings`, and `status` gained `'denied'` — the user's refusal, which has a Settings switch behind it, as against `'unavailable'`, which does not.
+
+### Features
+
+* **desktop-calendar:** the calendar moved to core — delete this side, floor at ^2.9.1 ([#71](https://github.com/sidorares/react-x11-components/issues/71)) ([ade315a](https://github.com/sidorares/react-x11-components/commit/ade315afba75d3892b8c6ce33b43329f539d3a7f))
+* **table:** the row highlight is a pill on the list, not a band across it ([#76](https://github.com/sidorares/react-x11-components/issues/76)) ([fa9923b](https://github.com/sidorares/react-x11-components/commit/fa9923b586ccbf2616c343db76227e7f8243930a))
+* **tree:** the row highlight is a pill on the list, not a band across it ([#75](https://github.com/sidorares/react-x11-components/issues/75)) ([011b98e](https://github.com/sidorares/react-x11-components/commit/011b98ed52c6bf9853f5123f283692a87d45a46c))
+
 ## [0.6.0](https://github.com/sidorares/react-x11-components/compare/v0.5.0...v0.6.0) (2026-09-08)
 
 
