@@ -85,6 +85,12 @@ parts.
   Framer's `Reorder` against the components here, why the engine is core's
   and this is the sortable layer, the closest-edge model, and why the
   indicator rather than the slide.
+- [The user's calendar on macOS](prd-desktop-calendar.md) — proposed: the
+  survey of every way to reach the user's calendar on a Mac and on Linux,
+  why the desktop-calendar hook moves to react-x11 as a ladder beside
+  notifications and permissions, the EventKit rung through the bridge and
+  the one through `osascript` that needs no bridge, and the three
+  `@windowkit/appkit` tickets that unblock the rest.
 
 ## Conventions these pages follow
 
