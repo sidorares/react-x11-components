@@ -128,6 +128,22 @@ const TWISTY = 12;
 const TWISTY_GLYPH = 10;
 const ROW_HEIGHT = 22;
 /**
+ * How far a row's wash sits inside the tree's own edge.
+ *
+ * It is what makes a selection read as a **pill on** the list rather than a
+ * band across it. With no inset the wash runs into whatever the tree is
+ * mounted against — in a sidebar that is the pane's hairline — and the
+ * selected row reads as a stripe cut across the pane instead of a mark on a
+ * row. Core's `Menu` insets its rows from the sheet for exactly this reason,
+ * and `MENU_PAD` is this number.
+ *
+ * Horizontal only. Rows stack flush against each other: in a menu it is the
+ * sheet's own padding that clears the first and the last, and here it is
+ * whatever the app put the tree in. A vertical margin would not reshape the
+ * wash, it would spread the list out.
+ */
+const ROW_INSET = 4;
+/**
  * Where `virtual="auto"` starts virtualizing.
  *
  * Well above any viewport, so a tree that is merely long is still built whole
@@ -144,6 +160,13 @@ const s = createStyles({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
+    // The wash's inset — see `ROW_INSET`. It lives here rather than beside
+    // the colours so that the skeleton row wears the same shape, and so that
+    // an app can take it back off: `styles.row` merges last, and
+    // `{ marginStart: 0, marginEnd: 0, borderRadius: 0 }` is the full-bleed
+    // band this used to be.
+    marginStart: ROW_INSET,
+    marginEnd: ROW_INSET,
     paddingEnd: 8,
     paddingTop: 3,
     paddingBottom: 3,
@@ -667,10 +690,45 @@ function TreeRowView<T>(props: TreeRowViewProps<T>): ReactElement {
         // index reads back what it actually became.
         { minHeight: rowHeight },
         // The indent is what says "inside", so it is measured from the edge
-        // the row's label begins at.
+        // the row's label begins at — which is the *wash's* edge now, not
+        // the tree's, and `ROW_INSET` is deliberately not subtracted back
+        // out here. Both readings move something: subtract it and the label
+        // stays where it was but ends up flush against the pill it sits in,
+        // which is what a pill with no padding looks like; leave it and the
+        // whole tree steps over by four pixels once, which nothing inside it
+        // can tell apart from a container four pixels narrower. So the
+        // padding is the pill's own clearance and the tree takes the shift.
+        // The guides are measured from the same edge and move with it, so a
+        // branch edge still meets the start of the row it belongs to.
         { paddingStart: renderGuide ? 4 : 4 + row.depth * indent },
         {
           backgroundColor: isSelected ? theme.hoverBackground : 'transparent',
+          // Rounded on the *window's* scale, not a popup's.
+          //
+          // `rowRadius` — what core's `Menu` and `Select` use — derives a
+          // row's radius from `radiusPopup`, less the sheet's border and
+          // padding, so that the pill's corner and the sheet's share a
+          // centre. That derivation needs an outer curve to be concentric
+          // with, and a tree has none: it fills whatever the app mounted it
+          // in — a sidebar, a split pane, a dialog — and cannot know that
+          // container's radius, or whether it has one. `radiusPopup` is the
+          // wrong parent by its own definition anyway ("a floating surface …
+          // half the text size"): a tree is content in the window, not a
+          // sheet laid over it.
+          //
+          // That leaves the two in-window tokens, and the row takes the
+          // tighter of them. `radius` is the control scale — a button, an
+          // input, a card cut into the surface — and this is not a control
+          // but a mark *on* the surface: transient, borderless, following
+          // the pointer. `radiusSmall` is that step down — the same relation
+          // `radiusPopupItem` has to `radiusPopup`, one scale in.
+          //
+          // An app that does own the sheet can still have the concentric
+          // version, because it is the one that knows the radius to be
+          // concentric with — `styles={{ row: { borderRadius:
+          // rowRadius(theme, border, inset) } }}`, with the inset it also
+          // sets here.
+          borderRadius: theme.radiusSmall,
           // The row's ink, said once: `color` inherits, so the label takes
           // it without being handed it.
           color,
@@ -684,9 +742,23 @@ function TreeRowView<T>(props: TreeRowViewProps<T>): ReactElement {
           // The selection only moves on the release, and `:active` marks
           // the whole press chain, so a press on the label or the twisty
           // still darkens the row it is in.
+          //
+          // The pressed colour comes from the ramp the row is already
+          // painted with. An unselected row is on the surface ramp, so it is
+          // `surfaceActive`. A selected row is washed with `hoverBackground`,
+          // and `accentActive` — what this used to say — is the pressed step
+          // of `accent`: a different token that merely *holds* the same
+          // colour in both stock palettes. Move the accent and the press
+          // flashes something the tree never wears at rest; a yellow accent
+          // over a blue selection gives a yellow press, and the row's ink is
+          // still `hoverText`, picked to be legible on the blue. There is no
+          // darker step of `hoverBackground` in the palette to reach for and
+          // the selected row is already the strongest fill in the list, so
+          // it keeps its wash: the click is answered by what it does, the
+          // selection or the activation on the second one.
           ':active': {
             backgroundColor: isSelected
-              ? theme.accentActive
+              ? theme.hoverBackground
               : theme.surfaceActive,
           },
         },
@@ -1319,6 +1391,9 @@ export function Tree<T = TreeItem>({
           { height: index.heightAt(row.index) },
           {
             backgroundColor: isSelected ? theme.hoverBackground : 'transparent',
+            // Same pill as a real row's, so a placeholder that is replaced
+            // mid-scroll does not change shape as it arrives.
+            borderRadius: theme.radiusSmall,
           },
           typeof rowStyleProp === 'function'
             ? rowStyleProp(state)
