@@ -1,11 +1,18 @@
 # PRD: the user's calendar on macOS — EventKit, and where the desktop calendar lives
 
-> **Status: proposed.** Nothing in this document is implemented; the branch
-> that carries it changes no code. The measurements in §2 and §3 were taken
-> on 2026-09-08 against react-x11 2.9.0, `@windowkit/appkit` 0.7.0 and this
-> package at 0.4.0, on one machine — macOS 15.2 (24C101), the Cocoa backend's
-> home — and against the sources of all three. The three bridge tickets and the
-> core issue §11 names were filed the same day.
+> **Status: milestones 1 and 2 are done.** The core half shipped in react-x11
+> **2.9.1** (sidorares/react-x11#508, over #504) — the ladder, the EDS rung
+> moved from here, the `osascript` rung, the cocoa rung, and the two
+> permission kinds. This side is the same PR as this document: the module,
+> its test, its page, the subpath and the `ical.js` optional dependency are
+> gone, and the floor is `^2.9.1`. Milestones 3 to 5 (the bridge release,
+> writes, the `source` seam) are open.
+>
+> The measurements in §2 and §3 were taken on 2026-09-08 against react-x11
+> 2.9.0, `@windowkit/appkit` 0.7.0 and this package at 0.4.0, on one machine —
+> macOS 15.2 (24C101), the Cocoa backend's home. **Two of §13's risks were
+> retired by measuring them during implementation, and both changed the
+> design** — see §14, which is the record of what the prompt actually did.
 
 `useDesktopCalendarEvents` reads the calendars the desktop already has and
 hands them to a `<Calendar dayContent>`. On a GNOME desktop that is the real
@@ -628,19 +635,21 @@ so a consumer can always tell which of the three it is in.
 
 ## 10. Milestones
 
-1. **Core: the move, and the bridge-free Mac.** `src/desktopcalendar.js`
-   (ladder, EDS, the JXA program), the hook, the types, `ical.js` as a regular dependency,
-   `'calendars'`/`'reminders'` in `PermissionKind` with the panes, and
-   `docs/desktop-calendar.md`. Linux behaviour unchanged; every Mac gets the
-   `osascript` rung. Nothing upstream blocks this.
-2. **Here: the deletion.** `src/desktop-calendar/`, its test, its page, the
-   README section, the subpath, the optional dependency; the example and
-   `docs/components/calendar.md` re-pointed. One PR, with the floor bump to
-   the core release that carries milestone 1 — "delete the copy, import the
-   export".
-3. **Bridge: #39 and #40**, then core's `src/cocoa/calendar.js` and
-   `CocoaApp.calendars`; `usePermission('calendars')` over the bridge. The
-   `osascript` rung stays beneath it.
+1. **Core: the move, and the bridge-free Mac. — done, react-x11 2.9.1.**
+   `src/desktopcalendar.js` (ladder, EDS, the JXA program), the hook, the
+   types, `ical.js` as a regular dependency, `'calendars'`/`'reminders'` in
+   `PermissionKind` with the panes, and `docs/desktop-calendar.md`. Linux
+   behaviour unchanged; every Mac gets the `osascript` rung. It also took the
+   cocoa rung, which this document had put in milestone 3 — the bridge verbs
+   landed in `@windowkit/appkit` 0.8 sooner than the plan assumed.
+2. **Here: the deletion. — done, this PR.** `src/desktop-calendar/`, its
+   test, its page, the README section, the subpath, the optional dependency;
+   the example and `docs/components/calendar.md` re-pointed; the floor at
+   `^2.9.1`. "Delete the copy, import the export."
+3. **The bridge release.** `@windowkit/appkit` 0.8 carries #39 and #40, and
+   core's `src/cocoa/calendar.js` uses them; what is left is the release of
+   this package that requires it, and the agreement script of §9 run on a
+   machine with both rungs.
 4. **Writes: #41**, the EDS write calls, `createEvent`/`updateEvent`/
    `removeEvent`.
 5. **The `source` seam and `icsSource`.**
@@ -727,3 +736,38 @@ dayContent>` is handed. The alternative — a helper here over `events` —
 - **The all-day convention** is the one place two rungs could disagree
   silently. The bridge's test pins the store's; core's test pins the
   normalisation; §9's agreement script catches the rest.
+
+## 14. What implementing it changed
+
+Two of §13's risks were live questions rather than caveats, and measuring
+them during the core implementation (sidorares/react-x11#508) changed the
+design. Both are recorded here because this document asserted the opposite.
+
+**The `osascript` rung's request never calls back.**
+`requestFullAccessToEventsWithCompletion:` from an `osascript` process is
+never called back — not on a refusal, and not even when the grant is already
+held; retaining the block does not help. §7.2 assumed the completion arrived,
+so the rung as designed would have hung on its first read forever. It answers
+from the **status**, polled, with a 30-second deadline for the case where TCC
+declines to ask at all. That deadline's `'prompt'` is the machine's silence
+rather than a refusal, so the hook reports `'unavailable'` and nothing
+remembers it.
+
+**The attribution is three processes, not one.** §7.2 said the child is
+attributed to its responsible process, "the same attribution the bridge
+gets". `tccd` in fact records three roles — `responsible` (the app that owns
+the tree: a terminal, an IDE), `accessing` (`osascript`) and `requesting`
+(`calaccessd`) — and keys the decision on the responsible one. So the grant is
+shared with **everything that terminal runs**, which is a broader blast radius
+than this document claimed and is the sort of thing a user should be told
+once rather than discover.
+
+Both are in react-x11's `docs/desktop-calendar.md`, along with four things
+measured with the grant still undecided: a status read never prompts, creating
+the store never prompts, an ungranted read answers an **empty list** rather
+than an error, and the child starts in about 130 ms.
+
+The general lesson is the one this repository already writes down for the
+cocoa drag work: **a fix for a platform you cannot exercise is a hypothesis.**
+§13 said so about the prompt and was right to; what it could not predict is
+that the hypothesis would be wrong in two different directions at once.
