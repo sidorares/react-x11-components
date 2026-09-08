@@ -22,10 +22,14 @@
 //   definitions pass over the whole document, and streamed model output
 //   essentially never uses them.
 // - **Raw HTML is literal text.** There is no HTML pass anywhere in this
-//   component, by design; `<Component />` syntax is reserved for a future
-//   MDX extension (see `ComponentInline` in ast.ts).
+//   component, by design. `<Component />` is a component only when
+//   `options.isComponent` claims the name — the MDX gate (docs/prd-mdx.md).
+//   Without it, every `<` here means exactly what it always did, which is
+//   how turning MDX on cannot change a document that never asked for it.
+//   Block position only in M1; see `ComponentInline` in ast.ts.
 import type {
   BlockNode,
+  ComponentBlock,
   Document,
   InlineNode,
   ListBlock,
@@ -33,6 +37,11 @@ import type {
   ParseOptions,
   TableAlign,
 } from './ast.js';
+import { closeBrace, scanTag } from './tags.js';
+import type { ScannedTag } from './tags.js';
+
+/** Nothing is a component unless the caller says so. */
+const NO_COMPONENTS = (): boolean => false;
 
 // --- line-level regexes, compiled once -------------------------------------
 
@@ -54,14 +63,94 @@ const RE_TABLE_DELIM_PREFIX = /^ {0,3}\|[ \t:|-]*$/;
 
 /** Would this line open something other than a paragraph? The test lazy
  *  continuation and list/quote termination share. */
-function isBlockStart(line: string): boolean {
+function isBlockStart(
+  line: string,
+  isComponent: (name: string) => boolean = NO_COMPONENTS,
+  expressions = false,
+): boolean {
   return (
     RE_ATX.test(line) ||
     RE_FENCE_OPEN.test(line) ||
     RE_HR.test(line) ||
     RE_QUOTE.test(line) ||
-    RE_LIST.test(line)
+    RE_LIST.test(line) ||
+    isComponentBlockLine(line, isComponent, expressions)
   );
+}
+
+/** A line that opens a component block, resolved — speculation does not
+ *  interrupt a paragraph. */
+function isComponentBlockLine(
+  line: string,
+  isComponent: (name: string) => boolean,
+  expressions: boolean,
+): boolean {
+  const found = componentBlockAt([line], 0, isComponent, expressions);
+  return found !== null && found !== 'incomplete';
+}
+
+/**
+ * The component block opening at `lines[at]`, if one does.
+ *
+ * A component block owns its whole line — `<Chart/>` with prose after it is
+ * a paragraph with a tag in it, which is the inline case and not this one —
+ * but it may spend several lines doing so, because a component with six
+ * props is written down the page and MDX authors expect that to work. Lines
+ * are joined until the tag closes; a blank line gives up, since a tag does
+ * not span a paragraph break.
+ *
+ * `'incomplete'` means "still arriving", which only the live tail acts on.
+ */
+function componentBlockAt(
+  lines: string[],
+  at: number,
+  isComponent: (name: string) => boolean,
+  expressions = false,
+): { tag: ScannedTag; lastLine: number } | 'incomplete' | null {
+  // The identity check is not an optimisation: `scanTag` reports a bare
+  // `<Chart` as "still arriving" before it can know whether anyone claims
+  // the name, and a document that never opted in must not have its lazy
+  // continuation changed by a line that merely looks like a tag.
+  if (isComponent === NO_COMPONENTS) return null;
+  const indent = indentOf(lines[at]);
+  if (indent > 3 || lines[at][indent] !== '<') return null;
+
+  let text = lines[at];
+  for (let j = at; j < lines.length; j += 1) {
+    if (j > at) text += `\n${lines[j]}`;
+    const tag = scanTag(text, indent, isComponent, expressions);
+    if (tag === null) return null;
+    if (tag === 'incomplete') {
+      if (j + 1 < lines.length && RE_BLANK.test(lines[j + 1])) return null;
+      continue;
+    }
+    if (tag.kind === 'close') return null;
+    return text.slice(tag.end).trim() === '' ? { tag, lastLine: j } : null;
+  }
+  return 'incomplete';
+}
+
+/** The line closing `name`, counting same-name nesting, or -1. */
+function componentCloseLine(
+  lines: string[],
+  from: number,
+  name: string,
+  isComponent: (name: string) => boolean,
+): number {
+  let depth = 0;
+  for (let i = from; i < lines.length; i += 1) {
+    const indent = indentOf(lines[i]);
+    if (indent > 3 || lines[i][indent] !== '<') continue;
+    const tag = scanTag(lines[i], indent, isComponent);
+    if (tag === null || tag === 'incomplete' || tag.name !== name) continue;
+    if (lines[i].slice(tag.end).trim() !== '') continue;
+    if (tag.kind === 'open') depth += 1;
+    else if (tag.kind === 'close') {
+      if (depth === 0) return i;
+      depth -= 1;
+    }
+  }
+  return -1;
 }
 
 /** Leading tabs advance to 4-column stops; content tabs are left alone. */
@@ -93,7 +182,14 @@ export function parse(source: string, options: ParseOptions = {}): Document {
   const lines = normalized.split('\n').map(expandLeadingTabs);
   const blocks: BlockNode[] = [];
   const ranges: Array<[number, number]> = [];
-  parseBlocks(lines, partial, blocks, ranges);
+  parseBlocks(
+    lines,
+    partial,
+    blocks,
+    ranges,
+    options.isComponent ?? NO_COMPONENTS,
+    options.expressions === true,
+  );
   return {
     blocks,
     raws: ranges.map(([a, b]) => lines.slice(a, b).join('\n')),
@@ -113,6 +209,8 @@ function parseBlocks(
   tailOpen: boolean,
   out: BlockNode[],
   ranges?: Array<[number, number]>,
+  isComponent: (name: string) => boolean = NO_COMPONENTS,
+  expressions = false,
 ): void {
   let i = 0;
   const n = lines.length;
@@ -132,7 +230,7 @@ function parseBlocks(
     para.length = 0;
     paraStart = -1;
     // the paragraph owns the live tail iff its last line is the document's
-    const children = parseInline(text, tailOpen && end === n);
+    const children = parseInline(text, tailOpen && end === n, expressions);
     if (children.length > 0)
       commit({ type: 'paragraph', children }, start, end);
   };
@@ -166,7 +264,7 @@ function parseBlocks(
           {
             type: 'heading',
             depth: setext[1][0] === '=' ? 1 : 2,
-            children: parseInline(text, false),
+            children: parseInline(text, false, expressions),
           },
           start,
           i + 1,
@@ -203,7 +301,7 @@ function parseBlocks(
         {
           type: 'heading',
           depth: atx[1].length,
-          children: parseInline(atx[2] ?? '', held),
+          children: parseInline(atx[2] ?? '', held, expressions),
         },
         i,
         i + 1,
@@ -248,6 +346,69 @@ function parseBlocks(
       continue;
     }
 
+    // A component standing where a paragraph would (docs/prd-mdx.md). Gated
+    // on `isComponent`, so a document that never opted in never gets here.
+    const component = componentBlockAt(lines, i, isComponent, expressions);
+    if (component === 'incomplete') {
+      // A tag still arriving: hold it back rather than flash `<Cha` on the
+      // screen, the way a half-arrived link is held. Only the live tail may
+      // do this — anywhere else the tag is simply never going to close.
+      if (tailOpen) {
+        flushPara(i);
+        i = n;
+        continue;
+      }
+    } else if (component) {
+      const { tag, lastLine } = component;
+      flushPara(i);
+      const start = i;
+      const node = (children: BlockNode[]): ComponentBlock => ({
+        type: 'component',
+        name: tag.name,
+        attributes: tag.attributes,
+        children,
+      });
+
+      if (tag.kind === 'self') {
+        i = lastLine + 1;
+        commit(node([]), start, i);
+        continue;
+      }
+
+      const closeAt = componentCloseLine(
+        lines,
+        lastLine + 1,
+        tag.name,
+        isComponent,
+      );
+      if (closeAt !== -1) {
+        const children: BlockNode[] = [];
+        parseBlocks(
+          lines.slice(lastLine + 1, closeAt),
+          tailOpen && closeAt >= n,
+          children,
+          undefined,
+          isComponent,
+          expressions,
+        );
+        i = closeAt + 1;
+        commit(node(children), start, i);
+        continue;
+      }
+
+      // Open, with no close yet. While the document is still arriving that
+      // is the ordinary state of an element being typed: hold the tag and
+      // let the children render as the markdown they are, so the reader sees
+      // the prose rather than nothing. Mounting the component now and
+      // appending to its children instead would remount it — and lose its
+      // state — on the chunk that finally closes it.
+      if (tailOpen) {
+        i = lastLine + 1;
+        continue;
+      }
+      // Final document, never closed: the tag is text, so fall through.
+    }
+
     const quote = RE_QUOTE.exec(line);
     if (quote) {
       flushPara(i);
@@ -266,7 +427,7 @@ function parseBlocks(
         }
         if (
           !RE_BLANK.test(l) &&
-          !isBlockStart(l) &&
+          !isBlockStart(l, isComponent, expressions) &&
           inner.length > 0 &&
           !RE_BLANK.test(inner[inner.length - 1])
         ) {
@@ -277,7 +438,14 @@ function parseBlocks(
         break;
       }
       const children: BlockNode[] = [];
-      parseBlocks(inner, tailOpen && i === n, children);
+      parseBlocks(
+        inner,
+        tailOpen && i === n,
+        children,
+        undefined,
+        isComponent,
+        expressions,
+      );
       if (children.length > 0) commit({ type: 'quote', children }, start, i);
       continue;
     }
@@ -288,7 +456,7 @@ function parseBlocks(
     if (list && !(para.length > 0 && !list[4]) && !(held && !list[4])) {
       flushPara(i);
       const start = i;
-      const block = parseList(lines, i, tailOpen);
+      const block = parseList(lines, i, tailOpen, isComponent, expressions);
       i = block.end;
       commit(block.list, start, i);
       continue;
@@ -323,7 +491,12 @@ function parseBlocks(
         const rows: InlineNode[][][] = [];
         while (i < n) {
           const l = lines[i];
-          if (RE_BLANK.test(l) || !l.includes('|') || isBlockStart(l)) break;
+          if (
+            RE_BLANK.test(l) ||
+            !l.includes('|') ||
+            isBlockStart(l, isComponent, expressions)
+          )
+            break;
           rows.push(
             normalizeRow(splitRow(l), align.length, tailOpen && i === n - 1),
           );
@@ -395,6 +568,8 @@ function parseList(
   lines: string[],
   from: number,
   tailOpen: boolean,
+  isComponent: (name: string) => boolean = NO_COMPONENTS,
+  expressions = false,
 ): ParsedList {
   const n = lines.length;
   const first = RE_LIST.exec(lines[from]);
@@ -452,7 +627,11 @@ function parseList(
         i += 1;
         continue;
       }
-      if (pendingBlanks === 0 && !isBlockStart(l) && !RE_BLANK.test(l)) {
+      if (
+        pendingBlanks === 0 &&
+        !isBlockStart(l, isComponent, expressions) &&
+        !RE_BLANK.test(l)
+      ) {
         inner.push(l); // lazy paragraph continuation
         i += 1;
         continue;
@@ -470,7 +649,14 @@ function parseList(
     }
 
     const children: BlockNode[] = [];
-    parseBlocks(inner, tailOpen && i >= n, children);
+    parseBlocks(
+      inner,
+      tailOpen && i >= n,
+      children,
+      undefined,
+      isComponent,
+      expressions,
+    );
     items.push({ checked, children });
   }
 
@@ -603,7 +789,11 @@ function classify(ch: string | undefined): 'ws' | 'punct' | 'other' {
  * Parse inline markdown. `atDocEnd` marks text whose end is the live end of
  * a streaming document — only then do the implicit-close rules apply.
  */
-export function parseInline(text: string, atDocEnd: boolean): InlineNode[] {
+export function parseInline(
+  text: string,
+  atDocEnd: boolean,
+  expressions = false,
+): InlineNode[] {
   const items: Item[] = [];
   let buf = '';
 
@@ -697,6 +887,31 @@ export function parseInline(text: string, atDocEnd: boolean): InlineNode[] {
       }
       buf += text.slice(i, i + run);
       i += run;
+      continue;
+    }
+
+    // `{expr}` in the prose — rung 2 only, so a brace in an ordinary
+    // document is the character it has always been.
+    if (expressions && ch === '{') {
+      const end = closeBrace(text, i);
+      if (end === -1) {
+        // Still arriving: hold the rest of the line back rather than show
+        // half an expression. In a final document it is just text.
+        if (atDocEnd) {
+          flushText();
+          i = len;
+          continue;
+        }
+        buf += ch;
+        i += 1;
+        continue;
+      }
+      flushText();
+      items.push({
+        kind: 'node',
+        node: { type: 'expression', src: text.slice(i + 1, end - 1).trim() },
+      });
+      i = end;
       continue;
     }
 

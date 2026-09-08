@@ -289,9 +289,20 @@ per top-level block on the raw source text, so appending to the tail
 re-renders the tail alone. `npm run examples:markdown` streams a document
 in live.
 
-MDX is on the roadmap, not in the box: the AST reserves a `component` node
-and the renderer is ordinary React composition, so user components can
-interleave — including mid-stream — once the parser learns the syntax.
+**MDX, in block position.** `components={{ Chart }}` lets a document put a
+component between two paragraphs, with markdown children, mid-stream — and
+evaluating nothing: an attribute is a string, `true`, or the `JSON.parse` of
+a `{…}`. A tag is a component _iff its name is a key in that map_, so a
+document that never passes the prop parses exactly as it did before, and one
+from a stranger can only reach what you already exposed.
+
+Adding `scope={{ quarters }}` is the second rung and a different statement:
+`{…}` compiles, `{...spread}` works, and a brace in the prose renders its
+value. There is no sandbox, so `components` decides what a document may
+_reach_ and `scope` decides whether it may _compute_ — which matters when the
+input is model output. A tag in the middle of a sentence is still text; the
+inline half needs a `<richtext>` that can reserve advance width for an
+element. [docs/prd-mdx.md](docs/prd-mdx.md) is the design record.
 
 ## HTML
 
@@ -1166,7 +1177,10 @@ Candidates to move here:
 - The 3D scene graph and a Three.js / react-three-fiber-shaped layer, with
   `<glarea>` itself staying in core.
 - `<Tabs>`, undecided — it may well stay in core.
-- MDX support in `<Markdown>` — see the note in that section.
+- The inline half of MDX — a component in the middle of a sentence, which is
+  gated on a `<richtext>` run that can reserve advance width for an embedded
+  element. Block-position components and expressions have shipped;
+  [docs/prd-mdx.md](docs/prd-mdx.md) has what is left.
 - A StatusNotifierItem host, beside `<TrayHost>` rather than inside it: the
   D-Bus way modern applications publish a tray icon. It pairs with core's
   `dbusmenu.js`, and a complete panel wants both.

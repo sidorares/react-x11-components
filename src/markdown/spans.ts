@@ -135,6 +135,10 @@ export function plainTextOf(nodes: InlineNode[]): string {
       case 'break':
         out += '\n';
         break;
+      case 'expression':
+        // Resolved to text before rendering (`<Markdown>`'s `scope`), so a
+        // node reaching here was never evaluated and has no text to give.
+        break;
       default:
         out += plainTextOf(node.children);
     }
