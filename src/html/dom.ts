@@ -157,6 +157,11 @@ export type SheetRef =
  * an extension resets the parser, because a mid-document edit can change the
  * tree arbitrarily and pretending otherwise is how a streaming renderer
  * shows a document nobody wrote.
+ *
+ * That delta is available only until the source says it is `complete`: an
+ * ended parse cannot be extended, so every later change re-parses. A caller
+ * that wants the append path — a stream, a `<Markdown partial>` — keeps
+ * `complete` false until the last chunk, which is what the flag is for.
  */
 export class HtmlSource {
   /** The tree, live: it grows as chunks are written. */
@@ -178,12 +183,22 @@ export class HtmlSource {
     this.document = handler.root;
   }
 
-  /** Set the whole source. Appends when it can; re-parses when it cannot. */
+  /** Set the whole source. Appends when it can — an extension of what was
+   *  written, into a parser that has not been ended — and re-parses when it
+   *  cannot. */
   setSource(source: string, complete: boolean): boolean {
     let changed = false;
     if (source === this._written) {
       changed = false;
-    } else if (source.startsWith(this._written)) {
+    } else if (!this.complete && source.startsWith(this._written)) {
+      // The append path is open only while the parser is. `end()` runs the
+      // tokenizer's EOF, and htmlparser2 answers any later chunk with
+      // `.write() after done!`, so a completed parse re-parses like any other
+      // edit. Without the guard the failure landed far from its cause: `<Html
+      // partial={false}>` passes `complete` on *every* render, so whether an
+      // edit crashed depended on the caret — one in the middle of the document
+      // is not a prefix and took the reset path, one at the end was a prefix,
+      // took this branch, and threw inside the reconciler's commit.
       this._parser.write(source.slice(this._written.length));
       this._written = source;
       changed = true;

@@ -211,6 +211,16 @@ arbitrarily.
 
 Set `partial={false}` when the stream ends.
 
+**The delta is available only until then.** Ending the parse is final — an
+ended parser cannot be extended — so once `partial` is false, every later
+`source` re-parses, whether it extends the last one or not. That is the right
+trade for a stream, which has nothing more to send. It is the wrong one for an
+editor that hands over the whole document on every keystroke: leave `partial`
+at its default there, so typing at the end stays an append and only a
+mid-document edit costs a re-parse. The cost of leaving it true is that the
+parser is never ended, so a document whose tail is an unfinished construct —
+`<p>hi` mid-word — stays buffered until it closes.
+
 ## Manipulating the DOM
 
 The document is [domhandler]'s tree — plain, mutable objects that
