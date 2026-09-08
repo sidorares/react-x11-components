@@ -1,10 +1,13 @@
 # PRD: MDX in `<Markdown>` — components in the prose, and where the JavaScript stops
 
-Status: proposed. Nothing here is implemented; the AST's `ComponentInline`
-(`src/markdown/ast.ts`) is the reserved seam this builds on, and the note in
-`src/markdown/index.ts` ("MDX (planned, not implemented)") is the promise it
-keeps. `docs/components/markdown.md` gets the reference section when M1
-lands.
+Status: **M1 shipped** — `components` on `<Markdown>`, block position, no
+evaluation. M2 (expressions) and the inline half are not built.
+
+Two things changed in the building, both recorded in place below:
+`onUnknownComponent` is **cut** (it cannot mean anything under
+map-membership gating — see "Public API"), and components are **block
+position only**, because the inline half needs a `<richtext>` capability
+that does not exist (see "The inline half").
 
 ## What it is
 
@@ -209,14 +212,21 @@ interface MarkdownProps {
    * Stable identity, as above.
    */
   scope?: Record<string, unknown>;
-
-  /**
-   * A tag named in the document but absent from `components`. Default:
-   * render its source as literal text. `'throw'` is for authoring, where a
-   * typo should be loud.
-   */
-  onUnknownComponent?: 'text' | 'throw' | ((name: string) => ReactNode);
 }
+```
+
+**`onUnknownComponent` was cut.** It was specified above as a way to make a
+typo loud, and building the parser showed it cannot exist as specified: a
+name absent from `components` never becomes a component node in the first
+place — it is text before the renderer is reached, so there is nothing to
+report. Making it reportable would need a _second_ rule for "this looks like
+it wanted to be a component", which is the two-rule design that map
+membership was chosen to avoid. If typo-detection is wanted it belongs in a
+dev-mode lint over the source, not in a render prop. This closes open
+question 1 as **no**.
+
+```tsx
+
 ```
 
 What a component is handed:
@@ -229,6 +239,31 @@ interface MdxComponentProps {
   children?: ReactNode;
 }
 ```
+
+## The inline half, and why it is not in M1
+
+`<Badge tone="warn">Q3</Badge>` in the middle of a sentence does not parse,
+and the AST node for it stays reserved. The reason is not the parser — the
+scanner in `src/markdown/tags.ts` does not care where it is called from —
+it is the renderer.
+
+A paragraph is laid out as **one `<richtext>`**, whose `runs` are a flat
+array of styled text. A `TextRun` (`src/richtext/node.ts`) can say what a
+run looks like, but it has no way to say _"reserve this much advance width
+here for something another component paints"_. Without that, an inline
+component can only be rendered beside the text rather than inside its flow,
+which breaks wrapping — the one thing a paragraph is for.
+
+`<Html>` does solve this, with `display: inline-block`, `box.replaced` and
+its own line-box layout in `src/html/css/`. That is a CSS engine, and
+`<Markdown>` deliberately does not have one.
+
+So the inline half is its own piece of work, and its real content is a
+`<richtext>` capability — an embedded-element run — plus the three questions
+that come with it: baseline alignment, how a line wraps around an element
+taller than its text, and what a selection dragged across one should copy.
+Until then, a tag in the middle of a sentence is text, which is what it has
+always been.
 
 ## Syntax, precisely
 
@@ -431,14 +466,20 @@ is **streamed model output**.
 
 ## Milestones
 
-**M1 — tags, no evaluation.** `ComponentBlock`, the two parser hooks,
-`components` and `onUnknownComponent`, JSON attributes, children, streaming
-hold-back, the full test set above, `docs/components/markdown.md` and the
-README section, `examples/mdx.tsx`. This is the rung the deck needs and the
-rung that is safe for model output.
+**M1 — tags, no evaluation. Shipped.** `ComponentBlock` and `AttributeValue`
+in the AST, `ParseOptions.isComponent` as the gate, `src/markdown/tags.ts`
+as the scanner, block dispatch in `parseBlocks` (multi-line tags included),
+`components` on `<Markdown>` with dotted resolution, JSON attributes,
+markdown children, streaming hold-back, `test/mdx.test.ts`,
+`examples/mdx.tsx`. Block position only; no `onUnknownComponent`.
 
 **M2 — expressions.** The `slurpExpression` extraction, `scope`, the compile
 cache, spreads, bare `{expr}` in prose, the security docs.
+
+**M1.5 — the inline half**, which M1 found to be a separate piece of work
+rather than the other half of the same one. See "The inline half"; it is
+gated on a `<richtext>` embedded-element run, and it is the more useful of
+the two remaining rungs for prose.
 
 **M3 — considered, not committed.** Fragments (`<>…</>`), a component that
 streams into its own children rather than remounting, and a `components` map
@@ -446,14 +487,15 @@ that can decline a tag at render time.
 
 ## Open questions
 
-1. **Does M1 ship `onUnknownComponent: 'throw'`?** Authoring wants it;
-   nothing else does. Proposed: yes, because a deck author typo-ing
-   `<Callout>` and silently getting text is a bad half-hour.
+1. ~~**Does M1 ship `onUnknownComponent: 'throw'`?**~~ **Closed: no.** The
+   prop cannot exist under map-membership gating — see "Public API". A lint
+   over the source is the shape this wants, if it is wanted.
 2. **Should `scope` be a function?** `scope={(name) => …}` would let an
    application refuse a binding lazily. Proposed: no in M2, an object is the
    MDX-shaped thing; revisit if a caller wants it.
-3. **Is `Card.Header` worth the walk?** It is two lines and the compound-
-   component idiom is common. Proposed: yes.
+3. ~~**Is `Card.Header` worth the walk?**~~ **Closed: yes**, shipped in M1 —
+   flat key first, then the property walk, so a map can spell the dotted
+   name literally or hang it off the parent.
 4. **Where does `<Formula>` sit after this?** A ` ```math ` fence and
    `<Formula tex="…"/>` become two ways to say one thing. Proposed: leave
    both; fences are how a _model_ writes maths, tags are how a person does.

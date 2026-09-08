@@ -152,23 +152,62 @@ word count, or a second renderer of your own.
 
 ## MDX
 
-On the roadmap, not in the box. The AST reserves a `component` node and the
-renderer is ordinary React composition, so user components can interleave —
-including mid-stream — once the parser learns the syntax. The reserved seam is
-the only part that exists today.
+Components in the prose, in block position, resolved from a map:
 
-[`docs/prd-mdx.md`](../prd-mdx.md) is the design. Three things in it are worth
-knowing before the feature exists, because they shape what it will be:
+```tsx
+<Markdown source={doc} components={{ Chart, Callout }} />
+```
 
-- **A `components` map gates the parser.** Without the prop, `<Chart/>` is
-  literal text exactly as it is now, so nothing you render today can change.
-- **A tag is a component iff its name is a key in that map** — no
-  capitalisation rule, no HTML fallback.
-- **`{…}` is JSON before it is JavaScript.** Attribute values parse as JSON
-  and evaluate nothing; a separate `scope` prop opts into `new Function`.
-  Since this component's usual input is streamed model output, that split is
-  the feature's main constraint: `components` decides what a document may
-  reach, `scope` decides whether it may compute.
+```markdown
+Revenue recovered in the second half:
+
+<Chart data={[12, 40, 38]} height={240} />
+
+<Callout tone="warn">
+
+Children are markdown, so a callout can hold a heading and a list.
+
+</Callout>
+```
+
+**A tag is a component iff its name is a key in `components`.** There is no
+capitalisation rule and no HTML fallback, so `<Chart/>` in a document with no
+`Chart` key is the literal text it has always been — and a document that
+never passes the prop parses exactly as it did before the feature existed.
+That gate is why turning MDX on cannot change anything you already render.
+
+**Nothing is evaluated.** An attribute is a string, `true` for a bare name,
+or the `JSON.parse` of a `{…}`. A brace that is not JSON makes the tag
+unreadable and it stays text. Since this component's usual input is streamed
+model output, that is the property that matters: a document from a stranger
+can name a component you already decided to expose, and hand it JSON, and
+that is all.
+
+A dotted name resolves flat first (`components['Card.Header']`), then by
+walking (`components.Card.Header`), so compound components work.
+
+A tag may span several lines, which is how a component with six props is
+written. It may not span a blank line.
+
+While streaming, a tag still arriving is held back rather than shown as
+syntax, like every other half-arrived construct; an element whose children
+are still arriving shows those children as the markdown they are, and
+becomes a component on the chunk that closes it.
+
+### Block position only
+
+A tag on its own line is a component. One in the middle of a sentence —
+`<Badge>Q3</Badge>` — is still text. That is not an oversight: a paragraph
+is laid out as a single `<richtext>`, and a `TextRun` has no way to reserve
+advance width for an element someone else paints, so an inline component
+cannot join the text flow without new machinery. See
+[the PRD](../prd-mdx.md), "The inline half".
+
+`{expressions}`, spreads and `import` are likewise not here;
+`docs/prd-mdx.md` has the ladder and what each rung would cost.
+
+`npm run examples:mdx` shows a document streaming in with and without the
+`components` prop, side by side.
 
 ## Example
 

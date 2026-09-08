@@ -174,6 +174,7 @@
     "examples:html": "tsx examples/html.tsx",
     "examples:maps": "tsx examples/maps.tsx",
     "examples:markdown": "tsx examples/markdown.tsx",
+    "examples:mdx": "tsx examples/mdx.tsx",
     "examples:media-player": "tsx examples/media-player.tsx",
     "examples:qml": "tsx examples/qml/qml.tsx",
     "examples:reorder": "tsx examples/reorder.tsx",

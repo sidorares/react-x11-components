@@ -1,9 +1,10 @@
 // The markdown AST `parse.ts` produces and `index.ts` renders. Deliberately
 // small: it is the GFM constructs this component draws, not a general
 // mdast — but it is shaped so that growing it stays additive. In particular
-// `component` is reserved for the MDX direction: a parser extension can emit
-// one without the renderer, the selection model or the caches changing shape
-// (see "MDX" in index.ts).
+// `component` is the MDX direction: `ComponentBlock` is parsed and rendered
+// (docs/prd-mdx.md, M1), and `ComponentInline` is still reserved — see the
+// note on it for why the inline half needs machinery `<richtext>` does not
+// have yet.
 
 /** Inline content, inside a paragraph, heading, list item or table cell. */
 export type InlineNode =
@@ -51,14 +52,31 @@ export interface BreakInline {
 }
 
 /**
- * Reserved for MDX: `<Chart data={…} />` would parse to one of these. The
- * current parser never emits it; the renderer maps unknown names to plain
- * text so a future parser upgrade cannot crash an older renderer.
+ * An attribute's value. `literal` is what an attribute string or a `{json}`
+ * attribute resolves to at parse time; `expression` holds unevaluated source
+ * for the rung that compiles it, so that parsing stays pure and one AST can
+ * be rendered against two scopes (docs/prd-mdx.md, M2). The parser emits
+ * only `literal` today.
+ */
+export type AttributeValue =
+  { kind: 'literal'; value: unknown } | { kind: 'expression'; src: string };
+
+/**
+ * **Still reserved.** `<Badge/>` in the middle of a sentence parses to one of
+ * these — except that nothing emits them yet, because nothing can render
+ * them: a paragraph is laid out as a single `<richtext>`, and a `TextRun`
+ * has no way to say "reserve this much advance width for an element someone
+ * else paints". Giving it one is the inline half of MDX and is its own piece
+ * of work (baseline alignment, wrapping around the element, and what a
+ * selection dragged across it should copy).
+ *
+ * Kept in the union so the shape stays stable, and so a renderer written
+ * against it today cannot be broken by the parser learning to emit them.
  */
 export interface ComponentInline {
   type: 'component';
   name: string;
-  attributes: Record<string, string>;
+  attributes: Record<string, AttributeValue>;
   children: InlineNode[];
 }
 
@@ -70,7 +88,22 @@ export type BlockNode =
   | QuoteBlock
   | ListBlock
   | TableBlock
-  | RuleBlock;
+  | RuleBlock
+  | ComponentBlock;
+
+/**
+ * A component standing where a paragraph would: `<Chart data={…} />` on its
+ * own line, or `<Callout>` … `</Callout>` around blocks.
+ *
+ * Only emitted when `ParseOptions.isComponent` says the name is one — which
+ * is what keeps every document that renders today rendering the same way.
+ */
+export interface ComponentBlock {
+  type: 'component';
+  name: string;
+  attributes: Record<string, AttributeValue>;
+  children: BlockNode[];
+}
 
 export interface ParagraphBlock {
   type: 'paragraph';
@@ -160,4 +193,14 @@ export interface ParseOptions {
    * underline or a rule) is held back. Pass false for text that is final.
    */
   partial?: boolean;
+  /**
+   * Whether `name` is a component this document may use. Absent — the
+   * default — means no tag is a component and `<Chart/>` stays the literal
+   * text it has always been, so turning MDX on is opt-in and turning it off
+   * is byte-for-byte the old behaviour.
+   *
+   * `<Markdown>` supplies one from its `components` prop. A dotted name
+   * (`Card.Header`) is passed through whole; resolving it is the caller's.
+   */
+  isComponent?: (name: string) => boolean;
 }

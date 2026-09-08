@@ -289,12 +289,16 @@ per top-level block on the raw source text, so appending to the tail
 re-renders the tail alone. `npm run examples:markdown` streams a document
 in live.
 
-MDX is on the roadmap, not in the box: the AST reserves a `component` node
-and the renderer is ordinary React composition, so user components can
-interleave — including mid-stream — once the parser learns the syntax.
-[docs/prd-mdx.md](docs/prd-mdx.md) is the design: a `components` map gates the
-parser, attribute values are JSON until an application opts into expressions,
-and nothing is evaluated for a document you did not write.
+**MDX, in block position.** `components={{ Chart }}` lets a document put a
+component between two paragraphs — with markdown children, mid-stream, and
+without evaluating anything: an attribute is a string, `true`, or the
+`JSON.parse` of a `{…}`. A tag is a component _iff its name is a key in that
+map_, so a document that never passes the prop parses exactly as it did
+before, and one from a stranger can only reach what you already exposed. A
+tag in the middle of a sentence is still text — the inline half needs a
+`<richtext>` that can reserve advance width for an element, which is its own
+piece of work. [docs/prd-mdx.md](docs/prd-mdx.md) has the ladder, and what
+`{expressions}` would cost.
 
 ## HTML
 
@@ -1169,9 +1173,10 @@ Candidates to move here:
 - The 3D scene graph and a Three.js / react-three-fiber-shaped layer, with
   `<glarea>` itself staying in core.
 - `<Tabs>`, undecided — it may well stay in core.
-- MDX support in `<Markdown>` — components in the prose, gated on a
-  `components` map so an untrusted document evaluates nothing. Designed in
-  [docs/prd-mdx.md](docs/prd-mdx.md); see also the note in that section.
+- MDX in `<Markdown>` beyond block position — `{expressions}` against an
+  opt-in scope, and the inline half, which is gated on a `<richtext>` run
+  that can reserve advance width for an embedded element. Block-position
+  components shipped; [docs/prd-mdx.md](docs/prd-mdx.md) has the rest.
 - A StatusNotifierItem host, beside `<TrayHost>` rather than inside it: the
   D-Bus way modern applications publish a tray icon. It pairs with core's
   `dbusmenu.js`, and a complete panel wants both.
