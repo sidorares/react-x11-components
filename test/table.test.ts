@@ -186,21 +186,26 @@ test('columns and rows are the whole basic setup', async () => {
   assert.deepStrictEqual(cells, ['banana', '300']);
 });
 
+/** The width of every cell in a row, summed — the grid the row lays out on. */
+function gridWidth(label: string): number {
+  return retained(rowFor(label))
+    .children.filter((c) => (c as RetainedNode).props.role === 'cell')
+    .reduce((sum, c) => sum + (c as RetainedNode).abs.width, 0);
+}
+
 test('unsized columns stretch: the row fills the box it was given', async () => {
+  // Less the grid's inset at each edge — the four pixels that make the
+  // selection a pill rather than a band. Flex columns give them up rather
+  // than pushing the last of the table under a scrollbar.
   await mount({}, 400);
   await settle();
-  const cells = retained(rowFor('banana')).children.filter(
-    (c) => (c as RetainedNode).props.role === 'cell',
-  );
-  const total = cells.reduce(
-    (sum, c) => sum + (c as RetainedNode).abs.width,
-    0,
-  );
-  assert.strictEqual(
-    total,
-    400,
-    `cells should share the whole 400px, got ${total}`,
-  );
+  assert.strictEqual(gridWidth('banana'), 400 - 4 * 2);
+
+  // and `rowInset={0}` is the old full-bleed grid, to the pixel
+  await cleanup();
+  await mount({ rowInset: 0 }, 400);
+  await settle();
+  assert.strictEqual(gridWidth('banana'), 400);
 });
 
 test('the app’s own row shape reads through getId and value', async () => {
@@ -930,6 +935,83 @@ test('clicking a row keeps the columns where they are', async () => {
   await userEvent.click(rowNodes()[2]);
   await settle();
   assert.strictEqual(bodyPane().scrollX, 150, 'the click moved the columns');
+});
+
+test('a row is a pill inside the table, and the header moves with it', async () => {
+  // The wash is inset on both sides and rounded, so a selection reads as a
+  // mark *on* a row rather than a stripe cut across the pane the table is
+  // mounted in.
+  await mount({ defaultSelected: 2 }, 400);
+  await settle();
+  const pane = retained(bodyPane());
+  const rows = rowNodes().map((n) => retained(n));
+  for (const row of rows) {
+    assert.strictEqual(row.abs.x - pane.abs.x, 4, 'inset at the start');
+    assert.strictEqual(
+      pane.abs.x + pane.abs.width - (row.abs.x + row.abs.width),
+      4,
+      'and by the same at the end',
+    );
+    // from the theme, not a literal: `radiusSmall` is 3 in the stock palette
+    assert.strictEqual(row.style.borderRadius, 3);
+  }
+
+  // The header is the other half of the same grid, so it moved by the same
+  // four pixels: every caption still sits over its own column. Asserted as
+  // the *offset between* the two, which the grip band makes non-zero for
+  // every column but the first — what matters is that it did not change.
+  const offsets = () =>
+    COLUMNS.map((_, at) => {
+      const head = retained(headerNodes()[at]);
+      const cell = retained(
+        retained(rowFor('banana')).children.filter(
+          (c) => retained(c).props.role === 'cell',
+        )[at],
+      );
+      return head.abs.x - cell.abs.x;
+    });
+  const inset = offsets();
+  await cleanup();
+  await mount({ defaultSelected: 2, rowInset: 0 }, 400);
+  await settle();
+  assert.deepStrictEqual(inset, offsets(), 'the grid did not shear');
+});
+
+test('the trailing inset survives a scroll past the last column', async () => {
+  // Columns wider than the pane: the row is genuinely wider than what is on
+  // screen, and at the far end of the scroll the last column would sit flush
+  // against the edge the inset exists to clear. The inset is the pane's
+  // padding rather than a margin on the rows box for exactly this — a
+  // trailing margin is dropped from the scroll extent, a trailing padding is
+  // not.
+  const wide: TableColumn<File>[] = [
+    { id: 'name', label: 'Name', width: 300 },
+    { id: 'bytes', label: 'Size', width: 300 },
+  ];
+  await mount({ columns: wide, rows: many(60), rowHeight: 24 }, 400, 200);
+  await settle();
+  bodyPane().scrollTo({ x: 99999 });
+  await settle();
+  const pane = retained(bodyPane());
+  const row = retained(rowNodes()[0]);
+  assert.strictEqual(
+    pane.abs.x + pane.abs.width - (row.abs.x + row.abs.width),
+    4,
+    'the row still ends four pixels inside the pane',
+  );
+});
+
+test('rowInset={0} puts the full-bleed band back', async () => {
+  // The escape hatch for a dense grid: no inset, and the corner goes with
+  // it — a rounded full-bleed row would only show the pane through four
+  // notched corners.
+  await mount({ defaultSelected: 2, rowInset: 0 }, 400);
+  await settle();
+  const pane = retained(bodyPane());
+  const row = retained(rowFor('banana'));
+  assert.strictEqual(row.abs.x, pane.abs.x);
+  assert.strictEqual(row.abs.width, pane.abs.width);
+  assert.strictEqual(row.style.borderRadius, 0);
 });
 
 // --- resize ----------------------------------------------------------------
