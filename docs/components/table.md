@@ -83,6 +83,7 @@ taught.
 | `onColumnResize`                        | `(id, width) => void`              | A grip was dragged or keyed.                                                                                                                                  |
 | `rowHeight`                             | `number`                           | Declares every row exactly this tall — core's model, nothing measured. **Omit it and rows are measured instead.** `rowHeight={24}` is core's exact behaviour. |
 | `estimatedRowHeight`                    | `number`                           | What an unmeasured row is assumed — and floored — at, while measuring. Default 24. Once enough rows are measured, the guess is re-learnt from their mean.     |
+| `rowInset`                              | `number`                           | How far the grid sits inside the table's edge. Default 4 — what makes the row wash a pill rather than a band. `0` is the full-bleed grid. See below.          |
 | `virtual`                               | `boolean \| 'auto'`                | Build only the rows on screen. `'auto'` (the default) turns it on past 200 rows.                                                                              |
 | `overscan`                              | `number`                           | Rows built either side of the viewport. Default 6.                                                                                                            |
 | `prefetch`                              | `number`                           | Rows built beyond the overscan while the table sits idle, per side. Default 40; `0` turns the band off. See "What a scroll costs".                            |
@@ -218,6 +219,38 @@ and `minWidth: 0`; give the box you put it in the same treatment.
 The header strip is not part of the scrolled content — it sits above the
 pane and tracks the body's horizontal scroll by `marginStart`, so it follows
 the direction the columns run under RTL and never moves vertically.
+
+### The row wash is a pill, not a band
+
+The grid sits four pixels inside each edge of the table, and the row is
+rounded on `theme.radiusSmall`, so selection and hover read as a mark _on_ a
+row rather than a stripe cut across the pane — the same reason a menu insets
+its rows from the sheet.
+
+**The inset is the grid's, not the row's**, which is where a table parts
+company with `<Tree>`. A tree row is alone in its pane, so its own margin is
+the whole story. A table row is one half of a grid whose other half is the
+header, and a margin on the row alone would slide every cell out from under
+the column it belongs to. So the body pane is padded, the header row is
+offset to match, and the columns resolve into what is left — a flex column
+gives up the eight pixels rather than pushing the last of the table under a
+horizontal scrollbar that was not there before.
+
+That is also why it is a prop and not a `styles.row` margin: `styles.row`
+cannot move the header, and a row that moved without it would shear the grid.
+
+```jsx
+<Table columns={columns} rows={rows} rowInset={0} />
+```
+
+`rowInset={0}` is the old full-bleed band, to the pixel. The corner goes with
+it — a pill has to be inset to be seen as one, and rounding a full-bleed row
+only shows the pane through four notched corners.
+
+The radius is the window's scale rather than core's `rowRadius`: that one
+derives a row's corner from `radiusPopup` so the pill and the sheet under it
+share a centre, and a table owns no sheet — it fills a pane whose radius it
+cannot know.
 
 ## Seams
 

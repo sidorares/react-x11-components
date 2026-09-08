@@ -137,6 +137,28 @@ const GRIP = HALF + RULE + HALF;
 /** What one Left/Right on a focused grip is worth. */
 const STEP = 16;
 /**
+ * How far the grid sits inside the table's own edge — the default `rowInset`.
+ *
+ * It is what makes a selection read as a **pill on** the list rather than a
+ * band across it. With no inset the wash runs into whatever the table is
+ * mounted against, and the selected row reads as a stripe cut across the pane
+ * instead of a mark on a row. Core's `Menu` insets its rows from the sheet
+ * for exactly this reason, and `MENU_PAD` is this number.
+ *
+ * **The inset is the grid's, not the row's**, which is where a table parts
+ * company with `<Tree>`. A tree row is alone in its pane, so its own margin
+ * is the whole story; a table row is one half of a grid whose other half is
+ * the header, and a margin on the row alone would slide every cell four
+ * pixels out from under the column it belongs to. So the body pane is padded
+ * and the header row is offset by the same amount, and the columns resolve
+ * into what is left — which is also why this is a prop rather than something
+ * `styles.row` could express (see `rowInset`).
+ *
+ * Horizontal only. Rows stack flush against each other: clearing the first
+ * and the last is the job of whatever the table is mounted in.
+ */
+const ROW_INSET = 4;
+/**
  * Where `virtual="auto"` starts virtualizing.
  *
  * Well above any viewport, so a table that is merely long is still built
@@ -342,6 +364,21 @@ interface TableBaseProps<Row> extends Omit<
    * the measure pass. `rowHeight={24}` restores core's exact behaviour.
    */
   rowHeight?: number;
+  /**
+   * How far the grid sits inside the table's edge, in pixels. Default 4.
+   *
+   * It is what makes the selection and hover washes read as pills on the
+   * list rather than bands across it, and the row's corner radius follows
+   * it: `rowInset={0}` is the full-bleed, square-cornered band, because a
+   * pill has to be inset to be *seen* as one and rounding a full-bleed row
+   * only shows the pane through four notched corners.
+   *
+   * A prop rather than a `styles.row` margin because the header has to move
+   * with the body — see `ROW_INSET`. The columns resolve into the width this
+   * leaves, so widening it narrows the flex columns rather than starting a
+   * horizontal scroll.
+   */
+  rowInset?: number;
   /** What an unmeasured row is assumed — and floored — at, while measuring.
    *  Default 24. The scrollbar is this guess for every row not yet seen; it
    *  converges as you scroll, and once enough rows have been measured the
@@ -495,6 +532,10 @@ interface TableRowViewProps<Row> {
   rowHeight: number | undefined;
   estimate: number;
   theme: Theme;
+  /** The row's corner, resolved once at the table level — see `rowRadius`
+   *  there for why it is `radiusSmall` and not core's popup derivation. A
+   *  number rather than a lookup so the memo still bails out on a scroll. */
+  radius: number;
   rowStyle: TableStyles<Row>['row'];
   cellStyle: TableStyles<Row>['cell'];
   renderRow?: (state: TableRowState<Row>, content: ReactNode[]) => ReactNode;
@@ -522,6 +563,7 @@ function TableRowView<Row>(props: TableRowViewProps<Row>): ReactElement {
     rowHeight,
     estimate,
     theme,
+    radius,
     rowStyle,
     cellStyle,
     renderRow,
@@ -611,17 +653,32 @@ function TableRowView<Row>(props: TableRowViewProps<Row>): ReactElement {
         selectable && { cursor: 'pointer' },
         {
           backgroundColor: isSelected ? theme.hoverBackground : 'transparent',
+          // A pill on the list rather than a band across it. The inset that
+          // makes it one is the grid's — see `ROW_INSET` — and this is the
+          // corner that goes with it.
+          borderRadius: radius,
           // The row's ink, said once: `color` inherits, so default cells
           // take it without being handed it.
           color,
         },
         selectable && {
-          // pressed even on the selected row: a re-press on the row that
-          // is already current is the one click in the table that would
-          // otherwise look ignored
+          // The press marks the row it lands on, and the pressed colour comes
+          // from the ramp that row is already painted with. An unselected row is on the surface ramp, so it is
+          // `surfaceActive`. A selected row is washed with `hoverBackground`,
+          // and `accentActive` — what this used to say — is the pressed step
+          // of `accent`: a different token that merely *holds* the same
+          // colour in both stock palettes. Move the accent and the press
+          // flashes something the table never wears at rest; a yellow accent
+          // over a blue selection gives a yellow press, and the row's ink is
+          // still `hoverText`, picked to be legible on the blue. There is no
+          // darker step of `hoverBackground` in the palette to reach for and
+          // the selected row is already the strongest fill in the list, so
+          // it keeps its wash. That row is the one place a press shows
+          // nothing, and it is also the one row whose press already has an
+          // answer: it is selected, and a second click opens it.
           ':active': {
             backgroundColor: isSelected
-              ? theme.accentActive
+              ? theme.hoverBackground
               : theme.surfaceActive,
           },
         },
@@ -682,6 +739,7 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
     onRowContextMenu,
     onColumnResize,
     rowHeight,
+    rowInset = ROW_INSET,
     estimatedRowHeight,
     virtual = 'auto',
     overscan = DEFAULT_OVERSCAN,
@@ -809,6 +867,8 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
   const hintShown = useRef(false);
   const userWidthsRef = useRef(userWidths);
   userWidthsRef.current = userWidths;
+  const rowInsetRef = useRef(rowInset);
+  rowInsetRef.current = rowInset;
 
   /** Declared uniform: divide, never measure — core's model. */
   const uniform = rowHeight !== undefined;
@@ -846,11 +906,29 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
   const { first, last, above, below } = win.slice;
 
   /** Columns resolve to pixels once, at the table level, per (columns,
-   *  viewport, resizes) — every row agrees on the grid by construction. */
+   *  viewport, resizes) — every row agrees on the grid by construction.
+   *  Into the *inset* box: the grid gives up `rowInset` at each edge, so a
+   *  flex column fills what is left instead of pushing the last few pixels
+   *  under a horizontal scrollbar that was not there before. */
+  const gridWidth = Math.max(0, view.width - rowInset * 2);
   const { widths, total } = useMemo(
-    () => resolveWidths(columns, userWidths, view.width),
-    [columns, userWidths, view.width],
+    () => resolveWidths(columns, userWidths, gridWidth),
+    [columns, userWidths, gridWidth],
   );
+  /**
+   * The row's corner. `radiusSmall` rather than core's `rowRadius`: that one
+   * derives a row's radius from `radiusPopup` less the sheet's border and
+   * padding, so the pill and the sheet under it share a centre — and a table
+   * owns no sheet. It fills a pane whose radius it cannot know, so there is
+   * no outer curve to be concentric with, and `radiusPopup` ("a floating
+   * surface … half the text size") is describing a menu laid over the window
+   * rather than content in it. Of the two in-window tokens the row takes the
+   * tighter: `radius` is the control scale — a button, an input, a card cut
+   * into the surface — and this is a mark *on* the surface, transient and
+   * borderless. Zero when there is no inset, because a pill has to be inset
+   * to be seen as one; rounded and full-bleed just notches the four corners.
+   */
+  const rowRadius = rowInset > 0 ? theme.radiusSmall : 0;
 
   /**
    * The scroll the table owes a row, and the pane's real offset read back
@@ -907,7 +985,10 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
     const expected = resolveWidths(
       columnsRef.current,
       userWidthsRef.current,
-      viewRef.current.width,
+      // the same inset box the render resolved into, or every row is
+      // measured against a grid the table does not have and no height is
+      // ever recorded
+      Math.max(0, viewRef.current.width - rowInsetRef.current * 2),
     ).total;
     const box = body.current;
     const rows = orderedRef.current;
@@ -1306,6 +1387,9 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
           { height: heights.heightAt(entry.index) },
           {
             backgroundColor: isSelected ? theme.hoverBackground : 'transparent',
+            // Same pill as a real row's, so a placeholder that is replaced
+            // mid-scroll does not change shape as it arrives.
+            borderRadius: rowRadius,
           },
           typeof rowStyleProp === 'function'
             ? rowStyleProp(state)
@@ -1483,6 +1567,7 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
         rowHeight,
         estimate,
         theme,
+        radius: rowRadius,
         rowStyle: rowStyleProp,
         cellStyle: cellStyleProp,
         renderRow,
@@ -1649,7 +1734,17 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
       },
       hx(
         'box',
-        { style: [s.headerRow, { marginStart: -scrollX, width: total }] },
+        {
+          // `rowInset` first, then the scroll: the header and the rows are
+          // one grid, so the inset that moves the body has to move the
+          // header by the same amount or every caption slides out from over
+          // its column. The strip's own background stays full-bleed — it is
+          // a band across the table, which is exactly what a row is not.
+          style: [
+            s.headerRow,
+            { marginStart: rowInset - scrollX, width: total },
+          ],
+        },
         headerCells,
       ),
     ),
@@ -1657,7 +1752,16 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
       'box',
       {
         ref: body,
-        style: s.body,
+        // The body half of the grid's inset — on the pane rather than on
+        // each row, for three reasons. A row still lays out at exactly
+        // `total`, which is the width `measureRows` insists on before it
+        // will record a height. The spacers a virtualized table stands on
+        // are inset with it, for free. And padding is inside the scrollable
+        // area at both ends, so the trailing inset survives a table scrolled
+        // to the end of columns wider than its pane — a trailing *margin* on
+        // the rows box is dropped from the scroll extent there, and the last
+        // column ends up flush against the edge it was meant to clear.
+        style: [s.body, { paddingStart: rowInset, paddingEnd: rowInset }],
         onScroll: (ev) => {
           // A scroll this component did not ask for is the user taking over,
           // and an owed `scrollToRow` must not yank the list back out from
