@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.6.0](https://github.com/sidorares/react-x11-components/compare/v0.5.0...v0.6.0) (2026-09-08)
+
+
+### ⚠ BREAKING CHANGES
+
+* **markdown:** MDX — components and expressions in the prose ([#72](https://github.com/sidorares/react-x11-components/issues/72))
+
+### Features
+
+* **markdown:** MDX — components and expressions in the prose ([#72](https://github.com/sidorares/react-x11-components/issues/72)) ([29be2fb](https://github.com/sidorares/react-x11-components/commit/29be2fb5fa2857d2b26ee88a231c7f188aad26b9))
+
 ## [0.5.0](https://github.com/sidorares/react-x11-components/compare/v0.4.0...v0.5.0) (2026-09-07)
 
 
