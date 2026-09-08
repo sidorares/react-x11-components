@@ -1,16 +1,22 @@
 // Type-level test: the calendar's props compile against react-x11's JSX
 // namespace, the two value shapes are told apart by the type as well as at
-// run time, and the desktop-event helper lines up with `dayContent`.
+// run time, and the desktop-event hook lines up with `dayContent`.
+//
+// That last one is a **cross-package** assertion since react-x11 2.9.1 took
+// the desktop calendar: the events come from core and the grid comes from
+// here, and the only thing joining them is the `'YYYY-MM-DD'` key. Nothing
+// checks that at run time — neither package imports the other's calendar —
+// so this file is where the two halves are held against each other.
 import React from 'react';
+import { useDesktopCalendarEvents } from 'react-x11';
+import type { DesktopEvent } from 'react-x11';
 
 import { Calendar, DatePicker } from '../../src/index.js';
-import { useDesktopCalendarEvents } from '../../src/index.js';
 import type {
   CalendarDay,
   CalendarDayState,
   CalendarHandle,
   DateRange,
-  DesktopEvent,
   WidgetChangeEvent,
 } from '../../src/index.js';
 
@@ -82,7 +88,11 @@ export function WithDesktopEvents(): React.ReactElement {
     to: new Date(2026, 8, 1),
     watch: true,
   });
-  void (status satisfies 'idle' | 'loading' | 'ready' | 'unavailable');
+  // `'denied'` arrived with the move: the user's answer, which has a
+  // Settings switch behind it, against the machine's `'unavailable'`, which
+  // has none.
+  void (status satisfies
+    'idle' | 'loading' | 'ready' | 'denied' | 'unavailable');
 
   return (
     <Calendar

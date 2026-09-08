@@ -186,7 +186,6 @@ const ORDER = [
   'media-player.md',
   'terminal.md',
   'tray-host.md',
-  'desktop-calendar.md',
   'richtext.md',
   'codeblock.md',
   'code-language.md',

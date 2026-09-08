@@ -74,8 +74,10 @@ the grid, and `false` back means "not mine, do your own thing".
 
 ### `dayContent`
 
-The keys `useDesktopCalendarEvents`'s `byDay` map uses are exactly the
-`'YYYY-MM-DD'` days `dayContent` is handed, so nothing sits between the two:
+The keys the `byDay` map of react-x11's
+[`useDesktopCalendarEvents`](https://github.com/sidorares/react-x11/blob/master/docs/desktop-calendar.md)
+uses are exactly the `'YYYY-MM-DD'` days `dayContent` is handed, so nothing
+sits between the grid and the user's real calendar:
 
 ```jsx
 <Calendar

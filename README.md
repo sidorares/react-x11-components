@@ -115,27 +115,26 @@ import type { CodeEditorProps } from '@react-x11/components';
 
 ## Components
 
-| Component        | Import                                   |                                                              |
-| ---------------- | ---------------------------------------- | ------------------------------------------------------------ |
-| `Calendar`       | `@react-x11/components/calendar`         | A month grid: one date or a range, any day blockable.        |
-| `DatePicker`     | `@react-x11/components/calendar`         | That calendar on a popup, behind a field.                    |
-| `LineChart` …    | `@react-x11/components/charts`           | Cartesian charts; a million points is a normal input.        |
-| `ColorPicker` …  | `@react-x11/components/color-picker`     | A colour input: field, hue, alpha, swatches, eyedropper.     |
-| `Code`           | `@react-x11/components/code`             | A static code block: highlighted, selectable.                |
-| `CodeEditor`     | `@react-x11/components/code-editor`      | Multiline code editing: highlighting, completion.            |
-| `Flow`           | `@react-x11/components/flow`             | A directed-graph editor: nodes, edges, pan and zoom.         |
-| `Html`           | `@react-x11/components/html`             | A static HTML + CSS document, selectable, with seams.        |
-| `Map`            | `@react-x11/components/maps`             | A 2D vector-tile map: pan, zoom, markers, overlays.          |
-| `Markdown`       | `@react-x11/components/markdown`         | Streaming-friendly GFM with cross-block selection.           |
-| `MediaPlayer`    | `@react-x11/components/media-player`     | mpv or VLC, embedded, with real transport control.           |
-| `ReorderList` …  | `@react-x11/components/reorder`          | A drag-and-drop list, over core's own drag and drop.         |
-| `Table`          | `@react-x11/components/table`            | A data table: sortable, virtualized, any row height.         |
-| `Terminal`       | `@react-x11/components/terminal`         | A real terminal: an embedded emulator, or its own.           |
-| `TerminalOutput` | `@react-x11/components/terminal-output`  | A captured session, rendered. `<Terminal>`'s static sibling. |
-| `Timeline` …     | `@react-x11/components/timeline`         | A run of events: a mark per step, a line between.            |
-| `TrayHost`       | `@react-x11/components/tray-host`        | The system tray: applications dock their icons in.           |
-| `Tree`           | `@react-x11/components/tree`             | A disclosure tree: seams throughout, and virtualized.        |
-| _(hook)_         | `@react-x11/components/desktop-calendar` | The user's real calendar events, over D-Bus.                 |
+| Component        | Import                                  |                                                              |
+| ---------------- | --------------------------------------- | ------------------------------------------------------------ |
+| `Calendar`       | `@react-x11/components/calendar`        | A month grid: one date or a range, any day blockable.        |
+| `DatePicker`     | `@react-x11/components/calendar`        | That calendar on a popup, behind a field.                    |
+| `LineChart` …    | `@react-x11/components/charts`          | Cartesian charts; a million points is a normal input.        |
+| `ColorPicker` …  | `@react-x11/components/color-picker`    | A colour input: field, hue, alpha, swatches, eyedropper.     |
+| `Code`           | `@react-x11/components/code`            | A static code block: highlighted, selectable.                |
+| `CodeEditor`     | `@react-x11/components/code-editor`     | Multiline code editing: highlighting, completion.            |
+| `Flow`           | `@react-x11/components/flow`            | A directed-graph editor: nodes, edges, pan and zoom.         |
+| `Html`           | `@react-x11/components/html`            | A static HTML + CSS document, selectable, with seams.        |
+| `Map`            | `@react-x11/components/maps`            | A 2D vector-tile map: pan, zoom, markers, overlays.          |
+| `Markdown`       | `@react-x11/components/markdown`        | Streaming-friendly GFM with cross-block selection.           |
+| `MediaPlayer`    | `@react-x11/components/media-player`    | mpv or VLC, embedded, with real transport control.           |
+| `ReorderList` …  | `@react-x11/components/reorder`         | A drag-and-drop list, over core's own drag and drop.         |
+| `Table`          | `@react-x11/components/table`           | A data table: sortable, virtualized, any row height.         |
+| `Terminal`       | `@react-x11/components/terminal`        | A real terminal: an embedded emulator, or its own.           |
+| `TerminalOutput` | `@react-x11/components/terminal-output` | A captured session, rendered. `<Terminal>`'s static sibling. |
+| `Timeline` …     | `@react-x11/components/timeline`        | A run of events: a mark per step, a line between.            |
+| `TrayHost`       | `@react-x11/components/tray-host`       | The system tray: applications dock their icons in.           |
+| `Tree`           | `@react-x11/components/tree`            | A disclosure tree: seams throughout, and virtualized.        |
 
 Five shared modules sit underneath and are importable on their own:
 `/richtext` (the styled-text element a document selects across),
@@ -860,13 +859,17 @@ architecture.
 
 ## The user's real calendar
 
-`useDesktopCalendarEvents` reads the calendars the desktop already has —
-Google, Microsoft, CalDAV, local — through Evolution Data Server over D-Bus.
-**Your app never sees a credential and never runs an OAuth flow**, because the
-desktop did that already, in Settings.
+`<Calendar dayContent>` is the seam the desktop's own events hang off, and
+the events themselves come from **react-x11**, not from here:
+[`useDesktopCalendarEvents`](https://github.com/sidorares/react-x11/blob/master/docs/desktop-calendar.md)
+reads the calendars the machine already has — iCloud, Google, Microsoft,
+Exchange, CalDAV, local — through EventKit on a Mac and Evolution Data Server
+on a Linux desktop. **Your app never sees a credential and never runs an
+OAuth flow**, because the desktop did that already, in Settings.
 
 ```jsx
-import { Calendar, useDesktopCalendarEvents } from '@react-x11/components';
+import { useDesktopCalendarEvents } from 'react-x11';
+import { Calendar } from '@react-x11/components';
 
 function Month({ from, to }) {
   const { byDay } = useDesktopCalendarEvents({ from, to, watch: true });
@@ -894,19 +897,26 @@ function Month({ from, to }) {
 ```
 
 The keys `byDay` uses are exactly the `'YYYY-MM-DD'` days `dayContent` is
-handed, so nothing sits between the two.
+handed, so nothing sits between the two — **that string format is the whole
+contract between the two packages**, and it is why the grid never had to know
+what an event is.
 
-Expanding recurring events needs [`ical.js`](https://github.com/kewisch/ical.js),
-which is an **optional** dependency — install it if you want events:
+This package shipped the D-Bus half until 0.4.0, as
+`@react-x11/components/desktop-calendar`. It moved to core in react-x11 2.9.1
+and the subpath is gone: a calendar is one of the things an app does _outside_
+its own windows, like notifications, the tray and the file dialog, and every
+one of those is a ladder in core with a freedesktop rung and a macOS one — the
+macOS rung here reaches EventKit through `@windowkit/appkit`, which only core
+can see. [`docs/prd-desktop-calendar.md`](docs/prd-desktop-calendar.md) is the
+design record and the survey behind that decision. Update an import of the old
+subpath to `react-x11`; nothing else changed, except that `status` grew
+`'denied'` and the result grew `backend` and `openSettings`.
 
-```bash
-npm install ical.js
-```
-
-Without it, or with no session bus, or on a desktop with no Evolution Data
-Server, `status` is `'unavailable'` and the calendar simply renders without
-dots. None of those is an error; they are ordinary states of a healthy
-machine. `npm run examples:calendar` in this repo is the whole thing working.
+Where no rung answers — no bus and no EDS on a Linux box, a Mac where the user
+declined — `status` says so and the calendar simply renders without dots. None
+of that is an error; they are ordinary states of a healthy machine.
+`npm run examples:calendar` in this repo is the whole thing working, and its
+footer names the rung that answered.
 
 ## Hosting another X client: `<Terminal>` and `<MediaPlayer>`
 

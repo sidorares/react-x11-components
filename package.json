@@ -64,10 +64,6 @@
       "types": "./dist/color-picker/index.d.ts",
       "default": "./dist/color-picker/index.js"
     },
-    "./desktop-calendar": {
-      "types": "./dist/desktop-calendar/index.d.ts",
-      "default": "./dist/desktop-calendar/index.js"
-    },
     "./embed": {
       "types": "./dist/embed/index.d.ts",
       "default": "./dist/embed/index.js"
@@ -203,7 +199,7 @@
     "@lydell/node-pty": "^1.0.0",
     "node-pty": "^1.0.0",
     "react": "^19.0.0",
-    "react-x11": "^2.8.3"
+    "react-x11": "^2.9.1"
   },
   "peerDependenciesMeta": {
     "@lezer/highlight": {
@@ -226,7 +222,7 @@
     "globals": "^17.8.0",
     "prettier": "^3.6.0",
     "react": "^19.2.8",
-    "react-x11": "^2.8.3",
+    "react-x11": "^2.9.1",
     "tsx": "^4.23.1",
     "typescript": "^7.0.2"
   },
@@ -235,7 +231,6 @@
   },
   "optionalDependencies": {
     "@xterm/headless": "^6.0.0",
-    "ical.js": "^2.2.1",
     "katex": "^0.18.4"
   }
 }
