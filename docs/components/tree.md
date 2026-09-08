@@ -225,6 +225,34 @@ A `renderLabel` **replaces** the default label, and its style with it. A
 custom label that should not wrap has to say `textWrap: 'nowrap'` itself;
 nothing inherits it.
 
+**The row's wash is a pill, not a band.** A row sits four pixels inside each
+edge of the tree and is rounded on `theme.radiusSmall`, so selection and hover
+read as a mark _on_ a row rather than a stripe cut across the pane the tree is
+in — the same reason a menu insets its rows from the sheet. It is a horizontal
+inset only: rows still stack flush, and clearing the first and the last is the
+job of whatever the tree is mounted in.
+
+The radius is the window's scale rather than a popup's, and deliberately not
+core's `rowRadius`: that one derives a row's corner from `radiusPopup` so the
+pill and the sheet under it share a centre, and a tree owns no sheet — it
+fills a sidebar or a split pane whose radius it cannot know. An app that _does_
+own one can have the concentric version, since it is the one that knows what
+to be concentric with.
+
+`styles.row` merges last, so both come off together — this is the old
+edge-to-edge band:
+
+```jsx
+<Tree
+  items={items}
+  styles={{ row: { marginStart: 0, marginEnd: 0, borderRadius: 0 } }}
+/>
+```
+
+The indent is measured from the row's own edge, so it is unchanged by the
+inset: the label steps by one `indent` per level as before, and the tree as a
+whole sits four pixels further in.
+
 ## Keyboard
 
 The tree is a single tab stop.

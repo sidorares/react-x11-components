@@ -748,6 +748,80 @@ test('rowHeight is a floor, and rows may exceed it', async () => {
   assert.ok(first > 40, `a wrapped row exceeds it, got ${first}`);
 });
 
+test('a row is a pill inside the tree, not a band across it', async () => {
+  // The wash is inset on both sides and rounded, so a selection reads as a
+  // mark *on* a row rather than a stripe cut across whatever the tree is
+  // mounted against — in a sidebar, the pane's own hairline.
+  await renderX11(
+    h(
+      'box',
+      { style: { width: 180, height: 200, minHeight: 0 } },
+      h(Tree, {
+        items: FILES,
+        defaultExpanded: ['src', 'src/tree'],
+        defaultSelected: 'src/tree',
+      }),
+    ),
+  );
+  const pane = retained(
+    screen.all((n) => retained(n).props.role === 'tree')[0],
+  );
+  const rows = rowNodes().map((n) => retained(n));
+  for (const row of rows) {
+    assert.strictEqual(row.abs.x - pane.abs.x, 4, 'inset at the start');
+    assert.strictEqual(
+      pane.abs.x + pane.abs.width - (row.abs.x + row.abs.width),
+      4,
+      'and by the same at the end',
+    );
+    // from the theme, not a literal: `radiusSmall` is 3 in the stock palette
+    assert.strictEqual(row.style.borderRadius, 3);
+  }
+  // The selected row wears the same shape as its neighbours — all three
+  // states are one node, so hover and press cannot redraw the list's edges.
+  const selected = rows.find((r) => r.props['aria-selected'] === true);
+  assert.ok(selected, 'a row is selected');
+  assert.strictEqual(selected.abs.width, rows[0].abs.width);
+
+  // And the indent is untouched three levels deep: the label steps by one
+  // `indent` per level, and the whole tree — not the label alone — is what
+  // moved over by the inset.
+  const labelX = rows.map((r) => {
+    const stack = [...r.children];
+    while (stack.length) {
+      const child = stack.shift() as RetainedNode;
+      if (child.kind === 'text') return child.abs.x;
+      stack.push(...child.children);
+    }
+    return -1;
+  });
+  assert.deepStrictEqual(labelX, [24, 38, 38, 52, 52, 24]);
+});
+
+test('styles.row puts the full-bleed band back', async () => {
+  // The escape hatch for a tree that really is edge to edge: `styles.row`
+  // merges last, so the three properties the shape is made of come off in
+  // one override.
+  await renderX11(
+    h(
+      'box',
+      { style: { width: 180, height: 200, minHeight: 0 } },
+      h(Tree, {
+        items: FILES,
+        defaultSelected: 'src',
+        styles: { row: { marginStart: 0, marginEnd: 0, borderRadius: 0 } },
+      }),
+    ),
+  );
+  const pane = retained(
+    screen.all((n) => retained(n).props.role === 'tree')[0],
+  );
+  const row = retained(rowNodes()[0]);
+  assert.strictEqual(row.abs.x, pane.abs.x);
+  assert.strictEqual(row.abs.width, pane.abs.width);
+  assert.strictEqual(row.style.borderRadius, 0);
+});
+
 // --- virtualization --------------------------------------------------------
 
 test('a virtualized tree measures its rows and totals them honestly', async () => {
@@ -757,10 +831,16 @@ test('a virtualized tree measures its rows and totals them honestly', async () =
     id: i,
     label: i % 2 === 0 ? `row ${i}` : `${LONG} ${i}`,
   }));
+  // 208 rather than 200 because a row sits `ROW_INSET` (4) inside each edge
+  // of the tree, so this is the width that leaves the labels the 200 the
+  // fixture is tuned for: the wrapped rows have to come out *one* height, or
+  // the two-shape total below is measuring a mix instead. The label is one
+  // long hyphenated token, so a few pixels either way moves a whole segment
+  // to the next line.
   await renderX11(
     h(
       'box',
-      { style: { width: 200, height: 220, minHeight: 0 } },
+      { style: { width: 208, height: 220, minHeight: 0 } },
       h(Tree, { items, virtual: true }),
     ),
   );
