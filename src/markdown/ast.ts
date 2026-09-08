@@ -13,7 +13,19 @@ export type InlineNode =
   | EmphasisInline
   | LinkInline
   | BreakInline
-  | ComponentInline;
+  | ComponentInline
+  | ExpressionInline;
+
+/**
+ * `{count}` in the middle of a sentence: unevaluated source, which the
+ * renderer compiles against its `scope` and turns into text. Only emitted
+ * when `ParseOptions.expressions` says so, so `{braces}` in an ordinary
+ * document remain the characters they have always been.
+ */
+export interface ExpressionInline {
+  type: 'expression';
+  src: string;
+}
 
 /** A run of plain text. Softbreaks arrive collapsed to spaces. */
 export interface TextInline {
@@ -60,6 +72,16 @@ export interface BreakInline {
  */
 export type AttributeValue =
   { kind: 'literal'; value: unknown } | { kind: 'expression'; src: string };
+
+/**
+ * A spread (`{...props}`) is an attribute with no name, so it is keyed
+ * `...0`, `...1`, … in the order it appeared. An attribute name cannot start
+ * with `.`, so these cannot collide with one; a renderer walking
+ * `Object.entries` in insertion order applies each spread where it was
+ * written, which is what decides whether it overrides `height` or `height`
+ * overrides it.
+ */
+export const SPREAD_PREFIX = '...';
 
 /**
  * **Still reserved.** `<Badge/>` in the middle of a sentence parses to one of
@@ -203,4 +225,15 @@ export interface ParseOptions {
    * (`Card.Header`) is passed through whole; resolving it is the caller's.
    */
   isComponent?: (name: string) => boolean;
+  /**
+   * Whether `{…}` may hold a JavaScript expression — in an attribute, as a
+   * `{...spread}`, or bare in the prose. Off by default, and off is the
+   * whole of rung 1: a `{…}` attribute must be JSON, and a brace in a
+   * paragraph is a brace.
+   *
+   * `<Markdown>` turns this on when it is given a `scope`, which is the prop
+   * that says the application accepts a document running code. Parsing still
+   * evaluates nothing — an expression is kept as source.
+   */
+  expressions?: boolean;
 }

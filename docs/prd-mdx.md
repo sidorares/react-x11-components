@@ -1,13 +1,15 @@
 # PRD: MDX in `<Markdown>` — components in the prose, and where the JavaScript stops
 
-Status: **M1 shipped** — `components` on `<Markdown>`, block position, no
-evaluation. M2 (expressions) and the inline half are not built.
+Status: **M1 and M2 shipped** — `components` (block-position components, no
+evaluation) and `scope` (expressions, spreads, braces in prose). The inline
+half is not built and is now filed as M1.5.
 
-Two things changed in the building, both recorded in place below:
+Three things changed in the building, all recorded in place below:
 `onUnknownComponent` is **cut** (it cannot mean anything under
-map-membership gating — see "Public API"), and components are **block
-position only**, because the inline half needs a `<richtext>` capability
-that does not exist (see "The inline half").
+map-membership gating — see "Public API"); components are **block position
+only**, because the inline half needs a `<richtext>` capability that does not
+exist (see "The inline half"); and the `slurpExpression` **extraction was
+assessed and declined** (see "Parser design").
 
 ## What it is
 
@@ -371,12 +373,31 @@ delimiter walk, at the `<` branch that already exists (`parse.ts:703`). The auto
 a `<` that opens neither an autolink nor a resolvable tag stays the literal
 character it is today.
 
-**Expression slurping**, shared. `src/qml/parse.ts`'s `slurpExpression()` and
-`skipString()` move to `src/internal/js-text.ts` and are imported by both.
-This is a pure extraction — QML's behaviour must not change, and its tests
-are the proof. The QML-specific parts (`expressionEndsHere`, QML's ASI rules)
-stay in QML; what moves is the bracket-depth-and-strings walk, which is the
-part that is about JavaScript's shape rather than about QML.
+**Expression slurping** — the extraction this document proposed, **assessed
+and declined**. The reasoning is worth keeping, because it looked obvious
+from here and was not.
+
+The two callers want different questions answered. QML's `slurpExpression()`
+is about where an _unbraced_ expression ends: at a `;`, at a depth-0 comma,
+at a newline its ASI rules call the end. MDX has no such question — an
+expression is delimited by the braces that introduced it, so all this parser
+needs is "where does this `{` close". That is `closeBrace()` in
+`src/markdown/tags.ts`, and it is not `slurpExpression` with parts removed;
+it is a different function that happens to share a subroutine.
+
+The genuinely common part is _skipping a string literal_ — perhaps a dozen
+lines, once template literals and their `${…}` holes are handled, which
+`tags.ts` now does because rung 2 needs it. Extracting that would mean
+converting `src/qml/parse.ts`'s stateful `Scanner` — whose `skipString`
+mutates `this.pos`, throws on unterminated input, and is re-entered by
+`skipBalancedUntil` — to call a pure helper, inside a 4,894-line engine that
+works. This document's own gate for the extraction was "QML's behaviour must
+not change, and its tests are the proof"; the safer reading of that gate is
+not to touch it for a dozen lines.
+
+So: no `src/internal/js-text.ts`. A single-consumer module under `internal/`
+would claim a sharing that is not happening. Revisit if a third caller
+appears.
 
 `new Function` compilation is cached in a module-level `Map` keyed on
 `(src, scopeKeys.join(','))`, bounded like the layout cache in
@@ -473,11 +494,16 @@ as the scanner, block dispatch in `parseBlocks` (multi-line tags included),
 markdown children, streaming hold-back, `test/mdx.test.ts`,
 `examples/mdx.tsx`. Block position only; no `onUnknownComponent`.
 
-**M2 — expressions.** The `slurpExpression` extraction, `scope`, the compile
-cache, spreads, bare `{expr}` in prose, the security docs.
+**M2 — expressions. Shipped.** `ParseOptions.expressions` as the second gate,
+`{…}` attributes kept as source when they are not JSON, `{...spread}` keyed
+by position, `{expr}` in prose through a new `ExpressionInline`,
+`src/markdown/expressions.ts` (a bounded compile cache over `new Function`, a
+warn-once path, and a document-level resolve pass so no `runsOf` caller had
+to change), `scope` on `<Markdown>` joining the seam epoch. No
+`slurpExpression` extraction — see "Parser design".
 
 **M1.5 — the inline half**, which M1 found to be a separate piece of work
-rather than the other half of the same one. See "The inline half"; it is
+rather than the other half of the same one. Now the only rung left. See "The inline half"; it is
 gated on a `<richtext>` embedded-element run, and it is the more useful of
 the two remaining rungs for prose.
 
@@ -490,9 +516,10 @@ that can decline a tag at render time.
 1. ~~**Does M1 ship `onUnknownComponent: 'throw'`?**~~ **Closed: no.** The
    prop cannot exist under map-membership gating — see "Public API". A lint
    over the source is the shape this wants, if it is wanted.
-2. **Should `scope` be a function?** `scope={(name) => …}` would let an
-   application refuse a binding lazily. Proposed: no in M2, an object is the
-   MDX-shaped thing; revisit if a caller wants it.
+2. ~~**Should `scope` be a function?**~~ **Closed: no**, an object shipped.
+   Its keys are read once and become the compiled function's parameter names,
+   which is what makes the compile cache keyable; a lazy resolver would give
+   that up for a use nobody has asked for yet.
 3. ~~**Is `Card.Header` worth the walk?**~~ **Closed: yes**, shipped in M1 —
    flat key first, then the property walk, so a map can spell the dotted
    name literally or hang it off the parent.

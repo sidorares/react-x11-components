@@ -68,6 +68,9 @@ import type { CodeBlockLook } from '../codeblock/index.js';
 import type { Language } from '../code-language/index.js';
 
 import { parse } from './parse.js';
+import { evaluator, resolveExpressions } from './expressions.js';
+import type { Evaluate } from './expressions.js';
+import { SPREAD_PREFIX } from './ast.js';
 import { runsOf, plainTextOf } from './spans.js';
 import type { InlineStyles } from './spans.js';
 import { useLinkClicks } from '../richtext/index.js';
@@ -78,10 +81,12 @@ export type {
   BlockNode,
   ComponentBlock,
   ComponentInline,
+  ExpressionInline,
   InlineNode,
   Document as MarkdownDocument,
   ParseOptions,
 } from './ast.js';
+export { SPREAD_PREFIX } from './ast.js';
 export { scanTag } from './tags.js';
 export type { ScannedTag, ScanResult } from './tags.js';
 export { parse, parseInline } from './parse.js';
@@ -191,6 +196,33 @@ export interface MarkdownProps {
    * block cache, the same way a new `fences` map does.
    */
   components?: Record<string, ComponentType<Record<string, unknown>>>;
+  /**
+   * Bindings that `{…}` in this document may read — and, by passing it, the
+   * statement that this document may **run code**.
+   *
+   * ```tsx
+   * <Markdown source={doc} components={{ Chart }} scope={{ quarters }} />
+   * ```
+   *
+   * With it, an attribute `{…}` that is not JSON is compiled instead of
+   * making the tag text, `{...spread}` works, and `{count}` in the middle of
+   * a paragraph renders the value. Without it none of those exist and
+   * nothing is ever compiled.
+   *
+   * **There is no sandbox.** Expressions run through `new Function`, in this
+   * process, with this process's authority. `components` decides what a
+   * document may *reach*; this decides whether it may *compute* — so do not
+   * pass it alongside a document you did not write, which for this component
+   * usually means anything a model produced.
+   *
+   * An expression that throws, or does not compile, renders as nothing and
+   * warns once. A value that is not a primitive renders as nothing in prose:
+   * there is nowhere in a line of text to put an element.
+   *
+   * Stable identity, as with `components` — the keys are read once, and a new
+   * object per render re-parses the document.
+   */
+  scope?: Record<string, unknown>;
   /** The root `<box>`'s style — width, padding, margins, `overflow`. */
   style?: Style | Style[];
   'data-testname'?: string;
@@ -293,6 +325,8 @@ interface RenderCtx {
   fences?: MarkdownProps['fences'];
   resolveLanguage?: MarkdownProps['resolveLanguage'];
   components?: MarkdownProps['components'];
+  /** Present exactly when `scope` was given — the rung that compiles. */
+  evaluate?: Evaluate;
   /** True while rendering the live tail block of a streaming document. */
   live?: boolean;
 }
@@ -411,8 +445,17 @@ function renderComponent(
   const Component = resolveComponent(ctx.components, block.name);
   if (!Component) return null;
   const props: Record<string, unknown> = {};
+  // Insertion order is the order they were written, which is what decides
+  // whether a spread overrides a named attribute or the other way round.
   for (const [name, value] of Object.entries(block.attributes)) {
-    if (value.kind === 'literal') props[name] = value.value;
+    if (name.startsWith(SPREAD_PREFIX)) {
+      const spread =
+        value.kind === 'expression' ? ctx.evaluate?.(value.src) : undefined;
+      if (spread && typeof spread === 'object') Object.assign(props, spread);
+      continue;
+    }
+    props[name] =
+      value.kind === 'literal' ? value.value : ctx.evaluate?.(value.src);
   }
   const children =
     block.children.length === 0
@@ -706,10 +749,27 @@ export function Markdown(props: MarkdownProps): ReactElement {
     [componentMap],
   );
 
-  const doc: Document = React.useMemo(
-    () => parse(source, isComponent ? { partial, isComponent } : { partial }),
-    [source, partial, isComponent],
+  // `scope` is both the gate and the bindings: giving one turns expression
+  // parsing on, and is where the compiled functions get their arguments.
+  const scope = props.scope;
+  const evaluate = React.useMemo(
+    () => (scope ? evaluator(scope) : undefined),
+    [scope],
   );
+
+  const doc: Document = React.useMemo(() => {
+    const parsed = parse(source, {
+      partial,
+      ...(isComponent ? { isComponent } : null),
+      ...(evaluate ? { expressions: true } : null),
+    });
+    // Expressions resolve to text here rather than during the render, so
+    // every `runsOf` caller downstream keeps seeing an inline tree it
+    // already understands. `raws` is carried through, so the block cache
+    // still keys on the source text; a change of `scope` invalidates it
+    // through the seam epoch instead.
+    return evaluate ? resolveExpressions(parsed, evaluate) : parsed;
+  }, [source, partial, isComponent, evaluate]);
 
   // Per-block element cache, keyed on the block's raw source (+ whether it
   // is the live tail). Streaming appends re-render only the block that
@@ -724,22 +784,26 @@ export function Markdown(props: MarkdownProps): ReactElement {
     fences: MarkdownProps['fences'];
     resolveLanguage: MarkdownProps['resolveLanguage'];
     components: MarkdownProps['components'];
+    scope: MarkdownProps['scope'];
     gen: number;
   }>({
     fences: props.fences,
     resolveLanguage: props.resolveLanguage,
     components: props.components,
+    scope: props.scope,
     gen: 0,
   });
   if (
     seamsRef.current.fences !== props.fences ||
     seamsRef.current.resolveLanguage !== props.resolveLanguage ||
-    seamsRef.current.components !== props.components
+    seamsRef.current.components !== props.components ||
+    seamsRef.current.scope !== props.scope
   ) {
     seamsRef.current = {
       fences: props.fences,
       resolveLanguage: props.resolveLanguage,
       components: props.components,
+      scope: props.scope,
       gen: seamsRef.current.gen + 1,
     };
   }
@@ -758,6 +822,7 @@ export function Markdown(props: MarkdownProps): ReactElement {
       fences: props.fences,
       resolveLanguage: props.resolveLanguage,
       components: props.components,
+      ...(evaluate ? { evaluate } : null),
     };
     for (let i = 0; i < doc.blocks.length; i += 1) {
       const live = partial && i === doc.blocks.length - 1;

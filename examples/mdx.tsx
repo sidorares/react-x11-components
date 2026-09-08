@@ -22,8 +22,16 @@ paragraphs — and still be markdown either side of it.
 
 <Metric label="merged pull requests" value={586} />
 
-The tag above is a \`component\` block. Its attributes were read as JSON at
-parse time; **nothing was evaluated** to render it.
+The tag above is a \`component\` block, and its attributes were read as JSON —
+**nothing was evaluated** to render it.
+
+This one is the other rung: its props come from an expression and a spread,
+and the sentence after it counts in the prose.
+
+<Metric {...headline} value={commits.length * 2} />
+
+There are {commits.length} of them, which is
+{commits.length > 2 ? 'more' : 'fewer'} than two.
 
 <Callout tone="warn">
 
@@ -106,16 +114,25 @@ function Callout({
 // re-parses the document and defeats the block cache.
 const COMPONENTS = { Metric, Callout };
 
+// Stable identity, like the map: the keys are read once, and a new object per
+// render re-parses the document.
+const SCOPE = {
+  headline: { label: 'commits, doubled' },
+  commits: [1, 2, 3],
+};
+
 function Pane({
   title,
   source,
   partial,
   components,
+  scope,
 }: {
   title: string;
   source: string;
   partial: boolean;
   components?: typeof COMPONENTS;
+  scope?: typeof SCOPE;
 }): ReactElement {
   return (
     <box style={{ flexGrow: 1, flexBasis: 0, gap: 8 }}>
@@ -125,6 +142,7 @@ function Pane({
           source={source}
           partial={partial}
           {...(components ? { components } : null)}
+          {...(scope ? { scope } : null)}
           style={{ padding: 12 }}
         />
       </box>
@@ -150,12 +168,13 @@ function App(): ReactElement {
     <window width={900} height={720} title="MDX — components in the prose">
       <box style={{ flexGrow: 1, flexDirection: 'row', gap: 12, padding: 12 }}>
         <Pane
-          title="with components"
+          title="components + scope"
           source={source}
           partial={!done}
           components={COMPONENTS}
+          scope={SCOPE}
         />
-        <Pane title="without the prop" source={source} partial={!done} />
+        <Pane title="neither prop" source={source} partial={!done} />
       </box>
     </window>
   );

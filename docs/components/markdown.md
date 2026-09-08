@@ -194,6 +194,41 @@ syntax, like every other half-arrived construct; an element whose children
 are still arriving shows those children as the markdown they are, and
 becomes a component on the chunk that closes it.
 
+### Expressions
+
+`scope` is the second rung, and the prop that says this document may **run
+code**:
+
+```tsx
+<Markdown source={doc} components={{ Chart }} scope={{ quarters }} />
+```
+
+With it, three things start working, all in the same syntax:
+
+```markdown
+<Chart data={quarters.map(Number)} {...defaults} />
+
+There are {quarters.length} of them.
+```
+
+An attribute `{…}` that is not JSON is compiled instead of making the tag
+text; `{...spread}` merges, at the position it was written, so a spread after
+`height` overrides it and one before does not; and a brace in the prose
+renders its value. Without `scope`, none of those exist and nothing is ever
+compiled — an attribute must be JSON and a brace in a paragraph is a brace.
+
+**There is no sandbox.** Expressions run through `new Function`, in this
+process, with this process's authority. `components` decides what a document
+may _reach_; `scope` decides whether it may _compute_. Since the usual input
+here is streamed model output, the rule is short: do not pass `scope`
+alongside a document you did not write. A model told what components exist
+will emit tags; one that has been prompt-injected will emit expressions.
+
+An expression that throws, or does not compile, renders as nothing and warns
+once — a document being typed is full of expressions that do not work yet. A
+value that is not a primitive also renders as nothing in prose, because there
+is nowhere in a line of text to put an element.
+
 ### Block position only
 
 A tag on its own line is a component. One in the middle of a sentence —
@@ -203,8 +238,10 @@ advance width for an element someone else paints, so an inline component
 cannot join the text flow without new machinery. See
 [the PRD](../prd-mdx.md), "The inline half".
 
-`{expressions}`, spreads and `import` are likewise not here;
-`docs/prd-mdx.md` has the ladder and what each rung would cost.
+`import` and `export` are not here and are not planned: resolving a specifier
+is a bundler's job, and `components` is the substitute — a better one, since
+the application decides what a document may reach. `docs/prd-mdx.md` has the
+ladder.
 
 `npm run examples:mdx` shows a document streaming in with and without the
 `components` prop, side by side.

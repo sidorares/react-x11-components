@@ -350,6 +350,7 @@ export type {
   BlockNode,
   ComponentBlock,
   ComponentInline,
+  ExpressionInline,
   FenceInfo,
   InlineNode,
   ParseOptions,

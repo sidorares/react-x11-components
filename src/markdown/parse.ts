@@ -37,7 +37,7 @@ import type {
   ParseOptions,
   TableAlign,
 } from './ast.js';
-import { scanTag } from './tags.js';
+import { closeBrace, scanTag } from './tags.js';
 import type { ScannedTag } from './tags.js';
 
 /** Nothing is a component unless the caller says so. */
@@ -66,6 +66,7 @@ const RE_TABLE_DELIM_PREFIX = /^ {0,3}\|[ \t:|-]*$/;
 function isBlockStart(
   line: string,
   isComponent: (name: string) => boolean = NO_COMPONENTS,
+  expressions = false,
 ): boolean {
   return (
     RE_ATX.test(line) ||
@@ -73,7 +74,7 @@ function isBlockStart(
     RE_HR.test(line) ||
     RE_QUOTE.test(line) ||
     RE_LIST.test(line) ||
-    isComponentBlockLine(line, isComponent)
+    isComponentBlockLine(line, isComponent, expressions)
   );
 }
 
@@ -82,8 +83,9 @@ function isBlockStart(
 function isComponentBlockLine(
   line: string,
   isComponent: (name: string) => boolean,
+  expressions: boolean,
 ): boolean {
-  const found = componentBlockAt([line], 0, isComponent);
+  const found = componentBlockAt([line], 0, isComponent, expressions);
   return found !== null && found !== 'incomplete';
 }
 
@@ -103,6 +105,7 @@ function componentBlockAt(
   lines: string[],
   at: number,
   isComponent: (name: string) => boolean,
+  expressions = false,
 ): { tag: ScannedTag; lastLine: number } | 'incomplete' | null {
   // The identity check is not an optimisation: `scanTag` reports a bare
   // `<Chart` as "still arriving" before it can know whether anyone claims
@@ -115,7 +118,7 @@ function componentBlockAt(
   let text = lines[at];
   for (let j = at; j < lines.length; j += 1) {
     if (j > at) text += `\n${lines[j]}`;
-    const tag = scanTag(text, indent, isComponent);
+    const tag = scanTag(text, indent, isComponent, expressions);
     if (tag === null) return null;
     if (tag === 'incomplete') {
       if (j + 1 < lines.length && RE_BLANK.test(lines[j + 1])) return null;
@@ -185,6 +188,7 @@ export function parse(source: string, options: ParseOptions = {}): Document {
     blocks,
     ranges,
     options.isComponent ?? NO_COMPONENTS,
+    options.expressions === true,
   );
   return {
     blocks,
@@ -206,6 +210,7 @@ function parseBlocks(
   out: BlockNode[],
   ranges?: Array<[number, number]>,
   isComponent: (name: string) => boolean = NO_COMPONENTS,
+  expressions = false,
 ): void {
   let i = 0;
   const n = lines.length;
@@ -225,7 +230,7 @@ function parseBlocks(
     para.length = 0;
     paraStart = -1;
     // the paragraph owns the live tail iff its last line is the document's
-    const children = parseInline(text, tailOpen && end === n);
+    const children = parseInline(text, tailOpen && end === n, expressions);
     if (children.length > 0)
       commit({ type: 'paragraph', children }, start, end);
   };
@@ -259,7 +264,7 @@ function parseBlocks(
           {
             type: 'heading',
             depth: setext[1][0] === '=' ? 1 : 2,
-            children: parseInline(text, false),
+            children: parseInline(text, false, expressions),
           },
           start,
           i + 1,
@@ -296,7 +301,7 @@ function parseBlocks(
         {
           type: 'heading',
           depth: atx[1].length,
-          children: parseInline(atx[2] ?? '', held),
+          children: parseInline(atx[2] ?? '', held, expressions),
         },
         i,
         i + 1,
@@ -343,7 +348,7 @@ function parseBlocks(
 
     // A component standing where a paragraph would (docs/prd-mdx.md). Gated
     // on `isComponent`, so a document that never opted in never gets here.
-    const component = componentBlockAt(lines, i, isComponent);
+    const component = componentBlockAt(lines, i, isComponent, expressions);
     if (component === 'incomplete') {
       // A tag still arriving: hold it back rather than flash `<Cha` on the
       // screen, the way a half-arrived link is held. Only the live tail may
@@ -384,6 +389,7 @@ function parseBlocks(
           children,
           undefined,
           isComponent,
+          expressions,
         );
         i = closeAt + 1;
         commit(node(children), start, i);
@@ -421,7 +427,7 @@ function parseBlocks(
         }
         if (
           !RE_BLANK.test(l) &&
-          !isBlockStart(l, isComponent) &&
+          !isBlockStart(l, isComponent, expressions) &&
           inner.length > 0 &&
           !RE_BLANK.test(inner[inner.length - 1])
         ) {
@@ -432,7 +438,14 @@ function parseBlocks(
         break;
       }
       const children: BlockNode[] = [];
-      parseBlocks(inner, tailOpen && i === n, children, undefined, isComponent);
+      parseBlocks(
+        inner,
+        tailOpen && i === n,
+        children,
+        undefined,
+        isComponent,
+        expressions,
+      );
       if (children.length > 0) commit({ type: 'quote', children }, start, i);
       continue;
     }
@@ -443,7 +456,7 @@ function parseBlocks(
     if (list && !(para.length > 0 && !list[4]) && !(held && !list[4])) {
       flushPara(i);
       const start = i;
-      const block = parseList(lines, i, tailOpen, isComponent);
+      const block = parseList(lines, i, tailOpen, isComponent, expressions);
       i = block.end;
       commit(block.list, start, i);
       continue;
@@ -481,7 +494,7 @@ function parseBlocks(
           if (
             RE_BLANK.test(l) ||
             !l.includes('|') ||
-            isBlockStart(l, isComponent)
+            isBlockStart(l, isComponent, expressions)
           )
             break;
           rows.push(
@@ -556,6 +569,7 @@ function parseList(
   from: number,
   tailOpen: boolean,
   isComponent: (name: string) => boolean = NO_COMPONENTS,
+  expressions = false,
 ): ParsedList {
   const n = lines.length;
   const first = RE_LIST.exec(lines[from]);
@@ -615,7 +629,7 @@ function parseList(
       }
       if (
         pendingBlanks === 0 &&
-        !isBlockStart(l, isComponent) &&
+        !isBlockStart(l, isComponent, expressions) &&
         !RE_BLANK.test(l)
       ) {
         inner.push(l); // lazy paragraph continuation
@@ -635,7 +649,14 @@ function parseList(
     }
 
     const children: BlockNode[] = [];
-    parseBlocks(inner, tailOpen && i >= n, children, undefined, isComponent);
+    parseBlocks(
+      inner,
+      tailOpen && i >= n,
+      children,
+      undefined,
+      isComponent,
+      expressions,
+    );
     items.push({ checked, children });
   }
 
@@ -768,7 +789,11 @@ function classify(ch: string | undefined): 'ws' | 'punct' | 'other' {
  * Parse inline markdown. `atDocEnd` marks text whose end is the live end of
  * a streaming document — only then do the implicit-close rules apply.
  */
-export function parseInline(text: string, atDocEnd: boolean): InlineNode[] {
+export function parseInline(
+  text: string,
+  atDocEnd: boolean,
+  expressions = false,
+): InlineNode[] {
   const items: Item[] = [];
   let buf = '';
 
@@ -862,6 +887,31 @@ export function parseInline(text: string, atDocEnd: boolean): InlineNode[] {
       }
       buf += text.slice(i, i + run);
       i += run;
+      continue;
+    }
+
+    // `{expr}` in the prose — rung 2 only, so a brace in an ordinary
+    // document is the character it has always been.
+    if (expressions && ch === '{') {
+      const end = closeBrace(text, i);
+      if (end === -1) {
+        // Still arriving: hold the rest of the line back rather than show
+        // half an expression. In a final document it is just text.
+        if (atDocEnd) {
+          flushText();
+          i = len;
+          continue;
+        }
+        buf += ch;
+        i += 1;
+        continue;
+      }
+      flushText();
+      items.push({
+        kind: 'node',
+        node: { type: 'expression', src: text.slice(i + 1, end - 1).trim() },
+      });
+      i = end;
       continue;
     }
 

@@ -73,6 +73,8 @@ function flat(nodes: InlineNode[]): string {
           return `${n.image ? 'img' : 'link'}[${flat(n.children)}](${String(n.href)})`;
         case 'component':
           return `<${n.name}>`;
+        case 'expression':
+          return `{${n.src}}`;
         default:
           return `${n.type}[${flat(n.children)}]`;
       }

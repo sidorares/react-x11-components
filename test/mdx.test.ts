@@ -13,10 +13,22 @@ import { renderX11, cleanup, screen } from 'react-x11/test';
 
 import { Markdown, parseMarkdown } from '../src/index.js';
 import type { BlockNode, ComponentBlock } from '../src/index.js';
+import { clearExpressionCache } from '../src/markdown/expressions.js';
 
 const h = React.createElement;
 
+/** Every rendered run's text, joined — enough to assert what a reader sees. */
+function renderedText(): string {
+  return screen
+    .all(
+      (n) => typeof (n as { textContent?: unknown }).textContent === 'function',
+    )
+    .map((n) => (n as unknown as { textContent(): string }).textContent())
+    .join(' ');
+}
+
 afterEach(cleanup);
+afterEach(clearExpressionCache);
 
 const KNOWN = ['Chart', 'Callout', 'Card.Header', 'Card'];
 const isComponent = (name: string): boolean => KNOWN.includes(name);
@@ -31,6 +43,12 @@ function only(source: string): ComponentBlock {
   assert.equal(rest.length, 0, 'expected exactly one block');
   assert.equal(block.type, 'component');
   return block as ComponentBlock;
+}
+
+/** The source of an attribute held as an expression. */
+function srcOf(block: ComponentBlock, name: string): string | undefined {
+  const value = block.attributes[name];
+  return value?.kind === 'expression' ? value.src : undefined;
 }
 
 /** Attribute values, unwrapped from their tagged form. */
@@ -222,4 +240,176 @@ test('children arrive as rendered markdown', async () => {
 test('a document with no components prop renders as it always did', async () => {
   await renderX11(h(Markdown, { source: '<Chart />', partial: false }));
   assert.equal(screen.queryByTestName('demo-none'), null);
+});
+
+// --- M2: expressions -------------------------------------------------------
+//
+// The second rung. Everything below needs `expressions` in the parser and a
+// `scope` on the component; without them the same documents are the text
+// they were on rung 1, which several of these assert directly.
+
+/** Parse with both rungs on. */
+function expr(source: string, partial = false): BlockNode[] {
+  return parseMarkdown(source, {
+    partial,
+    isComponent,
+    expressions: true,
+  }).blocks;
+}
+
+test('an attribute expression is kept as source, not evaluated', () => {
+  const [block] = expr('<Chart data={quarters.map(Number)} />');
+  assert.equal(block.type, 'component');
+  assert.deepEqual((block as ComponentBlock).attributes, {
+    data: { kind: 'expression', src: 'quarters.map(Number)' },
+  });
+});
+
+test('the same attribute on rung 1 makes the tag text', () => {
+  assert.deepEqual(
+    blocks('<Chart data={quarters} />').map((b) => b.type),
+    ['paragraph'],
+  );
+});
+
+test('JSON still wins where it can be read, so a number is a number', () => {
+  const [block] = expr('<Chart n={240} s="x" />');
+  assert.deepEqual((block as ComponentBlock).attributes, {
+    n: { kind: 'literal', value: 240 },
+    s: { kind: 'literal', value: 'x' },
+  });
+});
+
+test('a template literal or a comment does not end the expression early', () => {
+  assert.equal(
+    srcOf(expr('<Chart t={`a${b}c`} />')[0] as ComponentBlock, 't'),
+    '`a${b}c`',
+  );
+  assert.equal(
+    srcOf(expr('<Chart n={1 /* } */ + 2} />')[0] as ComponentBlock, 'n'),
+    '1 /* } */ + 2',
+  );
+});
+
+test('spreads keep their place among the named attributes', () => {
+  const [block] = expr('<Chart a={1} {...rest} b={2} />');
+  assert.deepEqual(Object.keys((block as ComponentBlock).attributes), [
+    'a',
+    '...0',
+    'b',
+  ]);
+  assert.deepEqual((block as ComponentBlock).attributes['...0'], {
+    kind: 'expression',
+    src: 'rest',
+  });
+});
+
+test('a spread on rung 1 is not an attribute at all', () => {
+  assert.deepEqual(
+    blocks('<Chart {...rest} />').map((b) => b.type),
+    ['paragraph'],
+  );
+});
+
+test('a brace in prose is an expression on rung 2 and text on rung 1', () => {
+  const [para] = expr('count: {n + 1}');
+  assert.equal(para.type, 'paragraph');
+  assert.deepEqual(
+    (para as { children: Array<{ type: string; src?: string }> }).children.map(
+      (c) => (c.type === 'expression' ? `{${c.src}}` : c.type),
+    ),
+    ['text', '{n + 1}'],
+  );
+  const [plain] = blocks('count: {n + 1}');
+  assert.deepEqual(
+    (plain as { children: Array<{ type: string }> }).children.map(
+      (c) => c.type,
+    ),
+    ['text'],
+  );
+});
+
+test('an unclosed brace at the live tail is held back', () => {
+  const [para] = expr('count: {n +', true);
+  assert.equal(para.type, 'paragraph');
+  const text = JSON.stringify(para);
+  assert.ok(!text.includes('{n +'), 'half an expression leaked');
+});
+
+// --- M2 rendering ----------------------------------------------------------
+
+test('an expression attribute reaches the component as a value', async () => {
+  await renderX11(
+    h(Markdown, {
+      source: '<Chart label={metric.name} />',
+      partial: false,
+      components: { Chart: Box as never },
+      scope: { metric: { name: 'latency' } },
+    }),
+  );
+  assert.ok(screen.getByTestName('demo-latency'));
+});
+
+test('a spread merges, and position decides who wins', async () => {
+  await renderX11(
+    h(Markdown, {
+      source: '<Chart label="named" {...over} />',
+      partial: false,
+      components: { Chart: Box as never },
+      scope: { over: { label: 'spread' } },
+    }),
+  );
+  assert.ok(screen.getByTestName('demo-spread'), 'a later spread wins');
+  cleanup();
+  await renderX11(
+    h(Markdown, {
+      source: '<Chart {...over} label="named" />',
+      partial: false,
+      components: { Chart: Box as never },
+      scope: { over: { label: 'spread' } },
+    }),
+  );
+  assert.ok(screen.getByTestName('demo-named'), 'an earlier one does not');
+});
+
+test('an expression in prose renders as text', async () => {
+  await renderX11(
+    h(Markdown, {
+      source: 'there are {2 + 3} of them',
+      partial: false,
+      scope: {},
+    }),
+  );
+  assert.match(renderedText(), /there are 5 of them/);
+});
+
+test('an expression that throws renders as nothing, not a crash', async () => {
+  await renderX11(
+    h(Markdown, {
+      source: 'a {missing.deep.thing} b',
+      partial: false,
+      scope: {},
+    }),
+  );
+  const text = renderedText();
+  assert.ok(text.includes('a'), 'the paragraph still rendered');
+  assert.ok(!text.includes('missing'), 'the expression left no source behind');
+});
+
+test('a value that is not a primitive renders as nothing in prose', async () => {
+  await renderX11(
+    h(Markdown, {
+      source: 'x {obj} y',
+      partial: false,
+      scope: { obj: { a: 1 } },
+    }),
+  );
+  assert.ok(!renderedText().includes('object Object'));
+});
+
+test('without scope, nothing is compiled and braces stay braces', async () => {
+  await renderX11(
+    h(Markdown, { source: 'there are {2 + 3} of them', partial: false }),
+  );
+  assert.match(renderedText(), /\{2 \+ 3\}/);
 });
