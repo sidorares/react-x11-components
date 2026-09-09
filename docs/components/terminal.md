@@ -168,6 +168,58 @@ is `^2.5.0`. A text engine without those seams (a face with metrics and
 coverage and nothing else) is still an ordinary state rather than a throw:
 the terminal paints nothing and says so once in development.
 
+### A flood of output, and the window's `frameRate`
+
+A program that prints faster than anyone can read — `find ~`, `cat` of a
+large file — claims a repaint per parsed batch, and react-x11's frame clock
+paints as many of those as the display allows. On X11 the server's own
+backpressure bounds it: the frame is fenced by a round trip, so a flood
+paints as often as the server keeps up and no more. On the native macOS
+backend the clock is the display's own period and every frame's pixel work
+runs on the JS thread, so the same flood paints at 120 Hz and the program
+gets what is left — measured at four times slower than XQuartz on the same
+machine (docs/prd-frame-pacing.md §2).
+
+**The knob is the window's, not the terminal's.** Pacing belongs to the
+surface the frames go to, so react-x11 2.9.0 put it on `<window>` rather
+than on any element, and a terminal-shaped app sets it there:
+
+```jsx
+<window frameRate="throughput">
+  <Terminal backend="vt" style={{ flexGrow: 1 }} />
+</window>
+```
+
+`createRoot({ frameRate })` says the same for every window a root opens, and
+`REACT_X11_FRAME_RATE` overrides both from the environment — an A/B run
+needs no code change. The rule prices frames in CPU time rather than
+counting them: credit accrues at `budget` ms per ms of wall time, a frame
+spends what it cost, and a claim that finds the account in debt waits for it
+to refill. So an idle claim never waits — a keystroke's echo after a pause
+paints on the next tick whatever the last frame cost — a cheap frame is
+never held, and only a _stream_ of expensive ones throttles.
+
+| `frameRate`                  | `budget` | `minFps` | `maxFps` | for                                      |
+| ---------------------------- | -------: | -------: | -------: | ---------------------------------------- |
+| `'display'`                  |        1 |     none |     none | the default: every frame the clock gives |
+| `'adaptive'`                 |     0.25 |       20 |     none | a UI that also streams                   |
+| `'throughput'`               |      0.1 |       10 |       30 | large output — the flood case            |
+| a number                     |        1 |     none |        n | a plain ceiling, nothing else            |
+| `{ budget, minFps, maxFps }` |        — |        — |        — | any of the three, spelled out            |
+
+`examples/terminal-vt.tsx` is the menu that walks them, with a `flood`
+button beside it that runs `time awk …` so the shell prints the cost of the
+setting itself.
+
+**The element's own half of the gap is specified but not yet adopted here.**
+`Node.opaqueRect()` and a `copy` composite (react-x11 2.9.0,
+sidorares/react-x11#497 and #501)
+would let a repaint under a flood skip the backgrounds the surface is about
+to cover and blit rather than blend, and subscribing to `onWriteParsed`
+alone would drop the per-scrolled-line claims `onScroll` adds. Measured
+together at 3.5s to 1.1s for a 300,000-line flood on macOS —
+docs/prd-frame-pacing.md §5.3 is the design and the status.
+
 Keyboard, mouse and selection are what a terminal user expects:
 xterm-compatible key encoding (application cursor and keypad modes, the
 modifier parameter scheme, `Alt` as an ESC prefix), mouse reporting in the
