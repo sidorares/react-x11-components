@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.1](https://github.com/sidorares/react-x11-components/compare/v0.7.0...v0.7.1) (2026-09-09)
+
+
+### Bug Fixes
+
+* **html:** a completed source that grows re-parses instead of extending an ended parse ([#78](https://github.com/sidorares/react-x11-components/issues/78)) ([8245063](https://github.com/sidorares/react-x11-components/commit/824506332a1e3aaef0d421fb242eb83b2949cac9)), closes [#77](https://github.com/sidorares/react-x11-components/issues/77)
+
 ## [0.7.0](https://github.com/sidorares/react-x11-components/compare/v0.6.0...v0.7.0) (2026-09-08)
 
 
