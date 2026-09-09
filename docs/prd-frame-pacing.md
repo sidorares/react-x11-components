@@ -1,11 +1,43 @@
 # PRD: adaptive frame pacing for elements fed off the input path
 
-> **Status: proposed.** Nothing in this document is implemented; the branch
-> that carries it changes no code. The measurements in §2 and §9 were taken
-> on 2026-09-07 against react-x11 2.6.1 (the pinned version) and re-checked
-> against the 2.8.2 source for the seams §6 names. The numbers are from one
-> machine — an M1 Pro with a 120 Hz panel — and the shape of the result, not
-> its third digit, is what the design rests on.
+> **Status: landed upstream; the element half is written but not on master.**
+> react-x11 2.9.0 (2026-09-07) took the pacer into core as `frameRate` on
+> `<window>`, `<popup>` and `<glarea>`, plus `createRoot({ frameRate })` and
+> `REACT_X11_FRAME_RATE`
+> ([react-x11#497](https://github.com/sidorares/react-x11/pull/497)) — the
+> same three numbers and the same preset names as §4.1, with §11's questions
+> answered there and one refinement over §5.1: a token bucket with a burst,
+> so a single expensive frame among cheap ones never waits. Two consequences
+> for this package. **§4's `frameRate` prop on `<Terminal>` and the
+> `<FramePacing>` provider will not be built** — pacing is a property of the
+> surface frames go to, so it is the window's policy and an app sets it
+> there; `docs/components/terminal.md` says which value, and
+> `examples/terminal-vt.tsx` is the menu that walks them. **§6's seams 1 and
+> 2 shipped** — `Node.opaqueRect()` (#497) and `globalCompositeOperation` on
+> the Cocoa context with a row memcpy for `copy`
+> ([#501](https://github.com/sidorares/react-x11/pull/501), over
+> `@windowkit/appkit` 0.7.0); seam 4 has a design record
+> ([#502](https://github.com/sidorares/react-x11/pull/502)), and seam 3's
+> tick-skip is not needed with the pacer above the clock. The floor is
+> already `^2.9.1`, so all of it is available here.
+>
+> **What is missing is §5.3 — this side's adoption.** It was written and
+> measured (3.5s to 1.1s on macOS), and it is _not_ on master: PR
+> [#70](https://github.com/sidorares/react-x11-components/pull/70) was
+> opened against `claude/terminal-vt-cocoa-perf-032613`, the branch behind
+> [#69](https://github.com/sidorares/react-x11-components/pull/69), and
+> merged into it _after_ #69 had already been squash-merged — so GitHub
+> calls #70 merged while master got only this document. `<vtterm>` still
+> answers no `opaqueRect()`, still composites with a blend, and still
+> subscribes to `onScroll` and `onCursorMove` beside `onWriteParsed`. Commit
+> `da84494` on that branch is the work; re-landing it onto master is the
+> open item.
+>
+> The measurements in §2 and §9 were taken on 2026-09-07 against react-x11
+> 2.6.1 (the version pinned then) and re-checked against the 2.8.2 source
+> for the seams §6 names. The numbers are from one machine — an M1 Pro with
+> a 120 Hz panel — and the shape of the result, not its third digit, is what
+> the design rests on.
 
 `<Terminal backend="vt">` repaints whenever the emulator says the screen may
 have changed, and leaves _when_ to react-x11's frame clock. On X11 that is
