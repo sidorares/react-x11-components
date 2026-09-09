@@ -151,6 +151,7 @@ function mount(
   props: Record<string, unknown> = {},
   width = 400,
   height = 200,
+  scale?: number,
 ): Promise<unknown> {
   // The cast, deliberately: several tests hand the union deliberately wrong
   // shapes to meet the remedial TypeErrors, which the compiler would
@@ -165,9 +166,12 @@ function mount(
         ...props,
       } as TableProps<File>),
     ),
-    // the harness window is 640×480 by default; a pane taller than that
-    // needs the window grown with it
-    height > 440 ? { width: width + 40, height: height + 60 } : {},
+    {
+      // the harness window is 640×480 by default; a pane taller than that
+      // needs the window grown with it
+      ...(height > 440 ? { width: width + 40, height: height + 60 } : {}),
+      ...(scale !== undefined ? { scale } : {}),
+    },
   );
 }
 
@@ -727,6 +731,129 @@ test('the default show-delay keeps a quick catch-up quiet', async () => {
     seen.length,
     0,
     'a catch-up quicker than the delay showed the hint anyway',
+  );
+});
+
+// --- display scale ---------------------------------------------------------
+//
+// The raw node properties the virtualizer reads back between events —
+// `scrollY`, `abs`, `contentHeight` — are device pixels; the event payloads,
+// the styles and the height index are logical (react-x11's docs/scale.md).
+// At scale 1 the two coincide, so only a scaled mount can catch a raw read
+// that skipped the division. The bug these pin: the offset re-read after
+// layout landed at twice the logical value, the slice was rebuilt a
+// viewport below where the user was looking, and the table example went
+// blank on a flick — and stayed blank after its append-and-reveal, whose
+// clamp mixed the same units. The measure pass was blind the whole time
+// (its width gate compared device against logical and never matched), so
+// nothing ever converged back.
+
+const WRAPPING = [
+  {
+    id: 'name',
+    label: 'Name',
+    render: (f: File) =>
+      h(
+        'text',
+        { key: 't' },
+        `a name much too long for one line of a narrow column, kept long ` +
+          `enough to wrap twice ${f.id}`,
+      ),
+  },
+];
+
+test('at scale 2 a scroll keeps rows under the viewport, and measuring works', async () => {
+  await mount(
+    { rows: many(400), columns: WRAPPING, virtual: true },
+    240,
+    220,
+    2,
+  );
+  await settle();
+  await idle(400);
+
+  bodyPane().scrollTo({ y: 2000 }); // logical, like every public API
+  await settle();
+  await idle(400);
+  assertCoversViewport('after a scroll at scale 2');
+  // The pane is still near where the user put it — a doubled re-read walks
+  // the slice (and then the offset) away from the scroll instead.
+  const s = 2;
+  assert.ok(
+    Math.abs(bodyPane().scrollY / s - 2000) < 1000,
+    `the offset ran away: at ${bodyPane().scrollY / s} for a scroll to 2000`,
+  );
+  // And the total has learnt from real rows — the device-vs-logical width
+  // gate used to reject every measurement at scale 2, freezing the flat
+  // guess for good.
+  assert.ok(
+    bodyPane().contentHeight / s > 400 * 24,
+    `nothing was ever measured: total ${bodyPane().contentHeight / s}`,
+  );
+});
+
+/** The example's live-tail shape, scaled: rows arrive, the newest row is
+ *  revealed — through the clamp and placement arithmetic that mixed device
+ *  and logical and left the viewport past the rows for good. */
+function GrowingTable({
+  hooks,
+}: {
+  hooks: { add?: (n: number) => void };
+}): ReturnType<typeof h> {
+  const [rows, setRows] = React.useState<File[]>(() => many(2000));
+  const table = React.useRef<TableHandle<File>>(null);
+  const tail = React.useRef(false);
+  hooks.add = (n: number) => {
+    tail.current = true;
+    setRows((prev) => [
+      ...prev,
+      ...many(n).map((f) => ({
+        ...f,
+        id: prev.length + f.id,
+        name: `row ${prev.length + f.id}`,
+      })),
+    ]);
+  };
+  React.useEffect(() => {
+    if (!tail.current) return;
+    tail.current = false;
+    const shown = table.current?.rows() ?? [];
+    const last = shown[shown.length - 1];
+    if (last) table.current?.scrollToRow(last.id);
+  }, [rows]);
+  return h(
+    'box',
+    { style: { width: 240, height: 220, minHeight: 0 } },
+    h(Table<File>, {
+      ref: table,
+      rows,
+      columns: WRAPPING as TableColumn<File>[],
+      virtual: true,
+    }),
+  );
+}
+
+test('at scale 2 an append-and-reveal ends on the newest row', async () => {
+  const hooks: { add?: (n: number) => void } = {};
+  await renderX11(h(GrowingTable, { hooks }), { scale: 2 });
+  await settle();
+  await idle(400);
+
+  await act(() => hooks.add?.(500));
+  await settle();
+  await idle(600);
+  assertCoversViewport('after the append at scale 2');
+  const drawn = rowNodes().map(retained);
+  const last = drawn[drawn.length - 1];
+  assert.strictEqual(
+    Number(last.props['aria-posinset']),
+    2500,
+    'the tail is not showing the newest row',
+  );
+  const pane = retained(bodyPane());
+  assert.ok(
+    last.abs.y < pane.abs.y + pane.abs.height,
+    'the newest row is below the fold',
   );
 });
 

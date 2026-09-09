@@ -70,6 +70,7 @@ import {
   cancelLater,
   later,
 } from '../internal/timers.js';
+import { scaleOf } from '../internal/units.js';
 import type { DelayTick } from '../internal/timers.js';
 import { useReveal } from '../internal/scroll.js';
 import {
@@ -953,7 +954,10 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
   const syncScroll = useCallback((): void => {
     const box = body.current;
     if (!box) return;
-    const x = box.scrollX;
+    // Device on the raw property; the header margin it feeds is a style
+    // length, logical — the same division every raw read here makes
+    // (../internal/units.ts).
+    const x = box.scrollX / scaleOf(box);
     setScrollX((prev) => (prev === x ? prev : x));
     winSync();
   }, [winSync]);
@@ -992,13 +996,18 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
     ).total;
     const box = body.current;
     const rows = orderedRef.current;
-    const anchor = box ? heights.indexAt(box.scrollY) : 0;
+    const anchor = box ? heights.indexAt(box.scrollY / scaleOf(box)) : 0;
     let shift = 0;
     let changed = false;
     for (const [id, { node, at }] of rowNodes.current) {
       if (rows[at]?.id !== id) continue; // drawn against a list that moved
-      if (node.abs.width !== expected) continue;
-      const height = node.abs.height;
+      // `abs` is device; the resolved widths and the height index are
+      // logical. Within a pixel rather than exact: a fractional scale
+      // rounds the device width to the pixel grid, and the stale-width
+      // layouts this gate exists for are whole columns off, not fractions.
+      const s = scaleOf(node);
+      if (Math.abs(node.abs.width / s - expected) >= 1) continue;
+      const height = node.abs.height / s;
       const was = heights.heightAt(at);
       if (!heights.measure(id, at, height)) continue;
       changed = true;
@@ -1026,7 +1035,7 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
     if (uniform || !virtualizing) return false;
     const box = body.current;
     if (!box) return false;
-    const anchor = heights.indexAt(box.scrollY);
+    const anchor = heights.indexAt(box.scrollY / scaleOf(box));
     const before = heights.offsetAt(anchor);
     if (!heights.adapt()) return false;
     reveal.nudge(heights.offsetAt(anchor) - before);

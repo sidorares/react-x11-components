@@ -48,6 +48,7 @@ import type { ScrollableNode } from 'react-x11';
 import type { RowHeights, RowKey } from './heights.js';
 import { cancelLater, later } from './timers.js';
 import type { DelayTick } from './timers.js';
+import { scaleOf } from './units.js';
 
 /** All this needs of a row — `TreeRow` and `TableRow` are both this. */
 interface Keyed {
@@ -298,7 +299,6 @@ export function useVirtualWindow(inputs: VirtualWindowInputs): VirtualWindow {
       // one has no slice to rebuild, and re-rendering it on a scroll it
       // already drew would be work for nothing.
       if (!inp.current.virtualizing) return;
-      (globalThis as any).__scrolls = ((globalThis as any).__scrolls ?? 0) + 1;
       const now = Date.now();
       const s = vel.current;
       const dt = now - s.t;
@@ -332,7 +332,9 @@ export function useVirtualWindow(inputs: VirtualWindowInputs): VirtualWindow {
     const { box, virtualizing } = inp.current;
     const node = box.current;
     if (!node || !virtualizing) return;
-    const y = node.scrollY;
+    // The raw property is device pixels; the viewport model — like the
+    // `onScroll` payload `scrolled` is fed — is logical (../internal/units.ts).
+    const y = node.scrollY / scaleOf(node);
     setView((prev) => (prev.top === y ? prev : { ...prev, top: y }));
   }, []);
 
