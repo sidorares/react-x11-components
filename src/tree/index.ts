@@ -70,6 +70,7 @@ import {
   later,
 } from '../internal/timers.js';
 import type { DelayTick } from '../internal/timers.js';
+import { scaleOf } from '../internal/units.js';
 import { useReveal } from '../internal/scroll.js';
 import {
   BURST_BUDGET,
@@ -1012,12 +1013,14 @@ export function Tree<T = TreeItem>({
     // under it, so their total change is what has to come back out of the
     // scroll offset — otherwise measuring a row you have already scrolled
     // past yanks the list under the pointer.
-    const anchor = box ? idx.indexAt(box.scrollY) : 0;
+    const anchor = box ? idx.indexAt(box.scrollY / scaleOf(box)) : 0;
     let shift = 0;
     let changed = false;
     for (const [id, { node, at }] of rowNodes.current) {
       if (rows[at]?.id !== id) continue; // drawn against a list that has moved
-      const height = node.abs.height;
+      // `abs` is device; the height index — like every style length — is
+      // logical (../internal/units.ts).
+      const height = node.abs.height / scaleOf(node);
       const was = idx.heightAt(at);
       if (!idx.measure(id, at, height)) continue;
       changed = true;
@@ -1043,7 +1046,7 @@ export function Tree<T = TreeItem>({
     if (!virtualizing) return false;
     const box = scroller.current;
     if (!box) return false;
-    const anchor = heights.indexAt(box.scrollY);
+    const anchor = heights.indexAt(box.scrollY / scaleOf(box));
     const before = heights.offsetAt(anchor);
     if (!heights.adapt()) return false;
     reveal.nudge(heights.offsetAt(anchor) - before);
@@ -1075,7 +1078,6 @@ export function Tree<T = TreeItem>({
     let look: DelayTick = null;
     let tries = 0;
     const pass = (): void => {
-      (globalThis as any).__ticks = ((globalThis as any).__ticks ?? 0) + 1;
       // `measureRows` first, and its answer handed on: a pass that moved the
       // heights has not settled anything, and an owed scroll judged against
       // the layout it is about to invalidate is not owed any less. During a

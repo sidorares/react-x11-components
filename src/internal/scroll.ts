@@ -44,6 +44,7 @@ import type { DrawnNode, ScrollableNode } from 'react-x11';
 import type { RowHeights, RowKey } from './heights.js';
 import { afterLayout, cancelAfterLayout } from './timers.js';
 import type { LayoutTick } from './timers.js';
+import { scaleOf } from './units.js';
 
 /** All a reveal needs of a row: `<TreeRow>` and `<TableRow>` are both this. */
 interface Keyed {
@@ -148,13 +149,17 @@ export function useReveal(sources: RevealSources): Reveal {
   const scrollTo = useCallback((y: number): void => {
     const box = src.current.box.current;
     if (!box) return;
+    // `y` is logical, like everything the reveal computes with; the raw
+    // node properties are device (../internal/units.ts), divided here so the
+    // clamp and the early-out speak the caller's unit.
+    const s = scaleOf(box);
     // Clamped here rather than left to the container, so what comes back on
     // `onScroll` is the number that was asked for and can be recognised.
     const to = Math.min(
       Math.max(0, y),
-      Math.max(0, box.contentHeight - box.abs.height),
+      Math.max(0, (box.contentHeight - box.abs.height) / s),
     );
-    if (to === box.scrollY) return;
+    if (to === box.scrollY / s) return;
     asked.current = to;
     box.scrollTo({ y: to });
   }, []);
@@ -166,9 +171,10 @@ export function useReveal(sources: RevealSources): Reveal {
     const box = src.current.box.current;
     const want = owedShift.current;
     if (!box || want === 0) return;
-    const was = box.scrollY;
+    const s = scaleOf(box);
+    const was = box.scrollY / s;
     scrollTo(was + want);
-    owedShift.current = want - (box.scrollY - was);
+    owedShift.current = want - (box.scrollY / s - was);
   }, [scrollTo]);
 
   const nudge = useCallback(
@@ -208,7 +214,10 @@ export function useReveal(sources: RevealSources): Reveal {
         settled.current = null;
         return;
       }
-      const viewport = box.abs.height;
+      // Logical, like the height index the unmounted arithmetic mixes with —
+      // the raw properties are device (../internal/units.ts).
+      const s = scaleOf(box);
+      const viewport = box.abs.height / s;
       if (viewport <= 0) return; // nothing laid out to scroll inside yet
 
       // How far the row is outside the pane, in pixels of scrolling. The row's
@@ -223,16 +232,20 @@ export function useReveal(sources: RevealSources): Reveal {
           : null;
       const placed = mounted
         ? {
-            above: box.abs.y - mounted.abs.y,
-            below: mounted.abs.y + mounted.abs.height - (box.abs.y + viewport),
-            height: mounted.abs.height,
+            above: (box.abs.y - mounted.abs.y) / s,
+            below:
+              (mounted.abs.y +
+                mounted.abs.height -
+                (box.abs.y + box.abs.height)) /
+              s,
+            height: mounted.abs.height / s,
           }
         : {
-            above: box.scrollY - heights.offsetAt(at),
+            above: box.scrollY / s - heights.offsetAt(at),
             below:
               heights.offsetAt(at) +
               heights.heightAt(at) -
-              (box.scrollY + viewport),
+              (box.scrollY / s + viewport),
             height: heights.heightAt(at),
           };
       /**
@@ -254,8 +267,8 @@ export function useReveal(sources: RevealSources): Reveal {
        */
       let certain = mounted !== null || heights.isMeasured(at);
       if (certain && heights.hasMeasurements()) {
-        const from = Math.min(at, heights.indexAt(box.scrollY));
-        const to = Math.max(at, heights.indexAt(box.scrollY + viewport));
+        const from = Math.min(at, heights.indexAt(box.scrollY / s));
+        const to = Math.max(at, heights.indexAt(box.scrollY / s + viewport));
         for (let i = from; i <= to && certain; i++) {
           certain = heights.isMeasured(i);
         }
@@ -283,8 +296,10 @@ export function useReveal(sources: RevealSources): Reveal {
       }
       // A move the pane cannot make yet leaves the debt standing: the layout
       // that admits the rows just appended is the one that will let it finish.
+      // `was` in device, compared against the same raw property — whether it
+      // moved is unit-free; the request itself goes through logical scrollTo.
       const was = box.scrollY;
-      scrollTo(was + move);
+      scrollTo(was / s + move);
       if (box.scrollY !== was) {
         stuck.current = null; // it moved; the scroll it caused brings us back
         return;
@@ -323,8 +338,12 @@ export function useReveal(sources: RevealSources): Reveal {
 
   const heard = useCallback((scrollY: number): void => {
     // A scroll this component did not ask for ends the whole chase, not just
-    // the outstanding half of it.
-    if (scrollY !== asked.current) {
+    // the outstanding half of it. Within half a pixel is ours: the payload
+    // is the device offset divided back to logical, and at a fractional
+    // scale that round trip need not be bit-identical to what was asked.
+    const ours =
+      asked.current !== null && Math.abs(scrollY - asked.current) < 0.5;
+    if (!ours) {
       owed.current = null;
       settled.current = null;
       owedShift.current = 0;

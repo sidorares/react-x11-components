@@ -903,6 +903,68 @@ test('a virtualized tree measures its rows and totals them honestly', async () =
   assert.ok(rowNodes().length < 180, `built ${rowNodes().length} of 400`);
 });
 
+test('at scale 2 measured heights land in the index as logical pixels', async () => {
+  // The raw `abs` a measurement reads is device pixels; the height index —
+  // like every style length — is logical (react-x11's docs/scale.md, and
+  // src/internal/units.ts). A measurement recorded raw at scale 2 doubles
+  // in the index, the spacers restate the doubled number as a style length,
+  // and the scrollbar claims a list twice as tall as the rows it stands on
+  // — while the offset re-read after layout, doubled the same way, walks
+  // the slice out from under the viewport. Only a scaled mount can catch
+  // either: at scale 1 the units coincide.
+  const items: TreeItem[] = Array.from({ length: 400 }, (_, i) => ({
+    id: i,
+    label: `row ${i}`,
+  }));
+  await renderX11(
+    h(
+      'box',
+      { style: { width: 208, height: 220, minHeight: 0 } },
+      h(Tree, { items, virtual: true }),
+    ),
+    { scale: 2 },
+  );
+  const tree = () =>
+    scrolling(screen.all((n) => retained(n).props.role === 'tree')[0]);
+  await settle();
+  let measured = tree().contentHeight;
+  for (let round = 0; round < 10; round++) {
+    await idle(200);
+    if (tree().contentHeight === measured) break;
+    measured = tree().contentHeight;
+  }
+  // Every row is one shape, so the honest total is simply 400 of what a
+  // drawn row lays out at — both sides in device pixels. With a raw
+  // measurement in the index the total comes out double this.
+  const row = rowNodes()
+    .map((n) => retained(n))
+    .find((n) => n.abs.height > 0);
+  assert.ok(row, 'no drawn row to read');
+  const expected = 400 * row.abs.height;
+  assert.ok(
+    Math.abs(measured - expected) <= 800,
+    `the total ${measured} strays from 400 × ${row.abs.height}`,
+  );
+
+  // and a jump still ends with rows under the viewport — the offset re-read
+  // after layout speaks the same unit as the slice it rebuilds
+  tree().scrollTo({ y: 3000 });
+  await settle();
+  await idle(300);
+  const pane = retained(tree());
+  const rows = rowNodes()
+    .map((n) => retained(n))
+    .filter((n) => n.abs.height > 0)
+    .sort((a, b) => a.abs.y - b.abs.y);
+  assert.ok(rows.length > 0, 'nothing was built after the jump');
+  assert.ok(
+    rows[0].abs.y <= pane.abs.y + 1 &&
+      rows[rows.length - 1].abs.y + rows[rows.length - 1].abs.height >=
+        pane.abs.y + pane.abs.height - 1,
+    'the viewport is not covered by rows after the jump at scale 2',
+  );
+});
+
 test('a catch-up shows the fast-scroll pill, and settling hides it', async () => {
   // Observed through the seam rather than the painted tree — the catch-up
   // can complete within a single act under the test clock, so the painted
