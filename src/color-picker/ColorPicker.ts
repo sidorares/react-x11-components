@@ -45,6 +45,7 @@ import {
 } from 'react-x11/keysyms';
 
 import { hx } from '../internal/hx.js';
+import { scaleOf } from '../internal/units.js';
 import { changeEvent } from '../internal/widget.js';
 import type { WidgetChangeEvent } from '../internal/widget.js';
 import {
@@ -493,9 +494,21 @@ export function ColorPicker(props: ColorPickerProps): ReactElement {
   ): { x: number; y: number } | null => {
     const box = node?.abs;
     if (!box?.width || !box.height) return null;
+    // `abs` is device pixels and `ev.x`/`ev.y` are logical — the same point,
+    // `scale` apart, and `../internal/units.js` is where the virtualizers
+    // learned the same lesson. Subtracting one from the other read a press
+    // on a retina panel as a press near the top left corner, so the thumb
+    // sat there however the pointer moved. `nativeEvent` is core's way back
+    // to the unit `abs` is in; the multiply is the fallback for a
+    // synthesized event that carries no native one, the `_devicePoint()`
+    // shape the terminal and the editor already use.
+    const native = ev.nativeEvent as { x?: unknown; y?: unknown } | null;
+    const s = scaleOf(node);
+    const px = typeof native?.x === 'number' ? native.x : ev.x * s;
+    const py = typeof native?.y === 'number' ? native.y : ev.y * s;
     return {
-      x: clamp01((ev.x - box.x) / box.width),
-      y: clamp01((ev.y - box.y) / box.height),
+      x: clamp01((px - box.x) / box.width),
+      y: clamp01((py - box.y) / box.height),
     };
   };
 
