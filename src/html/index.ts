@@ -87,6 +87,10 @@ export interface HtmlProps {
    * that extends the last one is written as a delta, so the nodes already
    * parsed keep their identity and their layout. Set false when the stream
    * ends.
+   *
+   * False ends the parse, and that is final: a later `source` re-parses even
+   * when it extends the last one. An editor handing over the whole document
+   * on every keystroke wants the default.
    */
   partial?: boolean;
   /** Mouse selection, Ctrl+A / Ctrl+C, PRIMARY. Default true. */

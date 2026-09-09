@@ -45,6 +45,7 @@ import {
   parseFragment,
   appendChild,
   createElement,
+  rawTextOf,
 } from '../src/html/dom.js';
 
 const h = React.createElement;
@@ -214,6 +215,45 @@ test('a source that is not an extension re-parses', () => {
   assert.notStrictEqual(source.document.children[0], first);
 });
 
+test('the last chunk of a stream is still written as a delta', () => {
+  const source = new HtmlSource();
+  source.setSource('<p>one</p>', false);
+  const first = source.document.children[0];
+  source.setSource('<p>one</p><p>two</p>', true);
+  assert.strictEqual(
+    source.document.children[0],
+    first,
+    'completing the stream is an append like any other, so identity survives',
+  );
+  assert.ok(source.complete);
+});
+
+test('a completed source that grows re-parses instead of extending the parse', () => {
+  const source = new HtmlSource();
+  source.setSource('<p>hi</p>', true);
+  // An append-shaped edit to a *completed* document: the parser has been
+  // ended, so this has to reset rather than write. It threw
+  // `.write() after done!` before — and only for an edit at the end of the
+  // document, because an edit anywhere else is not a prefix (#77).
+  source.setSource('<p>hi</p>!', true);
+  assert.strictEqual(rawTextOf(source.document), 'hi!');
+  assert.ok(source.complete, 'the re-parse is ended again');
+});
+
+test('typing at the end of a completed document is a re-parse per keystroke', () => {
+  const source = new HtmlSource();
+  // Every one of these extends the last, so every one of them is the crash.
+  source.setSource('<p>a', true);
+  source.setSource('<p>ab', true);
+  source.setSource('<p>abc', true);
+  assert.strictEqual(rawTextOf(source.document), 'abc');
+  assert.strictEqual(
+    source.setSource('<p>abc', true),
+    false,
+    'and an unchanged source is still no work at all',
+  );
+});
+
 test('the document reports its stylesheets, scripts and resources in one pass', () => {
   const source = new HtmlSource();
   source.setSource(
@@ -268,6 +308,27 @@ test('it mounts on the mock backend, where there are no font metrics', async () 
   const node = screen.getByTestName('doc') as DrawnNode;
   assert.strictEqual(view(node).kind, 'htmlview');
   void result;
+});
+
+test('a completed document survives an edit at its end', async () => {
+  // The editor case from #77: `partial={false}` passes `complete` on every
+  // render, so the parser is ended on the first one — and a keystroke at the
+  // *end* of the document makes the next source a prefix extension of it.
+  // Writing that delta into the ended parser threw `.write() after done!`
+  // out of `commitUpdate`, so the failure was a crash rather than a misdraw,
+  // and only for a caret at the end.
+  const doc = (source: string) =>
+    h(
+      'box',
+      { style: { width: 300 } },
+      h(Html, { source, partial: false, 'data-testname': 'doc' }),
+    );
+  const result = await renderX11(doc('<p>hi</p>'), { backend: 'mock' });
+  await act(() => result.rerender(doc('<p>hi</p><p>there</p>')));
+  assert.strictEqual(
+    view(screen.getByTestName('doc') as DrawnNode).textContent(),
+    'hithere',
+  );
 });
 
 test('the document text is what a copy would take', async () => {
