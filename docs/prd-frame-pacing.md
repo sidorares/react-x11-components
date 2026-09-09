@@ -21,17 +21,19 @@
 > tick-skip is not needed with the pacer above the clock. The floor is
 > already `^2.9.1`, so all of it is available here.
 >
-> **What is missing is §5.3 — this side's adoption.** It was written and
-> measured (3.5s to 1.1s on macOS), and it is _not_ on master: PR
+> **§5.3 — this side's adoption — is done, on the second attempt.**
+> `<vtterm>` answers `opaqueRect()` with its grid, composites its surface as
+> a `copy`, and subscribes to `onWriteParsed` alone: 3.5s to 1.1s for the §2
+> flood on macOS. It took two PRs because the first one never arrived. PR
 > [#70](https://github.com/sidorares/react-x11-components/pull/70) was
 > opened against `claude/terminal-vt-cocoa-perf-032613`, the branch behind
 > [#69](https://github.com/sidorares/react-x11-components/pull/69), and
 > merged into it _after_ #69 had already been squash-merged — so GitHub
-> calls #70 merged while master got only this document. `<vtterm>` still
-> answers no `opaqueRect()`, still composites with a blend, and still
-> subscribes to `onScroll` and `onCursorMove` beside `onWriteParsed`. Commit
-> `da84494` on that branch is the work; re-landing it onto master is the
-> open item.
+> calls #70 merged while master got only this document, and for a while
+> `<vtterm>` answered no `opaqueRect()` and still subscribed to `onScroll`
+> beside `onWriteParsed`. Commit `da84494` is the original; it was re-landed
+> onto master unchanged in substance. **A PR whose base is not `master` does
+> not reach `master`** — worth remembering the next time work is stacked.
 >
 > The measurements in §2 and §9 were taken on 2026-09-07 against react-x11
 > 2.6.1 (the version pinned then) and re-checked against the 2.8.2 source

@@ -211,14 +211,16 @@ never held, and only a _stream_ of expensive ones throttles.
 button beside it that runs `time awk …` so the shell prints the cost of the
 setting itself.
 
-**The element's own half of the gap is specified but not yet adopted here.**
-`Node.opaqueRect()` and a `copy` composite (react-x11 2.9.0,
-sidorares/react-x11#497 and #501)
-would let a repaint under a flood skip the backgrounds the surface is about
-to cover and blit rather than blend, and subscribing to `onWriteParsed`
-alone would drop the per-scrolled-line claims `onScroll` adds. Measured
-together at 3.5s to 1.1s for a 300,000-line flood on macOS —
-docs/prd-frame-pacing.md §5.3 is the design and the status.
+**The element's own half of the gap is done.** `<vtterm>` answers
+`Node.opaqueRect()` with its grid and claims a rect inside it, so a repaint
+under a flood skips the window and box backgrounds the surface is about to
+cover; the renderer composites its surface as a `copy` rather than a blend —
+XRender's `Src`, a row memcpy on macOS; and the node subscribes to
+`onWriteParsed` alone, where `onScroll` had been firing once per scrolled
+line (336,000 claims in a 300,000-line flood). All three are react-x11
+2.9.0's seams (sidorares/react-x11#497 and #501), and together they took
+that flood from 3.5s to 1.1s on macOS. docs/prd-frame-pacing.md §5.3 is the
+design.
 
 Keyboard, mouse and selection are what a terminal user expects:
 xterm-compatible key encoding (application cursor and keypad modes, the
