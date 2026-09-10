@@ -9,9 +9,17 @@
 // implementation of a projection proves only that it is self-consistent.
 import { test } from 'node:test';
 import assert from 'node:assert';
+import { existsSync } from 'node:fs';
 import React from 'react';
 
-import { cleanup, renderX11, userEvent, act, waitFor } from 'react-x11/test';
+import {
+  cleanup,
+  countPixels,
+  renderX11,
+  userEvent,
+  act,
+  waitFor,
+} from 'react-x11/test';
 import type { RenderX11Options } from 'react-x11/test';
 import { drawnKinds, knownElements } from 'react-x11/host';
 import { isStyleProp } from 'react-x11/style';
@@ -1648,7 +1656,7 @@ test('a failed load is reported, and retried on a backoff rather than per frame'
   assert.equal(attempts, 1, `asked ${attempts} times in 20 frames`);
   assert.equal(failures.length, 1);
   assert.match(failures[0], /502/);
-  const entry = cache.peek('down', { z: 1, x: 0, y: 0 });
+  const entry = cache.peek(source, { z: 1, x: 0, y: 0 });
   assert.equal(entry?.status, 'error');
   assert.ok((entry?.data.retryAt ?? 0) > Date.now(), 'a retry is scheduled');
   cache.destroy();
@@ -1714,6 +1722,241 @@ test('a tile that fails reaches onTileError and the frame stats', async () => {
   assert.ok(stats && stats.errors > 0, 'and counted in the frame stats');
 });
 
+test('a source object is its own cache: another under the same id shares nothing', async () => {
+  // What a provider switch showed: the old provider's tiles wherever it had
+  // them, the new one's everywhere else. Tiles were filed under the
+  // source's id, and an id is a name rather than a provider — `source-0`
+  // for every source without one, `osm-raster` for `osmRasterSource`
+  // whatever its `url` — so a different source under the same name was
+  // handed tiles it never loaded.
+  const asked: string[] = [];
+  const provider = (name: string): MapSource => ({
+    id: 'basemap',
+    load: () => {
+      asked.push(name);
+      return { kind: 'vector', data: tileBytes([]) };
+    },
+  });
+  const a = provider('a');
+  const b = provider('b');
+  const tile = { z: 2, x: 1, y: 1 };
+  const cache = new TileCache();
+  cache.beginFrame();
+  const fromA = cache.want(a, 'basemap', tile);
+  const fromB = cache.want(b, 'basemap', tile);
+  await Promise.resolve();
+  assert.deepEqual(asked, ['a', 'b'], 'each provider is asked for its own');
+  assert.notEqual(fromB.data, fromA.data);
+  assert.equal(fromB.sourceId, 'basemap', 'and is still called by its id');
+  cache.want(a, 'basemap', tile);
+  assert.deepEqual(asked, ['a', 'b'], 'one object is still one cache');
+  cache.destroy();
+});
+
+/** One colour, edge to edge: which provider drew a pixel is then something
+ *  the pixel says. */
+function solidRaster(rgb: [number, number, number]): TileData {
+  const size = 8;
+  const data = new Uint8Array(size * size * 4);
+  for (let i = 0; i < data.length; i += 4) {
+    data.set([...rgb, 255], i);
+  }
+  return { kind: 'raster', width: size, height: size, data };
+}
+
+async function settleFrames(rounds = 12): Promise<void> {
+  for (let i = 0; i < rounds; i++) {
+    await act(async () => {});
+    await new Promise((resolve) => setTimeout(resolve, 15));
+  }
+}
+
+const RED: [number, number, number] = [255, 0, 0];
+const BLUE: [number, number, number] = [0, 0, 255];
+const WHOLE = { width: 200, height: 200 };
+
+for (const [label, id] of [
+  ['sources with no id', undefined],
+  ['sources sharing an id', 'basemap'],
+] as const) {
+  test(`switching provider never shows the old one's tiles — ${label}`, async () => {
+    // The user-visible half. No id makes both `source-0`; a shared id is
+    // what two `osmRasterSource`s pointed at two servers amount to.
+    let askedRed = 0;
+    const red: MapSource = {
+      ...(id ? { id } : {}),
+      tileSize: 512,
+      load: () => {
+        askedRed++;
+        return solidRaster(RED);
+      },
+    };
+    // Held until the test lets go, so the frames between the switch and
+    // the new provider's first answer can be looked at on their own.
+    const held: (() => void)[] = [];
+    const blue: MapSource = {
+      ...(id ? { id } : {}),
+      tileSize: 512,
+      load: () =>
+        new Promise<TileData>((resolve) => {
+          held.push(() => resolve(solidRaster(BLUE)));
+        }),
+    };
+    let frames: MapFrameStats[] = [];
+    const render = (sources: MapSource[]): React.ReactElement =>
+      React.createElement(MapView, {
+        sources,
+        defaultCamera: { center: ONE_TILE_CENTRE, zoom: 3 },
+        onFrame: (stats) => frames.push({ ...stats }),
+        'data-testname': 'map',
+      });
+    const result = await renderX11(render([red]), {
+      backend: 'xserver',
+      ...WHOLE,
+    });
+    await settleFrames();
+    assert.ok(
+      (await countPixels(result.ctx, WHOLE, RED, 8)) > 0,
+      'the first provider drew',
+    );
+
+    frames = [];
+    await result.rerender(render([blue]));
+    await settleFrames();
+    assert.ok(held.length > 0, 'the new provider was asked for its tiles');
+    assert.ok(frames.length > 0, 'the switch painted');
+    for (const frame of frames) {
+      assert.equal(
+        frame.ready + frame.fromAncestor + frame.fromDescendant,
+        0,
+        `a tile was drawn before its provider answered: ${JSON.stringify(frame)}`,
+      );
+    }
+    assert.equal(
+      await countPixels(result.ctx, WHOLE, RED, 8),
+      0,
+      'none of the old provider is left on screen',
+    );
+
+    for (const release of held.splice(0)) release();
+    await settleFrames();
+    assert.ok((await countPixels(result.ctx, WHOLE, BLUE, 8)) > 0);
+    assert.equal(await countPixels(result.ctx, WHOLE, RED, 8), 0);
+
+    // Keyed by provider cuts both ways: switching back finds the first
+    // provider's tiles still cached, and asks it for nothing.
+    const before = askedRed;
+    await result.rerender(render([red]));
+    await settleFrames();
+    assert.equal(askedRed, before, 'the first provider was not asked again');
+    assert.ok((await countPixels(result.ctx, WHOLE, RED, 8)) > 0);
+    assert.equal(await countPixels(result.ctx, WHOLE, BLUE, 8), 0);
+  });
+}
+
+// Real font files: without `app.fonts` the map shapes no labels at all. The
+// pair `test/markdown.test.ts` looks for; a box with neither skips the test.
+const FONT_FILES = [
+  [
+    '/System/Library/Fonts/Supplemental/Arial.ttf',
+    '/System/Library/Fonts/Monaco.ttf',
+  ],
+  [
+    '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+    '/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf',
+  ],
+].find(([sans, mono]) => existsSync(sans) && existsSync(mono));
+const FONTS = FONT_FILES
+  ? { 'sans-serif': FONT_FILES[0], monospace: FONT_FILES[1] }
+  : null;
+
+test(
+  'labels come only from the sources on the map',
+  { skip: !FONTS },
+  async () => {
+    // The same leak one layer up. Labels are collected from the tile data the
+    // cache holds, and it keeps a provider's tiles after the provider is
+    // switched away — which is what makes switching back free — so a map
+    // switched off a vector source kept drawing that source's place names
+    // over the new one's tiles, until eviction reached them.
+    const named: MapSource = {
+      id: 'named',
+      tileSize: 512,
+      load: () => ({
+        kind: 'vector',
+        data: tileBytes([
+          layer({
+            name: 'places',
+            keys: ['name'],
+            values: ['Soho'],
+            features: [
+              {
+                type: GeomType.Point,
+                tags: [0, 0],
+                // The middle of the tile, which is the middle of the pane.
+                geometry: [...command(1, 1), zigzag(2048), zigzag(2048)],
+              },
+            ],
+          }),
+        ]),
+      }),
+    };
+    const plain: MapSource = {
+      id: 'plain',
+      tileSize: 512,
+      load: () => ({ kind: 'vector', data: threeLayerTile() }),
+    };
+    const style: MapStyle = {
+      ...THREE_RUN_STYLE,
+      layers: [
+        ...THREE_RUN_STYLE.layers,
+        {
+          id: 'places',
+          type: 'symbol',
+          sourceLayer: 'places',
+          textField: 'name',
+        },
+      ],
+    };
+    let frames: MapFrameStats[] = [];
+    const render = (sources: MapSource[]): React.ReactElement =>
+      React.createElement(MapView, {
+        sources,
+        mapStyle: style,
+        defaultCamera: { center: ONE_TILE_CENTRE, zoom: 3 },
+        onFrame: (stats) => frames.push({ ...stats }),
+        'data-testname': 'map',
+      });
+    const result = await renderX11(render([named]), {
+      backend: 'xserver',
+      ...WHOLE,
+      fonts: FONTS!,
+    });
+    await settleFrames();
+    // A frame that only continues a rasterization clips to one pixel and
+    // draws no labels whatever the cache holds, so only repaints count.
+    const repainted = (f: MapFrameStats): boolean =>
+      f.damage === null || f.damage.width * f.damage.height > 4096;
+    assert.ok(
+      frames.some((f) => repainted(f) && f.labels > 0),
+      'the place name was drawn',
+    );
+
+    frames = [];
+    await result.rerender(render([plain]));
+    await settleFrames();
+    const full = frames.filter(repainted);
+    assert.ok(full.length > 0, 'the switch repainted');
+    for (const frame of full) {
+      assert.equal(
+        frame.labels,
+        0,
+        `the old source's label is still drawn: ${JSON.stringify(frame)}`,
+      );
+    }
+  },
+);
+
 test('an ancestor with a surface is what covers a hole', () => {
   const cache = new TileCache();
   cache.beginFrame();
@@ -1731,19 +1974,19 @@ test('an ancestor with a surface is what covers a hole', () => {
   const drawing = cache.beginRender(parent, 256, 10, () => fake);
   assert.ok(drawing, 'a rendering was started');
   assert.equal(
-    cache.ancestorWithSurface('fake', { z: 12, x: 21, y: 29 }),
+    cache.ancestorWithSurface(source, { z: 12, x: 21, y: 29 }),
     null,
     'a rendering still being drawn is not a cover',
   );
   drawing.progress = -1;
   cache.promote(parent);
   assert.equal(
-    cache.ancestorWithSurface('fake', { z: 12, x: 21, y: 29 }),
+    cache.ancestorWithSurface(source, { z: 12, x: 21, y: 29 }),
     parent,
     'and a finished one is',
   );
   assert.equal(
-    cache.ancestorWithSurface('fake', { z: 12, x: 0, y: 0 }),
+    cache.ancestorWithSurface(source, { z: 12, x: 0, y: 0 }),
     null,
     'a tile that is not a descendant is not covered',
   );

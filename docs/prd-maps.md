@@ -184,8 +184,10 @@ anyway.
 
 Three caches, layered, and the whole performance argument is the layering.
 
-1. **Tile data**, keyed on `source/z/x/y`, valid forever: a tile's contents
-   do not depend on where the camera is.
+1. **Tile data**, keyed on the source object and `z/x/y`, valid forever: a
+   tile's contents do not depend on where the camera is. The object, not
+   its `id` — two providers can share a name, and a map switched between
+   them must not draw one's tiles as the other's.
 2. **Up to two rendered `Surface`s per tile** — the one on screen and the
    one being drawn — each valid for a zoom _level_ and a style but not for a
    camera position. Past the source's own depth the cover synthesizes
