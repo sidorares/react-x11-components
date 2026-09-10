@@ -21,7 +21,10 @@
  * program installed and is the only backend `write()` can work on.
  *
  * `'auto'` takes the first embeddable emulator that is installed and falls
- * back to `'vt'`. That order — rather than vt first — is deliberate: an
+ * back to `'vt'` — and on a react-x11 backend that cannot host an embedded
+ * window at all (the native macOS one) it takes `'vt'` without looking for
+ * the other three, because an emulator found on `PATH` there is one this app
+ * cannot show. That order — rather than vt first — is deliberate: an
  * external emulator is battle-tested, and a user who installed one expressed
  * a preference. Moving vt to the front is a later, deliberate decision.
  */

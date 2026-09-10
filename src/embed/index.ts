@@ -10,6 +10,8 @@
 // other `-into WID` program should not have to copy this file to exist.
 export {
   BackendUnavailableError,
+  EmbedUnsupportedError,
+  canHostXEmbed,
   resolveBackend,
   useEmbeddedClient,
 } from './client.js';

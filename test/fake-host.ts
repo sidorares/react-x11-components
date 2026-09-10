@@ -105,6 +105,9 @@ export class FakeHost implements ProcessHost {
   readonly sockets: FakeSocket[] = [];
   /** Paths handed out by `socketPath`, and whether they were cleaned up. */
   readonly scratch: { path: string; disposed: boolean }[] = [];
+  /** Every name `which()` was asked about, in order — what tells a backend
+   *  that was skipped from one that was looked for and missed. */
+  readonly probed: string[] = [];
   installed: Set<string>;
   spawnError: Error | null;
   #pid = 1000;
@@ -120,6 +123,7 @@ export class FakeHost implements ProcessHost {
   }
 
   async which(command: string): Promise<string | null> {
+    this.probed.push(command);
     return this.installed.has(command) ? `/usr/bin/${command}` : null;
   }
 

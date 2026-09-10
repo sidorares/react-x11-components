@@ -32,11 +32,19 @@ cross-process window embedding to build that on — react-x11's own
 element there rather than a hole punched in the window, so nothing is lost
 but the choice of emulator.
 
-The probe that picks a rung is a `PATH` probe, and a `PATH` probe cannot see
-which backend the app is running on: on a Mac with XQuartz installed,
-`'auto'` will still pick that xterm and then have nothing to embed it into.
-**An app that runs on both backends should say `backend="vt"` outright**
-rather than rely on `'auto'`.
+**`'auto'` asks the app before it asks `PATH`.** Whether the app can host
+another program's window at all is a question about its connection, not
+about what is installed, so the ladder asks that first
+([`canHostXEmbed`](embed.md)) and on the Cocoa backend skips the three
+emulators without looking for them. A Mac with XQuartz's xterm on `PATH`
+still gets vt, and an app that runs on both backends can leave `backend` at
+its default.
+
+**An emulator named outright is taken at its word.** `backend="xterm"` on the
+Cocoa backend does not quietly become vt: it reports `status: 'unavailable'`,
+renders `fallback`, and sends `onError` an `EmbedUnsupportedError` saying
+this backend cannot embed another program's window. Without a `fallback` the
+pane keeps its place, empty. Either way nothing is spawned.
 
 [macos]: https://github.com/sidorares/react-x11/blob/master/docs/macos.md
 
@@ -69,11 +77,11 @@ rather than rely on `'auto'`.
 
 ### Events
 
-| Prop            | Type                       | Notes                                                                                                                                                                                      |
-| --------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `onExit`        | `(info: ExitInfo) => void` | Including because `restart()` or unmount killed it.                                                                                                                                        |
-| `onTitleChange` | `(title: string) => void`  | What the shell says is running.                                                                                                                                                            |
-| `onError`       | `(err: Error) => void`     | Spawn failures, and the `BackendUnavailableError` for a machine with nothing installed. **Without a handler neither is reported anywhere** — `status` and `fallback` are the visible half. |
+| Prop            | Type                       | Notes                                                                                                                                                                                                                                                                               |
+| --------------- | -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `onExit`        | `(info: ExitInfo) => void` | Including because `restart()` or unmount killed it.                                                                                                                                                                                                                                 |
+| `onTitleChange` | `(title: string) => void`  | What the shell says is running.                                                                                                                                                                                                                                                     |
+| `onError`       | `(err: Error) => void`     | Spawn failures, the `BackendUnavailableError` for a machine with nothing installed, and the `EmbedUnsupportedError` for an emulator named on a backend that cannot embed one. **Without a handler none of it is reported anywhere** — `status` and `fallback` are the visible half. |
 
 ### vt backend only
 

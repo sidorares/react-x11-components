@@ -80,10 +80,24 @@ and macOS has no cross-process window embedding — react-x11's own
 `docs/macos.md` says so and names this package in as much. That is a wall,
 not a gap, so do not file it as one; the answer where an app needs the
 capability on both backends is a native sibling, which is what
-`backend="vt"` is for the terminal. `<TrayHost>` degrades to
-`status: 'unavailable'` there because core's Cocoa `X` stub has no selection
-machinery, which is the same posture it has against the headless mock — the
-posture to copy for anything else that reaches for raw X.
+`backend="vt"` is for the terminal.
+
+All three degrade the same way there — `status: 'unavailable'` plus
+`fallback` — and all three find out from the **app**, never the machine:
+core's Cocoa `X` is a stub with no selection machinery and no reparent, the
+same posture as the headless mock's. `<TrayHost>`'s manager asks for
+`SetSelectionOwner`; `canHostXEmbed(app)` in `src/embed/` asks that and
+`ReparentWindow`, and `useEmbeddedClient` answers `'unavailable'` with an
+`EmbedUnsupportedError` on the first render instead of trusting
+`<foreign onReady>`. That is the trap the check closes: on the Cocoa backend
+`<foreign>` still calls `onReady`, with `windowId: undefined`, so the two
+spawning components used to run their plans with it — `xterm -into
+undefined`, `mpv --wid=undefined` — over a blank pane, with no error.
+`<Terminal backend="auto">` asks before its `PATH` probe, so a Mac with
+XQuartz's xterm installed lands on vt. **That is the posture to copy for
+anything else that reaches for raw X**: ask the connection, answer on the
+first render, and mount no `<foreign>` where it has no socket to be — on
+core's headless mock one throws from the commit.
 
 The rule this leaves for a new component: **if it can only work on one
 backend, its docs page says which, in the first screenful.** A reader who
@@ -549,7 +563,11 @@ installed: both are ordinary states of a healthy machine, so `backend`
 defaults to `'auto'`, detection is a `PATH` probe, and the result is
 `status: 'unavailable'` plus a `fallback` — never a throw and never a
 dependency on a binary. Same call react-x11's `useDesktopCalendarEvents`
-makes about a desktop with no calendar service.
+makes about a desktop with no calendar service. A react-x11 backend with no
+XEmbed is the same kind of news and gets the same status, but it is a fact
+about the app rather than the machine, so it is asked first
+(`canHostXEmbed`) and nothing on `PATH` can overrule it — see "Two backends"
+above.
 
 Three things about these components that are decisions rather than gaps, so
 they are not re-litigated:
@@ -665,9 +683,11 @@ somewhere else:
 - **A test that renders `<Terminal>` must pin `pty`.** Since `'auto'` falls
   through to vt, a `<Terminal>` with no emulator installed and no `pty` prop
   opens a _real login shell_ — which then keeps node's event loop alive, so
-  the suite does not fail, it **hangs**. Every test here passes a
-  `FakePtyHost`; the one that drives a real pty is opt-in behind
-  `REACT_X11_COMPONENTS_REAL_PTY=1` for the same reason.
+  the suite does not fail, it **hangs**. `'auto'` also goes straight to vt
+  on any app that cannot host XEmbed, and the mock backend is one: there a
+  `<Terminal>` opens a pty whatever `processes` says is installed. Every
+  test here passes a `FakePtyHost`; the one that drives a real pty is
+  opt-in behind `REACT_X11_COMPONENTS_REAL_PTY=1` for the same reason.
 
 ## Hosting a client nobody spawned
 

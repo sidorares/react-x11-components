@@ -23,6 +23,13 @@ import {
   xterm,
 } from '../src/terminal/index.js';
 import type { TerminalHandle } from '../src/terminal/index.js';
+import {
+  EmbedUnsupportedError,
+  canHostXEmbed,
+  useEmbeddedClient,
+} from '../src/embed/index.js';
+import type { EmbeddedClient, LaunchPlan } from '../src/embed/index.js';
+import { cocoaShapedApp } from './cocoa-shaped.js';
 import { FakeHost } from './fake-host.js';
 import { FakePtyHost } from './fake-pty.js';
 
@@ -378,4 +385,145 @@ test('the pane is focusable by default and opts out by prop', async () => {
     backend: 'xserver',
   });
   assert.strictEqual(foreignNode()?.props.focusable, false);
+});
+
+// --- on a react-x11 backend with no XEmbed ---------------------------------
+//
+// The native macOS backend has no cross-process window embedding, so an
+// emulator on `PATH` — XQuartz's xterm, on a Mac — is not a terminal the app
+// can show. These render into an app whose `X` is that backend's stub
+// (`./cocoa-shaped.ts`), and every one pins `pty`: `'auto'` lands on vt there
+// whatever is installed, and an unpinned vt terminal opens a real shell that
+// keeps the suite alive.
+
+/**
+ * Run `fn` with the vt-only prop warning swallowed. A test below pins `pty`
+ * on a named emulator on purpose, and the component is right to say the prop
+ * does nothing there — it is just not what that test is about.
+ */
+async function withoutVtOnlyWarning<T>(fn: () => Promise<T>): Promise<T> {
+  const g = globalThis as { console: { warn: (...args: unknown[]) => void } };
+  const original = g.console.warn;
+  g.console.warn = (...args: unknown[]) => {
+    if (!String(args[0]).includes('only honoured by')) {
+      original.apply(g.console, args);
+    }
+  };
+  try {
+    return await fn();
+  } finally {
+    g.console.warn = original;
+  }
+}
+
+test('canHostXEmbed asks the connection, not PATH', async () => {
+  const { app } = await renderX11(h('box'), { backend: 'xserver' });
+  assert.strictEqual(canHostXEmbed(app), true, 'a real X connection can');
+  assert.strictEqual(canHostXEmbed(cocoaShapedApp()), false);
+  assert.strictEqual(canHostXEmbed(null), false);
+  assert.strictEqual(canHostXEmbed({}), false);
+  // a selection owner with no reparent is still not an embedder
+  assert.strictEqual(canHostXEmbed({ X: { SetSelectionOwner() {} } }), false);
+});
+
+test("'auto' skips the emulators on an app that cannot host one, and lands on vt", async () => {
+  // xterm is "installed": a PATH probe would find it, which was the bug — on
+  // a Mac with XQuartz, 'auto' chose that xterm, and since the Cocoa
+  // backend's <foreign> hands `onReady` a window id of undefined, it was
+  // spawned `-into undefined`.
+  const host = new FakeHost({ installed: ['xterm'] });
+  const pty = new FakePtyHost();
+  const ref = React.createRef<TerminalHandle>();
+  const errors: Error[] = [];
+
+  await renderX11(
+    h(Terminal, {
+      processes: host,
+      pty,
+      ref,
+      onError: (err) => errors.push(err),
+    }),
+    { app: cocoaShapedApp(), backend: 'mock' },
+  );
+
+  await waitFor(() => assert.ok(pty.last, 'a pty was opened instead'));
+  assert.strictEqual(ref.current?.backend, 'vt');
+  assert.strictEqual(foreignNode(), undefined, 'no <foreign> was mounted');
+  // Skipped, not tried: nothing was looked for, nothing was spawned, and
+  // nothing went wrong.
+  assert.deepStrictEqual(host.probed, []);
+  assert.strictEqual(host.spawns.length, 0);
+  assert.deepStrictEqual(errors, []);
+});
+
+test('an emulator named outright on such an app says it cannot embed, and spawns nothing', async () => {
+  const host = new FakeHost({ installed: ['xterm'] });
+  const pty = new FakePtyHost();
+  const ref = React.createRef<TerminalHandle>();
+  const errors: Error[] = [];
+  const props = {
+    backend: 'xterm' as const,
+    processes: host,
+    // Pinned though `xterm` never reaches vt: if it ever did, this is what
+    // makes that regression a failed assertion rather than a hung suite.
+    pty,
+    ref,
+    onError: (err: Error) => errors.push(err),
+    fallback: h('text', { 'data-testname': 'no-embed' }, 'try backend="vt"'),
+  };
+
+  const { rerender } = await withoutVtOnlyWarning(() =>
+    renderX11(h(Terminal, props), { app: cocoaShapedApp(), backend: 'mock' }),
+  );
+
+  await waitFor(() => assert.ok(screen.getByTestName('no-embed')));
+  assert.strictEqual(ref.current?.status, 'unavailable');
+  assert.strictEqual(ref.current?.backend, null);
+  assert.strictEqual(errors.length, 1);
+  assert.ok(errors[0] instanceof EmbedUnsupportedError);
+  assert.match(errors[0]!.message, /cannot embed another program's window/);
+  // Named means that one: no quiet swap to vt, and nothing spawned.
+  assert.strictEqual(pty.last, null);
+  assert.deepStrictEqual(host.probed, []);
+  assert.strictEqual(host.spawns.length, 0);
+
+  // A new command is a new plan, not new news.
+  await rerender(h(Terminal, { ...props, command: ['zsh'] }));
+  await act();
+  assert.strictEqual(errors.length, 1, 'reported once');
+
+  // With no fallback the pane keeps its place — still with no <foreign>.
+  await rerender(h(Terminal, { ...props, fallback: undefined }));
+  await act();
+  assert.strictEqual(ref.current?.status, 'unavailable');
+  assert.strictEqual(foreignNode(), undefined);
+});
+
+test('the hook spawns nothing on such an app, whatever onReady hands over', async () => {
+  // Not hypothetical: the Cocoa backend's <foreign> does call onReady, with
+  // `{ windowId: undefined }`, which slipped past a `windowId === null` guard
+  // and ran the plan. The app decides, not the event — and this is the
+  // wrapper that renders a <foreign> there anyway.
+  const host = new FakeHost({ installed: ['xterm'] });
+  let planned = 0;
+  const plan = async (): Promise<LaunchPlan> => {
+    planned += 1;
+    return { command: 'xterm', args: [] };
+  };
+  const seen: { client: EmbeddedClient | null } = { client: null };
+  function Probe(): React.ReactElement {
+    seen.client = useEmbeddedClient({ plan, host });
+    return h('box');
+  }
+
+  await renderX11(h(Probe), { app: cocoaShapedApp(), backend: 'mock' });
+  await act(() =>
+    seen.client!.handleReady({ windowId: undefined as unknown as number }),
+  );
+  await act(() => seen.client!.handleReady({ windowId: 42 }));
+  await act();
+
+  assert.strictEqual(planned, 0, 'the plan never ran');
+  assert.strictEqual(host.spawns.length, 0);
+  assert.strictEqual(seen.client!.status, 'unavailable');
 });

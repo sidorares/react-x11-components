@@ -3,10 +3,12 @@
 ```ts
 import {
   useEmbeddedClient,
+  canHostXEmbed,
   resolveBackend,
   nodeProcessHost,
   connectWhenReady,
   BackendUnavailableError,
+  EmbedUnsupportedError,
 } from '@react-x11/components/embed';
 ```
 
@@ -47,7 +49,7 @@ Returned:
 ```ts
 interface EmbeddedClient {
   status: 'idle' | 'starting' | 'running' | 'exited' | 'unavailable';
-  error: Error | null; // the last failure, including BackendUnavailableError
+  error: Error | null; // the last failure: BackendUnavailableError, EmbedUnsupportedError, …
   pid: number | null;
   windowId: number | null; // the container window, once <foreign> has one
   backend: string | null;
@@ -56,6 +58,23 @@ interface EmbeddedClient {
   signal: (signal?: string) => boolean;
 }
 ```
+
+### On a backend with no XEmbed
+
+react-x11's native macOS backend has no cross-process window embedding, so
+there is no window a program could draw into — and `<foreign onReady>` is no
+evidence either way, because on that backend it still fires, with
+`windowId: undefined`. A lifecycle that took it at its word spawned
+`xterm -into undefined`. So the hook asks the app instead: where
+`canHostXEmbed(app)` (below) is false, `status` is `'unavailable'` from the
+first render, `error` is an `EmbedUnsupportedError`, `onError` hears it once,
+and nothing is probed or spawned, whatever `onReady` hands over.
+`enabled: false` still holds off: a pane nobody can see yet reports nothing.
+
+**Render no `<foreign>` there either.** It has no socket to be: on the Cocoa
+backend it reports that undefined id, and on core's headless mock mounting
+one throws from the commit. `<Terminal>` and `<MediaPlayer>` render their
+`fallback`, or a plain box that holds the layout.
 
 ### `plan` identity is the restart signal
 
@@ -132,6 +151,28 @@ app shows can name them rather than saying "not found".
 **Nothing here is a hard dependency.** A machine with no emulator and no
 player is an ordinary state of a healthy machine, which is why the miss is a
 typed error routed to `onError` and a `fallback`, not a throw out of render.
+
+## `canHostXEmbed(app)`
+
+Whether an app can host another program's window at all — the question to
+ask before `resolveBackend`, and before rendering a `<foreign>` for one:
+
+```ts
+const embeddable = canHostXEmbed(useApp());
+```
+
+It asks the connection, not the machine. `app.X` has to carry
+`SetSelectionOwner` — the test `<TrayHost>` makes before it takes a
+selection — and `ReparentWindow`, the request an embed is made of.
+react-x11's X11 backend has both; the native macOS backend's `X` is a stub
+with neither, and so is the headless mock's. It takes the app rather than
+calling `useApp()` itself, so it also works off the render path, on
+`createRoot()`'s result before there is a tree.
+
+`EmbedUnsupportedError` is what `useEmbeddedClient` reports when it is false.
+Its status is `'unavailable'`, the same as a `BackendUnavailableError`'s,
+because both are ordinary states of a healthy app; the class is what tells
+"install xterm" apart from "this backend cannot embed anything".
 
 ## `connectWhenReady(host, path, options?)`
 

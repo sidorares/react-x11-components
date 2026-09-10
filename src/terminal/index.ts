@@ -23,7 +23,9 @@
 // rendered as a native element rather than as somebody else's X window. It is
 // what makes `write()` real — the pty is ours — and what works on a machine
 // with no emulator installed, which is why `'auto'` ends there rather than at
-// the `fallback`.
+// the `fallback`. It is also the only half that works on a react-x11 backend
+// with no XEmbed at all — the native macOS one — so `'auto'` goes straight
+// there when the app cannot host an emulator's window, whatever `PATH` holds.
 //
 // **`write()` still returns `false` on the XEmbed backends**, and that is not
 // an oversight: the pty belongs to xterm, so "type this" would have to be
@@ -40,12 +42,13 @@ import React, {
   useState,
 } from 'react';
 import type { ReactElement, ReactNode, Ref } from 'react';
-import { useTheme } from 'react-x11';
+import { useApp, useTheme } from 'react-x11';
 import type { ForeignProps } from 'react-x11';
 import type { Style } from 'react-x11/style';
 
 import {
   BackendUnavailableError,
+  canHostXEmbed,
   resolveBackend,
   useEmbeddedClient,
 } from '../embed/index.js';
@@ -153,7 +156,13 @@ export interface TerminalProps {
   /**
    * Which terminal. Default `'auto'`: the first of xterm, urxvt, alacritty
    * that is installed, and `'vt'` — this package's own emulator, which needs
-   * nothing installed — when none of them is.
+   * nothing installed — when none of them is, or when this react-x11 backend
+   * cannot embed another program's window at all (the native macOS one), in
+   * which case the three are not even looked for.
+   *
+   * Name one of the three on such a backend and it is taken at its word,
+   * not quietly swapped for vt: `status` is `'unavailable'`, `fallback`
+   * renders and `onError` gets an `EmbedUnsupportedError`.
    */
   backend?: TerminalBackendName;
   fontFamily?: string;
@@ -179,11 +188,14 @@ export interface TerminalProps {
   onExit?: (info: ExitInfo) => void;
   /** The emulator's `_NET_WM_NAME` changed: what the shell says is running. */
   onTitleChange?: (title: string) => void;
-  /** Spawn failures, and the `BackendUnavailableError` for a machine with no
-   *  emulator installed. Without a handler neither is reported anywhere —
-   *  `status` and `fallback` are the visible half. */
+  /** Spawn failures, the `BackendUnavailableError` for a machine with no
+   *  emulator installed, and the `EmbedUnsupportedError` for an emulator
+   *  named on a react-x11 backend that cannot embed one. Without a handler
+   *  none of it is reported anywhere — `status` and `fallback` are the
+   *  visible half. */
   onError?: (err: Error) => void;
-  /** Rendered instead of the surface when no backend is installed. */
+  /** Rendered instead of the surface when no backend is available — none
+   *  installed, or the one named cannot be embedded here. */
   fallback?: ReactNode;
   /** False holds off spawning — a pane in a tab that is not open yet. */
   enabled?: boolean;
@@ -290,8 +302,10 @@ function warnVtOnly(props: TerminalProps): void {
  * while the pointer is *over* an embedded emulator, keys go straight to it.
  *
  * **The vt backend is the floor.** With `backend="auto"` (the default), a
- * machine with no emulator installed gets this package's own — so `fallback`
- * renders only when the pty module or `@xterm/headless` is missing too.
+ * machine with no emulator installed gets this package's own, and so does an
+ * app on a react-x11 backend with no XEmbed — the native macOS one — whatever
+ * is installed. `fallback` renders only when the pty module or
+ * `@xterm/headless` is missing too.
  */
 export function Terminal(props: TerminalProps): ReactElement {
   const {
@@ -302,6 +316,9 @@ export function Terminal(props: TerminalProps): ReactElement {
     stopSignal,
   } = props;
   const theme = useTheme() as unknown as Record<string, unknown>;
+  // Whether an emulator's window can be hosted here at all. It decides the
+  // ladder below before `PATH` is asked anything.
+  const embeddable = canHostXEmbed(useApp());
 
   // Everything that goes into the command line, as one string.
   //
@@ -386,12 +403,15 @@ export function Terminal(props: TerminalProps): ReactElement {
   // --- which half of the component is running ------------------------------
   //
   // `'vt'` asks for it outright; `'auto'` arrives here only after the PATH
-  // probe found no emulator, which is what makes vt the floor rather than a
-  // parallel option. Both halves' hooks run unconditionally — the one that is
-  // not in use is simply disabled — because that is what hooks require and
-  // because a `<Terminal>` that flips backends must not remount the other one.
+  // probe found no emulator — or without probing at all on an app that could
+  // not host one it found, which on a Mac with XQuartz is exactly what `PATH`
+  // offers. That is what makes vt the floor rather than a parallel option.
+  // Both halves' hooks run unconditionally — the one that is not in use is
+  // simply disabled — because that is what hooks require and because a
+  // `<Terminal>` that flips backends must not remount the other one.
   const [vtFallback, setVtFallback] = useState(false);
-  const vt = backend === 'vt' || (backend === 'auto' && vtFallback);
+  const vt =
+    backend === 'vt' || (backend === 'auto' && (vtFallback || !embeddable));
   useEffect(() => {
     if (backend !== 'auto') setVtFallback(false);
   }, [backend]);
@@ -549,10 +569,18 @@ export function Terminal(props: TerminalProps): ReactElement {
 
   // No backend installed is an ordinary state of a perfectly healthy machine,
   // not an error to report — the same call `useDesktopCalendarEvents` makes
-  // about a desktop with no Evolution Data Server.
+  // about a desktop with no Evolution Data Server. So is an emulator named on
+  // an app that cannot host one.
   if (client.status === 'unavailable' && props.fallback !== undefined) {
     return h(React.Fragment, null, props.fallback);
   }
+
+  // …and without a `fallback` that app still gets no `<foreign>`, which has
+  // no socket to be there: on the Cocoa backend it hands `onReady` a window id
+  // of `undefined`, and on core's headless mock mounting one throws from the
+  // commit. A box in the terminal's own background holds the layout, as it
+  // does while the vt module loads.
+  if (!embeddable) return hx('box', { style: styles });
 
   const foreign: ForeignElementProps = {
     onReady: client.handleReady,
