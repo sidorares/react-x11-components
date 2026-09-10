@@ -63,8 +63,17 @@ export type TileData =
 
 /** A tile source. */
 export interface MapSource {
-  /** Distinguishes this source's cache entries from another's. Defaults to
-   *  the source's position in the `sources` array. */
+  /**
+   * What this source is called: the `sourceId` its `load` requests carry
+   * and `onTileError` reports. `source-<index>` by default.
+   *
+   * **Not** what its tiles are cached under — that is the source object
+   * itself, because a name is not a provider: two sources may share one,
+   * and a map switched between them must not draw one's tiles as the
+   * other's. The flip side is that a source made anew on every render
+   * starts from an empty cache on every render, so make it once — at
+   * module scope, or in `useMemo`.
+   */
   id?: string;
   /** Fetch, or answer from a cache, or decline. May be async. */
   load(request: TileRequest): TileData | Promise<TileData>;

@@ -18,6 +18,14 @@
 //    scaled. Only an integer zoom change, a style change or a display-scale
 //    change invalidates one.
 //
+// Both are filed under the **source object**, not under its `id`. An id is
+// only what a source is called, and two providers can share one — a source
+// without one is named for its slot in `sources`, and `osmRasterSource` is
+// `osm-raster` whichever server it points at — so filing by id handed a map
+// switched to another provider the old one's tiles wherever it had them,
+// until eviction got round to them. Filed by object, a new provider starts
+// empty, and an old one keeps its tiles for when it comes back.
+//
 // The surface is the expensive half — on the corpus in `scripts/bench/`, a
 // dense city tile is 50-140 ms to rasterize and about 0.05 ms to composite
 // — so the cache's job is to make sure that cost is paid once per tile per
@@ -97,6 +105,12 @@ export interface TileRender {
  */
 export interface TileDataEntry {
   readonly key: string;
+  /** Who answers for it — and so which provider the bytes came from,
+   *  since tiles are filed under the source object. */
+  readonly source: MapSource;
+  /** What that source is called: the `sourceId` its `load` requests carry
+   *  and `onError` reports. */
+  readonly sourceId: string;
   readonly tile: TileId;
   status: TileStatus;
   error: unknown;
@@ -207,6 +221,10 @@ export class TileCache {
   private readonly _entries = new Map<string, CachedTile>();
   /** The source's own tiles, shared by every rendering that draws one. */
   private readonly _data = new Map<string, TileDataEntry>();
+  /** The key prefix of each source object — per object and not per id,
+   *  for the reason at the top of this file. */
+  private readonly _prefixes = new WeakMap<MapSource, string>();
+  private _prefixCount = 0;
   private readonly _options: TileCacheOptions;
   private _frame = 0;
   private _surfaceBytes = 0;
@@ -241,21 +259,30 @@ export class TileCache {
     return this._entries.size;
   }
 
-  key(sourceId: string, tile: TileId): string {
-    return `${sourceId}:${tileKey(tile)}`;
+  /** What a source's tile is filed under: a prefix of the source object's
+   *  own, then `z/x/y`. The id is in the prefix only so that a key reads
+   *  well in a debugger; two objects with one id get two prefixes. */
+  key(source: MapSource, tile: TileId): string {
+    let prefix = this._prefixes.get(source);
+    if (prefix === undefined) {
+      prefix = `${source.id ?? 'source'}#${++this._prefixCount}`;
+      this._prefixes.set(source, prefix);
+    }
+    return `${prefix}:${tileKey(tile)}`;
   }
 
-  peek(sourceId: string, tile: TileId): CachedTile | undefined {
-    return this._entries.get(this.key(sourceId, tile));
+  peek(source: MapSource, tile: TileId): CachedTile | undefined {
+    return this._entries.get(this.key(source, tile));
   }
 
   /**
    * The entry for a tile the cover asked for, and the data behind it,
    * asking the source for that data if nothing has yet.
    *
-   * `dataTile` is the tile whose bytes serve this one — itself, until the
-   * cover goes deeper than the source cuts. Marks both used by the current
-   * frame, which is what keeps them out of the next eviction.
+   * Filed under `source`; `sourceId` is only what it is called. `dataTile`
+   * is the tile whose bytes serve this one — itself, until the cover goes
+   * deeper than the source cuts. Marks both used by the current frame,
+   * which is what keeps them out of the next eviction.
    */
   want(
     source: MapSource,
@@ -265,7 +292,7 @@ export class TileCache {
     sub: { x: number; y: number; span: number } = { x: 0, y: 0, span: 1 },
   ): CachedTile {
     const data = this._wantData(source, sourceId, dataTile);
-    const key = this.key(sourceId, tile);
+    const key = this.key(source, tile);
     let entry = this._entries.get(key);
     if (!entry) {
       entry = new CachedTile(key, sourceId, tile, data, sub);
@@ -280,11 +307,13 @@ export class TileCache {
     sourceId: string,
     tile: TileId,
   ): TileDataEntry {
-    const key = this.key(sourceId, tile);
+    const key = this.key(source, tile);
     let data = this._data.get(key);
     if (!data) {
       data = {
         key,
+        source,
+        sourceId,
         tile,
         status: 'idle',
         error: null,
@@ -299,23 +328,19 @@ export class TileCache {
     }
     data.lastUsed = this._frame;
     if (data.status === 'idle') {
-      this._load(source, sourceId, data);
+      this._load(data);
     } else if (data.status === 'error' && Date.now() >= data.retryAt) {
       // A failed tile is retried, but on a backoff rather than on every
       // frame. Without it a source that is down — or an application whose
       // `load` throws on the first call, which is how this was found — is
       // asked for every visible tile sixty times a second, which is a
       // retry storm pointed at somebody else's servers.
-      this._load(source, sourceId, data);
+      this._load(data);
     }
     return data;
   }
 
-  private _load(
-    source: MapSource,
-    sourceId: string,
-    entry: TileDataEntry,
-  ): void {
+  private _load(entry: TileDataEntry): void {
     entry.status = 'loading';
     entry.error = null;
     // A **real** `AbortController` where the runtime has one. A look-alike
@@ -365,7 +390,11 @@ export class TileCache {
     };
     let result: TileData | Promise<TileData>;
     try {
-      result = source.load({ ...entry.tile, sourceId, signal });
+      result = entry.source.load({
+        ...entry.tile,
+        sourceId: entry.sourceId,
+        signal,
+      });
     } catch (error) {
       settle(() => fail(error));
       return;
@@ -410,7 +439,7 @@ export class TileCache {
    * scaling one tile over sixteen screenfuls is worse than the hole.
    */
   ancestorWithSurface(
-    sourceId: string,
+    source: MapSource,
     tile: TileId,
     levels = 5,
   ): CachedTile | null {
@@ -418,7 +447,7 @@ export class TileCache {
     let x = tile.x >> 1;
     let y = tile.y >> 1;
     for (let up = 0; up < levels && z >= 0; up++, z--, x >>= 1, y >>= 1) {
-      const entry = this._entries.get(this.key(sourceId, { z, x, y }));
+      const entry = this._entries.get(this.key(source, { z, x, y }));
       // `shown` is finished by construction, so an ancestor is never a
       // half-drawn picture.
       if (entry?.shown) {
@@ -447,7 +476,7 @@ export class TileCache {
    * small to be worth the composites.
    */
   descendantsWithSurface(
-    sourceId: string,
+    source: MapSource,
     tile: TileId,
     depth = 2,
   ): { entry: CachedTile; x: number; y: number; span: number }[] {
@@ -458,7 +487,7 @@ export class TileCache {
       for (let dy = 0; dy < span; dy++) {
         for (let dx = 0; dx < span; dx++) {
           const entry = this._entries.get(
-            this.key(sourceId, {
+            this.key(source, {
               z: tile.z + down,
               x: (tile.x << down) + dx,
               y: (tile.y << down) + dy,
@@ -647,9 +676,11 @@ export class TileCache {
     return this._entries.values();
   }
 
-  /** Every source tile whose bytes are held. What labels are collected
-   *  from: a label belongs to the tile the data came from, and past a
-   *  source's depth many renderings share one of those. */
+  /** Every source tile whose bytes are held — including those of sources no
+   *  longer on the map, which is what makes switching back free and why a
+   *  reader filters on `source`. What labels are collected from: a label
+   *  belongs to the tile the data came from, and past a source's depth many
+   *  renderings share one of those. */
   dataEntries(): IterableIterator<TileDataEntry> {
     return this._data.values();
   }

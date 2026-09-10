@@ -634,7 +634,9 @@ function App(): React.ReactElement {
           ref={map}
           // Both change together, and both are stable objects, so
           // switching layers is one prop change rather than a re-render
-          // storm: the element drops its rendered tiles and rebuilds them.
+          // storm. Stable matters twice over: tiles are cached per source
+          // object, so a layer switched back to finds its tiles still there
+          // — and a source made anew each render never would.
           sources={layer.sources}
           mapStyle={layer.style}
           defaultCamera={{ center: place.centre, zoom: 14 }}

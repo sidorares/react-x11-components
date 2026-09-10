@@ -45,11 +45,19 @@ are two entries. A source is an object with a `load` function:
 | field         |                                                                                                                                                                                                                                                                                                                                          |
 | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `load`        | `(request) => TileData \| Promise<TileData>`. The whole seam.                                                                                                                                                                                                                                                                            |
-| `id`          | Distinguishes this source's cache entries. Its index by default.                                                                                                                                                                                                                                                                         |
+| `id`          | What `load` requests and `onTileError` call it; `source-<index>` by default. A name, not a cache key — see below.                                                                                                                                                                                                                        |
 | `minZoom`     | Shallowest level it has data for. 0 by default.                                                                                                                                                                                                                                                                                          |
 | `maxZoom`     | Deepest. 14 by default; a view past it **overzooms**, scaling the coarser tiles.                                                                                                                                                                                                                                                         |
 | `tileSize`    | Logical pixels per tile edge — 512 for vector, 256 for the older raster services. **Says which level is read**, not just how big the image is: a 256-px source answers a zoom-12 view with its level 13, so each image is drawn at its own size rather than stretched to twice it. Get it wrong and the map is misplaced, not just soft. |
 | `attribution` | What the licence requires. Drawn in the corner; see below.                                                                                                                                                                                                                                                                               |
+
+**A source object is its own cache.** Tiles are filed under the object you
+pass, not under its `id`: two providers can share a name, and a map switched
+from one to the other must not draw one's tiles as the other's. Switching
+back finds the first source's tiles still cached. The flip side is that a
+source made anew on every render starts from an empty cache on every render
+and fetches every tile again — so make each source once, at module scope or
+in `useMemo`.
 
 `TileData` is `{ kind: 'vector', data }` for MVT bytes (gzip is unwrapped
 for you), `{ kind: 'raster', width, height, data }` for straight RGBA

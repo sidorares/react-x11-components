@@ -11,7 +11,8 @@
 // Three caches, and the map's whole performance argument is the way they
 // are layered:
 //
-//  1. **Tile data**, keyed on `source/z/x/y` and valid forever.
+//  1. **Tile data**, keyed on the source object and `z/x/y`, and valid
+//     forever. The object, not its `id` — see `./tiles.ts`.
 //  2. **A rendered `Surface` per tile**, valid for a zoom *level* and a
 //     style — not for a camera position. So a **pan** composites the same
 //     surfaces at new offsets (and blits, so most of them are not even
@@ -272,9 +273,7 @@ export class MapViewNode extends Node {
           (error: unknown, tile: TileId & { sourceId: string }) => void
         >('onTileError')?.(entry.error, {
           ...entry.tile,
-          // The data entry is keyed per source, so the id is recoverable
-          // from the key it was built with.
-          sourceId: entry.key.slice(0, entry.key.lastIndexOf(':')),
+          sourceId: entry.sourceId,
         });
       },
       onChange: () => {
@@ -351,6 +350,8 @@ export class MapViewNode extends Node {
     return given ? [...given] : [];
   }
 
+  /** What a source is called in its requests and its errors. Not what its
+   *  tiles are cached under — the cache files them under the object. */
   private _sourceId(source: MapSource, index: number): string {
     return source.id ?? `source-${index}`;
   }
@@ -1108,12 +1109,12 @@ export class MapViewNode extends Node {
       // sharper and they are the level the user is coming *from*; the
       // ancestor wins when they do not, because a complete blurry picture
       // beats a sharp one with holes in it.
-      const kids = this._cache.descendantsWithSurface(sourceId, entry.tile);
+      const kids = this._cache.descendantsWithSurface(source, entry.tile);
       const covered =
         kids.length > 0 && kids.length === kids[0].span * kids[0].span;
       const ancestor = covered
         ? null
-        : this._cache.ancestorWithSurface(sourceId, entry.tile);
+        : this._cache.ancestorWithSurface(source, entry.tile);
       if (ancestor?.shown) {
         const up = entry.tile.z - ancestor.tile.z;
         const span = 1 << up;
@@ -1384,15 +1385,19 @@ export class MapViewNode extends Node {
       // Labels come from the tile the **data** came from, at the depth that
       // source actually cuts — past which many renderings share one tile
       // and collecting per rendering would place every label `span²` times.
-      const wanted = new Set(
-        this._sources().map((source) =>
-          Math.min(styleZoom, pyramid(source).maxZoom),
-        ),
-      );
+      //
+      // And only from the sources on the map now. The cache keeps a
+      // provider's tiles after it is switched away, so that switching back
+      // is free; collecting from all of them drew the old provider's place
+      // names over the new one's map until eviction reached them.
+      const wanted = new Map<MapSource, number>();
+      for (const source of this._sources()) {
+        wanted.set(source, Math.min(styleZoom, pyramid(source).maxZoom));
+      }
       const candidates: LabelCandidate[] = [];
       for (const cached of this._cache.dataEntries()) {
         if (cached.status !== 'ready' || !cached.vector) continue;
-        if (!wanted.has(cached.tile.z)) continue;
+        if (wanted.get(cached.source) !== cached.tile.z) continue;
         const at = `${cached.key}|${styleZoom}`;
         let found = this._candidates.get(at);
         if (!found) {
@@ -1745,6 +1750,9 @@ export class MapViewNode extends Node {
       return;
     }
     if (next.sources !== before.sources) {
+      // Nothing to throw away: tiles are filed under the source object, so
+      // a new provider starts empty and one switched away from keeps its
+      // tiles for when it comes back. Only the label placement is stale.
       this._labelKey = '';
       this._repaint('props');
       return;

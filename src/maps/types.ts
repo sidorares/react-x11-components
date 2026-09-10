@@ -140,6 +140,11 @@ export interface MapViewProps {
    * Where tiles come from, drawn in order — a basemap, then an overlay
    * pyramid over it. Empty draws the style's background and nothing else,
    * which is what a map with only markers on it wants.
+   *
+   * Tiles are cached per source **object**, whatever its `id`: switching
+   * to another source shows only its tiles, and switching back finds the
+   * first one's still cached. So keep each source stable across renders —
+   * one made anew every render fetches every tile again every render.
    */
   sources?: readonly MapSource[];
   /** How to draw them. Defaults to {@link shortbreadStyle} in the theme's
