@@ -377,11 +377,14 @@ builds, so the artifact under test is never stale.
 
 `react-x11` and `react` are `peerDependencies`, never regular ones. This is
 not style. `registerElement` mutates module-level state inside react-x11 —
-the registry `Map`, and the `DRAWN_KINDS` set that `paintOrder()` filters
-on. Two copies of react-x11 in one app means the registration lands in one
-copy and the render happens in the other, and the symptom is an element that
-lays out correctly, reports a sensible rect, and never paints, with no error
-anywhere.
+the registry `Map` that `createInstance` consults, and the `DRAWN_KINDS` set
+that `paintOrder()` filters on. Two copies of react-x11 in one app means the
+registration lands in one copy and the render happens in the other, so the
+component's first render throws `unknown element type <chartplot>` and
+suggests `registerElement()` — which is exactly what this package did, into
+the other copy. The tell is that the error lists none of this package's
+elements as registered. (Checked on 2.9.1 and 2.11.0, with a second core
+nested under this package.)
 
 ### Current status: core is released, and the git pin is gone
 
@@ -395,22 +398,39 @@ Both specs are ordinary registry ranges:
 
 Keep them the same range. They are one decision written twice, and a
 devDependency that drifts above the peer range means the suite passes
-against a core that consumers are not required to have.
+against a core that consumers are not required to have. The drift is one
+command away: `npm install -D react-x11@latest` moves the devDependency and
+leaves the peer where it was, which is the shape the 2.3.0 bump (PR #53) had
+before it was redone as 2.3.1. `scripts/check-package.ts` fails CI on any
+difference, and on `react-x11` or `react` in `dependencies` or
+`optionalDependencies`.
 
 Needing something core landed after the current floor is a normal release
 wait, not a pin bump: it ships in the next core release and both ranges pick
-it up. **The floor is a running one and moves often** — every move so far has
-been a component here adopting something core just landed, and the ones worth
-remembering are `^2.5.0` for the Cocoa glyph-run seams, `^2.6.1` for the
-chunked Cocoa stroke `<Map>` profiling asked for (react-x11#456/#457),
-`^2.9.1` for the desktop calendar's move into core (react-x11#508), and
-`^2.11.0` for the eyedropper's macOS rung, `NSColorSampler`
-(react-x11#517/#520 — before it, `useEyedropper().supported` was true on the
-Cocoa backend and the first press threw). 2.9.0 is the release the vt
-terminal's flood profiling asked for — `opaqueRect()`, the `copy` composite
-and the window's `frameRate` (react-x11#497/#501,
-`docs/prd-frame-pacing.md`) — and the calendar's bump carried it. Do not
-reach back for a `github:` spec to get at unreleased core — cut a core
+it up. **The floor is a running one and moves often** — every move since
+`^2.0.0`, both specs together each time:
+
+- `^2.3.1` — the `Node.scale` declaration `<Flow>` had been reading through
+  a cast (react-x11#430).
+- `^2.5.0` — the Cocoa glyph-run seams (2.4.0, react-x11#432) and the
+  offscreen `Surface` through `react-x11/ntk` (2.5.0, react-x11#433), the two
+  things the vt terminal was feature-detecting and degrading on.
+- `^2.6.0` — no seam adopted: the floor moved with `<Tabs>`'s overflow menu,
+  the first thing here to place a `<popup>` from a node that moves under it.
+- `^2.6.1` — the chunked Cocoa stroke `<Map>`'s profiling asked for
+  (react-x11#456/#457).
+- `^2.8.3` — `<ReorderList>` on core's drag and drop: the Cocoa backend in
+  2.7.0, then 2.8.0–2.8.3 for the Cocoa drag faults its branch filed
+  (react-x11#484, #488, #494).
+- `^2.9.1` — the desktop calendar's move into core (react-x11#508). It also
+  carried 2.9.0, the release the vt terminal's flood profiling asked for —
+  `opaqueRect()`, the `copy` composite and the window's `frameRate`
+  (react-x11#497/#501, `docs/prd-frame-pacing.md`).
+- `^2.11.0` — the eyedropper's macOS rung, `NSColorSampler`
+  (react-x11#517/#520 — before it, `useEyedropper().supported` was true on
+  the Cocoa backend and the first press threw).
+
+Do not reach back for a `github:` spec to get at unreleased core — cut a core
 release instead.
 
 **A component's docs page should not restate the floor.** Say what that
