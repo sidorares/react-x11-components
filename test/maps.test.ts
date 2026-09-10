@@ -80,6 +80,7 @@ import type {
 import { GeomType } from '../src/maps/mvt.js';
 import { drawOverlays } from '../src/maps/overlay.js';
 import { prepareStyle } from '../src/maps/paint.js';
+import { dataSquareOf } from '../src/maps/proj.js';
 import { TileCache } from '../src/maps/tiles.js';
 
 test.afterEach(async () => {
@@ -337,6 +338,55 @@ test('past its own depth a source is sub-tiled, not stretched', () => {
     const screen = DEFAULT_TILE_SIZE * 2 ** (zoom - z) * 2;
     assert.equal(raster.size, screen, `1:1 at zoom ${zoom}`);
   }
+});
+
+test('past its depth a raster is drawn over its data tile, where the cover puts that tile', () => {
+  // An image has nothing finer in it than its pixels, so a raster cell past
+  // the source's depth is drawn as the whole of its data tile — over a
+  // square that has to be where the cover at the source's own depth puts
+  // that tile, or the picture jumps at the zoom it takes over. Both
+  // placement bugs this map has had were a grid and a projection
+  // disagreeing about where something is.
+  for (const [tileSize, zoom] of [
+    [256, 19],
+    [256, 20.3],
+    [256, 22],
+    [512, 20],
+    [512, 21.6],
+  ] as const) {
+    const pyramid = { minZoom: 0, maxZoom: 19, tileSize };
+    const t = transformFor(
+      { center: LONDON, zoom },
+      { width: 700, height: 500 },
+    );
+    const cells = tileCover(t, { ...pyramid, maxZoom: 19 + 6 }, 256);
+    const own = tileCover(t, pyramid, 256);
+    const at = `${tileSize}px at zoom ${zoom}`;
+    assert.ok(cells[0].tile.z > 19, `${at} is past the cut`);
+    for (const cell of cells) {
+      const square = dataSquareOf(cell, 19);
+      const { z, x, y } = square.tile;
+      const tile = own.find(
+        (e) =>
+          e.worldCopy === square.worldCopy && e.tile.x === x && e.tile.y === y,
+      );
+      assert.ok(tile, `${at}: ${z}/${x}/${y} is not in the cover at the cut`);
+      assert.equal(z, 19);
+      for (const k of ['x', 'y', 'size'] as const) {
+        assert.ok(
+          Math.abs(square[k] - tile[k]) < 1e-6,
+          `${at}: ${k} is ${square[k]}, and the cover at the cut says ${tile[k]}`,
+        );
+      }
+    }
+  }
+  // A tile the source cuts is its own square.
+  const t = transformFor(
+    { center: LONDON, zoom: 18.5 },
+    { width: 700, height: 500 },
+  );
+  const entry = tileCover(t, { minZoom: 0, maxZoom: 19, tileSize: 256 })[0];
+  assert.equal(dataSquareOf(entry, 19), entry);
 });
 
 test('fitBounds frames a box, and a point does not become an infinite zoom', () => {
@@ -1570,6 +1620,161 @@ test('a map paints without throwing at the zoom where coordinates overflow', asy
     `reached ${handle.getCamera().zoom}`,
   );
 });
+
+// Past a raster source's deepest level.
+//
+// The cover goes deeper than a source cuts, and each tile past the cut is a
+// cell of its ancestor's data — rasterized through the cell for vector data,
+// which is what makes overzoom sharp. An image has nothing finer in it, and a
+// cell of one was drawn by uploading the image: all of it, into every cell.
+// So the view was that tile in miniature, 2×2 one level past the source and
+// 4×4 two past. A 256px source is read a level deeper than the view, so for
+// `osmRasterSource`, which cuts at 19, that was every zoom from 19 up.
+//
+// The fixture is ground truth rather than a flat colour: a checkerboard laid
+// on the ground, so what every pixel should show is a function of where it
+// is, and a picture drawn at the wrong place or the wrong size is wrong at
+// half of them.
+
+/** The ground's two colours, each the same read as RGBA or as BGRA. */
+const GROUND: readonly [Rgb, Rgb] = [
+  [0, 140, 0],
+  [255, 0, 255],
+];
+
+/** The ground's squares are the tiles of this level. */
+const GROUND_LEVEL = 22;
+
+/** The ground as `osmRasterSource` serves a map: 256px images, cut at 19. */
+const GROUND_SOURCE: MapSource = {
+  id: 'ground',
+  tileSize: 256,
+  minZoom: 0,
+  maxZoom: 19,
+  load: ({ z, x, y }) => {
+    const size = 256;
+    const cells = 2 ** (GROUND_LEVEL - z);
+    const data = new Uint8Array(size * size * 4);
+    for (let j = 0; j < size; j++) {
+      for (let i = 0; i < size; i++) {
+        const gx = Math.floor((x + (i + 0.5) / size) * cells);
+        const gy = Math.floor((y + (j + 0.5) / size) * cells);
+        data.set([...GROUND[(gx + gy) & 1], 255], (j * size + i) * 4);
+      }
+    }
+    return { kind: 'raster', width: size, height: size, data };
+  },
+};
+
+/**
+ * How many of a grid of samples over the pane show a colour other than the
+ * ground's where `unproject` puts them. A sample near a square's edge is
+ * skipped, since a scaled image blends the two colours there — by a margin
+ * that grows with the scaling, a zoom-19 pixel being 16 logical pixels
+ * across at zoom 22.
+ */
+async function wrongGround(
+  result: { ctx: unknown; windowNode: DrawnNode },
+  handle: MapHandle,
+  pane: ScreenRectLike,
+  scale: number,
+): Promise<{ checked: number; wrong: number; first: string }> {
+  const width = Math.round(result.windowNode.abs.width);
+  const height = Math.round(result.windowNode.abs.height);
+  const { data } = await (
+    result.ctx as {
+      getImageData(
+        x: number,
+        y: number,
+        w: number,
+        h: number,
+      ): Promise<{ data: Uint8ClampedArray }>;
+    }
+  ).getImageData(0, 0, width, height);
+  const zoom = handle.getCamera().zoom;
+  const square = DEFAULT_TILE_SIZE * 2 ** (zoom - GROUND_LEVEL);
+  const margin = 2 + 1.5 * ((DEFAULT_TILE_SIZE * 2 ** (zoom - 19)) / 256);
+  const n = 2 ** GROUND_LEVEL;
+  let checked = 0;
+  let wrong = 0;
+  let first = '';
+  for (let y = 2.5; y < pane.height; y += 5) {
+    for (let x = 2.5; x < pane.width; x += 5) {
+      const at = handle.unproject(x, y);
+      const gx = mercatorXFromLon(at.lon) * n;
+      const gy = mercatorYFromLat(at.lat) * n;
+      const edge =
+        Math.min(
+          gx - Math.floor(gx),
+          Math.ceil(gx) - gx,
+          gy - Math.floor(gy),
+          Math.ceil(gy) - gy,
+        ) * square;
+      if (edge < margin) continue;
+      checked++;
+      const rgb = GROUND[(Math.floor(gx) + Math.floor(gy)) & 1];
+      const i =
+        (Math.floor((pane.y + y) * scale) * width +
+          Math.floor((pane.x + x) * scale)) *
+        4;
+      if (
+        Math.abs(data[i] - rgb[0]) <= 40 &&
+        Math.abs(data[i + 1] - rgb[1]) <= 40 &&
+        Math.abs(data[i + 2] - rgb[2]) <= 40
+      ) {
+        continue;
+      }
+      wrong++;
+      first ||=
+        `(${x}, ${y}) is rgb(${data[i]}, ${data[i + 1]}, ${data[i + 2]}) ` +
+        `over ground that is rgb(${rgb.join(', ')})`;
+    }
+  }
+  return { checked, wrong, first };
+}
+
+for (const scale of [1, 2]) {
+  test(`past a raster source's deepest level each place is drawn once, where it is, at scale ${scale}`, async () => {
+    const ref = React.createRef<MapHandle>();
+    // 18.5 is the deepest a 256px source cut at 19 is drawn from tiles of
+    // its own, the level read being `floor(zoom + 1)`; the rest are one, two
+    // and four levels past it.
+    const defaultCamera = { center: LONDON, zoom: 18.5 };
+    const result = await renderX11(
+      React.createElement(MapView, {
+        ref,
+        sources: [GROUND_SOURCE],
+        defaultCamera,
+        attribution: '',
+        'data-testname': 'map',
+      }),
+      { backend: 'xserver', width: 240, height: 180, scale },
+    );
+    const handle = ref.current as MapHandle;
+    const abs = result.getByTestName('map').abs;
+    const pane = {
+      x: abs.x / scale,
+      y: abs.y / scale,
+      width: abs.width / scale,
+      height: abs.height / scale,
+    };
+    for (const zoom of [18.5, 19, 20.5, 22]) {
+      await act(async () => handle.setCamera({ center: LONDON, zoom }));
+      await waitFor(async () => {
+        const seen = await wrongGround(result, handle, pane, scale);
+        assert.ok(
+          seen.checked > 200,
+          `zoom ${zoom}: only ${seen.checked} samples clear of an edge`,
+        );
+        assert.ok(
+          seen.wrong === 0,
+          `zoom ${zoom}: ${seen.wrong} of ${seen.checked} samples show the ` +
+            `wrong ground, the first ${seen.first}`,
+        );
+      });
+    }
+  });
+}
 
 // --- the tile cache --------------------------------------------------------
 

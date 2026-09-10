@@ -209,9 +209,10 @@ level 13. The ground shown is identical; the grid is finer and each image
 lands at its natural size.
 
 The practical consequence is at the deep end. `osmRasterSource` cuts to
-level 19, so the sharpest view of it is zoom **18**, and past that its tiles
-upscale the way an overzoomed vector tile does. A 512-px vector source
-cutting to 14 is sharp to zoom 14 and sub-tiles past it.
+level 19, so the sharpest view of it is zoom **18**, and past that each of
+its level-19 images is drawn larger — an image has no finer detail to draw.
+A 512-px vector source cutting to 14 is sharp to zoom 14 and sub-tiles past
+it.
 
 ### Nothing here fetches, and that is the feature
 
@@ -569,6 +570,12 @@ to rasterize; one of its four z15 cells is 37 ms, one of 256 z18 cells is
 7.7 ms, and one of 4,096 z20 cells is 6 ms — because a feature whose box
 misses the cell is skipped before it becomes a path. Deep zoom is _cheaper_
 per tile than shallow zoom, and only the handful on screen are ever built.
+
+**A raster source is the exception: past its depth it stretches.** An image
+has no detail finer than its pixels, so there is nothing to draw a cell of
+one with but the whole image. Past a raster source's `maxZoom` each of its
+deepest images is drawn whole and larger, from one surface, however many
+cells of the view it spans.
 
 **A missing tile, a 404 and an empty ocean are the same answer.** `null`
 from `load`, and the map draws its background there. Only a `load` that

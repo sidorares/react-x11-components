@@ -47,11 +47,13 @@ import {
   DEFAULT_TILE_SIZE,
   cameraForBounds,
   boundsOf,
+  dataSquareOf,
   dataTileFor,
   subTileOf,
   projectLngLat,
   rasterFor,
   tileCover,
+  tileKey,
   transformFor,
   unprojectPoint,
   visibleBounds,
@@ -1244,11 +1246,19 @@ export class MapViewNode extends Node {
     // overzoomed map sharp: instead of one tile rasterized onto a surface
     // and stretched sixty-four times, there are two hundred and fifty-six
     // tiles sharing one fetch, each drawn at its own natural size, with
-    // detail limited by the data rather than by a bitmap.
-    const cover = tileCover(
-      { ...transform, zoom: transform.zoom },
-      { ...p, maxZoom: p.maxZoom + MAX_OVERZOOM },
-      COVER_PADDING,
+    // detail limited by the data rather than by a bitmap. That is vector
+    // data. An image has no more detail than its pixels, so a raster tile
+    // past the cut is drawn as the whole of its data tile instead — see
+    // `_rasterSquares`.
+    const cover = this._rasterSquares(
+      source,
+      sourceId,
+      tileCover(
+        { ...transform, zoom: transform.zoom },
+        { ...p, maxZoom: p.maxZoom + MAX_OVERZOOM },
+        COVER_PADDING,
+      ),
+      p.maxZoom,
     );
     const zoom = transform.zoom;
     const styleZoom = Math.floor(zoom);
@@ -1346,6 +1356,63 @@ export class MapViewNode extends Node {
       }
     }
     return visible;
+  }
+
+  /**
+   * The cover, with every **raster** tile past the source's depth drawn as
+   * the whole of its data tile — once, however many of its cells there are.
+   *
+   * The cover goes deeper than the source cuts because that is what makes
+   * vector data sharp there: each cell is rasterized from its data tile's
+   * features, through the cell (`sub`, in `_rasterize`). An image has no
+   * detail finer than its pixels and no drawing it through a cell: a raster
+   * cell was drawn by uploading the image, all of it, so each cell showed
+   * its data tile whole, shrunk into its own square. Past a raster source's
+   * depth the map was a grid of miniatures of each tile — 2×2 one level
+   * past, 4×4 two — and a 256px source is read a level deeper than the
+   * view, so for `osmRasterSource`, which cuts at 19, that was every zoom
+   * from 19 up.
+   *
+   * A raster map past its provider's depth draws the deepest images larger,
+   * and so does this. The square is where the cover at the source's own
+   * depth puts the data tile, and it is drawn from that tile's own surface —
+   * the one the view at that depth draws, so crossing into overzoom uploads
+   * nothing.
+   *
+   * Which kind a tile is, is known once its data is in. Until then a cell
+   * stays a cell, and is covered from its neighbours in the pyramid like
+   * any other hole. Asking is a `want`, which the frame's own pass repeats
+   * for a cell kept here, and which is idempotent.
+   */
+  private _rasterSquares(
+    source: MapSource,
+    sourceId: string,
+    cover: TileCoverEntry[],
+    maxZoom: number,
+  ): TileCoverEntry[] {
+    // A cover is one level, so every entry in it is past the cut or none is.
+    if (cover.length === 0 || cover[0].tile.z <= maxZoom) return cover;
+    const out: TileCoverEntry[] = [];
+    const squares = new Set<string>();
+    for (const cell of cover) {
+      const cached = this._cache.want(
+        source,
+        sourceId,
+        cell.tile,
+        dataTileFor(cell.tile, maxZoom),
+        subTileOf(cell.tile, maxZoom),
+      );
+      if (!cached.raster) {
+        out.push(cell);
+        continue;
+      }
+      const square = dataSquareOf(cell, maxZoom);
+      const key = `${square.worldCopy}:${tileKey(square.tile)}`;
+      if (squares.has(key)) continue;
+      squares.add(key);
+      out.push(square);
+    }
+    return out;
   }
 
   /**
