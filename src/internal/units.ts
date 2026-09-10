@@ -16,6 +16,14 @@
 // blank after an append-and-reveal). Every raw read goes through this
 // divisor so the arithmetic stays in one unit.
 //
+// **A pointer is the other half of this.** An event's `x`/`y` are logical,
+// so a gesture measured against a laid-out box wants the box in that unit:
+// `node.getClientRects()[0]`, which is `abs` already divided, rather than
+// `abs` and a multiply. `<ColorPicker>` compared the two directly and put
+// its thumb a quarter of the way from the corner on every retina panel.
+// Reach for `scaleOf` where there is no rect to ask for — a raw `scrollY`,
+// a `contentHeight`, a constant that never passes through a style.
+//
 // `scale` is on every retained node at run time but not on the public
 // `DrawnNode` type — hence the structural read, and `object` rather than
 // `{ scale?: unknown }` in the signature: a weak type with no property in

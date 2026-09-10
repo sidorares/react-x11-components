@@ -491,7 +491,16 @@ export function ColorPicker(props: ColorPickerProps): ReactElement {
     node: DrawnNode | null,
     ev: MouseEvent,
   ): { x: number; y: number } | null => {
-    const box = node?.abs;
+    // `getClientRects()`, not `abs`. `abs` is **device** pixels and an
+    // event's `x`/`y` are **logical** — react-x11's docs/scale.md — so
+    // subtracting one from the other is only right at scale 1. On a retina
+    // panel a press at the middle of this box read as a press a quarter of
+    // the way in from its corner: the thumb sat near the corner however the
+    // pointer moved, and the far side of every axis was unreachable. The
+    // client rect is the same box already divided by the node's scale,
+    // which is the unit the pointer arrives in, so the arithmetic below is
+    // the arithmetic it always was.
+    const [box] = node?.getClientRects() ?? [];
     if (!box?.width || !box.height) return null;
     return {
       x: clamp01((ev.x - box.x) / box.width),
