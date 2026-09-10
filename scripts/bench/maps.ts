@@ -36,7 +36,12 @@ import {
 import type { DrawStats, PreparedStyle } from '../../src/maps/paint.js';
 import { shortbreadStyle } from '../../src/maps/styles.js';
 import { DEFAULT_TILE_SIZE, tileBounds } from '../../src/maps/proj.js';
-import type { MapHandle, MapSource } from '../../src/maps/types.js';
+import type {
+  MapFrameStats,
+  MapHandle,
+  MapSource,
+  MapStyle,
+} from '../../src/maps/types.js';
 import { cachedTiles } from './tiles.js';
 
 type Backend = 'x11' | 'cocoa';
@@ -306,7 +311,7 @@ async function stagePerLayer(
  * a tile: a pan blits and composites, a fractional zoom composites, and
  * rasterization is budgeted and resumable.
  *
- * Three phases, and the numbers to look at are different in each:
+ * Four phases, and the numbers to look at are different in each:
  *
  *  - **settle** — a cold map filling in. `rasterMs` should be near the
  *    budget and `pending` should fall to zero.
@@ -314,6 +319,12 @@ async function stagePerLayer(
  *    rasterizes is the bug this whole design exists to avoid.
  *  - **zoom** — eight quantized steps within one level. Also zero, until a
  *    step crosses an integer zoom.
+ *  - **restyle** — the dark style over the same tiles. Every tile in view
+ *    is redrawn behind the old picture, which stays up until the whole view
+ *    is swapped in one frame: the number is how long that takes, and the
+ *    longest frame on the way is how late an input could be answered.
+ *    `--budget=<ms>` runs everything on another raster budget, which is how
+ *    one is measured against the default.
  */
 async function stageFrame(
   backend: Backend,
@@ -351,6 +362,8 @@ async function stageFrame(
     drawMs: number;
     pending: number;
     ready: number;
+    restyling: boolean;
+    at: number;
   }[] = [];
   const handle: { current: MapHandle | null } = { current: null };
   const source: MapSource = {
@@ -363,28 +376,44 @@ async function stageFrame(
       return found ? { kind: 'vector', data: found } : null;
     },
   };
+  // Every prop but `mapStyle` keeps its identity from render to render, so
+  // the restyle below changes that and nothing else.
+  const sources = [source];
+  const defaultCamera = { center: centre, zoom: 12 };
+  const mapBox = { flexGrow: 1 };
+  // `--budget=16` runs every phase on a raster budget other than the
+  // element's default, which is how a budget is measured before it changes.
+  const budget = arg('budget', '');
+  const rasterBudgetMs = budget === '' ? undefined : Number(budget);
+  const onFrame = (stats: MapFrameStats): void => {
+    frames.push({
+      rasterMs: stats.rasterMs,
+      drawMs: stats.drawMs,
+      pending: stats.pending,
+      ready: stats.ready,
+      restyling: stats.restyling,
+      at: performance.now(),
+    });
+  };
   const root = await createRoot({ backend, desktop: false, scale });
-  root.render(
-    React.createElement(
-      'window',
-      { width: 1200, height: 800, title: 'maps bench' },
-      React.createElement(MapComponent, {
-        ref: handle,
-        sources: [source],
-        mapStyle: styleOf(),
-        defaultCamera: { center: centre, zoom: 12 },
-        batchVertices,
-        onFrame: (stats) =>
-          frames.push({
-            rasterMs: stats.rasterMs,
-            drawMs: stats.drawMs,
-            pending: stats.pending,
-            ready: stats.ready,
-          }),
-        style: { flexGrow: 1 },
-      }),
-    ),
-  );
+  const show = (mapStyle: MapStyle): void =>
+    root.render(
+      React.createElement(
+        'window',
+        { width: 1200, height: 800, title: 'maps bench' },
+        React.createElement(MapComponent, {
+          ref: handle,
+          sources,
+          mapStyle,
+          defaultCamera,
+          batchVertices,
+          rasterBudgetMs,
+          onFrame,
+          style: mapBox,
+        }),
+      ),
+    );
+  show(styleOf());
 
   const wait = (ms: number): Promise<void> =>
     new Promise((resolve) => setTimeout(resolve, ms));
@@ -441,6 +470,53 @@ async function stageFrame(
   report('settle', settleFrames);
   report('pan', panFrames);
   report('zoom', zoomFrames);
+
+  // Phase 4: a style change. Every tile in view is redrawn behind the old
+  // picture, which stays up until the whole view can be swapped at once —
+  // so the number is how long the old style stays up, and the frames in
+  // between are the ones a budget is spent in: nothing on screen changes
+  // in them, and the longest of them is how late an input can be answered.
+  //
+  // Back at the settled camera first. The zoom above ends at 12.8, whose
+  // cover is level 13, and the corpus cuts only even levels: every tile in
+  // view there is empty and drawn from its level-12 parent, so a restyle
+  // would have nothing of its own to redraw and would measure nothing.
+  handle.current?.setCamera({ center: centre, zoom: 12 });
+  for (let i = 0; i < 200; i++) {
+    await wait(16);
+    if (i > 20 && frames[frames.length - 1]?.pending === 0) break;
+  }
+  await wait(400);
+  frames.length = 0;
+  const restyled = performance.now();
+  show(styleOf({ dark: true }));
+  // From the first frame that holds the old style — a frame can land
+  // between the render and its commit, and knows nothing of the switch — to
+  // the frame that swaps it out.
+  let first = -1;
+  let swap = -1;
+  for (let i = 0; i < 1000 && swap < 0; i++) {
+    await wait(16);
+    if (first < 0) first = frames.findIndex((f) => f.restyling);
+    if (first >= 0) {
+      swap = frames.findIndex((f, at) => at > first && !f.restyling);
+    }
+  }
+  const restyleFrames = frames.splice(0, frames.length);
+  const held =
+    first < 0
+      ? []
+      : restyleFrames.slice(first, swap < 0 ? undefined : swap + 1);
+  report('restyle', held);
+  process.stdout.write(
+    swap < 0
+      ? '  restyle  never swapped\n'
+      : `  restyle  held ${swap - first} frames, swapped after ` +
+          `${(restyleFrames[swap].at - restyled).toFixed(0)} ms, longest ` +
+          `frame ${Math.max(...held.map((f) => f.drawMs + f.rasterMs)).toFixed(
+            1,
+          )} ms\n`,
+  );
   await (root as unknown as { unmount?(): Promise<void> }).unmount?.();
 }
 

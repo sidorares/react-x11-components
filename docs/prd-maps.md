@@ -224,12 +224,20 @@ Around them:
   Composited as soon as its surface exists, a dense tile arrives as water,
   then landuse, then casings, then roads, across a dozen frames — honest
   about the renderer and unlike any other map. `progressive` opts back in.
-  What waiting costs is a transition that invalidates every surface at once
-  (a style change, `refresh()`, a scale change): no finished tile _and_ no
-  finished ancestor, so the map shows its background until the new tiles
-  land. Holding the old picture through that needs a second surface per
-  tile — draw into a draft, swap on completion — which doubles the surface
-  memory of every tile being redrawn and is deliberately not done here.
+  Waiting costs a second surface per tile being redrawn — the draft, drawn
+  behind the picture on screen and swapped in when it is finished — which
+  doubles the surface memory of the tiles in flight.
+- **A restyle swaps the whole view at once.** A style change or `refresh()`
+  redraws every tile, and a per-tile swap is wrong for exactly that: each
+  tile kept its old picture until its own new one landed, so for the second
+  or more a restyle takes, the map was a patchwork of both styles, under a
+  background and labels that had already switched. Instead the previous
+  generation's tiles, background and label placement stay up until every
+  tile in view that has data is redrawn — a tile still loading does not
+  hold it — and all of it goes in one frame, with one full-pane claim. A
+  view that keeps moving is bounded: after 1.5 s of drawing time the swap
+  happens anyway, and a tile not yet redrawn shows the new background until
+  it is.
 - **A gesture rasterizes nothing.** Any camera move sets the budget to zero
   for 140 ms, so a drag or a wheel is composites only and the map sharpens
   when it stops.
