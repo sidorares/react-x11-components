@@ -5,11 +5,15 @@
 // compiler catches. It has no opinion at all about the exports map: that
 // every subpath resolves to a file that is actually in the tarball, that
 // every component has a subpath of its own, and that the tree-shaking
-// contract (`sideEffects: false`) is still declared.
+// contract (`sideEffects: false`) is still declared. Nor about the dependency
+// posture: that react-x11 and React are peers, and that the core the suite
+// runs against is the core consumers are required to supply.
 //
 // A broken exports map is the classic component-library bug: it passes every
 // test in the repo, because the repo's own tests import through relative
-// paths, and fails for the first person who installs the package.
+// paths, and fails for the first person who installs the package. A broken
+// dependency posture is the same bug one level down: this repo only ever
+// installs one react-x11, so it cannot see the second copy an app can get.
 import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import path from 'node:path';
@@ -19,11 +23,15 @@ const ROOT = path.resolve(fileURLToPath(import.meta.url), '../..');
 /** One entry in the exports map: a path, or conditions nesting more of them. */
 type ExportsEntry = string | { [condition: string]: ExportsEntry };
 
-interface PackageJson {
+export interface PackageJson {
   files?: string[];
   sideEffects?: boolean;
   types?: string;
   exports?: Record<string, ExportsEntry>;
+  dependencies?: Record<string, string>;
+  optionalDependencies?: Record<string, string>;
+  peerDependencies?: Record<string, string>;
+  devDependencies?: Record<string, string>;
 }
 
 /** Every file an exports entry points at, whatever the condition. */
@@ -50,11 +58,59 @@ function componentDirs(root: string): string[] {
     .sort();
 }
 
+const PEER_RULE =
+  'AGENTS.md, "react-x11 is a peer dependency, and it has to be"';
+
+/**
+ * The dependency posture, which reads nothing but the manifest. react-x11
+ * keeps the registry `registerElement` writes into in module scope, and
+ * React keeps its hooks' dispatcher there, so both have to be the app's own
+ * copy: with a second react-x11, what this package registers is registered
+ * with a core the app does not render through.
+ */
+export function checkDependencies(pkg: PackageJson): string[] {
+  const errors: string[] = [];
+
+  for (const name of ['react-x11', 'react']) {
+    if (!pkg.peerDependencies?.[name]) {
+      errors.push(
+        `"${name}" is not in peerDependencies — the app supplies it ` +
+          `(${PEER_RULE})`,
+      );
+    }
+    for (const field of ['dependencies', 'optionalDependencies'] as const) {
+      if (pkg[field]?.[name]) {
+        errors.push(
+          `"${name}" is in ${field}, which can install a copy beside the ` +
+            `app's — it is a peer, never a regular dependency (${PEER_RULE})`,
+        );
+      }
+    }
+  }
+
+  // One decision written twice: what a consumer must supply, and what the
+  // suite runs against. `npm install -D` moves the second and leaves the
+  // first where it was — the shape of the 2.3.0 bump (PR #53), which had to
+  // be redone.
+  const peer = pkg.peerDependencies?.['react-x11'];
+  const dev = pkg.devDependencies?.['react-x11'];
+  if (peer && dev !== peer) {
+    errors.push(
+      `devDependencies["react-x11"] is ${dev ?? 'missing'} and ` +
+        `peerDependencies["react-x11"] is ${peer} — keep them the same ` +
+        'range: the suite has to run against the core consumers are ' +
+        `required to supply (${PEER_RULE})`,
+    );
+  }
+
+  return errors;
+}
+
 export function checkPackage(root: string = ROOT): string[] {
   const pkg: PackageJson = JSON.parse(
     readFileSync(path.join(root, 'package.json'), 'utf8'),
   );
-  const errors: string[] = [];
+  const errors = checkDependencies(pkg);
 
   // Everything below reads the built tree, so say so plainly rather than
   // reporting every subpath as missing.
