@@ -88,6 +88,14 @@ export interface TileRender {
   zoom: number;
   /** The cache generation it was drawn under. */
   generation: number;
+  /**
+   * Whether its pixels depend on the style. A vector tile's do — they are
+   * the style, rasterized — and a raster tile's do not: they are the
+   * provider's image, uploaded as it arrived. So an unstyled rendering
+   * belongs to every generation, and a restyle neither redraws it nor stops
+   * showing it.
+   */
+  styled: boolean;
   /** The next style run to draw, or `-1` when it is finished. */
   progress: number;
   /** …and how far into that run's active layers, because a run is not a
@@ -254,8 +262,9 @@ export class TileCache {
   }
 
   /**
-   * Every rendered surface is stale: a new style, or `refresh()` after an
-   * edit to one. The data behind them stays.
+   * Every styled surface is stale: a new style, or `refresh()` after an
+   * edit to one. The data behind them stays, and so does a raster tile's
+   * rendering, which no style drew (see {@link TileRender.styled}).
    *
    * A new display scale needs none of this, because a rendering's size is
    * already part of what makes it valid. And nothing on screen is thrown
@@ -471,7 +480,7 @@ export class TileCache {
       const entry = this._entries.get(this.key(source, { z, x, y }));
       // `shown` is finished by construction, so an ancestor is never a
       // half-drawn picture.
-      if (entry?.shown && this._drawnIn(entry.shown, generation)) {
+      if (entry?.shown && drawnFor(entry.shown, generation)) {
         // Stamped, because for as long as it is covering a hole it is on
         // screen — and an unstamped entry is the *first* thing eviction
         // takes, which would drop the only picture the map is showing.
@@ -517,7 +526,7 @@ export class TileCache {
               y: (tile.y << down) + dy,
             }),
           );
-          if (entry?.shown && this._drawnIn(entry.shown, generation)) {
+          if (entry?.shown && drawnFor(entry.shown, generation)) {
             entry.lastUsed = this._frame;
             found.push({ entry, x: dx, y: dy, span });
           }
@@ -556,6 +565,9 @@ export class TileCache {
     size: number,
     zoom: number,
     make: SurfaceFactory,
+    /** False for a raster tile, whose pixels are the provider's and no
+     *  style's — see {@link TileRender.styled}. */
+    styled = true,
   ): TileRender | null {
     if (this._matches(entry.shown, size, zoom)) return null;
     if (this._matches(entry.drawing, size, zoom)) return entry.drawing;
@@ -572,6 +584,7 @@ export class TileCache {
       size,
       zoom,
       generation: this._generation,
+      styled,
       progress: 0,
       progressLayer: 0,
     };
@@ -587,7 +600,7 @@ export class TileCache {
       render !== null &&
       render.size === size &&
       render.zoom === zoom &&
-      render.generation === this._generation
+      drawnFor(render, this._generation)
     );
   }
 
@@ -605,7 +618,8 @@ export class TileCache {
   /**
    * Put the current generation on screen in one go: every finished draft
    * becomes its tile's picture, and every picture and draft of an earlier
-   * generation is released.
+   * generation is released — apart from a raster tile's, which no style
+   * drew.
    *
    * The other half of a restyle. While the element holds the previous style
    * up it does not {@link promote}, so finished drafts wait in `drawing`,
@@ -616,25 +630,16 @@ export class TileCache {
    */
   swap(): void {
     for (const entry of this._entries.values()) {
-      if (entry.drawing && entry.drawing.generation !== this._generation) {
+      if (entry.drawing && !drawnFor(entry.drawing, this._generation)) {
         this._release(entry.drawing);
         entry.drawing = null;
       }
       if (this.promote(entry)) continue;
-      if (entry.shown && entry.shown.generation !== this._generation) {
+      if (entry.shown && !drawnFor(entry.shown, this._generation)) {
         this._release(entry.shown);
         entry.shown = null;
       }
     }
-  }
-
-  /** Whether a rendering counts for `generation` — any does, when none is
-   *  given. */
-  private _drawnIn(
-    render: TileRender,
-    generation: number | undefined,
-  ): boolean {
-    return generation === undefined || render.generation === generation;
   }
 
   /** Note where a tile's rasterization stopped: at run `run`, having
@@ -790,6 +795,22 @@ export class TileCache {
   dataEntries(): IterableIterator<TileDataEntry> {
     return this._data.values();
   }
+}
+
+/**
+ * Whether a rendering can be shown for `generation`: any can when none is
+ * given, which is `progressive`; one no style drew — a raster tile's — can
+ * in every generation; any other only in the one it was drawn under.
+ */
+export function drawnFor(
+  render: TileRender,
+  generation: number | undefined,
+): boolean {
+  return (
+    generation === undefined ||
+    !render.styled ||
+    render.generation === generation
+  );
 }
 
 /** A source's pyramid, memoized per source object so the defaults are not

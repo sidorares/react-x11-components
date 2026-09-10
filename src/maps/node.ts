@@ -65,7 +65,7 @@ import type {
   TileId,
   Transform,
 } from './proj.js';
-import { TileCache, pyramid } from './tiles.js';
+import { TileCache, drawnFor, pyramid } from './tiles.js';
 import type { CachedTile, SurfaceLike, TileRender } from './tiles.js';
 import type { MapSource } from './sources.js';
 import { shortbreadStyle } from './styles.js';
@@ -1292,6 +1292,8 @@ export class MapViewNode extends Node {
           size,
           cached.raster ? 0 : styleZoom,
           (edge: number) => this._makeSurface(edge),
+          // A raster tile is the provider's image, the same in every style.
+          !cached.raster,
         );
         if (drawing && drawing.progress !== -1) {
           if (cached.raster) {
@@ -1324,8 +1326,9 @@ export class MapViewNode extends Node {
           // Not while a restyle holds the previous style up, though: one
           // tile in the new style among the rest in the old is the
           // patchwork the hold is there to prevent. It waits, finished, for
-          // `_swapStyle` to put the whole view up at once.
-          if (!holding && this._cache.promote(cached)) {
+          // `_swapStyle` to put the whole view up at once. A raster tile
+          // does not wait — it is in no style, so it cannot make one.
+          if ((!holding || !drawing.styled) && this._cache.promote(cached)) {
             this._claim(box, 'content');
           }
         }
@@ -1373,10 +1376,7 @@ export class MapViewNode extends Node {
       // behaviour and is honest about what the renderer is doing.
       const showing =
         progressive && cached.drawing ? cached.drawing : cached.shown;
-      if (
-        showing &&
-        (generation === undefined || showing.generation === generation)
-      ) {
+      if (showing && drawnFor(showing, generation)) {
         if (!inPass) continue;
         this._composite(
           ctx,

@@ -237,7 +237,8 @@ Around them:
   hold it — and all of it goes in one frame, with one full-pane claim. A
   view that keeps moving is bounded: after 1.5 s of drawing time the swap
   happens anyway, and a tile not yet redrawn shows the new background until
-  it is.
+  it is. Raster tiles take no part: a provider's image is the same in every
+  style, so a switch neither redraws one nor stops showing it.
 - **A gesture rasterizes nothing.** Any camera move sets the budget to zero
   for 140 ms, so a drag or a wheel is composites only and the map sharpens
   when it stops.

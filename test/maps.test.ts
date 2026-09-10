@@ -2709,6 +2709,109 @@ test('a tile still loading does not hold a style switch', async () => {
   assert.ok(!shows(landed.old));
 });
 
+/** A raster source's pixels, in a colour neither look uses: a provider's
+ *  image belongs to no style. */
+const IMAGERY: Rgb = [255, 128, 0];
+
+/** One raster answer for every tile: a tile's worth of {@link IMAGERY} at
+ *  512 pixels, drawn 1:1 at an integer zoom. A smaller image scaled up to
+ *  a tile fades at its edges, which makes a pixel count say nothing. */
+const IMAGERY_TILE: TileData = (() => {
+  const size = 512;
+  const data = new Uint8Array(size * size * 4);
+  for (let i = 0; i < data.length; i += 4) {
+    data.set([...IMAGERY, 255], i);
+  }
+  return { kind: 'raster', width: size, height: size, data };
+})();
+
+test('a style switch leaves raster tiles, and what they cover, as they are', async () => {
+  // A raster tile is the provider's picture and the same in every style, so
+  // a restyle has nothing to redraw in it. Retiring it all the same uploaded
+  // every raster tile in view again for nothing — and a tile the provider
+  // has no image for, which shows its parent scaled up, lost the parent at
+  // the swap and fell to the background, because the parent had been drawn
+  // under the old generation.
+  const map = await mountLooks({
+    // Zoom 4's north-east tile has no image, as a depth a provider has not
+    // photographed has none.
+    load: ({ z, x, y }) =>
+      z === 4 && x === 8 && y === 7 ? null : IMAGERY_TILE,
+  });
+  (map.ref.current as MapHandle).zoomTo(4);
+  await settleFrames(40);
+  const imagery = (): Promise<number> =>
+    countPixels(map.result.ctx, WHOLE, [...IMAGERY], 8);
+  // All of it but a pixel's seam where the parent, scaled, meets the pane.
+  const whole = PANE * PANE * 0.99;
+  const before = await imagery();
+  assert.ok(
+    before >= whole,
+    `the parent covers the tile with no image: ${before} of ${PANE * PANE}`,
+  );
+  const bytes = map.frames[map.frames.length - 1].surfaceBytes;
+
+  await map.restyle();
+  await settleFrames(40);
+  const after = await imagery();
+  assert.ok(
+    after >= whole,
+    `the parent still covers it after the swap: ${after} of ${PANE * PANE}`,
+  );
+  // …and no raster tile was drawn again on the way: a second surface for
+  // any of them would have shown in what the surfaces hold.
+  const frames = await map.seen();
+  assert.ok(frames.length > 0, 'the switch painted');
+  for (const frame of frames) {
+    assert.ok(
+      frame.stats.surfaceBytes <= bytes,
+      `a raster tile was drawn again: ${frame.stats.surfaceBytes} bytes of surfaces, against ${bytes}`,
+    );
+  }
+});
+
+test('a raster tile that lands while a style switch is held goes up at once', async () => {
+  // It belongs to neither style, so it cannot make a patchwork of them, and
+  // nothing is gained by keeping it back for a swap that is waiting on
+  // other tiles — here the vector tiles around it, in a style that takes
+  // four hundred frames a tile, so the switch is held for as long as this
+  // takes to look.
+  let land: (() => void) | null = null;
+  const map = await mountLooks({
+    load: ({ z, x, y }) =>
+      z === 3 && x === 4 && y === 3
+        ? new Promise<TileData>((resolve) => {
+            land = () => resolve(IMAGERY_TILE);
+          })
+        : undefined,
+  });
+  await map.restyle(slowLookStyle(NEW_LOOK, 400));
+  await settleFrames(2);
+  assert.ok(land, 'the raster tile is still loading');
+  (land as () => void)();
+  await settleFrames(2);
+  assert.ok(
+    map.frames[map.frames.length - 1].restyling,
+    'the switch is still held',
+  );
+  assert.ok(
+    (await countPixels(map.result.ctx, WHOLE, [...IMAGERY], 8)) > 0,
+    'and the raster tile is on screen already',
+  );
+
+  for (let i = 0; i < 600; i++) {
+    await settleFrames(1);
+    if (!map.frames[map.frames.length - 1].restyling) break;
+  }
+  await settleFrames(4);
+  assertOneLook(await map.seen());
+  assertNewLook(await map.read());
+  assert.ok(
+    (await countPixels(map.result.ctx, WHOLE, [...IMAGERY], 8)) > 0,
+    'and still there after the swap',
+  );
+});
+
 test('eviction never takes the picture a style switch is holding up', async () => {
   // A restyle doubles what the view holds — the old picture and the new
   // one of every tile in it — so it is when a budget is most likely to be
