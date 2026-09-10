@@ -667,6 +667,41 @@ export function ColorPicker(props: ColorPickerProps): ReactElement {
     onKeyDown: focusable ? handleKey : undefined,
   });
 
+  /**
+   * The gradient and its border, as one element *under* the thumb.
+   *
+   * Core paints a node's children first and its border after them, so a
+   * border on the box the thumb lives in is painted across the thumb — the
+   * grey line over the white handle. On a sibling below it, the thumb wins,
+   * which is the order a handle wants: it is the thing being pointed at.
+   *
+   * It fixes the geometry too. An absolutely positioned child is laid out
+   * from its parent's *padding* box, so a border on the axis box shifted
+   * every thumb by its width — a strip handle overhung the top by 1px and
+   * the bottom by 3, and sat 1px right of the colour it was naming. Here
+   * the thumb's parent has no border, so `left` and `top` mean what they
+   * say: the same outer box `fractionIn` measures a press against.
+   */
+  const framed = (
+    axis: 'area' | 'hue' | 'alpha',
+    pane: ReactElement,
+  ): ReactElement =>
+    hx(
+      'box',
+      {
+        key: 'frame',
+        style: [
+          s.pane,
+          {
+            borderWidth: theme.borderWidth,
+            borderColor:
+              cursorShown && active === axis ? theme.borderFocus : theme.border,
+          },
+        ],
+      },
+      pane,
+    );
+
   const renderArea = (): ReactElement =>
     hx(
       'box',
@@ -680,40 +715,34 @@ export function ColorPicker(props: ColorPickerProps): ReactElement {
           model.s * 100,
           100,
         ),
-        style: [
-          s.area,
-          {
-            borderWidth: theme.borderWidth,
-            borderColor:
-              cursorShown && active === 'area'
-                ? theme.borderFocus
-                : theme.border,
-          },
-        ],
+        style: s.area,
         ...track('area', areaTo),
       },
-      hx('canvas', {
-        style: s.pane,
-        // Everything the drawing reads: the hue, and the size, which is a
-        // constant here precisely so this key can name it.
-        cacheKey: `sv:${Math.round(model.h)}:${CONTENT}x${AREA_H}`,
-        onDraw: (ctx, { width, height }) => {
-          ctx.fillStyle = hue;
-          ctx.fillRect(0, 0, width, height);
-          // Legacy comma spelling in the stops, for the same reason
-          // `formatColor` emits it: it is what ntk's parser understands.
-          const white = ctx.createLinearGradient(0, 0, width, 0);
-          white.addColorStop(0, 'rgb(255, 255, 255)');
-          white.addColorStop(1, 'rgba(255, 255, 255, 0)');
-          ctx.fillStyle = white;
-          ctx.fillRect(0, 0, width, height);
-          const black = ctx.createLinearGradient(0, 0, 0, height);
-          black.addColorStop(0, 'rgba(0, 0, 0, 0)');
-          black.addColorStop(1, 'rgb(0, 0, 0)');
-          ctx.fillStyle = black;
-          ctx.fillRect(0, 0, width, height);
-        },
-      }),
+      framed(
+        'area',
+        hx('canvas', {
+          style: s.pane,
+          // Everything the drawing reads: the hue, and the size, which is a
+          // constant here precisely so this key can name it.
+          cacheKey: `sv:${Math.round(model.h)}:${CONTENT}x${AREA_H}`,
+          onDraw: (ctx, { width, height }) => {
+            ctx.fillStyle = hue;
+            ctx.fillRect(0, 0, width, height);
+            // Legacy comma spelling in the stops, for the same reason
+            // `formatColor` emits it: it is what ntk's parser understands.
+            const white = ctx.createLinearGradient(0, 0, width, 0);
+            white.addColorStop(0, 'rgb(255, 255, 255)');
+            white.addColorStop(1, 'rgba(255, 255, 255, 0)');
+            ctx.fillStyle = white;
+            ctx.fillRect(0, 0, width, height);
+            const black = ctx.createLinearGradient(0, 0, 0, height);
+            black.addColorStop(0, 'rgba(0, 0, 0, 0)');
+            black.addColorStop(1, 'rgb(0, 0, 0)');
+            ctx.fillStyle = black;
+            ctx.fillRect(0, 0, width, height);
+          },
+        }),
+      ),
       hx('box', {
         style: [
           s.areaThumb,
@@ -739,33 +768,27 @@ export function ColorPicker(props: ColorPickerProps): ReactElement {
           model.h,
           360,
         ),
-        style: [
-          s.strip,
-          {
-            borderWidth: theme.borderWidth,
-            borderColor:
-              cursorShown && active === 'hue'
-                ? theme.borderFocus
-                : theme.border,
-          },
-        ],
+        style: s.strip,
         ...track('hue', hueTo),
       },
-      hx('canvas', {
-        style: s.pane,
-        cacheKey: `hue:${CONTENT}x${STRIP_H}`,
-        onDraw: (ctx, { width, height }) => {
-          const ramp = ctx.createLinearGradient(0, 0, width, 0);
-          for (let stop = 0; stop <= 6; stop += 1) {
-            ramp.addColorStop(
-              stop / 6,
-              opaqueHex(channelsFromHsv(stop * 60, 1, 1)),
-            );
-          }
-          ctx.fillStyle = ramp;
-          ctx.fillRect(0, 0, width, height);
-        },
-      }),
+      framed(
+        'hue',
+        hx('canvas', {
+          style: s.pane,
+          cacheKey: `hue:${CONTENT}x${STRIP_H}`,
+          onDraw: (ctx, { width, height }) => {
+            const ramp = ctx.createLinearGradient(0, 0, width, 0);
+            for (let stop = 0; stop <= 6; stop += 1) {
+              ramp.addColorStop(
+                stop / 6,
+                opaqueHex(channelsFromHsv(stop * 60, 1, 1)),
+              );
+            }
+            ctx.fillStyle = ramp;
+            ctx.fillRect(0, 0, width, height);
+          },
+        }),
+      ),
       hx('box', {
         style: [
           s.stripThumb,
@@ -787,31 +810,25 @@ export function ColorPicker(props: ColorPickerProps): ReactElement {
           model.a * 100,
           100,
         ),
-        style: [
-          s.strip,
-          {
-            borderWidth: theme.borderWidth,
-            borderColor:
-              cursorShown && active === 'alpha'
-                ? theme.borderFocus
-                : theme.border,
-          },
-        ],
+        style: s.strip,
         ...track('alpha', alphaTo),
       },
-      hx('canvas', {
-        style: s.pane,
-        cacheKey: `alpha:${opaqueHex(model)}:${CONTENT}x${STRIP_H}`,
-        onDraw: (ctx, { width, height }) => {
-          drawChecker(ctx, width, height);
-          const ramp = ctx.createLinearGradient(0, 0, width, 0);
-          const { r, g, b } = model;
-          ramp.addColorStop(0, `rgba(${r}, ${g}, ${b}, 0)`);
-          ramp.addColorStop(1, `rgb(${r}, ${g}, ${b})`);
-          ctx.fillStyle = ramp;
-          ctx.fillRect(0, 0, width, height);
-        },
-      }),
+      framed(
+        'alpha',
+        hx('canvas', {
+          style: s.pane,
+          cacheKey: `alpha:${opaqueHex(model)}:${CONTENT}x${STRIP_H}`,
+          onDraw: (ctx, { width, height }) => {
+            drawChecker(ctx, width, height);
+            const ramp = ctx.createLinearGradient(0, 0, width, 0);
+            const { r, g, b } = model;
+            ramp.addColorStop(0, `rgba(${r}, ${g}, ${b}, 0)`);
+            ramp.addColorStop(1, `rgb(${r}, ${g}, ${b})`);
+            ctx.fillStyle = ramp;
+            ctx.fillRect(0, 0, width, height);
+          },
+        }),
+      ),
       hx('box', {
         style: [
           s.stripThumb,
