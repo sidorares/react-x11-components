@@ -46,10 +46,18 @@ pipelines.
 | shaders         | none — the protocol encodes no shader objects                      | **yes** — `<shaderMaterial>`, GLSL ES 1.00               |
 | post-processing | none — no framebuffer objects to encode                            | **yes** — `<effectComposer>` and passes                  |
 
-The direct backend comes in two flavors, and nothing above the `<glarea>`
-tells them apart: **DRI3** on Linux (GBM/EGL) and **Apple-DRI** on
-macOS/XQuartz (CGL, and `x11-dri` ≥ 0.5.0). Both want the addon and a local
-session — neither survives a network connection.
+The direct backend comes in three flavors, and nothing above the `<glarea>`
+tells them apart: **DRI3** on Linux (GBM/EGL), **Apple-DRI** on macOS/XQuartz
+(CGL, and `x11-dri` ≥ 0.5.0), and **CGL into a CALayer** on react-x11's
+native macOS backend, where frames render into IOSurface-backed framebuffers
+and the WindowServer composites them — no X server anywhere. All three want
+the `x11-dri` addon and a local session; none survives a network connection.
+
+There is no indirect rung on the Cocoa backend, because indirect _is_ GLX and
+there is no X connection to encode into. `glPolicy: 'indirect'` throws there
+saying so, and `'auto'` — the default on that backend — resolves to direct.
+So a scene that runs at all on macOS-native runs with shaders and
+post-processing available.
 
 **The scene graph is identical**; the indirect feature set is a subset of
 the direct one. Ask for the best available at the root and the same JSX

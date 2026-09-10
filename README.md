@@ -11,10 +11,10 @@ needs a change to core to exist, and core does not grow to carry it.
 reference page per component, rendered from [`docs/`](docs/README.md). This
 README is the tour; that is the detail.
 
-> **Installable now.** react-x11 2.0.0 is on npm, so the peer range this
-> package declares resolves and `npm install` just works. The published
-> release is `0.1.0`; `master` carries components added since, so use a
-> checkout if you want what is not in that release yet.
+> **Installable now.** The published release is `0.7.1`, and the react-x11
+> range it declares resolves off the registry, so `npm install` just works.
+> `master` carries what has landed since, so use a checkout if you want
+> something not in that release yet.
 
 ## What is here, and what is in core
 
@@ -36,10 +36,49 @@ This package carries it when **all** of these hold:
 So `<box>`, `<text>`, `<window>`, buttons, menus, dialogs and the rest of the
 widget set are core. Heavier, more specialised things live here.
 
-The line can also fall inside a single feature. `<glarea>` is core — it is a
-real X window on a GLX visual, which is renderer internals. A Three.js-shaped
-scene graph drawn into it is not: that is composition over a public element,
-and it belongs here.
+The line can also fall inside a single feature. `<glarea>` is core — a real
+child surface on a GL visual, created in the commit phase, which is renderer
+internals whichever backend is under it. A Three.js-shaped scene graph drawn
+into it is not: that is composition over a public element, and it belongs
+here.
+
+## Two backends, and the three components that only run on one
+
+react-x11 has two backend families now — X11, and a native macOS one that
+speaks to Cocoa with no X server anywhere (`createRoot({ backend })`, or
+`REACT_X11_BACKEND`). **Almost everything in this package is neutral about
+which**, because almost everything here is either composition over core's
+host elements or a registered element that draws through core's 2D context,
+and both are backend contracts rather than X ones. `<Map>`, the vt terminal,
+`<Flow>`, `<Html>`, `<Markdown>`, the charts and the rest render on either.
+
+The exceptions are the components built on **XEmbed**, and they are
+exceptions because cross-process window embedding does not exist on macOS at
+all — there is no `<foreign>` to build on, which react-x11's own
+[`docs/macos.md`](https://github.com/sidorares/react-x11/blob/master/docs/macos.md)
+names this package in as much:
+
+| Component                                                 | On the Cocoa backend                                                                                                                                                                      |
+| --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `<Terminal>`, embedded backends (xterm, urxvt, alacritty) | No equivalent. Pin `backend="vt"`, which is native and needs no emulator installed anyway.                                                                                                |
+| `<MediaPlayer>`                                           | No equivalent — mpv's and VLC's `--wid` embedding is an X mechanism.                                                                                                                      |
+| `<TrayHost>`                                              | Reports `status: 'unavailable'` and renders `fallback`; there is no manager selection to take. Putting an icon _in_ a Mac's status bar is the other direction, and is core's `useTray()`. |
+
+`<Three>` is the one that looks like it should be on that list and is not: it
+draws through `<glarea>`, which the Cocoa backend implements as GL into a
+CALayer, so the scene graph runs there too — on a third GL path rather than
+none. [Its reference](docs/components/three.md) has the table.
+
+One sharp edge worth knowing: `<Terminal backend="auto">` probes `PATH`, and
+a `PATH` probe cannot see which backend the app is running on. On a Mac with
+XQuartz installed it will still choose that xterm, which the Cocoa backend
+then cannot embed. Say `backend="vt"` outright in an app that runs on both.
+
+The other X-shaped behaviour to know about is **PRIMARY**: selecting text
+publishing to the X PRIMARY selection, and middle-click pasting it, are what
+X11 desktops do and what this package's document surfaces take part in. On
+macOS there is one pasteboard and no such convention, so what is described
+as PRIMARY below is the X11 backend's half of the story.
 
 ## Install
 
@@ -51,8 +90,14 @@ npm install @react-x11/components react react-x11
 host element mutates state inside react-x11, so a second copy of the renderer
 would leave you with an element that lays out correctly and never paints.
 
-Core must be **2.0.0 or newer**: that is the release the subpaths this
-package imports (`react-x11/host`, `/node`, `/style`) arrived in.
+Core must be **2.11.0 or newer**. The floor is a running one rather than a
+one-time gate — it moves whenever a component here adopts something core
+just landed, and the last few moves were the Cocoa glyph-run seams
+(`^2.5.0`), the chunked Cocoa stroke `<Map>` wanted (`^2.6.1`), the desktop
+calendar's move into core (`^2.9.1`) and the eyedropper's macOS rung
+(`^2.11.0`). The subpaths this package imports are `react-x11` itself plus
+`/host`, `/node`, `/style`, `/keysyms`, `/ntk`, `/yoga` and
+`/jsx-runtime`.
 
 ## Usage
 
@@ -124,14 +169,18 @@ import type { CodeEditorProps } from '@react-x11/components';
 | `Code`           | `@react-x11/components/code`            | A static code block: highlighted, selectable.                |
 | `CodeEditor`     | `@react-x11/components/code-editor`     | Multiline code editing: highlighting, completion.            |
 | `Flow`           | `@react-x11/components/flow`            | A directed-graph editor: nodes, edges, pan and zoom.         |
+| `Formula`        | `@react-x11/components/formula`         | TeX mathematics: KaTeX layout, native ink, selectable.       |
 | `Html`           | `@react-x11/components/html`            | A static HTML + CSS document, selectable, with seams.        |
 | `Map`            | `@react-x11/components/maps`            | A 2D vector-tile map: pan, zoom, markers, overlays.          |
 | `Markdown`       | `@react-x11/components/markdown`        | Streaming-friendly GFM with cross-block selection.           |
 | `MediaPlayer`    | `@react-x11/components/media-player`    | mpv or VLC, embedded, with real transport control.           |
+| `QmlView`        | `@react-x11/components/qml`             | Qt's QML language as an authoring layer. No Qt.              |
 | `ReorderList` …  | `@react-x11/components/reorder`         | A drag-and-drop list, over core's own drag and drop.         |
 | `Table`          | `@react-x11/components/table`           | A data table: sortable, virtualized, any row height.         |
+| `Tabs` …         | `@react-x11/components/tabs`            | One visible panel at a time, five strip styles.              |
 | `Terminal`       | `@react-x11/components/terminal`        | A real terminal: an embedded emulator, or its own.           |
 | `TerminalOutput` | `@react-x11/components/terminal-output` | A captured session, rendered. `<Terminal>`'s static sibling. |
+| `Canvas` …       | `@react-x11/components/three`           | A three-fiber-shaped 3D scene over either GL backend.        |
 | `Timeline` …     | `@react-x11/components/timeline`        | A run of events: a mark per step, a line between.            |
 | `TrayHost`       | `@react-x11/components/tray-host`       | The system tray: applications dock their icons in.           |
 | `Tree`           | `@react-x11/components/tree`            | A disclosure tree: seams throughout, and virtualized.        |
@@ -147,7 +196,7 @@ spawn, watch and hand-back lifecycle both XEmbed wrappers are built on).
 Selecting text is **core's**, not this package's: a `<box selectable>` is
 a surface, everything under it that answers for its own text is in the
 selection, and the drag, the word and block granularities, Ctrl+A, Ctrl+C
-and PRIMARY come with it (react-x11#291). `<Markdown>` and `<Code>` set
+and (on X11) PRIMARY come with it (react-x11#291). `<Markdown>` and `<Code>` set
 that prop and say which parts are chrome; the elements underneath answer
 `textContent`/`textIndexAt`/`textCaretRect`/`textRangeRects`, which is all
 an element of your own has to do to join a document.
@@ -218,9 +267,10 @@ What "put a lot of effort into performance" means here, concretely:
   a per-pixel-column min/max index (a pyramid over the data, built lazily
   and extended on append), so a million points in a 90px cell cost ~90
   rectangles. A million points that fall on one pixel render one pixel.
-- **Server-side drawing commands by default, pixels when they win.** A
-  dense line goes out as one batched `FillRectangles` (~8 bytes per pixel
-  column); a sparse one as a real antialiased path. The one place a pixel
+- **Drawing commands by default, pixels when they win.** A dense line goes
+  out as one batched `fillRects` — on X11 that is a `FillRectangles` at
+  ~8 bytes per pixel column, and the wire cost `onFrameStats` reports is
+  that one; a sparse line goes as a real antialiased path. The one place a pixel
   push wins — a scatter covering most of the plot — is detected by
   comparing the actual byte costs, and flips to one composited density
   image.
@@ -278,8 +328,8 @@ markdown→HTML pass anywhere — and is exported (`parseMarkdown`) with the
 AST types.
 
 **Selection is the point.** Text selects across every block — drag,
-double-click a word, triple-click a block, Ctrl+A, Ctrl+C — and a mouse-up
-with a selection takes the X11 PRIMARY selection, so middle-click paste
+double-click a word, triple-click a block, Ctrl+A, Ctrl+C — and on X11 a
+mouse-up with a selection takes the PRIMARY selection, so middle-click paste
 works everywhere. All of that is core's `selectable` (react-x11#291); what
 this component adds is which parts are chrome, so copied text is clean:
 list markers stay behind, and the separators come from the layout, which
@@ -371,6 +421,26 @@ Highlighting goes through the same language seam (`lang` tag or an
 explicit `language={…}`) and the look is shared with `<Markdown>`'s fenced
 blocks, so the two agree in one window. Selection and copy are core's; the
 line-number gutter is `selectable={false}`, so copied code pastes clean.
+
+## Mathematics
+
+```jsx
+import { Formula } from '@react-x11/components/formula';
+
+<Formula tex="x = \frac{-b \pm \sqrt{b^2-4ac}}{2a}" display selectable />;
+```
+
+TeX, rendered natively. KaTeX — an optional dependency — parses the source
+into its virtual DOM, and this package's `formula` element lays that tree out
+and draws it through the app's font manager, using KaTeX's own faces. Every
+glyph answers core's four text accessors, so the mathematics is **part of the
+selection** rather than an opaque picture: on its own with `selectable`, or as
+one block inside any `selectable` document. `partial` holds the last tree that
+parsed while more source is still arriving, which is what makes it safe to
+append to a formula a model is still writing. A ` ```math ` fence in a
+document becomes one through `<Markdown>`'s `fences` map, which is opt-in —
+that seam is how `<Markdown>` hosts a component without importing it.
+[The reference](docs/components/formula.md) has the rest.
 
 ## A terminal session you already have: `<TerminalOutput>`
 
@@ -472,6 +542,40 @@ anyone has to name. `npm run examples:timeline` runs a live release
 pipeline beside galleries of the sizes and variants;
 [the reference](docs/components/timeline.md) has the rest, including why
 every indicator's chip is opaque.
+
+## Tabs
+
+One visible panel at a time. The API is
+[Chakra UI's Tabs](https://chakra-ui.com/docs/components/tabs) with its parts
+spelled flat, exactly as `<Timeline>` spells its own:
+
+```jsx
+import {
+  Tabs,
+  TabsList,
+  TabsTrigger,
+  TabsContent,
+} from '@react-x11/components/tabs';
+
+<Tabs defaultValue="members">
+  <TabsList>
+    <TabsTrigger value="members">Members</TabsTrigger>
+    <TabsTrigger value="projects">Projects</TabsTrigger>
+  </TabsList>
+  <TabsContent value="members">…</TabsContent>
+  <TabsContent value="projects">…</TabsContent>
+</Tabs>;
+```
+
+The vocabulary is Chakra's too — `value`/`defaultValue`/`onValueChange`, five
+strip variants (`line`, `subtle`, `enclosed`, `outline`, `plain`), `size`,
+`orientation`, `activationMode`, `fitted`, `lazyMount` — so a snippet from
+their docs is the same tree with the dots removed. It supersedes core's tabs
+the way `<Tree>` supersedes core's tree: the keyboard and RTL behaviour a
+user has already learnt, without the items-array API. The one prop Chakra has
+no counterpart for is `overflow`: a horizontal strip that runs out of room
+puts the tabs that do not fit in a menu at its end rather than off its own
+edge. [The reference](docs/components/tabs.md) has the rest.
 
 ## A drag-and-drop list
 
@@ -617,8 +721,8 @@ import {
 ```
 
 Editing is the full expected set: selection (keyboard and mouse, word and
-line variants), undo/redo with coalescing, X11 clipboard including PRIMARY
-and middle-click paste, auto-indent, Tab/Shift+Tab indentation, Ctrl+/
+line variants), undo/redo with coalescing, the system clipboard — including
+PRIMARY and middle-click paste on X11 — auto-indent, Tab/Shift+Tab indentation, Ctrl+/
 comment toggling, bracket matching, and LSP-shaped `diagnostics` squiggles.
 Escape then Tab leaves the field. Ctrl+Space asks for completions.
 
@@ -857,6 +961,71 @@ architecture.
 
 [mvt]: https://github.com/mapbox/vector-tile-spec
 
+## A 3D scene
+
+A [react-three-fiber](https://docs.pmnd.rs/react-three-fiber)-shaped scene
+graph over core's `<glarea>`. There is no three.js and no WebGL underneath —
+the element names, the prop shapes, `attach`, dashed paths, `useFrame` /
+`useThree` and `extend()` follow r3f, and what differs is the pipeline.
+
+```jsx
+import { Canvas, useFrame } from '@react-x11/components/three';
+
+<Canvas camera={{ position: [3, 3, 6], fov: 50 }} style={{ flexGrow: 1 }}>
+  <ambientLight intensity={0.4} />
+  <pointLight position={[5, 6, 6]} />
+  <mesh position={[0, 0.5, 0]}>
+    <boxGeometry args={[1, 1, 1]} />
+    <meshStandardMaterial color="hotpink" />
+  </mesh>
+</Canvas>;
+```
+
+This is the worked example at the top of this file of a boundary running
+_through_ a feature: `<glarea>` is a real GL surface created in the commit
+phase, which is renderer internals and stayed in core; the scene graph over it
+is composition, and it is here.
+
+Which pipeline draws is the connection's business, not the scene's. **Indirect
+GLX** encodes GL 1.x into the X connection and survives a network hop, at the
+cost of shaders and post-processing — the protocol encodes neither. **Direct**
+rendering (the `x11-dri` addon: DRI3 on Linux, Apple-DRI under XQuartz, CGL
+into a CALayer on the native macOS backend) is OpenGL ES 2 on the GPU, and it
+is where `<shaderMaterial>` and `<effectComposer>` work. The same JSX renders
+on all of them; the two direct-only families throw at creation naming the
+reason rather than showing a blank surface, so a scene that would rather
+degrade can branch. [The reference](docs/components/three.md) is the table,
+including the JSX pragma the intrinsic element names want.
+
+## QML, without Qt
+
+Qt's declarative UI language as an authoring layer — the parser, the reactive
+binding graph and the object model are this package's own, with zero
+dependencies and no Qt anywhere:
+
+```jsx
+import { QmlView } from '@react-x11/components/qml';
+
+<QmlView
+  source={`
+    import QtQuick 2.15
+    Rectangle {
+      width: 300; height: 120; color: "#101418"
+      property int count: 0
+      Text { anchors.centerIn: parent; color: "white"; text: "clicks: " + count }
+      MouseArea { anchors.fill: parent; onClicked: count++ }
+    }
+  `}
+/>;
+```
+
+Everything visible is an ordinary `<box>`, `<text>` or `<image>` committed
+through the renderer, so theming, damage tracking, accessibility and the test
+harness all apply to QML content without knowing it is QML. It registers no
+host element; the one import-time side effect is populating the family's own
+QtQuick type registry, which touches no core state and shakes out with the
+family. [The reference](docs/components/qml.md) has the rest.
+
 ## The user's real calendar
 
 `<Calendar dayContent>` is the seam the desktop's own events hang off, and
@@ -901,9 +1070,9 @@ handed, so nothing sits between the two — **that string format is the whole
 contract between the two packages**, and it is why the grid never had to know
 what an event is.
 
-This package shipped the D-Bus half until 0.4.0, as
+This package shipped the D-Bus half through 0.6.0, as
 `@react-x11/components/desktop-calendar`. It moved to core in react-x11 2.9.1
-and the subpath is gone: a calendar is one of the things an app does _outside_
+and 0.7.0 deleted the subpath: a calendar is one of the things an app does _outside_
 its own windows, like notifications, the tray and the file dialog, and every
 one of those is a ladder in core with a freedesktop rung and a macOS one — the
 macOS rung here reaches EventKit through `@windowkit/appkit`, which only core
@@ -923,6 +1092,12 @@ footer names the rung that answered.
 These two are the same component twice, and they are what core's `<foreign>`
 element was added for: a react-x11 app can now **host** another X client
 rather than only drawing its own pixels.
+
+**Both are X11-only**, and the heading says why: an X client is what they
+host. macOS has no cross-process window embedding to build the same thing
+on, so on the Cocoa backend `<Terminal backend="vt">` is the terminal and
+`<MediaPlayer>` has no counterpart — see
+[Two backends](#two-backends-and-the-three-components-that-only-run-on-one).
 
 ```jsx
 import { Terminal } from '@react-x11/components';
@@ -993,9 +1168,10 @@ without an xterm in CI.
 
 One prop changes the terminal from a hosted X client into a native element: a
 pty (through a pluggable `PtyHost`), [`@xterm/headless`][xterm-headless] as
-the escape-sequence state machine, and a cell-grid renderer that draws with
-XRender glyph runs into a retained offscreen surface, scrolls with a
-server-side copy, and coalesces onto react-x11's vblank-paced frame clock.
+the escape-sequence state machine, and a cell-grid renderer that draws glyph
+runs into a retained offscreen surface, scrolls it in place, and coalesces
+onto react-x11's frame clock. One renderer, both backends: XRender runs and a
+server-side copy on X11, CoreText runs into a CG bitmap on macOS.
 
 ```jsx
 <Terminal
@@ -1056,8 +1232,8 @@ Keyboard, mouse and selection are what a terminal user expects: xterm-compatible
 key encoding (application cursor/keypad modes, the modifier parameter
 scheme, `Alt` as an ESC prefix), mouse reporting in the tracking mode the
 program asked for (with Shift as the universal "let me select instead"
-override), char/word/line selection that publishes PRIMARY, middle-click
-paste, Ctrl+Shift+C/V, bracketed paste, and OSC 52 clipboard **writes** —
+override), char/word/line selection that publishes PRIMARY on X11,
+middle-click paste, Ctrl+Shift+C/V, bracketed paste, and OSC 52 clipboard **writes** —
 never reads, which are answered with nothing whatever a program asks for.
 
 Escape arms one pass-through Tab, so the terminal is not a keyboard trap;
@@ -1125,7 +1301,11 @@ The same protocol as the two above, pointed the other way. `<Terminal>` and
 `<MediaPlayer>` spawn a program into a container they own; a tray is handed
 windows by applications that were already running, and the
 [system tray spec](http://specifications.freedesktop.org/systemtray/latest/)
-is XEmbed's biggest surviving consumer.
+is XEmbed's biggest surviving consumer. **X11-only**, for the same reason the
+two above are: on the Cocoa backend there is no manager selection to take, so
+it reports `status: 'unavailable'` and renders `fallback` — the same posture
+it has against the headless test server. Putting an icon _in_ a Mac's status
+bar is the other direction and is core's `useTray()`.
 
 ```jsx
 import { TrayHost } from '@react-x11/components';
@@ -1184,9 +1364,6 @@ rather than inside it.
 
 Candidates to move here:
 
-- The 3D scene graph and a Three.js / react-three-fiber-shaped layer, with
-  `<glarea>` itself staying in core.
-- `<Tabs>`, undecided — it may well stay in core.
 - The inline half of MDX — a component in the middle of a sentence, which is
   gated on a `<richtext>` run that can reserve advance width for an embedded
   element. Block-position components and expressions have shipped;
@@ -1196,8 +1373,14 @@ Candidates to move here:
   `dbusmenu.js`, and a complete panel wants both.
 
 `<Table>` above supersedes core's `<Table>` the way `<Tree>` supersedes
-core's tree; whether core's remainder is stripped down or removed outright
-is core's decision, still open — `docs/prd-table.md` records the contract.
+core's tree, and `<Tabs>` supersedes core's tabs the same way; whether core's
+remainder in each case is stripped down or removed outright is core's
+decision, still open — `docs/prd-table.md` records the table's contract.
+
+The 3D scene graph landed while this list still called it a candidate:
+`@react-x11/components/three` is the react-three-fiber-shaped layer, and
+`<glarea>` stayed in core exactly as planned. That is the worked example at
+the top of this file of a boundary running _through_ a feature.
 
 `<Markdown>` above **replaces** core's ntk-backed `<markdown>` element, and
 `<Html>` now replaces `HtmlView` and core's `<html>` (ntk's document widgets
