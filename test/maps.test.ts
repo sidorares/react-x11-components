@@ -2832,6 +2832,156 @@ test('an ancestor with a surface is what covers a hole', () => {
   cache.destroy();
 });
 
+// A provider switch between sources with no `id`. The element names each
+// `source-<index>`, so the one put in the first one's place is `source-0`
+// too — and a cache that files tiles under that name hands it every tile
+// the first had loaded, and every answer the first still had in flight
+// when that lands.
+
+test('a source in another’s place is handed none of its tiles, loaded or in flight', async () => {
+  const loaded = { z: 3, x: 4, y: 4 };
+  const inFlight = { z: 3, x: 5, y: 4 };
+  const held: ((data: TileData) => void)[] = [];
+  const first: MapSource = {
+    load: ({ x }) =>
+      x === loaded.x
+        ? { kind: 'vector', data: tileBytes([]) }
+        : new Promise<TileData>((resolve) => held.push(resolve)),
+  };
+  const asked: string[] = [];
+  const second: MapSource = {
+    load: ({ z, x, y }) => {
+      asked.push(`${z}/${x}/${y}`);
+      return {
+        kind: 'raster',
+        width: 1,
+        height: 1,
+        data: new Uint8Array([0, 0, 255, 255]),
+      };
+    },
+  };
+  const cache = new TileCache();
+  cache.beginFrame();
+  cache.want(first, 'source-0', loaded);
+  cache.want(first, 'source-0', inFlight);
+  // The switch: the element hands the cache the same name for the new one.
+  cache.beginFrame();
+  const tiles = [
+    cache.want(second, 'source-0', loaded),
+    cache.want(second, 'source-0', inFlight),
+  ];
+  // …and the first source's answer lands after it.
+  for (const release of held) release({ kind: 'vector', data: tileBytes([]) });
+  await Promise.resolve();
+  assert.deepEqual(asked, ['3/4/4', '3/5/4'], 'the new source is asked');
+  for (const tile of tiles) {
+    assert.equal(tile.vector, null, 'no vector data under a raster source');
+    assert.deepEqual([...(tile.raster?.data ?? [])], [0, 0, 255, 255]);
+  }
+  cache.destroy();
+});
+
+for (const [label, answer] of [
+  ['loaded', (): TileData => ({ kind: 'vector', data: tileBytes([]) })],
+  // Never settles: the switch lands while every tile is still in flight.
+  ['in flight', (): Promise<TileData> => new Promise<TileData>(() => {})],
+] as const) {
+  test(`a map switched to another source with no id asks it for every tile — ${label}`, async () => {
+    const recording = (
+      asked: string[],
+      load: () => TileData | Promise<TileData>,
+    ): MapSource => ({
+      tileSize: 512,
+      load: ({ z, x, y }) => {
+        asked.push(`${z}/${x}/${y}`);
+        return load();
+      },
+    });
+    const frames = async (): Promise<void> => {
+      await act(async () => {});
+      await act(async () => {});
+    };
+    const first: string[] = [];
+    const second: string[] = [];
+    const { rerender } = await mountMap({
+      sources: [recording(first, answer)],
+    });
+    await frames();
+    assert.ok(first.length > 0, 'the first source was asked for the view');
+
+    const next = recording(second, () => ({
+      kind: 'vector',
+      data: tileBytes([]),
+    }));
+    await rerender({ sources: [next] });
+    await frames();
+    assert.deepEqual(
+      [...second].sort(),
+      [...first].sort(),
+      'the new source is asked for the same view',
+    );
+
+    // What the cache keeps is the source, not the array around it: a
+    // render that hands over the same object in a new array asks nothing.
+    const before = second.length;
+    await rerender({ sources: [next] });
+    await frames();
+    assert.equal(second.length, before);
+  });
+}
+
+/** Every `console.warn` made while `run` runs. */
+async function warningsDuring(run: () => Promise<void>): Promise<string[]> {
+  const warnings: string[] = [];
+  const original = console.warn;
+  console.warn = (message: unknown) => {
+    warnings.push(String(message));
+  };
+  try {
+    await run();
+  } finally {
+    console.warn = original;
+  }
+  return warnings;
+}
+
+test('a source made anew on every render is named in a warning, once', async () => {
+  // The price of a cache per source object, said out loud. Each render's
+  // source is an empty cache, so this map fetches its whole view on every
+  // render and is blank until the tiles land — and nothing else would tell
+  // the application why.
+  const make = (): MapSource => ({
+    tileSize: 512,
+    load: () => ({ kind: 'vector', data: tileBytes([]) }),
+  });
+  const warnings = await warningsDuring(async () => {
+    const { rerender } = await mountMap({ sources: [make()] });
+    for (let i = 0; i < 6; i++) await rerender({ sources: [make()] });
+  });
+  assert.equal(warnings.length, 1, warnings.join(' | '));
+  assert.match(warnings[0], /sources\[0\]/);
+  assert.match(warnings[0], /useMemo/);
+});
+
+test('switching between sources the map has had is not taken for remaking one', async () => {
+  // A layer switcher: three providers that look alike — no id, one
+  // pyramid — made once and switched between. Only a source the map has
+  // never had counts, so going back and forth never adds up to a warning.
+  const providers = [0, 1, 2].map((): MapSource => ({
+    tileSize: 256,
+    load: () => null,
+  }));
+  const warnings = await warningsDuring(async () => {
+    const { rerender } = await mountMap({ sources: [providers[0]] });
+    for (const i of [1, 2, 0, 1, 2, 0]) {
+      await rerender({ sources: [providers[i]] });
+    }
+    // …and a new array around the same object is no new source.
+    await rerender({ sources: [providers[0]] });
+  });
+  assert.deepEqual(warnings, []);
+});
+
 // --- the element -----------------------------------------------------------
 
 test('the element registers, is drawn, and its kind is its name', () => {

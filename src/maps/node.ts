@@ -2107,12 +2107,89 @@ export class MapViewNode extends Node {
     return items;
   }
 
+  /** Every source this element has been handed, and how many `sources`
+   *  changes in a row have made a slot anew — see `_noticeRemade`. */
+  private readonly _seenSources = new WeakSet<MapSource>();
+  private _remade = 0;
+  private _warnedRemade = false;
+
+  /**
+   * Say so, once, when the application makes a source anew on every
+   * render.
+   *
+   * Tiles are cached per source object (see `./tiles.ts`), so a source
+   * rebuilt on each render starts from an empty cache on each render: every
+   * tile in view is fetched again, and the map is its background until they
+   * land. Under a controlled camera that is a render per pan step — a drag
+   * across a blank map that fetches the whole view on every step.
+   *
+   * What gives it away is a slot handed a source this element has never
+   * had, looking like the one it replaces — the same id, pyramid and
+   * attribution — on three `sources` changes in a row. A provider switch
+   * does that once, and a switch back to a source already shown does not
+   * count at all. Looking alike is only ever the basis of a warning, never
+   * of a cache key: two providers can look exactly alike.
+   *
+   * `process` and `console` come off `globalThis` because `src/` compiles
+   * with `types: []`, as for the terminal's warning.
+   */
+  private _noticeRemade(
+    before: readonly MapSource[] | undefined,
+    next: readonly MapSource[] | undefined,
+  ): void {
+    if (this._warnedRemade) return;
+    let slot = -1;
+    if (before && next) {
+      const length = Math.min(before.length, next.length);
+      for (let i = 0; i < length && slot < 0; i++) {
+        const was = before[i];
+        const now = next[i];
+        if (
+          was &&
+          now &&
+          now !== was &&
+          !this._seenSources.has(now) &&
+          now.id === was.id &&
+          now.tileSize === was.tileSize &&
+          now.minZoom === was.minZoom &&
+          now.maxZoom === was.maxZoom &&
+          now.attribution === was.attribution
+        ) {
+          slot = i;
+        }
+      }
+    }
+    for (const source of before ?? []) this._seenSources.add(source);
+    for (const source of next ?? []) this._seenSources.add(source);
+    this._remade = slot < 0 ? 0 : this._remade + 1;
+    if (this._remade < 3) return;
+    this._warnedRemade = true;
+    const g = globalThis as {
+      process?: { env?: Record<string, string | undefined> };
+      console?: { warn(message: string): void };
+    };
+    if (g.process?.env?.NODE_ENV === 'production') return;
+    g.console?.warn(
+      `@react-x11/components: <Map> was handed a new sources[${slot}] on ` +
+        'three renders in a row. Tiles are cached per source object, so ' +
+        'each one started from an empty cache and fetched every tile in ' +
+        'view again. If it is the same provider each time, make it once — ' +
+        'at module scope, or with useMemo.',
+    );
+  }
+
   override applyProps(
     next: Record<string, unknown>,
     prev: Record<string, unknown>,
   ): void {
     const before = prev ?? this.props;
     super.applyProps(next, prev);
+    if (next.sources !== before.sources) {
+      this._noticeRemade(
+        before.sources as readonly MapSource[] | undefined,
+        next.sources as readonly MapSource[] | undefined,
+      );
+    }
     // Every one of these is in `selfDamagedProps`, so the commit claimed
     // nothing for them and this is the only claim there will be.
     //

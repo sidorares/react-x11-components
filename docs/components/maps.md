@@ -57,7 +57,10 @@ from one to the other must not draw one's tiles as the other's. Switching
 back finds the first source's tiles still cached. The flip side is that a
 source made anew on every render starts from an empty cache on every render
 and fetches every tile again — so make each source once, at module scope or
-in `useMemo`.
+in `useMemo`. Under a controlled camera that is a render per pan step, and
+the map is blank for the whole of a drag. In development the map warns,
+once, when a slot is handed a new source that looks like the one before it
+three renders in a row.
 
 `TileData` is `{ kind: 'vector', data }` for MVT bytes (gzip is unwrapped
 for you), `{ kind: 'raster', width, height, data }` for straight RGBA
