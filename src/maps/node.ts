@@ -995,7 +995,9 @@ export class MapViewNode extends Node {
       // Two different questions, and conflating them was a bug worth
       // spelling out. **Whether to work on a tile** is about the pane: the
       // cover is padded, so some of it is off screen and those tiles are
-      // wanted (so they load) but never drawn. **Whether to composite it**
+      // wanted (so they load) but never drawn. They are wanted on *every*
+      // frame, however small its damage rect, because the cache's `sweep`
+      // cancels any load a frame did not want. **Whether to composite it**
       // is about this pass's damage rect, which may be far smaller —
       // including the deliberately tiny claim a rasterization continuation
       // makes, which must still let the rasterizer run.
@@ -1750,9 +1752,11 @@ export class MapViewNode extends Node {
       return;
     }
     if (next.sources !== before.sources) {
-      // Nothing to throw away: tiles are filed under the source object, so
-      // a new provider starts empty and one switched away from keeps its
-      // tiles for when it comes back. Only the label placement is stale.
+      // Nothing to throw away here: tiles are filed under the source
+      // object, so a new provider starts empty, and one switched away from
+      // keeps the tiles it has for when it comes back — its loads still in
+      // flight are cancelled by the next frame's `sweep`, since nothing asks
+      // for them. Only the label placement is stale.
       this._labelKey = '';
       this._repaint('props');
       return;
