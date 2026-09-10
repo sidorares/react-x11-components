@@ -23,6 +23,15 @@ neither, `fallback` renders and `onError` gets a `BackendUnavailableError`
 naming what was looked for. That is an ordinary state of a healthy machine,
 not an exception.
 
+**X11-only.** Both players are embedded by handing them an X window id
+(`--wid`, `--drawable`), which is XEmbed's mechanism, and macOS has no
+cross-process window embedding at all — react-x11's own
+[macOS backend document](https://github.com/sidorares/react-x11/blob/master/docs/macos.md)
+names this component among what has no equivalent there. Unlike
+[`<Terminal>`](terminal.md), which has `backend="vt"` to fall to, this one
+has no native counterpart: a Cocoa app that needs video wants a different
+component than this one.
+
 ## Props
 
 ### Source and playback

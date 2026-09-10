@@ -61,13 +61,19 @@ parts.
 - [Rendering a captured session](prd-terminal-output.md) — why a log is a
   document rather than a grid, and what `/ansi` and `<TerminalOutput>` can
   and cannot represent.
-- [The data table](prd-table.md) — proposed: the prior-art survey, the
+- [The data table](prd-table.md) — implemented: the prior-art survey, the
   successor contract with core's `<Table>`, and the variable-height
   virtualization it shares with the tree.
 - [An HTML control worth having](prd-html.md) — the pipeline behind
   `<Html>`, why the element draws a document rather than composing one, the
   resource and script seams, the isolated-process mode, and the audit of
   exposing the seams as a Chrome DevTools Protocol surface.
+- [MDX in `<Markdown>`](prd-mdx.md) — block position and expressions
+  shipped: the two gates (`components` decides what a document may _reach_,
+  `scope` whether it may _compute_), why neither evaluates anything a
+  document that never passed the prop could not already do, and the inline
+  half that is still open on a `<richtext>` run able to reserve advance
+  width for an embedded element.
 - [Maps](prd-maps.md) — the format and provider survey (who serves vector
   tiles and who does not), the three-cache rendering architecture, and the
   profile that produced it on both the X11 and the Cocoa backends.
@@ -106,3 +112,9 @@ parts.
 - **Nothing here is a hard dependency.** Where a component needs a program or
   a native module, "it is not installed" is an ordinary state with a
   `fallback` and a `status`, never a throw.
+- **A page says so when it is not backend-neutral.** react-x11 has an X11
+  backend and a native macOS one, and most of what is here draws through
+  contracts both answer. Where a component needs something only one of them
+  has — XEmbed for `<Terminal>`'s embedded emulators, `<MediaPlayer>` and
+  `<TrayHost>`; the X selection for PRIMARY — its page names the backend
+  rather than leaving the reader to find out on the other one.

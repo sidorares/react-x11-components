@@ -53,6 +53,42 @@ Apply the same cut before assuming a whole subsystem moves or stays. Ask
 which part is standing on internals and which part is standing on the
 element.
 
+### Two backends, and which side of them a component is on
+
+core has an X11 backend and a native macOS one (`createRoot({ backend })`,
+`REACT_X11_BACKEND`), and **the default assumption for anything added here is
+that it runs on both** — because the things this package builds on, host
+elements and the 2D context and the text engine contract, are what both
+backends answer. Most of what is here needed no work at all to cross over;
+what work there was is recorded where it happened, and is worth reading
+before writing the next component:
+
+- the glyph-run seams the vt terminal needs, and the degrade when an engine
+  has none ("The terminal that is not somebody else's program");
+- device versus logical pixels, which is the bug the second backend
+  _introduced_ for every drawn element here, because 1x hid it
+  ("Drawing beats composing");
+- `CGContextStrokePath` being superlinear in subpath count, which is why
+  `<Map>`'s `batchVertices` is a per-backend probe ("A map, and the three
+  caches under it");
+- frame pacing, because a Cocoa window paints at the display's rate with no
+  server backpressure behind it (`docs/prd-frame-pacing.md`).
+
+**Three components are X11-only, and always will be**: `<Terminal>`'s
+embedded emulators, `<MediaPlayer>` and `<TrayHost>`. All three are XEmbed,
+and macOS has no cross-process window embedding — react-x11's own
+`docs/macos.md` says so and names this package in as much. That is a wall,
+not a gap, so do not file it as one; the answer where an app needs the
+capability on both backends is a native sibling, which is what
+`backend="vt"` is for the terminal. `<TrayHost>` degrades to
+`status: 'unavailable'` there because core's Cocoa `X` stub has no selection
+machinery, which is the same posture it has against the headless mock — the
+posture to copy for anything else that reaches for raw X.
+
+The rule this leaves for a new component: **if it can only work on one
+backend, its docs page says which, in the first screenful.** A reader who
+finds out from a blank window has been failed by the page.
+
 ## Layout
 
 - `src/<component>/` — **one directory per component.** Each has an
@@ -102,8 +138,10 @@ element.
 - `scripts/check-package.ts` — the exports-map/publishability check. `tsc`
   is the build now, but it has no opinion about the exports map, so this
   still runs.
-- `examples/` — one runnable file per component. These need a real
-  `$DISPLAY`; CI does not run them.
+- `examples/` — one runnable file per component. These need a display: a real
+  `$DISPLAY`, or a Mac running core's native backend
+  (`REACT_X11_BACKEND=cocoa`), which is the cheapest way to see whether a
+  component holds up on the other one. CI does not run them.
 - `docs/` — the reference, one page per component under `docs/components/`,
   plus design documents. **The only copy** — see "Documentation".
 - `website/` — the Docusaurus site that renders `docs/`. Its own
@@ -167,10 +205,14 @@ React half only places boxes.
 
 Three consequences are load-bearing and are documented at the seam: a mounted
 body re-renders as the viewport moves (the cost the drawn path exists to
-avoid, paid only by the nodes that opt in), it does not scale with the zoom
-(there is no transform), and its type reserves a `headerHeight` strip the
-body does not cover, because a node made entirely of text fields has nothing
-left to drag.
+avoid, paid only by the nodes that opt in), it **zooms with the pane** — the
+subtree is mounted in a box carrying core's `scale` prop (react-x11 2.6,
+react-x11#452), which multiplies every length under it with CSS `zoom`
+semantics rather than a transform, so a body is written in graph units and
+its text is shaped at the size it is drawn at, and below `zoom` 0.6 it is not
+mounted at all — and its type reserves a `headerHeight` strip the body does
+not cover, because a node made entirely of text fields has nothing left to
+drag.
 
 The rule to carry forward: **ask whether the feature's viewport is a
 transform.** If it is, the element draws, and anything that has to be a real
@@ -329,12 +371,13 @@ anywhere.
 
 ### Current status: core is released, and the git pin is gone
 
-react-x11 **2.0.0 is published on npm**, and it carries every subpath this
-package imports — `react-x11/host`, `/node`, `/style`, `/test`. Both specs
-are now ordinary registry ranges:
+react-x11 is published on npm, and it carries every subpath this package
+imports — `react-x11` itself plus `/host`, `/node`, `/style`, `/keysyms`,
+`/ntk`, `/yoga`, `/jsx-runtime`, and `/test` and `/debug` from the suite.
+Both specs are ordinary registry ranges:
 
-- `peerDependencies.react-x11` is `^2.9.1` — what a consumer must supply.
-- `devDependencies.react-x11` is `^2.9.1` — what the suite runs against.
+- `peerDependencies.react-x11` is `^2.11.0` — what a consumer must supply.
+- `devDependencies.react-x11` is `^2.11.0` — what the suite runs against.
 
 Keep them the same range. They are one decision written twice, and a
 devDependency that drifts above the peer range means the suite passes
@@ -342,15 +385,25 @@ against a core that consumers are not required to have.
 
 Needing something core landed after the current floor is a normal release
 wait, not a pin bump: it ships in the next core release and both ranges pick
-it up. The floor has moved three times for exactly that — `^2.5.0` for the
-Cocoa glyph-run seams, `^2.6.1` for the chunked Cocoa stroke `<Map>`
-profiling asked for (react-x11#456/#457), and `^2.9.1` for the desktop
-calendar's move into core (react-x11#508). 2.9.0 is the release the vt
+it up. **The floor is a running one and moves often** — every move so far has
+been a component here adopting something core just landed, and the ones worth
+remembering are `^2.5.0` for the Cocoa glyph-run seams, `^2.6.1` for the
+chunked Cocoa stroke `<Map>` profiling asked for (react-x11#456/#457),
+`^2.9.1` for the desktop calendar's move into core (react-x11#508), and
+`^2.11.0` for the eyedropper's macOS rung, `NSColorSampler`
+(react-x11#517/#520 — before it, `useEyedropper().supported` was true on the
+Cocoa backend and the first press threw). 2.9.0 is the release the vt
 terminal's flood profiling asked for — `opaqueRect()`, the `copy` composite
 and the window's `frameRate` (react-x11#497/#501,
 `docs/prd-frame-pacing.md`) — and the calendar's bump carried it. Do not
 reach back for a `github:` spec to get at unreleased core — cut a core
 release instead.
+
+**A component's docs page should not restate the floor.** Say what that
+change needed and why — "the Cocoa glyph-run seams landed in 2.4.0 and 2.5.0"
+stays true forever — but leave "the floor is `^x.y.z`" to `package.json`,
+which is the only copy that moves when the floor does. This section and
+`package.json` are the two places the current number belongs.
 
 <details>
 <summary>Why the git pin named a full sha (history, for when this recurs)</summary>
@@ -1145,21 +1198,24 @@ npm run typecheck     # builds, then tsc over src, test, examples, scripts
 npm run check:package # exports map + tree-shaking contract (needs a build)
 npm run docs          # sync docs/ into website/ and serve it
 npm run docs:build    # what the deploy workflow runs
-npm run examples:calendar    # needs a real $DISPLAY (and a bus, for events)
-npm run examples:charts      # needs a real $DISPLAY
-npm run examples:code        # needs a real $DISPLAY
-npm run examples:code-editor # needs a real $DISPLAY
-npm run examples:html        # needs a real $DISPLAY
-npm run examples:maps        # needs a real $DISPLAY and a network
-npm run examples:markdown    # needs a real $DISPLAY
-npm run examples:reorder     # needs a real $DISPLAY
-npm run examples:terminal    # needs a real $DISPLAY and an emulator installed
-npm run examples:terminal-vt # needs a real $DISPLAY and a pty module (node-pty)
-npm run examples:media-player -- <file>   # needs a real $DISPLAY and mpv/VLC
-npm run examples:table       # needs a real $DISPLAY
-npm run examples:tray-host   # needs a real $DISPLAY with no tray on it yet
-npm run examples:tree -- <dir>  # needs a real $DISPLAY; defaults to cwd
+```
+
+Every `examples:<name>` needs a display — a real `$DISPLAY`, or a Mac running
+the native backend (`REACT_X11_BACKEND=cocoa`). There is one per component;
+`package.json` is the list. The ones with something more to say:
+
+```bash
+npm run examples:calendar    # a bus, or EventKit, for the day dots
+npm run examples:maps        # and a network — real OSM tiles
+npm run examples:terminal    # X11 only, and an emulator installed
+npm run examples:terminal-vt # a pty module (node-pty), or Bun >= 1.4
+npm run examples:terminal-ssh   # SSH_HOST/SSH_USER, and `npm i -D ssh2`
+npm run examples:media-player -- <file>   # X11 only, and mpv or VLC
+npm run examples:tray-host   # X11 only, and no other tray on that display
+npm run examples:three       # a GL context: see docs/components/three.md
+npm run examples:tree -- <dir>  # defaults to cwd
 npm run examples:tree -- --stress[=rows]  # generated 100k-row tree instead
+npm run examples:flow-stress    # the measured pan loop, with an X-traffic HUD
 ```
 
 `pretest` and `pretypecheck` both build, and both have to. `package.test.ts`
@@ -1365,7 +1421,7 @@ one is written is in "Replacing a core widget rather than moving it" above.
 | `<Tabs>`                                         | superseded by `src/tabs/` here                                                | **Done.** Same successor relationship as `<Tree>`: Chakra's compositional API with the parts spelled flat (like `<Timeline>`), keeping core's keyboard/RTL behaviour and dropping the items-array API. Core's remainder is an open core-side decision.                                                                                                                                                                                                                                                                                                                                   |
 | `<Tree>`                                         | superseded by `src/tree/` here (see above)                                    | **Done.** Core's `src/components/Tree.js` is being retired; this is a successor, not a wrapper, and imports none of it. See "Replacing a core widget rather than moving it".                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `<Table>`                                        | superseded by `src/table/` here                                               | **Done.** Same successor relationship as `<Tree>`; prop-compatible with core's, plus accessors, variable-height virtualization, multi-select and seams. Core's remainder — stripped or removed — is an open core-side decision. `docs/prd-table.md` is the design record.                                                                                                                                                                                                                                                                                                                |
-| 3D scene graph, Three.js / r3f layer, `Canvas3D` | react-x11 `src/scene3d.js`, `src/components/Canvas3D.js`                      | **Candidate**, with `<glarea>` staying in core. See "The boundary can run through a feature".                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| 3D scene graph, Three.js / r3f layer, `Canvas3D` | `src/three/` here                                                             | **Done**, with `<glarea>` staying in core exactly as planned — the worked example in "The boundary can run through a feature". `<Canvas>` is r3f-shaped over one `<glarea>`, with its own JSX runtime subpaths (`./three/jsx-runtime`, `./three/jsx-dev-runtime`) because the intrinsic element names are the family's, not core's. Runs on all three GL flavors, the Cocoa backend's CGL-into-a-CALayer included; `three.js` itself is not a dependency.                                                                                                                                |
 | A 2D map                                         | `src/maps/` here                                                              | **Done.** `<Map>`: MVT tiles, a GL-style-shaped style subset, markers and overlays, over one element that draws the map. The third scene element, and the first where the scene arrives a tile at a time — see "A map, and the three caches under it" and `docs/prd-maps.md`.                                                                                                                                                                                                                                                                                                            |
 | react-flow clone                                 | `src/flow/` here                                                              | **Done.** `<Flow>`: react-flow's surface API over one element that draws the graph, with a `render` seam for bodies that must be real widgets. See "Drawing beats composing".                                                                                                                                                                                                                                                                                                                                                                                                            |
 | `<Terminal>`, `<MediaPlayer>`                    | new, here (`src/terminal/`, `src/media-player/`)                              | **Done.** Built on core's `<foreign>`; the wrapper is here because a binary dependency can never be core's. See "Running someone else's program".                                                                                                                                                                                                                                                                                                                                                                                                                                        |

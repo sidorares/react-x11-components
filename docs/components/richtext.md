@@ -75,12 +75,13 @@ API and a hairline on a text baseline does not need one.
 **The decorations are read off what the engine hands back.** ntk returns
 every laid-out run with the span it came from, markers and all, which is how
 the painter finds the chips, the rules and the link targets. react-x11's
-Cocoa text engine (2.3.x) returns a run's geometry and nothing else, so on
-that backend the text still shapes, draws and selects, but `bg`,
-`underline`, `strike` and `hrefAtPoint` have nothing to read and degrade
-to none rather than throwing; a development build says so once on the
-console. The gap is the engine's to close, and nothing here changes when it
-does.
+Cocoa text engine returns a run's geometry and nothing else — still true as
+of 2.11.0 — so on that backend the text shapes, draws and selects as usual,
+but `bg`, `underline`, `strike` and `hrefAtPoint` have nothing to read and
+degrade to none rather than throwing; a development build says so once on the
+console. This is a different gap from the terminal's glyph-run seams, which
+the Cocoa engine _did_ grow (2.4.0 and 2.5.0); it is the engine's to close,
+and nothing here changes when it does.
 
 ## Selection is core's
 

@@ -25,6 +25,21 @@ A real terminal in a react-x11 app, two ways behind one set of props:
 vt**. Since the last rung needs nothing installed, `auto` effectively always
 succeeds; `fallback` is reached only when there is also no pty module.
 
+**The first three rungs are X11-only.** They are XEmbed, and macOS has no
+cross-process window embedding to build that on — react-x11's own
+[macOS backend document][macos] says so and names this component in as much.
+`backend="vt"` is the whole terminal on the Cocoa backend, and it is a native
+element there rather than a hole punched in the window, so nothing is lost
+but the choice of emulator.
+
+The probe that picks a rung is a `PATH` probe, and a `PATH` probe cannot see
+which backend the app is running on: on a Mac with XQuartz installed,
+`'auto'` will still pick that xterm and then have nothing to embed it into.
+**An app that runs on both backends should say `backend="vt"` outright**
+rather than rely on `'auto'`.
+
+[macos]: https://github.com/sidorares/react-x11/blob/master/docs/macos.md
+
 ## Props
 
 ### Process
@@ -163,10 +178,11 @@ That is the X11 backend, and since react-x11 2.5.0 the native macOS backend
 too: the Cocoa face grew ntk's glyph-run seams in 2.4.0
 (sidorares/react-x11#432) and the offscreen `Surface` arrived in 2.5.0
 (#433), so the same renderer draws CoreText glyph runs into a CG bitmap and
-scrolls it in place, unchanged — which is why this package's react-x11 floor
-is `^2.5.0`. A text engine without those seams (a face with metrics and
-coverage and nothing else) is still an ordinary state rather than a throw:
-the terminal paints nothing and says so once in development.
+scrolls it in place, unchanged — the adoption that moved this package's
+react-x11 floor to `^2.5.0` at the time, since raised for other reasons.
+A text engine without those seams (a face with metrics and coverage and
+nothing else) is still an ordinary state rather than a throw: the terminal
+paints nothing and says so once in development.
 
 ### A flood of output, and the window's `frameRate`
 

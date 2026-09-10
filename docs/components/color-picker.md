@@ -121,9 +121,18 @@ colour resets the model.
 
 `eyedropper` is on by default and costs nothing where there is no sampler:
 the button exists only when core's `useEyedropper().supported` says a pick is
-possible ([react-x11#360](https://github.com/sidorares/react-x11/issues/360)
-— the portal's `Screenshot.PickColor`, or a crosshair pointer grab on plain
-X11).
+possible ([react-x11#360](https://github.com/sidorares/react-x11/issues/360)).
+Core's ladder is three rungs, tried in order and never by naming a backend:
+macOS's own `NSColorSampler` (react-x11 2.11, which is what moved this
+package's floor to `^2.11.0` — before it, `supported` was true on the Cocoa
+backend and the first press threw), the portal's `Screenshot.PickColor` where
+the session bus has it, and a crosshair pointer grab on plain X11. Nothing
+here names any of them; this component asks `supported` and draws a button or
+does not.
+
+One thing the macOS rung decides rather than this component: **nothing
+dismisses a sampler from code.** AppKit has no cancel for it, so an aborted
+pick ends this side's wait and leaves the loupe up until the user answers it.
 
 A function replaces the sampler with your own:
 

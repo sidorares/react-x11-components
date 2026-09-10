@@ -19,6 +19,13 @@ tray is handed windows by applications that were already running. The
 [system tray spec](http://specifications.freedesktop.org/systemtray/latest/)
 is XEmbed's biggest surviving consumer.
 
+**X11-only**, and it degrades rather than failing: the manager selection is
+X's, and on the Cocoa backend — whose `X` is a stub with no selection
+machinery — the host reports `status: 'unavailable'` and renders `fallback`,
+the same posture it has against the headless test server. That is the tray as
+a _container_. Putting an icon _into_ a Mac's status bar is the other
+direction and is core's `useTray()`, over `NSStatusItem`.
+
 Mounting it takes the `_NET_SYSTEM_TRAY_S<screen>` selection with a real
 server timestamp, publishes `_NET_SYSTEM_TRAY_ORIENTATION`, and broadcasts
 `MANAGER` to the root — which is what makes applications that started before
