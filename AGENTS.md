@@ -215,8 +215,13 @@ caret, gutter pad and scroll thumbs multiplied where they are drawn — and
 `test/code-editor.test.ts` clicks, drags and opens the completion popup at
 `scale: 2`, holding every number to `abs` and a core-shaped `<text>` ruler
 rather than to another answer of the editor's, which a doubled `metrics()`
-would have made pass. `<ColorPicker>`'s `fractionIn` still compares a
-logical event with a device `abs`.
+would have made pass. `<ColorPicker>`'s `fractionIn` compared a logical
+event with a device `abs` until it was the last one left: it reads
+`node.getClientRects()[0]` now — the same box already divided, which is the
+third way through this and the one to reach for when there is a rect to ask
+for at all, since it leaves the arithmetic in one unit instead of converting
+into the other. `test/color-picker.test.ts` drags the area and clicks the
+hue strip at `scale: 2`, which is the test the file never had.
 
 `src/internal/hx.ts` is what makes the no-JSX rule survive TypeScript.
 `React.createElement`'s own overloads are `@types/react`'s and describe the

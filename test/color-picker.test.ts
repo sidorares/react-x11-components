@@ -8,7 +8,14 @@ import { test, afterEach } from 'node:test';
 import assert from 'node:assert';
 import React from 'react';
 
-import { renderX11, cleanup, screen, userEvent } from 'react-x11/test';
+import {
+  act,
+  cleanup,
+  fireEvent,
+  renderX11,
+  screen,
+  userEvent,
+} from 'react-x11/test';
 import { XK_DOWN, XK_LEFT, XK_RIGHT, XK_ESCAPE } from 'react-x11/keysyms';
 import type { Node as RetainedNode } from 'react-x11/node';
 import type { DrawnNode } from 'react-x11';
@@ -40,6 +47,11 @@ function byLabel(label: string): DrawnNode {
   const [node] = screen.all((n) => retained(n).props['aria-label'] === label);
   assert.ok(node, `no node labelled ${JSON.stringify(label)}`);
   return node;
+}
+
+/** The labelled node's props, re-queried — a drag re-renders it. */
+function byLabelProps(label: string): Record<string, unknown> {
+  return retained(byLabel(label)).props;
 }
 
 function maybeByLabel(label: string): DrawnNode | undefined {
@@ -272,6 +284,49 @@ test('shift is the coarse step', async () => {
     String(retained(hue).props['aria-valuetext']),
     /hue 214 degrees/,
   );
+});
+
+test('a drag lands under the pointer, on a hidpi display too', async () => {
+  // The unit mix this file had no pointer test to catch: `abs` is device
+  // pixels and `ev.x`/`ev.y` are logical, so subtracting one from the other
+  // read a press at the middle of a retina panel's area as a press a
+  // quarter of the way in from its corner — saturation 10% for a pointer
+  // at 25%, and a thumb that stopped following the pointer well before the
+  // right edge. `fireEvent`'s offsets are device pixels, the unit `abs` is
+  // in, so a quarter of the box is the same colour at either scale.
+  for (const scale of [1, 2]) {
+    await renderX11(h(ColorPicker, { defaultValue: '#ff0000' }), { scale });
+    const area = byLabel('Saturation and brightness');
+    const dx = -Math.round(area.abs.width / 4);
+    const dy = -Math.round(area.abs.height / 4);
+    await act(async () => {
+      fireEvent.mouseDown(area, { dx: 0, dy: 0 });
+    });
+    await act(async () => {
+      fireEvent.mouseMove(area, { dx, dy });
+    });
+    await act(async () => {
+      fireEvent.mouseUp(area, { dx, dy });
+    });
+    assert.match(
+      String(byLabelProps('Saturation and brightness')['aria-valuetext']),
+      /saturation 25%, brightness 75%/,
+      `the area drag followed the pointer at scale ${scale}`,
+    );
+
+    // The strips are the same arithmetic on one axis: three quarters along
+    // the hue ramp is 270 degrees wherever it is drawn.
+    const hue = byLabel('Hue');
+    await act(async () => {
+      fireEvent.click(hue, { dx: Math.round(hue.abs.width / 4) });
+    });
+    assert.match(
+      String(byLabelProps('Hue')['aria-valuetext']),
+      /hue 270 degrees/,
+      `the hue click landed where the pointer was at scale ${scale}`,
+    );
+    await cleanup();
+  }
 });
 
 test('the hue survives a trip through black', async () => {
