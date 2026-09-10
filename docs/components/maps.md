@@ -467,6 +467,11 @@ claim a pixel each and the swap claims the pane once; `MapFrameStats`'s
   swap releases every surface of the old style, those of tiles off screen
   included, and a tile last drawn before a switch is redrawn when it comes
   back into view rather than shown the way it was.
+- **Raster tiles take no part in any of it.** A provider's image is the
+  same in every style, so a switch does not redraw one: it stays up through
+  the switch, keeps covering whatever it covered — a tile the provider has
+  no image for shows its parent, scaled — and one that arrives while a
+  switch is held goes up at once.
 - **`progressive` turns all of this off**, which is what it is for: the new
   background and labels go up at once, and each tile goes up as it is
   redrawn.
