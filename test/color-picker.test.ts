@@ -12,6 +12,7 @@ import {
   act,
   cleanup,
   fireEvent,
+  pixelAt,
   renderX11,
   screen,
   userEvent,
@@ -327,6 +328,38 @@ test('a drag lands under the pointer, on a hidpi display too', async () => {
     );
     await cleanup();
   }
+});
+
+test('the handle sits on the strip border, centred on it', async () => {
+  // Two symptoms, one cause: the axis box carried the border, and core
+  // paints a node's border *after* its children, so the grey line was drawn
+  // across the white handle. Absolute children are laid out from the
+  // padding box as well, so that border also pushed the handle down by its
+  // own width — 1px of overhang above and 3 below — and 1px to the right of
+  // the colour it names.
+  const { ctx } = await renderX11(h(ColorPicker, { defaultValue: '#00c8ff' }), {
+    width: 300,
+    height: 320,
+  });
+  const hue = byLabel('Hue');
+  const kids = retained(hue).children as unknown as DrawnNode[];
+  const thumb = kids[kids.length - 1];
+
+  const above = thumb.abs.y - hue.abs.y;
+  const below = hue.abs.y + hue.abs.height - (thumb.abs.y + thumb.abs.height);
+  assert.strictEqual(above, below, 'the handle overhangs the strip evenly');
+
+  // and the border does not cross it: the handle's own fill runs unbroken
+  // through the row the strip's border occupies. Relative rather than a
+  // colour constant, so the theme stays free to move.
+  const cx = Math.round(thumb.abs.x + thumb.abs.width / 2);
+  const onBorderRow = await pixelAt(ctx, cx, hue.abs.y);
+  const insideStrip = await pixelAt(ctx, cx, hue.abs.y + 3);
+  assert.deepStrictEqual(
+    onBorderRow,
+    insideStrip,
+    'the strip border is painted under the handle, not over it',
+  );
 });
 
 test('the hue survives a trip through black', async () => {
