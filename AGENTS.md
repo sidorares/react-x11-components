@@ -1082,6 +1082,16 @@ unclipped overlay did. `src/maps/clip.ts` is the pair of algorithms both
 paths share. The cap is six because the _data_ runs out there, not the
 renderer.
 
+**Only for vector data.** A raster tile went through the same cells, and
+only the rasterizer read what a cell was: the upload put the whole image
+into every cell, so past each raster source's depth the map was a grid of
+miniatures of its tiles — from zoom 19 on OSM's raster layer, which is read
+a level deeper than the view. An image has nothing finer in it, so past the
+cut a raster cell is drawn as the whole of its data tile, stretched
+(`MapViewNode._rasterSquares`). The rule to carry: **when a unit of work
+changes meaning, every path that does the work has to learn it** — two
+paths drew a tile here, and one of them had never heard of cells.
+
 **A hole is covered from whichever side has pixels, and there are two.**
 Zooming _in_, the tile already drawn is the target's ancestor — one
 composite, scaled up. Zooming _out_, the tiles already drawn are its

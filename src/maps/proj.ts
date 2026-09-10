@@ -442,6 +442,37 @@ export function subTileOf(
 }
 
 /**
+ * Where the data tile that serves a cover entry lands on screen: the entry
+ * itself until the cover goes deeper than the source cuts, and past that
+ * the whole of the ancestor it is one cell of — `span` times its size,
+ * starting `sub.x` cells to its left and `sub.y` above it.
+ *
+ * What a **raster** tile is drawn over past its source's depth. A vector
+ * cell is rasterized from its data tile's features through the cell, which
+ * is where overzoom's sharpness comes from; an image has nothing finer in
+ * it, so it is drawn whole, once, over this square. Placed from the entry
+ * rather than from the camera, and it lands where {@link tileCover} at the
+ * source's own depth puts the same tile.
+ */
+export function dataSquareOf(
+  entry: TileCoverEntry,
+  maxZoom: number,
+): TileCoverEntry {
+  const sub = subTileOf(entry.tile, maxZoom);
+  if (sub.span === 1) return entry;
+  return {
+    tile: dataTileFor(entry.tile, maxZoom),
+    worldCopy: entry.worldCopy,
+    x: entry.x - sub.x * entry.size,
+    y: entry.y - sub.y * entry.size,
+    size: entry.size * sub.span,
+    // The cell's: a square takes its place in the cover's order from the
+    // cell it was reached through.
+    distance: entry.distance,
+  };
+}
+
+/**
  * How large to rasterize a tile whose pyramid level is `z` at camera `zoom`.
  *
  * The rule: **rasterize at the size the tile has at integer zoom, and let
