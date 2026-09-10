@@ -1633,6 +1633,136 @@ test('the signal a source is handed is a real AbortSignal', async () => {
   );
 });
 
+test('a tile that leaves the cover mid-load is aborted, and asked for again if it comes back', async () => {
+  // `signal` was documented as aborted "when the tile leaves the view" and
+  // nothing did that — the only aborts were eviction past the data budget
+  // and `destroy()`. A tile panned out of the cover loaded to the end, and
+  // landing was an `onChange`: a full-pane repaint for a tile nobody was
+  // looking at.
+  const loads: {
+    tile: string;
+    signal: AbortSignal;
+    answer: (data: TileData) => void;
+  }[] = [];
+  const source: MapSource = {
+    id: 's',
+    // Answers when the test says so — and, like a source that never passes
+    // its signal on, whether or not it has been aborted.
+    load: ({ z, x, y, signal }) =>
+      new Promise<TileData>((answer) => {
+        loads.push({
+          tile: `${z}/${x}/${y}`,
+          signal: signal as AbortSignal,
+          answer,
+        });
+      }),
+  };
+  const changed: string[] = [];
+  const cache = new TileCache({
+    onChange: (entry) => changed.push(entry.key),
+  });
+  const frame = (...tiles: { z: number; x: number; y: number }[]): void => {
+    cache.beginFrame();
+    for (const tile of tiles) cache.want(source, 's', tile);
+    cache.sweep();
+  };
+  const settled = (): Promise<void> =>
+    new Promise((resolve) => setTimeout(resolve, 0));
+  const stay = { z: 3, x: 2, y: 2 };
+  const away = { z: 3, x: 5, y: 2 };
+
+  frame(stay, away);
+  frame(stay); // `away` has left the cover with its load still in flight
+  assert.deepEqual(
+    loads.map((load) => [load.tile, load.signal.aborted]),
+    [
+      ['3/2/2', false],
+      ['3/5/2', true],
+    ],
+  );
+  // Forgotten, not left behind: an aborted load never settles, so an entry
+  // kept would say 'loading' forever and never be asked for again.
+  assert.equal(cache.peek(source, away), undefined);
+
+  frame(stay, away);
+  assert.deepEqual(
+    loads.map((load) => load.tile),
+    ['3/2/2', '3/5/2', '3/5/2'],
+    'the tile that came back is asked for again, and the one that stayed is not',
+  );
+  assert.equal(loads[2].signal.aborted, false, 'with a signal of its own');
+
+  // The aborted load answering late must not land in the new one's place…
+  loads[1].answer({ kind: 'vector', data: tileBytes([]) });
+  await settled();
+  assert.equal(cache.peek(source, away)?.status, 'loading');
+  assert.deepEqual(changed, [], 'or repaint anything');
+  // …and the new one lands as any load does.
+  loads[2].answer({ kind: 'vector', data: tileBytes([]) });
+  await settled();
+  assert.equal(cache.peek(source, away)?.status, 'ready');
+  assert.deepEqual(changed, [cache.peek(source, away)?.data.key]);
+  cache.destroy();
+});
+
+test('switching sources aborts what the old one had in flight, and keeps what it delivered', async () => {
+  // A provider switch is every tile of one source leaving at once. What it
+  // had in flight is cancelled; what already arrived stays, which is what
+  // makes switching back free.
+  const asked: string[] = [];
+  const signals: AbortSignal[] = [];
+  const failed: unknown[] = [];
+  const arrived = { z: 3, x: 2, y: 2 };
+  const inFlight = { z: 3, x: 5, y: 2 };
+  const old: MapSource = {
+    id: 'old',
+    load: ({ z, x, y, signal }) => {
+      asked.push(`${z}/${x}/${y}`);
+      if (x === arrived.x) return { kind: 'vector', data: tileBytes([]) };
+      // Honours its signal the way `fetch` does: aborted, it rejects with
+      // the signal's reason, which is an `AbortError`.
+      const abortable = signal as AbortSignal;
+      signals.push(abortable);
+      return new Promise<TileData>((_, reject) => {
+        abortable.addEventListener('abort', () => reject(abortable.reason));
+      });
+    },
+  };
+  const next: MapSource = {
+    id: 'next',
+    load: () => new Promise<TileData>(() => {}),
+  };
+  const cache = new TileCache({
+    onError: (entry) => failed.push(entry.error),
+  });
+  const frame = (source: MapSource, id: string): void => {
+    cache.beginFrame();
+    cache.want(source, id, arrived);
+    cache.want(source, id, inFlight);
+    cache.sweep();
+  };
+
+  frame(old, 'old');
+  assert.equal(cache.peek(old, arrived)?.status, 'ready');
+  frame(next, 'next');
+  assert.equal(signals[0].aborted, true, 'the switch aborts the old load');
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(failed, [], 'and its AbortError is not a tile error');
+  assert.equal(
+    cache.peek(old, arrived)?.status,
+    'ready',
+    'what arrived is kept',
+  );
+
+  frame(old, 'old');
+  assert.deepEqual(
+    asked,
+    ['3/2/2', '3/5/2', '3/5/2'],
+    'switching back asks again for the aborted tile, and only that one',
+  );
+  cache.destroy();
+});
+
 test('a failed load is reported, and retried on a backoff rather than per frame', async () => {
   let attempts = 0;
   const source: MapSource = {
@@ -1956,6 +2086,84 @@ test(
     }
   },
 );
+
+test('the map aborts the loads its camera leaves behind, and none it still wants', async () => {
+  // The cache cancels whatever a frame did not ask for, so the element has
+  // to ask for everything it still wants on every frame — the padding
+  // around the pane, a frame clipped to a marker's box, a frame painted
+  // mid-gesture. A tile it forgot once would be aborted and fetched again.
+  const requests = new Map<string, AbortSignal[]>();
+  const held = (id: string): MapSource => ({
+    id,
+    minZoom: 0,
+    maxZoom: 14,
+    tileSize: 512,
+    // Never answers, so a tile is in flight for as long as it is wanted.
+    load: ({ z, x, y, signal }) => {
+      const key = `${id} ${z}/${x}/${y}`;
+      const signals = requests.get(key) ?? [];
+      requests.set(key, [...signals, signal as AbortSignal]);
+      return new Promise<TileData>(() => {});
+    },
+  });
+  // On a tile corner, so the pane shows whole tiles and the padding reaches
+  // tiles it does not show. Centred on London itself the padded cover
+  // happens to be exactly the six tiles on screen, and would test nothing.
+  const home = {
+    lon: lonFromMercatorX(2046 / 4096),
+    lat: latFromMercatorY(1362 / 4096),
+  };
+  let painted = 0;
+  const { handle, rerender } = await mountMap({
+    sources: [held('a')],
+    defaultCamera: { center: home, zoom: 12 },
+    onFrame: () => painted++,
+  });
+  const step = async (action: () => unknown): Promise<void> => {
+    const before = painted;
+    await action();
+    await act(async () => {});
+    await act(async () => {});
+    assert.ok(painted > before, 'a frame was painted');
+  };
+  const aborted = (key: string): boolean[] =>
+    (requests.get(key) ?? []).map((signal) => signal.aborted);
+
+  await act(async () => {});
+  const wanted = [...requests.keys()];
+  const onScreen = handle.stats()?.tiles ?? 0;
+  assert.ok(
+    onScreen > 0 && wanted.length > onScreen,
+    `${wanted.length} tiles loading for ${onScreen} on screen: the padding loads too`,
+  );
+
+  // The same view again: a whole frame, then one clipped to a marker.
+  await step(() => handle.refresh());
+  await step(() => rerender({ markers: [{ id: 'm', position: home }] }));
+  assert.ok((handle.stats()?.damage?.width ?? 640) < 640, 'a clipped frame');
+  for (const key of wanted) {
+    assert.deepEqual(aborted(key), [false], `${key}, with nothing moved`);
+  }
+
+  // A camera move is a gesture to the map — nothing is rasterized for a
+  // moment after it — and the cover is still asked for. Across the world,
+  // nothing of home is wanted; back again, each tile is asked for anew.
+  await step(() => handle.setCamera({ center: TOKYO }));
+  for (const key of wanted) assert.deepEqual(aborted(key), [true], key);
+  const tokyo = [...requests.keys()].filter((key) => !wanted.includes(key));
+  assert.ok(tokyo.length > 0, 'Tokyo is asked for');
+  await step(() => handle.setCamera({ center: home }));
+  for (const key of wanted) assert.deepEqual(aborted(key), [true, false], key);
+  for (const key of tokyo) assert.deepEqual(aborted(key), [true], key);
+
+  // A provider switch: every tile of the old one at once.
+  await step(() => rerender({ sources: [held('b')] }));
+  for (const key of wanted) assert.deepEqual(aborted(key), [true, true], key);
+  assert.ok(
+    [...requests.keys()].some((key) => key.startsWith('b ')),
+    'and the new one is asked instead',
+  );
+});
 
 test('an ancestor with a surface is what covers a hole', () => {
   const cache = new TileCache();

@@ -27,7 +27,13 @@ export interface TileRequest extends TileId {
    *  loader. */
   sourceId: string;
   /**
-   * Aborted when the tile leaves the view before it arrives.
+   * Aborted when the map stops wanting the tile before it has arrived: it
+   * has been panned or zoomed out of what the map is loading (the view and
+   * a margin around it), its source has been taken out of `sources`, or the
+   * map has unmounted. Whatever an aborted load answers after that, an
+   * `AbortError` included, is ignored rather than reported to
+   * `onTileError`, and a tile that comes back is asked for again with a new
+   * signal.
    *
    * **This is a real `AbortSignal`** on every runtime that has one, which
    * is what makes `fetch(url, { signal })` work — `fetch` rejects anything

@@ -66,9 +66,18 @@ answer, not an error, and is what an ocean tile in a land-only pyramid
 returns.
 
 `request.signal` is a **real `AbortSignal`**, so it goes straight to
-`fetch`; it is aborted when the tile leaves the view before it arrives. In
-TypeScript it needs a cast — `signal as AbortSignal` — because `src/`
-compiles with no DOM lib and cannot name the class.
+`fetch`. In TypeScript it needs a cast — `signal as AbortSignal` — because
+`src/` compiles with no DOM lib and cannot name the class.
+
+It is aborted when the map stops wanting the tile before it has arrived:
+the tile has been panned or zoomed out of what the map is loading (the
+view, plus a 256-pixel margin so that an ordinary flick finds its tiles),
+its source has been taken out of `sources`, or the map has unmounted.
+Whatever an aborted load answers after that, its `AbortError` included, is
+ignored rather than reported to `onTileError`, and a tile that comes back is
+asked for again with a new signal. Only loads are cancelled: a tile that has
+arrived stays cached, so panning back to it, like switching back to its
+provider, is not another request.
 
 **A `load` that throws is an error, and errors are on a backoff.** The tile
 is retried 0.5 s later, then 1, 2, 4 … up to 30 s, rather than on every

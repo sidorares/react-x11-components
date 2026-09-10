@@ -282,7 +282,8 @@ export class TileCache {
    * Filed under `source`; `sourceId` is only what it is called. `dataTile`
    * is the tile whose bytes serve this one — itself, until the cover goes
    * deeper than the source cuts. Marks both used by the current frame,
-   * which is what keeps them out of the next eviction.
+   * which is what keeps them out of the next eviction — and a load still
+   * in flight from being cancelled by {@link sweep}.
    */
   want(
     source: MapSource,
@@ -587,14 +588,18 @@ export class TileCache {
   }
 
   /**
-   * Drop what is no longer worth keeping.
+   * Drop what is no longer worth keeping. Called once a frame, after every
+   * tile the frame still needs has been through {@link want}.
    *
-   * Surfaces go first and by least-recently-wanted, because they are two
+   * A load the frame did not want is cancelled outright (see
+   * `_cancelUnwanted`). What has arrived is kept on budgets instead:
+   * surfaces first and by least-recently-wanted, because they are two
    * orders of magnitude larger than the data behind them and much cheaper
-   * to lose: a dropped surface is one re-rasterization, a dropped tile is a
-   * network request.
+   * to lose — a dropped surface is one re-rasterization, a dropped tile is
+   * a network request.
    */
   sweep(): void {
+    this._cancelUnwanted();
     if (
       this._surfaceBytes >
       (this._options.surfaceBudget ?? DEFAULT_SURFACE_BUDGET)
@@ -631,6 +636,45 @@ export class TileCache {
         if (data.lastUsed >= this._frame) continue;
         this._dropData(data);
       }
+    }
+  }
+
+  /**
+   * Cancel every load the frame just drawn did not ask for.
+   *
+   * A tile panned or zoomed out of the cover — or every tile of a source
+   * taken out of `sources` — would otherwise load to the end: a request
+   * nobody is waiting for, then a full-pane repaint when it lands, because
+   * a landing tile is an `onChange`. The cover is padded, so a tile just off
+   * screen is still wanted and keeps loading. That is also the contract on
+   * the element: it wants the whole cover on every frame, clipped and
+   * mid-gesture ones included, or what it skipped is aborted here and
+   * fetched again.
+   *
+   * Only loads: data that has arrived stays on the budgets above, and is
+   * what makes panning back, or switching back to a provider, free.
+   *
+   * And forgotten rather than parked. An aborted load never settles
+   * (`settle` ignores it), so an entry left in `_data` would say `'loading'`
+   * forever and never be asked for again; its renderings go with it, since
+   * each reads through to the same entry for life, and none has a surface to
+   * lose. The next frame that wants the tile starts over, with a new request
+   * and a new signal.
+   */
+  private _cancelUnwanted(): void {
+    let unwanted: Set<TileDataEntry> | null = null;
+    for (const data of this._data.values()) {
+      if (data.status === 'loading' && data.lastUsed < this._frame) {
+        (unwanted ??= new Set<TileDataEntry>()).add(data);
+      }
+    }
+    if (!unwanted) return;
+    for (const entry of [...this._entries.values()]) {
+      if (unwanted.has(entry.data)) this._drop(entry);
+    }
+    for (const data of unwanted) {
+      data.abort?.();
+      this._data.delete(data.key);
     }
   }
 
