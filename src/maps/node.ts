@@ -212,6 +212,84 @@ type Gesture =
     }
   | { kind: 'marker'; id: string; startX: number; startY: number };
 
+/** Whether `outer` covers all of `inner`. */
+function containsRect(outer: ScreenRect, inner: ScreenRect): boolean {
+  return (
+    outer.x <= inner.x &&
+    outer.y <= inner.y &&
+    outer.x + outer.width >= inner.x + inner.width &&
+    outer.y + outer.height >= inner.y + inner.height
+  );
+}
+
+function sameSources(
+  a: readonly MapSource[],
+  b: readonly MapSource[],
+): boolean {
+  return a.length === b.length && a.every((source, i) => source === b[i]);
+}
+
+/** A tile of the cover that is in view, as a frame's work found it. */
+interface VisibleTile {
+  entry: TileCoverEntry;
+  /** Where it lands, in pane-local logical pixels. */
+  box: ScreenRect;
+  cached: CachedTile;
+}
+
+/**
+ * How long a restyle may keep the previous style up once the view moves,
+ * in milliseconds the map was free to draw in.
+ *
+ * A still view is never cut short: its redraw is a fixed amount of work,
+ * and the swap waits for all of it. A moving one can bring tiles into view
+ * as fast as the old ones are finished — a pan with pauses in it, a camera
+ * an application animates — and would never swap. So once the camera has
+ * moved the wait is bounded, and a tile not yet redrawn when it runs out
+ * shows the background until it is. Frames a gesture holds rasterization
+ * off in do not count, since nothing is drawn in them.
+ */
+const RESTYLE_WAIT_MS = 1500;
+
+/**
+ * The previous style, held on screen while a restyle draws the new one.
+ *
+ * A `mapStyle` change or `refresh()` retires every tile surface at once,
+ * and the redraw is budgeted — a dense tile is 50-140 ms against 8 ms a
+ * frame — so it takes a second or more. A tile's own double buffer keeps
+ * its old picture until its new one is done, which is right for a zoom and
+ * wrong here: the map was a patchwork of both styles for that second, under
+ * a background and labels that had already switched. So the whole previous
+ * picture — the tiles of its generation, its background, its labels —
+ * stays up until the view is redrawn, and is replaced in one frame.
+ */
+interface Outgoing {
+  /** The cache generation on screen. Only its pictures are composited. */
+  generation: number;
+  /** The style background the last frame before the switch painted. */
+  background: string | undefined;
+  /**
+   * The labels on screen, and what they were placed for and from — the
+   * quantized zoom, the sources, their candidates and the face — kept
+   * because the style that produced them is gone, or, after `refresh()`,
+   * was edited in place. A zoom re-places them from the candidates; a
+   * source taken off the map takes its names with it.
+   */
+  labels: PlacedLabel[];
+  labelZoom: number;
+  labelSources: readonly MapSource[];
+  candidates: Map<MapSource, LabelCandidate[]>;
+  family: string | undefined;
+  /** The camera and the pane at the switch, and whether either has moved
+   *  since — which is what makes {@link RESTYLE_WAIT_MS} apply. */
+  view: string;
+  moved: boolean;
+  /** Milliseconds the map has been free to draw since the switch, and when
+   *  the last frame that was began — `null` when the last frame was not. */
+  waited: number;
+  lastDrawn: number | null;
+}
+
 export class MapViewNode extends Node {
   private readonly _cache: TileCache;
   private readonly _scratch = new DrawScratch();
@@ -237,9 +315,27 @@ export class MapViewNode extends Node {
   /** The placement, and what it was computed for. */
   private _labels: PlacedLabel[] = [];
   private _labelKey = '';
+  /** …and what it was placed from, all of which a restyle holds on to (see
+   *  {@link Outgoing}): the quantized zoom, the sources on the map, their
+   *  candidates per source, and the face they were shaped in. */
+  private _labelZoom = 0;
+  private _labelSources: readonly MapSource[] = [];
+  private _labelCandidates = new Map<MapSource, LabelCandidate[]>();
+  private _shapedFamily: string | undefined;
   /** Candidates per tile, so a pan that brings a tile back does not redo
    *  the walk over its symbol layers. */
   private readonly _candidates = new Map<string, LabelCandidate[]>();
+
+  /** The previous style while a restyle draws the new one behind it, or
+   *  null when what is on screen is the current generation. */
+  private _outgoing: Outgoing | null = null;
+  /** The style background the last frame painted — what a restyle keeps
+   *  painting. Remembered rather than recomputed, because `refresh()`
+   *  follows an edit made to the very style object it would be read from. */
+  private _paintedBackground: string | undefined;
+  /** Whether a frame has been painted: before one, a restyle has no
+   *  previous picture to hold. */
+  private _painted = false;
 
   private _gesture: Gesture | null = null;
   private _hover: string | null = null;
@@ -712,9 +808,60 @@ export class MapViewNode extends Node {
   }
 
   refresh(): void {
+    this._restyle();
+  }
+
+  /**
+   * Retire every rendered tile — for a new `mapStyle`, or `refresh()` after
+   * an edit made to the style in place. One path for both, and for anything
+   * else that ever needs the map redrawn in a new look.
+   *
+   * The compiled style and the label candidates go with the tiles: both are
+   * readings of the style, and `refresh()` exists because the object was
+   * edited under them. What does not go is the picture on screen. Unless
+   * there is none yet, or `progressive` asked to watch the repaint, it is
+   * held as {@link Outgoing} until the new one is ready to replace it.
+   *
+   * True when it is held. Then nothing on screen changes yet, so the only
+   * claim is the pixel that asks for a frame to start drawing in — and
+   * anything else a commit changed has to claim its own damage.
+   */
+  private _restyle(): boolean {
+    this._prepared = null;
+    this._preparedFrom = null;
+    this._candidates.clear();
+    if (
+      this._outgoing === null &&
+      this._painted &&
+      this._prop<boolean>('progressive') !== true
+    ) {
+      this._outgoing = {
+        generation: this._cache.generation,
+        background: this._paintedBackground,
+        labels: this._labels,
+        labelZoom: this._labelZoom,
+        labelSources: this._labelSources,
+        candidates: this._labelCandidates,
+        family: this._shapedFamily,
+        view: this._viewKey(this._transform(), this._pane()),
+        moved: false,
+        waited: 0,
+        lastDrawn: null,
+      };
+    }
     this._cache.invalidateStyle();
     this._labelKey = '';
-    this._repaint('content');
+    if (this._outgoing === null) {
+      this._repaint('props');
+      return false;
+    }
+    this._wake('props');
+    return true;
+  }
+
+  /** The camera and the pane, as a string that changes when either does. */
+  private _viewKey(transform: Transform, pane: ScreenRect): string {
+    return `${transform.centerX},${transform.centerY},${transform.zoom},${pane.width}x${pane.height}`;
   }
 
   stats(): MapFrameStats | null {
@@ -822,6 +969,7 @@ export class MapViewNode extends Node {
       fromAncestor: 0,
       fromDescendant: 0,
       pending: 0,
+      restyling: false,
       labels: 0,
       errors: 0,
       surfaceBytes: 0,
@@ -858,12 +1006,60 @@ export class MapViewNode extends Node {
     ctx.rect(clip.x, clip.y, clip.width, clip.height);
     ctx.clip();
 
+    // Rasterization is suspended for the length of a gesture, so a drag or
+    // a wheel is composites only. `rasterBudgetMs` bounds the rest.
+    const budget = this._gesturing
+      ? 0
+      : (this._prop<number>('rasterBudgetMs') ?? 8);
+    const deadline = started + budget;
+    this._rastered = false;
+    const progressive = this._prop<boolean>('progressive') === true;
+
+    // **The work first, then the picture.** Every tile the cover wants is
+    // asked for, and the ones in view are drawn as far as the budget goes —
+    // into their own surfaces, so none of it is on screen yet. Which style
+    // this frame shows is decided only after that, because it depends on
+    // what the work just finished: a restyle swaps in the frame that finds
+    // the view redrawn, and has to know before the first pixel goes down.
+    const sources = this._sources();
+    const holding = this._outgoing !== null && !progressive;
+    const views: VisibleTile[][] = [];
+    for (let i = 0; i < sources.length; i++) {
+      views.push(
+        this._workSource(
+          sources[i],
+          this._sourceId(sources[i], i),
+          transform,
+          pane,
+          style,
+          stats,
+          budget > 0,
+          deadline,
+          holding,
+        ),
+      );
+    }
+    this._settleRestyle(
+      transform,
+      pane,
+      stats,
+      budget,
+      started,
+      !damage || containsRect(damage, box),
+      progressive,
+    );
+    const outgoing = this._outgoing;
+    stats.restyling = outgoing !== null;
+
     // The style's background under everything: it is what the parts of the
     // world with no tile yet look like, so it is most of what a map looks
-    // like while it loads.
+    // like while it loads. The previous style's while a restyle holds it.
+    const styleBackground = outgoing
+      ? outgoing.background
+      : this._preparedBackground();
+    if (!outgoing) this._paintedBackground = styleBackground;
     const background =
-      (this.style.backgroundColor as string | undefined) ??
-      this._preparedBackground();
+      (this.style.backgroundColor as string | undefined) ?? styleBackground;
     if (background) {
       ctx.fillStyle = background;
       const region = this._frameClip
@@ -872,26 +1068,23 @@ export class MapViewNode extends Node {
       ctx.fillRect(region.x, region.y, region.width, region.height);
     }
 
-    // Rasterization is suspended for the length of a gesture, so a drag or
-    // a wheel is composites only. `rasterBudgetMs` bounds the rest.
-    const budget = this._gesturing
-      ? 0
-      : (this._prop<number>('rasterBudgetMs') ?? 8);
-    const deadline = started + budget;
-    this._rastered = false;
-
-    const sources = this._sources();
+    // Only pictures of the generation on screen are composited: the
+    // previous style's while a restyle holds it up, the current one's
+    // otherwise — so a tile last drawn before a switch is never shown in
+    // the style the map was switched away from. `progressive` shows
+    // whatever there is, which is its point.
+    const generation = progressive
+      ? undefined
+      : (outgoing?.generation ?? this._cache.generation);
     for (let i = 0; i < sources.length; i++) {
-      this._paintSource(
+      this._drawSource(
         ctx,
         sources[i],
-        this._sourceId(sources[i], i),
-        transform,
+        views[i],
         pane,
-        style,
         stats,
-        budget > 0,
-        deadline,
+        progressive,
+        generation,
       );
     }
 
@@ -907,6 +1100,7 @@ export class MapViewNode extends Node {
     stats.surfaceBytes = this._cache.surfaceBytes;
     stats.drawMs = now() - started - stats.rasterMs;
     this._stats = stats;
+    this._painted = true;
     this._painting = false;
     this._frameClip = null;
     void frame;
@@ -956,8 +1150,81 @@ export class MapViewNode extends Node {
     };
   }
 
-  private _paintSource(
-    ctx: MapCanvas,
+  /**
+   * Whether this frame keeps showing the previous style or swaps in the new
+   * one — see {@link Outgoing}.
+   *
+   * The swap waits for every tile in view that has data to have a finished
+   * rendering in the new style, which is `pending` reaching zero: a tile
+   * still loading has nothing to draw and does not hold it, and a tile that
+   * is done waits for the rest rather than going up alone. It is made only
+   * in a frame that repaints the whole pane, because a swap inside a partial
+   * frame would leave the rest of the pane in the old style — so a frame
+   * that finds the view redrawn but was clipped to its one pixel claims the
+   * pane, and the next frame swaps. That is the one full-pane claim a
+   * restyle makes.
+   *
+   * Or, once the view has moved, when {@link RESTYLE_WAIT_MS} of drawing
+   * time has gone by, with whatever is left undrawn.
+   */
+  private _settleRestyle(
+    transform: Transform,
+    pane: ScreenRect,
+    stats: MapFrameStats,
+    budget: number,
+    started: number,
+    whole: boolean,
+    progressive: boolean,
+  ): void {
+    const outgoing = this._outgoing;
+    if (!outgoing) return;
+    if (progressive) {
+      // Turned on while a restyle was held: the opt-in holds nothing.
+      this._swapStyle();
+      if (!whole) this._repaint('content');
+      return;
+    }
+    if (!outgoing.moved && this._viewKey(transform, pane) !== outgoing.view) {
+      outgoing.moved = true;
+    }
+    // The clock runs across frames that could draw, two in a row, so the
+    // gap a gesture made — which drew nothing — is not counted when the
+    // next frame after it begins.
+    if (budget > 0) {
+      if (outgoing.lastDrawn !== null) {
+        outgoing.waited += started - outgoing.lastDrawn;
+      }
+      outgoing.lastDrawn = started;
+    } else {
+      outgoing.lastDrawn = null;
+    }
+    const redrawn = stats.pending === 0;
+    // Never by the clock in the middle of a gesture: nothing is drawn
+    // during one, so the view would swap to holes it cannot fill until the
+    // gesture ends.
+    const overdue =
+      budget > 0 && outgoing.moved && outgoing.waited >= RESTYLE_WAIT_MS;
+    if (!redrawn && !overdue) return;
+    if (whole) this._swapStyle();
+    else this._repaint('content');
+  }
+
+  /** The new style goes on screen: every finished tile, its background and
+   *  a label placement of its own, all in the frame being painted. */
+  private _swapStyle(): void {
+    this._outgoing = null;
+    this._cache.swap();
+    this._labelKey = '';
+  }
+
+  /**
+   * A frame's work, for one source: want every tile of its cover, so that
+   * each loads and stays cached, and draw the ones in view into their own
+   * surfaces as far as the budget goes. Returns the ones in view, for
+   * {@link _drawSource} to composite once the frame knows which style it is
+   * showing.
+   */
+  private _workSource(
     source: MapSource,
     sourceId: string,
     transform: Transform,
@@ -967,8 +1234,10 @@ export class MapViewNode extends Node {
     /** False for the length of a gesture, when nothing is rasterized. */
     mayRaster: boolean,
     deadline: number,
-  ): void {
-    const scale = this._scale;
+    /** A restyle is holding the previous style up, so a tile that finishes
+     *  waits for the swap rather than going on screen alone. */
+    holding: boolean,
+  ): VisibleTile[] {
     const p = pyramid(source);
     // The cover goes **deeper than the source cuts**, up to
     // `MAX_OVERZOOM` levels past it, and the data for those tiles comes
@@ -984,7 +1253,7 @@ export class MapViewNode extends Node {
     );
     const zoom = transform.zoom;
     const styleZoom = Math.floor(zoom);
-    const progressive = this._prop<boolean>('progressive') === true;
+    const visible: VisibleTile[] = [];
     for (const entry of cover) {
       const box = {
         x: pane.x + entry.x,
@@ -1000,10 +1269,9 @@ export class MapViewNode extends Node {
       // cancels any load a frame did not want. **Whether to composite it**
       // is about this pass's damage rect, which may be far smaller —
       // including the deliberately tiny claim a rasterization continuation
-      // makes, which must still let the rasterizer run.
+      // makes, which must still let the rasterizer run. The first is asked
+      // here, and the second in `_drawSource`.
       const onScreen = rectsOverlap(box, pane);
-      const inPass =
-        this._frameClip === null || rectsOverlap(box, this._frameClip);
       const cached = this._cache.want(
         source,
         sourceId,
@@ -1012,6 +1280,7 @@ export class MapViewNode extends Node {
         subTileOf(entry.tile, p.maxZoom),
       );
       if (!onScreen) continue;
+      visible.push({ entry, box, cached });
       stats.tiles++;
       if (cached.status === 'error') stats.errors++;
 
@@ -1051,17 +1320,48 @@ export class MapViewNode extends Node {
           // goes blank between them. Claim the box it occupies, because
           // *that* is the pixel change this whole sequence of frames was
           // for; the frames before it claimed almost nothing.
-          if (this._cache.promote(cached)) this._claim(box, 'content');
+          //
+          // Not while a restyle holds the previous style up, though: one
+          // tile in the new style among the rest in the old is the
+          // patchwork the hold is there to prevent. It waits, finished, for
+          // `_swapStyle` to put the whole view up at once.
+          if (!holding && this._cache.promote(cached)) {
+            this._claim(box, 'content');
+          }
         }
         // "Pending" means *there is work left that this map could still
         // do*, and nothing weaker — because `paint` asks for another frame
-        // while it is non-zero. A tile whose surface could not be made (a
-        // backend that has none) never becomes drawable, and counting it
-        // would spin the frame clock at the refresh rate forever,
-        // repainting a map that cannot change.
-        if (cached.drawing) stats.pending++;
+        // while it is non-zero, and a restyle swaps when it reaches zero. A
+        // tile whose surface could not be made (a backend that has none)
+        // never becomes drawable, and counting it would spin the frame
+        // clock at the refresh rate forever, repainting a map that cannot
+        // change. A finished tile waiting for a restyle's swap has nothing
+        // left to do either.
+        if (cached.drawing && cached.drawing.progress !== -1) stats.pending++;
       }
+    }
+    return visible;
+  }
 
+  /**
+   * A frame's picture, for one source: composite each tile in view from its
+   * own finished rendering or, for a tile with none, from a finished
+   * ancestor or descendants. Only renderings of `generation` count, and
+   * `undefined` counts any — which is `progressive`.
+   */
+  private _drawSource(
+    ctx: MapCanvas,
+    source: MapSource,
+    visible: readonly VisibleTile[],
+    pane: ScreenRect,
+    stats: MapFrameStats,
+    progressive: boolean,
+    generation: number | undefined,
+  ): void {
+    const scale = this._scale;
+    for (const { entry, box, cached } of visible) {
+      const inPass =
+        this._frameClip === null || rectsOverlap(box, this._frameClip);
       // What is composited is `shown`, which is **finished by
       // construction** — a rendering only becomes `shown` when its last
       // style run is done. So a tile appears whole rather than as water,
@@ -1073,7 +1373,10 @@ export class MapViewNode extends Node {
       // behaviour and is honest about what the renderer is doing.
       const showing =
         progressive && cached.drawing ? cached.drawing : cached.shown;
-      if (showing) {
+      if (
+        showing &&
+        (generation === undefined || showing.generation === generation)
+      ) {
         if (!inPass) continue;
         this._composite(
           ctx,
@@ -1089,15 +1392,10 @@ export class MapViewNode extends Node {
         stats.ready++;
         continue;
       }
-      // Nothing of this tile yet — a first load, which no buffering can
-      // help. Borrow the ancestor that is already drawn, scaled up: that is
-      // the difference between a map that fills in and one that flashes
-      // empty on every zoom.
-      if (!inPass) continue;
 
-      // Nothing of this tile yet — a first load, which no buffering can
-      // help. Two ways to cover it, and which is available says which way
-      // the camera moved.
+      // Nothing of this tile to show — a first load, which no buffering can
+      // help, or a picture in a style the map is not showing. Two ways to
+      // cover it, and which is available says which way the camera moved.
       //
       // **Zooming in**, the tile already in hand is this one's *ancestor*:
       // one composite, scaled up, blurry but complete. **Zooming out**, the
@@ -1111,12 +1409,30 @@ export class MapViewNode extends Node {
       // sharper and they are the level the user is coming *from*; the
       // ancestor wins when they do not, because a complete blurry picture
       // beats a sharp one with holes in it.
-      const kids = this._cache.descendantsWithSurface(source, entry.tile);
+      //
+      // Looked up whether or not this pass draws the tile, because the
+      // lookup is what stamps a piece as in use: a piece covering a hole is
+      // on screen, and an unstamped entry is the first thing eviction takes
+      // — which, in the one-pixel frames a redraw runs in, was every piece
+      // but the one under that pixel. A restyle keeps such pieces on screen
+      // for as long as its redraw takes.
+      const kids = this._cache.descendantsWithSurface(
+        source,
+        entry.tile,
+        undefined,
+        generation,
+      );
       const covered =
         kids.length > 0 && kids.length === kids[0].span * kids[0].span;
       const ancestor = covered
         ? null
-        : this._cache.ancestorWithSurface(source, entry.tile);
+        : this._cache.ancestorWithSurface(
+            source,
+            entry.tile,
+            undefined,
+            generation,
+          );
+      if (!inPass) continue;
       if (ancestor?.shown) {
         const up = entry.tile.z - ancestor.tile.z;
         const span = 1 << up;
@@ -1371,7 +1687,11 @@ export class MapViewNode extends Node {
     const fonts = (this.app as { fonts?: FontsLike } | undefined)?.fonts;
     if (!fonts) return; // headless: nothing to shape with
     const text = this.resolvedTextStyle();
+    const outgoing = this._outgoing;
+    // While a restyle holds the previous style up, its labels are set in
+    // its face.
     const family =
+      outgoing?.family ??
       this._prop<MapStyle>('mapStyle')?.fontFamily ??
       this._defaultStyle?.fontFamily ??
       text.family;
@@ -1380,6 +1700,46 @@ export class MapViewNode extends Node {
     } else {
       this._shaper.reconfigure(fonts, family, this._scale);
     }
+    const clip = this._frameClip ? { ...this._frameClip } : null;
+    if (outgoing) {
+      // The labels that were on screen when the restyle began, and not the
+      // new style's, which would go up over a map still drawn in the old
+      // one. Re-placed only when they have to be — a placement is for one
+      // zoom, and a source taken off the map takes its names with it — and
+      // from what they were placed from, since the style that produced
+      // that is being replaced, or was edited in place.
+      const zoom = quantize(transform.zoom);
+      const sources = this._sources();
+      if (
+        zoom !== outgoing.labelZoom ||
+        !sameSources(sources, outgoing.labelSources)
+      ) {
+        const candidates: LabelCandidate[] = [];
+        for (const source of sources) {
+          for (const candidate of outgoing.candidates.get(source) ?? []) {
+            candidates.push(candidate);
+          }
+        }
+        outgoing.labels = placeLabels(
+          candidates,
+          transform.world,
+          this._shaper,
+        );
+        outgoing.labelZoom = zoom;
+        outgoing.labelSources = sources;
+      }
+      stats.labels = drawLabels(
+        ctx,
+        outgoing.labels,
+        transform,
+        pane,
+        this._scale,
+        clip,
+        this._shaper,
+      );
+      return;
+    }
+    this._shapedFamily = family;
     const key = `${quantize(transform.zoom)}|${this._cache.generation}`;
     if (key !== this._labelKey) {
       this._labelKey = key;
@@ -1392,11 +1752,13 @@ export class MapViewNode extends Node {
       // provider's tiles after it is switched away, so that switching back
       // is free; collecting from all of them drew the old provider's place
       // names over the new one's map until eviction reached them.
+      const sources = this._sources();
       const wanted = new Map<MapSource, number>();
-      for (const source of this._sources()) {
+      for (const source of sources) {
         wanted.set(source, Math.min(styleZoom, pyramid(source).maxZoom));
       }
       const candidates: LabelCandidate[] = [];
+      const bySource = new Map<MapSource, LabelCandidate[]>();
       for (const cached of this._cache.dataEntries()) {
         if (cached.status !== 'ready' || !cached.vector) continue;
         if (wanted.get(cached.source) !== cached.tile.z) continue;
@@ -1416,9 +1778,20 @@ export class MapViewNode extends Node {
           if (this._candidates.size > 512) this._candidates.clear();
           this._candidates.set(at, found);
         }
-        for (const candidate of found) candidates.push(candidate);
+        let own = bySource.get(cached.source);
+        if (!own) {
+          own = [];
+          bySource.set(cached.source, own);
+        }
+        for (const candidate of found) {
+          candidates.push(candidate);
+          own.push(candidate);
+        }
       }
       this._labels = placeLabels(candidates, transform.world, this._shaper);
+      this._labelZoom = quantize(transform.zoom);
+      this._labelSources = sources;
+      this._labelCandidates = bySource;
     }
     stats.labels = drawLabels(
       ctx,
@@ -1426,7 +1799,7 @@ export class MapViewNode extends Node {
       transform,
       pane,
       this._scale,
-      this._frameClip ? { ...this._frameClip } : null,
+      clip,
       this._shaper,
     );
   }
@@ -1742,15 +2115,12 @@ export class MapViewNode extends Node {
     super.applyProps(next, prev);
     // Every one of these is in `selfDamagedProps`, so the commit claimed
     // nothing for them and this is the only claim there will be.
-    if (next.mapStyle !== before.mapStyle) {
-      this._prepared = null;
-      this._preparedFrom = null;
-      this._candidates.clear();
-      this._cache.invalidateStyle();
-      this._labelKey = '';
-      this._repaint('props');
-      return;
-    }
+    //
+    // A restyle that repainted the pane covers everything else the commit
+    // changed. One that is held claims a single pixel — nothing on screen
+    // changes until the swap — so a camera or the markers moved in the same
+    // commit still have to claim their own damage below.
+    if (next.mapStyle !== before.mapStyle && !this._restyle()) return;
     if (next.sources !== before.sources) {
       // Nothing to throw away here: tiles are filed under the source
       // object, so a new provider starts empty, and one switched away from
@@ -1826,6 +2196,8 @@ export class MapViewNode extends Node {
     this._cache.destroy();
     this._candidates.clear();
     this._labels = [];
+    this._labelCandidates = new Map();
+    this._outgoing = null;
     super.destroySubtree();
   }
 }

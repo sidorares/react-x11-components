@@ -258,32 +258,32 @@ looking for the missing prop:
 
 ## Props
 
-| prop             |                                                                                                                                                   |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `sources`        | Where tiles come from, drawn in order. Empty draws the style's background, which is what a map with only markers on it wants.                     |
-| `mapStyle`       | How to draw them. `shortbreadStyle()` in the theme's light or dark palette by default. Named `mapStyle` so that `style` stays react-x11's.        |
-| `camera`         | `{ center: { lon, lat }, zoom }`, controlled. Leave it out and the **element** owns it — see "The camera" below.                                  |
-| `defaultCamera`  | Where an element-owned camera starts. Read once.                                                                                                  |
-| `onCameraChange` | Every camera move, gesture steps included.                                                                                                        |
-| `onMoveEnd`      | Once, after a gesture settles — the moment to fetch what is now on screen.                                                                        |
-| `minZoom`        | 0 by default.                                                                                                                                     |
-| `maxZoom`        | 22 by default.                                                                                                                                    |
-| `markers`        | Points the user can click. See below.                                                                                                             |
-| `overlays`       | Lines, areas and circles: a route, a traffic segment, a transit shape, a GeoJSON layer.                                                           |
-| `onMapClick`     | A click anywhere, with the position in every space that could be wanted.                                                                          |
-| `onMarkerClick`  | …and the marker, when there was one under it.                                                                                                     |
-| `onMarkerHover`  | The marker under the pointer, or `null`. The event is `null` for the leave that comes from the pointer leaving the map.                           |
-| `interactive`    | `false` freezes the camera — no drag, no wheel, no keys. The map still draws and still reports clicks.                                            |
-| `progressive`    | Show a tile as it is drawn rather than when it is finished. `false` by default, which is what every other map client does.                        |
-| `rasterBudgetMs` | Milliseconds a frame may spend rasterizing tiles. 8 by default; `0` suspends it. See "Why a map fills in".                                        |
-| `rasterScale`    | Device pixels per logical pixel for the tile surfaces. The display's by default; 1 on a retina panel is ~1.6× quicker and correspondingly softer. |
-| `surfaceBudget`  | Bytes of rendered tile surfaces to keep. 128 MB by default.                                                                                       |
-| `batchVertices`  | The rasterizer's path-flush size, 12,000. A real trade on X11; set it only with a profile in hand.                                                |
-| `attribution`    | Overrides what the sources say. `''` removes it.                                                                                                  |
-| `onFrame`        | Called once per painted frame with `MapFrameStats` — what it cost, how many tiles are still sharpening, how many failed.                          |
-| `onTileError`    | Called per failed tile load, with whatever the source threw. Worth wiring up first: a map whose tiles fail looks identical to one still loading.  |
-| `style`          | react-x11's, on the box around the pane. Fills its parent unless you give it a height or a `flexGrow`.                                            |
-| `children`       | Anything absolutely positioned over the map — a legend, a control panel.                                                                          |
+| prop             |                                                                                                                                                                                              |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `sources`        | Where tiles come from, drawn in order. Empty draws the style's background, which is what a map with only markers on it wants.                                                                |
+| `mapStyle`       | How to draw them. `shortbreadStyle()` in the theme's light or dark palette by default. Named `mapStyle` so that `style` stays react-x11's.                                                   |
+| `camera`         | `{ center: { lon, lat }, zoom }`, controlled. Leave it out and the **element** owns it — see "The camera" below.                                                                             |
+| `defaultCamera`  | Where an element-owned camera starts. Read once.                                                                                                                                             |
+| `onCameraChange` | Every camera move, gesture steps included.                                                                                                                                                   |
+| `onMoveEnd`      | Once, after a gesture settles — the moment to fetch what is now on screen.                                                                                                                   |
+| `minZoom`        | 0 by default.                                                                                                                                                                                |
+| `maxZoom`        | 22 by default.                                                                                                                                                                               |
+| `markers`        | Points the user can click. See below.                                                                                                                                                        |
+| `overlays`       | Lines, areas and circles: a route, a traffic segment, a transit shape, a GeoJSON layer.                                                                                                      |
+| `onMapClick`     | A click anywhere, with the position in every space that could be wanted.                                                                                                                     |
+| `onMarkerClick`  | …and the marker, when there was one under it.                                                                                                                                                |
+| `onMarkerHover`  | The marker under the pointer, or `null`. The event is `null` for the leave that comes from the pointer leaving the map.                                                                      |
+| `interactive`    | `false` freezes the camera — no drag, no wheel, no keys. The map still draws and still reports clicks.                                                                                       |
+| `progressive`    | Show a tile as it is drawn rather than when it is finished, and a style change as it is redrawn rather than swapped in whole. `false` by default, which is what every other map client does. |
+| `rasterBudgetMs` | Milliseconds a frame may spend rasterizing tiles. 8 by default; `0` suspends it. See "Why a map fills in".                                                                                   |
+| `rasterScale`    | Device pixels per logical pixel for the tile surfaces. The display's by default; 1 on a retina panel is ~1.6× quicker and correspondingly softer.                                            |
+| `surfaceBudget`  | Bytes of rendered tile surfaces to keep. 128 MB by default.                                                                                                                                  |
+| `batchVertices`  | The rasterizer's path-flush size, 12,000. A real trade on X11; set it only with a profile in hand.                                                                                           |
+| `attribution`    | Overrides what the sources say. `''` removes it.                                                                                                                                             |
+| `onFrame`        | Called once per painted frame with `MapFrameStats` — what it cost, how many tiles are still sharpening, how many failed, and whether a style change is still being drawn behind the old one. |
+| `onTileError`    | Called per failed tile load, with whatever the source threw. Worth wiring up first: a map whose tiles fail looks identical to one still loading.                                             |
+| `style`          | react-x11's, on the box around the pane. Fills its parent unless you give it a height or a `flexGrow`.                                                                                       |
+| `children`       | Anything absolutely positioned over the map — a legend, a control panel.                                                                                                                     |
 
 ## Markers
 
@@ -402,8 +402,9 @@ map.current?.fitMarkers();
 `getCamera` / `setCamera` / `panBy` / `zoomIn` / `zoomOut` / `zoomTo`,
 `fitBounds(bounds, { padding, maxZoom })`, `fitMarkers(ids?)`,
 `getBounds()`, `project` / `unproject` (geography ↔ pane-local logical
-pixels), `markerAt(x, y)`, `refresh()` (throw away every rendered tile,
-after a style you edited in place) and `stats()`.
+pixels), `markerAt(x, y)`, `refresh()` (redraw every tile, after a style
+you edited in place — swapped in whole, exactly like a new `mapStyle`) and
+`stats()`.
 
 `fitBounds` called before layout has run — which `fitBounds` in an effect
 always is — is remembered and applied at the first paint that has a size.
@@ -439,6 +440,40 @@ that paints more frames a second.
 The cost is memory: a tile being redrawn holds two surfaces, so a viewport
 mid-redraw peaks at about twice its resident bytes. `surfaceBudget` counts
 both, and eviction never touches a tile the current frame is using.
+
+**But a style change swaps the whole map at once.** A new `mapStyle` — or
+`refresh()` after you edited one in place — redraws every tile, which at
+50–140 ms a dense tile against an 8 ms budget takes a second or more. Kept
+per tile, the pair above would show each old tile until its own replacement
+landed, under a background and labels already in the new style: a patchwork
+of both styles for that second. So the whole previous picture stays up — its
+tiles, its background and its labels — while the new style is drawn behind
+it, and the view swaps in one frame once every tile in it that has data is
+redrawn. Nothing on screen changes before that, so the frames in between
+claim a pixel each and the swap claims the pane once; `MapFrameStats`'s
+`restyling` is true until it has happened.
+
+- **A tile still loading does not hold the swap.** It has nothing to draw
+  yet; it shows the new background until it arrives.
+- **Moving the camera in the meantime is fine.** The previous style keeps
+  covering the view — a tile that comes into view borrows its old-style
+  ancestor or descendants, as on any zoom — and the tiles that came in are
+  redrawn in the new style before the swap. But a view that keeps moving
+  can bring tiles in as fast as they are drawn, so once the camera has
+  moved the wait is bounded: after a second and a half of drawing time
+  (a gesture draws nothing, so it does not count) the swap happens anyway,
+  and a tile not yet redrawn shows the new background until it is.
+- **A picture in a style the map has left is never shown again.** The
+  swap releases every surface of the old style, those of tiles off screen
+  included, and a tile last drawn before a switch is redrawn when it comes
+  back into view rather than shown the way it was.
+- **`progressive` turns all of this off**, which is what it is for: the new
+  background and labels go up at once, and each tile goes up as it is
+  redrawn.
+
+A display-scale change is not a style change and swaps nothing: each tile
+keeps its old picture, at the old resolution, until its sharper one is
+drawn.
 
 What none of this helps is a **first** load — a tile nothing has ever drawn
 has no old picture of its own to keep. What covers it is whatever _is_

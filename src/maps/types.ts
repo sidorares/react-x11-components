@@ -67,6 +67,16 @@ export interface MapFrameStats {
   /** Tiles still to rasterize — non-zero means the map is still sharpening
    *  and another frame is already scheduled. */
   pending: number;
+  /**
+   * Whether what is on screen is the previous style.
+   *
+   * True from a `mapStyle` change or `refresh()` until the swap: the new
+   * style is drawn behind the old picture — tiles, background and labels —
+   * and replaces all of it in one frame, so the map never shows the two at
+   * once. The first frame it is false again is the one that swapped. Never
+   * true under `progressive`, which shows the repaint as it happens.
+   */
+  restyling: boolean;
   /** Labels placed, and labels drawn. */
   labels: number;
   /**
@@ -192,11 +202,15 @@ export interface MapViewProps {
    * road casings, then roads, across a dozen frames — which is honest about
    * what the renderer is doing and does not look like a map.
    *
-   * The one thing the default costs is a transition that invalidates every
-   * surface at once: a `mapStyle` change, `refresh()`, or a display-scale
-   * change leaves no finished tile *and* no finished ancestor, so the map
-   * drops to its background colour until the new tiles land. `true` shows
-   * it repainting instead.
+   * The difference is widest at a `mapStyle` change or `refresh()`, which
+   * redraws every tile at once. By default the previous style stays on
+   * screen whole — tiles, background and labels — while the new one is
+   * drawn behind it, and the view swaps in one frame once every tile in it
+   * that has data is redrawn; a tile still loading does not hold the swap.
+   * If the view keeps moving meanwhile, the wait is bounded, and a tile not
+   * redrawn by then shows the background until it is. `true` shows the
+   * repaint instead: the new background and labels at once, and each tile
+   * as it is redrawn.
    */
   progressive?: boolean;
   /**

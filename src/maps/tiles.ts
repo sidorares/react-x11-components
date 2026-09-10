@@ -155,7 +155,15 @@ export class CachedTile {
    * keeps being composited until it is ready to be replaced.
    */
   shown: TileRender | null = null;
-  /** The rendering being drawn, or null when there is nothing to draw. */
+  /**
+   * The rendering being drawn, or null when there is nothing to draw.
+   *
+   * Finished ones do not usually stay: a draft is {@link TileCache.promote}d
+   * in the frame it is done. The exception is a restyle, which holds the
+   * previous style's whole picture up until the view is redrawn — so there
+   * a finished draft waits here until {@link TileCache.swap} puts every one
+   * on screen at once.
+   */
   drawing: TileRender | null = null;
   /** Frame counter of the last frame that wanted it — what eviction sorts
    *  on. */
@@ -245,7 +253,15 @@ export class TileCache {
     return this._generation;
   }
 
-  /** Every rendered surface is stale — a new style, a new display scale. */
+  /**
+   * Every rendered surface is stale: a new style, or `refresh()` after an
+   * edit to one. The data behind them stays.
+   *
+   * A new display scale needs none of this, because a rendering's size is
+   * already part of what makes it valid. And nothing on screen is thrown
+   * away here: each picture stays until its replacement is finished —
+   * {@link promote} for one tile, {@link swap} for the whole view at once.
+   */
   invalidateStyle(): void {
     this._generation++;
   }
@@ -438,11 +454,15 @@ export class TileCache {
    * under the fine one until it arrives — which is the difference between a
    * map that fills in and a map that flashes empty. Bounded, because
    * scaling one tile over sixteen screenfuls is worse than the hole.
+   *
+   * With a `generation`, only a picture drawn in it counts: a map showing
+   * one style must not cover a hole with a tile drawn in another.
    */
   ancestorWithSurface(
     source: MapSource,
     tile: TileId,
     levels = 5,
+    generation?: number,
   ): CachedTile | null {
     let z = tile.z - 1;
     let x = tile.x >> 1;
@@ -451,7 +471,7 @@ export class TileCache {
       const entry = this._entries.get(this.key(source, { z, x, y }));
       // `shown` is finished by construction, so an ancestor is never a
       // half-drawn picture.
-      if (entry?.shown) {
+      if (entry?.shown && this._drawnIn(entry.shown, generation)) {
         // Stamped, because for as long as it is covering a hole it is on
         // screen — and an unstamped entry is the *first* thing eviction
         // takes, which would drop the only picture the map is showing.
@@ -475,11 +495,14 @@ export class TileCache {
    * `depth` is how many levels down to look, and it is small on purpose: a
    * level down is 4 tiles, two is 16, and beyond that the pieces are too
    * small to be worth the composites.
+   *
+   * `generation` as for {@link ancestorWithSurface}.
    */
   descendantsWithSurface(
     source: MapSource,
     tile: TileId,
     depth = 2,
+    generation?: number,
   ): { entry: CachedTile; x: number; y: number; span: number }[] {
     for (let down = 1; down <= depth; down++) {
       const span = 1 << down;
@@ -494,7 +517,7 @@ export class TileCache {
               y: (tile.y << down) + dy,
             }),
           );
-          if (entry?.shown) {
+          if (entry?.shown && this._drawnIn(entry.shown, generation)) {
             entry.lastUsed = this._frame;
             found.push({ entry, x: dx, y: dy, span });
           }
@@ -523,6 +546,10 @@ export class TileCache {
    * the tile is blank for the several frames it takes to redraw, which
    * above a source's `maxZoom` happens at every integer zoom — the same
    * z14 tile serves 15, 16, 17 and on.
+   *
+   * A draft that is finished but not yet promoted — a restyle holding the
+   * old style up until the whole view is ready — matches like any other and
+   * comes back as it is, so it is not drawn twice.
    */
   beginRender(
     entry: CachedTile,
@@ -573,6 +600,41 @@ export class TileCache {
     entry.shown = entry.drawing;
     entry.drawing = null;
     return true;
+  }
+
+  /**
+   * Put the current generation on screen in one go: every finished draft
+   * becomes its tile's picture, and every picture and draft of an earlier
+   * generation is released.
+   *
+   * The other half of a restyle. While the element holds the previous style
+   * up it does not {@link promote}, so finished drafts wait in `drawing`,
+   * and this is the frame they all land in. What is released is more than
+   * what they replace: a tile off screen still holds whatever it was last
+   * drawn in, which is now a picture of a style the map has left — never
+   * composited again, and otherwise kept until eviction got round to it.
+   */
+  swap(): void {
+    for (const entry of this._entries.values()) {
+      if (entry.drawing && entry.drawing.generation !== this._generation) {
+        this._release(entry.drawing);
+        entry.drawing = null;
+      }
+      if (this.promote(entry)) continue;
+      if (entry.shown && entry.shown.generation !== this._generation) {
+        this._release(entry.shown);
+        entry.shown = null;
+      }
+    }
+  }
+
+  /** Whether a rendering counts for `generation` — any does, when none is
+   *  given. */
+  private _drawnIn(
+    render: TileRender,
+    generation: number | undefined,
+  ): boolean {
+    return generation === undefined || render.generation === generation;
   }
 
   /** Note where a tile's rasterization stopped: at run `run`, having

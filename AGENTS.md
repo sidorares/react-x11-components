@@ -1085,6 +1085,21 @@ tiles, so a pan translates it rather than recomputing it. Get the second
 one wrong — key a surface on the camera — and every frame of a drag redraws
 the world.
 
+**A double buffer per piece is not a double buffer for the scene.** Each
+tile keeps its old picture until its new one is finished, which is right
+when tiles change one at a time — a zoom level, a display scale — and was
+wrong when a style change retired every tile at once: the view was redrawn
+a tile at a time, and for the second or more that took the map showed both
+styles, under a background and labels that had switched on the first
+frame. A restyle now holds the whole previous picture — its generation's
+tiles, its background, its label placement — until every tile in view that
+has data is redrawn, and swaps it in one frame; a tile still loading does
+not hold it, and a view that keeps moving is bounded. The rule to carry:
+**when a change invalidates the whole scene, swap the scene, not the
+pieces** — and the frame that decides has to have done its work before it
+draws anything, which is why `paint` is a work pass followed by a picture
+pass.
+
 **Rasterization is budgeted and resumable, and the unit has to be small
 enough.** A frame spends at most `rasterBudgetMs` on it and remembers where
 it stopped. The first cut resumed between _style runs_, which measured a

@@ -1129,8 +1129,8 @@ test('an overlay entirely off screen draws nothing at all', () => {
 });
 
 /** A tile with data in three source layers, so a style with three runs
- *  takes three passes to draw. */
-function threeLayerTile(): Uint8Array {
+ *  takes three passes to draw — plus any `extra` layers. */
+function threeLayerTile(extra: number[][] = []): Uint8Array {
   const square = [
     ...command(1, 1),
     zigzag(0),
@@ -1144,8 +1144,8 @@ function threeLayerTile(): Uint8Array {
     zigzag(0),
     ...command(7, 0),
   ];
-  return tileBytes(
-    ['ocean', 'land', 'buildings'].map((name) =>
+  return tileBytes([
+    ...['ocean', 'land', 'buildings'].map((name) =>
       layer({
         name,
         keys: [],
@@ -1153,7 +1153,8 @@ function threeLayerTile(): Uint8Array {
         features: [{ type: GeomType.Polygon, tags: [], geometry: square }],
       }),
     ),
-  );
+    ...extra,
+  ]);
 }
 
 const THREE_RUN_STYLE: MapStyle = {
@@ -2163,6 +2164,636 @@ test('the map aborts the loads its camera leaves behind, and none it still wants
     [...requests.keys()].some((key) => key.startsWith('b ')),
     'and the new one is asked instead',
   );
+});
+
+// --- a style switch ----------------------------------------------------------
+//
+// Switching `mapStyle` over the same source redraws every tile, and the
+// redraw is budgeted — a dense tile is 50-140 ms against 8 ms a frame — so it
+// spans a second or more. These are about what is on screen for that second:
+// one style or the other, whole, and never both. The per-tile double buffer
+// kept each old tile up until its own replacement was finished, while the new
+// background and the new labels went up on the first frame — so the map was
+// a patchwork of both styles until the last tile landed.
+
+type Rgb = readonly [number, number, number];
+
+/** The three places a style shows: its tiles, its background and its
+ *  labels. Two looks that share no colour make every pixel say which style
+ *  drew it. */
+interface Look {
+  fill: Rgb;
+  background: Rgb;
+  text: Rgb;
+}
+
+const OLD_LOOK: Look = {
+  fill: [255, 0, 0],
+  background: [255, 255, 0],
+  text: [255, 0, 255],
+};
+const NEW_LOOK: Look = {
+  fill: [0, 0, 255],
+  background: [0, 255, 255],
+  text: [0, 255, 0],
+};
+
+function hexOf(rgb: Rgb): string {
+  return '#' + rgb.map((c) => c.toString(16).padStart(2, '0')).join('');
+}
+
+/** A look as a style: every fill layer in one colour, so a half-drawn tile
+ *  — which only `progressive` shows — is already the colour of the style
+ *  drawing it. */
+function lookStyle(look: Look): MapStyle {
+  const fill = hexOf(look.fill);
+  return {
+    background: hexOf(look.background),
+    layers: [
+      { id: 'ocean', type: 'fill', sourceLayer: 'ocean', color: fill },
+      { id: 'land', type: 'fill', sourceLayer: 'land', color: fill },
+      { id: 'buildings', type: 'fill', sourceLayer: 'buildings', color: fill },
+      {
+        id: 'places',
+        type: 'symbol',
+        sourceLayer: 'places',
+        textField: 'name',
+        textColor: hexOf(look.text),
+        textSize: 28,
+      },
+    ],
+  };
+}
+
+/** The same look drawn in `passes` fill layers, so that at a layer a frame
+ *  a tile takes that many frames to redraw. */
+function slowLookStyle(look: Look, passes: number): MapStyle {
+  const base = lookStyle(look);
+  const sourceLayers = ['ocean', 'land', 'buildings'];
+  return {
+    ...base,
+    layers: [
+      ...Array.from({ length: passes }, (_, i) => ({
+        id: `pass-${i}`,
+        type: 'fill' as const,
+        sourceLayer: sourceLayers[i % sourceLayers.length],
+        color: hexOf(look.fill),
+      })),
+      ...base.layers.filter((layer) => layer.type === 'symbol'),
+    ],
+  };
+}
+
+/** Where four zoom-3 tiles meet, so the pane is one quadrant per tile. */
+const FOUR_TILES = { lon: 0, lat: 0 };
+
+/**
+ * The fixture tile with a place name on it — or nothing, for the south-east
+ * quarter of the world, so the pane's bottom-right quadrant is background at
+ * every zoom.
+ *
+ * The name sits 50 pixels in from the tile's corner at the middle of the
+ * world. A tile is 512 pixels and the pane 200, so the pane sees a 100-pixel
+ * corner of each of its four tiles, and a name in the middle of a tile would
+ * never be on screen.
+ */
+function quadrantTile({
+  z,
+  x,
+  y,
+}: {
+  z: number;
+  x: number;
+  y: number;
+}): TileData {
+  const half = 2 ** (z - 1);
+  if (x >= half && y >= half) return null;
+  // 50 of a tile's 512 pixels, in its 4096-unit grid.
+  const inset = 400;
+  return {
+    kind: 'vector',
+    data: threeLayerTile([
+      layer({
+        name: 'places',
+        keys: ['name'],
+        values: [`M${x}${y}`],
+        features: [
+          {
+            type: GeomType.Point,
+            tags: [0, 0],
+            geometry: [
+              ...command(1, 1),
+              zigzag(x < half ? 4096 - inset : inset),
+              zigzag(y < half ? 4096 - inset : inset),
+            ],
+          },
+        ],
+      }),
+    ]),
+  };
+}
+
+const PANE = 200;
+
+interface Tally {
+  fill: number;
+  background: number;
+  text: number;
+}
+
+/** How many pixels of the window are each colour of a look. */
+function tally(data: Uint8ClampedArray, look: Look): Tally {
+  const near = (i: number, rgb: Rgb): boolean =>
+    Math.abs(data[i] - rgb[0]) <= 8 &&
+    Math.abs(data[i + 1] - rgb[1]) <= 8 &&
+    Math.abs(data[i + 2] - rgb[2]) <= 8;
+  const out = { fill: 0, background: 0, text: 0 };
+  for (let i = 0; i < data.length; i += 4) {
+    if (near(i, look.fill)) out.fill++;
+    else if (near(i, look.background)) out.background++;
+    else if (near(i, look.text)) out.text++;
+  }
+  return out;
+}
+
+function shows(t: Tally): boolean {
+  return t.fill + t.background + t.text > 0;
+}
+
+/** What a frame put on screen, in both looks. */
+interface Looks {
+  old: Tally;
+  new: Tally;
+}
+
+function describeLooks(s: Looks): string {
+  return `old ${JSON.stringify(s.old)}, new ${JSON.stringify(s.new)}`;
+}
+
+function readWindow(ctx: unknown): Promise<Uint8ClampedArray> {
+  return (
+    ctx as {
+      getImageData(
+        x: number,
+        y: number,
+        w: number,
+        h: number,
+      ): Promise<{ data: Uint8ClampedArray }>;
+    }
+  )
+    .getImageData(0, 0, PANE, PANE)
+    .then((image) => image.data);
+}
+
+/**
+ * A map over {@link quadrantTile}s in the old look, settled, with a
+ * `restyle` that switches it and a record of every frame after that.
+ *
+ * Each frame is read back from `onFrame`, which runs at the end of the map's
+ * paint: the read is a request on the same connection as the frame's
+ * drawing, so no frame between the switch and the end goes unseen.
+ *
+ * The props are stable across renders — one `sources` array, one `onFrame`
+ * — so a switch changes `mapStyle` and nothing else, and every claim a frame
+ * makes is the map's own.
+ */
+async function mountLooks(
+  options: {
+    progressive?: boolean;
+    surfaceBudget?: number;
+    /** An answer of its own for a tile; `undefined` is the fixture's. */
+    load?: (tile: {
+      z: number;
+      x: number;
+      y: number;
+    }) => TileData | Promise<TileData> | undefined;
+    mapStyle?: MapStyle;
+    /** A camera to control, which `moveTo` moves; the element owns it
+     *  otherwise. */
+    camera?: { center: LngLat; zoom: number };
+  } = {},
+) {
+  const frames: MapFrameStats[] = [];
+  const watched: {
+    stats: MapFrameStats;
+    pixels: Promise<Uint8ClampedArray>;
+  }[] = [];
+  let ctx: unknown = null;
+  let watching = false;
+  const onFrame = (stats: MapFrameStats): void => {
+    frames.push({ ...stats });
+    if (watching && ctx) {
+      watched.push({ stats: { ...stats }, pixels: readWindow(ctx) });
+    }
+  };
+  const sources: MapSource[] = [
+    {
+      id: 'looks',
+      minZoom: 0,
+      maxZoom: 14,
+      tileSize: 512,
+      load: (request) => {
+        const own = options.load?.(request);
+        return own === undefined ? quadrantTile(request) : own;
+      },
+    },
+  ];
+  const ref = React.createRef<MapHandle>();
+  let mapStyle = options.mapStyle ?? lookStyle(OLD_LOOK);
+  let camera = options.camera;
+  // One object for the life of the mount: `defaultCamera` is not a
+  // self-damaged prop, so a new one would make every commit claim the pane.
+  const defaultCamera = { center: FOUR_TILES, zoom: 3 };
+  const render = (): React.ReactElement =>
+    React.createElement(MapView, {
+      ref,
+      sources,
+      mapStyle,
+      ...(camera ? { camera } : { defaultCamera }),
+      // A layer a frame, so the redraw of three tiles spans a dozen frames.
+      rasterBudgetMs: 0.0001,
+      progressive: options.progressive,
+      surfaceBudget: options.surfaceBudget,
+      onFrame,
+      'data-testname': 'map',
+    });
+  const result = await renderX11(render(), {
+    backend: 'xserver',
+    width: PANE,
+    height: PANE,
+    ...(FONTS ? { fonts: FONTS } : {}),
+  });
+  ctx = result.ctx;
+  await settleFrames(40);
+  return {
+    result,
+    ref,
+    frames,
+    async read(): Promise<Looks> {
+      const data = await readWindow(ctx);
+      return { old: tally(data, OLD_LOOK), new: tally(data, NEW_LOOK) };
+    },
+    /** From here on, every frame is recorded, and none before it. */
+    watch(): void {
+      watching = true;
+      frames.length = 0;
+      watched.length = 0;
+    },
+    /** Switch to `next`, and record every frame from here on. */
+    async restyle(next: MapStyle = lookStyle(NEW_LOOK)): Promise<void> {
+      this.watch();
+      mapStyle = next;
+      await result.rerender(render());
+    },
+    /** Move the controlled camera. */
+    async moveTo(next: { center: LngLat; zoom: number }): Promise<void> {
+      camera = next;
+      await result.rerender(render());
+    },
+    /** Every recorded frame, as it was on screen. */
+    async seen(): Promise<(Looks & { stats: MapFrameStats })[]> {
+      const out: (Looks & { stats: MapFrameStats })[] = [];
+      for (const { stats, pixels } of watched) {
+        const data = await pixels;
+        out.push({
+          stats,
+          old: tally(data, OLD_LOOK),
+          new: tally(data, NEW_LOOK),
+        });
+      }
+      return out;
+    },
+  };
+}
+
+/** No frame shows both looks. */
+function assertOneLook(frames: Looks[]): void {
+  frames.forEach((frame, i) => {
+    assert.ok(
+      !(shows(frame.old) && shows(frame.new)),
+      `frame ${i} of ${frames.length} showed both styles: ${describeLooks(frame)}`,
+    );
+  });
+}
+
+/** What is on screen is the new look — tiles, background and, when there
+ *  is a font to shape them with, labels — and nothing of the old one. */
+function assertNewLook(now: Looks, { labels = true } = {}): void {
+  assert.ok(
+    now.new.fill > 0 && now.new.background > 0,
+    `the new style is up: ${describeLooks(now)}`,
+  );
+  if (FONTS && labels) {
+    assert.ok(now.new.text > 0, `with its labels: ${describeLooks(now)}`);
+  }
+  assert.ok(
+    !shows(now.old),
+    `and nothing of the old one: ${describeLooks(now)}`,
+  );
+}
+
+/** Whether a frame repainted anything more than the one pixel a frame
+ *  that only continues a redraw claims. */
+function repainted(stats: MapFrameStats): boolean {
+  return stats.damage === null || stats.damage.width * stats.damage.height > 1;
+}
+
+test('a style switch never shows two styles at once', async () => {
+  const map = await mountLooks();
+  const before = await map.read();
+  assert.ok(
+    before.old.fill > 0 && before.old.background > 0,
+    `the old style is up: ${describeLooks(before)}`,
+  );
+  if (FONTS) assert.ok(before.old.text > 0, 'with its labels');
+
+  await map.restyle();
+  await settleFrames(40);
+  const frames = await map.seen();
+  const redrawing = frames.filter((f) => f.stats.pending > 0);
+  assert.ok(
+    redrawing.length >= 6,
+    `the redraw took ${redrawing.length} frames, which is too few to say anything`,
+  );
+  assertOneLook(frames);
+  assertNewLook(await map.read());
+
+  // Held, nothing on screen changes until the swap: every frame before it
+  // claims a pixel, and the swap is the one frame that repaints the pane.
+  const swap = frames.findIndex((f) => !f.stats.restyling);
+  assert.ok(swap > 0, 'the old style was held for a while');
+  assert.deepEqual(
+    frames.map((f) => repainted(f.stats)),
+    frames.map((_, i) => i === swap),
+    `the claims were ${frames
+      .map((f) =>
+        f.stats.damage
+          ? `${f.stats.damage.width}x${f.stats.damage.height}`
+          : 'full',
+      )
+      .join(' ')}, with the swap at frame ${swap}`,
+  );
+});
+
+test('a style switch under progressive is shown as it is redrawn', async () => {
+  // The opt-in's whole point, so it keeps it: nothing is held, the new
+  // background and labels go up with the switch, and each tile is on
+  // screen as soon as it is redrawn rather than all of them at the end.
+  const map = await mountLooks({ progressive: true });
+  await map.restyle();
+  await settleFrames(40);
+  const frames = await map.seen();
+  assert.ok(
+    frames.every((f) => !f.stats.restyling),
+    'nothing was held',
+  );
+  assert.ok(
+    frames.length > 0 && frames[0].new.background > 0,
+    `the new background went up at once: ${frames[0] && describeLooks(frames[0])}`,
+  );
+  assert.ok(
+    frames.some((f) => f.stats.pending > 0 && f.new.fill > 0),
+    'a redrawn tile was on screen while others were still being drawn',
+  );
+  assertNewLook(await map.read());
+});
+
+test('refresh() after an edit in place swaps the whole map, as a new style does', async () => {
+  // The other thing that retires every tile, down the same path. The style
+  // object is the same one, edited: by the time `refresh()` is called the
+  // old background and label colours are gone from it, so what stays up
+  // has to be what was painted rather than what the object now says. The
+  // labels have to be collected again, too — each carries the colour it
+  // was collected in — which `refresh()` did not do, so an edited label
+  // colour never showed.
+  const edited = lookStyle(OLD_LOOK);
+  const map = await mountLooks({ mapStyle: edited });
+  map.watch();
+  edited.background = hexOf(NEW_LOOK.background);
+  for (const layer of edited.layers) {
+    if (layer.type === 'fill') layer.color = hexOf(NEW_LOOK.fill);
+    if (layer.type === 'symbol') layer.textColor = hexOf(NEW_LOOK.text);
+  }
+  (map.ref.current as MapHandle).refresh();
+  await settleFrames(40);
+  const frames = await map.seen();
+  assertOneLook(frames);
+  assertNewLook(await map.read());
+  assert.ok(
+    frames.some((f) => f.stats.restyling),
+    'the old picture was held while the edit was drawn',
+  );
+});
+
+test('a tile panned into view during a style switch joins the same swap', async () => {
+  // It has no picture in either style, so while the old one is held it
+  // shows the old background — and it is drawn in the new style before
+  // the swap, like every tile that was already in view.
+  const map = await mountLooks();
+  await map.restyle();
+  // Past the east edge of the four tiles, so a fifth comes into view.
+  (map.ref.current as MapHandle).panBy(450, 0);
+  await settleFrames(60);
+  const frames = await map.seen();
+  assertOneLook(frames);
+  const after = frames.filter((f) => f.stats.tiles > 0 && repainted(f.stats));
+  assert.ok(
+    after.some((f) => f.stats.restyling),
+    'the old style was still up after the pan',
+  );
+  // The names were left behind by the pan; the tiles and the background
+  // are what is in view.
+  assertNewLook(await map.read(), { labels: false });
+});
+
+test('crossing a zoom level during a style switch holds the old style from the level before', async () => {
+  // The new level's tiles have no picture in either style yet. The old
+  // style's tiles a level up cover them, as on any zoom — scaled, and in
+  // the old style — and the new level is drawn in the new style before
+  // the swap.
+  const map = await mountLooks();
+  await map.restyle();
+  (map.ref.current as MapHandle).zoomTo(4);
+  await settleFrames(60);
+  const frames = await map.seen();
+  assertOneLook(frames);
+  assert.ok(
+    frames.some(
+      (f) =>
+        f.stats.restyling &&
+        repainted(f.stats) &&
+        f.stats.fromAncestor > 0 &&
+        f.old.fill > 0,
+    ),
+    'the level before covered the new one, in the old style',
+  );
+  assertNewLook(await map.read());
+});
+
+test('a view that keeps moving cannot hold the old style up for ever', async () => {
+  // Only a gesture stops rasterization, so an application animating a
+  // controlled camera keeps the map drawing while it brings tiles into
+  // view — here a new one every step, in a style that takes four hundred
+  // frames a tile, far more than a tile gets in the step or two it is in
+  // view. The view is never all redrawn, so without a bound the old style
+  // would stay up for as long as the camera kept moving.
+  //
+  // At zoom 10, where the world is a thousand tiles wide. Round a smaller
+  // one, the camera comes back to tiles it has been drawing all along, and
+  // can find a view that is finished just as the bound runs out.
+  const map = await mountLooks({ camera: { center: FOUR_TILES, zoom: 10 } });
+  // Timed from before the switch: the frames the switch's own commit runs
+  // are the first the map counts.
+  const began = Date.now();
+  await map.restyle(slowLookStyle(NEW_LOOK, 400));
+  let swappedAt = 0;
+  for (let lon = 0; Date.now() - began < 8000;) {
+    // A tile's width a step, east.
+    lon += 360 / 1024;
+    await map.moveTo({ center: { lon, lat: 0 }, zoom: 10 });
+    await settleFrames(1);
+    if (!swappedAt && map.frames.some((f) => !f.restyling)) {
+      swappedAt = Date.now();
+    }
+    // …and it keeps moving for a while after the swap, which must not
+    // bring the old style back.
+    if (swappedAt && Date.now() - swappedAt > 300) break;
+  }
+  const waited = swappedAt - began;
+  assert.ok(swappedAt > 0, 'the swap came while the camera was moving');
+  assert.ok(waited >= 1450, `and not before the bound: ${waited} ms`);
+  assert.ok(waited < 4000, `nor long after it: ${waited} ms`);
+  const frames = await map.seen();
+  const swap = frames.findIndex((f) => !f.stats.restyling);
+  assert.ok(
+    frames[swap].stats.pending > 0,
+    'it swapped with tiles still to draw, which only the bound does',
+  );
+  assertOneLook(frames);
+  const now = await map.read();
+  assert.ok(!shows(now.old), `none of the old style: ${describeLooks(now)}`);
+});
+
+test('a tile still loading does not hold a style switch', async () => {
+  // It has nothing to draw in either style, so waiting for it would hold
+  // the old style up for as long as a network takes. It shows the
+  // background of whichever style is up, and is drawn when it lands.
+  const held: (() => void)[] = [];
+  const map = await mountLooks({
+    load: ({ z, x, y }) =>
+      z === 3 && x === 4 && y === 3
+        ? new Promise<TileData>((resolve) => {
+            held.push(() => resolve(quadrantTile({ z, x, y })));
+          })
+        : undefined,
+  });
+  await map.restyle();
+  await settleFrames(40);
+  assert.ok(held.length > 0, 'the tile is still loading');
+  const frames = await map.seen();
+  assert.ok(
+    frames.some((f) => !f.stats.restyling),
+    'and the switch swapped without it',
+  );
+  assertOneLook(frames);
+  const swapped = await map.read();
+  assertNewLook(swapped);
+
+  for (const release of held.splice(0)) release();
+  await settleFrames(40);
+  const landed = await map.read();
+  assert.ok(
+    landed.new.fill > swapped.new.fill,
+    `and it is drawn in the new style when it lands: ${describeLooks(landed)}`,
+  );
+  assert.ok(!shows(landed.old));
+});
+
+test('eviction never takes the picture a style switch is holding up', async () => {
+  // A restyle doubles what the view holds — the old picture and the new
+  // one of every tile in it — so it is when a budget is most likely to be
+  // exceeded. Eviction skips a tile the frame used, and every frame uses
+  // every tile in view, the one-pixel frames of the redraw included.
+  const map = await mountLooks({ surfaceBudget: 1 });
+  const before = await map.read();
+  await map.restyle();
+  await settleFrames(40);
+  const frames = await map.seen();
+  const held = frames.filter((f) => f.stats.restyling);
+  assert.ok(held.length > 0, 'the old style was held');
+  for (const frame of held) {
+    assert.deepEqual(frame.old, before.old, 'the old picture stayed whole');
+  }
+  assertNewLook(await map.read());
+});
+
+test('eviction never takes a piece covering a hole while a style switch holds it up', async () => {
+  // After a zoom the old style is on screen as the level before, scaled:
+  // pieces of other tiles, covering this level's holes. They are as much
+  // in use as a tile's own picture, but a piece was only marked used by a
+  // frame that drew it — and the redraw's one-pixel frames drew the one
+  // under that pixel, so a tight budget evicted the rest, and the next
+  // frame to repaint the pane showed holes.
+  let land: (() => void) | null = null;
+  const map = await mountLooks({
+    surfaceBudget: 1,
+    load: ({ z, x, y }) =>
+      z === 4 && x === 8 && y === 8
+        ? new Promise<TileData>((resolve) => {
+            land = () => resolve(null);
+          })
+        : undefined,
+  });
+  await map.restyle();
+  (map.ref.current as MapHandle).zoomTo(4);
+  // Into the redraw's one-pixel frames, past the zoom's own repaint.
+  for (let i = 0; i < 100; i++) {
+    await settleFrames(1);
+    const last = map.frames[map.frames.length - 1];
+    if (last && last.restyling && last.rasterMs > 0 && !repainted(last)) break;
+  }
+  assert.ok(land, 'the last tile is still loading');
+  // Its landing repaints the pane while the old style is still held.
+  (land as () => void)();
+  await settleFrames(40);
+  const frames = await map.seen();
+  const landing = frames.filter(
+    (f) => f.stats.restyling && repainted(f.stats) && f.stats.tiles === 4,
+  );
+  assert.ok(
+    landing.length > 0,
+    'a frame repainted the pane while the old style was held',
+  );
+  for (const frame of landing) {
+    assert.ok(
+      frame.stats.fromAncestor === 3 &&
+        frame.old.background <= (PANE * PANE) / 4,
+      `every hole was still covered: ${describeLooks(frame)}, ${JSON.stringify(frame.stats)}`,
+    );
+  }
+  assertOneLook(frames);
+  assertNewLook(await map.read());
+});
+
+test('a level drawn before a style switch is not shown in the old style after it', async () => {
+  // The swap replaces what is in view. A level visited before the switch
+  // still held its pictures in the old style, and zooming back to it
+  // showed them among tiles and a background already in the new one until
+  // each was redrawn.
+  const map = await mountLooks();
+  (map.ref.current as MapHandle).zoomTo(4);
+  await settleFrames(40);
+  (map.ref.current as MapHandle).zoomTo(3);
+  await settleFrames(40);
+  await map.restyle();
+  await settleFrames(40);
+  assertNewLook(await map.read());
+
+  map.watch();
+  (map.ref.current as MapHandle).zoomTo(4);
+  await settleFrames(40);
+  assertOneLook(await map.seen());
+  assertNewLook(await map.read());
 });
 
 test('an ancestor with a surface is what covers a hole', () => {
