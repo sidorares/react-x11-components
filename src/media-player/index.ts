@@ -32,12 +32,13 @@ import React, {
   useState,
 } from 'react';
 import type { ReactElement, ReactNode, Ref } from 'react';
-import { useTheme } from 'react-x11';
+import { useApp, useTheme } from 'react-x11';
 import type { ForeignProps } from 'react-x11';
 import type { Style } from 'react-x11/style';
 
 import {
   BackendUnavailableError,
+  canHostXEmbed,
   resolveBackend,
   useEmbeddedClient,
 } from '../embed/index.js';
@@ -129,10 +130,13 @@ export interface MediaPlayerProps {
   onPlayingChange?: (playing: boolean) => void;
   /** The player process ended. */
   onExit?: (info: ExitInfo) => void;
-  /** Spawn failures, control-channel failures, and the
-   *  `BackendUnavailableError` for a machine with neither player installed. */
+  /** Spawn failures, control-channel failures, the `BackendUnavailableError`
+   *  for a machine with neither player installed, and the
+   *  `EmbedUnsupportedError` for a react-x11 backend that cannot embed a
+   *  player's window at all. */
   onError?: (err: Error) => void;
-  /** Rendered instead of the surface when no backend is installed. */
+  /** Rendered instead of the surface when no player is available — none
+   *  installed, or none can be embedded on this react-x11 backend. */
   fallback?: ReactNode;
   /** False holds off spawning entirely. */
   enabled?: boolean;
@@ -164,6 +168,11 @@ export interface MediaPlayerProps {
  *
  * The player's window stacks above everything drawn in this one, so nothing 2D
  * can overlap it — see "Controls" at the top of this file.
+ *
+ * **X11 only.** Both players are embedded by window id, which is XEmbed's
+ * mechanism; on a react-x11 backend with none — the native macOS one — the
+ * player is `'unavailable'` from the first render and `fallback` shows,
+ * rather than a player spawned at a window id that does not exist.
  */
 export function MediaPlayer(props: MediaPlayerProps): ReactElement {
   const {
@@ -174,6 +183,7 @@ export function MediaPlayer(props: MediaPlayerProps): ReactElement {
     stopSignal,
   } = props;
   const theme = useTheme() as unknown as Record<string, unknown>;
+  const embeddable = canHostXEmbed(useApp());
 
   const control = useRef<PlayerControl | null>(null);
   // Bumped when a control channel opens or closes. The prop-syncing effects
@@ -358,6 +368,10 @@ export function MediaPlayer(props: MediaPlayerProps): ReactElement {
   if (client.status === 'unavailable' && props.fallback !== undefined) {
     return h(React.Fragment, null, props.fallback);
   }
+  // No XEmbed on this app, and no `fallback`: an empty box holds the layout
+  // rather than a `<foreign>` with no socket to be — see the same branch in
+  // `../terminal/index.ts`.
+  if (!embeddable) return hx('box', { style: styles });
 
   const foreign: ForeignElementProps = {
     onReady: client.handleReady,

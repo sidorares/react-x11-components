@@ -655,7 +655,9 @@ export type {
 // a third `-into WID` wrapper should not have to reimplement it.
 export {
   BackendUnavailableError,
+  EmbedUnsupportedError,
   IpcConnectError,
+  canHostXEmbed,
   connectWhenReady,
   nodeProcessHost,
   resolveBackend,

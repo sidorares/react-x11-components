@@ -24,13 +24,21 @@ naming what was looked for. That is an ordinary state of a healthy machine,
 not an exception.
 
 **X11-only.** Both players are embedded by handing them an X window id
-(`--wid`, `--drawable`), which is XEmbed's mechanism, and macOS has no
+(`--wid`, `--drawable-xid`), which is XEmbed's mechanism, and macOS has no
 cross-process window embedding at all — react-x11's own
 [macOS backend document](https://github.com/sidorares/react-x11/blob/master/docs/macos.md)
-names this component among what has no equivalent there. Unlike
-[`<Terminal>`](terminal.md), which has `backend="vt"` to fall to, this one
-has no native counterpart: a Cocoa app that needs video wants a different
-component than this one.
+names this component among what has no equivalent there.
+
+On that backend the player says so up front, rather than spawning at a
+window id that does not exist: `status` is `'unavailable'` from the first
+render, `fallback` renders, and
+`onError` gets an `EmbedUnsupportedError` saying this backend cannot embed
+another program's window. Nothing is looked for on `PATH` and nothing is
+spawned. It is the same ordinary state as a machine with no player, told
+apart by the error's class, because "install mpv" is the wrong advice there.
+Unlike [`<Terminal>`](terminal.md), which has `backend="vt"` to fall to, this
+one has no native counterpart: a Cocoa app that needs video wants a
+different component than this one.
 
 ## Props
 
@@ -51,24 +59,24 @@ component than this one.
 
 ### Process and layout
 
-| Prop         | Type               | Notes                                                                     |
-| ------------ | ------------------ | ------------------------------------------------------------------------- |
-| `enabled`    | `boolean`          | False holds off spawning entirely.                                        |
-| `stopSignal` | `string`           | Sent on unmount and restart. Default `SIGTERM`.                           |
-| `processes`  | `ProcessHost`      | Where the process runs. See [embed](embed.md).                            |
-| `focusable`  | `boolean`          | A video surface is not a control; **default false**, unlike `<Terminal>`. |
-| `fallback`   | `ReactNode`        | Rendered instead of the surface when no player is installed.              |
-| `style`      | `Style \| Style[]` |                                                                           |
+| Prop         | Type               | Notes                                                                                                 |
+| ------------ | ------------------ | ----------------------------------------------------------------------------------------------------- |
+| `enabled`    | `boolean`          | False holds off spawning entirely.                                                                    |
+| `stopSignal` | `string`           | Sent on unmount and restart. Default `SIGTERM`.                                                       |
+| `processes`  | `ProcessHost`      | Where the process runs. See [embed](embed.md).                                                        |
+| `focusable`  | `boolean`          | A video surface is not a control; **default false**, unlike `<Terminal>`.                             |
+| `fallback`   | `ReactNode`        | Rendered instead of the surface when no player is installed, or none can be embedded on this backend. |
+| `style`      | `Style \| Style[]` |                                                                                                       |
 
 ### Events
 
-| Prop              | Type                         | Notes                                                                    |
-| ----------------- | ---------------------------- | ------------------------------------------------------------------------ |
-| `onProgress`      | `(p: MediaProgress) => void` | Position and duration as the player reports them. **mpv only.**          |
-| `onEnded`         | `(info) => void`             | The file reached its end. Not fired for `stop()` or a new `src`.         |
-| `onPlayingChange` | `(playing: boolean) => void` |                                                                          |
-| `onExit`          | `(info: ExitInfo) => void`   | The player process ended.                                                |
-| `onError`         | `(err: Error) => void`       | Spawn failures, control-channel failures, and `BackendUnavailableError`. |
+| Prop              | Type                         | Notes                                                                                             |
+| ----------------- | ---------------------------- | ------------------------------------------------------------------------------------------------- |
+| `onProgress`      | `(p: MediaProgress) => void` | Position and duration as the player reports them. **mpv only.**                                   |
+| `onEnded`         | `(info) => void`             | The file reached its end. Not fired for `stop()` or a new `src`.                                  |
+| `onPlayingChange` | `(playing: boolean) => void` |                                                                                                   |
+| `onExit`          | `(info: ExitInfo) => void`   | The player process ended.                                                                         |
+| `onError`         | `(err: Error) => void`       | Spawn failures, control-channel failures, `BackendUnavailableError`, and `EmbedUnsupportedError`. |
 
 ## `MediaPlayerHandle`
 

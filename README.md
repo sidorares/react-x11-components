@@ -58,21 +58,23 @@ all — there is no `<foreign>` to build on, which react-x11's own
 [`docs/macos.md`](https://github.com/sidorares/react-x11/blob/master/docs/macos.md)
 names this package in as much:
 
-| Component                                                 | On the Cocoa backend                                                                                                                                                                      |
-| --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `<Terminal>`, embedded backends (xterm, urxvt, alacritty) | No equivalent. Pin `backend="vt"`, which is native and needs no emulator installed anyway.                                                                                                |
-| `<MediaPlayer>`                                           | No equivalent — mpv's and VLC's `--wid` embedding is an X mechanism.                                                                                                                      |
-| `<TrayHost>`                                              | Reports `status: 'unavailable'` and renders `fallback`; there is no manager selection to take. Putting an icon _in_ a Mac's status bar is the other direction, and is core's `useTray()`. |
+| Component                                                 | On the Cocoa backend                                                                                                                                                                                       |
+| --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `<Terminal>`, embedded backends (xterm, urxvt, alacritty) | No equivalent. `backend="auto"` skips them and lands on `backend="vt"`, which is native and needs no emulator installed anyway; one named outright reports `status: 'unavailable'` and renders `fallback`. |
+| `<MediaPlayer>`                                           | No equivalent — mpv's `--wid` and VLC's `--drawable-xid` are X mechanisms. Reports `status: 'unavailable'` and renders `fallback`.                                                                         |
+| `<TrayHost>`                                              | Reports `status: 'unavailable'` and renders `fallback`; there is no manager selection to take. Putting an icon _in_ a Mac's status bar is the other direction, and is core's `useTray()`.                  |
 
 `<Three>` is the one that looks like it should be on that list and is not: it
 draws through `<glarea>`, which the Cocoa backend implements as GL into a
 CALayer, so the scene graph runs there too — on a third GL path rather than
 none. [Its reference](docs/components/three.md) has the table.
 
-One sharp edge worth knowing: `<Terminal backend="auto">` probes `PATH`, and
-a `PATH` probe cannot see which backend the app is running on. On a Mac with
-XQuartz installed it will still choose that xterm, which the Cocoa backend
-then cannot embed. Say `backend="vt"` outright in an app that runs on both.
+All three find out from the app, not the machine. `<Terminal backend="auto">`
+asks whether the app can host an embedded window before it probes `PATH`, so
+a Mac with XQuartz's xterm installed still gets the vt terminal on the Cocoa
+backend, and an app that runs on both can leave `backend` alone. An emulator
+named outright is refused out loud: `status: 'unavailable'`, `fallback`, and
+an `EmbedUnsupportedError` for `onError`.
 
 The other X-shaped behaviour to know about is **PRIMARY**: selecting text
 publishing to the X PRIMARY selection, and middle-click pasting it, are what

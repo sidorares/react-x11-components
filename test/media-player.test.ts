@@ -23,6 +23,8 @@ import type {
   MediaProgress,
 } from '../src/media-player/index.js';
 import { lineReader } from '../src/media-player/control.js';
+import { EmbedUnsupportedError } from '../src/embed/index.js';
+import { cocoaShapedApp } from './cocoa-shaped.js';
 import { FakeHost } from './fake-host.js';
 import type { FakeSocket } from './fake-host.js';
 
@@ -376,4 +378,44 @@ test('vlc gets write-only control and says so', async () => {
     'seek 30',
     'volume 128',
   ]);
+});
+
+test('on a backend that cannot embed a player it says so, and spawns nothing', async () => {
+  // The Cocoa backend's shape: an `X` with no XEmbed in it. mpv is
+  // "installed", so the only thing between this and a spawn is the app —
+  // which is the point.
+  const host = new FakeHost({ installed: ['mpv'] });
+  const ref = React.createRef<MediaPlayerHandle>();
+  const errors: Error[] = [];
+  const props = {
+    processes: host,
+    src: '/a.mkv',
+    ref,
+    onError: (err: Error) => errors.push(err),
+    fallback: h('text', { 'data-testname': 'no-player' }, 'no video here'),
+  };
+
+  // A pane nobody can see yet reports nothing, here as anywhere.
+  const { rerender } = await renderX11(
+    h(MediaPlayer, { ...props, enabled: false }),
+    { app: cocoaShapedApp(), backend: 'mock' },
+  );
+  await act();
+  assert.strictEqual(ref.current?.status, 'idle');
+  // a length, not `deepStrictEqual(errors, [])`: that asserts the array is
+  // `never[]`, and every read of it below stops type-checking
+  assert.strictEqual(errors.length, 0);
+  assert.strictEqual(foreignNode(), undefined, 'and it mounts no <foreign>');
+
+  await rerender(h(MediaPlayer, props));
+  await waitFor(() => assert.ok(screen.getByTestName('no-player')));
+  assert.strictEqual(ref.current?.status, 'unavailable');
+  assert.strictEqual(errors.length, 1);
+  assert.ok(errors[0] instanceof EmbedUnsupportedError);
+  assert.match(errors[0]!.message, /cannot embed another program's window/);
+
+  // Nothing looked for, nothing spawned, no scratch socket left in /tmp.
+  assert.deepStrictEqual(host.probed, []);
+  assert.strictEqual(host.spawns.length, 0);
+  assert.strictEqual(host.scratch.length, 0);
 });
