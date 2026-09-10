@@ -11,7 +11,7 @@ needs a change to core to exist, and core does not grow to carry it.
 reference page per component, rendered from [`docs/`](docs/README.md). This
 README is the tour; that is the detail.
 
-> **Installable now.** The published release is `0.7.1`, and the react-x11
+> **Installable now.** The published release is `0.8.0`, and the react-x11
 > range it declares resolves off the registry, so `npm install` just works.
 > `master` carries what has landed since, so use a checkout if you want
 > something not in that release yet.
@@ -1359,6 +1359,22 @@ display. **StatusNotifierItem is not in this component**: modern applications
 publish a tray icon over D-Bus, a complete panel supports both, and SNI
 shares nothing with this except intent — it belongs beside `<TrayHost>`
 rather than inside it.
+
+## Applications built with react-x11
+
+Both of these use this package as well as core, so they double as worked
+examples of its components inside a real program:
+
+- **[react-x11-workbench](https://github.com/sidorares/react-x11-workbench)**
+  (`@react-x11/workbench`) — a component workshop: develop, test and compare
+  react-x11 components in isolation. It does the job Storybook does, for a
+  toolkit with no browser to put an iframe in, and its sidebar is `<Tree>`.
+- **[x11-protocol-visualizer](https://github.com/sidorares/x11-protocol-visualizer)**
+  (`x11vis`) — a man-in-the-middle X11 proxy with a live protocol inspector
+  that decodes every request, reply, event and error down to the byte. Its
+  own UI is built from `<Table>`, `<Tree>`, `<Tabs>`, `<Code>` and
+  `<CodeEditor>`: an X11 client inspecting X11 clients — or, on macOS, drawn
+  by AppKit through core's Cocoa backend.
 
 ## Roadmap
 
