@@ -1081,7 +1081,6 @@ export class MapViewNode extends Node {
         ctx,
         sources[i],
         views[i],
-        pane,
         stats,
         progressive,
         generation,
@@ -1255,6 +1254,9 @@ export class MapViewNode extends Node {
     const styleZoom = Math.floor(zoom);
     const visible: VisibleTile[] = [];
     for (const entry of cover) {
+      // In the window's logical pixels, the space `pane` is in: what the
+      // overlap tests below, the claim when the tile lands and `_composite`
+      // all take. The pane's origin goes in here and nowhere after.
       const box = {
         x: pane.x + entry.x,
         y: pane.y + entry.y,
@@ -1356,7 +1358,6 @@ export class MapViewNode extends Node {
     ctx: MapCanvas,
     source: MapSource,
     visible: readonly VisibleTile[],
-    pane: ScreenRect,
     stats: MapFrameStats,
     progressive: boolean,
     generation: number | undefined,
@@ -1383,7 +1384,6 @@ export class MapViewNode extends Node {
           showing.surface,
           showing.size,
           box,
-          pane,
           scale,
           0,
           0,
@@ -1443,7 +1443,6 @@ export class MapViewNode extends Node {
           ancestor.shown.surface,
           ancestor.shown.size,
           box,
-          pane,
           scale,
           fx,
           fy,
@@ -1463,7 +1462,6 @@ export class MapViewNode extends Node {
               width: piece,
               height: piece,
             },
-            pane,
             scale,
             0,
             0,
@@ -1622,14 +1620,23 @@ export class MapViewNode extends Node {
    * point. Clipping the destination and moving the source rectangle to
    * match keeps the scale factor `sw/dw` exactly what it was, so nothing
    * about the picture changes.
+   *
+   * **`dest` is already in the window's space**, the one `pane` is in — a
+   * tile's `box` is `pane.x + entry.x` — so nothing is added to it here.
+   * The pane's origin used to be added a second time, which drew every
+   * tile that far right of and below where the markers, labels and
+   * overlays put the same place. A constant offset on screen is a
+   * different distance on the ground at every zoom, so it looked like a
+   * marker sliding across the map as it zoomed, and like nothing at all as
+   * it panned, where the blit moves both together. Every test mounted the
+   * map at the window's origin, where the offset is zero.
    */
   private _composite(
     ctx: MapCanvas,
     surface: SurfaceLike,
     size: number,
-    /** Where it lands, in pane-local logical pixels. */
+    /** Where it lands, in the window's logical pixels. */
     dest: ScreenRect,
-    pane: ScreenRect,
     scale: number,
     /** Which sub-square of the surface to take, in `subSpan`ths. */
     subX: number,
@@ -1637,10 +1644,10 @@ export class MapViewNode extends Node {
     subSpan: number,
   ): void {
     if (!ctx.drawImage || size <= 0) return;
-    const x0 = Math.round((pane.x + dest.x) * scale);
-    const y0 = Math.round((pane.y + dest.y) * scale);
-    const x1 = Math.round((pane.x + dest.x + dest.width) * scale);
-    const y1 = Math.round((pane.y + dest.y + dest.height) * scale);
+    const x0 = Math.round(dest.x * scale);
+    const y0 = Math.round(dest.y * scale);
+    const x1 = Math.round((dest.x + dest.width) * scale);
+    const y1 = Math.round((dest.y + dest.height) * scale);
     if (x1 <= x0 || y1 <= y0) return;
 
     // The clip is the content box — device pixels, like everything core

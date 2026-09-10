@@ -3603,6 +3603,156 @@ test('a 256px source is read one level deeper, at its natural size', () => {
   assert.equal(v.size, 512);
 });
 
+// The tiles and everything drawn over them have to agree about where the
+// *pane* is, as well as about where the world is.
+//
+// A tile's box is built in the window's logical pixels, `pane.x + entry.x`,
+// and the composite used to add the pane's origin to it a second time — so
+// every tile landed that far right of and below where the markers, labels
+// and overlays put the same place. A constant offset on screen is a
+// different distance on the ground at every zoom, so it was reported as a
+// marker drifting across the map as it zoomed and staying attached as it
+// panned, where the blit carries both together. Every other test here
+// mounts the map at the window's origin, where the offset is zero; this one
+// puts it under a header and beside a sidebar, the way an application does.
+
+const DISC: Rgb = [255, 0, 255];
+
+/** 256-pixel raster tiles, grey everywhere but a magenta disc on `place`. */
+function discSource(place: LngLat): MapSource {
+  const size = 256;
+  return {
+    id: 'disc',
+    tileSize: size,
+    minZoom: 0,
+    maxZoom: 19,
+    load: ({ z, x, y }) => {
+      const data = new Uint8Array(size * size * 4);
+      for (let i = 0; i < data.length; i += 4) {
+        data.set([200, 200, 200, 255], i);
+      }
+      const n = 2 ** z;
+      const px = (mercatorXFromLon(place.lon) * n - x) * size;
+      const py = (mercatorYFromLat(place.lat) * n - y) * size;
+      for (let j = Math.floor(py - 3); j <= Math.ceil(py + 3); j++) {
+        for (let i = Math.floor(px - 3); i <= Math.ceil(px + 3); i++) {
+          if (i < 0 || j < 0 || i >= size || j >= size) continue;
+          if ((i + 0.5 - px) ** 2 + (j + 0.5 - py) ** 2 <= 9) {
+            data.set([...DISC, 255], (j * size + i) * 4);
+          }
+        }
+      }
+      return { kind: 'raster', width: size, height: size, data };
+    },
+  };
+}
+
+/** The centroid of the window's pixels near `rgb`, in logical pixels. */
+async function centroidOf(
+  result: { ctx: unknown; windowNode: DrawnNode },
+  rgb: Rgb,
+  scale: number,
+): Promise<{ x: number; y: number } | null> {
+  const width = Math.round(result.windowNode.abs.width);
+  const height = Math.round(result.windowNode.abs.height);
+  const { data } = await (
+    result.ctx as {
+      getImageData(
+        x: number,
+        y: number,
+        w: number,
+        h: number,
+      ): Promise<{ data: Uint8ClampedArray }>;
+    }
+  ).getImageData(0, 0, width, height);
+  let sx = 0;
+  let sy = 0;
+  let count = 0;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = (y * width + x) * 4;
+      if (
+        Math.abs(data[i] - rgb[0]) <= 60 &&
+        Math.abs(data[i + 1] - rgb[1]) <= 60 &&
+        Math.abs(data[i + 2] - rgb[2]) <= 60
+      ) {
+        sx += x + 0.5;
+        sy += y + 0.5;
+        count++;
+      }
+    }
+  }
+  return count ? { x: sx / count / scale, y: sy / count / scale } : null;
+}
+
+for (const scale of [1, 2]) {
+  test(`tiles land where markers do when the pane is not at the window's origin, at scale ${scale}`, async () => {
+    const header = 37;
+    const sidebar = 23;
+    // Off the place, so the disc is not at the middle of the pane.
+    const centre = { lon: LONDON.lon + 0.0006, lat: LONDON.lat - 0.0004 };
+    const sources = [discSource(LONDON)];
+    const defaultCamera = { center: centre, zoom: 12 };
+    const ref = React.createRef<MapHandle>();
+    const result = await renderX11(
+      React.createElement(
+        'window',
+        { width: 480, height: 360 },
+        React.createElement(
+          'box',
+          { style: { flexDirection: 'column', flexGrow: 1 } },
+          React.createElement('box', { style: { height: header } }),
+          React.createElement(
+            'box',
+            { style: { flexDirection: 'row', flexGrow: 1 } },
+            React.createElement('box', { style: { width: sidebar } }),
+            React.createElement(MapView, {
+              ref,
+              sources,
+              defaultCamera,
+              attribution: '',
+              'data-testname': 'map',
+            }),
+          ),
+        ),
+      ),
+      { backend: 'xserver', width: 480, height: 360, scale, wrap: false },
+    );
+    const handle = ref.current as MapHandle;
+    // Device pixels, and the pane itself: the element has no padding or
+    // border, so its box is its content box.
+    const box = result.getByTestName('map').abs;
+    const pane = { x: box.x / scale, y: box.y / scale };
+    assert.deepEqual(
+      pane,
+      { x: sidebar, y: header },
+      'the pane is where the fixture put it',
+    );
+    for (const zoom of [12, 13.5, 16]) {
+      await act(async () => handle.setCamera({ center: centre, zoom }));
+      // Eventually rather than at once: the frame that shows this zoom's
+      // tiles comes after the one that moved the camera. Every frame of the
+      // old code missed by the pane's origin, so none of them can pass.
+      await waitFor(
+        async () => {
+          const disc = await centroidOf(result, DISC, scale);
+          assert.ok(disc, `zoom ${zoom}: no disc on screen`);
+          const at = handle.project(LONDON);
+          const dx = disc.x - (pane.x + at.x);
+          const dy = disc.y - (pane.y + at.y);
+          assert.ok(
+            Math.abs(dx) < 1.5 && Math.abs(dy) < 1.5,
+            `zoom ${zoom}: the tiles draw the place (${dx.toFixed(1)}, ` +
+              `${dy.toFixed(1)}) logical pixels from where a marker on it ` +
+              'is drawn',
+          );
+        },
+        { timeout: 3000 },
+      );
+    }
+  });
+}
+
 // A frame must not draw outside the rect it claimed.
 //
 // Everything in `paint` works in pane coordinates — a tile at its own box,
