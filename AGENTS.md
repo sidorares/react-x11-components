@@ -1191,6 +1191,20 @@ element that draws application-supplied geometry in a zoomable viewport has
 both bugs until it clips**, and a test that only ever frames what it draws
 will never find either — the regressions here zoom until they would throw.
 
+**A pane at the window's origin cannot show its origin added twice.**
+`abs`, `contentBox()` and a synthetic event's `x`/`y` are the window's
+coordinates, and everything the map places is pane-local until it is drawn,
+so the pane's origin has to go in exactly once. `_composite` added it a
+second time to every tile from the first version on: the basemap landed the
+pane's offset right of and below the markers, labels and overlays, which a
+user reported as markers drifting as the map zoomed and holding still as it
+panned — a constant offset on screen is a different distance on the ground
+at every zoom, and a pan blits both together. No test saw it, because every
+one mounted the map at the window's origin, where the offset is zero. It is
+the 1x-display trap again with an origin in place of a scale, and it has the
+same answer: at least one geometry test mounts the element somewhere else
+(`test/maps.test.ts` puts it under a header and beside a sidebar).
+
 **Two traps specific to real tile data**, both found by running the decoder
 over half a million real features and both now pinned by tests. `extent` is
 **per layer**, not per tile: OSM's Shortbread cuts `streets`, `land`,
