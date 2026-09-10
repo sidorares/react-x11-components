@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.8.0](https://github.com/sidorares/react-x11-components/compare/v0.7.1...v0.8.0) (2026-09-10)
+
+
+### Features
+
+* **examples:** a frameRate menu on the vt terminal, and the docs for the window's policy ([#80](https://github.com/sidorares/react-x11-components/issues/80)) ([d7f2a17](https://github.com/sidorares/react-x11-components/commit/d7f2a1712612de5ba447f083d153b273cb065152))
+* **terminal:** re-land the react-x11 2.9.0 adoption — opaque grid, copy composite, one emulator subscription ([#82](https://github.com/sidorares/react-x11-components/issues/82)) ([b941af7](https://github.com/sidorares/react-x11-components/commit/b941af7cca95793b738d4e4efb4c98c9ab8c904d))
+
+
+### Bug Fixes
+
+* **color-picker:** measure the pointer against the logical box ([#85](https://github.com/sidorares/react-x11-components/issues/85)) ([0ef7633](https://github.com/sidorares/react-x11-components/commit/0ef763306ace516511dfcbc8d2846063bec1ced3))
+* **color-picker:** the handle sits on the strip border, not under it ([#86](https://github.com/sidorares/react-x11-components/issues/86)) ([eb0e939](https://github.com/sidorares/react-x11-components/commit/eb0e939c3fea685d3133c813e3a60670bd39e051))
+* **table, tree:** virtualization mixed device and logical pixels — blank viewport at scale 2 ([#83](https://github.com/sidorares/react-x11-components/issues/83)) ([63726df](https://github.com/sidorares/react-x11-components/commit/63726df20cdfe3e1793082feb3c84595b986bfe5))
+
 ## [0.7.1](https://github.com/sidorares/react-x11-components/compare/v0.7.0...v0.7.1) (2026-09-09)
 
 
