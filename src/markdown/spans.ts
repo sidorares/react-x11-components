@@ -1,7 +1,7 @@
 // Inline AST → the styled runs `<richtext>` renders. Pure: all the colour
 // and font decisions arrive in `InlineStyles`, which `index.ts` derives
 // from the theme once per render.
-import type { InlineNode } from './ast.js';
+import type { InlineNode } from '../internal/markdown/ast.js';
 import type { TextRun } from '../richtext/node.js';
 
 /** The resolved look of inline text, for one block. */

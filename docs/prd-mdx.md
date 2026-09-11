@@ -246,7 +246,7 @@ interface MdxComponentProps {
 
 `<Badge tone="warn">Q3</Badge>` in the middle of a sentence does not parse,
 and the AST node for it stays reserved. The reason is not the parser — the
-scanner in `src/markdown/tags.ts` does not care where it is called from —
+scanner in `src/internal/markdown/tags.ts` does not care where it is called from —
 it is the renderer.
 
 A paragraph is laid out as **one `<richtext>`**, whose `runs` are a flat
@@ -382,7 +382,7 @@ is about where an _unbraced_ expression ends: at a `;`, at a depth-0 comma,
 at a newline its ASI rules call the end. MDX has no such question — an
 expression is delimited by the braces that introduced it, so all this parser
 needs is "where does this `{` close". That is `closeBrace()` in
-`src/markdown/tags.ts`, and it is not `slurpExpression` with parts removed;
+`src/internal/markdown/tags.ts`, and it is not `slurpExpression` with parts removed;
 it is a different function that happens to share a subroutine.
 
 The genuinely common part is _skipping a string literal_ — perhaps a dozen
@@ -488,7 +488,7 @@ is **streamed model output**.
 ## Milestones
 
 **M1 — tags, no evaluation. Shipped.** `ComponentBlock` and `AttributeValue`
-in the AST, `ParseOptions.isComponent` as the gate, `src/markdown/tags.ts`
+in the AST, `ParseOptions.isComponent` as the gate, `src/internal/markdown/tags.ts`
 as the scanner, block dispatch in `parseBlocks` (multi-line tags included),
 `components` on `<Markdown>` with dotted resolution, JSON attributes,
 markdown children, streaming hold-back, `test/mdx.test.ts`,
@@ -546,7 +546,7 @@ that can decline a tag at render time.
 
 ## Related
 
-- `src/markdown/ast.ts` — `ComponentInline`, the reserved seam.
+- `src/internal/markdown/ast.ts` — `ComponentInline`, the reserved seam.
 - `src/qml/parse.ts:243` — `slurpExpression`, the technique.
 - `docs/prd-table.md` — the continuity contract this follows.
 - **`FenceInfo` drops the info string** (`parse.ts:222` keeps only the first

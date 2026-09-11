@@ -40,10 +40,20 @@ const COMPONENTS = [
   { exportName: 'Calendar', dir: 'calendar', marker: 'Previous month' },
   // `<Markdown>`, `<Code>` and `<CodeEditor>` share `src/richtext/` and
   // `src/code-language/`, so their markers name what is theirs alone: the
-  // autolink scheme only the markdown parser writes, the gutter label only
-  // the code block draws.
-  { exportName: 'Markdown', dir: 'markdown', marker: 'mailto:' },
-  { exportName: 'Code', dir: 'code', marker: 'Code block' },
+  // warning only `<Markdown>`'s expression evaluator writes (its parser is
+  // shared with the rich text editor now, from `src/internal/markdown/`, so
+  // the autolink scheme it writes is no longer one component's), and the
+  // gutter label only the code block draws.
+  {
+    exportName: 'Markdown',
+    dir: 'markdown',
+    marker: 'markdown expression did not evaluate',
+  },
+  // `<Code>`'s marker is its accessible name *as an attribute*: the rich
+  // text editor's toolbar has a "Code block" button too, whose name is a
+  // `title` until it is drawn — so the string alone no longer says whose
+  // module is in the bundle, and the pair does.
+  { exportName: 'Code', dir: 'code', marker: '"aria-label":"Code block"' },
   // `<TerminalOutput>` shares `src/richtext/` and `src/codeblock/` with the
   // two above and shares nothing at all with `<Terminal>` — the name is the
   // only thing the two terminals have in common — so its marker is the label
@@ -105,6 +115,17 @@ const COMPONENTS = [
     dir: 'reorder',
     marker: 'application/x-react-x11-reorder',
   },
+  // `<RichTextEditor>` is the one component not in the barrel — its index.ts
+  // says why (ProseMirror's DOM-typed declarations) — so it is pulled from
+  // its subpath. It shares the markdown parser with `<Markdown>` and the
+  // `<richtext>` element with three others; its root element's name is its
+  // alone.
+  {
+    exportName: 'RichTextEditor',
+    dir: 'rich-text-editor',
+    marker: 'richeditor',
+    from: './dist/rich-text-editor/index.js',
+  },
 ];
 
 async function bundle(contents: string): Promise<string> {
@@ -143,9 +164,9 @@ test('the barrel has no side effects to keep', async () => {
 });
 
 test('naming one component does not pull in the others', async () => {
-  for (const { exportName, marker } of COMPONENTS) {
+  for (const { exportName, marker, from } of COMPONENTS) {
     const out = await bundle(
-      `import { ${exportName} } from './dist/index.js';\n` +
+      `import { ${exportName} } from '${from ?? './dist/index.js'}';\n` +
         `globalThis.__keep = ${exportName};\n`,
     );
     assert.ok(

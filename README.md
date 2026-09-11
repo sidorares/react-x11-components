@@ -162,30 +162,31 @@ import type { CodeEditorProps } from '@react-x11/components';
 
 ## Components
 
-| Component        | Import                                  |                                                              |
-| ---------------- | --------------------------------------- | ------------------------------------------------------------ |
-| `Calendar`       | `@react-x11/components/calendar`        | A month grid: one date or a range, any day blockable.        |
-| `DatePicker`     | `@react-x11/components/calendar`        | That calendar on a popup, behind a field.                    |
-| `LineChart` …    | `@react-x11/components/charts`          | Cartesian charts; a million points is a normal input.        |
-| `ColorPicker` …  | `@react-x11/components/color-picker`    | A colour input: field, hue, alpha, swatches, eyedropper.     |
-| `Code`           | `@react-x11/components/code`            | A static code block: highlighted, selectable.                |
-| `CodeEditor`     | `@react-x11/components/code-editor`     | Multiline code editing: highlighting, completion.            |
-| `Flow`           | `@react-x11/components/flow`            | A directed-graph editor: nodes, edges, pan and zoom.         |
-| `Formula`        | `@react-x11/components/formula`         | TeX mathematics: KaTeX layout, native ink, selectable.       |
-| `Html`           | `@react-x11/components/html`            | A static HTML + CSS document, selectable, with seams.        |
-| `Map`            | `@react-x11/components/maps`            | A 2D vector-tile map: pan, zoom, markers, overlays.          |
-| `Markdown`       | `@react-x11/components/markdown`        | Streaming-friendly GFM with cross-block selection.           |
-| `MediaPlayer`    | `@react-x11/components/media-player`    | mpv or VLC, embedded, with real transport control.           |
-| `QmlView`        | `@react-x11/components/qml`             | Qt's QML language as an authoring layer. No Qt.              |
-| `ReorderList` …  | `@react-x11/components/reorder`         | A drag-and-drop list, over core's own drag and drop.         |
-| `Table`          | `@react-x11/components/table`           | A data table: sortable, virtualized, any row height.         |
-| `Tabs` …         | `@react-x11/components/tabs`            | One visible panel at a time, five strip styles.              |
-| `Terminal`       | `@react-x11/components/terminal`        | A real terminal: an embedded emulator, or its own.           |
-| `TerminalOutput` | `@react-x11/components/terminal-output` | A captured session, rendered. `<Terminal>`'s static sibling. |
-| `Canvas` …       | `@react-x11/components/three`           | A three-fiber-shaped 3D scene over either GL backend.        |
-| `Timeline` …     | `@react-x11/components/timeline`        | A run of events: a mark per step, a line between.            |
-| `TrayHost`       | `@react-x11/components/tray-host`       | The system tray: applications dock their icons in.           |
-| `Tree`           | `@react-x11/components/tree`            | A disclosure tree: seams throughout, and virtualized.        |
+| Component        | Import                                   |                                                              |
+| ---------------- | ---------------------------------------- | ------------------------------------------------------------ |
+| `Calendar`       | `@react-x11/components/calendar`         | A month grid: one date or a range, any day blockable.        |
+| `DatePicker`     | `@react-x11/components/calendar`         | That calendar on a popup, behind a field.                    |
+| `LineChart` …    | `@react-x11/components/charts`           | Cartesian charts; a million points is a normal input.        |
+| `ColorPicker` …  | `@react-x11/components/color-picker`     | A colour input: field, hue, alpha, swatches, eyedropper.     |
+| `Code`           | `@react-x11/components/code`             | A static code block: highlighted, selectable.                |
+| `CodeEditor`     | `@react-x11/components/code-editor`      | Multiline code editing: highlighting, completion.            |
+| `Flow`           | `@react-x11/components/flow`             | A directed-graph editor: nodes, edges, pan and zoom.         |
+| `Formula`        | `@react-x11/components/formula`          | TeX mathematics: KaTeX layout, native ink, selectable.       |
+| `Html`           | `@react-x11/components/html`             | A static HTML + CSS document, selectable, with seams.        |
+| `Map`            | `@react-x11/components/maps`             | A 2D vector-tile map: pan, zoom, markers, overlays.          |
+| `Markdown`       | `@react-x11/components/markdown`         | Streaming-friendly GFM with cross-block selection.           |
+| `MediaPlayer`    | `@react-x11/components/media-player`     | mpv or VLC, embedded, with real transport control.           |
+| `QmlView`        | `@react-x11/components/qml`              | Qt's QML language as an authoring layer. No Qt.              |
+| `ReorderList` …  | `@react-x11/components/reorder`          | A drag-and-drop list, over core's own drag and drop.         |
+| `RichTextEditor` | `@react-x11/components/rich-text-editor` | WYSIWYG editing over ProseMirror; markdown in and out.       |
+| `Table`          | `@react-x11/components/table`            | A data table: sortable, virtualized, any row height.         |
+| `Tabs` …         | `@react-x11/components/tabs`             | One visible panel at a time, five strip styles.              |
+| `Terminal`       | `@react-x11/components/terminal`         | A real terminal: an embedded emulator, or its own.           |
+| `TerminalOutput` | `@react-x11/components/terminal-output`  | A captured session, rendered. `<Terminal>`'s static sibling. |
+| `Canvas` …       | `@react-x11/components/three`            | A three-fiber-shaped 3D scene over either GL backend.        |
+| `Timeline` …     | `@react-x11/components/timeline`         | A run of events: a mark per step, a line between.            |
+| `TrayHost`       | `@react-x11/components/tray-host`        | The system tray: applications dock their icons in.           |
+| `Tree`           | `@react-x11/components/tree`             | A disclosure tree: seams throughout, and virtualized.        |
 
 Five shared modules sit underneath and are importable on their own:
 `/richtext` (the styled-text element a document selects across),
@@ -745,6 +746,48 @@ Completion sources are one async function each, deliberately the shape of an
 LSP `textDocument/completion` call, so a language-server client is "just
 another source". `npm run examples:code-editor` shows the three input-field
 use cases side by side.
+
+## The rich text editor
+
+WYSIWYG editing — notes, comments, a chat composer, a document pane — with
+markdown as the value unless you say otherwise:
+
+```jsx
+import { RichTextEditor } from '@react-x11/components/rich-text-editor';
+
+<RichTextEditor
+  defaultValue={note.body}
+  onChange={(ev) => save(ev.value)}
+  placeholder="Write something…"
+  toolbar
+  style={{ flexGrow: 1 }}
+/>;
+```
+
+The model is [ProseMirror](https://prosemirror.net)'s — its schema,
+transactions, commands and plugin system, unmodified — and the view is this
+package's: blocks are `<box>` composition, every paragraph is a retained text
+element that draws its own caret and selection band, and the object a plugin
+is handed is an `EditorView` in everything but the DOM. So keymaps, input
+rules, history and decoration plugins written for a browser run as they are;
+the ones that reach into the DOM do not. The document is GFM — headings,
+marks, links, nested and task lists, quotes, fenced code highlighted by the
+same language seam as `<CodeEditor>`, tables — with the markdown shortcuts
+people type anyway (`# `, `- `, `[ ] `, `**bold**`), undo, a clipboard that
+pastes a web page as structure and the editor's own copies back whole, the
+right-click edit menu, IME preedit at the caret, and Escape then Tab to leave.
+
+The props are one element all the way up: `value` + `onChange` never mention
+ProseMirror; `toolbar`, `placeholder`, `readOnly` and `submitOnEnter` are the
+behaviours an app would otherwise wire by hand; `format="html"`, `markStyles`
+and `nodeViews` change what the document is written in and how its parts
+look; `plugins`, `editorProps` and `schema` are ProseMirror's own seams; and
+`state` + `dispatchTransaction` hand the whole `EditorState` to the app. It is
+imported from its subpath only — ProseMirror's declarations name DOM globals,
+and the barrel would hand that to every app. `npm run examples:rich-text-editor`
+shows a notes pane beside a chat composer.
+[The reference](docs/components/rich-text-editor.md) has the props;
+[the PRD](docs/prd-rich-text-editor.md) has the survey and the reasons.
 
 ## The graph editor
 

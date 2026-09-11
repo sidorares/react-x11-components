@@ -47,7 +47,7 @@ no `<html>` successor.
 
 ## What it renders
 
-GFM, parsed by `src/markdown/parse.ts`:
+GFM, parsed by `src/internal/markdown/parse.ts`:
 
 - headings, both ATX (`##`) and setext;
 - emphasis through the real CommonMark delimiter-run algorithm, including

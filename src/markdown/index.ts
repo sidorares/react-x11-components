@@ -10,8 +10,10 @@
 // pipeline is remark → rehype → DOM with Tailwind classes — an HTML pass
 // and a DOM renderer, neither of which exists here. What was worth taking
 // was taken: its `remend` package's unterminated-markdown behaviour is
-// implemented natively by `parse.ts`, as parser tolerance rather than a
-// repair pre-pass (one pass instead of repair-then-reparse).
+// implemented natively by `src/internal/markdown/parse.ts`, as parser
+// tolerance rather than a repair pre-pass (one pass instead of
+// repair-then-reparse). The parser is shared with `<RichTextEditor>`, which
+// reads and writes the same markdown this renders.
 //
 // So: `parse.ts` → AST → this file renders `<box>` structure with one
 // `<richtext>` per run of inline text, inside one `selectable` root. During
@@ -51,7 +53,7 @@ import type {
   InlineNode,
   ListBlock,
   TableBlock,
-} from './ast.js';
+} from '../internal/markdown/ast.js';
 import {
   registerRichText,
   RICHTEXT_ELEMENT,
@@ -67,10 +69,10 @@ import {
 import type { CodeBlockLook } from '../codeblock/index.js';
 import type { Language } from '../code-language/index.js';
 
-import { parse } from './parse.js';
+import { parse } from '../internal/markdown/parse.js';
 import { evaluator, resolveExpressions } from './expressions.js';
 import type { Evaluate } from './expressions.js';
-import { SPREAD_PREFIX } from './ast.js';
+import { SPREAD_PREFIX } from '../internal/markdown/ast.js';
 import { runsOf, plainTextOf } from './spans.js';
 import type { InlineStyles } from './spans.js';
 import { useLinkClicks } from '../richtext/index.js';
@@ -85,11 +87,11 @@ export type {
   InlineNode,
   Document as MarkdownDocument,
   ParseOptions,
-} from './ast.js';
-export { SPREAD_PREFIX } from './ast.js';
-export { scanTag } from './tags.js';
-export type { ScannedTag, ScanResult } from './tags.js';
-export { parse, parseInline } from './parse.js';
+} from '../internal/markdown/ast.js';
+export { SPREAD_PREFIX } from '../internal/markdown/ast.js';
+export { scanTag } from '../internal/markdown/tags.js';
+export type { ScannedTag, ScanResult } from '../internal/markdown/tags.js';
+export { parse, parseInline } from '../internal/markdown/parse.js';
 
 const h = React.createElement;
 
@@ -190,7 +192,8 @@ export interface MarkdownProps {
    * usual case.
    *
    * Block position only: a tag on its own line(s) is a component, and one in
-   * the middle of a sentence is still text. See `ComponentInline` in ast.ts.
+   * the middle of a sentence is still text. See `ComponentInline` in
+   * src/internal/markdown/ast.ts.
    *
    * Give the map a stable identity — a new object per render defeats the
    * block cache, the same way a new `fences` map does.
