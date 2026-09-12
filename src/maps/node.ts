@@ -1750,7 +1750,12 @@ export class MapViewNode extends Node {
     const point = { x: ev.x - pane.x, y: ev.y - pane.y };
     // Consumed whether or not the zoom moved: a wheel over a map that moves
     // is never meant for whatever is behind it.
-    if (this._controller.wheel(point, ev.deltaY ?? 0)) ev.preventDefault();
+    // `ev.smooth` is the device: a wheel that clicks whole notches, or a
+    // touchpad whose valuators measured the scroll. The controller eases
+    // the one and applies the other (`MapController.wheel`).
+    if (this._controller.wheel(point, ev.deltaY ?? 0, ev.smooth === true)) {
+      ev.preventDefault();
+    }
   }
 
   override defaultKeyDown(ev: KeyboardEvent): void {

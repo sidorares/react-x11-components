@@ -234,7 +234,11 @@ controller also listens on the child window itself for press, motion and
 release — ntk selects the motion and release bits on demand, and the
 implicit grab a press starts keeps a drag coming after the pointer leaves the
 map. Drag pans; the wheel and a double click zoom about the pointer (Shift
-for out); the arrows and +/− work once the map has focus.
+for out); the arrows and +/− work once the map has focus. A wheel notch is
+eased over the frames after it rather than applied where it lands, and a
+touchpad's measured fractions (`ev.smooth`) are applied as they arrive — the
+controller's glide, so the two renderers feel the same under a hand and a
+fallback mid-gesture keeps gliding.
 
 Checked three ways, each through the real dispatch: the harness's X server
 (injected presses, a drag, a wheel, a double click — `test/maps-gl.test.ts`);

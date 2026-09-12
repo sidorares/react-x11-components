@@ -3543,6 +3543,70 @@ test('a wheel over the map zooms it, and does not scroll what is behind', async 
   assert.ok(handle.getCamera().zoom < before, 'and back out');
 });
 
+test('a wheel notch is eased over the frames after it, not applied in one', async () => {
+  const seen: number[] = [];
+  const { handle, node } = await mountMap(
+    { onCameraChange: (camera) => seen.push(camera.zoom) },
+    DRIVEN,
+  );
+  // One notch is 0.384 of a level — six of the sixteenth the zoom is
+  // quantized to — and applying it where it lands is the jump this eases.
+  await userEvent.wheel(node, { deltaY: -1 });
+  const first = handle.getCamera().zoom;
+  // It moves under the notch that asked, because a wheel that waits for
+  // the next frame to do anything reads as lag…
+  assert.ok(first > 12, `the notch moved the map at once: ${first}`);
+  // …and not all the way, because that is the jump.
+  assert.ok(first < 12.375, `but not all of it at once: ${first}`);
+
+  await settleFrames(20);
+  const zoom = handle.getCamera().zoom;
+  assert.ok(
+    Math.abs(zoom - 12.375) < 1e-9,
+    `the frames after it delivered the rest: ${zoom}`,
+  );
+  assert.ok(
+    seen.length >= 4,
+    `and took more than a step to do it: ${seen.join(' ')}`,
+  );
+});
+
+test("a touchpad's fractions of a notch accumulate rather than round away", async () => {
+  const { handle, node } = await mountMap({}, DRIVEN);
+  // A twenty-fourth of a notch is 0.016 of a level, a quarter of the
+  // sixteenth the camera is quantized to. Rounded against the camera as it
+  // arrives it is nothing at all — and a slow two-finger scroll is a
+  // stream of exactly this, so the map used to sit still through the whole
+  // gesture. Kept in a target of its own, four of them are a step.
+  await userEvent.wheel(node, { deltaY: -1 / 24, smooth: true });
+  assert.equal(
+    handle.getCamera().zoom,
+    12,
+    'one fraction is too small to show',
+  );
+  for (let i = 0; i < 7; i++) {
+    await userEvent.wheel(node, { deltaY: -1 / 24, smooth: true });
+  }
+  // No frames in between: a measured scroll is already as smooth as the
+  // hand that made it, so it is applied as it arrives rather than eased.
+  const zoom = handle.getCamera().zoom;
+  assert.ok(
+    Math.abs(zoom - 12.125) < 1e-9,
+    `but eight of them are two: ${zoom}`,
+  );
+});
+
+test('a second notch lengthens the glide instead of restarting it', async () => {
+  const { handle, node } = await mountMap({}, DRIVEN);
+  await userEvent.wheel(node, { deltaY: -1 });
+  await userEvent.wheel(node, { deltaY: -1 });
+  await settleFrames(20);
+  // Two notches are two notches, wherever the first had got to when the
+  // second arrived: 12 + 2 × 0.384, on the grid.
+  const zoom = handle.getCamera().zoom;
+  assert.ok(Math.abs(zoom - 12.75) < 1e-9, `both notches landed: ${zoom}`);
+});
+
 test('interactive={false} freezes the camera and still reports clicks', async () => {
   const clicks: number[] = [];
   const { handle, node } = await mountMap(
