@@ -480,10 +480,11 @@ so switching renderers is never a type error and never a rewrite.
 
 **Children over a GL map.** A `<glarea>` is stacked above every 2D thing in
 its window, so a legend beside it would be under it. On a core that draws a
-surface's children above it (`useSupports('glOverlay')`), `<Map>` puts its
-children inside the GL surface instead — on X11 that overlay is opaque, so
-give a legend a background of its own. On an older core `'auto'` keeps a map
-with children on the retained renderer, and says so once in development.
+surface's children above it — react-x11 2.13 and later,
+`useSupports('glOverlay')` — `<Map>` puts its children inside the GL surface
+instead; on X11 that overlay is opaque, so give a legend a background of its
+own. On an older core `'auto'` keeps a map with children on the retained
+renderer, and says so once in development.
 
 ## The decisions
 
