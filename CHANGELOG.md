@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.9.0](https://github.com/sidorares/react-x11-components/compare/v0.8.0...v0.9.0) (2026-09-12)
+
+
+### ⚠ BREAKING CHANGES
+
+* **maps:** <Map> draws through GL by default where the connection has direct GL — on the Cocoa backend, always. A GL surface is invisible to window capture, labels are placed in screen space and fade, and line caps and joins are round. renderer="retained", or REACT_X11_MAP_RENDERER=retained in the environment, keeps the previous behaviour.
+* **maps:** `TileCache`'s `key`, `peek`, `ancestorWithSurface` and `descendantsWithSurface` take the `MapSource` rather than its id. And a source object made anew on every render now starts from an empty cache on every render — a stable id no longer papers over it — so create sources once, at module scope or in `useMemo`.
+
+### Features
+
+* **maps:** &lt;Map renderer="auto"&gt; — the GL renderer behind &lt;Map&gt;, with the retained one as its fallback ([#104](https://github.com/sidorares/react-x11-components/issues/104)) ([7449384](https://github.com/sidorares/react-x11-components/commit/74493849f4bb9db0f141c335f376cb907e24dab8))
+* **maps:** a GL renderer proof of concept — every frame drawn from vector tiles at display rate, with labels ([#100](https://github.com/sidorares/react-x11-components/issues/100)) ([715da60](https://github.com/sidorares/react-x11-components/commit/715da6053473263b9f3da76f3df20326e0d8cd4d))
+* **rich-text-editor:** a WYSIWYG editor — ProseMirror's model, drawn by react-x11, markdown in and out ([#99](https://github.com/sidorares/react-x11-components/issues/99)) ([156e40d](https://github.com/sidorares/react-x11-components/commit/156e40d35394d30abc12b1d37e119295a058edb2))
+* **rich-text-editor:** suggestions — @ mentions and a / block menu, a list kept by a plugin and drawn at the trigger ([#102](https://github.com/sidorares/react-x11-components/issues/102)) ([89276ca](https://github.com/sidorares/react-x11-components/commit/89276ca38499e6899ada108d9f9f8cf1d98c270d))
+* **rich-text-editor:** table editing, drag and drop, long documents, verified collaboration, and suggestion rows of the app's own ([#103](https://github.com/sidorares/react-x11-components/issues/103)) ([0a48966](https://github.com/sidorares/react-x11-components/commit/0a489666778589cb4f1b07973b6e36bf4ef10987))
+
+
+### Bug Fixes
+
+* **charts:** &lt;Chart&gt; threw in paint on react-x11 2.12+ — core's _host field shadowed the plot node's method ([#106](https://github.com/sidorares/react-x11-components/issues/106)) ([4f75af4](https://github.com/sidorares/react-x11-components/commit/4f75af4aac70004bc8efb7373f464900920958fa))
+* **maps:** a style change leaves raster tiles alone ([#94](https://github.com/sidorares/react-x11-components/issues/94)) ([71b07b3](https://github.com/sidorares/react-x11-components/commit/71b07b3676dd9b463290fdab2e1da7a743ea76d1))
+* **maps:** abort the loads the map stops wanting — a tile panned away loaded to the end ([#91](https://github.com/sidorares/react-x11-components/issues/91)) ([a160488](https://github.com/sidorares/react-x11-components/commit/a160488ea74390eb405dc8d9943c83b31f39cb8d))
+* **maps:** add the pane's origin to a tile once — markers drifted off their place as the map zoomed ([#95](https://github.com/sidorares/react-x11-components/issues/95)) ([944508a](https://github.com/sidorares/react-x11-components/commit/944508a728b2129e15e2d722270c3c463da6396b))
+* **maps:** cache tiles per source object — switching provider showed a patchwork of both ([#89](https://github.com/sidorares/react-x11-components/issues/89)) ([f5174da](https://github.com/sidorares/react-x11-components/commit/f5174da79eefbbb767aa856e478ac54f4381305b))
+* **maps:** draw a raster tile once, whole, past its source's depth — the view was a grid of miniatures ([#98](https://github.com/sidorares/react-x11-components/issues/98)) ([364396d](https://github.com/sidorares/react-x11-components/commit/364396d3f50154b9ad58013d5baaa70da6246430))
+* **maps:** ease a wheel notch over the frames after it, and keep a touchpad's fractions — the zoom was a staircase ([#105](https://github.com/sidorares/react-x11-components/issues/105)) ([9769d2a](https://github.com/sidorares/react-x11-components/commit/9769d2afcc571e1dcc651466067f2866b638f7a7))
+* **maps:** swap a style change in whole, not tile by tile ([#92](https://github.com/sidorares/react-x11-components/issues/92)) ([2bf2bd3](https://github.com/sidorares/react-x11-components/commit/2bf2bd36aff4fe30ab3a66fb884a128e39a7a190))
+* **maps:** warn when a source is remade every render — each render refetched the whole view ([#93](https://github.com/sidorares/react-x11-components/issues/93)) ([d3beeb8](https://github.com/sidorares/react-x11-components/commit/d3beeb8de43345f5b2e8b740b3ea3ff9e451658d))
+* **terminal:** 'auto' asks the app before PATH — on Cocoa it spawned xterm -into undefined ([#96](https://github.com/sidorares/react-x11-components/issues/96)) ([c7705de](https://github.com/sidorares/react-x11-components/commit/c7705debec229c1cd82c80e26b0d12b568d588d4))
+
 ## [0.8.0](https://github.com/sidorares/react-x11-components/compare/v0.7.1...v0.8.0) (2026-09-10)
 
 
