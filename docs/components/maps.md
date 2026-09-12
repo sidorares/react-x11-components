@@ -497,6 +497,24 @@ numbers, blits the band that survives and repaints the strip that was
 exposed. Routed through `useState` instead, every pointer step would be a
 render, a commit and a full-pane damage claim.
 
+**A wheel notch is eased; a touchpad's fractions are not.** A wheel
+_clicks_ — one event carrying a whole notch, 0.384 of a level, with nothing
+in between — so applying it where it lands is a jump, and a scroll is a
+staircase of them. A notch therefore sets a _target_ and the frames after it
+glide to it, and a second notch arriving mid-glide moves the target rather
+than starting again, so a fast scroll is one continuous zoom rather than six
+jolts. A touchpad reports what it **measured** instead, in fractions of a
+notch (`ev.smooth`, which rides react-x11's XI2 selection — it takes it on
+the first wheel a window sees), and that stream is already as smooth as the
+hand making it: easing it would only add lag. What it needs is somewhere to
+keep the fractions, because the zoom is quantized to a sixteenth of a level
+and a twenty-fourth of a notch is a quarter of one of those — rounded
+against the camera as it arrives it is nothing at all, event after event.
+The target holds the remainder, so a slow two-finger scroll moves a step
+every few events rather than never. Both of these live with the camera, in
+the controller, so both renderers glide the same way and a fallback in the
+middle of a gesture keeps the one it was in.
+
 **A tile appears whole, not layer by layer.** Rasterization is resumable a
 style layer at a time, so a surface that exists is not a surface that is
 done — composited as soon as it exists, a dense tile arrives as water, then

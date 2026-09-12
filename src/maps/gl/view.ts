@@ -199,6 +199,9 @@ interface SyntheticPointer {
   altKey?: boolean;
   metaKey?: boolean;
   deltaY?: number;
+  /** Whether the device measured the scroll rather than clicking it — a
+   *  touchpad's valuators against a wheel's notches. */
+  smooth?: boolean;
   keysym?: number;
   capturePointer?(): void;
   preventDefault?(): void;
@@ -524,7 +527,13 @@ class GlMapDriver implements MapView {
     },
     onMouseLeave: (): void => this._controller.pointerLeave(),
     onWheel: (ev: SyntheticPointer): void => {
-      if (this._controller.wheel(this._local(ev), ev.deltaY ?? 0)) {
+      if (
+        this._controller.wheel(
+          this._local(ev),
+          ev.deltaY ?? 0,
+          ev.smooth === true,
+        )
+      ) {
         ev.preventDefault?.();
       }
     },

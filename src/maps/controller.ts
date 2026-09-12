@@ -87,6 +87,82 @@ export function quantizeZoom(zoom: number): number {
 /** A wheel notch is this much zoom. */
 const WHEEL_ZOOM = 1 / 2.5;
 
+/**
+ * How fast a wheel's zoom closes on where the notches asked it to go — the
+ * time constant of the exponential the glide follows, so it is all but over
+ * after three of these.
+ *
+ * A notch is 0.384 of a level, which is six of {@link ZOOM_STEP}, and
+ * applying it the moment it arrives is a jump: the map is one size, and a
+ * frame later it is another. The device cannot help with that. A wheel
+ * *clicks* — the core protocol reports it as a button, and even over XI2 a
+ * mouse reports one notch at a time — so the smoothness has to come from
+ * the map spreading a notch over the frames after it, which is what every
+ * map client does with one. `ev.smooth` tells that device from the one that
+ * measured the scroll; see {@link MapController.wheel}.
+ */
+const WHEEL_EASE_MS = 55;
+
+/** What the wheel event's own step is worth, in the absence of a frame to
+ *  measure: one at 60Hz. The gesture has to move *now* — a wheel that waits
+ *  for the next frame to do anything reads as lag — and this is the distance
+ *  a frame would have moved it. */
+const EASE_FIRST_MS = 16;
+
+/**
+ * How often a glide steps: a 60Hz frame.
+ *
+ * A timer rather than the frame the step is drawn in, because a step *is* a
+ * camera move and the views already know what to do with one — the retained
+ * renderer claims the pane, the GL one asks for a frame — and that is the
+ * path a drag's every pointer step takes. Claiming from inside a frame is
+ * not: the claim lands on the frame being painted and brings nothing after
+ * it, which left a notch delivering its first step and then waiting for the
+ * settle timer to wake the map up.
+ *
+ * Nothing here outruns the display. The step is exponential in the *time*
+ * since the last one, so a view that paints at half this rate sees every
+ * other step and the same glide; what the timer decides is the finest the
+ * map can move, not how fast it gets there.
+ */
+const GLIDE_TICK_MS = 16;
+
+/**
+ * A zoom the wheel asked for and the frames are still delivering.
+ *
+ * The **target** is the whole of what the wheel has asked for, kept apart
+ * from the camera because the camera cannot hold it: the zoom is quantized
+ * to {@link ZOOM_STEP}, and a touchpad's fraction of a notch is smaller than
+ * that. Accumulating here is what stops a slow two-finger scroll rounding to
+ * nothing, event after event, and never moving the map at all.
+ */
+interface ZoomGlide {
+  /** Where the zoom is going: every delta of this gesture, unrounded. */
+  target: number;
+  /** The camera zoom the last step produced. If the camera is not there any
+   *  more, something else has moved it — an application that owns it,
+   *  `setCamera`, a fit — and this gesture is no longer the authority on
+   *  where the zoom goes. */
+  applied: number;
+  /** The point the zoom is about, in pane-local logical pixels: where the
+   *  pointer was for the last notch, which is what must not move. */
+  x: number;
+  y: number;
+  /** When the last step was applied — what the next one's distance is
+   *  measured from, so the glide is the same speed at any frame rate. */
+  at: number;
+  /**
+   * Whether the frames have anything left to deliver, or this is only the
+   * accumulator.
+   *
+   * `false` for a device that *measured* the scroll: a touchpad's stream of
+   * fractions is already as smooth as the hand that made it, and easing it
+   * would add lag to a gesture that has none. The record stays behind
+   * anyway, because the fractions still have to accumulate somewhere.
+   */
+  easing: boolean;
+}
+
 /** The props the controller reads — `<Map>`'s, whichever renderer draws. */
 export interface MapControllerProps {
   camera?: MapCamera;
@@ -161,7 +237,20 @@ type Gesture =
 const timers = globalThis as {
   setTimeout?(fn: () => void, ms: number): unknown;
   clearTimeout?(id: unknown): void;
+  performance?: { now(): number };
 };
+
+/**
+ * The clock a glide is measured on.
+ *
+ * `performance.now()` rather than the `Date.now()` the settle window uses:
+ * this one is compared across two frames of a 60Hz display, and `Date.now()`
+ * counts whole milliseconds, so a sixth of the step would be error. Reached
+ * through `globalThis` because `src/` compiles with `types: []`.
+ */
+function now(): number {
+  return timers.performance?.now() ?? Date.now();
+}
 
 /**
  * The settle timer, unref'd where the runtime allows it.
@@ -208,6 +297,8 @@ export class MapController {
   /** Wall-clock time the settle window closes at. */
   private _settleAt = 0;
   private _settleTimer: unknown = null;
+  private _glide: ZoomGlide | null = null;
+  private _glideTimer: unknown = null;
   private _pendingFit: {
     bounds: LngLatBounds;
     options?: FitBoundsOptions;
@@ -261,14 +352,18 @@ export class MapController {
   }
 
   /**
-   * Stop the settle timer — the one thing held that outlives a frame. The
-   * camera and the view stay, so a mount that React only pretends to tear
-   * down (a strict-mode double effect) comes back to a working controller;
-   * the next camera move arms the timer again.
+   * Stop the timers — the settle window's, and a wheel glide in flight.
+   * They are the only things held that outlive a frame. The camera and the
+   * view stay, so a mount that React only pretends to tear down (a
+   * strict-mode double effect) comes back to a working controller; the next
+   * camera move arms the settle timer again, and the next notch a glide.
    */
   dispose(): void {
     if (this._settleTimer !== null) timers.clearTimeout?.(this._settleTimer);
     this._settleTimer = null;
+    if (this._glideTimer !== null) timers.clearTimeout?.(this._glideTimer);
+    this._glideTimer = null;
+    this._glide = null;
   }
 
   private _minZoom(): number {
@@ -429,6 +524,134 @@ export class MapController {
       },
       false,
     );
+  }
+
+  /**
+   * A scroll, as a zoom: where the wheel wants the camera, and how the
+   * frames after it get there.
+   *
+   * **Two devices arrive here and they want opposite things.** A wheel
+   * *clicks*: one event carrying a whole notch, with nothing in between, so
+   * the notch becomes a target the frames after it glide towards. A touchpad
+   * *measures*: a stream of fractions that is already as smooth as the hand
+   * making it, which wants applying the moment it arrives and only needs
+   * keeping from rounding away. `ev.smooth` is core's word for which device
+   * this is — "a whole notch is worth easing towards, a stream of measured
+   * pixels is not" (react-x11's docs/events.md).
+   *
+   * Either way the *target* accumulates. A second notch arriving mid-glide
+   * lengthens the one gesture instead of starting another, and a fraction
+   * too small to move the quantized camera is still on the books when the
+   * next one arrives.
+   */
+  private _wheelZoom(
+    delta: number,
+    x: number,
+    y: number,
+    smooth: boolean,
+  ): void {
+    const at = now();
+    const camera = this.camera();
+    const glide = this._glide;
+    // Where this delta counts from: the target the wheel has already asked
+    // for, or the camera when there is nothing outstanding. A record whose
+    // `applied` is not where the camera is belongs to a camera something
+    // else has since moved, and is not this gesture's to add to.
+    //
+    // Nothing expires it by age. A glide that is still owed frames is still
+    // owed them however long the frames take, and what is left of a
+    // touchpad's is under half a step of zoom — too little to be a jump
+    // whenever it is spent.
+    const from =
+      glide && glide.applied === camera.zoom ? glide.target : camera.zoom;
+    // Clamped here as well as in `apply`: an accumulator allowed past the
+    // limit records notches the map cannot answer, and the scroll back out
+    // then does nothing until they are spent.
+    this._glide = {
+      target: clamp(from + delta, this._minZoom(), this._maxZoom()),
+      applied: camera.zoom,
+      x,
+      y,
+      at,
+      easing: !smooth,
+    };
+    // The event's own step, so the map moves under the notch that asked
+    // rather than on the frame after it — and then the rest, a frame at a
+    // time, until the target is reached.
+    this.stepZoom(at, EASE_FIRST_MS);
+    this._armGlide();
+  }
+
+  /** Keep stepping a glide until it arrives. Idempotent: a notch arriving
+   *  mid-glide moves the target and finds the timer already running. */
+  private _armGlide(): void {
+    if (this._glideTimer !== null || this._glide?.easing !== true) return;
+    const tick = (): void => {
+      this._glideTimer = null;
+      const glide = this._glide;
+      if (glide?.easing !== true) return;
+      const at = now();
+      // `stepZoom` clears the record when the target is reached or the
+      // camera refuses a step, and this re-arms only while one is left.
+      this.stepZoom(at, at - glide.at);
+      this._armGlide();
+    };
+    this._glideTimer = arm(tick, GLIDE_TICK_MS);
+  }
+
+  /**
+   * One step of a glide: how far the camera moves this frame.
+   *
+   * Exponential rather than a curve with a duration, because the distance is
+   * not known when it starts — a second notch moves the target while the
+   * first is still being delivered — and because `elapsed` being the real
+   * gap between two frames is what makes the glide the same speed on a
+   * display that paints 120 frames a second and one that manages 30.
+   *
+   * Returns whether the camera moved. The move itself is what brings the
+   * frame that shows it: `apply` tells the view, exactly as a drag's every
+   * pointer step does.
+   */
+  stepZoom(at: number, elapsed: number): boolean {
+    const glide = this._glide;
+    if (!glide) return false;
+    const camera = this.camera();
+    if (glide.applied !== camera.zoom) {
+      // The camera moved without this gesture: an application that owns it
+      // answering a wheel with something of its own, a `setCamera`, a fit.
+      // Whatever it was is more current than a notch from before it.
+      this._glide = null;
+      return false;
+    }
+    const remaining = glide.target - camera.zoom;
+    let step = glide.easing
+      ? remaining * (1 - Math.exp(-elapsed / WHEEL_EASE_MS))
+      : remaining;
+    // Never a step the quantized camera cannot show. The tail of an
+    // exponential is arbitrarily small, and a step that rounds to nothing
+    // would leave the glide asking for frames it has no use for — so the
+    // tail is walked a grid step at a time, and "the camera did not move" is
+    // left meaning what it says below.
+    if (Math.abs(step) < ZOOM_STEP) {
+      step =
+        Math.abs(remaining) < ZOOM_STEP
+          ? remaining
+          : Math.sign(remaining) * ZOOM_STEP;
+    }
+    const before = camera.zoom;
+    this.zoomAbout(step, glide.x, glide.y);
+    const zoom = this.camera().zoom;
+    glide.applied = zoom;
+    glide.at = at;
+    if (zoom === before) {
+      // The camera refused a step it cannot have rounded away — an
+      // application owns it and did not answer, or it is against its limit.
+      // A wheel's glide has nothing further to deliver; a touchpad's record
+      // stays behind as the accumulator, and the next fraction moves it on.
+      if (glide.easing) this._glide = null;
+      return false;
+    }
+    return true;
   }
 
   fitBounds(bounds: LngLatBounds, options?: FitBoundsOptions): void {
@@ -672,10 +895,10 @@ export class MapController {
    * — always, on a map that moves: a wheel over a map is never meant for
    * whatever is behind it.
    */
-  wheel(input: MapPointerInput, deltaY: number): boolean {
+  wheel(input: MapPointerInput, deltaY: number, smooth = false): boolean {
     if (!this._interactive()) return false;
     this.touch();
-    this.zoomAbout(-deltaY * WHEEL_ZOOM * 0.02, input.x, input.y);
+    this._wheelZoom(-deltaY * WHEEL_ZOOM * 0.02, input.x, input.y, smooth);
     return true;
   }
 

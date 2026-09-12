@@ -840,6 +840,25 @@ test('a wheel zooms about the pointer, and a double click zooms in', async () =>
   );
 });
 
+test('a wheel notch is eased rather than landing in one step', async () => {
+  const { handle, node } = await mountGlMap();
+  await userEvent.wheel(node, { deltaY: -1 });
+  // A notch is 0.384 of a level, and the glide is the controller's, so the
+  // GL renderer has it too: the event's own step is worth a frame, and the
+  // steps after it carry the rest. They are the controller's own timer
+  // rather than this view's frames, which is why they still happen here —
+  // the harness's server has no GLX, so nothing is ever drawn.
+  const first = handle.getCamera().zoom;
+  assert.ok(first > 12, `the notch moved the map at once: ${first}`);
+  assert.ok(first < 12.375, `but not all of it at once: ${first}`);
+  await new Promise((resolve) => setTimeout(resolve, 260));
+  const zoom = handle.getCamera().zoom;
+  assert.ok(
+    Math.abs(zoom - 12.375) < 1e-9,
+    `and the rest arrived after it: ${zoom}`,
+  );
+});
+
 // --- labels: anchors ---------------------------------------------------------------
 
 const LABEL_STYLE: MapStyleLayer[] = [
