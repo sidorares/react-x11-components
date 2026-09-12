@@ -12,17 +12,9 @@
 // is the whole frame, not a strip.
 //
 // **Input reaches the map through the pane's handlers**, which a press, a
-// drag and a wheel over the surface bubble up to. On a core that forwards
-// pointer input from a surface (react-x11#545, `forwardsPointer`) that is
-// the whole story on both backends. On an older core it is Cocoa's and
-// X11's wheel only: its hit test skips the surface for the pane behind it,
-// and an X11 *press* never gets that far — the child window selects presses
-// to hear the wheel, so the server delivers them there and nothing hands
-// them on — so this listens on the child window itself for press, motion,
-// release and leave, which ntk selects on demand; the implicit grab a press
-// starts keeps a drag coming even when the pointer leaves the map. Both
-// routes end at the controller methods the retained renderer's element
-// calls.
+// drag and a wheel over the surface bubble up to on both backends — the
+// pointer over a `<glarea>` is the tree's (react-x11#545) — and which end at
+// the controller methods the retained renderer's element calls.
 //
 // **A failure is `<Map>`'s to handle.** A surface that will not come up, a
 // connection with no direct GL, a context or a shader that will not build, a
@@ -155,10 +147,6 @@ class CostModel {
 
 interface AreaNode {
   requestFrame?(): void;
-  window?: unknown;
-  /** Set by a core that forwards presses and motion from the surface's own
-   *  window, as it does the wheel — see `_attachPointer`. */
-  forwardsPointer?: boolean;
 }
 
 interface PaneNode {
@@ -172,21 +160,6 @@ interface DrawInfo {
   width: number;
   height: number;
   node: object;
-}
-
-/** The part of an ntk pointer event this reads: device pixels, relative to
- *  the window it arrived at, the button in `keycode` and the modifier state
- *  in `buttons` (X11's, so Shift is bit 0 and Control bit 2). */
-interface NativePointer {
-  x: number;
-  y: number;
-  keycode?: number;
-  buttons?: number;
-}
-
-interface PointerWindow {
-  id?: unknown;
-  on?(name: string, listener: (ev: NativePointer) => void): void;
 }
 
 interface SyntheticPointer {
@@ -300,16 +273,9 @@ export interface GlMapPaneProps {
   role?: string;
   'aria-label'?: string;
   'data-testname'?: string;
-  /** Drawn above the surface — only ever given on a core that draws a
-   *  `<glarea>`'s children (`useSupports('glOverlay')`). */
+  /** Drawn above the surface, as core draws a `<glarea>`'s children — given
+   *  only where `useSupports('glOverlay')` says this connection does. */
   children?: ReactNode;
-}
-
-/** A mouse button, as opposed to a wheel notch, which X11 also reports as a
- *  press — of buttons 4 to 7. */
-function isButton(ev: NativePointer): boolean {
-  const button = ev.keycode ?? 1;
-  return button >= 1 && button <= 3;
 }
 
 class GlMapDriver implements MapView {
@@ -363,9 +329,6 @@ class GlMapDriver implements MapView {
   private _placedAt = -Infinity;
   private _pumpTimer: unknown = null;
   private _stats: MapFrameStats | null = null;
-  private _pointerWindow: unknown = null;
-  /** The last press on the X11 child window, for its click count. */
-  private _press = { time: 0, x: 0, y: 0, detail: 0 };
   private _announced = false;
   private _paneStyle: {
     base: Style | undefined;
@@ -509,7 +472,7 @@ class GlMapDriver implements MapView {
     };
   }
 
-  /** The pane's handlers — the whole of Cocoa's input, and X11's wheel. */
+  /** The pane's handlers — the whole of the map's input, on both backends. */
   readonly handlers = {
     onMouseDown: (ev: SyntheticPointer): void => {
       if (this._controller.pointerDown(this._input(ev)) === 'pan') {
@@ -544,71 +507,6 @@ class GlMapDriver implements MapView {
     },
   };
 
-  /**
-   * On X11, listen on the surface's own child window for what the server
-   * delivers there. A no-op on the Cocoa backend, whose surface is a layer
-   * with no events of its own — told apart by the X window id an ntk window
-   * has and a layer does not — and on a core that already forwards presses
-   * and motion from the surface to the pane, where listening here as well
-   * would take every press twice.
-   */
-  private _attachPointer(node: object): void {
-    const area = node as AreaNode;
-    const wnd = area.window as PointerWindow | null | undefined;
-    if (!wnd || wnd === this._pointerWindow) return;
-    if (typeof wnd.on !== 'function' || typeof wnd.id !== 'number') return;
-    if (area.forwardsPointer === true) return;
-    this._pointerWindow = wnd;
-    const input = (ev: NativePointer, detail: number): MapPointerInput => {
-      const scale = scaleOf(node);
-      const state = ev.buttons ?? 0;
-      // The surface fills the pane, so its origin is the pane's.
-      return {
-        x: ev.x / scale,
-        y: ev.y / scale,
-        button: ev.keycode ?? 1,
-        detail,
-        shiftKey: (state & 1) !== 0,
-        ctrlKey: (state & 4) !== 0,
-        altKey: (state & 8) !== 0,
-        metaKey: (state & 64) !== 0,
-      };
-    };
-    wnd.on('mousedown', (ev) => {
-      if (!isButton(ev)) return;
-      const detail = this._clickCount(ev, scaleOf(node));
-      if (this._controller.pointerDown(input(ev, detail)) === 'pan') {
-        this._pane?.focus?.();
-      }
-    });
-    wnd.on('mousemove', (ev) => {
-      const at = input(ev, 0);
-      if (this._controller.dragging) this._controller.pointerDrag(at);
-      else this._controller.pointerMove(at);
-    });
-    wnd.on('mouseup', (ev) => {
-      if (!isButton(ev)) return;
-      this._controller.pointerUp(input(ev, this._press.detail));
-    });
-    wnd.on('mouseout', () => this._controller.pointerLeave());
-  }
-
-  /** Core's click count, for presses core never sees: repeated presses
-   *  close together in time and space count up. */
-  private _clickCount(ev: NativePointer, scale: number): number {
-    const at = Date.now();
-    const last = this._press;
-    const slop = 4 * scale;
-    const detail =
-      at - last.time < 400 &&
-      Math.abs(ev.x - last.x) <= slop &&
-      Math.abs(ev.y - last.y) <= slop
-        ? last.detail + 1
-        : 1;
-    this._press = { time: at, x: ev.x, y: ev.y, detail };
-    return detail;
-  }
-
   // --- failure ------------------------------------------------------------------
 
   readonly surfaceError = (error: Error): void => {
@@ -637,7 +535,6 @@ class GlMapDriver implements MapView {
       if ((gl as { backend?: string }).backend !== 'direct') {
         throw new Error(INDIRECT);
       }
-      this._attachPointer(info.node);
       const controller = this._controller;
       // A fit asked for before layout had a size lands in the first frame
       // that has one, and this frame draws it.

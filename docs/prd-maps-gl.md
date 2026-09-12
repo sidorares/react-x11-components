@@ -219,26 +219,29 @@ not of data structure — nothing in it needs a serializer.
 
 A `<glarea>` is a window of its own — a CALayer on the Cocoa backend, a child
 X window on X11 — and that is why the first version of `<GlMap>` could not be
-panned: its handlers were on the surface, and nothing is ever dispatched
-there. Core's hit test skips a window-owning node (it is not in its parent's
-paint order) and answers with the box _behind_ it, so on Cocoa every press,
-drag and wheel went to the parent and bubbled away. On X11 the wheel does
-reach the surface — core forwards it from the child window, named at the
-node — but a _press_ never leaves the child window: the child selects button
-presses in order to hear the wheel, so the server delivers them there, and
-nothing hands them on.
+panned: its handlers were on the surface, and nothing was ever dispatched
+there. Core's hit test skipped a window-owning node (it is not in its
+parent's paint order) and answered with the box _behind_ it, so on Cocoa
+every press, drag and wheel went to the parent and bubbled away. On X11 the
+wheel did reach the surface — core forwarded it from the child window, named
+at the node — but a _press_ never left the child window: the child selected
+button presses in order to hear the wheel, so the server delivered them
+there, and nothing handed them on.
 
 So the gesture handlers live on a focusable pane box around the surface,
-which is what Cocoa's input and X11's forwarded wheel reach; and on X11 the
-controller also listens on the child window itself for press, motion and
-release — ntk selects the motion and release bits on demand, and the
-implicit grab a press starts keeps a drag coming after the pointer leaves the
-map. Drag pans; the wheel and a double click zoom about the pointer (Shift
-for out); the arrows and +/− work once the map has focus. A wheel notch is
-eased over the frames after it rather than applied where it lands, and a
-touchpad's measured fractions (`ev.smooth`) are applied as they arrive — the
-controller's glide, so the two renderers feel the same under a hand and a
-fallback mid-gesture keeps gliding.
+which is what Cocoa's input and X11's forwarded wheel reached; and on X11 the
+controller also listened on the child window itself for press, motion and
+release — ntk selected the motion and release bits on demand, and the
+implicit grab a press started kept a drag coming after the pointer left the
+map. Core has since made the pointer over a `<glarea>` the tree's
+(react-x11#545) — X delivers a press, a motion or a wheel over the surface to
+the owning window — so the pane box hears all of it on both backends, and the
+child-window listeners are gone. Drag pans; the wheel and a double click zoom
+about the pointer (Shift for out); the arrows and +/− work once the map has
+focus. A wheel notch is eased over the frames after it rather than applied
+where it lands, and a touchpad's measured fractions (`ev.smooth`) are applied
+as they arrive — the controller's glide, so the two renderers feel the same
+under a hand and a fallback mid-gesture keeps gliding.
 
 Checked three ways, each through the real dispatch: the harness's X server
 (injected presses, a drag, a wheel, a double click — `test/maps-gl.test.ts`);
@@ -589,7 +592,7 @@ surface — are attached to the pull request that closed #101.
 ## Platform findings
 
 Each of these cost a wrong answer before it was understood, and four of them
-are candidates for upstream issues.
+were candidates for upstream issues; core has since fixed one (6).
 
 1. **XQuartz's Apple-DRI surface has no stencil buffer.** ntk's CGL context
    (`renderingcontext_cgl.js`) passes only `depthSize` to `apple.Context`,
@@ -618,16 +621,16 @@ are candidates for upstream issues.
    unchanged, once this ProMotion panel had moved. The X11 path reached
    ~100 Hz at the time of the 75. A frame-rate comparison on this backend
    is only good against a control run in the same minutes.
-6. **Pointer input goes around a `<glarea>`, differently on each backend.**
-   Core's hit test skips the surface, so on Cocoa everything lands on the
-   box behind it; on X11 only the wheel is forwarded, and a press is
-   swallowed by the child window, which selects presses to hear the wheel.
-   `<GlMap>` handles both — its pane box, and listeners on the child window
-   ("Input", above) — but every GL element would have to learn the same two
-   routes, and 2D content still cannot overlap the surface, so a GL map
-   draws its own labels, markers and attribution. _Upstream candidate: core
-   forwarding presses and motion from the child window the way it forwards
-   the wheel._
+6. **Pointer input went around a `<glarea>`, differently on each backend.**
+   Core's hit test skipped the surface, so on Cocoa everything landed on the
+   box behind it; on X11 only the wheel was forwarded, and a press was
+   swallowed by the child window, which selected presses to hear the wheel.
+   `<GlMap>` handled both — its pane box, and listeners on the child window
+   ("Input", above) — but every GL element would have had to learn the same
+   two routes, and 2D content could not overlap the surface either, which is
+   why a GL map draws its own labels, markers and attribution. _Fixed
+   upstream: react-x11#545 makes the pointer over a surface the tree's, and
+   #546 draws a surface's children above it._
 7. **A worker under `tsx` just works.** Workers inherit tsx's loader through
    `execArgv`, and a `.js` specifier resolves to the `.ts` source, so
    `new Worker(new URL('./build-worker.js', import.meta.url))` runs in
@@ -685,7 +688,7 @@ both behind the one `<Map>`, which chooses for itself.**
 
 ### Why the retained renderer stays
 
-It is the only renderer in five places the GL one cannot reach, and none of
+It is the only renderer in four places the GL one cannot reach, and none of
 them is going away:
 
 1. **No direct GL.** An X11 connection gets indirect GLX unless the app asks
@@ -702,11 +705,11 @@ them is going away:
 4. **Capture.** A GL surface is invisible to window capture on both backends
    (finding 3). A retained map is in the window's own pixels, so a snapshot,
    a documentation screenshot or a print sees it.
-5. **2D over the map, on an older core.** `<Map>`'s `children` — a legend, a
-   control panel — are laid out over the pane, and a `<glarea>` is stacked
-   above every 2D thing in its window. Under GL they would be hidden on a
-   core from before react-x11 2.13 (#546), which draws a surface's children
-   above it (`useSupports('glOverlay')`).
+
+There was a fifth, and it did go away: 2D over the map. `<Map>`'s `children`
+— a legend, a control panel — are laid out over the pane, and a `<glarea>`
+is stacked above every 2D thing in its window, so under GL they were hidden
+until react-x11#546 drew a surface's children above it.
 
 What keeping it costs is a second draw path, which is less than it sounds:
 everything above the draw is shared already, or can be.
@@ -760,10 +763,13 @@ a rewrite.
 
 1. an explicit `renderer`, or the environment;
 2. `useSupports('shaders')` — whether this connection has direct GL;
-3. a capability gate — nothing the map uses is missing from the GL path (the
-   list below) — with a DEV-mode line naming the prop that kept it retained;
-4. at run time, a GL failure (`<glarea onError>`: no surface, no context, a
+3. at run time, a GL failure (`<glarea onError>`: no surface, no context, a
    shader) moves that map to the retained renderer and reports it.
+
+A capability gate sat between the last two while GL caught up — nothing the
+map uses missing from the GL path (the list below), with a DEV-mode line
+naming the prop that kept a map retained. Its last entry was `children`, and
+it went with react-x11#546.
 
 Three decisions go with it:
 
@@ -795,9 +801,8 @@ In the order of how many maps each one blocked — all of them in now:
    `test/maps-renderers.test.ts` runs one suite against both renderers.
 4. **Raster sources** as textures, drawn whole past the source's depth, and
    **circle layers** as instanced discs.
-5. **`children` over the map** — react-x11 2.13 (#546) draws a surface's
-   children above it. On a core from before it, `'auto'` keeps a map with
-   children retained.
+5. **`children` over the map** — react-x11#546 draws a surface's children
+   above it. Until it did, `'auto'` kept a map with children retained.
 
 ### Order of work
 
@@ -809,11 +814,11 @@ In the order of how many maps each one blocked — all of them in now:
 4. `'auto'` becomes the default, once both backends have soaked ("The soak",
    above) and a test proves the fallback — a GL that fails on its first
    frame. **Done** (#101).
-5. In core, alongside, and released in react-x11 2.13.0: 2D over a
-   `<glarea>` (#546); press and motion forwarding from its child window
-   (#545, which `<Map>` reads as `forwardsPointer`); x11-dri 0.8 for every
-   app (#547); and the `glPolicy` question answered in
-   `<Map>`'s documentation rather than by a new default for X11 — a map
+5. In core, alongside: 2D over a `<glarea>` (react-x11#546), the pointer
+   over it delivered to the owning window (react-x11#545) and x11-dri 0.8
+   for every app (react-x11#547) — all three **Done**, and `<Map>` no
+   longer works around the first two; and the `glPolicy` question answered
+   in `<Map>`'s documentation rather than by a new default for X11 — a map
    cannot raise its connection's policy, and an app that wants GL on X11
    says so once, at `createRoot`.
 

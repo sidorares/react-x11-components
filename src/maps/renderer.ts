@@ -16,16 +16,11 @@
 //     `useSupports('shaders')`, which on X11 needs `glPolicy: 'auto'` and a
 //     DRI3 or Apple-DRI server, and on the Cocoa backend is always true once
 //     its probe has answered.
-//  3. A capability gate: nothing the map uses is missing from the GL
-//     renderer. See {@link capabilityBlockers}.
-//  4. At run time, a GL failure moves the map to the retained renderer, with
+//  3. At run time, a GL failure moves the map to the retained renderer, with
 //     its camera and its handle intact. That one is sticky.
 //
 // A map that asked for `'gl'` by name never falls back: it gets GL, or it
 // gets `onError`.
-import { Children } from 'react';
-import type { ReactNode } from 'react';
-
 import type {
   MapRenderer,
   MapRendererReason,
@@ -64,9 +59,6 @@ export interface RendererInput {
    * tiles twice. A map in that state shows its background and waits.
    */
   probing?: boolean;
-  /** What the map uses that the GL renderer does not do yet, by prop name
-   *  — {@link capabilityBlockers}. */
-  blockers: readonly string[];
   /** Whether GL has already failed on this map. */
   failed: boolean;
 }
@@ -114,32 +106,7 @@ export function chooseRenderer(input: RendererInput): RendererChoice {
       ? { renderer: 'pending', reason: null, asked }
       : { renderer: 'retained', reason: 'no-direct-gl', asked };
   }
-  if (input.blockers.length > 0) {
-    return { renderer: 'retained', reason: 'capability', asked };
-  }
   return { renderer: 'gl', reason: null, asked };
-}
-
-/**
- * What in a map's props keeps it off the GL renderer under `'auto'`, by prop
- * name.
- *
- * The list is what the GL renderer does not do yet, and it shrank to one
- * entry as the renderer learned the rest: **`children`**, because a
- * `<glarea>` is stacked above every 2D thing in its window, so a legend laid
- * over a GL map would be hidden under it. That one is core's to lift
- * (react-x11 putting 2D content above a GL surface); `glOverlay` says it
- * has.
- */
-export function capabilityBlockers(
-  props: { children?: ReactNode },
-  supports: { glOverlay?: boolean } = {},
-): string[] {
-  const out: string[] = [];
-  if (!supports.glOverlay && Children.toArray(props.children).length > 0) {
-    out.push('children');
-  }
-  return out;
 }
 
 /** The environment's override, read off `globalThis` because `src/` compiles

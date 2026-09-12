@@ -138,7 +138,9 @@ export class HtmlViewNode extends Node {
   private _cascade: Cascade | null = null;
   private _tree: BoxTree | null = null;
   private _stale: Stale = Stale.Everything;
-  private _laidOutAt = -1;
+  /** The width the document was last laid out at. Not `_laidOutAt`: core's
+   *  `Node` has a method of that name, which a field would hide. */
+  private _laidOutWidth = -1;
   private _mediaBand = -1;
   private _documentHeight = 0;
   private _documentWidth = 0;
@@ -369,7 +371,7 @@ export class HtmlViewNode extends Node {
       this._sweep();
       if (this._stale < Stale.Style) this._stale = Stale.Style;
     }
-    if (this._stale === Stale.Nothing && this._laidOutAt === target) return;
+    if (this._stale === Stale.Nothing && this._laidOutWidth === target) return;
 
     if (this._stale >= Stale.Style || !this._cascade) {
       this._restyle(target);
@@ -398,12 +400,12 @@ export class HtmlViewNode extends Node {
       });
       this._textPoints = null;
       this._pointsAreUnits = null;
-      this._laidOutAt = -1;
+      this._laidOutWidth = -1;
     }
 
     if (
       this._tree &&
-      (this._laidOutAt !== target || this._stale >= Stale.Layout)
+      (this._laidOutWidth !== target || this._stale >= Stale.Layout)
     ) {
       const result = layoutDocument(
         this._tree,
@@ -413,7 +415,7 @@ export class HtmlViewNode extends Node {
       );
       this._documentWidth = result.width;
       this._documentHeight = result.height;
-      this._laidOutAt = target;
+      this._laidOutWidth = target;
       this._reportControls();
     }
     this._stale = Stale.Nothing;

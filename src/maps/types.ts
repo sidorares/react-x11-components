@@ -32,8 +32,8 @@ export type MapRenderer = 'gl' | 'retained';
 
 /**
  * What `<Map renderer>` asks for: one of the two renderers, or `'auto'` —
- * GL wherever this connection has direct GL and nothing the map uses is
- * missing from it, and the retained renderer everywhere else.
+ * GL wherever this connection has direct GL, and the retained renderer
+ * everywhere else.
  */
 export type MapRendererRequest = 'auto' | MapRenderer;
 
@@ -43,9 +43,6 @@ export type MapRendererReason =
   /** The connection has no direct GL — indirect GLX, or none at all —
    *  so `useSupports('shaders')` is false. */
   | 'no-direct-gl'
-  /** The map uses something the GL renderer does not do yet. A one-time
-   *  development warning names the prop. */
-  | 'capability'
   /** GL failed at run time: no surface, a context that would not create, a
    *  shader that would not compile, a throw from a frame. */
   | 'gl-failed'
@@ -401,18 +398,17 @@ export interface MapGlProps {
 export interface MapProps extends Omit<MapViewProps, 'ref'>, MapGlProps {
   ref?: Ref<MapHandle>;
   /**
-   * Which renderer draws the map: `'retained'` (the default) composites
-   * rasterized tile pictures and runs anywhere; `'gl'` draws every frame
-   * from the vector data on the GPU, and needs direct GL; `'auto'` takes GL
-   * where the connection has it and nothing the map uses is missing from
-   * it, and the retained renderer everywhere else. `REACT_X11_MAP_RENDERER`
-   * overrides it for every map. See the docs page's "Renderers".
+   * Which renderer draws the map: `'retained'` composites rasterized tile
+   * pictures and runs anywhere; `'gl'` draws every frame from the vector
+   * data on the GPU, and needs direct GL; `'auto'`, the default, takes GL
+   * where the connection has it and the retained renderer everywhere else.
+   * `REACT_X11_MAP_RENDERER` overrides it for every map. See the docs page's
+   * "Renderers".
    */
   renderer?: MapRendererRequest;
   /** The map is drawn with a renderer other than the one it asked for, or
-   *  changed renderer: `'auto'` finding no direct GL, a prop GL does not
-   *  do yet, or GL failing at run time. The camera and the handle carry
-   *  over. */
+   *  changed renderer: `'auto'` finding no direct GL, or GL failing at run
+   *  time. The camera and the handle carry over. */
   onRendererChange?: (renderer: MapRenderer, reason: MapRendererReason) => void;
   /**
    * GL failed, on a map that asked for it by name (`renderer="gl"`). Such a
@@ -423,8 +419,10 @@ export interface MapProps extends Omit<MapViewProps, 'ref'>, MapGlProps {
    */
   onError?: (error: Error) => void;
   /** Anything absolutely positioned over the map — a legend, a control
-   *  panel. Laid out as siblings of the drawn pane rather than inside it,
-   *  because a registered element paints its children *before* its own
-   *  drawing and anything inside would be painted over. */
+   *  panel. On the retained renderer they are siblings of the drawn pane
+   *  rather than inside it, because a registered element paints its
+   *  children *before* its own drawing and anything inside would be painted
+   *  over; on GL they go inside the surface, whose children core draws
+   *  above it — opaquely on X11, so give a legend a background of its own. */
   children?: ReactNode;
 }
