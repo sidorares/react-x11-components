@@ -657,7 +657,7 @@ export class ChartPlotNode extends Node {
 
   // --- render host ---------------------------------------------------------
 
-  private _host(): RenderHost {
+  private _renderHost(): RenderHost {
     return {
       scatterGrid: (id, key, _n) => {
         let grid = this._scatterGrids.get(id);
@@ -755,7 +755,7 @@ export class ChartPlotNode extends Node {
       xScale: layout.xScale,
       yScale: layout.yScale,
       stats,
-      host: this._host(),
+      host: this._renderHost(),
       scale: this._scale,
     };
     for (const geom of layout.geoms) renderSeries(env, geom);

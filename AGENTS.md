@@ -394,8 +394,8 @@ imports — `react-x11` itself plus `/host`, `/node`, `/style`, `/keysyms`,
 `/ntk`, `/yoga`, `/jsx-runtime`, and `/test` and `/debug` from the suite.
 Both specs are ordinary registry ranges:
 
-- `peerDependencies.react-x11` is `^2.11.0` — what a consumer must supply.
-- `devDependencies.react-x11` is `^2.11.0` — what the suite runs against.
+- `peerDependencies.react-x11` is `^2.13.0` — what a consumer must supply.
+- `devDependencies.react-x11` is `^2.13.0` — what the suite runs against.
 
 Keep them the same range. They are one decision written twice, and a
 devDependency that drifts above the peer range means the suite passes
@@ -430,6 +430,15 @@ it up. **The floor is a running one and moves often** — every move since
 - `^2.11.0` — the eyedropper's macOS rung, `NSColorSampler`
   (react-x11#517/#520 — before it, `useEyedropper().supported` was true on
   the Cocoa backend and the first press threw).
+- `^2.13.0` — the pointer over a `<glarea>` is the tree's (react-x11#545).
+  Before it the surface's own child window heard the wheel as button 4/5
+  presses and handed them on, so a touchpad over `<Map renderer="gl">`
+  arrived as whole notches whatever XI2 had negotiated; now X delivers it to
+  the owning window, whose XI2 selection carries the fractions, and the map's
+  wheel glide gets `ev.smooth` on both renderers. It also carried
+  react-x11#546, 2D children drawn over a surface: `useSupports('glOverlay')`
+  answers true on both backends now, so a map's children no longer hold
+  `renderer="auto"` on the retained renderer.
 
 Do not reach back for a `github:` spec to get at unreleased core — cut a core
 release instead.

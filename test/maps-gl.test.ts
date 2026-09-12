@@ -859,6 +859,22 @@ test('a wheel notch is eased rather than landing in one step', async () => {
   );
 });
 
+test("a touchpad's fractions over the GL map are applied as they arrive", async () => {
+  const { handle, node } = await mountGlMap();
+  // The same accumulator as `<Map>`'s retained renderer, reached through
+  // the GL renderer's pane — which is where core delivers a wheel over the
+  // surface since react-x11#545, fractions and `ev.smooth` included. A
+  // twenty-fourth of a notch is too small for the quantized camera; eight
+  // of them are two steps, with no frame or timer in between.
+  await userEvent.wheel(node, { deltaY: -1 / 24, smooth: true });
+  assert.equal(handle.getCamera().zoom, 12, 'one fraction is too small');
+  for (let i = 0; i < 7; i++) {
+    await userEvent.wheel(node, { deltaY: -1 / 24, smooth: true });
+  }
+  const zoom = handle.getCamera().zoom;
+  assert.ok(Math.abs(zoom - 12.125) < 1e-9, `eight of them are two: ${zoom}`);
+});
+
 // --- labels: anchors ---------------------------------------------------------------
 
 const LABEL_STYLE: MapStyleLayer[] = [
@@ -1755,7 +1771,7 @@ test("an 'auto' map on a connection with no direct GL is drawn retained, and say
   assert.deepStrictEqual(changes, [['retained', 'no-direct-gl']]);
 });
 
-test('a map with children stays retained under auto, and the prop is named once', async () => {
+test('a map with children goes to GL under auto, on a core that draws over the surface', async () => {
   await loadGlRenderer();
   const warnings: string[] = [];
   const warn = console.warn;
@@ -1785,12 +1801,22 @@ test('a map with children stays retained under auto, and the prop is named once'
       );
     await result.rerender(map());
     await act(async () => {});
+    // `children` used to hold an 'auto' map on the retained renderer: a
+    // `<glarea>` was stacked over every 2D thing in its window, so a legend
+    // laid over a GL map would have been hidden under it. react-x11#546
+    // draws a surface's children above it, `useSupports('glOverlay')` says
+    // so, and the map goes to GL with its legend. GL is what it *tried*:
+    // 'gl-failed' is the one reason 'auto' gives only after choosing GL,
+    // and the harness's server has no GLX to give it one.
     assert.strictEqual(kindOf(result.getByTestName('map')), 'mapview');
-    assert.deepStrictEqual(changes, [['retained', 'capability']]);
+    assert.deepStrictEqual(changes, [['retained', 'gl-failed']]);
     await result.rerender(map());
     await act(async () => {});
+    // …and nothing blamed the prop. (`capabilityBlockers` still answers for
+    // a connection that cannot overlay — see the test above that asks it
+    // directly.)
     const named = warnings.filter((w) => w.includes('`children`'));
-    assert.strictEqual(named.length, 1, warnings.join('\n'));
+    assert.strictEqual(named.length, 0, warnings.join('\n'));
   } finally {
     console.warn = warn;
   }
