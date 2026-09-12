@@ -5,10 +5,13 @@
 // plugin reads.
 import { test } from 'node:test';
 import assert from 'node:assert';
+import { setBlockType, wrapIn } from 'prosemirror-commands';
+import { history, undo } from 'prosemirror-history';
 import { keydownHandler } from 'prosemirror-keymap';
 import { Fragment, Schema, Slice } from 'prosemirror-model';
 import type { Node as PMNode } from 'prosemirror-model';
 import { EditorState, TextSelection } from 'prosemirror-state';
+import type { Command, PluginView, Transaction } from 'prosemirror-state';
 import type { EditorView } from 'prosemirror-view';
 
 import { parse } from '../src/internal/markdown/parse.js';
@@ -29,6 +32,18 @@ import {
   markdownFromDoc,
 } from '../src/rich-text-editor/markdown.js';
 import { schema } from '../src/rich-text-editor/schema.js';
+import {
+  acceptSuggestion,
+  dismissSuggestion,
+  filterSuggestions,
+  selectSuggestion,
+  suggestionState,
+  suggestions,
+} from '../src/rich-text-editor/suggest.js';
+import type {
+  Suggester,
+  SuggestionItem,
+} from '../src/rich-text-editor/suggest.js';
 
 const { nodes: N, marks: M } = schema;
 const p = (...content: (PMNode | string)[]): PMNode =>
@@ -743,4 +758,370 @@ test("keys: the backend's primary modifier is prosemirror-keymap's Mod, on any h
   assert.ok(!press({ metaKey: true }, 'ctrl'), 'X11: Super+B is not Mod-b');
   assert.strictEqual(fired, 2);
   void TextSelection;
+});
+
+// --- suggestions ---------------------------------------------------------------------
+//
+// The plugin, run against the three things of a view it touches — `state`,
+// `dispatch`, and its own plugin view, which asks for the rows — so what opens
+// a list, which answer is kept and what a row does are asserted with no
+// display. Typing is `insertText` at the caret, as the view types.
+
+const PEOPLE: SuggestionItem[] = [
+  { label: 'Ada Lovelace', insert: '@ada' },
+  { label: 'Grace Hopper', insert: '@grace' },
+  { label: 'Alan Turing', insert: '@alan' },
+];
+
+interface Suggesting {
+  state: EditorState;
+  editable: boolean;
+  dispatch(tr: Transaction): void;
+  /** Type, a character at a time, at the caret. */
+  type(text: string): void;
+  /** Move the caret — no edit. */
+  caret(pos: number): void;
+  run(command: Command): boolean;
+  /** A plain key, or a chord, as the plugin's `handleKeyDown` is handed it. */
+  press(key: string, mods?: Partial<Record<Modifier, boolean>>): boolean;
+}
+
+type Modifier = 'shiftKey' | 'ctrlKey' | 'altKey' | 'metaKey';
+
+function suggesting(
+  suggesters: readonly Suggester[],
+  ...blocks: PMNode[]
+): Suggesting {
+  const plugin = suggestions(suggesters);
+  let pluginView: PluginView | null = null;
+  const h: Suggesting = {
+    state: EditorState.create({
+      doc: blocks.length ? doc(...blocks) : doc(p()),
+      plugins: [plugin, history()],
+    }),
+    editable: true,
+    dispatch(tr) {
+      const prev = h.state;
+      h.state = h.state.apply(tr);
+      pluginView?.update?.(h as unknown as EditorView, prev);
+    },
+    type(text) {
+      for (const ch of text) h.dispatch(h.state.tr.insertText(ch));
+    },
+    caret(pos) {
+      h.dispatch(
+        h.state.tr.setSelection(TextSelection.create(h.state.doc, pos)),
+      );
+    },
+    run: (command) => command(h.state, h.dispatch, h as unknown as EditorView),
+    press(key, mods = {}) {
+      const event = {
+        key,
+        shiftKey: false,
+        ctrlKey: false,
+        altKey: false,
+        metaKey: false,
+        ...mods,
+      };
+      return !!plugin.props.handleKeyDown?.call(
+        plugin,
+        h as unknown as EditorView,
+        event as unknown as KeyboardEvent,
+      );
+    },
+  };
+  h.caret(TextSelection.atEnd(h.state.doc).head);
+  pluginView = plugin.spec.view?.(h as unknown as EditorView) ?? null;
+  return h;
+}
+
+/** Rows arrive a turn after the query they answer. */
+const settle = (): Promise<void> =>
+  new Promise((resolve) => setImmediate(resolve));
+
+const labels = (h: Suggesting): string[] | null =>
+  suggestionState(h.state)?.items?.map((item) => item.label) ?? null;
+
+test('suggestions: a trigger typed at a word’s start opens a list, and the rows answer the word', async () => {
+  const h = suggesting([{ char: '@', items: PEOPLE }], p('hi '));
+  assert.strictEqual(suggestionState(h.state), null);
+  h.type('@');
+  const opened = suggestionState(h.state);
+  assert.ok(opened, 'the trigger opened a list');
+  assert.deepStrictEqual(
+    [opened.char, opened.query, opened.from, opened.to],
+    ['@', '', 4, 5],
+  );
+  assert.strictEqual(opened.items, null, 'no rows until they are answered');
+  await settle();
+  assert.deepStrictEqual(labels(h), [
+    'Ada Lovelace',
+    'Grace Hopper',
+    'Alan Turing',
+  ]);
+  h.type('a');
+  await settle();
+  assert.deepStrictEqual(
+    [suggestionState(h.state)?.query, suggestionState(h.state)?.to],
+    ['a', 6],
+  );
+  assert.deepStrictEqual(
+    labels(h),
+    ['Ada Lovelace', 'Alan Turing', 'Grace Hopper'],
+    'labels that start with it, then one that has it',
+  );
+  h.type('l');
+  await settle();
+  assert.deepStrictEqual(labels(h), ['Alan Turing']);
+});
+
+test('suggestions: not inside a word, not in code, and not for a caret that only moves into a trigger’s word', async () => {
+  const at = [{ char: '@', items: PEOPLE }];
+  const mail = suggesting(at, p('mail me'));
+  mail.type('@x');
+  assert.strictEqual(suggestionState(mail.state), null, 'me@x is an address');
+  const fence = suggesting(at, N.code_block.create(null, schema.text('x ')));
+  fence.type('@');
+  assert.strictEqual(suggestionState(fence.state), null, 'a fence');
+  const code = suggesting(at, p(schema.text('x ', [M.code.create()])));
+  code.type('@');
+  assert.strictEqual(suggestionState(code.state), null, 'inline code');
+  const reset = suggesting(at, p());
+  reset.dispatch(
+    reset.state.tr.insertText('@a').setMeta('addToHistory', false),
+  );
+  assert.strictEqual(
+    suggestionState(reset.state),
+    null,
+    'an edit that is not the user’s — a reset, a collaborator’s',
+  );
+
+  const h = suggesting(at, p('ask @ada later'));
+  h.caret(8);
+  assert.strictEqual(suggestionState(h.state), null, 'the caret moving in');
+  h.type('m');
+  const edited = suggestionState(h.state);
+  assert.deepStrictEqual(
+    [edited?.query, edited?.from, edited?.to],
+    ['adma', 5, 10],
+    'an edit in the word opens it, and the query is the whole word',
+  );
+  h.caret(3);
+  assert.strictEqual(suggestionState(h.state), null, 'leaving closes it');
+  h.caret(8);
+  assert.strictEqual(suggestionState(h.state), null, 'and it stays closed');
+});
+
+test('suggestions: Escape closes the list for its trigger; typing on does not reopen it, a new trigger does', async () => {
+  const h = suggesting([{ char: '@', items: PEOPLE }]);
+  h.type('@a');
+  await settle();
+  assert.ok(h.run(dismissSuggestion));
+  assert.strictEqual(suggestionState(h.state), null);
+  h.type('d');
+  assert.strictEqual(suggestionState(h.state), null, 'the word goes on');
+  assert.ok(!h.run(dismissSuggestion), 'nothing left to dismiss');
+  h.type(' @g');
+  assert.strictEqual(suggestionState(h.state)?.query, 'g', 'a new trigger');
+});
+
+test('suggestions: the list takes plain keys, and only while it has rows', async () => {
+  const h = suggesting([{ char: '@', items: PEOPLE }]);
+  assert.ok(!h.press('ArrowDown'), 'no list');
+  h.type('@');
+  assert.ok(!h.press('Enter'), 'no rows yet: Enter is the editor’s');
+  await settle();
+  assert.ok(h.press('ArrowDown'));
+  assert.ok(h.press('ArrowDown'));
+  assert.ok(h.press('ArrowDown'), 'Down past the last row is still the list’s');
+  assert.strictEqual(suggestionState(h.state)?.selected, 2, 'held to the rows');
+  assert.ok(h.press('ArrowUp'));
+  assert.ok(!h.press('ArrowUp', { shiftKey: true }), 'Shift extends, as ever');
+  assert.ok(!h.press('Enter', { ctrlKey: true }), 'a chord is the keymap’s');
+  h.editable = false;
+  assert.ok(!h.press('Enter'), 'a read-only editor takes no row');
+  h.editable = true;
+  assert.ok(h.press('Tab'));
+  assert.strictEqual(h.state.doc.textContent, '@grace ');
+  assert.strictEqual(suggestionState(h.state), null);
+
+  h.type('@');
+  await settle();
+  assert.ok(h.press('Escape'));
+  assert.strictEqual(suggestionState(h.state), null);
+  assert.ok(!h.run(selectSuggestion(1)), 'no rows to highlight');
+});
+
+test('suggestions: a row replaces the trigger and its whole word, then a space — or the space already there', async () => {
+  const h = suggesting([{ char: '@', items: PEOPLE }], p('to '));
+  h.type('@gr');
+  await settle();
+  assert.ok(h.run(acceptSuggestion()));
+  assert.strictEqual(h.state.doc.textContent, 'to @grace ');
+  assert.strictEqual(h.state.selection.head, 11, 'the caret after the space');
+  assert.ok(h.run(undo));
+  assert.strictEqual(
+    h.state.doc.textContent,
+    'to @gr',
+    'one undo gives back what was typed, however soon the choice came',
+  );
+  assert.strictEqual(
+    suggestionState(h.state)?.query,
+    'gr',
+    'and the list with it, to choose again',
+  );
+
+  const kept = suggesting([{ char: '@', items: PEOPLE }], p('to '));
+  kept.type('@gr');
+  await settle();
+  assert.ok(kept.run(acceptSuggestion()));
+  kept.dispatch(kept.state.tr.delete(10, 11));
+  assert.strictEqual(
+    suggestionState(kept.state),
+    null,
+    'what a row put in is not a word to reopen on',
+  );
+
+  const mid = suggesting([{ char: '@', items: PEOPLE }], p('cc @la later'));
+  mid.caret(5);
+  mid.type('a');
+  await settle();
+  assert.deepStrictEqual(labels(mid), ['Alan Turing']);
+  assert.ok(mid.run(acceptSuggestion()));
+  assert.strictEqual(mid.state.doc.textContent, 'cc @alan later');
+  assert.strictEqual(mid.state.selection.head, 10);
+
+  const issues = suggesting([
+    { char: '#', items: [{ label: '42', detail: 'Crash on paste' }] },
+  ]);
+  issues.type('#4');
+  await settle();
+  assert.ok(issues.run(acceptSuggestion(0)));
+  assert.strictEqual(
+    issues.state.doc.textContent,
+    '#42 ',
+    'by default, the trigger and the label',
+  );
+
+  const href = 'https://example.com/ada';
+  const linked = suggesting([
+    {
+      char: '@',
+      items: [
+        {
+          label: 'Ada',
+          insert: schema.text('@ada', [M.link.create({ href })]),
+        },
+      ],
+    },
+  ]);
+  linked.type('@');
+  await settle();
+  assert.ok(linked.run(acceptSuggestion()));
+  const para = linked.state.doc.firstChild!;
+  assert.deepStrictEqual(
+    [para.child(0).text, para.child(0).marks[0]?.attrs.href],
+    ['@ada', href],
+    'a node goes in as itself',
+  );
+  assert.deepStrictEqual(
+    [para.child(1).text, para.child(1).marks.length],
+    [' ', 0],
+    'and the space after it is not part of the link',
+  );
+});
+
+test('suggestions: a command row runs where its trigger was, and one undo gives the trigger back', async () => {
+  const blockMenu: Suggester = {
+    char: '/',
+    startOfLine: true,
+    items: [
+      { label: 'Heading 1', command: setBlockType(N.heading, { level: 1 }) },
+      { label: 'Quote', command: wrapIn(N.blockquote) },
+    ],
+  };
+  const h = suggesting([blockMenu]);
+  h.type('/he');
+  await settle();
+  assert.deepStrictEqual(labels(h), ['Heading 1']);
+  assert.ok(h.run(acceptSuggestion()));
+  assert.strictEqual(h.state.doc.firstChild?.type, N.heading);
+  assert.strictEqual(h.state.doc.textContent, '');
+  assert.ok(h.run(undo));
+  assert.strictEqual(h.state.doc.firstChild?.type, N.paragraph);
+  assert.strictEqual(h.state.doc.textContent, '/he');
+
+  const mid = suggesting([blockMenu], p('a '));
+  mid.type('/');
+  assert.strictEqual(
+    suggestionState(mid.state),
+    null,
+    'startOfLine: only at the start of a block',
+  );
+});
+
+test('suggestions: a function is asked with the query, and an answer the query has moved past is dropped', async () => {
+  const asked: string[] = [];
+  const answer = new Map<string, (items: SuggestionItem[]) => void>();
+  const h = suggesting([
+    {
+      char: '@',
+      items: ({ query }) => {
+        asked.push(query);
+        return new Promise((resolve) => answer.set(query, resolve));
+      },
+    },
+  ]);
+  h.type('@a');
+  await settle();
+  h.type('d');
+  await settle();
+  assert.deepStrictEqual(
+    asked,
+    ['a', 'ad'],
+    'asked once per query that was still open when its turn came',
+  );
+  answer.get('ad')?.([{ label: 'zeta' }]);
+  await settle();
+  assert.deepStrictEqual(labels(h), ['zeta'], 'shown as given, unfiltered');
+  answer.get('a')?.([{ label: 'Alan Turing' }]);
+  await settle();
+  assert.deepStrictEqual(labels(h), ['zeta'], 'the late answer was dropped');
+});
+
+test('suggestions: allowSpaces lets a query hold a space, and two in a row end it', async () => {
+  const h = suggesting([{ char: '@', allowSpaces: true, items: PEOPLE }]);
+  h.type('@grace h');
+  await settle();
+  assert.strictEqual(suggestionState(h.state)?.query, 'grace h');
+  assert.deepStrictEqual(labels(h), ['Grace Hopper']);
+  h.type('  ');
+  assert.strictEqual(suggestionState(h.state), null);
+
+  const taken = suggesting([{ char: '@', allowSpaces: true, items: PEOPLE }]);
+  taken.type('@ada');
+  await settle();
+  assert.ok(taken.run(acceptSuggestion()));
+  taken.type('x');
+  assert.strictEqual(
+    suggestionState(taken.state),
+    null,
+    'a mention with a space in it does not reopen on its own trigger',
+  );
+});
+
+test('filterSuggestions: labels that start with the query, then a word that does, then any that contain it', () => {
+  const items = [
+    { label: 'Hopper' },
+    { label: 'grace hopper' },
+    { label: 'Shopping' },
+    { label: 'hop' },
+    { label: 'Turing' },
+  ];
+  assert.deepStrictEqual(
+    filterSuggestions(items, 'hop').map((item) => item.label),
+    ['hop', 'Hopper', 'grace hopper', 'Shopping'],
+  );
+  assert.strictEqual(filterSuggestions(items, '').length, 5);
+  assert.deepStrictEqual(filterSuggestions(items, 'xyz'), []);
 });

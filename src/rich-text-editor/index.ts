@@ -5,8 +5,8 @@
 //
 //   1. `defaultValue` / `value` + `onChange` — markdown in and out, and a
 //      caller never meets ProseMirror;
-//   2. `toolbar`, `placeholder`, `readOnly`, `onSubmit` — the chrome and the
-//      behaviours an app would otherwise wire by hand;
+//   2. `toolbar`, `placeholder`, `readOnly`, `onSubmit`, `suggestions` — the
+//      chrome and the behaviours an app would otherwise wire by hand;
 //   3. `format="html" | "text"`, `markStyles`, `renderImage`, `nodeViews` —
 //      what the document is written in, and how its parts look;
 //   4. `plugins`, `editorProps`, `schema` — ProseMirror's own seams, so the
@@ -44,6 +44,7 @@ import type {
   ScrollableNode,
 } from 'react-x11';
 import { XK_ESCAPE, XK_KP_ENTER, XK_RETURN } from 'react-x11/keysyms';
+import { tint } from 'react-x11/style';
 import type { Style } from 'react-x11/style';
 import { toggleMark } from 'prosemirror-commands';
 import { redo, undo } from 'prosemirror-history';
@@ -81,6 +82,13 @@ import { renderBlocks } from './render.js';
 import type { ImageInfo, NodeViewProps, RenderContext } from './render.js';
 import type { RunStyle } from './inline.js';
 import { schema as defaultSchema } from './schema.js';
+import {
+  acceptSuggestion,
+  SUGGESTION_PAGE,
+  suggestionState,
+  suggestions as suggestionPlugin,
+} from './suggest.js';
+import type { Suggester } from './suggest.js';
 import {
   DEFAULT_TOOLBAR,
   resolveToolbar,
@@ -200,6 +208,10 @@ interface CommonProps {
   /** A link was activated: Mod-click while editing, a click when read-only.
    *  The editor never navigates by itself. */
   onLink?: (href: string, ev: X11MouseEvent<DrawnNode>) => void;
+  /** Lists that open at a trigger character as its word is typed — `@` for
+   *  people, `#` for issues, `/` for a block menu. A new array on every
+   *  render is fine: the plugin reads the latest one. */
+  suggestions?: readonly Suggester[];
   placeholder?: string;
   /** Selectable and copyable, not editable. */
   readOnly?: boolean;
@@ -413,9 +425,25 @@ export function RichTextEditor(props: RichTextEditorProps): ReactElement {
       }),
     [schema, props.history, props.inputRules, props.keymap, props.typography],
   );
+  // The suggestion plugin, made once while there are suggesters: it reads
+  // the latest prop through `latest`, so an inline array is not a rebuild —
+  // a rebuild would drop the list that is open.
+  const suggesting = !!props.suggestions?.length;
+  const suggest = useMemo(
+    () =>
+      suggesting
+        ? suggestionPlugin(() => latest.current.suggestions ?? [])
+        : null,
+    [suggesting],
+  );
   const plugins = useMemo(
-    () => [...(props.plugins ?? []), ...defaults],
-    [props.plugins, defaults],
+    () => [
+      ...(props.plugins ?? []),
+      // ahead of the defaults, so a row takes Enter before the keymap does
+      ...(suggest ? [suggest] : []),
+      ...defaults,
+    ],
+    [props.plugins, suggest, defaults],
   );
 
   const listeners = useRef(new Set<() => void>());
@@ -424,10 +452,21 @@ export function RichTextEditor(props: RichTextEditorProps): ReactElement {
   const handleRef = useRef<RichTextEditorHandle | null>(null);
   const rootRef = useRef<DrawnNode | null>(null);
   const [linkEdit, setLinkEdit] = useState<LinkEdit | null>(null);
+  // A suggestion list shows only while the editor has focus.
+  const [focused, setFocused] = useState(false);
+
+  // The trigger being typed is drawn in the accent colour, unless the app
+  // says what the `suggestion` class looks like. Memoized: a new object
+  // redraws every block's decorations (`configure`).
+  const decorationClasses = useMemo(
+    () => ({ suggestion: { color: look.accent }, ...props.decorationClasses }),
+    [look.accent, props.decorationClasses],
+  );
 
   const config: ViewConfig = {
     onRender: () => {},
     onUpdate: (prev, trs) => onUpdate(prev, trs),
+    onFocusChange: setFocused,
     clipboard,
     ...(placeholder ? { placeholder } : null),
     colors: {
@@ -437,9 +476,7 @@ export function RichTextEditor(props: RichTextEditorProps): ReactElement {
       placeholder: look.muted,
       preedit: look.text,
     },
-    ...(props.decorationClasses
-      ? { decorationClasses: props.decorationClasses }
-      : null),
+    decorationClasses,
   };
 
   const viewRef = useRef<RichEditorView | null>(null);
@@ -719,9 +756,15 @@ export function RichTextEditor(props: RichTextEditorProps): ReactElement {
     const k = ev.keysym;
     if ((k === XK_RETURN || k === XK_KP_ENTER) && p.onSubmit) {
       const plain = !ev.shiftKey && !primary && !ev.altKey;
-      const submit = p.submitOnEnter
-        ? plain && !inListOrCode(view.state)
-        : primary && !ev.shiftKey;
+      // a plain Enter while a suggestion list shows rows takes a row: it is
+      // the list's plugin's, a step further on
+      const listing =
+        plain && editable && !!suggestionState(view.state)?.items?.length;
+      const submit =
+        !listing &&
+        (p.submitOnEnter
+          ? plain && !inListOrCode(view.state)
+          : primary && !ev.shiftKey);
       if (submit) {
         ev.preventDefault();
         p.onSubmit(event('submit'));
@@ -839,6 +882,109 @@ export function RichTextEditor(props: RichTextEditorProps): ReactElement {
       ),
     );
 
+  // The suggestion list, drawn from the plugin's state and nothing else
+  // (./suggest.ts) — so an app that owns the EditorState gets it too. It hangs
+  // off the textblock the trigger is in, at the trigger, so it follows the
+  // text as the document scrolls and unmaps while the text is out of view.
+  // It never takes focus: a press on a row takes the row, and the caret
+  // stays in the editor.
+  const suggestion = suggestionState(state);
+  const firstRow = useRef(0);
+  const rowsShown = focused && editable && !!suggestion?.items?.length;
+  const anchor =
+    rowsShown && suggestion ? view.anchorAt(suggestion.from) : null;
+  let suggestionPopup: ReactNode = null;
+  if (suggestion?.items && anchor) {
+    const { items, selected } = suggestion;
+    // the window of rows moves only as far as keeps the highlight in it
+    let first = Math.min(
+      firstRow.current,
+      Math.max(0, items.length - SUGGESTION_PAGE),
+    );
+    if (selected < first) first = selected;
+    if (selected >= first + SUGGESTION_PAGE)
+      first = selected - SUGGESTION_PAGE + 1;
+    firstRow.current = first;
+    const rows = items.slice(first, first + SUGGESTION_PAGE).map((item, i) => {
+      const index = first + i;
+      const on = index === selected;
+      return hx(
+        'box',
+        {
+          key: `${index} ${item.label}`,
+          style: {
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 12,
+            height: Math.round(look.size + 12),
+            paddingLeft: 8,
+            paddingRight: 8,
+            borderRadius: Math.max(0, look.radius - 2),
+            backgroundColor: on ? look.accent : 'transparent',
+            ...(on
+              ? null
+              : { ':hover': { backgroundColor: tint(look.text, 0.08) } }),
+          },
+          onMouseDown: (ev: X11MouseEvent) => {
+            ev.preventDefault();
+            view.run(acceptSuggestion(index));
+          },
+        },
+        hx(
+          'text',
+          {
+            style: {
+              flexGrow: 1,
+              fontFamily: look.family,
+              fontSize: look.size,
+              color: on ? look.accentText : look.text,
+            },
+          },
+          item.label,
+        ),
+        item.detail
+          ? hx(
+              'text',
+              {
+                style: {
+                  fontFamily: look.family,
+                  fontSize: Math.max(10, look.size - 2),
+                  color: on ? look.accentText : look.muted,
+                },
+              },
+              item.detail,
+            )
+          : null,
+      );
+    });
+    suggestionPopup = hx(
+      'popup',
+      {
+        theme: theme as Record<string, string | number>,
+        anchor: { to: anchor.node, at: anchor.at, placement: 'bottom' },
+        minWidth: 200,
+        maxWidth: 420,
+      },
+      hx(
+        'box',
+        {
+          style: {
+            flexGrow: 1,
+            flexDirection: 'column',
+            padding: 4,
+            borderWidth: 1,
+            borderColor: look.border,
+            borderRadius: look.radius,
+            backgroundColor: look.surface,
+          },
+        },
+        ...rows,
+      ),
+    );
+  } else {
+    firstRow.current = 0;
+  }
+
   const frame: Style = {
     flexDirection: 'column',
     borderWidth: 1,
@@ -918,6 +1064,7 @@ export function RichTextEditor(props: RichTextEditorProps): ReactElement {
       ),
     ),
     linkPopup,
+    suggestionPopup,
   );
 }
 
@@ -1004,6 +1151,20 @@ export type { MarkdownCodec } from './markdown.js';
 export { docFromHTML, htmlFromContent } from './html.js';
 export { DEFAULT_TOOLBAR, toolbarItems } from './toolbar.js';
 export type { ToolbarEntry, ToolbarItem, ToolbarItemName } from './toolbar.js';
+export {
+  acceptSuggestion,
+  dismissSuggestion,
+  filterSuggestions,
+  selectSuggestion,
+  suggestionState,
+  suggestions,
+} from './suggest.js';
+export type {
+  Suggester,
+  SuggestionItem,
+  SuggestionQuery,
+  SuggestionState,
+} from './suggest.js';
 export type { ImageInfo, NodeViewProps } from './render.js';
 export type { MarkStyle } from './look.js';
 export type { RunStyle } from './inline.js';

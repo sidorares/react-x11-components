@@ -947,6 +947,35 @@ export class RichEditorView implements EditorHost, ClipboardView {
       : { left: 0, right: 0, top: 0, bottom: 0 };
   }
 
+  /**
+   * The textblock element that draws `pos`, and where a caret there is in
+   * that element's own logical coordinates — what a `<popup anchor>` hangs
+   * off, so it moves with the text when the document scrolls and unmaps
+   * when the text scrolls out of view. Null when no mounted block draws it.
+   */
+  anchorAt(pos: number): {
+    node: DrawnNode;
+    at: { x: number; y: number; width: number; height: number };
+  } | null {
+    const { doc } = this.state;
+    const $pos = doc.resolve(Math.max(0, Math.min(pos, doc.content.size)));
+    if (!$pos.parent.isTextblock || $pos.depth === 0) return null;
+    const key = this.keys.keyAt($pos.before());
+    const text = key ? this.texts.get(key) : undefined;
+    const box = text?.map ? this.rectOf(text) : null;
+    if (!text || !box) return null;
+    const caret = this.coordsAtPos(pos);
+    return {
+      node: text as unknown as DrawnNode,
+      at: {
+        x: caret.left - box.x,
+        y: caret.top - box.y,
+        width: 1,
+        height: Math.max(1, caret.bottom - caret.top),
+      },
+    };
+  }
+
   /** ProseMirror's `endOfTextblock`: would moving `dir` from the selection
    *  leave its textblock? Up and down ask the layout which line it is on. */
   endOfTextblock(
@@ -1230,7 +1259,7 @@ export class RichEditorView implements EditorHost, ClipboardView {
       this.tabEscapes = false;
       return;
     }
-    this.tabEscapes = k === XK_ESCAPE;
+    this.tabEscapes = false;
     const dom = toDomKeyEvent(ev, this.primary);
     this.userInput++;
     try {
@@ -1242,6 +1271,9 @@ export class RichEditorView implements EditorHost, ClipboardView {
         ev.preventDefault();
         return;
       }
+      // only an Escape nothing claimed: one a plugin took — a suggestion
+      // list closing — was spent, and the next Escape arms the Tab instead
+      this.tabEscapes = k === XK_ESCAPE;
       if (this.fallbackKey(ev, dom)) ev.preventDefault();
     } finally {
       this.userInput--;

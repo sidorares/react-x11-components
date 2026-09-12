@@ -9,6 +9,8 @@ import {
   RichTextEditor,
   defaultPlugins,
   schema,
+  suggestionState,
+  suggestions,
   toolbarItems,
 } from '../../src/rich-text-editor/index.js';
 import type {
@@ -16,6 +18,8 @@ import type {
   NodeViewProps,
   RichTextEditorChangeEvent,
   RichTextEditorHandle,
+  Suggester,
+  SuggestionItem,
   ToolbarEntry,
 } from '../../src/rich-text-editor/index.js';
 
@@ -165,3 +169,46 @@ export const stuck = <RichTextEditor state={EditorState.create({ schema })} />;
 
 // @ts-expect-error the format is one of three
 export const wrongFormat = <RichTextEditor format="rtf" />;
+
+// suggestions: a list the editor filters, a function it asks, a command row —
+// and the plugin itself, for an app that owns the state
+const people: SuggestionItem[] = [
+  { label: 'Ada Lovelace', detail: '@ada', insert: '@ada' },
+];
+const blockMenu: Suggester = {
+  char: '/',
+  startOfLine: true,
+  items: [
+    {
+      label: 'Divider',
+      command: (state, dispatch) => {
+        dispatch?.(state.tr.insertText('---'));
+        return true;
+      },
+    },
+  ],
+};
+
+export const withSuggestions = (
+  <RichTextEditor
+    suggestions={[
+      { char: '@', items: people },
+      {
+        char: '#',
+        allowSpaces: true,
+        items: async ({ query, state }) => [
+          { label: query, insert: state.schema.text(`#${query}`) },
+        ],
+      },
+      blockMenu,
+    ]}
+  />
+);
+
+export const listOpen: boolean =
+  suggestionState(
+    EditorState.create({ schema, plugins: [suggestions([blockMenu])] }),
+  ) !== null;
+
+// @ts-expect-error a row needs a label
+export const noLabel: SuggestionItem = { insert: '@ada' };

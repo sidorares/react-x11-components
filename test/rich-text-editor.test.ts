@@ -31,7 +31,7 @@ import {
   XK_UP,
 } from 'react-x11/test';
 import type { RenderX11Options, RenderX11Result } from 'react-x11/test';
-import { editMenuOpen } from 'react-x11';
+import { editMenuOpen, screenRect } from 'react-x11';
 import type { DrawnNode } from 'react-x11';
 import type { A11yTextState } from 'react-x11/node';
 import { undo } from 'prosemirror-history';
@@ -44,6 +44,7 @@ import {
   defaultPlugins,
   docFromMarkdown,
   schema,
+  suggestions,
 } from '../src/rich-text-editor/index.js';
 import type {
   DomKeyEvent,
@@ -948,6 +949,155 @@ test('the handle: setValue is a reset, insertContent goes in at the caret, isAct
   });
   await act(() => editor.insertContent(' three', 'text'));
   assert.strictEqual(editor.getValue(), '# two three');
+});
+
+// --- suggestions ---------------------------------------------------------------------
+
+const PEOPLE = [
+  { label: 'Ada Lovelace', detail: '@ada', insert: '@ada' },
+  { label: 'Grace Hopper', detail: '@grace', insert: '@grace' },
+  { label: 'Alan Turing', detail: '@alan', insert: '@alan' },
+];
+const MENTIONS = [{ char: '@', items: PEOPLE }];
+
+/**
+ * The suggestion list's geometry: the one `<window>` that is not the
+ * harness's root — a `<popup>` is an X window of its own. Throws until it
+ * has reached the server, so it is called through `waitFor`.
+ */
+function listWindow(): { x: number; y: number; width: number; height: number } {
+  const windows = screen.all((n) => n.kind === 'window');
+  const popup = windows[1] as unknown as
+    | { abs: DrawnNode['abs']; window: { x: number; y: number } | null }
+    | undefined;
+  assert.ok(popup, 'the list is a window of its own');
+  assert.ok(popup.window, 'and it has reached the server');
+  return {
+    x: popup.window.x,
+    y: popup.window.y,
+    width: popup.abs.width,
+    height: popup.abs.height,
+  };
+}
+
+test('@ opens a list as it is typed; Down moves the highlight and Enter takes the row', async () => {
+  const { editor } = await mount({ defaultValue: 'hi', suggestions: MENTIONS });
+  await focusAtEnd();
+  await type(' @');
+  await waitFor(() => screen.getByText('Grace Hopper'));
+  assert.ok(screen.queryByText('@grace'), 'a row’s detail is drawn beside it');
+  const runs = runsOf(blocks()[0]);
+  const trigger = runs.find((run) => run.text === '@');
+  const plain = runs.find((run) => run.text.startsWith('hi'));
+  assert.ok(
+    trigger && plain && trigger.color !== plain.color,
+    'the trigger being typed is drawn in the accent colour',
+  );
+  await userEvent.key(XK_DOWN);
+  await userEvent.key(XK_RETURN);
+  assert.strictEqual(editor.state.doc.textContent, 'hi @grace ');
+  assert.strictEqual(editor.state.doc.childCount, 1, 'Enter made no new line');
+  await waitFor(() =>
+    assert.ok(!screen.queryByText('Grace Hopper'), 'the list is gone'),
+  );
+});
+
+test('with submitOnEnter, Enter takes a row rather than sending; the next Enter sends', async () => {
+  const sent: string[] = [];
+  const { editor } = await mount({
+    submitOnEnter: true,
+    onSubmit: (ev) => sent.push(ev.value),
+    suggestions: MENTIONS,
+  });
+  await focusAtEnd();
+  await type('ping @ad');
+  await waitFor(() => screen.getByText('Ada Lovelace'));
+  await userEvent.key(XK_RETURN);
+  assert.deepStrictEqual(sent, [], 'the row, not the message');
+  assert.strictEqual(editor.state.doc.textContent, 'ping @ada ');
+  await userEvent.key(XK_RETURN);
+  assert.strictEqual(sent.length, 1);
+  assert.match(sent[0], /^ping @ada\s*$/);
+});
+
+test('Escape closes the list, and is not the Escape that lets Tab leave', async () => {
+  const { editor } = await mount({
+    defaultValue: '- one\n- two',
+    suggestions: MENTIONS,
+  });
+  await focusAtEnd();
+  await type(' @');
+  await waitFor(() => screen.getByText('Ada Lovelace'));
+  await userEvent.key(XK_ESCAPE);
+  await waitFor(() =>
+    assert.ok(!screen.queryByText('Ada Lovelace'), 'the list closed'),
+  );
+  await userEvent.key(XK_TAB);
+  assert.strictEqual(
+    editor.getValue(),
+    '- one\n  - two @',
+    'the list spent that Escape: Tab still nests the item',
+  );
+  assert.ok(root().focused);
+});
+
+test('a press on a row takes it, and the caret stays in the editor', async () => {
+  const { editor } = await mount({ suggestions: MENTIONS });
+  await focusAtEnd();
+  await type('@');
+  const row = await waitFor(() => screen.getByText('Alan Turing'));
+  await userEvent.click(row);
+  assert.strictEqual(editor.state.doc.textContent, '@alan ');
+  assert.ok(root().focused, 'the editor kept focus');
+  await type('x');
+  assert.strictEqual(editor.state.doc.textContent, '@alan x');
+});
+
+test(
+  'the list hangs below the trigger, where the word being typed starts',
+  { skip: !FONTS },
+  async () => {
+    await mount({ defaultValue: 'some text', suggestions: MENTIONS });
+    await focusAtEnd();
+    await type(' @gr');
+    await waitFor(() => screen.getByText('Grace Hopper'));
+    const [block] = blocks();
+    const trigger = block.textCaretRect(10);
+    assert.ok(trigger, 'the trigger is laid out');
+    const { abs } = drawn(block);
+    const origin = screenRect(drawn(block));
+    assert.ok(origin, 'the block is on screen');
+    const list = await waitFor(listWindow);
+    assert.deepStrictEqual(
+      [list.x, list.y],
+      [
+        Math.round(origin.x + trigger.x - abs.x),
+        Math.round(origin.y + trigger.y - abs.y + trigger.height + 2),
+      ],
+      'at the trigger with the default two-pixel gap, not at the caret',
+    );
+  },
+);
+
+test('an app that owns the EditorState gets the list from the plugin in its state', async () => {
+  function Owner(): ReactElement {
+    const [state, setState] = useState(() =>
+      EditorState.create({
+        doc: docFromMarkdown(schema, 'owned'),
+        plugins: [suggestions(MENTIONS), ...defaultPlugins(schema)],
+      }),
+    );
+    return h(RichTextEditor, {
+      state,
+      dispatchTransaction: (tr: Transaction) => setState((s) => s.apply(tr)),
+    });
+  }
+  await renderX11(h(Owner), WITH_FONTS);
+  await focusAtEnd();
+  await type(' @');
+  await waitFor(() => screen.getByText('Ada Lovelace'));
+  await userEvent.key(XK_RETURN);
+  assert.deepStrictEqual(drawnText(), ['owned @ada ']);
 });
 
 // --- accessibility -------------------------------------------------------------------

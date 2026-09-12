@@ -1317,6 +1317,16 @@ What to know before changing it:
   serializer it writes with. A parser change changes both components; the
   model test round-trips a generated corpus and fails on any document that
   loses text or does not settle after one trip.
+- **Suggestions are plugin state; the component only draws them.**
+  `suggest.ts` keeps the open trigger, its query, the rows and the
+  highlight in a plugin's state and takes the list's keys in its
+  `handleKeyDown`, so an app that owns the EditorState gets the list by
+  putting `suggestions([…])` in its plugins — ahead of `defaultPlugins`, or
+  the keymap's Enter splits the paragraph before a row can take it. The
+  component's `onKeyDown` runs before every plugin, which is why its
+  submit-on-Enter defers to an open list; and an Escape a plugin claims does
+  not arm the Tab-out (`view.ts`, `keyDown`) — the list's Escape closes the
+  list, and the next one arms the Tab.
 - **Subpath only.** The one component not re-exported from `src/index.ts`:
   ProseMirror's declarations name DOM globals (`dom-globals.d.ts` declares
   the four this repository needs), and an app importing anything from the
@@ -1570,7 +1580,7 @@ one is written is in "Replacing a core widget rather than moving it" above.
 | A StatusNotifierItem host                        | nowhere yet                                                                                         | **Planned**, as a sibling of `<TrayHost>` with its own issue. Shares intent and nothing else: it pairs with core's `dbusmenu.js`, not with `<foreign>`.                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | A pure-JS VT backend for `<Terminal>`            | new, here (`src/terminal/vt/`)                                                                      | **Done** (issue #19). `backend="vt"`, behind the existing props: pty + `@xterm/headless` + a cell-grid renderer. See "The terminal that is not somebody else's program".                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `<TerminalOutput>` — a captured session          | new, here (`src/terminal-output/` + `src/ansi/`)                                                    | **Phase 1 done.** A log is a document, not a grid, so flow mode is `<richtext>` spans with no dependency at all. The cell-grid path for captures that addressed the cursor is phase 2 — see [the PRD](docs/prd-terminal-output.md).                                                                                                                                                                                                                                                                                                                                                      |
-| A WYSIWYG rich text editor                       | new, here (`src/rich-text-editor/`)                                                                 | **Done.** `<RichTextEditor>`: ProseMirror's model, transforms and plugin system, drawn by this package — the view is ours and `EditorView`-shaped, so every plugin that lives in state (keymaps, input rules, history, decorations, collaboration) runs unchanged and the ones that reach into the DOM do not. Not in the barrel: ProseMirror's declarations name DOM globals. See "A rich text editor over ProseMirror" and [the PRD](docs/prd-rich-text-editor.md), which also carries the follow-ups (mentions, table editing, IME tiers).                                            |
+| A WYSIWYG rich text editor                       | new, here (`src/rich-text-editor/`)                                                                 | **Done.** `<RichTextEditor>`: ProseMirror's model, transforms and plugin system, drawn by this package — the view is ours and `EditorView`-shaped, so every plugin that lives in state (keymaps, input rules, history, decorations, collaboration) runs unchanged and the ones that reach into the DOM do not. Not in the barrel: ProseMirror's declarations name DOM globals. See "A rich text editor over ProseMirror" and [the PRD](docs/prd-rich-text-editor.md), which also carries the follow-ups (table editing, IME tiers, inline widgets).                                      |
 
 Verified against ntk 7.2.0 on 2026-08-09: `MarkdownView`, `HtmlView`,
 `SvgView` and `layoutTex` are all still exported; only mermaid is gone.

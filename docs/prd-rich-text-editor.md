@@ -79,7 +79,7 @@ set):
 <RichTextEditor value={body} onChange={(ev) => setBody(ev.value)} />
 
 // 2. the behaviours an app would otherwise wire by hand
-<RichTextEditor toolbar placeholder="Reply…" submitOnEnter onSubmit={send} />
+<RichTextEditor toolbar placeholder="Reply…" submitOnEnter onSubmit={send} suggestions={[mentions]} />
 
 // 3. what the document is written in, and how its parts look
 <RichTextEditor format="html" markStyles={{ code: { bg: '#eef' } }} nodeViews={{ image: Figure }} />
@@ -155,6 +155,17 @@ and Meta when the backend's primary modifier and the host's disagree:
 prosemirror-keymap reads `navigator.platform`, which under Node on a Mac says
 Mac even when the app is drawing to an X server.
 
+**Suggestions** (`suggest.ts`) are a plugin whose state is the open list —
+the trigger, the word typed after it, the rows and the highlighted one — and
+whose `handleKeyDown` takes the list's keys while it has rows. Its plugin
+view asks for the rows as the query changes and drops an answer to a query
+already typed past, `<CodeEditor>`'s completion rule. The component draws a
+`<popup>` from nothing but that state, hung off the textblock the trigger is
+in (`anchorAt`), so an app that owns the state gets the list by putting the
+plugin in it. A list opens as its trigger's word is typed, never as the
+caret moves into one: the value is markdown, so a mention stays text, and a
+document soon holds many words that start with `@`.
+
 ## What a plugin can count on
 
 The ledger, so "does my plugin work?" has an answer short of trying it.
@@ -221,18 +232,33 @@ What that means for the plugins people reach for:
   want a calendar.
 - **No virtualization.** Blocks re-render only when their node changed, but
   every block is mounted. Right for the use cases above; not for a book.
+- **A suggestion opens as its word is typed, never as the caret moves.** The
+  value is markdown and a mention stays text, so a document is soon full of
+  words that start with `@`, and a click into one places a caret. GitHub's
+  comment box and `<CodeEditor>`'s completion keep the same rule.
+- **A mention is text unless a row says otherwise.** Markdown has no mention
+  syntax — GitHub stores `@ada` as text too. A row's `insert` can be a node:
+  text with a link mark, or a mention node of an app's own schema. A chip
+  waits on inline widgets.
+- **An Escape a plugin claims is the plugin's.** Escape arms one Tab that
+  leaves the editor unless a plugin's `handleKeyDown` took it — a suggestion
+  list closing. The next Escape arms the Tab: while a list is open the way
+  out is one key longer, never gone.
 
 ## Follow-ups
 
-- **Suggestions and mentions** — a popup at the caret fed by a plugin, built
-  like `<CodeEditor>`'s completion (`coordsAtPos` is there for it).
 - **Table editing** — rows and columns added and removed, prosemirror-tables'
   commands in the toolbar, and column widths that follow content.
 - **IME tiers** (react-x11#272) — the preedit is drawn and committed; the
   candidate window's placement and the preedit's own cursor and segments
   are core's to deliver.
 - **Inline widgets as components** — the same gate as MDX's inline half: a
-  `<richtext>` run that reserves advance width for an element.
+  `<richtext>` run that reserves advance width for an element. A mention
+  drawn as a chip, avatar and all, waits on the same run; until then a
+  mention is text, or text with a mark.
+- **Suggestion rows of the app's own** — an avatar, a presence dot: a
+  `renderItem` on the suggester, once an app asks for more than a label and
+  a detail.
 - **Virtualization**, for long documents.
 - **y-prosemirror, verified** — the sync plugin, and its cursors drawn as
   `text` widgets or node decorations.
