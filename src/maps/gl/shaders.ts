@@ -65,10 +65,12 @@ bool broken() {
  * and the same number is the antialiasing ramp. Nothing about a join is
  * computed anywhere, so a road network costs its points and nothing else.
  *
- * The one thing it gives up is a translucent line: where two capsules
- * overlap at a join the colour is laid down twice. Every line in the
- * default styles is opaque; a style that is not would want the depth-test
- * trick (one fragment per pixel per layer) before it wanted anything else.
+ * What that costs is a translucent line: where two capsules overlap at a
+ * join the colour would be laid down twice, a darker bead at every vertex.
+ * So a translucent stroke is drawn a pixel at a time under the stencil, in
+ * two parts (`u_part`): the pixels a capsule covers wholly, the first
+ * capsule to reach one taking it, and then the antialiased fringe where
+ * nothing has been drawn yet.
  */
 export const LINE_VERTEX = `${PRELUDE}
 uniform float u_half;
@@ -101,6 +103,8 @@ uniform vec4 u_color;
 uniform float u_half;
 // on, off — device pixels; on == 0 is a solid line
 uniform vec2 u_dash;
+// 0: every pixel; 1: only those the capsule covers wholly; 2: only the rest
+uniform float u_part;
 varying vec2 v_local;
 varying float v_len;
 varying float v_dist;
@@ -112,6 +116,7 @@ void main() {
     float m = mod(v_dist, u_dash.x + u_dash.y);
     alpha *= clamp(min(m + 0.5, u_dash.x - m + 0.5), 0.0, 1.0);
   }
+  if (u_part > 0.5 && (alpha < 1.0) == (u_part < 1.5)) discard;
   if (alpha <= 0.0) discard;
   gl_FragColor = u_color * alpha;
 }

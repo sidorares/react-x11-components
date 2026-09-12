@@ -120,7 +120,7 @@ const globals = globalThis as { performance?: { now(): number } };
 const now = (): number => globals.performance?.now() ?? Date.now();
 
 /** A growable stream of 8-byte records, viewed both ways. */
-class Stream {
+export class Stream {
   bytes: ArrayBuffer;
   i16: Int16Array;
   f32: Float32Array;
@@ -158,7 +158,8 @@ function coord(v: number, k: number): number {
   return s < -32767 ? -32767 : s > 32767 ? 32767 : s;
 }
 
-function pushBreak(line: Stream): void {
+/** A line stream's sentinel. The caller has reserved the record. */
+export function pushBreak(line: Stream): void {
   const at = line.count * 4;
   line.i16[at] = BREAK;
   line.i16[at + 1] = BREAK;
@@ -166,7 +167,8 @@ function pushBreak(line: Stream): void {
   line.count++;
 }
 
-function pushFillBreak(fill: Stream): void {
+/** A fill stream's sentinel. The caller has reserved the record. */
+export function pushFillBreak(fill: Stream): void {
   const at = fill.count * 4;
   fill.i16[at] = BREAK;
   fill.i16[at + 1] = BREAK;

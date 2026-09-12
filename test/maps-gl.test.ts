@@ -20,7 +20,12 @@ import {
 } from 'react-x11/test';
 
 import { GeomType, parseTile } from '../src/maps/mvt.js';
-import { transformFor, unprojectPoint } from '../src/maps/proj.js';
+import {
+  project,
+  transformFor,
+  unproject,
+  unprojectPoint,
+} from '../src/maps/proj.js';
 import { QUALITY_LADDER, chooseQuality } from '../src/maps/gl/view.js';
 import { Map as MapView } from '../src/maps/index.js';
 import type { MapHandle } from '../src/maps/index.js';
@@ -36,10 +41,12 @@ import type { MapSource } from '../src/maps/sources.js';
 import {
   attributionLayout,
   drawMarkers,
+  drawOverlays,
+  geoJsonOverlays,
   markerAt,
   markerOrder,
 } from '../src/maps/overlay.js';
-import type { MapMarker } from '../src/maps/overlay.js';
+import type { MapMarker, MapOverlay } from '../src/maps/overlay.js';
 import {
   BREAK,
   RECORD_BYTES,
@@ -59,6 +66,11 @@ import {
 } from '../src/maps/gl/labels.js';
 import type { GlLabelData } from '../src/maps/gl/labels.js';
 import { MARKER_INSTANCE, MarkerBatcher } from '../src/maps/gl/markers.js';
+import {
+  buildOverlayBucket,
+  overlayRegion,
+  regionPlacement,
+} from '../src/maps/gl/overlays.js';
 import {
   FADE_MS,
   LABEL_INSTANCE,
@@ -1902,4 +1914,343 @@ test('a GL frame draws the markers in one draw, each where the hit test finds it
     assert.ok(Math.abs(tip[1] - at.y) < 1e-3, `${id}: ${tip[1]} vs ${at.y}`);
   });
   assert.strictEqual(renderers.at(-1), 'gl');
+});
+
+// --- overlays ----------------------------------------------------------------------
+
+/** A 2D context that records every call it is given. */
+function recordingCanvas(calls: { name: string; args: number[] }[]) {
+  return new Proxy({} as Record<string, unknown>, {
+    get: (target, name: string) =>
+      name in target
+        ? target[name]
+        : (...args: number[]) => {
+            calls.push({ name, args });
+          },
+    set: (target, name: string, value) => {
+      target[name] = value;
+      return true;
+    },
+  });
+}
+
+/** A stream's records as the vertex shader places them, a list of points
+ *  per polyline or ring. */
+function placedPaths(
+  buffer: ArrayBuffer,
+  at: { unit: number; x: number; y: number },
+): [number, number][][] {
+  const i16 = new Int16Array(buffer);
+  const out: [number, number][][] = [];
+  let path: [number, number][] = [];
+  for (let r = 0; r < i16.length / 4; r++) {
+    if (i16[r * 4] === BREAK) {
+      if (path.length > 0) out.push(path);
+      path = [];
+      continue;
+    }
+    path.push([i16[r * 4] * at.unit + at.x, i16[r * 4 + 1] * at.unit + at.y]);
+  }
+  return out;
+}
+
+test('an overlay holds still at zoom 22: rebased in float64, never a world position in float32', () => {
+  const pane = { width: 800, height: 600 };
+  const scale = 2;
+  const width = pane.width * scale;
+  const world = 512 * 2 ** 22 * scale;
+  const ground = { lon: 151.2093, lat: -33.8688 };
+  const far = { lon: 151.20931, lat: -33.8688 };
+  const m = project(ground);
+  // A camera `dx` device pixels east of the ground point.
+  const camera = (dx: number) => ({
+    center: unproject({ x: m.x + dx / world, y: m.y }),
+    zoom: 22,
+  });
+  const region = overlayRegion(camera(0), pane, scale);
+  const bucket = buildOverlayBucket(
+    [{ kind: 'line', id: 'l', path: [ground, far] }],
+    region,
+    PALETTE,
+  );
+  // The far end's record, about sixty logical pixels east.
+  const rx = new Int16Array(bucket.data.line)[4];
+  const f = Math.fround;
+  let naiveWorst = 0;
+  for (let step = 0; step <= 16; step++) {
+    const dx = step / 16;
+    const centre = project(camera(dx).center);
+    const exact = width / 2 + (project(far).x - centre.x) * world;
+    // The vertex shader's arithmetic, in float32: the record times the
+    // unit, plus the region's origin — both worked out from the camera.
+    const at = regionPlacement(
+      region,
+      camera(dx),
+      width,
+      pane.height * scale,
+      scale,
+    );
+    const gpu = f(f(rx * f(at.unit)) + f(at.x));
+    assert.ok(Math.abs(gpu - exact) < 0.07, `at ${dx}: ${gpu} vs ${exact}`);
+    // What the vertex would be as a world position in float32, less the
+    // camera's: the jitter the rebase is for.
+    const naive =
+      f(f(project(far).x * world) - f(centre.x * world)) + width / 2;
+    naiveWorst = Math.max(naiveWorst, Math.abs(naive - exact));
+  }
+  assert.ok(naiveWorst > 1, `a float32 world position is ${naiveWorst} px off`);
+});
+
+test('an overlay is the same geometry on both renderers', () => {
+  const pane = { x: 0, y: 0, width: 400, height: 300 };
+  const camera = { center: { lon: -0.1281, lat: 51.508 }, zoom: 15 };
+  const transform = transformFor(camera, pane, 512);
+  const at = (x: number, y: number): [number, number] => {
+    const p = unprojectPoint(transform, 200 + x, 150 + y);
+    return [p.lon, p.lat];
+  };
+  const { overlays } = geoJsonOverlays({
+    type: 'FeatureCollection',
+    features: [
+      {
+        type: 'Feature',
+        geometry: {
+          type: 'LineString',
+          coordinates: [
+            at(-150, -90),
+            at(-20, -60.5),
+            at(40.25, 30),
+            at(160, 110),
+          ],
+        },
+      },
+      {
+        type: 'Feature',
+        geometry: {
+          type: 'Polygon',
+          coordinates: [
+            [
+              at(-120, 20),
+              at(-20, 30),
+              at(-40, 120),
+              at(-130, 100),
+              at(-120, 20),
+            ],
+            [at(-90, 50), at(-60, 60), at(-80, 90), at(-90, 50)],
+          ],
+        },
+      },
+    ],
+  });
+  // The retained renderer's points: each subpath it strokes or fills.
+  const calls: { name: string; args: number[] }[] = [];
+  drawOverlays(
+    recordingCanvas(calls) as never,
+    overlays,
+    transform,
+    pane,
+    1,
+    PALETTE,
+  );
+  const retained: [number, number][][] = [];
+  for (const { name, args } of calls) {
+    if (name === 'moveTo') retained.push([[args[0], args[1]]]);
+    else if (name === 'lineTo') retained.at(-1)!.push([args[0], args[1]]);
+  }
+  // The GL renderer's: every record, where the vertex shader puts it.
+  const region = overlayRegion(camera, pane, 1);
+  const bucket = buildOverlayBucket(overlays, region, PALETTE);
+  const placed = regionPlacement(region, camera, 400, 300, 1);
+  const gl = [
+    ...placedPaths(bucket.data.line, placed),
+    ...placedPaths(bucket.data.fill, placed),
+  ];
+  assert.strictEqual(retained.length, 3, 'a line, a ring and its hole');
+  assert.strictEqual(gl.length, 3);
+  retained.forEach((path, i) => {
+    // A ring's record list ends with its first point again, closing it.
+    const drawn = gl[i].slice(0, path.length);
+    assert.strictEqual(drawn.length, path.length);
+    path.forEach(([x, y], j) => {
+      assert.ok(
+        Math.abs(drawn[j][0] - x) < 0.05 && Math.abs(drawn[j][1] - y) < 0.05,
+        `path ${i} point ${j}: ${drawn[j]} vs ${[x, y]}`,
+      );
+    });
+  });
+});
+
+test('overlays draw in zIndex order — a casing under its line, a fill under its outline', () => {
+  const region = overlayRegion(
+    { center: ORIGIN, zoom: 10 },
+    { width: 400, height: 300 },
+    1,
+  );
+  const near = (x: number, y: number) => ({ lon: x * 0.01, lat: y * 0.01 });
+  const bucket = buildOverlayBucket(
+    [
+      {
+        kind: 'polygon',
+        id: 'area',
+        rings: [[near(0, 0), near(1, 0), near(1, 1), near(0, 0)]],
+        outline: '#000000',
+        zIndex: 2,
+      },
+      {
+        kind: 'line',
+        id: 'route',
+        path: [near(0, 0), near(2, 1)],
+        casing: '#ffffff',
+        color: '#0000ff',
+        width: 4,
+      },
+      {
+        kind: 'circle',
+        id: 'gone',
+        center: ORIGIN,
+        radiusMetres: 500,
+        opacity: 0,
+      },
+      {
+        kind: 'circle',
+        id: 'ring',
+        center: ORIGIN,
+        radiusMetres: 500,
+        zIndex: 1,
+      },
+    ],
+    region,
+    PALETTE,
+  );
+  assert.deepStrictEqual(
+    bucket.passes.map((p) => [p.index, p.kind, p.color, p.width]),
+    [
+      [0, 'stroke', '#ffffff', 6],
+      [0, 'stroke', '#0000ff', 4],
+      [1, 'fill', '#ff0000', 0],
+      [2, 'fill', '#ff0000', 0],
+      [2, 'stroke', '#000000', 1],
+    ],
+  );
+  assert.strictEqual(bucket.data.draws.length, 3, 'the invisible one has none');
+});
+
+test('a translucent stroke is drawn each pixel once: its whole pixels, then its fringe, under the stencil', () => {
+  const data = buildTileBuckets(fixtureTile(), prepareStyle({ layers: STYLE }));
+  const camera = { center: ORIGIN, zoom: 10 };
+  const region = overlayRegion(camera, { width: 256, height: 256 }, 1);
+  const placed = regionPlacement(region, camera, 256, 256, 1);
+  const drawsWith = (opacity: number | null) => {
+    const { gl, log } = recordingGl(true);
+    const renderer = new GlMapRenderer(gl);
+    const bucket = buildOverlayBucket(
+      [
+        {
+          kind: 'line',
+          id: 'l',
+          path: [
+            { lon: -0.1, lat: 0 },
+            { lon: 0.05, lat: 0.05 },
+            { lon: 0.1, lat: 0 },
+          ],
+          opacity: opacity ?? 1,
+        },
+      ],
+      region,
+      PALETTE,
+    );
+    const stats = renderer.render(frameOver(data), {
+      overlays:
+        opacity === null
+          ? null
+          : { data: bucket.data, passes: bucket.passes, ...placed },
+    });
+    const count = (name: string) => log.filter((c) => c.name === name).length;
+    return {
+      instanced: count('drawArraysInstanced'),
+      covers: count('drawArrays'),
+      passes: stats.overlays,
+    };
+  };
+  const none = drawsWith(null);
+  const opaque = drawsWith(1);
+  const translucent = drawsWith(0.5);
+  assert.strictEqual(opaque.passes, 1);
+  assert.strictEqual(opaque.instanced - none.instanced, 1, 'one draw');
+  assert.strictEqual(opaque.covers, none.covers);
+  // The whole pixels, then the fringe; then the stencil cleared again.
+  assert.strictEqual(translucent.instanced - none.instanced, 2);
+  assert.strictEqual(translucent.covers - none.covers, 1);
+});
+
+test('the overlays are one bucket, built again when the array changes or the view leaves its region', async () => {
+  await loadGlRenderer();
+  const ref = React.createRef<MapHandle>();
+  const result = await renderX11(React.createElement('box'), {
+    backend: 'xserver',
+    width: 640,
+    height: 480,
+  });
+  Object.defineProperty(result.app, 'chooseGLConfig', {
+    value: () => new Promise(() => {}),
+    configurable: true,
+  });
+  const route = (): MapOverlay[] => [
+    {
+      kind: 'line',
+      id: 'route',
+      path: [
+        { lon: -0.13, lat: 51.507 },
+        { lon: -0.12, lat: 51.51 },
+      ],
+    },
+  ];
+  const mount = (overlays: MapOverlay[]) =>
+    result.rerender(
+      React.createElement(MapView, {
+        ref,
+        renderer: 'gl',
+        overlays,
+        defaultCamera: { center: { lon: -0.1281, lat: 51.508 }, zoom: 14 },
+        'data-testname': 'map',
+      }),
+    );
+  await mount(route());
+  const pane = result.getByTestName('map') as unknown as {
+    abs: { width: number; height: number };
+    children: { kind: string; props: Record<string, unknown> }[];
+  };
+  const area = pane.children.find((child) => child.kind === 'glarea')!;
+  const { gl, log } = recordingGl(true);
+  (gl as Record<string, unknown>).backend = 'direct';
+  // Uploads of geometry: with no sources on the map, the overlays' alone.
+  const uploads = () =>
+    log.filter(
+      (c) => c.name === 'bufferData' && c.args[1] instanceof Uint8Array,
+    ).length;
+  const frame = () =>
+    act(async () => {
+      (area.props.onDraw as (gl: unknown, info: object) => void)(gl, {
+        width: pane.abs.width,
+        height: pane.abs.height,
+        node: area,
+      });
+    });
+  await frame();
+  assert.strictEqual(uploads(), 1, 'built and uploaded');
+  await frame();
+  const handle = ref.current as MapHandle;
+  handle.panBy(80, -40);
+  await frame();
+  assert.strictEqual(uploads(), 1, 'the same bucket, placed again');
+  await mount(route());
+  await frame();
+  assert.strictEqual(uploads(), 2, 'a new array is a new bucket');
+  handle.zoomTo(16.5);
+  await frame();
+  assert.strictEqual(uploads(), 3, 'two levels in, built again');
+  assert.ok(
+    log.some((c) => c.name === 'deleteBuffer'),
+    'the old ones let go',
+  );
 });

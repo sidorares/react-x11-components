@@ -31,6 +31,7 @@ import { parseColor, premultiplied } from './color.js';
 import type { Rgba } from './color.js';
 import { MARKER_INSTANCE } from './markers.js';
 import type { MarkerBatch } from './markers.js';
+import type { OverlayPass } from './overlays.js';
 import { LABEL_INSTANCE } from './placement.js';
 import type { LabelBatch } from './placement.js';
 import {
@@ -129,12 +130,26 @@ export interface AttributionDraw {
   text: LabelBatch;
 }
 
+/** The overlays' bucket, and where its units land this frame. */
+export interface OverlayDraw {
+  data: GlTileData;
+  passes: readonly OverlayPass[];
+  /** Device pixels per unit of the bucket's records. */
+  unit: number;
+  /** Where the bucket's origin lands, in device pixels. */
+  x: number;
+  y: number;
+}
+
 /** What a frame draws over its scene, in this order. */
 export interface RenderExtras {
   /** A second scene, faded in over the first. */
   fade?: FadeFrame | null;
   /** The labels, over both. */
   labels?: LabelBatch | null;
+  /** The overlays, over the labels — where the retained renderer draws
+   *  them. */
+  overlays?: OverlayDraw | null;
   /** The markers, over the labels — where the retained renderer draws
    *  them, a marker being what the user aims at. */
   markers?: MarkerBatch | null;
@@ -187,7 +202,28 @@ export interface GlRenderStats {
   labels: number;
   /** Markers drawn. */
   markers: number;
+  /** Overlay passes drawn — a line with a casing is two. */
+  overlays: number;
 }
+
+/** A stroke: premultiplied colour, and half its width and its dash in
+ *  device pixels. */
+interface StrokePaint {
+  color: Rgba;
+  half: number;
+  dash: readonly [number, number] | null;
+}
+
+/** A polygon: its colour, and its edge — the antialiasing, or an
+ *  outline. */
+interface FillPaint {
+  color: Rgba;
+  antialias: boolean;
+  outline: Rgba | null;
+  outlineHalf: number;
+}
+
+const CLEAR: Rgba = [0, 0, 0, 0];
 
 interface TileGpu {
   line: unknown;
@@ -274,6 +310,7 @@ export class GlMapRenderer {
       'u_half',
       'u_color',
       'u_dash',
+      'u_part',
     ]);
     this._fan = linkProgram(gl, FAN_VERTEX, FAN_FRAGMENT, [
       'u_tile',
@@ -319,6 +356,7 @@ export class GlMapRenderer {
       fade: 0,
       labels: 0,
       markers: 0,
+      overlays: 0,
     };
   }
 
@@ -377,7 +415,7 @@ export class GlMapRenderer {
    * from would blink at every level change.
    */
   render(frame: RenderFrame, extras: RenderExtras = {}): GlRenderStats {
-    const { fade, labels, markers, attribution } = extras;
+    const { fade, labels, overlays, markers, attribution } = extras;
     const gl = this._gl;
     const started = now();
     const stats = (this._stats = GlMapRenderer._emptyStats());
@@ -410,6 +448,8 @@ export class GlMapRenderer {
     // Even with nothing to draw: the batch's atlas may have rasters waiting
     // for the texture, and until they are in it nothing of theirs can be.
     if (labels) stats.labels = this._labels(labels, width, height);
+
+    if (overlays) stats.overlays = this._overlays(overlays, frame);
 
     if (markers) stats.markers = this._markers(markers, width, height);
 
@@ -535,29 +575,42 @@ export class GlMapRenderer {
     scissors: (number[] | null)[],
     edges: boolean,
   ): boolean {
-    const gl = this._gl;
     const zoom = frame.zoom;
     const opacity =
       layer.opacity === undefined ? 1 : resolveZoomed(layer.opacity, zoom);
     if (opacity <= 0) return false;
     const base = this._color(resolveZoomed(layer.color, zoom));
     if (!base) return false;
+    const outline =
+      layer.outlineColor === undefined
+        ? undefined
+        : this._color(resolveZoomed(layer.outlineColor, zoom));
+    return this._fillWith(tiles, index, scissors, {
+      color: premultiplied(base, opacity),
+      // The edge: the outline colour a style asked for, at one logical
+      // pixel, or else the fill colour at half a device pixel — which is
+      // the antialiasing.
+      antialias: !outline && edges,
+      outline: outline ? premultiplied(outline, opacity) : null,
+      outlineHalf: Math.max(0.5, frame.scale / 2),
+    });
+  }
+
+  /**
+   * A polygon's ranges, over every tile that has them: the winding number
+   * into the stencil buffer, the colour wherever it is not zero, then the
+   * edge — the antialiasing, or an outline.
+   */
+  private _fillWith(
+    tiles: readonly RenderTile[],
+    index: number,
+    scissors: (number[] | null)[],
+    paint: FillPaint,
+  ): boolean {
+    const gl = this._gl;
     // The cover's extent: the union of the squares this layer drew in.
-    let x0 = Infinity;
-    let y0 = Infinity;
-    let x1 = -Infinity;
-    let y1 = -Infinity;
-    let any = false;
-    for (let t = 0; t < tiles.length; t++) {
-      const s = scissors[t];
-      if (!s || !tiles[t].data.draws[index]) continue;
-      any = true;
-      if (s[0] < x0) x0 = s[0];
-      if (s[1] < y0) y0 = s[1];
-      if (s[0] + s[2] > x1) x1 = s[0] + s[2];
-      if (s[1] + s[3] > y1) y1 = s[1] + s[3];
-    }
-    if (!any) return false;
+    const box = this._unionOf(tiles, index, scissors);
+    if (!box) return false;
     const stats = this._stats;
 
     // 1. The winding number, into the stencil buffer.
@@ -585,53 +638,61 @@ export class GlMapRenderer {
     }
     gl.disable(gl.CULL_FACE);
 
-    // 2. The colour, wherever the winding is not zero — and the stencil
-    // back to zero as it goes, so the next layer starts clean.
+    // 2. The colour, wherever the winding is not zero. An opaque fill sets
+    // the stencil back to zero as it goes, so the next layer starts clean;
+    // a translucent one keeps it for its edge, which is drawn outside the
+    // polygon only — laid over the fill's own colour it would be a darker
+    // rim round every translucent polygon — and clears it after.
+    const translucent = paint.color[3] < 1;
     gl.colorMask(true, true, true, true);
     gl.stencilFunc(gl.NOTEQUAL, 0, 0xff);
-    gl.stencilOp(gl.ZERO, gl.ZERO, gl.ZERO);
-    gl.scissor(x0, y0, x1 - x0, y1 - y0);
-    this._drawCover(premultiplied(base, opacity));
+    if (translucent) gl.stencilOp(gl.KEEP, gl.KEEP, gl.KEEP);
+    else gl.stencilOp(gl.ZERO, gl.ZERO, gl.ZERO);
+    gl.scissor(box[0], box[1], box[2], box[3]);
+    this._drawCover(paint.color);
     stats.drawCalls++;
-    gl.disable(gl.STENCIL_TEST);
 
-    // 3. The edge: the outline colour a style asked for, at one logical
-    // pixel, or else the fill colour at half a device pixel — which is the
-    // antialiasing. Either way it is the fill stream drawn as segments.
-    const outline =
-      layer.outlineColor === undefined
-        ? undefined
-        : this._color(resolveZoomed(layer.outlineColor, zoom));
-    if (outline) {
-      this._edges(
+    // 3. The edge, which is the fill stream drawn as segments.
+    if (translucent) {
+      if (paint.antialias) {
+        // Where the winding is zero and no edge has been yet, each pixel
+        // once, at what a pixel the polygon partly covers is covered by:
+        // a segment of no width, whose ramp is half a pixel either side.
+        gl.stencilFunc(gl.EQUAL, 0, 0xff);
+        gl.stencilOp(gl.KEEP, gl.KEEP, gl.INCR);
+        this._segments(
+          tiles,
+          index,
+          scissors,
+          { color: paint.color, half: 0, dash: null },
+          true,
+          0,
+        );
+      }
+      this._clearStencil(box);
+      gl.disable(gl.STENCIL_TEST);
+    } else {
+      gl.disable(gl.STENCIL_TEST);
+      if (paint.antialias) {
+        this._strokeWith(
+          tiles,
+          index,
+          scissors,
+          { color: paint.color, half: 0.5, dash: null },
+          true,
+        );
+      }
+    }
+    if (paint.outline) {
+      this._strokeWith(
         tiles,
         index,
         scissors,
-        premultiplied(outline, opacity),
-        Math.max(0.5, frame.scale / 2),
+        { color: paint.outline, half: paint.outlineHalf, dash: null },
+        true,
       );
-    } else if (edges) {
-      this._edges(tiles, index, scissors, premultiplied(base, opacity), 0.5);
     }
     return true;
-  }
-
-  private _edges(
-    tiles: readonly RenderTile[],
-    index: number,
-    scissors: (number[] | null)[],
-    color: Rgba,
-    half: number,
-  ): void {
-    const gl = this._gl;
-    const u = this._line.uniforms;
-    gl.useProgram(this._line.program);
-    gl.uniform4f(u.u_color, color[0], color[1], color[2], color[3]);
-    gl.uniform1f(u.u_half, half);
-    gl.uniform2f(u.u_dash, 0, 0);
-    this._eachTile(tiles, index, scissors, this._line, true, (count) => {
-      gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, count);
-    });
   }
 
   private _lines(
@@ -641,7 +702,6 @@ export class GlMapRenderer {
     layer: Extract<MapStyleLayer, { type: 'line' }>,
     scissors: (number[] | null)[],
   ): boolean {
-    const gl = this._gl;
     const zoom = frame.zoom;
     const logical = resolveZoomed(layer.width, zoom);
     if (!(logical > 0)) return false;
@@ -650,32 +710,182 @@ export class GlMapRenderer {
     if (opacity <= 0) return false;
     const base = this._color(resolveZoomed(layer.color, zoom));
     if (!base) return false;
-    let any = false;
-    for (let t = 0; t < tiles.length; t++) {
-      if (scissors[t] && tiles[t].data.draws[index]) {
-        any = true;
-        break;
-      }
-    }
-    if (!any) return false;
+    if (!this._unionOf(tiles, index, scissors)) return false;
     // A road narrower than a pixel is drawn *at* a pixel, as paint.ts does:
     // a motorway network that vanishes at zoom 6 is worse than a heavy one.
     const width = Math.max(1, logical * frame.scale);
-    const color = premultiplied(base, opacity);
+    const dash = layer.dash;
+    this._strokeWith(
+      tiles,
+      index,
+      scissors,
+      {
+        color: premultiplied(base, opacity),
+        half: width / 2,
+        dash:
+          dash && dash.length >= 2
+            ? [dash[0] * frame.scale, dash[1] * frame.scale]
+            : null,
+      },
+      false,
+    );
+    return true;
+  }
+
+  /**
+   * A stroke of one layer's ranges — of the line stream, or of the fill
+   * stream as a polygon's outline. A translucent one is drawn each pixel
+   * once: two capsules overlap at every join, and colour laid down twice
+   * there is a darker bead at every vertex. So the pixels a capsule covers
+   * wholly go first, under the stencil, the first capsule to reach one
+   * taking it; then the antialiased fringe, where nothing has been yet.
+   */
+  private _strokeWith(
+    tiles: readonly RenderTile[],
+    index: number,
+    scissors: (number[] | null)[],
+    paint: StrokePaint,
+    fillStream: boolean,
+  ): void {
+    if (paint.color[3] >= 1) {
+      this._segments(tiles, index, scissors, paint, fillStream, 0);
+      return;
+    }
+    const box = this._unionOf(tiles, index, scissors);
+    if (!box) return;
+    const gl = this._gl;
+    gl.enable(gl.STENCIL_TEST);
+    gl.stencilFunc(gl.EQUAL, 0, 0xff);
+    gl.stencilOp(gl.KEEP, gl.KEEP, gl.INCR);
+    this._segments(tiles, index, scissors, paint, fillStream, 1);
+    this._segments(tiles, index, scissors, paint, fillStream, 2);
+    this._clearStencil(box);
+    gl.disable(gl.STENCIL_TEST);
+  }
+
+  /** One layer's ranges as capsules, over every tile that has them. `part`
+   *  1 draws only the pixels a capsule covers wholly, 2 only the rest, and
+   *  0 both. */
+  private _segments(
+    tiles: readonly RenderTile[],
+    index: number,
+    scissors: (number[] | null)[],
+    paint: StrokePaint,
+    fillStream: boolean,
+    part: number,
+  ): void {
+    const gl = this._gl;
     const u = this._line.uniforms;
+    const { color, dash } = paint;
     gl.useProgram(this._line.program);
     gl.uniform4f(u.u_color, color[0], color[1], color[2], color[3]);
-    gl.uniform1f(u.u_half, width / 2);
-    const dash = layer.dash;
-    if (dash && dash.length >= 2) {
-      gl.uniform2f(u.u_dash, dash[0] * frame.scale, dash[1] * frame.scale);
-    } else {
-      gl.uniform2f(u.u_dash, 0, 0);
-    }
-    this._eachTile(tiles, index, scissors, this._line, false, (count) => {
+    gl.uniform1f(u.u_half, paint.half);
+    gl.uniform2f(u.u_dash, dash ? dash[0] : 0, dash ? dash[1] : 0);
+    gl.uniform1f(u.u_part, part);
+    this._eachTile(tiles, index, scissors, this._line, fillStream, (count) => {
       gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, count);
     });
-    return true;
+  }
+
+  /** The union of the squares a layer draws in, as a scissor box; null
+   *  when no tile draws it. */
+  private _unionOf(
+    tiles: readonly RenderTile[],
+    index: number,
+    scissors: (number[] | null)[],
+  ): number[] | null {
+    let x0 = Infinity;
+    let y0 = Infinity;
+    let x1 = -Infinity;
+    let y1 = -Infinity;
+    for (let t = 0; t < tiles.length; t++) {
+      const s = scissors[t];
+      if (!s || !tiles[t].data.draws[index]) continue;
+      if (s[0] < x0) x0 = s[0];
+      if (s[1] < y0) y0 = s[1];
+      if (s[0] + s[2] > x1) x1 = s[0] + s[2];
+      if (s[1] + s[3] > y1) y1 = s[1] + s[3];
+    }
+    return x0 === Infinity ? null : [x0, y0, x1 - x0, y1 - y0];
+  }
+
+  /** The stencil back to zero over a box, the colour untouched. */
+  private _clearStencil(box: number[]): void {
+    const gl = this._gl;
+    gl.colorMask(false, false, false, false);
+    gl.stencilFunc(gl.ALWAYS, 0, 0xff);
+    gl.stencilOp(gl.ZERO, gl.ZERO, gl.ZERO);
+    gl.scissor(box[0], box[1], box[2], box[3]);
+    this._drawCover(CLEAR);
+    this._stats.drawCalls++;
+    gl.colorMask(true, true, true, true);
+  }
+
+  // --- overlays ---------------------------------------------------------------
+
+  /**
+   * The overlays, over the labels — the retained renderer's order — from
+   * their bucket, placed this frame, pass by pass: a fill as a style's fill
+   * layer is drawn, a stroke as its line layer is. Answers how many passes
+   * it drew.
+   */
+  private _overlays(draw: OverlayDraw, frame: RenderFrame): number {
+    const gl = this._gl;
+    const { width, height, scale } = frame;
+    this._gpu(draw.data);
+    const clip = { x: 0, y: 0, width, height };
+    const tiles: RenderTile[] = [
+      {
+        data: draw.data,
+        x: draw.x,
+        y: draw.y,
+        size: draw.unit * TILE_EXTENT,
+        clip,
+      },
+    ];
+    const scissors = [scissorOf(clip, width, height)];
+    gl.viewport(0, 0, width, height);
+    gl.enable(gl.SCISSOR_TEST);
+    gl.disable(gl.STENCIL_TEST);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    for (const program of [this._line, this._fan]) {
+      gl.useProgram(program.program);
+      gl.uniform2f(program.uniforms.u_viewport, width, height);
+    }
+    let drawn = 0;
+    for (const pass of draw.passes) {
+      const base = this._color(pass.color);
+      if (!base) continue;
+      const color = premultiplied(base, pass.opacity);
+      if (pass.kind === 'fill') {
+        this._fillWith(tiles, pass.index, scissors, {
+          color,
+          antialias: this._options.antialias,
+          outline: null,
+          outlineHalf: 0,
+        });
+      } else {
+        const dash = pass.dash;
+        this._strokeWith(
+          tiles,
+          pass.index,
+          scissors,
+          {
+            color,
+            half: (pass.width * scale) / 2,
+            dash:
+              dash && dash.length >= 2
+                ? [dash[0] * scale, dash[1] * scale]
+                : null,
+          },
+          pass.outline === true,
+        );
+      }
+      drawn++;
+    }
+    gl.disable(gl.SCISSOR_TEST);
+    return drawn;
   }
 
   /**

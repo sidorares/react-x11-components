@@ -149,6 +149,13 @@ function byZ<T extends { zIndex?: number }>(items: readonly T[]): T[] {
   return [...items].sort((a, b) => (a.zIndex ?? 0) - (b.zIndex ?? 0));
 }
 
+/** The order overlays are drawn in, bottom first: by `zIndex`, and
+ *  otherwise the order the application listed them in. Both renderers
+ *  draw in it. */
+export function overlayOrder(overlays: readonly MapOverlay[]): MapOverlay[] {
+  return byZ(overlays);
+}
+
 /**
  * Draw the overlays.
  *
@@ -718,13 +725,16 @@ export function geoJsonOverlays(
  */
 const MAX_ARC_RADIUS = 8192;
 
+/** How many segments a circle of this radius, in pixels, is drawn with as
+ *  a ring: enough to hold the sagitta under half a pixel. */
+export function circleSegments(radius: number): number {
+  const step = 2 * Math.acos(Math.max(-1, 1 - 0.5 / radius));
+  return Math.min(4096, Math.max(24, Math.ceil((Math.PI * 2) / step)));
+}
+
 /** A circle as a ring, with the sagitta held under half a pixel. */
 function circleRing(cx: number, cy: number, radius: number): number[] {
-  const step = 2 * Math.acos(Math.max(-1, 1 - 0.5 / radius));
-  const segments = Math.min(
-    4096,
-    Math.max(24, Math.ceil((Math.PI * 2) / step)),
-  );
+  const segments = circleSegments(radius);
   const out: number[] = [];
   for (let i = 0; i < segments; i++) {
     const angle = (i / segments) * Math.PI * 2;

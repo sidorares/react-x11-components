@@ -40,6 +40,7 @@ import {
   ATTRIBUTION_SIZE,
   attributionLayout,
 } from '../overlay.js';
+import type { MapOverlay, OverlayPalette } from '../overlay.js';
 import { prepareStyle } from '../paint.js';
 import type { PreparedStyle } from '../paint.js';
 import {
@@ -48,7 +49,7 @@ import {
   transformFor,
   worldSize,
 } from '../proj.js';
-import type { ScreenRect } from '../proj.js';
+import type { MapCamera, ScreenRect } from '../proj.js';
 import { attributionOf, pyramidOf } from '../sources.js';
 import type { MapSource } from '../sources.js';
 import type { MapStyle } from '../style.js';
@@ -59,6 +60,13 @@ import type { Rgba } from './color.js';
 import { renderCover } from './cover.js';
 import type { CoverResult } from './cover.js';
 import { MarkerBatcher } from './markers.js';
+import {
+  buildOverlayBucket,
+  overlayRegion,
+  regionHolds,
+  regionPlacement,
+} from './overlays.js';
+import type { OverlayBucket } from './overlays.js';
 import { GL_PANE } from './pane.js';
 import { LABEL_INSTANCE, LabelPlacer } from './placement.js';
 import type { LabelBatch, PlacementFrame } from './placement.js';
@@ -66,6 +74,7 @@ import { GlMapRenderer } from './renderer.js';
 import type {
   AttributionDraw,
   FadeFrame,
+  OverlayDraw,
   RenderFrame,
   RenderTile,
 } from './renderer.js';
@@ -320,6 +329,12 @@ class GlMapDriver implements MapView {
   } | null = null;
   private readonly _placer = new LabelPlacer();
   private readonly _markers = new MarkerBatcher();
+  /** The overlays' bucket, and what it was built from. */
+  private _overlay: {
+    bucket: OverlayBucket;
+    overlays: readonly MapOverlay[];
+    accent: string;
+  } | null = null;
   private _atlas: LabelAtlas | null = null;
   private _atlasKey = '';
   /** No labels — the app has no fonts, or placing them failed — and no
@@ -891,14 +906,24 @@ class GlMapDriver implements MapView {
       labelMs = now() - started;
     }
 
-    // The markers, laid out on the same world as the tiles under them.
+    // The overlays and the markers, laid out on the same world as the
+    // tiles under them.
+    const palette = overlayPalette(this.theme);
+    const overlays = this._overlaysFor(
+      renderer,
+      camera,
+      pane,
+      scale,
+      palette,
+      info,
+    );
     const markers = map.markers?.length
       ? this._markers.batch(
           map.markers,
           transformFor(camera, pane, DEFAULT_TILE_SIZE),
           pane,
           scale,
-          overlayPalette(this.theme),
+          palette,
         )
       : null;
 
@@ -921,6 +946,7 @@ class GlMapDriver implements MapView {
     const stats = renderer.render(frame, {
       fade,
       labels,
+      overlays,
       markers,
       attribution,
     });
@@ -1012,6 +1038,52 @@ class GlMapDriver implements MapView {
       this._pane?.notifyA11ySceneChanged?.();
     }
     map.onFrame?.(this._stats);
+  }
+
+  /**
+   * The overlays' bucket, placed for this frame: the one there is while the
+   * overlays are the same array, the theme's accent the same colour and
+   * the view inside the bucket's region, and a new one around the view
+   * otherwise.
+   */
+  private _overlaysFor(
+    renderer: GlMapRenderer,
+    camera: MapCamera,
+    pane: { width: number; height: number },
+    scale: number,
+    palette: OverlayPalette,
+    info: DrawInfo,
+  ): OverlayDraw | null {
+    const overlays = this.props.map.overlays;
+    let current = this._overlay;
+    if (!overlays || overlays.length === 0) {
+      if (current) renderer.release(current.bucket.data);
+      this._overlay = null;
+      return null;
+    }
+    if (
+      !current ||
+      current.overlays !== overlays ||
+      current.accent !== palette.accent ||
+      !regionHolds(current.bucket.region, camera, pane, scale)
+    ) {
+      if (current) renderer.release(current.bucket.data);
+      current = this._overlay = {
+        bucket: buildOverlayBucket(
+          overlays,
+          overlayRegion(camera, pane, scale),
+          palette,
+        ),
+        overlays,
+        accent: palette.accent,
+      };
+    }
+    const { bucket } = current;
+    return {
+      data: bucket.data,
+      passes: bucket.passes,
+      ...regionPlacement(bucket.region, camera, info.width, info.height, scale),
+    };
   }
 
   /**
@@ -1170,6 +1242,8 @@ class GlMapDriver implements MapView {
     }
     this._stores.clear();
     this._inactive = [];
+    // Its buffers go with the renderer's.
+    this._overlay = null;
     try {
       this._renderer?.dispose();
     } catch {
