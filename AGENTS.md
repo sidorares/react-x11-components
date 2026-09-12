@@ -1327,6 +1327,18 @@ What to know before changing it:
   submit-on-Enter defers to an open list; and an Escape a plugin claims does
   not arm the Tab-out (`view.ts`, `keyDown`) — the list's Escape closes the
   list, and the next one arms the Tab.
+- **A markdown table keeps markdown's shape.** `tables.ts` wraps
+  prosemirror-tables' commands so that a table which starts with one header
+  row, first, and no spans ends that way too: a row added above the header
+  becomes it, a deleted header hands over to the row below, and a new cell
+  takes its column's alignment. A table of another shape — a header column
+  from HTML — is left as prosemirror-tables leaves it. Its `tableEditing()`
+  plugin is not used: that cell selection runs on DOM mouse events.
+- **Table columns follow their content, measured per cell.** `TableView`
+  lays each cell's text out through the app's font manager and caches the
+  width by the cell _node_, so typing measures one cell again. The rows are
+  separate boxes and still line up because every row's cells get the same
+  `flexBasis` and shrink alike.
 - **Subpath only.** The one component not re-exported from `src/index.ts`:
   ProseMirror's declarations name DOM globals (`dom-globals.d.ts` declares
   the four this repository needs), and an app importing anything from the

@@ -29,6 +29,7 @@ import { Markdown } from '../src/markdown/index.js';
 import {
   RichTextEditor,
   insertHorizontalRule,
+  insertTable,
   schema,
   toggleBlockType,
   toggleList,
@@ -131,8 +132,66 @@ const BLOCK_MENU: Suggester = {
       detail: '---',
       command: insertHorizontalRule(nodes.horizontal_rule),
     },
+    { label: 'Table', detail: '| |', command: insertTable() },
   ],
 };
+
+/** A person's row, drawn by the app: a badge of their initials, the name,
+ *  and the handle — `renderItem`, where the default is a label and a
+ *  detail. The row box, its highlight and a press on it stay the editor's. */
+function PersonRow({
+  person,
+  selected,
+}: {
+  person: SuggestionItem;
+  selected: boolean;
+}): ReactElement {
+  const initials = person.label
+    .split(' ')
+    .map((word) => word[0])
+    .join('');
+  return (
+    <box
+      style={{
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+        flexGrow: 1,
+        paddingTop: 3,
+        paddingBottom: 3,
+      }}
+    >
+      <box
+        style={{
+          width: 20,
+          height: 20,
+          borderRadius: 10,
+          alignItems: 'center',
+          justifyContent: 'center',
+          backgroundColor: selected ? '$accentText' : '$accent',
+        }}
+      >
+        <text
+          style={{
+            fontSize: 9,
+            fontWeight: 'bold',
+            color: selected ? '$accent' : '$accentText',
+          }}
+        >
+          {initials}
+        </text>
+      </box>
+      <text style={{ flexGrow: 1, color: selected ? '$accentText' : '$text' }}>
+        {person.label}
+      </text>
+      <text
+        style={{ fontSize: 11, color: selected ? '$accentText' : '$textMuted' }}
+      >
+        {person.detail ?? ''}
+      </text>
+    </box>
+  );
+}
 
 /** `@`: people, inserted as their handle — text, the way GitHub keeps it. */
 const PEOPLE: SuggestionItem[] = (
@@ -163,7 +222,13 @@ const NOTE_SUGGESTIONS: Suggester[] = [
   { char: '@', items: PEOPLE },
 ];
 const CHAT_SUGGESTIONS: Suggester[] = [
-  { char: '@', items: PEOPLE },
+  {
+    char: '@',
+    items: PEOPLE,
+    renderItem: (person, row) => (
+      <PersonRow person={person} selected={row.selected} />
+    ),
+  },
   { char: '#', items: CHANNELS },
 ];
 

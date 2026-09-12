@@ -62,12 +62,23 @@ export interface NodeViewProps {
   view: RichEditorView;
 }
 
+/** What a table measures its cells with: the app's font manager, whose
+ *  `layout` takes runs in the logical sizes styles are written in and
+ *  answers in the same units. Null on the mock backend, which has none. */
+export interface CellFonts {
+  layout(
+    runs: readonly object[],
+    style: { family?: string; size?: number },
+  ): { width: number };
+}
+
 /** Everything a block renders with. One object per look and seam set, so a
  *  memoized block compares it by identity. */
 export interface RenderContext {
   view: RichEditorView;
   look: EditorLook;
   editable: boolean;
+  fonts?: CellFonts | null;
   nodeViews?: Readonly<Record<string, ComponentType<NodeViewProps>>>;
   renderImage?: (image: ImageInfo) => ReactNode;
 }
@@ -538,37 +549,104 @@ const ItemView = React.memo(
     sameBlock(a, b) && a.marker === b.marker && a.markerWidth === b.markerWidth,
 );
 
-/** A table: rows of cells, columns sharing the width equally — widths that
- *  follow the content would re-measure every cell on every keystroke. */
+/** What a cell's text measures, kept by the cell node and the look it was
+ *  measured in. ProseMirror shares every node an edit did not touch, so
+ *  typing in a cell measures that cell again and no other. */
+const cellWidths = new WeakMap<PMNode, { key: string; width: number }>();
+
+/** A textblock's text, laid out on one line, in logical pixels. */
+function lineWidth(
+  block: PMNode,
+  ctx: RenderContext,
+  bctx: BlockContext,
+): number {
+  if (!ctx.fonts) return block.textContent.length * ctx.look.size * 0.55;
+  const inline = ctx.look.inline(block, bctx);
+  const { runs } = buildInline(block, inline);
+  return ctx.fonts.layout(runs, {
+    family: inline.base.family,
+    size: inline.base.size,
+  }).width;
+}
+
+function cellWidth(
+  cell: PMNode,
+  ctx: RenderContext,
+  bctx: BlockContext,
+): number {
+  const key = `${ctx.look.key}|${bctx.header ? 'h' : ''}${bctx.quote ? 'q' : ''}|${ctx.fonts ? 'f' : ''}`;
+  const hit = cellWidths.get(cell);
+  if (hit && hit.key === key) return hit.width;
+  let width = 0;
+  if (cell.isTextblock) width = lineWidth(cell, ctx, bctx);
+  else {
+    // a schema whose cells hold blocks: the widest of them
+    cell.descendants((node) => {
+      if (!node.isTextblock) return true;
+      width = Math.max(width, lineWidth(node, ctx, bctx));
+      return false;
+    });
+  }
+  cellWidths.set(cell, { key, width });
+  return width;
+}
+
+/**
+ * A table: rows of cells, each column as wide as its widest cell — capped,
+ * so one long cell cannot starve the rest; `<Markdown>`'s rule, so a table
+ * looks alike in both. When the table is wider than the document, every
+ * column gives up the same share and its text wraps. The rows are separate
+ * boxes and still line up, because every row's cells get the same basis and
+ * shrink alike.
+ */
 function TableView({ node, blockKey, ctx, bctx }: BlockProps): ReactElement {
   const look = ctx.look;
   const view = ctx.view;
   const contentStart = startOf(ctx, blockKey);
+  const size = look.size;
+  const padX = Math.round(size * 0.6);
+  const least = Math.round(size * 2.5);
+  const headerCtx = bctx.quote ? QUOTED_HEADER : HEADER;
+  const isHeader = (cell: PMNode): boolean =>
+    cell.type.spec.tableRole === 'header_cell';
+  const widths: number[] = [];
+  node.forEach((row) => {
+    row.forEach((cell, _offset, col) => {
+      const w = cellWidth(cell, ctx, isHeader(cell) ? headerCtx : bctx);
+      widths[col] = Math.max(
+        widths[col] ?? 0,
+        Math.min(Math.ceil(w), size * 26),
+      );
+    });
+  });
+  const basis = widths.map((w) => Math.max(w + padX * 2 + 2, least));
   const rows: ReactNode[] = [];
   node.forEach((row, rowOffset, rowIndex) => {
     const rowPos = contentStart + rowOffset;
     const rowKey = view.keys.keyAt(rowPos) ?? `r${rowPos}`;
     const cells: ReactNode[] = [];
-    row.forEach((cell, cellOffset) => {
+    row.forEach((cell, cellOffset, col) => {
       const cellPos = rowPos + 1 + cellOffset;
       const cellKey = view.keys.keyAt(cellPos) ?? `c${cellPos}`;
-      const header = cell.type.spec.tableRole === 'header_cell';
+      const header = isHeader(cell);
       cells.push(
         hx(
           'box',
           {
             key: cellKey,
             style: {
-              flexGrow: 1,
-              flexBasis: 0,
-              minWidth: look.size * 3,
-              paddingLeft: Math.round(look.size * 0.6),
-              paddingRight: Math.round(look.size * 0.6),
-              paddingTop: Math.round(look.size * 0.35),
-              paddingBottom: Math.round(look.size * 0.35),
+              flexBasis: basis[col] ?? least,
+              flexGrow: 0,
+              flexShrink: 1,
+              minWidth: least,
+              paddingLeft: padX,
+              paddingRight: padX,
+              paddingTop: Math.round(size * 0.35),
+              paddingBottom: Math.round(size * 0.35),
               borderLeftWidth: cellOffset === 0 ? 0 : 1,
               borderLeftColor: look.border,
               flexDirection: 'column',
+              backgroundColor: header ? look.headerBg : undefined,
             },
           },
           cell.isTextblock
@@ -576,9 +654,9 @@ function TableView({ node, blockKey, ctx, bctx }: BlockProps): ReactElement {
                 blockKey: cellKey,
                 node: cell,
                 ctx,
-                bctx: header ? (bctx.quote ? QUOTED_HEADER : HEADER) : bctx,
+                bctx: header ? headerCtx : bctx,
               })
-            : renderBlocks(cell, cellPos + 1, ctx, header ? HEADER : bctx),
+            : renderBlocks(cell, cellPos + 1, ctx, header ? headerCtx : bctx),
         ),
       );
     });
@@ -589,7 +667,6 @@ function TableView({ node, blockKey, ctx, bctx }: BlockProps): ReactElement {
           key: rowKey,
           style: {
             flexDirection: 'row',
-            backgroundColor: rowIndex === 0 ? look.headerBg : undefined,
             borderTopWidth: rowIndex === 0 ? 0 : 1,
             borderTopColor: look.border,
           },
@@ -603,6 +680,8 @@ function TableView({ node, blockKey, ctx, bctx }: BlockProps): ReactElement {
     {
       style: {
         flexDirection: 'column',
+        alignSelf: 'flex-start',
+        maxWidth: '100%',
         borderWidth: 1,
         borderColor: look.border,
         borderRadius: 6,

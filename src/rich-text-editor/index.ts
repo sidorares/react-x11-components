@@ -35,7 +35,7 @@ import React, {
   useSyncExternalStore,
 } from 'react';
 import type { ComponentType, ReactElement, ReactNode, Ref } from 'react';
-import { useClipboard, useTheme } from 'react-x11';
+import { useApp, useClipboard, useTheme } from 'react-x11';
 import type {
   DrawnNode,
   FocusEvent,
@@ -85,6 +85,7 @@ import { schema as defaultSchema } from './schema.js';
 import {
   acceptSuggestion,
   SUGGESTION_PAGE,
+  suggesterFor,
   suggestionState,
   suggestions as suggestionPlugin,
 } from './suggest.js';
@@ -730,15 +731,19 @@ export function RichTextEditor(props: RichTextEditorProps): ReactElement {
   useEffect(() => () => view.destroy(), [view]);
 
   const editable = !readOnly && !disabled;
+  // what a table measures its columns with; none on the mock backend
+  const fonts =
+    (useApp() as { fonts?: RenderContext['fonts'] } | null)?.fonts ?? null;
   const ctx = useMemo<RenderContext>(
     () => ({
       view,
       look,
       editable,
+      fonts,
       ...(props.nodeViews ? { nodeViews: props.nodeViews } : null),
       ...(props.renderImage ? { renderImage: props.renderImage } : null),
     }),
-    [view, look, editable, props.nodeViews, props.renderImage],
+    [view, look, editable, fonts, props.nodeViews, props.renderImage],
   );
   const blocks = useMemo(
     () => renderBlocks(state.doc, 0, ctx),
@@ -905,9 +910,38 @@ export function RichTextEditor(props: RichTextEditorProps): ReactElement {
     if (selected >= first + SUGGESTION_PAGE)
       first = selected - SUGGESTION_PAGE + 1;
     firstRow.current = first;
+    // a suggester may draw its rows itself; the row box — the highlight
+    // behind it, the press on it — stays the editor's
+    const custom = suggesterFor(state)?.renderItem;
+    const rowHeight = Math.round(look.size + 12);
     const rows = items.slice(first, first + SUGGESTION_PAGE).map((item, i) => {
       const index = first + i;
       const on = index === selected;
+      if (custom) {
+        return hx(
+          'box',
+          {
+            key: `${index} ${item.label}`,
+            style: {
+              flexDirection: 'row',
+              alignItems: 'center',
+              minHeight: rowHeight,
+              paddingLeft: 8,
+              paddingRight: 8,
+              borderRadius: Math.max(0, look.radius - 2),
+              backgroundColor: on ? look.accent : 'transparent',
+              ...(on
+                ? null
+                : { ':hover': { backgroundColor: tint(look.text, 0.08) } }),
+            },
+            onMouseDown: (ev: X11MouseEvent) => {
+              ev.preventDefault();
+              view.run(acceptSuggestion(index));
+            },
+          },
+          custom(item, { selected: on, query: suggestion.query }),
+        );
+      }
       return hx(
         'box',
         {
@@ -916,7 +950,7 @@ export function RichTextEditor(props: RichTextEditorProps): ReactElement {
             flexDirection: 'row',
             alignItems: 'center',
             gap: 12,
-            height: Math.round(look.size + 12),
+            height: rowHeight,
             paddingLeft: 8,
             paddingRight: 8,
             borderRadius: Math.max(0, look.radius - 2),
@@ -1156,6 +1190,7 @@ export {
   dismissSuggestion,
   filterSuggestions,
   selectSuggestion,
+  suggesterFor,
   suggestionState,
   suggestions,
 } from './suggest.js';
@@ -1163,8 +1198,24 @@ export type {
   Suggester,
   SuggestionItem,
   SuggestionQuery,
+  SuggestionRow,
   SuggestionState,
 } from './suggest.js';
+export {
+  addColumnAfter,
+  addColumnBefore,
+  addRowAfter,
+  addRowBefore,
+  columnAlign,
+  deleteColumn,
+  deleteRow,
+  deleteTable,
+  insertTable,
+  isInTable,
+  setColumnAlign,
+  tableRepair,
+} from './tables.js';
+export type { ColumnAlign } from './tables.js';
 export type { ImageInfo, NodeViewProps } from './render.js';
 export type { MarkStyle } from './look.js';
 export type { RunStyle } from './inline.js';

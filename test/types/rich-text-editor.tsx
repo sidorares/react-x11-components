@@ -3,17 +3,26 @@
 // augmentation adds, and ProseMirror's own types reaching through the seams.
 import { useRef, useState } from 'react';
 import { EditorState, Plugin } from 'prosemirror-state';
-import type { Transaction } from 'prosemirror-state';
+import type { Command, Transaction } from 'prosemirror-state';
 
 import {
   RichTextEditor,
+  addColumnBefore,
+  addRowAfter,
+  columnAlign,
   defaultPlugins,
+  deleteColumn,
+  deleteRow,
+  deleteTable,
+  insertTable,
   schema,
+  setColumnAlign,
   suggestionState,
   suggestions,
   toolbarItems,
 } from '../../src/rich-text-editor/index.js';
 import type {
+  ColumnAlign,
   DomKeyEvent,
   NodeViewProps,
   RichTextEditorChangeEvent,
@@ -212,3 +221,35 @@ export const listOpen: boolean =
 
 // @ts-expect-error a row needs a label
 export const noLabel: SuggestionItem = { insert: '@ada' };
+
+// an app's own row type reaches renderItem, typed
+interface Person extends SuggestionItem {
+  avatar: string;
+}
+const crew: Person[] = [{ label: 'Ada', avatar: 'ada.png', insert: '@ada' }];
+const crewMentions: Suggester<Person> = {
+  char: '@',
+  items: crew,
+  renderItem: (person, row) => (
+    <text style={{ color: row.selected ? '#ffffff' : '#000000' }}>
+      {`${person.avatar} ${person.label} ${row.query}`}
+    </text>
+  ),
+};
+export const withRows = (
+  <RichTextEditor suggestions={[crewMentions, blockMenu]} />
+);
+
+// the table commands are commands, for a bar of an app's own
+export const tableCommands: Command[] = [
+  insertTable(2, 2),
+  addRowAfter,
+  addColumnBefore,
+  deleteRow,
+  deleteColumn,
+  deleteTable,
+  setColumnAlign('center'),
+];
+export const aligned: ColumnAlign | undefined = columnAlign(
+  EditorState.create({ schema }),
+);

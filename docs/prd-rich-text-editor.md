@@ -166,6 +166,13 @@ plugin in it. A list opens as its trigger's word is typed, never as the
 caret moves into one: the value is markdown, so a mention stays text, and a
 document soon holds many words that start with `@`.
 
+**Tables** (`tables.ts`) are prosemirror-tables' commands, wrapped so a
+table in markdown's shape — one header row, first, alignment by column —
+stays in it; `TableView` sizes each column to its widest cell the way
+`<Markdown>` does, measuring a cell again only when its node changed; and
+the table's own buttons are in the toolbar only with the caret in a
+table.
+
 ## What a plugin can count on
 
 The ledger, so "does my plugin work?" has an answer short of trying it.
@@ -200,9 +207,10 @@ What that means for the plugins people reach for:
   underlines, a collaborator's selection — is drawn, as long as a widget
   says what it draws with `text`. The example's TODO highlighter is one,
   unchanged from what a browser would run.
-- **prosemirror-tables' commands** are commands over a compatible schema;
-  its `tableEditing()` plugin's cell selection listens to DOM mouse events
-  and will not arm. Not yet exercised here.
+- **prosemirror-tables' commands** run here: they are the editor's own
+  table commands (`tables.ts`). Its `tableEditing()` plugin's cell selection
+  listens to DOM mouse events and does not arm, so there is no selecting a
+  block of cells yet.
 - **prosemirror-collab** is state and steps by construction; **y-prosemirror**
   also needs its cursors drawn, which are DOM widgets. Neither is verified
   yet — listed below.
@@ -247,8 +255,6 @@ What that means for the plugins people reach for:
 
 ## Follow-ups
 
-- **Table editing** — rows and columns added and removed, prosemirror-tables'
-  commands in the toolbar, and column widths that follow content.
 - **IME tiers** (react-x11#272) — the preedit is drawn and committed; the
   candidate window's placement and the preedit's own cursor and segments
   are core's to deliver.
@@ -256,9 +262,6 @@ What that means for the plugins people reach for:
   `<richtext>` run that reserves advance width for an element. A mention
   drawn as a chip, avatar and all, waits on the same run; until then a
   mention is text, or text with a mark.
-- **Suggestion rows of the app's own** — an avatar, a presence dot: a
-  `renderItem` on the suggester, once an app asks for more than a label and
-  a detail.
 - **Virtualization**, for long documents.
 - **y-prosemirror, verified** — the sync plugin, and its cursors drawn as
   `text` widgets or node decorations.

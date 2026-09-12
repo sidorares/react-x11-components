@@ -25,7 +25,10 @@ import { docFromHTML, htmlFromContent } from '../src/rich-text-editor/html.js';
 import { buildInline } from '../src/rich-text-editor/inline.js';
 import type { InlineLook } from '../src/rich-text-editor/inline.js';
 import { BlockKeys } from '../src/rich-text-editor/keys.js';
-import { toDomKeyEvent } from '../src/rich-text-editor/keymap.js';
+import {
+  defaultPlugins,
+  toDomKeyEvent,
+} from '../src/rich-text-editor/keymap.js';
 import {
   docFromMarkdown,
   markdownCodec,
@@ -44,6 +47,17 @@ import type {
   Suggester,
   SuggestionItem,
 } from '../src/rich-text-editor/suggest.js';
+import {
+  addColumnAfter,
+  addRowAfter,
+  addRowBefore,
+  columnAlign,
+  deleteColumn,
+  deleteRow,
+  insertTable,
+  setColumnAlign,
+  tableRepair,
+} from '../src/rich-text-editor/tables.js';
 
 const { nodes: N, marks: M } = schema;
 const p = (...content: (PMNode | string)[]): PMNode =>
@@ -1124,4 +1138,194 @@ test('filterSuggestions: labels that start with the query, then a word that does
   );
   assert.strictEqual(filterSuggestions(items, '').length, 5);
   assert.deepStrictEqual(filterSuggestions(items, 'xyz'), []);
+});
+
+// --- tables ----------------------------------------------------------------------------
+//
+// prosemirror-tables' commands over the default schema's tables, and the shape
+// a markdown table has kept through them: one header row, first, and
+// alignment by column. What an app keeps is the markdown, so each shape is
+// also read back from its own markdown.
+
+/** `markdown`, with the caret at the start of the first textblock reading
+ *  `text`. */
+function tableState(markdown: string, text: string): EditorState {
+  return caretAt(
+    EditorState.create({
+      doc: docFromMarkdown(schema, markdown),
+      plugins: defaultPlugins(schema),
+    }),
+    text,
+  );
+}
+
+function caretAt(state: EditorState, text: string): EditorState {
+  let pos = -1;
+  state.doc.descendants((node, at) => {
+    if (pos < 0 && node.isTextblock && node.textContent === text) pos = at + 1;
+    return pos < 0;
+  });
+  assert.ok(pos > 0, `a textblock reading "${text}"`);
+  return state.apply(
+    state.tr.setSelection(TextSelection.create(state.doc, pos)),
+  );
+}
+
+/** Run `command`, which has to, and the state it leaves. */
+function ran(state: EditorState, command: Command): EditorState {
+  let next = state;
+  assert.ok(
+    command(state, (tr) => {
+      next = state.apply(tr);
+    }),
+    'the command ran',
+  );
+  return next;
+}
+
+/** The first table's rows, cell by cell: `read(cell)` joined with `|`. */
+function rowsOf(state: EditorState, read: (cell: PMNode) => string): string[] {
+  const out: string[] = [];
+  state.doc.descendants((node) => {
+    if (out.length || node.type !== N.table) return !out.length;
+    node.forEach((row) => {
+      const cells: string[] = [];
+      row.forEach((cell) => cells.push(read(cell)));
+      out.push(cells.join('|'));
+    });
+    return false;
+  });
+  return out;
+}
+
+const grid = (state: EditorState): string[] =>
+  rowsOf(state, (cell) => cell.textContent);
+/** `h` for a header cell, `c` for a plain one: `hhh` for a header row. */
+const kinds = (state: EditorState): string[] =>
+  rowsOf(state, (cell) => (cell.type === N.table_header ? 'h' : 'c')).map(
+    (row) => row.split('|').join(''),
+  );
+const alignsOf = (state: EditorState): string[] =>
+  rowsOf(state, (cell) => String(cell.attrs.align ?? '-'));
+/** The document read back from its own markdown. */
+const reread = (state: EditorState): EditorState =>
+  EditorState.create({
+    doc: docFromMarkdown(schema, markdownFromDoc(state.doc)),
+  });
+
+const TABLE = '| a | b |\n| - | - |\n| 1 | 2 |';
+
+test('tables: rows and columns go in and out, and markdown reads back what was shown', () => {
+  let state = tableState(TABLE, '1');
+  state = ran(state, addRowAfter);
+  state = ran(state, addColumnAfter);
+  assert.deepStrictEqual(grid(state), ['a||b', '1||2', '||']);
+  assert.deepStrictEqual(
+    kinds(state),
+    ['hhh', 'ccc', 'ccc'],
+    'a new column’s top cell is a header cell',
+  );
+  assert.deepStrictEqual(grid(reread(state)), grid(state));
+  state = ran(caretAt(state, '2'), deleteColumn);
+  assert.deepStrictEqual(grid(state), ['a|', '1|', '|']);
+  state = ran(caretAt(state, '1'), deleteRow);
+  assert.deepStrictEqual(grid(state), ['a|', '|']);
+});
+
+test('tables: a row above the header becomes the header, and a deleted header hands over to the row below', () => {
+  let state = tableState(TABLE, 'a');
+  state = ran(state, addRowBefore);
+  assert.deepStrictEqual(grid(state), ['|', 'a|b', '1|2']);
+  assert.deepStrictEqual(
+    kinds(state),
+    ['hh', 'cc', 'cc'],
+    'markdown has one header row, and it is the first',
+  );
+  assert.deepStrictEqual(grid(reread(state)), grid(state));
+  state = ran(caretAt(state, ''), deleteRow);
+  assert.deepStrictEqual(kinds(state), ['hh', 'cc']);
+  state = ran(caretAt(state, 'a'), deleteRow);
+  assert.deepStrictEqual(grid(state), ['1|2']);
+  assert.deepStrictEqual(kinds(state), ['hh'], 'the row below took over');
+  let dispatched = false;
+  assert.ok(
+    !deleteRow(caretAt(state, '1'), () => {
+      dispatched = true;
+    }),
+  );
+  assert.ok(!dispatched, 'the last row cannot go; the table can');
+});
+
+test('tables: alignment belongs to a column — a new row takes it, and setColumnAlign sets it for every cell', () => {
+  let state = tableState('| a | b |\n| :-: | --: |\n| 1 | 2 |', '1');
+  state = ran(state, addRowAfter);
+  assert.deepStrictEqual(alignsOf(state), [
+    'center|right',
+    'center|right',
+    'center|right',
+  ]);
+  state = ran(caretAt(state, '2'), setColumnAlign('left'));
+  assert.deepStrictEqual(alignsOf(state), [
+    'center|left',
+    'center|left',
+    'center|left',
+  ]);
+  assert.strictEqual(columnAlign(caretAt(state, 'b')), 'left');
+  assert.deepStrictEqual(
+    alignsOf(reread(state))[0],
+    'center|left',
+    'markdown keeps each column’s alignment',
+  );
+  state = ran(caretAt(state, 'a'), setColumnAlign(null));
+  assert.deepStrictEqual(alignsOf(state)[0], '-|left');
+  assert.strictEqual(columnAlign(caretAt(state, '1')), null);
+});
+
+test('insertTable: a header row, the caret in its first cell, and a paragraph after it', () => {
+  let state = EditorState.create({ schema, plugins: defaultPlugins(schema) });
+  state = ran(state, insertTable(2, 3));
+  assert.deepStrictEqual(grid(state), ['||', '||']);
+  assert.deepStrictEqual(kinds(state), ['hhh', 'ccc']);
+  assert.strictEqual(state.selection.$from.parent.type, N.table_header);
+  assert.strictEqual(
+    state.doc.lastChild?.type,
+    N.paragraph,
+    'something after it to go on typing in',
+  );
+  assert.ok(!insertTable()(state), 'not a table inside a table');
+});
+
+test('tables: a table markdown cannot hold is left the way prosemirror-tables leaves it', () => {
+  const html =
+    '<table><tr><th>h</th><td>a</td></tr><tr><th>g</th><td>b</td></tr></table>';
+  let state = caretAt(
+    EditorState.create({
+      doc: docFromHTML(schema, html),
+      plugins: defaultPlugins(schema),
+    }),
+    'a',
+  );
+  assert.deepStrictEqual(kinds(state), ['hc', 'hc'], 'a header column');
+  state = ran(state, addRowAfter);
+  assert.deepStrictEqual(
+    kinds(state),
+    ['hc', 'hc', 'hc'],
+    'a header column stays one; nothing is made a header row',
+  );
+});
+
+test('tableRepair: a ragged table is made whole on the next change to it', () => {
+  const ragged = N.table.create(null, [
+    N.table_row.create(null, [
+      N.table_header.create(null, schema.text('a')),
+      N.table_header.create(null, schema.text('b')),
+    ]),
+    N.table_row.create(null, [N.table_cell.create(null, schema.text('1'))]),
+  ]);
+  let state = caretAt(
+    EditorState.create({ doc: doc(ragged), plugins: [tableRepair()] }),
+    '1',
+  );
+  state = state.apply(state.tr.insertText('!'));
+  assert.deepStrictEqual(grid(state), ['a|b', '!1|']);
 });

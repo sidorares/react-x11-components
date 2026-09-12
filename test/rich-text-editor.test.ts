@@ -1100,6 +1100,113 @@ test('an app that owns the EditorState gets the list from the plugin in its stat
   assert.deepStrictEqual(drawnText(), ['owned @ada ']);
 });
 
+test('a suggester can draw its own rows; the highlight and the press stay the editor’s', async () => {
+  const drawnRows: string[] = [];
+  const { editor } = await mount({
+    suggestions: [
+      {
+        char: '@',
+        items: PEOPLE,
+        renderItem: (item, row) => {
+          drawnRows.push(`${item.label}:${row.selected}:${row.query}`);
+          return h('text', null, `* ${item.label}`);
+        },
+      },
+    ],
+  });
+  await focusAtEnd();
+  await type('@gr');
+  const row = await waitFor(() => screen.getByText('* Grace Hopper'));
+  assert.ok(!screen.queryByText('@grace'), 'the default detail is not drawn');
+  assert.ok(
+    drawnRows.includes('Grace Hopper:true:gr'),
+    'handed the item, whether it is highlighted, and the query',
+  );
+  await userEvent.click(row);
+  assert.strictEqual(editor.state.doc.textContent, '@grace ');
+  assert.ok(root().focused, 'a press still takes the row, focus stays');
+});
+
+// --- tables ----------------------------------------------------------------------------
+
+/** A toolbar button by its accessible name, or undefined when it is not in
+ *  the bar. */
+function toolbarButton(label: string): DrawnNode | undefined {
+  return screen.all(
+    (n) =>
+      (n as unknown as { props?: Record<string, unknown> }).props?.[
+        'aria-label'
+      ] === label,
+  )[0];
+}
+
+/** The first table's rows and columns. */
+function tableShape(editor: RichTextEditorHandle): [number, number] {
+  let shape: [number, number] = [0, 0];
+  editor.state.doc.descendants((node) => {
+    if (node.type.name !== 'table') return true;
+    shape = [node.childCount, node.firstChild?.childCount ?? 0];
+    return false;
+  });
+  return shape;
+}
+
+test('the toolbar puts in a table, and the table’s own buttons are there only with the caret in one', async () => {
+  const { editor } = await mount({ defaultValue: 'notes', toolbar: true });
+  await focusAtEnd();
+  assert.ok(!toolbarButton('Row below'), 'no table, no row buttons');
+  await userEvent.click(toolbarButton('Table')!);
+  assert.deepStrictEqual(tableShape(editor), [3, 3]);
+  assert.ok(editor.isActive('table_header'), 'the caret in its first cell');
+  await waitFor(() => assert.ok(toolbarButton('Row below'), 'row buttons'));
+  await type('Name');
+  await userEvent.click(toolbarButton('Column after')!);
+  await userEvent.click(toolbarButton('Row below')!);
+  assert.deepStrictEqual(tableShape(editor), [4, 4]);
+  assert.ok(root().focused, 'and the caret stayed in the editor');
+  await userEvent.key(XK_END, { modifiers: ['Control'] });
+  await waitFor(() =>
+    assert.ok(!toolbarButton('Row below'), 'out of the table, they go'),
+  );
+  await userEvent.key(XK_UP);
+  await waitFor(() => assert.ok(toolbarButton('Delete table')));
+  await userEvent.click(toolbarButton('Delete table')!);
+  assert.deepStrictEqual(tableShape(editor), [0, 0]);
+  assert.match(editor.getValue(), /^notes/);
+});
+
+test(
+  'a table’s columns are as wide as their content, line up row to row, and widen as a cell is typed in',
+  { skip: !FONTS },
+  async () => {
+    await mount({
+      defaultValue: '| Key | Does |\n| - | - |\n| Z | undo the last change |',
+      style: { width: 640 },
+    });
+    const box = (i: number): DrawnNode['abs'] => drawn(blocks()[i]).abs;
+    const [key, does, z, undoText] = [box(0), box(1), box(2), box(3)];
+    assert.deepStrictEqual(
+      [key.x, key.width],
+      [z.x, z.width],
+      'a column is one width from row to row',
+    );
+    assert.deepStrictEqual([does.x, does.width], [undoText.x, undoText.width]);
+    assert.ok(
+      does.width > key.width * 2,
+      `the long column is the wide one (${does.width} vs ${key.width})`,
+    );
+    await press(blocks()[2], 1);
+    await type(' then redo it all');
+    await waitFor(() =>
+      assert.ok(
+        box(0).width > key.width,
+        `typing in a cell widened its column (${box(0).width})`,
+      ),
+    );
+    assert.strictEqual(box(0).width, box(2).width, 'and it still lines up');
+  },
+);
+
 // --- accessibility -------------------------------------------------------------------
 
 test('a screen reader reads one text, a line per block, and can select and edit it', async () => {

@@ -5,19 +5,26 @@
 // schema can do; an array picks and orders — built-in names, `'|'` for a
 // separator, and items of the app's own beside them; a function renders
 // something else entirely, handed the editor to drive. The buttons run the
-// same public commands an app's own toolbar would (`./commands.ts`), and ask
-// the state whether they are on and whether they can run the same way, so the
-// built-in toolbar is a caller of the API rather than a second one.
+// same public commands an app's own toolbar would (`./commands.ts`,
+// `./tables.ts`), and ask the state whether they are on and whether they can
+// run the same way, so the built-in toolbar is a caller of the API rather
+// than a second one.
 //
 // A press never takes focus: a button is not focusable, and its press is
 // consumed before the editor's own press handler sees it — so the caret stays
 // where the user left it, and the command runs on the selection they can see.
 //
-// Most buttons are a letter or two in the editor's own face. Four are
-// pictures — undo, redo, a link, a task — and those are drawn rather than
-// typed: core's icon set is affordances (a chevron, a check) and these are
-// nouns, and no font a desktop happens to have can be counted on for ↶ or ☐
-// (AGENTS.md, "Affordance glyphs come from core's set; nouns do not").
+// Some buttons belong to a place in the document: a table's rows and columns
+// mean something only with the caret in a table. Those say so with
+// `visible`, and the bar leaves them out — and any separator left with
+// nothing beside it — everywhere else.
+//
+// Most buttons are a letter or two in the editor's own face. The rest are
+// pictures — undo, redo, a link, a task, a table and its parts — and those
+// are drawn rather than typed: core's icon set is affordances (a chevron, a
+// check) and these are nouns, and no font a desktop happens to have can be
+// counted on for ↶ or ☐ (AGENTS.md, "Affordance glyphs come from core's set;
+// nouns do not").
 import React from 'react';
 import type { ReactElement, ReactNode } from 'react';
 import type { MouseEvent as X11MouseEvent } from 'react-x11';
@@ -41,6 +48,20 @@ import {
   toggleWrap,
 } from './commands.js';
 import type { EditorLook } from './look.js';
+import {
+  addColumnAfter,
+  addColumnBefore,
+  addRowAfter,
+  addRowBefore,
+  columnAlign,
+  deleteColumn,
+  deleteRow,
+  deleteTable,
+  hasTables,
+  insertTable,
+  isInTable,
+  setColumnAlign,
+} from './tables.js';
 
 const h = React.createElement;
 
@@ -63,6 +84,9 @@ export interface ToolbarItem {
   active?(state: EditorState): boolean;
   /** Whether it can run here. Default: whether `run` could. */
   enabled?(state: EditorState): boolean;
+  /** Whether it is in the bar at all here — a table's rows only in a table.
+   *  Default: always. */
+  visible?(state: EditorState): boolean;
 }
 
 /** The built-in items, by name. */
@@ -83,12 +107,25 @@ export type ToolbarItemName =
   | 'taskList'
   | 'blockquote'
   | 'codeBlock'
-  | 'rule';
+  | 'rule'
+  | 'table'
+  | 'rowBefore'
+  | 'rowAfter'
+  | 'columnBefore'
+  | 'columnAfter'
+  | 'deleteRow'
+  | 'deleteColumn'
+  | 'deleteTable'
+  | 'alignLeft'
+  | 'alignCenter'
+  | 'alignRight';
 
 /** What a `toolbar` array holds: a built-in by name, `'|'`, or an item. */
 export type ToolbarEntry = ToolbarItemName | '|' | ToolbarItem;
 
-/** `toolbar={true}`. Whatever the schema cannot do is left out. */
+/** `toolbar={true}`. Whatever the schema cannot do is left out, and the
+ *  table's own group shows only with the caret in a table. The column
+ *  alignments are there by name, for a bar of an app's own. */
 export const DEFAULT_TOOLBAR: readonly ToolbarEntry[] = [
   'undo',
   'redo',
@@ -110,6 +147,15 @@ export const DEFAULT_TOOLBAR: readonly ToolbarEntry[] = [
   'blockquote',
   'codeBlock',
   'rule',
+  'table',
+  '|',
+  'rowBefore',
+  'rowAfter',
+  'columnBefore',
+  'columnAfter',
+  'deleteRow',
+  'deleteColumn',
+  'deleteTable',
 ];
 
 // --- the drawn glyphs -------------------------------------------------------------
@@ -196,6 +242,134 @@ function TaskGlyph({ ink }: { ink: string }): ReactElement {
       ctx.moveTo(4.5, 7.25);
       ctx.lineTo(6.25, 9);
       ctx.lineTo(9.75, 5);
+      ctx.stroke();
+    },
+  });
+}
+
+type TablePart =
+  | 'table'
+  | 'rowBefore'
+  | 'rowAfter'
+  | 'columnBefore'
+  | 'columnAfter'
+  | 'deleteRow'
+  | 'deleteColumn'
+  | 'deleteTable';
+
+/** A table, or the part of one a button adds or takes away: a grid, and a
+ *  plus where a row or column goes, or a cross over what goes. */
+function TableGlyph({
+  ink,
+  part,
+}: {
+  ink: string;
+  part: TablePart;
+}): ReactElement {
+  return hx('canvas', {
+    style: GLYPH,
+    onDraw: (ctx) => {
+      ctx.strokeStyle = ink;
+      ctx.lineWidth = 1.25;
+      ctx.lineCap = 'round';
+      const grid = (
+        x: number,
+        y: number,
+        w: number,
+        gh: number,
+        cols: number,
+        rows: number,
+      ): void => {
+        ctx.strokeRect(x, y, w, gh);
+        ctx.beginPath();
+        for (let c = 1; c < cols; c++) {
+          ctx.moveTo(x + (w * c) / cols, y);
+          ctx.lineTo(x + (w * c) / cols, y + gh);
+        }
+        for (let r = 1; r < rows; r++) {
+          ctx.moveTo(x, y + (gh * r) / rows);
+          ctx.lineTo(x + w, y + (gh * r) / rows);
+        }
+        ctx.stroke();
+      };
+      const mark = (cx: number, cy: number, cross: boolean): void => {
+        ctx.beginPath();
+        if (cross) {
+          ctx.moveTo(cx - 2, cy - 2);
+          ctx.lineTo(cx + 2, cy + 2);
+          ctx.moveTo(cx + 2, cy - 2);
+          ctx.lineTo(cx - 2, cy + 2);
+        } else {
+          ctx.moveTo(cx - 2.5, cy);
+          ctx.lineTo(cx + 2.5, cy);
+          ctx.moveTo(cx, cy - 2.5);
+          ctx.lineTo(cx, cy + 2.5);
+        }
+        ctx.stroke();
+      };
+      switch (part) {
+        case 'table':
+          grid(1.5, 2.5, 11, 9, 3, 3);
+          break;
+        case 'rowBefore':
+          grid(1.5, 6.5, 11, 6, 3, 2);
+          mark(7, 2.5, false);
+          break;
+        case 'rowAfter':
+          grid(1.5, 1.5, 11, 6, 3, 2);
+          mark(7, 11.5, false);
+          break;
+        case 'columnBefore':
+          grid(6.5, 1.5, 6, 11, 2, 3);
+          mark(2.5, 7, false);
+          break;
+        case 'columnAfter':
+          grid(1.5, 1.5, 6, 11, 2, 3);
+          mark(11.5, 7, false);
+          break;
+        case 'deleteRow':
+          ctx.strokeRect(1.5, 4, 11, 6);
+          mark(7, 7, true);
+          break;
+        case 'deleteColumn':
+          ctx.strokeRect(4, 1.5, 6, 11);
+          mark(7, 7, true);
+          break;
+        case 'deleteTable':
+          grid(1.5, 1.5, 8, 8, 2, 2);
+          mark(11, 11, true);
+          break;
+      }
+    },
+  });
+}
+
+/** Four lines set ragged the way a column's text is. */
+function AlignGlyph({
+  ink,
+  align,
+}: {
+  ink: string;
+  align: 'left' | 'center' | 'right';
+}): ReactElement {
+  return hx('canvas', {
+    style: GLYPH,
+    onDraw: (ctx, { width }) => {
+      ctx.strokeStyle = ink;
+      ctx.lineWidth = 1.5;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      [11, 7, 11, 7].forEach((len, i) => {
+        const y = 3 + i * 2.75;
+        const x =
+          align === 'left'
+            ? 1.5
+            : align === 'right'
+              ? width - 1.5 - len
+              : (width - len) / 2;
+        ctx.moveTo(x, y);
+        ctx.lineTo(x + len, y);
+      });
       ctx.stroke();
     },
   });
@@ -361,6 +535,51 @@ export function toolbarItems(
       run: insertHorizontalRule(nodes.horizontal_rule),
     };
   }
+  if (hasTables(schema)) {
+    out.table = {
+      id: 'table',
+      label: 'Table',
+      icon: (ink) => h(TableGlyph, { ink, part: 'table' }),
+      title: 'Table',
+      run: insertTable(),
+      active: isInTable,
+    };
+    const part = (id: TablePart, title: string, run: Command): ToolbarItem => ({
+      id,
+      label: title,
+      icon: (ink) => h(TableGlyph, { ink, part: id }),
+      title,
+      run,
+      visible: isInTable,
+    });
+    out.rowBefore = part('rowBefore', 'Row above', addRowBefore);
+    out.rowAfter = part('rowAfter', 'Row below', addRowAfter);
+    out.columnBefore = part('columnBefore', 'Column before', addColumnBefore);
+    out.columnAfter = part('columnAfter', 'Column after', addColumnAfter);
+    out.deleteRow = part('deleteRow', 'Delete row', deleteRow);
+    out.deleteColumn = part('deleteColumn', 'Delete column', deleteColumn);
+    out.deleteTable = part('deleteTable', 'Delete table', deleteTable);
+    for (const [id, align] of [
+      ['alignLeft', 'left'],
+      ['alignCenter', 'center'],
+      ['alignRight', 'right'],
+    ] as const) {
+      out[id] = {
+        id,
+        label: `Align ${align}`,
+        icon: (ink) => h(AlignGlyph, { ink, align }),
+        title: `Align column ${align}`,
+        // pressed again, it takes the alignment off
+        run: (state, dispatch) =>
+          setColumnAlign(columnAlign(state) === align ? null : align)(
+            state,
+            dispatch,
+          ),
+        active: (state) => columnAlign(state) === align,
+        visible: isInTable,
+      };
+    }
+  }
   return out;
 }
 
@@ -378,6 +597,23 @@ export function resolveToolbar(
     if (item === '|' && (out.length === 0 || out[out.length - 1] === '|'))
       continue;
     out.push(item);
+  }
+  while (out[out.length - 1] === '|') out.pop();
+  return out;
+}
+
+/** The entries in the bar for `state`: the invisible ones out, and the
+ *  separators that were only between them with them. */
+function shownEntries(
+  entries: readonly (ToolbarItem | '|')[],
+  state: EditorState,
+): (ToolbarItem | '|')[] {
+  const out: (ToolbarItem | '|')[] = [];
+  for (const entry of entries) {
+    if (entry !== '|' && entry.visible && !entry.visible(state)) continue;
+    if (entry === '|' && (out.length === 0 || out[out.length - 1] === '|'))
+      continue;
+    out.push(entry);
   }
   while (out[out.length - 1] === '|') out.pop();
   return out;
@@ -449,7 +685,8 @@ function button(item: ToolbarItem, props: ToolbarProps): ReactNode {
 }
 
 export function Toolbar(props: ToolbarProps): ReactElement {
-  const { entries, look } = props;
+  const { look } = props;
+  const entries = shownEntries(props.entries, props.state);
   return hx(
     'box',
     {
