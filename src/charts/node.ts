@@ -657,7 +657,11 @@ export class ChartPlotNode extends Node {
 
   // --- render host ---------------------------------------------------------
 
-  private _host(): RenderHost {
+  // Not `_host`: core's `Node` sets a `_host` field on every node (react-x11
+  // 2.12 and later), and a field on the instance shadows a method of the
+  // same name — every chart threw in `paint`. `test/node-fields.test.ts`
+  // keeps the next such name from getting through.
+  private _renderHost(): RenderHost {
     return {
       scatterGrid: (id, key, _n) => {
         let grid = this._scatterGrids.get(id);
@@ -755,7 +759,7 @@ export class ChartPlotNode extends Node {
       xScale: layout.xScale,
       yScale: layout.yScale,
       stats,
-      host: this._host(),
+      host: this._renderHost(),
       scale: this._scale,
     };
     for (const geom of layout.geoms) renderSeries(env, geom);
