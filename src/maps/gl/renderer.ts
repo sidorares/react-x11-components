@@ -38,6 +38,8 @@ import {
   ATTRIBUTES,
   BLIT_FRAGMENT,
   BLIT_VERTEX,
+  CIRCLE_FRAGMENT,
+  CIRCLE_VERTEX,
   COVER_FRAGMENT,
   COVER_VERTEX,
   FAN_FRAGMENT,
@@ -48,6 +50,8 @@ import {
   LINE_VERTEX,
   MARKER_FRAGMENT,
   MARKER_VERTEX,
+  RASTER_FRAGMENT,
+  RASTER_VERTEX,
   linkProgram,
 } from './shaders.js';
 import type { GL, Program } from './shaders.js';
@@ -230,6 +234,8 @@ interface TileGpu {
   fill: unknown;
   /** One vertex array per range start and stream: `first * 2 + (fill ? 1 : 0)`. */
   vaos: Map<number, unknown>;
+  /** A raster tile's image. */
+  texture: unknown;
   bytes: number;
 }
 
@@ -248,7 +254,13 @@ const now = (): number => globals.performance?.now() ?? Date.now();
  *  newest layers left out — `paint.ts`'s gate, plus adaptive quality's. */
 function drawsAt(layer: MapStyleLayer, zoom: number, detail: number): boolean {
   if (layer.visible === false) return false;
-  if (layer.type !== 'fill' && layer.type !== 'line') return false;
+  if (
+    layer.type !== 'fill' &&
+    layer.type !== 'line' &&
+    layer.type !== 'circle'
+  ) {
+    return false;
+  }
   if (layer.minZoom !== undefined && zoom < layer.minZoom) return false;
   if (layer.maxZoom !== undefined && zoom >= layer.maxZoom) return false;
   if (
@@ -291,6 +303,8 @@ export class GlMapRenderer {
   private _marker: Program | null = null;
   private _markerVao: unknown = null;
   private _markerBuffer: unknown = null;
+  private _circle: Program | null = null;
+  private _raster: Program | null = null;
   private _atlasTexture: unknown = null;
   private _atlasOwner: LabelAtlas | null = null;
   private _stats: GlRenderStats = GlMapRenderer._emptyStats();
@@ -475,6 +489,7 @@ export class GlMapRenderer {
     for (const vao of gpu.vaos.values()) gl.deleteVertexArray(vao);
     if (gpu.line) gl.deleteBuffer(gpu.line);
     if (gpu.fill) gl.deleteBuffer(gpu.fill);
+    if (gpu.texture) gl.deleteTexture(gpu.texture);
     this.gpuBytes -= gpu.bytes;
     this._tiles.delete(data);
   }
@@ -494,6 +509,8 @@ export class GlMapRenderer {
       this._blit,
       this._label,
       this._marker,
+      this._circle,
+      this._raster,
     ]) {
       if (program) gl.deleteProgram(program.program);
     }
@@ -548,6 +565,11 @@ export class GlMapRenderer {
         scissors.push(scissorOf(tile.clip, width, height));
       }
       stats.tiles += tiles.length;
+      // A raster source is its images, and no style.
+      if (tiles.some((tile) => tile.data.raster)) {
+        this._rasters(tiles, scissors, width, height);
+        continue;
+      }
       for (let i = 0; i < layers.length; i++) {
         const layer = layers[i].layer;
         if (!drawsAt(layer, frame.zoom, detail)) continue;
@@ -557,6 +579,8 @@ export class GlMapRenderer {
           }
         } else if (layer.type === 'line') {
           if (this._lines(frame, tiles, i, layer, scissors)) stats.layers++;
+        } else if (layer.type === 'circle') {
+          if (this._circles(frame, tiles, i, layer, scissors)) stats.layers++;
         }
       }
     }
@@ -730,6 +754,107 @@ export class GlMapRenderer {
       false,
     );
     return true;
+  }
+
+  /**
+   * A circle layer: a disc per point, one instanced draw per tile — the
+   * radius, colours and stroke `paint.ts` reads, at this zoom.
+   */
+  private _circles(
+    frame: RenderFrame,
+    tiles: readonly RenderTile[],
+    index: number,
+    layer: Extract<MapStyleLayer, { type: 'circle' }>,
+    scissors: (number[] | null)[],
+  ): boolean {
+    const zoom = frame.zoom;
+    const radius =
+      (layer.radius === undefined ? 3 : resolveZoomed(layer.radius, zoom)) *
+      frame.scale;
+    if (!(radius > 0)) return false;
+    const opacity =
+      layer.opacity === undefined ? 1 : resolveZoomed(layer.opacity, zoom);
+    if (opacity <= 0) return false;
+    const base = this._color(resolveZoomed(layer.color, zoom));
+    if (!base) return false;
+    if (!this._unionOf(tiles, index, scissors)) return false;
+    const ring =
+      layer.strokeColor === undefined
+        ? null
+        : this._color(resolveZoomed(layer.strokeColor, zoom));
+    const stroke = ring
+      ? (layer.strokeWidth === undefined
+          ? 1
+          : resolveZoomed(layer.strokeWidth, zoom)) * frame.scale
+      : 0;
+    const gl = this._gl;
+    const program = (this._circle ??= linkProgram(
+      gl,
+      CIRCLE_VERTEX,
+      CIRCLE_FRAGMENT,
+      [
+        'u_tile',
+        'u_viewport',
+        'u_radius',
+        'u_stroke',
+        'u_color',
+        'u_stroke_color',
+      ],
+    ));
+    const u = program.uniforms;
+    const color = premultiplied(base, opacity);
+    const edge = ring ? premultiplied(ring, opacity) : CLEAR;
+    gl.useProgram(program.program);
+    gl.uniform2f(u.u_viewport, frame.width, frame.height);
+    gl.uniform1f(u.u_radius, radius);
+    gl.uniform1f(u.u_stroke, stroke);
+    gl.uniform4f(u.u_color, color[0], color[1], color[2], color[3]);
+    gl.uniform4f(u.u_stroke_color, edge[0], edge[1], edge[2], edge[3]);
+    this._eachTile(tiles, index, scissors, program, false, (count) => {
+      gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, count);
+    });
+    return true;
+  }
+
+  /**
+   * A raster source's tiles: each one's image over its square, clipped to
+   * the part of the view it draws. Past the source's depth the square is
+   * the data tile's, larger than the view's cells, so the image is drawn
+   * whole and stretched — the retained renderer's rule since #98.
+   */
+  private _rasters(
+    tiles: readonly RenderTile[],
+    scissors: (number[] | null)[],
+    width: number,
+    height: number,
+  ): void {
+    const gl = this._gl;
+    const program = (this._raster ??= linkProgram(
+      gl,
+      RASTER_VERTEX,
+      RASTER_FRAGMENT,
+      ['u_tile', 'u_viewport', 'u_image'],
+    ));
+    const u = program.uniforms;
+    gl.useProgram(program.program);
+    gl.uniform2f(u.u_viewport, width, height);
+    gl.uniform1i(u.u_image, 0);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindVertexArray(this._coverVao);
+    gl.disable(gl.STENCIL_TEST);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    for (let t = 0; t < tiles.length; t++) {
+      const tile = tiles[t];
+      const s = scissors[t];
+      const texture = this._tiles.get(tile.data)?.texture;
+      if (!s || !texture) continue;
+      gl.scissor(s[0], s[1], s[2], s[3]);
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+      gl.uniform3f(u.u_tile, tile.size, tile.x, tile.y);
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+      this._stats.drawCalls++;
+    }
   }
 
   /**
@@ -1150,7 +1275,7 @@ export class GlMapRenderer {
     let gpu = this._tiles.get(data);
     if (gpu) return gpu;
     const gl = this._gl;
-    gpu = { line: null, fill: null, vaos: new Map(), bytes: 0 };
+    gpu = { line: null, fill: null, vaos: new Map(), texture: null, bytes: 0 };
     if (data.lineRecords > 1) {
       gpu.line = gl.createBuffer();
       gl.bindBuffer(gl.ARRAY_BUFFER, gpu.line);
@@ -1162,6 +1287,27 @@ export class GlMapRenderer {
       gl.bindBuffer(gl.ARRAY_BUFFER, gpu.fill);
       gl.bufferData(gl.ARRAY_BUFFER, new Uint8Array(data.fill), gl.STATIC_DRAW);
       gpu.bytes += data.fill.byteLength;
+    }
+    if (data.raster) {
+      const { width, height, pixels } = data.raster;
+      gpu.texture = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, gpu.texture);
+      gl.texImage2D(
+        gl.TEXTURE_2D,
+        0,
+        gl.RGBA,
+        width,
+        height,
+        0,
+        gl.RGBA,
+        gl.UNSIGNED_BYTE,
+        pixels,
+      );
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gpu.bytes += width * height * 4;
     }
     this._tiles.set(data, gpu);
     this.gpuBytes += gpu.bytes;

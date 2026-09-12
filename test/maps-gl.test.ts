@@ -52,6 +52,7 @@ import {
   RECORD_BYTES,
   TILE_EXTENT,
   buildTileBuckets,
+  rasterTileData,
 } from '../src/maps/gl/buckets.js';
 import type { GlTileData } from '../src/maps/gl/buckets.js';
 import { parseColor, premultiplied } from '../src/maps/gl/color.js';
@@ -2253,4 +2254,150 @@ test('the overlays are one bucket, built again when the array changes or the vie
     log.some((c) => c.name === 'deleteBuffer'),
     'the old ones let go',
   );
+});
+
+// --- circle layers and raster tiles -------------------------------------------------
+
+/** A layer of points at extent 4096: a multipoint, then one point. */
+function pointTile(points: [number, number][]) {
+  const multi = [...command(1, points.length)];
+  let x = 0;
+  let y = 0;
+  for (const [px, py] of points) {
+    multi.push(zigzag(px - x), zigzag(py - y));
+    x = px;
+    y = py;
+  }
+  const one = [...command(1, 1), zigzag(3000), zigzag(3000)];
+  return parseTile(
+    new Uint8Array(
+      layer(
+        'pois',
+        4096,
+        [],
+        [],
+        [
+          { type: GeomType.Point, tags: [], geometry: multi },
+          { type: GeomType.Point, tags: [], geometry: one },
+        ],
+      ),
+    ),
+  );
+}
+
+const CIRCLES: MapStyleLayer[] = [
+  {
+    id: 'pois',
+    type: 'circle',
+    sourceLayer: 'pois',
+    radius: 4,
+    color: '#ff0000',
+    strokeColor: '#ffffff',
+    strokeWidth: 1,
+  },
+];
+
+test('a circle layer is its points, a record each, drawn as a disc each in one draw', () => {
+  const data = buildTileBuckets(
+    pointTile([
+      [100, 200],
+      [400, 800],
+    ]),
+    prepareStyle({ layers: CIRCLES }),
+  );
+  const draw = data.draws[0]!;
+  assert.strictEqual(draw.kind, 'circle');
+  // Three points and the sentinel after them: three instances.
+  assert.deepStrictEqual(draw.ranges, [0, 4]);
+  const i16 = new Int16Array(data.line);
+  assert.deepStrictEqual(
+    [i16[0], i16[1], i16[4], i16[5], i16[8], i16[9], i16[12]],
+    [100, 200, 400, 800, 3000, 3000, BREAK],
+  );
+  const { gl, log } = recordingGl(true);
+  const stats = new GlMapRenderer(gl).render(frameOver(data, CIRCLES));
+  const draws = log.filter((c) => c.name === 'drawArraysInstanced');
+  assert.deepStrictEqual(
+    draws.map((c) => c.args[3]),
+    [3],
+    'three discs, one draw',
+  );
+  assert.strictEqual(stats.layers, 1);
+});
+
+test('a raster tile is kept as its image, with nothing to build', async () => {
+  const pixels = new Uint8Array(4 * 4 * 4).fill(255);
+  const source: MapSource = {
+    id: 'image',
+    minZoom: 0,
+    maxZoom: 3,
+    tileSize: 256,
+    load: () => ({ kind: 'raster', width: 4, height: 4, data: pixels }),
+  };
+  let changes = 0;
+  const store = new GlTileStore({
+    source,
+    prepared: prepareStyle({ layers: STYLE }),
+    onChange: () => changes++,
+  });
+  store.tick();
+  store.want([{ z: 1, x: 0, y: 0 }]);
+  await new Promise((resolve) => setImmediate(resolve));
+  const data = store.get({ z: 1, x: 0, y: 0 });
+  assert.strictEqual(data?.raster?.pixels, pixels);
+  assert.strictEqual(store.building, 0, 'nothing waits for a build');
+  assert.ok(changes > 0, 'and a frame was asked for');
+  // A restyle has nothing to rebuild in it.
+  store.rebuild();
+  assert.strictEqual(store.building, 0);
+  assert.strictEqual(store.get({ z: 1, x: 0, y: 0 }), data);
+});
+
+test('past a raster source’s depth its tile is drawn whole over its own square', () => {
+  const image = rasterTileData(4, 4, new Uint8Array(64));
+  const cover = renderCover(
+    { center: { lon: 10, lat: 20 }, zoom: 7 },
+    { width: 800, height: 600 },
+    2,
+    { minZoom: 0, maxZoom: 3, tileSize: 256 },
+    { get: () => image },
+  );
+  assert.strictEqual(cover.level, 3);
+  assert.ok(cover.tiles.length > 0);
+  // Level 3 at zoom 7, on the 512-pixel world, at scale 2.
+  const size = 512 * 2 ** (7 - 3) * 2;
+  for (const tile of cover.tiles) {
+    assert.strictEqual(tile.size, size);
+    assert.deepStrictEqual(tile.clip, {
+      x: tile.x,
+      y: tile.y,
+      width: size,
+      height: size,
+    });
+  }
+});
+
+test('raster tiles are textures: uploaded once, a quad each, let go with their tile', () => {
+  const image = rasterTileData(2, 2, new Uint8Array(16).fill(200));
+  const { gl, log } = recordingGl(true);
+  const renderer = new GlMapRenderer(gl);
+  const square = (x: number) => ({
+    data: image,
+    x,
+    y: 0,
+    size: 128,
+    clip: { x, y: 0, width: 128, height: 128 },
+  });
+  const frame = { ...frameOver(image), sources: [[square(0), square(128)]] };
+  renderer.render(frame);
+  const count = (name: string) => log.filter((c) => c.name === name).length;
+  assert.strictEqual(count('texImage2D'), 1, 'one image, one upload');
+  log.length = 0;
+  const stats = renderer.render(frame);
+  assert.strictEqual(count('texImage2D'), 0, 'already there');
+  assert.strictEqual(count('drawArrays'), 2, 'a quad each');
+  assert.strictEqual(count('drawArraysInstanced'), 0, 'and no style');
+  assert.strictEqual(stats.tiles, 2);
+  renderer.release(image);
+  assert.strictEqual(count('deleteTexture'), 1);
 });

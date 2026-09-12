@@ -23,7 +23,7 @@ import type { MapSource, TileData } from '../sources.js';
 import type { TileId } from '../proj.js';
 import type { PreparedStyle } from '../paint.js';
 import type { MapStyleLayer } from '../style.js';
-import { buildTileBuckets } from './buckets.js';
+import { buildTileBuckets, rasterTileData } from './buckets.js';
 import type { GlTileData } from './buckets.js';
 import type { BuildRequest } from './build-worker.js';
 import type { TileLookup } from './cover.js';
@@ -222,8 +222,12 @@ export class GlTileStore implements TileLookup {
             entry.bytes = data.data;
             entry.state = 'loaded';
             this._queue.push(entry);
+          } else if (data && data.kind === 'raster' && data.width > 0) {
+            // An image needs no building — it is its own texture — and no
+            // style: nothing to queue, and nothing a restyle rebuilds.
+            entry.data = rasterTileData(data.width, data.height, data.data);
+            entry.state = 'ready';
           } else {
-            // No data, or a raster tile, which this renderer does not draw.
             entry.state = 'empty';
           }
         },

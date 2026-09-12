@@ -341,6 +341,80 @@ void main() {
 }
 `;
 
+/**
+ * A circle layer's point as a disc: a quad around it, instanced over the
+ * layer's records. Only `a_p0` is read — a point is one record, and the
+ * sentinel after a range's last point is `a_p1` of nothing drawn.
+ */
+export const CIRCLE_VERTEX = `${PRELUDE}
+uniform float u_radius;
+uniform float u_stroke;
+varying vec2 v_local;
+void main() {
+  if (a_p0.x < -32767.5) {
+    gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+    return;
+  }
+  vec2 centre = a_p0 * u_tile.x + u_tile.yz;
+  float e = u_radius + u_stroke * 0.5 + 1.0;
+  v_local = vec2(a_corner.x * 2.0 - 1.0, a_corner.y) * e;
+  gl_Position = clip(centre + v_local);
+}
+`;
+
+/** The disc's pixels: the fill inside, and a stroke centred on the edge
+ *  over it — `paint.ts` fills a circle's path and then strokes it. */
+export const CIRCLE_FRAGMENT = `precision highp float;
+uniform vec4 u_color;
+uniform vec4 u_stroke_color;
+uniform float u_radius;
+uniform float u_stroke;
+varying vec2 v_local;
+void main() {
+  float dist = length(v_local) - u_radius;
+  float fill = clamp(0.5 - dist, 0.0, 1.0);
+  float ring = u_stroke > 0.0
+    ? clamp(u_stroke * 0.5 + 0.5 - abs(dist), 0.0, 1.0)
+    : 0.0;
+  vec4 stroke = u_stroke_color * ring;
+  vec4 color = stroke + u_color * (fill * (1.0 - stroke.a));
+  if (color.a <= 0.0) discard;
+  gl_FragColor = color;
+}
+`;
+
+/**
+ * A raster tile: its image over its square — the data tile's, which past
+ * the source's depth is larger than the cell it is drawn for — and a
+ * scissor clipping it to that cell. A pixel past every edge, so two squares
+ * that share an edge leave no gap; the scissor crops it and the image
+ * clamps to it.
+ */
+export const RASTER_VERTEX = `precision highp float;
+attribute vec2 a_corner;
+// the square's size, then its top-left corner — device pixels
+uniform vec3 u_tile;
+uniform vec2 u_viewport;
+varying vec2 v_uv;
+void main() {
+  vec2 corner = vec2(a_corner.x, a_corner.y * 0.5 + 0.5);
+  vec2 p = u_tile.yz - 1.0 + corner * (u_tile.x + 2.0);
+  v_uv = (p - u_tile.yz) / u_tile.x;
+  gl_Position = vec4(p.x / u_viewport.x * 2.0 - 1.0, 1.0 - p.y / u_viewport.y * 2.0, 0.0, 1.0);
+}
+`;
+
+/** An image as a source decodes one — not premultiplied — onto a frame
+ *  that is. */
+export const RASTER_FRAGMENT = `precision mediump float;
+uniform sampler2D u_image;
+varying vec2 v_uv;
+void main() {
+  vec4 c = texture2D(u_image, v_uv);
+  gl_FragColor = vec4(c.rgb * c.a, c.a);
+}
+`;
+
 /* The GL table is WebGL-shaped (x11-dri's camelCase), typed loosely on
  * purpose — the same reason `src/three/renderer-direct.ts` gives. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
