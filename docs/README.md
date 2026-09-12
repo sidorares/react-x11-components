@@ -77,6 +77,11 @@ parts.
 - [Maps](prd-maps.md) — the format and provider survey (who serves vector
   tiles and who does not), the three-cache rendering architecture, and the
   profile that produced it on both the X11 and the Cocoa backends.
+- [Maps on the GPU](prd-maps-gl.md) — a proof of concept, not exported:
+  every frame drawn from vector tiles through `<glarea>` with no bitmap
+  cache. The record-stream bucket format, stencil fans instead of
+  triangulation, instanced capsule lines, and the measurements against the
+  retained renderer on both backends.
 - [Adaptive frame pacing](prd-frame-pacing.md) — landed upstream: why a
   pty-fed element must not paint at the display's rate on the Cocoa backend,
   the `frameRate` vocabulary react-x11 2.9.0 took into core as the _window's_

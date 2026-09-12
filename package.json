@@ -169,6 +169,7 @@
     "examples:formula": "tsx examples/formula.tsx",
     "examples:html": "tsx examples/html.tsx",
     "examples:maps": "tsx examples/maps.tsx",
+    "examples:maps-gl": "tsx examples/maps-gl.tsx",
     "examples:markdown": "tsx examples/markdown.tsx",
     "examples:mdx": "tsx examples/mdx.tsx",
     "examples:media-player": "tsx examples/media-player.tsx",
