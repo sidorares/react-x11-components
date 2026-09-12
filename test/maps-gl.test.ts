@@ -64,8 +64,14 @@ import {
   mergeParts,
   straightRuns,
   upright,
-} from '../src/maps/gl/labels.js';
-import type { GlLabelData } from '../src/maps/gl/labels.js';
+} from '../src/maps/anchors.js';
+import type { GlLabelData } from '../src/maps/anchors.js';
+import {
+  LabelShaper,
+  collectLabels,
+  drawLabels,
+  placeLabels,
+} from '../src/maps/labels.js';
 import { MARKER_INSTANCE, MarkerBatcher } from '../src/maps/gl/markers.js';
 import {
   buildOverlayBucket,
@@ -972,6 +978,133 @@ test('pieces merge end to end either way round, taking the straightest way on', 
   assert.ok(Math.abs(upright(85 * deg) + 95 * deg) < 1e-9);
   assert.ok(Math.abs(upright(-95 * deg) + 95 * deg) < 1e-9);
   assert.ok(Math.abs(upright(70 * deg) - 70 * deg) < 1e-9);
+});
+
+// --- labels: the retained renderer's, from the same anchors -------------------------
+
+test('both renderers set a tile’s labels on the same anchors, at the same angles', () => {
+  const tile = labelTile();
+  const prepared = prepareStyle({ layers: LABEL_STYLE });
+  const gl = anchorsOf(buildTileLabels(tile, prepared, TILE_EXTENT));
+  const id = { z: 14, x: 8185, y: 5448 };
+  const n = 2 ** id.z;
+  const retained = collectLabels(tile, id, prepared, 14);
+  assert.strictEqual(retained.length, gl.length);
+  gl.forEach((a, i) => {
+    const c = retained[i];
+    assert.strictEqual(c.text, a.text);
+    assert.strictEqual(c.mx, (id.x + a.x / TILE_EXTENT) / n);
+    assert.strictEqual(c.my, (id.y + a.y / TILE_EXTENT) / n);
+    assert.strictEqual(c.angle, a.avail < 0 ? 0 : a.angle);
+  });
+  // The street cut into three pieces is named along its one run, a name a
+  // block — where the retained renderer used to set one level at the middle
+  // of whichever piece had the largest box.
+  assert.strictEqual(
+    retained.filter((c) => c.text === 'Long Street').length,
+    3,
+  );
+  const cross = retained.find((c) => c.text === 'Cross Street')!;
+  assert.ok(Math.abs(cross.angle + Math.PI / 2) < 1e-6, 'reads upward');
+});
+
+/** Fonts that set every character half an em wide, and draw nothing. */
+const halfEmFonts = {
+  layout: (text: string, style: Record<string, unknown>) => {
+    const size = style.size as number;
+    return { width: text.length * size * 0.5, height: size, draw: () => {} };
+  },
+};
+
+test('the retained renderer fits a name to its straight stretch, and turns it along the street', () => {
+  const prepared = prepareStyle({ layers: LABEL_STYLE });
+  const candidates = collectLabels(
+    labelTile(),
+    { z: 14, x: 0, y: 0 },
+    prepared,
+    14,
+  ).filter((c) => c.text !== 'Townsville');
+  const shaper = new LabelShaper(halfEmFonts, 'sans-serif', 1);
+  const placed = (zoom: number) =>
+    placeLabels(candidates, 512 * 2 ** zoom, shaper);
+  // Two levels out, no stretch of either street is long enough for its
+  // name, and neither is set anywhere.
+  assert.deepStrictEqual(placed(12), []);
+  // At the tile's own zoom, the primary road first, down its middle and
+  // reading upward, then the residential street, level, clear of it.
+  const at14 = placed(14);
+  assert.deepStrictEqual(
+    at14.map((l) => l.text),
+    ['Cross Street', 'Long Street'],
+  );
+  assert.ok(Math.abs(at14[0].angle + Math.PI / 2) < 1e-6);
+  assert.strictEqual(at14[1].angle, 0, 'its street is level to a pixel');
+  // What a turned name covers is its turned box: tall, not wide.
+  assert.ok(at14[0].height > at14[0].width);
+});
+
+test('the retained renderer draws a street name turned about its centre, and a level one on whole pixels', () => {
+  const calls: { name: string; args: number[] }[] = [];
+  const ctx = recordingCanvas(calls);
+  const shaped = {
+    width: 60,
+    height: 11,
+    layout: {
+      draw: (_ctx: unknown, x: number, y: number) =>
+        calls.push({ name: 'text', args: [x, y] }),
+    },
+  };
+  const label = {
+    id: 'a',
+    key: 'streets|Main Street',
+    text: 'Main Street',
+    mx: 0.5,
+    my: 0.5,
+    angle: -Math.PI / 2,
+    avail: 100,
+    clear: 100,
+    length: 200,
+    dev: 0,
+    rank: 0,
+    priority: 0,
+    size: 11,
+    color: '#000000',
+    halo: undefined,
+    haloWidth: 0,
+    repeat: 0,
+    wx: 256,
+    wy: 256,
+    width: 15,
+    height: 64,
+    shaped,
+  };
+  drawLabels(
+    ctx as never,
+    [label, { ...label, id: 'b', angle: 0, wx: 100.3, wy: 50.6 }],
+    transformFor(
+      { center: { lon: 0, lat: 0 }, zoom: 0 },
+      { width: 512, height: 512 },
+      512,
+    ),
+    { x: 0, y: 0, width: 512, height: 512 },
+    2,
+    null,
+    new LabelShaper(null, 'sans-serif', 2),
+  );
+  assert.deepStrictEqual(
+    calls.slice(0, 5).map((c) => c.name),
+    ['save', 'translate', 'rotate', 'text', 'restore'],
+  );
+  // About its centre, in device pixels, from half its size back.
+  assert.deepStrictEqual(calls[1].args, [512, 512]);
+  assert.deepStrictEqual(calls[2].args, [-Math.PI / 2]);
+  assert.deepStrictEqual(calls[3].args, [-60, -11]);
+  // The level one: no transform, and whole pixels.
+  assert.deepStrictEqual(
+    calls.slice(5).map((c) => c.name),
+    ['text'],
+  );
+  assert.ok(calls[5].args.every(Number.isInteger), `${calls[5].args}`);
 });
 
 // --- labels: placement ---------------------------------------------------------------

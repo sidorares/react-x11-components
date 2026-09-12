@@ -38,8 +38,8 @@ import { GeomType, GeometryBuffer } from '../mvt.js';
 import type { FeatureCursor, VectorTile } from '../mvt.js';
 import type { PreparedLayer, PreparedStyle } from '../paint.js';
 import type { MapStyleLayer } from '../style.js';
-import { buildTileLabels } from './labels.js';
-import type { GlLabelData } from './labels.js';
+import { buildTileLabels } from '../anchors.js';
+import type { GlLabelData } from '../anchors.js';
 
 /** Tile units across a tile, after normalisation. */
 export const TILE_EXTENT = 4096;
@@ -94,7 +94,7 @@ export interface GlTileData {
   fillRecords: number;
   /** Indexed by style layer; a hole where this tile has nothing to draw. */
   draws: (LayerDraw | undefined)[];
-  /** Where the tile's labels could go — see `./labels.ts`. */
+  /** Where the tile's labels could go — see `../anchors.ts`. */
   labels?: GlLabelData;
   /** A raster tile's image — RGBA, not premultiplied, as a source decodes
    *  it — in place of streams: its own texture, and no style. */

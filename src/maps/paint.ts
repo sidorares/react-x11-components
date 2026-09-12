@@ -72,6 +72,9 @@ export interface MapCanvas {
    *  scale bar are drawn with. */
   fillRects?(rects: readonly number[]): void;
   setLineDash?(segments: readonly number[]): void;
+  /** What a street name set along its street is drawn with. */
+  translate?(x: number, y: number): void;
+  rotate?(angle: number): void;
   roundRect?(x: number, y: number, w: number, h: number, radii: number): void;
   drawImage?(image: unknown, ...args: number[]): void;
   /** Straight RGBA in, for a raster tile the application decoded. */

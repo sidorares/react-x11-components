@@ -1,5 +1,8 @@
-// Labels, the tile's half: where in a tile a label *could* go, worked out
-// once per tile — on the worker, with the buckets — and never per frame.
+// Where in a tile a label *could* go, worked out once per tile and never per
+// frame — and by both renderers: the GL renderer with a tile's buckets, on
+// its build workers (`./gl/buckets.ts`), and the retained renderer when it
+// collects a tile's candidates (`./labels.ts`). One answer, so a map names
+// the same streets in the same places whichever of them draws it.
 //
 // A point label's place is its point. A line label's place is the hard
 // part, and the answer here is the one that makes a street name easy to
@@ -31,11 +34,31 @@
 // label clears one — the middle of a block — to one that does not.
 //
 // Everything leaves as one Float32Array and a string table, so a worker can
-// hand it over with the buckets (see `./store.ts`).
-import { GeomType, GeometryBuffer } from '../mvt.js';
-import type { FeatureCursor, VectorTile } from '../mvt.js';
-import type { PreparedStyle } from '../paint.js';
-import type { SymbolLayer } from '../style.js';
+// hand it over with the buckets (see `./gl/store.ts`).
+import { GeomType, GeometryBuffer } from './mvt.js';
+import type { FeatureCursor, VectorTile } from './mvt.js';
+import type { PreparedStyle } from './paint.js';
+import type { SymbolLayer } from './style.js';
+
+// --- the fit rules both renderers place by ------------------------------------
+
+/** A line label is set level — on whole pixels, which is sharper — when its
+ *  street is this close to level, in radians. */
+export const LEVEL_SNAP = 0.03;
+/** How far a line label's run may depart from straight, as a fraction of
+ *  the text's size at the zoom it is drawn at. */
+export const STRAIGHT_FRACTION = 0.3;
+/** Run that must remain past each end of a line label, in text heights —
+ *  a name that stops exactly at a corner reads as bent. */
+export const LINE_MARGIN = 0.5;
+
+/** A name's width before it is measured: a lower-ish bound, from how wide
+ *  Latin and CJK glyphs run. Only ever used to rule out what cannot fit. */
+export function estimateWidth(text: string, size: number): number {
+  let em = 0;
+  for (const ch of text) em += ch.codePointAt(0)! >= 0x2e80 ? 0.95 : 0.5;
+  return em * size;
+}
 
 /** Floats per anchor record. */
 export const LABEL_STRIDE = 10;

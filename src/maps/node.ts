@@ -39,7 +39,6 @@ import type {
   MapPointerInput,
   MapView,
 } from './controller.js';
-import { GeometryBuffer } from './mvt.js';
 import {
   BATCH_VERTICES,
   DrawScratch,
@@ -249,7 +248,6 @@ interface Outgoing {
 export class MapViewNode extends Node {
   private readonly _cache: TileCache;
   private readonly _scratch = new DrawScratch();
-  private readonly _geometry = new GeometryBuffer();
   private _shaper: LabelShaper | null = null;
 
   /**
@@ -1633,13 +1631,7 @@ export class MapViewNode extends Node {
         const at = `${cached.key}|${styleZoom}`;
         let found = this._candidates.get(at);
         if (!found) {
-          found = collectLabels(
-            cached.vector,
-            cached.tile,
-            style,
-            styleZoom,
-            this._geometry,
-          );
+          found = collectLabels(cached.vector, cached.tile, style, styleZoom);
           // Bounded the way the shaper's cache is: a map panned across a
           // continent must not turn this into a leak, and rebuilding a
           // tile's candidates is one walk over its symbol layers.
