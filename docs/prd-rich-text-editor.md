@@ -181,6 +181,13 @@ back as a bar beside the editor's own caret. The plugin views that need
 `view.dom` — y-prosemirror's listens on it for focus — are made once the
 root element exists, not in the view's constructor.
 
+**Drag and drop** (`drag.ts`) is core's gesture over the root element,
+which is a drag source and a drop target. A press on the selection is the
+one press the view leaves unclaimed, so that core can arm a drag; a drag
+carries a copy's HTML and text and, for a drop in the app, the slice
+itself. A drop is read like a paste and put in where `dropPoint` says it
+fits — prosemirror-view's own drop, step for step.
+
 ## What a plugin can count on
 
 The ledger, so "does my plugin work?" has an answer short of trying it.
@@ -192,19 +199,20 @@ The ledger, so "does my plugin work?" has an answer short of trying it.
 | `posAtCoords`, `coordsAtPos`, `endOfTextblock`                                | Yes, in logical window coordinates.                                                                                                                |
 | `pasteText`, `pasteHTML`                                                      | Yes, through the same props a real paste goes through.                                                                                             |
 | `dom`                                                                         | The root element — a react-x11 node, not an `HTMLElement` — with `addEventListener` for the focus events; `docView` is truthy while it is mounted. |
-| `dragging`                                                                    | Always `null`: no drag and drop yet.                                                                                                               |
+| `dragging`                                                                    | The slice a drag out of this editor carries, and whether a drop back in here moves it.                                                             |
 | `root`, `domAtPos`, `nodeDOM`, `posAtDOM`, `domSelection()`                   | No. There is no DOM to answer with.                                                                                                                |
 
-| View prop                                                                                                                             | Here                                                                                 |
-| ------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
-| `handleKeyDown`, `handleKeyPress`, `handleTextInput`                                                                                  | Yes. The event is a `DomKeyEvent`; composition commits go through `handleTextInput`. |
-| `handleClickOn`, `handleClick`, and the double and triple forms                                                                       | Yes. The event has `clientX`/`clientY` (logical), `button`, `detail`, the modifiers. |
-| `handlePaste`, `transformPasted`, `transformPastedHTML`, `transformPastedText`, `clipboardParser`, `clipboardTextParser`, `domParser` | Yes.                                                                                 |
-| `transformCopied`, `clipboardSerializer`, `clipboardTextSerializer`                                                                   | Yes.                                                                                 |
-| `decorations`                                                                                                                         | Inline and node decorations; widgets whose spec carries `text`.                      |
-| `editable`, `handleScrollToSelection`, `dispatchTransaction`                                                                          | Yes.                                                                                 |
-| `nodeViews`                                                                                                                           | Not as DOM constructors: the component's `nodeViews` take React components.          |
-| `handleDOMEvents`, `handleDrop`, `markViews`, `attributes`, `createSelectionBetween`                                                  | No.                                                                                  |
+| View prop                                                                                                                             | Here                                                                                                                   |
+| ------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `handleKeyDown`, `handleKeyPress`, `handleTextInput`                                                                                  | Yes. The event is a `DomKeyEvent`; composition commits go through `handleTextInput`.                                   |
+| `handleClickOn`, `handleClick`, and the double and triple forms                                                                       | Yes. The event has `clientX`/`clientY` (logical), `button`, `detail`, the modifiers.                                   |
+| `handlePaste`, `transformPasted`, `transformPastedHTML`, `transformPastedText`, `clipboardParser`, `clipboardTextParser`, `domParser` | Yes.                                                                                                                   |
+| `transformCopied`, `clipboardSerializer`, `clipboardTextSerializer`                                                                   | Yes.                                                                                                                   |
+| `decorations`                                                                                                                         | Inline and node decorations; widgets whose spec carries `text`.                                                        |
+| `editable`, `handleScrollToSelection`, `dispatchTransaction`                                                                          | Yes.                                                                                                                   |
+| `nodeViews`                                                                                                                           | Not as DOM constructors: the component's `nodeViews` take React components.                                            |
+| `handleDrop`                                                                                                                          | Yes. The event is DOM-shaped: `dataTransfer.getData` answers what was read, and its `files` are `{ name, path, uri }`. |
+| `handleDOMEvents`, `markViews`, `attributes`, `createSelectionBetween`                                                                | No.                                                                                                                    |
 
 What that means for the plugins people reach for:
 
@@ -275,5 +283,3 @@ What that means for the plugins people reach for:
 - **Virtualization**, for long documents.
 - **Images in text** — `renderImage` draws an image alone in its paragraph;
   one inside a line needs the same inline-widget run.
-- **Drag and drop** — moving blocks, and dropping files and images, over
-  core's drag and drop the way `<ReorderList>` is.

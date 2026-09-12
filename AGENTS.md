@@ -1347,6 +1347,13 @@ What to know before changing it:
   `toDOM` returns `remoteCaret`'s description (`collab.ts`); the view asks a
   text-less widget's `toDOM` once, cached by the widget's type, and a
   builder that reaches for `document` throws and is skipped.
+- **A press on the selection is left to core, so that it can arm a
+  drag.** The root is `draggable`; `mouseDown` claims every other press,
+  and `onDragStart` cancels a drag whose press was not on the selection.
+  An in-app drop reaches its target with no modifiers — core builds it
+  with `buttons: 0` — so the copy modifier travels in the slice payload
+  from the source's last `onDrag`; and an in-app drop must answer
+  synchronously, because `onDragEnd` follows at once.
 - **Subpath only.** The one component not re-exported from `src/index.ts`:
   ProseMirror's declarations name DOM globals (`dom-globals.d.ts` declares
   the four this repository needs), and an app importing anything from the

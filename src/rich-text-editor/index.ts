@@ -37,7 +37,11 @@ import React, {
 import type { ComponentType, ReactElement, ReactNode, Ref } from 'react';
 import { useApp, useClipboard, useTheme } from 'react-x11';
 import type {
+  DragEndEvent,
+  DragEvent,
+  DragSourceEvent,
   DrawnNode,
+  DropEvent,
   FocusEvent,
   KeyboardEvent,
   MouseEvent as X11MouseEvent,
@@ -71,6 +75,8 @@ import {
   toggleList,
   toggleWrap,
 } from './commands.js';
+import { DROP_TYPES, SLICE_TYPE } from './drag.js';
+import type { DropAnswer } from './drag.js';
 import { docFromHTML, htmlFromContent } from './html.js';
 import { defaultPlugins } from './keymap.js';
 import { deriveLook } from './look.js';
@@ -104,6 +110,11 @@ registerRichText();
 registerEditorElements();
 
 const h = React.createElement;
+
+/** What a drag out of the editor offers to do: an editable one moves or
+ *  copies, a read-only one only copies. */
+const MOVE_OR_COPY: Array<'move' | 'copy'> = ['move', 'copy'];
+const COPY_ONLY: Array<'move' | 'copy'> = ['copy'];
 
 // --- props -------------------------------------------------------------------
 
@@ -810,6 +821,17 @@ export function RichTextEditor(props: RichTextEditorProps): ReactElement {
     [view],
   );
 
+  // What a drag out of the editor offers, resolved when a drop asks for it:
+  // a copy's text and HTML, and the slice itself for a drop in this app.
+  const dragData = useMemo(
+    () => ({
+      'text/plain': () => view.dragText(),
+      'text/html': () => view.dragHTML(),
+      [SLICE_TYPE]: () => view.dragPayload(),
+    }),
+    [view],
+  );
+
   // --- chrome --------------------------------------------------------------
 
   let chrome: ReactNode = null;
@@ -1064,6 +1086,43 @@ export function RichTextEditor(props: RichTextEditorProps): ReactElement {
         view.contextMenu(ev);
         ev.preventDefault();
       },
+      // drag and drop (./drag.ts): the selection drags out, and a drop is
+      // read like a paste. A press on the selection is left to core, which
+      // arms the drag here; `onDragStart` cancels one that is not the
+      // selection's, and leaves a drag of something inside alone.
+      draggable: !disabled,
+      dragData,
+      dragActions: editable ? MOVE_OR_COPY : COPY_ONLY,
+      onDragStart: (ev: DragSourceEvent) => {
+        if (ev.target !== rootRef.current) return;
+        if (!view.dragStart()) ev.preventDefault();
+      },
+      onDrag: (ev: DragSourceEvent) => {
+        if (ev.target === rootRef.current)
+          view.dragMoved(ev.ctrlKey, ev.altKey);
+      },
+      onDragEnd: (ev: DragEndEvent) => {
+        if (ev.target === rootRef.current) view.dragEnd(ev.action, ev.dropped);
+      },
+      ...(editable
+        ? {
+            dropAccept: DROP_TYPES,
+            onDragOver: (ev: DragEvent) => {
+              if (!view.dragOver(ev.x, ev.y)) ev.reject();
+            },
+            onDragLeave: () => view.dragLeave(),
+            onDrop: (ev: DropEvent) => {
+              const settle = (answer: DropAnswer): void => {
+                if (answer) ev.accept(answer);
+                else ev.reject();
+              };
+              const answer = view.drop(ev);
+              if (answer instanceof Promise) return answer.then(settle);
+              settle(answer);
+              return undefined;
+            },
+          }
+        : null),
       onFocus: props.onFocus,
       onBlur: props.onBlur,
     },

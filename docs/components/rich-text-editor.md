@@ -166,10 +166,12 @@ backend's convention, whatever host the process runs on.
 
 With the pointer: a press places the caret, Shift extends, a double press
 selects a word and a triple one the block, a drag selects (and scrolls at the
-edges), a press on a divider — any block that is a leaf — selects it whole,
-a press on a task's box toggles it, and the right button opens core's edit menu (Copy and
-Select All only, when read-only). On X11 a selection is offered as PRIMARY
-and the middle button pastes PRIMARY at the pointer.
+edges), a drag that starts on the selection moves it
+([Drag and drop](#drag-and-drop)), a press on a divider — any block that is
+a leaf — selects it whole, a press on a task's box toggles it, and the right
+button opens core's edit menu (Copy and Select All only, when read-only). On
+X11 a selection is offered as PRIMARY and the middle button pastes PRIMARY at
+the pointer.
 
 ## Markdown shortcuts
 
@@ -341,6 +343,25 @@ plugin's own decoration. y-prosemirror's default cursor builder makes a DOM
 element, which has nothing to draw it here — `remoteCaret` is the builder
 this editor reads. The name is not drawn beside the caret yet.
 
+## Drag and drop
+
+A press on the selection and a drag takes it along; let go, and it goes in
+where the drop caret was drawn — moved, or copied with **Ctrl** (**Option**
+on the Mac backend) held. A press on the selection that does not move is a
+click, and puts the caret there. The drag carries what a copy does — its
+HTML and its text, for another application — and, to another editor in the
+app, the content itself, so a list stays a list.
+
+A drop is read the way a paste is, at the point it lands: HTML by the
+schema's own rules, text a paragraph to a line. Files dropped from a file
+manager go in as what markdown can say of them: an image as an image, drawn
+by `renderImage` — the editor reads nothing from the file — and anything
+else as its name, linked to it. `editorProps.handleDrop` — or a plugin's —
+sees a drop first, with a DOM-shaped event whose `dataTransfer` answers what
+was read and whose `files` are `{ name, path, uri }`: a path to read, not
+a browser's `File`. A read-only editor can be dragged from, to copy, and
+takes no drop.
+
 ## The document model
 
 `schema` is GFM in the names of ProseMirror's reference schemas, so commands
@@ -418,7 +439,7 @@ View props honoured: `handleKeyDown`, `handleKeyPress`, `handleTextInput`,
 `dispatchTransaction`, and the whole clipboard family — `transformCopied`,
 `clipboardSerializer`, `clipboardTextSerializer`, `transformPastedHTML`,
 `transformPastedText`, `clipboardParser`, `clipboardTextParser`, `domParser`
-and `transformPasted`. Not honoured: `handleDOMEvents`, `handleDrop`,
+and `transformPasted` — and `handleDrop`. Not honoured: `handleDOMEvents`,
 DOM `nodeViews` (use the component's `nodeViews`), `markViews`,
 `attributes` and `createSelectionBetween`.
 
@@ -494,6 +515,12 @@ function Fence({ node, children, updateAttributes }: NodeViewProps) {
   cursor builder, `remoteCaret`, because the default one builds a DOM
   element, and everything else — sync, undo, awareness — is the binding
   every Yjs-backed ProseMirror editor runs.
+- **A drag starts only from the selection**, as it does in a browser's
+  editor: a press anywhere else is the caret's, and a drag from there
+  selects.
+- **Dropped files become what markdown can say** — an image, or a link.
+  The editor reads nothing from them; a drop that uploads, or inlines,
+  is `handleDrop`'s.
 
 ## Backends
 

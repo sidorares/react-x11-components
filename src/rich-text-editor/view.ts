@@ -29,7 +29,8 @@
 //   contenteditable gives ProseMirror.
 import { splitBlock } from 'prosemirror-commands';
 import { redo, redoDepth, undo, undoDepth } from 'prosemirror-history';
-import type { Node as PMNode, Slice } from 'prosemirror-model';
+import { Slice } from 'prosemirror-model';
+import type { Node as PMNode } from 'prosemirror-model';
 import {
   AllSelection,
   NodeSelection,
@@ -66,8 +67,16 @@ import { afterLayout, cancelAfterLayout } from '../internal/timers.js';
 import type { LayoutTick } from '../internal/timers.js';
 import { scaleOf } from '../internal/units.js';
 import { parseFromClipboard, serializeForClipboard } from './clipboard.js';
-import type { ClipboardView } from './clipboard.js';
+import type { ClipboardContent, ClipboardView } from './clipboard.js';
 import { caretOf } from './collab.js';
+import {
+  domDrop,
+  dropTransaction,
+  filesSlice,
+  SLICE_TYPE,
+  textOf,
+} from './drag.js';
+import type { DragPayload, DropAnswer, DropLike } from './drag.js';
 import type { InlineDecoration, InlineWidget, RunStyle } from './inline.js';
 import { BlockKeys } from './keys.js';
 import { primaryModifierOf, toDomKeyEvent } from './keymap.js';
@@ -332,6 +341,24 @@ export class RichEditorView implements EditorHost, ClipboardView {
   private drag: Drag | null = null;
   private dragScroll: TimerId = null;
   private pointer: { x: number; y: number } | null = null;
+  /** A press on the selection, until the pointer either comes up there —
+   *  a click, which places the caret — or core starts a drag from it. */
+  private dragCandidate: { pos: number; collapse: boolean } | null = null;
+  /** What is being dragged out of this editor — prosemirror-view's
+   *  `dragging` — the range it came from, and its clipboard form once
+   *  something asked for it. */
+  private draggingNow: {
+    slice: Slice;
+    move: boolean;
+    from: number;
+    to: number;
+    content: ClipboardContent | null;
+    /** Whether the copy modifier was down at the drag's last motion: a
+     *  drop in this app carries no modifiers of its own. */
+    copy: boolean;
+  } | null = null;
+  /** The block the drop caret is drawn in. */
+  private dropKey: string | null = null;
   private tabEscapes = false;
   /** Above zero while user input is being handled — a read-only editor
    *  drops the document changes that input would make, and only those. */
@@ -388,8 +415,12 @@ export class RichEditorView implements EditorHost, ClipboardView {
     return this.root as unknown as DrawnNode | null;
   }
 
-  get dragging(): null {
-    return null;
+  /** prosemirror-view's `dragging`: the slice a drag out of this editor
+   *  carries, and whether a drop back in here moves it — while there is
+   *  one. */
+  get dragging(): { slice: Slice; move: boolean } | null {
+    const d = this.draggingNow;
+    return d && { slice: d.slice, move: d.move };
   }
 
   /** prosemirror-view's own view description, internal there, which a
@@ -1511,6 +1542,7 @@ export class RichEditorView implements EditorHost, ClipboardView {
    *  took it — the component then prevents core's default action. */
   mouseDown(ev: X11MouseEvent): boolean {
     this.goalX = null;
+    this.dragCandidate = null;
     const hit = this.hit(ev.x, ev.y);
     if (!hit) return false;
     const { doc } = this.state;
@@ -1535,6 +1567,16 @@ export class RichEditorView implements EditorHost, ClipboardView {
     if (ev.button !== 1) return false;
     const detail = ev.detail || 1;
     if (this.clickHandlers(hit, ev, detail)) return true;
+    // a press on the selection may be the start of dragging it: it is
+    // left to core, which arms a drag on the root, and settled when the
+    // pointer comes up — a click — or when core starts the drag
+    if (detail === 1 && !ev.shiftKey && this.onSelection(hit)) {
+      this.dragCandidate = {
+        pos: hit.pos,
+        collapse: !(sel instanceof NodeSelection),
+      };
+      return false;
+    }
     if (hit.atom) {
       const node = doc.nodeAt(hit.pos);
       if (node && NodeSelection.isSelectable(node)) {
@@ -1625,6 +1667,18 @@ export class RichEditorView implements EditorHost, ClipboardView {
   }
 
   mouseUp(): void {
+    // a press on the selection that never became a drag was a click: the
+    // caret goes where it was — a selected block stays selected
+    const press = this.dragCandidate;
+    this.dragCandidate = null;
+    if (press?.collapse) {
+      const { doc } = this.state;
+      this.dispatch(
+        this.state.tr.setSelection(
+          Selection.near(doc.resolve(Math.min(press.pos, doc.content.size))),
+        ),
+      );
+    }
     if (!this.drag) return;
     this.drag = null;
     stopInterval(this.dragScroll);
@@ -1696,6 +1750,218 @@ export class RichEditorView implements EditorHost, ClipboardView {
     const $pos = this.state.doc.resolve(pos);
     if (!$pos.parent.isTextblock) return [pos, pos];
     return [$pos.start(), $pos.end()];
+  }
+
+  // --- drag and drop --------------------------------------------------------------
+  //
+  // The gesture is core's; these answer its events on the root, and
+  // ./drag.ts has the document's half. A drag starts only from a press on the
+  // selection — `mouseDown` leaves that press to core, which arms a drag on
+  // the draggable root — and a drop is read the way a paste is.
+
+  /** Whether a press lands on what is selected: inside a text selection, or
+   *  on the block a node selection holds. */
+  private onSelection(hit: Hit): boolean {
+    const sel = this.state.selection;
+    if (sel.empty) return false;
+    if (sel instanceof NodeSelection) return hit.pos === sel.from;
+    return hit.pos > sel.from && hit.pos < sel.to;
+  }
+
+  /** Core is starting a drag from the root. It is the selection's when the
+   *  press was on the selection; false has the drag cancelled, and the
+   *  gesture goes on as mouse events. */
+  dragStart(): boolean {
+    const press = this.dragCandidate;
+    this.dragCandidate = null;
+    const sel = this.state.selection;
+    if (!press || sel.empty) return false;
+    this.draggingNow = {
+      slice: sel.content(),
+      move: this.editable,
+      from: sel.from,
+      to: sel.to,
+      content: null,
+      copy: false,
+    };
+    return true;
+  }
+
+  private dragContent(): ClipboardContent | null {
+    const d = this.draggingNow;
+    return d ? (d.content ??= serializeForClipboard(this, d.slice)) : null;
+  }
+
+  /** What a drag out of the editor offers another application: what a copy
+   *  would — its text, and its HTML. */
+  dragText(): string {
+    return this.dragContent()?.text ?? '';
+  }
+
+  dragHTML(): string {
+    return this.dragContent()?.html ?? '';
+  }
+
+  /** …and a drop in this app, the slice itself. */
+  dragPayload(): DragPayload | null {
+    const d = this.draggingNow;
+    return d ? { slice: d.slice, view: this, copy: d.copy } : null;
+  }
+
+  /** Each motion of a drag out of this editor: whether the copy
+   *  modifier — Ctrl, or Option on the Mac backend — is down. Core's drop
+   *  in this app arrives with no modifiers, so the drag carries them. */
+  dragMoved(ctrlKey: boolean, altKey: boolean): void {
+    if (this.draggingNow)
+      this.draggingNow.copy = this.primary === 'meta' ? altKey : ctrlKey;
+  }
+
+  /** The drag out of this editor ended. A move that another editor or
+   *  application took takes the content out of here; a drop back in here
+   *  has done that already. */
+  dragEnd(action: string | null, dropped: boolean): void {
+    const d = this.draggingNow;
+    this.draggingNow = null;
+    this.setDropAt(null);
+    if (!d || !dropped || action !== 'move' || !this.editable) return;
+    const sel = this.state.selection;
+    // only what was dragged: a document that has moved on keeps it
+    if (sel.from !== d.from || sel.to !== d.to) return;
+    this.dispatch(
+      this.state.tr
+        .deleteSelection()
+        .scrollIntoView()
+        .setMeta('uiEvent', 'drop'),
+    );
+  }
+
+  /** A drag over the editor at logical window `x`, `y`: a caret drawn where
+   *  it would go in. False when nothing is taken here. */
+  dragOver(x: number, y: number): boolean {
+    if (!this.editable) {
+      this.setDropAt(null);
+      return false;
+    }
+    const hit = this.hit(x, y);
+    this.setDropAt(hit && !hit.atom ? hit.pos : null);
+    return true;
+  }
+
+  dragLeave(): void {
+    this.setDropAt(null);
+  }
+
+  /** The drop caret, on the block a drop would go into: its text element
+   *  draws it the way it draws the caret, re-rendering nothing. */
+  private setDropAt(pos: number | null): void {
+    let key: string | null = null;
+    let index = 0;
+    if (pos !== null) {
+      const { doc } = this.state;
+      const $pos = doc.resolve(Math.max(0, Math.min(pos, doc.content.size)));
+      const at =
+        $pos.parent.isTextblock && $pos.depth > 0
+          ? this.keys.keyAt($pos.before())
+          : undefined;
+      const map = at ? this.texts.get(at)?.map : null;
+      if (at && map) {
+        key = at;
+        index = map.toDisplay($pos.parentOffset);
+      }
+    }
+    if (this.dropKey && this.dropKey !== key)
+      this.texts.get(this.dropKey)?.setDropCaret(null, '');
+    this.dropKey = key;
+    if (key) this.texts.get(key)?.setDropCaret(index, this.config.colors.caret);
+  }
+
+  /**
+   * A drop on the editor: read, offered to `handleDrop`, and put in where it
+   * fits — prosemirror-view's drop. Answers the action to report to the
+   * source, or null to refuse it: at once for a drag from this app, which
+   * core settles before the source's `onDragEnd` runs, and after a read for
+   * HTML from another application.
+   */
+  drop(ev: DropLike): DropAnswer | Promise<DropAnswer> {
+    this.setDropAt(null);
+    if (!this.editable || this.destroyedFlag) return null;
+    const payload = ev.items?.[SLICE_TYPE] as DragPayload | null | undefined;
+    if (payload?.slice) return this.dropSlice(ev, payload);
+    if (!ev.files.length && ev.types.includes('text/html')) {
+      return ev.getData('text/html').then(
+        (got) => this.dropRead(ev, textOf(got)),
+        () => this.dropRead(ev, null),
+      );
+    }
+    return this.dropRead(ev, null);
+  }
+
+  /** A slice out of an editor in this app — this one, or another. */
+  private dropSlice(ev: DropLike, payload: DragPayload): DropAnswer {
+    const hit = this.hit(ev.x, ev.y);
+    if (!hit) return null;
+    const copy =
+      payload.copy ?? (this.primary === 'meta' ? ev.altKey : ev.ctrlKey);
+    const own = payload.view === this;
+    const moved = own && !copy && !!this.draggingNow?.move;
+    let slice = payload.slice;
+    this.someProp('transformPasted', (f) => {
+      slice = f(slice, this.asEditorView, false);
+    });
+    // a drop back in here is the whole of the move: the drag's end has
+    // nothing left to take out
+    if (own) this.draggingNow = null;
+    const answer: DropAnswer = copy ? 'copy' : 'move';
+    if (
+      this.someProp('handleDrop', (f) =>
+        f(this.asEditorView, domDrop(ev, null, null), slice, moved),
+      )
+    )
+      return answer;
+    this.insertDrop(slice, hit.pos, moved);
+    return answer;
+  }
+
+  /** Text, HTML, links or files from another application — or from an
+   *  element of this one that is not an editor. */
+  private dropRead(ev: DropLike, html: string | null): DropAnswer {
+    if (this.destroyedFlag || !this.editable) return null;
+    const hit = this.hit(ev.x, ev.y);
+    if (!hit) return null;
+    const $at = this.state.doc.resolve(hit.pos);
+    const files = ev.files;
+    // with files on offer, `text` is the URI list itself
+    const text = files.length ? null : (ev.text ?? null);
+    const slice =
+      files.length && !html
+        ? filesSlice(this.state.schema, files, $at)
+        : parseFromClipboard(this, text, html, false, $at);
+    if (
+      this.someProp('handleDrop', (f) =>
+        f(
+          this.asEditorView,
+          domDrop(ev, html, text),
+          slice ?? Slice.empty,
+          false,
+        ),
+      )
+    )
+      return 'copy';
+    if (!slice) return null;
+    return this.insertDrop(slice, hit.pos, false) ? 'copy' : null;
+  }
+
+  private insertDrop(slice: Slice, at: number, moved: boolean): boolean {
+    const tr = dropTransaction(this.state, slice, at, moved);
+    if (!tr) return false;
+    this.userInput++;
+    try {
+      this.dispatch(tr.scrollIntoView());
+    } finally {
+      this.userInput--;
+    }
+    this.focus();
+    return true;
   }
 
   /** Right-click: core's standard edit menu, with the verbs this editor has.

@@ -16,7 +16,9 @@
 // and core runs the default action of *that* node, not of the root. So the
 // component takes presses in an ordinary bubbling `onMouseDown` on the root
 // and `preventDefault()`s them, which also keeps core's drag-and-drop from
-// arming on a press that is placing a caret.
+// arming on a press that is placing a caret — all but a press on the
+// selection, which is left to core so that it can arm a drag of the
+// selection from the root (./drag.ts).
 //
 // **`<richeditortext>`** is one textblock: `<richtext>` — its layout cache,
 // its run decoration, its four text accessors — plus a selection band and a
@@ -214,6 +216,10 @@ export class EditorTextNode extends RichTextNode {
   private editorCaretOn = true;
   /** Collaborators' carets in this block, in drawn code points. */
   private remoteCarets: readonly { index: number; color: string }[] = [];
+  /** Where a drop would go in, in drawn code points, while a drag is over
+   *  this block. */
+  private dropCaretAt: number | null = null;
+  private dropCaretColor = '';
 
   constructor(props: Record<string, unknown>, app: unknown) {
     super(props, app as NtkApp, TEXT_ELEMENT);
@@ -378,6 +384,43 @@ export class EditorTextNode extends RichTextNode {
     }
   }
 
+  /** The drop caret: where a drop would go in, or null to take it away. */
+  setDropCaret(index: number | null, color: string): void {
+    if (index === this.dropCaretAt && color === this.dropCaretColor) return;
+    this.damageDropCaret();
+    this.dropCaretAt = index;
+    this.dropCaretColor = color;
+    this.damageDropCaret();
+  }
+
+  /** Where this block draws the drop caret, or null. */
+  get dropCaret(): number | null {
+    return this.dropCaretAt;
+  }
+
+  private dropCaretBox(): Rect | null {
+    if (this.dropCaretAt === null) return null;
+    const r = this.textCaretRect(this.dropCaretAt);
+    if (!r) return null;
+    const s = Math.max(1, Math.round(this.scale));
+    return {
+      x: Math.round(r.x) - s,
+      y: Math.round(r.y),
+      width: 2 * s,
+      height: Math.ceil(r.height),
+    };
+  }
+
+  private damageDropCaret(): void {
+    const box = this.dropCaretBox();
+    if (!box) return;
+    this.root?.invalidate(
+      false,
+      { x: box.x - 1, y: box.y, width: box.width + 2, height: box.height },
+      'caret',
+    );
+  }
+
   // --- painting ----------------------------------------------------------------
 
   protected override paintSelection(ctx: FillContext): void {
@@ -402,6 +445,11 @@ export class EditorTextNode extends RichTextNode {
       const { bar, flag } = boxes;
       ctx.fillRect(bar.x, bar.y, bar.width, bar.height);
       ctx.fillRect(flag.x, flag.y, flag.width, flag.height);
+    }
+    const drop = this.dropCaretBox();
+    if (drop && this.dropCaretColor) {
+      ctx.fillStyle = this.dropCaretColor;
+      ctx.fillRect(drop.x, drop.y, drop.width, drop.height);
     }
     if (!this.editorCaretOn) return;
     const box = this.caretBox();
