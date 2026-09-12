@@ -27,6 +27,31 @@ export type {
   Zoomed,
 } from './style.js';
 
+/** Which renderer draws a map — see `<Map renderer>`. */
+export type MapRenderer = 'gl' | 'retained';
+
+/**
+ * What `<Map renderer>` asks for: one of the two renderers, or `'auto'` —
+ * GL wherever this connection has direct GL and nothing the map uses is
+ * missing from it, and the retained renderer everywhere else.
+ */
+export type MapRendererRequest = 'auto' | MapRenderer;
+
+/** Why a map is drawn with the renderer it is, when that is not what it
+ *  asked for. */
+export type MapRendererReason =
+  /** The connection has no direct GL — indirect GLX, or none at all —
+   *  so `useSupports('shaders')` is false. */
+  | 'no-direct-gl'
+  /** The map uses something the GL renderer does not do yet. A one-time
+   *  development warning names the prop. */
+  | 'capability'
+  /** GL failed at run time: no surface, a context that would not create, a
+   *  shader that would not compile, a throw from a frame. */
+  | 'gl-failed'
+  /** `REACT_X11_MAP_RENDERER` chose it. */
+  | 'forced';
+
 /** Where a pointer event happened, in every space that could be wanted. */
 export interface MapPointerEvent {
   /** Geographic. */
@@ -45,18 +70,28 @@ export interface MapPointerEvent {
   button: number;
 }
 
-/** What one frame cost — for a performance HUD, and what
- *  `scripts/bench/maps.ts` reads. */
+/**
+ * What one frame cost — for a performance HUD, and what the benches read.
+ *
+ * The fields both renderers have are named the same; the ones only one of
+ * them has are optional, and present on that renderer's frames.
+ */
 export interface MapFrameStats {
-  /** Milliseconds spent rasterizing tiles into their surfaces this frame.
-   *  Bounded by `rasterBudgetMs` except for the one run that crossed it. */
-  rasterMs: number;
-  /** …and compositing them, drawing the labels, overlays and markers. */
+  /** Which renderer drew the frame. */
+  renderer: MapRenderer;
+  /** Retained only: milliseconds spent rasterizing tiles into their
+   *  surfaces this frame. Bounded by `rasterBudgetMs` except for the one
+   *  run that crossed it. */
+  rasterMs?: number;
+  /** The rest of the frame on this thread: compositing tiles and drawing
+   *  the labels, overlays and markers (retained), or issuing the frame's GL
+   *  calls and placing its labels (GL — the GPU's own time is not in it). */
   drawMs: number;
   /** Tiles the cover asked for. */
   tiles: number;
-  /** …of which were composited from their own finished surface. Under
-   *  `progressive` this also counts the half-drawn ones. */
+  /** …of which were drawn from their own data: a finished surface
+   *  (retained; under `progressive` the half-drawn ones too) or their own
+   *  geometry (GL). */
   ready: number;
   /** …and how many were drawn from a coarser ancestor instead, scaled up.
    *  What covers a hole while zooming *in*. */
@@ -64,8 +99,8 @@ export interface MapFrameStats {
   /** …and how many from their finer descendants, scaled down. What covers
    *  a hole while zooming *out*, where there is no ancestor to borrow. */
   fromDescendant: number;
-  /** Tiles still to rasterize — non-zero means the map is still sharpening
-   *  and another frame is already scheduled. */
+  /** Tiles still to rasterize (retained) or to build (GL) — non-zero means
+   *  the map is still sharpening and another frame is already scheduled. */
   pending: number;
   /**
    * Whether what is on screen is the previous style.
@@ -87,10 +122,11 @@ export interface MapFrameStats {
    * difference is not something a user can see.
    */
   errors: number;
-  /** Bytes of rendered surfaces the cache is holding. */
-  surfaceBytes: number;
+  /** Retained only: bytes of rendered surfaces the cache is holding. */
+  surfaceBytes?: number;
   /**
-   * What this pass repainted, in device pixels, or `null` for a full one.
+   * Retained only: what this pass repainted, in device pixels, or `null` for
+   * a full one. (A GL frame is always whole.)
    *
    * The number to watch when a map looks busy: a frame that is only
    * continuing a rasterization should claim almost nothing, because the
@@ -99,15 +135,67 @@ export interface MapFrameStats {
    * asking for repaints it does not need — which on a backend that paints
    * many frames a second reads as flashing.
    */
-  damage: { x: number; y: number; width: number; height: number } | null;
-  /** What the rasterizer did, summed over the tiles drawn this frame. */
-  draw: {
+  damage?: { x: number; y: number; width: number; height: number } | null;
+  /** Retained only: what the rasterizer did, summed over the tiles drawn
+   *  this frame. */
+  draw?: {
     features: number;
     vertices: number;
     decimated: number;
     culled: number;
     batches: number;
   };
+  /** GL only: what the frame cost on the GPU's side of the thread. */
+  gl?: MapGlFrameStats;
+}
+
+/** What a GL frame cost, beyond what both renderers report. */
+export interface MapGlFrameStats {
+  /** Milliseconds since the frame before — what a frame rate is made of. */
+  interval: number;
+  /** Milliseconds this thread spent issuing the frame's GL calls. */
+  cpuMs: number;
+  /** …building tiles' geometry, when the builds are on this thread. */
+  buildMs: number;
+  /** Tiles loaded and waiting for a build, and tiles still loading. */
+  building: number;
+  loading: number;
+  /** Bytes of tile geometry on the GPU. */
+  gpuBytes: number;
+  /** Segment instances drawn, every pass counted — the frame's work. */
+  instances: number;
+  drawCalls: number;
+  /** Tiles uploaded to the GPU this frame, and their bytes. */
+  uploads: number;
+  uploadBytes: number;
+  /** Whether the frame was drawn through an offscreen framebuffer — which
+   *  a surface with no stencil buffer of its own needs. */
+  offscreen: boolean;
+  /** The pyramid level the view is drawn from, and the one fully shown:
+   *  they differ while a level fades in (`levelFade`). */
+  level: number;
+  shownLevel: number;
+  /** How much of the arriving level was faded in; `0` with no fade. */
+  fade: number;
+  /** The adaptive-quality rung the frame was drawn at: `0` is everything,
+   *  higher leaves more out (`adaptive`). */
+  quality: number;
+  /** What adaptive quality predicted a moving frame would cost, in ms, or
+   *  `0` for a frame it did not price. */
+  predictedMs: number;
+  /** A settled frame's own time, drained and finished — what the cost
+   *  model learns from — or `0`. Moving frames are never timed. */
+  measuredMs: number;
+  /** Whether the camera moved within the settle window. */
+  moving: boolean;
+  /** Label anchors considered, and labels placed, this frame. */
+  labelCandidates: number;
+  labelsPlaced: number;
+  /** Milliseconds this thread spent on labels: placing them, and measuring
+   *  strings it had not measured before. */
+  labelMs: number;
+  /** Label text still waiting to be rasterized. */
+  textPending: boolean;
 }
 
 /** Options for framing a box. */
@@ -268,9 +356,71 @@ export interface MapViewProps {
   ref?: Ref<unknown>;
 }
 
+/**
+ * What only the GL renderer reads. Accepted by the retained renderer and
+ * ignored there, as the retained renderer's own — `progressive`,
+ * `rasterBudgetMs`, `rasterScale`, `surfaceBudget`, `batchVertices` — are
+ * ignored by GL: switching renderer is never a type error or a rewrite.
+ */
+export interface MapGlProps {
+  /**
+   * Cross-fade between pyramid levels over this many milliseconds, instead
+   * of switching to the new level's geometry in one frame. `0` (the
+   * default) switches. While a level fades in the frame is drawn twice —
+   * the level leaving, and the level arriving over it.
+   */
+  levelFade?: number;
+  /**
+   * Trade detail for frame rate while the camera moves. `true` holds each
+   * moving frame to 12 ms; `{ budgetMs }` to another budget. When the camera
+   * settles the next frame draws everything again.
+   */
+  adaptive?: boolean | { budgetMs?: number };
+  /** Build tiles' geometry on this many worker threads, so no frame pays
+   *  for a tile arriving. `0` (the default) builds on this thread, a few
+   *  milliseconds a frame. */
+  buildWorkers?: number;
+  /** Antialias polygon edges with a half-pixel line. `true` by default; the
+   *  surfaces have no multisampling, so without it an edge is a staircase. */
+  antialias?: boolean;
+  /** `'nonzero'` (the default, and the retained renderer's rule) or
+   *  `'evenodd'`, one stencil pass cheaper and wrong wherever two features
+   *  of one layer overlap. */
+  fillRule?: 'nonzero' | 'evenodd';
+  /**
+   * Raw GL after the map has drawn and before the swap, with the frame's
+   * framebuffer bound. What a test or a screenshot reads a frame back
+   * through: a capture of the window from outside does not see a GL surface
+   * on either backend.
+   */
+  onAfterDraw?: (gl: unknown, info: { width: number; height: number }) => void;
+}
+
 /** What `<Map>` takes. */
-export interface MapProps extends Omit<MapViewProps, 'ref'> {
+export interface MapProps extends Omit<MapViewProps, 'ref'>, MapGlProps {
   ref?: Ref<MapHandle>;
+  /**
+   * Which renderer draws the map: `'retained'` (the default) composites
+   * rasterized tile pictures and runs anywhere; `'gl'` draws every frame
+   * from the vector data on the GPU, and needs direct GL; `'auto'` takes GL
+   * where the connection has it and nothing the map uses is missing from
+   * it, and the retained renderer everywhere else. `REACT_X11_MAP_RENDERER`
+   * overrides it for every map. See the docs page's "Renderers".
+   */
+  renderer?: MapRendererRequest;
+  /** The map is drawn with a renderer other than the one it asked for, or
+   *  changed renderer: `'auto'` finding no direct GL, a prop GL does not
+   *  do yet, or GL failing at run time. The camera and the handle carry
+   *  over. */
+  onRendererChange?: (renderer: MapRenderer, reason: MapRendererReason) => void;
+  /**
+   * GL failed, on a map that asked for it by name (`renderer="gl"`). Such a
+   * map never falls back — an application that asked for GL wants to know it
+   * did not get it — so this is where it finds out; under `'auto'` a failure
+   * moves the map to the retained renderer and says so through
+   * `onRendererChange` instead.
+   */
+  onError?: (error: Error) => void;
   /** Anything absolutely positioned over the map — a legend, a control
    *  panel. Laid out as siblings of the drawn pane rather than inside it,
    *  because a registered element paints its children *before* its own

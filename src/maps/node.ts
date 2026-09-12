@@ -33,6 +33,12 @@ import type { A11ySceneItem, Context2D } from 'react-x11/node';
 import type { KeyboardEvent, MouseEvent, WheelEvent } from 'react-x11';
 import { Surface } from 'react-x11/ntk';
 
+import { MapController, quantizeZoom } from './controller.js';
+import type {
+  MapControllerProps,
+  MapPointerInput,
+  MapView,
+} from './controller.js';
 import { GeometryBuffer } from './mvt.js';
 import {
   BATCH_VERTICES,
@@ -45,18 +51,13 @@ import {
 import type { MapCanvas, PreparedStyle } from './paint.js';
 import {
   DEFAULT_TILE_SIZE,
-  cameraForBounds,
-  boundsOf,
   dataSquareOf,
   dataTileFor,
   subTileOf,
-  projectLngLat,
   rasterFor,
   tileCover,
   tileKey,
   transformFor,
-  unprojectPoint,
-  visibleBounds,
 } from './proj.js';
 import type {
   LngLat,
@@ -69,9 +70,11 @@ import type {
 } from './proj.js';
 import { TileCache, drawnFor, pyramid } from './tiles.js';
 import type { CachedTile, SurfaceLike, TileRender } from './tiles.js';
+import { attributionOf } from './sources.js';
 import type { MapSource } from './sources.js';
 import { shortbreadStyle } from './styles.js';
 import type { MapStyle } from './style.js';
+import { isDarkTheme, overlayPalette } from './theme.js';
 import {
   LabelShaper,
   collectLabels,
@@ -79,9 +82,16 @@ import {
   placeLabels,
 } from './labels.js';
 import type { FontsLike, LabelCandidate, PlacedLabel } from './labels.js';
-import { drawMarkers, drawOverlays, markerAt, markerRect } from './overlay.js';
+import {
+  ATTRIBUTION_OPACITY,
+  ATTRIBUTION_SIZE,
+  attributionLayout,
+  drawMarkers,
+  drawOverlays,
+  markerRect,
+} from './overlay.js';
 import type { MapMarker, MapOverlay, OverlayPalette } from './overlay.js';
-import type { MapFrameStats, MapPointerEvent } from './types.js';
+import type { FitBoundsOptions, MapFrameStats } from './types.js';
 
 /** Registration key, `kind` and JSX tag, one string — react-x11 rejects a
  *  node whose `kind` is not the name it was registered under, because
@@ -105,24 +115,6 @@ export const SELF_DAMAGED_PROPS = [
   'sources',
   'mapStyle',
 ] as const;
-
-/** Screen pixels the pointer may travel before a press becomes a drag. */
-const DRAG_THRESHOLD = 3;
-
-/** How long after the last gesture step the map goes back to rasterizing.
- *  Long enough that a wheel-zoom's many steps count as one gesture, short
- *  enough that the map sharpens before the user has finished looking. */
-const SETTLE_MS = 140;
-
-/** Zoom is quantized to this, for the reason react-x11's docs/scale.md
- *  gives about a gesture-driven `scale`: every distinct value is a distinct
- *  set of font sizes to shape, and a wheel feeding a raw accumulator makes
- *  a new set per frame. A sixteenth of a level is finer than the eye reads
- *  as stepping. */
-const ZOOM_STEP = 1 / 16;
-
-/** A wheel notch is this much zoom. */
-const WHEEL_ZOOM = 1 / 2.5;
 
 /** The largest tile surface, per edge, in device pixels. An argb32 surface
  *  is `4 × size²` bytes, so 2048 is 16 MB and is already more than any
@@ -157,33 +149,6 @@ function intersectRects(a: ScreenRect, b: ScreenRect): ScreenRect | null {
   return { x, y, width: right - x, height: bottom - y };
 }
 
-const timers = globalThis as {
-  setTimeout?(fn: () => void, ms: number): unknown;
-  clearTimeout?(id: unknown): void;
-};
-
-/**
- * The settle timer, unref'd where the runtime allows it.
- *
- * A map that has just been panned holds a 140 ms timer, and an unref'd one
- * does not keep a process alive on its own — which matters for a script or
- * a test that renders a map and expects to exit, and is the call core's
- * caret blink makes for the same reason.
- */
-function arm(tick: () => void): unknown {
-  const handle = timers.setTimeout?.(tick, SETTLE_MS) ?? null;
-  (handle as { unref?(): void } | null)?.unref?.();
-  return handle;
-}
-
-function clamp(value: number, low: number, high: number): number {
-  return value < low ? low : value > high ? high : value;
-}
-
-function quantize(zoom: number): number {
-  return Math.round(zoom / ZOOM_STEP) * ZOOM_STEP;
-}
-
 /** A logical value put on the device grid — the same helper `src/flow/`
  *  keeps, and for the same reason: ntk's fast paths for a blit and a
  *  rounded box are gated on integral geometry, and `x * 1.5` is not always
@@ -203,17 +168,6 @@ function rectsOverlap(a: ScreenRect, b: ScreenRect): boolean {
   );
 }
 
-type Gesture =
-  | {
-      kind: 'pan';
-      startX: number;
-      startY: number;
-      lastX: number;
-      lastY: number;
-      moved: boolean;
-    }
-  | { kind: 'marker'; id: string; startX: number; startY: number };
-
 /** Whether `outer` covers all of `inner`. */
 function containsRect(outer: ScreenRect, inner: ScreenRect): boolean {
   return (
@@ -230,6 +184,13 @@ function sameSources(
 ): boolean {
   return a.length === b.length && a.every((source, i) => source === b[i]);
 }
+
+/** A frame's stats as this renderer keeps them: every field, including the
+ *  ones only it has. */
+type RetainedFrameStats = MapFrameStats &
+  Required<Pick<MapFrameStats, 'rasterMs' | 'surfaceBytes' | 'draw'>> & {
+    damage: { x: number; y: number; width: number; height: number } | null;
+  };
 
 /** A tile of the cover that is in view, as a frame's work found it. */
 interface VisibleTile {
@@ -299,16 +260,22 @@ export class MapViewNode extends Node {
   private _shaper: LabelShaper | null = null;
 
   /**
-   * The camera this element owns, used whenever `props.camera` is absent.
+   * The camera and the gestures: the controller `<Map>` hands down, or this
+   * element's own when it is used bare. Both of `<Map>`'s renderers answer
+   * to one (`./controller.ts`), which is how a fallback from one to the
+   * other keeps the camera and the handle.
    *
-   * The element keeping it — rather than the component above holding it in
-   * `useState` — is what makes a pan cost nothing but a blit: a drag step
-   * moves this number and claims a strip, and React is not involved at all.
-   * Routed through state instead, every pointer step would be a render, a
-   * commit and a full-pane claim, which is the shape `<Flow>` documents as
-   * "the content lags and catches up".
+   * The camera being an object's rather than React state's is what makes a
+   * pan cost nothing but a blit: a drag step moves two numbers and claims a
+   * strip, and React is not involved at all. Routed through state instead,
+   * every pointer step would be a render, a commit and a full-pane claim,
+   * which is the shape `<Flow>` documents as "the content lags and catches
+   * up".
    */
-  private _camera: MapCamera = { center: { lon: 0, lat: 20 }, zoom: 2 };
+  private readonly _controller: MapController;
+  private readonly _ownsController: boolean;
+  /** This element, as its controller sees it. */
+  private readonly _view: MapView;
 
   private _prepared: PreparedStyle | null = null;
   private _preparedFrom: MapStyle | null = null;
@@ -339,13 +306,6 @@ export class MapViewNode extends Node {
    *  previous picture to hold. */
   private _painted = false;
 
-  private _gesture: Gesture | null = null;
-  private _hover: string | null = null;
-  /** Set while a gesture is in flight and for `SETTLE_MS` after it, which
-   *  is when rasterization is suspended. */
-  private _settleAt = 0;
-  private _settleTimer: unknown = null;
-  private _painting = false;
   /** Whether any tile has been rasterized in the frame being painted — the
    *  forward-progress guarantee below. */
   private _rastered = false;
@@ -355,10 +315,36 @@ export class MapViewNode extends Node {
 
   constructor(props: Record<string, unknown>, app: unknown) {
     super(ELEMENT, props, app as ConstructorParameters<typeof Node>[2]);
-    // Seeded once. `defaultCamera` is read here and never again, which is
-    // what makes it a *default* rather than a second controlled prop.
+    const given = props.mapController as MapController | undefined;
+    // A bare element's own controller is seeded once: `defaultCamera` is
+    // read here and never again, which is what makes it a *default* rather
+    // than a second controlled prop. `<Map>` seeds the one it hands down.
     const seed = (props.camera ?? props.defaultCamera) as MapCamera | undefined;
-    if (seed) this._camera = { center: { ...seed.center }, zoom: seed.zoom };
+    this._controller = given ?? new MapController(seed);
+    this._ownsController = given === undefined;
+    if (this._ownsController) {
+      this._controller.setProps(props as MapControllerProps);
+    }
+    this._view = {
+      pane: () => this._pane(),
+      scale: () => this._scale,
+      moved: (previous, next, blit) => {
+        // A new pyramid level: different tiles, different labels.
+        if (Math.floor(next.zoom) !== Math.floor(previous.zoom)) {
+          this._labelKey = '';
+        }
+        if (!blit || !this._blitPan(previous, next)) this._repaint('scroll');
+      },
+      // The gesture is over: sharpen. A wake-up, not a repaint — nothing has
+      // moved since the last frame, so what is on screen is still right;
+      // what is needed is a frame to start rasterizing in, and each tile
+      // claims its own box as it lands.
+      settled: () => this._wake('content'),
+      refresh: () => this._restyle(),
+      stats: () => this._stats,
+      focus: () => this.focus(),
+    };
+    this._controller.attach(this._view);
     // A map is a thing you drive with the keyboard as well as the mouse:
     // arrows pan, +/- zoom. Without this it is never focused and no key
     // arrives.
@@ -421,26 +407,11 @@ export class MapViewNode extends Node {
   }
 
   private _isDark(): boolean {
-    const theme = this.theme as Record<string, unknown> | undefined;
-    const background = theme?.background;
-    if (typeof background !== 'string') return false;
-    // The same reading `src/code-editor/`'s token themes make: luminance of
-    // the surface the widget sits on, not a flag nobody sets.
-    const hex = background.trim();
-    if (!hex.startsWith('#') || hex.length < 7) return false;
-    const r = parseInt(hex.slice(1, 3), 16);
-    const g = parseInt(hex.slice(3, 5), 16);
-    const b = parseInt(hex.slice(5, 7), 16);
-    return 0.2126 * r + 0.7152 * g + 0.0722 * b < 128;
+    return isDarkTheme(this.theme);
   }
 
   private _palette(): OverlayPalette {
-    const theme = this.theme as Record<string, unknown> | undefined;
-    return {
-      accent: (theme?.accent as string) ?? '#2d6cdf',
-      background: (theme?.background as string) ?? '#ffffff',
-      text: (theme?.text as string) ?? '#111111',
-    };
+    return overlayPalette(this.theme);
   }
 
   private _sources(): MapSource[] {
@@ -452,18 +423,6 @@ export class MapViewNode extends Node {
    *  tiles are cached under — the cache files them under the object. */
   private _sourceId(source: MapSource, index: number): string {
     return source.id ?? `source-${index}`;
-  }
-
-  private _minZoom(): number {
-    return this._prop<number>('minZoom') ?? 0;
-  }
-
-  private _maxZoom(): number {
-    return this._prop<number>('maxZoom') ?? 22;
-  }
-
-  private _interactive(): boolean {
-    return this._prop<boolean>('interactive') !== false;
   }
 
   private _markers(): readonly MapMarker[] {
@@ -495,8 +454,7 @@ export class MapViewNode extends Node {
   }
 
   camera(): MapCamera {
-    const given = this._prop<MapCamera>('camera');
-    return given ?? this._camera;
+    return this._controller.camera();
   }
 
   /** The camera resolved against the pane. */
@@ -553,46 +511,6 @@ export class MapViewNode extends Node {
   // --- camera --------------------------------------------------------------
 
   /**
-   * Move the camera.
-   *
-   * The one place the camera changes, so the controlled/uncontrolled fork,
-   * the clamping, the notification and — the interesting part — the
-   * decision between a blit and a repaint all live together.
-   */
-  private _applyCamera(next: MapCamera, blit = true): void {
-    const previous = this.camera();
-    const zoom = clamp(next.zoom, this._minZoom(), this._maxZoom());
-    // Latitude is clamped to what Web Mercator can represent; longitude is
-    // not, because the map wraps and a camera just past the antimeridian is
-    // a camera in the next copy of the world.
-    const camera: MapCamera = {
-      center: { lon: next.center.lon, lat: clamp(next.center.lat, -85, 85) },
-      zoom,
-    };
-    if (
-      camera.zoom === previous.zoom &&
-      camera.center.lon === previous.center.lon &&
-      camera.center.lat === previous.center.lat
-    ) {
-      return;
-    }
-    if (this.props.camera === undefined) this._camera = camera;
-    this._prop<(camera: MapCamera) => void>('onCameraChange')?.(camera);
-    if (this._painting) return;
-    // Every camera move defers rasterization, not just a pointer gesture.
-    // An application animating a camera with `panBy` in a loop wants
-    // exactly what a drag wants — composites while it moves, a sharpen when
-    // it stops — and a single programmatic move only pays the settle delay,
-    // which is a seventh of a second.
-    this._touchGesture();
-    if (Math.floor(camera.zoom) !== Math.floor(previous.zoom)) {
-      // A new pyramid level: different tiles, different labels.
-      this._labelKey = '';
-    }
-    if (!blit || !this._blitPan(previous, camera)) this._repaint('scroll');
-  }
-
-  /**
    * A pan is a scroll in every way but the bookkeeping, and react-x11#303
    * made the bookkeeping public: `scrollContents` claims the pane, arms the
    * frame to blit the band that survives, and narrows the claim to the
@@ -647,166 +565,65 @@ export class MapViewNode extends Node {
     return true;
   }
 
-  /** Zoom about a point that must not move — the pointer under a wheel,
-   *  the pane's centre for a key. */
-  private _zoomAbout(delta: number, screenX: number, screenY: number): void {
-    const camera = this.camera();
-    const zoom = clamp(
-      quantize(camera.zoom + delta),
-      this._minZoom(),
-      this._maxZoom(),
-    );
-    if (zoom === camera.zoom) return;
-    const before = this._transform(camera);
-    const anchor = unprojectPoint(before, screenX, screenY);
-    const after = this._transform({ center: camera.center, zoom });
-    // Where the anchor would land at the new zoom, and how far the centre
-    // has to move so it lands where it already is.
-    const moved = projectLngLat(after, anchor);
-    const dx = (moved.x - screenX) / after.world;
-    const dy = (moved.y - screenY) / after.world;
-    this._applyCamera(
-      {
-        zoom,
-        center: unprojectPoint(
-          {
-            ...after,
-            centerX: after.centerX + dx,
-            centerY: after.centerY + dy,
-          },
-          after.paneX,
-          after.paneY,
-        ),
-      },
-      false,
-    );
-  }
-
-  /** Suspend rasterization for the length of a gesture, and arrange for it
-   *  to resume. */
-  private _touchGesture(): void {
-    // Wall-clock here, not the budget clock: this is a 140 ms window, and
-    // it is compared inside a timer callback.
-    this._settleAt = Date.now() + SETTLE_MS;
-    if (this._settleTimer !== null) return;
-    const tick = (): void => {
-      this._settleTimer = null;
-      if (Date.now() < this._settleAt) {
-        this._settleTimer = arm(tick);
-        return;
-      }
-      // The gesture is over: sharpen. A wake-up, not a repaint — nothing
-      // has moved since the last frame, so what is on screen is still
-      // right; what is needed is a frame to start rasterizing in, and each
-      // tile claims its own box as it lands.
-      this._prop<(camera: MapCamera) => void>('onMoveEnd')?.(this.camera());
-      this._wake('content');
-    };
-    this._settleTimer = arm(tick);
-  }
-
+  /** A gesture in flight, or the settle window after a camera move: while
+   *  it lasts nothing is rasterized, so a drag or a wheel is composites
+   *  only. The window is the controller's, and one for both renderers. */
   private get _gesturing(): boolean {
-    return this._gesture !== null || Date.now() < this._settleAt;
+    return this._controller.gesturing;
   }
 
   // --- the imperative surface ----------------------------------------------
+  //
+  // The controller's, for an application holding the element itself rather
+  // than `<Map>`'s handle.
 
   getCamera(): MapCamera {
-    const camera = this.camera();
-    return { center: { ...camera.center }, zoom: camera.zoom };
+    return this._controller.getCamera();
   }
 
   setCamera(camera: Partial<MapCamera>): void {
-    const current = this.camera();
-    this._applyCamera(
-      {
-        center: camera.center ?? current.center,
-        zoom: camera.zoom ?? current.zoom,
-      },
-      false,
-    );
+    this._controller.setCamera(camera);
   }
 
   /** Move by a distance in pane-local logical pixels. */
   panBy(dx: number, dy: number): void {
-    const transform = this._transform();
-    this._applyCamera({
-      zoom: transform.zoom,
-      center: unprojectPoint(
-        transform,
-        transform.paneX + dx,
-        transform.paneY + dy,
-      ),
-    });
+    this._controller.panBy(dx, dy);
   }
 
   zoomIn(step = 1): void {
-    const pane = this._pane();
-    this._zoomAbout(step, pane.width / 2, pane.height / 2);
+    this._controller.zoomIn(step);
   }
 
   zoomOut(step = 1): void {
-    this.zoomIn(-step);
+    this._controller.zoomOut(step);
   }
 
   zoomTo(zoom: number): void {
-    this.setCamera({ zoom });
+    this._controller.zoomTo(zoom);
   }
 
-  fitBounds(
-    bounds: LngLatBounds,
-    options?: { padding?: number; maxZoom?: number },
-  ): void {
-    const pane = this._pane();
-    if (pane.width <= 0 || pane.height <= 0) {
-      // Asked before layout has run — which `fitBounds` in an effect always
-      // is. Remembered and applied at the first paint that has a size.
-      this._pendingFit = { bounds, options };
-      return;
-    }
-    this._applyCamera(
-      cameraForBounds(
-        bounds,
-        { width: pane.width, height: pane.height },
-        {
-          padding: options?.padding ?? 24,
-          tileSize: DEFAULT_TILE_SIZE,
-          minZoom: this._minZoom(),
-          maxZoom: options?.maxZoom ?? this._maxZoom(),
-        },
-      ),
-      false,
-    );
+  fitBounds(bounds: LngLatBounds, options?: FitBoundsOptions): void {
+    this._controller.fitBounds(bounds, options);
   }
 
-  fitMarkers(
-    ids?: readonly string[],
-    options?: { padding?: number; maxZoom?: number },
-  ): void {
-    const wanted = ids ? new Set(ids) : null;
-    const positions: LngLat[] = [];
-    for (const marker of this._markers()) {
-      if (wanted && !wanted.has(marker.id)) continue;
-      positions.push(marker.position);
-    }
-    const bounds = boundsOf(positions);
-    if (bounds) this.fitBounds(bounds, options);
+  fitMarkers(ids?: readonly string[], options?: FitBoundsOptions): void {
+    this._controller.fitMarkers(ids, options);
   }
 
   getBounds(): LngLatBounds {
-    return visibleBounds(this._transform());
+    return this._controller.getBounds();
   }
 
   project(position: LngLat): { x: number; y: number } {
-    return projectLngLat(this._transform(), position);
+    return this._controller.project(position);
   }
 
   unproject(x: number, y: number): LngLat {
-    return unprojectPoint(this._transform(), x, y);
+    return this._controller.unproject(x, y);
   }
 
   markerAt(x: number, y: number): MapMarker | null {
-    return markerAt(this._markers(), this._transform(), x, y);
+    return this._controller.markerAt(x, y);
   }
 
   refresh(): void {
@@ -870,11 +687,6 @@ export class MapViewNode extends Node {
     return this._stats;
   }
 
-  private _pendingFit: {
-    bounds: LngLatBounds;
-    options?: { padding?: number; maxZoom?: number };
-  } | null = null;
-
   // --- painting ------------------------------------------------------------
 
   /** How tall the attribution strip is, in logical pixels — 0 when there is
@@ -885,15 +697,7 @@ export class MapViewNode extends Node {
   }
 
   private _attributionText(): string {
-    const given = this._prop<string>('attribution');
-    if (given !== undefined) return given;
-    const parts: string[] = [];
-    for (const source of this._sources()) {
-      if (source.attribution && !parts.includes(source.attribution)) {
-        parts.push(source.attribution);
-      }
-    }
-    return parts.join(' · ');
+    return attributionOf(this._prop<string>('attribution'), this._sources());
   }
 
   /** How large a tile is rasterized, and how many surface pixels one
@@ -939,7 +743,6 @@ export class MapViewNode extends Node {
     if (!this._visible() || !isMapCanvas(ctx)) return;
 
     const started = now();
-    this._painting = true;
     const scale = this._scale;
     this._frameClip = damage
       ? {
@@ -950,20 +753,18 @@ export class MapViewNode extends Node {
         }
       : null;
 
-    if (this._pendingFit) {
-      const { bounds, options } = this._pendingFit;
-      this._pendingFit = null;
-      this._painting = false;
-      this.fitBounds(bounds, options);
-      this._painting = true;
-    }
+    // A fit asked for before layout had a size — `fitBounds` in an effect —
+    // lands in the first frame that has one, and this frame draws it.
+    this._controller.beginFrame();
+    this._controller.painting = true;
 
     const pane = this._pane();
     const camera = this.camera();
     const transform = this._transform(camera);
     const style = this._style();
     const frame = this._cache.beginFrame();
-    const stats: MapFrameStats = {
+    const stats: RetainedFrameStats = {
+      renderer: 'retained',
       rasterMs: 0,
       drawMs: 0,
       tiles: 0,
@@ -1001,7 +802,7 @@ export class MapViewNode extends Node {
       ? intersectRects(box, this._deviceRect(this._frameClip))
       : box;
     if (!clip) {
-      this._painting = false;
+      this._controller.painting = false;
       this._frameClip = null;
       return;
     }
@@ -1102,7 +903,7 @@ export class MapViewNode extends Node {
     stats.drawMs = now() - started - stats.rasterMs;
     this._stats = stats;
     this._painted = true;
-    this._painting = false;
+    this._controller.painting = false;
     this._frameClip = null;
     void frame;
     this._prop<(stats: MapFrameStats) => void>('onFrame')?.(stats);
@@ -1171,7 +972,7 @@ export class MapViewNode extends Node {
   private _settleRestyle(
     transform: Transform,
     pane: ScreenRect,
-    stats: MapFrameStats,
+    stats: RetainedFrameStats,
     budget: number,
     started: number,
     whole: boolean,
@@ -1231,7 +1032,7 @@ export class MapViewNode extends Node {
     transform: Transform,
     pane: ScreenRect,
     style: PreparedStyle,
-    stats: MapFrameStats,
+    stats: RetainedFrameStats,
     /** False for the length of a gesture, when nothing is rasterized. */
     mayRaster: boolean,
     deadline: number,
@@ -1425,7 +1226,7 @@ export class MapViewNode extends Node {
     ctx: MapCanvas,
     source: MapSource,
     visible: readonly VisibleTile[],
-    stats: MapFrameStats,
+    stats: RetainedFrameStats,
     progressive: boolean,
     generation: number | undefined,
   ): void {
@@ -1554,7 +1355,7 @@ export class MapViewNode extends Node {
     entry: TileCoverEntry,
     plan: { size: number; pixelsPerLogical: number },
     styleZoom: number,
-    stats: MapFrameStats,
+    stats: RetainedFrameStats,
     deadline: number,
   ): void {
     const vector = cached.vector;
@@ -1756,7 +1557,7 @@ export class MapViewNode extends Node {
     transform: Transform,
     pane: ScreenRect,
     style: PreparedStyle,
-    stats: MapFrameStats,
+    stats: RetainedFrameStats,
   ): void {
     const fonts = (this.app as { fonts?: FontsLike } | undefined)?.fonts;
     if (!fonts) return; // headless: nothing to shape with
@@ -1782,7 +1583,7 @@ export class MapViewNode extends Node {
       // zoom, and a source taken off the map takes its names with it — and
       // from what they were placed from, since the style that produced
       // that is being replaced, or was edited in place.
-      const zoom = quantize(transform.zoom);
+      const zoom = quantizeZoom(transform.zoom);
       const sources = this._sources();
       if (
         zoom !== outgoing.labelZoom ||
@@ -1814,7 +1615,7 @@ export class MapViewNode extends Node {
       return;
     }
     this._shapedFamily = family;
-    const key = `${quantize(transform.zoom)}|${this._cache.generation}`;
+    const key = `${quantizeZoom(transform.zoom)}|${this._cache.generation}`;
     if (key !== this._labelKey) {
       this._labelKey = key;
       const styleZoom = Math.floor(transform.zoom);
@@ -1863,7 +1664,7 @@ export class MapViewNode extends Node {
         }
       }
       this._labels = placeLabels(candidates, transform.world, this._shaper);
-      this._labelZoom = quantize(transform.zoom);
+      this._labelZoom = quantizeZoom(transform.zoom);
       this._labelSources = sources;
       this._labelCandidates = bySource;
     }
@@ -1894,185 +1695,63 @@ export class MapViewNode extends Node {
   ): void {
     const text = this._attributionText();
     if (!text || !this._shaper) return;
-    const shaped = this._shaper.shape(text, 9, palette.text);
+    const shaped = this._shaper.shape(text, ATTRIBUTION_SIZE, palette.text);
     if (!shaped) return;
-    const scale = this._scale;
-    const padding = 4;
-    const width = shaped.width + padding * 2;
-    const height = shaped.height + padding;
-    const x = pane.x + pane.width - width;
-    const y = pane.y + pane.height - height;
+    const at = attributionLayout(shaped, pane, this._scale);
     ctx.save();
-    if (ctx.globalAlpha !== undefined) ctx.globalAlpha = 0.72;
+    if (ctx.globalAlpha !== undefined) ctx.globalAlpha = ATTRIBUTION_OPACITY;
     ctx.fillStyle = palette.background;
-    ctx.fillRect(
-      Math.round(x * scale),
-      Math.round(y * scale),
-      Math.ceil(width * scale),
-      Math.ceil(height * scale),
-    );
+    ctx.fillRect(at.box.x, at.box.y, at.box.width, at.box.height);
     if (ctx.globalAlpha !== undefined) ctx.globalAlpha = 1;
-    shaped.layout.draw(
-      ctx,
-      Math.round((x + padding) * scale),
-      Math.round((y + padding / 2) * scale),
-    );
+    shaped.layout.draw(ctx, at.x, at.y);
     ctx.restore();
   }
 
   // --- behaviour -----------------------------------------------------------
 
-  /** An event's position in the pane's own logical pixels. A synthetic
-   *  event's `x`/`y` are logical and relative to the window, so only the
-   *  pane's own origin has to come off. */
-  private _point(ev: MouseEvent): { x: number; y: number } {
+  /**
+   * An event as the controller reads it. A synthetic event's `x`/`y` are
+   * logical and relative to the window, so only the pane's own origin has
+   * to come off.
+   */
+  private _input(ev: MouseEvent): MapPointerInput {
     const pane = this._pane();
-    return { x: ev.x - pane.x, y: ev.y - pane.y };
-  }
-
-  private _pointerEvent(
-    ev: MouseEvent,
-    marker: MapMarker | null,
-  ): MapPointerEvent {
-    const point = this._point(ev);
     return {
-      lngLat: unprojectPoint(this._transform(), point.x, point.y),
-      x: point.x,
-      y: point.y,
-      marker,
-      shiftKey: ev.shiftKey ?? false,
-      ctrlKey: ev.ctrlKey ?? false,
-      altKey: ev.altKey ?? false,
-      metaKey: ev.metaKey ?? false,
-      button: ev.button ?? 1,
+      x: ev.x - pane.x,
+      y: ev.y - pane.y,
+      button: ev.button,
+      // The click count core puts on a press and on its release, which the
+      // declarations do not name.
+      detail: (ev as { detail?: number }).detail,
+      shiftKey: ev.shiftKey,
+      ctrlKey: ev.ctrlKey,
+      altKey: ev.altKey,
+      metaKey: ev.metaKey,
     };
   }
 
   override defaultMouseDown(ev: MouseEvent): void {
-    const point = this._point(ev);
-    const marker = markerAt(
-      this._markers(),
-      this._transform(),
-      point.x,
-      point.y,
-    );
-    if (marker) {
-      this._gesture = {
-        kind: 'marker',
-        id: marker.id,
-        startX: point.x,
-        startY: point.y,
-      };
-      ev.capturePointer?.();
-      return;
-    }
-    if (!this._interactive()) {
-      // Not a pan, but still a press: the release is what makes a click,
-      // and an application listening for one on a frozen map should get it.
-      this._gesture = {
-        kind: 'pan',
-        startX: point.x,
-        startY: point.y,
-        lastX: point.x,
-        lastY: point.y,
-        moved: false,
-      };
-      ev.capturePointer?.();
-      return;
-    }
-    this._gesture = {
-      kind: 'pan',
-      startX: point.x,
-      startY: point.y,
-      lastX: point.x,
-      lastY: point.y,
-      moved: false,
-    };
-    this.focus();
+    // A pan takes the focus, so the arrows work next. A press on a marker,
+    // or on a map that does not move, is captured all the same: its release
+    // is a click, and an application listening for one should get it.
+    if (this._controller.pointerDown(this._input(ev)) === 'pan') this.focus();
     ev.capturePointer?.();
   }
 
   override defaultMouseDrag(ev: MouseEvent): void {
-    const gesture = this._gesture;
-    if (!gesture || gesture.kind !== 'pan') return;
-    if (!this._interactive()) return;
-    const point = this._point(ev);
-    if (
-      !gesture.moved &&
-      Math.abs(point.x - gesture.startX) < DRAG_THRESHOLD &&
-      Math.abs(point.y - gesture.startY) < DRAG_THRESHOLD
-    ) {
-      return;
-    }
-    gesture.moved = true;
-    // Whole device pixels, because that is what the blit can shift — a
-    // fractional pan would decline it every frame and repaint the pane.
-    const scale = this._scale;
-    const dx = Math.round((point.x - gesture.lastX) * scale) / scale;
-    const dy = Math.round((point.y - gesture.lastY) * scale) / scale;
-    if (dx === 0 && dy === 0) return;
-    gesture.lastX += dx;
-    gesture.lastY += dy;
-    this._touchGesture();
-    this.panBy(-dx, -dy);
+    this._controller.pointerDrag(this._input(ev));
   }
 
   override defaultMouseUp(ev: MouseEvent): void {
-    const gesture = this._gesture;
-    this._gesture = null;
-    if (!gesture) return;
-    const point = this._point(ev);
-    if (gesture.kind === 'marker') {
-      const marker = this._markers().find((m) => m.id === gesture.id);
-      if (
-        marker &&
-        Math.abs(point.x - gesture.startX) < DRAG_THRESHOLD &&
-        Math.abs(point.y - gesture.startY) < DRAG_THRESHOLD
-      ) {
-        const event = this._pointerEvent(ev, marker);
-        this._prop<(m: MapMarker, e: MapPointerEvent) => void>(
-          'onMarkerClick',
-        )?.(marker, event);
-        this._prop<(e: MapPointerEvent) => void>('onMapClick')?.(event);
-      }
-      return;
-    }
-    if (gesture.moved) {
-      this._touchGesture();
-      return;
-    }
-    this._prop<(e: MapPointerEvent) => void>('onMapClick')?.(
-      this._pointerEvent(ev, null),
-    );
+    this._controller.pointerUp(this._input(ev));
   }
 
   override defaultMouseMove(ev: MouseEvent): void {
-    const notify =
-      this._prop<(m: MapMarker | null, e: MapPointerEvent | null) => void>(
-        'onMarkerHover',
-      );
-    if (!notify) return;
-    const point = this._point(ev);
-    const marker = markerAt(
-      this._markers(),
-      this._transform(),
-      point.x,
-      point.y,
-    );
-    const id = marker?.id ?? null;
-    if (id === this._hover) return;
-    this._hover = id;
-    notify(marker, this._pointerEvent(ev, marker));
+    this._controller.pointerMove(this._input(ev));
   }
 
   override defaultMouseLeave(): void {
-    if (this._hover === null) return;
-    this._hover = null;
-    // No event: the pointer has left the map, so there is no position on it
-    // to report and inventing one would be worse than saying so.
-    this._prop<(m: MapMarker | null, e: MapPointerEvent | null) => void>(
-      'onMarkerHover',
-    )?.(null, null);
+    this._controller.pointerLeave();
   }
 
   /**
@@ -2082,103 +1761,30 @@ export class MapViewNode extends Node {
    * scroll chain never hands over.
    */
   override defaultWheel(ev: WheelEvent): void {
-    if (!this._interactive()) return;
     const pane = this._pane();
-    this._touchGesture();
-    this._zoomAbout(
-      -(ev.deltaY ?? 0) * WHEEL_ZOOM * 0.02,
-      ev.x - pane.x,
-      ev.y - pane.y,
-    );
-    // Consumed whether or not the zoom moved: a wheel over a map is never
-    // meant for whatever is behind it.
-    ev.preventDefault();
+    const point = { x: ev.x - pane.x, y: ev.y - pane.y };
+    // Consumed whether or not the zoom moved: a wheel over a map that moves
+    // is never meant for whatever is behind it.
+    if (this._controller.wheel(point, ev.deltaY ?? 0)) ev.preventDefault();
   }
 
   override defaultKeyDown(ev: KeyboardEvent): void {
-    // `Node` declares the default actions optional — an element that has
-    // no behaviour of its own simply has none — so calling up is an
-    // optional call rather than a plain one.
-    if (!this._interactive()) {
-      super.defaultKeyDown?.(ev);
+    if (this._controller.keyDown(ev.keysym ?? 0, ev.shiftKey ?? false)) {
+      ev.preventDefault();
       return;
     }
-    const pane = this._pane();
-    const step = ev.shiftKey ? 200 : 60;
-    switch (ev.keysym) {
-      case 0xff51: // XK_Left
-        this.panBy(-step, 0);
-        break;
-      case 0xff53: // XK_Right
-        this.panBy(step, 0);
-        break;
-      case 0xff52: // XK_Up
-        this.panBy(0, -step);
-        break;
-      case 0xff54: // XK_Down
-        this.panBy(0, step);
-        break;
-      case 0x002b: // XK_plus
-      case 0x003d: // XK_equal
-      case 0xffab: // XK_KP_Add
-        this._zoomAbout(1, pane.width / 2, pane.height / 2);
-        break;
-      case 0x002d: // XK_minus
-      case 0xffad: // XK_KP_Subtract
-        this._zoomAbout(-1, pane.width / 2, pane.height / 2);
-        break;
-      default:
-        // Everything else goes to the base class, which is what keeps the
-        // selection keys and Space/Enter-as-a-click working.
-        super.defaultKeyDown?.(ev);
-        return;
-    }
-    ev.preventDefault();
+    // Everything else goes to the base class, which is what keeps the
+    // selection keys and Space/Enter-as-a-click working. `Node` declares the
+    // default actions optional — an element that has no behaviour of its
+    // own simply has none — so calling up is an optional call.
+    super.defaultKeyDown?.(ev);
   }
 
-  /**
-   * What a screen reader meets.
-   *
-   * A map is one painted rectangle to an assistive technology, and its
-   * markers are the only things in it that are *objects* rather than
-   * cartography — so those are the scene, and the map itself carries the
-   * camera in its description. Announcing every road would be worse than
-   * announcing none.
-   */
+  /** What a screen reader meets: the markers in view, as buttons — the
+   *  controller's answer, which both renderers give. */
   override a11yScene(): A11ySceneItem[] {
     if (!this._visible()) return [];
-    const transform = this._transform();
-    const pane = this._pane();
-    const scale = this._scale;
-    const items: A11ySceneItem[] = [];
-    for (const marker of this._markers()) {
-      const rect = markerRect(marker, transform);
-      if (
-        rect.x + rect.width < 0 ||
-        rect.y + rect.height < 0 ||
-        rect.x > pane.width ||
-        rect.y > pane.height
-      ) {
-        continue;
-      }
-      items.push({
-        id: `marker:${marker.id}`,
-        // Device pixels in the owning window's coordinates, which is what
-        // an a11y scene rect is — the same space as `abs`.
-        rect: {
-          x: (pane.x + rect.x) * scale,
-          y: (pane.y + rect.y) * scale,
-          width: rect.width * scale,
-          height: rect.height * scale,
-        },
-        role: 'button',
-        name:
-          marker.title ??
-          `${marker.position.lat.toFixed(4)}, ${marker.position.lon.toFixed(4)}`,
-        states: { selected: marker.selected ?? false },
-      });
-    }
-    return items;
+    return this._controller.markerScene();
   }
 
   /** Every source this element has been handed, and how many `sources`
@@ -2258,6 +1864,9 @@ export class MapViewNode extends Node {
   ): void {
     const before = prev ?? this.props;
     super.applyProps(next, prev);
+    if (this._ownsController) {
+      this._controller.setProps(this.props as MapControllerProps);
+    }
     if (next.sources !== before.sources) {
       this._noticeRemade(
         before.sources as readonly MapSource[] | undefined,
@@ -2284,7 +1893,9 @@ export class MapViewNode extends Node {
     }
     if (next.camera !== before.camera && next.camera !== undefined) {
       const camera = next.camera as MapCamera;
-      const previous = (before.camera as MapCamera | undefined) ?? this._camera;
+      const previous =
+        (before.camera as MapCamera | undefined) ??
+        this._controller.ownCamera();
       if (
         camera.zoom !== previous.zoom ||
         camera.center.lon !== previous.center.lon ||
@@ -2340,10 +1951,8 @@ export class MapViewNode extends Node {
   }
 
   override destroySubtree(): void {
-    if (this._settleTimer !== null) {
-      timers.clearTimeout?.(this._settleTimer);
-      this._settleTimer = null;
-    }
+    this._controller.detach(this._view);
+    if (this._ownsController) this._controller.dispose();
     this._cache.destroy();
     this._candidates.clear();
     this._labels = [];

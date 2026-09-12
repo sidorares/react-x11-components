@@ -264,6 +264,78 @@ void main() {
 }
 `;
 
+/**
+ * A marker: a quad around it, instanced. Its outline is computed per pixel
+ * (`MARKER_FRAGMENT`), so the quad is only big enough to hold the shape, its
+ * ring and a pixel of coverage.
+ */
+export const MARKER_VERTEX = `precision highp float;
+attribute vec2 a_corner;
+// the point marked (device pixels) — a pin's tip, a disc's centre — the
+// head's radius, and how far above the point the head's centre is: 0 for a
+// disc
+attribute vec4 a_anchor;
+// the fill and the ring, premultiplied
+attribute vec4 a_ink;
+attribute vec4 a_halo;
+// the ring's width in pixels
+attribute vec2 a_params;
+uniform vec2 u_viewport;
+varying vec2 v_local;
+varying vec4 v_fill;
+varying vec4 v_ring;
+varying vec3 v_shape;
+void main() {
+  float r = a_anchor.z;
+  float d = a_anchor.w;
+  vec2 centre = a_anchor.xy - vec2(0.0, d);
+  float m = a_params.x * 0.5 + 1.0;
+  vec2 lo = centre - vec2(r + m);
+  vec2 hi = centre + vec2(r + m, max(r, d) + m);
+  vec2 p = mix(lo, hi, vec2(a_corner.x, a_corner.y * 0.5 + 0.5));
+  v_local = p - centre;
+  v_fill = a_ink;
+  v_ring = a_halo;
+  v_shape = vec3(r, d, a_params.x * 0.5);
+  gl_Position = vec4(p.x / u_viewport.x * 2.0 - 1.0, 1.0 - p.y / u_viewport.y * 2.0, 0.0, 1.0);
+}
+`;
+
+/**
+ * A marker's pixels: the signed distance to its outline, and from it the
+ * fill inside and the ring over it — a stroke centred on the outline, which
+ * is how the retained renderer fills its path and then strokes it. The
+ * outline is a disc, or a pin's teardrop: the hull of the head and a point
+ * below it, which is Inigo Quilez's uneven capsule with a second radius of
+ * zero — its straight sides tangent to the head where the retained
+ * renderer's are.
+ */
+export const MARKER_FRAGMENT = `precision highp float;
+varying vec2 v_local;
+varying vec4 v_fill;
+varying vec4 v_ring;
+varying vec3 v_shape;
+float outline(vec2 p, float r, float d) {
+  if (d <= r) return length(p) - r;
+  p.x = abs(p.x);
+  float b = r / d;
+  float a = sqrt(1.0 - b * b);
+  float k = dot(p, vec2(-b, a));
+  if (k < 0.0) return length(p) - r;
+  if (k > a * d) return length(p - vec2(0.0, d));
+  return dot(p, vec2(a, b)) - r;
+}
+void main() {
+  float dist = outline(v_local, v_shape.x, v_shape.y);
+  float fill = clamp(0.5 - dist, 0.0, 1.0);
+  float ring = clamp(v_shape.z + 0.5 - abs(dist), 0.0, 1.0);
+  vec4 stroke = v_ring * ring;
+  vec4 color = stroke + v_fill * (fill * (1.0 - stroke.a));
+  if (color.a <= 0.0) discard;
+  gl_FragColor = color;
+}
+`;
+
 /* The GL table is WebGL-shaped (x11-dri's camelCase), typed loosely on
  * purpose — the same reason `src/three/renderer-direct.ts` gives. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

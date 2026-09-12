@@ -10,15 +10,36 @@ import { test } from 'node:test';
 import assert from 'node:assert';
 import React from 'react';
 
-import { act, fireEvent, renderX11, userEvent } from 'react-x11/test';
+import {
+  act,
+  cleanup,
+  fireEvent,
+  renderX11,
+  userEvent,
+  waitFor,
+} from 'react-x11/test';
 
 import { GeomType, parseTile } from '../src/maps/mvt.js';
 import { transformFor, unprojectPoint } from '../src/maps/proj.js';
-import { GlMap, QUALITY_LADDER, chooseQuality } from '../src/maps/gl/view.js';
-import type { GlMapHandle } from '../src/maps/gl/view.js';
+import { QUALITY_LADDER, chooseQuality } from '../src/maps/gl/view.js';
+import { Map as MapView } from '../src/maps/index.js';
+import type { MapHandle } from '../src/maps/index.js';
+import {
+  capabilityBlockers,
+  chooseRenderer,
+  loadGlRenderer,
+} from '../src/maps/renderer.js';
 import { prepareStyle } from '../src/maps/paint.js';
 import type { MapStyleLayer } from '../src/maps/style.js';
+import { attributionOf } from '../src/maps/sources.js';
 import type { MapSource } from '../src/maps/sources.js';
+import {
+  attributionLayout,
+  drawMarkers,
+  markerAt,
+  markerOrder,
+} from '../src/maps/overlay.js';
+import type { MapMarker } from '../src/maps/overlay.js';
 import {
   BREAK,
   RECORD_BYTES,
@@ -37,6 +58,7 @@ import {
   upright,
 } from '../src/maps/gl/labels.js';
 import type { GlLabelData } from '../src/maps/gl/labels.js';
+import { MARKER_INSTANCE, MarkerBatcher } from '../src/maps/gl/markers.js';
 import {
   FADE_MS,
   LABEL_INSTANCE,
@@ -47,6 +69,10 @@ import { GlMapRenderer, scissorOf } from '../src/maps/gl/renderer.js';
 import { GlTileStore } from '../src/maps/gl/store.js';
 import { LabelAtlas } from '../src/maps/gl/text.js';
 import type { TextEngine } from '../src/maps/gl/text.js';
+
+test.afterEach(async () => {
+  await cleanup();
+});
 
 // --- a minimal MVT encoder (the same shape as test/maps.test.ts's) ----------
 
@@ -450,6 +476,8 @@ test('the store loads, builds under the budget, and keeps buckets across a palet
  */
 function recordingGl(stencil: boolean) {
   const calls: string[] = [];
+  /** …with their arguments, for a test about what a call was given. */
+  const log: { name: string; args: unknown[] }[] = [];
   let next = 1;
   const constants = new Map<string, number>();
   const target: Record<string, unknown> = {
@@ -476,6 +504,7 @@ function recordingGl(stencil: boolean) {
   };
   return {
     calls,
+    log,
     gl: new Proxy(target, {
       get(obj, name: string) {
         if (name in obj) return obj[name];
@@ -486,6 +515,7 @@ function recordingGl(stencil: boolean) {
         }
         return (...args: unknown[]) => {
           calls.push(name);
+          log.push({ name, args });
           return name.startsWith('create')
             ? next++
             : args.length
@@ -505,14 +535,16 @@ function frameOver(data: GlTileData, style = STYLE) {
     scale: 1,
     style: prepareStyle({ layers: style }),
     background: '#f0ece4',
-    tiles: [
-      {
-        data,
-        x: 0,
-        y: 0,
-        size: 256,
-        clip: { x: 0, y: 0, width: 256, height: 256 },
-      },
+    sources: [
+      [
+        {
+          data,
+          x: 0,
+          y: 0,
+          size: 256,
+          clip: { x: 0, y: 0, width: 256, height: 256 },
+        },
+      ],
     ],
   };
 }
@@ -590,8 +622,7 @@ test('a fade draws the arriving level whole, offscreen, and composites it once',
   const alone = new GlMapRenderer(plain.gl).render(frameOver(data));
   const faded = recordingGl(true);
   const stats = new GlMapRenderer(faded.gl).render(frameOver(data), {
-    frame: frameOver(data),
-    alpha: 0.4,
+    fade: { frame: frameOver(data), alpha: 0.4 },
   });
   assert.strictEqual(stats.fade, 0.4);
   // Both scenes, whole: twice the work, not a translucent second pass.
@@ -605,8 +636,7 @@ test('a fade draws the arriving level whole, offscreen, and composites it once',
   // An alpha of 0 is no fade at all.
   const none = recordingGl(true);
   new GlMapRenderer(none.gl).render(frameOver(data), {
-    frame: frameOver(data),
-    alpha: 0,
+    fade: { frame: frameOver(data), alpha: 0 },
   });
   assert.strictEqual(framebuffers(none.calls), 0);
 });
@@ -652,14 +682,17 @@ test('a cover can be drawn from another level, holes still borrowing', () => {
 // --- input, through the harness's X server ---------------------------------------
 
 async function mountGlMap() {
-  const ref = React.createRef<GlMapHandle>();
+  // Loaded before the render, so `<Map>` mounts the GL renderer at once
+  // rather than a frame later, when its dynamic import lands.
+  await loadGlRenderer();
+  const ref = React.createRef<MapHandle>();
   const result = await renderX11(
     React.createElement(
       'window',
       { width: 640, height: 480 },
-      React.createElement(GlMap, {
+      React.createElement(MapView, {
         ref,
-        sources: [],
+        renderer: 'gl',
         defaultCamera: { center: { lon: -0.1281, lat: 51.508 }, zoom: 12 },
         'data-testname': 'map',
         // The harness's server has no GLX: the surface reports that, and
@@ -671,12 +704,12 @@ async function mountGlMap() {
     { backend: 'xserver', width: 640, height: 480, wrap: false } as never,
   );
   const node = result.getByTestName('map');
-  return { handle: ref.current as GlMapHandle, node };
+  return { handle: ref.current as MapHandle, node };
 }
 
 /** Pane-local logical pixels to the ground, for a camera over a pane. */
 function groundAt(
-  handle: GlMapHandle,
+  handle: MapHandle,
   size: { width: number; height: number },
   x: number,
   y: number,
@@ -1151,10 +1184,8 @@ test('labels are one instanced draw over the scene, once their rasters are uploa
   const renderer = new GlMapRenderer(gl);
   const instances = new Float32Array(LABEL_INSTANCE);
   // A frame with nothing to draw yet still takes the rasters in.
-  const empty = renderer.render(frameOver(data), null, {
-    atlas,
-    instances,
-    count: 0,
+  const empty = renderer.render(frameOver(data), {
+    labels: { atlas, instances, count: 0 },
   });
   assert.strictEqual(empty.labels, 0);
   assert.strictEqual(calls.filter((c) => c === 'texSubImage2D').length, 1);
@@ -1184,14 +1215,691 @@ test('labels are one instanced draw over the scene, once their rasters are uploa
   const draws = () => calls.filter((c) => c === 'drawArraysInstanced').length;
   const plain = new GlMapRenderer(recordingGl(true).gl);
   const scene = plain.render(frameOver(data)).drawCalls;
-  const stats = renderer.render(frameOver(data), null, {
-    atlas,
-    instances,
-    count: 1,
+  const stats = renderer.render(frameOver(data), {
+    labels: { atlas, instances, count: 1 },
   });
   assert.strictEqual(stats.labels, 1);
   // Nothing new to upload, and the labels are one draw more than the scene.
   assert.ok(!calls.includes('texSubImage2D'));
   assert.strictEqual(stats.drawCalls, scene + 1);
   assert.ok(draws() > 0);
+});
+
+// --- more than one source ------------------------------------------------------
+
+test('every source is drawn, in order, each whole before the next', () => {
+  const data = buildTileBuckets(fixtureTile(), prepareStyle({ layers: STYLE }));
+  const other = buildTileBuckets(
+    fixtureTile(),
+    prepareStyle({ layers: STYLE }),
+  );
+  const frame = frameOver(data);
+  const [first] = frame.sources[0];
+  // A second pyramid over the first: another tile, at x 128.
+  const two = {
+    ...frame,
+    sources: [
+      [first],
+      [
+        {
+          ...first,
+          data: other,
+          x: 128,
+          clip: { x: 128, y: 0, width: 128, height: 256 },
+        },
+      ],
+    ],
+  };
+  const { gl, log } = recordingGl(true);
+  const stats = new GlMapRenderer(gl).render(two);
+  const single = new GlMapRenderer(recordingGl(true).gl).render(frame);
+  assert.strictEqual(stats.tiles, 2);
+  assert.strictEqual(stats.uploads, 2);
+  assert.strictEqual(stats.instances, single.instances * 2);
+  // Every draw names its tile's origin in `u_tile`: all of the first
+  // source's, then all of the second's — layer-major inside a source, and
+  // one source over another the way the retained renderer lays them.
+  const origins = log
+    .filter((call) => call.name === 'uniform3f')
+    .map((call) => call.args[2]);
+  const turn = origins.indexOf(128);
+  assert.ok(turn > 0, `the second source drew: ${origins.join(' ')}`);
+  assert.ok(
+    origins.slice(0, turn).every((x) => x === 0) &&
+      origins.slice(turn).every((x) => x === 128),
+    `interleaved: ${origins.join(' ')}`,
+  );
+});
+
+// --- the tile store: failures and aborts ---------------------------------------
+
+test('the GL store reports each failed load, retries on the backoff, and aborts what a frame stopped wanting', async () => {
+  const errors: [unknown, unknown][] = [];
+  const signals: ({ readonly aborted: boolean } | undefined)[] = [];
+  let calls = 0;
+  const source: MapSource = {
+    id: 'flaky',
+    load: ({ z, signal }) => {
+      calls++;
+      signals.push(signal);
+      if (z === 3) throw new Error('down');
+      // The other one never answers: it is in flight until aborted.
+      return new Promise<never>(() => {});
+    },
+  };
+  const store = new GlTileStore({
+    source,
+    prepared: prepareStyle({ layers: STYLE }),
+    onChange: () => {},
+    onError: (error, tile) => errors.push([error, tile]),
+  });
+  store.tick();
+  store.want([
+    { z: 3, x: 1, y: 1 },
+    { z: 4, x: 0, y: 0 },
+  ]);
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  // Reported once, named the way `onTileError` names a tile.
+  assert.strictEqual(errors.length, 1);
+  assert.strictEqual((errors[0][0] as Error).message, 'down');
+  assert.deepStrictEqual(errors[0][1], { z: 3, x: 1, y: 1, sourceId: 'flaky' });
+  assert.strictEqual(store.failedAmong([{ z: 3, x: 1, y: 1 }]), 1);
+  // Asked for again at once, it is not asked of the source: the backoff.
+  store.want([{ z: 3, x: 1, y: 1 }]);
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.strictEqual(calls, 2);
+  // A frame that looks at the failed tile and not the one in flight lets
+  // the second go: its load is aborted when the frame ends, and whatever it
+  // answers after that is nobody's news.
+  store.tick();
+  store.get({ z: 3, x: 1, y: 1 });
+  store.evict(() => {});
+  assert.strictEqual(signals[1]?.aborted, true);
+  assert.strictEqual(errors.length, 1);
+  store.dispose(() => {});
+});
+
+// --- the renderer choice ------------------------------------------------------
+
+test('the renderer decision: the environment, then the prop, then the connection, then the gate, then a failure', () => {
+  const base = { shaders: true, blockers: [], failed: false };
+  // Nothing said: the retained renderer, until GL has soaked.
+  assert.deepStrictEqual(chooseRenderer(base), {
+    renderer: 'retained',
+    reason: null,
+    asked: 'retained',
+  });
+  // A renderer asked for by name is what the map gets — GL with no direct
+  // GL too, where it fails through `onError` rather than falling back.
+  assert.strictEqual(
+    chooseRenderer({ ...base, requested: 'gl', shaders: false }).renderer,
+    'gl',
+  );
+  assert.strictEqual(
+    chooseRenderer({ ...base, requested: 'gl', failed: true }).renderer,
+    'gl',
+  );
+  assert.strictEqual(
+    chooseRenderer({ ...base, requested: 'retained' }).renderer,
+    'retained',
+  );
+  // 'auto': GL where there is direct GL and nothing is missing from it…
+  assert.deepStrictEqual(chooseRenderer({ ...base, requested: 'auto' }), {
+    renderer: 'gl',
+    reason: null,
+    asked: 'auto',
+  });
+  // …and the retained renderer everywhere else, with the reason.
+  const auto = { ...base, requested: 'auto' as const };
+  assert.deepStrictEqual(chooseRenderer({ ...auto, shaders: false }), {
+    renderer: 'retained',
+    reason: 'no-direct-gl',
+    asked: 'auto',
+  });
+  assert.strictEqual(
+    chooseRenderer({ ...auto, blockers: ['children'] }).reason,
+    'capability',
+  );
+  assert.strictEqual(
+    chooseRenderer({ ...auto, failed: true }).reason,
+    'gl-failed',
+  );
+  // An answer still to come is waited for, not guessed at.
+  assert.strictEqual(
+    chooseRenderer({ ...auto, shaders: false, probing: true }).renderer,
+    'pending',
+  );
+  // The environment over the prop, saying so only when it changed the
+  // answer; anything that is not one of the three words is nobody's.
+  assert.deepStrictEqual(
+    chooseRenderer({ ...base, requested: 'gl', env: 'retained' }),
+    { renderer: 'retained', reason: 'forced', asked: 'retained' },
+  );
+  assert.deepStrictEqual(
+    chooseRenderer({ ...base, requested: 'retained', env: ' GL ' }),
+    { renderer: 'gl', reason: 'forced', asked: 'gl' },
+  );
+  assert.strictEqual(
+    chooseRenderer({ ...base, requested: 'gl', env: 'gl' }).reason,
+    null,
+  );
+  assert.strictEqual(
+    chooseRenderer({ ...base, requested: 'gl', env: 'vulkan' }).renderer,
+    'gl',
+  );
+});
+
+test('children keep an auto map off GL until core can draw over a GL surface', () => {
+  assert.deepStrictEqual(capabilityBlockers({}), []);
+  assert.deepStrictEqual(capabilityBlockers({ children: [null, false] }), []);
+  const legend = React.createElement('box');
+  assert.deepStrictEqual(capabilityBlockers({ children: legend }), [
+    'children',
+  ]);
+  assert.deepStrictEqual(
+    capabilityBlockers({ children: legend }, { glOverlay: true }),
+    [],
+  );
+});
+
+const kindOf = (node: unknown): string => (node as { kind: string }).kind;
+
+/**
+ * Say the harness's connection has direct GL.
+ *
+ * It has not — it is node-x11's in-process server, with no GLX at all — so
+ * a map that believes it chooses GL under `'auto'` and meets a `<glarea>`
+ * that can never get a surface: the run-time failure the fallback exists
+ * for. The two fields are what `useSupports('shaders')` reads (react-x11
+ * `src/glbackend.js`).
+ */
+function claimDirectGl(app: unknown): void {
+  // `glPolicy` is a getter on ntk's app: an own property shadows it for
+  // this one connection.
+  Object.defineProperty(app, 'glPolicy', {
+    value: { mode: 'auto' },
+    configurable: true,
+  });
+  Object.defineProperty(app, '_glCapsResolved', {
+    value: { direct: true },
+    configurable: true,
+    writable: true,
+  });
+}
+
+test("an 'auto' map whose GL fails falls back to the retained renderer, with its camera and its handle", async () => {
+  await loadGlRenderer();
+  const changes: [string, string][] = [];
+  const renderers: string[] = [];
+  const ref = React.createRef<MapHandle>();
+  const result = await renderX11(React.createElement('box'), {
+    backend: 'xserver',
+    width: 640,
+    height: 480,
+  });
+  claimDirectGl(result.app);
+  // …and a surface that is always about to arrive, so the failure is the
+  // one forced below rather than the harness's own, which lands in the
+  // commit that mounts the map — before anything could be done on GL.
+  Object.defineProperty(result.app, 'chooseGLConfig', {
+    value: () => new Promise(() => {}),
+    configurable: true,
+  });
+  await result.rerender(
+    React.createElement(MapView, {
+      ref,
+      renderer: 'auto',
+      defaultCamera: { center: { lon: -0.1281, lat: 51.508 }, zoom: 12 },
+      onRendererChange: (renderer, reason) => changes.push([renderer, reason]),
+      onFrame: (stats) => renderers.push(stats.renderer),
+      'data-testname': 'map',
+    }),
+  );
+  const handle = ref.current as MapHandle;
+  const pane = result.getByTestName('map');
+  assert.strictEqual(kindOf(pane), 'mapglpane');
+  assert.deepStrictEqual(changes, [], 'GL is what auto asked for');
+  // Moved while GL has it.
+  handle.panBy(120, -40);
+  const moved = handle.getCamera();
+  // Then a frame, on a GL whose programs will not link: the renderer cannot
+  // be made, and that is a run-time failure like any other.
+  const area = (
+    pane as unknown as {
+      children: { kind: string; props: Record<string, unknown> }[];
+    }
+  ).children.find((child) => child.kind === 'glarea');
+  assert.ok(area, 'the surface is there');
+  const { gl } = recordingGl(true);
+  const unlinkable = new Proxy(gl as object, {
+    get: (target, name) =>
+      name === 'backend'
+        ? 'direct'
+        : name === 'getProgramParameter'
+          ? () => false
+          : (target as Record<string | symbol, unknown>)[name],
+  });
+  await act(async () => {
+    (area.props.onDraw as (gl: unknown, info: object) => void)(unlinkable, {
+      width: 640,
+      height: 480,
+      node: area,
+    });
+  });
+  await waitFor(() => {
+    assert.strictEqual(kindOf(result.getByTestName('map')), 'mapview');
+  });
+  assert.deepStrictEqual(changes, [['retained', 'gl-failed']], 'told once');
+  assert.strictEqual(ref.current, handle, 'the same handle object');
+  assert.deepStrictEqual(handle.getCamera(), moved, 'the same camera');
+  await waitFor(() => {
+    assert.ok(renderers.includes('retained'), 'drawn retained from then on');
+  });
+});
+
+test("a 'gl' map whose GL fails says so through onError, and does not fall back", async () => {
+  await loadGlRenderer();
+  const errors: Error[] = [];
+  const changes: unknown[] = [];
+  const result = await renderX11(
+    React.createElement(MapView, {
+      renderer: 'gl',
+      onError: (error) => errors.push(error),
+      onRendererChange: (...args) => changes.push(args),
+      'data-testname': 'map',
+    }),
+    { backend: 'xserver', width: 640, height: 480 },
+  );
+  await waitFor(() => {
+    assert.strictEqual(errors.length, 1);
+  });
+  assert.strictEqual(kindOf(result.getByTestName('map')), 'mapglpane');
+  assert.deepStrictEqual(changes, []);
+});
+
+test("an 'auto' map on a connection with no direct GL is drawn retained, and says why", async () => {
+  const changes: [string, string][] = [];
+  const result = await renderX11(
+    React.createElement(MapView, {
+      renderer: 'auto',
+      onRendererChange: (renderer, reason) => changes.push([renderer, reason]),
+      'data-testname': 'map',
+    }),
+    { backend: 'xserver', width: 640, height: 480 },
+  );
+  await act(async () => {});
+  assert.strictEqual(kindOf(result.getByTestName('map')), 'mapview');
+  assert.deepStrictEqual(changes, [['retained', 'no-direct-gl']]);
+});
+
+test('a map with children stays retained under auto, and the prop is named once', async () => {
+  await loadGlRenderer();
+  const warnings: string[] = [];
+  const warn = console.warn;
+  console.warn = (message: unknown) => {
+    warnings.push(String(message));
+  };
+  try {
+    const changes: [string, string][] = [];
+    const result = await renderX11(React.createElement('box'), {
+      backend: 'xserver',
+      width: 640,
+      height: 480,
+    });
+    claimDirectGl(result.app);
+    const map = () =>
+      React.createElement(
+        MapView,
+        {
+          renderer: 'auto',
+          onRendererChange: (renderer, reason) =>
+            changes.push([renderer, reason]),
+          'data-testname': 'map',
+        },
+        React.createElement('box', {
+          style: { position: 'absolute', left: 8, top: 8, width: 60 },
+        }),
+      );
+    await result.rerender(map());
+    await act(async () => {});
+    assert.strictEqual(kindOf(result.getByTestName('map')), 'mapview');
+    assert.deepStrictEqual(changes, [['retained', 'capability']]);
+    await result.rerender(map());
+    await act(async () => {});
+    const named = warnings.filter((w) => w.includes('`children`'));
+    assert.strictEqual(named.length, 1, warnings.join('\n'));
+  } finally {
+    console.warn = warn;
+  }
+});
+
+test("an 'auto' map falls back the same way when its surface cannot come up at all", async () => {
+  await loadGlRenderer();
+  const changes: [string, string][] = [];
+  const result = await renderX11(React.createElement('box'), {
+    backend: 'xserver',
+    width: 640,
+    height: 480,
+  });
+  claimDirectGl(result.app);
+  // The harness's own `<glarea>`, which has no GLX to get a surface from
+  // and says so through `onError`.
+  await result.rerender(
+    React.createElement(MapView, {
+      renderer: 'auto',
+      onRendererChange: (renderer, reason) => changes.push([renderer, reason]),
+      'data-testname': 'map',
+    }),
+  );
+  await waitFor(() => {
+    assert.strictEqual(kindOf(result.getByTestName('map')), 'mapview');
+  });
+  assert.deepStrictEqual(changes, [['retained', 'gl-failed']]);
+});
+
+// --- attribution -----------------------------------------------------------------
+
+test('the attribution is the prop, or each source’s own once, and an empty string is none', () => {
+  const osm: MapSource = {
+    load: () => null,
+    attribution: '© OpenStreetMap contributors',
+  };
+  const esa: MapSource = { load: () => null, attribution: '© ESA WorldCover' };
+  assert.strictEqual(
+    attributionOf(undefined, [osm, esa, osm]),
+    '© OpenStreetMap contributors · © ESA WorldCover',
+  );
+  assert.strictEqual(attributionOf('Data: mine', [osm]), 'Data: mine');
+  assert.strictEqual(attributionOf('', [osm]), '');
+  assert.strictEqual(attributionOf(undefined, [{ load: () => null }]), '');
+});
+
+test('the attribution sits where the retained renderer puts it, on whole pixels', () => {
+  // 4 logical pixels of padding either side of the text and 2 above and
+  // below it, in the pane's bottom-right corner: a 50×10 text in a 640×480
+  // pane at scale 2.
+  const at = attributionLayout(
+    { width: 50, height: 10 },
+    { x: 0, y: 0, width: 640, height: 480 },
+    2,
+  );
+  assert.deepStrictEqual(at.box, { x: 1164, y: 932, width: 116, height: 28 });
+  assert.deepStrictEqual([at.x, at.y], [1172, 936]);
+  // A pane off the window's origin takes its attribution with it — the
+  // retained renderer's case; the GL pane is its own origin — and a
+  // fractional text box at a fractional scale still lands on whole pixels.
+  const off = attributionLayout(
+    { width: 50.3, height: 10.6 },
+    { x: 100, y: 40, width: 640, height: 480 },
+    1.5,
+  );
+  assert.deepStrictEqual(off.box, { x: 1023, y: 758, width: 88, height: 22 });
+  assert.deepStrictEqual([off.x, off.y], [1029, 761]);
+});
+
+test('over the scene: the labels, the markers in one draw, then the attribution — its box, then its text', async () => {
+  const data = buildTileBuckets(fixtureTile(), prepareStyle({ layers: STYLE }));
+  const atlas = instantAtlas();
+  atlas.beginFrame(Infinity);
+  atlas.entry('Main Street', 11);
+  atlas.entry('© OSM', 9);
+  atlas.pump();
+  await new Promise((resolve) => setImmediate(resolve));
+  const { gl, calls, log } = recordingGl(true);
+  const renderer = new GlMapRenderer(gl);
+  // A frame with nothing to draw takes the rasters into the texture.
+  renderer.render(frameOver(data), {
+    labels: { atlas, instances: new Float32Array(LABEL_INSTANCE), count: 0 },
+  });
+  const label = atlas.entry('Main Street', 11)!;
+  const text = atlas.entry('© OSM', 9)!;
+  assert.ok(label && text, 'both rasters are in the texture');
+  const quad = (
+    entry: { x: number; y: number; width: number; height: number },
+    cx: number,
+    cy: number,
+  ) =>
+    Float32Array.of(
+      ...[cx, cy, 1, 0, entry.x, entry.y, entry.width, entry.height],
+      ...[0, 0, 0, 1, 0, 0, 0, 0, 0, 1],
+    );
+  // Three markers, one of them a disc, all in view.
+  const pane = { width: 256, height: 256 };
+  const markers = new MarkerBatcher().batch(
+    [
+      { id: 'a', position: { lon: 0, lat: 0 } },
+      { id: 'b', position: { lon: 10, lat: 10 } },
+      { id: 'c', position: { lon: -10, lat: -10 }, shape: 'circle' },
+    ],
+    transformFor({ center: { lon: 0, lat: 0 }, zoom: 3 }, pane, 512),
+    pane,
+    1,
+    { accent: '#2d6cdf', background: '#ffffff', text: '#111111' },
+  );
+  assert.strictEqual(markers.count, 3);
+  calls.length = 0;
+  log.length = 0;
+  const stats = renderer.render(frameOver(data), {
+    labels: { atlas, instances: quad(label, 100, 100), count: 1 },
+    markers,
+    attribution: {
+      box: { x: 200, y: 240, width: 56, height: 16 },
+      boxColor: [0.72, 0.72, 0.72, 0.72],
+      text: { atlas, instances: quad(text, 228, 248), count: 1 },
+    },
+  });
+  // The frame's last four draws: the labels; the markers, all three in
+  // one; the attribution's box; and its text — the retained renderer's
+  // order.
+  const drawsOf = () =>
+    log.filter(
+      (c) => c.name === 'drawArraysInstanced' || c.name === 'drawArrays',
+    );
+  const draws = drawsOf();
+  assert.deepStrictEqual(
+    draws.slice(-4).map((c) => c.name),
+    [
+      'drawArraysInstanced',
+      'drawArraysInstanced',
+      'drawArrays',
+      'drawArraysInstanced',
+    ],
+  );
+  assert.strictEqual(draws[draws.length - 3].args[3], 3);
+  assert.strictEqual(stats.markers, 3);
+  // The box is the cover program scissored to it: bottom-left origin.
+  const scissors = log.filter((c) => c.name === 'scissor').map((c) => c.args);
+  assert.deepStrictEqual(scissors[scissors.length - 1], [200, 0, 56, 16]);
+  assert.strictEqual(stats.labels, 1, 'the attribution is not a label');
+  // No attribution: the markers are the last thing drawn.
+  log.length = 0;
+  renderer.render(frameOver(data), {
+    labels: { atlas, instances: quad(label, 100, 100), count: 1 },
+    markers,
+  });
+  const plain = drawsOf();
+  assert.strictEqual(plain.length, draws.length - 2);
+  assert.strictEqual(plain[plain.length - 1].args[3], 3);
+});
+
+// --- markers -----------------------------------------------------------------------
+
+const PALETTE = { accent: '#ff0000', background: '#ffffff', text: '#000000' };
+const ORIGIN = { lon: 0, lat: 0 };
+
+test('markers are drawn by zIndex, a selected one over its peers, and hit from the top', () => {
+  const m = (id: string, extra: Partial<MapMarker> = {}): MapMarker => ({
+    id,
+    position: ORIGIN,
+    ...extra,
+  });
+  assert.deepStrictEqual(
+    markerOrder([
+      m('a'),
+      m('b', { selected: true }),
+      m('c'),
+      m('d', { zIndex: -1, selected: true }),
+      m('e', { zIndex: 1 }),
+    ]).map((marker) => marker.id),
+    ['d', 'a', 'c', 'b', 'e'],
+  );
+  // All on one point: a press lands on the one drawn on top.
+  const transform = transformFor(
+    { center: ORIGIN, zoom: 10 },
+    { width: 200, height: 200 },
+    512,
+  );
+  const hit = (markers: MapMarker[]) =>
+    markerAt(markers, transform, 100, 95)?.id;
+  assert.strictEqual(hit([m('a'), m('b', { selected: true }), m('c')]), 'b');
+  assert.strictEqual(
+    hit([m('a'), m('b', { selected: true }), m('c', { zIndex: 1 })]),
+    'c',
+  );
+  assert.strictEqual(hit([m('a'), m('b')]), 'b');
+});
+
+test('a pin’s straight sides meet its head where they are tangent to it', () => {
+  const calls: { name: string; args: number[] }[] = [];
+  const ctx = new Proxy({} as Record<string, unknown>, {
+    get: (target, name: string) =>
+      name in target
+        ? target[name]
+        : (...args: number[]) => {
+            calls.push({ name, args });
+          },
+    set: (target, name: string, value) => {
+      target[name] = value;
+      return true;
+    },
+  });
+  const transform = transformFor(
+    { center: ORIGIN, zoom: 10 },
+    { width: 200, height: 200 },
+    512,
+  );
+  drawMarkers(
+    ctx as never,
+    [{ id: 'pin', position: ORIGIN, size: 20 }],
+    transform,
+    { x: 0, y: 0, width: 200, height: 200 },
+    2,
+    PALETTE,
+  );
+  const [cx, cy, r, start, end] = calls.find((c) => c.name === 'arc')!.args;
+  const [tx, ty] = calls.find((c) => c.name === 'lineTo')!.args;
+  assert.deepStrictEqual([tx, ty], [200, 200], 'the tip is the position');
+  for (const angle of [start, end]) {
+    // Where a side leaves the head, the radius is at right angles to it.
+    const px = cx + r * Math.cos(angle);
+    const py = cy + r * Math.sin(angle);
+    const dot = (px - cx) * (tx - px) + (py - cy) * (ty - py);
+    assert.ok(Math.abs(dot) < 1e-6, `not tangent at ${angle}: ${dot}`);
+  }
+});
+
+test('markers become an instance each — the point, the head, the paint — bottom first, and only those in view', () => {
+  const pane = { width: 200, height: 100 };
+  const batch = new MarkerBatcher().batch(
+    [
+      { id: 'sel', position: ORIGIN, selected: true },
+      {
+        id: 'dot',
+        position: ORIGIN,
+        shape: 'circle',
+        size: 10,
+        color: '#00ff00',
+        outline: '#0000ff',
+      },
+      { id: 'far', position: { lon: 90, lat: 0 } },
+    ],
+    transformFor({ center: ORIGIN, zoom: 10 }, pane, 512),
+    pane,
+    2,
+    PALETTE,
+  );
+  assert.strictEqual(batch.count, 2, 'the one off the pane is left out');
+  const instance = (i: number) =>
+    Array.from(
+      batch.instances.subarray(i * MARKER_INSTANCE, (i + 1) * MARKER_INSTANCE),
+    );
+  // The selected pin is drawn over the disc.
+  const [dot, sel] = [instance(0), instance(1)];
+  // A disc: its centre in device pixels, its radius, no height; its own
+  // fill and ring, the ring 1.5 logical pixels wide.
+  assert.deepStrictEqual(dot.slice(0, 4), [200, 100, 10, 0]);
+  assert.deepStrictEqual(dot.slice(4, 12), [0, 1, 0, 1, 0, 0, 1, 1]);
+  assert.strictEqual(dot[12], 3);
+  // A pin: its tip, a 14-pixel head at scale 2 whose centre is
+  // 1.4 × 14 − 7 = 12.6 logical pixels above the tip; the theme's accent,
+  // and the selected ring, 2.5 logical pixels of the theme's text colour.
+  assert.deepStrictEqual(sel.slice(0, 3), [200, 100, 14]);
+  assert.ok(Math.abs(sel[3] - 25.2) < 1e-4);
+  assert.deepStrictEqual(sel.slice(4, 12), [1, 0, 0, 1, 0, 0, 0, 1]);
+  assert.strictEqual(sel[12], 5);
+});
+
+test('a GL frame draws the markers in one draw, each where the hit test finds it', async () => {
+  await loadGlRenderer();
+  const ref = React.createRef<MapHandle>();
+  const renderers: string[] = [];
+  const result = await renderX11(React.createElement('box'), {
+    backend: 'xserver',
+    width: 640,
+    height: 480,
+  });
+  // A surface always about to arrive, so the frame below is the only one.
+  Object.defineProperty(result.app, 'chooseGLConfig', {
+    value: () => new Promise(() => {}),
+    configurable: true,
+  });
+  const markers: MapMarker[] = [
+    { id: 'a', position: { lon: -0.1281, lat: 51.508 } },
+    { id: 'b', position: { lon: -0.12, lat: 51.51 }, selected: true },
+    { id: 'c', position: { lon: -0.14, lat: 51.5 }, shape: 'circle' },
+    { id: 'gone', position: { lon: 100, lat: 0 } },
+  ];
+  await result.rerender(
+    React.createElement(MapView, {
+      ref,
+      renderer: 'gl',
+      markers,
+      defaultCamera: { center: { lon: -0.1281, lat: 51.508 }, zoom: 12 },
+      onFrame: (stats) => renderers.push(stats.renderer),
+      'data-testname': 'map',
+    }),
+  );
+  const pane = result.getByTestName('map') as unknown as {
+    abs: { width: number; height: number };
+    children: { kind: string; props: Record<string, unknown> }[];
+  };
+  const area = pane.children.find((child) => child.kind === 'glarea')!;
+  const { gl, log } = recordingGl(true);
+  (gl as Record<string, unknown>).backend = 'direct';
+  await act(async () => {
+    (area.props.onDraw as (gl: unknown, info: object) => void)(gl, {
+      width: pane.abs.width,
+      height: pane.abs.height,
+      node: area,
+    });
+  });
+  const draws = log.filter((c) => c.name === 'drawArraysInstanced');
+  assert.strictEqual(draws.at(-1)?.args[3], 3, 'the three in view, at once');
+  // What that draw read: bottom first, the selected one last, each tip
+  // where the handle projects its position.
+  const uploads = log.filter(
+    (c) => c.name === 'bufferData' && c.args[1] instanceof Float32Array,
+  );
+  const instances = uploads.at(-1)!.args[1] as Float32Array;
+  const handle = ref.current as MapHandle;
+  ['a', 'c', 'b'].forEach((id, i) => {
+    const at = handle.project(markers.find((m) => m.id === id)!.position);
+    const tip = instances.subarray(
+      i * MARKER_INSTANCE,
+      i * MARKER_INSTANCE + 2,
+    );
+    assert.ok(Math.abs(tip[0] - at.x) < 1e-3, `${id}: ${tip[0]} vs ${at.x}`);
+    assert.ok(Math.abs(tip[1] - at.y) < 1e-3, `${id}: ${tip[1]} vs ${at.y}`);
+  });
+  assert.strictEqual(renderers.at(-1), 'gl');
 });

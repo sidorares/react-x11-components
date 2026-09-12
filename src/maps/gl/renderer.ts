@@ -29,6 +29,8 @@ import { RECORD_BYTES, TILE_EXTENT } from './buckets.js';
 import type { GlTileData } from './buckets.js';
 import { parseColor, premultiplied } from './color.js';
 import type { Rgba } from './color.js';
+import { MARKER_INSTANCE } from './markers.js';
+import type { MarkerBatch } from './markers.js';
 import { LABEL_INSTANCE } from './placement.js';
 import type { LabelBatch } from './placement.js';
 import {
@@ -43,6 +45,8 @@ import {
   LABEL_VERTEX,
   LINE_FRAGMENT,
   LINE_VERTEX,
+  MARKER_FRAGMENT,
+  MARKER_VERTEX,
   linkProgram,
 } from './shaders.js';
 import type { GL, Program } from './shaders.js';
@@ -84,7 +88,12 @@ export interface RenderFrame {
   scale: number;
   style: PreparedStyle;
   background?: string;
-  tiles: readonly RenderTile[];
+  /**
+   * Each source's tiles, in the map's order — a basemap, then a pyramid
+   * over it. Each is drawn whole, layer-major, before the next, which is
+   * how the retained renderer lays one source's tiles over another's.
+   */
+  sources: readonly (readonly RenderTile[])[];
   /**
    * Leave out the style layers that begin within this many levels of the
    * zoom: a layer whose `minZoom` is above `zoom - detail` is skipped. `0`
@@ -105,6 +114,33 @@ export interface FadeFrame {
   frame: RenderFrame;
   /** `0` shows only the base scene, `1` only this one. */
   alpha: number;
+}
+
+/**
+ * The attribution: a box of the theme's background, and the text in it —
+ * one label's worth of instance data from the labels' atlas, set level and
+ * on whole pixels.
+ */
+export interface AttributionDraw {
+  /** Device pixels, top-left origin. */
+  box: DeviceRect;
+  /** Premultiplied, its opacity folded in. */
+  boxColor: Rgba;
+  text: LabelBatch;
+}
+
+/** What a frame draws over its scene, in this order. */
+export interface RenderExtras {
+  /** A second scene, faded in over the first. */
+  fade?: FadeFrame | null;
+  /** The labels, over both. */
+  labels?: LabelBatch | null;
+  /** The markers, over the labels — where the retained renderer draws
+   *  them, a marker being what the user aims at. */
+  markers?: MarkerBatch | null;
+  /** The attribution, over everything — drawn last, as the retained
+   *  renderer draws it. */
+  attribution?: AttributionDraw | null;
 }
 
 export interface GlRenderOptions {
@@ -149,6 +185,8 @@ export interface GlRenderStats {
   fade: number;
   /** Labels drawn. */
   labels: number;
+  /** Markers drawn. */
+  markers: number;
 }
 
 interface TileGpu {
@@ -214,6 +252,9 @@ export class GlMapRenderer {
   private _label: Program | null = null;
   private _labelVao: unknown = null;
   private _labelBuffer: unknown = null;
+  private _marker: Program | null = null;
+  private _markerVao: unknown = null;
+  private _markerBuffer: unknown = null;
   private _atlasTexture: unknown = null;
   private _atlasOwner: LabelAtlas | null = null;
   private _stats: GlRenderStats = GlMapRenderer._emptyStats();
@@ -277,6 +318,7 @@ export class GlMapRenderer {
       offscreen: false,
       fade: 0,
       labels: 0,
+      markers: 0,
     };
   }
 
@@ -289,31 +331,33 @@ export class GlMapRenderer {
    */
   estimate(frame: RenderFrame): number {
     const { width, height } = frame;
-    const visible = frame.tiles.map(
-      (t) => scissorOf(t.clip, width, height) !== null,
-    );
     const layers = frame.style.layers;
     const detail = frame.detail ?? 0;
     const edges = frame.edges ?? this._options.antialias;
     const stencil = this._options.fillRule === 'nonzero' ? 2 : 1;
     let work = 0;
-    for (let i = 0; i < layers.length; i++) {
-      const layer = layers[i].layer;
-      if (!drawsAt(layer, frame.zoom, detail)) continue;
-      let records = 0;
-      for (let t = 0; t < frame.tiles.length; t++) {
-        if (!visible[t]) continue;
-        const draw = frame.tiles[t].data.draws[i];
-        if (!draw) continue;
-        for (let r = 1; r < draw.ranges.length; r += 2) {
-          records += draw.ranges[r] - 1;
+    for (const tiles of frame.sources) {
+      const visible = tiles.map(
+        (t) => scissorOf(t.clip, width, height) !== null,
+      );
+      for (let i = 0; i < layers.length; i++) {
+        const layer = layers[i].layer;
+        if (!drawsAt(layer, frame.zoom, detail)) continue;
+        let records = 0;
+        for (let t = 0; t < tiles.length; t++) {
+          if (!visible[t]) continue;
+          const draw = tiles[t].data.draws[i];
+          if (!draw) continue;
+          for (let r = 1; r < draw.ranges.length; r += 2) {
+            records += draw.ranges[r] - 1;
+          }
         }
-      }
-      if (layer.type === 'fill') {
-        const edge = layer.outlineColor !== undefined || edges ? 1 : 0;
-        work += records * (stencil + edge);
-      } else {
-        work += records;
+        if (layer.type === 'fill') {
+          const edge = layer.outlineColor !== undefined || edges ? 1 : 0;
+          work += records * (stencil + edge);
+        } else {
+          work += records;
+        }
       }
     }
     return work;
@@ -332,11 +376,8 @@ export class GlMapRenderer {
    * not for either level, and a name that dimmed with the level it came
    * from would blink at every level change.
    */
-  render(
-    frame: RenderFrame,
-    fade?: FadeFrame | null,
-    labels?: LabelBatch | null,
-  ): GlRenderStats {
+  render(frame: RenderFrame, extras: RenderExtras = {}): GlRenderStats {
+    const { fade, labels, markers, attribution } = extras;
     const gl = this._gl;
     const started = now();
     const stats = (this._stats = GlMapRenderer._emptyStats());
@@ -368,7 +409,14 @@ export class GlMapRenderer {
 
     // Even with nothing to draw: the batch's atlas may have rasters waiting
     // for the texture, and until they are in it nothing of theirs can be.
-    if (labels) this._labels(labels, width, height);
+    if (labels) stats.labels = this._labels(labels, width, height);
+
+    if (markers) stats.markers = this._markers(markers, width, height);
+
+    // Last, over the labels and everything else, which is where the
+    // retained renderer draws it: a licence condition is not something a
+    // street name may cover.
+    if (attribution) this._attribution(attribution, width, height);
 
     if (output) {
       gl.bindFramebuffer(gl.FRAMEBUFFER, surface);
@@ -405,6 +453,7 @@ export class GlMapRenderer {
       this._cover,
       this._blit,
       this._label,
+      this._marker,
     ]) {
       if (program) gl.deleteProgram(program.program);
     }
@@ -412,6 +461,8 @@ export class GlMapRenderer {
     gl.deleteVertexArray(this._coverVao);
     if (this._labelVao) gl.deleteVertexArray(this._labelVao);
     if (this._labelBuffer) gl.deleteBuffer(this._labelBuffer);
+    if (this._markerVao) gl.deleteVertexArray(this._markerVao);
+    if (this._markerBuffer) gl.deleteBuffer(this._markerBuffer);
     if (this._atlasTexture) gl.deleteTexture(this._atlasTexture);
     for (const target of this._targets.values()) this._dropTarget(target);
     this._targets.clear();
@@ -440,15 +491,6 @@ export class GlMapRenderer {
     gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
     gl.enable(gl.SCISSOR_TEST);
 
-    // Upload before drawing, so a frame's uploads are counted once and a
-    // tile arriving mid-frame is not half drawn.
-    const scissors: (number[] | null)[] = [];
-    for (const tile of frame.tiles) {
-      this._gpu(tile.data);
-      scissors.push(scissorOf(tile.clip, width, height));
-    }
-    stats.tiles += frame.tiles.length;
-
     for (const program of [this._line, this._fan]) {
       gl.useProgram(program.program);
       gl.uniform2f(program.uniforms.u_viewport, width, height);
@@ -457,13 +499,25 @@ export class GlMapRenderer {
     const edges = frame.edges ?? this._options.antialias;
     const detail = frame.detail ?? 0;
     const layers = frame.style.layers;
-    for (let i = 0; i < layers.length; i++) {
-      const layer = layers[i].layer;
-      if (!drawsAt(layer, frame.zoom, detail)) continue;
-      if (layer.type === 'fill') {
-        if (this._fill(frame, i, layer, scissors, edges)) stats.layers++;
-      } else if (layer.type === 'line') {
-        if (this._lines(frame, i, layer, scissors)) stats.layers++;
+    for (const tiles of frame.sources) {
+      // Upload before drawing, so a frame's uploads are counted once and a
+      // tile arriving mid-frame is not half drawn.
+      const scissors: (number[] | null)[] = [];
+      for (const tile of tiles) {
+        this._gpu(tile.data);
+        scissors.push(scissorOf(tile.clip, width, height));
+      }
+      stats.tiles += tiles.length;
+      for (let i = 0; i < layers.length; i++) {
+        const layer = layers[i].layer;
+        if (!drawsAt(layer, frame.zoom, detail)) continue;
+        if (layer.type === 'fill') {
+          if (this._fill(frame, tiles, i, layer, scissors, edges)) {
+            stats.layers++;
+          }
+        } else if (layer.type === 'line') {
+          if (this._lines(frame, tiles, i, layer, scissors)) stats.layers++;
+        }
       }
     }
 
@@ -475,6 +529,7 @@ export class GlMapRenderer {
 
   private _fill(
     frame: RenderFrame,
+    tiles: readonly RenderTile[],
     index: number,
     layer: Extract<MapStyleLayer, { type: 'fill' }>,
     scissors: (number[] | null)[],
@@ -493,9 +548,9 @@ export class GlMapRenderer {
     let x1 = -Infinity;
     let y1 = -Infinity;
     let any = false;
-    for (let t = 0; t < frame.tiles.length; t++) {
+    for (let t = 0; t < tiles.length; t++) {
       const s = scissors[t];
-      if (!s || !frame.tiles[t].data.draws[index]) continue;
+      if (!s || !tiles[t].data.draws[index]) continue;
       any = true;
       if (s[0] < x0) x0 = s[0];
       if (s[1] < y0) y0 = s[1];
@@ -524,7 +579,7 @@ export class GlMapRenderer {
         gl.cullFace(cull);
       }
       gl.stencilOp(gl.KEEP, gl.KEEP, op);
-      this._eachTile(frame, index, scissors, this._fan, true, (count) => {
+      this._eachTile(tiles, index, scissors, this._fan, true, (count) => {
         gl.drawArraysInstanced(gl.TRIANGLES, 0, 3, count);
       });
     }
@@ -549,20 +604,20 @@ export class GlMapRenderer {
         : this._color(resolveZoomed(layer.outlineColor, zoom));
     if (outline) {
       this._edges(
-        frame,
+        tiles,
         index,
         scissors,
         premultiplied(outline, opacity),
         Math.max(0.5, frame.scale / 2),
       );
     } else if (edges) {
-      this._edges(frame, index, scissors, premultiplied(base, opacity), 0.5);
+      this._edges(tiles, index, scissors, premultiplied(base, opacity), 0.5);
     }
     return true;
   }
 
   private _edges(
-    frame: RenderFrame,
+    tiles: readonly RenderTile[],
     index: number,
     scissors: (number[] | null)[],
     color: Rgba,
@@ -574,13 +629,14 @@ export class GlMapRenderer {
     gl.uniform4f(u.u_color, color[0], color[1], color[2], color[3]);
     gl.uniform1f(u.u_half, half);
     gl.uniform2f(u.u_dash, 0, 0);
-    this._eachTile(frame, index, scissors, this._line, true, (count) => {
+    this._eachTile(tiles, index, scissors, this._line, true, (count) => {
       gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, count);
     });
   }
 
   private _lines(
     frame: RenderFrame,
+    tiles: readonly RenderTile[],
     index: number,
     layer: Extract<MapStyleLayer, { type: 'line' }>,
     scissors: (number[] | null)[],
@@ -595,8 +651,8 @@ export class GlMapRenderer {
     const base = this._color(resolveZoomed(layer.color, zoom));
     if (!base) return false;
     let any = false;
-    for (let t = 0; t < frame.tiles.length; t++) {
-      if (scissors[t] && frame.tiles[t].data.draws[index]) {
+    for (let t = 0; t < tiles.length; t++) {
+      if (scissors[t] && tiles[t].data.draws[index]) {
         any = true;
         break;
       }
@@ -616,7 +672,7 @@ export class GlMapRenderer {
     } else {
       gl.uniform2f(u.u_dash, 0, 0);
     }
-    this._eachTile(frame, index, scissors, this._line, false, (count) => {
+    this._eachTile(tiles, index, scissors, this._line, false, (count) => {
       gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, count);
     });
     return true;
@@ -628,7 +684,7 @@ export class GlMapRenderer {
    * changes between tiles.
    */
   private _eachTile(
-    frame: RenderFrame,
+    tiles: readonly RenderTile[],
     index: number,
     scissors: (number[] | null)[],
     program: Program,
@@ -637,8 +693,8 @@ export class GlMapRenderer {
   ): void {
     const gl = this._gl;
     const stats = this._stats;
-    for (let t = 0; t < frame.tiles.length; t++) {
-      const tile = frame.tiles[t];
+    for (let t = 0; t < tiles.length; t++) {
+      const tile = tiles[t];
       const layerDraw = tile.data.draws[index];
       const s = scissors[t];
       if (!layerDraw || !s) continue;
@@ -669,10 +725,35 @@ export class GlMapRenderer {
   // --- labels -----------------------------------------------------------------
 
   /**
-   * The frame's labels, over whatever is bound: one instanced draw of the
-   * batch's quads, after the atlas texture has what the batch draws.
+   * The attribution, over whatever is bound: its box — the cover program,
+   * scissored to it — and then its text, one more label quad.
    */
-  private _labels(batch: LabelBatch, width: number, height: number): void {
+  private _attribution(
+    draw: AttributionDraw,
+    width: number,
+    height: number,
+  ): void {
+    const gl = this._gl;
+    const box = scissorOf(draw.box, width, height);
+    if (box) {
+      gl.enable(gl.SCISSOR_TEST);
+      gl.scissor(box[0], box[1], box[2], box[3]);
+      gl.disable(gl.STENCIL_TEST);
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+      this._drawCover(draw.boxColor);
+      this._stats.drawCalls++;
+      gl.disable(gl.SCISSOR_TEST);
+    }
+    this._labels(draw.text, width, height);
+  }
+
+  /**
+   * A batch of labels, over whatever is bound: one instanced draw of the
+   * batch's quads, after the atlas texture has what the batch draws.
+   * Answers how many it drew.
+   */
+  private _labels(batch: LabelBatch, width: number, height: number): number {
     const gl = this._gl;
     const atlas = batch.atlas;
     const program = (this._label ??= linkProgram(
@@ -683,7 +764,7 @@ export class GlMapRenderer {
     ));
     gl.activeTexture(gl.TEXTURE0);
     this._uploadAtlas(atlas);
-    if (batch.count === 0) return;
+    if (batch.count === 0) return 0;
 
     if (!this._labelVao) {
       this._labelBuffer = gl.createBuffer();
@@ -729,7 +810,64 @@ export class GlMapRenderer {
     gl.uniform1i(u.u_image, 0);
     gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, batch.count);
     this._stats.drawCalls++;
-    this._stats.labels = batch.count;
+    return batch.count;
+  }
+
+  // --- markers ----------------------------------------------------------------
+
+  /**
+   * The markers, over whatever is bound: one instanced draw of a quad each,
+   * every pixel shaded by its distance to the marker's outline. Answers how
+   * many it drew.
+   */
+  private _markers(batch: MarkerBatch, width: number, height: number): number {
+    if (batch.count === 0) return 0;
+    const gl = this._gl;
+    const program = (this._marker ??= linkProgram(
+      gl,
+      MARKER_VERTEX,
+      MARKER_FRAGMENT,
+      ['u_viewport'],
+    ));
+    if (!this._markerVao) {
+      this._markerBuffer = gl.createBuffer();
+      this._markerVao = gl.createVertexArray();
+      gl.bindVertexArray(this._markerVao);
+      gl.bindBuffer(gl.ARRAY_BUFFER, this._corners);
+      gl.enableVertexAttribArray(ATTRIBUTES.a_corner);
+      gl.vertexAttribPointer(ATTRIBUTES.a_corner, 2, gl.FLOAT, false, 0, 0);
+      gl.vertexAttribDivisor(ATTRIBUTES.a_corner, 0);
+      gl.bindBuffer(gl.ARRAY_BUFFER, this._markerBuffer);
+      const stride = MARKER_INSTANCE * 4;
+      const fields: [number, number, number][] = [
+        [ATTRIBUTES.a_anchor, 4, 0],
+        [ATTRIBUTES.a_ink, 4, 16],
+        [ATTRIBUTES.a_halo, 4, 32],
+        [ATTRIBUTES.a_params, 2, 48],
+      ];
+      for (const [location, size, offset] of fields) {
+        gl.enableVertexAttribArray(location);
+        gl.vertexAttribPointer(location, size, gl.FLOAT, false, stride, offset);
+        gl.vertexAttribDivisor(location, 1);
+      }
+    }
+    gl.bindVertexArray(this._markerVao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this._markerBuffer);
+    gl.bufferData(
+      gl.ARRAY_BUFFER,
+      batch.instances.subarray(0, batch.count * MARKER_INSTANCE),
+      gl.STREAM_DRAW,
+    );
+    gl.viewport(0, 0, width, height);
+    gl.disable(gl.SCISSOR_TEST);
+    gl.disable(gl.STENCIL_TEST);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    gl.useProgram(program.program);
+    gl.uniform2f(program.uniforms.u_viewport, width, height);
+    gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, batch.count);
+    this._stats.drawCalls++;
+    return batch.count;
   }
 
   /**

@@ -387,7 +387,7 @@ async function stageFrame(
   const rasterBudgetMs = budget === '' ? undefined : Number(budget);
   const onFrame = (stats: MapFrameStats): void => {
     frames.push({
-      rasterMs: stats.rasterMs,
+      rasterMs: stats.rasterMs ?? 0,
       drawMs: stats.drawMs,
       pending: stats.pending,
       ready: stats.ready,

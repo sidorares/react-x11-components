@@ -248,6 +248,35 @@ test('the vt backend is a lazy chunk, not part of <Terminal>', async () => {
   );
 });
 
+/**
+ * `<Map>` must not cost the GL renderer.
+ *
+ * The GL renderer — its shaders, the bucket builder, the label atlas — is
+ * brought in by dynamic `import()` when a map chooses it
+ * (`src/maps/renderer.ts`). Split, that is a chunk an application drawing
+ * every map through the retained renderer never fetches; a static import
+ * anywhere under `<Map>` would put all of it into every bundle that names a
+ * map. The markers are the pane element only the GL renderer registers, and
+ * a word only its shaders write.
+ */
+test('the GL map renderer is a lazy chunk, not part of <Map>', async () => {
+  const chunks = await bundleChunks(
+    "import { Map } from './dist/maps/index.js';\n" +
+      'globalThis.__keep = Map;\n',
+  );
+  const [entry] = chunks;
+  for (const marker of ['mapglpane', 'gl_FragColor']) {
+    assert.ok(
+      !entry.text.includes(marker),
+      `the map entry chunk should not contain the GL renderer (${marker})`,
+    );
+  }
+  assert.ok(
+    chunks.slice(1).some((chunk) => chunk.text.includes('mapglpane')),
+    'and the GL renderer should still be reachable, in a chunk of its own',
+  );
+});
+
 test('each component is also importable on its own', async () => {
   for (const { exportName, dir } of COMPONENTS) {
     const subpath = `./dist/${dir}/index.js`;

@@ -102,6 +102,26 @@ export interface MapSource {
   attribution?: string;
 }
 
+/**
+ * What a map says in its corner: the `attribution` prop when it is given —
+ * `''` is the application saying it has put the attribution somewhere else —
+ * and otherwise every source's own, each once, in order. Both renderers draw
+ * this string, because for open data it is a licence condition.
+ */
+export function attributionOf(
+  attribution: string | undefined,
+  sources: readonly MapSource[],
+): string {
+  if (attribution !== undefined) return attribution;
+  const parts: string[] = [];
+  for (const source of sources) {
+    if (source.attribution && !parts.includes(source.attribution)) {
+      parts.push(source.attribution);
+    }
+  }
+  return parts.join(' · ');
+}
+
 /** A source's pyramid, with the defaults filled in. */
 export function pyramidOf(source: MapSource): {
   minZoom: number;

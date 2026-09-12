@@ -1,4 +1,5 @@
-// `<GlMap>` in a real window, animated, with every delivered frame counted.
+// `<Map renderer="gl">` in a real window, animated, with every delivered
+// frame counted.
 //
 //   npx tsx scripts/bench/maps-gl-live.tsx                  # the default backend
 //   REACT_X11_BACKEND=x11 npx tsx scripts/bench/maps-gl-live.tsx
@@ -21,11 +22,15 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { createRoot } from 'react-x11';
 
+import { Map as MapView, shortbreadStyle } from '../../src/maps/index.js';
+import type {
+  MapFrameStats,
+  MapGlFrameStats,
+  MapHandle,
+} from '../../src/maps/index.js';
 import { project, unproject, worldSize } from '../../src/maps/proj.js';
 import type { LngLat, MapCamera } from '../../src/maps/proj.js';
 import type { MapSource } from '../../src/maps/sources.js';
-import { GlMap } from '../../src/maps/gl/view.js';
-import type { GlMapFrameStats, GlMapHandle } from '../../src/maps/gl/view.js';
 import { cachedTiles } from './tiles.js';
 
 function arg(name: string, fallback: string): string {
@@ -97,9 +102,25 @@ function cameraAt(phase: Phase, t: number): MapCamera {
   return base;
 }
 
-const handle: { current: GlMapHandle | null } = { current: null };
+const handle: { current: MapHandle | null } = { current: null };
 const state = { phase: 'settle' as Phase, started: 0 };
-const frames: (GlMapFrameStats & { phase: Phase; at: number })[] = [];
+/** A frame's GL figures, with the two the renderers share alongside. */
+type Frame = MapGlFrameStats & {
+  tiles: number;
+  labels: number;
+  phase: Phase;
+  at: number;
+};
+const frames: Frame[] = [];
+/** `--labels=off`: the default style with no label layers in it. */
+const NO_LABELS = shortbreadStyle({ labels: false });
+
+/** Ask for a frame on a map that is otherwise still: a camera step there
+ *  and back, which the frame after them draws once, at the camera it had. */
+function nudge(): void {
+  handle.current?.panBy(1, 0);
+  handle.current?.panBy(-1, 0);
+}
 
 // `--readback=frame.png`: one settled frame, read back from GL inside the
 // frame — the only capture that sees a GL surface (a window snapshot from
@@ -165,9 +186,16 @@ async function writeCapture(path: string): Promise<void> {
   await writeFile(path, PNG.sync.write(png));
 }
 
-function onFrame(stats: GlMapFrameStats): void {
+function onFrame(stats: MapFrameStats): void {
   const at = performance.now();
-  frames.push({ ...stats, phase: state.phase, at });
+  if (!stats.gl) return;
+  frames.push({
+    ...stats.gl,
+    tiles: stats.tiles,
+    labels: stats.labels,
+    phase: state.phase,
+    at,
+  });
   if (state.phase !== 'settle') {
     handle.current?.setCamera(
       cameraAt(state.phase, (at - state.started) / 1000),
@@ -203,13 +231,18 @@ const coverTimer = setInterval(() => {
 coverTimer.unref?.();
 root.render(
   <window width={1200} height={800} title="maps-gl live">
-    <GlMap
+    <MapView
+      renderer="gl"
       ref={handle}
       sources={sources}
+      mapStyle={labels ? undefined : NO_LABELS}
       defaultCamera={base}
-      frameLoop="always"
       onFrame={onFrame}
       onAfterDraw={onAfterDraw}
+      onError={(error) => {
+        process.stdout.write(`GL failed: ${error.message}\n`);
+        process.exit(1);
+      }}
       buildWorkers={Number(arg('workers', '0'))}
       // `--fade=300` cross-fades pyramid levels; `--adaptive=6` holds moving
       // frames to a 6 ms budget.
@@ -219,7 +252,6 @@ root.render(
           ? { budgetMs: Number(arg('adaptive', '0')) }
           : false
       }
-      labels={labels}
       style={{ flexGrow: 1 }}
     />
   </window>,
@@ -247,6 +279,7 @@ if (readback) {
   }
   await wait(400);
   capture.wanted = true;
+  nudge();
   await wait(250);
   await writeCapture(readback);
 }
@@ -275,7 +308,8 @@ if (gate !== 1 && cocoaGL) cocoaGL.frameInterval *= gate;
 for (const phase of ['pan', 'zoom', 'fly'] as const) {
   state.phase = phase;
   state.started = performance.now();
-  handle.current?.invalidate();
+  // The first step: its frame's callback takes the next one, and so on.
+  nudge();
   await wait(seconds * 1000);
 }
 state.phase = 'settle';

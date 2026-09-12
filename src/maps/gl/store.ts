@@ -42,11 +42,22 @@ interface Entry {
   failures: number;
   /** The worker job whose answer this entry is waiting for. */
   job: number;
+  /** Cancels the load in flight, while there is one. */
+  abort: (() => void) | null;
 }
 
 export interface GlTileStoreOptions {
   source: MapSource;
+  /** What the source is called in its requests and its errors —
+   *  `source-<index>` when it has no `id`. */
+  sourceId?: string;
   prepared: PreparedStyle;
+  /**
+   * Called once per failed load, with whatever the source threw — what
+   * `<Map onTileError>` hears. A load aborted because the map stopped
+   * wanting the tile is not a failure, whatever it answers after that.
+   */
+  onError?: (error: unknown, tile: TileId & { sourceId: string }) => void;
   /** A load landed or a build finished: a frame is worth drawing. */
   onChange: () => void;
   /** Loads in flight at once. 8 by default. */
@@ -70,6 +81,9 @@ const key = (t: TileId): string => `${t.z}/${t.x}/${t.y}`;
 
 export class GlTileStore implements TileLookup {
   private readonly _source: MapSource;
+  private readonly _sourceId: string;
+  private readonly _onError:
+    ((error: unknown, tile: TileId & { sourceId: string }) => void) | undefined;
   private _prepared: PreparedStyle;
   private _style: { id: number; layers: MapStyleLayer[] };
   private readonly _onChange: () => void;
@@ -89,6 +103,8 @@ export class GlTileStore implements TileLookup {
 
   constructor(options: GlTileStoreOptions) {
     this._source = options.source;
+    this._sourceId = options.sourceId ?? options.source.id ?? 'source-0';
+    this._onError = options.onError;
     this._prepared = options.prepared;
     this._style = {
       id: 1,
@@ -157,6 +173,7 @@ export class GlTileStore implements TileLookup {
           retryAt: 0,
           failures: 0,
           job: 0,
+          abort: null,
         };
         this._entries.set(k, entry);
       }
@@ -180,23 +197,27 @@ export class GlTileStore implements TileLookup {
 
   private _load(entry: Entry): void {
     this._inFlight++;
+    // A real `AbortController` where the runtime has one: `fetch` rejects a
+    // signal that is not an instance of `AbortSignal`, so a look-alike would
+    // fail every load a source makes the documented way (`../tiles.ts`).
     const controller = globals.AbortController
       ? new globals.AbortController()
       : null;
+    let aborted = false;
+    entry.abort = () => {
+      aborted = true;
+      controller?.abort();
+    };
     const { z, x, y } = entry.tile;
+    const sourceId = this._sourceId;
     Promise.resolve()
       .then(() =>
-        this._source.load({
-          z,
-          x,
-          y,
-          sourceId: this._source.id ?? 'source-0',
-          signal: controller?.signal,
-        }),
+        this._source.load({ z, x, y, sourceId, signal: controller?.signal }),
       )
       .then(
         (data: TileData) => {
-          if (this._disposed) return;
+          if (this._disposed || aborted) return;
+          entry.failures = 0;
           if (data && data.kind === 'vector' && data.data.length > 0) {
             entry.bytes = data.data;
             entry.state = 'loaded';
@@ -206,19 +227,63 @@ export class GlTileStore implements TileLookup {
             entry.state = 'empty';
           }
         },
-        () => {
-          if (this._disposed) return;
+        (error: unknown) => {
+          // Whatever an aborted load answers — its `AbortError` included —
+          // is not news: the map stopped wanting the tile.
+          if (this._disposed || aborted) return;
           entry.failures++;
           entry.state = 'failed';
-          entry.retryAt = now() + Math.min(30_000, 500 * 2 ** entry.failures);
+          // 0.5 s, 1, 2, 4 … up to 30 s: the retained cache's backoff, so a
+          // source that is down costs nothing and a blip repairs itself.
+          entry.retryAt =
+            now() + Math.min(30_000, 500 * 2 ** (entry.failures - 1));
+          // A failed tile draws nothing, so a map whose tiles all fail looks
+          // exactly like a map that is still loading: somebody has to be
+          // told, once per failure, as the retained cache tells them.
+          this._onError?.(error, { z, x, y, sourceId });
         },
       )
       .finally(() => {
         this._inFlight--;
+        entry.abort = null;
         if (this._disposed) return;
         this._drain();
-        this._onChange();
+        if (!aborted) this._onChange();
       });
+  }
+
+  /**
+   * How many of `tiles` failed to load and are waiting on a retry — the
+   * frame's `errors`.
+   */
+  failedAmong(tiles: readonly TileId[]): number {
+    let n = 0;
+    for (const tile of tiles) {
+      if (this._entries.get(key(tile))?.state === 'failed') n++;
+    }
+    return n;
+  }
+
+  /**
+   * Stop loading: every load in flight is aborted and forgotten, and nothing
+   * waiting is started. For a source taken off the map, whose tiles that
+   * have arrived stay, so switching back to it is free — the retained
+   * cache's rule.
+   */
+  abortLoads(): void {
+    for (const [k, entry] of this._entries) {
+      if (entry.state !== 'loading') continue;
+      entry.abort?.();
+      this._entries.delete(k);
+    }
+    this._waiting = [];
+  }
+
+  /** Build every tile again from its bytes — `refresh()`, after a style
+   *  the application edited in place. The old buckets draw until then. */
+  rebuild(): void {
+    this._style = { ...this._style, id: this._style.id + 1 };
+    this._requeue();
   }
 
   /**
@@ -292,6 +357,12 @@ export class GlTileStore implements TileLookup {
       id: this._style.id + 1,
       layers: prepared.layers.map((l) => l.layer),
     };
+    this._requeue();
+  }
+
+  /** Every tile with bytes back on the build queue, most recently drawn
+   *  first; each keeps drawing its old buckets until its new ones exist. */
+  private _requeue(): void {
     this._queue = [];
     for (const entry of this._entries.values()) {
       if (
@@ -308,8 +379,23 @@ export class GlTileStore implements TileLookup {
     this._queue.sort((a, b) => b.used - a.used);
   }
 
-  /** Let go of the least recently drawn tiles past capacity. */
+  /**
+   * The end of a frame: cancel every load it did not want, and let go of the
+   * least recently drawn tiles past capacity.
+   *
+   * A tile panned or zoomed out of the cover — and the ring around it the
+   * cover keeps warm — would otherwise load to the end: a request nobody is
+   * waiting for, pointed at somebody else's servers. That is the contract
+   * the docs make for `request.signal`, on either renderer. A tile that
+   * comes back is asked for again, with a new signal.
+   */
   evict(release: (data: GlTileData) => void): void {
+    for (const [k, entry] of this._entries) {
+      if (entry.abort && entry.used < this._frame) {
+        entry.abort();
+        this._entries.delete(k);
+      }
+    }
     if (this._entries.size <= this._capacity) return;
     const candidates = [...this._entries.entries()]
       .filter(
