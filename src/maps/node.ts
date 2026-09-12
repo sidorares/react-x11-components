@@ -185,13 +185,6 @@ function sameSources(
   return a.length === b.length && a.every((source, i) => source === b[i]);
 }
 
-/** A frame's stats as this renderer keeps them: every field, including the
- *  ones only it has. */
-type RetainedFrameStats = MapFrameStats &
-  Required<Pick<MapFrameStats, 'rasterMs' | 'surfaceBytes' | 'draw'>> & {
-    damage: { x: number; y: number; width: number; height: number } | null;
-  };
-
 /** A tile of the cover that is in view, as a frame's work found it. */
 interface VisibleTile {
   entry: TileCoverEntry;
@@ -763,7 +756,7 @@ export class MapViewNode extends Node {
     const transform = this._transform(camera);
     const style = this._style();
     const frame = this._cache.beginFrame();
-    const stats: RetainedFrameStats = {
+    const stats: MapFrameStats = {
       renderer: 'retained',
       rasterMs: 0,
       drawMs: 0,
@@ -972,7 +965,7 @@ export class MapViewNode extends Node {
   private _settleRestyle(
     transform: Transform,
     pane: ScreenRect,
-    stats: RetainedFrameStats,
+    stats: MapFrameStats,
     budget: number,
     started: number,
     whole: boolean,
@@ -1032,7 +1025,7 @@ export class MapViewNode extends Node {
     transform: Transform,
     pane: ScreenRect,
     style: PreparedStyle,
-    stats: RetainedFrameStats,
+    stats: MapFrameStats,
     /** False for the length of a gesture, when nothing is rasterized. */
     mayRaster: boolean,
     deadline: number,
@@ -1226,7 +1219,7 @@ export class MapViewNode extends Node {
     ctx: MapCanvas,
     source: MapSource,
     visible: readonly VisibleTile[],
-    stats: RetainedFrameStats,
+    stats: MapFrameStats,
     progressive: boolean,
     generation: number | undefined,
   ): void {
@@ -1355,7 +1348,7 @@ export class MapViewNode extends Node {
     entry: TileCoverEntry,
     plan: { size: number; pixelsPerLogical: number },
     styleZoom: number,
-    stats: RetainedFrameStats,
+    stats: MapFrameStats,
     deadline: number,
   ): void {
     const vector = cached.vector;
@@ -1557,7 +1550,7 @@ export class MapViewNode extends Node {
     transform: Transform,
     pane: ScreenRect,
     style: PreparedStyle,
-    stats: RetainedFrameStats,
+    stats: MapFrameStats,
   ): void {
     const fonts = (this.app as { fonts?: FontsLike } | undefined)?.fonts;
     if (!fonts) return; // headless: nothing to shape with

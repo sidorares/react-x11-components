@@ -1415,7 +1415,7 @@ test('zooming out covers the gap with the tiles already in hand', async () => {
   // draws the background where a picture was available.
   for (const frame of frames) {
     const repainted =
-      frame.damage == null || frame.damage.width * frame.damage.height > 4096;
+      frame.damage === null || frame.damage.width * frame.damage.height > 4096;
     if (!repainted || frame.tiles === 0) continue;
     assert.ok(
       frame.ready + frame.fromAncestor + frame.fromDescendant > 0,
@@ -1475,7 +1475,7 @@ test('a frame that only continues a redraw claims a pixel, not the pane', async 
   // zoom-14 source is four synthesized tiles, so the bound is theirs.
   const tiles = Math.max(...frames.map((f) => f.tiles));
   const large = frames.filter(
-    (f) => f.damage == null || f.damage.width * f.damage.height > 4096,
+    (f) => f.damage === null || f.damage.width * f.damage.height > 4096,
   );
   assert.ok(
     large.length <= 1 + tiles,
@@ -2272,7 +2272,7 @@ test(
     // A frame that only continues a rasterization clips to one pixel and
     // draws no labels whatever the cache holds, so only repaints count.
     const repainted = (f: MapFrameStats): boolean =>
-      f.damage == null || f.damage.width * f.damage.height > 4096;
+      f.damage === null || f.damage.width * f.damage.height > 4096;
     assert.ok(
       frames.some((f) => repainted(f) && f.labels > 0),
       'the place name was drawn',
@@ -2700,7 +2700,7 @@ function assertNewLook(now: Looks, { labels = true } = {}): void {
 /** Whether a frame repainted anything more than the one pixel a frame
  *  that only continues a redraw claims. */
 function repainted(stats: MapFrameStats): boolean {
-  return stats.damage == null || stats.damage.width * stats.damage.height > 1;
+  return stats.damage === null || stats.damage.width * stats.damage.height > 1;
 }
 
 test('a style switch never shows two styles at once', async () => {
@@ -2969,7 +2969,7 @@ test('a style switch leaves raster tiles, and what they cover, as they are', asy
   assert.ok(frames.length > 0, 'the switch painted');
   for (const frame of frames) {
     assert.ok(
-      frame.stats.surfaceBytes! <= bytes!,
+      frame.stats.surfaceBytes <= bytes,
       `a raster tile was drawn again: ${frame.stats.surfaceBytes} bytes of surfaces, against ${bytes}`,
     );
   }
@@ -3058,9 +3058,7 @@ test('eviction never takes a piece covering a hole while a style switch holds it
   for (let i = 0; i < 100; i++) {
     await settleFrames(1);
     const last = map.frames[map.frames.length - 1];
-    if (last && last.restyling && last.rasterMs! > 0 && !repainted(last)) {
-      break;
-    }
+    if (last && last.restyling && last.rasterMs > 0 && !repainted(last)) break;
   }
   assert.ok(land, 'the last tile is still loading');
   // Its landing repaints the pane while the old style is still held.

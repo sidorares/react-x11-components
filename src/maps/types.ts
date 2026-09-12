@@ -79,10 +79,10 @@ export interface MapPointerEvent {
 export interface MapFrameStats {
   /** Which renderer drew the frame. */
   renderer: MapRenderer;
-  /** Retained only: milliseconds spent rasterizing tiles into their
-   *  surfaces this frame. Bounded by `rasterBudgetMs` except for the one
-   *  run that crossed it. */
-  rasterMs?: number;
+  /** Milliseconds spent rasterizing tiles into their surfaces this frame.
+   *  Bounded by `rasterBudgetMs` except for the one run that crossed it.
+   *  Always `0` on the GL renderer, which rasterizes nothing. */
+  rasterMs: number;
   /** The rest of the frame on this thread: compositing tiles and drawing
    *  the labels, overlays and markers (retained), or issuing the frame's GL
    *  calls and placing its labels (GL — the GPU's own time is not in it). */
@@ -122,11 +122,12 @@ export interface MapFrameStats {
    * difference is not something a user can see.
    */
   errors: number;
-  /** Retained only: bytes of rendered surfaces the cache is holding. */
-  surfaceBytes?: number;
+  /** Bytes of rendered surfaces the cache is holding. `0` on the GL
+   *  renderer, whose tiles are geometry — its bytes are `gl.gpuBytes`. */
+  surfaceBytes: number;
   /**
-   * Retained only: what this pass repainted, in device pixels, or `null` for
-   * a full one. (A GL frame is always whole.)
+   * What this pass repainted, in device pixels, or `null` for a full one —
+   * which every GL frame is.
    *
    * The number to watch when a map looks busy: a frame that is only
    * continuing a rasterization should claim almost nothing, because the
@@ -135,10 +136,10 @@ export interface MapFrameStats {
    * asking for repaints it does not need — which on a backend that paints
    * many frames a second reads as flashing.
    */
-  damage?: { x: number; y: number; width: number; height: number } | null;
-  /** Retained only: what the rasterizer did, summed over the tiles drawn
-   *  this frame. */
-  draw?: {
+  damage: { x: number; y: number; width: number; height: number } | null;
+  /** What the rasterizer did, summed over the tiles drawn this frame. All
+   *  zeros on the GL renderer. */
+  draw: {
     features: number;
     vertices: number;
     decimated: number;

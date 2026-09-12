@@ -232,6 +232,13 @@ const PLACE_INTERVAL_MS = 25;
 const ZOOM_QUIET_MS = 120;
 /** Sources taken off the map whose tiles are kept for a switch back. */
 const INACTIVE_STORES = 2;
+const NO_RASTER: MapFrameStats['draw'] = {
+  features: 0,
+  vertices: 0,
+  decimated: 0,
+  culled: 0,
+  batches: 0,
+};
 /** A theme colour that does not parse falls back to these. */
 const BLACK: Rgba = [0, 0, 0, 1];
 const WHITE: Rgba = [1, 1, 1, 1];
@@ -984,6 +991,11 @@ class GlMapDriver implements MapView {
     const level = primary?.target.level ?? 0;
     this._stats = {
       renderer: 'gl',
+      // Nothing rasterized, no surfaces held, and every frame whole.
+      rasterMs: 0,
+      surfaceBytes: 0,
+      damage: null,
+      draw: NO_RASTER,
       drawMs: stats.cpuMs + labelMs,
       tiles,
       ready,
