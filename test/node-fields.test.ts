@@ -8,6 +8,14 @@
 //
 // So this asks core for the fields a node has, and every element here for the
 // methods it defines, and fails on a name that is both.
+//
+// And the other way round: core keeps its behaviour in methods on
+// `Node.prototype`, and a field an element here sets hides one of those the
+// same way. react-x11 2.12's positions put `_laidOutAt()` there, `<Html>`'s
+// node kept a width in a field of that name, and core's placement pass would
+// have called the number. So this also asks core for everything a node
+// inherits, and every element here — made the way its registration makes it
+// — for the fields it sets that core's own node does not.
 import { test } from 'node:test';
 import assert from 'node:assert';
 import React from 'react';
@@ -34,7 +42,11 @@ test.afterEach(async () => {
 });
 
 /** Every node class an element here is made of. */
-const ELEMENTS: { name: string; prototype: object }[] = [
+const ELEMENTS: {
+  name: string;
+  prototype: object;
+  new (props: Record<string, unknown>, app: never): object;
+}[] = [
   ChartPlotNode,
   CodeEditorNode,
   EditorTextNode,
@@ -74,6 +86,39 @@ test('no element here defines a method under the name of a field core keeps on e
         }
       }
     }
+  }
+  assert.deepStrictEqual(clashes, []);
+});
+
+test('no element here sets a field under the name of a method core gives every node', async () => {
+  const { app } = await renderX11(React.createElement('box'), {
+    backend: 'mock',
+    width: 10,
+    height: 10,
+  });
+  const own = new Set(
+    Object.getOwnPropertyNames(new Node('probe', {}, app as never)),
+  );
+  const inherited = new Set<string>();
+  for (
+    let proto: object | null = Node.prototype;
+    proto !== null && proto !== Object.prototype;
+    proto = Object.getPrototypeOf(proto) as object | null
+  ) {
+    for (const name of Object.getOwnPropertyNames(proto)) {
+      if (name !== 'constructor') inherited.add(name);
+    }
+  }
+  assert.ok(inherited.has('paint'), 'a node, as core makes one');
+  const clashes: string[] = [];
+  for (const element of ELEMENTS) {
+    const node = new element({}, app as never) as { destroy?(): void };
+    for (const name of Object.getOwnPropertyNames(node)) {
+      if (inherited.has(name) && !own.has(name)) {
+        clashes.push(`${element.name}.${name}`);
+      }
+    }
+    node.destroy?.();
   }
   assert.deepStrictEqual(clashes, []);
 });
