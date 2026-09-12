@@ -166,30 +166,62 @@ plugin in it. A list opens as its trigger's word is typed, never as the
 caret moves into one: the value is markdown, so a mention stays text, and a
 document soon holds many words that start with `@`.
 
+**Tables** (`tables.ts`) are prosemirror-tables' commands, wrapped so a
+table in markdown's shape — one header row, first, alignment by column —
+stays in it; `TableView` sizes each column to its widest cell the way
+`<Markdown>` does, measuring a cell again only when its node changed; and
+the table's own buttons are in the toolbar only with the caret in a
+table.
+
+**Collaborators' carets** (`collab.ts`) are y-prosemirror's cursor widgets
+made drawable. Its cursor plugin builds each with a `cursorBuilder`, which
+by default makes a DOM element; `remoteCaret` makes a description instead,
+and the view, asking a text-less widget's `toDOM` once, draws what comes
+back as a bar beside the editor's own caret. The plugin views that need
+`view.dom` — y-prosemirror's listens on it for focus — are made once the
+root element exists, not in the view's constructor.
+
+**Drag and drop** (`drag.ts`) is core's gesture over the root element,
+which is a drag source and a drop target. A press on the selection is the
+one press the view leaves unclaimed, so that core can arm a drag; a drag
+carries a copy's HTML and text and, for a drop in the app, the slice
+itself. A drop is read like a paste and put in where `dropPoint` says it
+fits — prosemirror-view's own drop, step for step.
+
+**Long documents** (`virtual.ts`) draw a window of the top-level blocks,
+over the machinery `<Tree>` and `<Table>` share (`src/internal/`): a
+height index keyed by block key, the window, and a reveal that is a debt
+rather than a one-shot. Each drawn block is in a box measured after
+layout. The view's geometry is laid-out text, so it asks the window
+whether the block a position is in is drawn; when it is not,
+`scrollToSelection` and the motions that need a line have the block
+revealed first, and finish once it is laid out.
+
 ## What a plugin can count on
 
 The ledger, so "does my plugin work?" has an answer short of trying it.
 
-| `EditorView` member                                                           | Here                                                       |
-| ----------------------------------------------------------------------------- | ---------------------------------------------------------- |
-| `state`, `dispatch`, `props`, `someProp`, `setProps`, `update`, `updateState` | Yes. `someProp` in ProseMirror's order.                    |
-| `editable`, `composing`, `hasFocus()`, `focus()`, `isDestroyed`, `destroy()`  | Yes.                                                       |
-| `posAtCoords`, `coordsAtPos`, `endOfTextblock`                                | Yes, in logical window coordinates.                        |
-| `pasteText`, `pasteHTML`                                                      | Yes, through the same props a real paste goes through.     |
-| `dom`                                                                         | The root element — a react-x11 node, not an `HTMLElement`. |
-| `dragging`                                                                    | Always `null`: no drag and drop yet.                       |
-| `root`, `domAtPos`, `nodeDOM`, `posAtDOM`, `domSelection()`                   | No. There is no DOM to answer with.                        |
+| `EditorView` member                                                           | Here                                                                                                                                               |
+| ----------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `state`, `dispatch`, `props`, `someProp`, `setProps`, `update`, `updateState` | Yes. `someProp` in ProseMirror's order.                                                                                                            |
+| `editable`, `composing`, `hasFocus()`, `focus()`, `isDestroyed`, `destroy()`  | Yes.                                                                                                                                               |
+| `posAtCoords`, `coordsAtPos`, `endOfTextblock`                                | Yes, in logical window coordinates — for a position in a drawn block; in a long document's undrawn one, `coordsAtPos` answers the editor's corner. |
+| `pasteText`, `pasteHTML`                                                      | Yes, through the same props a real paste goes through.                                                                                             |
+| `dom`                                                                         | The root element — a react-x11 node, not an `HTMLElement` — with `addEventListener` for the focus events; `docView` is truthy while it is mounted. |
+| `dragging`                                                                    | The slice a drag out of this editor carries, and whether a drop back in here moves it.                                                             |
+| `root`, `domAtPos`, `nodeDOM`, `posAtDOM`, `domSelection()`                   | No. There is no DOM to answer with.                                                                                                                |
 
-| View prop                                                                                                                             | Here                                                                                 |
-| ------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
-| `handleKeyDown`, `handleKeyPress`, `handleTextInput`                                                                                  | Yes. The event is a `DomKeyEvent`; composition commits go through `handleTextInput`. |
-| `handleClickOn`, `handleClick`, and the double and triple forms                                                                       | Yes. The event has `clientX`/`clientY` (logical), `button`, `detail`, the modifiers. |
-| `handlePaste`, `transformPasted`, `transformPastedHTML`, `transformPastedText`, `clipboardParser`, `clipboardTextParser`, `domParser` | Yes.                                                                                 |
-| `transformCopied`, `clipboardSerializer`, `clipboardTextSerializer`                                                                   | Yes.                                                                                 |
-| `decorations`                                                                                                                         | Inline and node decorations; widgets whose spec carries `text`.                      |
-| `editable`, `handleScrollToSelection`, `dispatchTransaction`                                                                          | Yes.                                                                                 |
-| `nodeViews`                                                                                                                           | Not as DOM constructors: the component's `nodeViews` take React components.          |
-| `handleDOMEvents`, `handleDrop`, `markViews`, `attributes`, `createSelectionBetween`                                                  | No.                                                                                  |
+| View prop                                                                                                                             | Here                                                                                                                   |
+| ------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `handleKeyDown`, `handleKeyPress`, `handleTextInput`                                                                                  | Yes. The event is a `DomKeyEvent`; composition commits go through `handleTextInput`.                                   |
+| `handleClickOn`, `handleClick`, and the double and triple forms                                                                       | Yes. The event has `clientX`/`clientY` (logical), `button`, `detail`, the modifiers.                                   |
+| `handlePaste`, `transformPasted`, `transformPastedHTML`, `transformPastedText`, `clipboardParser`, `clipboardTextParser`, `domParser` | Yes.                                                                                                                   |
+| `transformCopied`, `clipboardSerializer`, `clipboardTextSerializer`                                                                   | Yes.                                                                                                                   |
+| `decorations`                                                                                                                         | Inline and node decorations; widgets whose spec carries `text`.                                                        |
+| `editable`, `handleScrollToSelection`, `dispatchTransaction`                                                                          | Yes.                                                                                                                   |
+| `nodeViews`                                                                                                                           | Not as DOM constructors: the component's `nodeViews` take React components.                                            |
+| `handleDrop`                                                                                                                          | Yes. The event is DOM-shaped: `dataTransfer.getData` answers what was read, and its `files` are `{ name, path, uri }`. |
+| `handleDOMEvents`, `markViews`, `attributes`, `createSelectionBetween`                                                                | No.                                                                                                                    |
 
 What that means for the plugins people reach for:
 
@@ -200,12 +232,15 @@ What that means for the plugins people reach for:
   underlines, a collaborator's selection — is drawn, as long as a widget
   says what it draws with `text`. The example's TODO highlighter is one,
   unchanged from what a browser would run.
-- **prosemirror-tables' commands** are commands over a compatible schema;
-  its `tableEditing()` plugin's cell selection listens to DOM mouse events
-  and will not arm. Not yet exercised here.
-- **prosemirror-collab** is state and steps by construction; **y-prosemirror**
-  also needs its cursors drawn, which are DOM widgets. Neither is verified
-  yet — listed below.
+- **prosemirror-tables' commands** run here: they are the editor's own
+  table commands (`tables.ts`). Its `tableEditing()` plugin's cell selection
+  listens to DOM mouse events and does not arm, so there is no selecting a
+  block of cells yet.
+- **y-prosemirror** is verified (`test/rich-text-editor-collab.test.ts`):
+  its sync, undo and cursor plugins run unchanged over two relayed editors,
+  and a collaborator's caret is drawn when the cursor plugin is handed
+  `remoteCaret` for its cursor builder — the default one makes a DOM
+  element. **prosemirror-collab** is state and steps by construction.
 
 ## Decisions
 
@@ -230,8 +265,11 @@ What that means for the plugins people reach for:
 - **Subpath only.** ProseMirror's declarations name DOM globals; exported
   from the barrel, they would be every app's problem, including apps that
   want a calendar.
-- **No virtualization.** Blocks re-render only when their node changed, but
-  every block is mounted. Right for the use cases above; not for a book.
+- **Virtualized by top-level block.** Past 200 top-level blocks only the
+  ones near the viewport are mounted — `<Tree>`'s and `<Table>`'s window
+  and height index, keyed by block key. A block's children are drawn with
+  it, so one enormous list or table is drawn whole: windowing inside a
+  block is not worth its cost until a document shows it is.
 - **A suggestion opens as its word is typed, never as the caret moves.** The
   value is markdown and a mention stays text, so a document is soon full of
   words that start with `@`, and a click into one places a caret. GitHub's
@@ -247,8 +285,6 @@ What that means for the plugins people reach for:
 
 ## Follow-ups
 
-- **Table editing** — rows and columns added and removed, prosemirror-tables'
-  commands in the toolbar, and column widths that follow content.
 - **IME tiers** (react-x11#272) — the preedit is drawn and committed; the
   candidate window's placement and the preedit's own cursor and segments
   are core's to deliver.
@@ -256,13 +292,5 @@ What that means for the plugins people reach for:
   `<richtext>` run that reserves advance width for an element. A mention
   drawn as a chip, avatar and all, waits on the same run; until then a
   mention is text, or text with a mark.
-- **Suggestion rows of the app's own** — an avatar, a presence dot: a
-  `renderItem` on the suggester, once an app asks for more than a label and
-  a detail.
-- **Virtualization**, for long documents.
-- **y-prosemirror, verified** — the sync plugin, and its cursors drawn as
-  `text` widgets or node decorations.
 - **Images in text** — `renderImage` draws an image alone in its paragraph;
   one inside a line needs the same inline-widget run.
-- **Drag and drop** — moving blocks, and dropping files and images, over
-  core's drag and drop the way `<ReorderList>` is.

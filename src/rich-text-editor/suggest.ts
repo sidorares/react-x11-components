@@ -27,6 +27,7 @@
 // start with a trigger. Opening whenever the caret visits one would pop a list
 // up at every click; opening on an edit at the caret is the rule GitHub's
 // comment box keeps, and `<CodeEditor>`'s completion.
+import type { ReactNode } from 'react';
 import { closeHistory } from 'prosemirror-history';
 import type { Node as PMNode } from 'prosemirror-model';
 import { Plugin, PluginKey, Selection, TextSelection } from 'prosemirror-state';
@@ -67,8 +68,20 @@ export interface SuggestionQuery {
   state: EditorState;
 }
 
-/** A trigger character, and where the rows it opens come from. */
-export interface Suggester {
+/** What `renderItem` is handed beside its row. */
+export interface SuggestionRow {
+  /** The highlighted row — the one Enter takes — drawn on the accent. */
+  selected: boolean;
+  /** What has been typed after the trigger. */
+  query: string;
+}
+
+/**
+ * A trigger character, and where the rows it opens come from. `Item` is the
+ * app's own row type when a row carries more than a label — an avatar, a
+ * presence — for `renderItem` to draw.
+ */
+export interface Suggester<Item extends SuggestionItem = SuggestionItem> {
   /** What opens the list: `'@'`, `'#'`, `':'`, `'/'`. */
   char: string;
   /**
@@ -79,10 +92,15 @@ export interface Suggester {
    * after the query has moved on is dropped.
    */
   items:
-    | readonly SuggestionItem[]
-    | ((
-        query: SuggestionQuery,
-      ) => readonly SuggestionItem[] | Promise<readonly SuggestionItem[]>);
+    | readonly Item[]
+    | ((query: SuggestionQuery) => readonly Item[] | Promise<readonly Item[]>);
+  /**
+   * A row of the app's own, in place of the label and its detail: an avatar,
+   * a presence dot, a shortcut drawn as keys. The editor still draws the
+   * highlight behind it and takes a press on it, and an array is still
+   * filtered on the label.
+   */
+  renderItem?(item: Item, row: SuggestionRow): ReactNode;
   /** Only at the very start of a textblock — a block menu. Default false:
    *  at the start of any word. */
   startOfLine?: boolean;
@@ -304,14 +322,13 @@ function nextState(
  * does with a suggester whose `items` is an array; exported for an app that
  * filters its own.
  */
-export function filterSuggestions(
-  items: readonly SuggestionItem[],
+export function filterSuggestions<Item extends SuggestionItem>(
+  items: readonly Item[],
   query: string,
-): SuggestionItem[] {
+): Item[] {
   if (!query) return items.slice(0, MAX_ITEMS);
   const folded = query.toLowerCase();
-  const ranked: Array<{ item: SuggestionItem; rank: number; order: number }> =
-    [];
+  const ranked: Array<{ item: Item; rank: number; order: number }> = [];
   items.forEach((item, order) => {
     const label = item.label;
     const lower = label.toLowerCase();
@@ -399,6 +416,15 @@ function asker(
  *  and what an app drawing its own reads. */
 export function suggestionState(state: EditorState): SuggestionState | null {
   return key.getState(state)?.active ?? null;
+}
+
+/** The suggester whose list is open, or null — for its `renderItem`. */
+export function suggesterFor(state: EditorState): Suggester | null {
+  const active = suggestionState(state);
+  if (!active) return null;
+  const get = key.get(state)?.spec.suggesters as
+    (() => readonly Suggester[]) | undefined;
+  return get?.()[active.index] ?? null;
 }
 
 /** Close the list. It does not open again for this trigger while the
@@ -546,6 +572,9 @@ export function suggestions(
   const get = typeof suggesters === 'function' ? suggesters : () => suggesters;
   return new Plugin<PluginState>({
     key,
+    // read back by `suggesterFor`, so a row is drawn by its suggester's
+    // `renderItem` in an app-owned state too
+    suggesters: get,
     state: {
       init: () => ({ active: null, closed: [] }),
       apply: (tr, prev, _old, state) => nextState(tr, prev, state, get()),

@@ -16,7 +16,9 @@
 // and core runs the default action of *that* node, not of the root. So the
 // component takes presses in an ordinary bubbling `onMouseDown` on the root
 // and `preventDefault()`s them, which also keeps core's drag-and-drop from
-// arming on a press that is placing a caret.
+// arming on a press that is placing a caret — all but a press on the
+// selection, which is left to core so that it can arm a drag of the
+// selection from the root (./drag.ts).
 //
 // **`<richeditortext>`** is one textblock: `<richtext>` — its layout cache,
 // its run decoration, its four text accessors — plus a selection band and a
@@ -43,6 +45,13 @@ export const TEXT_ELEMENT = 'richeditortext';
 
 type KeyEvent = Parameters<NonNullable<Node['defaultKeyDown']>>[0];
 type ComposeEvent = Parameters<NonNullable<Node['defaultComposition']>>[0];
+
+/** What a listener `view.dom.addEventListener` took is handed: a focus
+ *  event, DOM-named, from the root element. */
+export interface DomFocusEvent {
+  readonly type: 'focus' | 'blur' | 'focusin' | 'focusout';
+  readonly target: RichEditorNode;
+}
 
 /**
  * What the elements report to — the editor view (`./view.ts`). An interface
@@ -126,6 +135,37 @@ export class RichEditorNode extends Node {
     super.destroySubtree();
   }
 
+  /**
+   * Listeners a plugin written for a browser put on `view.dom` —
+   * y-prosemirror's cursor plugin listens for `focusin` and `focusout` to
+   * publish and withdraw the local caret. The focus family is all that is
+   * sent: `focus`, `blur`, `focusin`, `focusout`, after the view has heard
+   * the change, so `view.hasFocus()` already agrees with the event.
+   */
+  private domEventListeners = new Map<
+    string,
+    Set<(ev: DomFocusEvent) => void>
+  >();
+
+  addEventListener(type: string, listener: (ev: DomFocusEvent) => void): void {
+    let set = this.domEventListeners.get(type);
+    if (!set) this.domEventListeners.set(type, (set = new Set()));
+    set.add(listener);
+  }
+
+  removeEventListener(
+    type: string,
+    listener: (ev: DomFocusEvent) => void,
+  ): void {
+    this.domEventListeners.get(type)?.delete(listener);
+  }
+
+  private sendDomEvent(type: DomFocusEvent['type']): void {
+    const set = this.domEventListeners.get(type);
+    if (!set) return;
+    for (const listener of [...set]) listener({ type, target: this });
+  }
+
   override defaultKeyDown(ev: KeyEvent): void {
     this.host?.keyDown(ev);
   }
@@ -136,10 +176,14 @@ export class RichEditorNode extends Node {
 
   override defaultFocus(): void {
     this.host?.focusChanged(true);
+    this.sendDomEvent('focus');
+    this.sendDomEvent('focusin');
   }
 
   override defaultBlur(): void {
     this.host?.focusChanged(false);
+    this.sendDomEvent('blur');
+    this.sendDomEvent('focusout');
   }
 
   override a11yTextState(): A11yTextState | null {
@@ -170,6 +214,12 @@ export class EditorTextNode extends RichTextNode {
   private editorCaret: number | null = null;
   private editorCaretColor = '';
   private editorCaretOn = true;
+  /** Collaborators' carets in this block, in drawn code points. */
+  private remoteCarets: readonly { index: number; color: string }[] = [];
+  /** Where a drop would go in, in drawn code points, while a drag is over
+   *  this block. */
+  private dropCaretAt: number | null = null;
+  private dropCaretColor = '';
 
   constructor(props: Record<string, unknown>, app: unknown) {
     super(props, app as NtkApp, TEXT_ELEMENT);
@@ -274,6 +324,103 @@ export class EditorTextNode extends RichTextNode {
     );
   }
 
+  /** Collaborators' carets in this block — set by the view like the
+   *  editor's own, and drawn beside it without blinking. */
+  setRemoteCarets(carets: readonly { index: number; color: string }[]): void {
+    const was = this.remoteCarets;
+    if (
+      carets.length === was.length &&
+      carets.every(
+        (c, i) => c.index === was[i].index && c.color === was[i].color,
+      )
+    )
+      return;
+    this.damageRemoteCarets();
+    this.remoteCarets = carets;
+    this.damageRemoteCarets();
+  }
+
+  /** The collaborators' carets this block draws. */
+  get collaboratorCarets(): readonly { index: number; color: string }[] {
+    return this.remoteCarets;
+  }
+
+  /** A collaborator's caret: a bar two pixels wide, and a flag beside
+   *  its top — inside the line, so nothing paints outside the block. */
+  private remoteCaretBoxes(index: number): { bar: Rect; flag: Rect } | null {
+    const r = this.textCaretRect(index);
+    if (!r) return null;
+    const s = Math.max(1, Math.round(this.scale));
+    const bar = {
+      x: Math.round(r.x) - s,
+      y: Math.round(r.y),
+      width: 2 * s,
+      height: Math.ceil(r.height),
+    };
+    const flag = {
+      x: bar.x + bar.width,
+      y: bar.y,
+      width: 3 * s,
+      height: 3 * s,
+    };
+    return { bar, flag };
+  }
+
+  private damageRemoteCarets(): void {
+    for (const caret of this.remoteCarets) {
+      const boxes = this.remoteCaretBoxes(caret.index);
+      if (!boxes) continue;
+      const { bar, flag } = boxes;
+      this.root?.invalidate(
+        false,
+        {
+          x: bar.x - 1,
+          y: bar.y,
+          width: bar.width + flag.width + 2,
+          height: bar.height,
+        },
+        'caret',
+      );
+    }
+  }
+
+  /** The drop caret: where a drop would go in, or null to take it away. */
+  setDropCaret(index: number | null, color: string): void {
+    if (index === this.dropCaretAt && color === this.dropCaretColor) return;
+    this.damageDropCaret();
+    this.dropCaretAt = index;
+    this.dropCaretColor = color;
+    this.damageDropCaret();
+  }
+
+  /** Where this block draws the drop caret, or null. */
+  get dropCaret(): number | null {
+    return this.dropCaretAt;
+  }
+
+  private dropCaretBox(): Rect | null {
+    if (this.dropCaretAt === null) return null;
+    const r = this.textCaretRect(this.dropCaretAt);
+    if (!r) return null;
+    const s = Math.max(1, Math.round(this.scale));
+    return {
+      x: Math.round(r.x) - s,
+      y: Math.round(r.y),
+      width: 2 * s,
+      height: Math.ceil(r.height),
+    };
+  }
+
+  private damageDropCaret(): void {
+    const box = this.dropCaretBox();
+    if (!box) return;
+    this.root?.invalidate(
+      false,
+      { x: box.x - 1, y: box.y, width: box.width + 2, height: box.height },
+      'caret',
+    );
+  }
+
   // --- painting ----------------------------------------------------------------
 
   protected override paintSelection(ctx: FillContext): void {
@@ -291,6 +438,19 @@ export class EditorTextNode extends RichTextNode {
   }
 
   protected override paintOverlay(ctx: FillContext): void {
+    for (const caret of this.remoteCarets) {
+      const boxes = this.remoteCaretBoxes(caret.index);
+      if (!boxes) continue;
+      ctx.fillStyle = caret.color;
+      const { bar, flag } = boxes;
+      ctx.fillRect(bar.x, bar.y, bar.width, bar.height);
+      ctx.fillRect(flag.x, flag.y, flag.width, flag.height);
+    }
+    const drop = this.dropCaretBox();
+    if (drop && this.dropCaretColor) {
+      ctx.fillStyle = this.dropCaretColor;
+      ctx.fillRect(drop.x, drop.y, drop.width, drop.height);
+    }
     if (!this.editorCaretOn) return;
     const box = this.caretBox();
     if (!box || !this.editorCaretColor) return;

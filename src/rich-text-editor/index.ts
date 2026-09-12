@@ -35,9 +35,13 @@ import React, {
   useSyncExternalStore,
 } from 'react';
 import type { ComponentType, ReactElement, ReactNode, Ref } from 'react';
-import { useClipboard, useTheme } from 'react-x11';
+import { useApp, useClipboard, useTheme } from 'react-x11';
 import type {
+  DragEndEvent,
+  DragEvent,
+  DragSourceEvent,
   DrawnNode,
+  DropEvent,
   FocusEvent,
   KeyboardEvent,
   MouseEvent as X11MouseEvent,
@@ -71,6 +75,8 @@ import {
   toggleList,
   toggleWrap,
 } from './commands.js';
+import { DROP_TYPES, SLICE_TYPE } from './drag.js';
+import type { DropAnswer } from './drag.js';
 import { docFromHTML, htmlFromContent } from './html.js';
 import { defaultPlugins } from './keymap.js';
 import { deriveLook } from './look.js';
@@ -78,13 +84,14 @@ import type { MarkStyle } from './look.js';
 import { docFromText, markdownCodec, textFromDoc } from './markdown.js';
 import type { MarkdownCodec } from './markdown.js';
 import { registerEditorElements, ROOT_ELEMENT, TEXT_ELEMENT } from './nodes.js';
-import { renderBlocks } from './render.js';
+import { renderBlockRange, renderBlocks } from './render.js';
 import type { ImageInfo, NodeViewProps, RenderContext } from './render.js';
 import type { RunStyle } from './inline.js';
 import { schema as defaultSchema } from './schema.js';
 import {
   acceptSuggestion,
   SUGGESTION_PAGE,
+  suggesterFor,
   suggestionState,
   suggestions as suggestionPlugin,
 } from './suggest.js';
@@ -98,11 +105,17 @@ import {
 import type { ToolbarEntry } from './toolbar.js';
 import { RichEditorView } from './view.js';
 import type { ViewConfig, ViewProps } from './view.js';
+import { useBlockWindow } from './virtual.js';
 
 registerRichText();
 registerEditorElements();
 
 const h = React.createElement;
+
+/** What a drag out of the editor offers to do: an editable one moves or
+ *  copies, a read-only one only copies. */
+const MOVE_OR_COPY: Array<'move' | 'copy'> = ['move', 'copy'];
+const COPY_ONLY: Array<'move' | 'copy'> = ['copy'];
 
 // --- props -------------------------------------------------------------------
 
@@ -268,6 +281,13 @@ interface CommonProps {
   /** Custom rendering by node type: a React component, handed the node, its
    *  rendered content and a way to update its attributes. */
   nodeViews?: Readonly<Record<string, ComponentType<NodeViewProps>>>;
+  /**
+   * Draw only the top-level blocks near the viewport, for a long
+   * document. `'auto'`, the default, does once there are more than 200
+   * of them — so a composer never does. It matters only in an editor
+   * given a height to scroll in.
+   */
+  virtual?: boolean | 'auto';
 
   /** The frame: width, height, `flexGrow`, border, background. */
   style?: Style | Style[];
@@ -727,23 +747,48 @@ export function RichTextEditor(props: RichTextEditorProps): ReactElement {
     });
   }, [editorProps, view]);
 
+  // the plugins' views, now that the root element exists for them to find
+  useLayoutEffect(() => {
+    view.mountPluginViews();
+  }, [view]);
+
   useEffect(() => () => view.destroy(), [view]);
 
   const editable = !readOnly && !disabled;
+  // what a table measures its columns with; none on the mock backend
+  const fonts =
+    (useApp() as { fonts?: RenderContext['fonts'] } | null)?.fonts ?? null;
   const ctx = useMemo<RenderContext>(
     () => ({
       view,
       look,
       editable,
+      fonts,
       ...(props.nodeViews ? { nodeViews: props.nodeViews } : null),
       ...(props.renderImage ? { renderImage: props.renderImage } : null),
     }),
-    [view, look, editable, props.nodeViews, props.renderImage],
+    [view, look, editable, fonts, props.nodeViews, props.renderImage],
   );
+  // A long document draws only the blocks near the viewport, in a window
+  // the view asks about when what it needs is not drawn (./virtual.ts).
+  const windowed = useBlockWindow({
+    doc: state.doc,
+    keys: view.keys,
+    virtual: props.virtual ?? 'auto',
+    estimate: Math.round(look.size * 1.5) + look.blockGap,
+    gap: look.blockGap,
+  });
+  const { virtualizing, first, last, register } = windowed;
   const blocks = useMemo(
-    () => renderBlocks(state.doc, 0, ctx),
-    [state.doc, ctx],
+    () =>
+      virtualizing
+        ? renderBlockRange(state.doc, first, last, ctx, register)
+        : renderBlocks(state.doc, 0, ctx),
+    [state.doc, ctx, virtualizing, first, last, register],
   );
+  useLayoutEffect(() => {
+    view.attachWindow(virtualizing ? windowed.window : null);
+  }, [view, virtualizing, windowed.window]);
 
   // --- input ---------------------------------------------------------------
 
@@ -794,9 +839,23 @@ export function RichTextEditor(props: RichTextEditorProps): ReactElement {
   const setRoot = useCallback((node: unknown) => {
     rootRef.current = (node as DrawnNode | null) ?? null;
   }, []);
+  const pane = windowed.box;
   const setScroller = useCallback(
-    (node: unknown) =>
-      view.attachScroller((node as ScrollableNode | null) ?? null),
+    (node: unknown) => {
+      pane.current = (node as ScrollableNode | null) ?? null;
+      view.attachScroller(pane.current);
+    },
+    [view, pane],
+  );
+
+  // What a drag out of the editor offers, resolved when a drop asks for it:
+  // a copy's text and HTML, and the slice itself for a drop in this app.
+  const dragData = useMemo(
+    () => ({
+      'text/plain': () => view.dragText(),
+      'text/html': () => view.dragHTML(),
+      [SLICE_TYPE]: () => view.dragPayload(),
+    }),
     [view],
   );
 
@@ -905,9 +964,38 @@ export function RichTextEditor(props: RichTextEditorProps): ReactElement {
     if (selected >= first + SUGGESTION_PAGE)
       first = selected - SUGGESTION_PAGE + 1;
     firstRow.current = first;
+    // a suggester may draw its rows itself; the row box — the highlight
+    // behind it, the press on it — stays the editor's
+    const custom = suggesterFor(state)?.renderItem;
+    const rowHeight = Math.round(look.size + 12);
     const rows = items.slice(first, first + SUGGESTION_PAGE).map((item, i) => {
       const index = first + i;
       const on = index === selected;
+      if (custom) {
+        return hx(
+          'box',
+          {
+            key: `${index} ${item.label}`,
+            style: {
+              flexDirection: 'row',
+              alignItems: 'center',
+              minHeight: rowHeight,
+              paddingLeft: 8,
+              paddingRight: 8,
+              borderRadius: Math.max(0, look.radius - 2),
+              backgroundColor: on ? look.accent : 'transparent',
+              ...(on
+                ? null
+                : { ':hover': { backgroundColor: tint(look.text, 0.08) } }),
+            },
+            onMouseDown: (ev: X11MouseEvent) => {
+              ev.preventDefault();
+              view.run(acceptSuggestion(index));
+            },
+          },
+          custom(item, { selected: on, query: suggestion.query }),
+        );
+      }
       return hx(
         'box',
         {
@@ -916,7 +1004,7 @@ export function RichTextEditor(props: RichTextEditorProps): ReactElement {
             flexDirection: 'row',
             alignItems: 'center',
             gap: 12,
-            height: Math.round(look.size + 12),
+            height: rowHeight,
             paddingLeft: 8,
             paddingRight: 8,
             borderRadius: Math.max(0, look.radius - 2),
@@ -1025,6 +1113,43 @@ export function RichTextEditor(props: RichTextEditorProps): ReactElement {
         view.contextMenu(ev);
         ev.preventDefault();
       },
+      // drag and drop (./drag.ts): the selection drags out, and a drop is
+      // read like a paste. A press on the selection is left to core, which
+      // arms the drag here; `onDragStart` cancels one that is not the
+      // selection's, and leaves a drag of something inside alone.
+      draggable: !disabled,
+      dragData,
+      dragActions: editable ? MOVE_OR_COPY : COPY_ONLY,
+      onDragStart: (ev: DragSourceEvent) => {
+        if (ev.target !== rootRef.current) return;
+        if (!view.dragStart()) ev.preventDefault();
+      },
+      onDrag: (ev: DragSourceEvent) => {
+        if (ev.target === rootRef.current)
+          view.dragMoved(ev.ctrlKey, ev.altKey);
+      },
+      onDragEnd: (ev: DragEndEvent) => {
+        if (ev.target === rootRef.current) view.dragEnd(ev.action, ev.dropped);
+      },
+      ...(editable
+        ? {
+            dropAccept: DROP_TYPES,
+            onDragOver: (ev: DragEvent) => {
+              if (!view.dragOver(ev.x, ev.y)) ev.reject();
+            },
+            onDragLeave: () => view.dragLeave(),
+            onDrop: (ev: DropEvent) => {
+              const settle = (answer: DropAnswer): void => {
+                if (answer) ev.accept(answer);
+                else ev.reject();
+              };
+              const answer = view.drop(ev);
+              if (answer instanceof Promise) return answer.then(settle);
+              settle(answer);
+              return undefined;
+            },
+          }
+        : null),
       onFocus: props.onFocus,
       onBlur: props.onBlur,
     },
@@ -1048,6 +1173,9 @@ export function RichTextEditor(props: RichTextEditorProps): ReactElement {
           flexBasis: 'auto',
           flexDirection: 'column',
         },
+        ...(virtualizing
+          ? { onViewport: windowed.onViewport, onScroll: windowed.onScroll }
+          : null),
       },
       hx(
         'box',
@@ -1060,7 +1188,20 @@ export function RichTextEditor(props: RichTextEditorProps): ReactElement {
             ...styles?.content,
           },
         },
+        // the blocks outside a long document's window, as space
+        windowed.above > 0
+          ? hx('box', {
+              key: 'spacer:before',
+              style: { flexShrink: 0, height: windowed.above },
+            })
+          : null,
         ...blocks,
+        windowed.below > 0
+          ? hx('box', {
+              key: 'spacer:after',
+              style: { flexShrink: 0, height: windowed.below },
+            })
+          : null,
       ),
     ),
     linkPopup,
@@ -1156,6 +1297,7 @@ export {
   dismissSuggestion,
   filterSuggestions,
   selectSuggestion,
+  suggesterFor,
   suggestionState,
   suggestions,
 } from './suggest.js';
@@ -1163,8 +1305,27 @@ export type {
   Suggester,
   SuggestionItem,
   SuggestionQuery,
+  SuggestionRow,
   SuggestionState,
 } from './suggest.js';
+export {
+  addColumnAfter,
+  addColumnBefore,
+  addRowAfter,
+  addRowBefore,
+  columnAlign,
+  deleteColumn,
+  deleteRow,
+  deleteTable,
+  insertTable,
+  isInTable,
+  setColumnAlign,
+  tableRepair,
+} from './tables.js';
+export type { ColumnAlign } from './tables.js';
+export { remoteCaret } from './collab.js';
+export type { RemoteCaret } from './collab.js';
+export type { DomFocusEvent } from './nodes.js';
 export type { ImageInfo, NodeViewProps } from './render.js';
 export type { MarkStyle } from './look.js';
 export type { RunStyle } from './inline.js';

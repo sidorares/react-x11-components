@@ -82,6 +82,7 @@ top of the one before, and none of them replaces another.
 | `renderImage`       | `(image: ImageInfo) => ReactNode`                                          | An image alone in its paragraph, drawn by you. Without it an image is its alt text: the editor fetches nothing.                                                                                                      |
 | `style`             | `Style \| Style[]`                                                         | The frame: width, height, `maxHeight`, `flexGrow`, border, background. Given no height the editor is as tall as its content up to `maxHeight`, and scrolls past it — a composer grows as it is typed in.             |
 | `styles`            | `{ toolbar?: Style; content?: Style }`                                     | The parts inside the frame.                                                                                                                                                                                          |
+| `virtual`           | `boolean \| 'auto'`                                                        | Draw only the top-level blocks near the viewport — see [Long documents](#long-documents). Default `'auto'`: past 200 of them.                                                                                        |
 
 ### ProseMirror's seams
 
@@ -144,32 +145,34 @@ to know _that_ something changed never pays for it), `doc`, `state`, the
 Mod is **Ctrl** on the X11 backend and **Cmd** on the macOS one — the
 backend's convention, whatever host the process runs on.
 
-| Keys                                          | Does                                                                                                                                                                       |
-| --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Mod-B, Mod-I, Mod-\`, Shift-Mod-X             | Bold, italic, inline code, strikethrough                                                                                                                                   |
-| Mod-K                                         | Link the selection: a field at the selection asks for the target, Enter applies, Escape cancels, an empty target unlinks                                                   |
-| Mod-Z; Shift-Mod-Z or Mod-Y                   | Undo; redo                                                                                                                                                                 |
-| Mod-Alt-0; Mod-Alt-1 … 6; Mod-Alt-C           | Paragraph; heading 1–6; code block                                                                                                                                         |
-| Shift-Mod-8, Shift-Mod-7, Shift-Mod-9         | Bulleted, numbered, task list                                                                                                                                              |
-| Ctrl->                                        | Quote                                                                                                                                                                      |
-| Mod-\_                                        | Divider                                                                                                                                                                    |
-| Shift-Enter, Mod-Enter                        | Line break (Mod-Enter submits instead when there is an `onSubmit`)                                                                                                         |
-| Enter                                         | New paragraph; in a list a new item, and on an empty item the end of the list                                                                                              |
-| Tab, Shift-Tab                                | In a list, nest and un-nest the item; in a code block, indent and dedent; in a table, the next and previous cell. Anywhere else Tab is not the editor's and moves focus on |
-| Escape, then Tab                              | Leave the editor, from anywhere. An Escape that closes a [suggestion list](#suggestions) closes only the list                                                              |
-| Arrows, Home/End, PageUp/PageDown             | Move, by grapheme and by visual line; Home and End go to the ends of the _line_ as it wraps. Shift extends                                                                 |
-| Ctrl-arrows, Ctrl-Home/End (X11)              | By word; to the ends of the document                                                                                                                                       |
-| Alt-arrows, Cmd-arrows (macOS)                | By word; to the ends of the line, or of the document                                                                                                                       |
-| Backspace, Delete                             | By grapheme; with Ctrl (X11) or Alt (macOS) by word, with Cmd (macOS) to the line's start                                                                                  |
-| Mod-A, Mod-C, Mod-X, Mod-V, Shift-Mod-V       | Select all, copy, cut, paste, paste as plain text                                                                                                                          |
-| Shift-Delete, Ctrl-Insert, Shift-Insert (X11) | Cut, copy, paste                                                                                                                                                           |
+| Keys                                          | Does                                                                                                                                                                                                         |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Mod-B, Mod-I, Mod-\`, Shift-Mod-X             | Bold, italic, inline code, strikethrough                                                                                                                                                                     |
+| Mod-K                                         | Link the selection: a field at the selection asks for the target, Enter applies, Escape cancels, an empty target unlinks                                                                                     |
+| Mod-Z; Shift-Mod-Z or Mod-Y                   | Undo; redo                                                                                                                                                                                                   |
+| Mod-Alt-0; Mod-Alt-1 … 6; Mod-Alt-C           | Paragraph; heading 1–6; code block                                                                                                                                                                           |
+| Shift-Mod-8, Shift-Mod-7, Shift-Mod-9         | Bulleted, numbered, task list                                                                                                                                                                                |
+| Ctrl->                                        | Quote                                                                                                                                                                                                        |
+| Mod-\_                                        | Divider                                                                                                                                                                                                      |
+| Shift-Enter, Mod-Enter                        | Line break (Mod-Enter submits instead when there is an `onSubmit`)                                                                                                                                           |
+| Enter                                         | New paragraph; in a list a new item, and on an empty item the end of the list                                                                                                                                |
+| Tab, Shift-Tab                                | In a list, nest and un-nest the item; in a code block, indent and dedent; in a table, the next and previous cell (Tab in the last cell adds a row). Anywhere else Tab is not the editor's and moves focus on |
+| Escape, then Tab                              | Leave the editor, from anywhere. An Escape that closes a [suggestion list](#suggestions) closes only the list                                                                                                |
+| Arrows, Home/End, PageUp/PageDown             | Move, by grapheme and by visual line; Home and End go to the ends of the _line_ as it wraps. Shift extends                                                                                                   |
+| Ctrl-arrows, Ctrl-Home/End (X11)              | By word; to the ends of the document                                                                                                                                                                         |
+| Alt-arrows, Cmd-arrows (macOS)                | By word; to the ends of the line, or of the document                                                                                                                                                         |
+| Backspace, Delete                             | By grapheme; with Ctrl (X11) or Alt (macOS) by word, with Cmd (macOS) to the line's start                                                                                                                    |
+| Mod-A, Mod-C, Mod-X, Mod-V, Shift-Mod-V       | Select all, copy, cut, paste, paste as plain text                                                                                                                                                            |
+| Shift-Delete, Ctrl-Insert, Shift-Insert (X11) | Cut, copy, paste                                                                                                                                                                                             |
 
 With the pointer: a press places the caret, Shift extends, a double press
 selects a word and a triple one the block, a drag selects (and scrolls at the
-edges), a press on a divider — any block that is a leaf — selects it whole,
-a press on a task's box toggles it, and the right button opens core's edit menu (Copy and
-Select All only, when read-only). On X11 a selection is offered as PRIMARY
-and the middle button pastes PRIMARY at the pointer.
+edges), a drag that starts on the selection moves it
+([Drag and drop](#drag-and-drop)), a press on a divider — any block that is
+a leaf — selects it whole, a press on a task's box toggles it, and the right
+button opens core's edit menu (Copy and Select All only, when read-only). On
+X11 a selection is offered as PRIMARY and the middle button pastes PRIMARY at
+the pointer.
 
 ## Markdown shortcuts
 
@@ -197,7 +200,7 @@ turns them all off.
 />
 ```
 
-A `Suggester` is a trigger, its rows, and two options:
+A `Suggester` is a trigger, its rows, and three options:
 
 | Field         | Notes                                                                                                                                                                                                                                                                                                                                                                    |
 | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -205,6 +208,7 @@ A `Suggester` is a trigger, its rows, and two options:
 | `items`       | An array of `SuggestionItem`s, which the editor filters as the word is typed: labels that start with the query first, then labels with a word that does, then any that contain it. Or a function, handed `{ query, char, state }`, whose rows are shown as it returns them; it may return a promise, and an answer that arrives after the query has moved on is dropped. |
 | `startOfLine` | Only at the start of a textblock — a block menu.                                                                                                                                                                                                                                                                                                                         |
 | `allowSpaces` | The query may hold spaces — a full name. Two spaces in a row end it either way.                                                                                                                                                                                                                                                                                          |
+| `renderItem`  | `(item, { selected, query }) => ReactNode`: a row of your own — an avatar, a presence dot, a shortcut drawn as keys. The editor still draws the highlight behind it (`selected` says which row sits on the accent) and takes a press on it, and an array is still filtered on `label`. `Suggester<Item>` takes your own row type, so `renderItem` is handed it typed.    |
 
 A `SuggestionItem` is a row, and what taking it does:
 
@@ -256,7 +260,124 @@ EditorState.create({
 The list's commands are exported for a toolbar, a test, or a list of your
 own: `acceptSuggestion(index?)`, `selectSuggestion(index)` and
 `dismissSuggestion`; `filterSuggestions(items, query)` is the editor's own
-filter.
+filter, and `suggesterFor(state)` is the suggester whose list is open.
+
+## Tables
+
+A table is typed in like any text — Tab and Shift-Tab go to the next and
+the previous cell, and Tab in the last cell adds a row — and its rows and
+columns go in and out from the toolbar. **Table** puts a table where the
+caret is, a header row and two more of three cells, with the caret in its
+first cell; while the caret is in a table the bar also shows **Row
+above**, **Row below**, **Column before**, **Column after**, **Delete
+row**, **Delete column** and **Delete table**, and hides them again when
+it leaves. `alignLeft`, `alignCenter` and `alignRight` are there by name,
+for a bar of your own: they set a column's alignment, and pressed again
+take it off. An item of your own can come and go the same way, with
+`visible(state)`.
+
+The commands are prosemirror-tables' own, exported for a toolbar of your
+own and for `handle.run`: `insertTable(rows?, cols?)`, `addRowBefore`,
+`addRowAfter`, `addColumnBefore`, `addColumnAfter`, `deleteRow`,
+`deleteColumn`, `deleteTable`, `setColumnAlign(align)`, and — to light an
+alignment button — `columnAlign(state)`.
+
+**A markdown table keeps markdown's shape.** Markdown's table has one
+header row, and it is the first; its alignment belongs to a column, not to
+a cell. So a row added above the header becomes the header, deleting the
+header hands it to the row below, and a new cell takes its column's
+alignment: what the editor shows is what the markdown reads back as. A
+table of another shape — a header column pasted from HTML, say — is left
+the way prosemirror-tables leaves it. `tableRepair()`, one of the default
+plugins, keeps every table rectangular, which a paste can break.
+
+**Columns are as wide as their content**, capped so that one long cell
+cannot starve the rest, and a table narrower than the document stays
+narrow — the way `<Markdown>` sizes the same table. Wider than the
+document, every column gives up the same share and its text wraps. A cell
+is measured when it changes and not otherwise, so typing in a large table
+costs what typing in a paragraph does.
+
+## Collaboration
+
+The editor runs y-prosemirror — the binding a Yjs-backed ProseMirror
+editor uses — as it is: its sync plugin binds the document to a
+`Y.XmlFragment`, its undo plugin takes the place of the editor's own
+history with one that takes back only this user's edits, and its cursor
+plugin shows where everyone else is. The one piece that is this editor's is
+`remoteCaret`, the cursor builder:
+
+```tsx
+import {
+  ySyncPlugin,
+  yCursorPlugin,
+  yUndoPlugin,
+  undo,
+  redo,
+} from 'y-prosemirror';
+import { keymap } from 'prosemirror-keymap';
+import {
+  RichTextEditor,
+  remoteCaret,
+} from '@react-x11/components/rich-text-editor';
+
+const plugins = [
+  ySyncPlugin(ydoc.getXmlFragment('prosemirror')),
+  yCursorPlugin(provider.awareness, { cursorBuilder: remoteCaret }),
+  yUndoPlugin(),
+  keymap({ 'Mod-z': undo, 'Mod-y': redo, 'Shift-Mod-z': redo }),
+];
+
+<RichTextEditor plugins={plugins} history={false} />;
+```
+
+Give the plugins a stable identity, and turn `history` off: two undo
+histories over one document fight. The document is the fragment's — the
+sync plugin replaces whatever the editor started with — so `value` and
+`defaultValue` have nothing to say here, and `onChange` still hears every
+change, a collaborator's included.
+
+A collaborator's caret is a bar and a small flag in their awareness colour
+(`user.color`, a `#rrggbb`), drawn beside the editor's own caret and set
+the same way, re-rendering nothing; their selection is lit by the cursor
+plugin's own decoration. y-prosemirror's default cursor builder makes a DOM
+element, which has nothing to draw it here — `remoteCaret` is the builder
+this editor reads. The name is not drawn beside the caret yet.
+
+## Drag and drop
+
+A press on the selection and a drag takes it along; let go, and it goes in
+where the drop caret was drawn — moved, or copied with **Ctrl** (**Option**
+on the Mac backend) held. A press on the selection that does not move is a
+click, and puts the caret there. The drag carries what a copy does — its
+HTML and its text, for another application — and, to another editor in the
+app, the content itself, so a list stays a list.
+
+A drop is read the way a paste is, at the point it lands: HTML by the
+schema's own rules, text a paragraph to a line. Files dropped from a file
+manager go in as what markdown can say of them: an image as an image, drawn
+by `renderImage` — the editor reads nothing from the file — and anything
+else as its name, linked to it. `editorProps.handleDrop` — or a plugin's —
+sees a drop first, with a DOM-shaped event whose `dataTransfer` answers what
+was read and whose `files` are `{ name, path, uri }`: a path to read, not
+a browser's `File`. A read-only editor can be dragged from, to copy, and
+takes no drop.
+
+## Long documents
+
+A document of more than 200 top-level blocks — a book, a log, a long
+README — draws only the blocks near the viewport. The ones above and below
+are space the scrollbar measures: each block the height it had when it was
+last drawn, or a guess the drawn ones teach. Scrolling draws what comes into
+view. The caret, a click and the keys work as they do anywhere, and a key
+that needs a block outside the window — the document's end, a Down pressed
+after scrolling away from the caret, a letter typed there — has it drawn
+and scrolled into view first.
+
+`virtual` turns the window on for any document (`true`) or off for every
+one (`false`). It matters only in an editor given a height to scroll in:
+one that grows with its content has nothing out of view. The window is of
+top-level blocks, so one enormous list or table is drawn whole.
 
 ## The document model
 
@@ -323,7 +444,11 @@ then the state's), `setProps`, `update`, `updateState`, `editable`,
 `composing`, `hasFocus`, `focus`, `destroy`, `posAtCoords`, `coordsAtPos`,
 `endOfTextblock`, `pasteText` and `pasteHTML`. `dom` is the root element — a
 react-x11 node, not an `HTMLElement` — and there is no `domAtPos`, `nodeDOM`
-or `posAtDOM`, because there is no DOM to answer with.
+or `posAtDOM`, because there is no DOM to answer with. It does answer
+`addEventListener` for the focus events — `focus`, `blur`, `focusin` and
+`focusout`, what y-prosemirror's cursor plugin listens for — and `docView`
+is truthy while the editor is mounted. Plugin views are made once the
+editor is mounted, so a plugin view finds `view.dom` from its first call.
 
 View props honoured: `handleKeyDown`, `handleKeyPress`, `handleTextInput`,
 `handleClickOn`/`handleClick` and their double and triple forms,
@@ -331,7 +456,7 @@ View props honoured: `handleKeyDown`, `handleKeyPress`, `handleTextInput`,
 `dispatchTransaction`, and the whole clipboard family — `transformCopied`,
 `clipboardSerializer`, `clipboardTextSerializer`, `transformPastedHTML`,
 `transformPastedText`, `clipboardParser`, `clipboardTextParser`, `domParser`
-and `transformPasted`. Not honoured: `handleDOMEvents`, `handleDrop`,
+and `transformPasted` — and `handleDrop`. Not honoured: `handleDOMEvents`,
 DOM `nodeViews` (use the component's `nodeViews`), `markViews`,
 `attributes` and `createSelectionBetween`.
 
@@ -389,14 +514,33 @@ function Fence({ node, children, updateAttributes }: NodeViewProps) {
   exactly that copy takes the slice back. That matters on macOS, where
   react-x11's clipboard carries text only for now: without it, copy and
   paste inside one editor would flatten every list.
-- **Every block is mounted.** Only the blocks an edit touched re-render, but
-  nothing is virtualized — right for notes and documents, not for a book.
+- **A long document draws a window of its top-level blocks.** Only the
+  blocks an edit touched re-render at any length; past 200 of them only the
+  ones near the viewport are mounted at all — `<Tree>`'s and `<Table>`'s
+  window, over block keys. A block inside a list or a quote is drawn with
+  its top-level block, so one enormous list is drawn whole.
 - **A suggestion list opens as its word is typed**, never as the caret moves
   into one — the rule GitHub's comment box keeps, and
   [`<CodeEditor>`](code-editor.md)'s completion. A markdown document keeps
   its mentions as text, so it is soon full of words that start with a
   trigger, and a click into one of them should place a caret, not open a
   list.
+- **A markdown table keeps markdown's shape** through every table
+  command — one header row, first, and alignment by column — so the value
+  never reads back as a different table from the one on screen.
+- **Table actions live in the toolbar, not the right-click menu.** The
+  edit menu is core's, with a fixed set of verbs; the bar shows a table's
+  own buttons only while the caret is in one.
+- **Collaboration is y-prosemirror's, run as it is.** The editor adds a
+  cursor builder, `remoteCaret`, because the default one builds a DOM
+  element, and everything else — sync, undo, awareness — is the binding
+  every Yjs-backed ProseMirror editor runs.
+- **A drag starts only from the selection**, as it does in a browser's
+  editor: a press anywhere else is the caret's, and a drag from there
+  selects.
+- **Dropped files become what markdown can say** — an image, or a link.
+  The editor reads nothing from them; a drop that uploads, or inlines,
+  is `handleDrop`'s.
 
 ## Backends
 
@@ -416,15 +560,22 @@ another application arrives as its text (react-x11's docs/clipboard.md,
 codecs (`docFromMarkdown`, `markdownFromDoc`, `markdownCodec`,
 `docFromHTML`, `htmlFromContent`, `docFromText`, `textFromDoc`);
 `DEFAULT_TOOLBAR` and `toolbarItems`; the suggestion plugin and its commands
-(`suggestions`, `suggestionState`, `acceptSuggestion`, `selectSuggestion`,
-`dismissSuggestion`, `filterSuggestions`); and the types `DomKeyEvent`,
+(`suggestions`, `suggestionState`, `suggesterFor`, `acceptSuggestion`,
+`selectSuggestion`, `dismissSuggestion`, `filterSuggestions`); the table
+commands (`insertTable`, `addRowBefore`, `addRowAfter`, `addColumnBefore`,
+`addColumnAfter`, `deleteRow`, `deleteColumn`, `deleteTable`,
+`setColumnAlign`, `columnAlign`, `isInTable`) and `tableRepair`;
+`remoteCaret`, y-prosemirror's cursor builder for this editor; and the
+types `DomKeyEvent`,
 `NodeViewProps`, `ImageInfo`, `MarkStyle`, `RunStyle`, `ToolbarEntry`,
 `ToolbarItem`, `MarkdownCodec`, `Suggester`, `SuggestionItem`,
-`SuggestionQuery` and `SuggestionState`.
+`SuggestionQuery`, `SuggestionRow`, `SuggestionState`, `ColumnAlign`,
+`RemoteCaret` and `DomFocusEvent`.
 
 ## Example
 
 `npm run examples:rich-text-editor` shows a notes pane — toolbar, markdown
 source beside it, a stock ProseMirror decoration plugin, and a `/` block
-menu — next to a chat composer that grows as it is typed in, sends on
-Enter, and mentions people with `@` and channels with `#`.
+menu with a Table row — next to a chat composer that grows as it is typed
+in, sends on Enter, mentions people with `@` — each row drawn by the app,
+a badge of initials beside the name — and names channels with `#`.

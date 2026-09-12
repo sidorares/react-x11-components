@@ -29,7 +29,8 @@
 //   contenteditable gives ProseMirror.
 import { splitBlock } from 'prosemirror-commands';
 import { redo, redoDepth, undo, undoDepth } from 'prosemirror-history';
-import type { Node as PMNode, Slice } from 'prosemirror-model';
+import { Slice } from 'prosemirror-model';
+import type { Node as PMNode } from 'prosemirror-model';
 import {
   AllSelection,
   NodeSelection,
@@ -66,7 +67,16 @@ import { afterLayout, cancelAfterLayout } from '../internal/timers.js';
 import type { LayoutTick } from '../internal/timers.js';
 import { scaleOf } from '../internal/units.js';
 import { parseFromClipboard, serializeForClipboard } from './clipboard.js';
-import type { ClipboardView } from './clipboard.js';
+import type { ClipboardContent, ClipboardView } from './clipboard.js';
+import { caretOf } from './collab.js';
+import {
+  domDrop,
+  dropTransaction,
+  filesSlice,
+  SLICE_TYPE,
+  textOf,
+} from './drag.js';
+import type { DragPayload, DropAnswer, DropLike } from './drag.js';
 import type { InlineDecoration, InlineWidget, RunStyle } from './inline.js';
 import { BlockKeys } from './keys.js';
 import { primaryModifierOf, toDomKeyEvent } from './keymap.js';
@@ -74,6 +84,7 @@ import type { DomKeyEvent, PrimaryModifier } from './keymap.js';
 import { styleFromCSS } from './look.js';
 import type { EditorHost, EditorTextNode, RichEditorNode } from './nodes.js';
 import { KeyedStore } from './store.js';
+import type { BlockWindow } from './virtual.js';
 
 type KeyEvent = Parameters<EditorHost['keyDown']>[0];
 type ComposeEvent = Parameters<EditorHost['composition']>[0];
@@ -128,6 +139,18 @@ export type MoveUnit =
   | 'pageUp'
   | 'pageDown';
 
+/** Motions made from where the caret is drawn — a line, a page, a
+ *  line's ends — which wait for its block when a long document has it
+ *  scrolled out of the window. */
+const LAID_OUT: ReadonlySet<MoveUnit> = new Set<MoveUnit>([
+  'up',
+  'down',
+  'pageUp',
+  'pageDown',
+  'lineStart',
+  'lineEnd',
+]);
+
 interface Drag {
   anchor: number;
   unit: 'char' | 'word' | 'block';
@@ -147,9 +170,17 @@ interface Hit {
   atom: boolean;
 }
 
+/** A collaborator's caret in a block: an offset inside it, a colour. */
+interface RemoteCaretAt {
+  pos: number;
+  color: string;
+}
+
 const XK_TAB = 0xff09;
 const XK_ISO_LEFT_TAB = 0xfe20;
 const XK_ESCAPE = 0xff1b;
+
+const NO_CARETS: readonly { index: number; color: string }[] = [];
 
 // --- text helpers ----------------------------------------------------------
 
@@ -307,7 +338,19 @@ export class RichEditorView implements EditorHost, ClipboardView {
    *  a press can land on that is not text. */
   private boxes = new Map<string, DrawnNode>();
   private scroller: ScrollableNode | null = null;
+  /** A long document's window (./virtual.ts): which top-level blocks are
+   *  drawn, and how one that is not gets drawn. Null while all of them
+   *  are. */
+  private blockWindow: BlockWindow | null = null;
   private pluginViews: PluginView[] = [];
+  /** Whether the component has asked for plugin views
+   *  (`mountPluginViews`), and whether they are made now: they live while
+   *  the root element does. */
+  private pluginViewsWanted = false;
+  private pluginViewsLive = false;
+  /** Collaborators' carets by block key, from widgets `remoteCaret`
+   *  built (./collab.ts). */
+  private carets = new Map<string, readonly RemoteCaretAt[]>();
   private focused = false;
   private preedit: string | null = null;
   private goalX: number | null = null;
@@ -315,6 +358,24 @@ export class RichEditorView implements EditorHost, ClipboardView {
   private drag: Drag | null = null;
   private dragScroll: TimerId = null;
   private pointer: { x: number; y: number } | null = null;
+  /** A press on the selection, until the pointer either comes up there —
+   *  a click, which places the caret — or core starts a drag from it. */
+  private dragCandidate: { pos: number; collapse: boolean } | null = null;
+  /** What is being dragged out of this editor — prosemirror-view's
+   *  `dragging` — the range it came from, and its clipboard form once
+   *  something asked for it. */
+  private draggingNow: {
+    slice: Slice;
+    move: boolean;
+    from: number;
+    to: number;
+    content: ClipboardContent | null;
+    /** Whether the copy modifier was down at the drag's last motion: a
+     *  drop in this app carries no modifiers of its own. */
+    copy: boolean;
+  } | null = null;
+  /** The block the drop caret is drawn in. */
+  private dropKey: string | null = null;
   private tabEscapes = false;
   /** Above zero while user input is being handled — a read-only editor
    *  drops the document changes that input would make, and only those. */
@@ -336,7 +397,10 @@ export class RichEditorView implements EditorHost, ClipboardView {
     this.config = config;
     this.keys = new BlockKeys(state.doc);
     this.recomputeDecorations();
-    this.createPluginViews();
+    // Plugin views wait for `mountPluginViews`: a browser's EditorView has
+    // its DOM from its constructor, and plugin views are written to find
+    // `view.dom` there — y-prosemirror's cursor plugin listens on it at once.
+    // Here the root element does not exist until React has created it.
   }
 
   // --- the EditorView surface ----------------------------------------------
@@ -368,8 +432,20 @@ export class RichEditorView implements EditorHost, ClipboardView {
     return this.root as unknown as DrawnNode | null;
   }
 
-  get dragging(): null {
-    return null;
+  /** prosemirror-view's `dragging`: the slice a drag out of this editor
+   *  carries, and whether a drop back in here moves it — while there is
+   *  one. */
+  get dragging(): { slice: Slice; move: boolean } | null {
+    const d = this.draggingNow;
+    return d && { slice: d.slice, move: d.move };
+  }
+
+  /** prosemirror-view's own view description, internal there, which a
+   *  plugin reads as "is the view drawn?": y-prosemirror's cursor plugin
+   *  publishes no collaborator's move without it. The root element,
+   *  while there is one. */
+  get docView(): unknown {
+    return this.root;
   }
 
   /** The backend's shortcut modifier — Cmd on macOS, Ctrl on X11. */
@@ -504,6 +580,29 @@ export class RichEditorView implements EditorHost, ClipboardView {
     if (trs.some((tr) => tr.scrolledIntoView)) this.scheduleScroll();
   }
 
+  /**
+   * Make the plugins' views, once the root element exists: the component
+   * calls this after its first commit. A browser's EditorView makes them
+   * in its constructor, where it already has its DOM, and a plugin view
+   * is written to find `view.dom` there; here that is the root element.
+   */
+  mountPluginViews(): void {
+    this.pluginViewsWanted = true;
+    if (this.root) this.startPluginViews();
+  }
+
+  private startPluginViews(): void {
+    if (this.pluginViewsLive || this.destroyedFlag) return;
+    this.pluginViewsLive = true;
+    this.createPluginViews();
+  }
+
+  private stopPluginViews(): void {
+    for (const view of this.pluginViews) view.destroy?.();
+    this.pluginViews = [];
+    this.pluginViewsLive = false;
+  }
+
   private createPluginViews(): void {
     for (const plugin of [
       ...(this.direct.plugins ?? []),
@@ -515,9 +614,9 @@ export class RichEditorView implements EditorHost, ClipboardView {
   }
 
   private resetPluginViews(): void {
-    for (const view of this.pluginViews) view.destroy?.();
-    this.pluginViews = [];
-    this.createPluginViews();
+    const live = this.pluginViewsLive;
+    this.stopPluginViews();
+    if (live) this.startPluginViews();
   }
 
   destroy(): void {
@@ -536,10 +635,14 @@ export class RichEditorView implements EditorHost, ClipboardView {
   attachRoot(node: RichEditorNode): void {
     this.root = node;
     this.primary = primaryModifierOf(node.app);
+    if (this.pluginViewsWanted) this.startPluginViews();
   }
 
   detachRoot(node: RichEditorNode): void {
     if (this.root !== node) return;
+    // the plugin views were made for this element, so they go before it
+    // does: a plugin view's `destroy` reads `view.dom` too
+    this.stopPluginViews();
     this.root = null;
     this.stopBlink();
   }
@@ -572,6 +675,11 @@ export class RichEditorView implements EditorHost, ClipboardView {
   /** The scrolling viewport the document is in. */
   attachScroller(node: ScrollableNode | null): void {
     this.scroller = node;
+  }
+
+  /** A long document's window, while it draws only some blocks. */
+  attachWindow(window: BlockWindow | null): void {
+    this.blockWindow = window;
   }
 
   // --- selection, painted ------------------------------------------------------
@@ -635,6 +743,13 @@ export class RichEditorView implements EditorHost, ClipboardView {
         this.stopBlink();
       }
     }
+
+    const carets = this.carets.get(key);
+    text.setRemoteCarets(
+      carets
+        ? carets.map((c) => ({ index: map.toDisplay(c.pos), color: c.color }))
+        : NO_CARETS,
+    );
   }
 
   /** Place the whole selection: every block it touches, every block it
@@ -730,6 +845,7 @@ export class RichEditorView implements EditorHost, ClipboardView {
       return b;
     };
     const found: Decoration[] = [];
+    const carets = new Map<string, RemoteCaretAt[]>();
     this.someProp('decorations', (f) => {
       const source = f(this.state);
       if (source) collectDecorations(source, found);
@@ -745,7 +861,21 @@ export class RichEditorView implements EditorHost, ClipboardView {
       if (typed.widget) {
         const spec = deco.spec as
           { text?: unknown; run?: RunStyle; side?: number } | undefined;
-        if (typeof spec?.text !== 'string' || spec.text === '') continue;
+        if (typeof spec?.text !== 'string' || spec.text === '') {
+          // no text to draw it with — unless it is a collaborator's caret
+          const caret = caretOf(deco, this.asEditorView);
+          const $at = caret ? doc.resolve(deco.from) : null;
+          const key =
+            $at && $at.parent.isTextblock && $at.depth > 0
+              ? this.keys.keyAt($at.before())
+              : undefined;
+          if (caret && $at && key) {
+            let list = carets.get(key);
+            if (!list) carets.set(key, (list = []));
+            list.push({ pos: $at.parentOffset, color: caret.color });
+          }
+          continue;
+        }
         const $pos = doc.resolve(deco.from);
         if (!$pos.parent.isTextblock || $pos.depth === 0) continue;
         const key = this.keys.keyAt($pos.before());
@@ -820,6 +950,19 @@ export class RichEditorView implements EditorHost, ClipboardView {
         changed = true;
       }
     }
+
+    // collaborators' carets go to their blocks' elements the way the
+    // editor's own caret does: set on the node, nothing re-rendered
+    const moved: string[] = [];
+    for (const key of new Set([...this.carets.keys(), ...carets.keys()])) {
+      if (
+        JSON.stringify(this.carets.get(key) ?? []) !==
+        JSON.stringify(carets.get(key) ?? [])
+      )
+        moved.push(key);
+    }
+    this.carets = carets;
+    for (const key of moved) this.syncBlock(key);
     return changed;
   }
 
@@ -832,6 +975,20 @@ export class RichEditorView implements EditorHost, ClipboardView {
   ): { x: number; y: number; width: number; height: number } | null {
     const r = (node as DrawnNode).getClientRects()[0];
     return r && (r.width > 0 || r.height > 0) ? r : null;
+  }
+
+  /** The top-level block `pos` is in, by index — what a long
+   *  document's window draws or not. */
+  private topIndexOf(pos: number): number {
+    const { doc } = this.state;
+    const $pos = doc.resolve(Math.max(0, Math.min(pos, doc.content.size)));
+    return Math.max(0, Math.min($pos.index(0), doc.childCount - 1));
+  }
+
+  /** Whether the block that draws `pos` is laid out: always, but in a
+   *  long document scrolled away from it (./virtual.ts). */
+  private isDrawnAt(pos: number): boolean {
+    return !this.blockWindow || this.blockWindow.drawn(this.topIndexOf(pos));
   }
 
   /** The nearest block to a point: the one it is in, or the one closest
@@ -1063,6 +1220,15 @@ export class RichEditorView implements EditorHost, ClipboardView {
    */
   move(unit: MoveUnit, extend: boolean): boolean {
     const { doc, selection: sel } = this.state;
+    // the caret's block scrolled out of a long document's window: it is
+    // drawn again first, and the motion made from it once it is laid out
+    if (LAID_OUT.has(unit) && !this.isDrawnAt(sel.head)) {
+      const head = sel.head;
+      this.blockWindow?.reveal(this.topIndexOf(head), () => {
+        if (this.state.selection.head === head) this.move(unit, extend);
+      });
+      return true;
+    }
     let target: Selection | null = null;
     let head: number | null = null;
     let atom = false;
@@ -1421,6 +1587,7 @@ export class RichEditorView implements EditorHost, ClipboardView {
    *  took it — the component then prevents core's default action. */
   mouseDown(ev: X11MouseEvent): boolean {
     this.goalX = null;
+    this.dragCandidate = null;
     const hit = this.hit(ev.x, ev.y);
     if (!hit) return false;
     const { doc } = this.state;
@@ -1445,6 +1612,16 @@ export class RichEditorView implements EditorHost, ClipboardView {
     if (ev.button !== 1) return false;
     const detail = ev.detail || 1;
     if (this.clickHandlers(hit, ev, detail)) return true;
+    // a press on the selection may be the start of dragging it: it is
+    // left to core, which arms a drag on the root, and settled when the
+    // pointer comes up — a click — or when core starts the drag
+    if (detail === 1 && !ev.shiftKey && this.onSelection(hit)) {
+      this.dragCandidate = {
+        pos: hit.pos,
+        collapse: !(sel instanceof NodeSelection),
+      };
+      return false;
+    }
     if (hit.atom) {
       const node = doc.nodeAt(hit.pos);
       if (node && NodeSelection.isSelectable(node)) {
@@ -1535,6 +1712,18 @@ export class RichEditorView implements EditorHost, ClipboardView {
   }
 
   mouseUp(): void {
+    // a press on the selection that never became a drag was a click: the
+    // caret goes where it was — a selected block stays selected
+    const press = this.dragCandidate;
+    this.dragCandidate = null;
+    if (press?.collapse) {
+      const { doc } = this.state;
+      this.dispatch(
+        this.state.tr.setSelection(
+          Selection.near(doc.resolve(Math.min(press.pos, doc.content.size))),
+        ),
+      );
+    }
     if (!this.drag) return;
     this.drag = null;
     stopInterval(this.dragScroll);
@@ -1606,6 +1795,218 @@ export class RichEditorView implements EditorHost, ClipboardView {
     const $pos = this.state.doc.resolve(pos);
     if (!$pos.parent.isTextblock) return [pos, pos];
     return [$pos.start(), $pos.end()];
+  }
+
+  // --- drag and drop --------------------------------------------------------------
+  //
+  // The gesture is core's; these answer its events on the root, and
+  // ./drag.ts has the document's half. A drag starts only from a press on the
+  // selection — `mouseDown` leaves that press to core, which arms a drag on
+  // the draggable root — and a drop is read the way a paste is.
+
+  /** Whether a press lands on what is selected: inside a text selection, or
+   *  on the block a node selection holds. */
+  private onSelection(hit: Hit): boolean {
+    const sel = this.state.selection;
+    if (sel.empty) return false;
+    if (sel instanceof NodeSelection) return hit.pos === sel.from;
+    return hit.pos > sel.from && hit.pos < sel.to;
+  }
+
+  /** Core is starting a drag from the root. It is the selection's when the
+   *  press was on the selection; false has the drag cancelled, and the
+   *  gesture goes on as mouse events. */
+  dragStart(): boolean {
+    const press = this.dragCandidate;
+    this.dragCandidate = null;
+    const sel = this.state.selection;
+    if (!press || sel.empty) return false;
+    this.draggingNow = {
+      slice: sel.content(),
+      move: this.editable,
+      from: sel.from,
+      to: sel.to,
+      content: null,
+      copy: false,
+    };
+    return true;
+  }
+
+  private dragContent(): ClipboardContent | null {
+    const d = this.draggingNow;
+    return d ? (d.content ??= serializeForClipboard(this, d.slice)) : null;
+  }
+
+  /** What a drag out of the editor offers another application: what a copy
+   *  would — its text, and its HTML. */
+  dragText(): string {
+    return this.dragContent()?.text ?? '';
+  }
+
+  dragHTML(): string {
+    return this.dragContent()?.html ?? '';
+  }
+
+  /** …and a drop in this app, the slice itself. */
+  dragPayload(): DragPayload | null {
+    const d = this.draggingNow;
+    return d ? { slice: d.slice, view: this, copy: d.copy } : null;
+  }
+
+  /** Each motion of a drag out of this editor: whether the copy
+   *  modifier — Ctrl, or Option on the Mac backend — is down. Core's drop
+   *  in this app arrives with no modifiers, so the drag carries them. */
+  dragMoved(ctrlKey: boolean, altKey: boolean): void {
+    if (this.draggingNow)
+      this.draggingNow.copy = this.primary === 'meta' ? altKey : ctrlKey;
+  }
+
+  /** The drag out of this editor ended. A move that another editor or
+   *  application took takes the content out of here; a drop back in here
+   *  has done that already. */
+  dragEnd(action: string | null, dropped: boolean): void {
+    const d = this.draggingNow;
+    this.draggingNow = null;
+    this.setDropAt(null);
+    if (!d || !dropped || action !== 'move' || !this.editable) return;
+    const sel = this.state.selection;
+    // only what was dragged: a document that has moved on keeps it
+    if (sel.from !== d.from || sel.to !== d.to) return;
+    this.dispatch(
+      this.state.tr
+        .deleteSelection()
+        .scrollIntoView()
+        .setMeta('uiEvent', 'drop'),
+    );
+  }
+
+  /** A drag over the editor at logical window `x`, `y`: a caret drawn where
+   *  it would go in. False when nothing is taken here. */
+  dragOver(x: number, y: number): boolean {
+    if (!this.editable) {
+      this.setDropAt(null);
+      return false;
+    }
+    const hit = this.hit(x, y);
+    this.setDropAt(hit && !hit.atom ? hit.pos : null);
+    return true;
+  }
+
+  dragLeave(): void {
+    this.setDropAt(null);
+  }
+
+  /** The drop caret, on the block a drop would go into: its text element
+   *  draws it the way it draws the caret, re-rendering nothing. */
+  private setDropAt(pos: number | null): void {
+    let key: string | null = null;
+    let index = 0;
+    if (pos !== null) {
+      const { doc } = this.state;
+      const $pos = doc.resolve(Math.max(0, Math.min(pos, doc.content.size)));
+      const at =
+        $pos.parent.isTextblock && $pos.depth > 0
+          ? this.keys.keyAt($pos.before())
+          : undefined;
+      const map = at ? this.texts.get(at)?.map : null;
+      if (at && map) {
+        key = at;
+        index = map.toDisplay($pos.parentOffset);
+      }
+    }
+    if (this.dropKey && this.dropKey !== key)
+      this.texts.get(this.dropKey)?.setDropCaret(null, '');
+    this.dropKey = key;
+    if (key) this.texts.get(key)?.setDropCaret(index, this.config.colors.caret);
+  }
+
+  /**
+   * A drop on the editor: read, offered to `handleDrop`, and put in where it
+   * fits — prosemirror-view's drop. Answers the action to report to the
+   * source, or null to refuse it: at once for a drag from this app, which
+   * core settles before the source's `onDragEnd` runs, and after a read for
+   * HTML from another application.
+   */
+  drop(ev: DropLike): DropAnswer | Promise<DropAnswer> {
+    this.setDropAt(null);
+    if (!this.editable || this.destroyedFlag) return null;
+    const payload = ev.items?.[SLICE_TYPE] as DragPayload | null | undefined;
+    if (payload?.slice) return this.dropSlice(ev, payload);
+    if (!ev.files.length && ev.types.includes('text/html')) {
+      return ev.getData('text/html').then(
+        (got) => this.dropRead(ev, textOf(got)),
+        () => this.dropRead(ev, null),
+      );
+    }
+    return this.dropRead(ev, null);
+  }
+
+  /** A slice out of an editor in this app — this one, or another. */
+  private dropSlice(ev: DropLike, payload: DragPayload): DropAnswer {
+    const hit = this.hit(ev.x, ev.y);
+    if (!hit) return null;
+    const copy =
+      payload.copy ?? (this.primary === 'meta' ? ev.altKey : ev.ctrlKey);
+    const own = payload.view === this;
+    const moved = own && !copy && !!this.draggingNow?.move;
+    let slice = payload.slice;
+    this.someProp('transformPasted', (f) => {
+      slice = f(slice, this.asEditorView, false);
+    });
+    // a drop back in here is the whole of the move: the drag's end has
+    // nothing left to take out
+    if (own) this.draggingNow = null;
+    const answer: DropAnswer = copy ? 'copy' : 'move';
+    if (
+      this.someProp('handleDrop', (f) =>
+        f(this.asEditorView, domDrop(ev, null, null), slice, moved),
+      )
+    )
+      return answer;
+    this.insertDrop(slice, hit.pos, moved);
+    return answer;
+  }
+
+  /** Text, HTML, links or files from another application — or from an
+   *  element of this one that is not an editor. */
+  private dropRead(ev: DropLike, html: string | null): DropAnswer {
+    if (this.destroyedFlag || !this.editable) return null;
+    const hit = this.hit(ev.x, ev.y);
+    if (!hit) return null;
+    const $at = this.state.doc.resolve(hit.pos);
+    const files = ev.files;
+    // with files on offer, `text` is the URI list itself
+    const text = files.length ? null : (ev.text ?? null);
+    const slice =
+      files.length && !html
+        ? filesSlice(this.state.schema, files, $at)
+        : parseFromClipboard(this, text, html, false, $at);
+    if (
+      this.someProp('handleDrop', (f) =>
+        f(
+          this.asEditorView,
+          domDrop(ev, html, text),
+          slice ?? Slice.empty,
+          false,
+        ),
+      )
+    )
+      return 'copy';
+    if (!slice) return null;
+    return this.insertDrop(slice, hit.pos, false) ? 'copy' : null;
+  }
+
+  private insertDrop(slice: Slice, at: number, moved: boolean): boolean {
+    const tr = dropTransaction(this.state, slice, at, moved);
+    if (!tr) return false;
+    this.userInput++;
+    try {
+      this.dispatch(tr.scrollIntoView());
+    } finally {
+      this.userInput--;
+    }
+    this.focus();
+    return true;
   }
 
   /** Right-click: core's standard edit menu, with the verbs this editor has.
@@ -1776,7 +2177,16 @@ export class RichEditorView implements EditorHost, ClipboardView {
     const box = this.scroller;
     const viewport = box?.getClientRects()[0];
     if (!box || !viewport) return;
-    const r = this.coordsAtPos(this.state.selection.head);
+    const head = this.state.selection.head;
+    if (!this.isDrawnAt(head)) {
+      // scrolled out of a long document's window: its block is drawn
+      // first, and the caret brought into view once it is laid out
+      this.blockWindow?.reveal(this.topIndexOf(head), () =>
+        this.scrollToSelection(),
+      );
+      return;
+    }
+    const r = this.coordsAtPos(head);
     const margin = 8;
     let dy = 0;
     if (r.top < viewport.y + margin) dy = r.top - viewport.y - margin;

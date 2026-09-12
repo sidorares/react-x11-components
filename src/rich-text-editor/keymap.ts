@@ -63,6 +63,7 @@ import {
   splitItem,
   toggleTaskList,
 } from './commands.js';
+import { hasTables, tableRepair } from './tables.js';
 
 // --- the event ---------------------------------------------------------------
 
@@ -297,6 +298,8 @@ export function defaultPlugins(
       keymap({ 'Mod-z': undo, 'Shift-Mod-z': redo, 'Mod-y': redo }),
     );
   }
+  // every table kept rectangular, so the table commands can reason about it
+  if (hasTables(schema)) out.push(tableRepair());
   out.push(keymap(baseKeymap));
   return out;
 }
