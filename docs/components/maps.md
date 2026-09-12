@@ -268,7 +268,7 @@ looking for the missing prop:
 | `sources`          | Where tiles come from, drawn in order. Empty draws the style's background, which is what a map with only markers on it wants.                                                                                                                                                             |
 | `mapStyle`         | How to draw them. `shortbreadStyle()` in the theme's light or dark palette by default. Named `mapStyle` so that `style` stays react-x11's.                                                                                                                                                |
 | `renderer`         | `'auto'` (the default): GL where this connection has direct GL, the retained renderer everywhere else. `'gl'` or `'retained'` pins one. See "Renderers".                                                                                                                                  |
-| `onRendererChange` | `(renderer, reason)`: the map landed on a renderer it did not ask for, or changed renderer. `reason` is `'no-direct-gl'`, `'capability'`, `'gl-failed'` or `'forced'`.                                                                                                                    |
+| `onRendererChange` | `(renderer, reason)`: the map landed on a renderer it did not ask for, or changed renderer. `reason` is `'no-direct-gl'`, `'gl-failed'` or `'forced'`.                                                                                                                                    |
 | `onError`          | GL failed on a map that asked for `renderer="gl"`, which never falls back.                                                                                                                                                                                                                |
 | `camera`           | `{ center: { lon, lat }, zoom }`, controlled. Leave it out and the **element** owns it — see "The camera" below.                                                                                                                                                                          |
 | `defaultCamera`    | Where an element-owned camera starts. Read once.                                                                                                                                                                                                                                          |
@@ -297,7 +297,7 @@ looking for the missing prop:
 | `onFrame`          | Called once per painted frame with `MapFrameStats` — what it cost, how many tiles are still sharpening, how many failed, and whether a style change is still being drawn behind the old one. `renderer` says which renderer drew it, and a GL frame carries its GPU-side figures in `gl`. |
 | `onTileError`      | Called per failed tile load, with whatever the source threw. Worth wiring up first: a map whose tiles fail looks identical to one still loading.                                                                                                                                          |
 | `style`            | react-x11's, on the box around the pane. Fills its parent unless you give it a height or a `flexGrow`.                                                                                                                                                                                    |
-| `children`         | Anything absolutely positioned over the map — a legend, a control panel. Over a GL map, only on a core that draws a surface's children; see "Renderers".                                                                                                                                  |
+| `children`         | Anything absolutely positioned over the map — a legend, a control panel. Over a GL map, drawn above the surface; see "Renderers".                                                                                                                                                         |
 
 ## Markers
 
@@ -437,7 +437,7 @@ it — across a fall back from GL too — so a ref taken once keeps working.
   surfaces. It runs wherever a 2D context does, and it is what a window
   capture sees.
 
-`renderer="auto"`, the default, chooses GL when all of these hold:
+`renderer="auto"`, the default, chooses GL when both of these hold:
 
 1. neither the `renderer` prop nor `REACT_X11_MAP_RENDERER` in the
    environment says otherwise;
@@ -445,9 +445,7 @@ it — across a fall back from GL too — so a ref taken once keeps working.
    `useSupports('shaders')`. On the Cocoa backend it does. **On X11 it does
    only if the app asked**, with `createRoot({ glPolicy: 'auto' })` on a DRI3
    or Apple-DRI server: X11's default policy is indirect GLX, which has no
-   shaders, and a map cannot raise its connection's policy after the fact;
-3. nothing the map uses is missing from GL — today only `children`, on a
-   core that cannot draw over a GL surface.
+   shaders, and a map cannot raise its connection's policy after the fact.
 
 Otherwise it chooses the retained renderer, and it moves a map there if GL
 fails at run time — no surface, no context, a shader that will not build —
@@ -479,12 +477,10 @@ A prop only one renderer reads is accepted by both and ignored by the other,
 so switching renderers is never a type error and never a rewrite.
 
 **Children over a GL map.** A `<glarea>` is stacked above every 2D thing in
-its window, so a legend beside it would be under it. On a core that draws a
-surface's children above it — react-x11 2.13 and later,
-`useSupports('glOverlay')` — `<Map>` puts its children inside the GL surface
-instead; on X11 that overlay is opaque, so give a legend a background of its
-own. On an older core `'auto'` keeps a map with children on the retained
-renderer, and says so once in development.
+its window, so a legend beside it would be under it. `<Map>` puts its
+children inside the GL surface instead, and core draws a surface's children
+above it (`useSupports('glOverlay')`) — on X11 that overlay is opaque, so
+give a legend a background of its own.
 
 ## The decisions
 

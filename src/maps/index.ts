@@ -28,7 +28,6 @@ import type {} from 'react-x11/jsx-runtime';
 import { DEFAULT_CAMERA, MapController } from './controller.js';
 import { ELEMENT, MapViewNode, SELF_DAMAGED_PROPS } from './node.js';
 import {
-  capabilityBlockers,
   chooseRenderer,
   glRendererModule,
   loadGlRenderer,
@@ -189,41 +188,21 @@ interface PaneProps {
 
 /**
  * `renderer="auto"`: GL where this connection draws through the direct
- * backend and nothing the map uses is missing from GL, the retained renderer
- * everywhere else — `./renderer.ts` is the decision, and this is where it
- * reads the connection. Its own component so that a map that asked for a
- * renderer by name never asks the connection: on the Cocoa backend the
- * question is a GL runtime brought up to answer it.
+ * backend, the retained renderer everywhere else — `./renderer.ts` is the
+ * decision, and this is where it reads the connection. Its own component so
+ * that a map that asked for a renderer by name never asks the connection: on
+ * the Cocoa backend the question is a GL runtime brought up to answer it.
  */
 function AutoPane(props: PaneProps & { failed: boolean }): ReactElement {
   const { map } = props;
   const app = useApp();
   const shaders = useSupports('shaders');
   const probing = useDirectGlProbe(app, shaders);
-  const blockers = capabilityBlockers(map, { glOverlay: useGlOverlay() });
   const choice = chooseRenderer({
     requested: 'auto',
     shaders,
     probing,
-    blockers,
     failed: props.failed,
-  });
-  const warned = useRef(false);
-  useEffect(() => {
-    if (choice.reason !== 'capability' || warned.current) return;
-    warned.current = true;
-    const g = globalThis as {
-      process?: { env?: Record<string, string | undefined> };
-      console?: { warn(message: string): void };
-    };
-    if (g.process?.env?.NODE_ENV === 'production') return;
-    g.console?.warn(
-      `@react-x11/components: <Map renderer="auto"> is drawing through the ` +
-        `retained renderer because of ${blockers.map((b) => `\`${b}\``).join(', ')}. ` +
-        'A GL surface is stacked above every 2D thing in its window, so a ' +
-        'map with children would hide them; renderer="gl" draws through GL ' +
-        'anyway, under them.',
-    );
   });
   return h(MapPane, {
     renderer: choice.renderer,
@@ -269,20 +248,6 @@ function useDirectGlProbe(app: unknown, shaders: boolean): boolean {
 }
 
 /**
- * Whether this core draws a `<glarea>`'s children above its surface —
- * `useSupports('glOverlay')`, react-x11#546. A core from before it throws
- * on the name rather than answering, and a throw is a no; one core answers
- * the same way on every render, so the hooks it calls keep their order.
- */
-function useGlOverlay(): boolean {
-  try {
-    return useSupports('glOverlay' as Parameters<typeof useSupports>[0]);
-  } catch {
-    return false;
-  }
-}
-
-/**
  * The pane, drawn by the renderer chosen: the `<mapview>` element, the GL
  * renderer once its module has loaded, or — while the connection's answer
  * or the module is on its way — a box in the style's background. Whichever
@@ -296,18 +261,17 @@ function MapPane(
 ): ReactElement {
   const { renderer, reason, map, controller } = props;
   const theme = useTheme();
-  const overlay = useGlOverlay();
+  const overlay = useSupports('glOverlay');
 
-  // `onRendererChange`: when the map lands somewhere it did not ask for,
-  // and whenever it changes renderer after that.
+  // `onRendererChange`: whenever the map lands somewhere it did not ask for
+  // — its first renderer, or the one it falls back to.
   const reported = useRef<MapRenderer | null>(null);
   useEffect(() => {
     if (renderer === 'pending') return;
     const before = reported.current;
     reported.current = renderer;
-    if (before === renderer) return;
-    if (before === null && reason === null) return;
-    map.onRendererChange?.(renderer, reason ?? 'capability');
+    if (before === renderer || reason === null) return;
+    map.onRendererChange?.(renderer, reason);
   }, [renderer, reason]);
 
   const wantGl = renderer === 'gl';
@@ -341,9 +305,9 @@ function MapPane(
   // it, rather than its child: a registered element's own drawing happens
   // *after* `super.paint` has painted its children, so anything mounted
   // inside `<mapview>` would be painted over by the map. `<Flow>` makes the
-  // same arrangement for the same reason. The one exception is a GL pane
-  // on a core that draws a surface's children above it: there they go
-  // inside the surface, since a sibling is under it.
+  // same arrangement for the same reason. The one exception is a GL pane:
+  // a sibling is under its surface, so there they go inside the surface,
+  // whose children core draws above it.
   const over = (pane: ReactElement, children: ReactNode): ReactElement =>
     h(React.Fragment, null, pane, children);
   if (renderer === 'retained') {
