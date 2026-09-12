@@ -1,5 +1,5 @@
-// `<GlMap>`, the GL map proof of concept: every frame drawn from vector
-// tiles on the GPU, with no bitmap cache anywhere.
+// `<Map renderer="gl">`: every frame drawn from vector tiles on the GPU,
+// with no bitmap cache anywhere, and the GL renderer's own levers on a bar.
 //
 //   npm run examples:maps-gl                     # London: corpus tiles, else the network
 //   npm run examples:maps-gl -- tokyo --dark     # or manhattan, pacific
@@ -37,15 +37,21 @@ import { useEffect, useRef, useState } from 'react';
 import { Button, createRoot, useTheme } from 'react-x11';
 
 import {
+  Map,
   osmVectorSource,
   project,
   shortbreadStyle,
   unproject,
   worldSize,
 } from '../src/maps/index.js';
-import type { LngLat, MapCamera, MapSource } from '../src/maps/index.js';
-import { GlMap } from '../src/maps/gl/view.js';
-import type { GlMapFrameStats, GlMapHandle } from '../src/maps/gl/view.js';
+import type {
+  LngLat,
+  MapCamera,
+  MapFrameStats,
+  MapGlFrameStats,
+  MapHandle,
+  MapSource,
+} from '../src/maps/index.js';
 import { cachePath } from '../scripts/bench/tiles.js';
 
 const PLACES: Record<string, { name: string; centre: LngLat; zoom: number }> = {
@@ -101,8 +107,25 @@ const source: MapSource = {
   },
 };
 const sources = [source];
-const light = shortbreadStyle();
-const darkStyle = shortbreadStyle({ dark: true });
+/** The style in each palette, with and without labels — made once each, as
+ *  a style should be: a new style object is a restyle. */
+const STYLES = {
+  light: shortbreadStyle(),
+  dark: shortbreadStyle({ dark: true }),
+  lightPlain: shortbreadStyle({ labels: false }),
+  darkPlain: shortbreadStyle({ dark: true, labels: false }),
+};
+const styleFor = (dark: boolean, labels: boolean) =>
+  labels
+    ? dark
+      ? STYLES.dark
+      : STYLES.light
+    : dark
+      ? STYLES.darkPlain
+      : STYLES.lightPlain;
+
+/** A frame's GL figures, with its tiles and the zoom it was drawn at. */
+type Frame = MapGlFrameStats & { tiles: number; zoom: number };
 const defaultCamera: MapCamera = {
   center: place.centre,
   zoom: Number.isFinite(zoomArg) ? zoomArg : place.zoom,
@@ -142,7 +165,7 @@ function cameraAt(kind: Animation, base: MapCamera, t: number): MapCamera {
   return base;
 }
 
-function summary(frames: GlMapFrameStats[], seconds: number): string {
+function summary(frames: Frame[], seconds: number): string {
   if (frames.length === 0) return 'idle';
   const intervals = frames
     .map((f) => f.interval)
@@ -160,7 +183,7 @@ function summary(frames: GlMapFrameStats[], seconds: number): string {
     `frame p95 ${p95.toFixed(1)} ms`,
     `${last.tiles} tiles`,
     `${(last.instances / 1e6).toFixed(2)}M segments`,
-    `z${last.camera.zoom.toFixed(2)} (level ${last.level})`,
+    `z${last.zoom.toFixed(2)} (level ${last.level})`,
   ];
   if (measured.length > 0) {
     parts.push(
@@ -179,15 +202,14 @@ function summary(frames: GlMapFrameStats[], seconds: number): string {
 
 function App(): React.ReactElement {
   const theme = useTheme();
-  const map = useRef<GlMapHandle>(null);
-  const [animation, setAnimation] = useState<Animation>('still');
+  const map = useRef<MapHandle>(null);
   const [dark, setDark] = useState(args.includes('--dark'));
   const [antialias, setAntialias] = useState(true);
   const [fade, setFade] = useState(0);
   const [budget, setBudget] = useState<(typeof BUDGETS)[number]>(0);
   const [labels, setLabels] = useState(!args.includes('--no-labels'));
   const [status, setStatus] = useState('');
-  const frames = useRef<GlMapFrameStats[]>([]);
+  const frames = useRef<Frame[]>([]);
   const running = useRef({
     kind: 'still' as Animation,
     started: 0,
@@ -209,12 +231,19 @@ function App(): React.ReactElement {
   const start = (kind: Animation): void => {
     const base = map.current?.getCamera() ?? defaultCamera;
     running.current = { kind, started: performance.now(), base };
-    setAnimation(kind);
-    map.current?.invalidate();
+    // The first step: its frame's callback takes the next one, and so on
+    // until Stop. A still map asks for nothing.
+    if (kind !== 'still') map.current?.setCamera(cameraAt(kind, base, 0.001));
   };
 
-  const onFrame = (stats: GlMapFrameStats): void => {
-    frames.current.push(stats);
+  const onFrame = (stats: MapFrameStats): void => {
+    if (stats.gl) {
+      frames.current.push({
+        ...stats.gl,
+        tiles: stats.tiles,
+        zoom: map.current?.getCamera().zoom ?? 0,
+      });
+    }
     const { kind, started, base } = running.current;
     if (kind === 'still') return;
     map.current?.setCamera(
@@ -265,18 +294,18 @@ function App(): React.ReactElement {
             {status || 'drag to pan · wheel or double-click to zoom'}
           </text>
         </box>
-        <GlMap
+        <Map
+          renderer="gl"
           ref={map}
           sources={sources}
-          mapStyle={dark ? darkStyle : light}
+          mapStyle={styleFor(dark, labels)}
           defaultCamera={defaultCamera}
-          frameLoop={animation === 'still' ? 'demand' : 'always'}
           antialias={antialias}
           levelFade={fade}
           adaptive={budget ? { budgetMs: budget } : false}
-          labels={labels}
           buildWorkers={2}
           onFrame={onFrame}
+          onError={(error) => setStatus(`GL failed: ${error.message}`)}
           style={{ flexGrow: 1 }}
         />
       </box>

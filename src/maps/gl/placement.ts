@@ -33,8 +33,15 @@ import type { SymbolLayer } from '../style.js';
 import { TILE_EXTENT } from './buckets.js';
 import { parseColor, premultiplied } from './color.js';
 import type { Rgba } from './color.js';
-import { LABEL_STRIDE, LabelField } from './labels.js';
-import type { GlLabelData } from './labels.js';
+import {
+  LABEL_STRIDE,
+  LEVEL_SNAP,
+  LINE_MARGIN,
+  LabelField,
+  STRAIGHT_FRACTION,
+  estimateWidth,
+} from '../anchors.js';
+import type { GlLabelData } from '../anchors.js';
 import { haloReach } from './text.js';
 import type { AtlasEntry, LabelAtlas } from './text.js';
 
@@ -106,12 +113,6 @@ export interface PlacementStats {
   ms: number;
 }
 
-/** How far a line label's run may depart from straight, as a fraction of
- *  the text's size at this zoom. */
-const STRAIGHT_FRACTION = 0.3;
-/** Run that must remain past each end of a line label, in text heights —
- *  a name that stops exactly at a corner reads as bent. */
-const LINE_MARGIN = 0.5;
 /** Logical pixels between two labels, and the extra a newcomer needs. The
  *  extra is the hysteresis: the label already shown wins a tie by it. */
 const PADDING = 4;
@@ -120,8 +121,6 @@ const NEW_PADDING = 3;
 const EDGE = 6;
 /** How long a label takes to appear or leave. */
 export const FADE_MS = 220;
-/** Radians from level at which a line label is set level, on whole pixels. */
-const SNAP = 0.03;
 /** How near a new anchor must be, in label heights, to a shown label of
  *  the same name to be that label — across a level change, say. */
 const MATCH = 2;
@@ -571,7 +570,7 @@ export class LabelPlacer {
       // measure it to know.
       if (avail * unit < estimate * 0.35) return null;
     }
-    const level = point || Math.abs(angle) < SNAP;
+    const level = point || Math.abs(angle) < LEVEL_SNAP;
     const a = level ? 0 : angle;
     const clearPx = clear * unit;
     const mx = frame.centerX + (sx - frame.width / 2) / frame.world;
@@ -686,14 +685,6 @@ function compare(a: Candidate, b: Candidate): number {
     a.sx - b.sx ||
     a.sy - b.sy
   );
-}
-
-/** A name's width before it is measured: a lower-ish bound, from how wide
- *  Latin and CJK glyphs run. Only ever used to rule out what cannot fit. */
-export function estimateWidth(text: string, size: number): number {
-  let em = 0;
-  for (const ch of text) em += ch.codePointAt(0)! >= 0x2e80 ? 0.95 : 0.5;
-  return em * size;
 }
 
 /**

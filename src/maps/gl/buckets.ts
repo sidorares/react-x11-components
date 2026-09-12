@@ -38,8 +38,8 @@ import { GeomType, GeometryBuffer } from '../mvt.js';
 import type { FeatureCursor, VectorTile } from '../mvt.js';
 import type { PreparedLayer, PreparedStyle } from '../paint.js';
 import type { MapStyleLayer } from '../style.js';
-import { buildTileLabels } from './labels.js';
-import type { GlLabelData } from './labels.js';
+import { buildTileLabels } from '../anchors.js';
+import type { GlLabelData } from '../anchors.js';
 
 /** Tile units across a tile, after normalisation. */
 export const TILE_EXTENT = 4096;
@@ -51,7 +51,9 @@ export const BREAK = -32768;
 /** Bytes per record, in either stream. */
 export const RECORD_BYTES = 8;
 
-export type DrawKind = 'fill' | 'line';
+/** A `circle` layer's points are line-stream records too, one per point —
+ *  a disc each — with a sentinel after them. */
+export type DrawKind = 'fill' | 'line' | 'circle';
 
 /** What one style layer draws from one tile. */
 export interface LayerDraw {
@@ -92,35 +94,77 @@ export interface GlTileData {
   fillRecords: number;
   /** Indexed by style layer; a hole where this tile has nothing to draw. */
   draws: (LayerDraw | undefined)[];
-  /** Where the tile's labels could go — see `./labels.ts`. */
+  /** Where the tile's labels could go — see `../anchors.ts`. */
   labels?: GlLabelData;
+  /** A raster tile's image — RGBA, not premultiplied, as a source decodes
+   *  it — in place of streams: its own texture, and no style. */
+  raster?: { width: number; height: number; pixels: Uint8Array };
   stats: BucketStats;
+}
+
+/** A raster tile as the store keeps it: its image, and nothing to build. */
+export function rasterTileData(
+  width: number,
+  height: number,
+  pixels: Uint8Array,
+): GlTileData {
+  return {
+    line: new ArrayBuffer(0),
+    lineRecords: 0,
+    fill: new ArrayBuffer(0),
+    fillRecords: 0,
+    draws: [],
+    raster: { width, height, pixels },
+    stats: { features: 0, lineRecords: 0, fillRecords: 0, groups: 0, ms: 0 },
+  };
 }
 
 /** Whether a style layer is one this renderer draws from a tile at all. */
 function drawable(
   layer: MapStyleLayer,
-): layer is Extract<MapStyleLayer, { type: 'fill' | 'line' }> {
-  // Circles are the one geometry type the default styles never use; symbol
-  // layers are labels, which are placed per frame and not bucketed.
+): layer is Extract<MapStyleLayer, { type: DrawKind }> {
+  // Symbol layers are labels, which are placed per frame and not bucketed.
   return (
-    (layer.type === 'fill' || layer.type === 'line') && layer.visible !== false
+    (layer.type === 'fill' ||
+      layer.type === 'line' ||
+      layer.type === 'circle') &&
+    layer.visible !== false
   );
 }
 
 /** `paint.ts`'s rule: a `line` layer takes polygons too — stroking a ring is
- *  what a style asking for an outline means — and a `fill` only polygons. */
-function takes(type: 'fill' | 'line', geometry: GeomType): boolean {
+ *  what a style asking for an outline means — a `fill` only polygons, and a
+ *  `circle` only points. */
+function takes(type: DrawKind, geometry: GeomType): boolean {
+  if (type === 'circle') return geometry === GeomType.Point;
   return type === 'fill'
     ? geometry === GeomType.Polygon
     : geometry === GeomType.LineString || geometry === GeomType.Polygon;
+}
+
+/** Points, a record each, for a circle layer's discs. */
+function emitPoints(
+  line: Stream,
+  coords: Int32Array,
+  from: number,
+  to: number,
+  k: number,
+): void {
+  line.reserve(to - from);
+  for (let i = from; i < to; i++) {
+    const at = line.count;
+    line.i16[at * 4] = coord(coords[i * 2], k);
+    line.i16[at * 4 + 1] = coord(coords[i * 2 + 1], k);
+    line.f32[at * 2 + 1] = 0;
+    line.count++;
+  }
 }
 
 const globals = globalThis as { performance?: { now(): number } };
 const now = (): number => globals.performance?.now() ?? Date.now();
 
 /** A growable stream of 8-byte records, viewed both ways. */
-class Stream {
+export class Stream {
   bytes: ArrayBuffer;
   i16: Int16Array;
   f32: Float32Array;
@@ -158,7 +202,8 @@ function coord(v: number, k: number): number {
   return s < -32767 ? -32767 : s > 32767 ? 32767 : s;
 }
 
-function pushBreak(line: Stream): void {
+/** A line stream's sentinel. The caller has reserved the record. */
+export function pushBreak(line: Stream): void {
   const at = line.count * 4;
   line.i16[at] = BREAK;
   line.i16[at + 1] = BREAK;
@@ -166,7 +211,8 @@ function pushBreak(line: Stream): void {
   line.count++;
 }
 
-function pushFillBreak(fill: Stream): void {
+/** A fill stream's sentinel. The caller has reserved the record. */
+export function pushFillBreak(fill: Stream): void {
   const at = fill.count * 4;
   fill.i16[at] = BREAK;
   fill.i16[at + 1] = BREAK;
@@ -334,9 +380,11 @@ export function buildTileBuckets(
     for (const group of order) {
       let needFill = false;
       let needLine = false;
+      let needPoints = false;
       for (let j = 0; j < active.length; j++) {
         if (!(group.mask & (1 << j))) continue;
         if (active[j].type === 'fill') needFill = true;
+        else if (active[j].type === 'circle') needPoints = true;
         else needLine = true;
       }
       const fillFrom = fill.count;
@@ -347,12 +395,23 @@ export function buildTileBuckets(
         if (buffer.parts === 0) continue;
         features++;
         const polygon = cursor.type === GeomType.Polygon;
+        const points = cursor.type === GeomType.Point;
         for (let part = 0; part < buffer.parts; part++) {
           const from = buffer.starts[part];
           const to = buffer.starts[part + 1];
+          if (points) {
+            if (needPoints) emitPoints(line, buffer.coords, from, to, k);
+            continue;
+          }
           if (needFill && polygon) emitRing(fill, buffer.coords, from, to, k);
           if (needLine) emitLine(line, buffer.coords, from, to, k, polygon);
         }
+      }
+      // A group's points end in a sentinel like a polyline does, so the
+      // instance count of their range is the number of points.
+      if (needPoints && line.count > lineFrom) {
+        line.reserve(1);
+        pushBreak(line);
       }
       group.fill = [fillFrom, fill.count - fillFrom];
       group.line = [lineFrom, line.count - lineFrom];

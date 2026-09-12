@@ -29,12 +29,17 @@ import { RECORD_BYTES, TILE_EXTENT } from './buckets.js';
 import type { GlTileData } from './buckets.js';
 import { parseColor, premultiplied } from './color.js';
 import type { Rgba } from './color.js';
+import { MARKER_INSTANCE } from './markers.js';
+import type { MarkerBatch } from './markers.js';
+import type { OverlayPass } from './overlays.js';
 import { LABEL_INSTANCE } from './placement.js';
 import type { LabelBatch } from './placement.js';
 import {
   ATTRIBUTES,
   BLIT_FRAGMENT,
   BLIT_VERTEX,
+  CIRCLE_FRAGMENT,
+  CIRCLE_VERTEX,
   COVER_FRAGMENT,
   COVER_VERTEX,
   FAN_FRAGMENT,
@@ -43,6 +48,10 @@ import {
   LABEL_VERTEX,
   LINE_FRAGMENT,
   LINE_VERTEX,
+  MARKER_FRAGMENT,
+  MARKER_VERTEX,
+  RASTER_FRAGMENT,
+  RASTER_VERTEX,
   linkProgram,
 } from './shaders.js';
 import type { GL, Program } from './shaders.js';
@@ -84,7 +93,12 @@ export interface RenderFrame {
   scale: number;
   style: PreparedStyle;
   background?: string;
-  tiles: readonly RenderTile[];
+  /**
+   * Each source's tiles, in the map's order — a basemap, then a pyramid
+   * over it. Each is drawn whole, layer-major, before the next, which is
+   * how the retained renderer lays one source's tiles over another's.
+   */
+  sources: readonly (readonly RenderTile[])[];
   /**
    * Leave out the style layers that begin within this many levels of the
    * zoom: a layer whose `minZoom` is above `zoom - detail` is skipped. `0`
@@ -107,6 +121,47 @@ export interface FadeFrame {
   alpha: number;
 }
 
+/**
+ * The attribution: a box of the theme's background, and the text in it —
+ * one label's worth of instance data from the labels' atlas, set level and
+ * on whole pixels.
+ */
+export interface AttributionDraw {
+  /** Device pixels, top-left origin. */
+  box: DeviceRect;
+  /** Premultiplied, its opacity folded in. */
+  boxColor: Rgba;
+  text: LabelBatch;
+}
+
+/** The overlays' bucket, and where its units land this frame. */
+export interface OverlayDraw {
+  data: GlTileData;
+  passes: readonly OverlayPass[];
+  /** Device pixels per unit of the bucket's records. */
+  unit: number;
+  /** Where the bucket's origin lands, in device pixels. */
+  x: number;
+  y: number;
+}
+
+/** What a frame draws over its scene, in this order. */
+export interface RenderExtras {
+  /** A second scene, faded in over the first. */
+  fade?: FadeFrame | null;
+  /** The labels, over both. */
+  labels?: LabelBatch | null;
+  /** The overlays, over the labels — where the retained renderer draws
+   *  them. */
+  overlays?: OverlayDraw | null;
+  /** The markers, over the labels — where the retained renderer draws
+   *  them, a marker being what the user aims at. */
+  markers?: MarkerBatch | null;
+  /** The attribution, over everything — drawn last, as the retained
+   *  renderer draws it. */
+  attribution?: AttributionDraw | null;
+}
+
 export interface GlRenderOptions {
   /**
    * Draw each polygon's boundary as a half-pixel antialiased line after the
@@ -118,7 +173,9 @@ export interface GlRenderOptions {
   antialias?: boolean;
   /**
    * `'nonzero'` (the default) is the rule the retained renderer fills with,
-   * and costs two stencil passes, one per facing. `'evenodd'` is one pass —
+   * and costs two stencil passes, one per facing — or one, on a GL table
+   * with `stencilOpSeparate` (x11-dri 0.8, and the Cocoa backend's), which
+   * counts both facings in the same draw. `'evenodd'` is one pass —
    * and wrong wherever two features of one layer overlap, which real
    * landuse does: the overlap is cut out as if it were a hole.
    */
@@ -149,13 +206,59 @@ export interface GlRenderStats {
   fade: number;
   /** Labels drawn. */
   labels: number;
+  /** Markers drawn. */
+  markers: number;
+  /** Overlay passes drawn — a line with a casing is two. */
+  overlays: number;
 }
+
+/** A stroke: premultiplied colour, half its width in device pixels, and its
+ *  dash pattern as {@link dashPattern} gives one. */
+interface StrokePaint {
+  color: Rgba;
+  half: number;
+  dash: readonly number[] | null;
+}
+
+/** Entries of a dash pattern the line program holds: four dashes. */
+const DASH_ENTRIES = 8;
+
+/**
+ * A style's or an overlay's dash array as the line program draws it: in
+ * device pixels, and read as a canvas reads one — an odd number of entries
+ * is repeated to make an even one, and an entry that is negative or not a
+ * number, or entries that are all zero, make a solid line. A pattern of
+ * more than four dashes is cut to its first four.
+ */
+export function dashPattern(
+  dash: readonly number[] | undefined,
+  scale: number,
+): number[] | null {
+  if (!dash || dash.length === 0) return null;
+  if (dash.some((d) => !Number.isFinite(d) || d < 0)) return null;
+  if (!dash.some((d) => d > 0)) return null;
+  const even = dash.length % 2 === 1 ? [...dash, ...dash] : dash;
+  return even.slice(0, DASH_ENTRIES).map((d) => d * scale);
+}
+
+/** A polygon: its colour, and its edge — the antialiasing, or an
+ *  outline. */
+interface FillPaint {
+  color: Rgba;
+  antialias: boolean;
+  outline: Rgba | null;
+  outlineHalf: number;
+}
+
+const CLEAR: Rgba = [0, 0, 0, 0];
 
 interface TileGpu {
   line: unknown;
   fill: unknown;
   /** One vertex array per range start and stream: `first * 2 + (fill ? 1 : 0)`. */
   vaos: Map<number, unknown>;
+  /** A raster tile's image. */
+  texture: unknown;
   bytes: number;
 }
 
@@ -174,7 +277,13 @@ const now = (): number => globals.performance?.now() ?? Date.now();
  *  newest layers left out — `paint.ts`'s gate, plus adaptive quality's. */
 function drawsAt(layer: MapStyleLayer, zoom: number, detail: number): boolean {
   if (layer.visible === false) return false;
-  if (layer.type !== 'fill' && layer.type !== 'line') return false;
+  if (
+    layer.type !== 'fill' &&
+    layer.type !== 'line' &&
+    layer.type !== 'circle'
+  ) {
+    return false;
+  }
   if (layer.minZoom !== undefined && zoom < layer.minZoom) return false;
   if (layer.maxZoom !== undefined && zoom >= layer.maxZoom) return false;
   if (
@@ -206,6 +315,9 @@ export class GlMapRenderer {
   private readonly _tiles = new Map<GlTileData, TileGpu>();
   private readonly _colors = new Map<string, Rgba | null>();
   private _stencil: boolean | null = null;
+  /** Whether the table sets each facing's stencil operation apart, which
+   *  makes the non-zero winding one pass. */
+  private readonly _separate: boolean;
   /** Offscreen targets by role: `'output'` stands in for a surface with no
    *  stencil buffer, `'fade'` holds the scene being faded in. */
   private readonly _targets = new Map<string, Offscreen>();
@@ -214,6 +326,11 @@ export class GlMapRenderer {
   private _label: Program | null = null;
   private _labelVao: unknown = null;
   private _labelBuffer: unknown = null;
+  private _marker: Program | null = null;
+  private _markerVao: unknown = null;
+  private _markerBuffer: unknown = null;
+  private _circle: Program | null = null;
+  private _raster: Program | null = null;
   private _atlasTexture: unknown = null;
   private _atlasOwner: LabelAtlas | null = null;
   private _stats: GlRenderStats = GlMapRenderer._emptyStats();
@@ -227,12 +344,20 @@ export class GlMapRenderer {
       fillRule: options.fillRule ?? 'nonzero',
       offscreen: options.offscreen ?? 'auto',
     };
+    // Asked of the table itself: an x11-dri from before 0.8 has no such
+    // entry at all, and an entry that is there works.
+    this._separate =
+      'stencilOpSeparate' in (gl as object) &&
+      typeof gl.stencilOpSeparate === 'function';
     this._line = linkProgram(gl, LINE_VERTEX, LINE_FRAGMENT, [
       'u_tile',
       'u_viewport',
       'u_half',
       'u_color',
-      'u_dash',
+      'u_dash_a',
+      'u_dash_b',
+      'u_period',
+      'u_part',
     ]);
     this._fan = linkProgram(gl, FAN_VERTEX, FAN_FRAGMENT, [
       'u_tile',
@@ -277,6 +402,8 @@ export class GlMapRenderer {
       offscreen: false,
       fade: 0,
       labels: 0,
+      markers: 0,
+      overlays: 0,
     };
   }
 
@@ -289,31 +416,34 @@ export class GlMapRenderer {
    */
   estimate(frame: RenderFrame): number {
     const { width, height } = frame;
-    const visible = frame.tiles.map(
-      (t) => scissorOf(t.clip, width, height) !== null,
-    );
     const layers = frame.style.layers;
     const detail = frame.detail ?? 0;
     const edges = frame.edges ?? this._options.antialias;
-    const stencil = this._options.fillRule === 'nonzero' ? 2 : 1;
+    const stencil =
+      this._options.fillRule === 'nonzero' && !this._separate ? 2 : 1;
     let work = 0;
-    for (let i = 0; i < layers.length; i++) {
-      const layer = layers[i].layer;
-      if (!drawsAt(layer, frame.zoom, detail)) continue;
-      let records = 0;
-      for (let t = 0; t < frame.tiles.length; t++) {
-        if (!visible[t]) continue;
-        const draw = frame.tiles[t].data.draws[i];
-        if (!draw) continue;
-        for (let r = 1; r < draw.ranges.length; r += 2) {
-          records += draw.ranges[r] - 1;
+    for (const tiles of frame.sources) {
+      const visible = tiles.map(
+        (t) => scissorOf(t.clip, width, height) !== null,
+      );
+      for (let i = 0; i < layers.length; i++) {
+        const layer = layers[i].layer;
+        if (!drawsAt(layer, frame.zoom, detail)) continue;
+        let records = 0;
+        for (let t = 0; t < tiles.length; t++) {
+          if (!visible[t]) continue;
+          const draw = tiles[t].data.draws[i];
+          if (!draw) continue;
+          for (let r = 1; r < draw.ranges.length; r += 2) {
+            records += draw.ranges[r] - 1;
+          }
         }
-      }
-      if (layer.type === 'fill') {
-        const edge = layer.outlineColor !== undefined || edges ? 1 : 0;
-        work += records * (stencil + edge);
-      } else {
-        work += records;
+        if (layer.type === 'fill') {
+          const edge = layer.outlineColor !== undefined || edges ? 1 : 0;
+          work += records * (stencil + edge);
+        } else {
+          work += records;
+        }
       }
     }
     return work;
@@ -332,11 +462,8 @@ export class GlMapRenderer {
    * not for either level, and a name that dimmed with the level it came
    * from would blink at every level change.
    */
-  render(
-    frame: RenderFrame,
-    fade?: FadeFrame | null,
-    labels?: LabelBatch | null,
-  ): GlRenderStats {
+  render(frame: RenderFrame, extras: RenderExtras = {}): GlRenderStats {
+    const { fade, labels, overlays, markers, attribution } = extras;
     const gl = this._gl;
     const started = now();
     const stats = (this._stats = GlMapRenderer._emptyStats());
@@ -368,7 +495,16 @@ export class GlMapRenderer {
 
     // Even with nothing to draw: the batch's atlas may have rasters waiting
     // for the texture, and until they are in it nothing of theirs can be.
-    if (labels) this._labels(labels, width, height);
+    if (labels) stats.labels = this._labels(labels, width, height);
+
+    if (overlays) stats.overlays = this._overlays(overlays, frame);
+
+    if (markers) stats.markers = this._markers(markers, width, height);
+
+    // Last, over the labels and everything else, which is where the
+    // retained renderer draws it: a licence condition is not something a
+    // street name may cover.
+    if (attribution) this._attribution(attribution, width, height);
 
     if (output) {
       gl.bindFramebuffer(gl.FRAMEBUFFER, surface);
@@ -387,6 +523,7 @@ export class GlMapRenderer {
     for (const vao of gpu.vaos.values()) gl.deleteVertexArray(vao);
     if (gpu.line) gl.deleteBuffer(gpu.line);
     if (gpu.fill) gl.deleteBuffer(gpu.fill);
+    if (gpu.texture) gl.deleteTexture(gpu.texture);
     this.gpuBytes -= gpu.bytes;
     this._tiles.delete(data);
   }
@@ -405,6 +542,9 @@ export class GlMapRenderer {
       this._cover,
       this._blit,
       this._label,
+      this._marker,
+      this._circle,
+      this._raster,
     ]) {
       if (program) gl.deleteProgram(program.program);
     }
@@ -412,6 +552,8 @@ export class GlMapRenderer {
     gl.deleteVertexArray(this._coverVao);
     if (this._labelVao) gl.deleteVertexArray(this._labelVao);
     if (this._labelBuffer) gl.deleteBuffer(this._labelBuffer);
+    if (this._markerVao) gl.deleteVertexArray(this._markerVao);
+    if (this._markerBuffer) gl.deleteBuffer(this._markerBuffer);
     if (this._atlasTexture) gl.deleteTexture(this._atlasTexture);
     for (const target of this._targets.values()) this._dropTarget(target);
     this._targets.clear();
@@ -440,15 +582,6 @@ export class GlMapRenderer {
     gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
     gl.enable(gl.SCISSOR_TEST);
 
-    // Upload before drawing, so a frame's uploads are counted once and a
-    // tile arriving mid-frame is not half drawn.
-    const scissors: (number[] | null)[] = [];
-    for (const tile of frame.tiles) {
-      this._gpu(tile.data);
-      scissors.push(scissorOf(tile.clip, width, height));
-    }
-    stats.tiles += frame.tiles.length;
-
     for (const program of [this._line, this._fan]) {
       gl.useProgram(program.program);
       gl.uniform2f(program.uniforms.u_viewport, width, height);
@@ -457,13 +590,32 @@ export class GlMapRenderer {
     const edges = frame.edges ?? this._options.antialias;
     const detail = frame.detail ?? 0;
     const layers = frame.style.layers;
-    for (let i = 0; i < layers.length; i++) {
-      const layer = layers[i].layer;
-      if (!drawsAt(layer, frame.zoom, detail)) continue;
-      if (layer.type === 'fill') {
-        if (this._fill(frame, i, layer, scissors, edges)) stats.layers++;
-      } else if (layer.type === 'line') {
-        if (this._lines(frame, i, layer, scissors)) stats.layers++;
+    for (const tiles of frame.sources) {
+      // Upload before drawing, so a frame's uploads are counted once and a
+      // tile arriving mid-frame is not half drawn.
+      const scissors: (number[] | null)[] = [];
+      for (const tile of tiles) {
+        this._gpu(tile.data);
+        scissors.push(scissorOf(tile.clip, width, height));
+      }
+      stats.tiles += tiles.length;
+      // A raster source is its images, and no style.
+      if (tiles.some((tile) => tile.data.raster)) {
+        this._rasters(tiles, scissors, width, height);
+        continue;
+      }
+      for (let i = 0; i < layers.length; i++) {
+        const layer = layers[i].layer;
+        if (!drawsAt(layer, frame.zoom, detail)) continue;
+        if (layer.type === 'fill') {
+          if (this._fill(frame, tiles, i, layer, scissors, edges)) {
+            stats.layers++;
+          }
+        } else if (layer.type === 'line') {
+          if (this._lines(frame, tiles, i, layer, scissors)) stats.layers++;
+        } else if (layer.type === 'circle') {
+          if (this._circles(frame, tiles, i, layer, scissors)) stats.layers++;
+        }
       }
     }
 
@@ -475,34 +627,48 @@ export class GlMapRenderer {
 
   private _fill(
     frame: RenderFrame,
+    tiles: readonly RenderTile[],
     index: number,
     layer: Extract<MapStyleLayer, { type: 'fill' }>,
     scissors: (number[] | null)[],
     edges: boolean,
   ): boolean {
-    const gl = this._gl;
     const zoom = frame.zoom;
     const opacity =
       layer.opacity === undefined ? 1 : resolveZoomed(layer.opacity, zoom);
     if (opacity <= 0) return false;
     const base = this._color(resolveZoomed(layer.color, zoom));
     if (!base) return false;
+    const outline =
+      layer.outlineColor === undefined
+        ? undefined
+        : this._color(resolveZoomed(layer.outlineColor, zoom));
+    return this._fillWith(tiles, index, scissors, {
+      color: premultiplied(base, opacity),
+      // The edge: the outline colour a style asked for, at one logical
+      // pixel, or else the fill colour at half a device pixel — which is
+      // the antialiasing.
+      antialias: !outline && edges,
+      outline: outline ? premultiplied(outline, opacity) : null,
+      outlineHalf: Math.max(0.5, frame.scale / 2),
+    });
+  }
+
+  /**
+   * A polygon's ranges, over every tile that has them: the winding number
+   * into the stencil buffer, the colour wherever it is not zero, then the
+   * edge — the antialiasing, or an outline.
+   */
+  private _fillWith(
+    tiles: readonly RenderTile[],
+    index: number,
+    scissors: (number[] | null)[],
+    paint: FillPaint,
+  ): boolean {
+    const gl = this._gl;
     // The cover's extent: the union of the squares this layer drew in.
-    let x0 = Infinity;
-    let y0 = Infinity;
-    let x1 = -Infinity;
-    let y1 = -Infinity;
-    let any = false;
-    for (let t = 0; t < frame.tiles.length; t++) {
-      const s = scissors[t];
-      if (!s || !frame.tiles[t].data.draws[index]) continue;
-      any = true;
-      if (s[0] < x0) x0 = s[0];
-      if (s[1] < y0) y0 = s[1];
-      if (s[0] + s[2] > x1) x1 = s[0] + s[2];
-      if (s[1] + s[3] > y1) y1 = s[1] + s[3];
-    }
-    if (!any) return false;
+    const box = this._unionOf(tiles, index, scissors);
+    if (!box) return false;
     const stats = this._stats;
 
     // 1. The winding number, into the stencil buffer.
@@ -510,82 +676,99 @@ export class GlMapRenderer {
     gl.colorMask(false, false, false, false);
     gl.enable(gl.STENCIL_TEST);
     gl.stencilFunc(gl.ALWAYS, 0, 0xff);
-    const passes: [number | null, number][] =
-      this._options.fillRule === 'nonzero'
+    const fan = (count: number): void => {
+      gl.drawArraysInstanced(gl.TRIANGLES, 0, 3, count);
+    };
+    const nonzero = this._options.fillRule === 'nonzero';
+    if (nonzero && this._separate) {
+      // Front faces count up and back faces down, in the one draw.
+      gl.disable(gl.CULL_FACE);
+      gl.stencilOpSeparate(gl.FRONT, gl.KEEP, gl.KEEP, gl.INCR_WRAP);
+      gl.stencilOpSeparate(gl.BACK, gl.KEEP, gl.KEEP, gl.DECR_WRAP);
+      this._eachTile(tiles, index, scissors, this._fan, true, fan);
+    } else {
+      const passes: [number | null, number][] = nonzero
         ? [
             [gl.BACK, gl.INCR_WRAP],
             [gl.FRONT, gl.DECR_WRAP],
           ]
         : [[null, gl.INVERT]];
-    for (const [cull, op] of passes) {
-      if (cull === null) gl.disable(gl.CULL_FACE);
-      else {
-        gl.enable(gl.CULL_FACE);
-        gl.cullFace(cull);
+      for (const [cull, op] of passes) {
+        if (cull === null) gl.disable(gl.CULL_FACE);
+        else {
+          gl.enable(gl.CULL_FACE);
+          gl.cullFace(cull);
+        }
+        gl.stencilOp(gl.KEEP, gl.KEEP, op);
+        this._eachTile(tiles, index, scissors, this._fan, true, fan);
       }
-      gl.stencilOp(gl.KEEP, gl.KEEP, op);
-      this._eachTile(frame, index, scissors, this._fan, true, (count) => {
-        gl.drawArraysInstanced(gl.TRIANGLES, 0, 3, count);
-      });
     }
     gl.disable(gl.CULL_FACE);
 
-    // 2. The colour, wherever the winding is not zero — and the stencil
-    // back to zero as it goes, so the next layer starts clean.
+    // 2. The colour, wherever the winding is not zero. An opaque fill sets
+    // the stencil back to zero as it goes, so the next layer starts clean;
+    // a translucent one keeps it for its edge, which is drawn outside the
+    // polygon only — laid over the fill's own colour it would be a darker
+    // rim round every translucent polygon — and clears it after.
+    const translucent = paint.color[3] < 1;
     gl.colorMask(true, true, true, true);
     gl.stencilFunc(gl.NOTEQUAL, 0, 0xff);
-    gl.stencilOp(gl.ZERO, gl.ZERO, gl.ZERO);
-    gl.scissor(x0, y0, x1 - x0, y1 - y0);
-    this._drawCover(premultiplied(base, opacity));
+    if (translucent) gl.stencilOp(gl.KEEP, gl.KEEP, gl.KEEP);
+    else gl.stencilOp(gl.ZERO, gl.ZERO, gl.ZERO);
+    gl.scissor(box[0], box[1], box[2], box[3]);
+    this._drawCover(paint.color);
     stats.drawCalls++;
-    gl.disable(gl.STENCIL_TEST);
 
-    // 3. The edge: the outline colour a style asked for, at one logical
-    // pixel, or else the fill colour at half a device pixel — which is the
-    // antialiasing. Either way it is the fill stream drawn as segments.
-    const outline =
-      layer.outlineColor === undefined
-        ? undefined
-        : this._color(resolveZoomed(layer.outlineColor, zoom));
-    if (outline) {
-      this._edges(
-        frame,
+    // 3. The edge, which is the fill stream drawn as segments.
+    if (translucent) {
+      if (paint.antialias) {
+        // Where the winding is zero and no edge has been yet, each pixel
+        // once, at what a pixel the polygon partly covers is covered by:
+        // a segment of no width, whose ramp is half a pixel either side.
+        gl.stencilFunc(gl.EQUAL, 0, 0xff);
+        gl.stencilOp(gl.KEEP, gl.KEEP, gl.INCR);
+        this._segments(
+          tiles,
+          index,
+          scissors,
+          { color: paint.color, half: 0, dash: null },
+          true,
+          0,
+        );
+      }
+      this._clearStencil(box);
+      gl.disable(gl.STENCIL_TEST);
+    } else {
+      gl.disable(gl.STENCIL_TEST);
+      if (paint.antialias) {
+        this._strokeWith(
+          tiles,
+          index,
+          scissors,
+          { color: paint.color, half: 0.5, dash: null },
+          true,
+        );
+      }
+    }
+    if (paint.outline) {
+      this._strokeWith(
+        tiles,
         index,
         scissors,
-        premultiplied(outline, opacity),
-        Math.max(0.5, frame.scale / 2),
+        { color: paint.outline, half: paint.outlineHalf, dash: null },
+        true,
       );
-    } else if (edges) {
-      this._edges(frame, index, scissors, premultiplied(base, opacity), 0.5);
     }
     return true;
   }
 
-  private _edges(
-    frame: RenderFrame,
-    index: number,
-    scissors: (number[] | null)[],
-    color: Rgba,
-    half: number,
-  ): void {
-    const gl = this._gl;
-    const u = this._line.uniforms;
-    gl.useProgram(this._line.program);
-    gl.uniform4f(u.u_color, color[0], color[1], color[2], color[3]);
-    gl.uniform1f(u.u_half, half);
-    gl.uniform2f(u.u_dash, 0, 0);
-    this._eachTile(frame, index, scissors, this._line, true, (count) => {
-      gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, count);
-    });
-  }
-
   private _lines(
     frame: RenderFrame,
+    tiles: readonly RenderTile[],
     index: number,
     layer: Extract<MapStyleLayer, { type: 'line' }>,
     scissors: (number[] | null)[],
   ): boolean {
-    const gl = this._gl;
     const zoom = frame.zoom;
     const logical = resolveZoomed(layer.width, zoom);
     if (!(logical > 0)) return false;
@@ -594,32 +777,279 @@ export class GlMapRenderer {
     if (opacity <= 0) return false;
     const base = this._color(resolveZoomed(layer.color, zoom));
     if (!base) return false;
-    let any = false;
-    for (let t = 0; t < frame.tiles.length; t++) {
-      if (scissors[t] && frame.tiles[t].data.draws[index]) {
-        any = true;
-        break;
-      }
-    }
-    if (!any) return false;
+    if (!this._unionOf(tiles, index, scissors)) return false;
     // A road narrower than a pixel is drawn *at* a pixel, as paint.ts does:
     // a motorway network that vanishes at zoom 6 is worse than a heavy one.
     const width = Math.max(1, logical * frame.scale);
+    this._strokeWith(
+      tiles,
+      index,
+      scissors,
+      {
+        color: premultiplied(base, opacity),
+        half: width / 2,
+        dash: dashPattern(layer.dash, frame.scale),
+      },
+      false,
+    );
+    return true;
+  }
+
+  /**
+   * A circle layer: a disc per point, one instanced draw per tile — the
+   * radius, colours and stroke `paint.ts` reads, at this zoom.
+   */
+  private _circles(
+    frame: RenderFrame,
+    tiles: readonly RenderTile[],
+    index: number,
+    layer: Extract<MapStyleLayer, { type: 'circle' }>,
+    scissors: (number[] | null)[],
+  ): boolean {
+    const zoom = frame.zoom;
+    const radius =
+      (layer.radius === undefined ? 3 : resolveZoomed(layer.radius, zoom)) *
+      frame.scale;
+    if (!(radius > 0)) return false;
+    const opacity =
+      layer.opacity === undefined ? 1 : resolveZoomed(layer.opacity, zoom);
+    if (opacity <= 0) return false;
+    const base = this._color(resolveZoomed(layer.color, zoom));
+    if (!base) return false;
+    if (!this._unionOf(tiles, index, scissors)) return false;
+    const ring =
+      layer.strokeColor === undefined
+        ? null
+        : this._color(resolveZoomed(layer.strokeColor, zoom));
+    const stroke = ring
+      ? (layer.strokeWidth === undefined
+          ? 1
+          : resolveZoomed(layer.strokeWidth, zoom)) * frame.scale
+      : 0;
+    const gl = this._gl;
+    const program = (this._circle ??= linkProgram(
+      gl,
+      CIRCLE_VERTEX,
+      CIRCLE_FRAGMENT,
+      [
+        'u_tile',
+        'u_viewport',
+        'u_radius',
+        'u_stroke',
+        'u_color',
+        'u_stroke_color',
+      ],
+    ));
+    const u = program.uniforms;
     const color = premultiplied(base, opacity);
-    const u = this._line.uniforms;
-    gl.useProgram(this._line.program);
+    const edge = ring ? premultiplied(ring, opacity) : CLEAR;
+    gl.useProgram(program.program);
+    gl.uniform2f(u.u_viewport, frame.width, frame.height);
+    gl.uniform1f(u.u_radius, radius);
+    gl.uniform1f(u.u_stroke, stroke);
     gl.uniform4f(u.u_color, color[0], color[1], color[2], color[3]);
-    gl.uniform1f(u.u_half, width / 2);
-    const dash = layer.dash;
-    if (dash && dash.length >= 2) {
-      gl.uniform2f(u.u_dash, dash[0] * frame.scale, dash[1] * frame.scale);
-    } else {
-      gl.uniform2f(u.u_dash, 0, 0);
-    }
-    this._eachTile(frame, index, scissors, this._line, false, (count) => {
+    gl.uniform4f(u.u_stroke_color, edge[0], edge[1], edge[2], edge[3]);
+    this._eachTile(tiles, index, scissors, program, false, (count) => {
       gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, count);
     });
     return true;
+  }
+
+  /**
+   * A raster source's tiles: each one's image over its square, clipped to
+   * the part of the view it draws. Past the source's depth the square is
+   * the data tile's, larger than the view's cells, so the image is drawn
+   * whole and stretched — the retained renderer's rule since #98.
+   */
+  private _rasters(
+    tiles: readonly RenderTile[],
+    scissors: (number[] | null)[],
+    width: number,
+    height: number,
+  ): void {
+    const gl = this._gl;
+    const program = (this._raster ??= linkProgram(
+      gl,
+      RASTER_VERTEX,
+      RASTER_FRAGMENT,
+      ['u_tile', 'u_viewport', 'u_image'],
+    ));
+    const u = program.uniforms;
+    gl.useProgram(program.program);
+    gl.uniform2f(u.u_viewport, width, height);
+    gl.uniform1i(u.u_image, 0);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindVertexArray(this._coverVao);
+    gl.disable(gl.STENCIL_TEST);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    for (let t = 0; t < tiles.length; t++) {
+      const tile = tiles[t];
+      const s = scissors[t];
+      const texture = this._tiles.get(tile.data)?.texture;
+      if (!s || !texture) continue;
+      gl.scissor(s[0], s[1], s[2], s[3]);
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+      gl.uniform3f(u.u_tile, tile.size, tile.x, tile.y);
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+      this._stats.drawCalls++;
+    }
+  }
+
+  /**
+   * A stroke of one layer's ranges — of the line stream, or of the fill
+   * stream as a polygon's outline. A translucent one is drawn each pixel
+   * once: two capsules overlap at every join, and colour laid down twice
+   * there is a darker bead at every vertex. So the pixels a capsule covers
+   * wholly go first, under the stencil, the first capsule to reach one
+   * taking it; then the antialiased fringe, where nothing has been yet.
+   */
+  private _strokeWith(
+    tiles: readonly RenderTile[],
+    index: number,
+    scissors: (number[] | null)[],
+    paint: StrokePaint,
+    fillStream: boolean,
+  ): void {
+    if (paint.color[3] >= 1) {
+      this._segments(tiles, index, scissors, paint, fillStream, 0);
+      return;
+    }
+    const box = this._unionOf(tiles, index, scissors);
+    if (!box) return;
+    const gl = this._gl;
+    gl.enable(gl.STENCIL_TEST);
+    gl.stencilFunc(gl.EQUAL, 0, 0xff);
+    gl.stencilOp(gl.KEEP, gl.KEEP, gl.INCR);
+    this._segments(tiles, index, scissors, paint, fillStream, 1);
+    this._segments(tiles, index, scissors, paint, fillStream, 2);
+    this._clearStencil(box);
+    gl.disable(gl.STENCIL_TEST);
+  }
+
+  /** One layer's ranges as capsules, over every tile that has them. `part`
+   *  1 draws only the pixels a capsule covers wholly, 2 only the rest, and
+   *  0 both. */
+  private _segments(
+    tiles: readonly RenderTile[],
+    index: number,
+    scissors: (number[] | null)[],
+    paint: StrokePaint,
+    fillStream: boolean,
+    part: number,
+  ): void {
+    const gl = this._gl;
+    const u = this._line.uniforms;
+    const { color, dash } = paint;
+    gl.useProgram(this._line.program);
+    gl.uniform4f(u.u_color, color[0], color[1], color[2], color[3]);
+    gl.uniform1f(u.u_half, paint.half);
+    // Unused entries are zero, and a dash of no length draws nothing.
+    const d = (i: number): number => dash?.[i] ?? 0;
+    gl.uniform4f(u.u_dash_a, d(0), d(1), d(2), d(3));
+    gl.uniform4f(u.u_dash_b, d(4), d(5), d(6), d(7));
+    gl.uniform1f(u.u_period, dash ? dash.reduce((sum, v) => sum + v, 0) : 0);
+    gl.uniform1f(u.u_part, part);
+    this._eachTile(tiles, index, scissors, this._line, fillStream, (count) => {
+      gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, count);
+    });
+  }
+
+  /** The union of the squares a layer draws in, as a scissor box; null
+   *  when no tile draws it. */
+  private _unionOf(
+    tiles: readonly RenderTile[],
+    index: number,
+    scissors: (number[] | null)[],
+  ): number[] | null {
+    let x0 = Infinity;
+    let y0 = Infinity;
+    let x1 = -Infinity;
+    let y1 = -Infinity;
+    for (let t = 0; t < tiles.length; t++) {
+      const s = scissors[t];
+      if (!s || !tiles[t].data.draws[index]) continue;
+      if (s[0] < x0) x0 = s[0];
+      if (s[1] < y0) y0 = s[1];
+      if (s[0] + s[2] > x1) x1 = s[0] + s[2];
+      if (s[1] + s[3] > y1) y1 = s[1] + s[3];
+    }
+    return x0 === Infinity ? null : [x0, y0, x1 - x0, y1 - y0];
+  }
+
+  /** The stencil back to zero over a box, the colour untouched. */
+  private _clearStencil(box: number[]): void {
+    const gl = this._gl;
+    gl.colorMask(false, false, false, false);
+    gl.stencilFunc(gl.ALWAYS, 0, 0xff);
+    gl.stencilOp(gl.ZERO, gl.ZERO, gl.ZERO);
+    gl.scissor(box[0], box[1], box[2], box[3]);
+    this._drawCover(CLEAR);
+    this._stats.drawCalls++;
+    gl.colorMask(true, true, true, true);
+  }
+
+  // --- overlays ---------------------------------------------------------------
+
+  /**
+   * The overlays, over the labels — the retained renderer's order — from
+   * their bucket, placed this frame, pass by pass: a fill as a style's fill
+   * layer is drawn, a stroke as its line layer is. Answers how many passes
+   * it drew.
+   */
+  private _overlays(draw: OverlayDraw, frame: RenderFrame): number {
+    const gl = this._gl;
+    const { width, height, scale } = frame;
+    this._gpu(draw.data);
+    const clip = { x: 0, y: 0, width, height };
+    const tiles: RenderTile[] = [
+      {
+        data: draw.data,
+        x: draw.x,
+        y: draw.y,
+        size: draw.unit * TILE_EXTENT,
+        clip,
+      },
+    ];
+    const scissors = [scissorOf(clip, width, height)];
+    gl.viewport(0, 0, width, height);
+    gl.enable(gl.SCISSOR_TEST);
+    gl.disable(gl.STENCIL_TEST);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    for (const program of [this._line, this._fan]) {
+      gl.useProgram(program.program);
+      gl.uniform2f(program.uniforms.u_viewport, width, height);
+    }
+    let drawn = 0;
+    for (const pass of draw.passes) {
+      const base = this._color(pass.color);
+      if (!base) continue;
+      const color = premultiplied(base, pass.opacity);
+      if (pass.kind === 'fill') {
+        this._fillWith(tiles, pass.index, scissors, {
+          color,
+          antialias: this._options.antialias,
+          outline: null,
+          outlineHalf: 0,
+        });
+      } else {
+        this._strokeWith(
+          tiles,
+          pass.index,
+          scissors,
+          {
+            color,
+            half: (pass.width * scale) / 2,
+            dash: dashPattern(pass.dash, scale),
+          },
+          pass.outline === true,
+        );
+      }
+      drawn++;
+    }
+    gl.disable(gl.SCISSOR_TEST);
+    return drawn;
   }
 
   /**
@@ -628,7 +1058,7 @@ export class GlMapRenderer {
    * changes between tiles.
    */
   private _eachTile(
-    frame: RenderFrame,
+    tiles: readonly RenderTile[],
     index: number,
     scissors: (number[] | null)[],
     program: Program,
@@ -637,8 +1067,8 @@ export class GlMapRenderer {
   ): void {
     const gl = this._gl;
     const stats = this._stats;
-    for (let t = 0; t < frame.tiles.length; t++) {
-      const tile = frame.tiles[t];
+    for (let t = 0; t < tiles.length; t++) {
+      const tile = tiles[t];
       const layerDraw = tile.data.draws[index];
       const s = scissors[t];
       if (!layerDraw || !s) continue;
@@ -669,10 +1099,35 @@ export class GlMapRenderer {
   // --- labels -----------------------------------------------------------------
 
   /**
-   * The frame's labels, over whatever is bound: one instanced draw of the
-   * batch's quads, after the atlas texture has what the batch draws.
+   * The attribution, over whatever is bound: its box — the cover program,
+   * scissored to it — and then its text, one more label quad.
    */
-  private _labels(batch: LabelBatch, width: number, height: number): void {
+  private _attribution(
+    draw: AttributionDraw,
+    width: number,
+    height: number,
+  ): void {
+    const gl = this._gl;
+    const box = scissorOf(draw.box, width, height);
+    if (box) {
+      gl.enable(gl.SCISSOR_TEST);
+      gl.scissor(box[0], box[1], box[2], box[3]);
+      gl.disable(gl.STENCIL_TEST);
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+      this._drawCover(draw.boxColor);
+      this._stats.drawCalls++;
+      gl.disable(gl.SCISSOR_TEST);
+    }
+    this._labels(draw.text, width, height);
+  }
+
+  /**
+   * A batch of labels, over whatever is bound: one instanced draw of the
+   * batch's quads, after the atlas texture has what the batch draws.
+   * Answers how many it drew.
+   */
+  private _labels(batch: LabelBatch, width: number, height: number): number {
     const gl = this._gl;
     const atlas = batch.atlas;
     const program = (this._label ??= linkProgram(
@@ -683,7 +1138,7 @@ export class GlMapRenderer {
     ));
     gl.activeTexture(gl.TEXTURE0);
     this._uploadAtlas(atlas);
-    if (batch.count === 0) return;
+    if (batch.count === 0) return 0;
 
     if (!this._labelVao) {
       this._labelBuffer = gl.createBuffer();
@@ -729,7 +1184,64 @@ export class GlMapRenderer {
     gl.uniform1i(u.u_image, 0);
     gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, batch.count);
     this._stats.drawCalls++;
-    this._stats.labels = batch.count;
+    return batch.count;
+  }
+
+  // --- markers ----------------------------------------------------------------
+
+  /**
+   * The markers, over whatever is bound: one instanced draw of a quad each,
+   * every pixel shaded by its distance to the marker's outline. Answers how
+   * many it drew.
+   */
+  private _markers(batch: MarkerBatch, width: number, height: number): number {
+    if (batch.count === 0) return 0;
+    const gl = this._gl;
+    const program = (this._marker ??= linkProgram(
+      gl,
+      MARKER_VERTEX,
+      MARKER_FRAGMENT,
+      ['u_viewport'],
+    ));
+    if (!this._markerVao) {
+      this._markerBuffer = gl.createBuffer();
+      this._markerVao = gl.createVertexArray();
+      gl.bindVertexArray(this._markerVao);
+      gl.bindBuffer(gl.ARRAY_BUFFER, this._corners);
+      gl.enableVertexAttribArray(ATTRIBUTES.a_corner);
+      gl.vertexAttribPointer(ATTRIBUTES.a_corner, 2, gl.FLOAT, false, 0, 0);
+      gl.vertexAttribDivisor(ATTRIBUTES.a_corner, 0);
+      gl.bindBuffer(gl.ARRAY_BUFFER, this._markerBuffer);
+      const stride = MARKER_INSTANCE * 4;
+      const fields: [number, number, number][] = [
+        [ATTRIBUTES.a_anchor, 4, 0],
+        [ATTRIBUTES.a_ink, 4, 16],
+        [ATTRIBUTES.a_halo, 4, 32],
+        [ATTRIBUTES.a_params, 2, 48],
+      ];
+      for (const [location, size, offset] of fields) {
+        gl.enableVertexAttribArray(location);
+        gl.vertexAttribPointer(location, size, gl.FLOAT, false, stride, offset);
+        gl.vertexAttribDivisor(location, 1);
+      }
+    }
+    gl.bindVertexArray(this._markerVao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this._markerBuffer);
+    gl.bufferData(
+      gl.ARRAY_BUFFER,
+      batch.instances.subarray(0, batch.count * MARKER_INSTANCE),
+      gl.STREAM_DRAW,
+    );
+    gl.viewport(0, 0, width, height);
+    gl.disable(gl.SCISSOR_TEST);
+    gl.disable(gl.STENCIL_TEST);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    gl.useProgram(program.program);
+    gl.uniform2f(program.uniforms.u_viewport, width, height);
+    gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, batch.count);
+    this._stats.drawCalls++;
+    return batch.count;
   }
 
   /**
@@ -802,7 +1314,7 @@ export class GlMapRenderer {
     let gpu = this._tiles.get(data);
     if (gpu) return gpu;
     const gl = this._gl;
-    gpu = { line: null, fill: null, vaos: new Map(), bytes: 0 };
+    gpu = { line: null, fill: null, vaos: new Map(), texture: null, bytes: 0 };
     if (data.lineRecords > 1) {
       gpu.line = gl.createBuffer();
       gl.bindBuffer(gl.ARRAY_BUFFER, gpu.line);
@@ -814,6 +1326,27 @@ export class GlMapRenderer {
       gl.bindBuffer(gl.ARRAY_BUFFER, gpu.fill);
       gl.bufferData(gl.ARRAY_BUFFER, new Uint8Array(data.fill), gl.STATIC_DRAW);
       gpu.bytes += data.fill.byteLength;
+    }
+    if (data.raster) {
+      const { width, height, pixels } = data.raster;
+      gpu.texture = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, gpu.texture);
+      gl.texImage2D(
+        gl.TEXTURE_2D,
+        0,
+        gl.RGBA,
+        width,
+        height,
+        0,
+        gl.RGBA,
+        gl.UNSIGNED_BYTE,
+        pixels,
+      );
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gpu.bytes += width * height * 4;
     }
     this._tiles.set(data, gpu);
     this.gpuBytes += gpu.bytes;

@@ -18,7 +18,7 @@ import { clipOf, clipRing, clipSegment } from './clip.js';
 import type { ClipRect } from './clip.js';
 import type { MapCanvas } from './paint.js';
 import { projectLngLat } from './proj.js';
-import type { LngLat, Transform } from './proj.js';
+import type { LngLat, ScreenRect, Transform } from './proj.js';
 
 /** A point on the map the user can click. */
 export interface MapMarker {
@@ -37,9 +37,11 @@ export interface MapMarker {
   /** The ring around it, so a marker stays visible on any basemap. The
    *  theme's background by default. */
   outline?: string;
-  /** Drawn above unselected markers, and given the selected ring. */
+  /** Drawn above the unselected markers of its `zIndex`, and given the
+   *  selected ring: 2.5 logical pixels of the theme's text colour. */
   selected?: boolean;
-  /** Higher draws later. Ties break on array order. */
+  /** Higher draws later, and is hit first. Ties break on `selected`, then
+   *  on array order. */
   zIndex?: number;
   /** Skipped by hit testing — for a marker that is decoration. */
   interactive?: boolean;
@@ -104,10 +106,54 @@ export interface OverlayPalette {
   text: string;
 }
 
+/** The attribution's text size, in logical pixels. */
+export const ATTRIBUTION_SIZE = 9;
+/** The opacity of the box of the theme's background the attribution sits
+ *  in — enough to read it over any basemap, not so much that it hides one. */
+export const ATTRIBUTION_OPACITY = 0.72;
+
+/**
+ * Where the attribution goes: a box in the pane's bottom-right corner with 4
+ * logical pixels of padding either side of the text and 2 above and below
+ * it, and the text's top-left corner inside it — in device pixels, on whole
+ * ones. Both renderers lay it out with this, so it sits on the same pixels
+ * whichever of them draws the map.
+ *
+ * `text` is the set string's box and `pane` the pane, in logical pixels.
+ */
+export function attributionLayout(
+  text: { width: number; height: number },
+  pane: ScreenRect,
+  scale: number,
+): { box: ScreenRect; x: number; y: number } {
+  const padding = 4;
+  const width = text.width + padding * 2;
+  const height = text.height + padding;
+  const x = pane.x + pane.width - width;
+  const y = pane.y + pane.height - height;
+  return {
+    box: {
+      x: Math.round(x * scale),
+      y: Math.round(y * scale),
+      width: Math.ceil(width * scale),
+      height: Math.ceil(height * scale),
+    },
+    x: Math.round((x + padding) * scale),
+    y: Math.round((y + padding / 2) * scale),
+  };
+}
+
 function byZ<T extends { zIndex?: number }>(items: readonly T[]): T[] {
   // A stable sort — the language guarantees it — so items with no `zIndex`
   // keep the order the application listed them in.
   return [...items].sort((a, b) => (a.zIndex ?? 0) - (b.zIndex ?? 0));
+}
+
+/** The order overlays are drawn in, bottom first: by `zIndex`, and
+ *  otherwise the order the application listed them in. Both renderers
+ *  draw in it. */
+export function overlayOrder(overlays: readonly MapOverlay[]): MapOverlay[] {
+  return byZ(overlays);
 }
 
 /**
@@ -314,22 +360,87 @@ function appendRing(ctx: MapCanvas, ring: readonly number[]): boolean {
   return true;
 }
 
-/** Where a marker's ink lands, in pane-local logical pixels. Shared by the
- *  drawing and the hit test, so the two cannot disagree — the bug that
- *  makes a marker unclickable a few pixels from where it looks. */
-export function markerRect(
+/** A marker's size when it names none, in logical pixels. */
+export const MARKER_SIZE = 14;
+/** A pin is this many times as tall as it is wide. */
+export const PIN_HEIGHT = 1.4;
+
+/**
+ * The order markers are drawn in, bottom first: by `zIndex`, a selected
+ * marker above the unselected ones of its `zIndex`, and otherwise the order
+ * the application listed them in. The hit test walks it from the top, so a
+ * press lands on the marker drawn over the others. Both renderers draw in
+ * it.
+ */
+export function markerOrder(markers: readonly MapMarker[]): MapMarker[] {
+  // A stable sort, so equal keys keep the application's order.
+  return [...markers].sort(
+    (a, b) =>
+      (a.zIndex ?? 0) - (b.zIndex ?? 0) ||
+      Number(a.selected === true) - Number(b.selected === true),
+  );
+}
+
+/** A marker's colours and ring, the theme's where it names none — what
+ *  both renderers paint it with. `ringWidth` is in device pixels. */
+export function markerPaint(
   marker: MapMarker,
-  transform: Transform,
-): {
+  palette: OverlayPalette,
+  scale: number,
+): { fill: string; ring: string; ringWidth: number } {
+  return {
+    fill: marker.color ?? palette.accent,
+    ring: marker.selected
+      ? palette.text
+      : (marker.outline ?? palette.background),
+    ringWidth: Math.max(1, (marker.selected ? 2.5 : 1.5) * scale),
+  };
+}
+
+/** Where a marker's ink lands: its box, and the point it marks. */
+export interface MarkerRect {
   x: number;
   y: number;
   width: number;
   height: number;
   tipX: number;
   tipY: number;
-} {
+}
+
+/**
+ * The markers a pane shows, bottom first, with where each one's ink lands
+ * — what both renderers draw. A marker wholly outside the pane is left out.
+ */
+export function markersInView(
+  markers: readonly MapMarker[],
+  transform: Transform,
+  pane: { width: number; height: number },
+): { marker: MapMarker; rect: MarkerRect }[] {
+  const shown: { marker: MapMarker; rect: MarkerRect }[] = [];
+  for (const marker of markerOrder(markers)) {
+    const rect = markerRect(marker, transform);
+    if (
+      rect.x + rect.width < 0 ||
+      rect.y + rect.height < 0 ||
+      rect.x > pane.width ||
+      rect.y > pane.height
+    ) {
+      continue;
+    }
+    shown.push({ marker, rect });
+  }
+  return shown;
+}
+
+/** Where a marker's ink lands, in pane-local logical pixels. Shared by the
+ *  drawing and the hit test, so the two cannot disagree — the bug that
+ *  makes a marker unclickable a few pixels from where it looks. */
+export function markerRect(
+  marker: MapMarker,
+  transform: Transform,
+): MarkerRect {
   const point = projectLngLat(transform, marker.position);
-  const size = marker.size ?? 14;
+  const size = marker.size ?? MARKER_SIZE;
   if ((marker.shape ?? 'pin') === 'circle') {
     return {
       x: point.x - size / 2,
@@ -343,7 +454,7 @@ export function markerRect(
   // A pin *stands on* its position: the point is the tip, and the head is
   // above it. Getting this the other way round puts every marker half its
   // own height north of where it belongs, which on a city map is a street.
-  const height = size * 1.4;
+  const height = size * PIN_HEIGHT;
   return {
     x: point.x - size / 2,
     y: point.y - height,
@@ -354,7 +465,7 @@ export function markerRect(
   };
 }
 
-/** Draw the markers, lowest `zIndex` first. */
+/** Draw the markers, in {@link markerOrder}. */
 export function drawMarkers(
   ctx: MapCanvas,
   markers: readonly MapMarker[],
@@ -363,27 +474,17 @@ export function drawMarkers(
   scale: number,
   palette: OverlayPalette,
 ): number {
-  let drawn = 0;
-  for (const marker of byZ(markers)) {
-    const rect = markerRect(marker, transform);
-    if (
-      rect.x + rect.width < 0 ||
-      rect.y + rect.height < 0 ||
-      rect.x > pane.width ||
-      rect.y > pane.height
-    ) {
-      continue;
-    }
-    const size = marker.size ?? 14;
-    const fill = marker.color ?? palette.accent;
-    const ring = marker.outline ?? palette.background;
+  const shown = markersInView(markers, transform, pane);
+  for (const { marker, rect } of shown) {
+    const size = marker.size ?? MARKER_SIZE;
+    const paint = markerPaint(marker, palette, scale);
     const x = (pane.x + rect.tipX) * scale;
     const y = (pane.y + rect.tipY) * scale;
     const r = (size / 2) * scale;
     ctx.save();
-    ctx.lineWidth = Math.max(1, (marker.selected ? 2.5 : 1.5) * scale);
-    ctx.strokeStyle = marker.selected ? palette.text : ring;
-    ctx.fillStyle = fill;
+    ctx.lineWidth = paint.ringWidth;
+    ctx.strokeStyle = paint.ring;
+    ctx.fillStyle = paint.fill;
     if ((marker.shape ?? 'pin') === 'circle') {
       ctx.beginPath();
       ctx.moveTo(x + r, y);
@@ -391,12 +492,14 @@ export function drawMarkers(
       ctx.fill();
       ctx.stroke();
     } else {
-      // A teardrop: a circle for the head and two lines down to the tip.
-      // The tangent angle is where the straight sides meet the circle, so
-      // the outline is smooth rather than two lines crossing an arc.
-      const cy = y - size * 1.4 * scale + r;
+      // A teardrop: a circle for the head and two straight sides down to
+      // the tip, meeting the circle where they are tangent to it — at
+      // acos(r / d) either side of the line to the tip, seen from the
+      // centre — so the outline is smooth rather than two lines crossing
+      // an arc.
+      const cy = y - size * PIN_HEIGHT * scale + r;
       const d = y - cy;
-      const angle = Math.asin(Math.min(1, r / d));
+      const angle = Math.acos(Math.min(1, r / d));
       ctx.beginPath();
       ctx.arc(x, cy, r, Math.PI / 2 + angle, Math.PI / 2 - angle);
       ctx.lineTo(x, y);
@@ -405,9 +508,8 @@ export function drawMarkers(
       ctx.stroke();
     }
     ctx.restore();
-    drawn++;
   }
-  return drawn;
+  return shown.length;
 }
 
 /** The marker under a pane-local logical point, topmost first, or null. */
@@ -418,7 +520,7 @@ export function markerAt(
   y: number,
   slop = 2,
 ): MapMarker | null {
-  const ordered = byZ(markers);
+  const ordered = markerOrder(markers);
   for (let i = ordered.length - 1; i >= 0; i--) {
     const marker = ordered[i];
     if (marker.interactive === false) continue;
@@ -623,13 +725,16 @@ export function geoJsonOverlays(
  */
 const MAX_ARC_RADIUS = 8192;
 
+/** How many segments a circle of this radius, in pixels, is drawn with as
+ *  a ring: enough to hold the sagitta under half a pixel. */
+export function circleSegments(radius: number): number {
+  const step = 2 * Math.acos(Math.max(-1, 1 - 0.5 / radius));
+  return Math.min(4096, Math.max(24, Math.ceil((Math.PI * 2) / step)));
+}
+
 /** A circle as a ring, with the sagitta held under half a pixel. */
 function circleRing(cx: number, cy: number, radius: number): number[] {
-  const step = 2 * Math.acos(Math.max(-1, 1 - 0.5 / radius));
-  const segments = Math.min(
-    4096,
-    Math.max(24, Math.ceil((Math.PI * 2) / step)),
-  );
+  const segments = circleSegments(radius);
   const out: number[] = [];
   for (let i = 0; i < segments; i++) {
     const angle = (i / segments) * Math.PI * 2;

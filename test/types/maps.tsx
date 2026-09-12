@@ -18,6 +18,8 @@ import type {
   MapMarker,
   MapOverlay,
   MapPointerEvent,
+  MapRenderer,
+  MapRendererReason,
   MapSource,
   MapStyle,
 } from '../../src/maps/index.js';
@@ -154,7 +156,25 @@ function Controlled(): React.ReactElement {
       }}
       // The event is null for the leave that comes from leaving the map.
       onMarkerHover={(marker, event) => void (marker && event?.lngLat)}
-      onFrame={(stats) => void stats.rasterMs}
+      onFrame={(stats) => {
+        const drawnBy: MapRenderer = stats.renderer;
+        void drawnBy;
+        void stats.rasterMs;
+        // A GL frame's own figures, absent on a retained one.
+        void stats.gl?.cpuMs;
+      }}
+      renderer="auto"
+      onRendererChange={(renderer: MapRenderer, reason: MapRendererReason) =>
+        void [renderer, reason]
+      }
+      onError={(error) => void error.message}
+      // Read by one renderer and accepted by both.
+      levelFade={250}
+      adaptive={{ budgetMs: 8 }}
+      buildWorkers={2}
+      antialias
+      fillRule="nonzero"
+      onAfterDraw={(gl, info) => void [gl, info.width]}
       minZoom={2}
       maxZoom={19}
       rasterBudgetMs={8}

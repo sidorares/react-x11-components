@@ -1,4 +1,5 @@
-// `<GlMap>` in a real window, animated, with every delivered frame counted.
+// `<Map renderer="gl">` in a real window, animated, with every delivered
+// frame counted.
 //
 //   npx tsx scripts/bench/maps-gl-live.tsx                  # the default backend
 //   REACT_X11_BACKEND=x11 npx tsx scripts/bench/maps-gl-live.tsx
@@ -21,11 +22,17 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { createRoot } from 'react-x11';
 
+import { Map as MapView, shortbreadStyle } from '../../src/maps/index.js';
+import type {
+  MapFrameStats,
+  MapGlFrameStats,
+  MapHandle,
+  MapMarker,
+  MapOverlay,
+} from '../../src/maps/index.js';
 import { project, unproject, worldSize } from '../../src/maps/proj.js';
 import type { LngLat, MapCamera } from '../../src/maps/proj.js';
 import type { MapSource } from '../../src/maps/sources.js';
-import { GlMap } from '../../src/maps/gl/view.js';
-import type { GlMapFrameStats, GlMapHandle } from '../../src/maps/gl/view.js';
 import { cachedTiles } from './tiles.js';
 
 function arg(name: string, fallback: string): string {
@@ -46,6 +53,12 @@ const snapshot = arg('snapshot', '');
 // labels begin at 14. `--labels=off` draws the map without any.
 const zoom = Number(arg('zoom', String(place.zoom)));
 const labels = arg('labels', 'on') !== 'off';
+// `--markers=200` scatters that many markers around the place — a tenth of
+// them discs, one selected — and `--overlays=on` lays a route with a
+// casing, a dashed line, an area with a hole and two circles over it: what
+// an application puts on a map, drawn over the tiles and labels every frame.
+const markerCount = Number(arg('markers', '0'));
+const withOverlays = arg('overlays', 'off') === 'on';
 
 const bytes = new Map<string, Uint8Array>();
 for (const { tile, file } of await cachedTiles()) {
@@ -66,6 +79,87 @@ const source: MapSource = {
 };
 const sources = [source];
 const base: MapCamera = { center: place.centre, zoom };
+
+/** The same numbers on every run, so two runs draw the same map. */
+function random(seed: number): () => number {
+  let s = seed >>> 0;
+  return () => {
+    s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
+    return s / 2 ** 32;
+  };
+}
+const next = random(101);
+const around = (spread: number): LngLat => ({
+  lon: place.centre.lon + (next() - 0.5) * spread,
+  lat: place.centre.lat + (next() - 0.5) * spread * 0.6,
+});
+/** A 48-gon about the place, `r` degrees across in longitude. */
+function ring(r: number): LngLat[] {
+  return Array.from({ length: 49 }, (_, i) => {
+    const a = (i / 48) * Math.PI * 2;
+    return {
+      lon: place.centre.lon + r * Math.cos(a),
+      lat: place.centre.lat + r * 0.6 * Math.sin(a),
+    };
+  });
+}
+const markers: MapMarker[] = Array.from({ length: markerCount }, (_, i) => ({
+  id: `m${i}`,
+  position: around(0.12),
+  shape: i % 10 === 0 ? 'circle' : 'pin',
+  selected: i === 0,
+}));
+const route: LngLat[] = Array.from({ length: 400 }, (_, i) => ({
+  lon: place.centre.lon - 0.08 + (0.16 * i) / 399,
+  lat: place.centre.lat + 0.02 * Math.sin(i / 25),
+}));
+const overlays: MapOverlay[] = withOverlays
+  ? [
+      {
+        kind: 'line',
+        id: 'route',
+        path: route,
+        color: '#2d6cdf',
+        width: 5,
+        casing: '#ffffff',
+      },
+      {
+        kind: 'line',
+        id: 'dashed',
+        path: route.map((p) => ({ lon: p.lon, lat: p.lat - 0.01 })),
+        color: '#c0392b',
+        width: 3,
+        dash: [8, 4, 2, 4],
+        opacity: 0.8,
+      },
+      {
+        kind: 'polygon',
+        id: 'area',
+        rings: [ring(0.03), ring(0.012)],
+        fill: '#27ae60',
+        opacity: 0.25,
+        outline: '#27ae60',
+        outlineWidth: 2,
+      },
+      {
+        kind: 'circle',
+        id: 'near',
+        center: place.centre,
+        radiusMetres: 400,
+        fill: '#8e44ad',
+        opacity: 0.2,
+        outline: '#8e44ad',
+      },
+      {
+        kind: 'circle',
+        id: 'far',
+        center: around(0.08),
+        radiusMetres: 1500,
+        fill: '#f39c12',
+        opacity: 0.15,
+      },
+    ]
+  : [];
 
 type Phase = 'settle' | 'pan' | 'zoom' | 'fly';
 
@@ -97,9 +191,25 @@ function cameraAt(phase: Phase, t: number): MapCamera {
   return base;
 }
 
-const handle: { current: GlMapHandle | null } = { current: null };
+const handle: { current: MapHandle | null } = { current: null };
 const state = { phase: 'settle' as Phase, started: 0 };
-const frames: (GlMapFrameStats & { phase: Phase; at: number })[] = [];
+/** A frame's GL figures, with the two the renderers share alongside. */
+type Frame = MapGlFrameStats & {
+  tiles: number;
+  labels: number;
+  phase: Phase;
+  at: number;
+};
+const frames: Frame[] = [];
+/** `--labels=off`: the default style with no label layers in it. */
+const NO_LABELS = shortbreadStyle({ labels: false });
+
+/** Ask for a frame on a map that is otherwise still: a camera step there
+ *  and back, which the frame after them draws once, at the camera it had. */
+function nudge(): void {
+  handle.current?.panBy(1, 0);
+  handle.current?.panBy(-1, 0);
+}
 
 // `--readback=frame.png`: one settled frame, read back from GL inside the
 // frame — the only capture that sees a GL surface (a window snapshot from
@@ -165,9 +275,16 @@ async function writeCapture(path: string): Promise<void> {
   await writeFile(path, PNG.sync.write(png));
 }
 
-function onFrame(stats: GlMapFrameStats): void {
+function onFrame(stats: MapFrameStats): void {
   const at = performance.now();
-  frames.push({ ...stats, phase: state.phase, at });
+  if (!stats.gl) return;
+  frames.push({
+    ...stats.gl,
+    tiles: stats.tiles,
+    labels: stats.labels,
+    phase: state.phase,
+    at,
+  });
   if (state.phase !== 'settle') {
     handle.current?.setCamera(
       cameraAt(state.phase, (at - state.started) / 1000),
@@ -203,13 +320,20 @@ const coverTimer = setInterval(() => {
 coverTimer.unref?.();
 root.render(
   <window width={1200} height={800} title="maps-gl live">
-    <GlMap
+    <MapView
+      renderer="gl"
       ref={handle}
       sources={sources}
+      mapStyle={labels ? undefined : NO_LABELS}
+      markers={markers}
+      overlays={overlays}
       defaultCamera={base}
-      frameLoop="always"
       onFrame={onFrame}
       onAfterDraw={onAfterDraw}
+      onError={(error) => {
+        process.stdout.write(`GL failed: ${error.message}\n`);
+        process.exit(1);
+      }}
       buildWorkers={Number(arg('workers', '0'))}
       // `--fade=300` cross-fades pyramid levels; `--adaptive=6` holds moving
       // frames to a 6 ms budget.
@@ -219,7 +343,6 @@ root.render(
           ? { budgetMs: Number(arg('adaptive', '0')) }
           : false
       }
-      labels={labels}
       style={{ flexGrow: 1 }}
     />
   </window>,
@@ -247,6 +370,7 @@ if (readback) {
   }
   await wait(400);
   capture.wanted = true;
+  nudge();
   await wait(250);
   await writeCapture(readback);
 }
@@ -275,7 +399,8 @@ if (gate !== 1 && cocoaGL) cocoaGL.frameInterval *= gate;
 for (const phase of ['pan', 'zoom', 'fly'] as const) {
   state.phase = phase;
   state.started = performance.now();
-  handle.current?.invalidate();
+  // The first step: its frame's callback takes the next one, and so on.
+  nudge();
   await wait(seconds * 1000);
 }
 state.phase = 'settle';
@@ -285,6 +410,7 @@ const backend =
   (process.platform === 'darwin' ? 'cocoa' : 'x11');
 process.stdout.write(
   `\nlive on ${backend}: 1200×800 window, ${seconds} s per phase; settled in ${settledMs.toFixed(0)} ms\n` +
+    `  labels ${labels ? 'on' : 'off'}, ${markerCount} markers, overlays ${withOverlays ? 'on' : 'off'}\n` +
     `  phase   frames   fps   interval med    p95    max   >20ms   issue med   build total/max   tiles   segments\n`,
 );
 const summary: Record<string, unknown>[] = [];
@@ -369,6 +495,9 @@ if (json) {
       {
         backend,
         seconds,
+        labels,
+        markers: markerCount,
+        overlays: withOverlays,
         summary,
         frames: frames.map((f) => ({
           phase: f.phase,

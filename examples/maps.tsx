@@ -4,7 +4,12 @@
 //   npm run examples:maps                    # London, light
 //   npm run examples:maps -- tokyo           # or manhattan
 //   npm run examples:maps -- tokyo --dark
+//   npm run examples:maps -- --gl            # start on the GL renderer
 //   npm run examples:maps -- --help
+//
+// The bar's renderer button switches the same map between the retained
+// renderer and GL: the camera, the markers and the route stay where they
+// are, because both renderers answer to one controller.
 //
 // Needs a real `$DISPLAY` and a network. The `fetch` below is the whole of
 // what this package will not do for you: it is where the user agent, the
@@ -107,7 +112,7 @@ const PLACES: Record<
 
 if (process.argv.includes('--help')) {
   process.stdout.write(
-    'usage: npm run examples:maps -- [place] [--dark]\n' +
+    'usage: npm run examples:maps -- [place] [--dark] [--gl]\n' +
       `  place: ${Object.keys(PLACES).join(', ')} (default london)\n`,
   );
   process.exit(0);
@@ -568,6 +573,9 @@ function App(): React.ReactElement {
   const [status, setStatus] = useState('');
 
   const [layerId, setLayerId] = useState(dark ? 'vector-dark' : 'vector');
+  const [renderer, setRenderer] = useState<'retained' | 'gl'>(
+    process.argv.includes('--gl') ? 'gl' : 'retained',
+  );
   const layer = LAYERS.find((l) => l.id === layerId) ?? LAYERS[0];
   const markers = useMemo(
     () =>
@@ -628,10 +636,19 @@ function App(): React.ReactElement {
             onChange={(event) => setLayerId(event.value)}
             style={{ width: 200 }}
           />
+          <Button
+            onClick={() => setRenderer(renderer === 'gl' ? 'retained' : 'gl')}
+          >
+            {renderer === 'gl' ? 'Drawn with GL' : 'Drawn retained'}
+          </Button>
           <text style={{ color: theme.textMuted }}>{status}</text>
         </box>
         <Map
           ref={map}
+          renderer={renderer}
+          // A map that asked for GL by name never falls back: it says so
+          // here instead, and the bar says what it said.
+          onError={(error) => setStatus(`GL failed: ${error.message}`)}
           // Both change together, and both are stable objects, so
           // switching layers is one prop change rather than a re-render
           // storm. Stable matters twice over: tiles are cached per source
@@ -680,7 +697,10 @@ function App(): React.ReactElement {
   );
 }
 
-const root = await createRoot();
+// `glPolicy: 'auto'` is what gives the GL renderer direct GL on X11, where
+// the default is indirect GLX and has no shaders; the Cocoa backend's GL is
+// always direct. The retained renderer does not care either way.
+const root = await createRoot({ glPolicy: 'auto' });
 root.render(<App />);
 
 /**

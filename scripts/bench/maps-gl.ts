@@ -243,7 +243,7 @@ async function stageTile(
       scale: SCALE,
       style: prepared,
       background: STYLE.background,
-      tiles: [{ data: warm, x: 0, y: 0, size, clip: whole }],
+      sources: [[{ data: warm, x: 0, y: 0, size, clip: whole }]],
     });
     head.gl.finish();
     renderer.release(warm);
@@ -258,14 +258,16 @@ async function stageTile(
       scale: SCALE,
       style: prepared,
       background: STYLE.background,
-      tiles: [
-        {
-          data,
-          x: 0,
-          y: 0,
-          size,
-          clip: { x: 0, y: 0, width: size, height: size },
-        },
+      sources: [
+        [
+          {
+            data,
+            x: 0,
+            y: 0,
+            size,
+            clip: { x: 0, y: 0, width: size, height: size },
+          },
+        ],
       ],
     };
     renderer.release(data);
@@ -544,7 +546,7 @@ function frameOf(
     scale: SCALE,
     style: prepared,
     background: STYLE.background,
-    tiles,
+    sources: [tiles],
   };
 }
 
