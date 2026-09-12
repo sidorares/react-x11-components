@@ -129,7 +129,7 @@ a sentence has nowhere to go.
 
 ### Dependencies, and why this one is allowed to have some
 
-This package's usual answer to a parser is "write it" (`src/markdown/parse.ts`
+This package's usual answer to a parser is "write it" (`src/internal/markdown/parse.ts`
 is a hand-written GFM parser) or "make it optional" (`ical.js`,
 `@xterm/headless`), because install closure is a real cost.
 

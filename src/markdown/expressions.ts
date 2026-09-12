@@ -15,7 +15,11 @@
 // in as few words as they can: do not pass `scope` alongside a document you
 // did not write.
 
-import type { BlockNode, Document, InlineNode } from './ast.js';
+import type {
+  BlockNode,
+  Document,
+  InlineNode,
+} from '../internal/markdown/ast.js';
 
 /** A compiled expression, or null if it would not compile at all. */
 type Compiled = ((...args: unknown[]) => unknown) | null;

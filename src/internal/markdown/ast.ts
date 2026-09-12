@@ -1,10 +1,15 @@
-// The markdown AST `parse.ts` produces and `index.ts` renders. Deliberately
-// small: it is the GFM constructs this component draws, not a general
-// mdast — but it is shaped so that growing it stays additive. In particular
-// `component` is the MDX direction: `ComponentBlock` is parsed and rendered
-// (docs/prd-mdx.md, M1), and `ComponentInline` is still reserved — see the
-// note on it for why the inline half needs machinery `<richtext>` does not
-// have yet.
+// The markdown AST `parse.ts` produces, `<Markdown>` renders and
+// `<RichTextEditor>` edits (it converts to and from ProseMirror nodes, and
+// `stringify.ts` writes the result back out). Deliberately small: it is the
+// GFM constructs the two components draw, not a general mdast — but it is
+// shaped so that growing it stays additive. In particular `component` is the
+// MDX direction: `ComponentBlock` is parsed and rendered (docs/prd-mdx.md,
+// M1), and `ComponentInline` is still reserved — see the note on it for why
+// the inline half needs machinery `<richtext>` does not have yet.
+//
+// It lives in `src/internal/` because two components read it: shared code no
+// app needs on its own yet, per AGENTS.md's "half-step below a shared
+// module". `<Markdown>` still re-exports the parser and the types.
 
 /** Inline content, inside a paragraph, heading, list item or table cell. */
 export type InlineNode =
@@ -56,6 +61,11 @@ export interface LinkInline {
   /** True when this was `![alt](src)` — the href is the image source. */
   image: boolean;
   children: InlineNode[];
+  /**
+   * `[text](href "title")`'s title, when there was one. `<Markdown>` renders
+   * none; the editor keeps it, so a document it saves still has it.
+   */
+  title?: string;
 }
 
 /** A hard line break (two trailing spaces, or a trailing backslash). */
@@ -144,6 +154,13 @@ export interface CodeBlock {
   type: 'code';
   /** First word of the info string, lowercased — `''` when absent. */
   lang: string;
+  /**
+   * The whole info string, trimmed — present only when it says more than
+   * `lang` does (```` ```ts title="a.ts" ````, or a language not written in
+   * lowercase), so a fence that is just a language parses to the AST it
+   * always did. The editor keeps it through a round trip.
+   */
+  info?: string;
   text: string;
   /**
    * False when the closing fence has not arrived. During streaming that is

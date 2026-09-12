@@ -1,5 +1,8 @@
-// Markdown → AST, written for this component rather than adapted from a
-// DOM-shaped pipeline. GFM-flavoured CommonMark: headings (ATX and setext),
+// Markdown → AST, written for this package rather than adapted from a
+// DOM-shaped pipeline — shared, from `src/internal/`, because two components
+// read it: `<Markdown>` renders what it produces and `<RichTextEditor>` edits
+// it, writing it back out through `./stringify.ts`. GFM-flavoured
+// CommonMark: headings (ATX and setext),
 // paragraphs, fenced and indented code, blockquotes with lazy continuation,
 // nested ordered/bullet/task lists with the tight/loose distinction, tables,
 // thematic breaks; inline emphasis with the real flanking and rule-of-three
@@ -317,7 +320,8 @@ function parseBlocks(
       const start = i;
       const fenceIndent = fence[1].length;
       const marker = fence[2];
-      const lang = (fence[3].trim().split(/[ \t]/, 1)[0] ?? '').toLowerCase();
+      const info = fence[3].trim();
+      const lang = (info.split(/[ \t]/, 1)[0] ?? '').toLowerCase();
       const body: string[] = [];
       let closed = false;
       i += 1;
@@ -342,7 +346,19 @@ function parseBlocks(
         );
         i += 1;
       }
-      commit({ type: 'code', lang, text: body.join('\n'), closed }, start, i);
+      commit(
+        {
+          type: 'code',
+          lang,
+          // only when it says more than the language does, so a plain
+          // ```js fence parses to the AST it always did
+          ...(info !== lang ? { info } : null),
+          text: body.join('\n'),
+          closed,
+        },
+        start,
+        i,
+      );
       continue;
     }
 
@@ -607,11 +623,27 @@ function parseList(
     const contentIndent = indent + m[2].length + pad;
 
     const inner: string[] = [rest];
+    // The fence open in the item's own content, if one is. A blank line
+    // inside a fence is the code's rather than the list's: it neither ends
+    // the item nor makes the list loose — and a snippet with an empty line
+    // in it, under a numbered step, is the ordinary case.
+    // (a task item's box comes off first: `- [ ] ```js` opens a fence too)
+    let fence = fenceAfter(null, rest.replace(RE_TASK, ''));
     i += 1;
     let pendingBlanks = 0;
     while (i < n) {
       const l = lines[i];
       if (RE_BLANK.test(l)) {
+        if (fence !== null && pendingBlanks === 0) {
+          // …as long as the item goes on after it: an unclosed fence must
+          // not swallow the paragraph the list is followed by
+          let k = i + 1;
+          while (k < n && RE_BLANK.test(lines[k])) k += 1;
+          if (k < n && indentOf(lines[k]) >= contentIndent) {
+            for (; i < k; i += 1) inner.push('');
+            continue;
+          }
+        }
         pendingBlanks += 1;
         if (pendingBlanks > 1) break;
         i += 1;
@@ -623,7 +655,9 @@ function parseList(
           loose = true;
           pendingBlanks = 0;
         }
-        inner.push(l.slice(contentIndent));
+        const content = l.slice(contentIndent);
+        inner.push(content);
+        fence = fenceAfter(fence, content);
         i += 1;
         continue;
       }
@@ -664,6 +698,23 @@ function parseList(
     list: { type: 'list', ordered, start, tight: !loose, items },
     end: i,
   };
+}
+
+/**
+ * The fence still open after `line`, given the one open before it — the
+ * opening run (```` ``` ````, `~~~~`) or null. Indentation is ignored, so a
+ * fence in a list nested inside this item is seen too.
+ */
+function fenceAfter(open: string | null, line: string): string | null {
+  const m = RE_FENCE_OPEN.exec(line.trimStart());
+  if (open === null) {
+    if (!m || (m[2][0] === '`' && m[3].includes('`'))) return null;
+    return m[2];
+  }
+  if (m && m[2][0] === open[0] && m[2].length >= open.length && m[3] === '') {
+    return null;
+  }
+  return open;
 }
 
 // --- tables ----------------------------------------------------------------
@@ -763,19 +814,45 @@ const NAMED_ENTITIES: Record<string, string> = {
   middot: '·',
 };
 
+/** The same pattern, anchored — for reading one reference at a position. */
+const RE_ENTITY_AT = new RegExp(RE_ENTITY.source, 'y');
+
+function entityText(
+  whole: string,
+  dec?: string,
+  hex?: string,
+  named?: string,
+): string {
+  if (dec) {
+    const cp = parseInt(dec, 10);
+    return cp > 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : '�';
+  }
+  if (hex) {
+    const cp = parseInt(hex, 16);
+    return cp > 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : '�';
+  }
+  return (named && NAMED_ENTITIES[named]) ?? whole;
+}
+
 function decodeEntities(text: string): string {
   if (!text.includes('&')) return text;
-  return text.replace(RE_ENTITY, (whole, dec, hex, named) => {
-    if (dec) {
-      const cp = parseInt(dec, 10);
-      return cp > 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : '�';
-    }
-    if (hex) {
-      const cp = parseInt(hex, 16);
-      return cp > 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : '�';
-    }
-    return NAMED_ENTITIES[named] ?? whole;
-  });
+  return text.replace(RE_ENTITY, entityText);
+}
+
+/** The whole character ending at `i`, surrogate pair and all — an emoji is
+ *  a symbol, and half of one is not. */
+function charBefore(text: string, i: number): string | undefined {
+  if (i <= 0) return undefined;
+  const unit = text.charCodeAt(i - 1);
+  return unit >= 0xdc00 && unit <= 0xdfff && i >= 2
+    ? text.slice(i - 2, i)
+    : text[i - 1];
+}
+
+/** The whole character starting at `i`. */
+function charAt(text: string, i: number): string | undefined {
+  const cp = text.codePointAt(i);
+  return cp === undefined ? undefined : String.fromCodePoint(cp);
 }
 
 function classify(ch: string | undefined): 'ws' | 'punct' | 'other' {
@@ -797,11 +874,14 @@ export function parseInline(
   const items: Item[] = [];
   let buf = '';
 
+  // References are decoded where they are read (below), not on the flushed
+  // buffer: `\&amp;` is an escaped ampersand followed by `amp;`, and
+  // decoding afterwards turned it back into `&`.
   const flushText = (): void => {
     if (buf.length === 0) return;
     items.push({
       kind: 'node',
-      node: { type: 'text', text: decodeEntities(buf) },
+      node: { type: 'text', text: buf },
     });
     buf = '';
   };
@@ -957,7 +1037,7 @@ export function parseInline(
       const suffix = parseLinkSuffix(text, i + 1);
       if (suffix) {
         flushText();
-        closeLink(items, openIdx, suffix.href);
+        closeLink(items, openIdx, suffix.href, suffix.title);
         i = suffix.end;
         continue;
       }
@@ -988,8 +1068,8 @@ export function parseInline(
     if (ch === '*' || ch === '_' || ch === '~') {
       let run = 1;
       while (text[i + run] === ch) run += 1;
-      const before = classify(text[i - 1]);
-      const after = classify(text[i + run]);
+      const before = classify(charBefore(text, i));
+      const after = classify(charAt(text, i + run));
       const leftFlank =
         after !== 'ws' && (after !== 'punct' || before !== 'other');
       const rightFlank =
@@ -1021,6 +1101,16 @@ export function parseInline(
       items.push({ kind: 'delim', char: ch, length: run, canOpen, canClose });
       i += run;
       continue;
+    }
+
+    if (ch === '&') {
+      RE_ENTITY_AT.lastIndex = i;
+      const ref = RE_ENTITY_AT.exec(text);
+      if (ref) {
+        buf += entityText(ref[0], ref[1], ref[2], ref[3]);
+        i += ref[0].length;
+        continue;
+      }
     }
 
     buf += ch;
@@ -1072,10 +1162,12 @@ function lastBracket(items: Item[]): number {
 interface LinkSuffix {
   href: string;
   end: number;
+  title?: string;
 }
 
 /** `](dest "title")` — destination in `<>` or bare with balanced parens.
- *  The title is tolerated and dropped: nothing here renders one. */
+ *  The title is kept on the node — nothing renders one, but the editor
+ *  writes it back out. */
 function parseLinkSuffix(text: string, from: number): LinkSuffix | null {
   if (text[from] !== '(') return null;
   let i = from + 1;
@@ -1110,22 +1202,33 @@ function parseLinkSuffix(text: string, from: number): LinkSuffix | null {
   while (i < len && (text[i] === ' ' || text[i] === '\n' || text[i] === '\t'))
     i += 1;
   // an optional title in any of the three quote styles
+  let title: string | undefined;
   const q = text[i];
   if (q === '"' || q === "'" || q === '(') {
     const closer = q === '(' ? ')' : q;
     let j = i + 1;
     while (j < len && text[j] !== closer) j += 1;
     if (j >= len) return null;
+    title = decodeEntities(text.slice(i + 1, j));
     i = j + 1;
     while (i < len && (text[i] === ' ' || text[i] === '\n' || text[i] === '\t'))
       i += 1;
   }
   if (text[i] !== ')') return null;
-  return { href: decodeEntities(href), end: i + 1 };
+  return {
+    href: decodeEntities(href),
+    end: i + 1,
+    ...(title !== undefined ? { title } : null),
+  };
 }
 
 /** Fold everything after the bracket opener at `openIdx` into a link node. */
-function closeLink(items: Item[], openIdx: number, href: string | null): void {
+function closeLink(
+  items: Item[],
+  openIdx: number,
+  href: string | null,
+  title?: string,
+): void {
   const bracket = items[openIdx] as { kind: 'bracket'; image: boolean };
   const inner = items.splice(openIdx);
   inner.shift();
@@ -1133,7 +1236,14 @@ function closeLink(items: Item[], openIdx: number, href: string | null): void {
   processEmphasis(inner, href === null);
   items.push({
     kind: 'node',
-    node: { type: 'link', href, image: bracket.image, children: finish(inner) },
+    node: {
+      type: 'link',
+      href,
+      image: bracket.image,
+      children: finish(inner),
+      // only when written, so a link without one keeps its old shape
+      ...(title !== undefined ? { title } : null),
+    },
   });
 }
 

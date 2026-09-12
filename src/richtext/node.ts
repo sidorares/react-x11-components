@@ -37,6 +37,7 @@ import {
   paintRunBackgrounds,
   paintRunRules,
 } from './runs.js';
+import type { FillContext } from './runs.js';
 import { codeUnitOffsets } from '../internal/text.js';
 
 /** The element name — registration key, `node.kind` and JSX tag alike. */
@@ -215,8 +216,18 @@ export class RichTextNode extends Node {
   private _layouts = new Map<string, TextLayoutLike | null>();
   private _text: string | null = null;
 
-  constructor(props: Record<string, unknown>, app: NtkApp) {
-    super(ELEMENT, props, app);
+  /**
+   * `kind` is for a subclass registered under a name of its own — the rich
+   * text editor's text blocks are `<richtext>` plus a caret and a selection
+   * the editor owns (`src/rich-text-editor/nodes.ts`). A node's `kind` must be
+   * the name it was registered under, so the subclass passes its own.
+   */
+  constructor(
+    props: Record<string, unknown>,
+    app: NtkApp,
+    kind: string = ELEMENT,
+  ) {
+    super(kind, props, app);
   }
 
   /**
@@ -302,8 +313,10 @@ export class RichTextNode extends Node {
    * The layout this node is currently painted with — and, because it is the
    * one thing every accessor below answers from, the reason a caret rect and
    * a glyph cannot disagree (docs/extending.md, "answer from what you draw").
+   * Protected rather than private for the editor's subclass, whose line-wise
+   * caret motion reads the lines off the same layout the glyphs came from.
    */
-  private _paintLayout(): TextLayoutLike | null {
+  protected paintLayout(): TextLayoutLike | null {
     const wrap = (this.props as unknown as RichTextProps).wrap !== false;
     return this._layoutFor(wrap ? this.abs.width : Infinity);
   }
@@ -347,14 +360,14 @@ export class RichTextNode extends Node {
   }
 
   override textIndexAt(x: number, y: number): number {
-    const layout = this._paintLayout();
+    const layout = this.paintLayout();
     if (!layout) return 0;
     const i = layout.indexAt(x - this.abs.x, y - this.abs.y);
     return Math.max(0, Math.min([...this.textContent()].length, i));
   }
 
   override textCaretRect(index: number): Rect | null {
-    const layout = this._paintLayout();
+    const layout = this.paintLayout();
     if (!layout) return null;
     const caret = layout.caretPosition(index);
     return {
@@ -366,7 +379,7 @@ export class RichTextNode extends Node {
   }
 
   override textRangeRects(start: number, end: number): Rect[] {
-    const layout = this._paintLayout();
+    const layout = this.paintLayout();
     if (!layout) return [];
     return rangeBands(layout, this.textContent(), start, end).map((band) => ({
       x: this.abs.x + band.x,
@@ -381,7 +394,7 @@ export class RichTextNode extends Node {
    *  selection seam: core deliberately left hover and `cursorAt` out of
    *  #291, so following a link stays this package's. */
   hrefAtPoint(x: number, y: number): string | null {
-    const layout = this._paintLayout();
+    const layout = this.paintLayout();
     if (!layout) return null;
     const s = this._scale;
     const lx = x * s - this.abs.x;
@@ -401,7 +414,7 @@ export class RichTextNode extends Node {
 
   override paint(ctx: Context2D): void {
     super.paint(ctx); // background, border, clip to `abs`
-    const layout = this._paintLayout();
+    const layout = this.paintLayout();
     if (!layout || !canFill(ctx)) return;
     const { x, y } = this.abs;
     const s = this._scale;
@@ -412,28 +425,8 @@ export class RichTextNode extends Node {
     //    terminal's cell backgrounds
     for (const line of layout.lines) paintRunBackgrounds(ctx, line, x, y, s);
 
-    // 2. the band the document selection has claimed of this element's text,
-    //    translucent so the ink keeps its contrast on either palette (the
-    //    same reasoning as `<textarea>`'s). The range and the colour both
-    //    arrive from the surface above; `textRangeRects` is what a custom
-    //    element and core's own `<text>` both fill, so they cannot drift.
-    const range = this.selectionRange;
-    // The colour is the condition, not just the range: core types it
-    // `string | null` and defines it as what to fill the rectangles with
-    // *while a selection is set*, so a null one is "nothing to draw"
-    // rather than a band in the default ink.
-    const selectionColor = this.selectionColor;
-    if (selectionColor && range && range.end > range.start) {
-      ctx.fillStyle = selectionColor;
-      for (const r of this.textRangeRects(range.start, range.end)) {
-        ctx.fillRect(
-          Math.round(r.x),
-          Math.round(r.y),
-          Math.ceil(r.width),
-          Math.ceil(r.height),
-        );
-      }
-    }
+    // 2. the band a selection has claimed of this element's text
+    this.paintSelection(ctx);
 
     // 3. the ink
     layout.draw(ctx, x, y);
@@ -441,6 +434,42 @@ export class RichTextNode extends Node {
     // 4. rules over the ink: link underlines, strikethrough
     for (const line of layout.lines) paintRunRules(ctx, line, x, y, s);
 
+    // 5. anything that belongs over everything — a subclass's caret
+    this.paintOverlay(ctx);
+
     ctx.restore();
   }
+
+  /**
+   * The selection band, between the run backgrounds and the ink. The default
+   * is core's document selection: the band the `selectable` surface above
+   * has claimed of this element's text, translucent so the ink keeps its
+   * contrast on either palette (the same reasoning as `<textarea>`'s). The
+   * range and the colour both arrive from that surface; `textRangeRects` is
+   * what a custom element and core's own `<text>` both fill, so they cannot
+   * drift. An element with a selection of its own — the editor's text
+   * blocks — overrides this and fills that one instead.
+   */
+  protected paintSelection(ctx: FillContext): void {
+    const range = this.selectionRange;
+    // The colour is the condition, not just the range: core types it
+    // `string | null` and defines it as what to fill the rectangles with
+    // *while a selection is set*, so a null one is "nothing to draw"
+    // rather than a band in the default ink.
+    const selectionColor = this.selectionColor;
+    if (!selectionColor || !range || range.end <= range.start) return;
+    ctx.fillStyle = selectionColor;
+    for (const r of this.textRangeRects(range.start, range.end)) {
+      ctx.fillRect(
+        Math.round(r.x),
+        Math.round(r.y),
+        Math.ceil(r.width),
+        Math.ceil(r.height),
+      );
+    }
+  }
+
+  /** Drawn last, over the ink and the rules: nothing here, a caret in the
+   *  editor's subclass. Inside the same save/restore as the rest. */
+  protected paintOverlay(_ctx: FillContext): void {}
 }
