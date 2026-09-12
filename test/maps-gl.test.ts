@@ -18,6 +18,7 @@ import {
   userEvent,
   waitFor,
 } from 'react-x11/test';
+import { useSupports } from 'react-x11';
 
 import { GeomType, parseTile } from '../src/maps/mvt.js';
 import {
@@ -1755,7 +1756,29 @@ test("an 'auto' map on a connection with no direct GL is drawn retained, and say
   assert.deepStrictEqual(changes, [['retained', 'no-direct-gl']]);
 });
 
-test('a map with children stays retained under auto, and the prop is named once', async () => {
+/** Whether this core draws a `<glarea>`'s children above the surface,
+ *  asked the way `<Map>` asks: a core from before it throws on the name. */
+async function coreDrawsOverGl(): Promise<boolean> {
+  let answer = false;
+  function Probe(): null {
+    try {
+      answer = useSupports('glOverlay' as Parameters<typeof useSupports>[0]);
+    } catch {
+      answer = false;
+    }
+    return null;
+  }
+  await renderX11(React.createElement(Probe), {
+    backend: 'xserver',
+    width: 10,
+    height: 10,
+  });
+  await cleanup();
+  return answer;
+}
+
+test('a map with children under auto: GL with them drawn over it where core can, retained and named once where it cannot', async () => {
+  const overGl = await coreDrawsOverGl();
   await loadGlRenderer();
   const warnings: string[] = [];
   const warn = console.warn;
@@ -1770,6 +1793,11 @@ test('a map with children stays retained under auto, and the prop is named once'
       height: 480,
     });
     claimDirectGl(result.app);
+    // A surface always about to arrive: the harness has no GLX to give it.
+    Object.defineProperty(result.app, 'chooseGLConfig', {
+      value: () => new Promise(() => {}),
+      configurable: true,
+    });
     const map = () =>
       React.createElement(
         MapView,
@@ -1780,19 +1808,92 @@ test('a map with children stays retained under auto, and the prop is named once'
           'data-testname': 'map',
         },
         React.createElement('box', {
+          'data-testname': 'legend',
           style: { position: 'absolute', left: 8, top: 8, width: 60 },
         }),
       );
     await result.rerender(map());
     await act(async () => {});
-    assert.strictEqual(kindOf(result.getByTestName('map')), 'mapview');
-    assert.deepStrictEqual(changes, [['retained', 'capability']]);
     await result.rerender(map());
     await act(async () => {});
     const named = warnings.filter((w) => w.includes('`children`'));
-    assert.strictEqual(named.length, 1, warnings.join('\n'));
+    if (overGl) {
+      assert.strictEqual(kindOf(result.getByTestName('map')), 'mapglpane');
+      assert.deepStrictEqual(changes, [], 'GL is what auto asked for');
+      assert.strictEqual(named.length, 0, warnings.join('\n'));
+      // The legend is the surface's child, which core draws above it.
+      const kinds: string[] = [];
+      let node = result.getByTestName('legend') as unknown as
+        { kind: string; parent?: unknown } | undefined;
+      while (node) {
+        kinds.push(node.kind);
+        node = node.parent as typeof node;
+      }
+      assert.ok(kinds.includes('glarea'), kinds.join(' < '));
+    } else {
+      assert.strictEqual(kindOf(result.getByTestName('map')), 'mapview');
+      assert.deepStrictEqual(changes, [['retained', 'capability']]);
+      assert.strictEqual(named.length, 1, warnings.join('\n'));
+    }
   } finally {
     console.warn = warn;
+  }
+});
+
+test('where core forwards the pointer from a surface, the map listens on no window of its own', async () => {
+  await loadGlRenderer();
+  for (const forwards of [true, undefined]) {
+    const result = await renderX11(React.createElement('box'), {
+      backend: 'xserver',
+      width: 640,
+      height: 480,
+    });
+    Object.defineProperty(result.app, 'chooseGLConfig', {
+      value: () => new Promise(() => {}),
+      configurable: true,
+    });
+    await result.rerender(
+      React.createElement(MapView, {
+        renderer: 'gl',
+        defaultCamera: { center: { lon: -0.1281, lat: 51.508 }, zoom: 12 },
+        'data-testname': 'map',
+      }),
+    );
+    const pane = result.getByTestName('map') as unknown as {
+      children: { kind: string; props: Record<string, unknown> }[];
+    };
+    const area = pane.children.find((child) => child.kind === 'glarea')!;
+    // An X11 surface's own window, and whether core says it hands on what
+    // arrives there.
+    const heard: string[] = [];
+    Object.defineProperty(area, 'window', {
+      value: { id: 7, on: (name: string) => heard.push(name) },
+      configurable: true,
+    });
+    Object.defineProperty(area, 'forwardsPointer', {
+      value: forwards,
+      configurable: true,
+    });
+    const { gl } = recordingGl(true);
+    (gl as Record<string, unknown>).backend = 'direct';
+    await act(async () => {
+      (area.props.onDraw as (gl: unknown, info: object) => void)(gl, {
+        width: 640,
+        height: 480,
+        node: area,
+      });
+    });
+    if (forwards) {
+      assert.deepStrictEqual(heard, [], 'the tree hears it all');
+    } else {
+      assert.deepStrictEqual(heard.sort(), [
+        'mousedown',
+        'mousemove',
+        'mouseout',
+        'mouseup',
+      ]);
+    }
+    await cleanup();
   }
 });
 

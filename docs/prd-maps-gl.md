@@ -705,8 +705,8 @@ them is going away:
 5. **2D over the map, on an older core.** `<Map>`'s `children` — a legend, a
    control panel — are laid out over the pane, and a `<glarea>` is stacked
    above every 2D thing in its window. Under GL they would be hidden on a
-   core from before react-x11#546, which draws a surface's children above it
-   (`useSupports('glOverlay')`).
+   core from before react-x11 2.13 (#546), which draws a surface's children
+   above it (`useSupports('glOverlay')`).
 
 What keeping it costs is a second draw path, which is less than it sounds:
 everything above the draw is shared already, or can be.
@@ -795,9 +795,9 @@ In the order of how many maps each one blocked — all of them in now:
    `test/maps-renderers.test.ts` runs one suite against both renderers.
 4. **Raster sources** as textures, drawn whole past the source's depth, and
    **circle layers** as instanced discs.
-5. **`children` over the map** — react-x11#546 draws a surface's children
-   above it. On a core from before it, `'auto'` keeps a map with children
-   retained.
+5. **`children` over the map** — react-x11 2.13 (#546) draws a surface's
+   children above it. On a core from before it, `'auto'` keeps a map with
+   children retained.
 
 ### Order of work
 
@@ -809,9 +809,10 @@ In the order of how many maps each one blocked — all of them in now:
 4. `'auto'` becomes the default, once both backends have soaked ("The soak",
    above) and a test proves the fallback — a GL that fails on its first
    frame. **Done** (#101).
-5. In core, alongside: 2D over a `<glarea>` (react-x11#546); press and
-   motion forwarding from its child window (react-x11#545, which `<Map>`
-   reads as `forwardsPointer`); and the `glPolicy` question answered in
+5. In core, alongside, and released in react-x11 2.13.0: 2D over a
+   `<glarea>` (#546); press and motion forwarding from its child window
+   (#545, which `<Map>` reads as `forwardsPointer`); x11-dri 0.8 for every
+   app (#547); and the `glPolicy` question answered in
    `<Map>`'s documentation rather than by a new default for X11 — a map
    cannot raise its connection's policy, and an app that wants GL on X11
    says so once, at `createRoot`.
