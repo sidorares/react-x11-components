@@ -7,16 +7,18 @@
 // one ProseMirror plugin written the way it would be for a browser — it finds
 // "TODO" and decorates it; the editor draws the decoration, because a
 // decoration is state, not DOM. The saved value is shown beside it as it
-// changes: that string is what an app would write to disk.
+// changes: that string is what an app would write to disk. `/` at the start
+// of a line opens a block menu: suggestions whose rows are commands.
 //
 // Right, a chat composer: no toolbar, Enter sends and Shift+Enter breaks the
-// line, it grows with its text up to a height and then scrolls, and sent
-// messages render with `<Markdown>` — the same parser, so what was typed is
-// what is shown.
+// line, it grows with its text up to a height and then scrolls, `@` mentions
+// someone and `#` names a channel, and sent messages render with
+// `<Markdown>` — the same parser, so what was typed is what is shown.
 //
 // Try: `# ` at the start of a line, `- `, `1. `, `[ ] `, `> `, ``` ``` ```,
 // `**bold**`, Ctrl+B / Ctrl+I / Ctrl+K (Cmd on the Mac backend), Tab in a
-// list, Ctrl+Z, a right click, copy and paste from a web page.
+// list, Ctrl+Z, a right click, copy and paste from a web page — and `/`, `@`
+// and `#`.
 import { useMemo, useRef, useState } from 'react';
 import type { ReactElement } from 'react';
 import { createRoot } from 'react-x11';
@@ -24,8 +26,20 @@ import { Plugin } from 'prosemirror-state';
 import { Decoration, DecorationSet } from 'prosemirror-view';
 
 import { Markdown } from '../src/markdown/index.js';
-import { RichTextEditor } from '../src/rich-text-editor/index.js';
-import type { RichTextEditorHandle } from '../src/rich-text-editor/index.js';
+import {
+  RichTextEditor,
+  insertHorizontalRule,
+  schema,
+  toggleBlockType,
+  toggleList,
+  toggleTaskList,
+  toggleWrap,
+} from '../src/rich-text-editor/index.js';
+import type {
+  RichTextEditorHandle,
+  Suggester,
+  SuggestionItem,
+} from '../src/rich-text-editor/index.js';
 
 const NOTE = `# Release notes
 
@@ -41,6 +55,7 @@ Everything below round-trips through the same parser \`<Markdown>\` uses.
 1. Press Ctrl+B for **bold** and Ctrl+I for *italic*.
 2. Type \`# \` at the start of a line for a heading, \`- \` for a list.
 3. Select a word and press Ctrl+K to [link](https://github.com/sidorares/react-x11) it.
+4. Type \`/\` at the start of a line for the block menu, \`@\` to mention someone.
 
 > Quotes nest, and hold \`inline code\` like anything else.
 
@@ -77,6 +92,81 @@ function todoPlugin(): Plugin {
   });
 }
 
+const { nodes } = schema;
+
+/** `/` at the start of a line: a block menu, whose rows are commands. */
+const BLOCK_MENU: Suggester = {
+  char: '/',
+  startOfLine: true,
+  items: [
+    {
+      label: 'Heading 1',
+      detail: '#',
+      command: toggleBlockType(nodes.heading, { level: 1 }),
+    },
+    {
+      label: 'Heading 2',
+      detail: '##',
+      command: toggleBlockType(nodes.heading, { level: 2 }),
+    },
+    {
+      label: 'Bulleted list',
+      detail: '-',
+      command: toggleList(nodes.bullet_list, nodes.list_item),
+    },
+    {
+      label: 'Numbered list',
+      detail: '1.',
+      command: toggleList(nodes.ordered_list, nodes.list_item),
+    },
+    { label: 'Task list', detail: '[ ]', command: toggleTaskList(schema) },
+    { label: 'Quote', detail: '>', command: toggleWrap(nodes.blockquote) },
+    {
+      label: 'Code block',
+      detail: '```',
+      command: toggleBlockType(nodes.code_block),
+    },
+    {
+      label: 'Divider',
+      detail: '---',
+      command: insertHorizontalRule(nodes.horizontal_rule),
+    },
+  ],
+};
+
+/** `@`: people, inserted as their handle — text, the way GitHub keeps it. */
+const PEOPLE: SuggestionItem[] = (
+  [
+    ['Ada Lovelace', 'ada'],
+    ['Alan Turing', 'alan'],
+    ['Grace Hopper', 'grace'],
+    ['Katherine Johnson', 'katherine'],
+    ['Linus Torvalds', 'linus'],
+    ['Margaret Hamilton', 'margaret'],
+  ] as Array<[string, string]>
+).map(([label, handle]) => ({
+  label,
+  detail: `@${handle}`,
+  insert: `@${handle}`,
+}));
+
+/** `#`: channels — the trigger and the label is what goes in. */
+const CHANNELS: SuggestionItem[] = [
+  'general',
+  'random',
+  'releases',
+  'design',
+].map((label) => ({ label }));
+
+const NOTE_SUGGESTIONS: Suggester[] = [
+  BLOCK_MENU,
+  { char: '@', items: PEOPLE },
+];
+const CHAT_SUGGESTIONS: Suggester[] = [
+  { char: '@', items: PEOPLE },
+  { char: '#', items: CHANNELS },
+];
+
 function Label({ children }: { children: string }): ReactElement {
   return (
     <text style={{ fontSize: 12, fontWeight: 'bold', color: '$textMuted' }}>
@@ -88,7 +178,7 @@ function Label({ children }: { children: string }): ReactElement {
 function App(): ReactElement {
   const [saved, setSaved] = useState(NOTE);
   const [messages, setMessages] = useState<string[]>([
-    'Hi! **Enter** sends, `Shift+Enter` makes a new line.',
+    'Hi! **Enter** sends, `Shift+Enter` makes a new line, `@` mentions someone.',
   ]);
   const plugins = useMemo(() => [todoPlugin()], []);
   const composer = useRef<RichTextEditorHandle>(null);
@@ -107,6 +197,7 @@ function App(): ReactElement {
             onChange={(ev) => setSaved(ev.value)}
             toolbar
             plugins={plugins}
+            suggestions={NOTE_SUGGESTIONS}
             decorationClasses={{
               todo: { bg: '#ffe08a', color: '#5c4400', weight: 700 },
             }}
@@ -160,6 +251,7 @@ function App(): ReactElement {
             ref={composer}
             placeholder="Message #general"
             submitOnEnter
+            suggestions={CHAT_SUGGESTIONS}
             onSubmit={(ev) => {
               const text = ev.value.trim();
               if (text) setMessages((all) => [...all, text]);

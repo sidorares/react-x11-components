@@ -55,16 +55,17 @@ top of the one before, and none of them replaces another.
 
 ### Behaviour
 
-| Prop                | Type                                     | Notes                                                                                                                    |
-| ------------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `placeholder`       | `string`                                 | Drawn in an empty document, after the caret. Also the accessible name when there is no `aria-label`.                     |
-| `readOnly`          | `boolean`                                | Focusable, selectable and copyable; nothing edits.                                                                       |
-| `disabled`          | `boolean`                                | Inert, out of the tab order, dimmed.                                                                                     |
-| `autoFocus`         | `boolean`                                |                                                                                                                          |
-| `onSubmit`          | `(ev: RichTextEditorEvent) => void`      | Mod-Enter — or plain Enter, with `submitOnEnter`.                                                                        |
-| `submitOnEnter`     | `boolean`                                | Enter submits and Shift+Enter breaks the line: a chat composer. Inside a list or a code block Enter still edits.         |
-| `onSelectionChange` | `(ev: RichTextEditorEvent) => void`      |                                                                                                                          |
-| `onLink`            | `(href: string, ev: MouseEvent) => void` | A link was activated — Mod-click while editing, a plain click when read-only. The editor never opens anything by itself. |
+| Prop                | Type                                     | Notes                                                                                                                                                |
+| ------------------- | ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `placeholder`       | `string`                                 | Drawn in an empty document, after the caret. Also the accessible name when there is no `aria-label`.                                                 |
+| `readOnly`          | `boolean`                                | Focusable, selectable and copyable; nothing edits.                                                                                                   |
+| `disabled`          | `boolean`                                | Inert, out of the tab order, dimmed.                                                                                                                 |
+| `autoFocus`         | `boolean`                                |                                                                                                                                                      |
+| `onSubmit`          | `(ev: RichTextEditorEvent) => void`      | Mod-Enter — or plain Enter, with `submitOnEnter`.                                                                                                    |
+| `submitOnEnter`     | `boolean`                                | Enter submits and Shift+Enter breaks the line: a chat composer. Inside a list or a code block Enter still edits.                                     |
+| `onSelectionChange` | `(ev: RichTextEditorEvent) => void`      |                                                                                                                                                      |
+| `onLink`            | `(href: string, ev: MouseEvent) => void` | A link was activated — Mod-click while editing, a plain click when read-only. The editor never opens anything by itself.                             |
+| `suggestions`       | `Suggester[]`                            | Lists that open at a trigger character as its word is typed — `@` for people, `#` for issues, `/` for a block menu. See [Suggestions](#suggestions). |
 
 ### Chrome and looks
 
@@ -155,7 +156,7 @@ backend's convention, whatever host the process runs on.
 | Shift-Enter, Mod-Enter                        | Line break (Mod-Enter submits instead when there is an `onSubmit`)                                                                                                         |
 | Enter                                         | New paragraph; in a list a new item, and on an empty item the end of the list                                                                                              |
 | Tab, Shift-Tab                                | In a list, nest and un-nest the item; in a code block, indent and dedent; in a table, the next and previous cell. Anywhere else Tab is not the editor's and moves focus on |
-| Escape, then Tab                              | Leave the editor, from anywhere                                                                                                                                            |
+| Escape, then Tab                              | Leave the editor, from anywhere. An Escape that closes a [suggestion list](#suggestions) closes only the list                                                              |
 | Arrows, Home/End, PageUp/PageDown             | Move, by grapheme and by visual line; Home and End go to the ends of the _line_ as it wraps. Shift extends                                                                 |
 | Ctrl-arrows, Ctrl-Home/End (X11)              | By word; to the ends of the document                                                                                                                                       |
 | Alt-arrows, Cmd-arrows (macOS)                | By word; to the ends of the line, or of the document                                                                                                                       |
@@ -180,6 +181,82 @@ Anywhere: `**bold**`, `__bold__`, `*italic*`, `_italic_`, `` `code` `` and
 `~~strike~~` take their mark as the closing delimiter is typed. Backspace
 straight after any of them gives the characters back. `inputRules={false}`
 turns them all off.
+
+## Suggestions
+
+`suggestions` opens a list at a trigger character as its word is typed — the
+`@` of a mention, the `#` of an issue, the `/` of a block menu:
+
+```tsx
+<RichTextEditor
+  suggestions={[
+    { char: '@', items: people }, // an array: filtered as the name is typed
+    { char: '#', items: ({ query }) => searchIssues(query) }, // a function: asked
+    { char: '/', startOfLine: true, items: blockMenu }, // rows that are commands
+  ]}
+/>
+```
+
+A `Suggester` is a trigger, its rows, and two options:
+
+| Field         | Notes                                                                                                                                                                                                                                                                                                                                                                    |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `char`        | The trigger. It opens a list at the start of a word — after a space, an opening bracket or quote, or at the start of a block — so `ada@example.com` is an address. Never in code.                                                                                                                                                                                        |
+| `items`       | An array of `SuggestionItem`s, which the editor filters as the word is typed: labels that start with the query first, then labels with a word that does, then any that contain it. Or a function, handed `{ query, char, state }`, whose rows are shown as it returns them; it may return a promise, and an answer that arrives after the query has moved on is dropped. |
+| `startOfLine` | Only at the start of a textblock — a block menu.                                                                                                                                                                                                                                                                                                                         |
+| `allowSpaces` | The query may hold spaces — a full name. Two spaces in a row end it either way.                                                                                                                                                                                                                                                                                          |
+
+A `SuggestionItem` is a row, and what taking it does:
+
+| Field     | Notes                                                                                                                                                                                                                  |
+| --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `label`   | The row — and what an array is filtered on.                                                                                                                                                                            |
+| `detail`  | Muted text after the label: a handle, a description, a shortcut.                                                                                                                                                       |
+| `insert`  | What replaces the trigger and its word: text, or a node of the schema — text carrying a link mark, a mention node of your own schema. Default: the trigger and the label. A space follows it, unless one already does. |
+| `command` | Run instead of inserting anything, where the trigger and its word were: a block menu's "Heading 1". It is one undo step with the deletion.                                                                             |
+
+The list hangs below the trigger and follows its text as the document
+scrolls. It takes plain keys, and only while it has rows: **Up** and
+**Down** move the highlight, **PageUp** and **PageDown** by a page, **Enter**
+and **Tab** take the row — so a `submitOnEnter` composer takes the mention
+rather than sending the message — and **Escape** closes the list. A press on
+a row takes it, and the caret stays where it was. One undo straight after a
+choice gives back what was typed.
+
+**A list opens as its trigger's word is typed, never when the caret merely
+moves into one.** The value is markdown, so a mention stays text — `@ada` —
+and a document soon holds many words that start with a trigger: clicking
+into one opens nothing, typing in it does. A list closed with Escape, or by a
+choice, stays closed for that trigger until its character is deleted. While
+the word is typed it carries the decoration class `suggestion`, drawn in the
+accent colour; `decorationClasses={{ suggestion: … }}` restyles it.
+
+**A mention is text, or text with a mark.** The default schema is GFM, and
+markdown has no mention — GitHub keeps `@ada` as text too. For a mention
+that links, `insert: schema.text('@ada', [schema.marks.link.create({ href })])`;
+for a mention node, hand the editor a schema that has one and insert that.
+
+**The list is plugin state.** The prop installs `suggestions(suggesters)` —
+one plugin per editor, holding every trigger — and the popup is drawn from
+nothing but `suggestionState(state)`: `{ char, query, from, to, items,
+selected }`. An app that owns the `EditorState` puts the same plugin in its
+plugins, ahead of the defaults so a row takes Enter before the keymap does,
+and gets the same list:
+
+```ts
+EditorState.create({
+  schema,
+  plugins: [
+    suggestions([{ char: '@', items: people }]),
+    ...defaultPlugins(schema),
+  ],
+});
+```
+
+The list's commands are exported for a toolbar, a test, or a list of your
+own: `acceptSuggestion(index?)`, `selectSuggestion(index)` and
+`dismissSuggestion`; `filterSuggestions(items, query)` is the editor's own
+filter.
 
 ## The document model
 
@@ -314,6 +391,12 @@ function Fence({ node, children, updateAttributes }: NodeViewProps) {
   paste inside one editor would flatten every list.
 - **Every block is mounted.** Only the blocks an edit touched re-render, but
   nothing is virtualized — right for notes and documents, not for a book.
+- **A suggestion list opens as its word is typed**, never as the caret moves
+  into one — the rule GitHub's comment box keeps, and
+  [`<CodeEditor>`](code-editor.md)'s completion. A markdown document keeps
+  its mentions as text, so it is soon full of words that start with a
+  trigger, and a click into one of them should place a caret, not open a
+  list.
 
 ## Backends
 
@@ -332,12 +415,16 @@ another application arrives as its text (react-x11's docs/clipboard.md,
 `dedentCode`, `goToCell`, `isMarkActive`, `isBlockActive`, `markAttrs`); the
 codecs (`docFromMarkdown`, `markdownFromDoc`, `markdownCodec`,
 `docFromHTML`, `htmlFromContent`, `docFromText`, `textFromDoc`);
-`DEFAULT_TOOLBAR` and `toolbarItems`; and the types `DomKeyEvent`,
+`DEFAULT_TOOLBAR` and `toolbarItems`; the suggestion plugin and its commands
+(`suggestions`, `suggestionState`, `acceptSuggestion`, `selectSuggestion`,
+`dismissSuggestion`, `filterSuggestions`); and the types `DomKeyEvent`,
 `NodeViewProps`, `ImageInfo`, `MarkStyle`, `RunStyle`, `ToolbarEntry`,
-`ToolbarItem` and `MarkdownCodec`.
+`ToolbarItem`, `MarkdownCodec`, `Suggester`, `SuggestionItem`,
+`SuggestionQuery` and `SuggestionState`.
 
 ## Example
 
 `npm run examples:rich-text-editor` shows a notes pane — toolbar, markdown
-source beside it, and a stock ProseMirror decoration plugin — next to a chat
-composer that grows as it is typed in and sends on Enter.
+source beside it, a stock ProseMirror decoration plugin, and a `/` block
+menu — next to a chat composer that grows as it is typed in, sends on
+Enter, and mentions people with `@` and channels with `#`.
