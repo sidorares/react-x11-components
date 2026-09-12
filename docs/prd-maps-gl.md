@@ -1,9 +1,12 @@
 # Maps on the GPU
 
-> **Status: proof of concept**, 2026-09-12. The code is in `src/maps/gl/`
-> and is **not exported** from the package; `examples/maps-gl.tsx` runs it
-> and `scripts/bench/maps-gl.ts` / `maps-gl-live.tsx` measure it. Every
-> number below is from an Apple M1 Pro — OpenGL 4.1 on Metal, through
+> **Status: `<Map>`'s GL renderer**, 2026-09-12. What began as this proof
+> of concept is the renderer `<Map>` chooses by default wherever there is
+> direct GL, with the retained renderer as its fallback — see "One `<Map>`,
+> two renderers" and "The soak". The code is in `src/maps/gl/`, loaded when a
+> map chooses it; `examples/maps-gl.tsx` runs it and
+> `scripts/bench/maps-gl.ts` / `maps-gl-live.tsx` measure it. Every number
+> below is from an Apple M1 Pro — OpenGL 4.1 on Metal, through
 > x11-dri 0.7.0 — under react-x11 2.11.0, on the corpus
 > `scripts/bench/tiles.ts` fetches (real OpenStreetMap Shortbread tiles for
 > Manhattan, central London, Tokyo and a mid-Pacific control, 104 tiles over
@@ -544,9 +547,40 @@ roads, are where the next milliseconds are**. Low-zoom `land` and
 closer together than a pixel. The levers, in order of what they would buy:
 simplify fill rings to the level's resolution once, at build time (the
 retained renderer's decimation, moved from every frame to every tile); drop
-the edge pass where a fill's neighbour shares its colour; and a
-`stencilOpSeparate` in x11-dri, which makes non-zero one pass. The offscreen
-copy is 0.1–1.3 ms a frame — what XQuartz pays for its missing stencil.
+the edge pass where a fill's neighbour shares its colour; and
+`stencilOpSeparate`, which makes non-zero one pass — x11-dri 0.8 has it, and
+the renderer uses it wherever the table does. The offscreen copy is
+0.1–1.3 ms a frame — what XQuartz pays for its missing stencil, until ntk
+asks CGL for one (ntk#353).
+
+### The soak
+
+What `'auto'` became the default on: the live bench with everything an
+application puts on a map switched on — the style's labels, 200 markers (a
+tenth of them discs, one selected) and overlays (a 400-point route with a
+casing, a dashed line, a translucent area with a hole and two translucent
+circles) — and the same map with only its labels. London at zoom 12.3,
+1200×800, six seconds a phase; "late" is intervals over 20 ms.
+
+| backend                 | builds    | markers, overlays | settle fps | pan fps / late | zoom fps / late | fly fps / late | pan interval median / p95 / max |
+| ----------------------- | --------- | ----------------- | ---------: | -------------- | --------------- | -------------- | ------------------------------- |
+| Cocoa                   | here      | on                |         49 | 60 / 0         | 80 / 4          | 86 / 6         | 16.6 / 18.4 / 19.4 ms           |
+| Cocoa                   | 2 workers | on                |         71 | 60 / 0         | 79 / 1          | 89 / 1         | 16.6 / 18.7 / 19.8 ms           |
+| Cocoa                   | 2 workers | off               |         72 | 60 / 0         | 79 / 2          | 91 / 0         | 16.7 / 18.1 / 19.4 ms           |
+| X11 (XQuartz Apple-DRI) | here      | on                |         79 | 93 / 0         | 93 / 4          | 91 / 4         | 10.6 / 13.2 / 16.6 ms           |
+| X11 (XQuartz Apple-DRI) | 2 workers | on                |         85 | 97 / 0         | 94 / 0          | 97 / 1         | 10.1 / 12.4 / 14.5 ms           |
+| X11 (XQuartz Apple-DRI) | 2 workers | off               |         91 | 95 / 0         | 97 / 0          | 103 / 0        | 10.5 / 12.6 / 18.5 ms           |
+
+What the markers and overlays cost is a fraction of a millisecond of the
+main thread a frame — 0.74 against 0.51 ms at the median while panning on
+Cocoa, within the noise on X11 — and no frame rate on either backend. The
+late frames that remain are tile builds on the main thread, a dense tile up
+to 80 ms of it; with `buildWorkers={2}` they are gone from pan and zoom and
+down to one in fly. On Cocoa the pan phase runs at 60 fps with or without
+anything on the map, while zoom and fly run at 79–91: the window paces that
+phase, and the renderer issues a pan frame in under a millisecond. The
+frames read back from GL inside the frame — the only capture that sees the
+surface — are attached to the pull request that closed #101.
 
 ## Platform findings
 
@@ -614,24 +648,30 @@ are candidates for upstream issues.
     ntk's X11 font fallback spaces Cyrillic out ("М о с т" in a probe).
     _Upstream candidate: the fallback's advances._
 
-## What a real renderer still needs
+## What is still to do
 
-The proof of concept draws the basemap — fills, lines, dashes, the default
-styles' every geometry layer — and its labels, and nothing else `<Map>`
-does. In rough order:
+The GL renderer draws everything `<Map>` does ("One `<Map>`, two
+renderers", next). What it does not do yet, in rough order:
 
 - **Curved labels, icons and label priorities from the style.** A name that
   only fits around a bend is not drawn (by design — see "Labels"), a style
   cannot yet say `symbol-sort-key` or weight a face, and there are no POI
   icons, which are instanced quads from the same atlas.
-- **Markers, overlays and attribution** in GL: overlays are polylines, which
-  is the capsule shader again; markers are instanced quads.
-- **Raster sources** as textures, **circle layers** as instanced discs, and
-  translucent lines (the depth trick above).
-- **Hit testing** (the decoder already answers it on the CPU) and
-  abort-on-leave for loads, as `<Map>` has; and pinch, which `<GlMap>` does
-  not handle — a two-finger scroll is a wheel and zooms, as in `<Map>`.
-- **One API** — the next section.
+- **Caps and joins other than round.** Every GL line has round caps and
+  round joins, so a style's `cap` and `join` are the retained renderer's
+  alone. Butt and square caps and miter and bevel joins need a segment's
+  neighbours in the vertex shader: a sentinel before a stream's first
+  record, and two more attributes.
+- **Dash patterns of more than four dashes**, cut to four today.
+- **Timer queries and multisampling** from x11-dri 0.8 — the first to price
+  adaptive quality's moving frames without `glFinish`, the second to retire
+  the fill edge pass. x11-dri reports both (`gl.getFeatures()`); nothing
+  here reads them yet. Its `stencilOpSeparate` is read: it makes a non-zero
+  fill one stencil pass.
+- **Marker boxes in the label collision grid**, so that a name does not run
+  under a marker — which neither renderer does.
+- **Pinch**: a two-finger scroll is a wheel and zooms, as on the retained
+  renderer.
 
 ## One `<Map>`, two renderers
 
@@ -658,10 +698,11 @@ them is going away:
 4. **Capture.** A GL surface is invisible to window capture on both backends
    (finding 3). A retained map is in the window's own pixels, so a snapshot,
    a documentation screenshot or a print sees it.
-5. **2D over the map.** `<Map>`'s `children` — a legend, a control panel — are
-   laid out over the pane, and a `<glarea>` is stacked above every 2D thing
-   in its window. Under GL they would be hidden, until core can put 2D
-   content above a GL surface.
+5. **2D over the map, on an older core.** `<Map>`'s `children` — a legend, a
+   control panel — are laid out over the pane, and a `<glarea>` is stacked
+   above every 2D thing in its window. Under GL they would be hidden on a
+   core from before react-x11#546, which draws a surface's children above it
+   (`useSupports('glOverlay')`).
 
 What keeping it costs is a second draw path, which is less than it sounds:
 everything above the draw is shared already, or can be.
@@ -672,15 +713,17 @@ everything above the draw is shared already, or can be.
 | style                                       | `style.ts`, `styles.ts`, `prepareStyle` + filters |                                                    |
 | projection, tile cover                      | `proj.ts`                                         |                                                    |
 | sources, pyramids, `load`                   | `sources.ts`                                      |                                                    |
-| tile cache                                  | (the bytes could be)                              | surfaces (retained), buckets (GL)                  |
-| labels                                      | the text-field rule                               | world-pixel vs screen-space placement; 2D vs atlas |
-| camera, input, handle                       | (should be)                                       | `MapViewNode`, `gl/view.ts`                        |
-| markers, overlays, attribution, hit testing |                                                   | retained only                                      |
+| tile cache                                  | (the bytes could be)                              | surfaces (retained), buckets and textures (GL)     |
+| labels                                      | the anchors (`anchors.ts`) and the fit rules      | world-pixel vs screen-space placement; 2D vs atlas |
+| camera, input, handle                       | `controller.ts`                                   |                                                    |
+| markers, overlays, attribution, hit testing | order, paint, layout, hit test (`overlay.ts`)     | 2D paths vs instanced discs and a rebased bucket   |
 
-The label anchors and placement (`gl/labels.ts`, `gl/placement.ts`) are CPU
-code with a GL batch at the very end. The retained renderer can take them
-over and draw the result with its 2D context, and then both renderers name
-streets the same way.
+The label anchors are `src/maps/anchors.ts` now, and the retained renderer
+places from them — in world pixels still, with the GL renderer's fit rules —
+so both renderers name the same streets in the same places, at the same
+angles. Placement stays each renderer's own: world pixels are what keep the
+retained renderer's pan a blit, and screen space with fades is what a
+renderer that draws every frame can afford.
 
 ### One component, chosen for you
 
@@ -730,40 +773,46 @@ Three decisions go with it:
 - **`'gl'` never falls back silently.** An application that asked for GL
   wants to know it did not get it.
 
-### What GL needs before `'auto'` may choose it
+### What GL needed before `'auto'` could choose it
 
-In the order of how many maps each one blocks:
+In the order of how many maps each one blocked — all of them in now:
 
 1. **Attribution** — a licence condition, on every OpenStreetMap map. Drawn
-   in GL through the label atlas.
-2. **Markers and overlays**, and their events: markers are instanced quads
-   from the atlas and `markerAt`, `onMarkerClick` and `onMarkerHover` are the
-   retained renderer's CPU hit test, shared; overlays are polylines and
-   rings, which are the capsule and fan programs again.
-3. **The rest of the handle and events** — `fitBounds`, `fitMarkers`,
-   `getBounds`, `project`, `unproject`, `zoomIn`/`zoomOut`/`zoomTo`,
-   `refresh`, a controlled `camera`, `onCameraChange`, `onMoveEnd`,
-   `onMapClick`, `onTileError`. Camera arithmetic from `proj.ts`; no drawing.
-4. **Raster sources** as textures, and **circle layers** as instanced discs.
-5. **`children` over the map**, which needs core: 2D content above a
-   `<glarea>` — on Cocoa a layer above the GL sublayer, on X11 a child window
-   above the GL window. Until then, `'auto'` keeps a map with children
+   through the label atlas, on the pixels the retained renderer puts it on
+   (`attributionLayout`, shared).
+2. **Markers and overlays**, and their events. Markers are one instanced
+   draw, each shaded by its distance to its outline — a disc, or the pin's
+   teardrop — and the hit test and its events are the controller's. Overlays
+   are one bucket of the tiles' own record streams, drawn by the same
+   programs; its records are int16 from the centre of a region around the
+   view, worked out in float64, so a vertex holds still at zoom 22
+   (`gl/overlays.ts`).
+3. **The rest of the handle and events** — the controller's, so
+   `test/maps-renderers.test.ts` runs one suite against both renderers.
+4. **Raster sources** as textures, drawn whole past the source's depth, and
+   **circle layers** as instanced discs.
+5. **`children` over the map** — react-x11#546 draws a surface's children
+   above it. On a core from before it, `'auto'` keeps a map with children
    retained.
 
 ### Order of work
 
-1. This proof of concept, not exported, and this plan.
+1. This proof of concept, and this plan. **Done** (#100).
 2. The shared controller, and `<Map renderer>` with `'retained'` as the
-   default and `'gl'` an opt-in whose gaps are documented.
+   default and `'gl'` an opt-in. **Done** (#101).
 3. GL parity, items 1–4 above; the retained renderer adopts the GL label
-   placement.
-4. `'auto'` becomes the default, once both backends have soaked and a test
-   proves the fallback (a GL that fails on its first frame).
-5. In core, alongside: 2D over a `<glarea>`; press and motion forwarding from
-   its child window (finding 6); and either `'auto'` as X11's default
-   `glPolicy` or the policy question answered in `<Map>`'s documentation.
+   anchors. **Done** (#101).
+4. `'auto'` becomes the default, once both backends have soaked ("The soak",
+   above) and a test proves the fallback — a GL that fails on its first
+   frame. **Done** (#101).
+5. In core, alongside: 2D over a `<glarea>` (react-x11#546); press and
+   motion forwarding from its child window (react-x11#545, which `<Map>`
+   reads as `forwardsPointer`); and the `glPolicy` question answered in
+   `<Map>`'s documentation rather than by a new default for X11 — a map
+   cannot raise its connection's policy, and an app that wants GL on X11
+   says so once, at `createRoot`.
 
-The retained renderer is deprecated at no step. It becomes the fallback.
+The retained renderer is deprecated at no step. It is the fallback.
 
 ## Reproduce
 
@@ -777,5 +826,7 @@ REACT_X11_BACKEND=x11 npx tsx scripts/bench/maps-gl-live.tsx --workers=2
 npx tsx scripts/bench/maps-gl-live.tsx --workers=2 --adaptive=3 --fade=300
 npx tsx scripts/bench/maps-gl-live.tsx --workers=2 --zoom=15.5 --readback=f.png   # labels
 npx tsx scripts/bench/maps-gl-live.tsx --workers=2 --zoom=15.5 --labels=off       # and without
+npx tsx scripts/bench/maps-gl-live.tsx --markers=200 --overlays=on                 # the soak
+REACT_X11_BACKEND=x11 npx tsx scripts/bench/maps-gl-live.tsx --markers=200 --overlays=on
 npm run examples:maps-gl                                # and look at it
 ```

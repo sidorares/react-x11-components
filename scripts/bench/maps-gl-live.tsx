@@ -27,6 +27,8 @@ import type {
   MapFrameStats,
   MapGlFrameStats,
   MapHandle,
+  MapMarker,
+  MapOverlay,
 } from '../../src/maps/index.js';
 import { project, unproject, worldSize } from '../../src/maps/proj.js';
 import type { LngLat, MapCamera } from '../../src/maps/proj.js';
@@ -51,6 +53,12 @@ const snapshot = arg('snapshot', '');
 // labels begin at 14. `--labels=off` draws the map without any.
 const zoom = Number(arg('zoom', String(place.zoom)));
 const labels = arg('labels', 'on') !== 'off';
+// `--markers=200` scatters that many markers around the place — a tenth of
+// them discs, one selected — and `--overlays=on` lays a route with a
+// casing, a dashed line, an area with a hole and two circles over it: what
+// an application puts on a map, drawn over the tiles and labels every frame.
+const markerCount = Number(arg('markers', '0'));
+const withOverlays = arg('overlays', 'off') === 'on';
 
 const bytes = new Map<string, Uint8Array>();
 for (const { tile, file } of await cachedTiles()) {
@@ -71,6 +79,87 @@ const source: MapSource = {
 };
 const sources = [source];
 const base: MapCamera = { center: place.centre, zoom };
+
+/** The same numbers on every run, so two runs draw the same map. */
+function random(seed: number): () => number {
+  let s = seed >>> 0;
+  return () => {
+    s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
+    return s / 2 ** 32;
+  };
+}
+const next = random(101);
+const around = (spread: number): LngLat => ({
+  lon: place.centre.lon + (next() - 0.5) * spread,
+  lat: place.centre.lat + (next() - 0.5) * spread * 0.6,
+});
+/** A 48-gon about the place, `r` degrees across in longitude. */
+function ring(r: number): LngLat[] {
+  return Array.from({ length: 49 }, (_, i) => {
+    const a = (i / 48) * Math.PI * 2;
+    return {
+      lon: place.centre.lon + r * Math.cos(a),
+      lat: place.centre.lat + r * 0.6 * Math.sin(a),
+    };
+  });
+}
+const markers: MapMarker[] = Array.from({ length: markerCount }, (_, i) => ({
+  id: `m${i}`,
+  position: around(0.12),
+  shape: i % 10 === 0 ? 'circle' : 'pin',
+  selected: i === 0,
+}));
+const route: LngLat[] = Array.from({ length: 400 }, (_, i) => ({
+  lon: place.centre.lon - 0.08 + (0.16 * i) / 399,
+  lat: place.centre.lat + 0.02 * Math.sin(i / 25),
+}));
+const overlays: MapOverlay[] = withOverlays
+  ? [
+      {
+        kind: 'line',
+        id: 'route',
+        path: route,
+        color: '#2d6cdf',
+        width: 5,
+        casing: '#ffffff',
+      },
+      {
+        kind: 'line',
+        id: 'dashed',
+        path: route.map((p) => ({ lon: p.lon, lat: p.lat - 0.01 })),
+        color: '#c0392b',
+        width: 3,
+        dash: [8, 4, 2, 4],
+        opacity: 0.8,
+      },
+      {
+        kind: 'polygon',
+        id: 'area',
+        rings: [ring(0.03), ring(0.012)],
+        fill: '#27ae60',
+        opacity: 0.25,
+        outline: '#27ae60',
+        outlineWidth: 2,
+      },
+      {
+        kind: 'circle',
+        id: 'near',
+        center: place.centre,
+        radiusMetres: 400,
+        fill: '#8e44ad',
+        opacity: 0.2,
+        outline: '#8e44ad',
+      },
+      {
+        kind: 'circle',
+        id: 'far',
+        center: around(0.08),
+        radiusMetres: 1500,
+        fill: '#f39c12',
+        opacity: 0.15,
+      },
+    ]
+  : [];
 
 type Phase = 'settle' | 'pan' | 'zoom' | 'fly';
 
@@ -236,6 +325,8 @@ root.render(
       ref={handle}
       sources={sources}
       mapStyle={labels ? undefined : NO_LABELS}
+      markers={markers}
+      overlays={overlays}
       defaultCamera={base}
       onFrame={onFrame}
       onAfterDraw={onAfterDraw}
@@ -319,6 +410,7 @@ const backend =
   (process.platform === 'darwin' ? 'cocoa' : 'x11');
 process.stdout.write(
   `\nlive on ${backend}: 1200×800 window, ${seconds} s per phase; settled in ${settledMs.toFixed(0)} ms\n` +
+    `  labels ${labels ? 'on' : 'off'}, ${markerCount} markers, overlays ${withOverlays ? 'on' : 'off'}\n` +
     `  phase   frames   fps   interval med    p95    max   >20ms   issue med   build total/max   tiles   segments\n`,
 );
 const summary: Record<string, unknown>[] = [];
@@ -403,6 +495,9 @@ if (json) {
       {
         backend,
         seconds,
+        labels,
+        markers: markerCount,
+        overlays: withOverlays,
         summary,
         frames: frames.map((f) => ({
           phase: f.phase,

@@ -173,7 +173,9 @@ export interface GlRenderOptions {
   antialias?: boolean;
   /**
    * `'nonzero'` (the default) is the rule the retained renderer fills with,
-   * and costs two stencil passes, one per facing. `'evenodd'` is one pass —
+   * and costs two stencil passes, one per facing — or one, on a GL table
+   * with `stencilOpSeparate` (x11-dri 0.8, and the Cocoa backend's), which
+   * counts both facings in the same draw. `'evenodd'` is one pass —
    * and wrong wherever two features of one layer overlap, which real
    * landuse does: the overlap is cut out as if it were a hole.
    */
@@ -313,6 +315,9 @@ export class GlMapRenderer {
   private readonly _tiles = new Map<GlTileData, TileGpu>();
   private readonly _colors = new Map<string, Rgba | null>();
   private _stencil: boolean | null = null;
+  /** Whether the table sets each facing's stencil operation apart, which
+   *  makes the non-zero winding one pass. */
+  private readonly _separate: boolean;
   /** Offscreen targets by role: `'output'` stands in for a surface with no
    *  stencil buffer, `'fade'` holds the scene being faded in. */
   private readonly _targets = new Map<string, Offscreen>();
@@ -339,6 +344,11 @@ export class GlMapRenderer {
       fillRule: options.fillRule ?? 'nonzero',
       offscreen: options.offscreen ?? 'auto',
     };
+    // Asked of the table itself: an x11-dri from before 0.8 has no such
+    // entry at all, and an entry that is there works.
+    this._separate =
+      'stencilOpSeparate' in (gl as object) &&
+      typeof gl.stencilOpSeparate === 'function';
     this._line = linkProgram(gl, LINE_VERTEX, LINE_FRAGMENT, [
       'u_tile',
       'u_viewport',
@@ -409,7 +419,8 @@ export class GlMapRenderer {
     const layers = frame.style.layers;
     const detail = frame.detail ?? 0;
     const edges = frame.edges ?? this._options.antialias;
-    const stencil = this._options.fillRule === 'nonzero' ? 2 : 1;
+    const stencil =
+      this._options.fillRule === 'nonzero' && !this._separate ? 2 : 1;
     let work = 0;
     for (const tiles of frame.sources) {
       const visible = tiles.map(
@@ -665,23 +676,32 @@ export class GlMapRenderer {
     gl.colorMask(false, false, false, false);
     gl.enable(gl.STENCIL_TEST);
     gl.stencilFunc(gl.ALWAYS, 0, 0xff);
-    const passes: [number | null, number][] =
-      this._options.fillRule === 'nonzero'
+    const fan = (count: number): void => {
+      gl.drawArraysInstanced(gl.TRIANGLES, 0, 3, count);
+    };
+    const nonzero = this._options.fillRule === 'nonzero';
+    if (nonzero && this._separate) {
+      // Front faces count up and back faces down, in the one draw.
+      gl.disable(gl.CULL_FACE);
+      gl.stencilOpSeparate(gl.FRONT, gl.KEEP, gl.KEEP, gl.INCR_WRAP);
+      gl.stencilOpSeparate(gl.BACK, gl.KEEP, gl.KEEP, gl.DECR_WRAP);
+      this._eachTile(tiles, index, scissors, this._fan, true, fan);
+    } else {
+      const passes: [number | null, number][] = nonzero
         ? [
             [gl.BACK, gl.INCR_WRAP],
             [gl.FRONT, gl.DECR_WRAP],
           ]
         : [[null, gl.INVERT]];
-    for (const [cull, op] of passes) {
-      if (cull === null) gl.disable(gl.CULL_FACE);
-      else {
-        gl.enable(gl.CULL_FACE);
-        gl.cullFace(cull);
+      for (const [cull, op] of passes) {
+        if (cull === null) gl.disable(gl.CULL_FACE);
+        else {
+          gl.enable(gl.CULL_FACE);
+          gl.cullFace(cull);
+        }
+        gl.stencilOp(gl.KEEP, gl.KEEP, op);
+        this._eachTile(tiles, index, scissors, this._fan, true, fan);
       }
-      gl.stencilOp(gl.KEEP, gl.KEEP, op);
-      this._eachTile(tiles, index, scissors, this._fan, true, (count) => {
-        gl.drawArraysInstanced(gl.TRIANGLES, 0, 3, count);
-      });
     }
     gl.disable(gl.CULL_FACE);
 

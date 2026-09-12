@@ -30,9 +30,11 @@ import { QUALITY_LADDER, chooseQuality } from '../src/maps/gl/view.js';
 import { Map as MapView } from '../src/maps/index.js';
 import type { MapHandle } from '../src/maps/index.js';
 import {
+  DEFAULT_RENDERER,
   capabilityBlockers,
   chooseRenderer,
   loadGlRenderer,
+  rendererRequest,
 } from '../src/maps/renderer.js';
 import { prepareStyle } from '../src/maps/paint.js';
 import type { MapStyleLayer } from '../src/maps/style.js';
@@ -600,6 +602,57 @@ test('non-zero fills take two stencil passes, even-odd one', () => {
   };
   assert.strictEqual(count('nonzero'), 2);
   assert.strictEqual(count('evenodd'), 1);
+});
+
+test('on a table with stencilOpSeparate, a non-zero fill is one pass: front faces up, back faces down', () => {
+  const data = buildTileBuckets(fixtureTile(), prepareStyle({ layers: STYLE }));
+  const only = STYLE.slice(0, 1);
+  const { gl, log } = recordingGl(true);
+  // x11-dri 0.8's table has the entry; the recording one answers every
+  // name, so it is told which it has.
+  const separate = new Proxy(gl as object, {
+    has: (target, name) => name === 'stencilOpSeparate' || name in target,
+  });
+  const renderer = new GlMapRenderer(separate, { antialias: false });
+  renderer.render(frameOver(data, only));
+  assert.strictEqual(
+    log.filter((c) => c.name === 'drawArraysInstanced').length,
+    1,
+  );
+  const ops = log.filter((c) => c.name === 'stencilOpSeparate');
+  assert.strictEqual(ops.length, 2);
+  // And what the frame is priced at says so.
+  const twoPass = new GlMapRenderer(recordingGl(true).gl, { antialias: false });
+  assert.ok(
+    renderer.estimate(frameOver(data, only)) <
+      twoPass.estimate(frameOver(data, only)),
+  );
+});
+
+test('a map that names no renderer is auto — the retained one on a connection with no direct GL, which it says', async () => {
+  assert.strictEqual(DEFAULT_RENDERER, 'auto');
+  assert.deepStrictEqual(rendererRequest(undefined, undefined), {
+    asked: 'auto',
+    forced: false,
+  });
+  // The environment still has the last word.
+  assert.deepStrictEqual(rendererRequest(undefined, 'retained'), {
+    asked: 'retained',
+    forced: true,
+  });
+  const changes: [string, string][] = [];
+  const result = await renderX11(
+    React.createElement(MapView, {
+      defaultCamera: { center: { lon: -0.1281, lat: 51.508 }, zoom: 12 },
+      onRendererChange: (renderer, reason) => changes.push([renderer, reason]),
+      'data-testname': 'map',
+    }),
+    { backend: 'xserver', width: 640, height: 480 },
+  );
+  await waitFor(() => {
+    assert.deepStrictEqual(changes, [['retained', 'no-direct-gl']]);
+  });
+  assert.strictEqual(kindOf(result.getByTestName('map')), 'mapview');
 });
 
 test('what a frame is estimated to cost is what it draws', () => {
@@ -1473,11 +1526,12 @@ test('the GL store reports each failed load, retries on the backoff, and aborts 
 
 test('the renderer decision: the environment, then the prop, then the connection, then the gate, then a failure', () => {
   const base = { shaders: true, blockers: [], failed: false };
-  // Nothing said: the retained renderer, until GL has soaked.
+  // Nothing said is 'auto': GL, on a connection with direct GL and a map
+  // that uses nothing GL lacks.
   assert.deepStrictEqual(chooseRenderer(base), {
-    renderer: 'retained',
+    renderer: 'gl',
     reason: null,
-    asked: 'retained',
+    asked: 'auto',
   });
   // A renderer asked for by name is what the map gets — GL with no direct
   // GL too, where it fails through `onError` rather than falling back.

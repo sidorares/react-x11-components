@@ -1265,6 +1265,36 @@ layer, the high-zoom `buildings` layer — so per-feature culling never culls
 it and a per-feature path flush never flushes it. Both wanted per-**part**
 handling.
 
+**One `<Map>`, two renderers.** `<Map>` draws through GL (`src/maps/gl/`:
+every frame from vector buckets, through a `<glarea>`) where the connection
+has direct GL, and through the retained renderer (`MapViewNode`) everywhere
+else — `renderer="auto"`, the default, decided in `src/maps/renderer.ts`.
+What makes two renderers one component is that **nothing above the drawing
+belongs to either**: the camera, the settle window, the gestures, the hit
+test and the handle live on `MapController` (`src/maps/controller.ts`),
+which a renderer attaches to as a `MapView`; marker order and paint, the
+attribution's layout and the overlay order are `overlay.ts`'s; label anchors
+are `anchors.ts`'s. A renderer that grows a camera of its own, a hit test or
+its own idea of where a label goes is the bug: the handle would change
+meaning across a fallback, and a map moved from one renderer to the other
+would visibly move. Three rules came with it:
+
+- **The GL module is a dynamic import**, so `<Map>` alone bundles none of it
+  — `test/treeshake.test.ts` looks for the GL pane's element name and a
+  shader keyword in the entry chunk. Nothing outside `src/maps/gl/` imports
+  from it but `loadGlRenderer()`.
+- **Nothing large reaches a float32.** A tile's coordinates are small
+  numbers from its own corner; an overlay's are geography, so its bucket is
+  int16 from a region around the view, and where the region lands is worked
+  out each frame in float64 from the camera (`gl/overlays.ts`). A world
+  position in float32 at zoom 22 is hundreds of pixels out.
+- **Test both renderers with one suite.** `test/maps-renderers.test.ts` runs
+  every handle and event test against both. A GL frame in the harness is the
+  surface's `onDraw` called by hand with a stand-in context, after
+  `app.chooseGLConfig` is stubbed to a promise that never settles, so the
+  harness's own "no GLX" failure never lands. `test/maps.test.ts` is the
+  retained renderer's, and stays exactly as it is.
+
 ## A rich text editor over ProseMirror
 
 `src/rich-text-editor/` is `<RichTextEditor>`, and the sentence to keep from

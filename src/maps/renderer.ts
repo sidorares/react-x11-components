@@ -36,10 +36,13 @@ import type {
 export const RENDERER_ENV = 'REACT_X11_MAP_RENDERER';
 
 /**
- * What a map asks for when it does not say. `'retained'` until the GL
- * renderer has soaked on both backends; `'auto'` after.
+ * What a map asks for when it does not say: GL where this connection draws
+ * through the direct backend, the retained renderer everywhere else — which
+ * is still every indirect GLX connection, every remote X server and every
+ * headless test run. `'retained'` until the GL renderer had soaked on both
+ * backends (`docs/prd-maps-gl.md`, "The soak").
  */
-export const DEFAULT_RENDERER: MapRendererRequest = 'retained';
+export const DEFAULT_RENDERER: MapRendererRequest = 'auto';
 
 const REQUESTS: readonly string[] = ['auto', 'gl', 'retained'];
 
