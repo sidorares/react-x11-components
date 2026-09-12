@@ -67,6 +67,7 @@ import type { LayoutTick } from '../internal/timers.js';
 import { scaleOf } from '../internal/units.js';
 import { parseFromClipboard, serializeForClipboard } from './clipboard.js';
 import type { ClipboardView } from './clipboard.js';
+import { caretOf } from './collab.js';
 import type { InlineDecoration, InlineWidget, RunStyle } from './inline.js';
 import { BlockKeys } from './keys.js';
 import { primaryModifierOf, toDomKeyEvent } from './keymap.js';
@@ -147,9 +148,17 @@ interface Hit {
   atom: boolean;
 }
 
+/** A collaborator's caret in a block: an offset inside it, a colour. */
+interface RemoteCaretAt {
+  pos: number;
+  color: string;
+}
+
 const XK_TAB = 0xff09;
 const XK_ISO_LEFT_TAB = 0xfe20;
 const XK_ESCAPE = 0xff1b;
+
+const NO_CARETS: readonly { index: number; color: string }[] = [];
 
 // --- text helpers ----------------------------------------------------------
 
@@ -308,6 +317,14 @@ export class RichEditorView implements EditorHost, ClipboardView {
   private boxes = new Map<string, DrawnNode>();
   private scroller: ScrollableNode | null = null;
   private pluginViews: PluginView[] = [];
+  /** Whether the component has asked for plugin views
+   *  (`mountPluginViews`), and whether they are made now: they live while
+   *  the root element does. */
+  private pluginViewsWanted = false;
+  private pluginViewsLive = false;
+  /** Collaborators' carets by block key, from widgets `remoteCaret`
+   *  built (./collab.ts). */
+  private carets = new Map<string, readonly RemoteCaretAt[]>();
   private focused = false;
   private preedit: string | null = null;
   private goalX: number | null = null;
@@ -336,7 +353,10 @@ export class RichEditorView implements EditorHost, ClipboardView {
     this.config = config;
     this.keys = new BlockKeys(state.doc);
     this.recomputeDecorations();
-    this.createPluginViews();
+    // Plugin views wait for `mountPluginViews`: a browser's EditorView has
+    // its DOM from its constructor, and plugin views are written to find
+    // `view.dom` there — y-prosemirror's cursor plugin listens on it at once.
+    // Here the root element does not exist until React has created it.
   }
 
   // --- the EditorView surface ----------------------------------------------
@@ -370,6 +390,14 @@ export class RichEditorView implements EditorHost, ClipboardView {
 
   get dragging(): null {
     return null;
+  }
+
+  /** prosemirror-view's own view description, internal there, which a
+   *  plugin reads as "is the view drawn?": y-prosemirror's cursor plugin
+   *  publishes no collaborator's move without it. The root element,
+   *  while there is one. */
+  get docView(): unknown {
+    return this.root;
   }
 
   /** The backend's shortcut modifier — Cmd on macOS, Ctrl on X11. */
@@ -504,6 +532,29 @@ export class RichEditorView implements EditorHost, ClipboardView {
     if (trs.some((tr) => tr.scrolledIntoView)) this.scheduleScroll();
   }
 
+  /**
+   * Make the plugins' views, once the root element exists: the component
+   * calls this after its first commit. A browser's EditorView makes them
+   * in its constructor, where it already has its DOM, and a plugin view
+   * is written to find `view.dom` there; here that is the root element.
+   */
+  mountPluginViews(): void {
+    this.pluginViewsWanted = true;
+    if (this.root) this.startPluginViews();
+  }
+
+  private startPluginViews(): void {
+    if (this.pluginViewsLive || this.destroyedFlag) return;
+    this.pluginViewsLive = true;
+    this.createPluginViews();
+  }
+
+  private stopPluginViews(): void {
+    for (const view of this.pluginViews) view.destroy?.();
+    this.pluginViews = [];
+    this.pluginViewsLive = false;
+  }
+
   private createPluginViews(): void {
     for (const plugin of [
       ...(this.direct.plugins ?? []),
@@ -515,9 +566,9 @@ export class RichEditorView implements EditorHost, ClipboardView {
   }
 
   private resetPluginViews(): void {
-    for (const view of this.pluginViews) view.destroy?.();
-    this.pluginViews = [];
-    this.createPluginViews();
+    const live = this.pluginViewsLive;
+    this.stopPluginViews();
+    if (live) this.startPluginViews();
   }
 
   destroy(): void {
@@ -536,10 +587,14 @@ export class RichEditorView implements EditorHost, ClipboardView {
   attachRoot(node: RichEditorNode): void {
     this.root = node;
     this.primary = primaryModifierOf(node.app);
+    if (this.pluginViewsWanted) this.startPluginViews();
   }
 
   detachRoot(node: RichEditorNode): void {
     if (this.root !== node) return;
+    // the plugin views were made for this element, so they go before it
+    // does: a plugin view's `destroy` reads `view.dom` too
+    this.stopPluginViews();
     this.root = null;
     this.stopBlink();
   }
@@ -635,6 +690,13 @@ export class RichEditorView implements EditorHost, ClipboardView {
         this.stopBlink();
       }
     }
+
+    const carets = this.carets.get(key);
+    text.setRemoteCarets(
+      carets
+        ? carets.map((c) => ({ index: map.toDisplay(c.pos), color: c.color }))
+        : NO_CARETS,
+    );
   }
 
   /** Place the whole selection: every block it touches, every block it
@@ -730,6 +792,7 @@ export class RichEditorView implements EditorHost, ClipboardView {
       return b;
     };
     const found: Decoration[] = [];
+    const carets = new Map<string, RemoteCaretAt[]>();
     this.someProp('decorations', (f) => {
       const source = f(this.state);
       if (source) collectDecorations(source, found);
@@ -745,7 +808,21 @@ export class RichEditorView implements EditorHost, ClipboardView {
       if (typed.widget) {
         const spec = deco.spec as
           { text?: unknown; run?: RunStyle; side?: number } | undefined;
-        if (typeof spec?.text !== 'string' || spec.text === '') continue;
+        if (typeof spec?.text !== 'string' || spec.text === '') {
+          // no text to draw it with — unless it is a collaborator's caret
+          const caret = caretOf(deco, this.asEditorView);
+          const $at = caret ? doc.resolve(deco.from) : null;
+          const key =
+            $at && $at.parent.isTextblock && $at.depth > 0
+              ? this.keys.keyAt($at.before())
+              : undefined;
+          if (caret && $at && key) {
+            let list = carets.get(key);
+            if (!list) carets.set(key, (list = []));
+            list.push({ pos: $at.parentOffset, color: caret.color });
+          }
+          continue;
+        }
         const $pos = doc.resolve(deco.from);
         if (!$pos.parent.isTextblock || $pos.depth === 0) continue;
         const key = this.keys.keyAt($pos.before());
@@ -820,6 +897,19 @@ export class RichEditorView implements EditorHost, ClipboardView {
         changed = true;
       }
     }
+
+    // collaborators' carets go to their blocks' elements the way the
+    // editor's own caret does: set on the node, nothing re-rendered
+    const moved: string[] = [];
+    for (const key of new Set([...this.carets.keys(), ...carets.keys()])) {
+      if (
+        JSON.stringify(this.carets.get(key) ?? []) !==
+        JSON.stringify(carets.get(key) ?? [])
+      )
+        moved.push(key);
+    }
+    this.carets = carets;
+    for (const key of moved) this.syncBlock(key);
     return changed;
   }
 

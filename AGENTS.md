@@ -1339,6 +1339,14 @@ What to know before changing it:
   width by the cell _node_, so typing measures one cell again. The rows are
   separate boxes and still line up because every row's cells get the same
   `flexBasis` and shrink alike.
+- **Plugin views are made after the first commit** (`mountPluginViews`,
+  from the component's layout effect). A browser's EditorView has its DOM
+  from its constructor, and plugin views are written to find `view.dom` —
+  y-prosemirror's cursor plugin listens on it for `focusin`/`focusout`,
+  which the root element answers. A collaborator's caret is a widget whose
+  `toDOM` returns `remoteCaret`'s description (`collab.ts`); the view asks a
+  text-less widget's `toDOM` once, cached by the widget's type, and a
+  builder that reaches for `document` throws and is skipped.
 - **Subpath only.** The one component not re-exported from `src/index.ts`:
   ProseMirror's declarations name DOM globals (`dom-globals.d.ts` declares
   the four this repository needs), and an app importing anything from the

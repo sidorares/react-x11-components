@@ -807,6 +807,40 @@ test('a plugin comes first: its handleKeyDown beats the keymap, and its decorati
   );
 });
 
+test('a plugin view is made once the editor is drawn, finds view.dom there, and is gone before it is', async () => {
+  const seen: string[] = [];
+  type Listen = (type: string, fn: (ev: { type: string }) => void) => void;
+  const plugins = [
+    new Plugin({
+      view(view) {
+        const dom = view.dom as unknown as {
+          addEventListener: Listen;
+          removeEventListener: Listen;
+        };
+        const heard = (ev: { type: string }): void => void seen.push(ev.type);
+        dom.addEventListener('focusin', heard);
+        const drawnYet = (view as unknown as { docView: unknown }).docView;
+        seen.push(drawnYet ? 'made, drawn' : 'made, not drawn');
+        return {
+          destroy() {
+            dom.removeEventListener('focusin', heard);
+            seen.push(view.dom ? 'destroyed, with dom' : 'destroyed, no dom');
+          },
+        };
+      },
+    }),
+  ];
+  await mount({ defaultValue: 'x', plugins });
+  await userEvent.click(drawn(blocks()[0]));
+  assert.deepStrictEqual(seen, ['made, drawn', 'focusin']);
+  cleanup();
+  assert.strictEqual(
+    seen[seen.length - 1],
+    'destroyed, with dom',
+    'a plugin view’s destroy still has the element it listened on',
+  );
+});
+
 test('editorProps are ProseMirror view props, without a plugin to hold them', async () => {
   const { editor } = await mount({
     editorProps: {

@@ -728,6 +728,11 @@ export function RichTextEditor(props: RichTextEditorProps): ReactElement {
     });
   }, [editorProps, view]);
 
+  // the plugins' views, now that the root element exists for them to find
+  useLayoutEffect(() => {
+    view.mountPluginViews();
+  }, [view]);
+
   useEffect(() => () => view.destroy(), [view]);
 
   const editable = !readOnly && !disabled;
@@ -1216,6 +1221,9 @@ export {
   tableRepair,
 } from './tables.js';
 export type { ColumnAlign } from './tables.js';
+export { remoteCaret } from './collab.js';
+export type { RemoteCaret } from './collab.js';
+export type { DomFocusEvent } from './nodes.js';
 export type { ImageInfo, NodeViewProps } from './render.js';
 export type { MarkStyle } from './look.js';
 export type { RunStyle } from './inline.js';

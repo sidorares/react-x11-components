@@ -173,19 +173,27 @@ stays in it; `TableView` sizes each column to its widest cell the way
 the table's own buttons are in the toolbar only with the caret in a
 table.
 
+**Collaborators' carets** (`collab.ts`) are y-prosemirror's cursor widgets
+made drawable. Its cursor plugin builds each with a `cursorBuilder`, which
+by default makes a DOM element; `remoteCaret` makes a description instead,
+and the view, asking a text-less widget's `toDOM` once, draws what comes
+back as a bar beside the editor's own caret. The plugin views that need
+`view.dom` — y-prosemirror's listens on it for focus — are made once the
+root element exists, not in the view's constructor.
+
 ## What a plugin can count on
 
 The ledger, so "does my plugin work?" has an answer short of trying it.
 
-| `EditorView` member                                                           | Here                                                       |
-| ----------------------------------------------------------------------------- | ---------------------------------------------------------- |
-| `state`, `dispatch`, `props`, `someProp`, `setProps`, `update`, `updateState` | Yes. `someProp` in ProseMirror's order.                    |
-| `editable`, `composing`, `hasFocus()`, `focus()`, `isDestroyed`, `destroy()`  | Yes.                                                       |
-| `posAtCoords`, `coordsAtPos`, `endOfTextblock`                                | Yes, in logical window coordinates.                        |
-| `pasteText`, `pasteHTML`                                                      | Yes, through the same props a real paste goes through.     |
-| `dom`                                                                         | The root element — a react-x11 node, not an `HTMLElement`. |
-| `dragging`                                                                    | Always `null`: no drag and drop yet.                       |
-| `root`, `domAtPos`, `nodeDOM`, `posAtDOM`, `domSelection()`                   | No. There is no DOM to answer with.                        |
+| `EditorView` member                                                           | Here                                                                                                                                               |
+| ----------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `state`, `dispatch`, `props`, `someProp`, `setProps`, `update`, `updateState` | Yes. `someProp` in ProseMirror's order.                                                                                                            |
+| `editable`, `composing`, `hasFocus()`, `focus()`, `isDestroyed`, `destroy()`  | Yes.                                                                                                                                               |
+| `posAtCoords`, `coordsAtPos`, `endOfTextblock`                                | Yes, in logical window coordinates.                                                                                                                |
+| `pasteText`, `pasteHTML`                                                      | Yes, through the same props a real paste goes through.                                                                                             |
+| `dom`                                                                         | The root element — a react-x11 node, not an `HTMLElement` — with `addEventListener` for the focus events; `docView` is truthy while it is mounted. |
+| `dragging`                                                                    | Always `null`: no drag and drop yet.                                                                                                               |
+| `root`, `domAtPos`, `nodeDOM`, `posAtDOM`, `domSelection()`                   | No. There is no DOM to answer with.                                                                                                                |
 
 | View prop                                                                                                                             | Here                                                                                 |
 | ------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
@@ -211,9 +219,11 @@ What that means for the plugins people reach for:
   table commands (`tables.ts`). Its `tableEditing()` plugin's cell selection
   listens to DOM mouse events and does not arm, so there is no selecting a
   block of cells yet.
-- **prosemirror-collab** is state and steps by construction; **y-prosemirror**
-  also needs its cursors drawn, which are DOM widgets. Neither is verified
-  yet — listed below.
+- **y-prosemirror** is verified (`test/rich-text-editor-collab.test.ts`):
+  its sync, undo and cursor plugins run unchanged over two relayed editors,
+  and a collaborator's caret is drawn when the cursor plugin is handed
+  `remoteCaret` for its cursor builder — the default one makes a DOM
+  element. **prosemirror-collab** is state and steps by construction.
 
 ## Decisions
 
@@ -263,8 +273,6 @@ What that means for the plugins people reach for:
   drawn as a chip, avatar and all, waits on the same run; until then a
   mention is text, or text with a mark.
 - **Virtualization**, for long documents.
-- **y-prosemirror, verified** — the sync plugin, and its cursors drawn as
-  `text` widgets or node decorations.
 - **Images in text** — `renderImage` draws an image alone in its paragraph;
   one inside a line needs the same inline-widget run.
 - **Drag and drop** — moving blocks, and dropping files and images, over

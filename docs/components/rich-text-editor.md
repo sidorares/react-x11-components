@@ -295,6 +295,52 @@ document, every column gives up the same share and its text wraps. A cell
 is measured when it changes and not otherwise, so typing in a large table
 costs what typing in a paragraph does.
 
+## Collaboration
+
+The editor runs y-prosemirror — the binding a Yjs-backed ProseMirror
+editor uses — as it is: its sync plugin binds the document to a
+`Y.XmlFragment`, its undo plugin takes the place of the editor's own
+history with one that takes back only this user's edits, and its cursor
+plugin shows where everyone else is. The one piece that is this editor's is
+`remoteCaret`, the cursor builder:
+
+```tsx
+import {
+  ySyncPlugin,
+  yCursorPlugin,
+  yUndoPlugin,
+  undo,
+  redo,
+} from 'y-prosemirror';
+import { keymap } from 'prosemirror-keymap';
+import {
+  RichTextEditor,
+  remoteCaret,
+} from '@react-x11/components/rich-text-editor';
+
+const plugins = [
+  ySyncPlugin(ydoc.getXmlFragment('prosemirror')),
+  yCursorPlugin(provider.awareness, { cursorBuilder: remoteCaret }),
+  yUndoPlugin(),
+  keymap({ 'Mod-z': undo, 'Mod-y': redo, 'Shift-Mod-z': redo }),
+];
+
+<RichTextEditor plugins={plugins} history={false} />;
+```
+
+Give the plugins a stable identity, and turn `history` off: two undo
+histories over one document fight. The document is the fragment's — the
+sync plugin replaces whatever the editor started with — so `value` and
+`defaultValue` have nothing to say here, and `onChange` still hears every
+change, a collaborator's included.
+
+A collaborator's caret is a bar and a small flag in their awareness colour
+(`user.color`, a `#rrggbb`), drawn beside the editor's own caret and set
+the same way, re-rendering nothing; their selection is lit by the cursor
+plugin's own decoration. y-prosemirror's default cursor builder makes a DOM
+element, which has nothing to draw it here — `remoteCaret` is the builder
+this editor reads. The name is not drawn beside the caret yet.
+
 ## The document model
 
 `schema` is GFM in the names of ProseMirror's reference schemas, so commands
@@ -360,7 +406,11 @@ then the state's), `setProps`, `update`, `updateState`, `editable`,
 `composing`, `hasFocus`, `focus`, `destroy`, `posAtCoords`, `coordsAtPos`,
 `endOfTextblock`, `pasteText` and `pasteHTML`. `dom` is the root element — a
 react-x11 node, not an `HTMLElement` — and there is no `domAtPos`, `nodeDOM`
-or `posAtDOM`, because there is no DOM to answer with.
+or `posAtDOM`, because there is no DOM to answer with. It does answer
+`addEventListener` for the focus events — `focus`, `blur`, `focusin` and
+`focusout`, what y-prosemirror's cursor plugin listens for — and `docView`
+is truthy while the editor is mounted. Plugin views are made once the
+editor is mounted, so a plugin view finds `view.dom` from its first call.
 
 View props honoured: `handleKeyDown`, `handleKeyPress`, `handleTextInput`,
 `handleClickOn`/`handleClick` and their double and triple forms,
@@ -440,6 +490,10 @@ function Fence({ node, children, updateAttributes }: NodeViewProps) {
 - **Table actions live in the toolbar, not the right-click menu.** The
   edit menu is core's, with a fixed set of verbs; the bar shows a table's
   own buttons only while the caret is in one.
+- **Collaboration is y-prosemirror's, run as it is.** The editor adds a
+  cursor builder, `remoteCaret`, because the default one builds a DOM
+  element, and everything else — sync, undo, awareness — is the binding
+  every Yjs-backed ProseMirror editor runs.
 
 ## Backends
 
@@ -463,11 +517,13 @@ codecs (`docFromMarkdown`, `markdownFromDoc`, `markdownCodec`,
 `selectSuggestion`, `dismissSuggestion`, `filterSuggestions`); the table
 commands (`insertTable`, `addRowBefore`, `addRowAfter`, `addColumnBefore`,
 `addColumnAfter`, `deleteRow`, `deleteColumn`, `deleteTable`,
-`setColumnAlign`, `columnAlign`, `isInTable`) and `tableRepair`; and the
+`setColumnAlign`, `columnAlign`, `isInTable`) and `tableRepair`;
+`remoteCaret`, y-prosemirror's cursor builder for this editor; and the
 types `DomKeyEvent`,
 `NodeViewProps`, `ImageInfo`, `MarkStyle`, `RunStyle`, `ToolbarEntry`,
 `ToolbarItem`, `MarkdownCodec`, `Suggester`, `SuggestionItem`,
-`SuggestionQuery`, `SuggestionRow`, `SuggestionState` and `ColumnAlign`.
+`SuggestionQuery`, `SuggestionRow`, `SuggestionState`, `ColumnAlign`,
+`RemoteCaret` and `DomFocusEvent`.
 
 ## Example
 
