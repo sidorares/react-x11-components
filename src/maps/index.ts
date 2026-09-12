@@ -15,7 +15,7 @@
 // `sideEffects: false` stays honest. Do not move it into `../index.ts`
 // (AGENTS.md, "Tree-shaking is a constraint").
 import React, { useEffect, useImperativeHandle, useRef, useState } from 'react';
-import type { ReactElement } from 'react';
+import type { ReactElement, ReactNode } from 'react';
 import { useApp, useSupports, useTheme } from 'react-x11';
 import { registerElement, registeredElements } from 'react-x11/host';
 import { createStyles, flattenStyle } from 'react-x11/style';
@@ -149,17 +149,10 @@ export function Map(props: MapProps): ReactElement {
           onFailure: (error: Error) => latest.current.onError?.(error),
         });
 
-  // The pane and anything the application puts over it are siblings rather
-  // than parent and children: a registered element's own drawing happens
-  // *after* `super.paint` has painted its children, so anything mounted
-  // inside would be painted over by the map. Beside it, and after it, a
-  // legend or a control panel lands on top. `<Flow>` makes the same
-  // arrangement for the same reason.
   return h(
     'box',
     { style: sized ? [styles.clip, props.style] : [styles.pane, props.style] },
     pane,
-    props.children,
   );
 }
 
@@ -207,7 +200,7 @@ function AutoPane(props: PaneProps & { failed: boolean }): ReactElement {
   const app = useApp();
   const shaders = useSupports('shaders');
   const probing = useDirectGlProbe(app, shaders);
-  const blockers = capabilityBlockers(map);
+  const blockers = capabilityBlockers(map, { glOverlay: useGlOverlay() });
   const choice = chooseRenderer({
     requested: 'auto',
     shaders,
@@ -276,6 +269,20 @@ function useDirectGlProbe(app: unknown, shaders: boolean): boolean {
 }
 
 /**
+ * Whether this core draws a `<glarea>`'s children above its surface —
+ * `useSupports('glOverlay')`, react-x11#546. A core from before it throws
+ * on the name rather than answering, and a throw is a no; one core answers
+ * the same way on every render, so the hooks it calls keep their order.
+ */
+function useGlOverlay(): boolean {
+  try {
+    return useSupports('glOverlay' as Parameters<typeof useSupports>[0]);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * The pane, drawn by the renderer chosen: the `<mapview>` element, the GL
  * renderer once its module has loaded, or — while the connection's answer
  * or the module is on its way — a box in the style's background. Whichever
@@ -289,6 +296,7 @@ function MapPane(
 ): ReactElement {
   const { renderer, reason, map, controller } = props;
   const theme = useTheme();
+  const overlay = useGlOverlay();
 
   // `onRendererChange`: when the map lands somewhere it did not ask for,
   // and whenever it changes renderer after that.
@@ -329,39 +337,62 @@ function MapPane(
     'aria-label': map['aria-label'] ?? 'Map',
     'data-testname': map['data-testname'],
   };
+  // What the application puts over the map is the pane's sibling, after
+  // it, rather than its child: a registered element's own drawing happens
+  // *after* `super.paint` has painted its children, so anything mounted
+  // inside `<mapview>` would be painted over by the map. `<Flow>` makes the
+  // same arrangement for the same reason. The one exception is a GL pane
+  // on a core that draws a surface's children above it: there they go
+  // inside the surface, since a sibling is under it.
+  const over = (pane: ReactElement, children: ReactNode): ReactElement =>
+    h(React.Fragment, null, pane, children);
   if (renderer === 'retained') {
-    return h(ELEMENT, {
-      ...elementProps(map),
-      ...common,
-      key: 'retained',
-      mapController: controller,
-      // The controlled/uncontrolled fork, and the whole of it. Controlled:
-      // the application's camera goes down and the element only ever
-      // *asks* to move. Uncontrolled: nothing goes down, the controller
-      // owns the camera, and a pan never reaches React — which is the
-      // difference between a drag that blits a strip and one that
-      // re-renders and re-claims the pane on every pointer step.
-      camera: map.camera,
-    } as MapViewProps);
+    return over(
+      h(ELEMENT, {
+        ...elementProps(map),
+        ...common,
+        key: 'retained',
+        mapController: controller,
+        // The controlled/uncontrolled fork, and the whole of it.
+        // Controlled: the application's camera goes down and the element
+        // only ever *asks* to move. Uncontrolled: nothing goes down, the
+        // controller owns the camera, and a pan never reaches React —
+        // which is the difference between a drag that blits a strip and
+        // one that re-renders and re-claims the pane on every pointer
+        // step.
+        camera: map.camera,
+      } as MapViewProps),
+      map.children,
+    );
   }
   if (renderer === 'gl' && gl) {
-    return h(gl.GlMapPane, {
-      ...common,
-      key: 'gl',
-      controller,
-      map,
-      onFailure: props.onFailure,
-    });
+    return over(
+      h(
+        gl.GlMapPane,
+        {
+          ...common,
+          key: 'gl',
+          controller,
+          map,
+          onFailure: props.onFailure,
+        },
+        overlay ? map.children : undefined,
+      ),
+      overlay ? null : map.children,
+    );
   }
   const background = (map.mapStyle ?? defaultStyleFor(isDarkTheme(theme)))
     .background;
-  return h('box', {
-    ...common,
-    key: 'pending',
-    style: background
-      ? [styles.fill, { backgroundColor: background }]
-      : styles.fill,
-  });
+  return over(
+    h('box', {
+      ...common,
+      key: 'pending',
+      style: background
+        ? [styles.fill, { backgroundColor: background }]
+        : styles.fill,
+    }),
+    map.children,
+  );
 }
 
 /** The host element name, for an application that would rather write

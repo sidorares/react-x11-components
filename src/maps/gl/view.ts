@@ -29,7 +29,7 @@
 // moves an `'auto'` map to the retained renderer or tells a `'gl'` one
 // through `onError`. Nothing here falls back on its own.
 import React, { useEffect, useMemo } from 'react';
-import type { ReactElement } from 'react';
+import type { ReactElement, ReactNode } from 'react';
 import { useTheme } from 'react-x11';
 import type { Style } from 'react-x11/style';
 
@@ -296,6 +296,9 @@ export interface GlMapPaneProps {
   role?: string;
   'aria-label'?: string;
   'data-testname'?: string;
+  /** Drawn above the surface — only ever given on a core that draws a
+   *  `<glarea>`'s children (`useSupports('glOverlay')`). */
+  children?: ReactNode;
 }
 
 /** A mouse button, as opposed to a wheel notch, which X11 also reports as a
@@ -1296,14 +1299,18 @@ export function GlMapPane(props: GlMapPaneProps): ReactElement {
       'data-testname': props['data-testname'],
       ...driver.handlers,
     },
-    h('glarea', {
-      ref: driver.areaRef,
-      style: FILL,
-      clearColor: background,
-      frameLoop: 'demand',
-      onDraw: driver.draw,
-      onError: driver.surfaceError,
-    }),
+    h(
+      'glarea',
+      {
+        ref: driver.areaRef,
+        style: FILL,
+        clearColor: background,
+        frameLoop: 'demand',
+        onDraw: driver.draw,
+        onError: driver.surfaceError,
+      },
+      props.children,
+    ),
   );
 }
 
