@@ -101,8 +101,9 @@ export interface Reveal {
   /** Scroll the pane, recording that this component is the one that asked. */
   scrollTo(y: number): void;
   /** An `onScroll` arrived. One this component did not ask for is the user
-   *  taking over, and it cancels whatever was owed. */
-  heard(scrollY: number): void;
+   *  taking over, and it cancels whatever was owed. Answers whether it was
+   *  this component's own. */
+  heard(scrollY: number): boolean;
 }
 
 /**
@@ -336,7 +337,7 @@ export function useReveal(sources: RevealSources): Reveal {
     [retry],
   );
 
-  const heard = useCallback((scrollY: number): void => {
+  const heard = useCallback((scrollY: number): boolean => {
     // A scroll this component did not ask for ends the whole chase, not just
     // the outstanding half of it. Within half a pixel is ours: the payload
     // is the device offset divided back to logical, and at a fractional
@@ -349,6 +350,7 @@ export function useReveal(sources: RevealSources): Reveal {
       owedShift.current = 0;
     }
     asked.current = null;
+    return ours;
   }, []);
 
   // One stable object, not a fresh literal per render: callbacks built on

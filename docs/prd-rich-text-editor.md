@@ -188,6 +188,15 @@ carries a copy's HTML and text and, for a drop in the app, the slice
 itself. A drop is read like a paste and put in where `dropPoint` says it
 fits — prosemirror-view's own drop, step for step.
 
+**Long documents** (`virtual.ts`) draw a window of the top-level blocks,
+over the machinery `<Tree>` and `<Table>` share (`src/internal/`): a
+height index keyed by block key, the window, and a reveal that is a debt
+rather than a one-shot. Each drawn block is in a box measured after
+layout. The view's geometry is laid-out text, so it asks the window
+whether the block a position is in is drawn; when it is not,
+`scrollToSelection` and the motions that need a line have the block
+revealed first, and finish once it is laid out.
+
 ## What a plugin can count on
 
 The ledger, so "does my plugin work?" has an answer short of trying it.
@@ -196,7 +205,7 @@ The ledger, so "does my plugin work?" has an answer short of trying it.
 | ----------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `state`, `dispatch`, `props`, `someProp`, `setProps`, `update`, `updateState` | Yes. `someProp` in ProseMirror's order.                                                                                                            |
 | `editable`, `composing`, `hasFocus()`, `focus()`, `isDestroyed`, `destroy()`  | Yes.                                                                                                                                               |
-| `posAtCoords`, `coordsAtPos`, `endOfTextblock`                                | Yes, in logical window coordinates.                                                                                                                |
+| `posAtCoords`, `coordsAtPos`, `endOfTextblock`                                | Yes, in logical window coordinates — for a position in a drawn block; in a long document's undrawn one, `coordsAtPos` answers the editor's corner. |
 | `pasteText`, `pasteHTML`                                                      | Yes, through the same props a real paste goes through.                                                                                             |
 | `dom`                                                                         | The root element — a react-x11 node, not an `HTMLElement` — with `addEventListener` for the focus events; `docView` is truthy while it is mounted. |
 | `dragging`                                                                    | The slice a drag out of this editor carries, and whether a drop back in here moves it.                                                             |
@@ -256,8 +265,11 @@ What that means for the plugins people reach for:
 - **Subpath only.** ProseMirror's declarations name DOM globals; exported
   from the barrel, they would be every app's problem, including apps that
   want a calendar.
-- **No virtualization.** Blocks re-render only when their node changed, but
-  every block is mounted. Right for the use cases above; not for a book.
+- **Virtualized by top-level block.** Past 200 top-level blocks only the
+  ones near the viewport are mounted — `<Tree>`'s and `<Table>`'s window
+  and height index, keyed by block key. A block's children are drawn with
+  it, so one enormous list or table is drawn whole: windowing inside a
+  block is not worth its cost until a document shows it is.
 - **A suggestion opens as its word is typed, never as the caret moves.** The
   value is markdown and a mention stays text, so a document is soon full of
   words that start with `@`, and a click into one places a caret. GitHub's
@@ -280,6 +292,5 @@ What that means for the plugins people reach for:
   `<richtext>` run that reserves advance width for an element. A mention
   drawn as a chip, avatar and all, waits on the same run; until then a
   mention is text, or text with a mark.
-- **Virtualization**, for long documents.
 - **Images in text** — `renderImage` draws an image alone in its paragraph;
   one inside a line needs the same inline-widget run.

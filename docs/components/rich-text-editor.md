@@ -82,6 +82,7 @@ top of the one before, and none of them replaces another.
 | `renderImage`       | `(image: ImageInfo) => ReactNode`                                          | An image alone in its paragraph, drawn by you. Without it an image is its alt text: the editor fetches nothing.                                                                                                      |
 | `style`             | `Style \| Style[]`                                                         | The frame: width, height, `maxHeight`, `flexGrow`, border, background. Given no height the editor is as tall as its content up to `maxHeight`, and scrolls past it — a composer grows as it is typed in.             |
 | `styles`            | `{ toolbar?: Style; content?: Style }`                                     | The parts inside the frame.                                                                                                                                                                                          |
+| `virtual`           | `boolean \| 'auto'`                                                        | Draw only the top-level blocks near the viewport — see [Long documents](#long-documents). Default `'auto'`: past 200 of them.                                                                                        |
 
 ### ProseMirror's seams
 
@@ -362,6 +363,22 @@ was read and whose `files` are `{ name, path, uri }`: a path to read, not
 a browser's `File`. A read-only editor can be dragged from, to copy, and
 takes no drop.
 
+## Long documents
+
+A document of more than 200 top-level blocks — a book, a log, a long
+README — draws only the blocks near the viewport. The ones above and below
+are space the scrollbar measures: each block the height it had when it was
+last drawn, or a guess the drawn ones teach. Scrolling draws what comes into
+view. The caret, a click and the keys work as they do anywhere, and a key
+that needs a block outside the window — the document's end, a Down pressed
+after scrolling away from the caret, a letter typed there — has it drawn
+and scrolled into view first.
+
+`virtual` turns the window on for any document (`true`) or off for every
+one (`false`). It matters only in an editor given a height to scroll in:
+one that grows with its content has nothing out of view. The window is of
+top-level blocks, so one enormous list or table is drawn whole.
+
 ## The document model
 
 `schema` is GFM in the names of ProseMirror's reference schemas, so commands
@@ -497,8 +514,11 @@ function Fence({ node, children, updateAttributes }: NodeViewProps) {
   exactly that copy takes the slice back. That matters on macOS, where
   react-x11's clipboard carries text only for now: without it, copy and
   paste inside one editor would flatten every list.
-- **Every block is mounted.** Only the blocks an edit touched re-render, but
-  nothing is virtualized — right for notes and documents, not for a book.
+- **A long document draws a window of its top-level blocks.** Only the
+  blocks an edit touched re-render at any length; past 200 of them only the
+  ones near the viewport are mounted at all — `<Tree>`'s and `<Table>`'s
+  window, over block keys. A block inside a list or a quote is drawn with
+  its top-level block, so one enormous list is drawn whole.
 - **A suggestion list opens as its word is typed**, never as the caret moves
   into one — the rule GitHub's comment box keeps, and
   [`<CodeEditor>`](code-editor.md)'s completion. A markdown document keeps

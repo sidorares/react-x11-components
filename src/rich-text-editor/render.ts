@@ -245,6 +245,64 @@ function startOf(ctx: RenderContext, key: string): number {
   return (ctx.view.keys.posOf(key) ?? -1) + 1;
 }
 
+/** A top-level block of a long document, in the box its height is measured
+ *  by (./virtual.ts). */
+interface RowProps extends BlockProps {
+  at: number;
+  register: (key: string, at: number, node: unknown) => void;
+}
+
+const ROW_STYLE = { flexDirection: 'column', flexShrink: 0 } as const;
+
+const BlockRow = React.memo(
+  function BlockRow(props: RowProps): ReactElement {
+    const { blockKey, at, register } = props;
+    const ref = useCallback(
+      (node: unknown) => register(blockKey, at, node),
+      [register, blockKey, at],
+    );
+    return hx(
+      'box',
+      { ref, style: ROW_STYLE },
+      h(BlockView, {
+        blockKey,
+        node: props.node,
+        ctx: props.ctx,
+        bctx: props.bctx,
+      }),
+    );
+  },
+  (a, b) => sameBlock(a, b) && a.at === b.at && a.register === b.register,
+);
+
+/** The top-level blocks `first` to `last` (exclusive) of a long document —
+ *  the window ./virtual.ts keeps — each in a box of its own to measure. */
+export function renderBlockRange(
+  doc: PMNode,
+  first: number,
+  last: number,
+  ctx: RenderContext,
+  register: RowProps['register'],
+): ReactNode[] {
+  const out: ReactNode[] = [];
+  doc.forEach((child, offset, index) => {
+    if (index < first || index >= last) return;
+    const key = ctx.view.keys.keyAt(offset) ?? `p${offset}`;
+    out.push(
+      h(BlockRow, {
+        key,
+        blockKey: key,
+        node: child,
+        ctx,
+        bctx: PLAIN,
+        at: index,
+        register,
+      }),
+    );
+  });
+  return out;
+}
+
 function imageContent(node: PMNode, ctx: RenderContext): ReactNode {
   const info: ImageInfo = {
     src: String(node.attrs.src ?? ''),

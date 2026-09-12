@@ -179,6 +179,14 @@ export const stuck = <RichTextEditor state={EditorState.create({ schema })} />;
 // @ts-expect-error the format is one of three
 export const wrongFormat = <RichTextEditor format="rtf" />;
 
+// a long document draws a window of its blocks: past 200 of them, or when
+// asked to
+export const long = <RichTextEditor defaultValue="" virtual="auto" />;
+export const alwaysWhole = <RichTextEditor virtual={false} />;
+
+// @ts-expect-error `virtual` is a boolean or 'auto'
+export const wrongVirtual = <RichTextEditor virtual="on" />;
+
 // suggestions: a list the editor filters, a function it asks, a command row —
 // and the plugin itself, for an app that owns the state
 const people: SuggestionItem[] = [

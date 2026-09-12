@@ -132,8 +132,9 @@ finds out from a blank window has been failed by the page.
   its element in its own index.ts" keeps holding and an app that imports
   neither component registers nothing.
 - `src/internal/` is the half-step **below** a shared module: code two
-  components share — the height index, layout tick and scroll-reveal under
-  `<Tree>` and `<Table>`, the typed `hx()` every composed widget writes its
+  components share — the height index, window, layout tick and
+  scroll-reveal under `<Tree>`, `<Table>` and a long `<RichTextEditor>`,
+  the typed `hx()` every composed widget writes its
   elements
   with, and the change event and dismiss-on-blur subscription under
   `<Calendar>`/`<DatePicker>` and `<ColorPicker>`/`<ColorField>` — that no
@@ -1354,6 +1355,13 @@ What to know before changing it:
   with `buttons: 0` — so the copy modifier travels in the slice payload
   from the source's last `onDrag`; and an in-app drop must answer
   synchronously, because `onDragEnd` follows at once.
+- **A long document draws a window of its top-level blocks**
+  (`virtual.ts`, over `src/internal/`'s window). The view's geometry is
+  laid-out text and a block outside the window has none, so the view asks
+  `BlockWindow.drawn` before it needs one — `scrollToSelection`, and the
+  motions in `LAID_OUT` — and otherwise has the block revealed and
+  finishes in the callback. A block is measured with the gap after it:
+  the content column keeps its `gap`, and each spacer gives one back.
 - **Subpath only.** The one component not re-exported from `src/index.ts`:
   ProseMirror's declarations name DOM globals (`dom-globals.d.ts` declares
   the four this repository needs), and an app importing anything from the
@@ -1607,7 +1615,7 @@ one is written is in "Replacing a core widget rather than moving it" above.
 | A StatusNotifierItem host                        | nowhere yet                                                                                         | **Planned**, as a sibling of `<TrayHost>` with its own issue. Shares intent and nothing else: it pairs with core's `dbusmenu.js`, not with `<foreign>`.                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | A pure-JS VT backend for `<Terminal>`            | new, here (`src/terminal/vt/`)                                                                      | **Done** (issue #19). `backend="vt"`, behind the existing props: pty + `@xterm/headless` + a cell-grid renderer. See "The terminal that is not somebody else's program".                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `<TerminalOutput>` — a captured session          | new, here (`src/terminal-output/` + `src/ansi/`)                                                    | **Phase 1 done.** A log is a document, not a grid, so flow mode is `<richtext>` spans with no dependency at all. The cell-grid path for captures that addressed the cursor is phase 2 — see [the PRD](docs/prd-terminal-output.md).                                                                                                                                                                                                                                                                                                                                                      |
-| A WYSIWYG rich text editor                       | new, here (`src/rich-text-editor/`)                                                                 | **Done.** `<RichTextEditor>`: ProseMirror's model, transforms and plugin system, drawn by this package — the view is ours and `EditorView`-shaped, so every plugin that lives in state (keymaps, input rules, history, decorations, collaboration) runs unchanged and the ones that reach into the DOM do not. Not in the barrel: ProseMirror's declarations name DOM globals. See "A rich text editor over ProseMirror" and [the PRD](docs/prd-rich-text-editor.md), which also carries the follow-ups (table editing, IME tiers, inline widgets).                                      |
+| A WYSIWYG rich text editor                       | new, here (`src/rich-text-editor/`)                                                                 | **Done.** `<RichTextEditor>`: ProseMirror's model, transforms and plugin system, drawn by this package — the view is ours and `EditorView`-shaped, so every plugin that lives in state (keymaps, input rules, history, decorations, collaboration) runs unchanged and the ones that reach into the DOM do not. Not in the barrel: ProseMirror's declarations name DOM globals. See "A rich text editor over ProseMirror" and [the PRD](docs/prd-rich-text-editor.md), which also carries the follow-ups (IME tiers, inline widgets, images in text).                                     |
 
 Verified against ntk 7.2.0 on 2026-08-09: `MarkdownView`, `HtmlView`,
 `SvgView` and `layoutTex` are all still exported; only mermaid is gone.

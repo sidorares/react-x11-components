@@ -84,6 +84,7 @@ import type { DomKeyEvent, PrimaryModifier } from './keymap.js';
 import { styleFromCSS } from './look.js';
 import type { EditorHost, EditorTextNode, RichEditorNode } from './nodes.js';
 import { KeyedStore } from './store.js';
+import type { BlockWindow } from './virtual.js';
 
 type KeyEvent = Parameters<EditorHost['keyDown']>[0];
 type ComposeEvent = Parameters<EditorHost['composition']>[0];
@@ -137,6 +138,18 @@ export type MoveUnit =
   | 'docEnd'
   | 'pageUp'
   | 'pageDown';
+
+/** Motions made from where the caret is drawn — a line, a page, a
+ *  line's ends — which wait for its block when a long document has it
+ *  scrolled out of the window. */
+const LAID_OUT: ReadonlySet<MoveUnit> = new Set<MoveUnit>([
+  'up',
+  'down',
+  'pageUp',
+  'pageDown',
+  'lineStart',
+  'lineEnd',
+]);
 
 interface Drag {
   anchor: number;
@@ -325,6 +338,10 @@ export class RichEditorView implements EditorHost, ClipboardView {
    *  a press can land on that is not text. */
   private boxes = new Map<string, DrawnNode>();
   private scroller: ScrollableNode | null = null;
+  /** A long document's window (./virtual.ts): which top-level blocks are
+   *  drawn, and how one that is not gets drawn. Null while all of them
+   *  are. */
+  private blockWindow: BlockWindow | null = null;
   private pluginViews: PluginView[] = [];
   /** Whether the component has asked for plugin views
    *  (`mountPluginViews`), and whether they are made now: they live while
@@ -660,6 +677,11 @@ export class RichEditorView implements EditorHost, ClipboardView {
     this.scroller = node;
   }
 
+  /** A long document's window, while it draws only some blocks. */
+  attachWindow(window: BlockWindow | null): void {
+    this.blockWindow = window;
+  }
+
   // --- selection, painted ------------------------------------------------------
 
   private selectionColor(): string {
@@ -955,6 +977,20 @@ export class RichEditorView implements EditorHost, ClipboardView {
     return r && (r.width > 0 || r.height > 0) ? r : null;
   }
 
+  /** The top-level block `pos` is in, by index — what a long
+   *  document's window draws or not. */
+  private topIndexOf(pos: number): number {
+    const { doc } = this.state;
+    const $pos = doc.resolve(Math.max(0, Math.min(pos, doc.content.size)));
+    return Math.max(0, Math.min($pos.index(0), doc.childCount - 1));
+  }
+
+  /** Whether the block that draws `pos` is laid out: always, but in a
+   *  long document scrolled away from it (./virtual.ts). */
+  private isDrawnAt(pos: number): boolean {
+    return !this.blockWindow || this.blockWindow.drawn(this.topIndexOf(pos));
+  }
+
   /** The nearest block to a point: the one it is in, or the one closest
    *  vertically, then horizontally. Text blocks win ties with atoms. */
   private hit(x: number, y: number): Hit | null {
@@ -1184,6 +1220,15 @@ export class RichEditorView implements EditorHost, ClipboardView {
    */
   move(unit: MoveUnit, extend: boolean): boolean {
     const { doc, selection: sel } = this.state;
+    // the caret's block scrolled out of a long document's window: it is
+    // drawn again first, and the motion made from it once it is laid out
+    if (LAID_OUT.has(unit) && !this.isDrawnAt(sel.head)) {
+      const head = sel.head;
+      this.blockWindow?.reveal(this.topIndexOf(head), () => {
+        if (this.state.selection.head === head) this.move(unit, extend);
+      });
+      return true;
+    }
     let target: Selection | null = null;
     let head: number | null = null;
     let atom = false;
@@ -2132,7 +2177,16 @@ export class RichEditorView implements EditorHost, ClipboardView {
     const box = this.scroller;
     const viewport = box?.getClientRects()[0];
     if (!box || !viewport) return;
-    const r = this.coordsAtPos(this.state.selection.head);
+    const head = this.state.selection.head;
+    if (!this.isDrawnAt(head)) {
+      // scrolled out of a long document's window: its block is drawn
+      // first, and the caret brought into view once it is laid out
+      this.blockWindow?.reveal(this.topIndexOf(head), () =>
+        this.scrollToSelection(),
+      );
+      return;
+    }
+    const r = this.coordsAtPos(head);
     const margin = 8;
     let dy = 0;
     if (r.top < viewport.y + margin) dy = r.top - viewport.y - margin;

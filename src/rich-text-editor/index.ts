@@ -84,7 +84,7 @@ import type { MarkStyle } from './look.js';
 import { docFromText, markdownCodec, textFromDoc } from './markdown.js';
 import type { MarkdownCodec } from './markdown.js';
 import { registerEditorElements, ROOT_ELEMENT, TEXT_ELEMENT } from './nodes.js';
-import { renderBlocks } from './render.js';
+import { renderBlockRange, renderBlocks } from './render.js';
 import type { ImageInfo, NodeViewProps, RenderContext } from './render.js';
 import type { RunStyle } from './inline.js';
 import { schema as defaultSchema } from './schema.js';
@@ -105,6 +105,7 @@ import {
 import type { ToolbarEntry } from './toolbar.js';
 import { RichEditorView } from './view.js';
 import type { ViewConfig, ViewProps } from './view.js';
+import { useBlockWindow } from './virtual.js';
 
 registerRichText();
 registerEditorElements();
@@ -280,6 +281,13 @@ interface CommonProps {
   /** Custom rendering by node type: a React component, handed the node, its
    *  rendered content and a way to update its attributes. */
   nodeViews?: Readonly<Record<string, ComponentType<NodeViewProps>>>;
+  /**
+   * Draw only the top-level blocks near the viewport, for a long
+   * document. `'auto'`, the default, does once there are more than 200
+   * of them — so a composer never does. It matters only in an editor
+   * given a height to scroll in.
+   */
+  virtual?: boolean | 'auto';
 
   /** The frame: width, height, `flexGrow`, border, background. */
   style?: Style | Style[];
@@ -761,10 +769,26 @@ export function RichTextEditor(props: RichTextEditorProps): ReactElement {
     }),
     [view, look, editable, fonts, props.nodeViews, props.renderImage],
   );
+  // A long document draws only the blocks near the viewport, in a window
+  // the view asks about when what it needs is not drawn (./virtual.ts).
+  const windowed = useBlockWindow({
+    doc: state.doc,
+    keys: view.keys,
+    virtual: props.virtual ?? 'auto',
+    estimate: Math.round(look.size * 1.5) + look.blockGap,
+    gap: look.blockGap,
+  });
+  const { virtualizing, first, last, register } = windowed;
   const blocks = useMemo(
-    () => renderBlocks(state.doc, 0, ctx),
-    [state.doc, ctx],
+    () =>
+      virtualizing
+        ? renderBlockRange(state.doc, first, last, ctx, register)
+        : renderBlocks(state.doc, 0, ctx),
+    [state.doc, ctx, virtualizing, first, last, register],
   );
+  useLayoutEffect(() => {
+    view.attachWindow(virtualizing ? windowed.window : null);
+  }, [view, virtualizing, windowed.window]);
 
   // --- input ---------------------------------------------------------------
 
@@ -815,10 +839,13 @@ export function RichTextEditor(props: RichTextEditorProps): ReactElement {
   const setRoot = useCallback((node: unknown) => {
     rootRef.current = (node as DrawnNode | null) ?? null;
   }, []);
+  const pane = windowed.box;
   const setScroller = useCallback(
-    (node: unknown) =>
-      view.attachScroller((node as ScrollableNode | null) ?? null),
-    [view],
+    (node: unknown) => {
+      pane.current = (node as ScrollableNode | null) ?? null;
+      view.attachScroller(pane.current);
+    },
+    [view, pane],
   );
 
   // What a drag out of the editor offers, resolved when a drop asks for it:
@@ -1146,6 +1173,9 @@ export function RichTextEditor(props: RichTextEditorProps): ReactElement {
           flexBasis: 'auto',
           flexDirection: 'column',
         },
+        ...(virtualizing
+          ? { onViewport: windowed.onViewport, onScroll: windowed.onScroll }
+          : null),
       },
       hx(
         'box',
@@ -1158,7 +1188,20 @@ export function RichTextEditor(props: RichTextEditorProps): ReactElement {
             ...styles?.content,
           },
         },
+        // the blocks outside a long document's window, as space
+        windowed.above > 0
+          ? hx('box', {
+              key: 'spacer:before',
+              style: { flexShrink: 0, height: windowed.above },
+            })
+          : null,
         ...blocks,
+        windowed.below > 0
+          ? hx('box', {
+              key: 'spacer:after',
+              style: { flexShrink: 0, height: windowed.below },
+            })
+          : null,
       ),
     ),
     linkPopup,

@@ -18,7 +18,8 @@
 // Try: `# ` at the start of a line, `- `, `1. `, `[ ] `, `> `, ``` ``` ```,
 // `**bold**`, Ctrl+B / Ctrl+I / Ctrl+K (Cmd on the Mac backend), Tab in a
 // list, Ctrl+Z, a right click, copy and paste from a web page — and `/`, `@`
-// and `#`.
+// and `#`. The block menu's Long document row swaps in 2,000 paragraphs, of
+// which only the ones near the viewport are drawn.
 import { useMemo, useRef, useState } from 'react';
 import type { ReactElement } from 'react';
 import { createRoot } from 'react-x11';
@@ -95,6 +96,10 @@ function todoPlugin(): Plugin {
 
 const { nodes } = schema;
 
+/** The Long document row's paragraphs, of uneven length. */
+const SENTENCE =
+  'Only the blocks near the viewport are drawn; the rest is space the scrollbar measures. ';
+
 /** `/` at the start of a line: a block menu, whose rows are commands. */
 const BLOCK_MENU: Suggester = {
   char: '/',
@@ -133,6 +138,24 @@ const BLOCK_MENU: Suggester = {
       command: insertHorizontalRule(nodes.horizontal_rule),
     },
     { label: 'Table', detail: '| |', command: insertTable() },
+    {
+      label: 'Long document',
+      detail: '2,000 ¶',
+      // a book's worth of paragraphs: only the blocks near the viewport
+      // are drawn
+      command: (state, dispatch) => {
+        const book = Array.from({ length: 2000 }, (_, i) =>
+          nodes.paragraph.create(
+            null,
+            schema.text(
+              `Paragraph ${i + 1}. ${SENTENCE.repeat(1 + (i % 4)).trimEnd()}`,
+            ),
+          ),
+        );
+        dispatch?.(state.tr.replaceWith(0, state.doc.content.size, book));
+        return true;
+      },
+    },
   ],
 };
 
@@ -242,6 +265,8 @@ function Label({ children }: { children: string }): ReactElement {
 
 function App(): ReactElement {
   const [saved, setSaved] = useState(NOTE);
+  // a long document's markdown is a book: the pane shows how it starts
+  const shown = saved.length > 20_000 ? `${saved.slice(0, 20_000)}\n…` : saved;
   const [messages, setMessages] = useState<string[]>([
     'Hi! **Enter** sends, `Shift+Enter` makes a new line, `@` mentions someone.',
   ]);
@@ -292,7 +317,7 @@ function App(): ReactElement {
                 color: '$textMuted',
               }}
             >
-              {saved}
+              {shown}
             </text>
           </box>
 
