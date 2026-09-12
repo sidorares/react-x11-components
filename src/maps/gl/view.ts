@@ -11,17 +11,18 @@
 // renderer, because every frame here is a full redraw and the budget for one
 // is the whole frame, not a strip.
 //
-// **Input reaches a `<glarea>` two ways, and neither is the surface's own
-// props.** The surface is a window of its own, so core's hit test skips it
-// and answers with the pane behind it: the pane's handlers are what Cocoa's
-// presses, drags and wheels reach, and what X11's wheel bubbles to (core
-// forwards the wheel from the child window, named at the surface). An X11
-// *press* never gets that far — the child window selects presses to hear the
-// wheel, so the server delivers them there and nothing hands them on — so
-// this listens on the child window itself for press, motion, release and
-// leave, which ntk selects on demand; the implicit grab a press starts keeps
-// a drag coming even when the pointer leaves the map. Both routes end at the
-// controller methods the retained renderer's element calls.
+// **Input reaches the map through the pane's handlers**, which a press, a
+// drag and a wheel over the surface bubble up to. On a core that forwards
+// pointer input from a surface (react-x11#545, `forwardsPointer`) that is
+// the whole story on both backends. On an older core it is Cocoa's and
+// X11's wheel only: its hit test skips the surface for the pane behind it,
+// and an X11 *press* never gets that far — the child window selects presses
+// to hear the wheel, so the server delivers them there and nothing hands
+// them on — so this listens on the child window itself for press, motion,
+// release and leave, which ntk selects on demand; the implicit grab a press
+// starts keeps a drag coming even when the pointer leaves the map. Both
+// routes end at the controller methods the retained renderer's element
+// calls.
 //
 // **A failure is `<Map>`'s to handle.** A surface that will not come up, a
 // connection with no direct GL, a context or a shader that will not build, a

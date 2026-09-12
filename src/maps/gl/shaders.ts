@@ -101,20 +101,38 @@ void main() {
 export const LINE_FRAGMENT = `precision highp float;
 uniform vec4 u_color;
 uniform float u_half;
-// on, off — device pixels; on == 0 is a solid line
-uniform vec2 u_dash;
+// up to four dashes, on and off in turn, and the pattern's length — device
+// pixels; a length of 0 is a solid line
+uniform vec4 u_dash_a;
+uniform vec4 u_dash_b;
+uniform float u_period;
 // 0: every pixel; 1: only those the capsule covers wholly; 2: only the rest
 uniform float u_part;
 varying vec2 v_local;
 varying float v_len;
 varying float v_dist;
+// How much of the pixel at \`m\` along the pattern the dash from \`s\`, \`on\`
+// long, covers — or its copy a pattern later, which the last pixels of a
+// pattern are nearest to.
+float dash(float m, float s, float on) {
+  if (on <= 0.0) return 0.0;
+  float here = min(m - s, s + on - m);
+  float next = min(m - u_period - s, s + on - m + u_period);
+  return clamp(max(here, next) + 0.5, 0.0, 1.0);
+}
 void main() {
   float x = clamp(v_local.x, 0.0, v_len);
   float dist = length(vec2(v_local.x - x, v_local.y));
   float alpha = clamp(u_half - dist + 0.5, 0.0, 1.0);
-  if (u_dash.x > 0.0) {
-    float m = mod(v_dist, u_dash.x + u_dash.y);
-    alpha *= clamp(min(m + 0.5, u_dash.x - m + 0.5), 0.0, 1.0);
+  if (u_period > 0.0) {
+    float m = mod(v_dist, u_period);
+    float s1 = u_dash_a.x + u_dash_a.y;
+    float s2 = s1 + u_dash_a.z + u_dash_a.w;
+    float s3 = s2 + u_dash_b.x + u_dash_b.y;
+    alpha *= max(
+      max(dash(m, 0.0, u_dash_a.x), dash(m, s1, u_dash_a.z)),
+      max(dash(m, s2, u_dash_b.x), dash(m, s3, u_dash_b.z))
+    );
   }
   if (u_part > 0.5 && (alpha < 1.0) == (u_part < 1.5)) discard;
   if (alpha <= 0.0) discard;

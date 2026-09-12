@@ -210,12 +210,33 @@ export interface GlRenderStats {
   overlays: number;
 }
 
-/** A stroke: premultiplied colour, and half its width and its dash in
- *  device pixels. */
+/** A stroke: premultiplied colour, half its width in device pixels, and its
+ *  dash pattern as {@link dashPattern} gives one. */
 interface StrokePaint {
   color: Rgba;
   half: number;
-  dash: readonly [number, number] | null;
+  dash: readonly number[] | null;
+}
+
+/** Entries of a dash pattern the line program holds: four dashes. */
+const DASH_ENTRIES = 8;
+
+/**
+ * A style's or an overlay's dash array as the line program draws it: in
+ * device pixels, and read as a canvas reads one — an odd number of entries
+ * is repeated to make an even one, and an entry that is negative or not a
+ * number, or entries that are all zero, make a solid line. A pattern of
+ * more than four dashes is cut to its first four.
+ */
+export function dashPattern(
+  dash: readonly number[] | undefined,
+  scale: number,
+): number[] | null {
+  if (!dash || dash.length === 0) return null;
+  if (dash.some((d) => !Number.isFinite(d) || d < 0)) return null;
+  if (!dash.some((d) => d > 0)) return null;
+  const even = dash.length % 2 === 1 ? [...dash, ...dash] : dash;
+  return even.slice(0, DASH_ENTRIES).map((d) => d * scale);
 }
 
 /** A polygon: its colour, and its edge — the antialiasing, or an
@@ -323,7 +344,9 @@ export class GlMapRenderer {
       'u_viewport',
       'u_half',
       'u_color',
-      'u_dash',
+      'u_dash_a',
+      'u_dash_b',
+      'u_period',
       'u_part',
     ]);
     this._fan = linkProgram(gl, FAN_VERTEX, FAN_FRAGMENT, [
@@ -738,7 +761,6 @@ export class GlMapRenderer {
     // A road narrower than a pixel is drawn *at* a pixel, as paint.ts does:
     // a motorway network that vanishes at zoom 6 is worse than a heavy one.
     const width = Math.max(1, logical * frame.scale);
-    const dash = layer.dash;
     this._strokeWith(
       tiles,
       index,
@@ -746,10 +768,7 @@ export class GlMapRenderer {
       {
         color: premultiplied(base, opacity),
         half: width / 2,
-        dash:
-          dash && dash.length >= 2
-            ? [dash[0] * frame.scale, dash[1] * frame.scale]
-            : null,
+        dash: dashPattern(layer.dash, frame.scale),
       },
       false,
     );
@@ -905,7 +924,11 @@ export class GlMapRenderer {
     gl.useProgram(this._line.program);
     gl.uniform4f(u.u_color, color[0], color[1], color[2], color[3]);
     gl.uniform1f(u.u_half, paint.half);
-    gl.uniform2f(u.u_dash, dash ? dash[0] : 0, dash ? dash[1] : 0);
+    // Unused entries are zero, and a dash of no length draws nothing.
+    const d = (i: number): number => dash?.[i] ?? 0;
+    gl.uniform4f(u.u_dash_a, d(0), d(1), d(2), d(3));
+    gl.uniform4f(u.u_dash_b, d(4), d(5), d(6), d(7));
+    gl.uniform1f(u.u_period, dash ? dash.reduce((sum, v) => sum + v, 0) : 0);
     gl.uniform1f(u.u_part, part);
     this._eachTile(tiles, index, scissors, this._line, fillStream, (count) => {
       gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, count);
@@ -991,7 +1014,6 @@ export class GlMapRenderer {
           outlineHalf: 0,
         });
       } else {
-        const dash = pass.dash;
         this._strokeWith(
           tiles,
           pass.index,
@@ -999,10 +1021,7 @@ export class GlMapRenderer {
           {
             color,
             half: (pass.width * scale) / 2,
-            dash:
-              dash && dash.length >= 2
-                ? [dash[0] * scale, dash[1] * scale]
-                : null,
+            dash: dashPattern(pass.dash, scale),
           },
           pass.outline === true,
         );

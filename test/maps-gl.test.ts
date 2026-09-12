@@ -78,7 +78,11 @@ import {
   LabelPlacer,
 } from '../src/maps/gl/placement.js';
 import type { PlacementFrame } from '../src/maps/gl/placement.js';
-import { GlMapRenderer, scissorOf } from '../src/maps/gl/renderer.js';
+import {
+  GlMapRenderer,
+  dashPattern,
+  scissorOf,
+} from '../src/maps/gl/renderer.js';
 import { GlTileStore } from '../src/maps/gl/store.js';
 import { LabelAtlas } from '../src/maps/gl/text.js';
 import type { TextEngine } from '../src/maps/gl/text.js';
@@ -2400,4 +2404,47 @@ test('raster tiles are textures: uploaded once, a quad each, let go with their t
   assert.strictEqual(stats.tiles, 2);
   renderer.release(image);
   assert.strictEqual(count('deleteTexture'), 1);
+});
+
+// --- dashes ---------------------------------------------------------------------------
+
+test('a dash array is read as a canvas reads one: odd ones repeated, bad ones solid, four dashes at most', () => {
+  assert.deepStrictEqual(dashPattern([4, 2], 2), [8, 4]);
+  assert.deepStrictEqual(dashPattern([4, 2, 1], 1), [4, 2, 1, 4, 2, 1]);
+  assert.strictEqual(dashPattern([4, -1], 1), null);
+  assert.strictEqual(dashPattern([4, Number.NaN], 1), null);
+  assert.strictEqual(dashPattern([0, 0], 1), null);
+  assert.strictEqual(dashPattern([], 1), null);
+  assert.strictEqual(dashPattern(undefined, 1), null);
+  assert.deepStrictEqual(
+    dashPattern([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 1),
+    [1, 2, 3, 4, 5, 6, 7, 8],
+  );
+});
+
+test('a line layer’s whole dash pattern reaches the line program', () => {
+  const dashed: MapStyleLayer[] = [
+    {
+      id: 'rail',
+      type: 'line',
+      sourceLayer: 'streets',
+      color: '#333333',
+      width: 2,
+      dash: [4, 2, 1],
+    },
+  ];
+  const data = buildTileBuckets(
+    fixtureTile(),
+    prepareStyle({ layers: dashed }),
+  );
+  const { gl, log } = recordingGl(true);
+  new GlMapRenderer(gl).render({ ...frameOver(data, dashed), scale: 2 });
+  const fours = log
+    .filter((c) => c.name === 'uniform4f')
+    .map((c) => c.args.slice(1).join());
+  // [4, 2, 1] is [4, 2, 1, 4, 2, 1], in device pixels at scale 2.
+  assert.ok(fours.includes('8,4,2,8'), fours.join(' | '));
+  assert.ok(fours.includes('4,2,0,0'), fours.join(' | '));
+  const ones = log.filter((c) => c.name === 'uniform1f').map((c) => c.args[1]);
+  assert.ok(ones.includes(28), 'and the pattern is 28 pixels long');
 });
