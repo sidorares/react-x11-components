@@ -208,7 +208,7 @@
     "prosemirror-tables": "^1.8.5",
     "prosemirror-transform": "^1.12.1",
     "prosemirror-view": "^1.42.3",
-    "react-reconciler": "^0.33.0"
+    "react-reconciler": "^0.34.0"
   },
   "peerDependencies": {
     "@lezer/highlight": "^1.0.0",
