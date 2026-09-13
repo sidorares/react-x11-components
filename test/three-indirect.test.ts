@@ -376,7 +376,11 @@ function pickScene(
       { ...box, style: { flexGrow: 1, padding: 20 } },
       h(
         Canvas,
-        { ...canvas, style: { flexGrow: 1 }, camera: { position: [0, 0, 6] } },
+        {
+          ...canvas,
+          style: [{ flexGrow: 1 }, canvas.style],
+          camera: { position: [0, 0, 6] },
+        },
         h(
           'mesh',
           mesh,
@@ -514,12 +518,73 @@ test('hover crosses into the scene and out of it through the tree, and the curso
     };
     fireEvent.mouseMove(scene.surface);
     await waitFor(() => heard.length === 1, 'the cube hovered');
+    // On at once, and only on the X window: the <glarea>'s own style never
+    // takes it, so on X11 a hover costs no commit.
+    assert.deepEqual(cursors, ['pointer']);
+    await flushInput(scene.app);
+    assert.equal(scene.surface.style.cursor, undefined);
     // To the screen's corner: onto the box's padding, off the canvas, so the
     // <glarea> leaves the hover path — which is the scene's leave.
     fireEvent.mouseLeave(scene.surface);
     await waitFor(() => heard.length === 2, 'the cube left');
     assert.deepEqual(heard, ['over', 'out']);
     assert.deepEqual(cursors, ['pointer', null]);
+  } finally {
+    await scene.close();
+  }
+});
+
+test('where the surface cannot wear a cursor, as the Cocoa backend’s layer cannot, the hovered object’s reaches the window through the <glarea>’s style', async () => {
+  const heard: string[] = [];
+  const scene = await mountPickScene(
+    pickScene(
+      {
+        cursor: 'pointer',
+        onPointerOver: () => heard.push('over'),
+        onPointerOut: () => heard.push('out'),
+      },
+      { style: { cursor: 'crosshair' } },
+    ),
+  );
+  try {
+    // The Cocoa backend's surface is a layer with no cursor of its own, so
+    // there the owning window's is the only one: take the X window's away.
+    Object.defineProperty(scene.surface.window, 'setCursor', {
+      value: undefined,
+      configurable: true,
+    });
+    const wnd = scene.surface.root.window;
+    const cursors: unknown[] = [];
+    const setCursor = wnd.setCursor.bind(wnd);
+    wnd.setCursor = (cursor: unknown) => {
+      cursors.push(cursor);
+      return setCursor(cursor);
+    };
+    const last = () => cursors[cursors.length - 1];
+    const style = () => scene.surface.style.cursor;
+
+    // Onto the cube. Core picks the window's cursor before it dispatches the
+    // motion, so this one puts on the canvas's own, and the cube's goes into
+    // the <glarea>'s style for the next.
+    fireEvent.mouseMove(scene.surface);
+    await waitFor(() => heard.length === 1, 'the cube hovered');
+    await waitFor(() => style() === 'pointer', 'the <glarea> to take it');
+    fireEvent.mouseMove(scene.surface, { dx: 2 });
+    await waitFor(() => last() === 'pointer', 'the window to take it');
+
+    // Off the cube, still over the canvas: the canvas's own again.
+    fireEvent.mouseMove(scene.surface, { dx: -100, dy: -70 });
+    await waitFor(() => heard.length === 2, 'the cube left');
+    await waitFor(() => style() === 'crosshair', 'the <glarea> to drop it');
+    fireEvent.mouseMove(scene.surface, { dx: -98, dy: -70 });
+    await waitFor(() => last() === 'crosshair', 'the window to drop it');
+
+    // Off the canvas, onto the box's padding, which names none: core takes
+    // the cursor off, as it does any cursor it put on.
+    fireEvent.mouseLeave(scene.surface);
+    await waitFor(() => last() === null, 'the window’s cursor reset');
+    assert.deepEqual(heard, ['over', 'out']);
+    assert.deepEqual(cursors, ['crosshair', 'pointer', 'crosshair', null]);
   } finally {
     await scene.close();
   }

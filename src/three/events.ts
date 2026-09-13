@@ -43,22 +43,21 @@ export interface PointerSource {
   setCursor?(cursor: string | null): void;
 }
 
-/** Where a hovered object's cursor goes. */
-type CursorTarget = Pick<PointerSource, 'setCursor'> | null | undefined;
-
 /**
  * The pointer a core dispatches through the tree, as a `PointerSource`: the
  * canvas's `<glarea>` handlers `emit` what they are handed, already in the
  * surface's device pixels, and the scene subscribes to it as it would to a
- * window. A hovered object's cursor still goes to the surface's own window,
- * where there is one — the Cocoa backend's layer has none.
+ * window. Where a hovered object's cursor goes is the canvas's to say, as
+ * where the pointer comes from is: onto the surface's own X window, or,
+ * where the surface is a layer that cannot wear one, into the `<glarea>`'s
+ * style.
  */
 export class ForwardedPointer implements PointerSource {
   private handlers = new Map<string, (event: NativeMouse) => void>();
-  private cursorTarget: () => CursorTarget;
+  private applyCursor: (cursor: string | null) => void;
 
-  constructor(cursorTarget: () => CursorTarget) {
-    this.cursorTarget = cursorTarget;
+  constructor(applyCursor: (cursor: string | null) => void) {
+    this.applyCursor = applyCursor;
   }
 
   on(name: string, handler: (event: NativeMouse) => void): void {
@@ -74,7 +73,7 @@ export class ForwardedPointer implements PointerSource {
   }
 
   setCursor(cursor: string | null): void {
-    this.cursorTarget()?.setCursor?.(cursor);
+    this.applyCursor(cursor);
   }
 }
 
