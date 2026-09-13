@@ -1,8 +1,14 @@
-// Pointer events for the scene: X mouse events on the `<glarea>`'s child
-// window, raycast against the CPU-side geometry, dispatched to the object
-// they hit and bubbled up its ancestors — a port of react-x11's
-// `src/pointer3d.js` onto the object graph, with the event shaped the way
-// r3f handlers expect (`object`, `point`, `distance`, `stopPropagation`).
+// Pointer events for the scene: the pointer over the `<glarea>`, raycast
+// against the CPU-side geometry, dispatched to the object it hit and
+// bubbled up its ancestors — a port of react-x11's `src/pointer3d.js` onto
+// the object graph, with the event shaped the way r3f handlers expect
+// (`object`, `point`, `distance`, `stopPropagation`).
+//
+// Where the pointer comes from is the canvas's to say (canvas.ts): the
+// `<glarea>`'s own handlers, on a core that dispatches the pointer over a
+// surface through the tree (react-x11#545), or the surface's child X window
+// on one that does not. Either way it arrives here as a `PointerSource`, in
+// device pixels from the surface's corner.
 import type { Mesh, Object3D, Scene } from './objects.js';
 import { raycast } from './raycast.js';
 import type { RayHit } from './raycast.js';
@@ -37,6 +43,41 @@ export interface PointerSource {
   setCursor?(cursor: string | null): void;
 }
 
+/** Where a hovered object's cursor goes. */
+type CursorTarget = Pick<PointerSource, 'setCursor'> | null | undefined;
+
+/**
+ * The pointer a core dispatches through the tree, as a `PointerSource`: the
+ * canvas's `<glarea>` handlers `emit` what they are handed, already in the
+ * surface's device pixels, and the scene subscribes to it as it would to a
+ * window. A hovered object's cursor still goes to the surface's own window,
+ * where there is one — the Cocoa backend's layer has none.
+ */
+export class ForwardedPointer implements PointerSource {
+  private handlers = new Map<string, (event: NativeMouse) => void>();
+  private cursorTarget: () => CursorTarget;
+
+  constructor(cursorTarget: () => CursorTarget) {
+    this.cursorTarget = cursorTarget;
+  }
+
+  on(name: string, handler: (event: NativeMouse) => void): void {
+    this.handlers.set(name, handler);
+  }
+
+  /** Hand an event to the scene: false while nothing has subscribed. */
+  emit(name: string, event: NativeMouse): boolean {
+    const handler = this.handlers.get(name);
+    if (!handler) return false;
+    handler(event);
+    return true;
+  }
+
+  setCursor(cursor: string | null): void {
+    this.cursorTarget()?.setCursor?.(cursor);
+  }
+}
+
 /** The dispatch path: the object that was hit, then its ancestors. */
 function bubblePath(node: Object3D, scene: Scene): Object3D[] {
   const path: Object3D[] = [];
@@ -51,10 +92,10 @@ function bubblePath(node: Object3D, scene: Scene): Object3D[] {
 }
 
 /**
- * One canvas's pointer pipeline. The canvas attaches it to the surface's
- * child X window once anything in the scene listens; hover and press state
- * live here so enter/leave pairs and click (down and up on the same object)
- * come out right.
+ * One canvas's pointer pipeline. The canvas attaches it to where the pointer
+ * comes from — the tree, or the surface's child X window — once anything in
+ * the scene listens; hover and press state live here so enter/leave pairs
+ * and click (down and up on the same object) come out right.
  */
 export class ScenePointer {
   private scene: Scene;

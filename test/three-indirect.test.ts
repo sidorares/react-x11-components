@@ -9,15 +9,23 @@
 // The harness is react-x11's own `test/scene3d.test.js` harness, carried
 // over: this package is where the scene graph lives now, and the property
 // it asserts moved with it.
+//
+// The pointer tests at the end run on the same stack, because what they ask
+// is the X server's to answer: a press is delivered to the first window up
+// from the pointer that selected it, so whether the scene hears it through
+// the tree or through the surface's own X window — and whether the tree
+// around the canvas still hears it at all — comes down to which windows
+// selected what. `fireEvent` from react-x11/test injects it.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import React from 'react';
 
 import { createRoot } from 'react-x11';
+import { act, cleanup, fireEvent, renderX11 } from 'react-x11/test';
 
 import { Canvas, useFrame } from '../src/three/index.js';
-import type { Mesh } from '../src/three/index.js';
+import type { CanvasProps, Mesh, ThreeEvent } from '../src/three/index.js';
 
 const require = createRequire(import.meta.url);
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -106,8 +114,8 @@ function tapRequests(stream: {
   };
 }
 
-async function createGlApp() {
-  const server = xserver.createServer({ width: 640, height: 480 });
+async function createGlApp({ width = 640, height = 480 } = {}) {
+  const server = xserver.createServer({ width, height });
   const backend = new RecordingBackend();
   server.registerExtension(
     'GLX',
@@ -121,6 +129,9 @@ async function createGlApp() {
     fontSource: new StaticFontSource(),
     onXError: (err: Error) => xErrors.push(err),
   });
+  // react-x11/test's fireEvent injects input through the server it finds on
+  // a node's connection, which is where renderX11 leaves it
+  app._reactX11TestServer = server;
   return { app, backend, xErrors, tap: tapRequests(clientEnd) };
 }
 
@@ -342,5 +353,289 @@ test('per-frame cost does not grow with triangle count', async () => {
     await settle(app);
   } finally {
     await app.close();
+  }
+});
+
+// --- the pointer -----------------------------------------------------------
+
+/**
+ * A canvas off the window's origin — the box's padding is what makes a point
+ * measured from the window's corner and one measured from the surface's
+ * differ — with a unit cube in the middle of it, facing the camera.
+ */
+function pickScene(
+  mesh: Record<string, unknown>,
+  canvas: CanvasProps = {},
+  box: Record<string, unknown> = {},
+) {
+  return h(
+    'window',
+    { width: 320, height: 240 },
+    h(
+      'box',
+      { ...box, style: { flexGrow: 1, padding: 20 } },
+      h(
+        Canvas,
+        { ...canvas, style: { flexGrow: 1 }, camera: { position: [0, 0, 6] } },
+        h(
+          'mesh',
+          mesh,
+          h('boxGeometry', { args: [1, 1, 1] }),
+          h('meshBasicMaterial', { color: 'tomato' }),
+        ),
+      ),
+    ),
+  );
+}
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
+/**
+ * Mount a pick scene and draw its first frame: the one that records the
+ * camera a pick casts through, and that decides where the scene takes the
+ * pointer from. `oldCore` makes the `<glarea>` node one from a core without
+ * react-x11#545, which has no `forwardsPointer` — set as soon as the node
+ * exists, which is before that frame: the surface waits on a GLX reply.
+ */
+async function mountPickScene(
+  element: React.ReactNode,
+  { scale = 1, oldCore = false } = {},
+) {
+  const { app, xErrors } = await createGlApp({
+    width: 320 * scale + 200,
+    height: 240 * scale + 200,
+  });
+  try {
+    const x11Root = await createRoot({ app, scale });
+    const instance = await render(element, x11Root);
+    const surface = findSurface(instance._reactX11Node);
+    if (oldCore) {
+      Object.defineProperty(surface, 'forwardsPointer', {
+        value: undefined,
+        configurable: true,
+      });
+    }
+    await waitFor(() => surface.gl?.contextTag > 0, 'the GL context');
+    await quiesce(surface, app);
+    await drawFrame(surface, app);
+    return {
+      app,
+      surface,
+      xErrors,
+      async close() {
+        await x11Root.unmount();
+        await settle(app);
+        await app.close();
+      },
+    };
+  } catch (err) {
+    await app.close();
+    throw err;
+  }
+}
+
+/**
+ * Let what was injected reach the tree. The server writes its events on its
+ * own schedule, so a macrotask for the write and a round trip for the read —
+ * twice, which is react-x11/test's own `act()` recipe.
+ */
+async function flushInput(app: any) {
+  for (let round = 0; round < 2; round++) {
+    await new Promise((resolve) => setImmediate(resolve));
+    await settle(app);
+  }
+}
+/* eslint-enable @typescript-eslint/no-explicit-any */
+
+test('where core forwards the pointer, a press on the canvas reaches the scene through the tree and bubbles on', async () => {
+  const heard: string[] = [];
+  const scene = await mountPickScene(
+    pickScene(
+      {
+        onPointerDown: (e: ThreeEvent) => heard.push(`down ${e.x},${e.y}`),
+        onClick: () => heard.push('click'),
+      },
+      {
+        onPointerMissed: (e: ThreeEvent) => heard.push(`missed ${e.x},${e.y}`),
+      },
+      {
+        onMouseDown: () => heard.push('box mousedown'),
+        onWheel: () => heard.push('box wheel'),
+      },
+    ),
+  );
+  try {
+    assert.equal(scene.surface.forwardsPointer, true, 'core has #545');
+    // The surface's centre, where the cube is: 140,100 from its corner.
+    fireEvent.click(scene.surface);
+    await flushInput(scene.app);
+    // The scene first, as the <glarea>'s own handler, then on up the tree.
+    // Had the canvas listened on the surface's X window, the server would
+    // have delivered the press there, and the box would never have heard it.
+    assert.deepEqual(heard, ['down 140,100', 'box mousedown', 'click']);
+
+    heard.length = 0;
+    fireEvent.click(scene.surface, { dx: -100, dy: -70 });
+    await flushInput(scene.app);
+    assert.deepEqual(heard, ['missed 40,30', 'box mousedown']);
+
+    // The scene has no wheel events, so the wheel over the canvas is the
+    // box's — a notch is a press of button 5 to X, which a listener on the
+    // surface's window would have taken along with the rest.
+    heard.length = 0;
+    fireEvent.wheel(scene.surface);
+    await flushInput(scene.app);
+    assert.deepEqual(heard, ['box wheel']);
+    assert.equal(
+      scene.xErrors.length,
+      0,
+      scene.xErrors.map((e) => e.message).join(', '),
+    );
+  } finally {
+    await scene.close();
+  }
+});
+
+test('hover crosses into the scene and out of it through the tree, and the cursor goes to the surface', async () => {
+  const heard: string[] = [];
+  const scene = await mountPickScene(
+    pickScene({
+      cursor: 'pointer',
+      onPointerOver: () => heard.push('over'),
+      onPointerOut: () => heard.push('out'),
+    }),
+  );
+  try {
+    const wnd = scene.surface.window;
+    const cursors: unknown[] = [];
+    const setCursor = wnd.setCursor.bind(wnd);
+    wnd.setCursor = (cursor: unknown) => {
+      cursors.push(cursor);
+      return setCursor(cursor);
+    };
+    fireEvent.mouseMove(scene.surface);
+    await waitFor(() => heard.length === 1, 'the cube hovered');
+    // To the screen's corner: onto the box's padding, off the canvas, so the
+    // <glarea> leaves the hover path — which is the scene's leave.
+    fireEvent.mouseLeave(scene.surface);
+    await waitFor(() => heard.length === 2, 'the cube left');
+    assert.deepEqual(heard, ['over', 'out']);
+    assert.deepEqual(cursors, ['pointer', null]);
+  } finally {
+    await scene.close();
+  }
+});
+
+test('at scale 2, off the window’s origin, the scene is handed device pixels from the surface’s corner', async () => {
+  const heard: string[] = [];
+  const scene = await mountPickScene(
+    pickScene(
+      { onPointerDown: (e: ThreeEvent) => heard.push(`down ${e.x},${e.y}`) },
+      {
+        onPointerMissed: (e: ThreeEvent) => heard.push(`missed ${e.x},${e.y}`),
+      },
+    ),
+    { scale: 2 },
+  );
+  try {
+    const { x, y, width, height } = scene.surface.abs;
+    assert.deepEqual([x, y, width, height], [40, 40, 560, 400]);
+    // The press is at 160,120 in the window's logical pixels. From the
+    // surface's corner in those it is 140,100; the device corner taken off
+    // the logical point and then doubled makes it 240,160. Only device pixels
+    // from the corner — 280,200 — are the middle of the surface, and the cube.
+    fireEvent.click(scene.surface);
+    await flushInput(scene.app);
+    assert.deepEqual(heard, ['down 280,200']);
+
+    heard.length = 0;
+    // fireEvent's offsets are device pixels, as the server takes them
+    fireEvent.click(scene.surface, { dx: 120, dy: -90 });
+    await flushInput(scene.app);
+    assert.deepEqual(heard, ['missed 400,110']);
+  } finally {
+    await scene.close();
+  }
+});
+
+test('on a core that does not forward the pointer, the canvas listens on the surface’s X window', async () => {
+  const heard: string[] = [];
+  const scene = await mountPickScene(
+    pickScene(
+      {
+        onPointerDown: (e: ThreeEvent) => heard.push(`down ${e.x},${e.y}`),
+        onClick: () => heard.push('click'),
+      },
+      {},
+      { onMouseDown: () => heard.push('box mousedown') },
+    ),
+    { oldCore: true },
+  );
+  try {
+    fireEvent.click(scene.surface);
+    await flushInput(scene.app);
+    // The surface's window selected the press, so the server delivered it
+    // there: the scene hears it once, in that window's own pixels, and the
+    // tree around the canvas never does.
+    assert.deepEqual(heard, ['down 140,100', 'click']);
+  } finally {
+    await scene.close();
+  }
+});
+
+test('a canvas listens on its surface’s window only where core does not forward, and only on an X window', async () => {
+  // The harness's own <glarea>, which never gets a surface here, handed the
+  // one each backend would give it: an ntk window, which has an X id, or the
+  // Cocoa backend's layer, which takes listeners and never calls them.
+  const cases: [boolean | undefined, 'x11' | 'cocoa', string[]][] = [
+    [true, 'x11', []],
+    [true, 'cocoa', []],
+    [undefined, 'x11', ['mousedown', 'mousemove', 'mouseout', 'mouseup']],
+    [undefined, 'cocoa', []],
+  ];
+  for (const [forwards, backend, expected] of cases) {
+    const result = await renderX11(h('box'), { width: 320, height: 240 });
+    // A surface that is always about to arrive, rather than the harness's
+    // no-GLX failure, which lands in the commit that mounts the <glarea>.
+    Object.defineProperty(result.app, 'chooseGLConfig', {
+      value: () => new Promise(() => {}),
+      configurable: true,
+    });
+    await result.rerender(
+      h(
+        Canvas,
+        { style: { flexGrow: 1 } },
+        h(
+          'mesh',
+          { onClick: () => {} },
+          h('boxGeometry'),
+          h('meshBasicMaterial'),
+        ),
+      ),
+    );
+    const area = findSurface(result.windowNode);
+    const heard: string[] = [];
+    const on = (name: string) => heard.push(name);
+    Object.defineProperty(area, 'window', {
+      value: backend === 'x11' ? { id: 7, on } : { on },
+      configurable: true,
+      writable: true,
+    });
+    Object.defineProperty(area, 'forwardsPointer', {
+      value: forwards,
+      configurable: true,
+    });
+    // the indirect renderer only reads constants off gl
+    const gl = new Proxy({}, { get: () => () => 1 });
+    const info = { width: 320, height: 240, node: area };
+    await act(async () => {
+      area.props.onCreated(gl, info);
+      area.props.onDraw(gl, info);
+    });
+    assert.deepEqual(
+      heard.sort(),
+      expected,
+      `forwardsPointer ${forwards}, ${backend}`,
+    );
+    await cleanup();
   }
 });
