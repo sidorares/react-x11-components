@@ -308,22 +308,27 @@ export class GlTileStore implements TileLookup {
         if (!entry.bytes) continue;
         entry.state = 'building';
         const style = this._style.id;
-        entry.job = pool.build(entry.bytes, this._style, (result) => {
-          if (this._disposed || entry.job === 0) return;
-          entry.job = 0;
-          if (!this._entries.has(key(entry.tile))) return;
-          if (result.data && style === this._style.id) {
-            entry.data = result.data;
-            entry.state = 'ready';
-          } else if (result.data) {
-            // Built for a style that has since been replaced: build again.
-            entry.state = 'loaded';
-            this._queue.push(entry);
-          } else {
-            entry.state = 'empty';
-          }
-          this._onChange();
-        });
+        entry.job = pool.build(
+          entry.bytes,
+          entry.tile,
+          this._style,
+          (result) => {
+            if (this._disposed || entry.job === 0) return;
+            entry.job = 0;
+            if (!this._entries.has(key(entry.tile))) return;
+            if (result.data && style === this._style.id) {
+              entry.data = result.data;
+              entry.state = 'ready';
+            } else if (result.data) {
+              // Built for a style that has since been replaced: build again.
+              entry.state = 'loaded';
+              this._queue.push(entry);
+            } else {
+              entry.state = 'empty';
+            }
+            this._onChange();
+          },
+        );
       }
       return false;
     }
@@ -337,6 +342,7 @@ export class GlTileStore implements TileLookup {
         entry.data = buildTileBuckets(
           parseVectorTile(entry.bytes),
           this._prepared,
+          entry.tile,
         );
         entry.state = 'ready';
       } catch {
@@ -510,6 +516,7 @@ class BuildPool {
 
   build(
     bytes: Uint8Array,
+    tile: TileId,
     style: { id: number; layers: MapStyleLayer[] },
     done: (result: BuildResult) => void,
   ): number {
@@ -530,7 +537,13 @@ class BuildPool {
     const copy = bytes.slice();
     slot.busy++;
     slot.worker.postMessage(
-      { type: 'build', job, style: style.id, bytes: copy },
+      {
+        type: 'build',
+        job,
+        style: style.id,
+        bytes: copy,
+        tile: { z: tile.z, x: tile.x, y: tile.y },
+      },
       [copy.buffer as ArrayBuffer],
     );
     return job;

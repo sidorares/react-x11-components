@@ -12,6 +12,7 @@
 // specifier would make every build depend on Node's type declarations.
 import { prepareStyle } from '../paint.js';
 import type { PreparedStyle } from '../paint.js';
+import type { TileId } from '../proj.js';
 import { parseVectorTile } from '../sources.js';
 import type { MapStyleLayer } from '../style.js';
 import { buildTileBuckets } from './buckets.js';
@@ -19,7 +20,13 @@ import { buildTileBuckets } from './buckets.js';
 /** What the store sends. */
 export type BuildRequest =
   | { type: 'style'; id: number; layers: MapStyleLayer[] }
-  | { type: 'build'; job: number; style: number; bytes: Uint8Array };
+  | {
+      type: 'build';
+      job: number;
+      style: number;
+      bytes: Uint8Array;
+      tile: TileId;
+    };
 
 interface Port {
   on(event: 'message', listener: (message: unknown) => void): void;
@@ -45,7 +52,11 @@ parentPort?.on('message', (message) => {
   try {
     const prepared = styles.get(request.style);
     if (!prepared) throw new Error(`style ${request.style} was never sent`);
-    const data = buildTileBuckets(parseVectorTile(request.bytes), prepared);
+    const data = buildTileBuckets(
+      parseVectorTile(request.bytes),
+      prepared,
+      request.tile,
+    );
     const transfer = [data.line, data.fill];
     if (data.labels) transfer.push(data.labels.anchors.buffer as ArrayBuffer);
     parentPort.postMessage({ job: request.job, data }, transfer);

@@ -37,6 +37,19 @@ import {
 } from '../src/maps/renderer.js';
 import { prepareStyle } from '../src/maps/paint.js';
 import type { MapStyleLayer } from '../src/maps/style.js';
+import {
+  LIGHT_PALETTE,
+  openMapTilesStyle,
+  shortbreadStyle,
+} from '../src/maps/styles.js';
+import {
+  DEFAULT_ICON_SIZE,
+  ICON_GAP,
+  MAP_ICONS,
+  isMapIcon,
+  traceGlyph,
+  tracePlate,
+} from '../src/maps/icons.js';
 import { attributionOf } from '../src/maps/sources.js';
 import type { MapSource } from '../src/maps/sources.js';
 import {
@@ -1176,6 +1189,481 @@ test('the retained renderer draws a street name turned about its centre, and a l
     ['text'],
   );
   assert.ok(calls[5].args.every(Number.isInteger), `${calls[5].args}`);
+});
+
+// --- labels: icons -------------------------------------------------------------------
+
+/** A bus stop, a kind with no pictogram, and three house numbers — two of
+ *  them "2", forty tile units apart — as Shortbread cuts them. */
+function stopTile() {
+  const point = (tags: number[], x: number, y: number) => ({
+    type: GeomType.Point,
+    tags,
+    geometry: [...command(1, 1), zigzag(x), zigzag(y)],
+  });
+  return parseTile(
+    new Uint8Array([
+      ...layer(
+        'public_transport',
+        4096,
+        ['kind', 'name'],
+        ['bus_stop', 'Lyons Ave/Yuille St', 'helipad', 'Hospital Helipad'],
+        [point([0, 0, 1, 1], 1000, 1000), point([0, 2, 1, 3], 3000, 3000)],
+      ),
+      ...layer(
+        'addresses',
+        4096,
+        ['housenumber'],
+        ['2', '80'],
+        [
+          point([0, 0], 1500, 1500),
+          point([0, 0], 1540, 1500),
+          point([0, 1], 2000, 2000),
+        ],
+      ),
+    ]),
+  );
+}
+
+test('the stock style sets a bus stop’s name beside a bus, and house numbers from zoom 18', () => {
+  const prepared = prepareStyle(shortbreadStyle());
+  const id = { z: 14, x: 0, y: 0 };
+  const at15 = collectLabels(stopTile(), id, prepared, 15);
+  const stops = at15.filter((c) => c.text === 'Lyons Ave/Yuille St');
+  // Once: the pictogram layers and the one for the rest split the kinds.
+  assert.strictEqual(stops.length, 1);
+  assert.deepStrictEqual(stops[0].icon, {
+    name: 'bus',
+    size: DEFAULT_ICON_SIZE,
+    color: LIGHT_PALETTE.transit,
+    glyph: '#ffffff',
+  });
+  // A kind with no pictogram is named as every stop used to be.
+  const helipad = at15.find((c) => c.text === 'Hospital Helipad');
+  assert.ok(helipad, 'the helipad is still named');
+  assert.strictEqual(helipad.icon ?? null, null);
+
+  const numbers = (zoom: number) =>
+    collectLabels(stopTile(), id, prepared, zoom).filter((c) =>
+      c.key.startsWith('house-numbers|'),
+    );
+  // A 256-pixel map's 19, where Google sets them — and not a level before.
+  assert.deepStrictEqual(numbers(17), []);
+  assert.deepStrictEqual(
+    numbers(18)
+      .map((c) => c.text)
+      .sort(),
+    ['2', '2', '80'],
+  );
+  // The two 2s are 80 pixels apart at 18: both are set, where a repeat
+  // distance would keep one — every street has a number 2.
+  const shaper = new LabelShaper(halfEmFonts, 'sans-serif', 1);
+  const placed = placeLabels(numbers(18), 512 * 2 ** 18, shaper);
+  assert.strictEqual(placed.filter((l) => l.text === '2').length, 2);
+});
+
+/** A point label with the fields placement reads, 10 px half-em text. */
+const pointLabel = {
+  id: 's',
+  key: 'stops|Stop',
+  text: 'Stop',
+  mx: 0.5,
+  my: 0.5,
+  angle: 0,
+  avail: Infinity,
+  clear: Infinity,
+  length: 0,
+  dev: 0,
+  rank: 10,
+  priority: 0,
+  size: 10,
+  color: '#000000',
+  halo: undefined,
+  haloWidth: 0,
+  repeat: 0,
+};
+const busIcon = {
+  name: 'bus' as const,
+  size: 14,
+  color: '#2a6fb8',
+  glyph: '#ffffff',
+};
+
+test('the retained renderer places an icon and its name as one box, the name right of the point', () => {
+  const shaper = new LabelShaper(halfEmFonts, 'sans-serif', 1);
+  const [stop] = placeLabels([{ ...pointLabel, icon: busIcon }], 512, shaper);
+  // "Stop" is 20 wide: the plate, the gap and the name, padded 2 a side.
+  assert.strictEqual(stop.width, 14 + ICON_GAP + 20 + 4);
+  assert.strictEqual(stop.height, 14 + 4);
+  // The point is the plate's centre, so the box starts half a plate left
+  // of it and runs right.
+  assert.strictEqual(stop.wx + stop.ox! - stop.width / 2, 256 - 7 - 2);
+  // So a name just left of the point fits, and one just right of the stop's
+  // own name does not — the other way round from a name set on the point.
+  const neighbour = (text: string, x: number) => ({
+    ...pointLabel,
+    id: text,
+    key: `places|${text}`,
+    text,
+    rank: 0,
+    mx: x / 512,
+  });
+  const placed = placeLabels(
+    [
+      { ...pointLabel, icon: busIcon },
+      neighbour('West', 232),
+      neighbour('East', 290),
+    ],
+    512,
+    shaper,
+  );
+  assert.deepStrictEqual(
+    placed.map((l) => l.text),
+    ['Stop', 'West'],
+  );
+});
+
+test('the retained renderer draws the icon on the point and the name level beside it', () => {
+  const calls: { name: string; args: number[] }[] = [];
+  const ctx = recordingCanvas(calls);
+  const shaped = {
+    width: 20,
+    height: 10,
+    layout: {
+      draw: (_ctx: unknown, x: number, y: number) =>
+        calls.push({ name: 'text', args: [x, y] }),
+    },
+  };
+  drawLabels(
+    ctx as never,
+    [
+      {
+        ...pointLabel,
+        halo: '#ffffff',
+        haloWidth: 1,
+        icon: busIcon,
+        wx: 100,
+        wy: 50,
+        ox: 11.5,
+        width: 41,
+        height: 18,
+        shaped,
+      },
+    ],
+    transformFor(
+      { center: { lon: 0, lat: 0 }, zoom: 0 },
+      { width: 512, height: 512 },
+      512,
+    ),
+    { x: 0, y: 0, width: 512, height: 512 },
+    2,
+    null,
+    new LabelShaper(null, 'sans-serif', 2),
+  );
+  // The halo's plate, the plate, the glyph — then the name, over them.
+  assert.strictEqual(calls.filter((c) => c.name === 'fill').length, 3);
+  assert.strictEqual(calls.at(-1)!.name, 'text');
+  // The plate about the point, in device pixels: its first edge starts a
+  // corner's radius in from its left, half a plate above the point.
+  const moves = calls.filter((c) => c.name === 'moveTo');
+  const plate = moves[1].args;
+  assert.ok(Math.abs(plate[0] - (200 - 14 + 28 * 0.2)) < 1e-9, `${plate}`);
+  assert.strictEqual(plate[1], 100 - 14);
+  // The name the gap past the plate's right edge, centred on the point's
+  // height, on whole pixels.
+  assert.deepStrictEqual(calls.at(-1)!.args, [
+    (100 + 7 + ICON_GAP) * 2,
+    (50 - 5) * 2,
+  ]);
+});
+
+test('every icon’s glyph lies on its plate, and only the icons drawn are icons', () => {
+  for (const icon of MAP_ICONS) {
+    const points: number[][] = [];
+    const ctx = {
+      beginPath: () => {},
+      closePath: () => {},
+      arc: () => {},
+      moveTo: (x: number, y: number) => points.push([x, y]),
+      lineTo: (x: number, y: number) => points.push([x, y]),
+    };
+    traceGlyph(ctx, icon, 50, 50, 16);
+    assert.ok(points.length >= 3, icon);
+    for (const [x, y] of points) {
+      assert.ok(x >= 42 && x <= 58 && y >= 42 && y <= 58, `${icon}: ${x},${y}`);
+    }
+    // And a plate is a closed path, with nothing outside its square.
+    const plate: number[][] = [];
+    tracePlate(
+      {
+        ...ctx,
+        moveTo: (x, y) => plate.push([x, y]),
+        lineTo: (x, y) => plate.push([x, y]),
+      },
+      50,
+      50,
+      16,
+    );
+    for (const [x, y] of plate)
+      assert.ok(x >= 42 && x <= 58 && y >= 42 && y <= 58);
+  }
+  // A style is data, and may name an icon this version lacks — or a key
+  // every object has.
+  assert.strictEqual(isMapIcon('bus'), true);
+  assert.strictEqual(isMapIcon('rocket'), false);
+  assert.strictEqual(isMapIcon('toString'), false);
+});
+
+/** One point anchor at the middle of {@link labelFrame}'s world, on layer 0. */
+function oneStop(text: string): GlLabelData {
+  const anchors = new Float32Array(LABEL_STRIDE);
+  anchors[LabelField.x] = 2048;
+  anchors[LabelField.y] = 2048;
+  anchors[LabelField.avail] = -1;
+  anchors[LabelField.clear] = 1e9;
+  anchors[LabelField.text] = 0;
+  anchors[LabelField.layer] = 0;
+  return { texts: [text], anchors, count: 1, ms: 0 };
+}
+
+const stopStyle = prepareStyle({
+  layers: [
+    {
+      id: 'stops',
+      type: 'symbol',
+      sourceLayer: 'public_transport',
+      textField: 'name',
+      textSize: 10,
+      icon: 'bus',
+      iconSize: 14,
+      iconColor: '#ff0000',
+    },
+  ],
+});
+
+/** Place `labels` with {@link stopStyle}, let every raster land, and fade
+ *  in: the batch a settled frame draws. */
+async function settleStops(labels: GlLabelData, atlas: LabelAtlas) {
+  const placer = new LabelPlacer();
+  const frame = (now: number) => ({
+    ...labelFrame(labels, now),
+    style: stopStyle,
+  });
+  atlas.beginFrame(Infinity);
+  placer.place(frame(0), atlas);
+  atlas.pump();
+  await new Promise((resolve) => setImmediate(resolve));
+  for (const entry of atlas.takeUploads(Infinity)) entry.ready = true;
+  placer.batch(frame(0), atlas);
+  return placer.batch(frame(FADE_MS), atlas);
+}
+
+test('the GL renderer draws an icon as its plate and glyph on the point, and the name beside them', async () => {
+  const atlas = instantAtlas();
+  const batch = await settleStops(oneStop('Stop'), atlas);
+  assert.strictEqual(batch.count, 3, 'plate, glyph, name');
+  assert.strictEqual(batch.labels, 1, 'one label');
+  const at = (i: number, f: number) => batch.instances[i * LABEL_INSTANCE + f];
+  // The world is one 512-pixel tile, so the anchor is at 256, 256.
+  assert.deepStrictEqual(
+    [at(0, 0), at(0, 1), at(1, 0), at(1, 1)],
+    [256, 256, 256, 256],
+  );
+  const rgba = (i: number) => [8, 9, 10, 11].map((f) => at(i, f));
+  assert.deepStrictEqual(rgba(0), [
+    ...premultiplied(parseColor('#ff0000')!, 1),
+  ]);
+  assert.deepStrictEqual(rgba(1), [1, 1, 1, 1], 'a white glyph');
+  // The name's string is its raster less the margin, and its left edge is
+  // the gap past the plate's right edge.
+  const string = at(2, 6) - 2 * atlas.pad;
+  assert.strictEqual(at(2, 0) - string / 2, 256 + 7 + ICON_GAP);
+  assert.strictEqual(at(2, 1), 256);
+});
+
+test('where the GL atlas cannot draw an icon, the name is drawn alone rather than not at all', async () => {
+  const engine: TextEngine = {
+    measure: (text, size) => ({
+      width: text.length * size * 0.5,
+      height: size,
+    }),
+    // No path to fill: every icon piece is a raster that can never be.
+    rasterize: async (items, pad) =>
+      items.map((item) => {
+        if (item.icon) return null;
+        const width = item.text.length * item.size * 0.5 + pad * 2;
+        const height = item.size + pad * 2;
+        return { width, height, pixels: new Uint8Array(width * height * 4) };
+      }),
+    dispose: () => {},
+  };
+  const batch = await settleStops(
+    oneStop('Stop'),
+    new LabelAtlas(engine, { pad: 6 }),
+  );
+  assert.strictEqual(batch.count, 1);
+  assert.strictEqual(
+    batch.instances[0],
+    256,
+    'on the point, as a name with no icon',
+  );
+});
+
+// --- labels: house numbers in their buildings ---------------------------------------
+
+/**
+ * Buildings and the address points around them, in 4096-unit tile space on
+ * the equator at zoom 14 — where a tile unit is 0.6 m, so the default 15 m
+ * is 25 units:
+ *
+ *  - "1" inside a square, "2" 10 units (6 m) outside another;
+ *  - "3" 400 units (240 m) from anything;
+ *  - "4a" and "4b" both claiming one square;
+ *  - "5" 10 units under an L whose centroid falls outside it.
+ */
+function numbersTile() {
+  const square = (x: number, y: number): [number, number][] => [
+    [x, y],
+    [x + 100, y],
+    [x + 100, y + 100],
+    [x, y + 100],
+  ];
+  const building = (ring: [number, number][]) => ({
+    type: GeomType.Polygon,
+    tags: [],
+    geometry: part(ring, true),
+  });
+  const number = (tag: number, x: number, y: number) => ({
+    type: GeomType.Point,
+    tags: [0, tag],
+    geometry: [...command(1, 1), zigzag(x), zigzag(y)],
+  });
+  return parseTile(
+    new Uint8Array([
+      ...layer(
+        'buildings',
+        4096,
+        [],
+        [],
+        [
+          building(square(1000, 1000)),
+          building(square(2000, 1000)),
+          building(square(3000, 1000)),
+          building([
+            [1000, 2000],
+            [1400, 2000],
+            [1400, 2040],
+            [1040, 2040],
+            [1040, 2400],
+            [1000, 2400],
+          ]),
+        ],
+      ),
+      ...layer(
+        'addresses',
+        4096,
+        ['housenumber'],
+        ['1', '2', '3', '4a', '4b', '5'],
+        [
+          number(0, 1020, 1020),
+          number(1, 2050, 990),
+          number(2, 1500, 1050),
+          number(3, 3010, 1010),
+          number(4, 3050, 1110),
+          number(5, 1020, 2410),
+        ],
+      ),
+    ]),
+  );
+}
+
+const numbersStyle = (snap: boolean) =>
+  prepareStyle({
+    layers: [
+      {
+        id: 'house-numbers',
+        type: 'symbol',
+        sourceLayer: 'addresses',
+        textField: 'housenumber',
+        ...(snap ? { snapInto: { sourceLayer: 'buildings' } } : {}),
+      },
+    ],
+  });
+
+/** Each number's anchor, in 4096-unit tile space. */
+function numberAnchors(
+  snap: boolean,
+  id?: { z: number; x: number; y: number },
+) {
+  const s = TILE_EXTENT / 4096;
+  const out: Record<string, [number, number]> = {};
+  for (const a of anchorsOf(
+    buildTileLabels(numbersTile(), numbersStyle(snap), TILE_EXTENT, id),
+  )) {
+    out[a.text] = [
+      Math.round((a.x / s) * 10) / 10,
+      Math.round((a.y / s) * 10) / 10,
+    ];
+  }
+  return out;
+}
+
+const EQUATOR_14 = { z: 14, x: 0, y: 8191 };
+
+test('with snapping off, every house number is exactly where the data puts it', () => {
+  assert.deepStrictEqual(numberAnchors(false, EQUATOR_14), {
+    '1': [1020, 1020],
+    '2': [2050, 990],
+    '3': [1500, 1050],
+    '4a': [3010, 1010],
+    '4b': [3050, 1110],
+    '5': [1020, 2410],
+  });
+});
+
+test('a house number snaps into the one building that is its alone, within 15 m', () => {
+  const at = numberAnchors(true, EQUATOR_14);
+  // Inside its building, and 6 m outside another: both to the middle.
+  assert.deepStrictEqual(at['1'], [1050, 1050]);
+  assert.deepStrictEqual(at['2'], [2050, 1050]);
+  // 240 m from any building: the house it numbers is not mapped.
+  assert.deepStrictEqual(at['3'], [1500, 1050]);
+  // Two numbers, one building: a duplex, or a garage nearer the street
+  // than either house. Neither moves.
+  assert.deepStrictEqual(at['4a'], [3010, 1010]);
+  assert.deepStrictEqual(at['4b'], [3050, 1110]);
+  // An L's centroid is in the crook, outside it: the number goes to the
+  // middle of the L's span on the centroid's row, inside the upright.
+  const [x, y] = at['5'];
+  assert.strictEqual(x, 1020);
+  assert.ok(y > 2040 && y < 2400, `${y}`);
+});
+
+test('without the tile, no distance is known, and only a number inside a building moves', () => {
+  const at = numberAnchors(true);
+  assert.deepStrictEqual(at['1'], [1050, 1050]);
+  assert.deepStrictEqual(at['2'], [2050, 990]);
+});
+
+test('snapBuildingNumbers snaps the stock styles’ house numbers into their footprints, and only then', () => {
+  const numbers = (style: readonly MapStyleLayer[]) =>
+    style.find((l) => l.id === 'house-numbers') as { snapInto?: unknown };
+  assert.strictEqual(numbers(shortbreadStyle().layers).snapInto, undefined);
+  assert.deepStrictEqual(
+    numbers(shortbreadStyle({ snapBuildingNumbers: true }).layers).snapInto,
+    { sourceLayer: 'buildings' },
+  );
+  assert.deepStrictEqual(
+    numbers(openMapTilesStyle({ snapBuildingNumbers: true }).layers).snapInto,
+    { sourceLayer: 'building' },
+  );
+  // No footprints drawn, nothing to put a number in.
+  assert.strictEqual(
+    numbers(
+      shortbreadStyle({ snapBuildingNumbers: true, buildings: false }).layers,
+    ).snapInto,
+    undefined,
+  );
 });
 
 // --- labels: placement ---------------------------------------------------------------

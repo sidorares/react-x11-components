@@ -38,6 +38,7 @@ import { GeomType, GeometryBuffer } from '../mvt.js';
 import type { FeatureCursor, VectorTile } from '../mvt.js';
 import type { PreparedLayer, PreparedStyle } from '../paint.js';
 import type { MapStyleLayer } from '../style.js';
+import type { TileId } from '../proj.js';
 import { buildTileLabels } from '../anchors.js';
 import type { GlLabelData } from '../anchors.js';
 
@@ -324,6 +325,9 @@ interface Group {
 export function buildTileBuckets(
   tile: VectorTile,
   prepared: PreparedStyle,
+  /** Which tile — what a label layer's `snapInto` distance is measured
+   *  against (`../anchors.ts`). */
+  id?: TileId,
 ): GlTileData {
   const started = now();
   const line = new Stream(1024);
@@ -445,7 +449,7 @@ export function buildTileBuckets(
     fill: fill.take(),
     fillRecords: fill.count,
     draws,
-    labels: buildTileLabels(tile, prepared, TILE_EXTENT),
+    labels: buildTileLabels(tile, prepared, TILE_EXTENT, id),
     stats: {
       features,
       lineRecords: line.count,

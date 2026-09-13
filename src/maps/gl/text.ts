@@ -17,7 +17,14 @@
 // white and read from the alpha channel; colour and halo are the shader's
 // (see `./shaders.ts`), so one raster serves every palette and a
 // light-to-dark switch re-rasterizes nothing.
+//
+// An icon's two pieces (`../icons.ts`) are rasters here too, drawn as
+// coverage from the same paths the retained renderer fills, and coloured by
+// the same shader.
 import { Surface } from 'react-x11/ntk';
+
+import { traceGlyph, tracePlate } from '../icons.js';
+import type { IconPathContext, MapIcon } from '../icons.js';
 
 /** A set string's box, in device pixels. */
 export interface TextBox {
@@ -25,10 +32,15 @@ export interface TextBox {
   height: number;
 }
 
-/** One string to set, at `size` device pixels. */
+/** Which of an icon's two single-colour rasters. */
+export type IconPart = 'plate' | 'glyph';
+
+/** One string to set, at `size` device pixels — or, with `icon`, one piece
+ *  of an icon `size` pixels across, and `text` empty. */
 export interface TextItem {
   text: string;
   size: number;
+  icon?: { name: MapIcon; part: IconPart };
 }
 
 /** A rasterized string: RGBA as read back, coverage in alpha, `pad`
@@ -73,9 +85,22 @@ interface ImageLike {
   height: number;
 }
 
-interface ContextLike {
+interface ContextLike extends Partial<IconPathContext> {
   getImageData(x: number, y: number, w: number, h: number): Promise<ImageLike>;
   destroy?(): void;
+  fillStyle?: unknown;
+  fill?(): void;
+}
+
+/** Whether a context can fill a path — what an icon is drawn with. */
+function fills(
+  ctx: ContextLike,
+): ctx is ContextLike & IconPathContext & { fill(): void } {
+  return (
+    typeof ctx.beginPath === 'function' &&
+    typeof ctx.arc === 'function' &&
+    typeof ctx.fill === 'function'
+  );
 }
 
 interface SurfaceLike {
@@ -154,7 +179,9 @@ export class SurfaceTextEngine implements TextEngine {
     let y = 0;
     let row = 0;
     for (const item of items) {
-      const box = this.measure(item.text, item.size);
+      const box = item.icon
+        ? { width: Math.ceil(item.size), height: Math.ceil(item.size) }
+        : this.measure(item.text, item.size);
       const w = box.width + pad * 2;
       const h = box.height + pad * 2;
       if (w > STAGING_WIDTH || h > STAGING_HEIGHT) {
@@ -200,11 +227,27 @@ export class SurfaceTextEngine implements TextEngine {
         places[i] = undefined;
         return;
       }
-      this._layout(item.text, item.size).draw(
-        ctx,
-        place.x + pad,
-        place.y + pad,
-      );
+      if (item.icon) {
+        // White, like the strings: coverage, coloured by the shader.
+        if (!fills(ctx)) {
+          places[i] = null;
+          return;
+        }
+        const half = item.size / 2;
+        const cx = place.x + pad + half;
+        const cy = place.y + pad + half;
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath();
+        if (item.icon.part === 'plate') tracePlate(ctx, cx, cy, item.size);
+        else traceGlyph(ctx, item.icon.name, cx, cy, item.size);
+        ctx.fill();
+      } else {
+        this._layout(item.text, item.size).draw(
+          ctx,
+          place.x + pad,
+          place.y + pad,
+        );
+      }
       used = Math.max(used, place.y + place.h);
     });
     const image = await ctx.getImageData(0, 0, STAGING_WIDTH, used);
@@ -249,6 +292,10 @@ export interface AtlasEntry {
 }
 
 const keyOf = (text: string, size: number): string => `${size}|${text}`;
+/** An icon piece's key: `#` where a string's has `|`, so no string can
+ *  be taken for one. */
+const iconKey = (name: MapIcon, part: IconPart, size: number): string =>
+  `${size}#${part}:${name}`;
 
 /**
  * The widest halo a raster's margin holds, in pixels. The drawn quad sits
@@ -366,24 +413,53 @@ export class LabelAtlas {
   /** The string's raster, once the texture has it; null until then —
    *  asking is what gets it rasterized. */
   entry(text: string, size: number): AtlasEntry | null {
-    const key = keyOf(text, size);
+    return this._lookup(keyOf(text, size), text, size, null, 'plate');
+  }
+
+  /** One piece of an icon `size` pixels across, as {@link entry} answers
+   *  for a string. */
+  icon(name: MapIcon, part: IconPart, size: number): AtlasEntry | null {
+    return this._lookup(iconKey(name, part, size), '', size, name, part);
+  }
+
+  private _lookup(
+    key: string,
+    text: string,
+    size: number,
+    icon: MapIcon | null,
+    part: IconPart,
+  ): AtlasEntry | null {
     const entry = this._entries.get(key);
     if (entry) {
       entry.used = this._frame;
       return entry.ready ? entry : null;
     }
     if (!this._failed.has(key) && !this._wanted.has(key)) {
-      this._wanted.set(key, { text, size });
+      this._wanted.set(
+        key,
+        icon ? { text, size, icon: { name: icon, part } } : { text, size },
+      );
     }
     return null;
+  }
+
+  /** Whether an icon can never be drawn at this size — the engine has no
+   *  path to fill it with. A name set beside it is then set alone. */
+  iconFailed(name: MapIcon, size: number): boolean {
+    return (
+      this._failed.has(iconKey(name, 'plate', size)) ||
+      this._failed.has(iconKey(name, 'glyph', size))
+    );
   }
 
   /** Start rasterizing what has been asked for, unless a batch is out. */
   pump(): void {
     const engine = this._engine;
     if (!engine || this._busy || this._wanted.size === 0) return;
+    const keys: string[] = [];
     const batch: TextItem[] = [];
-    for (const item of this._wanted.values()) {
+    for (const [key, item] of this._wanted) {
+      keys.push(key);
       batch.push(item);
       if (batch.length >= BATCH) break;
     }
@@ -393,7 +469,7 @@ export class LabelAtlas {
         this._busy = false;
         rasters.forEach((raster, i) => {
           if (raster === undefined) return;
-          const key = keyOf(batch[i].text, batch[i].size);
+          const key = keys[i];
           this._wanted.delete(key);
           if (raster === null || !this._add(key, raster)) this._failed.add(key);
         });

@@ -23,6 +23,7 @@
 // the whole performance argument for the restriction: a dense tile has
 // twelve thousand features and eighteen layers, so anything computed per
 // layer is free and anything computed per feature is the frame.
+import type { MapIcon } from './icons.js';
 import type { FeatureValue } from './mvt.js';
 import { GeomType } from './mvt.js';
 import type { FeatureCursor } from './mvt.js';
@@ -151,6 +152,37 @@ export interface SymbolLayer extends LayerBase {
    * distance is where that line goes.
    */
   repeatDistance?: number;
+  /**
+   * A pictogram set on the point, with the text beside it — the bus that
+   * says "Lyons Ave/Yuille St" is a stop, not a street. The icon is centred
+   * on the feature and the text sits to its right; the two are placed, and
+   * give way, as one. Point labels only: a name along a street has no point
+   * to stand an icon on, and is set as though there were none.
+   *
+   * One icon per layer, like {@link rank} and for the same reason — a
+   * `filter` split says which features get which, exactly.
+   */
+  icon?: MapIcon;
+  /** Logical pixels across the icon's plate. 14 by default. */
+  iconSize?: Zoomed<number>;
+  /** The plate's colour. */
+  iconColor?: Zoomed<string>;
+  /** The pictogram's colour, over the plate. White by default. */
+  iconGlyphColor?: Zoomed<string>;
+  /**
+   * Move each point label into the polygon of `sourceLayer` it belongs to —
+   * a house number into its house. A point inside a polygon belongs to it;
+   * one outside, to the nearest polygon within `within` metres (15 by
+   * default). It moves only where it is the one point that polygon is
+   * claimed by, and then to the polygon's middle; every other point stays
+   * where the data put it. Absent, nothing moves.
+   *
+   * Worth having because address data is often not *on* its building: an
+   * address point sits in the lot, metres from the house, and a number
+   * drawn there reads as the garden's. On OpenStreetMap's tiles around
+   * Melbourne, 42% of address points were inside a building.
+   */
+  snapInto?: { sourceLayer: string; within?: number };
 }
 
 export type MapStyleLayer = FillLayer | LineLayer | CircleLayer | SymbolLayer;

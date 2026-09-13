@@ -831,6 +831,7 @@ test('the default style is written against the schema it names', () => {
     'water_polygons_labels',
     'street_labels',
     'public_transport',
+    'addresses',
   ]);
   for (const layer of style.layers) {
     assert.ok(
@@ -879,6 +880,9 @@ test('the OpenMapTiles style names that schema, not Shortbread', () => {
     'place',
     'water_name',
     'boundary',
+    'poi',
+    'aerodrome_label',
+    'housenumber',
   ]);
   const shortbread = new Set(
     shortbreadStyle().layers.map((l) => l.sourceLayer),
