@@ -78,6 +78,8 @@ interface SurfaceNode {
      *  none. */
     id?: unknown;
     on(name: string, handler: (event: { x: number; y: number }) => void): void;
+    /** The cursor X shows over the window. The Cocoa backend's layer has
+     *  none: there the only cursor is the owning window's, and core's. */
     setCursor?(cursor: string | null): void;
   } | null;
 }
@@ -182,6 +184,9 @@ export function Canvas({
   const supportsShaders = useSupports('shaders');
   const [error, setError] = useState<Error | null>(null);
   const areaRef = useRef<unknown>(null);
+  // The hovered object's cursor, where the surface cannot wear it itself
+  // (`forwarded` below).
+  const [sceneCursor, setSceneCursor] = useState<string | null>(null);
 
   // Everything with the canvas's lifetime, made once. The camera the scene
   // starts with is the default one; `<perspectiveCamera makeDefault>`
@@ -227,9 +232,23 @@ export function Canvas({
           missedRef.current?.(event);
         },
       }),
-      forwarded: new ForwardedPointer(
-        () => (areaRef.current as SurfaceNode | null)?.window,
-      ),
+      // Where a hovered object's cursor goes. An X window wears a cursor of
+      // its own, and X shows it over the window — or, while it is null, the
+      // parent's, which is core's — so on X11 the scene's goes straight
+      // onto the surface: on at once, and off again onto whatever the tree
+      // asked for. The Cocoa backend's surface is a layer, and there the
+      // only cursor is the window's, which core puts on from the style of
+      // the node under the pointer and remembers having put on. Set behind
+      // core's back, it would outlast the hover wherever core saw nothing
+      // to change. So there the scene's becomes the `<glarea>`'s own
+      // `cursor`, and core applies it like any other: from the motion after
+      // the one the scene heard, because core picks the window's cursor
+      // before it dispatches the motion.
+      forwarded: new ForwardedPointer((cursor) => {
+        const surface = (areaRef.current as SurfaceNode | null)?.window;
+        if (typeof surface?.setCursor === 'function') surface.setCursor(cursor);
+        else setSceneCursor(cursor);
+      }),
       renderer: null,
       post: null,
       gl: null,
@@ -512,7 +531,9 @@ export function Canvas({
 
   return hx('glarea', {
     ref: areaRef as Ref<never>,
-    style,
+    // over the canvas's own, as a child's cursor is over its parent's: the
+    // object is what the pointer is on
+    style: sceneCursor === null ? style : [style, { cursor: sceneCursor }],
     clearColor,
     glx,
     frameLoop: loop,

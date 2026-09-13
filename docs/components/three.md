@@ -197,6 +197,15 @@ wheel over the canvas to that window: the scene hears them, and the tree
 around the canvas does not. The Cocoa backend's surface is a layer with no
 events of its own, so on such a core a scene there hears nothing.
 
+**The cursor goes where the surface can wear it.** On X11 the surface is an
+X window, and a hovered object's `cursor` goes onto it: X shows it over the
+surface at once, and the tree's cursor again once it comes off. The Cocoa
+backend's surface is a layer with no cursor of its own, so there the
+object's cursor becomes the `<glarea>`'s `cursor` style, over the canvas's
+own as a child's is over its parent's, and core puts it on the window as it
+does any node's. That is a commit each time the cursor changes, and it
+arrives a motion late (see [Honest edges](#honest-edges)).
+
 ## TypeScript
 
 The scene vocabulary is typed twice over, because react-x11 core still
@@ -233,9 +242,12 @@ typings up and the pragma stops being necessary.
   RGBA bytes.
 - **Removed props keep their value** rather than resetting to a default
   (write the value you want, or key the element).
-- **`cursor` does nothing on the Cocoa backend yet.** A hovered object's
-  cursor is set on the surface's X window, and the Cocoa surface is a layer
-  without one.
+- **On the Cocoa backend the cursor follows the scene one motion late.**
+  Core picks the window's cursor as the pointer moves, before the scene
+  hears where it went, so an object's cursor goes on with the motion after
+  the one that reached the object, and comes off with the motion after the
+  one that left it. A pointer that comes to rest just as it reaches an
+  object keeps the old cursor until it moves again.
 
 ## Why this lives here, and how
 
