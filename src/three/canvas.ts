@@ -3,7 +3,9 @@
 //
 // The division of labour: `<glarea>` owns everything that is renderer
 // internals — the child X window on a GL visual, the context, the frame
-// clock, the swap — and exposes it as `onCreated`/`onDraw`/`frameLoop`.
+// clock, the swap — and exposes it as `onCreated`/`onDraw`/`frameLoop`. On
+// a core with react-x11#545 the pointer over the surface is the tree's too,
+// dispatched at the `<glarea>` like the pointer over any node.
 // This component owns everything that is scene: the second reconciler
 // rendering `children` into the object graph, the store `useThree`/`useFrame`
 // read, the backend-appropriate renderer, picking, and post-processing.
@@ -24,7 +26,7 @@ import {
 } from 'react';
 import type { ReactNode, Ref } from 'react';
 import { useSupports } from 'react-x11';
-import type { ReactX11Elements } from 'react-x11';
+import type { ReactX11Elements, SyntheticEvent } from 'react-x11';
 // Loads the module the JSX augmentation in jsx.ts targets (see flow/index.ts
 // for the same pattern). Type-only, so it is erased.
 import type {} from 'react-x11/jsx-runtime';
@@ -42,9 +44,10 @@ import { IndirectRenderer } from './renderer-indirect.js';
 import { DirectRenderer } from './renderer-direct.js';
 import { PostProcessor } from './postprocess.js';
 import type { EffectComposer } from './passes.js';
-import { ScenePointer, type ThreeEvent } from './events.js';
+import { ForwardedPointer, ScenePointer, type ThreeEvent } from './events.js';
 import { sceneWantsPointer } from './raycast.js';
 import { now, warn } from './globals.js';
+import { scaleOf } from '../internal/units.js';
 
 /**
  * Failures that mean "one thing in this scene is broken", not "this machine
@@ -64,10 +67,39 @@ type GlAreaProps = ReactX11Elements['glarea'];
 /** The glarea node surface this component reaches through its ref. */
 interface SurfaceNode {
   requestFrame?: () => void;
+  /** `true` where core dispatches the pointer over the surface at this node,
+   *  through the tree (react-x11#545); absent on a core that does not. */
+  forwardsPointer?: boolean;
+  /** The node's box, which is the surface's: device pixels, in the owning
+   *  window's space. */
+  abs?: { x: number; y: number };
   window?: {
+    /** The X window's id — the Cocoa backend's surface is a layer, and has
+     *  none. */
+    id?: unknown;
     on(name: string, handler: (event: { x: number; y: number }) => void): void;
     setCursor?(cursor: string | null): void;
   } | null;
+}
+
+/**
+ * A pointer event where the scene measures it: device pixels from the
+ * surface's corner, as the surface's own X window reports them. Core hands a
+ * handler the point in the window's logical pixels — divided by the node's
+ * scale — while the surface covers the node's box, `abs`, in device pixels:
+ * so the point goes back to device pixels and the box's corner comes off.
+ * (The content box's corner would be out by any padding or border, which the
+ * surface covers too.)
+ */
+function surfacePoint(
+  node: SurfaceNode | null,
+  ev: { x: number; y: number },
+): { x: number; y: number } {
+  const scale = scaleOf(node);
+  return {
+    x: ev.x * scale - (node?.abs?.x ?? 0),
+    y: ev.y * scale - (node?.abs?.y ?? 0),
+  };
 }
 
 interface DrawInfo {
@@ -119,6 +151,8 @@ interface CanvasKit {
   store: ThreeStore;
   container: SceneContainer;
   pointer: ScenePointer;
+  /** The pointer as core forwards it, which the surface's handlers feed. */
+  forwarded: ForwardedPointer;
   renderer: IndirectRenderer | DirectRenderer | null;
   post: PostProcessor | null;
   gl: unknown;
@@ -193,6 +227,9 @@ export function Canvas({
           missedRef.current?.(event);
         },
       }),
+      forwarded: new ForwardedPointer(
+        () => (areaRef.current as SurfaceNode | null)?.window,
+      ),
       renderer: null,
       post: null,
       gl: null,
@@ -359,14 +396,24 @@ export function Canvas({
       clock.delta = delta;
       store.runFrames(store.getState(), delta);
 
-      // pointer events are only worth selecting on the X window when
-      // something in the scene listens — checked when the tree said it
-      // changed, attached the first time it is true
+      // The pointer is only worth taking when something in the scene
+      // listens — checked when the tree said it changed, attached the first
+      // time it is true. Where core forwards it (react-x11#545) it comes from
+      // the surface's own handlers and nowhere else: a listener on the
+      // surface's X window would select the events there, and X would
+      // deliver every press, and the wheel, to that window rather than to
+      // the tree. An older core delivers nothing over the surface, so there
+      // it is the X window's own events — X11 only, since the Cocoa surface
+      // is a layer, with no X window id and no pointer events of its own.
       if (store.eventsDirty) {
         store.eventsDirty = false;
         if (!kit.pointer.attached && sceneWantsPointer(kit.scene.children)) {
           const node = areaRef.current as SurfaceNode | null;
-          if (node?.window) kit.pointer.attach(node.window);
+          if (node?.forwardsPointer === true) {
+            kit.pointer.attach(kit.forwarded);
+          } else if (node?.window && typeof node.window.id === 'number') {
+            kit.pointer.attach(node.window);
+          }
         }
       }
 
@@ -425,6 +472,31 @@ export function Canvas({
     [kit],
   );
 
+  // The pointer core dispatches at the surface, into the scene — through
+  // `kit.forwarded`, which passes it on only once the frame loop attached
+  // the scene to it. Where the pointer comes from the surface's X window
+  // instead, these hear nothing of it and pass nothing on.
+  const pointerHandlers = useMemo(() => {
+    const at = (ev: SyntheticEvent) =>
+      surfacePoint(areaRef.current as SurfaceNode | null, ev);
+    return {
+      onMouseDown: (ev: SyntheticEvent) => {
+        // Held until the release, as X's grab held it for the surface's
+        // window: a drag that leaves the canvas still reaches the scene.
+        if (kit.forwarded.emit('mousedown', at(ev))) ev.capturePointer();
+      },
+      onMouseMove: (ev: SyntheticEvent) => {
+        kit.forwarded.emit('mousemove', at(ev));
+      },
+      onMouseUp: (ev: SyntheticEvent) => {
+        kit.forwarded.emit('mouseup', at(ev));
+      },
+      onMouseLeave: (ev: SyntheticEvent) => {
+        kit.forwarded.emit('mouseout', at(ev));
+      },
+    };
+  }, [kit]);
+
   if (error && fallback !== undefined) {
     return hx(
       'box',
@@ -447,5 +519,6 @@ export function Canvas({
     onCreated: handleCreated as GlAreaProps['onCreated'],
     onDraw: handleDraw as GlAreaProps['onDraw'],
     onError: handleError,
+    ...pointerHandlers,
   });
 }
