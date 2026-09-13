@@ -178,10 +178,24 @@ hold and the frame being drawn has it.
 `onClick`, `onPointerDown/Up/Move/Over/Out` on any object, raycast on the
 CPU against the same arrays the geometry was uploaded from — no GPU
 picking, no round trips. Only objects that (or whose ancestors) carry
-handlers are tested, and X pointer events are only selected on the window
-once something listens. `cursor="pointer"` on a hovered object sets the
-window cursor. `onPointerMissed` on the canvas catches presses that hit
-nothing.
+handlers are tested, and the canvas takes the pointer only once something
+listens. `cursor="pointer"` on a hovered object sets the cursor over the
+surface. `onPointerMissed` on the canvas catches presses that hit nothing.
+
+**The pointer reaches the scene through the tree.** Core dispatches the
+pointer over a `<glarea>` at the `<glarea>` itself, on both backends
+(react-x11#545), and `<Canvas>` feeds the scene from its surface's own
+`onMouseDown`/`onMouseMove`/`onMouseUp`/`onMouseLeave`. So a press on a
+canvas reaches the scene and then bubbles on to the canvas's ancestors like
+any other, and the wheel, which the scene has no events for, goes straight
+to them. A press the scene listens for holds the pointer until its release,
+so a drag that leaves the canvas still reaches the scene.
+
+On a core whose `<glarea>` node has no `forwardsPointer`, the canvas listens
+on the surface's X window instead, and X then delivers the presses and the
+wheel over the canvas to that window: the scene hears them, and the tree
+around the canvas does not. The Cocoa backend's surface is a layer with no
+events of its own, so on such a core a scene there hears nothing.
 
 ## TypeScript
 
@@ -219,6 +233,9 @@ typings up and the pragma stops being necessary.
   RGBA bytes.
 - **Removed props keep their value** rather than resetting to a default
   (write the value you want, or key the element).
+- **`cursor` does nothing on the Cocoa backend yet.** A hovered object's
+  cursor is set on the surface's X window, and the Cocoa surface is a layer
+  without one.
 
 ## Why this lives here, and how
 
