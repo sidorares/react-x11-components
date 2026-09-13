@@ -400,6 +400,30 @@ segment_ in every schema there is, so `street_labels` offers "Oxford Street"
 a dozen times over for one street, none of them overlapping any other;
 without the rule a placement accepts all twelve.
 
+**`icon`** sets a pictogram on a point label — `'bus'`, `'tram'`,
+`'train'`, `'ferry'` or `'airport'` (`MAP_ICONS`) — with the text beside
+it. The two are placed as one box and give way as one, so a stop's name is
+never set without the thing that says it is a stop. `iconColor`,
+`iconGlyphColor` and `iconSize` colour and size it; a name along a street
+has no point to stand one on and ignores it. Both renderers draw it from
+the same paths.
+
+The stock styles use it for public transport — a layer per pictogram
+(`transport-bus`, `transport-tram`, `transport-rail`, `transport-ferry`,
+`transport-airport`), coloured by the palette's `transit` — and set **house
+numbers** (`house-numbers`) from zoom 18, a 256-pixel map's 19, where
+Google Maps sets them.
+
+A number is drawn where the address data puts it, and that is often not on
+the house: an address point sits in the lot, metres from the building.
+`shortbreadStyle({ snapBuildingNumbers: true })` (and the OpenMapTiles
+style's) moves each number into its building's middle — `SymbolLayer.snapInto`
+on the `house-numbers` layer. A point inside a footprint belongs to it; one
+outside, to the nearest footprint within 15 m; and it moves only when it is
+the one number that building is claimed by, so a duplex's two numbers, or a
+number whose house is not mapped, stay where the data put them. Off by
+default, and off moves nothing.
+
 `shortbreadStyle({ dark, palette, nameField, labels, buildings })` is the
 default, written against OpenStreetMap's own schema: twenty-six layers, in
 paint order, with road **casings as one pass and road fills as another** —

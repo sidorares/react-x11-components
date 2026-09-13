@@ -426,6 +426,8 @@ export {
 
 export { compileFilter, resolveZoomed } from './style.js';
 
+export { MAP_ICONS } from './icons.js';
+
 export {
   decodePolyline,
   geoJsonOverlays,
@@ -479,6 +481,7 @@ export type {
   SymbolLayer,
   Zoomed,
 } from './style.js';
+export type { MapIcon } from './icons.js';
 export type {
   MapPalette,
   OpenMapTilesStyleOptions,

@@ -19,7 +19,14 @@
 // Every layer's `id` is stable, because that is what an application filters
 // on to hide one (`style.layers.filter((l) => l.id !== 'buildings')`) and
 // what a `<Map>` event names.
-import type { MapStyle, MapStyleLayer, Zoomed } from './style.js';
+import type { MapIcon } from './icons.js';
+import type {
+  MapFilter,
+  MapStyle,
+  MapStyleLayer,
+  SymbolLayer,
+  Zoomed,
+} from './style.js';
 
 /** The tags Shortbread puts a road's class in, grouped as a style wants
  *  them rather than as the schema lists them. */
@@ -108,6 +115,8 @@ export interface MapPalette {
   text: string;
   textMinor: string;
   halo: string;
+  /** The plate a public-transport stop's pictogram is set on. */
+  transit: string;
 }
 
 /** OSM Carto's hues, near enough that a user's eye reads the map as the one
@@ -135,6 +144,7 @@ export const LIGHT_PALETTE: MapPalette = {
   text: '#33322e',
   textMinor: '#6b6862',
   halo: 'rgba(255,255,255,0.85)',
+  transit: '#2a6fb8',
 };
 
 /** The dark counterpart. Desaturated rather than inverted: an inverted map
@@ -162,6 +172,7 @@ export const DARK_PALETTE: MapPalette = {
   text: '#d3d7de',
   textMinor: '#9299a3',
   halo: 'rgba(12,14,18,0.85)',
+  transit: '#3b78c4',
 };
 
 /** How wide a road class is, at each zoom. */
@@ -190,6 +201,16 @@ export interface ShortbreadStyleOptions {
   /** Leave building footprints out. They are the densest polygon layer at
    *  high zoom and the first thing to drop on a slow machine. */
   buildings?: boolean;
+  /**
+   * Set each house number inside its building (`SymbolLayer.snapInto` on
+   * the `house-numbers` layer), where the address data puts it in the lot
+   * beside the house. Off by default, and off means every number is exactly
+   * where the data says. A number moves only into a building that is its
+   * alone and within 15 m, so a duplex's two numbers, or one whose house is
+   * not mapped, stay put. Needs the footprints: with `buildings: false`
+   * there is nothing to set a number in, and nothing moves.
+   */
+  snapBuildingNumbers?: boolean;
 }
 
 /**
@@ -593,11 +614,29 @@ export function shortbreadStyle(
         // a street's name is what they read once they are oriented.
         rank: 20,
       },
+      // Public transport, a layer per pictogram, which Shortbread's `kind`
+      // says. A stop's name alone reads as a street's: "Lyons Ave/Yuille
+      // St" is a bus stop, and only the bus says so.
+      ...SHORTBREAD_STOPS.map((stop) =>
+        stopLayer(
+          p,
+          name,
+          stop.id,
+          'public_transport',
+          ['in', 'kind', ...stop.kinds],
+          stop.icon,
+          stop.minZoom,
+          stop.rank,
+        ),
+      ),
       {
+        // What has no pictogram here — a helipad, a lift station — named
+        // as every stop used to be.
         id: 'transport-labels',
         type: 'symbol',
         sourceLayer: 'public_transport',
         minZoom: 15,
+        filter: ['!in', 'kind', ...SHORTBREAD_STOPS.flatMap((s) => s.kinds)],
         textField: name,
         textColor: p.textMinor,
         textHaloColor: p.halo,
@@ -605,6 +644,7 @@ export function shortbreadStyle(
         textSize: 10,
         rank: 10,
       },
+      houseNumbers(p, 'addresses', snapInto(options, 'buildings')),
     );
   }
 
@@ -616,6 +656,121 @@ export function shortbreadStyle(
 function scaleWidth(base: Zoomed<number>, add: number): Zoomed<number> {
   if (typeof base === 'number') return base + add;
   return { stops: base.stops.map(([z, v]) => [z, v + add] as const) };
+}
+
+/** Shortbread's public-transport kinds that have a pictogram, and the zoom
+ *  and rank a stop of each is named at: an airport among the towns, a
+ *  station among the suburbs, a bus stop under the streets. */
+const SHORTBREAD_STOPS: readonly {
+  id: string;
+  kinds: readonly string[];
+  icon: MapIcon;
+  minZoom: number;
+  rank: number;
+}[] = [
+  {
+    id: 'transport-airport',
+    kinds: ['aerodrome'],
+    icon: 'airport',
+    minZoom: 11,
+    rank: 70,
+  },
+  {
+    id: 'transport-rail',
+    kinds: ['station', 'halt'],
+    icon: 'train',
+    minZoom: 13,
+    rank: 50,
+  },
+  {
+    id: 'transport-ferry',
+    kinds: ['ferry_terminal'],
+    icon: 'ferry',
+    minZoom: 13,
+    rank: 45,
+  },
+  {
+    id: 'transport-tram',
+    kinds: ['tram_stop'],
+    icon: 'tram',
+    minZoom: 15,
+    rank: 12,
+  },
+  {
+    id: 'transport-bus',
+    kinds: ['bus_stop', 'bus_station'],
+    icon: 'bus',
+    minZoom: 15,
+    rank: 10,
+  },
+];
+
+/** A public-transport stop: its pictogram on the point, its name beside
+ *  it. The same layer over either schema, less where the schema keeps it. */
+function stopLayer(
+  p: MapPalette,
+  name: string,
+  id: string,
+  sourceLayer: string,
+  filter: MapFilter | undefined,
+  icon: MapIcon,
+  minZoom: number,
+  rank: number,
+): SymbolLayer {
+  return {
+    id,
+    type: 'symbol',
+    sourceLayer,
+    minZoom,
+    filter,
+    textField: name,
+    textColor: p.textMinor,
+    textHaloColor: p.halo,
+    textHaloWidth: 1,
+    textSize: 10,
+    icon,
+    iconColor: p.transit,
+    rank,
+  };
+}
+
+/** The footprints house numbers snap into, where the options ask for it and
+ *  the footprints are there to snap into. */
+function snapInto(
+  options: ShortbreadStyleOptions,
+  buildings: string,
+): string | null {
+  return options.snapBuildingNumbers && options.buildings !== false
+    ? buildings
+    : null;
+}
+
+/**
+ * House numbers, once a house is big enough on screen to carry one: from
+ * zoom 18, which on this map's 512-pixel world is a 256-pixel map's 19 —
+ * where Google Maps sets them.
+ */
+function houseNumbers(
+  p: MapPalette,
+  sourceLayer: string,
+  buildings: string | null,
+): SymbolLayer {
+  return {
+    id: 'house-numbers',
+    type: 'symbol',
+    sourceLayer,
+    ...(buildings ? { snapInto: { sourceLayer: buildings } } : {}),
+    minZoom: 18,
+    textField: 'housenumber',
+    textColor: p.textMinor,
+    textHaloColor: p.halo,
+    textHaloWidth: 1,
+    textSize: 10,
+    // Under every other name, and held to no repeat distance: "2" is the
+    // number of a house on every street there is.
+    rank: 0,
+    repeatDistance: 0,
+  };
 }
 
 // --- OpenMapTiles -----------------------------------------------------------
@@ -1033,6 +1188,53 @@ export function openMapTilesStyle(
         textSize: 11,
         rank: 20,
       },
+      // Public transport, from `poi`'s classes — OpenMapTiles has no layer
+      // of its own for it — and airports from theirs.
+      stopLayer(
+        p,
+        name,
+        'transport-airport',
+        'aerodrome_label',
+        undefined,
+        'airport',
+        11,
+        70,
+      ),
+      stopLayer(
+        p,
+        name,
+        'transport-rail',
+        'poi',
+        [
+          'all',
+          ['==', 'class', 'railway'],
+          ['in', 'subclass', 'station', 'halt'],
+        ],
+        'train',
+        13,
+        50,
+      ),
+      stopLayer(
+        p,
+        name,
+        'transport-tram',
+        'poi',
+        ['==', 'subclass', 'tram_stop'],
+        'tram',
+        15,
+        12,
+      ),
+      stopLayer(
+        p,
+        name,
+        'transport-bus',
+        'poi',
+        ['==', 'class', 'bus'],
+        'bus',
+        15,
+        10,
+      ),
+      houseNumbers(p, 'housenumber', snapInto(options, 'building')),
     );
   }
 

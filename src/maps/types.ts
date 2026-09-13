@@ -26,6 +26,7 @@ export type {
   SymbolLayer,
   Zoomed,
 } from './style.js';
+export type { MapIcon } from './icons.js';
 
 /** Which renderer draws a map — see `<Map renderer>`. */
 export type MapRenderer = 'gl' | 'retained';

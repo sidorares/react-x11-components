@@ -495,7 +495,11 @@ export class GlMapRenderer {
 
     // Even with nothing to draw: the batch's atlas may have rasters waiting
     // for the texture, and until they are in it nothing of theirs can be.
-    if (labels) stats.labels = this._labels(labels, width, height);
+    if (labels) {
+      this._labels(labels, width, height);
+      // Labels, not instances: an icon's plate and glyph are two more.
+      stats.labels = labels.labels ?? labels.count;
+    }
 
     if (overlays) stats.overlays = this._overlays(overlays, frame);
 

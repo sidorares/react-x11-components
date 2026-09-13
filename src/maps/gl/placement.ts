@@ -44,6 +44,14 @@ import {
 import type { GlLabelData } from '../anchors.js';
 import { haloReach } from './text.js';
 import type { AtlasEntry, LabelAtlas } from './text.js';
+import {
+  DEFAULT_ICON_COLOR,
+  DEFAULT_ICON_GLYPH_COLOR,
+  DEFAULT_ICON_SIZE,
+  ICON_GAP,
+  isMapIcon,
+} from '../icons.js';
+import type { MapIcon } from '../icons.js';
 
 /** A rectangle in device pixels. */
 interface Rect {
@@ -102,6 +110,9 @@ export interface LabelBatch {
    *  the label on whole pixels. */
   instances: Float32Array;
   count: number;
+  /** Labels drawn: fewer than `count` where an icon is two instances of
+   *  its own beside its name's. `count` where absent. */
+  labels?: number;
 }
 
 export interface PlacementStats {
@@ -136,6 +147,17 @@ interface LayerLabels {
   ink: Rgba;
   halo: Rgba | null;
   haloPx: number;
+  icon: LayerIcon | null;
+}
+
+/** A layer's icon at a zoom: device pixels across (whole — a raster's
+ *  size), the gap to the name, and its two colours. */
+interface LayerIcon {
+  name: MapIcon;
+  size: number;
+  gap: number;
+  plate: Rgba;
+  glyph: Rgba;
 }
 
 /** A label on screen, or fading. Its ground is mercator, so it outlives
@@ -172,6 +194,9 @@ interface Candidate {
   point: boolean;
   sx: number;
   sy: number;
+  /** How far right of `sx` its box's centre is: an icon's name is set
+   *  beside it. Device pixels; set once the box is measured. */
+  ox: number;
   angle: number;
   cos: number;
   sin: number;
@@ -372,18 +397,28 @@ export class LabelPlacer {
       }
       const box = atlas.measure(c.text, c.size);
       if (!box || box.width === 0) continue;
-      const w = box.width;
-      const h = box.height;
+      let w = box.width;
+      let h = box.height;
       if (!c.point) {
         const need = w / 2 + h * LINE_MARGIN;
         if (c.avail < (c.shown ? need * 0.9 : need)) continue;
       }
+      // An icon on the point and the name beside it are one box, placed
+      // and given way as one.
+      const icon = this._icon(layers[c.layer], c.point, atlas);
+      if (icon) {
+        const full = icon.size + icon.gap + w;
+        c.ox = (full - icon.size) / 2;
+        w = full;
+        h = Math.max(h, icon.size);
+      }
+      const bx = c.sx + c.ox;
       const hw = (Math.abs(c.cos) * w + Math.abs(c.sin) * h) / 2;
       const hh = (Math.abs(c.sin) * w + Math.abs(c.cos) * h) / 2;
       if (
-        c.sx - hw < inset ||
+        bx - hw < inset ||
         c.sy - hh < inset ||
-        c.sx + hw > width - inset ||
+        bx + hw > width - inset ||
         c.sy + hh > height - inset
       ) {
         continue;
@@ -444,6 +479,11 @@ export class LabelPlacer {
       shown.size = c.size;
       if (!frame.moving || shown.drawn === 0)
         atlas.entry(shown.text, shown.size);
+      const icon = this._icon(layers[shown.layer], shown.point, atlas);
+      if (icon) {
+        atlas.icon(icon.name, 'plate', icon.size);
+        atlas.icon(icon.name, 'glyph', icon.size);
+      }
     }
 
     this.stats = {
@@ -468,6 +508,7 @@ export class LabelPlacer {
     const halfW = frame.width / 2;
     const halfH = frame.height / 2;
     let count = 0;
+    let labels = 0;
     for (const shown of [...this._shown]) {
       const layer = layers[shown.layer];
       let entry: AtlasEntry | null;
@@ -480,8 +521,15 @@ export class LabelPlacer {
         if (entry) shown.drawn = shown.size;
         else if (shown.drawn > 0) entry = atlas.entry(shown.text, shown.drawn);
       }
+      // A name set beside an icon waits for the icon as well: the name
+      // alone is what the icon is there to explain.
+      const icon = this._icon(layer, shown.point, atlas);
+      const plate = icon ? atlas.icon(icon.name, 'plate', icon.size) : null;
+      const glyph = icon ? atlas.icon(icon.name, 'glyph', icon.size) : null;
+      const ready =
+        entry !== null && (!icon || (plate !== null && glyph !== null));
       // Nothing to show yet: wait at zero rather than fade in unseen.
-      if (entry && layer) {
+      if (ready && layer) {
         shown.opacity = shown.placed
           ? Math.min(1, shown.opacity + step)
           : Math.max(0, shown.opacity - step);
@@ -492,44 +540,91 @@ export class LabelPlacer {
         this._shown.delete(shown);
         continue;
       }
-      if (!entry || !layer || shown.opacity <= 0) continue;
+      if (!ready || !entry || !layer || shown.opacity <= 0) continue;
       let dx = shown.mx - frame.centerX;
       dx -= Math.round(dx);
       const sx = halfW + dx * frame.world;
       const sy = halfH + (shown.my - frame.centerY) * frame.world;
       const eased = shown.opacity * shown.opacity * (3 - 2 * shown.opacity);
-      if (this._instances.length < (count + 1) * LABEL_INSTANCE) {
-        const grown = new Float32Array(this._instances.length * 2);
-        grown.set(this._instances);
-        this._instances = grown;
-      }
-      const d = this._instances;
-      const at = count * LABEL_INSTANCE;
-      const level = shown.angle === 0;
-      d[at] = sx;
-      d[at + 1] = sy;
-      d[at + 2] = level ? 1 : Math.cos(shown.angle);
-      d[at + 3] = level ? 0 : Math.sin(shown.angle);
-      d[at + 4] = entry.x;
-      d[at + 5] = entry.y;
-      d[at + 6] = entry.width;
-      d[at + 7] = entry.height;
       const ink = premultiplied(layer.ink, eased);
-      d[at + 8] = ink[0];
-      d[at + 9] = ink[1];
-      d[at + 10] = ink[2];
-      d[at + 11] = ink[3];
       const halo = layer.halo ? premultiplied(layer.halo, eased) : ZERO;
-      d[at + 12] = halo[0];
-      d[at + 13] = halo[1];
-      d[at + 14] = halo[2];
-      d[at + 15] = halo[3];
-      d[at + 16] = layer.halo ? Math.min(layer.haloPx, reach) : 0;
-      d[at + 17] = level ? 1 : 0;
-      count++;
+      const haloPx = layer.halo ? Math.min(layer.haloPx, reach) : 0;
+      if (icon && plate && glyph) {
+        // The plate under its halo, the glyph on it, and the name level
+        // beside it: the string is its raster less the margin, and its
+        // left edge goes the gap past the plate's right.
+        count = this._put(
+          count,
+          sx,
+          sy,
+          0,
+          plate,
+          premultiplied(icon.plate, eased),
+          halo,
+          haloPx,
+        );
+        count = this._put(
+          count,
+          sx,
+          sy,
+          0,
+          glyph,
+          premultiplied(icon.glyph, eased),
+          ZERO,
+          0,
+        );
+        const tx =
+          sx + icon.size / 2 + icon.gap + (entry.width - 2 * atlas.pad) / 2;
+        count = this._put(count, tx, sy, 0, entry, ink, halo, haloPx);
+      } else {
+        count = this._put(count, sx, sy, shown.angle, entry, ink, halo, haloPx);
+      }
+      labels++;
     }
-    this.stats.drawn = count;
-    return { atlas, instances: this._instances, count };
+    this.stats.drawn = labels;
+    return { atlas, instances: this._instances, count, labels };
+  }
+
+  /** One instance — a label's string, or a piece of its icon — written at
+   *  `count`: answers the count after it. Level (`angle` 0) is set on
+   *  whole pixels. */
+  private _put(
+    count: number,
+    x: number,
+    y: number,
+    angle: number,
+    entry: AtlasEntry,
+    ink: Rgba,
+    halo: Rgba,
+    haloPx: number,
+  ): number {
+    if (this._instances.length < (count + 1) * LABEL_INSTANCE) {
+      const grown = new Float32Array(this._instances.length * 2);
+      grown.set(this._instances);
+      this._instances = grown;
+    }
+    const d = this._instances;
+    const at = count * LABEL_INSTANCE;
+    const level = angle === 0;
+    d[at] = x;
+    d[at + 1] = y;
+    d[at + 2] = level ? 1 : Math.cos(angle);
+    d[at + 3] = level ? 0 : Math.sin(angle);
+    d[at + 4] = entry.x;
+    d[at + 5] = entry.y;
+    d[at + 6] = entry.width;
+    d[at + 7] = entry.height;
+    d[at + 8] = ink[0];
+    d[at + 9] = ink[1];
+    d[at + 10] = ink[2];
+    d[at + 11] = ink[3];
+    d[at + 12] = halo[0];
+    d[at + 13] = halo[1];
+    d[at + 14] = halo[2];
+    d[at + 15] = halo[3];
+    d[at + 16] = haloPx;
+    d[at + 17] = level ? 1 : 0;
+    return count + 1;
   }
 
   // --- internals -------------------------------------------------------------
@@ -587,6 +682,7 @@ export class LabelPlacer {
       point,
       sx,
       sy,
+      ox: 0,
       angle: a,
       cos: Math.cos(a),
       sin: Math.sin(a),
@@ -605,6 +701,18 @@ export class LabelPlacer {
       centre: cx * cx + cy * cy,
       repeat: layer.repeat,
     };
+  }
+
+  /** The icon a label of `layer` is set with: none for a name along a
+   *  street, and none where the atlas cannot draw it — the name is then set
+   *  alone rather than not at all. */
+  private _icon(
+    layer: LayerLabels | null | undefined,
+    point: boolean,
+    atlas: LabelAtlas,
+  ): LayerIcon | null {
+    const icon = point ? (layer?.icon ?? null) : null;
+    return icon && !atlas.iconFailed(icon.name, icon.size) ? icon : null;
   }
 
   /** Each symbol layer's labelling at this zoom, by layer index — null
@@ -646,8 +754,41 @@ export class LabelPlacer {
         ink,
         halo: halo && haloWidth > 0 ? halo : null,
         haloPx: haloWidth * scale,
+        icon: this._iconOf(symbol, zoom, scale),
       };
     });
+  }
+
+  /** A layer's icon at this zoom, or null where it sets none — or names
+   *  one this version does not draw, or a colour that does not parse. */
+  private _iconOf(
+    symbol: SymbolLayer,
+    zoom: number,
+    scale: number,
+  ): LayerIcon | null {
+    if (!isMapIcon(symbol.icon)) return null;
+    const plate = this._color(
+      symbol.iconColor
+        ? resolveZoomed(symbol.iconColor, zoom)
+        : DEFAULT_ICON_COLOR,
+    );
+    const glyph = this._color(
+      symbol.iconGlyphColor
+        ? resolveZoomed(symbol.iconGlyphColor, zoom)
+        : DEFAULT_ICON_GLYPH_COLOR,
+    );
+    if (!plate || !glyph) return null;
+    const size =
+      symbol.iconSize === undefined
+        ? DEFAULT_ICON_SIZE
+        : resolveZoomed(symbol.iconSize, zoom);
+    return {
+      name: symbol.icon,
+      size: Math.max(1, Math.round(size * scale)),
+      gap: ICON_GAP * scale,
+      plate,
+      glyph,
+    };
   }
 
   private _color(value: string): Rgba | null {
@@ -743,11 +884,12 @@ class CollisionGrid {
     const out = this._scratch;
     out.length = 0;
     if (c.angle === 0) {
+      const x = c.sx + c.ox;
       out.push(
         0,
-        c.sx - w / 2 - pad,
+        x - w / 2 - pad,
         c.sy - h / 2 - pad,
-        c.sx + w / 2 + pad,
+        x + w / 2 + pad,
         c.sy + h / 2 + pad,
       );
       return out;

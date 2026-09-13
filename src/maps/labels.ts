@@ -36,6 +36,16 @@ import type { GlLabelData } from './anchors.js';
 import type { MapCanvas } from './paint.js';
 import type { VectorTile } from './mvt.js';
 import type { PreparedStyle, PreparedLayer } from './paint.js';
+import {
+  DEFAULT_ICON_COLOR,
+  DEFAULT_ICON_GLYPH_COLOR,
+  DEFAULT_ICON_SIZE,
+  ICON_GAP,
+  isMapIcon,
+  traceGlyph,
+  tracePlate,
+} from './icons.js';
+import type { MapIcon } from './icons.js';
 import { resolveZoomed } from './style.js';
 import type { MapStyleLayer, SymbolLayer, Zoomed } from './style.js';
 import type { TileId, Transform } from './proj.js';
@@ -105,6 +115,17 @@ export interface LabelCandidate {
   haloWidth: number;
   /** Pixels within which this text may not repeat. */
   repeat: number;
+  /** The icon on the point, where the layer sets one — absent, or null, for
+   *  a label that is text alone and for every name along a street. */
+  icon?: LabelIcon | null;
+}
+
+/** A point label's icon at a zoom: logical pixels across, and colours. */
+export interface LabelIcon {
+  name: MapIcon;
+  size: number;
+  color: string;
+  glyph: string;
 }
 
 /** A candidate that won its place, with the box it occupies in world
@@ -115,6 +136,9 @@ export interface PlacedLabel extends LabelCandidate {
   wy: number;
   width: number;
   height: number;
+  /** How far right of the anchor the box's centre is, in world pixels: half
+   *  the icon and the gap, for a name set beside an icon; 0 otherwise. */
+  ox?: number;
   shaped: ShapedLabel;
 }
 
@@ -141,10 +165,14 @@ const anchorCache = new WeakMap<
   { prepared: PreparedStyle; data: GlLabelData }
 >();
 
-function anchorsOf(tile: VectorTile, prepared: PreparedStyle): GlLabelData {
+function anchorsOf(
+  tile: VectorTile,
+  prepared: PreparedStyle,
+  id: TileId,
+): GlLabelData {
   const hit = anchorCache.get(tile);
   if (hit && hit.prepared === prepared) return hit.data;
-  const data = buildTileLabels(tile, prepared, EXTENT);
+  const data = buildTileLabels(tile, prepared, EXTENT, id);
   anchorCache.set(tile, { prepared, data });
   return data;
 }
@@ -158,6 +186,7 @@ interface LayerPaint {
   haloWidth: number;
   rank: number;
   repeat: number;
+  icon: LabelIcon | null;
 }
 
 function paintAt(
@@ -180,6 +209,18 @@ function paintAt(
     haloWidth: num(symbol.textHaloWidth, zoom, 1),
     rank: symbol.rank ?? 0,
     repeat: symbol.repeatDistance ?? 250,
+    icon: isMapIcon(symbol.icon)
+      ? {
+          name: symbol.icon,
+          size: num(symbol.iconSize, zoom, DEFAULT_ICON_SIZE),
+          color: symbol.iconColor
+            ? resolveZoomed(symbol.iconColor, zoom)
+            : DEFAULT_ICON_COLOR,
+          glyph: symbol.iconGlyphColor
+            ? resolveZoomed(symbol.iconGlyphColor, zoom)
+            : DEFAULT_ICON_GLYPH_COLOR,
+        }
+      : null,
   };
 }
 
@@ -197,7 +238,7 @@ export function collectLabels(
   zoom: number,
 ): LabelCandidate[] {
   const out: LabelCandidate[] = [];
-  const data = anchorsOf(tile, prepared);
+  const data = anchorsOf(tile, prepared, id);
   const n = tileCountAt(id.z);
   const key = tileKey(id);
   // Tile units to normalized mercator.
@@ -235,6 +276,7 @@ export function collectLabels(
       halo: paint.halo,
       haloWidth: paint.haloWidth,
       repeat: paint.repeat,
+      icon: point ? paint.icon : null,
     });
   }
   return out;
@@ -391,15 +433,25 @@ export function placeLabels(
       }
     }
     // The turned text's bounding box: what it covers, as far as another
-    // label can tell.
+    // label can tell. With an icon, the box around the icon on the point
+    // and the text beside it — the two give way as one, or a stop's name
+    // would be set with nothing to say it is a stop.
     const angle = levelled(candidate.angle);
-    const w = shaped.width + padding * 2;
-    const h = shaped.height + padding * 2;
+    const icon = candidate.icon ?? null;
+    let w = shaped.width + padding * 2;
+    let h = shaped.height + padding * 2;
+    let ox = 0;
+    if (icon) {
+      const full = icon.size + ICON_GAP + shaped.width;
+      ox = (full - icon.size) / 2;
+      w = full + padding * 2;
+      h = Math.max(icon.size, shaped.height) + padding * 2;
+    }
     const cos = Math.abs(Math.cos(angle));
     const sin = Math.abs(Math.sin(angle));
     const width = w * cos + h * sin;
     const height = w * sin + h * cos;
-    const left = wx - width / 2;
+    const left = wx + ox - width / 2;
     const top = wy - height / 2;
     const x0 = Math.floor(left / CELL);
     const x1 = Math.floor((left + width) / CELL);
@@ -411,11 +463,13 @@ export function placeLabels(
         const bucket = grid.get(cellKey(cx, cy));
         if (!bucket) continue;
         for (const other of bucket) {
+          const otherLeft = other.wx + (other.ox ?? 0) - other.width / 2;
+          const otherTop = other.wy - other.height / 2;
           if (
-            left < other.wx - other.width / 2 + other.width &&
-            left + width > other.wx - other.width / 2 &&
-            top < other.wy - other.height / 2 + other.height &&
-            top + height > other.wy - other.height / 2
+            left < otherLeft + other.width &&
+            left + width > otherLeft &&
+            top < otherTop + other.height &&
+            top + height > otherTop
           ) {
             free = false;
             break;
@@ -429,6 +483,7 @@ export function placeLabels(
       angle,
       wx,
       wy,
+      ox,
       width,
       height,
       shaped,
@@ -482,30 +537,47 @@ export function drawLabels(
   for (const label of placed) {
     const cx = originX + label.wx;
     const cy = originY + label.wy;
+    // The box's centre, which is right of the point where an icon is on it.
+    const bx = cx + (label.ox ?? 0);
     const halfW = label.width / 2;
     const halfH = label.height / 2;
     if (
-      cx + halfW < pane.x ||
+      bx + halfW < pane.x ||
       cy + halfH < pane.y ||
-      cx - halfW > pane.x + pane.width ||
+      bx - halfW > pane.x + pane.width ||
       cy - halfH > pane.y + pane.height
     ) {
       continue;
     }
     if (
       clip &&
-      (cx + halfW < clip.x ||
+      (bx + halfW < clip.x ||
         cy + halfH < clip.y ||
-        cx - halfW > clip.x + clip.width ||
+        bx - halfW > clip.x + clip.width ||
         cy - halfH > clip.y + clip.height)
     ) {
       continue;
     }
     const { width, height } = label.shaped;
-    const turned = label.angle !== 0 && turns;
+    const icon = label.icon ?? null;
+    const turned = !icon && label.angle !== 0 && turns;
+    const haloed = label.halo !== undefined && label.haloWidth > 0;
     let dx: number;
     let dy: number;
-    if (turned) {
+    if (icon) {
+      // The icon on the point, and the name level beside it.
+      drawIcon(
+        ctx,
+        icon,
+        Math.round(cx * scale),
+        Math.round(cy * scale),
+        icon.size * scale,
+        haloed ? label.halo : undefined,
+        Math.max(1, Math.round(label.haloWidth * scale)),
+      );
+      dx = Math.round((cx + icon.size / 2 + ICON_GAP) * scale);
+      dy = Math.round((cy - height / 2) * scale);
+    } else if (turned) {
       ctx.save();
       ctx.translate!(cx * scale, cy * scale);
       ctx.rotate!(label.angle);
@@ -530,6 +602,38 @@ export function drawLabels(
     drawn++;
   }
   return drawn;
+}
+
+/**
+ * An icon on its point, in device pixels: the plate, over a plate of the
+ * halo's colour a halo wider where the layer has one — the same ground a
+ * name's halo gives it over a road — and the glyph on the plate.
+ */
+function drawIcon(
+  ctx: MapCanvas,
+  icon: LabelIcon,
+  x: number,
+  y: number,
+  size: number,
+  halo: string | undefined,
+  reach: number,
+): void {
+  ctx.save();
+  if (halo !== undefined) {
+    ctx.fillStyle = halo;
+    ctx.beginPath();
+    tracePlate(ctx, x, y, size + reach * 2);
+    ctx.fill();
+  }
+  ctx.fillStyle = icon.color;
+  ctx.beginPath();
+  tracePlate(ctx, x, y, size);
+  ctx.fill();
+  ctx.fillStyle = icon.glyph;
+  ctx.beginPath();
+  traceGlyph(ctx, icon.name, x, y, size);
+  ctx.fill();
+  ctx.restore();
 }
 
 export type { PreparedLayer };

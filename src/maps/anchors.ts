@@ -36,8 +36,10 @@
 // Everything leaves as one Float32Array and a string table, so a worker can
 // hand it over with the buckets (see `./gl/store.ts`).
 import { GeomType, GeometryBuffer } from './mvt.js';
-import type { FeatureCursor, VectorTile } from './mvt.js';
+import type { FeatureCursor, VectorTile, VectorTileLayer } from './mvt.js';
 import type { PreparedStyle } from './paint.js';
+import { latFromMercatorY } from './proj.js';
+import type { TileId } from './proj.js';
 import type { SymbolLayer } from './style.js';
 
 // --- the fit rules both renderers place by ------------------------------------
@@ -241,6 +243,10 @@ export function buildTileLabels(
   tile: VectorTile,
   prepared: PreparedStyle,
   extent: number,
+  /** Which tile: what turns a `snapInto` distance in metres into tile
+   *  units. Without it no distance can be known, and only a point already
+   *  inside a polygon moves. */
+  id?: TileId,
 ): GlLabelData {
   const started = now();
   const texts: string[] = [];
@@ -259,6 +265,11 @@ export function buildTileLabels(
     const groups = new Map<number, LineGroup>();
     // Which name first touched each vertex, or -1 once a second did.
     const touched = new Map<number, number>();
+    // A layer that snaps into polygons collects its points first — x, y,
+    // text, priority — since which point a polygon belongs to depends on
+    // every other point that could claim it.
+    const snap = symbol.snapInto;
+    const snaps: number[] | null = snap ? [] : null;
 
     for (let f = 0; f < source.length; f++) {
       source.seek(f, cursor);
@@ -309,8 +320,21 @@ export function buildTileLabels(
       if (!anchor) continue;
       const x = anchor.x * k;
       const y = anchor.y * k;
+      if (snaps && cursor.type === GeomType.Point) {
+        // The buffer's points too, and judged before the tile's square:
+        // a polygon near the edge is claimed by points on either side of
+        // it, and both tiles that hold it must see the same claims.
+        snaps.push(x, y, t, priority);
+        continue;
+      }
       if (x < 0 || y < 0 || x >= extent || y >= extent) continue;
       out.point(x, y, t, i, priority);
+    }
+
+    if (snap && snaps) {
+      const polygons = tile.layers.get(snap.sourceLayer);
+      const within = (snap.within ?? SNAP_WITHIN) / metresPerUnit(id, extent);
+      snapPoints(polygons, within, snaps, extent, i, out, buffer);
     }
 
     for (const group of groups.values()) {
@@ -321,6 +345,288 @@ export function buildTileLabels(
   }
 
   return { texts, anchors: out.take(), count: out.count, ms: now() - started };
+}
+
+/** How far a point is taken to belong to a polygon it is outside, metres,
+ *  where the layer does not say. An address point in the lot sits a few
+ *  metres off its house; much past this, the nearest building is as often
+ *  a neighbour's — the house the number is for not being mapped at all. */
+const SNAP_WITHIN = 15;
+/** The earth's circumference at the equator, metres (Web Mercator's). */
+const EQUATOR = 40075016.686;
+
+/** Metres on the ground per tile unit, at the tile's middle row. */
+function metresPerUnit(id: TileId | undefined, extent: number): number {
+  const n = 2 ** (id?.z ?? 0);
+  const lat = id ? latFromMercatorY((id.y + 0.5) / n) : 0;
+  return (EQUATOR * Math.cos((lat * Math.PI) / 180)) / (n * extent);
+}
+
+/** One polygon's outer ring, in tile units: its points, its box, and the
+ *  point inside it a label moved into it is set on. */
+interface SnapRing {
+  points: number[];
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+  cx: number;
+  cy: number;
+}
+
+/** The grid rings are found by, in tile units: a z14 tile is 16 cells a
+ *  side, a few dozen buildings each. */
+const SNAP_CELL = 256;
+const snapCell = (gx: number, gy: number): number =>
+  (gx + 1024) * 4096 + (gy + 1024);
+
+/**
+ * Point labels moved into the polygon each one belongs to — a house number
+ * into its house.
+ *
+ * A point inside a polygon belongs to it; one outside, to the nearest
+ * polygon whose outline is within `within` tile units. It moves only if it
+ * is the **one** point its polygon is claimed by: a duplex's two numbers, or
+ * a garage nearer the street than the house, would otherwise pile several
+ * numbers onto one roof — and collision would then keep one of them, on a
+ * building that is not only its own. Every point that does not move stays
+ * exactly where the data put it.
+ *
+ * `points` are the whole tile's, buffer included, so a polygon near the edge
+ * is claimed alike in both tiles that hold it; each point is then anchored
+ * only in the tile its own position is in, as every other point is. One
+ * whose polygon's middle is in the next tile over stays put rather than
+ * move out of the tile that offers it.
+ */
+function snapPoints(
+  polygons: VectorTileLayer | undefined,
+  within: number,
+  points: readonly number[],
+  extent: number,
+  layer: number,
+  out: AnchorWriter,
+  buffer: GeometryBuffer,
+): void {
+  const count = points.length / 4;
+  const target = new Int32Array(count).fill(-1);
+  const rings = polygons ? snapRings(polygons, extent, buffer) : [];
+  if (rings.length > 0) {
+    const grid = new Map<number, number[]>();
+    rings.forEach((ring, r) => {
+      for (let gx = cellOf(ring.x0); gx <= cellOf(ring.x1); gx++) {
+        for (let gy = cellOf(ring.y0); gy <= cellOf(ring.y1); gy++) {
+          const key = snapCell(gx, gy);
+          const list = grid.get(key);
+          if (list) list.push(r);
+          else grid.set(key, [r]);
+        }
+      }
+    });
+    const claims = new Int32Array(rings.length);
+    // Which query last looked at each ring: a ring spanning several cells
+    // is one candidate, not several.
+    const seen = new Int32Array(rings.length).fill(-1);
+    for (let p = 0; p < count; p++) {
+      const r = ownerOf(
+        rings,
+        grid,
+        seen,
+        p,
+        points[p * 4],
+        points[p * 4 + 1],
+        within,
+      );
+      if (r >= 0) {
+        target[p] = r;
+        claims[r]++;
+      }
+    }
+    for (let p = 0; p < count; p++) {
+      if (target[p] >= 0 && claims[target[p]] !== 1) target[p] = -1;
+    }
+  }
+  for (let p = 0; p < count; p++) {
+    let x = points[p * 4];
+    let y = points[p * 4 + 1];
+    if (x < 0 || y < 0 || x >= extent || y >= extent) continue;
+    const r = target[p];
+    if (r >= 0) {
+      const ring = rings[r];
+      if (
+        ring.cx >= 0 &&
+        ring.cy >= 0 &&
+        ring.cx < extent &&
+        ring.cy < extent
+      ) {
+        x = ring.cx;
+        y = ring.cy;
+      }
+    }
+    out.point(x, y, points[p * 4 + 2], layer, points[p * 4 + 3]);
+  }
+}
+
+const cellOf = (v: number): number => Math.floor(v / SNAP_CELL);
+
+/** Every polygon's outer rings, in tile units. Holes are not a building's
+ *  own ground, and a courtyard is not where a number goes. */
+function snapRings(
+  source: VectorTileLayer,
+  extent: number,
+  buffer: GeometryBuffer,
+): SnapRing[] {
+  const k = extent / source.extent;
+  const cursor = source.feature(0);
+  const rings: SnapRing[] = [];
+  for (let f = 0; f < source.length; f++) {
+    source.seek(f, cursor);
+    if (cursor.type !== GeomType.Polygon) continue;
+    cursor.readGeometry(buffer);
+    for (let part = 0; part < buffer.parts; part++) {
+      if (buffer.areas[part] <= 0) continue;
+      const from = buffer.starts[part];
+      const to = buffer.starts[part + 1];
+      if (to - from < 3) continue;
+      const points: number[] = [];
+      let x0 = Infinity;
+      let y0 = Infinity;
+      let x1 = -Infinity;
+      let y1 = -Infinity;
+      for (let p = from; p < to; p++) {
+        const x = buffer.coords[p * 2] * k;
+        const y = buffer.coords[p * 2 + 1] * k;
+        points.push(x, y);
+        if (x < x0) x0 = x;
+        if (x > x1) x1 = x;
+        if (y < y0) y0 = y;
+        if (y > y1) y1 = y;
+      }
+      const [cx, cy] = interiorPoint(points, x0, y0, x1, y1);
+      rings.push({ points, x0, y0, x1, y1, cx, cy });
+    }
+  }
+  return rings;
+}
+
+/**
+ * A point inside a ring to set a label on: its centroid, which is inside
+ * for all but the most contorted outline — 99.8% of the building rings in
+ * the tiles this was measured on — and where it is not, the middle of the
+ * widest span of the ring along the centroid's row.
+ */
+function interiorPoint(
+  points: readonly number[],
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number,
+): [number, number] {
+  let area = 0;
+  let sx = 0;
+  let sy = 0;
+  const n = points.length;
+  for (let i = 0, j = n - 2; i < n; j = i, i += 2) {
+    const cross = points[j] * points[i + 1] - points[i] * points[j + 1];
+    area += cross;
+    sx += (points[j] + points[i]) * cross;
+    sy += (points[j + 1] + points[i + 1]) * cross;
+  }
+  if (area === 0) return [(x0 + x1) / 2, (y0 + y1) / 2];
+  const cx = sx / (3 * area);
+  const cy = sy / (3 * area);
+  if (insideRing(points, cx, cy)) return [cx, cy];
+  const crossings: number[] = [];
+  for (let i = 0, j = n - 2; i < n; j = i, i += 2) {
+    const ay = points[j + 1];
+    const by = points[i + 1];
+    if (ay > cy !== by > cy) {
+      crossings.push(
+        points[j] + ((cy - ay) / (by - ay)) * (points[i] - points[j]),
+      );
+    }
+  }
+  crossings.sort((a, b) => a - b);
+  let best = -1;
+  let mid = (x0 + x1) / 2;
+  for (let c = 0; c + 1 < crossings.length; c += 2) {
+    const span = crossings[c + 1] - crossings[c];
+    if (span > best) {
+      best = span;
+      mid = (crossings[c] + crossings[c + 1]) / 2;
+    }
+  }
+  return [mid, cy];
+}
+
+/** Even-odd: whether `x, y` is inside the ring. */
+function insideRing(points: readonly number[], x: number, y: number): boolean {
+  let inside = false;
+  const n = points.length;
+  for (let i = 0, j = n - 2; i < n; j = i, i += 2) {
+    const xi = points[i];
+    const yi = points[i + 1];
+    const xj = points[j];
+    const yj = points[j + 1];
+    if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+/** How far `x, y` is from the ring's outline. */
+function distanceToRing(points: readonly number[], x: number, y: number) {
+  let best = Infinity;
+  const n = points.length;
+  for (let i = 0, j = n - 2; i < n; j = i, i += 2) {
+    const ax = points[j];
+    const ay = points[j + 1];
+    const dx = points[i] - ax;
+    const dy = points[i + 1] - ay;
+    const length = dx * dx + dy * dy;
+    const t =
+      length > 0
+        ? Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / length))
+        : 0;
+    const d = Math.hypot(x - ax - t * dx, y - ay - t * dy);
+    if (d < best) best = d;
+  }
+  return best;
+}
+
+/** The ring a point belongs to — the one it is inside, else the nearest
+ *  within `within` — or -1. */
+function ownerOf(
+  rings: readonly SnapRing[],
+  grid: Map<number, number[]>,
+  seen: Int32Array,
+  query: number,
+  x: number,
+  y: number,
+  within: number,
+): number {
+  let best = -1;
+  let bestDistance = within;
+  for (let gx = cellOf(x - within); gx <= cellOf(x + within); gx++) {
+    for (let gy = cellOf(y - within); gy <= cellOf(y + within); gy++) {
+      for (const r of grid.get(snapCell(gx, gy)) ?? []) {
+        if (seen[r] === query) continue;
+        seen[r] = query;
+        const ring = rings[r];
+        // Past the box by more than the distance allowed: not a candidate.
+        const bx = Math.max(ring.x0 - x, 0, x - ring.x1);
+        const by = Math.max(ring.y0 - y, 0, y - ring.y1);
+        if (bx > bestDistance || by > bestDistance) continue;
+        if (bx === 0 && by === 0 && insideRing(ring.points, x, y)) return r;
+        const d = distanceToRing(ring.points, x, y);
+        if (d <= bestDistance) {
+          best = r;
+          bestDistance = d;
+        }
+      }
+    }
+  }
+  return best;
 }
 
 /**

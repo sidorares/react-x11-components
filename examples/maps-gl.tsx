@@ -7,11 +7,20 @@
 //   npm run examples:maps-gl -- --online         # OpenStreetMap's servers only
 //   npm run examples:maps-gl -- --zoom=16.5      # start closer (street names are 14+)
 //   npm run examples:maps-gl -- --no-labels      # start with labels off
+//   npm run examples:maps-gl -- --source=openfreemap   # start on another provider
+//   npm run examples:maps-gl -- --snap-numbers   # house numbers inside their buildings
 //
 // The corpus is `scripts/bench/tiles.ts`'s cache; without it the tiles come
 // from `vector.openstreetmap.org`, identified the way its usage policy asks.
 // On X11 this needs the direct GL backend (the root below asks for it); on
 // the Cocoa backend GL is always direct.
+//
+// **Source** switches the provider under the same camera — `./map-sources.ts`'
+// list, which `maps.tsx` shows too: OSM's own Shortbread tiles (the corpus
+// first), VersaTiles' cut of the same schema, OpenFreeMap's OpenMapTiles,
+// MapTiler with `MAPTILER_KEY`, and the raster layers. One renderer across
+// different data: the same street in two schemas, a planet cut by another
+// tool, pixels instead of geometry.
 //
 // Drag to pan; wheel or double-click to zoom (Shift + double-click out);
 // arrows and +/− once the map has focus. Pan, Zoom and Fly animate the camera
@@ -34,11 +43,11 @@
 import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { useEffect, useRef, useState } from 'react';
-import { Button, createRoot, useTheme } from 'react-x11';
+import { Button, Select, createRoot, useTheme } from 'react-x11';
 
 import {
   Map,
-  osmVectorSource,
+  openMapTilesStyle,
   project,
   shortbreadStyle,
   unproject,
@@ -51,8 +60,11 @@ import type {
   MapGlFrameStats,
   MapHandle,
   MapSource,
+  MapStyle,
 } from '../src/maps/index.js';
 import { cachePath } from '../scripts/bench/tiles.js';
+import { PROVIDERS, osmVector } from './map-sources.js';
+import type { TileProvider, TileSchema } from './map-sources.js';
 
 const PLACES: Record<string, { name: string; centre: LngLat; zoom: number }> = {
   london: { name: 'London', centre: { lon: -0.1281, lat: 51.508 }, zoom: 15 },
@@ -72,28 +84,14 @@ const zoomArg = Number(
   args.find((a) => a.startsWith('--zoom='))?.slice('--zoom='.length),
 );
 
-const osm = osmVectorSource({
-  fetch: async (url, signal) => {
-    const response = await fetch(url, {
-      signal: signal as AbortSignal | undefined,
-      headers: {
-        'user-agent':
-          'react-x11-components-example/0.1 (+https://github.com/sidorares/react-x11-components)',
-      },
-    });
-    if (response.status === 404 || response.status === 204) return null;
-    if (!response.ok) throw new Error(`HTTP ${response.status} for ${url}`);
-    return new Uint8Array(await response.arrayBuffer());
-  },
-});
-
-/** The bench corpus where it has the tile, the network where it does not. */
-const source: MapSource = {
+/** OpenStreetMap's own tiles: the bench corpus where it has the tile, the
+ *  network where it does not. */
+const corpus: MapSource = {
   id: 'osm-vector',
   minZoom: 0,
   maxZoom: 14,
   tileSize: 512,
-  attribution: osm.attribution,
+  attribution: osmVector.attribution,
   async load(request) {
     if (!online) {
       const file = cachePath(request);
@@ -103,26 +101,59 @@ const source: MapSource = {
       }
       if (offline) return null;
     }
-    return osm.load(request);
+    return osmVector.load(request);
   },
 };
-const sources = [source];
-/** The style in each palette, with and without labels — made once each, as
- *  a style should be: a new style object is a restyle. */
-const STYLES = {
-  light: shortbreadStyle(),
-  dark: shortbreadStyle({ dark: true }),
-  lightPlain: shortbreadStyle({ labels: false }),
-  darkPlain: shortbreadStyle({ dark: true, labels: false }),
-};
-const styleFor = (dark: boolean, labels: boolean) =>
-  labels
-    ? dark
-      ? STYLES.dark
-      : STYLES.light
-    : dark
-      ? STYLES.darkPlain
-      : STYLES.lightPlain;
+
+/** The bar's providers: OSM through the corpus first, then every other one
+ *  `./map-sources.ts` has. */
+const GL_PROVIDERS: TileProvider[] = [
+  {
+    id: 'osm',
+    label: offline
+      ? 'OpenStreetMap — corpus only'
+      : online
+        ? 'OpenStreetMap — vector'
+        : 'OpenStreetMap — corpus, then network',
+    sources: [corpus],
+    schema: 'shortbread',
+  },
+  ...PROVIDERS.filter((p) => p.id !== 'osm'),
+];
+const sourceArg = args
+  .find((a) => a.startsWith('--source='))
+  ?.slice('--source='.length);
+if (sourceArg && !GL_PROVIDERS.some((p) => p.id === sourceArg)) {
+  process.stderr.write(
+    `--source=${sourceArg}: not one of ${GL_PROVIDERS.map((p) => p.id).join(', ')}` +
+      ' (a keyed provider needs its key in the environment)\n',
+  );
+}
+
+/** Every style the bar can ask for — per schema, palette, labels and
+ *  whether house numbers snap into their buildings — made once each, as a
+ *  style should be: a new style object is a restyle. */
+const STYLES: Record<string, MapStyle> = {};
+for (const dark of [false, true]) {
+  for (const labels of [false, true]) {
+    for (const snapBuildingNumbers of [false, true]) {
+      const options = { dark, labels, snapBuildingNumbers };
+      const key = `${dark}|${labels}|${snapBuildingNumbers}`;
+      STYLES[`shortbread|${key}`] = shortbreadStyle(options);
+      STYLES[`openmaptiles|${key}`] = openMapTilesStyle(options);
+    }
+  }
+}
+/** None for a raster provider: its tiles arrive already drawn. */
+const styleFor = (
+  schema: TileSchema,
+  dark: boolean,
+  labels: boolean,
+  snap: boolean,
+): MapStyle | undefined =>
+  schema === 'raster'
+    ? undefined
+    : STYLES[`${schema}|${dark}|${labels}|${snap}`];
 
 /** A frame's GL figures, with its tiles and the zoom it was drawn at. */
 type Frame = MapGlFrameStats & { tiles: number; zoom: number };
@@ -208,6 +239,12 @@ function App(): React.ReactElement {
   const [fade, setFade] = useState(0);
   const [budget, setBudget] = useState<(typeof BUDGETS)[number]>(0);
   const [labels, setLabels] = useState(!args.includes('--no-labels'));
+  const [snap, setSnap] = useState(args.includes('--snap-numbers'));
+  const [providerId, setProviderId] = useState(
+    GL_PROVIDERS.some((p) => p.id === sourceArg) ? sourceArg! : 'osm',
+  );
+  const provider =
+    GL_PROVIDERS.find((p) => p.id === providerId) ?? GL_PROVIDERS[0];
   const [status, setStatus] = useState('');
   const frames = useRef<Frame[]>([]);
   const running = useRef({
@@ -270,6 +307,21 @@ function App(): React.ReactElement {
         >
           <box style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
             <text style={{ fontWeight: 600 }}>{place.name}</text>
+            <Select
+              value={provider.id}
+              options={GL_PROVIDERS.map((p) => ({
+                value: p.id,
+                label: p.label,
+              }))}
+              onChange={(event) => setProviderId(event.value)}
+              // Drawn, not AppKit's popup, until sidorares/react-x11#552: a
+              // native menu opened from a trigger this near the window's top,
+              // with anything but the first option chosen, closes on the next
+              // layout pass — which the status line below brings twice a
+              // second.
+              native={false}
+              style={{ width: 240 }}
+            />
             <Button onClick={() => start('pan')}>Pan</Button>
             <Button onClick={() => start('zoom')}>Zoom</Button>
             <Button onClick={() => start('fly')}>Fly</Button>
@@ -282,6 +334,9 @@ function App(): React.ReactElement {
             </Button>
             <Button onClick={() => setLabels(!labels)}>
               {labels ? 'Labels on' : 'Labels off'}
+            </Button>
+            <Button onClick={() => setSnap(!snap)}>
+              {snap ? 'Numbers in buildings' : 'Numbers as mapped'}
             </Button>
             <Button onClick={() => setAntialias(!antialias)}>
               {antialias ? 'AA on' : 'AA off'}
@@ -297,8 +352,8 @@ function App(): React.ReactElement {
         <Map
           renderer="gl"
           ref={map}
-          sources={sources}
-          mapStyle={styleFor(dark, labels)}
+          sources={provider.sources}
+          mapStyle={styleFor(provider.schema, dark, labels, snap)}
           defaultCamera={defaultCamera}
           antialias={antialias}
           levelFade={fade}
@@ -306,6 +361,14 @@ function App(): React.ReactElement {
           buildWorkers={2}
           onFrame={onFrame}
           onError={(error) => setStatus(`GL failed: ${error.message}`)}
+          // The bar's line is the frame summary, rewritten twice a second, so
+          // a provider that is down or wants a key says so here instead.
+          onTileError={(error, tile) =>
+            process.stderr.write(
+              `${provider.id} tile ${tile.z}/${tile.x}/${tile.y}: ` +
+                `${error instanceof Error ? error.message : String(error)}\n`,
+            )
+          }
           style={{ flexGrow: 1 }}
         />
       </box>
