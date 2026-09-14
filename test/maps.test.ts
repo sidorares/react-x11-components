@@ -82,6 +82,7 @@ import { drawOverlays } from '../src/maps/overlay.js';
 import { prepareStyle } from '../src/maps/paint.js';
 import { dataSquareOf } from '../src/maps/proj.js';
 import { TileCache } from '../src/maps/tiles.js';
+import { holdGlide } from './glide-clock.js';
 
 test.afterEach(async () => {
   await cleanup();
@@ -3547,12 +3548,15 @@ test('a wheel over the map zooms it, and does not scroll what is behind', async 
   assert.ok(handle.getCamera().zoom < before, 'and back out');
 });
 
-test('a wheel notch is eased over the frames after it, not applied in one', async () => {
+test('a wheel notch is eased over the frames after it, not applied in one', async (t) => {
   const seen: number[] = [];
   const { handle, node } = await mountMap(
     { onCameraChange: (camera) => seen.push(camera.zoom) },
     DRIVEN,
   );
+  // Held, so what the notch did under its own event is still what the
+  // camera shows however long the event took to arrive (./glide-clock.ts).
+  const glide = holdGlide(t);
   // One notch is 0.384 of a level — six of the sixteenth the zoom is
   // quantized to — and applying it where it lands is the jump this eases.
   await userEvent.wheel(node, { deltaY: -1 });
@@ -3562,8 +3566,9 @@ test('a wheel notch is eased over the frames after it, not applied in one', asyn
   assert.ok(first > 12, `the notch moved the map at once: ${first}`);
   // …and not all the way, because that is the jump.
   assert.ok(first < 12.375, `but not all of it at once: ${first}`);
+  assert.ok(glide.pending, 'and left the rest to the frames after it');
 
-  await settleFrames(20);
+  await glide.finish();
   const zoom = handle.getCamera().zoom;
   assert.ok(
     Math.abs(zoom - 12.375) < 1e-9,
@@ -3600,11 +3605,17 @@ test("a touchpad's fractions of a notch accumulate rather than round away", asyn
   );
 });
 
-test('a second notch lengthens the glide instead of restarting it', async () => {
+test('a second notch lengthens the glide instead of restarting it', async (t) => {
   const { handle, node } = await mountMap({}, DRIVEN);
+  // Held, so the second notch is sure to arrive while the first is still
+  // being delivered. On a runner slow enough to finish the first glide
+  // between the two, a restart lands on 12.75 as well, and this proves
+  // nothing.
+  const glide = holdGlide(t);
   await userEvent.wheel(node, { deltaY: -1 });
+  assert.ok(glide.pending, 'the first notch is mid-glide');
   await userEvent.wheel(node, { deltaY: -1 });
-  await settleFrames(20);
+  await glide.finish();
   // Two notches are two notches, wherever the first had got to when the
   // second arrived: 12 + 2 × 0.384, on the grid.
   const zoom = handle.getCamera().zoom;

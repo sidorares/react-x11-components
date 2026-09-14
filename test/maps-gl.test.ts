@@ -52,6 +52,7 @@ import {
 } from '../src/maps/icons.js';
 import { attributionOf } from '../src/maps/sources.js';
 import type { MapSource } from '../src/maps/sources.js';
+import { holdGlide } from './glide-clock.js';
 import {
   attributionLayout,
   drawMarkers,
@@ -852,8 +853,11 @@ test('a wheel zooms about the pointer, and a double click zooms in', async () =>
   );
 });
 
-test('a wheel notch is eased rather than landing in one step', async () => {
+test('a wheel notch is eased rather than landing in one step', async (t) => {
   const { handle, node } = await mountGlMap();
+  // Held, as in maps.test.ts: the glide is wall-clock time, and a slow
+  // runner can spend all of it inside the `await` (./glide-clock.ts).
+  const glide = holdGlide(t);
   await userEvent.wheel(node, { deltaY: -1 });
   // A notch is 0.384 of a level, and the glide is the controller's, so the
   // GL renderer has it too: the event's own step is worth a frame, and the
@@ -863,7 +867,8 @@ test('a wheel notch is eased rather than landing in one step', async () => {
   const first = handle.getCamera().zoom;
   assert.ok(first > 12, `the notch moved the map at once: ${first}`);
   assert.ok(first < 12.375, `but not all of it at once: ${first}`);
-  await new Promise((resolve) => setTimeout(resolve, 260));
+  assert.ok(glide.pending, 'and left the rest to the frames after it');
+  await glide.finish();
   const zoom = handle.getCamera().zoom;
   assert.ok(
     Math.abs(zoom - 12.375) < 1e-9,
