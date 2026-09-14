@@ -1264,10 +1264,13 @@ export class MapViewNode extends Node {
       // background — with the labels and the markers still drawn over it —
       // until the coarser tile had been fetched, rasterized and composited.
       //
-      // Descendants win when they cover the whole square, because they are
-      // sharper and they are the level the user is coming *from*; the
-      // ancestor wins when they do not, because a complete blurry picture
-      // beats a sharp one with holes in it.
+      // Both, in one square: the descendants wherever there are any, because
+      // they are sharper and they are the level the user is coming *from*,
+      // and the ancestor in the gaps between them. The first cut chose one
+      // for the whole square — descendants only when they tiled it, and
+      // only when no ancestor was in hand — and a zoom out lands at the
+      // edges of the level it left, where they never tile it: that was the
+      // background there, sharp tiles in hand or not.
       //
       // Looked up whether or not this pass draws the tile, because the
       // lookup is what stamps a piece as in use: a piece covering a hole is
@@ -1275,60 +1278,65 @@ export class MapViewNode extends Node {
       // — which, in the one-pixel frames a redraw runs in, was every piece
       // but the one under that pixel. A restyle keeps such pieces on screen
       // for as long as its redraw takes.
-      const kids = this._cache.descendantsWithSurface(
+      const below = this._cache.descendantsWithSurface(
         source,
         entry.tile,
-        undefined,
         generation,
       );
-      const covered =
-        kids.length > 0 && kids.length === kids[0].span * kids[0].span;
-      const ancestor = covered
-        ? null
-        : this._cache.ancestorWithSurface(
-            source,
-            entry.tile,
-            undefined,
-            generation,
-          );
+      const ancestor =
+        below.gaps.length > 0
+          ? this._cache.ancestorWithSurface(
+              source,
+              entry.tile,
+              undefined,
+              generation,
+            )
+          : null;
       if (!inPass) continue;
-      if (ancestor?.shown) {
-        const up = entry.tile.z - ancestor.tile.z;
+      for (const piece of below.pieces) {
+        const edge = entry.size / piece.span;
+        this._composite(
+          ctx,
+          piece.value.shown!.surface,
+          piece.value.shown!.size,
+          {
+            x: box.x + piece.x * edge,
+            y: box.y + piece.y * edge,
+            width: edge,
+            height: edge,
+          },
+          scale,
+          0,
+          0,
+          1,
+        );
+      }
+      if (below.pieces.length > 0) stats.fromDescendant++;
+      if (!ancestor?.shown) continue;
+      for (const gap of below.gaps) {
+        // The gap is a tile `log2(span)` levels under this one, and the
+        // ancestor is `up` levels over that: the same sub-square arithmetic
+        // as a whole tile, one level set deeper.
+        const edge = entry.size / gap.span;
+        const up = entry.tile.z + Math.log2(gap.span) - ancestor.tile.z;
         const span = 1 << up;
-        const fx = entry.tile.x - (ancestor.tile.x << up);
-        const fy = entry.tile.y - (ancestor.tile.y << up);
         this._composite(
           ctx,
           ancestor.shown.surface,
           ancestor.shown.size,
-          box,
+          {
+            x: box.x + gap.x * edge,
+            y: box.y + gap.y * edge,
+            width: edge,
+            height: edge,
+          },
           scale,
-          fx,
-          fy,
+          entry.tile.x * gap.span + gap.x - (ancestor.tile.x << up),
+          entry.tile.y * gap.span + gap.y - (ancestor.tile.y << up),
           span,
         );
-        stats.fromAncestor++;
-      } else if (kids.length > 0) {
-        for (const kid of kids) {
-          const piece = entry.size / kid.span;
-          this._composite(
-            ctx,
-            kid.entry.shown!.surface,
-            kid.entry.shown!.size,
-            {
-              x: box.x + kid.x * piece,
-              y: box.y + kid.y * piece,
-              width: piece,
-              height: piece,
-            },
-            scale,
-            0,
-            0,
-            1,
-          );
-        }
-        stats.fromDescendant++;
       }
+      stats.fromAncestor++;
     }
   }
 

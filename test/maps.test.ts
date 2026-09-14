@@ -1428,6 +1428,60 @@ test('zooming out covers the gap with the tiles already in hand', async () => {
   }
 });
 
+test('a zoom out of three levels at once is covered from the level it left', async () => {
+  // A flick of the wheel goes more than a level before one coarser tile has
+  // landed. The search under a hole looked two levels down, so a jump from
+  // 14 to 11 showed the background with the zoom-14 picture in hand.
+  const source: MapSource = {
+    id: 'every',
+    minZoom: 0,
+    maxZoom: 14,
+    tileSize: 512,
+    load: () =>
+      new Promise((resolve) =>
+        setTimeout(
+          () => resolve({ kind: 'vector', data: threeLayerTile() }),
+          60,
+        ),
+      ),
+  };
+  const ref = React.createRef<MapHandle>();
+  let frames: MapFrameStats[] = [];
+  await renderX11(
+    React.createElement(MapView, {
+      ref,
+      sources: [source],
+      mapStyle: THREE_RUN_STYLE,
+      defaultCamera: { center: ONE_TILE_CENTRE_14, zoom: 14 },
+      onFrame: (stats) => frames.push({ ...stats }),
+      'data-testname': 'map',
+    }),
+    { backend: 'xserver', width: 200, height: 200 },
+  );
+  const settle = async (): Promise<void> => {
+    for (let i = 0; i < 24; i++) {
+      await act(async () => {});
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  };
+  await settle();
+  assert.ok(
+    frames.some((f) => f.ready > 0),
+    'the zoom-14 tile was drawn',
+  );
+
+  frames = [];
+  (ref.current as MapHandle).zoomTo(11);
+  await settle();
+  const covering = frames.filter((f) => f.fromDescendant > 0);
+  assert.ok(
+    covering.length > 0,
+    'a picture three levels down covered its part of the hole',
+  );
+  // …until the zoom-11 tile replaced it.
+  assert.ok(frames.at(-1)!.ready > 0, 'and then the tile itself was drawn');
+});
+
 test('a frame that only continues a redraw claims a pixel, not the pane', async () => {
   // What a burst of flashes at the end of a zoom actually was. A tile being
   // redrawn is a second surface nobody is looking at, so nothing on screen
@@ -1777,6 +1831,227 @@ for (const scale of [1, 2]) {
         );
       });
     }
+  });
+}
+
+// A hole covered from both sides at once: the level the map left wherever
+// it has pictures there, and an ancestor in the gaps. The same ground, but
+// each level paints it in its own colours, so a sample says which level drew
+// it as well as whether it drew it in the right place.
+
+/** Each level's colours for the ground. Symmetric in red and blue, so the
+ *  same read as RGBA or as BGRA. */
+const LEVEL_GROUND: Partial<Record<number, readonly [Rgb, Rgb]>> = {
+  11: [
+    [0, 100, 0],
+    [0, 220, 0],
+  ],
+  13: [
+    [110, 0, 110],
+    [255, 0, 255],
+  ],
+};
+
+/** Its squares are the tiles of this level: 32 logical pixels at zoom 12. */
+const LEVELLED_GROUND_LEVEL = 16;
+
+/**
+ * Which of a level's two colours the ground is at a mercator position: a
+ * checkerboard of level-16 squares, inverted over every other level-13 tile
+ * and every other level-12 tile. A plain checkerboard is the same picture
+ * shifted by any even number of squares — a whole level-13 tile is eight —
+ * so a piece taken from the wrong sub-square of its picture looked right.
+ */
+function groundParity(mx: number, my: number): 0 | 1 {
+  let parity = 0;
+  for (const level of [LEVELLED_GROUND_LEVEL, 13, 12]) {
+    const n = 2 ** level;
+    parity ^= (Math.floor(mx * n) + Math.floor(my * n)) & 1;
+  }
+  return parity as 0 | 1;
+}
+
+/** Levels 11 and 13 answer at once; 12 never does, so a view at zoom 12 is
+ *  all holes, and all of it is what covers them. */
+const LEVELLED_GROUND: MapSource = {
+  id: 'levelled',
+  tileSize: 512,
+  minZoom: 0,
+  maxZoom: 14,
+  load: ({ z, x, y }) => {
+    if (z === 12) return new Promise<TileData>(() => {});
+    const colours = LEVEL_GROUND[z];
+    if (!colours) return null;
+    const size = 256;
+    const n = 2 ** z;
+    const data = new Uint8Array(size * size * 4);
+    for (let j = 0; j < size; j++) {
+      for (let i = 0; i < size; i++) {
+        const parity = groundParity(
+          (x + (i + 0.5) / size) / n,
+          (y + (j + 0.5) / size) / n,
+        );
+        data.set([...colours[parity], 255], (j * size + i) * 4);
+      }
+    }
+    return { kind: 'raster', width: size, height: size, data };
+  },
+};
+
+/** Like {@link wrongGround}, with the level each sample should have been
+ *  drawn from — `levelAt`, of its mercator position — and a count of the
+ *  samples each level drew right. */
+async function wrongLevelledGround(
+  result: { ctx: unknown; windowNode: DrawnNode },
+  handle: MapHandle,
+  pane: ScreenRectLike,
+  scale: number,
+  levelAt: (mx: number, my: number) => number,
+  /** Logical pixels from a square's edge to leave unread: a scaled image
+   *  blends the two colours across about one of its pixels there. */
+  margin: number,
+): Promise<{
+  checked: number;
+  wrong: number;
+  first: string;
+  drawnBy: Record<number, number>;
+}> {
+  const width = Math.round(result.windowNode.abs.width);
+  const height = Math.round(result.windowNode.abs.height);
+  const { data } = await (
+    result.ctx as {
+      getImageData(
+        x: number,
+        y: number,
+        w: number,
+        h: number,
+      ): Promise<{ data: Uint8ClampedArray }>;
+    }
+  ).getImageData(0, 0, width, height);
+  const zoom = handle.getCamera().zoom;
+  const square = DEFAULT_TILE_SIZE * 2 ** (zoom - LEVELLED_GROUND_LEVEL);
+  const n = 2 ** LEVELLED_GROUND_LEVEL;
+  let checked = 0;
+  let wrong = 0;
+  let first = '';
+  const drawnBy: Record<number, number> = {};
+  for (let y = 2.5; y < pane.height; y += 5) {
+    for (let x = 2.5; x < pane.width; x += 5) {
+      const at = handle.unproject(x, y);
+      const mx = mercatorXFromLon(at.lon);
+      const my = mercatorYFromLat(at.lat);
+      const gx = mx * n;
+      const gy = my * n;
+      const edge =
+        Math.min(
+          gx - Math.floor(gx),
+          Math.ceil(gx) - gx,
+          gy - Math.floor(gy),
+          Math.ceil(gy) - gy,
+        ) * square;
+      if (edge < margin) continue;
+      checked++;
+      const level = levelAt(mx, my);
+      const rgb = LEVEL_GROUND[level]![groundParity(mx, my)];
+      const i =
+        (Math.floor((pane.y + y) * scale) * width +
+          Math.floor((pane.x + x) * scale)) *
+        4;
+      if (
+        Math.abs(data[i] - rgb[0]) <= 40 &&
+        Math.abs(data[i + 1] - rgb[1]) <= 40 &&
+        Math.abs(data[i + 2] - rgb[2]) <= 40
+      ) {
+        drawnBy[level] = (drawnBy[level] ?? 0) + 1;
+        continue;
+      }
+      wrong++;
+      first ||=
+        `(${x}, ${y}) is rgb(${data[i]}, ${data[i + 1]}, ${data[i + 2]}) ` +
+        `where level ${level} draws rgb(${rgb.join(', ')})`;
+    }
+  }
+  return { checked, wrong, first, drawnBy };
+}
+
+for (const scale of [1, 2]) {
+  test(`a hole is drawn from the finer level where it has it and the coarser in the gaps, each in its place, at scale ${scale}`, async () => {
+    // Zoom 11, then 13 on one quarter of a level-12 tile, then 12 over the
+    // whole of that tile, whose own data never comes. The quarter the map
+    // came from is drawn from level 13, and the other three from level 11,
+    // each from its own sub-square of the level-11 picture. The first cut
+    // drew level 11 over the whole tile, the sharp quarter in hand.
+    const at = (mx: number, my: number): LngLat => ({
+      lon: lonFromMercatorX(mx),
+      lat: latFromMercatorY(my),
+    });
+    const middle = at(2048.5 / 4096, 2048.5 / 4096);
+    const quarter = at(4096.5 / 8192, 4096.5 / 8192);
+    const defaultCamera = { center: middle, zoom: 11 };
+    const ref = React.createRef<MapHandle>();
+    const result = await renderX11(
+      React.createElement(MapView, {
+        ref,
+        sources: [LEVELLED_GROUND],
+        defaultCamera,
+        attribution: '',
+        'data-testname': 'map',
+      }),
+      { backend: 'xserver', width: 200, height: 200, scale },
+    );
+    const handle = ref.current as MapHandle;
+    const abs = result.getByTestName('map').abs;
+    const pane = {
+      x: abs.x / scale,
+      y: abs.y / scale,
+      width: abs.width / scale,
+      height: abs.height / scale,
+    };
+    let seen = { checked: 0, wrong: 0, first: '', drawnBy: {} };
+    // Each level's image is 256 pixels over a 512-pixel tile: two logical
+    // pixels a pixel at its own zoom, and four for level 11 at zoom 12.
+    const settled = async (
+      zoom: number,
+      levelAt: (mx: number, my: number) => number,
+      margin = 3,
+    ): Promise<void> =>
+      waitFor(async () => {
+        seen = await wrongLevelledGround(
+          result,
+          handle,
+          pane,
+          scale,
+          levelAt,
+          margin,
+        );
+        assert.ok(
+          seen.checked > 200,
+          `zoom ${zoom}: only ${seen.checked} samples clear of an edge`,
+        );
+        assert.ok(
+          seen.wrong === 0,
+          `zoom ${zoom}: ${seen.wrong} of ${seen.checked} samples wrong, ` +
+            `the first ${seen.first}`,
+        );
+      });
+
+    await settled(11, () => 11);
+    await act(async () => handle.setCamera({ center: quarter, zoom: 13 }));
+    await settled(13, () => 13);
+    await act(async () => handle.setCamera({ center: middle, zoom: 12 }));
+    await settled(
+      12,
+      (mx, my) =>
+        Math.floor(mx * 8192) === 4096 && Math.floor(my * 8192) === 4096
+          ? 13
+          : 11,
+      6,
+    );
+    const drawnBy = seen.drawnBy as Record<number, number>;
+    assert.ok(
+      (drawnBy[13] ?? 0) > 50 && (drawnBy[11] ?? 0) > 150,
+      `both levels drew their part: ${JSON.stringify(drawnBy)}`,
+    );
   });
 }
 
@@ -3141,6 +3416,77 @@ test('an ancestor with a surface is what covers a hole', () => {
     null,
     'a tile that is not a descendant is not covered',
   );
+  cache.destroy();
+});
+
+test('a hole is covered from the nearest level under each quarter, and the gaps are named', () => {
+  // A zoom out lands at the edges of the level it left, which covers part
+  // of each coarser tile there, and a quick one lands levels past it. The
+  // first cut took one level for the whole square, and looked two down.
+  const cache = new TileCache();
+  cache.beginFrame();
+  const source = fakeSource(() => ({ kind: 'vector', data: tileBytes([]) }));
+  const fake = {
+    width: 256,
+    height: 256,
+    getContext: () => null,
+    clear: () => undefined,
+    destroy: () => undefined,
+  };
+  const finish = (tile: { z: number; x: number; y: number }): void => {
+    const entry = cache.want(source, 'fake', tile);
+    const drawing = cache.beginRender(entry, 256, tile.z, () => fake)!;
+    drawing.progress = -1;
+    cache.promote(entry);
+  };
+  const named = (fill: {
+    pieces: {
+      value: { tile: { z: number; x: number; y: number } };
+      x: number;
+      y: number;
+      span: number;
+    }[];
+  }): string[] =>
+    fill.pieces.map(
+      ({ value: { tile }, x, y, span }) =>
+        `${tile.z}/${tile.x}/${tile.y} at ${x},${y} of ${span}`,
+    );
+
+  const hole = { z: 10, x: 5, y: 7 };
+  // Its top-left child, and two of its top-right child's four children.
+  finish({ z: 11, x: 10, y: 14 });
+  finish({ z: 12, x: 22, y: 28 });
+  assert.deepStrictEqual(named(cache.descendantsWithSurface(source, hole)), [
+    '11/10/14 at 0,0 of 2',
+    '12/22/28 at 2,0 of 4',
+  ]);
+  // A picture that lands after one search is found by the next.
+  finish({ z: 12, x: 23, y: 29 });
+  const fill = cache.descendantsWithSurface(source, hole);
+  assert.deepStrictEqual(named(fill), [
+    '11/10/14 at 0,0 of 2',
+    '12/22/28 at 2,0 of 4',
+    '12/23/29 at 3,1 of 4',
+  ]);
+  // What is left is the ancestor's: two cells of the top-right quarter, and
+  // the bottom quarters whole — one gap each, not four.
+  assert.deepStrictEqual(fill.gaps, [
+    { x: 3, y: 0, span: 4 },
+    { x: 2, y: 1, span: 4 },
+    { x: 0, y: 1, span: 2 },
+    { x: 1, y: 1, span: 2 },
+  ]);
+
+  // Four levels down is looked at, five is not.
+  const far = { z: 3, x: 1, y: 1 };
+  finish({ z: 8, x: 32, y: 32 });
+  assert.deepStrictEqual(cache.descendantsWithSurface(source, far).gaps, [
+    { x: 0, y: 0, span: 1 },
+  ]);
+  finish({ z: 7, x: 16, y: 16 });
+  assert.deepStrictEqual(named(cache.descendantsWithSurface(source, far)), [
+    '7/16/16 at 0,0 of 16',
+  ]);
   cache.destroy();
 });
 

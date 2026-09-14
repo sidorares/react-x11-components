@@ -473,6 +473,93 @@ export function dataSquareOf(
 }
 
 /**
+ * How many levels under a hole {@link fillFromBelow} looks for pieces.
+ *
+ * A zoom out leaves the level it came from in the middle of the view, and a
+ * quick one — a flick of the wheel, a pinch — goes more than one level
+ * before a single coarser tile has landed. Four levels down, a tile's pieces
+ * are a sixteenth of its width; past that they cover too little of the view
+ * to be worth the search.
+ */
+export const FILL_DEPTH = 4;
+
+/** Part of a tile's square: cell `(x, y)` of a `span × span` grid. */
+export interface TileCell {
+  x: number;
+  y: number;
+  span: number;
+}
+
+/** What a {@link fillFromBelow} probe answers for a tile that has nothing
+ *  of its own to draw but may have something under it. */
+export const BELOW: unique symbol = Symbol('below');
+
+/**
+ * Cover a hole — a tile with nothing of its own to draw — from the tiles
+ * under it that do have something: each quarter of the square from its own
+ * child where there is one, and from that child's children where there is
+ * not, down to `depth` levels. What is left is the gaps, for the caller to
+ * fill from an ancestor.
+ *
+ * `probe` answers for one tile under the hole: something to draw; `null`
+ * for a tile that is answered and has nothing in it, which covers its
+ * square as surely as a picture does; {@link BELOW} for nothing here but
+ * perhaps something under it; `undefined` for nothing here or under it.
+ *
+ * The pieces and the gaps tile the square exactly and never overlap, so a
+ * caller can draw each once with no clip but its own square. That matters
+ * beyond overdraw: a translucent layer drawn twice is darker, and a label
+ * from two overlapping pieces is placed twice. And a square with nothing
+ * under it after all is one gap, not four, so the ancestor that fills it is
+ * one composite.
+ */
+export function fillFromBelow<T>(
+  tile: TileId,
+  depth: number,
+  probe: (tile: TileId) => T | null | typeof BELOW | undefined,
+): {
+  pieces: (TileCell & { tile: TileId; value: T })[];
+  gaps: TileCell[];
+  /** Whether any of the square is covered — by a picture, or by an answer
+   *  that there is nothing there. */
+  covered: boolean;
+} {
+  const pieces: (TileCell & { tile: TileId; value: T })[] = [];
+  const gaps: TileCell[] = [];
+  const visit = (parent: TileId, at: TileCell, left: number): boolean => {
+    const gapsBefore = gaps.length;
+    let covered = false;
+    for (let dy = 0; dy < 2; dy++) {
+      for (let dx = 0; dx < 2; dx++) {
+        const child = {
+          z: parent.z + 1,
+          x: parent.x * 2 + dx,
+          y: parent.y * 2 + dy,
+        };
+        const cell = { x: at.x * 2 + dx, y: at.y * 2 + dy, span: at.span * 2 };
+        const found = probe(child);
+        if (found === BELOW) {
+          if (left > 1 && visit(child, cell, left - 1)) covered = true;
+          else gaps.push(cell);
+        } else if (found === undefined) {
+          gaps.push(cell);
+        } else {
+          if (found !== null)
+            pieces.push({ ...cell, tile: child, value: found });
+          covered = true;
+        }
+      }
+    }
+    // Nothing anywhere under this square: the caller files it as one gap.
+    if (!covered) gaps.length = gapsBefore;
+    return covered;
+  };
+  const covered = depth > 0 && visit(tile, { x: 0, y: 0, span: 1 }, depth);
+  if (!covered) gaps.push({ x: 0, y: 0, span: 1 });
+  return { pieces, gaps, covered };
+}
+
+/**
  * How large to rasterize a tile whose pyramid level is `z` at camera `zoom`.
  *
  * The rule: **rasterize at the size the tile has at integer zoom, and let

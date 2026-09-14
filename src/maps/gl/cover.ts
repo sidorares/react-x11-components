@@ -18,7 +18,14 @@
 // projection — markers, overlays, labels, `project()`. `tileCover` reads a
 // smaller tile one level deeper instead, which puts every image at its own
 // natural size on the one world everything shares.
-import { DEFAULT_TILE_SIZE, tileCover, transformFor } from '../proj.js';
+import {
+  BELOW,
+  DEFAULT_TILE_SIZE,
+  FILL_DEPTH,
+  fillFromBelow,
+  tileCover,
+  transformFor,
+} from '../proj.js';
 import type { MapCamera, TileId, TilePyramid } from '../proj.js';
 import type { GlTileData } from './buckets.js';
 import type { RenderTile } from './renderer.js';
@@ -27,6 +34,17 @@ import type { RenderTile } from './renderer.js';
  *  source has no data there, `undefined` while it is still to come. */
 export interface TileLookup {
   get(tile: TileId): GlTileData | null | undefined;
+  /**
+   * What the store has answered for at or under a tile: `'here'` for the
+   * tile itself, `'below'` for only tiles under it — within `FILL_DEPTH`
+   * levels — and `undefined` for neither.
+   *
+   * What lets a hole's search for pieces skip the parts of the pyramid that
+   * hold nothing. Without it the search asks `get` for every tile down to
+   * that depth — which costs lookups, and stamps a tile still loading as
+   * used, so a load the view has left is not cancelled.
+   */
+  holds?(tile: TileId): 'here' | 'below' | undefined;
 }
 
 export interface CoverResult {
@@ -53,10 +71,18 @@ const MAX_ANCESTOR = 8;
  * The frame's tiles, centre-out, each with its screen square and its clip.
  *
  * A hole — a tile still loading, or one the source has no data for — is
- * covered from whichever side has geometry: the nearest ancestor, drawn at
- * its own larger size and clipped to the hole; or, zooming out, the four
- * children, when all of them are in hand. `AGENTS.md`'s rule for the
- * retained cache holds here too: a pyramid has two neighbours.
+ * covered from whichever side has geometry. Zooming out, that is the tiles
+ * under it: each quarter from the nearest level that has it, down to
+ * `FILL_DEPTH`. Whatever they leave, and the whole of a hole with nothing
+ * under it, is the nearest ancestor's, drawn at its own larger size and
+ * clipped to each gap. `AGENTS.md`'s rule for the retained cache holds here
+ * too: a pyramid has two neighbours.
+ *
+ * The first cut tried the ancestor first, and the children only when all
+ * four of them were in hand. A zoom out leaves the level it came from in
+ * the middle of the view, covering only part of the tiles at the edges, and
+ * a quick one leaves it two or three levels down: both were the background,
+ * with the sharper tiles in hand.
  */
 export function renderCover(
   camera: MapCamera,
@@ -118,53 +144,62 @@ export function renderCover(
       own++;
       continue;
     }
-    // An ancestor: the same ground, `2^k` times the size, from `sub` cells
-    // above and to the left of this entry's square.
-    let found = false;
+    // Under it: a tile with no data has nothing under it either, and past
+    // the pyramid's depth there is nothing to find.
     const { z, x, y } = entry.tile;
+    const below = fillFromBelow(
+      entry.tile,
+      data === null ? 0 : Math.min(FILL_DEPTH, pyramid.maxZoom - z),
+      (under) => {
+        const held = lookup.holds ? lookup.holds(under) : 'here';
+        if (held === undefined) return undefined;
+        if (held === 'below') return BELOW;
+        const got = lookup.get(under);
+        return got === undefined ? BELOW : got;
+      },
+    );
+    for (const piece of below.pieces) {
+      const size = clip.width / piece.span;
+      const px = clip.x + piece.x * size;
+      const py = clip.y + piece.y * size;
+      tiles.push({
+        data: piece.value,
+        x: px,
+        y: py,
+        size,
+        clip: { x: px, y: py, width: size, height: size },
+      });
+    }
+    if (below.covered) descendants++;
+    if (below.gaps.length === 0) continue;
+    // Over it: an ancestor, the same ground `2^k` times the size, from
+    // `sub` cells above and to the left of this entry's square — drawn once
+    // for each gap, clipped to it.
     for (let k = 1; k <= MAX_ANCESTOR && z - k >= pyramid.minZoom; k++) {
       const ancestor = { z: z - k, x: x >> k, y: y >> k };
       const stand = lookup.get(ancestor);
       if (!stand) continue;
-      const span = 1 << k;
-      const size = clip.width * span;
-      tiles.push({
-        data: stand,
-        x: clip.x - (x - (ancestor.x << k)) * clip.width,
-        y: clip.y - (y - (ancestor.y << k)) * clip.width,
-        size,
-        clip,
-      });
+      const size = clip.width * (1 << k);
+      const sx = clip.x - (x - (ancestor.x << k)) * clip.width;
+      const sy = clip.y - (y - (ancestor.y << k)) * clip.width;
+      for (const gap of below.gaps) {
+        const edge = clip.width / gap.span;
+        tiles.push({
+          data: stand,
+          x: sx,
+          y: sy,
+          size,
+          clip: {
+            x: clip.x + gap.x * edge,
+            y: clip.y + gap.y * edge,
+            width: edge,
+            height: edge,
+          },
+        });
+      }
       ancestors++;
-      found = true;
       break;
     }
-    if (found || data === null || z + 1 > pyramid.maxZoom) continue;
-    // Zooming out: the finer level is what is in hand. Only when all four
-    // children have answered, or the hole would be patched with holes.
-    const children: (GlTileData | null)[] = [];
-    for (let dy = 0; dy < 2; dy++) {
-      for (let dx = 0; dx < 2; dx++) {
-        const child = lookup.get({ z: z + 1, x: x * 2 + dx, y: y * 2 + dy });
-        if (child === undefined) break;
-        children.push(child);
-      }
-    }
-    if (children.length !== 4) continue;
-    const half = clip.width / 2;
-    children.forEach((child, i) => {
-      if (!child) return;
-      const cx = clip.x + (i % 2) * half;
-      const cy = clip.y + Math.floor(i / 2) * half;
-      tiles.push({
-        data: child,
-        x: cx,
-        y: cy,
-        size: half,
-        clip: { x: cx, y: cy, width: half, height: half },
-      });
-    });
-    descendants++;
   }
   return { tiles, missing, level, own, ancestors, descendants, inView };
 }

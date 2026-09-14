@@ -20,6 +20,7 @@
 // needs a serializer.
 import { parseVectorTile } from '../sources.js';
 import type { MapSource, TileData } from '../sources.js';
+import { FILL_DEPTH } from '../proj.js';
 import type { TileId } from '../proj.js';
 import type { PreparedStyle } from '../paint.js';
 import type { MapStyleLayer } from '../style.js';
@@ -96,6 +97,9 @@ export class GlTileStore implements TileLookup {
   private _inFlight = 0;
   private _frame = 0;
   private _disposed = false;
+  /** What {@link holds} answers from: built when first asked, and dropped
+   *  whenever a tile gets an answer or loses one. */
+  private _held: Map<string, 'here' | 'below'> | null = null;
   private readonly _pool: BuildPool | null;
   /** Bucket builds and their cost on this thread, for a HUD. */
   built = 0;
@@ -149,6 +153,33 @@ export class GlTileStore implements TileLookup {
     // A tile being rebuilt for a new style keeps drawing its old buckets
     // until the new ones exist, so a restyle never opens a hole.
     return entry.data ?? undefined;
+  }
+
+  /**
+   * Whether this store has an answer for `tile` (`'here'`), for only tiles
+   * under it within `FILL_DEPTH` levels (`'below'`), or neither — the
+   * cover's way to search under a hole without a `get` for every tile
+   * there, which would stamp a tile still loading and keep its load going.
+   */
+  holds(tile: TileId): 'here' | 'below' | undefined {
+    let held = this._held;
+    if (!held) {
+      held = new Map();
+      for (const [k, entry] of this._entries) {
+        if (entry.data === null && entry.state !== 'empty') continue;
+        held.set(k, 'here');
+        let { z, x, y } = entry.tile;
+        for (let up = 1; up <= FILL_DEPTH && z > 0; up++) {
+          z--;
+          x >>= 1;
+          y >>= 1;
+          const above = key({ z, x, y });
+          if (!held.has(above)) held.set(above, 'below');
+        }
+      }
+      this._held = held;
+    }
+    return held.get(key(tile));
   }
 
   /** A new frame: what the cover asks for from here on is this frame's. */
@@ -218,6 +249,7 @@ export class GlTileStore implements TileLookup {
         (data: TileData) => {
           if (this._disposed || aborted) return;
           entry.failures = 0;
+          this._held = null;
           if (data && data.kind === 'vector' && data.data.length > 0) {
             entry.bytes = data.data;
             entry.state = 'loaded';
@@ -316,6 +348,7 @@ export class GlTileStore implements TileLookup {
             if (this._disposed || entry.job === 0) return;
             entry.job = 0;
             if (!this._entries.has(key(entry.tile))) return;
+            this._held = null;
             if (result.data && style === this._style.id) {
               entry.data = result.data;
               entry.state = 'ready';
@@ -337,6 +370,7 @@ export class GlTileStore implements TileLookup {
       first = false;
       const entry = this._queue.shift()!;
       if (!entry.bytes) continue;
+      this._held = null;
       const started = now();
       try {
         entry.data = buildTileBuckets(
@@ -420,6 +454,7 @@ export class GlTileStore implements TileLookup {
       if (excess <= 0) break;
       if (entry.data) release(entry.data);
       this._entries.delete(k);
+      this._held = null;
       excess--;
     }
     this._queue = this._queue.filter((e) => this._entries.has(key(e.tile)));
@@ -431,6 +466,7 @@ export class GlTileStore implements TileLookup {
       if (entry.data) release(entry.data);
     }
     this._entries.clear();
+    this._held = null;
     this._queue = [];
     this._waiting = [];
     this._pool?.terminate();

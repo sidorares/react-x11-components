@@ -1122,10 +1122,16 @@ Zooming _in_, the tile already drawn is the target's ancestor — one
 composite, scaled up. Zooming _out_, the tiles already drawn are its
 descendants, and walking up the pyramid finds nothing, so the first cut
 showed the background (with the labels and markers still over it) for as
-long as the coarser tile took to fetch and rasterize. Both directions are
-covered now, descendants preferred when they tile the square. The rule
-generalises past maps: **a pyramid cache has two neighbours, and code that
-only knows one of them is half a cache.**
+long as the coarser tile took to fetch and rasterize. The second cut still
+chose one neighbour per square — descendants only when one level of them
+tiled it, else the ancestor — and a zoom out lands at the _edges_ of the
+level it left, where they never do, or two levels past it, where the search
+did not look: blank again, sharp tiles in hand. Now each quarter of a hole
+comes from the nearest level under it that has it (`fillFromBelow` in
+`proj.ts`, four levels down, both renderers) and the ancestor fills only
+the gaps, clipped to them so nothing is drawn twice. The rule generalises
+past maps: **a pyramid cache has two neighbours, and code that only knows
+one of them is half a cache** — and it has them per square, not per tile.
 
 **Three caches, layered, and the layering is the whole argument.** Tile
 data, keyed on `source/z/x/y` and valid forever. Up to two rendered
