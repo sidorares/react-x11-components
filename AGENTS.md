@@ -394,8 +394,8 @@ imports — `react-x11` itself plus `/host`, `/node`, `/style`, `/keysyms`,
 `/ntk`, `/yoga`, `/jsx-runtime`, and `/test` and `/debug` from the suite.
 Both specs are ordinary registry ranges:
 
-- `peerDependencies.react-x11` is `^2.13.0` — what a consumer must supply.
-- `devDependencies.react-x11` is `^2.13.0` — what the suite runs against.
+- `peerDependencies.react-x11` is `^2.15.0` — what a consumer must supply.
+- `devDependencies.react-x11` is `^2.15.0` — what the suite runs against.
 
 Keep them the same range. They are one decision written twice, and a
 devDependency that drifts above the peer range means the suite passes
@@ -434,6 +434,13 @@ it up. **The floor is a running one and moves often** — every move since
   (react-x11#545) and a `<glarea>`'s children drawn above its surface
   (#546), which retired `<Map>`'s listeners on the surface's child window
   and the `children` gate that kept an `'auto'` map off GL.
+- `^2.15.0` — the three things the vt terminal's grid needed from the
+  Wayland backend, all of which it had been working around: `fillRects`
+  taking the flat rectangle list the other two backends accept
+  (react-x11#564), `createSolidPicture` so `drawGlyphs` can be spelled the
+  documented way (#565), and an offscreen `Surface`'s context being
+  holdable rather than usable only inside `render()` (#566 — which also
+  retired putting the window's GL state back by hand).
 
 Do not reach back for a `github:` spec to get at unreleased core — cut a core
 release instead.

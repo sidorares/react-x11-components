@@ -48,10 +48,7 @@ export interface CellContext {
    *  rather than assume. Absent on a context with no notion of it. */
   globalCompositeOperation?: string;
   fillRect(x: number, y: number, w: number, h: number): void;
-  /** A batch of `[x, y, width, height]` rectangles. The tuple form is the
-   *  one every backend reads: ntk and Cocoa also take a flat number list,
-   *  and react-x11's Wayland context only takes tuples — see `_flushRects`. */
-  fillRects?(rects: number[][]): void;
+  fillRects?(rects: number[]): void;
   drawGlyphs?(op: number, src: unknown, positioned: PositionedRun[]): void;
   createSolidPicture?(r: number, g: number, b: number, a: number): unknown;
   drawImage?(
@@ -66,11 +63,6 @@ export interface CellContext {
     dh: number,
   ): void;
   Render?: { PictOp?: { Over?: number; Src?: number } };
-  /** Put back the drawing state this context assumes, after something else
-   *  drew through the same device — react-x11's Wayland context offers it
-   *  for a `<glarea>`'s foreign GL, and an offscreen surface's frame is the
-   *  same interruption. Absent on a backend with no shared device state. */
-  restoreGLState?(): void;
   destroy?(): void;
 }
 
@@ -79,10 +71,6 @@ interface SurfaceLike {
   width: number;
   height: number;
   getContext(name: string): CellContext;
-  /** Draw into the surface through a context the surface itself provides,
-   *  and which is only guaranteed to be drawable for the length of the call.
-   *  `RetainedRenderer.draw` picks between this and a held `getContext`. */
-  render(fn: (ctx: CellContext) => void): unknown;
   /** ntk#252 — overlapping self-copy inside the pixmap. */
   copyWithin(
     src: { x: number; y: number; width: number; height: number },
@@ -192,8 +180,8 @@ abstract class BatchingRenderer implements RendererOps {
   /** Where this renderer's coordinates sit relative to the paint context. */
   protected offsetX = 0;
   protected offsetY = 0;
-  private _fills = new Map<number, number[][]>();
-  private _decorations = new Map<number, number[][]>();
+  private _fills = new Map<number, number[]>();
+  private _decorations = new Map<number, number[]>();
   private _runs = new Map<number, PositionedRun[]>();
   readonly stats: RendererStats = zeroStats();
   readonly totals: RendererStats = zeroStats();
@@ -207,12 +195,8 @@ abstract class BatchingRenderer implements RendererOps {
 
   abstract ensure(cols: number, rows: number, metrics: CellMetrics): boolean;
   abstract copyRows(srcRow: number, dstRow: number, count: number): boolean;
-  /**
-   * Run `paint` against the context this frame's cells go to — the surface,
-   * or the window. The subclass owns *how* that context is come by, because
-   * a surface's may only be drawable inside a call it hands out.
-   */
-  protected abstract draw(paint: (ctx: CellContext) => void): void;
+  /** Where the batched draws land — the surface, or the window. */
+  protected abstract target(): CellContext | null;
   /** After the batches are flushed: the retained renderer composites. */
   protected abstract present(): void;
   abstract destroy(): void;
@@ -322,42 +306,30 @@ abstract class BatchingRenderer implements RendererOps {
   }
 
   end(): void {
-    this.draw((ctx) => {
+    const ctx = this.target();
+    if (ctx) {
       this._flushRects(ctx, this._fills);
       this._flushGlyphs(ctx);
       this._flushRects(ctx, this._decorations);
-    });
-    // After the surface's own call has returned, so a backend that had to
-    // bind the surface to draw into it has put the window back first.
+    }
     this.present();
     this._fills.clear();
     this._decorations.clear();
     this._runs.clear();
   }
 
-  private _flushRects(
-    ctx: CellContext,
-    batches: Map<number, number[][]>,
-  ): void {
+  private _flushRects(ctx: CellContext, batches: Map<number, number[]>): void {
     for (const [rgb, rects] of batches) {
       if (!rects.length) continue;
       ctx.fillStyle = css(rgb);
       if (typeof ctx.fillRects === 'function') {
         // One `Render.FillRectangles` for the whole colour (ntk#253), where
         // a `fillRect` loop is one composite per rectangle.
-        //
-        // As `[x, y, w, h]` tuples rather than one flat run of numbers,
-        // because the tuple is the only shape every backend reads: ntk and
-        // Cocoa take either, and react-x11's Wayland context walks the
-        // argument one *element* per rectangle, so a flat list hands it
-        // numbers where it wants rectangles and it draws none of them —
-        // silently, since a rectangle it cannot read is simply skipped.
-        // Every background on that backend went missing (issue #17), which
-        // left the grid transparent and the window's older pixels showing
-        // through the composite.
         ctx.fillRects(rects);
       } else {
-        for (const r of rects) ctx.fillRect(r[0], r[1], r[2], r[3]);
+        for (let i = 0; i < rects.length; i += 4) {
+          ctx.fillRect(rects[i], rects[i + 1], rects[i + 2], rects[i + 3]);
+        }
       }
       this.count('fillRequests');
     }
@@ -365,40 +337,23 @@ abstract class BatchingRenderer implements RendererOps {
 
   private _flushGlyphs(ctx: CellContext): void {
     if (!this._runs.size) return;
-    if (typeof ctx.drawGlyphs !== 'function') return;
-    const solid = ctx.createSolidPicture;
+    if (
+      typeof ctx.drawGlyphs !== 'function' ||
+      typeof ctx.createSolidPicture !== 'function'
+    ) {
+      return;
+    }
     const op = ctx.Render?.PictOp?.Over ?? 3;
     for (const [rgb, runs] of this._runs) {
       if (!runs.length) continue;
-      let src: unknown;
-      if (typeof solid === 'function') {
-        // Premultiplied 0..1, which is what XRender solids are. Opaque, so the
-        // premultiplication is the identity.
-        src = solid.call(
-          ctx,
-          ((rgb >> 16) & 0xff) / 255,
-          ((rgb >> 8) & 0xff) / 255,
-          (rgb & 0xff) / 255,
-          1,
-        );
-      } else {
-        // No `createSolidPicture`: a backend drawing glyphs through something
-        // other than XRender has no `Picture` to make one of. react-x11's
-        // Wayland context2d is that backend (issue #17) — it rasterises
-        // through a glyph atlas and takes the ink from the source's `color`,
-        // or from `fillStyle` when the source has none. Both are set here,
-        // because which of the two a non-XRender backend reads is its own
-        // business; `fillStyle` is the public seam and the `color` is what
-        // Wayland's own `fillText` hands its `drawGlyphs`.
-        //
-        // Requiring the solid was why this whole method used to return
-        // early there — silently, because a frame that draws no glyphs is
-        // still a frame: the cells came out in their own colours with no
-        // text in any of them.
-        const colour = css(rgb);
-        ctx.fillStyle = colour;
-        src = { color: colour };
-      }
+      // Premultiplied 0..1, which is what XRender solids are. Opaque, so the
+      // premultiplication is the identity.
+      const src = ctx.createSolidPicture(
+        ((rgb >> 16) & 0xff) / 255,
+        ((rgb >> 8) & 0xff) / 255,
+        (rgb & 0xff) / 255,
+        1,
+      );
       ctx.drawGlyphs(op, src, runs);
       this.count('glyphRequests');
     }
@@ -406,13 +361,13 @@ abstract class BatchingRenderer implements RendererOps {
 }
 
 function push(
-  batches: Map<number, number[][]>,
+  batches: Map<number, number[]>,
   key: number,
   rect: number[],
 ): void {
   const list = batches.get(key);
-  if (list) list.push(rect);
-  else batches.set(key, [rect]);
+  if (list) list.push(rect[0], rect[1], rect[2], rect[3]);
+  else batches.set(key, rect.slice());
 }
 
 /**
@@ -431,8 +386,6 @@ export class RetainedRenderer extends BatchingRenderer {
   private _Surface: SurfaceCtor;
   private _surface: SurfaceLike | null = null;
   private _surfaceCtx: CellContext | null = null;
-  /** Whether `_surfaceCtx` is ours to destroy — see `ensure`. */
-  private _ownsCtx = false;
   private _cols = 0;
   private _metrics: CellMetrics | null = null;
 
@@ -466,54 +419,18 @@ export class RetainedRenderer extends BatchingRenderer {
         format: 'argb32',
       });
       // One context for the surface's whole life: a context is much heavier
-      // than it looks on ntk's X11 surface (a GC and a Picture), which
-      // builds one per `getContext` and says a caller doing many draws
-      // should keep one rather than let `render` churn one per frame.
-      //
-      // Whether it *is* one per call is also how ownership is visible: ask
-      // twice, and a surface that answers the same object owns it and frees
-      // it with itself (the Cocoa and Wayland surfaces), where ntk's hands
-      // over a new one the caller owes a `destroy()`. The spare goes back
-      // here, and this costs one context per surface, not one per frame.
+      // than it looks (a GC and a Picture), and `Surface#render` would build
+      // and destroy one per frame.
       this._surfaceCtx = this._surface.getContext('2d');
-      const again = this._surface.getContext('2d');
-      this._ownsCtx = again !== this._surfaceCtx;
-      if (this._ownsCtx) again.destroy?.();
     } catch {
       this._surface = null;
       this._surfaceCtx = null;
-      this._ownsCtx = false;
     }
     return false;
   }
 
-  /**
-   * Draw the frame into the surface.
-   *
-   * Straight through the held context, except where every context on the
-   * backend is a view on one shared device: there the surface has to be made
-   * the device's target before a draw lands in it, `render` is the public
-   * call that does that and puts the window's target back after, and a draw
-   * made outside it goes nowhere at all — which is silent, because nothing
-   * refuses the draw. react-x11's Wayland backend is that case (issue #17):
-   * its contexts are GL, and the grid the frame drew stayed empty.
-   *
-   * `restoreGLState` is the signal, because it *is* that property: a context
-   * offers it to be put back after foreign drawing on the shared device (a
-   * `<glarea>`'s frame, or — just as much — a surface's). On X11 and Cocoa
-   * there is no shared device, no `restoreGLState`, and nothing changes.
-   */
-  protected draw(paint: (ctx: CellContext) => void): void {
-    const windowCtx = this.ctx;
-    const surface = this._surface;
-    if (surface && typeof windowCtx?.restoreGLState === 'function') {
-      surface.render(paint);
-      // `render` rebinds the window's target but not the state around it,
-      // and `present` is about to draw through this context again.
-      windowCtx.restoreGLState();
-      return;
-    }
-    if (this._surfaceCtx) paint(this._surfaceCtx);
+  protected target(): CellContext | null {
+    return this._surfaceCtx;
   }
 
   copyRows(srcRow: number, dstRow: number, count: number): boolean {
@@ -584,10 +501,9 @@ export class RetainedRenderer extends BatchingRenderer {
   }
 
   private _release(): void {
-    if (this._ownsCtx) this._surfaceCtx?.destroy?.();
+    this._surfaceCtx?.destroy?.();
     this._surface?.destroy();
     this._surfaceCtx = null;
-    this._ownsCtx = false;
     this._surface = null;
   }
 
@@ -623,8 +539,8 @@ export class DirectRenderer extends BatchingRenderer {
     this.offsetY = frame.originY;
   }
 
-  protected draw(paint: (ctx: CellContext) => void): void {
-    if (this.ctx) paint(this.ctx);
+  protected target(): CellContext | null {
+    return this.ctx;
   }
 
   copyRows(): boolean {

@@ -442,16 +442,8 @@ function spyContext(): {
     fillStyle: '',
     fillRect: (x: number, y: number, w: number, h: number) =>
       calls.push(`fillRect ${ctx.fillStyle} ${x},${y} ${w}x${h}`),
-    // Counted in rectangles, and the shape is part of what is asserted:
-    // `fillRects` takes `[x, y, w, h]` tuples, which is the only form every
-    // backend reads (issue #17).
-    fillRects: (rects: number[][]) =>
-      calls.push(
-        `fillRects ${ctx.fillStyle} ${rects.length}` +
-          (rects.every((r) => Array.isArray(r) && r.length === 4)
-            ? ''
-            : ' BAD-SHAPE'),
-      ),
+    fillRects: (rects: number[]) =>
+      calls.push(`fillRects ${ctx.fillStyle} ${rects.length / 4}`),
     drawGlyphs: (_op: number, _src: unknown, runs: unknown[]) =>
       calls.push(`drawGlyphs ${runs.length}`),
     createSolidPicture: () => ({}),
@@ -528,74 +520,6 @@ test('without a Surface the renderer still draws, and still batches', () => {
 test('a context with no pixel API paints nothing rather than throwing', () => {
   // The mock backend, where a component that throws cannot be tested at all.
   assert.equal(createRenderer(null, {} as never, null), null);
-});
-
-test('glyphs still go out on a context with no createSolidPicture', () => {
-  // react-x11's Wayland context2d (issue #17): it draws glyphs through a
-  // rasteriser and an atlas rather than XRender, so there is no `Picture` to
-  // make and no `createSolidPicture` to make one with — but `drawGlyphs` is
-  // there and takes its ink from the source's `color`, falling back to
-  // `fillStyle`. Requiring the solid skipped every glyph, silently: the
-  // backgrounds still painted, so the terminal came up correct in every
-  // colour and empty of text.
-  const calls: string[] = [];
-  const ctx = {
-    fillStyle: '',
-    fillRect: () => {},
-    // Counted in rectangles, and the shape is part of what is asserted:
-    // `fillRects` takes `[x, y, w, h]` tuples, which is the only form every
-    // backend reads (issue #17).
-    fillRects: (rects: number[][]) =>
-      calls.push(
-        `fillRects ${ctx.fillStyle} ${rects.length}` +
-          (rects.every((r) => Array.isArray(r) && r.length === 4)
-            ? ''
-            : ' BAD-SHAPE'),
-      ),
-    drawGlyphs: (_op: number, src: { color?: string }, runs: unknown[]) =>
-      calls.push(`drawGlyphs ${src?.color} ${ctx.fillStyle} ${runs.length}`),
-    // No `createSolidPicture`, and no `Render` to name a `PictOp` either.
-  };
-
-  const renderer = createRenderer(null, ctx as never, null);
-  assert.ok(renderer);
-  const metrics = {
-    cellWidth: 8,
-    cellHeight: 16,
-    baseline: 12,
-    underline: 14,
-    ruleHeight: 1,
-  };
-  renderer.ensure(4, 1, metrics);
-  renderer.begin(ctx as never, {
-    originX: 0,
-    originY: 0,
-    cols: 4,
-    rows: 1,
-    metrics,
-  });
-  const run = {
-    font: {} as never,
-    size: 13,
-    glyphs: [{ id: 1, ax: 8, dx: 0, dy: 0 }],
-  };
-  renderer.fillCells(0, 0, 4, 0x000000);
-  renderer.drawRun(0, 0, run, 0xffffff);
-  renderer.drawRun(0, 1, run, 0xff8800);
-  renderer.end();
-
-  assert.deepEqual(
-    calls,
-    [
-      'fillRects #000000 1',
-      // The colour reaches the backend both ways round, because which one a
-      // non-XRender backend reads is its own business.
-      'drawGlyphs #ffffff #ffffff 1',
-      'drawGlyphs #ff8800 #ff8800 1',
-    ],
-    calls.join('\n'),
-  );
-  assert.equal(renderer.stats.glyphRequests, 2, 'still one request per colour');
 });
 
 // --- 3c. the faces, on an engine that is not ntk's --------------------------
