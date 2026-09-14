@@ -95,7 +95,9 @@ export interface MapFrameStats {
    *  What covers a hole while zooming *in*. */
   fromAncestor: number;
   /** …and how many from their finer descendants, scaled down. What covers
-   *  a hole while zooming *out*, where there is no ancestor to borrow. */
+   *  a hole while zooming *out*, where there is no ancestor to borrow.
+   *  Descendants cover what they can and an ancestor the gaps between them,
+   *  so a hole covered partly from each counts in both. */
   fromDescendant: number;
   /** Tiles still to rasterize (retained) or to build (GL) — non-zero means
    *  the map is still sharpening and another frame is already scheduled. */

@@ -33,8 +33,8 @@
 import type { PreparedStyle } from './paint.js';
 import type { VectorTile } from './mvt.js';
 import { parseTile } from './mvt.js';
-import { tileKey } from './proj.js';
-import type { TileId } from './proj.js';
+import { BELOW, FILL_DEPTH, fillFromBelow, tileKey } from './proj.js';
+import type { TileCell, TileId } from './proj.js';
 import { pyramidOf } from './sources.js';
 import type { MapSource, TileData } from './sources.js';
 
@@ -247,6 +247,10 @@ export class TileCache {
   /** Bumped by a style change, which retires every surface without
    *  touching the data behind it. */
   private _generation = 0;
+  /** The key of every tile with a picture, and of its ancestors up to
+   *  `FILL_DEPTH` levels above it — see {@link descendantsWithSurface}.
+   *  Built when first asked, and dropped whenever a picture comes or goes. */
+  private _below: Set<string> | null = null;
 
   constructor(options: TileCacheOptions = {}) {
     this._options = options;
@@ -492,7 +496,8 @@ export class TileCache {
   }
 
   /**
-   * The finished **descendants** of a tile, and where each sits inside it.
+   * The finished **descendants** of a tile, where each sits inside it, and
+   * the gaps they leave.
    *
    * The mirror of {@link ancestorWithSurface}, and the half a map needs
    * when it zooms *out*: the tiles already in hand are then the target's
@@ -501,42 +506,64 @@ export class TileCache {
    * over it, which is exactly as odd as it sounds — until the coarser tile
    * has been fetched, rasterized and composited.
    *
-   * `depth` is how many levels down to look, and it is small on purpose: a
-   * level down is 4 tiles, two is 16, and beyond that the pieces are too
-   * small to be worth the composites.
+   * Each quarter of the square is taken from the nearest level that has it,
+   * down to `FILL_DEPTH` — see `fillFromBelow`. The first cut took one
+   * level for the whole square, the nearest with anything in it, and looked
+   * two down. Both left the view blank where a zoom out needs it most: the
+   * edges, where the level the map came from covers only part of a coarser
+   * tile and the rest is one level further down or nowhere; and a zoom out
+   * of more than two levels, which a flick of the wheel is.
+   *
+   * The search goes only where {@link _heldBelow} says there is something,
+   * so a hole with nothing under it — every tile of a zoom *in* — costs four
+   * lookups rather than three hundred.
    *
    * `generation` as for {@link ancestorWithSurface}.
    */
   descendantsWithSurface(
     source: MapSource,
     tile: TileId,
-    depth = 2,
     generation?: number,
-  ): { entry: CachedTile; x: number; y: number; span: number }[] {
-    for (let down = 1; down <= depth; down++) {
-      const span = 1 << down;
-      const found: { entry: CachedTile; x: number; y: number; span: number }[] =
-        [];
-      for (let dy = 0; dy < span; dy++) {
-        for (let dx = 0; dx < span; dx++) {
-          const entry = this._entries.get(
-            this.key(source, {
-              z: tile.z + down,
-              x: (tile.x << down) + dx,
-              y: (tile.y << down) + dy,
-            }),
-          );
-          if (entry?.shown && drawnFor(entry.shown, generation)) {
-            entry.lastUsed = this._frame;
-            found.push({ entry, x: dx, y: dy, span });
-          }
-        }
+  ): {
+    pieces: (TileCell & { tile: TileId; value: CachedTile })[];
+    gaps: TileCell[];
+  } {
+    const below = this._heldBelow();
+    const { pieces, gaps } = fillFromBelow(tile, FILL_DEPTH, (under) => {
+      const key = this.key(source, under);
+      if (!below.has(key)) return undefined;
+      const entry = this._entries.get(key);
+      if (entry?.shown && drawnFor(entry.shown, generation)) {
+        // Stamped, for the reason `ancestorWithSurface` gives.
+        entry.lastUsed = this._frame;
+        return entry;
       }
-      // The nearest level that has anything wins: one level down is both
-      // the sharpest and the fewest composites.
-      if (found.length > 0) return found;
+      return BELOW;
+    });
+    return { pieces, gaps };
+  }
+
+  /** The keys of every tile with a picture and of its ancestors up to
+   *  `FILL_DEPTH` levels above — so a search under a hole can tell where
+   *  there is nothing without asking for each tile there. A superset where
+   *  a picture is of another generation, which only costs the search a
+   *  level. */
+  private _heldBelow(): Set<string> {
+    if (this._below) return this._below;
+    const below = new Set<string>();
+    for (const entry of this._entries.values()) {
+      if (!entry.shown) continue;
+      below.add(entry.key);
+      let { z, x, y } = entry.tile;
+      for (let up = 1; up <= FILL_DEPTH && z > 0; up++) {
+        z--;
+        x >>= 1;
+        y >>= 1;
+        below.add(this.key(entry.data.source, { z, x, y }));
+      }
     }
-    return [];
+    this._below = below;
+    return below;
   }
 
   /**
@@ -612,6 +639,7 @@ export class TileCache {
     if (entry.shown) this._release(entry.shown);
     entry.shown = entry.drawing;
     entry.drawing = null;
+    this._below = null;
     return true;
   }
 
@@ -629,6 +657,7 @@ export class TileCache {
    * composited again, and otherwise kept until eviction got round to it.
    */
   swap(): void {
+    this._below = null;
     for (const entry of this._entries.values()) {
       if (entry.drawing && !drawnFor(entry.drawing, this._generation)) {
         this._release(entry.drawing);
@@ -746,7 +775,10 @@ export class TileCache {
   }
 
   private _dropSurface(entry: CachedTile): void {
-    if (entry.shown) this._release(entry.shown);
+    if (entry.shown) {
+      this._release(entry.shown);
+      this._below = null;
+    }
     if (entry.drawing) this._release(entry.drawing);
     entry.shown = null;
     entry.drawing = null;
@@ -780,6 +812,7 @@ export class TileCache {
     for (const data of this._data.values()) data.abort?.();
     this._data.clear();
     this._surfaceBytes = 0;
+    this._below = null;
   }
 
   /** Every entry — for a test, and for the `onTiles` diagnostic. */

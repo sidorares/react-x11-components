@@ -406,6 +406,158 @@ test('a tile with no data is not missing, and is drawn from its ancestor', () =>
   assert.ok(tiles.length > 0);
 });
 
+type Tile = { z: number; x: number; y: number };
+type Clipped = {
+  clip: { x: number; y: number; width: number; height: number };
+};
+
+const areaOf = (tiles: readonly Clipped[]): number =>
+  tiles.reduce((sum, t) => sum + t.clip.width * t.clip.height, 0);
+
+/** No two clips overlap: a piece drawn twice is a translucent layer darker
+ *  there, and a label placed twice. */
+function assertDisjoint(tiles: readonly Clipped[]): void {
+  for (let i = 0; i < tiles.length; i++) {
+    for (let j = i + 1; j < tiles.length; j++) {
+      const a = tiles[i].clip;
+      const b = tiles[j].clip;
+      const overlap =
+        a.x < b.x + b.width - 1e-9 &&
+        b.x < a.x + a.width - 1e-9 &&
+        a.y < b.y + b.height - 1e-9 &&
+        b.y < a.y + a.height - 1e-9;
+      assert.ok(!overlap, `${JSON.stringify(a)} overlaps ${JSON.stringify(b)}`);
+    }
+  }
+}
+
+test('zooming out, the children in hand cover their quarters and an ancestor the rest', () => {
+  // The edges of a zoom out: the level the map came from covers only part
+  // of each coarser tile there. The first cut wanted all four children or
+  // none — and tried the ancestor first, over the whole square.
+  const { tiles: want } = renderCover(camera, pane, 1, pyramid, {
+    get: () => stub,
+  });
+  const child = { stats: { ms: 1 } } as unknown as GlTileData;
+  const lookup = {
+    get: (t: Tile) =>
+      t.z === 13 && !(t.x % 2 === 1 && t.y % 2 === 1)
+        ? child
+        : t.z === 11
+          ? stub
+          : undefined,
+  };
+  const cover = renderCover(camera, pane, 1, pyramid, lookup);
+  assert.strictEqual(cover.descendants, want.length);
+  assert.strictEqual(cover.ancestors, want.length);
+  assert.strictEqual(
+    cover.tiles.filter((t) => t.data === child).length,
+    want.length * 3,
+  );
+  const stands = cover.tiles.filter((t) => t.data === stub);
+  assert.strictEqual(stands.length, want.length);
+  // The ancestor at its own size, drawn only over the missing quarter.
+  const half = want[0].size / 2;
+  assert.strictEqual(stands[0].size, want[0].size * 2);
+  assert.deepStrictEqual(stands[0].clip, {
+    x: want[0].clip.x + half,
+    y: want[0].clip.y + half,
+    width: half,
+    height: half,
+  });
+  assertDisjoint(cover.tiles);
+  assert.ok(Math.abs(areaOf(cover.tiles) - areaOf(want)) < 1e-6);
+});
+
+test('each quarter of a hole comes from the nearest level under it that has one', () => {
+  // A zoom out of two levels, or a quarter the level it left never reached:
+  // the first cut looked one level down and no further.
+  const { tiles: want } = renderCover(camera, pane, 1, pyramid, {
+    get: () => stub,
+  });
+  const child = { stats: { ms: 1 } } as unknown as GlTileData;
+  const lookup = {
+    get: (t: Tile) =>
+      t.z === 13 && t.x % 2 === 0 && t.y % 2 === 0
+        ? child
+        : t.z === 14
+          ? stub
+          : undefined,
+  };
+  const cover = renderCover(camera, pane, 1, pyramid, lookup);
+  assert.strictEqual(cover.ancestors, 0);
+  assert.strictEqual(cover.descendants, want.length);
+  // Per hole: the top-left child, and four grandchildren in each of the
+  // other three quarters.
+  assert.strictEqual(
+    cover.tiles.filter((t) => t.data === child).length,
+    want.length,
+  );
+  const grandchildren = cover.tiles.filter((t) => t.data === stub);
+  assert.strictEqual(grandchildren.length, want.length * 12);
+  assert.strictEqual(grandchildren[0].size, want[0].size / 4);
+  assertDisjoint(cover.tiles);
+  assert.ok(Math.abs(areaOf(cover.tiles) - areaOf(want)) < 1e-6);
+});
+
+test('the search under a hole asks the store only for tiles it holds', async () => {
+  // A `get` stamps a tile as used, and a load the view has left is
+  // cancelled only when nothing stamped it — so the search walks through
+  // the level between on what the store holds, and asks for nothing there.
+  const { tiles: want, inView } = renderCover(camera, pane, 1, pyramid, {
+    get: () => stub,
+  });
+  const grandchildren = inView.flatMap((t) =>
+    [0, 1, 2, 3].flatMap((j) =>
+      [0, 1, 2, 3].map((i) => ({ z: t.z + 2, x: t.x * 4 + i, y: t.y * 4 + j })),
+    ),
+  );
+  const store = new GlTileStore({
+    source: {
+      id: 'raster',
+      minZoom: 0,
+      maxZoom: 14,
+      tileSize: 512,
+      load: () => ({
+        kind: 'raster',
+        width: 1,
+        height: 1,
+        data: new Uint8Array(4),
+      }),
+    },
+    prepared: prepareStyle({ layers: STYLE }),
+    onChange: () => {},
+    concurrency: grandchildren.length,
+  });
+  const [first] = grandchildren;
+  assert.strictEqual(store.holds(first), undefined, 'nothing is held yet');
+  store.want(grandchildren);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  // Asked for before the tiles landed, and right after: the index is not
+  // the stale one.
+  assert.strictEqual(store.holds(first), 'here');
+  assert.strictEqual(
+    store.holds({ z: first.z - 1, x: first.x >> 1, y: first.y >> 1 }),
+    'below',
+  );
+
+  const asked: Tile[] = [];
+  const cover = renderCover(camera, pane, 1, pyramid, {
+    get: (t: Tile) => {
+      asked.push(t);
+      return store.get(t);
+    },
+    holds: (t: Tile) => store.holds(t),
+  });
+  assert.strictEqual(cover.tiles.length, want.length * 16);
+  assert.deepStrictEqual(
+    asked.filter((t) => t.z === 13),
+    [],
+    'the level between is walked through, not asked for',
+  );
+  store.dispose(() => {});
+});
+
 // --- scissors and colours -------------------------------------------------------
 
 test('two tiles that share an edge round it to the same pixel column', () => {
