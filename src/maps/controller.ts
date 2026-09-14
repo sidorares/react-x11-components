@@ -241,18 +241,6 @@ const timers = globalThis as {
 };
 
 /**
- * The clock a glide is measured on.
- *
- * `performance.now()` rather than the `Date.now()` the settle window uses:
- * this one is compared across two frames of a 60Hz display, and `Date.now()`
- * counts whole milliseconds, so a sixth of the step would be error. Reached
- * through `globalThis` because `src/` compiles with `types: []`.
- */
-function now(): number {
-  return timers.performance?.now() ?? Date.now();
-}
-
-/**
  * The settle timer, unref'd where the runtime allows it.
  *
  * A map that has just been panned holds a timer, and an unref'd one does not
@@ -265,6 +253,29 @@ function arm(tick: () => void, ms: number): unknown {
   (handle as { unref?(): void } | null)?.unref?.();
   return handle;
 }
+
+/**
+ * The clock a glide is measured on, and the timer that steps it.
+ *
+ * `performance.now()` rather than the `Date.now()` the settle window uses:
+ * this one is compared across two frames of a 60Hz display, and `Date.now()`
+ * counts whole milliseconds, so a sixth of the step would be error. Reached
+ * through `globalThis` because `src/` compiles with `types: []`.
+ *
+ * One object, exported from this module though not from the package, so a
+ * test can stand in for both and step a glide a frame at a time. The glide
+ * is wall-clock time on purpose, and a runner slow enough to spend the whole
+ * of one inside a single `await` finds it over before it can look.
+ */
+export const glideClock = {
+  now(): number {
+    return timers.performance?.now() ?? Date.now();
+  },
+  arm,
+  disarm(handle: unknown): void {
+    timers.clearTimeout?.(handle);
+  },
+};
 
 function clamp(value: number, low: number, high: number): number {
   return value < low ? low : value > high ? high : value;
@@ -361,7 +372,7 @@ export class MapController {
   dispose(): void {
     if (this._settleTimer !== null) timers.clearTimeout?.(this._settleTimer);
     this._settleTimer = null;
-    if (this._glideTimer !== null) timers.clearTimeout?.(this._glideTimer);
+    if (this._glideTimer !== null) glideClock.disarm(this._glideTimer);
     this._glideTimer = null;
     this._glide = null;
   }
@@ -550,7 +561,7 @@ export class MapController {
     y: number,
     smooth: boolean,
   ): void {
-    const at = now();
+    const at = glideClock.now();
     const camera = this.camera();
     const glide = this._glide;
     // Where this delta counts from: the target the wheel has already asked
@@ -590,13 +601,13 @@ export class MapController {
       this._glideTimer = null;
       const glide = this._glide;
       if (glide?.easing !== true) return;
-      const at = now();
+      const at = glideClock.now();
       // `stepZoom` clears the record when the target is reached or the
       // camera refuses a step, and this re-arms only while one is left.
       this.stepZoom(at, at - glide.at);
       this._armGlide();
     };
-    this._glideTimer = arm(tick, GLIDE_TICK_MS);
+    this._glideTimer = glideClock.arm(tick, GLIDE_TICK_MS);
   }
 
   /**
