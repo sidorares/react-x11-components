@@ -1023,6 +1023,22 @@ test('a wheel notch is eased rather than landing in one step', async () => {
   );
 });
 
+test("a touchpad's fractions over the GL map are applied as they arrive", async () => {
+  const { handle, node } = await mountGlMap();
+  // The same accumulator as `<Map>`'s retained renderer, reached through
+  // the GL renderer's pane — which is where core delivers a wheel over the
+  // surface since react-x11#545, fractions and `ev.smooth` included. A
+  // twenty-fourth of a notch is too small for the quantized camera; eight
+  // of them are two steps, with no frame or timer in between.
+  await userEvent.wheel(node, { deltaY: -1 / 24, smooth: true });
+  assert.equal(handle.getCamera().zoom, 12, 'one fraction is too small');
+  for (let i = 0; i < 7; i++) {
+    await userEvent.wheel(node, { deltaY: -1 / 24, smooth: true });
+  }
+  const zoom = handle.getCamera().zoom;
+  assert.ok(Math.abs(zoom - 12.125) < 1e-9, `eight of them are two: ${zoom}`);
+});
+
 // --- labels: anchors ---------------------------------------------------------------
 
 const LABEL_STYLE: MapStyleLayer[] = [
