@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.10.0](https://github.com/sidorares/react-x11-components/compare/v0.9.0...v0.10.0) (2026-09-14)
+
+
+### Features
+
+* **maps:** a bus on a bus stop, house numbers from zoom 18, and snapBuildingNumbers to set them inside their buildings ([#113](https://github.com/sidorares/react-x11-components/issues/113)) ([9fbf881](https://github.com/sidorares/react-x11-components/commit/9fbf881fa374d23744be2e9f7cbf776a7fe9cb4a))
+
+
+### Bug Fixes
+
+* **maps:** cover a zoom-out's holes from the finer tiles in hand, a quarter at a time and up to four levels down — the view went blank at its edges and on a quick zoom out ([#115](https://github.com/sidorares/react-x11-components/issues/115)) ([3e6c006](https://github.com/sidorares/react-x11-components/commit/3e6c0067042f5adbc0e8b53b51e6b4abde4bfb00))
+* **maps:** draw the sea over parks in the OpenMapTiles style — a marine reserve painted the water green ([#116](https://github.com/sidorares/react-x11-components/issues/116)) ([de06c3a](https://github.com/sidorares/react-x11-components/commit/de06c3a65508bee7fb56407a9c282a8af40ef31a))
+* **terminal:** react-x11 ^2.15.0 — the vt grid's Wayland gaps are closed in core, so it draws there ([#119](https://github.com/sidorares/react-x11-components/issues/119)) ([3b82678](https://github.com/sidorares/react-x11-components/commit/3b82678a2fdc715f83eaf2da4b1e18f402ca3c13))
+* **three:** put a hovered object's cursor on the window on Cocoa, through the &lt;glarea&gt;'s style — the surface there is a layer with no cursor of its own ([#114](https://github.com/sidorares/react-x11-components/issues/114)) ([04a34b8](https://github.com/sidorares/react-x11-components/commit/04a34b8e9292f172ff955c5d8cb8df2ed3319786))
+* **three:** take the pointer from the &lt;glarea&gt;'s own handlers where core forwards it — listening on the surface's window took presses and the wheel from the tree ([#111](https://github.com/sidorares/react-x11-components/issues/111)) ([4d2da84](https://github.com/sidorares/react-x11-components/commit/4d2da840a560ff1d3c563ff29e1d3d3b01f57129))
+
 ## [0.9.0](https://github.com/sidorares/react-x11-components/compare/v0.8.0...v0.9.0) (2026-09-12)
 
 
