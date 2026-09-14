@@ -865,6 +865,12 @@ test('the OpenMapTiles style names that schema, not Shortbread', () => {
     ids.indexOf('motorway-casing') < ids.indexOf('motorway'),
     'casings still precede fills',
   );
+  for (const under of ['landuse-green', 'park', 'landuse-built', 'sites']) {
+    assert.ok(
+      ids.indexOf(under) < ids.indexOf('ocean'),
+      `the water is drawn over ${under}`,
+    );
+  }
   // …but every source layer is OpenMapTiles', and none of them is one
   // Shortbread has. Pointing the wrong style at a source is the one failure
   // to expect, and it draws an empty map rather than erroring.
@@ -907,6 +913,83 @@ test('the OpenMapTiles style names that schema, not Shortbread', () => {
     ),
     false,
   );
+});
+
+test('in the OpenMapTiles style the sea is drawn over a park that reaches into it', async () => {
+  // The schema has no land polygons — land is the background and the sea is
+  // cut out of it — and its `park` layer carries protected areas, which are
+  // often mostly sea: the Pearl River Estuary's dolphin reserve is a
+  // rectangle of water west of Lantau. The sea was the style's first layer,
+  // so every such reserve painted the water green.
+  const square = [
+    ...command(1, 1),
+    zigzag(0),
+    zigzag(0),
+    ...command(2, 3),
+    zigzag(4096),
+    zigzag(0),
+    zigzag(0),
+    zigzag(4096),
+    zigzag(-4096),
+    zigzag(0),
+    ...command(7, 0),
+  ];
+  const data = tileBytes(
+    ['water', 'park'].map((name) =>
+      layer({
+        name,
+        keys: [],
+        values: [],
+        features: [{ type: GeomType.Polygon, tags: [], geometry: square }],
+      }),
+    ),
+  );
+  const style = openMapTilesStyle({ labels: false });
+  const ocean = style.layers.find((l) => l.id === 'ocean');
+  assert.ok(ocean?.type === 'fill');
+  const water = ocean.color as string;
+  assert.match(water, /^#[0-9a-f]{6}$/i);
+  const rgb = [1, 3, 5].map((i) => parseInt(water.slice(i, i + 2), 16));
+  const source: MapSource = {
+    id: 'omt',
+    minZoom: 0,
+    maxZoom: 14,
+    tileSize: 512,
+    load: () => ({ kind: 'vector', data }),
+  };
+  const result = await renderX11(
+    React.createElement(MapView, {
+      sources: [source],
+      mapStyle: style,
+      defaultCamera: { center: ONE_TILE_CENTRE_14, zoom: 14 },
+      attribution: '',
+      'data-testname': 'map',
+    }),
+    { backend: 'xserver', width: 200, height: 200 },
+  );
+  const abs = result.getByTestName('map').abs;
+  await waitFor(async () => {
+    const { data: px } = await (
+      result.ctx as unknown as {
+        getImageData(
+          x: number,
+          y: number,
+          w: number,
+          h: number,
+        ): Promise<{ data: Uint8ClampedArray }>;
+      }
+    ).getImageData(
+      Math.round(abs.x + abs.width / 2),
+      Math.round(abs.y + abs.height / 2),
+      1,
+      1,
+    );
+    assert.ok(
+      rgb.every((c, i) => Math.abs(px[i] - c) <= 8),
+      `the middle of the park is rgb(${px[0]}, ${px[1]}, ${px[2]}), ` +
+        `not the water's rgb(${rgb.join(', ')})`,
+    );
+  });
 });
 
 test('the style compiles into runs of one source layer', () => {

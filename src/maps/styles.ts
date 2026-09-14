@@ -837,9 +837,6 @@ export function openMapTilesStyle(
   };
   const name = options.nameField ?? 'name';
   const layers: MapStyleLayer[] = [
-    // One `water` layer for everything wet, with `class` telling the sea
-    // from a lake — where Shortbread has `ocean` and `water_polygons`.
-    { id: 'ocean', type: 'fill', sourceLayer: 'water', color: p.water },
     {
       id: 'landuse-green',
       type: 'fill',
@@ -863,6 +860,18 @@ export function openMapTilesStyle(
       filter: ['in', 'class', ...OMT_SITES],
       color: p.site,
     },
+    // One `water` layer for everything wet, with `class` telling the sea
+    // from a lake — where Shortbread has `ocean` and `water_polygons`.
+    //
+    // Drawn **over** the green and the built-up, as Shortbread's
+    // `water_polygons` are and as OSM Bright and OSM Liberty draw it. This
+    // schema has no land polygons — land is the background and the sea is
+    // cut out of it — and its `park` layer carries protected areas, which
+    // are often mostly sea: the Pearl River Estuary's dolphin reserve is a
+    // rectangle of water west of Lantau. Drawn first, the sea went under
+    // every park that reaches into it, and under every one with a lake in
+    // it.
+    { id: 'ocean', type: 'fill', sourceLayer: 'water', color: p.water },
     {
       id: 'water-lines',
       type: 'line',
