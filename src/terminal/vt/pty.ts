@@ -201,11 +201,25 @@ function nodeProcess(): {
   return g.process ?? null;
 }
 
-/** The user's login shell, or the last-resort `sh`. */
+/**
+ * The user's login shell, or the platform's last resort.
+ *
+ * `$SHELL` first wherever it is set, because it is the user's own answer —
+ * and it is set under a POSIX shell on Windows too (git-bash, MSYS), where it
+ * is still the right one. Failing that the fallback has to be the platform's:
+ * `/bin/sh` is not a path on Windows, and a terminal that opens on "file not
+ * found" is indistinguishable from one whose pty could not start.
+ *
+ * `%COMSPEC%` rather than a spelled-out `cmd.exe`, since that is where Windows
+ * says which command processor this system has.
+ */
 export function defaultShell(
   env: Record<string, string | undefined> = nodeProcess()?.env ?? {},
+  platform: string = nodeProcess()?.platform ?? '',
 ): string {
-  return env.SHELL || '/bin/sh';
+  if (env.SHELL) return env.SHELL;
+  if (platform === 'win32') return env.COMSPEC || 'cmd.exe';
+  return '/bin/sh';
 }
 
 class NodePtySession implements PtySession {

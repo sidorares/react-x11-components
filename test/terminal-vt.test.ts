@@ -811,8 +811,17 @@ test('with no command the host decides what the shell is', async () => {
   // the right one. `nodePtyHost` fills in `defaultShell()` for exactly this.
   const { pty } = await mountVt();
   assert.deepEqual(pty.opened[0].argv, []);
-  assert.match(defaultShell({ SHELL: '/bin/zsh' }), /zsh/);
-  assert.equal(defaultShell({}), '/bin/sh');
+  // `$SHELL` is the user's own answer wherever it is set, including under a
+  // POSIX shell on Windows. The platform is passed rather than read, so this
+  // asserts the same thing on every machine it runs on.
+  assert.match(defaultShell({ SHELL: '/bin/zsh' }, 'darwin'), /zsh/);
+  assert.match(defaultShell({ SHELL: '/usr/bin/bash' }, 'win32'), /bash/);
+  assert.equal(defaultShell({}, 'linux'), '/bin/sh');
+  assert.equal(defaultShell({}, 'win32'), 'cmd.exe');
+  assert.equal(
+    defaultShell({ COMSPEC: 'C:\\Windows\\System32\\cmd.exe' }, 'win32'),
+    'C:\\Windows\\System32\\cmd.exe',
+  );
 });
 
 test('auto prefers an installed emulator over the vt floor', async () => {
