@@ -20,6 +20,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactElement, Ref } from 'react';
 import { execFileSync } from 'node:child_process';
+import { totalmem } from 'node:os';
 import { Button, Icon, SplitPane, createRoot, useTheme } from 'react-x11';
 
 import { Table } from '../src/index.js';
@@ -34,7 +35,29 @@ interface Proc {
   command: string;
 }
 
+/**
+ * The running processes, however this machine will say.
+ *
+ * `ps` is the Unix answer and `tasklist` is the Windows one, and they
+ * disagree about more than their names: `ps` gives a CPU percentage and a
+ * memory percentage, `tasklist` gives a working set in kilobytes and no CPU
+ * at all. So each branch produces the same four fields and the table above
+ * never learns which platform it is on.
+ *
+ * A machine where neither runs — a locked-down container, a PATH without
+ * either — gets a handful of invented rows rather than a crash. This is a
+ * table demo; the table is the point, and refusing to start because the
+ * process list is unavailable would make it demonstrate nothing.
+ */
 function listProcesses(): Proc[] {
+  try {
+    return process.platform === 'win32' ? tasklist() : ps();
+  } catch {
+    return SAMPLE_PROCESSES;
+  }
+}
+
+function ps(): Proc[] {
   const out = execFileSync('ps', ['axo', 'pid=,pcpu=,pmem=,comm='], {
     encoding: 'utf8',
   });
@@ -52,6 +75,46 @@ function listProcesses(): Proc[] {
       };
     });
 }
+
+function tasklist(): Proc[] {
+  // CSV with no header, which is `tasklist`'s only machine-readable form:
+  //   "chrome.exe","1234","Console","1","123,456 K"
+  const out = execFileSync('tasklist', ['/fo', 'csv', '/nh'], {
+    encoding: 'utf8',
+    windowsHide: true,
+  });
+  const total = totalmem();
+  return out
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const cells = line.match(/"([^"]*)"/g)?.map((c) => c.slice(1, -1)) ?? [];
+      const bytes = Number(cells[4]?.replace(/[^\d]/g, '') ?? 0) * 1024;
+      return {
+        id: Number(cells[1] ?? 0),
+        // `tasklist` has no CPU column and the ones that do — a WMI query, a
+        // performance counter — cost a second or more per refresh. Nothing
+        // is a truer answer than a number that is not the one the column
+        // says it is.
+        cpu: 0,
+        mem: total ? Math.round((bytes / total) * 1000) / 10 : 0,
+        command: cells[0] ?? '',
+      };
+    })
+    .filter((row) => row.id > 0);
+}
+
+/** For a machine that will not list its processes — see listProcesses. */
+const SAMPLE_PROCESSES: Proc[] = [
+  { id: 1, cpu: 0.0, mem: 0.1, command: 'init' },
+  { id: 412, cpu: 1.3, mem: 2.4, command: 'compositor' },
+  { id: 918, cpu: 0.2, mem: 0.8, command: 'dbus-daemon' },
+  { id: 1204, cpu: 12.7, mem: 9.1, command: 'renderer' },
+  { id: 1337, cpu: 0.0, mem: 0.3, command: 'sshd' },
+  { id: 2048, cpu: 4.4, mem: 5.6, command: 'node' },
+  { id: 3001, cpu: 0.9, mem: 1.2, command: 'terminal' },
+];
 
 const PROC_COLUMNS: TableColumn<Proc>[] = [
   { id: 'id', label: 'PID', width: 64, align: 'end' },
