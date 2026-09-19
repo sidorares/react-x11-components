@@ -3364,10 +3364,20 @@ export class FlowGraphNode extends Node implements FlowInstance {
     // Nodes are drawn one at a time, in z-order, and both halves of that
     // were measured rather than assumed — see `_paintHandles` for why
     // batching a card or a handle costs more than it saves.
-    for (const entry of order) this._paintNode(painter, palette, entry);
+    for (const entry of order) this._paintGraphNode(painter, palette, entry);
   }
 
-  private _paintNode(
+  /**
+   * One node's box, label and ports.
+   *
+   * Not `_paintNode`: that name belongs to the react-x11 node this extends —
+   * its `paint()` calls `this._paintNode(ctx)` — and defining one here
+   * replaced the base implementation with a method of a different shape.
+   * `super.paint(ctx)` then arrived here with a drawing context where an
+   * entry was expected, which is a crash rather than a wrong picture only
+   * because the first thing it reads is a property.
+   */
+  private _paintGraphNode(
     painter: FlowPainter,
     palette: FlowPalette,
     entry: NodeEntry,
