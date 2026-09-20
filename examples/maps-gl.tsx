@@ -164,8 +164,12 @@ const defaultCamera: MapCamera = {
 
 type Animation = 'still' | 'pan' | 'zoom' | 'fly';
 
-/** The adaptive budgets the button steps through, in milliseconds; 0 is off. */
-const BUDGETS = [0, 12, 6, 3] as const;
+/** The adaptive budgets the button steps through, in milliseconds; 0 is off.
+ *  The component's own default is first, so the map starts as a shipped one
+ *  behaves and the button steps *down* to the unbudgeted case — which is a
+ *  thing worth seeing here and a thing no app should be left in by default:
+ *  unbudgeted, a fly takes the whole thread and the host's timers with it. */
+const BUDGETS = [12, 6, 3, 0] as const;
 
 /** Where an animation has the camera `t` seconds in. */
 function cameraAt(kind: Animation, base: MapCamera, t: number): MapCamera {
@@ -237,7 +241,7 @@ function App(): React.ReactElement {
   const [dark, setDark] = useState(args.includes('--dark'));
   const [antialias, setAntialias] = useState(true);
   const [fade, setFade] = useState(0);
-  const [budget, setBudget] = useState<(typeof BUDGETS)[number]>(0);
+  const [budget, setBudget] = useState<(typeof BUDGETS)[number]>(12);
   const [labels, setLabels] = useState(!args.includes('--no-labels'));
   const [snap, setSnap] = useState(args.includes('--snap-numbers'));
   const [providerId, setProviderId] = useState(
