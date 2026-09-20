@@ -794,6 +794,7 @@ export class MapViewNode extends Node {
       : box;
     if (!clip) {
       this._controller.painting = false;
+      this._controller.paintEnded();
       this._frameClip = null;
       return;
     }
@@ -895,6 +896,7 @@ export class MapViewNode extends Node {
     this._stats = stats;
     this._painted = true;
     this._controller.painting = false;
+    this._controller.paintEnded();
     this._frameClip = null;
     void frame;
     this._prop<(stats: MapFrameStats) => void>('onFrame')?.(stats);

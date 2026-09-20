@@ -372,9 +372,16 @@ export interface MapGlProps {
    */
   levelFade?: number;
   /**
-   * Trade detail for frame rate while the camera moves. `true` holds each
-   * moving frame to 12 ms; `{ budgetMs }` to another budget. When the camera
-   * settles the next frame draws everything again.
+   * Trade detail for frame rate while the camera moves. **On by default**,
+   * holding each moving frame to 12 ms; `{ budgetMs }` picks another budget
+   * and `false` turns it off. When the camera settles the next frame draws
+   * everything again.
+   *
+   * It is on by default because the alternative is a renderer that can take
+   * the whole thread: unbudgeted, a fly across ten zoom levels left the
+   * event loop unable to run a `setTimeout` for a second at a time, with
+   * nothing individually slow inside it. An app embedding a map should not
+   * have to know that to keep its own clock running.
    */
   adaptive?: boolean | { budgetMs?: number };
   /** Build tiles' geometry on this many worker threads, so no frame pays

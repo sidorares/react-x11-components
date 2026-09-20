@@ -544,6 +544,9 @@ class GlMapDriver implements MapView {
         this._frame(gl, info);
       } finally {
         controller.painting = false;
+        // `onFrame` ran inside that, and a camera animation drives itself
+        // from it — so whatever it asked for is scheduled here.
+        controller.paintEnded();
       }
     } catch (error) {
       // Core hands an `onDraw` throw to `<glarea onError>` and nothing else;
@@ -604,9 +607,25 @@ class GlMapDriver implements MapView {
     return out;
   }
 
+  /**
+   * How long a moving frame may take, or null for "as long as it likes".
+   *
+   * **On unless turned off.** A renderer with no budget spends whatever a
+   * frame costs and asks for the next one on the following compositor tick
+   * regardless, so at the expensive end of a zoom sweep it takes the whole
+   * thread — and the app around it stops getting its timers. Measured on a
+   * fly across ten levels: without a budget the loop went a second at a time
+   * without running a `setTimeout`, and nothing inside it was slow, because
+   * the cost was spread over a hundred frames rather than spent in one call.
+   * With the budget, none. An embedding app should not have to know that to
+   * keep its own clock.
+   *
+   * What it costs is detail while the camera moves, and only while it moves:
+   * the frame after it settles draws everything again.
+   */
   private _budget(): number | null {
     const adaptive = this.props.map.adaptive;
-    if (!adaptive) return null;
+    if (adaptive === false) return null;
     return typeof adaptive === 'object'
       ? (adaptive.budgetMs ?? DEFAULT_BUDGET_MS)
       : DEFAULT_BUDGET_MS;

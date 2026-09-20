@@ -47,7 +47,12 @@
 //    is over. It is one object for one gesture, never read at import time.
 //  - **The indicator, not the slide.** Neighbours do not glide out of the
 //    way: this renderer has no transform, and a line at the closest edge
-//    answers the same question for a rectangle per item. The one thing that
+//    answers the same question for a rectangle per item. That is the
+//    *default*, not a limit — an app that wants the gap instead can open one
+//    from `onDragUpdate` and let flex layout move the rows, which is what
+//    `examples/reorder.tsx`'s first list does in about twenty lines. What
+//    this component will not do is pick that for everyone: a gap costs a
+//    reflow per pointer move, and a line costs none. The one thing that
 //    does move is the drop: `dropAnimation` flies a copy of the item from
 //    where the pointer let go to where the item landed. That copy is a box
 //    **inside the item**, not the ghost popup carried on — a popup outlives
@@ -338,14 +343,39 @@ export interface ReorderDragStart {
 
 /** Where the drag is now. Fires on the list the item belongs to, whichever
  *  list the pointer is over — `over` is null over anything that is not a
- *  list in the group. `over.index` is the index the item would **land at**,
- *  which is what `onReorder`'s `to` and `onInsert`'s `index` will say, not
- *  the raw gap it is hovering. */
+ *  list in the group, and **only** then. `over.index` is the index the item
+ *  would **land at**, which is what `onReorder`'s `to` and `onInsert`'s
+ *  `index` will say, not the raw gap it is hovering; `over.settled` says the
+ *  drop would land there and change nothing. */
 export interface ReorderDragUpdate {
   id: ReorderId;
   ids: ReorderId[];
   from: number;
-  over: { list: string | undefined; index: number } | null;
+  over: {
+    list: string | undefined;
+    /** Where the row would **end up** — what `onReorder`'s `to` will say. */
+    index: number;
+    /**
+     * Which gap the pointer is over, counting the one before the first row
+     * as 0 and the one past the last as `length`.
+     *
+     * Not the same number as `index`, and the difference is not a detail: a
+     * row moving within its own list closes the hole it leaves behind, so
+     * dragging row 0 down onto the gap after row 1 is **slot 2** and lands
+     * at **index 1**. Draw a drop position from `index` and it sits one
+     * place too high for every downward drag and exactly right for every
+     * upward one, which is what an off-by-one that only happens half the
+     * time looks like.
+     *
+     * So: `slot` to draw *where the drop would go*, `index` to say *what
+     * the list will become*.
+     */
+    slot: number;
+    /** The drop would land here and change nothing. A position, not an
+     *  absence: the pointer is over the list, at an index it can name, and
+     *  the rows are simply already in that order. */
+    settled: boolean;
+  } | null;
   combine: ReorderId | null;
   input: ReorderInput;
 }
@@ -539,7 +569,14 @@ interface DragOver {
   listUid: string;
   list: string | undefined;
   index: number;
+  /** The gap the pointer is over. **Not** `index`: for a move within one
+   *  list the row leaves a hole behind it, so dragging row 0 down to the
+   *  gap after row 1 is slot 2 and lands at index 1. */
+  slot: number;
   combine: ReorderId | null;
+  /** The drop would land here and change nothing — the rows are already in
+   *  this order. Still a position, and still over the list. */
+  settled: boolean;
 }
 
 /**
@@ -843,11 +880,30 @@ function refuse(): boolean {
   return false;
 }
 
+/**
+ * Whether two answers say the same thing — the gate that keeps one
+ * `onDragUpdate` per *change* rather than one per pointer motion.
+ *
+ * `slot` is part of the comparison and not an afterthought: it and `index`
+ * move independently. Dragging a row down its own list, the gap after the
+ * next row and the gap after the one beyond it are slots 2 and 3, and both
+ * land the row at index 1 and 2 — but the pair (1,2) and (2,3) differ in
+ * both. Where they *don't* is at the top of a downward drag: slots 1 and 2
+ * both land at index 1, because the row closes the hole it left. Comparing
+ * on `index` alone therefore swallowed the move from slot 1 to slot 2, and a
+ * list drawing the drop as a space kept it a row too high for as long as the
+ * pointer stayed in that band — an off-by-one that looked like a rule
+ * problem and was a dropped notification.
+ */
 function sameOver(a: DragOver | null, b: DragOver | null): boolean {
   if (a === b) return true;
   if (!a || !b) return false;
   return (
-    a.listUid === b.listUid && a.index === b.index && a.combine === b.combine
+    a.listUid === b.listUid &&
+    a.index === b.index &&
+    a.slot === b.slot &&
+    a.settled === b.settled &&
+    a.combine === b.combine
   );
 }
 
@@ -1144,18 +1200,26 @@ export function ReorderList(props: ReorderListProps): ReactElement {
       ev.reject();
       return;
     }
-    // one of this list's own items, over a gap that is already its own:
-    // nothing would move, so nothing is promised
+    // One of this list's own items, over a slot it already occupies: the
+    // drop would change nothing.
     const move =
       !combining && moving.length > 0
         ? moveManyToSlot(ids, moving, slot, payload!.id)
         : null;
-    if (!combining && moving.length > 0 && move === null) {
-      mark(null);
-      if (activeDrag?.over?.listUid === uid) activeDrag.over = null;
-      return;
-    }
-    mark(at);
+    const settled = !combining && moving.length > 0 && move === null;
+    // No line: there is no insertion to point at. But the drag **is** over
+    // this list, at a position this list can name, and saying `over: null`
+    // for it conflated two different facts — "nowhere" and "here, and
+    // already in order".
+    //
+    // That conflation is visible, not theoretical. A list that draws the
+    // drop as a gap closes the gap when told `over` is null; closing it
+    // moves the rows back up; the pointer is then over a different row, so
+    // a gap opens again, which moves the rows down, which puts the pointer
+    // back over the gap. Walking a pointer down the list a step at a time,
+    // that alternates every other sample — and what it looks like is a drop
+    // target one slot away from the pointer.
+    mark(settled ? null : at);
     if (activeDrag) {
       activeDrag.over = {
         listUid: uid,
@@ -1163,7 +1227,9 @@ export function ReorderList(props: ReorderListProps): ReactElement {
         // where it would land, not the gap it is over — a same-list move
         // closes the hole it left behind, and a newcomer lands at the gap
         index: move ? move.to : slot,
+        slot,
         combine: combining,
+        settled,
       };
     }
   };
@@ -1361,7 +1427,10 @@ export function ReorderList(props: ReorderListProps): ReactElement {
         id: itemId,
         ids: move.ids,
         from,
-        over: { list: id, index: move.to },
+        // The keyboard path is not a preview: the row has already *moved*,
+        // so where it is and where it would land are the same place and
+        // there is no hole still open behind it.
+        over: { list: id, index: move.to, slot: move.to, settled: false },
         combine: null,
         input: 'keyboard',
       });
@@ -1423,7 +1492,14 @@ export function ReorderList(props: ReorderListProps): ReactElement {
       id: itemId,
       ids: payload?.ids ?? [itemId],
       from: payload?.index ?? -1,
-      over: over ? { list: over.list, index: over.index } : null,
+      over: over
+        ? {
+            list: over.list,
+            index: over.index,
+            slot: over.slot,
+            settled: over.settled,
+          }
+        : null,
       combine: over?.combine ?? null,
       input: 'pointer',
     });
