@@ -112,7 +112,9 @@ for (const [id, us] of [...self].sort((a, b) => b[1] - a[1]).slice(0, 18)) {
   const n = byId.get(id);
   if (!n) continue;
   const pct = ((us / total) * 100).toFixed(1);
-  console.log(`  ${(us / 1000).toFixed(0).padStart(6)}ms  ${pct.padStart(5)}%  ${label(n)}`);
+  console.log(
+    `  ${(us / 1000).toFixed(0).padStart(6)}ms  ${pct.padStart(5)}%  ${label(n)}`,
+  );
 }
 
 // Total time in a function says nothing about *shape*: 2.5s spread over
@@ -157,7 +159,8 @@ for (const [id, us] of [...self].sort((a, b) => b[1] - a[1]).slice(0, 18)) {
 // is who called it. For the heaviest few, walk back up to the nearest frame
 // that has a file.
 const parentOf = new Map();
-for (const n of profile.nodes) for (const c of n.children ?? []) parentOf.set(c, n.id);
+for (const n of profile.nodes)
+  for (const c of n.children ?? []) parentOf.set(c, n.id);
 console.log('');
 console.log('the heaviest leaves, and who called them:');
 for (const [id, us] of [...self].sort((a, b) => b[1] - a[1]).slice(0, 6)) {
@@ -165,7 +168,11 @@ for (const [id, us] of [...self].sort((a, b) => b[1] - a[1]).slice(0, 6)) {
   if (!n || us < 50000) continue;
   if (n.callFrame.functionName === '(idle)') continue;
   const stack = [];
-  for (let at = id; at !== undefined && stack.length < 7; at = parentOf.get(at)) {
+  for (
+    let at = id;
+    at !== undefined && stack.length < 7;
+    at = parentOf.get(at)
+  ) {
     const node = byId.get(at);
     if (node) stack.push(label(node));
   }
@@ -177,7 +184,8 @@ for (const [id, us] of [...self].sort((a, b) => b[1] - a[1]).slice(0, 6)) {
 // …and the same rolled up the call tree, which is what names a *phase*
 // rather than the leaf it happened to be in.
 const parent = new Map();
-for (const n of profile.nodes) for (const c of n.children ?? []) parent.set(c, n.id);
+for (const n of profile.nodes)
+  for (const c of n.children ?? []) parent.set(c, n.id);
 const totalOf = new Map();
 for (const [id, us] of self) {
   for (let at = id; at !== undefined; at = parent.get(at)) {
@@ -194,6 +202,8 @@ const interesting = [...totalOf]
   .slice(0, 16);
 for (const [id, us] of interesting) {
   const pct = ((us / total) * 100).toFixed(1);
-  console.log(`  ${(us / 1000).toFixed(0).padStart(6)}ms  ${pct.padStart(5)}%  ${label(byId.get(id))}`);
+  console.log(
+    `  ${(us / 1000).toFixed(0).padStart(6)}ms  ${pct.padStart(5)}%  ${label(byId.get(id))}`,
+  );
 }
 process.exit(0);

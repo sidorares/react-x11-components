@@ -114,7 +114,9 @@ function smallBoxes() {
 function gripFor(label) {
   const midY = label.abs.y + label.abs.height / 2;
   const near = smallBoxes()
-    .filter((b) => b.x < label.abs.x && Math.abs(b.y + b.height / 2 - midY) < 24)
+    .filter(
+      (b) => b.x < label.abs.x && Math.abs(b.y + b.height / 2 - midY) < 24,
+    )
     .sort((a, b) => b.x - a.x);
   return near[0] ?? null;
 }
@@ -201,7 +203,8 @@ for (const c of CASES) {
     origin.x + (grip ? grip.x + grip.width / 2 : from.abs.x + 20),
   );
   const y0 = Math.round(
-    origin.y + (grip ? grip.y + grip.height / 2 : from.abs.y + from.abs.height / 2),
+    origin.y +
+      (grip ? grip.y + grip.height / 2 : from.abs.y + from.abs.height / 2),
   );
   const y1 = Math.round(
     origin.y + to.abs.y + to.abs.height / 2 + 8 + (c.below ?? 0),
@@ -228,9 +231,7 @@ for (const c of CASES) {
     : changed
       ? 'REORDERED '
       : 'IGNORED   ';
-  console.log(
-    `${c.name.padEnd(22)} ${verdict}  ${before}  ->  ${after}`,
-  );
+  console.log(`${c.name.padEnd(22)} ${verdict}  ${before}  ->  ${after}`);
   console.log(
     `${''.padEnd(22)} drag-enter=${routed.get('drag-enter') ?? 0} ` +
       `drag-over=${routed.get('drag-over') ?? 0} ` +

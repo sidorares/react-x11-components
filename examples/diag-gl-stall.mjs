@@ -93,7 +93,23 @@ for (const name of Object.keys(gl)) {
     }
   };
 }
-console.log(`watching ${totals.size || [...Object.keys(gl)].length} GL entry points`);
+// The app's frame ticks are NOT the map's frames. The window can be paced at
+// the display rate while the <glarea> draws far less often, and counting the
+// wrong one makes a 2fps map look like a 165fps one.
+let ticks = 0;
+const origTick = app._tickFrames.bind(app);
+app._tickFrames = () => {
+  ticks += 1;
+  origTick();
+};
+// …and how often the area was *asked* to draw, against how often it did.
+let asked = 0;
+const origReq = area.requestFrame.bind(area);
+area.requestFrame = () => {
+  asked += 1;
+  return origReq();
+};
+console.log(`watching ${Object.keys(gl).length} GL entry points`);
 
 await click(
   Math.round(origin.x + fly.abs.x + fly.abs.width / 2),
@@ -102,14 +118,26 @@ await click(
 await sleep(400);
 totals.clear();
 slow.length = 0;
+ticks = 0;
+asked = 0;
 started = performance.now();
 await sleep(SECONDS * 1000);
 
-console.log(`\nflew for ${SECONDS}s\n`);
+const swaps = totals.get('SwapBuffers')?.calls ?? 0;
+console.log('');
+console.log(`flew for ${SECONDS}s`);
+console.log(`  app frame ticks : ${ticks} (${(ticks / SECONDS).toFixed(0)}/s)`);
+console.log(`  glarea asked    : ${asked} (${(asked / SECONDS).toFixed(0)}/s)`);
+console.log(
+  `  glarea DREW     : ${swaps} (${(swaps / SECONDS).toFixed(0)}/s)  <- what is on screen`,
+);
+console.log('');
 console.log('calls that blocked longer than ' + SLOW_MS + 'ms:');
 if (slow.length === 0) console.log('  (none)');
 for (const s of slow) {
-  console.log(`  ${s.ms.toFixed(0).padStart(6)}ms  gl.${s.name}  at +${(s.at / 1000).toFixed(1)}s`);
+  console.log(
+    `  ${s.ms.toFixed(0).padStart(6)}ms  gl.${s.name}  at +${(s.at / 1000).toFixed(1)}s`,
+  );
 }
 
 console.log('\nwhere the frame thread went, by call:');

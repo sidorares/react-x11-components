@@ -100,6 +100,22 @@ const beat = setInterval(() => {
   lagLast = now;
 }, 8);
 
+// The same question asked of a different phase of the loop. A timer that is
+// late while setImmediate is prompt means the loop never reaches its timers
+// phase — starvation, and fixable by yielding. Both late means the thread is
+// simply saturated, and the only fix is to do less.
+const imm = [];
+let immLast = performance.now();
+let immOn = true;
+const beatImm = () => {
+  if (!immOn) return;
+  const now = performance.now();
+  imm.push(now - immLast);
+  immLast = now;
+  setImmediate(beatImm);
+};
+setImmediate(beatImm);
+
 // Find the Fly button by its label and press it.
 let fly = null;
 const walk = (n) => {
@@ -120,7 +136,7 @@ ticks.length = 0;
 asked.length = 0;
 lags.length = 0;
 lagAt.length = 0;
-zooms.length = 0;
+imm.length = 0;
 frameCost.length = 0;
 await sleep(Number(process.argv[3] ?? 6000));
 
@@ -145,6 +161,7 @@ console.log(
     .join('  '),
 );
 clearInterval(beat);
+immOn = false;
 const fs = [...frameCost].sort((a, b) => a - b);
 const fp = (q) =>
   fs[Math.min(fs.length - 1, Math.floor(fs.length * q))].toFixed(1);
@@ -159,13 +176,21 @@ console.log(
 );
 const stalls = lags.filter((v) => v > 100).length;
 console.log(`loop stalls >100ms: ${stalls}`);
+const is = [...imm].sort((a, b) => a - b);
+const ip = (q) =>
+  is[Math.min(is.length - 1, Math.floor(is.length * q))].toFixed(1);
+console.log(
+  `setImmediate gap ms: p50 ${ip(0.5)}  p95 ${ip(0.95)}  max ${ip(1)}  (${imm.length} turns)`,
+);
 // Where in the fly, and at what zoom — a stall that always lands at the same
 // zoom is a level being built, not a random hiccup.
 let clock0 = lagAt[0] ?? 0;
 for (let i = 0; i < lags.length; i++) {
   if (lags[i] > 100) {
     console.log(
-      `  stall ${Math.round(lags[i])}ms at +${Math.round(lagAt[i] - clock0)}ms into the fly`,
+      `into the fly, ${
+        ticks.filter((t) => t > lagAt[i] - lags[i] && t <= lagAt[i]).length
+      } frames drawn during it`,
     );
   }
 }
