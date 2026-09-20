@@ -39,6 +39,7 @@ import {
   arrayMove,
   useReorderItem,
   type ReorderDragStart,
+  type ReorderStyles,
 } from '../src/index.js';
 import type {
   ReorderDragUpdate,
@@ -173,12 +174,11 @@ function DropGap({
  */
 function useDropGap(style: { padding: number; borderWidth: number }): {
   firstRow: React.RefObject<DrawnNode | null>;
-  rowStyle: (id: ReorderId, base: object | object[]) => object | object[];
   start: (e: ReorderDragStart) => void;
   note: (e: ReorderDragUpdate) => void;
   clear: () => void;
   gap: (at: number, list?: string) => ReactElement;
-  styles: { indicator: { height: number } };
+  styles: ReorderStyles;
 } {
   const [drop, setDrop] = useState<{
     list: string | undefined;
@@ -192,17 +192,8 @@ function useDropGap(style: { padding: number; borderWidth: number }): {
    *  is about to be needed. Read per update instead and a drag of the very
    *  row being measured reports zero, because by then it has collapsed. */
   const held = useRef(43);
-  /** The rows that are travelling, and therefore out of the flow. */
-  const [away, setAway] = useState<ReadonlySet<ReorderId>>(new Set());
   return {
     firstRow,
-    /** A row's style, collapsed to nothing while it is the one travelling. */
-    rowStyle: (id: ReorderId, base: object | object[]): object | object[] =>
-      !away.has(id)
-        ? base
-        : Array.isArray(base)
-          ? [...base, collapsed]
-          : [base, collapsed],
     start: (e: ReorderDragStart): void => {
       held.current =
         (firstRow.current?.abs?.height ?? 25) +
@@ -211,7 +202,6 @@ function useDropGap(style: { padding: number; borderWidth: number }): {
       // Open it where the row already is: the space it leaves is the space
       // it is going to, and everything after this is that space moving.
       if (e.input !== 'pointer') return;
-      setAway(new Set(e.ids));
       setDrop({
         list: undefined,
         slot: e.index,
@@ -243,10 +233,7 @@ function useDropGap(style: { padding: number; borderWidth: number }): {
             }
           : null,
       ),
-    clear: (): void => {
-      setAway(new Set());
-      setDrop(null);
-    },
+    clear: (): void => setDrop(null),
     gap: (at: number, list?: string): ReactElement => (
       <DropGap
         key={`gap-${at}`}
@@ -254,11 +241,23 @@ function useDropGap(style: { padding: number; borderWidth: number }): {
         rowHeight={drop?.rowHeight ?? 43}
       />
     ),
-    // The line is what a gap replaces, so a list drawing one does not draw
-    // the other. `height: 0` rather than a transparent colour: the indicator
-    // is absolutely positioned, so there is nothing to collapse, and saying
-    // "no thickness" is plainer than naming whatever is behind it.
-    styles: { indicator: { height: 0 } },
+    styles: {
+      // The line is what a gap replaces, so a list drawing one does not draw
+      // the other. `height: 0` rather than a transparent colour: the
+      // indicator is absolutely positioned, so there is nothing to collapse,
+      // and saying "no thickness" is plainer than naming whatever is behind
+      // it.
+      indicator: { height: 0 },
+      // …and the row itself leaves the flow while it travels.
+      //
+      // `!state.preview` is the whole reason this lives here rather than on
+      // the item's own `style`: the ghost that follows the pointer is drawn
+      // from that same style, so collapsing it there collapses the thing
+      // being dragged as well — a drag with a cursor and nothing under it.
+      // `styles.item` is asked separately for the row and for the ghost, and
+      // only one of them is supposed to disappear.
+      item: (state) => (state.dragging && !state.preview ? collapsed : null),
+    },
   };
 }
 
@@ -310,12 +309,11 @@ function Todos(): ReactElement {
           <ReorderItem
             key={todo.id}
             id={todo.id}
-            style={gaps.rowStyle(
-              todo.id,
+            style={
               selected.includes(todo.id)
                 ? [row, { borderColor: '$accent' }]
-                : row,
-            )}
+                : row
+            }
           >
             <box
               ref={at === 0 ? gaps.firstRow : undefined}
@@ -415,11 +413,7 @@ function Palette(): ReactElement {
       >
         {notes.flatMap((note, at) => [
           gaps.gap(at, 'notes'),
-          <ReorderItem
-            key={note.id}
-            id={note.id}
-            style={gaps.rowStyle(note.id, row)}
-          >
+          <ReorderItem key={note.id} id={note.id} style={row}>
             <box
               ref={at === 0 ? gaps.firstRow : undefined}
               style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}
@@ -507,12 +501,12 @@ function Cards(): ReactElement {
             id={card.id}
             disabled={card.locked}
             aria-label={card.title}
-            style={gaps.rowStyle(card.id, {
+            style={{
               ...row,
               flexDirection: 'row',
               alignItems: 'center',
               gap: 8,
-            })}
+            }}
           >
             <ReorderHandle />
             <box
@@ -613,11 +607,7 @@ function Board(): ReactElement {
             >
               {board[column.id].flatMap((card, at) => [
                 gaps.gap(at, column.id),
-                <ReorderItem
-                  key={card}
-                  id={card}
-                  style={gaps.rowStyle(card, row)}
-                >
+                <ReorderItem key={card} id={card} style={row}>
                   <text
                     ref={
                       column.id === COLUMNS[0]!.id && at === 0
@@ -708,7 +698,7 @@ function Inbox(): ReactElement {
               }),
             }}
             dragActions={['copy', 'move']}
-            style={gaps.rowStyle(note.id, row)}
+            style={row}
           >
             {(state) => (
               <text
