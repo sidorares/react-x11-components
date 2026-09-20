@@ -130,7 +130,14 @@ try {
 // same question: the slot below the last row, like the slot above the first,
 // is where that row already is.
 const fromLast = process.argv.includes('--last');
-const grab = fromLast ? before[before.length - 1] : before[0];
+// `--row=N` grabs a middle row, where the two no-op slots either side of it
+// are easiest to tell apart: at the ends one of them is off the list.
+const pick = process.argv.find((a) => a.startsWith('--row='));
+const grab = pick
+  ? before[Number(pick.slice('--row='.length))]
+  : fromLast
+    ? before[before.length - 1]
+    : before[0];
 const x = Math.round(origin.x + grab.abs.x + 20);
 const y0 = Math.round(origin.y + grab.abs.y + grab.abs.height / 2);
 const steps = Math.ceil((rowH * 5.5) / STEP);

@@ -93,6 +93,26 @@ const collapsed = {
   transition: { height: 130, opacity: 130 },
 } as const;
 
+/**
+ * …and what it wears while the drop is where it already is: **the row is the
+ * slot**, keeping its own box and losing only its contents.
+ *
+ * The alternative — collapse the row and open a separate space beside it —
+ * cannot land on the same pixels. Every slot is a sibling in the column, so
+ * each contributes its share of the list's `gap` whether it is open or shut,
+ * and a space rendered next to a collapsed row therefore starts a few pixels
+ * off from where that row was: measured, six. Worse, a row at index k has
+ * *two* slots that change nothing, k and k+1, so the space had two places to
+ * be and drifted between them as the pointer crossed. Letting the row keep
+ * its place answers both: there is one self slot, it is exactly where the
+ * row is, and nothing has to move to make it.
+ */
+const asGap = {
+  borderColor: '$accent',
+  backgroundColor: '$surfaceHover',
+  transition: { borderColor: 130, backgroundColor: 130 },
+} as const;
+
 // --- rung 1: a list of strings ------------------------------------------------
 
 interface Todo {
@@ -149,7 +169,12 @@ function DropGap({
       style={{
         height: open ? rows * rowHeight + (rows - 1) * LIST_GAP : 0,
         borderRadius: 6,
-        borderWidth: 1,
+        // Zero, not "one in a transparent colour": a closed gap is a sibling
+        // in the column like any other, so a hairline it still owns is two
+        // pixels of the list's height that nothing accounts for — and the
+        // row height is derived from the spacing between rows, so those two
+        // pixels end up in every slot.
+        borderWidth: open ? 1 : 0,
         borderColor: open ? '$accent' : 'transparent',
         backgroundColor: open ? '$surfaceHover' : 'transparent',
         transition: { height: 130, borderColor: 130, backgroundColor: 130 },
@@ -172,8 +197,9 @@ function DropGap({
  * three columns share one of these and each renders the gap only when
  * `over.list` names it. A lone list has no id and matches `undefined`.
  */
-function useDropGap(style: { padding: number; borderWidth: number }): {
+function useDropGap(listGap: number): {
   firstRow: React.RefObject<DrawnNode | null>;
+  secondRow: React.RefObject<DrawnNode | null>;
   start: (e: ReorderDragStart) => void;
   note: (e: ReorderDragUpdate) => void;
   clear: () => void;
@@ -185,28 +211,50 @@ function useDropGap(style: { padding: number; borderWidth: number }): {
     slot: number;
     rows: number;
     rowHeight: number;
+    /** The drop is where the row already is, so the row *is* the slot and
+     *  no separate space is opened beside it. */
+    home: boolean;
   } | null>(null);
   const firstRow = useRef<DrawnNode | null>(null);
-  /** Measured once, when the drag starts — which is the last moment the row
-   *  is still in the flow at its full height, and the first moment its size
-   *  is about to be needed. Read per update instead and a drag of the very
-   *  row being measured reports zero, because by then it has collapsed. */
+  const secondRow = useRef<DrawnNode | null>(null);
+  /**
+   * A row's height, measured once when the drag starts — the last moment the
+   * row is still in the flow at its full size, and the first moment that
+   * size is about to be needed.
+   *
+   * Taken as the **pitch between two rows, less the list's gap**, rather than
+   * built up from a content box and the padding around it. A row is only as
+   * tall as its tallest child, and that is not always the text: the card list
+   * has a button in each row, so adding the padding to the *title* measured a
+   * row nine pixels shorter than it is — the slot came out short and the rows
+   * below it sat nine pixels high. Two rows and a subtraction cannot be wrong
+   * about what a row is, whatever is inside it.
+   */
   const held = useRef(43);
+  const measure = (): number => {
+    const a = firstRow.current?.abs;
+    const b = secondRow.current?.abs;
+    // Two gaps, not one: a closed `DropGap` sits between every pair of rows,
+    // and the list's `gap` falls on both sides of it.
+    return a && b && b.y > a.y ? b.y - a.y - listGap * 2 : held.current;
+  };
+  /** Where the row started, which is the one place its *own* gap belongs. */
+  const home = useRef(0);
   return {
     firstRow,
+    secondRow,
     start: (e: ReorderDragStart): void => {
-      held.current =
-        (firstRow.current?.abs?.height ?? 25) +
-        style.padding * 2 +
-        style.borderWidth * 2;
+      held.current = measure();
       // Open it where the row already is: the space it leaves is the space
       // it is going to, and everything after this is that space moving.
       if (e.input !== 'pointer') return;
+      home.current = e.index;
       setDrop({
         list: undefined,
         slot: e.index,
         rows: e.ids.length,
         rowHeight: held.current,
+        home: true,
       });
     },
     note: (e: ReorderDragUpdate): void =>
@@ -220,14 +268,22 @@ function useDropGap(style: { padding: number; borderWidth: number }): {
         // there would open beside a row that has already arrived. And not
         // while combining: a tag landing *on* a note takes no room.
         //
-        // No `settled` case to skip any more, and that is the point of the
-        // row leaving the flow: the gap is always open somewhere, because
-        // the row is always somewhere. A position that would change nothing
-        // is simply the gap where it started.
+        // No `settled` case to *skip* any more — the gap is always open
+        // somewhere, because the row is always somewhere — but a settled
+        // one is pinned to where the row started, and that is not cosmetic.
+        //
+        // A row at index k has **two** slots that change nothing: k and
+        // k+1, the gaps either side of it. With the row collapsed out of
+        // the flow those two gaps are adjacent, a few pixels apart, so
+        // drifting across the boundary between them moved the space a
+        // hair up or down and back — one "self" slot appearing to be two,
+        // and neither of them where the row actually is. They are one
+        // place, and this is it.
         e.over && e.input === 'pointer' && !e.combine
           ? {
               list: e.over.list,
-              slot: e.over.slot,
+              slot: e.over.settled ? home.current : e.over.slot,
+              home: e.over.settled,
               rows: e.ids.length,
               rowHeight: held.current,
             }
@@ -237,7 +293,12 @@ function useDropGap(style: { padding: number; borderWidth: number }): {
     gap: (at: number, list?: string): ReactElement => (
       <DropGap
         key={`gap-${at}`}
-        rows={drop && drop.slot === at && drop.list === list ? drop.rows : 0}
+        // …except at home, where the row is doing this job itself.
+        rows={
+          drop && !drop.home && drop.slot === at && drop.list === list
+            ? drop.rows
+            : 0
+        }
         rowHeight={drop?.rowHeight ?? 43}
       />
     ),
@@ -256,7 +317,16 @@ function useDropGap(style: { padding: number; borderWidth: number }): {
       // being dragged as well — a drag with a cursor and nothing under it.
       // `styles.item` is asked separately for the row and for the ghost, and
       // only one of them is supposed to disappear.
-      item: (state) => (state.dragging && !state.preview ? collapsed : null),
+      item: (state) =>
+        !state.dragging || state.preview
+          ? null
+          : drop?.home
+            ? // Its own height, held: with the contents gone the box would
+              // otherwise shrink to its padding, and everything below it
+              // would slide up by the height of a line — the row's place is
+              // supposed to be exactly the size of the row.
+              { ...asGap, height: held.current }
+            : collapsed,
     },
   };
 }
@@ -265,7 +335,7 @@ function Todos(): ReactElement {
   const [todos, setTodos] = useState(TODOS);
   const [selected, setSelected] = useState<ReorderId[]>([]);
   const [status, setStatus] = useState<string | null>(null);
-  const gaps = useDropGap(row);
+  const gaps = useDropGap(LIST_GAP);
 
   const toggle = (id: number): void =>
     setSelected((chosen) =>
@@ -292,7 +362,14 @@ function Todos(): ReactElement {
         }}
         onDragUpdate={(e: ReorderDragUpdate) => {
           setStatus(
-            e.over ? `would land at ${e.over.index + 1}` : 'not over the list',
+            !e.over
+              ? 'not over the list'
+              : e.over.settled
+                ? // `index` for a settled drop is the slot, not a place the
+                  // row would move to — saying "would land at 4" about a row
+                  // that would stay third is worse than saying nothing.
+                  'would stay where it is'
+                : `would land at ${e.over.index + 1}`,
           );
           // …and the same answer as a size instead of a position.
           gaps.note(e);
@@ -315,20 +392,39 @@ function Todos(): ReactElement {
                 : row
             }
           >
-            <box
-              ref={at === 0 ? gaps.firstRow : undefined}
-              style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}
-              onMouseDown={() => toggle(todo.id)}
-            >
-              <text
-                style={{
-                  color: selected.includes(todo.id) ? '$accent' : '$textMuted',
-                }}
-              >
-                {selected.includes(todo.id) ? '◉' : '○'}
-              </text>
-              <text>{todo.title}</text>
-            </box>
+            {/* Empty while this row *is* the slot: the contents are in the
+                ghost under the pointer, and a slot with a row still in it is
+                not a slot. `preview` is what tells the two copies apart. */}
+            {(state) =>
+              state.dragging && !state.preview ? null : (
+                <box
+                  ref={
+                    at === 0
+                      ? gaps.firstRow
+                      : at === 1
+                        ? gaps.secondRow
+                        : undefined
+                  }
+                  style={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: 8,
+                  }}
+                  onMouseDown={() => toggle(todo.id)}
+                >
+                  <text
+                    style={{
+                      color: selected.includes(todo.id)
+                        ? '$accent'
+                        : '$textMuted',
+                    }}
+                  >
+                    {selected.includes(todo.id) ? '◉' : '○'}
+                  </text>
+                  <text>{todo.title}</text>
+                </box>
+              )
+            }
           </ReorderItem>,
         ])}
         {/* the slot past the last row, which no item's edge can stand for */}
@@ -349,7 +445,7 @@ function Palette(): ReactElement {
   // Only the notes get a space. The palette above is a horizontal wrap and
   // hands out copies rather than moving anything, and a gap that opens
   // downwards would be answering a question nobody asked there.
-  const gaps = useDropGap(row);
+  const gaps = useDropGap(LIST_GAP);
   const [notes, setNotes] = useState([
     { id: 'n1', text: 'Ship the release', tags: [] as string[] },
     { id: 'n2', text: 'Book the room', tags: [] as string[] },
@@ -414,17 +510,27 @@ function Palette(): ReactElement {
         {notes.flatMap((note, at) => [
           gaps.gap(at, 'notes'),
           <ReorderItem key={note.id} id={note.id} style={row}>
-            <box
-              ref={at === 0 ? gaps.firstRow : undefined}
-              style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}
-            >
-              <text style={{ flexGrow: 1 }}>{note.text}</text>
-              {note.tags.map((tag) => (
-                <text key={tag} style={{ fontSize: 10, color: '$accent' }}>
-                  {tag}
-                </text>
-              ))}
-            </box>
+            {(state) =>
+              state.dragging && !state.preview ? null : (
+                <box
+                  ref={
+                    at === 0
+                      ? gaps.firstRow
+                      : at === 1
+                        ? gaps.secondRow
+                        : undefined
+                  }
+                  style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}
+                >
+                  <text style={{ flexGrow: 1 }}>{note.text}</text>
+                  {note.tags.map((tag) => (
+                    <text key={tag} style={{ fontSize: 10, color: '$accent' }}>
+                      {tag}
+                    </text>
+                  ))}
+                </box>
+              )
+            }
           </ReorderItem>,
         ])}
         {gaps.gap(notes.length, 'notes')}
@@ -482,7 +588,7 @@ function CardDetail({ card }: { card: Card }): ReactElement {
 function Cards(): ReactElement {
   const [cards, setCards] = useState(CARDS);
   const [opened, setOpened] = useState<string | null>(null);
-  const gaps = useDropGap(row);
+  const gaps = useDropGap(6);
   return (
     <box style={{ gap: 8, width: 260 }}>
       <Caption>A GRIP, AND A CONTROL BESIDE IT</Caption>
@@ -508,15 +614,27 @@ function Cards(): ReactElement {
               gap: 8,
             }}
           >
-            <ReorderHandle />
-            <box
-              ref={at === 0 ? gaps.firstRow : undefined}
-              style={{ flexGrow: 1, gap: 2 }}
-            >
-              <text style={{ fontWeight: 'bold' }}>{card.title}</text>
-              <CardDetail card={card} />
-            </box>
-            <Button label="Open" onPress={() => setOpened(card.title)} />
+            {(state) =>
+              state.dragging && !state.preview ? null : (
+                <>
+                  <ReorderHandle />
+                  <box
+                    ref={
+                      at === 0
+                        ? gaps.firstRow
+                        : at === 1
+                          ? gaps.secondRow
+                          : undefined
+                    }
+                    style={{ flexGrow: 1, gap: 2 }}
+                  >
+                    <text style={{ fontWeight: 'bold' }}>{card.title}</text>
+                    <CardDetail card={card} />
+                  </box>
+                  <Button label="Open" onPress={() => setOpened(card.title)} />
+                </>
+              )
+            }
           </ReorderItem>,
         ])}
         {gaps.gap(cards.length)}
@@ -551,7 +669,7 @@ function Board(): ReactElement {
   // One for the group, not one per column: `onDragUpdate` fires on the list
   // the card belongs to, whichever column the pointer is over, so the column
   // that has to open a space is generally not the one being told.
-  const gaps = useDropGap(row);
+  const gaps = useDropGap(LIST_GAP);
   const splice = (
     column: Column,
     fn: (cards: readonly string[]) => string[],
@@ -608,16 +726,24 @@ function Board(): ReactElement {
               {board[column.id].flatMap((card, at) => [
                 gaps.gap(at, column.id),
                 <ReorderItem key={card} id={card} style={row}>
-                  <text
-                    ref={
-                      column.id === COLUMNS[0]!.id && at === 0
-                        ? gaps.firstRow
-                        : undefined
-                    }
-                    style={{ fontSize: 12 }}
-                  >
-                    {card}
-                  </text>
+                  {(state) =>
+                    state.dragging && !state.preview ? null : (
+                      <text
+                        ref={
+                          column.id !== COLUMNS[0]!.id
+                            ? undefined
+                            : at === 0
+                              ? gaps.firstRow
+                              : at === 1
+                                ? gaps.secondRow
+                                : undefined
+                        }
+                        style={{ fontSize: 12 }}
+                      >
+                        {card}
+                      </text>
+                    )
+                  }
                 </ReorderItem>,
               ])}
               {gaps.gap(board[column.id].length, column.id)}
@@ -638,7 +764,7 @@ interface Note {
 }
 
 function Inbox(): ReactElement {
-  const gaps = useDropGap(row);
+  const gaps = useDropGap(LIST_GAP);
   const [notes, setNotes] = useState<Note[]>([
     { id: 'n1', text: 'Drop a file or some text on me' },
     { id: 'n2', text: 'Drag me into a terminal' },
@@ -700,20 +826,28 @@ function Inbox(): ReactElement {
             dragActions={['copy', 'move']}
             style={row}
           >
-            {(state) => (
-              <text
-                ref={at === 0 ? gaps.firstRow : undefined}
-                style={{
-                  fontSize: 12,
-                  textWrap: 'nowrap',
-                  textOverflow: 'ellipsis',
-                  color:
-                    state.dragging && !state.accepted ? '$danger' : '$text',
-                }}
-              >
-                {note.text}
-              </text>
-            )}
+            {(state) =>
+              state.dragging && !state.preview ? null : (
+                <text
+                  ref={
+                    at === 0
+                      ? gaps.firstRow
+                      : at === 1
+                        ? gaps.secondRow
+                        : undefined
+                  }
+                  style={{
+                    fontSize: 12,
+                    textWrap: 'nowrap',
+                    textOverflow: 'ellipsis',
+                    color:
+                      state.dragging && !state.accepted ? '$danger' : '$text',
+                  }}
+                >
+                  {note.text}
+                </text>
+              )
+            }
           </ReorderItem>,
         ])}
         {gaps.gap(notes.length)}

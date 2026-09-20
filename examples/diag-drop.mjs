@@ -138,11 +138,21 @@ const CASES = [
     grab: 'Buy milk',
     past: 'Book the dentist',
   },
+  // Measured from the grabbed row rather than aimed at a named one. The row
+  // leaves the flow for the length of the gesture, so the list is a card
+  // shorter and everything below the grab moves up by a pitch; a target
+  // taken from the resting layout overshoots, and overshooting the last row
+  // leaves the list entirely — `drag-leave` and no drop, which reads exactly
+  // like a list refusing one. A short, self-relative move cannot overshoot.
   {
     name: 'cards (grip only)',
     group: ['Mail', 'Calendar', 'Weather'],
     grab: 'Mail',
-    past: 'Weather',
+    past: 'Mail',
+    // A whole card, not half: a shorter move stays inside the band of slots
+    // that would change nothing, and a drag that correctly decides to do
+    // nothing is not what this case is testing.
+    below: 90,
     grip: true,
   },
   {
