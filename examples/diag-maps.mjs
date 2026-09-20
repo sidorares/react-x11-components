@@ -182,17 +182,21 @@ const ip = (q) =>
 console.log(
   `setImmediate gap ms: p50 ${ip(0.5)}  p95 ${ip(0.95)}  max ${ip(1)}  (${imm.length} turns)`,
 );
-// Where in the fly, and at what zoom — a stall that always lands at the same
-// zoom is a level being built, not a random hiccup.
-let clock0 = lagAt[0] ?? 0;
+// When in the fly each stall landed, and how many frames were drawn during
+// it. Both halves matter: a stall that always lands at the same moment is
+// tied to the camera's path rather than to chance, and a "stall" with frames
+// inside it was never a stall — the thread was busy, and only the timer was
+// late.
+const clock0 = lagAt[0] ?? 0;
 for (let i = 0; i < lags.length; i++) {
-  if (lags[i] > 100) {
-    console.log(
-      `into the fly, ${
-        ticks.filter((t) => t > lagAt[i] - lags[i] && t <= lagAt[i]).length
-      } frames drawn during it`,
-    );
-  }
+  if (lags[i] <= 100) continue;
+  const drawn = ticks.filter(
+    (t) => t > lagAt[i] - lags[i] && t <= lagAt[i],
+  ).length;
+  console.log(
+    `  stall ${Math.round(lags[i])}ms at +${Math.round(lagAt[i] - clock0)}ms ` +
+      `into the fly, ${drawn} frames drawn during it`,
+  );
 }
 
 // For each long gap between frames, was a frame *asked for* during it?
@@ -208,8 +212,7 @@ console.log(
 const longGaps = [];
 for (let i = 1; i < ticks.length; i++) {
   if (ticks[i] - ticks[i - 1] > 150) {
-    const inside = asked.filter((t) => t > ticks[i - 1] && t < ticks[i]).length;
-    // *When* inside matters more than how many: a request at the very end
+    // *When* a request lands matters more than how many do: one at the very end
     // of the gap means nobody asked for a frame until then (the map stopped
     // driving), while one at the start means a frame was asked for and not
     // delivered (the backend stopped answering). Opposite bugs.
