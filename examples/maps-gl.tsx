@@ -246,6 +246,13 @@ function App(): React.ReactElement {
   const provider =
     GL_PROVIDERS.find((p) => p.id === providerId) ?? GL_PROVIDERS[0];
   const [status, setStatus] = useState('');
+  // A GL failure has to outlast the summary. The line below is rewritten
+  // twice a second from the frame stats, so a message set from `onError` was
+  // gone again before it could be read — and a map that asked for GL by name
+  // never falls back, so there is nothing else on screen to say why it is
+  // empty. It holds the line until frames arrive again, which is the only
+  // thing that can make it stale.
+  const [failure, setFailure] = useState('');
   const frames = useRef<Frame[]>([]);
   const running = useRef({
     kind: 'still' as Animation,
@@ -274,6 +281,7 @@ function App(): React.ReactElement {
   };
 
   const onFrame = (stats: MapFrameStats): void => {
+    if (failure) setFailure('');
     if (stats.gl) {
       frames.current.push({
         ...stats.gl,
@@ -345,8 +353,8 @@ function App(): React.ReactElement {
               {dark ? 'Light' : 'Dark'}
             </Button>
           </box>
-          <text style={{ color: theme.textMuted }}>
-            {status || 'drag to pan · wheel or double-click to zoom'}
+          <text style={{ color: failure ? theme.danger : theme.textMuted }}>
+            {failure || status || 'drag to pan · wheel or double-click to zoom'}
           </text>
         </box>
         <Map
@@ -360,7 +368,16 @@ function App(): React.ReactElement {
           adaptive={budget ? { budgetMs: budget } : false}
           buildWorkers={2}
           onFrame={onFrame}
-          onError={(error) => setStatus(`GL failed: ${error.message}`)}
+          onError={(error) => {
+            // The bar has one line and a GL error's hint runs to several, so
+            // the line says what failed and stderr carries the whole of it —
+            // the same division the tile errors below make.
+            const { hint } = error as Error & { hint?: string };
+            process.stderr.write(
+              `GL failed: ${error.message}\n${hint ? `${hint}\n` : ''}`,
+            );
+            setFailure(`GL failed: ${error.message}`);
+          }}
           // The bar's line is the frame summary, rewritten twice a second, so
           // a provider that is down or wants a key says so here instead.
           onTileError={(error, tile) =>
