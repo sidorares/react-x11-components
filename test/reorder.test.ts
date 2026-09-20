@@ -932,6 +932,12 @@ function lifecycle(
     onDragUpdate: (e) =>
       log.push(
         `update ${e.id} over ${e.over ? `${e.over.list}:${e.over.index}` : 'nothing'}` +
+          // `index` alone cannot tell two slots apart, and two slots can
+          // share one: the gap before an item and the gap after it both land
+          // a row moving *down* its own list at the same index, because it
+          // closes the hole it left. `settled` is which of them this is —
+          // the one that would change nothing.
+          `${e.over?.settled ? ' (settled)' : ''}` +
           `${e.combine ? ` combine ${String(e.combine)}` : ''}`,
       ),
     onDragEnd: (e) =>
@@ -947,10 +953,16 @@ test('the list reports the gesture: start, an update per slot, end', async () =>
   await mount(view(lifecycle(log)));
 
   await dragTo(item('l', 'a'), item('l', 'b'), { dy: 10 });
-  // the index is where it would *land*, which is what onReorder will say —
-  // past b, and the hole a left behind has closed
+  // Two updates, one per slot crossed, and they report the same index — the
+  // index is where the row would *land*, which is what onReorder will say,
+  // and a row moving down its own list closes the hole it left behind. So
+  // its own gap and the gap past b both land it at 1, and only `settled`
+  // separates them. Reporting one update for the pair would be reporting a
+  // position that had moved as one that had not, and anything drawing the
+  // drop as a space in the list would hold it a row short.
   assert.deepStrictEqual(log, [
     'start a [a] at 0 by pointer',
+    'update a over todo:1 (settled)',
     'update a over todo:1',
   ]);
 
@@ -959,7 +971,7 @@ test('the list reports the gesture: start, an update per slot, end', async () =>
     fireEvent.mouseMove(item('l', 'b'), { dy: 12 });
   });
   await landed();
-  assert.strictEqual(log.length, 2, log.join(' | '));
+  assert.strictEqual(log.length, 3, log.join(' | '));
 
   // a new slot is a new update
   await act(async () => {
