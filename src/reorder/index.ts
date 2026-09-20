@@ -47,7 +47,12 @@
 //    is over. It is one object for one gesture, never read at import time.
 //  - **The indicator, not the slide.** Neighbours do not glide out of the
 //    way: this renderer has no transform, and a line at the closest edge
-//    answers the same question for a rectangle per item. The one thing that
+//    answers the same question for a rectangle per item. That is the
+//    *default*, not a limit — an app that wants the gap instead can open one
+//    from `onDragUpdate` and let flex layout move the rows, which is what
+//    `examples/reorder.tsx`'s first list does in about twenty lines. What
+//    this component will not do is pick that for everyone: a gap costs a
+//    reflow per pointer move, and a line costs none. The one thing that
 //    does move is the drop: `dropAnimation` flies a copy of the item from
 //    where the pointer let go to where the item landed. That copy is a box
 //    **inside the item**, not the ghost popup carried on — a popup outlives

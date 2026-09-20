@@ -6,7 +6,11 @@
 //  - a todo list — the shortest thing that works, the keyboard model on it
 //    (Tab to an item, Space, the arrows, Space; Escape puts it back), a
 //    selection several rows wide that travels as one, and a status line fed
-//    by the list's own onDragStart/onDragUpdate/onDragEnd;
+//    by the list's own onDragStart/onDragUpdate/onDragEnd. It also draws the
+//    drop **as a gap** rather than as a line: the rectangle the rows are
+//    about to occupy, opened where they would land, with everything below it
+//    sliding down to make the room real. `DropGap` below is the whole of it,
+//    and it needs nothing from the component — see its comment;
 //  - cards with a grip: a `<ReorderHandle>` is the only press target, so
 //    the button in each card keeps working, one card is `disabled`, and the
 //    detail line reads the drag through `useReorderItem()`;
@@ -23,8 +27,9 @@
 //    dragged *out* — into a terminal, an editor, or the todo list's window;
 //    its items are function children, and turn red over anything that
 //    would not take them.
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import type { ReactElement, ReactNode } from 'react';
+import type { DrawnNode } from 'react-x11';
 import { Button, createRoot } from 'react-x11';
 
 import {
@@ -73,10 +78,77 @@ const TODOS: Todo[] = [
   'Call the bank',
 ].map((title, id) => ({ id, title }));
 
+/** The space between rows. The row *height* is measured rather than written
+ *  down — see `Todos` — because a constant for it is wrong the moment the
+ *  theme's font size moves, and a gap that is not exactly a row tall is a
+ *  promise the drop does not keep. */
+const LIST_GAP = 4;
+
+/**
+ * The space a drop would take, opened where the rows would land.
+ *
+ * The default look is a **line** in the gap between two items — one rectangle
+ * per item answers "which side of this one", and it costs no layout. This
+ * list asks the other question instead: *how much room* is about to be taken,
+ * and where. So it draws the whole rectangle, and the rows below it move down
+ * to make the room real.
+ *
+ * Two things make that work without touching the component:
+ *
+ *  - **A gap is an ordinary sibling.** `<ReorderItem>`s register themselves
+ *    with the list from the tree, so a box between two of them is not an item
+ *    and is not counted — it is just a box in the same column.
+ *  - **`transition` animates the height**, and flex layout does the rest: the
+ *    gap grows, the column reflows, and every row below slides down with it.
+ *    Nothing is transformed and nothing is positioned by hand.
+ *
+ * It is always rendered, at zero height when closed, because a transition
+ * moves a value that changes — a box that mounts already open has nothing to
+ * animate from.
+ */
+function DropGap({
+  rows,
+  rowHeight,
+}: {
+  rows: number;
+  rowHeight: number;
+}): ReactElement {
+  const open = rows > 0;
+  return (
+    <box
+      style={{
+        height: open ? rows * rowHeight + (rows - 1) * LIST_GAP : 0,
+        borderRadius: 6,
+        borderWidth: 1,
+        borderColor: open ? '$accent' : 'transparent',
+        backgroundColor: open ? '$surfaceHover' : 'transparent',
+        transition: { height: 130, borderColor: 130, backgroundColor: 130 },
+      }}
+    />
+  );
+}
+
 function Todos(): ReactElement {
   const [todos, setTodos] = useState(TODOS);
   const [selected, setSelected] = useState<ReorderId[]>([]);
   const [status, setStatus] = useState<string | null>(null);
+  /** Which slot the drop would land in, how many rows are travelling, and how
+   *  tall one is. The first two are on the list's own events; the third is
+   *  read off the layout when the drag starts, which is the one moment it is
+   *  both settled and about to be needed. */
+  const [drop, setDrop] = useState<{
+    slot: number;
+    rows: number;
+    rowHeight: number;
+  } | null>(null);
+  const firstRow = useRef<DrawnNode | null>(null);
+  /** A row is its content plus the padding and hairline `row` puts around it
+   *  — measured for the part that moves with the font, and read off the very
+   *  style object that draws it for the part that does not. */
+  const rowHeight = (): number =>
+    (firstRow.current?.abs?.height ?? 25) +
+    row.padding * 2 +
+    row.borderWidth * 2;
 
   const toggle = (id: number): void =>
     setSelected((chosen) =>
@@ -100,17 +172,44 @@ function Todos(): ReactElement {
             `holding ${e.ids.length} ${e.ids.length === 1 ? 'row' : 'rows'} from ${e.index + 1}`,
           )
         }
-        onDragUpdate={(e: ReorderDragUpdate) =>
+        onDragUpdate={(e: ReorderDragUpdate) => {
           setStatus(
             e.over ? `would land at ${e.over.index + 1}` : 'not over the list',
-          )
-        }
-        onDragEnd={(e) =>
-          setStatus(e.reason === 'drop' ? null : 'put back where it was')
-        }
-        style={{ gap: 4 }}
+          );
+          // The same answer the line would have drawn, as a size instead of
+          // a position: which slot, and how many rows are going into it.
+          //
+          // Pointer only. The keyboard path is not a preview — Space lifts
+          // and each arrow *moves* the row, reporting where it now is — so a
+          // gap there would open beside a row that has already arrived.
+          setDrop(
+            e.over && e.input === 'pointer'
+              ? {
+                  slot: e.over.index,
+                  rows: e.ids.length,
+                  rowHeight: rowHeight(),
+                }
+              : null,
+          );
+        }}
+        onDragEnd={(e) => {
+          setStatus(e.reason === 'drop' ? null : 'put back where it was');
+          setDrop(null);
+        }}
+        // The line is what a gap replaces, so this list does not draw one.
+        // `height: 0` rather than a transparent colour: the indicator is
+        // absolutely positioned, so there is nothing to collapse, and saying
+        // "no thickness" is plainer than saying "the same colour as whatever
+        // is behind it".
+        styles={{ indicator: { height: 0 } }}
+        style={{ gap: LIST_GAP }}
       >
-        {todos.map((todo) => (
+        {todos.flatMap((todo, at) => [
+          <DropGap
+            key={`gap-${at}`}
+            rows={drop?.slot === at ? drop.rows : 0}
+            rowHeight={drop?.rowHeight ?? 43}
+          />,
           <ReorderItem
             key={todo.id}
             id={todo.id}
@@ -121,6 +220,7 @@ function Todos(): ReactElement {
             }
           >
             <box
+              ref={at === 0 ? firstRow : undefined}
               style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}
               onMouseDown={() => toggle(todo.id)}
             >
@@ -133,8 +233,14 @@ function Todos(): ReactElement {
               </text>
               <text>{todo.title}</text>
             </box>
-          </ReorderItem>
-        ))}
+          </ReorderItem>,
+        ])}
+        {/* the slot past the last row, which no item's edge can stand for */}
+        <DropGap
+          key="gap-end"
+          rows={drop?.slot === todos.length ? drop.rows : 0}
+          rowHeight={drop?.rowHeight ?? 43}
+        />
       </ReorderList>
       <text style={{ fontSize: 11, color: '$textMuted' }}>
         {status ??
