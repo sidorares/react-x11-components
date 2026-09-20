@@ -185,7 +185,17 @@ function Todos(): ReactElement {
           setDrop(
             e.over && e.input === 'pointer'
               ? {
-                  slot: e.over.index,
+                  // `slot`, not `index`. They are different numbers and the
+                  // difference is exactly one, half the time: a row moving
+                  // within its own list closes the hole it leaves behind, so
+                  // dragging row 0 down onto the gap after row 1 is slot 2
+                  // and *lands* at index 1. Drawing the space at `index` put
+                  // it one row too high on every downward drag and exactly
+                  // right on every upward one — an off-by-one that only
+                  // happens in one direction, which is the hardest kind to
+                  // see and the easiest to explain once you have both
+                  // numbers in front of you.
+                  slot: e.over.slot,
                   rows: e.ids.length,
                   rowHeight: rowHeight(),
                 }
