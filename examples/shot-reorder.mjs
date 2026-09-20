@@ -43,10 +43,14 @@ ${
       : '[M]::mouse_event([M]::UP, 0, 0, 0, [IntPtr]::Zero)'
 }
 `;
-  execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], {
-    stdio: 'ignore',
-    timeout: 20000,
-  });
+  execFileSync(
+    'powershell.exe',
+    ['-NoProfile', '-NonInteractive', '-Command', ps],
+    {
+      stdio: 'ignore',
+      timeout: 20000,
+    },
+  );
 }
 
 /** One PNG of the window as it is right now. */
@@ -68,9 +72,7 @@ const root = await createRoot();
 root.render(React.createElement(App));
 await sleep(1800);
 
-const { liveApps } = await import(
-  '../../react-x11/src/trace-registry.js'
-);
+const { liveApps } = await import('../../react-x11/src/trace-registry.js');
 const app = liveApps()[0] ?? null;
 if (!app) throw new Error('no app to shoot');
 const wnd = [...app._windows.values()][0];
@@ -82,14 +84,22 @@ console.log('window at', origin, `${wnd.width}x${wnd.height}`);
 const node = wnd._reactX11Node;
 const rows = [];
 const walk = (n) => {
-  if (n.kind === 'text' && /Buy milk|Write the release|Book the dentist/.test(String(n.props?.children ?? ''))) {
+  if (
+    n.kind === 'text' &&
+    /Buy milk|Write the release|Book the dentist/.test(
+      String(n.props?.children ?? ''),
+    )
+  ) {
     rows.push({ label: String(n.props.children), abs: { ...n.abs } });
   }
   for (const kid of n.children ?? []) walk(kid);
 };
 walk(node);
 rows.sort((a, b) => a.abs.y - b.abs.y);
-console.log('rows:', rows.map((r) => `${r.label}@${Math.round(r.abs.y)}`).join(' '));
+console.log(
+  'rows:',
+  rows.map((r) => `${r.label}@${Math.round(r.abs.y)}`).join(' '),
+);
 if (rows.length < 3) throw new Error('could not find the rows to drag');
 
 const at = (row, dy = 0) => ({
@@ -99,7 +109,10 @@ const at = (row, dy = 0) => ({
 
 /** Pick a row's selection dot, so a multi-row drag has something to carry. */
 async function pick(row) {
-  const p = { x: Math.round(origin.x + row.abs.x - 10), y: Math.round(origin.y + row.abs.y + row.abs.height / 2) };
+  const p = {
+    x: Math.round(origin.x + row.abs.x - 10),
+    y: Math.round(origin.y + row.abs.y + row.abs.height / 2),
+  };
   input('move', p.x, p.y);
   await sleep(90);
   input('down');
