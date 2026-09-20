@@ -126,9 +126,15 @@ try {
 } catch {
   // first run
 }
-const x = Math.round(origin.x + before[0].abs.x + 20);
-const y0 = Math.round(origin.y + before[0].abs.y + before[0].abs.height / 2);
+// `--last` grabs the bottom row and walks *up*, which is the mirror of the
+// same question: the slot below the last row, like the slot above the first,
+// is where that row already is.
+const fromLast = process.argv.includes('--last');
+const grab = fromLast ? before[before.length - 1] : before[0];
+const x = Math.round(origin.x + grab.abs.x + 20);
+const y0 = Math.round(origin.y + grab.abs.y + grab.abs.height / 2);
 const steps = Math.ceil((rowH * 5.5) / STEP);
+const dir = fromLast ? -1 : 1;
 
 const ps = `
 Add-Type -TypeDefinition @'
@@ -152,7 +158,7 @@ public static class M {
   }
 }
 '@
-[M]::Walk([IntPtr]${hwnd}, ${x}, ${y0}, ${steps}, ${STEP}, "${flag.split('\\').join('\\\\')}")
+[M]::Walk([IntPtr]${hwnd}, ${x}, ${y0}, ${steps}, ${STEP * dir}, "${flag.split('\\').join('\\\\')}")
 `;
 const child = spawn(
   'powershell.exe',
@@ -180,7 +186,7 @@ const poll = setInterval(() => {
       .sort((a, b) => b.height - a.height)[0];
     samples.push({
       step,
-      pointerY: before[0].abs.y + before[0].abs.height / 2 + step * STEP,
+      pointerY: grab.abs.y + grab.abs.height / 2 + step * STEP * dir,
       slot: reportedSlot(),
       gapY: gap ? Math.round(gap.y) : null,
       gapH: gap ? Math.round(gap.height) : null,

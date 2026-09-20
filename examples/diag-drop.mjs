@@ -163,6 +163,13 @@ const CASES = [
     expect: 'same',
   },
   // …and all the way down: the last slot is the one no row's edge stands for.
+  //
+  // Aimed at the *second* to last row, and that is not a fudge: the row being
+  // dragged leaves the flow, so the list is one row shorter for the whole
+  // gesture and everything below the grab moves up by one pitch. A target
+  // computed from the resting layout has to account for that, or it lands
+  // past the end of a list that is no longer that long — which shows up as
+  // `drag-leave` and no drop, and looks exactly like a list refusing a drop.
   {
     name: 'todos: to the end',
     group: [
@@ -173,8 +180,8 @@ const CASES = [
       'Call the bank',
     ],
     grab: 'Buy milk',
-    past: 'Call the bank',
-    below: 30,
+    past: 'Water the plants',
+    below: 14,
   },
 ];
 
