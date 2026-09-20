@@ -544,6 +544,9 @@ class GlMapDriver implements MapView {
         this._frame(gl, info);
       } finally {
         controller.painting = false;
+        // `onFrame` ran inside that, and a camera animation drives itself
+        // from it — so whatever it asked for is scheduled here.
+        controller.paintEnded();
       }
     } catch (error) {
       // Core hands an `onDraw` throw to `<glarea onError>` and nothing else;

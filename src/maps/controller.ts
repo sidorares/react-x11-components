@@ -298,6 +298,10 @@ export class MapController {
    * claims nothing and starts no gesture.
    */
   painting = false;
+  /** A camera move made while `painting`, waiting for the frame to end —
+   *  `previous` is the camera the *first* such move started from, so the
+   *  view is told the whole delta however many were fused. */
+  private _paintMove: { previous: MapCamera } | null = null;
 
   private _props: MapControllerProps = {};
   /** The camera, when the application does not control it. */
@@ -454,9 +458,47 @@ export class MapController {
     const controlled = this._props.camera !== undefined;
     if (!controlled) this._camera = camera;
     this._props.onCameraChange?.(camera);
-    if (this.painting) return;
+    if (this.painting) {
+      // A camera set from **inside** a frame, which is how every camera
+      // animation is written: the map's own `onFrame` is the clock, and the
+      // GL view calls it while it is still painting. Re-entering the paint
+      // is not on, but returning here used to drop the move's *scheduling*
+      // as well as its redraw — so the animation had nothing to ask for the
+      // next frame with, and stopped until something unrelated re-rendered.
+      //
+      // In the maps-gl example that something was the status bar's
+      // half-second interval, and it showed as exactly that: frames every
+      // 11ms, then a 511ms hole with the next request arriving at +508 —
+      // nobody asking, rather than anyone being slow. Manual panning never
+      // hit it because an input event is not inside a paint.
+      //
+      // So the move is remembered, with the camera it started from, and
+      // finished when the frame ends.
+      this._paintMove ??= { previous };
+      return;
+    }
     this.touch();
     if (!controlled) this._view?.moved(previous, camera, blit);
+  }
+
+  /**
+   * A frame finished: do whatever `apply` deferred because it was painting.
+   * Called from both painters (`gl/view.ts`, `node.ts`) wherever `painting`
+   * goes back to false.
+   *
+   * Never a blit. A blit needs the exact transform it is shifting from, and
+   * what is flushed here may be several moves fused into one; a full redraw
+   * of a frame that was going to be drawn anyway costs nothing next to
+   * getting that wrong.
+   */
+  paintEnded(): void {
+    const move = this._paintMove;
+    if (!move) return;
+    this._paintMove = null;
+    this.touch();
+    if (this._props.camera === undefined) {
+      this._view?.moved(move.previous, this.camera(), false);
+    }
   }
 
   getCamera(): MapCamera {
