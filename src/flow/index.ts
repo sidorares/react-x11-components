@@ -138,6 +138,27 @@ interface FlowNodeBodyProps {
 }
 
 /**
+ * The same node, as far as its body can tell: every field but `position`.
+ *
+ * Identity is not the test. A drag — and every commit of a controlled graph
+ * — hands the pane a *new* node object each step with only its position
+ * changed, so comparing identity called `render` on every step of every
+ * drag: 60 renders with unchanged `data` in a 60-step drag, counted by
+ * `examples/flow-stress.tsx`. Any other field that changes — `data`,
+ * `selected`, `style`, a size — still re-renders, as it must.
+ */
+function sameButPosition(a: FlowNode<unknown>, b: FlowNode<unknown>): boolean {
+  if (a === b) return true;
+  const keys = Object.keys(a) as (keyof FlowNode<unknown>)[];
+  if (keys.length !== Object.keys(b).length) return false;
+  for (const key of keys) {
+    if (key === 'position') continue;
+    if (!Object.is(a[key], b[key])) return false;
+  }
+  return true;
+}
+
+/**
  * One mounted node body. Memoized so that a *move* re-renders nothing: a
  * drag or a pan changes only the overlay box's `left`/`top` — the body's
  * subtree keeps its identity and React commits a style-only update. The
@@ -164,7 +185,7 @@ const FlowNodeBody = React.memo(
   },
   (a, b) =>
     a.type === b.type &&
-    a.node === b.node &&
+    sameButPosition(a.node, b.node) &&
     a.selected === b.selected &&
     a.zoom === b.zoom &&
     a.width === b.width &&

@@ -1932,3 +1932,43 @@ test('onFrame reports each 2D frame once, whatever it painted', async () => {
   assert.ok(frames[0].sceneMs >= 0 && frames[0].drawMs >= 0);
   assert.strictEqual(frames[0].drawCalls, 0, 'draw calls are the GL one’s');
 });
+
+test('a mounted body is not re-rendered for a move, only for what it shows', async () => {
+  // A drag, and every commit of a controlled graph, hands the pane a new
+  // node object with only its position changed. The body's `render` must
+  // not run for that — its box moves and its subtree rides along — and must
+  // run for anything else: new `data` here.
+  let renders = 0;
+  const counted: FlowNodeType = {
+    size: { width: 200, height: 120 },
+    render: ({ node }) => {
+      renders++;
+      return h('text', null, String((node.data as FlowNodeData).label));
+    },
+  };
+  const flow: { current: FlowInstance | null } = { current: null };
+  const base: FlowNode[] = [
+    {
+      id: 'a',
+      type: 'counted',
+      position: { x: 0, y: 0 },
+      data: { label: 'one' },
+    },
+  ];
+  const props = { ref: flow, edges: [], nodeTypes: { counted } };
+  const { rerender } = await renderX11(h(TypedFlow, { ...props, nodes: base }));
+  await act();
+  assert.ok(renders > 0, 'precondition: the body is mounted');
+  const before = renders;
+
+  let current = base;
+  for (let step = 1; step <= 5; step++) {
+    current = current.map((n) => ({ ...n, position: { x: step * 10, y: 0 } }));
+    await act(() => rerender(h(TypedFlow, { ...props, nodes: current })));
+  }
+  assert.strictEqual(renders, before, 'five moves, no render');
+
+  current = current.map((n) => ({ ...n, data: { label: 'two' } }));
+  await act(() => rerender(h(TypedFlow, { ...props, nodes: current })));
+  assert.strictEqual(renders, before + 1, 'new data, one render');
+});
