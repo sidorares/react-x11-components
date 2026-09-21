@@ -3004,9 +3004,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
         this.props.background as
           BackgroundOptions | string | boolean | undefined,
       ),
-      nodes: overlay
-        ? []
-        : order.map((entry) => this._source(entry)),
+      nodes: overlay ? [] : order.map((entry) => this._source(entry)),
       all,
       edges: overlay ? [] : this._edges,
       dashPhase: this._dashPhase,
