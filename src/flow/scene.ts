@@ -672,7 +672,24 @@ export interface FlowScene {
 
 // --- geometry -----------------------------------------------------------------
 
-/** Graph point to screen. */
+/**
+ * The viewport as the *window* sees it: the pane's own origin folded into
+ * the translation.
+ *
+ * A {@link Viewport} is the pane's — `x`/`y` place the graph relative to the
+ * pane's top-left, which is what `setViewport` and `onViewportChange` speak
+ * — while everything this module draws and everything the element hit-tests
+ * is in window pixels. Every graph-to-window conversion goes through this
+ * first. The scene extraction once skipped it, so a pane that did not sit at
+ * the window's origin drew and hit-tested shifted by its own offset — and
+ * agreed with itself while doing it, which is why only an off-origin test
+ * could see it (`test/flow.test.ts`, "off the window origin").
+ */
+export function screenViewport(v: Viewport, pane: FlowRect): Viewport {
+  return { x: pane.x + v.x, y: pane.y + v.y, zoom: v.zoom };
+}
+
+/** Graph point to window, through a {@link screenViewport}. */
 export function toScreen(v: Viewport, p: XYPosition): XYPosition {
   return { x: p.x * v.zoom + v.x, y: p.y * v.zoom + v.y };
 }
@@ -868,7 +885,8 @@ function indexOf(
 }
 
 function buildEdges(input: SceneInput, scene: FlowScene): SceneEdge[] {
-  const { viewport: v, pane, clip, palette, hover, scale } = input;
+  const { pane, clip, palette, hover, scale } = input;
+  const v = screenViewport(input.viewport, pane);
   const labels = v.zoom >= LABEL_ZOOM;
   const out: SceneEdge[] = [];
   const cache = input.cache;
@@ -1078,7 +1096,8 @@ export function endpoint(
 }
 
 function buildNodes(input: SceneInput): SceneNodeItem[] {
-  const { viewport: v, pane, clip, hover, scale } = input;
+  const { pane, clip, hover, scale } = input;
+  const v = screenViewport(input.viewport, pane);
   const out: SceneNodeItem[] = [];
   for (const source of input.nodes) {
     if (source.node.hidden) continue;
@@ -1354,8 +1373,9 @@ export function connectionPath(
 }
 
 function buildConnection(input: SceneInput): SceneConnection | null {
-  const { viewport: v, palette, connection } = input;
+  const { palette, connection } = input;
   if (!connection) return null;
+  const v = screenViewport(input.viewport, input.pane);
   const to = toScreen(v, connection.to ?? connection.pointer);
   const invalid = connection.to != null && !connection.valid;
   const color = invalid ? palette.dim : palette.accent;

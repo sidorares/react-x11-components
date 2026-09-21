@@ -84,6 +84,7 @@ import {
   endpoint,
   HANDLE_ZOOM,
   screenRect,
+  screenViewport,
 } from './scene.js';
 import type { SceneGrid, SceneInput, SceneNodeSource } from './scene.js';
 import type {
@@ -782,6 +783,12 @@ export class FlowGraphNode extends Node implements FlowInstance {
     return this._prop<Viewport>('viewport') ?? this._vp;
   }
 
+  /** The viewport with the pane's window origin folded in — what every
+   *  graph-to-window conversion shared with `./scene.ts` takes. */
+  private _screenViewport(): Viewport {
+    return screenViewport(this._viewport(), this._pane());
+  }
+
   /**
    * Device pixels per logical pixel — the display scale this pane's window
    * resolved to (react-x11's docs/scale.md): `1` on an ordinary display,
@@ -973,7 +980,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
    * agree to the pixel.
    */
   private _screenRect(entry: NodeEntry): FlowRect {
-    return screenRect(this._viewport(), this.rectOf(entry), this._scale);
+    return screenRect(this._screenViewport(), this.rectOf(entry), this._scale);
   }
 
   private _visible(): boolean {
@@ -1404,7 +1411,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
     if (!source || !target) return null;
     if (source.node.hidden || target.node.hidden) return null;
     return edgeCoarseBox(
-      this._viewport(),
+      this._screenViewport(),
       this._source(source),
       this._source(target),
       this._scale,
@@ -1455,7 +1462,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
     if (!source || !target) return null;
     if (source.node.hidden || target.node.hidden) return null;
     return edgeRoute(
-      this._viewport(),
+      this._screenViewport(),
       edge,
       this._source(source),
       this._source(target),
@@ -2133,7 +2140,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
   private _connectionPath(
     gesture: Extract<Gesture, { kind: 'connect' }>,
   ): XYPosition[] {
-    return connectionPath(this._viewport(), gesture);
+    return connectionPath(this._screenViewport(), gesture);
   }
 
   private _validConnection(connection: {

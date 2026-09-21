@@ -1831,3 +1831,83 @@ test('at a display scale of 2 the card lands on device pixels and its body on lo
     { left: 105, top: 220, width: 190, height: 95 },
   );
 });
+
+// --- off the window's origin -------------------------------------------------
+//
+// Every test above mounts the pane at the window's top-left, where "window
+// coordinates" and "pane coordinates" are the same numbers — which is how a
+// pane offset can be dropped and nothing notices. It was dropped once, by the
+// scene extraction (`src/flow/scene.ts`): the scene's `toScreen` left out the
+// pane's origin that the element's own had added, and because hit testing now
+// shares the scene's helpers, the drawing and the pointer moved together and
+// agreed with each other while both disagreeing with the window. `<Map>` fell
+// into the same hole once (maps#95). These two put the pane 60 × 40 pixels in.
+
+const OFFSET = { x: 60, y: 40 };
+
+async function mountOffset(
+  props: Partial<FlowProps> = {},
+): Promise<{ recorded: Recorded; ctx: unknown }> {
+  const recorded: Recorded = {
+    nodeChanges: [],
+    edgeChanges: [],
+    connections: [],
+  };
+  const { ctx } = await renderX11(
+    h(
+      'box',
+      {
+        style: {
+          flexGrow: 1,
+          paddingLeft: OFFSET.x,
+          paddingTop: OFFSET.y,
+        },
+      },
+      h(TypedFlow, {
+        nodes: nodes(),
+        edges: edges(),
+        onNodesChange: (c) => void recorded.nodeChanges.push(c),
+        ...props,
+      }),
+    ),
+  );
+  await act();
+  return { recorded, ctx };
+}
+
+test('off the window origin, a press lands on the node drawn under it', async () => {
+  const { recorded } = await mountOffset();
+  const { abs } = pane();
+  assert.deepStrictEqual(
+    { x: abs.x, y: abs.y },
+    OFFSET,
+    'precondition: the pane really is off the origin',
+  );
+  // node `a` is graph (100,100)–(220,140); the pane's origin moves it on the
+  // window by the offset, and a press there is a press on it
+  await userEvent.click(
+    pane() as unknown as DrawnNode,
+    at(160 + OFFSET.x, 120 + OFFSET.y),
+  );
+  assert.deepStrictEqual(
+    ofType(recorded.nodeChanges, 'select').map((c) => c.id),
+    ['a'],
+  );
+});
+
+test('off the window origin, a card is drawn where the pane puts it', async () => {
+  const { ctx } = await mountOffset({
+    nodes: nodes().map((n) =>
+      n.id === 'a'
+        ? { ...n, style: { background: '#ff0000', borderColor: '#ff0000' } }
+        : n,
+    ),
+  });
+  await expectPixel(ctx, 115 + OFFSET.x, 115 + OFFSET.y, '#ff0000', {
+    message: 'the card is drawn offset by the pane origin',
+  });
+  assert.ok(
+    !isNear(await pixelAt(ctx, 105, 105), '#ff0000'),
+    'and not at the graph numbers read as window ones',
+  );
+});
