@@ -400,6 +400,10 @@ export class FlowGraphNode extends Node implements FlowInstance {
   /** What was last handed to `onNodeBodies`, so the React half is told only
    * when something actually moved. */
   private _bodiesKey = '';
+  /** The bodies last sent, re-sent as the same array when only the origin
+   *  moved, and that origin. */
+  private _bodies: readonly NodeBodyRect[] = [];
+  private _bodiesOrigin: XYPosition = { x: 0, y: 0 };
   private _dashPhase = 0;
   private _animTimer: unknown = null;
   /** Inside `paint`, where an invalidation would only schedule a redraw of
@@ -2983,19 +2987,31 @@ export class FlowGraphNode extends Node implements FlowInstance {
   }
 
   /**
-   * Where every mounted node body belongs, relative to the pane's own
-   * top-left. Sent only when the list changed, so a repaint that moved
-   * nothing does not re-render React — but a pan does, once per frame,
-   * which is the cost `render` is documented to carry.
+   * Where every mounted node body belongs, and where the graph's origin is.
+   *
+   * The two are sent apart because they change apart. A body's rect is
+   * relative to the **graph's origin on screen** — its position times the
+   * zoom — which a pan does not move; the origin is the viewport's
+   * translation, which is all a pan moves. So a pan re-sends the *same*
+   * bodies array with a new origin, `<Flow>` moves the one box they are
+   * laid out in, and React re-renders none of them: the per-step commit of
+   * every mounted body's position is what held a pan over 48 of them to 57
+   * frames a second. A drag, a zoom, a selection or a body entering the pane
+   * sends a new array, as before.
    */
   private _emitBodies(): void {
     const notify =
-      this._prop<(bodies: readonly NodeBodyRect[], sync: boolean) => void>(
-        'onNodeBodies',
-      );
+      this._prop<
+        (
+          bodies: readonly NodeBodyRect[],
+          sync: boolean,
+          origin: XYPosition,
+        ) => void
+      >('onNodeBodies');
     if (!notify) return;
     const v = this._viewport();
     const pane = this._pane();
+    const origin = { x: Math.round(v.x), y: Math.round(v.y) };
     const bodies: NodeBodyRect[] = [];
     for (const entry of this._order) {
       if (entry.node.hidden || !this._mounted(entry)) continue;
@@ -3008,10 +3024,10 @@ export class FlowGraphNode extends Node implements FlowInstance {
       if (width <= 1 || height <= 1) continue;
       bodies.push({
         id: entry.node.id,
-        // pane-relative and logical, because that is what an absolutely
-        // positioned box beside the pane is laid out against, and in
-        x: Math.round(rect.x + inset - pane.x),
-        y: Math.round(rect.y + header - pane.y),
+        // logical, and relative to the graph's origin on screen — the
+        // box they are laid out in sits at `origin` in the pane
+        x: Math.round(rect.x + inset - pane.x) - origin.x,
+        y: Math.round(rect.y + header - pane.y) - origin.y,
         width: Math.round(width),
         height: Math.round(height),
         zoom: v.zoom,
@@ -3027,9 +3043,15 @@ export class FlowGraphNode extends Node implements FlowInstance {
           `${b.id}:${b.x},${b.y},${b.width},${b.height},${b.zoom},${b.selected}`,
       )
       .join('|');
-    if (key === this._bodiesKey) return;
-    this._bodiesKey = key;
-    notify(bodies, this._gestureSync);
+    const moved =
+      origin.x !== this._bodiesOrigin.x || origin.y !== this._bodiesOrigin.y;
+    if (key === this._bodiesKey && !moved) return;
+    if (key !== this._bodiesKey) {
+      this._bodiesKey = key;
+      this._bodies = bodies;
+    }
+    this._bodiesOrigin = origin;
+    notify(this._bodies, this._gestureSync, origin);
   }
 
   /**

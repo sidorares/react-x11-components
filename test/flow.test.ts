@@ -88,6 +88,21 @@ function pane(): RetainedNode {
   return retained(node);
 }
 
+/** The one box `<Flow>` lays mounted bodies out in, at the graph's origin
+ *  in the pane — a pan moves it and nothing inside it. */
+function bodyLayer(): RetainedNode {
+  const layer = pane().parent!.children.find((c) => c.kind === 'box');
+  assert.ok(layer, 'the bodies’ box is mounted');
+  return retained(layer);
+}
+
+/** A mounted body's own box, positioned inside {@link bodyLayer}. */
+function bodyBox(index = 0): RetainedNode {
+  const box = bodyLayer().children[index];
+  assert.ok(box, 'the overlay box is mounted');
+  return retained(box);
+}
+
 /** A window coordinate as the offset from the pane's centre that
  *  `fireEvent` wants. The pane fills the test window, and the default
  *  viewport is the identity, so window coordinates *are* graph
@@ -1069,11 +1084,7 @@ test('a zoom too small to move the box still reaches the body', async () => {
     edges: [],
     nodeTypes: { form: sizedType },
   });
-  const bodyScale = (): unknown => {
-    const overlay = pane().parent!.children.find((c) => c.kind === 'box');
-    assert.ok(overlay, 'the overlay box is mounted');
-    return retained(retained(overlay).children[0]).props.scale;
-  };
+  const bodyScale = (): unknown => retained(bodyBox().children[0]).props.scale;
   assert.strictEqual(bodyScale(), 1);
 
   // The pane snaps the box it emits to whole pixels, and this zoom is
@@ -1494,14 +1505,10 @@ test('the body commit is synchronous inside the gesture dispatch', async () => {
   // the dispatch returns: the overlay box's committed style already carries
   // the step's position when `defaultMouseDrag` comes back, with no flush,
   // no settle, no frame in between.
-  const overlay = (): { style?: { left?: number; top?: number } } => {
-    const wrapper = pane().parent!;
-    const box = wrapper.children.find((c) => c.kind === 'box');
-    assert.ok(box, 'the overlay box is mounted');
-    return retained(box).props as {
+  const overlay = (): { style?: { left?: number; top?: number } } =>
+    bodyBox().props as {
       style?: { left?: number; top?: number };
     };
-  };
   await renderX11(
     h(TypedFlow, {
       nodes: [
@@ -1813,10 +1820,7 @@ test('at a display scale of 2 the card lands on device pixels and its body on lo
   // x = 100 + inset(5), y = 200 + header(20); 200 − 2×5 wide, 120 − 20 − 5
   // tall. Doubled numbers here were the body sitting a node's width away
   // from its card.
-  const wrapper = pane().parent!;
-  const box = wrapper.children.find((c) => c.kind === 'box');
-  assert.ok(box, 'the overlay box is mounted');
-  const style = retained(box).props.style as {
+  const style = bodyBox().props.style as {
     left?: number;
     top?: number;
     width?: number;
@@ -1971,4 +1975,46 @@ test('a mounted body is not re-rendered for a move, only for what it shows', asy
   current = current.map((n) => ({ ...n, data: { label: 'two' } }));
   await act(() => rerender(h(TypedFlow, { ...props, nodes: current })));
   assert.strictEqual(renders, before + 1, 'new data, one render');
+});
+
+test('a pan moves the bodies’ one box, and re-renders no body', async () => {
+  // A pan changes the viewport's translation and nothing else, so it moves
+  // the box the bodies are laid out in — one style change — and hands every
+  // body the same props as before. Committing each body's new position on
+  // every pan step was what held a pan over 48 of them to 57 frames/s.
+  let renders = 0;
+  const counted: FlowNodeType = {
+    size: { width: 200, height: 120 },
+    headerHeight: 20,
+    render: () => {
+      renders++;
+      return h('text', null, 'body');
+    },
+  };
+  const { flow } = await mount({
+    nodes: [
+      { id: 'a', type: 'counted', position: { x: 100, y: 100 } },
+      { id: 'b', type: 'counted', position: { x: 400, y: 100 } },
+    ],
+    edges: [],
+    nodeTypes: { counted },
+  });
+  await act();
+  const before = renders;
+  const bodyLeft = bodyBox().props.style as { left: number };
+  for (let step = 1; step <= 5; step++) {
+    await act(() => flow.current!.setViewport({ x: step * 7, y: step * 3 }));
+  }
+  assert.strictEqual(renders, before, 'five pan steps, no body render');
+  const layer = bodyLayer().props.style as { left: number; top: number };
+  assert.deepStrictEqual(
+    { left: layer.left, top: layer.top },
+    { left: 35, top: 15 },
+    'the box moved by the pan',
+  );
+  assert.strictEqual(
+    (bodyBox().props.style as { left: number }).left,
+    bodyLeft.left,
+    'and the body inside it did not',
+  );
 });

@@ -10,7 +10,7 @@
 // for frames through `setGlRequest`, so every change the 2D renderer would
 // have repainted becomes one GL frame.
 import React, { useEffect, useMemo } from 'react';
-import type { ReactElement } from 'react';
+import type { ReactElement, ReactNode } from 'react';
 
 import type { FlowFrameStats } from '../types.js';
 import { FlowGlRenderer, now } from './renderer.js';
@@ -33,6 +33,8 @@ export interface FlowGlSurfaceProps {
   onFrame?: (stats: FlowFrameStats) => void;
   /** The surface could not draw; `<Flow>` goes back to the 2D renderer. */
   onError: (error: Error) => void;
+  /** Drawn over the surface: the mounted node bodies. */
+  children?: ReactNode;
 }
 
 interface AreaNode {
@@ -237,10 +239,11 @@ class Driver {
  * to say a node is for looking at, and it lets the pointer through to the
  * pane as it would through any node.
  *
- * It holds while the surface has no children. Node bodies belong inside it
- * as overlay children (`docs/prd-flow-gl.md`), and those do want the
- * pointer — so the day they move in, the surface becomes the pane's child
- * instead, as `<Map>`'s is, and events bubble to the pane from there.
+ * With node bodies over it the surface is `'box-none'` instead (below): the
+ * bodies take the pointer, and the surface between them still passes it on
+ * to the pane. Making the surface the pane's child, as `<Map>`'s is, would
+ * not have done: the pane's gestures are default actions, and core runs a
+ * default action on the event's target alone, never an ancestor.
  */
 /** Timers, through `globalThis`: `src/` compiles with `types: []`. */
 const timers = globalThis as {
@@ -257,6 +260,11 @@ const FILL = {
   pointerEvents: 'none',
 } as const;
 
+/** The same, where the surface holds node bodies: they are its children,
+ *  drawn over it, and take the pointer; the surface between them still does
+ *  not. React Native's `'box-none'`, which react-x11 has from #637 on. */
+const FILL_WITH_BODIES = { ...FILL, pointerEvents: 'box-none' } as const;
+
 /**
  * The surface. Mounted by `<Flow>` as the pane's sibling, after it, filling
  * the same box: a `<glarea>` is stacked over everything 2D in its window, so
@@ -271,10 +279,14 @@ export function FlowGlSurface(props: FlowGlSurfaceProps): ReactElement {
   }, [driver]);
   return React.createElement('glarea', {
     ref: driver.areaRef,
-    style: FILL,
+    // With bodies over it, the surface must pass the pointer through between
+    // them and still let them take it — `'box-none'`, react-x11#637. With
+    // none, `'none'` does the same and needs nothing new of core.
+    style: props.children ? FILL_WITH_BODIES : FILL,
     clearColor: props.clearColor,
     frameLoop: 'demand',
     onDraw: driver.draw,
     onError: driver.surfaceError,
+    children: props.children,
   });
 }

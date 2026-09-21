@@ -43,6 +43,7 @@ import type {
   FlowProps,
   NodeBodyRect,
   NodeChange,
+  XYPosition,
 } from './types.js';
 
 if (!registeredElements().includes(ELEMENT)) {
@@ -339,11 +340,24 @@ export function Flow<N = FlowNodeData, E = unknown>(
     [nodeTypes],
   );
   const [bodies, setBodies] = useState<readonly NodeBodyRect[]>([]);
+  // Where the graph's origin sits in the pane. The bodies are laid out in
+  // one box placed here, so a pan — which moves this and nothing else — is
+  // one style change rather than a render of every body.
+  const [origin, setOrigin] = useState<XYPosition>({ x: 0, y: 0 });
   // Gesture-time emissions commit inline (see `flushSync` above); the rest —
   // a programmatic `fitView`, the first paint — take the ordinary path.
-  const handleBodies = (next: readonly NodeBodyRect[], sync: boolean): void => {
-    if (sync) flushSync(() => setBodies(next));
-    else setBodies(next);
+  const handleBodies = (
+    next: readonly NodeBodyRect[],
+    sync: boolean,
+    at: XYPosition,
+  ): void => {
+    const apply = (): void => {
+      // the same array on a pan: React bails out of this update
+      setBodies(next);
+      setOrigin((was) => (was.x === at.x && was.y === at.y ? was : at));
+    };
+    if (sync) flushSync(apply);
+    else apply();
   };
   const byId = useMemo(() => {
     const map = new Map<string, FlowNode<N>>();
@@ -351,60 +365,83 @@ export function Flow<N = FlowNodeData, E = unknown>(
     return map;
   }, [mounts, currentNodes]);
 
-  const overlays = mounts
-    ? bodies.map((body) => {
-        const node = byId.get(body.id);
-        const type = node && nodeTypes?.[node.type ?? 'default'];
-        if (!node || !type?.render) return null;
-        // The two boxes are two units. The outer one is the pane's: it is
-        // positioned and clipped in the same logical window pixels the pane
-        // painted the card in, so the body lands on the card exactly. The
-        // inner one is the body's, and `scale` is what makes the difference
-        // between them the zoom (react-x11#449, core 2.6): every length
-        // under it is multiplied by that factor, so a body sized in graph
-        // units comes out at the size the card is drawn at, with its text
-        // shaped at that size rather than stretched.
-        const width = body.width / body.zoom;
-        const height = body.height / body.zoom;
-        return React.createElement(
+  // Memoized on the bodies array, which a pan does not replace: the box they
+  // sit in moves, and React reconciles none of them.
+  const overlays = useMemo(
+    () =>
+      mounts
+        ? bodies.map((body) => {
+            const node = byId.get(body.id);
+            const type = node && nodeTypes?.[node.type ?? 'default'];
+            if (!node || !type?.render) return null;
+            // The two boxes are two units. The outer one is the pane's: it is
+            // positioned and clipped in the same logical window pixels the pane
+            // painted the card in, so the body lands on the card exactly. The
+            // inner one is the body's, and `scale` is what makes the difference
+            // between them the zoom (react-x11#449, core 2.6): every length
+            // under it is multiplied by that factor, so a body sized in graph
+            // units comes out at the size the card is drawn at, with its text
+            // shaped at that size rather than stretched.
+            const width = body.width / body.zoom;
+            const height = body.height / body.zoom;
+            return React.createElement(
+              'box',
+              {
+                key: body.id,
+                style: {
+                  position: 'absolute',
+                  left: body.x,
+                  top: body.y,
+                  width: body.width,
+                  height: body.height,
+                  // A body is free to overflow what it was given — a popup's
+                  // fallback, a long line — and this is what stops it spilling
+                  // over the graph.
+                  overflow: 'hidden',
+                },
+              },
+              React.createElement(
+                'box',
+                {
+                  scale: body.zoom,
+                  // Sized in the unit it establishes, which is what makes it
+                  // fill the outer box at every zoom.
+                  style: { width, height },
+                },
+                React.createElement(FlowNodeBody, {
+                  type: type as FlowNodeType<unknown>,
+                  node: node as FlowNode<unknown>,
+                  selected: body.selected,
+                  zoom: body.zoom,
+                  // Graph units, like everything else the body sees.
+                  x: body.x / body.zoom,
+                  y: body.y / body.zoom,
+                  width,
+                  height,
+                }),
+              ),
+            );
+          })
+        : null,
+    [mounts, bodies, byId, nodeTypes],
+  );
+  const layer =
+    overlays && overlays.length > 0
+      ? React.createElement(
           'box',
           {
-            key: body.id,
+            key: 'bodies',
             style: {
               position: 'absolute',
-              left: body.x,
-              top: body.y,
-              width: body.width,
-              height: body.height,
-              // A body is free to overflow what it was given — a popup's
-              // fallback, a long line — and this is what stops it spilling
-              // over the graph.
-              overflow: 'hidden',
+              left: origin.x,
+              top: origin.y,
+              width: 0,
+              height: 0,
             },
           },
-          React.createElement(
-            'box',
-            {
-              scale: body.zoom,
-              // Sized in the unit it establishes, which is what makes it
-              // fill the outer box at every zoom.
-              style: { width, height },
-            },
-            React.createElement(FlowNodeBody, {
-              type: type as FlowNodeType<unknown>,
-              node: node as FlowNode<unknown>,
-              selected: body.selected,
-              zoom: body.zoom,
-              // Graph units, like everything else the body sees.
-              x: body.x / body.zoom,
-              y: body.y / body.zoom,
-              width,
-              height,
-            }),
-          ),
-        );
-      })
-    : null;
+          overlays,
+        )
+      : null;
 
   // --- the GL surface -----------------------------------------------------
   //
@@ -453,6 +490,10 @@ export function Flow<N = FlowNodeData, E = unknown>(
         ).background,
         onFrame: onFrame,
         onError: failGl,
+        // A `<glarea>`'s children are drawn over its surface, so that is
+        // where the bodies go under GL — beside the pane, they would be
+        // under it.
+        children: layer,
       })
     : null;
 
@@ -485,12 +526,10 @@ export function Flow<N = FlowNodeData, E = unknown>(
       role: 'group',
       'aria-label': rest['aria-label'] ?? 'Flow graph',
     }),
-    // After the pane, so the surface covers exactly its box. The bodies come
-    // after that in the tree and still land under the surface — a
-    // `<glarea>` is over everything 2D in its window — which is the next
-    // piece of work: they belong inside it, as its overlay children.
+    // After the pane, so the surface covers exactly its box — and with the
+    // bodies inside it under GL, or beside the pane without.
     surface,
-    overlays,
+    drawsGl ? null : layer,
   );
 }
 

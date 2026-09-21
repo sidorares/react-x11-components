@@ -274,7 +274,7 @@ export interface WidgetData {
 
 /** How a body changes its own node: the example's setter, through context,
  *  so the node type can stay one stable object. */
-const PatchWidget = createContext<
+export const PatchWidget = createContext<
   (id: string, patch: Partial<WidgetData>) => void
 >(() => {});
 

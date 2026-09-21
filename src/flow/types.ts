@@ -649,13 +649,23 @@ export interface FlowProps<N = FlowNodeData, E = unknown> {
    * between the drawn half and the mounted one, and the raw `<flowgraph>`
    * element is the only reason it is a prop rather than a private method.
    *
+   * Each rect is relative to `origin`: where the graph's own origin sits in
+   * the pane, which is the viewport's translation. A pan moves the origin
+   * and nothing else, and re-sends the same `bodies` array — so the bodies
+   * can be laid out in one box at `origin` that a pan moves, rather than
+   * each moved by a render of its own.
+   *
    * `sync` is true when the change came out of a live gesture — a drag
    * step, a wheel tick, an arrow key. Motion dispatches at continuous
    * priority, which React may hold across several frames while the pane
    * paints each step immediately; a gesture-time receiver must commit
    * synchronously or the mounted bodies visibly trail the drawn cards.
    */
-  onNodeBodies?: (bodies: readonly NodeBodyRect[], sync: boolean) => void;
+  onNodeBodies?: (
+    bodies: readonly NodeBodyRect[],
+    sync: boolean,
+    origin: XYPosition,
+  ) => void;
   /**
    * Which renderer draws the graph. `'retained'` (the default) draws through
    * the 2D context, everywhere a window can. `'gl'` draws through a
