@@ -23,7 +23,6 @@ import * as ntk from 'react-x11/ntk';
 import { Node } from 'react-x11/node';
 import type { A11ySceneAction, A11ySceneItem } from 'react-x11/node';
 import type { Context2D } from 'react-x11/node';
-import { tint } from 'react-x11/style';
 import type { KeyboardEvent, MouseEvent, WheelEvent } from 'react-x11';
 import {
   ctrlChordLetter,
@@ -44,29 +43,20 @@ import {
   boundsOf,
   canConnect,
   clamp,
-  DEFAULT_MARKER_SIZE,
   DEFAULT_MAX_ZOOM,
   DEFAULT_MIN_ZOOM,
   EDGE_SLOP,
-  EDGE_STEP_OFFSET,
   fitViewport,
-  handleAnchor,
   HANDLE_RADIUS,
   HANDLE_SLOP,
   gripPoint,
   inflateRect,
-  intersectRects,
   measureNode,
   MIN_NODE_HEIGHT,
   MIN_NODE_WIDTH,
   NODE_BODY_INSET,
-  NODE_DESC_SIZE,
   NODE_HEADER,
-  NODE_LABEL_SIZE,
-  NODE_PAD_X,
-  NODE_PAD_Y,
   normalizeBackground,
-  normalizeMarker,
   orientConnection,
   rectContains,
   rectsOverlap,
@@ -81,15 +71,20 @@ import {
   unionRects,
   ZOOM_STEP,
 } from './model.js';
+import { distanceToPath, pathBounds } from './paths.js';
+import { paintScene } from './paint.js';
 import {
-  distanceToPath,
-  edgePath,
-  endAngle,
-  pathBounds,
-  pointAtFraction,
-  startAngle,
-  trimEnd,
-} from './paths.js';
+  anchorsOf,
+  buildScene,
+  connectionPath,
+  CULL_MARGIN,
+  edgeCoarseBox,
+  edgeRoute,
+  endpoint,
+  HANDLE_ZOOM,
+  screenRect,
+} from './scene.js';
+import type { SceneGrid, SceneInput, SceneNodeSource } from './scene.js';
 import type {
   BackgroundOptions,
   BackgroundVariant,
@@ -109,8 +104,6 @@ import type {
   MiniMapOptions,
   NodeBodyRect,
   NodeChange,
-  ShapeOptions,
-  StrokeOptions,
   TextOptions,
   Viewport,
   XYPosition,
@@ -153,32 +146,9 @@ const timers = globalThis as {
  * full of them is not a repaint storm, fast enough to read as motion. */
 const ANIMATION_MS = 60;
 const ANIMATION_SPEED = 1.4; // px of dash travel per tick, at zoom 1
-const DEFAULT_DASH = [7, 5];
-
-/** Below these zooms the pane stops drawing detail nobody could read — the
- * cheapest optimisation there is, and the one that keeps a zoomed-out
- * overview interactive. */
-const LABEL_ZOOM = 0.45;
-const HANDLE_ZOOM = 0.5;
-const DESC_ZOOM = 0.6;
 
 /** Screen pixels the pointer may travel before a press becomes a drag. */
 const DRAG_THRESHOLD = 3;
-/** The grid never draws denser than this on screen, whatever the zoom. */
-const MIN_GRID_PX = 16;
-
-/** See `StrokeBuckets.BATCH_MIN`. */
-const MARKER_BATCH_MIN = 24;
-
-/**
- * How far outside its own box a node's ink can land: handles (capped at
- * 6 × 1.4 plus their outline), resize grips, the selection border, a pixel
- * of antialiasing. Damage rects grow by this before they are invalidated,
- * and cull tests grow their target by the same amount — the two must agree,
- * or a moved node leaves crumbs of its old handles behind.
- */
-const CULL_MARGIN = 16;
-
 /**
  * The props whose change means different pixels. `applyProps` repaints when
  * one of these moves and stays quiet otherwise — the event handlers are
@@ -383,98 +353,6 @@ function unionMaybe(a: FlowRect | null, b: FlowRect | null): FlowRect | null {
   return unionRects(a, b);
 }
 
-/** An arrowhead pile: the filled heads and the open ones share a colour, so
- * they share a bucket and differ only in which list they land in. */
-interface MarkerBucket {
-  color: string;
-  lineWidth: number;
-  filled: XYPosition[][];
-  open: XYPosition[][];
-}
-
-/**
- * Edge strokes, grouped by the pen that will draw them.
- *
- * Everything a graph strokes is the same two or three pens — the default
- * edge, the selected one, the animated dash — so grouping collapses a
- * per-edge request into a per-pen one. The key has to carry the dash *and*
- * its offset: two edges marching out of phase cannot share a path, because
- * the offset is set on the context, not on the subpath.
- */
-class StrokeBuckets {
-  private readonly byPen = new Map<
-    string,
-    { options: StrokeOptions; runs: XYPosition[][] }
-  >();
-
-  bucket(
-    stroke: string,
-    lineWidth: number,
-    dash: readonly number[] | undefined,
-    phase: number,
-    zoom: number,
-  ): XYPosition[][] {
-    const scaled = dash?.map((d) => d * zoom);
-    const key = `${stroke}|${lineWidth}|${scaled?.join(',') ?? ''}|${phase}`;
-    let entry = this.byPen.get(key);
-    if (!entry) {
-      entry = {
-        options: {
-          stroke,
-          lineWidth,
-          dash: scaled,
-          dashOffset: phase ? -phase * zoom : 0,
-        },
-        runs: [],
-      };
-      this.byPen.set(key, entry);
-    }
-    return entry.runs;
-  }
-
-  /**
-   * Below this many edges in one pen, they are stroked one at a time.
-   *
-   * A path's mask is its bounding box, so batching scattered geometry trades
-   * many small masks for one the size of the pane — about three quarters of
-   * a megabyte at a normal window size. That is a large win at seven hundred
-   * edges (measured: 3.9 MB a frame down to 1.3) and a loss at twenty, where
-   * the individual masks never add up to a paneful. The threshold is where
-   * they start to.
-   */
-  private static readonly BATCH_MIN = 24;
-
-  paint(painter: FlowPainter): void {
-    for (const { options, runs } of this.byPen.values()) {
-      if (runs.length >= StrokeBuckets.BATCH_MIN) {
-        painter.strokeRuns(runs, options);
-      } else {
-        for (const run of runs) painter.polyline(run, options);
-      }
-    }
-  }
-}
-
-/**
- * Are these the same handle? Anchors are rebuilt from the node on every read
- * — a drag moves them between commits — so identity says nothing, and the
- * `id` alone says too little: the node every graph starts with has *two*
- * handles with no id at all. Node, id, type and side together are what
- * distinguish them.
- */
-function sameHandle(
-  a: HandleAnchor | null | undefined,
-  b: HandleAnchor,
-): boolean {
-  return (
-    a != null &&
-    a.nodeId === b.nodeId &&
-    (a.id ?? null) === (b.id ?? null) &&
-    a.type === b.type &&
-    a.position === b.position
-  );
-}
-
 export class FlowGraphNode extends Node implements FlowInstance {
   // --- viewport, owned here unless the `viewport` prop takes it over ------
   private _vp: Viewport = { x: 0, y: 0, zoom: 1 };
@@ -615,6 +493,15 @@ export class FlowGraphNode extends Node implements FlowInstance {
 
   private _measure = (text: string, options?: TextOptions): number =>
     measureText(this._textOptions(), text, options).width;
+
+  /** The same shaping, both dimensions: what a scene's label chips are
+   *  sized from. `_measure` answers a width because `measureNode` only ever
+   *  wanted one. */
+  private _measureBox = (
+    text: string,
+    options?: TextOptions,
+  ): { width: number; height: number } =>
+    measureText(this._textOptions(), text, options);
 
   private _palette(): FlowPalette {
     return resolvePalette(
@@ -1027,9 +914,44 @@ export class FlowGraphNode extends Node implements FlowInstance {
     });
   }
 
+  /**
+   * One entry as `./scene.ts` takes it: the live gesture state resolved
+   * away, so everything past this point is pure. A drag's position and a
+   * resize's box are already in `rect`, and `grips` is already filtered by
+   * whatever the handles took.
+   *
+   * Built per call rather than cached: `rectOf` is what keeps a drag in step
+   * with the commit that has not landed yet, and a cache here is a cache of
+   * last frame's positions.
+   */
+  /** Whether a React body is mounted over this node — which is what makes
+   * its card draw a title bar rather than a centred label, and what
+   * `_emitBodies` reports a box for. */
+  private _mounted(entry: NodeEntry): boolean {
+    return entry.type?.render != null && this._viewport().zoom >= RENDER_ZOOM;
+  }
+
+  private _source(entry: NodeEntry): SceneNodeSource {
+    return {
+      node: entry.node,
+      rect: this.rectOf(entry),
+      specs: entry.specs,
+      type: entry.type,
+      header: this._headerHeight(entry),
+      mounted: this._mounted(entry),
+      connectable: this._connectable(entry),
+      grips: this._grips(entry),
+    };
+  }
+
+  /** Not through `_source`: a source carries its grips, and `_grips` asks
+   *  where the handles are — the pair would recur. */
   private _handlesOf(entry: NodeEntry): HandleAnchor[] {
-    const rect = this.rectOf(entry);
-    return entry.specs.map((spec) => handleAnchor(entry.node.id, rect, spec));
+    return anchorsOf({
+      node: entry.node,
+      rect: this.rectOf(entry),
+      specs: entry.specs,
+    });
   }
 
   /**
@@ -1048,21 +970,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
    * agree to the pixel.
    */
   private _screenRect(entry: NodeEntry): FlowRect {
-    const v = this._viewport();
-    const rect = this.rectOf(entry);
-    const p = this._toScreen(rect);
-    const s = this._scale;
-    const grid = (value: number): number => Math.round(value * s) / s;
-    const x = grid(p.x);
-    const y = grid(p.y);
-    return {
-      x,
-      y,
-      // rounded as edges rather than as a size, so two nodes that share a
-      // column still share it after rounding
-      width: grid(p.x + rect.width * v.zoom) - x,
-      height: grid(p.y + rect.height * v.zoom) - y,
-    };
+    return screenRect(this._viewport(), this.rectOf(entry), this._scale);
   }
 
   private _visible(): boolean {
@@ -1492,33 +1400,17 @@ export class FlowGraphNode extends Node implements FlowInstance {
     const target = this._byId.get(edge.target);
     if (!source || !target) return null;
     if (source.node.hidden || target.node.hidden) return null;
-    const zoom = this._viewport().zoom;
-    const a = this._screenRect(source);
-    const b = this._screenRect(target);
-    const span = Math.hypot(
-      a.x + a.width / 2 - (b.x + b.width / 2),
-      a.y + a.height / 2 - (b.y + b.height / 2),
+    return edgeCoarseBox(
+      this._viewport(),
+      this._source(source),
+      this._source(target),
+      this._scale,
     );
-    const slack =
-      Math.max(5, EDGE_SLOP * zoom) +
-      Math.max(EDGE_STEP_OFFSET * 3 * zoom, 8 * Math.sqrt(zoom * span));
-    const x = Math.min(a.x, b.x) - slack;
-    const y = Math.min(a.y, b.y) - slack;
-    return {
-      x,
-      y,
-      width: Math.max(a.x + a.width, b.x + b.width) + slack - x,
-      height: Math.max(a.y + a.height, b.y + b.height) + slack - y,
-    };
   }
 
   /** The drawn handle, in screen pixels. Capped as well as floored: a dot
    * that scaled all the way up would be a saucer at 2.5×, and the thing it
    * marks — a point on the border — does not get bigger. */
-  private _handleRadius(): number {
-    return clamp(HANDLE_RADIUS * this._viewport().zoom, 2.5, 6);
-  }
-
   private _connectable(entry: NodeEntry): boolean {
     return (
       (entry.node.connectable ?? this._bool('nodesConnectable', true)) !== false
@@ -1541,25 +1433,12 @@ export class FlowGraphNode extends Node implements FlowInstance {
     type: 'source' | 'target',
     towards: XYPosition | null,
   ): HandleAnchor | null {
-    const anchors = this._handlesOf(entry);
-    if (handleId != null) {
-      const named = anchors.find((a) => a.id === handleId);
-      if (named) return named;
-    }
-    const typed = anchors.filter((a) => a.type === type);
-    const candidates = typed.length > 0 ? typed : anchors;
-    if (candidates.length === 0) return null;
-    if (candidates.length === 1 || !towards) return candidates[0];
-    let best = candidates[0];
-    let bestDistance = Infinity;
-    for (const anchor of candidates) {
-      const d = Math.hypot(anchor.x - towards.x, anchor.y - towards.y);
-      if (d < bestDistance) {
-        bestDistance = d;
-        best = anchor;
-      }
-    }
-    return best;
+    return endpoint(
+      { node: entry.node, rect: this.rectOf(entry), specs: entry.specs },
+      handleId,
+      type,
+      towards,
+    );
   }
 
   /** An edge's polyline, in **screen** pixels, plus the two ends it joins.
@@ -1568,46 +1447,16 @@ export class FlowGraphNode extends Node implements FlowInstance {
   private _edgeGeometry(
     edge: AnyEdge,
   ): { points: XYPosition[]; from: HandleAnchor; to: HandleAnchor } | null {
-    const sourceEntry = this._byId.get(edge.source);
-    const targetEntry = this._byId.get(edge.target);
-    if (!sourceEntry || !targetEntry) return null;
-    if (sourceEntry.node.hidden || targetEntry.node.hidden) return null;
-    const sourceCentre = this._centre(sourceEntry);
-    const targetCentre = this._centre(targetEntry);
-    const from = this._endpoint(
-      sourceEntry,
-      edge.sourceHandle,
-      'source',
-      targetCentre,
+    const source = this._byId.get(edge.source);
+    const target = this._byId.get(edge.target);
+    if (!source || !target) return null;
+    if (source.node.hidden || target.node.hidden) return null;
+    return edgeRoute(
+      this._viewport(),
+      edge,
+      this._source(source),
+      this._source(target),
     );
-    const to = this._endpoint(
-      targetEntry,
-      edge.targetHandle,
-      'target',
-      sourceCentre,
-    );
-    if (!from || !to) return null;
-
-    const zoom = this._viewport().zoom;
-    const s = this._toScreen(from);
-    const t = this._toScreen(to);
-    const points = edgePath(
-      edge.type,
-      { x: s.x, y: s.y, position: from.position },
-      { x: t.x, y: t.y, position: to.position },
-      {
-        stepOffset: EDGE_STEP_OFFSET * zoom,
-        radius: 8 * zoom,
-        scale: zoom,
-        loop: edge.source === edge.target,
-      },
-    );
-    return { points, from, to };
-  }
-
-  private _centre(entry: NodeEntry): XYPosition {
-    const r = this.rectOf(entry);
-    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
   }
 
   // --- pane furniture geometry --------------------------------------------
@@ -1734,20 +1583,6 @@ export class FlowGraphNode extends Node implements FlowInstance {
     return {
       x: (x - ox) / map.scale + map.bounds.x,
       y: (y - oy) / map.scale + map.bounds.y,
-    };
-  }
-
-  private _miniToScreen(
-    map: { panel: FlowRect; bounds: FlowRect; scale: number },
-    p: XYPosition,
-  ): XYPosition {
-    const ox =
-      map.panel.x + (map.panel.width - map.bounds.width * map.scale) / 2;
-    const oy =
-      map.panel.y + (map.panel.height - map.bounds.height * map.scale) / 2;
-    return {
-      x: ox + (p.x - map.bounds.x) * map.scale,
-      y: oy + (p.y - map.bounds.y) * map.scale,
     };
   }
 
@@ -2295,29 +2130,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
   private _connectionPath(
     gesture: Extract<Gesture, { kind: 'connect' }>,
   ): XYPosition[] {
-    const v = this._viewport();
-    const from = this._toScreen(gesture.from);
-    const target = gesture.to ?? gesture.pointer;
-    const to = this._toScreen(target);
-    const toPosition =
-      gesture.to?.position ??
-      (gesture.from.position === 'left'
-        ? 'right'
-        : gesture.from.position === 'right'
-          ? 'left'
-          : gesture.from.position === 'top'
-            ? 'bottom'
-            : 'top');
-    return edgePath(
-      'bezier',
-      { x: from.x, y: from.y, position: gesture.from.position },
-      { x: to.x, y: to.y, position: toPosition },
-      {
-        stepOffset: EDGE_STEP_OFFSET * v.zoom,
-        radius: 8 * v.zoom,
-        scale: v.zoom,
-      },
-    );
+    return connectionPath(this._viewport(), gesture);
   }
 
   private _validConnection(connection: {
@@ -2808,34 +2621,19 @@ export class FlowGraphNode extends Node implements FlowInstance {
           ),
         ));
     painter.clipRect(x, y, width, height, nearCorner ? radius : 0);
-    // The fill and the grid draw only the region this pass repaints — on a
-    // full pass that is the pane, and on a drag it is the sliver that moved.
-    const region = this._frameClip
-      ? intersectRects({ x, y, width, height }, this._frameClip)
-      : { x, y, width, height };
-    if (region) {
-      // The style's own colour if it set one — `super.paint` already filled
-      // it, and repeating it costs one rectangle and keeps the two agreeing.
-      painter.rect(region.x, region.y, region.width, region.height, 0, {
-        fill:
-          (this.style.backgroundColor as string | undefined) ??
-          palette.background,
-      });
-      this._paintGrid(painter, palette, region);
-    }
-
-    const animated = this._paintEdges(painter, palette);
-    this._paintNodes(painter, palette);
-    this._paintConnection(painter, palette);
-    this._paintSelectionBox(painter, palette);
-    this._paintMiniMap(painter, palette);
-    this._paintControls(painter, palette);
+    const scene = buildScene(this._sceneInput(palette));
+    paintScene(painter, scene, this._grid);
+    // The box the dash ticks invalidate comes off the *drawn* geometry; a
+    // pass that culled every animated edge keeps the one before it, because
+    // the endpoints did not move, or that move's own damage would have
+    // redrawn them here.
+    if (scene.animBox) this._animBox = scene.animBox;
     painter.restore();
     this._painting = false;
     this._frameClip = null;
 
     // The timer exists only while something on screen needs it.
-    if (animated) this._startAnimation();
+    if (scene.animated) this._startAnimation();
     else this._stopAnimation();
 
     if (!this._sceneAnnounced) {
@@ -2849,6 +2647,79 @@ export class FlowGraphNode extends Node implements FlowInstance {
     // to put the node bodies it mounts, and it is answered from the geometry
     // this frame just used — the same numbers, never a second derivation.
     this._emitBodies();
+  }
+
+  /**
+   * Everything `buildScene` reads, gathered from the element once.
+   *
+   * The two node lists differ on purpose: `nodes` is the paint order with a
+   * dragged node lifted to the top, and `all` is every node, because the
+   * minimap summarises the graph rather than the pass.
+   */
+  /** Whether this pass's damage reaches the minimap's corner at all —
+   *  answered from the panel's box alone, without resolving the map. */
+  private _miniMapReached(): boolean {
+    const options = this._miniMapOptions();
+    if (!options) return false;
+    const clip = this._frameClip;
+    if (!clip) return true;
+    return rectsOverlap(
+      this._corner(
+        options.position,
+        options.width ?? MINIMAP_W,
+        options.height ?? MINIMAP_H,
+        'bottom-right',
+      ),
+      clip,
+    );
+  }
+
+  private _sceneInput(palette: FlowPalette): SceneInput {
+    const dragging = this._dragTo;
+    const order: NodeEntry[] = [];
+    const deferred: NodeEntry[] = [];
+    for (const entry of this._order) {
+      // a dragged node comes to the top
+      if (dragging?.has(entry.node.id)) deferred.push(entry);
+      else order.push(entry);
+    }
+    const gesture = this._gesture;
+    // The panel cull comes before `_miniMap()`, which walks every node to
+    // find the graph's bounds — during a drag that walk per pass would cost
+    // more than the panel it skips. The dot for a mid-drag node goes stale
+    // until the release repaints in full; that is the trade, and it is
+    // deliberate.
+    const map = this._miniMapReached() ? this._miniMap() : null;
+    return {
+      viewport: this._viewport(),
+      pane: this._pane(),
+      clip: this._frameClip,
+      palette,
+      paneBackground: this.style.backgroundColor as string | undefined,
+      background: normalizeBackground(
+        this.props.background as
+          BackgroundOptions | string | boolean | undefined,
+      ),
+      nodes: [...order, ...deferred].map((entry) => this._source(entry)),
+      all: this._entries.map((entry) => this._source(entry)),
+      edges: this._edges,
+      dashPhase: this._dashPhase,
+      hover: this._hover,
+      connection: gesture?.kind === 'connect' ? gesture : null,
+      selection: gesture?.kind === 'select' ? selectBoxRect(gesture) : null,
+      miniMap: map
+        ? {
+            panel: map.panel,
+            bounds: map.bounds,
+            scale: map.scale,
+            nodeColor: map.options.nodeColor,
+            maskColor: map.options.maskColor,
+          }
+        : null,
+      controls: this._controlButtons(),
+      scale: this._scale,
+      measure: this._measureBox,
+    };
   }
 
   /**
@@ -2901,111 +2772,36 @@ export class FlowGraphNode extends Node implements FlowInstance {
     notify(bodies, this._gestureSync);
   }
 
-  /** The grid, drawn only inside `region` — the pass's damage on a partial
-   * repaint, the pane on a full one. Alignment stays anchored to the
-   * viewport origin, so the region never changes where a dot falls. */
-  private _paintGrid(
-    painter: FlowPainter,
-    palette: FlowPalette,
-    region: FlowRect,
-  ): void {
-    const options = normalizeBackground(
-      this.props.background as BackgroundOptions | string | boolean | undefined,
-    );
-    if (options.variant === 'none') return;
-    const v = this._viewport();
-    let step = options.gap * v.zoom;
-    if (!(step > 0)) return;
-    // Doubling rather than clamping keeps the grid *aligned* to the graph
-    // while zooming out: every visible line is still a real one.
-    while (step < MIN_GRID_PX) step *= 2;
-    const color = options.color ?? palette.grid;
-    const pane = this._pane();
-    const { x, y, width, height } = region;
-    const originX = pane.x + v.x;
-    const originY = pane.y + v.y;
-    if (this._paintGridPattern(painter, options, step, color, region)) return;
-    const firstX = originX + Math.ceil((x - originX) / step) * step;
-    const firstY = originY + Math.ceil((y - originY) / step) * step;
-
-    if (options.variant === 'lines') {
-      const runs: XYPosition[][] = [];
-      for (let gx = firstX; gx <= x + width; gx += step) {
-        runs.push([
-          { x: gx, y },
-          { x: gx, y: y + height },
-        ]);
-      }
-      for (let gy = firstY; gy <= y + height; gy += step) {
-        runs.push([
-          { x, y: gy },
-          { x: x + width, y: gy },
-        ]);
-      }
-      painter.strokeRuns(runs, { stroke: color, lineWidth: 1 });
-      return;
-    }
-
-    if (options.variant === 'cross') {
-      const arm = Math.max(2, options.size * 3 * v.zoom);
-      const runs: XYPosition[][] = [];
-      for (let gx = firstX; gx <= x + width; gx += step) {
-        for (let gy = firstY; gy <= y + height; gy += step) {
-          runs.push([
-            { x: gx - arm, y: gy },
-            { x: gx + arm, y: gy },
-          ]);
-          runs.push([
-            { x: gx, y: gy - arm },
-            { x: gx, y: gy + arm },
-          ]);
-        }
-      }
-      painter.strokeRuns(runs, { stroke: color, lineWidth: 1 });
-      return;
-    }
-
-    const centres: XYPosition[] = [];
-    for (let gx = firstX; gx <= x + width; gx += step) {
-      for (let gy = firstY; gy <= y + height; gy += step) {
-        centres.push({ x: gx, y: gy });
-      }
-    }
-    painter.dots(
-      centres,
-      Math.max(1, Math.round(options.size * 2 * v.zoom)),
-      color,
-    );
-  }
-
   /**
    * The grid as one repeating fill (ntk#263): a step-sized tile drawn once,
    * a `createPattern('repeat')` over it, and one composite for the whole
-   * region — where the runs path pays a region-sized coverage mask.
+   * region — where the runs path in `./paint.ts` pays a region-sized
+   * coverage mask.
    *
-   * Two decisions with reasons:
+   * Handed to `paintScene` as its grid painter, and answering **false** when
+   * it does not apply, so the universal path takes over. Two decisions with
+   * reasons:
    *
    * - **Integral device steps only.** The tile is a pixmap, so its size is
-   *   whole pixels; at a fractional step the pattern would drift against
-   *   the graph's own coordinates — against `snapToGrid`, against node
-   *   positions — by a fraction per tile, and a grid that slides under the
-   *   content it grids is worse than a slower exact one.
+   *   whole pixels; at a fractional step the pattern would drift against the
+   *   graph's own coordinates — against `snapToGrid`, against node positions
+   *   — by a fraction per tile, and a grid that slides under the content it
+   *   grids is worse than a slower exact one.
    * - **The phase lives in the tile, not in a picture transform.** An
    *   untransformed repeat is anchored to the window origin, so the grid's
    *   alignment is baked in by drawing the mark at `origin mod tile` — and
    *   re-baking when the origin moves. A `setTransform` translate says the
    *   same thing in one request, but a *transformed* repeat forfeits the
-   *   server's untransformed fast path — on the in-process test server
-   *   that was ~180 ms a frame of per-pixel arithmetic, and re-rendering a
-   *   24px tile is a handful of requests on any server.
+   *   server's untransformed fast path — on the in-process test server that
+   *   was ~180 ms a frame of per-pixel arithmetic, and re-rendering a 24px
+   *   tile is a handful of requests on any server.
+   *
+   * An arrow property rather than a method: it is passed as a value, and a
+   * method would arrive with no `this`.
    */
-  private _paintGridPattern(
-    painter: FlowPainter,
-    options: { variant: BackgroundVariant; size: number },
-    step: number,
-    color: string,
-    region: FlowRect,
-  ): boolean {
+  private _grid = (painter: FlowPainter, grid: SceneGrid): boolean => {
+    const options = { variant: grid.variant, size: grid.size };
+    const { step, color, region } = grid;
     // The tile is a pixmap on the panel's grid, so the pitch has to be a
     // whole number of *device* pixels, and the phase is where the viewport
     // origin lands on that grid.
@@ -3050,7 +2846,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
     const fill = this._device(region);
     raw.fillRect?.(fill.x, fill.y, fill.width, fill.height);
     return true;
-  }
+  };
 
   private _makeGridSurface(tileSize: number): SurfaceLike | null {
     const ctor = (ntk as unknown as { Surface?: SurfaceCtor }).Surface;
@@ -3107,697 +2903,5 @@ export class FlowGraphNode extends Node implements FlowInstance {
     tile.pattern._picture?.destroy?.();
     tile.surface.destroy?.();
     this._gridTile = null;
-  }
-
-  /** Draws every visible edge; answers whether any of them is animated, so
-   * the caller knows whether to keep a timer alive. */
-  private _paintEdges(painter: FlowPainter, palette: FlowPalette): boolean {
-    const v = this._viewport();
-    const pane = this._pane();
-    const labels = v.zoom >= LABEL_ZOOM;
-    let animated = false;
-    // Collect, then draw. A stroke has no fast path in ntk — every one is a
-    // mask rasterized in JS, uploaded with `PutImage` and composited — so a
-    // graph of seven hundred edges was seven hundred round trips and about
-    // four megabytes a frame. Bucketed by the style they will be stroked
-    // with, the same graph is one path per distinct pen, which for almost
-    // every graph is one.
-    const strokes = new StrokeBuckets();
-    const markers = new Map<string, MarkerBucket>();
-    const labelChips: { rect: FlowRect; radius: number; fill: string }[] = [];
-    const pendingLabels: {
-      text: string;
-      x: number;
-      y: number;
-      size: number;
-      color: string;
-    }[] = [];
-
-    const clip = this._frameClip;
-    let animBox: FlowRect | null = null;
-    for (const edge of this._edges) {
-      if (edge.hidden) continue;
-      // two rejects: one from the nodes alone, one from the route it took
-      const coarse = this._edgeCoarseBox(edge);
-      if (!coarse || !rectsOverlap(coarse, pane)) continue;
-      // Tracked before the damage skip, deliberately: whether the dash
-      // timer runs is a question about the viewport, not about what this
-      // particular pass repaints — deciding it after the skip is how a drag
-      // in one corner would stop the dash marching in the other. The box
-      // the ticks invalidate is collected below from the *drawn* geometry:
-      // the coarse box carries the bezier slack, and a tick that repaints
-      // slack repaints a card-sized halo of neighbours sixteen times a
-      // second.
-      if (edge.animated) animated = true;
-      if (clip && !rectsOverlap(coarse, clip)) continue;
-      const geometry = this._edgeGeometry(edge);
-      if (!geometry) continue;
-      if (!rectsOverlap(pathBounds(geometry.points), pane)) continue;
-
-      const selected = edge.selected ?? false;
-      const hovered = this._hover.edgeId === edge.id;
-      const stroke =
-        edge.style?.stroke ??
-        (selected
-          ? palette.edgeSelected
-          : hovered
-            ? palette.text
-            : palette.edge);
-      const lineWidth = Math.max(
-        1,
-        (edge.style?.strokeWidth ?? (selected ? 2 : 1.5)) * v.zoom,
-      );
-      // `markerEnd` left out means an arrow: a directed graph whose edges do
-      // not say which way they point is a set of lines. `null` opts out.
-      const markerEnd = normalizeMarker(
-        edge.markerEnd === undefined ? 'arrowclosed' : edge.markerEnd,
-      );
-      const markerStart = normalizeMarker(edge.markerStart);
-
-      // The tip stops short of the handle rather than at it: the handle dot
-      // is drawn *over* the edges, with the nodes, so an arrow aimed at the
-      // handle's centre is an arrow mostly hidden under a white circle.
-      const inset = v.zoom >= HANDLE_ZOOM ? this._handleRadius() + 1 : 1;
-      const last = geometry.points[geometry.points.length - 1];
-      const outAngle = endAngle(geometry.points);
-      const endTip = {
-        x: last.x - Math.cos(outAngle) * inset,
-        y: last.y - Math.sin(outAngle) * inset,
-      };
-      let points = geometry.points;
-      if (markerEnd) {
-        // and the stroke stops behind the head, so a filled triangle is a
-        // triangle rather than a triangle with a line through it
-        points = trimEnd(
-          points,
-          (markerEnd.size ?? DEFAULT_MARKER_SIZE) * v.zoom * 0.8 + inset,
-        );
-      }
-      const dash =
-        edge.style?.dash ?? (edge.animated ? DEFAULT_DASH : undefined);
-      if (edge.animated) {
-        const tight = inflateRect(pathBounds(geometry.points), CULL_MARGIN);
-        animBox = animBox ? unionRects(animBox, tight) : tight;
-      }
-      strokes
-        .bucket(
-          stroke,
-          lineWidth,
-          dash,
-          edge.animated ? this._dashPhase : 0,
-          v.zoom,
-        )
-        .push(points);
-
-      if (markerEnd) {
-        this._collectMarker(
-          markers,
-          endTip,
-          outAngle,
-          markerEnd.type,
-          markerEnd.color ?? stroke,
-          (markerEnd.size ?? DEFAULT_MARKER_SIZE) * v.zoom,
-          lineWidth,
-        );
-      }
-      if (markerStart) {
-        const inAngle = startAngle(geometry.points);
-        this._collectMarker(
-          markers,
-          {
-            x: geometry.points[0].x - Math.cos(inAngle) * inset,
-            y: geometry.points[0].y - Math.sin(inAngle) * inset,
-          },
-          inAngle,
-          markerStart.type,
-          markerStart.color ?? stroke,
-          (markerStart.size ?? DEFAULT_MARKER_SIZE) * v.zoom,
-          lineWidth,
-        );
-      }
-
-      if (labels && edge.label) {
-        const at = pointAtFraction(geometry.points, 0.5);
-        const size = Math.max(8, 11 * v.zoom);
-        const metrics = painter.measureText(edge.label, { size });
-        const padX = 5 * v.zoom;
-        const padY = 2 * v.zoom;
-        // The chip is collected with the rest; the text is not, because a
-        // glyph run is already one request and nothing is gained by holding
-        // it. Both still land above every edge, which is the point of the
-        // chip.
-        labelChips.push({
-          rect: {
-            x: Math.round(at.x - metrics.width / 2 - padX),
-            y: Math.round(at.y - metrics.height / 2 - padY),
-            width: Math.round(metrics.width + padX * 2),
-            height: Math.round(metrics.height + padY * 2),
-          },
-          radius: Math.max(2, Math.round(3 * v.zoom)),
-          fill: edge.style?.labelBackground ?? tint(palette.background, 0.92),
-        });
-        pendingLabels.push({
-          text: edge.label,
-          x: at.x,
-          y: at.y,
-          size,
-          color: edge.style?.labelColor ?? palette.text,
-        });
-      }
-    }
-
-    strokes.paint(painter);
-    for (const bucket of markers.values()) {
-      // the same threshold, for the same reason: a handful of arrowheads
-      // scattered over the pane is cheaper drawn as a handful
-      if (bucket.filled.length >= MARKER_BATCH_MIN) {
-        painter.polygons(bucket.filled, { fill: bucket.color });
-      } else {
-        for (const head of bucket.filled) {
-          painter.polygon(head, { fill: bucket.color });
-        }
-      }
-      if (bucket.open.length >= MARKER_BATCH_MIN) {
-        painter.strokeRuns(bucket.open, {
-          stroke: bucket.color,
-          lineWidth: bucket.lineWidth,
-        });
-      } else {
-        for (const head of bucket.open) {
-          painter.strokeRuns([head], {
-            stroke: bucket.color,
-            lineWidth: bucket.lineWidth,
-          });
-        }
-      }
-    }
-    for (const chip of labelChips) {
-      painter.rect(
-        chip.rect.x,
-        chip.rect.y,
-        chip.rect.width,
-        chip.rect.height,
-        chip.radius,
-        { fill: chip.fill },
-      );
-    }
-    for (const l of pendingLabels) {
-      painter.text(l.text, l.x, l.y, {
-        size: l.size,
-        color: l.color,
-        align: 'center',
-        baseline: 'middle',
-      });
-    }
-    // A pass that drew an animated edge knows exactly where its dash is; a
-    // pass that culled them all keeps the previous box — the endpoints did
-    // not move, or the move's own damage would have redrawn them here.
-    if (animBox) this._animBox = animBox;
-    return animated;
-  }
-
-  /** An arrowhead's three or four points, added to the pile for its colour
-   * rather than drawn — see {@link StrokeBuckets} for why. */
-  private _collectMarker(
-    markers: Map<string, MarkerBucket>,
-    at: XYPosition,
-    angle: number,
-    type: 'arrow' | 'arrowclosed',
-    color: string,
-    size: number,
-    lineWidth: number,
-  ): void {
-    const spread = 0.42; // radians off the shaft — a ~24° half-angle
-    const back = {
-      x: at.x - Math.cos(angle) * size,
-      y: at.y - Math.sin(angle) * size,
-    };
-    const left = {
-      x: at.x - Math.cos(angle - spread) * size,
-      y: at.y - Math.sin(angle - spread) * size,
-    };
-    const right = {
-      x: at.x - Math.cos(angle + spread) * size,
-      y: at.y - Math.sin(angle + spread) * size,
-    };
-    const key = `${color}|${lineWidth}`;
-    let bucket = markers.get(key);
-    if (!bucket) {
-      bucket = { color, lineWidth, filled: [], open: [] };
-      markers.set(key, bucket);
-    }
-    if (type === 'arrowclosed') bucket.filled.push([at, left, back, right]);
-    else bucket.open.push([left, at, right]);
-  }
-
-  private _paintNodes(painter: FlowPainter, palette: FlowPalette): void {
-    const dragging = this._dragTo;
-    const order: NodeEntry[] = [];
-    const deferred: NodeEntry[] = [];
-    for (const entry of this._order) {
-      // a dragged node comes to the top
-      if (dragging?.has(entry.node.id)) deferred.push(entry);
-      else order.push(entry);
-    }
-    order.push(...deferred);
-
-    // Nodes are drawn one at a time, in z-order, and both halves of that
-    // were measured rather than assumed — see `_paintHandles` for why
-    // batching a card or a handle costs more than it saves.
-    for (const entry of order) this._paintGraphNode(painter, palette, entry);
-  }
-
-  /**
-   * One node's box, label and ports.
-   *
-   * Not `_paintNode`: that name belongs to the react-x11 node this extends —
-   * its `paint()` calls `this._paintNode(ctx)` — and defining one here
-   * replaced the base implementation with a method of a different shape.
-   * `super.paint(ctx)` then arrived here with a drawing context where an
-   * entry was expected, which is a crash rather than a wrong picture only
-   * because the first thing it reads is a property.
-   */
-  private _paintGraphNode(
-    painter: FlowPainter,
-    palette: FlowPalette,
-    entry: NodeEntry,
-  ): void {
-    if (entry.node.hidden) return;
-    const rect = this._screenRect(entry);
-    if (!rectsOverlap(rect, this._pane())) return;
-    // inflated by the margin its handles and grips can ink outside the box —
-    // the same margin every invalidate grew by, so the two agree
-    const clip = this._frameClip;
-    if (clip && !rectsOverlap(inflateRect(rect, CULL_MARGIN), clip)) return;
-    const v = this._viewport();
-    const selected = entry.node.selected ?? false;
-    const hovered = this._hover.nodeId === entry.node.id;
-    const handles = this._handlesOf(entry).map((anchor) => {
-      const s = this._toScreen(anchor);
-      return { ...anchor, x: s.x, y: s.y };
-    });
-
-    if (entry.type?.paint) {
-      // Never batched: a type that draws its own body is drawing whatever it
-      // likes, in an order only it knows.
-      entry.type.paint({
-        node: entry.node,
-        rect,
-        zoom: v.zoom,
-        selected,
-        hovered,
-        palette,
-        painter,
-        handles,
-      });
-    } else {
-      this._paintCardShape(painter, palette, entry, rect, selected, hovered);
-      this._paintCardInk(painter, palette, entry, rect);
-    }
-
-    if (this._connectable(entry) && (v.zoom >= HANDLE_ZOOM || hovered)) {
-      this._paintHandles(painter, palette, handles);
-    }
-    this._paintGrips(painter, palette, entry, rect);
-  }
-
-  private _mounted(entry: NodeEntry): boolean {
-    return entry.type?.render != null && this._viewport().zoom >= RENDER_ZOOM;
-  }
-
-  private _paintGrips(
-    painter: FlowPainter,
-    palette: FlowPalette,
-    entry: NodeEntry,
-    rect: FlowRect,
-  ): void {
-    const grips = this._grips(entry);
-    if (grips.length === 0) return;
-    const size = Math.max(4, RESIZE_GRIP * 2 * this._viewport().zoom);
-    for (const dir of grips) {
-      const at = gripPoint(rect, dir);
-      painter.rect(at.x - size / 2, at.y - size / 2, size, size, 1, {
-        fill: palette.nodeBackground,
-        stroke: palette.accent,
-        lineWidth: 1.5,
-      });
-    }
-  }
-
-  /** The built-in node: a card with a label, an optional second line and an
-   * optional accent stripe down its leading edge. */
-  /** The card itself: one rounded box, and the accent stripe if it has one.
-   * With a `batch` the box joins the pile for its appearance instead of
-   * being drawn on its own. */
-  private _paintCardShape(
-    painter: FlowPainter,
-    palette: FlowPalette,
-    entry: NodeEntry,
-    rect: FlowRect,
-    selected: boolean,
-    hovered: boolean,
-  ): void {
-    const v = this._viewport();
-    const style = entry.node.style;
-    const radius = Math.round((style?.borderRadius ?? 6) * v.zoom);
-    const border = selected
-      ? palette.accent
-      : hovered
-        ? tint(palette.accent, 0.55)
-        : (style?.borderColor ?? palette.nodeBorder);
-    const options: ShapeOptions = {
-      fill: style?.background ?? palette.nodeBackground,
-      stroke: border,
-      lineWidth: Math.max(
-        1,
-        Math.round((style?.borderWidth ?? (selected ? 2 : 1)) * v.zoom),
-      ),
-    };
-    painter.rect(rect.x, rect.y, rect.width, rect.height, radius, options);
-
-    if (style?.accent) {
-      // Inset past the rounded corners instead of clipped to them: a
-      // non-rectangular clip forfeits ntk's rounded-box fast path for every
-      // fill under it — measured as a pixmap create/free and a trapezoid
-      // pass per card per repaint.
-      painter.rect(
-        rect.x + Math.max(1, v.zoom),
-        rect.y + radius,
-        Math.max(2, 3 * v.zoom),
-        rect.height - radius * 2,
-        0,
-        { fill: style.accent },
-      );
-    }
-  }
-
-  /** The label and its second line — the half of a card that has to come
-   * after every card when they are batched. */
-  private _paintCardInk(
-    painter: FlowPainter,
-    palette: FlowPalette,
-    entry: NodeEntry,
-    rect: FlowRect,
-  ): void {
-    const v = this._viewport();
-    if (v.zoom < LABEL_ZOOM) return;
-    const style = entry.node.style;
-    const header = this._mounted(entry) ? this._headerHeight(entry) : 0;
-    const data = entry.node.data as FlowNodeData | undefined;
-    const label = data?.label ?? entry.node.id;
-    const description = data?.description;
-    const color = style?.color ?? palette.text;
-    const padX = NODE_PAD_X * v.zoom;
-    const centre = rect.x + rect.width / 2;
-    const maxWidth = Math.max(8, rect.width - padX * 2);
-    const showDescription = Boolean(description) && v.zoom >= DESC_ZOOM;
-
-    if (header > 0) {
-      // The title bar of a node whose body is somebody else's: left-aligned,
-      // with a hairline under it so the strip reads as the thing to grab.
-      const band = header * v.zoom;
-      painter.text(label, rect.x + padX, rect.y + band / 2, {
-        size: NODE_LABEL_SIZE * v.zoom,
-        weight: 'bold',
-        color,
-        baseline: 'middle',
-        maxWidth,
-      });
-      painter.strokeRuns(
-        [
-          [
-            { x: rect.x + 1, y: rect.y + band },
-            { x: rect.x + rect.width - 1, y: rect.y + band },
-          ],
-        ],
-        { stroke: palette.nodeBorder, lineWidth: 1 },
-      );
-      return;
-    }
-
-    if (!showDescription) {
-      painter.text(label, centre, rect.y + rect.height / 2, {
-        size: NODE_LABEL_SIZE * v.zoom,
-        weight: 'bold',
-        color,
-        align: 'center',
-        baseline: 'middle',
-        maxWidth,
-      });
-      return;
-    }
-    const top = rect.y + NODE_PAD_Y * v.zoom;
-    painter.text(label, centre, top, {
-      size: NODE_LABEL_SIZE * v.zoom,
-      weight: 'bold',
-      color,
-      align: 'center',
-      maxWidth,
-    });
-    painter.text(description!, centre, top + NODE_LABEL_SIZE * 1.35 * v.zoom, {
-      size: NODE_DESC_SIZE * v.zoom,
-      color: palette.dim,
-      align: 'center',
-      maxWidth,
-    });
-  }
-
-  /**
-   * Handles are drawn one disc at a time, and that is the measured answer
-   * rather than the obvious one.
-   *
-   * Batching them into a single path halved the requests and made the frame
-   * *slower*: a path's mask is its bounding box, so forty dots scattered
-   * across the pane rasterize to a paneful of mask — three quarters of a
-   * megabyte — where forty small ones cost a kilobyte each. Batching pays
-   * for the edges because an edge already spans that box; it does not pay
-   * for anything small and scattered.
-   */
-  private _paintHandles(
-    painter: FlowPainter,
-    palette: FlowPalette,
-    handles: readonly HandleAnchor[],
-  ): void {
-    const v = this._viewport();
-    const radius = this._handleRadius();
-    const gesture = this._gesture;
-    const connecting = gesture?.kind === 'connect' ? gesture : null;
-    const lineWidth = Math.max(1, 1.5 * v.zoom);
-    for (const anchor of handles) {
-      const active =
-        sameHandle(this._hover.handle, anchor) ||
-        sameHandle(connecting?.to ?? null, anchor) ||
-        sameHandle(connecting?.from ?? null, anchor);
-      const options: ShapeOptions = {
-        fill: active ? palette.accent : palette.nodeBackground,
-        stroke: active ? palette.accent : palette.handle,
-        lineWidth,
-      };
-      painter.circle(
-        anchor.x,
-        anchor.y,
-        active ? radius * 1.4 : radius,
-        options,
-      );
-      if (anchor.label && v.zoom >= DESC_ZOOM) {
-        const outside = anchor.position === 'left' || anchor.position === 'top';
-        painter.text(
-          anchor.label,
-          anchor.x +
-            (anchor.position === 'left'
-              ? -radius - 4 * v.zoom
-              : radius + 4 * v.zoom),
-          anchor.y,
-          {
-            size: 10 * v.zoom,
-            color: palette.dim,
-            align: outside ? 'right' : 'left',
-            baseline: 'middle',
-          },
-        );
-      }
-    }
-  }
-
-  private _paintConnection(painter: FlowPainter, palette: FlowPalette): void {
-    const gesture = this._gesture;
-    if (gesture?.kind !== 'connect') return;
-    const v = this._viewport();
-    const target = gesture.to ?? gesture.pointer;
-    const to = this._toScreen(target);
-    const points = this._connectionPath(gesture);
-    const invalid = gesture.to != null && !gesture.valid;
-    painter.polyline(points, {
-      stroke: invalid ? palette.dim : palette.accent,
-      lineWidth: Math.max(1.5, 2 * v.zoom),
-      dash: gesture.to && gesture.valid ? undefined : [5 * v.zoom, 4 * v.zoom],
-    });
-    painter.circle(to.x, to.y, this._handleRadius(), {
-      fill: invalid ? palette.dim : palette.accent,
-    });
-  }
-
-  private _paintSelectionBox(painter: FlowPainter, palette: FlowPalette): void {
-    const gesture = this._gesture;
-    if (gesture?.kind !== 'select') return;
-    const x = Math.min(gesture.startX, gesture.x);
-    const y = Math.min(gesture.startY, gesture.y);
-    painter.rect(
-      x,
-      y,
-      Math.abs(gesture.x - gesture.startX),
-      Math.abs(gesture.y - gesture.startY),
-      2,
-      { fill: palette.selection, stroke: palette.accent, lineWidth: 1 },
-    );
-  }
-
-  private _paintMiniMap(painter: FlowPainter, palette: FlowPalette): void {
-    const opts = this._miniMapOptions();
-    if (!opts) return;
-    // The panel cull comes before `_miniMap()`, which walks every node to
-    // find the graph's bounds — during a drag that walk per pass would cost
-    // more than the panel it skips. The dot for a mid-drag node goes stale
-    // until the release repaints in full; that is the trade, and it is
-    // deliberate.
-    const clip = this._frameClip;
-    if (clip) {
-      const quick = this._corner(
-        opts.position,
-        opts.width ?? MINIMAP_W,
-        opts.height ?? MINIMAP_H,
-        'bottom-right',
-      );
-      if (!rectsOverlap(quick, clip)) return;
-    }
-    const map = this._miniMap();
-    if (!map) return;
-    const { panel, options } = map;
-    painter.rect(panel.x, panel.y, panel.width, panel.height, 4, {
-      fill: tint(palette.surface, 0.92),
-      stroke: palette.surfaceBorder,
-      lineWidth: 1,
-    });
-    painter.save();
-    painter.clipRect(panel.x, panel.y, panel.width, panel.height, 4);
-
-    const nodeColor = options.nodeColor;
-    for (const entry of this._entries) {
-      if (entry.node.hidden) continue;
-      const rect = this.rectOf(entry);
-      const at = this._miniToScreen(map, rect);
-      const fill =
-        typeof nodeColor === 'function'
-          ? nodeColor(entry.node as FlowNode<never>)
-          : (nodeColor ??
-            (entry.node.selected ? palette.accent : palette.nodeBorder));
-      painter.rect(
-        at.x,
-        at.y,
-        Math.max(1, rect.width * map.scale),
-        Math.max(1, rect.height * map.scale),
-        0,
-        { fill },
-      );
-    }
-
-    // The viewport, as an outline over a wash on everything outside it —
-    // cheaper than four mask rectangles and reads the same.
-    const v = this._viewport();
-    const paneRect = this._pane();
-    const view = this._miniToScreen(map, {
-      x: -v.x / v.zoom,
-      y: -v.y / v.zoom,
-    });
-    painter.rect(
-      view.x,
-      view.y,
-      (paneRect.width / v.zoom) * map.scale,
-      (paneRect.height / v.zoom) * map.scale,
-      2,
-      {
-        fill: options.maskColor ?? tint(palette.accent, 0.1),
-        stroke: palette.accent,
-        lineWidth: 1,
-      },
-    );
-    painter.restore();
-  }
-
-  private _paintControls(painter: FlowPainter, palette: FlowPalette): void {
-    const buttons = this._controlButtons();
-    if (buttons.length === 0) return;
-    const clip = this._frameClip;
-    if (clip && !buttons.some((b) => rectsOverlap(b.rect, clip))) return;
-    const first = buttons[0].rect;
-    const last = buttons[buttons.length - 1].rect;
-    painter.rect(
-      first.x,
-      first.y,
-      first.width,
-      last.y + last.height - first.y,
-      4,
-      {
-        fill: tint(palette.surface, 0.94),
-        stroke: palette.surfaceBorder,
-        lineWidth: 1,
-      },
-    );
-    for (let i = 0; i < buttons.length; i++) {
-      const { rect, action } = buttons[i];
-      if (i > 0) {
-        painter.strokeRuns(
-          [
-            [
-              { x: rect.x + 4, y: rect.y },
-              { x: rect.x + rect.width - 4, y: rect.y },
-            ],
-          ],
-          { stroke: palette.surfaceBorder, lineWidth: 1 },
-        );
-      }
-      const cx = rect.x + rect.width / 2;
-      const cy = rect.y + rect.height / 2;
-      const arm = 5;
-      const runs: XYPosition[][] = [];
-      if (action === 'in' || action === 'out') {
-        runs.push([
-          { x: cx - arm, y: cy },
-          { x: cx + arm, y: cy },
-        ]);
-        if (action === 'in') {
-          runs.push([
-            { x: cx, y: cy - arm },
-            { x: cx, y: cy + arm },
-          ]);
-        }
-      } else {
-        // a frame with its sides opened out: "fit what is there into this"
-        const a = 5;
-        runs.push(
-          [
-            { x: cx - a, y: cy - a + 3 },
-            { x: cx - a, y: cy - a },
-            { x: cx - a + 3, y: cy - a },
-          ],
-          [
-            { x: cx + a - 3, y: cy - a },
-            { x: cx + a, y: cy - a },
-            { x: cx + a, y: cy - a + 3 },
-          ],
-          [
-            { x: cx + a, y: cy + a - 3 },
-            { x: cx + a, y: cy + a },
-            { x: cx + a - 3, y: cy + a },
-          ],
-          [
-            { x: cx - a + 3, y: cy + a },
-            { x: cx - a, y: cy + a },
-            { x: cx - a, y: cy + a - 3 },
-          ],
-        );
-      }
-      painter.strokeRuns(runs, { stroke: palette.text, lineWidth: 1.5 });
-    }
   }
 }
