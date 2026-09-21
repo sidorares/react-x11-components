@@ -8,3 +8,6 @@ dist/
 # debug captures from examples/maps.tsx
 maps-backing.bmp
 maps-screen.png
+
+# recorded Jev sessions from examples/json-render-jev.tsx (JEV_RECORD)
+*.jsonl
