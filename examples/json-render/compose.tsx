@@ -46,6 +46,14 @@ export interface ComposerOptions<M> {
   /** The budgets are the safety rail, not a performance knob: they bound how
    *  much one request can cost before it gives up. */
   limits: { maxSteps: number; maxElements: number; maxDepth: number };
+  /**
+   * Guidance appended to the composer's own questions. `next` is the one that
+   * matters for selection: core sends it as the "shared guidance" that the
+   * membership question — "include only requested content or conventional
+   * essentials described by shared guidance" — defers to. Part of every
+   * request, so changing it invalidates a recording.
+   */
+  instructions?: { root?: string; next?: string; parent?: string };
   /** Runs before each composition: the candidates to offer for this prompt,
    *  plus anything the tab wants to show about how it got them. */
   prepare: (prompt: string) => {
@@ -87,6 +95,7 @@ export function useComposer<M = undefined>(
           initialState: opts.initialState,
           evaluate: chooseEvaluator().evaluate,
           ...opts.limits,
+          instructions: opts.instructions,
           signal: AbortSignal.any([ctl.signal, AbortSignal.timeout(55_000)]),
         })) {
           if (ctl.signal.aborted) return;

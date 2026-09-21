@@ -33,6 +33,9 @@
 //    is where authorization and validation belong. A generated UI that can
 //    book is one whose handlers were already safe to call with anything.
 //
+// And one thing that is not about the model's ability at all: saying what an
+// unqualified request means. See `SEARCH_GUIDANCE`.
+//
 // The boundary moved; it did not vanish. "Book me a hotel in Paris" is still
 // `unavailable`, for the same reason the flight used to be.
 import { useMemo } from 'react';
@@ -395,12 +398,30 @@ interface TripMeta {
 
 const FLIGHTS_LIMITS = { maxSteps: 12, maxElements: 14, maxDepth: 3 };
 
+// What counts as "requested" in a search. Without this, "Book me a flight to
+// Melbourne" composed a results panel with no flights in it — twice, live —
+// because Jev's membership question asks for "only requested content or
+// conventional essentials described by shared guidance", and a request that
+// names no preference makes each individual flight look optional. This is
+// that shared guidance: core sends `instructions.next` as the `guidance` the
+// question defers to. It says what an unqualified search means; it does not
+// filter anything, so "cheapest direct" still narrows to one.
+const SEARCH_GUIDANCE =
+  'This is a flight search. The flights are the content the traveller asked ' +
+  'for, not related extras. If the request states no preference about time ' +
+  'of day, price, stops or carrier, it is asking to see every flight: include ' +
+  'all of them so the traveller can choose. If it states a preference, ' +
+  'include only the flights that satisfy every part of it. A superlative ' +
+  '(cheapest, earliest, fastest, the best) asks for exactly one flight: the ' +
+  'single one that wins among those that satisfy the rest.';
+
 /** The "Flights" tab. */
 export function FlightsTab(): ReactElement {
   const { run, compose } = useComposer<TripMeta>({
     catalog,
     initialState: { booked: null },
     limits: FLIGHTS_LIMITS,
+    instructions: { next: SEARCH_GUIDANCE },
     // The two halves, in order: code extracts, then candidates are built
     // from the records that extraction selected.
     prepare: (prompt) => {
