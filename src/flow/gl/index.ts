@@ -14,7 +14,7 @@ import type { ReactElement } from 'react';
 
 import type { FlowFrameStats } from '../types.js';
 import { FlowGlRenderer, now } from './renderer.js';
-import type { FlowGlFrame } from './renderer.js';
+import type { FlowGlFrame, FlowGlTarget } from './renderer.js';
 
 /** What the surface needs of the pane — `FlowGraphNode`, structurally. */
 export interface FlowGlSource {
@@ -36,11 +36,52 @@ interface AreaNode {
   requestFrame?(): void;
 }
 
-interface DrawInfoLike {
+/** What core's `<glarea>` hands `onDraw` — as it is, not as its type says:
+ *  react-x11 2.17's `DrawInfo` declares a `scale` the element does not
+ *  pass, so the scale is read off the node. */
+export interface DrawInfoLike {
   width: number;
   height: number;
-  scale: number;
-  node: { abs: { x: number; y: number } };
+  scale?: number;
+  node: { abs: { x: number; y: number }; scale?: number };
+}
+
+/**
+ * Where the surface sits, from what `onDraw` was handed.
+ *
+ * The scene is in logical window pixels and the surface is a box of its own
+ * in device ones; the node's `abs` is device pixels too, so its origin in
+ * logical ones is `abs / scale`. Taking `scale` from `DrawInfo`, where its
+ * type puts it, made that `abs / undefined`: every vertex `NaN`, a blank
+ * pane — and every counter the renderer keeps, draw calls and instances and
+ * frames a second, exactly what a correct frame reports. So a target that
+ * is not finite throws here, and a surface that cannot place itself fails
+ * back to the 2D renderer through `onError` rather than drawing nothing.
+ */
+export function targetOf(info: DrawInfoLike): FlowGlTarget {
+  const scale = info.scale ?? info.node.scale ?? 1;
+  const target = {
+    origin: { x: info.node.abs.x / scale, y: info.node.abs.y / scale },
+    scale,
+    width: info.width,
+    height: info.height,
+  };
+  if (
+    ![
+      target.origin.x,
+      target.origin.y,
+      scale,
+      target.width,
+      target.height,
+    ].every(Number.isFinite) ||
+    !(scale > 0)
+  ) {
+    throw new Error(
+      `@react-x11/components flow/gl: cannot place the surface ` +
+        `(${JSON.stringify(target)})`,
+    );
+  }
+  return target;
 }
 
 /** The surface's state across renders: the renderer lives as long as the GL
@@ -95,16 +136,7 @@ class Driver {
       const frame = pane.glFrame(this.worldKey);
       if (!frame) return;
       const sceneMs = now() - started;
-      // The scene is in logical window pixels and the surface is a box of
-      // its own in device ones: where that box sits is the one number the
-      // vertex shaders need to meet in the middle.
-      const s = info.scale;
-      const stats = this.renderer.drawFrame(frame, {
-        origin: { x: info.node.abs.x / s, y: info.node.abs.y / s },
-        scale: s,
-        width: info.width,
-        height: info.height,
-      });
+      const stats = this.renderer.drawFrame(frame, targetOf(info));
       if (frame.world) this.worldKey = frame.key;
       this.props.onFrame?.({ renderer: 'gl', sceneMs, ...stats });
     } catch (error) {
