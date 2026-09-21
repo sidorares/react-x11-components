@@ -188,6 +188,16 @@ function paintInk(
   }
 }
 
+/** One node — card, ink, handles, grips — as the scene paints it; the
+ *  scene is read for its zoom and palette only. */
+export function paintNodeItem(
+  painter: FlowPainter,
+  item: SceneNodeItem,
+  scene: Pick<FlowScene, 'viewport' | 'palette'>,
+): void {
+  paintNode(painter, item, scene as FlowScene);
+}
+
 function paintNode(
   painter: FlowPainter,
   item: SceneNodeItem,

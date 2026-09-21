@@ -1110,6 +1110,12 @@ export function endpoint(
   return best;
 }
 
+/** The node items of a scene alone — what a mounted node's card is painted
+ *  from, apart from the rest of the scene (`FlowGraphNode.paintCard`). */
+export function buildNodeItems(input: SceneInput): SceneNodeItem[] {
+  return buildNodes(input);
+}
+
 function buildNodes(input: SceneInput): SceneNodeItem[] {
   const { pane, clip, hover, scale } = input;
   const v = screenViewport(input.viewport, pane);

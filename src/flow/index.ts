@@ -32,6 +32,7 @@ import { createStyles, flattenStyle } from 'react-x11/style';
 import type {} from 'react-x11/jsx-runtime';
 
 import { applyEdgeChanges, applyNodeChanges, resolvePalette } from './model.js';
+import { CULL_MARGIN } from './scene.js';
 import { ELEMENT, FlowGraphNode, SELF_DAMAGED_PROPS } from './node.js';
 import type {
   EdgeChange,
@@ -125,6 +126,20 @@ function loadGl(): Promise<GlModule> {
     },
   );
   return glLoading;
+}
+
+/** How far a card's handles and grips ink outside its box — the canvas
+ *  its card is painted on in the bodies' layer reaches that far round it. */
+const CARD_INK = CULL_MARGIN;
+
+/** A number per node object, for a card's cache key: a node whose label or
+ *  style changed is a new object, and its card is painted again. */
+const serials = new WeakMap<object, number>();
+let serial = 0;
+function serialOf(node: object): number {
+  let n = serials.get(node);
+  if (n === undefined) serials.set(node, (n = ++serial));
+  return n;
 }
 
 /** What `forwardWheel` reads off a wheel that landed on a body. */
@@ -472,11 +487,11 @@ export function Flow<N = FlowNodeData, E = unknown>(
     let y0 = Infinity;
     let x1 = -Infinity;
     let y1 = -Infinity;
-    for (const body of bodies) {
-      x0 = Math.min(x0, body.x);
-      y0 = Math.min(y0, body.y);
-      x1 = Math.max(x1, body.x + body.width);
-      y1 = Math.max(y1, body.y + body.height);
+    for (const { card } of bodies) {
+      x0 = Math.min(x0, card.x - CARD_INK);
+      y0 = Math.min(y0, card.y - CARD_INK);
+      x1 = Math.max(x1, card.x + card.width + CARD_INK);
+      y1 = Math.max(y1, card.y + card.height + CARD_INK);
     }
     return { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
   }, [bodies]);
@@ -507,27 +522,23 @@ export function Flow<N = FlowNodeData, E = unknown>(
             // shaped at that size rather than stretched.
             const width = body.width / body.zoom;
             const height = body.height / body.zoom;
-            return React.createElement(
+            const { card } = body;
+            const bodyBox = React.createElement(
               'box',
               {
-                key: body.id,
+                key: 'body',
                 style: {
                   position: 'absolute',
-                  left: body.x - extent.x,
-                  top: body.y - extent.y,
+                  left: body.x - card.x + CARD_INK,
+                  top: body.y - card.y + CARD_INK,
                   width: body.width,
                   height: body.height,
                   // A body is free to overflow what it was given — a popup's
                   // fallback, a long line — and this is what stops it spilling
                   // over the graph.
                   overflow: 'hidden',
-                  // Opaque, in the card's own fill. Every body is over every
-                  // card — they share one layer above the graph — so a body
-                  // that let what is under it show through showed the body
-                  // of any card it overlapped: two cards' controls mixed in
-                  // one box. Stacked in the cards' paint order, an opaque
-                  // body covers the bodies under it as its card covers
-                  // theirs.
+                  // Opaque, in the card's own fill: the card painted under it
+                  // shows none of what a transparent body would let through.
                   backgroundColor:
                     (node.style as { background?: string } | undefined)
                       ?.background ?? nodeFill,
@@ -553,6 +564,45 @@ export function Flow<N = FlowNodeData, E = unknown>(
                   height,
                 }),
               ),
+            );
+            // The card, painted by the pane's own 2D painter just under its
+            // body (`FlowGraphNode.paintCard`): the bodies share one layer
+            // over every card the graph draws, so without it a body covered
+            // the header, border and handles of any card over its own.
+            // Cached until something it shows changes; the node object is in
+            // the key by identity, so a new label or style repaints it.
+            const cardCanvas = React.createElement('canvas', {
+              key: 'card',
+              style: {
+                position: 'absolute',
+                left: 0,
+                top: 0,
+                width: card.width + CARD_INK * 2,
+                height: card.height + CARD_INK * 2,
+                pointerEvents: 'none',
+              },
+              cacheKey:
+                `${body.id}:${serialOf(node)}:${card.width}x${card.height}:` +
+                `${body.zoom}:${body.selected}:${body.hovered}`,
+              onDraw: (ctx: unknown, info: { node: { abs: XYPosition } }) =>
+                pane.current?.paintCard(body.id, ctx, info.node.abs),
+            });
+            return React.createElement(
+              'box',
+              {
+                key: body.id,
+                style: {
+                  position: 'absolute',
+                  left: card.x - CARD_INK - extent.x,
+                  top: card.y - CARD_INK - extent.y,
+                  width: card.width + CARD_INK * 2,
+                  height: card.height + CARD_INK * 2,
+                  // the card's presses are the pane's; its body's are the body's
+                  pointerEvents: 'box-none',
+                },
+              },
+              cardCanvas,
+              bodyBox,
             );
           })
         : null,

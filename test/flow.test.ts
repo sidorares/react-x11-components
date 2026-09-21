@@ -97,10 +97,18 @@ function bodyLayer(): RetainedNode {
   return retained(layer);
 }
 
-/** A mounted body's own box, positioned inside {@link bodyLayer}. */
-function bodyBox(index = 0): RetainedNode {
+/** A mounted node's box in {@link bodyLayer}: its card's canvas, then its
+ *  body over it. */
+function cardBox(index = 0): RetainedNode {
   const box = bodyLayer().children[index];
-  assert.ok(box, 'the overlay box is mounted');
+  assert.ok(box, 'the node’s box is mounted');
+  return retained(box);
+}
+
+/** A mounted body's own box, positioned inside its {@link cardBox}. */
+function bodyBox(index = 0): RetainedNode {
+  const box = cardBox(index).children[1];
+  assert.ok(box, 'the body box is mounted');
   return retained(box);
 }
 
@@ -113,8 +121,12 @@ function bodiesAway(): boolean {
  *  place plus the body's own inside it. */
 function bodyPlace(index = 0): { left: number; top: number } {
   const layer = bodyLayer().props.style as { left: number; top: number };
+  const card = cardBox(index).props.style as { left: number; top: number };
   const own = bodyBox(index).props.style as { left: number; top: number };
-  return { left: layer.left + own.left, top: layer.top + own.top };
+  return {
+    left: layer.left + card.left + own.left,
+    top: layer.top + card.top + own.top,
+  };
 }
 
 /** A window coordinate as the offset from the pane's centre that
@@ -2433,4 +2445,50 @@ test('a dragged node’s body is lifted over the others, as its card is', async 
   );
   await act(() => fireEvent.mouseUp(node, at(190, 128)));
   assert.ok(firstBody() < 400, 'after the drop, back in declaration order');
+});
+
+test('a card over another card’s body is painted over it, border and header', async () => {
+  // Every body shares one layer over every card, so the lower card's body
+  // covered whatever of the upper card was not body — its header, border,
+  // handles: a selected node's outline behind the node under it. Each
+  // mounted card is now painted in the bodies' layer, just under its body.
+  const redType: FlowNodeType = {
+    size: { width: 200, height: 120 },
+    headerHeight: 20,
+    render: () =>
+      h('box', { style: { flexGrow: 1, backgroundColor: '#ff0000' } }),
+  };
+  const { ctx } = await renderX11(
+    h(TypedFlow, {
+      nodes: [
+        { id: 'under', type: 'red', position: { x: 100, y: 100 } },
+        // selected, so painted over `under`, and bordered in the accent;
+        // its header and left border cross `under`'s red body
+        {
+          id: 'over',
+          type: 'red',
+          position: { x: 180, y: 160 },
+          selected: true,
+          style: { borderColor: '#00ff00' },
+        },
+      ],
+      edges: [],
+      nodeTypes: { red: redType },
+      palette: { accent: '#00ff00' },
+    }),
+  );
+  await act();
+  // `over`'s left border, 2 px wide at x 180..182, at y 170: inside
+  // `under`'s red body (x 105..295, y 120..215)
+  await expectPixel(ctx, 180, 190, '#00ff00', {
+    message: 'the upper card’s border is over the lower card’s body',
+  });
+  // `over`'s header band (y 160..180), right of the border
+  assert.ok(
+    !isNear(await pixelAt(ctx, 240, 170), '#ff0000'),
+    'and so is its header',
+  );
+  await expectPixel(ctx, 130, 150, '#ff0000', {
+    message: 'the lower body still shows where nothing is over it',
+  });
 });

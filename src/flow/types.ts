@@ -509,6 +509,12 @@ export interface NodeBodyRect extends FlowRect {
    * units. */
   zoom: number;
   selected: boolean;
+  /** The whole card the body sits in, in the same frame as the body's rect:
+   *  `<Flow>` paints it (`paintCard`) under the body, so card and body are
+   *  stacked together. */
+  card: FlowRect;
+  /** The pointer is over the node — its card paints its hover border. */
+  hovered: boolean;
 }
 
 // --- the imperative surface ------------------------------------------------

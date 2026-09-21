@@ -72,9 +72,10 @@ import {
   ZOOM_STEP,
 } from './model.js';
 import { distanceToPath, pathBounds } from './paths.js';
-import { paintScene } from './paint.js';
+import { paintNodeItem, paintScene } from './paint.js';
 import {
   anchorsOf,
+  buildNodeItems,
   buildScene,
   connectionPath,
   SceneCache,
@@ -3074,6 +3075,13 @@ export class FlowGraphNode extends Node implements FlowInstance {
       if (width <= 1 || height <= 1) continue;
       bodies.push({
         id: entry.node.id,
+        card: {
+          x: Math.round(rect.x - pane.x) - origin.x,
+          y: Math.round(rect.y - pane.y) - origin.y,
+          width: Math.round(rect.width),
+          height: Math.round(rect.height),
+        },
+        hovered: this._hover.nodeId === entry.node.id,
         // logical, and relative to the graph's origin on screen — the
         // box they are laid out in sits at `origin` in the pane
         x: Math.round(rect.x + inset - pane.x) - origin.x,
@@ -3090,7 +3098,8 @@ export class FlowGraphNode extends Node implements FlowInstance {
     const key = bodies
       .map(
         (b) =>
-          `${b.id}:${b.x},${b.y},${b.width},${b.height},${b.zoom},${b.selected}`,
+          `${b.id}:${b.x},${b.y},${b.width},${b.height},${b.zoom},${b.selected},${b.hovered},` +
+          `${b.card.x},${b.card.y},${b.card.width},${b.card.height}`,
       )
       .join('|');
     const moved =
@@ -3152,6 +3161,48 @@ export class FlowGraphNode extends Node implements FlowInstance {
       return true;
     }
     return this._bodiesHeld && this._bodiesRest != null;
+  }
+
+  /**
+   * Paint one mounted node's card — fill, border, header, handles, grips —
+   * into `ctx`, a `<canvas>` in the bodies' layer (`<Flow>`), exactly as the
+   * scene paints it. `ctx` is at the canvas's origin, `abs` its place in
+   * the window in device pixels.
+   *
+   * Why the card is painted twice: the bodies share one layer over every
+   * card — over the GL surface, or beside the 2D pane — so a body could not
+   * go under a card that was over its own. It painted over that card's
+   * header, border and handles: a selected node's outline hidden behind the
+   * body of the node under it. A card painted in the bodies' layer, just
+   * under its own body, is stacked with it in the cards' paint order, and
+   * covers the card the graph drew for it.
+   */
+  paintCard(id: string, ctx: unknown, abs: XYPosition): void {
+    const entry = this._byId.get(id);
+    if (!entry) return;
+    const painter = createPainter(ctx, this._textOptions());
+    if (!painter) return;
+    const palette = this._palette();
+    const input = this._sceneInput(palette);
+    const [item] = buildNodeItems({
+      ...input,
+      nodes: [this._source(entry)],
+      clip: null,
+      cull: undefined,
+    });
+    if (!item) return;
+    const c = ctx as {
+      save(): void;
+      restore(): void;
+      translate(x: number, y: number): void;
+    };
+    c.save();
+    try {
+      c.translate(-abs.x, -abs.y);
+      paintNodeItem(painter, item, { viewport: input.viewport, palette });
+    } finally {
+      c.restore();
+    }
   }
 
   /** `adaptive` as a number of milliseconds: `Infinity` never holds. */
