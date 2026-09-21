@@ -26,7 +26,14 @@ import {
   unproject,
   unprojectPoint,
 } from '../src/maps/proj.js';
-import { QUALITY_LADDER, chooseQuality } from '../src/maps/gl/view.js';
+import {
+  GateFader,
+  GlMapDriver,
+  LevelFader,
+  QUALITY_LADDER,
+  chooseQuality,
+} from '../src/maps/gl/view.js';
+import { MapController } from '../src/maps/controller.js';
 import { Map as MapView } from '../src/maps/index.js';
 import type { MapHandle } from '../src/maps/index.js';
 import {
@@ -72,6 +79,7 @@ import {
 import type { GlTileData } from '../src/maps/gl/buckets.js';
 import { parseColor, premultiplied } from '../src/maps/gl/color.js';
 import { renderCover } from '../src/maps/gl/cover.js';
+import type { CoverResult } from '../src/maps/gl/cover.js';
 import {
   LABEL_STRIDE,
   LabelField,
@@ -99,9 +107,11 @@ import {
   LabelPlacer,
 } from '../src/maps/gl/placement.js';
 import type { PlacementFrame } from '../src/maps/gl/placement.js';
+import type { RenderFrame } from '../src/maps/gl/renderer.js';
 import {
   GlMapRenderer,
   dashPattern,
+  gateOf,
   scissorOf,
 } from '../src/maps/gl/renderer.js';
 import { GlTileStore } from '../src/maps/gl/store.js';
@@ -191,6 +201,15 @@ function layer(
 /** Two roads at extent 2048 (like Shortbread's `streets`), one path, and a
  *  building with a courtyard at 4096. */
 function fixtureTile() {
+  return parseTile(fixtureBytes());
+}
+
+/**
+ * {@link fixtureTile}'s bytes, for a source that serves them — without the
+ * buildings layer where `buildings` is false, which is what a level below a
+ * pyramid's building data serves.
+ */
+function fixtureBytes({ buildings: withBuildings = true } = {}): Uint8Array {
   const road = (kind: number, points: [number, number][]): Feature => ({
     type: GeomType.LineString,
     tags: [0, kind],
@@ -200,7 +219,6 @@ function fixtureTile() {
   const building: Feature = {
     type: GeomType.Polygon,
     tags: [],
-    // Exterior clockwise on screen (positive area, y down), hole the other way.
     geometry: [
       ...part(
         [
@@ -224,32 +242,30 @@ function fixtureTile() {
       ),
     ],
   };
-  return parseTile(
-    new Uint8Array([
-      ...layer(
-        'streets',
-        2048,
-        ['kind'],
-        ['primary', 'residential', 'footway'],
-        [
-          road(0, [
-            [0, 0],
-            [300, 400],
-            [600, 400],
-          ]),
-          road(1, [
-            [10, 10],
-            [20, 10],
-          ]),
-          road(2, [
-            [50, 50],
-            [60, 60],
-          ]),
-        ],
-      ),
-      ...layer('buildings', 4096, [], [], [building]),
-    ]),
-  );
+  return new Uint8Array([
+    ...layer(
+      'streets',
+      2048,
+      ['kind'],
+      ['primary', 'residential', 'footway'],
+      [
+        road(0, [
+          [0, 0],
+          [300, 400],
+          [600, 400],
+        ]),
+        road(1, [
+          [10, 10],
+          [20, 10],
+        ]),
+        road(2, [
+          [50, 50],
+          [60, 60],
+        ]),
+      ],
+    ),
+    ...(withBuildings ? layer('buildings', 4096, [], [], [building]) : []),
+  ]);
 }
 
 const STYLE: MapStyleLayer[] = [
@@ -671,6 +687,9 @@ function recordingGl(stencil: boolean) {
   let next = 1;
   const constants = new Map<string, number>();
   const target: Record<string, unknown> = {
+    // What `GlMapDriver` checks before it draws at all: indirect GLX has
+    // no shaders, and this table stands for a direct one.
+    backend: 'direct',
     getParameter: () => 0,
     getShaderParameter: () => true,
     getProgramParameter: () => true,
@@ -880,6 +899,355 @@ test('a fade draws the arriving level whole, offscreen, and composites it once',
     fade: { frame: frameOver(data), alpha: 0 },
   });
   assert.strictEqual(framebuffers(none.calls), 0);
+});
+
+/** The style of {@link STYLE} with the buildings kept for zoom 14 up. */
+const GATED: MapStyleLayer[] = STYLE.map((l) =>
+  l.id === 'buildings' ? { ...l, minZoom: 14 } : l,
+);
+/** Buildings are the first layer, so their alpha is the first one. */
+const BUILDINGS = 0;
+
+test('a layer crossing the zoom gate is drawn at its ramp, not cut', () => {
+  const data = buildTileBuckets(fixtureTile(), prepareStyle({ layers: GATED }));
+  // The camera is at 12 throughout: only `layerAlpha` decides.
+  const draw = (alpha?: number) => {
+    const gl = recordingGl(true);
+    const layerAlpha =
+      alpha === undefined ? undefined : GATED.map((_, i) => (i ? 1 : alpha));
+    const stats = new GlMapRenderer(gl.gl).render({
+      ...frameOver(data, GATED),
+      layerAlpha,
+    });
+    // Every colour the frame set, premultiplied — a ramped layer's is the
+    // only one whose alpha is neither 0 nor 1.
+    const alphas = gl.log
+      .filter((c) => c.name === 'uniform4f')
+      .map((c) => c.args[4] as number);
+    return { layers: stats.layers, alphas };
+  };
+  // Below the gate and with no ramp given, the style's own answer stands.
+  const gated = draw();
+  assert.strictEqual(draw(1).layers, gated.layers + 1, 'a ramp of 1 draws it');
+  assert.strictEqual(draw(0).layers, gated.layers, 'a ramp of 0 does not');
+  assert.ok(
+    draw(1).alphas.every((a) => a === 0 || a === 1),
+    'and drawn whole it is set in whole colours',
+  );
+  const half = draw(0.5);
+  assert.strictEqual(half.layers, gated.layers + 1);
+  assert.ok(
+    half.alphas.some((a) => Math.abs(a - 0.5) < 1e-6),
+    `and half of it is half drawn: ${half.alphas.join(' ')}`,
+  );
+});
+
+test('the zoom gate ramps a layer rather than cutting it, both ways', () => {
+  const style = prepareStyle({ layers: GATED });
+  const gates = new GateFader();
+  const step = (zoom: number, at: number) =>
+    gates.step(style, { at, fadeMs: 200, zoom, detail: 0 });
+
+  // The first frame is the gate itself: nothing to fade from.
+  assert.strictEqual(step(14.2, 0), null);
+  assert.strictEqual(gates.fading, false);
+  // Out past 14: the layer leaves over the fade, not on one frame.
+  const out = step(13.9, 50);
+  assert.ok(out, 'the crossing is a ramp');
+  assert.ok(
+    Math.abs(out![BUILDINGS] - 0.75) < 1e-6,
+    `a quarter of the way out: ${out![BUILDINGS]}`,
+  );
+  assert.strictEqual(gates.fading, true, 'and asks for the frame after it');
+  assert.ok(
+    Math.abs(step(13.8, 150)![BUILDINGS] - 0.25) < 1e-6,
+    'three quarters out',
+  );
+  assert.strictEqual(step(13.8, 260), null, 'gone: the gate again');
+  assert.strictEqual(gates.fading, false);
+  // The layers that do not cross a gate are untouched throughout.
+  const back = step(14.1, 300)!;
+  assert.ok(back, 'and it ramps back in');
+  assert.ok(
+    back.slice(1).every((a) => a === 1),
+    'nothing else moved',
+  );
+
+  // With the fade off, the gate is a cut, as it was.
+  const cut = new GateFader();
+  const off = (at: number, zoom: number) =>
+    cut.step(style, { at, fadeMs: 0, zoom, detail: 0 });
+  assert.strictEqual(off(0, 14.2), null);
+  assert.strictEqual(off(50, 13.9), null);
+  assert.strictEqual(cut.fading, false);
+});
+
+/** A cover of a level, with nothing missing. */
+const coverOf = (level: number): CoverResult => ({
+  tiles: [],
+  missing: [],
+  level,
+  own: 0,
+  ancestors: 0,
+  descendants: 0,
+  inView: [],
+});
+
+test('a gate crossing inside a level fade neither cuts nor comes back', () => {
+  // The bug this pair replaced: carried as a second scene, the gate flip
+  // and the level flip were two fades over one composite, and the second
+  // to start retargeted the first — buildings vanished for one wheel notch
+  // and came back for the next. The two are independent now, so a sweep
+  // out across both flips only ever has fewer buildings than the frame
+  // before it.
+  const style = prepareStyle({ layers: GATED });
+  const level = new LevelFader();
+  const gates = new GateFader();
+  const shown: number[] = [];
+  // A zoom out from 14.2 to 13.2 over 250 ms, a frame every 16 ms: the
+  // gate is crossed at 14, the pyramid's level at 13.5.
+  for (let at = 0; at <= 400; at += 16) {
+    const zoom = Math.max(13.2, 14.2 - at / 250);
+    const levelAt = zoom >= 13.5 ? 13 : 12;
+    const plan = level.plan(coverOf(levelAt), coverOf, { at, fadeMs: 200 });
+    const alpha = gates.step(style, { at, fadeMs: 200, zoom, detail: 0 });
+    // What the eye sees of the layer: the same in both of the fade's
+    // scenes, which is the point — a level fade cannot step it.
+    shown.push(alpha ? alpha[BUILDINGS] : zoom >= 14 ? 1 : 0);
+    assert.ok(plan.alpha >= 0 && plan.alpha <= 1);
+  }
+  assert.strictEqual(shown[0], 1, 'buildings to begin with');
+  assert.strictEqual(shown[shown.length - 1], 0, 'and none at the end');
+  for (let i = 1; i < shown.length; i++) {
+    assert.ok(
+      shown[i] <= shown[i - 1] + 1e-9,
+      `frame ${i} brought buildings back: ${shown[i - 1]} -> ${shown[i]}`,
+    );
+  }
+  // And it took the fade to go, rather than a frame.
+  assert.ok(
+    shown.filter((a) => a > 0 && a < 1).length >= 8,
+    `a ramp, not a cut: ${shown.join(' ')}`,
+  );
+});
+
+// --- the whole frame, over a zoom sweep -------------------------------------------
+
+/**
+ * The driver over a recording GL table: a camera moved a fraction of a
+ * level at a time, and what each frame actually draws of one layer.
+ *
+ * This is the only way to see a whole frame's decisions — the level plan,
+ * the gate ramp and the tiles' own contents together — because this host
+ * cannot render one: the GL renderer needs a direct backend and indirect
+ * GLX has no shaders.
+ */
+async function sweep(options: {
+  from: number;
+  to: number;
+  step: number;
+  levelFade: number;
+  /** Levels whose tiles carry the buildings layer; every level by default. */
+  data?: (z: number) => boolean;
+  adaptive?: false | { budgetMs: number };
+  /** Frames to draw with the camera still, after the sweep. */
+  settle?: number;
+}) {
+  const clock = { at: 0 };
+  const real = globalThis.performance;
+  (globalThis as { performance?: { now(): number } }).performance = {
+    now: () => clock.at,
+  };
+  const seen: {
+    zoom: number;
+    detail: number;
+    base: { level: number; alpha: number; has: boolean };
+    next: { level: number; alpha: number; has: boolean } | null;
+    shown: number;
+  }[] = [];
+  const render = GlMapRenderer.prototype.render;
+  GlMapRenderer.prototype.render = function (frame, extras) {
+    const detail = frame.detail ?? 0;
+    const of = (f: RenderFrame) => ({
+      level: f.sources[0]?.[0]?.size ?? -1,
+      // The renderer's own answer, so what is watched cannot drift from
+      // what is drawn.
+      alpha: gateOf(f, BUILDINGS, GATED[BUILDINGS], f.detail ?? 0),
+      // Whether the scene's tiles carry the layer's geometry at all.
+      has: (f.sources[0] ?? []).some((t) => !!t.data.draws[BUILDINGS]),
+    });
+    const base = of(frame);
+    const fade = extras?.fade;
+    const a = fade ? Math.min(1, fade.alpha) : 0;
+    const next = fade && a > 0 ? of(fade.frame) : null;
+    const ink = (s: { alpha: number; has: boolean }) => (s.has ? s.alpha : 0);
+    seen.push({
+      zoom: frame.zoom,
+      detail,
+      base,
+      next,
+      shown: next ? ink(base) * (1 - a) + ink(next) * a : ink(base),
+    });
+    return render.call(this, frame, extras);
+  };
+  try {
+    const controller = new MapController({
+      center: { lon: -0.1281, lat: 51.508 },
+      zoom: options.from,
+    });
+    const source = {
+      id: 'fixture',
+      minZoom: 0,
+      maxZoom: 14,
+      tileSize: 512,
+      load: (request: { z: number }) => ({
+        kind: 'vector' as const,
+        data: fixtureBytes({
+          buildings: !options.data || options.data(request.z),
+        }),
+      }),
+    };
+    const driver = new GlMapDriver(controller, {
+      controller,
+      map: {
+        sources: [source],
+        mapStyle: { layers: GATED },
+        levelFade: options.levelFade,
+        adaptive: options.adaptive ?? false,
+      },
+      onFailure: (error: Error) => {
+        throw error;
+      },
+    });
+    const gl = recordingGl(true).gl;
+    const info = { width: 512, height: 512, node: { scale: 1 } };
+    const frame = async () => {
+      clock.at += 16;
+      driver.draw(gl, info);
+      // The store loads and builds off the frame: let both land.
+      for (let i = 0; i < 3; i++) await new Promise((r) => setTimeout(r, 0));
+    };
+    // Settled at the start, so the sweep begins with its tiles in hand.
+    for (let i = 0; i < 20; i++) await frame();
+    const from = seen.length;
+    for (let z = options.from; z >= options.to; z -= options.step) {
+      controller.setCamera({ zoom: z });
+      await frame();
+    }
+    // And still: what the camera settling hands back. Real milliseconds,
+    // because the controller's settle window is wall-clock.
+    for (let i = 0; i < (options.settle ?? 0); i++) {
+      await new Promise((r) => setTimeout(r, 20));
+      await frame();
+    }
+    return seen.slice(from);
+  } finally {
+    GlMapRenderer.prototype.render = render;
+    (globalThis as { performance?: unknown }).performance = real;
+  }
+}
+
+/** What a sweep's frames looked like, one line each — for a failure. */
+const shownAt = (frames: Awaited<ReturnType<typeof sweep>>): string =>
+  frames
+    .map(
+      (f) =>
+        `z${f.zoom.toFixed(2)} detail=${f.detail} base=${f.base.level}${
+          f.base.has ? '' : '(none)'
+        }@${f.base.alpha.toFixed(2)}${
+          f.next
+            ? ` fade=${f.next.level}${f.next.has ? '' : '(none)'}@${f.next.alpha.toFixed(2)}`
+            : ''
+        } shown=${f.shown.toFixed(2)}`,
+    )
+    .join('\n');
+
+/** The largest a frame moved what is shown of the layer. */
+const biggestStep = (frames: Awaited<ReturnType<typeof sweep>>): number => {
+  let most = 0;
+  for (let i = 1; i < frames.length; i++) {
+    most = Math.max(most, Math.abs(frames[i].shown - frames[i - 1].shown));
+  }
+  return most;
+};
+
+test("a zoom out across a layer's minZoom dissolves it, in every frame it draws", async () => {
+  // The camera 0.02 of a level per frame, past the buildings' minZoom of
+  // 14, with the pyramid's own level changing on the way — and the tiles
+  // below 14 carrying no buildings at all, which is what a real pyramid
+  // serves. What is watched is the renderer's own answer for the layer in
+  // each scene the frame draws, weighted by the level fade between them.
+  const frames = await sweep({
+    from: 14.6,
+    to: 13.4,
+    step: 0.02,
+    levelFade: 200,
+    data: (z) => z >= 14,
+  });
+  const shown = frames.map((f) => f.shown);
+  assert.strictEqual(
+    shown[0],
+    1,
+    `buildings to begin with:\n${shownAt(frames)}`,
+  );
+  assert.strictEqual(
+    shown[shown.length - 1],
+    0,
+    `and none at the end:\n${shownAt(frames)}`,
+  );
+  // Never back: coming and going again is the flicker this replaced.
+  for (let i = 1; i < shown.length; i++) {
+    assert.ok(
+      shown[i] <= shown[i - 1] + 1e-9,
+      `frame ${i} brought buildings back:\n${shownAt(frames)}`,
+    );
+  }
+  // And it dissolved rather than cut: no frame moved it far, and plenty
+  // of frames drew it part-way.
+  assert.ok(
+    biggestStep(frames) < 0.25,
+    `a cut, not a dissolve:\n${shownAt(frames)}`,
+  );
+  assert.ok(
+    shown.filter((a) => a > 0.01 && a < 0.99).length >= 8,
+    `too few frames in between:\n${shownAt(frames)}`,
+  );
+});
+
+test("adaptive quality's detail rung dissolves its layers too, and hands them back", async () => {
+  // A budget no frame can meet, so the ladder drops the style's newest
+  // layers — buildings — for the whole sweep, and the camera settling
+  // hands them back. The zoom never leaves the band the style draws them
+  // in: every change here is the rung's, not the style's.
+  const frames = await sweep({
+    from: 15.6,
+    to: 14.4,
+    step: 0.02,
+    levelFade: 200,
+    adaptive: { budgetMs: 0.05 },
+    settle: 25,
+  });
+  const shown = frames.map((f) => f.shown);
+  assert.strictEqual(shown[0], 1, 'drawn while the camera is still');
+  assert.ok(
+    frames.some((f) => f.detail > 0),
+    `the ladder dropped detail:\n${shownAt(frames)}`,
+  );
+  assert.ok(
+    Math.min(...shown) === 0,
+    `and the layer went:\n${shownAt(frames)}`,
+  );
+  assert.strictEqual(
+    shown[shown.length - 1],
+    1,
+    `and came back when the camera settled:\n${shownAt(frames)}`,
+  );
+  // Both ways a dissolve: this is the flicker the report was about — a
+  // layer cut on the frame a rung changed and handed back on one more.
+  assert.ok(
+    biggestStep(frames) < 0.25,
+    `a rung change stepped the picture:\n${shownAt(frames)}`,
+  );
 });
 
 test('adaptive quality takes the lowest rung that fits, and climbs back only with room', () => {

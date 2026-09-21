@@ -89,6 +89,17 @@ export interface RenderFrame {
   height: number;
   /** The camera zoom: what zoom ramps and layer ranges resolve at. */
   zoom: number;
+  /**
+   * How much of each of the style's layers to draw, by the layer's index in
+   * `style.layers` — a layer the camera is zooming past `minZoom` is ramped
+   * out rather than cut, and what is not listed is `drawsAt`'s own answer.
+   *
+   * Per layer rather than per scene because the flips overlap: the zoom a
+   * layer ends at is not where the pyramid changes level, so a scene-wide
+   * cross-fade of the two would keep retargeting, and each retarget is a
+   * step in the picture. An opacity is a number that can move on its own.
+   */
+  layerAlpha?: readonly number[];
   /** Device pixels per logical pixel: what style lengths are multiplied by. */
   scale: number;
   style: PreparedStyle;
@@ -296,6 +307,45 @@ function drawsAt(layer: MapStyleLayer, zoom: number, detail: number): boolean {
   return true;
 }
 
+/**
+ * How much of a layer this frame draws: its `layerAlpha` where the frame
+ * has one, and otherwise the gate. The ramp is the whole answer where there
+ * is one — whoever set it has already folded in every gate, `detail`
+ * included — but never for a layer the style has turned off or a kind this
+ * renderer does not draw.
+ *
+ * Exported for the tests that watch a swept frame decide.
+ */
+export function gateOf(
+  frame: RenderFrame,
+  index: number,
+  layer: MapStyleLayer,
+  detail: number,
+): number {
+  if (layer.visible === false) return 0;
+  if (layer.type !== 'fill' && layer.type !== 'line' && layer.type !== 'circle')
+    return 0;
+  const ramp = frame.layerAlpha?.[index];
+  if (ramp === undefined) return drawsAt(layer, frame.zoom, detail) ? 1 : 0;
+  return ramp > 0 ? Math.min(1, ramp) : 0;
+}
+
+/**
+ * Which of a style's layers the gates draw, as a `layerAlpha` of ones and
+ * zeroes — what a ramp moves towards. `detail` is adaptive quality's, so a
+ * rung that drops the style's newest layers is something to ramp like any
+ * other gate rather than a step in the picture.
+ */
+export function gatesAt(
+  style: PreparedStyle,
+  zoom: number,
+  detail = 0,
+): number[] {
+  return style.layers.map(({ layer }) =>
+    drawsAt(layer, zoom, detail) ? 1 : 0,
+  );
+}
+
 /** Label rasters taken into the atlas texture per frame at most. */
 const ATLAS_UPLOADS_PER_FRAME = 24;
 
@@ -428,6 +478,11 @@ export class GlMapRenderer {
       );
       for (let i = 0; i < layers.length; i++) {
         const layer = layers[i].layer;
+        // The gate, not the ramp: what a rung is priced at is what it
+        // settles at. A layer on its way out is still being drawn, and
+        // pricing that would put the next rung's estimate above the budget
+        // — which would drop another layer, which would ramp, which is a
+        // ladder that climbs on its own transients.
         if (!drawsAt(layer, frame.zoom, detail)) continue;
         let records = 0;
         for (let t = 0; t < tiles.length; t++) {
@@ -610,15 +665,20 @@ export class GlMapRenderer {
       }
       for (let i = 0; i < layers.length; i++) {
         const layer = layers[i].layer;
-        if (!drawsAt(layer, frame.zoom, detail)) continue;
+        const gate = gateOf(frame, i, layer, detail);
+        if (gate <= 0) continue;
         if (layer.type === 'fill') {
-          if (this._fill(frame, tiles, i, layer, scissors, edges)) {
+          if (this._fill(frame, tiles, i, layer, scissors, edges, gate)) {
             stats.layers++;
           }
         } else if (layer.type === 'line') {
-          if (this._lines(frame, tiles, i, layer, scissors)) stats.layers++;
+          if (this._lines(frame, tiles, i, layer, scissors, gate)) {
+            stats.layers++;
+          }
         } else if (layer.type === 'circle') {
-          if (this._circles(frame, tiles, i, layer, scissors)) stats.layers++;
+          if (this._circles(frame, tiles, i, layer, scissors, gate)) {
+            stats.layers++;
+          }
         }
       }
     }
@@ -636,10 +696,12 @@ export class GlMapRenderer {
     layer: Extract<MapStyleLayer, { type: 'fill' }>,
     scissors: (number[] | null)[],
     edges: boolean,
+    gate = 1,
   ): boolean {
     const zoom = frame.zoom;
     const opacity =
-      layer.opacity === undefined ? 1 : resolveZoomed(layer.opacity, zoom);
+      (layer.opacity === undefined ? 1 : resolveZoomed(layer.opacity, zoom)) *
+      gate;
     if (opacity <= 0) return false;
     const base = this._color(resolveZoomed(layer.color, zoom));
     if (!base) return false;
@@ -772,12 +834,14 @@ export class GlMapRenderer {
     index: number,
     layer: Extract<MapStyleLayer, { type: 'line' }>,
     scissors: (number[] | null)[],
+    gate = 1,
   ): boolean {
     const zoom = frame.zoom;
     const logical = resolveZoomed(layer.width, zoom);
     if (!(logical > 0)) return false;
     const opacity =
-      layer.opacity === undefined ? 1 : resolveZoomed(layer.opacity, zoom);
+      (layer.opacity === undefined ? 1 : resolveZoomed(layer.opacity, zoom)) *
+      gate;
     if (opacity <= 0) return false;
     const base = this._color(resolveZoomed(layer.color, zoom));
     if (!base) return false;
@@ -809,6 +873,7 @@ export class GlMapRenderer {
     index: number,
     layer: Extract<MapStyleLayer, { type: 'circle' }>,
     scissors: (number[] | null)[],
+    gate = 1,
   ): boolean {
     const zoom = frame.zoom;
     const radius =
@@ -816,7 +881,8 @@ export class GlMapRenderer {
       frame.scale;
     if (!(radius > 0)) return false;
     const opacity =
-      layer.opacity === undefined ? 1 : resolveZoomed(layer.opacity, zoom);
+      (layer.opacity === undefined ? 1 : resolveZoomed(layer.opacity, zoom)) *
+      gate;
     if (opacity <= 0) return false;
     const base = this._color(resolveZoomed(layer.color, zoom));
     if (!base) return false;
