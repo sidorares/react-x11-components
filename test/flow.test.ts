@@ -64,6 +64,7 @@ import {
   unionRects,
 } from '../src/flow/model.js';
 import {
+  bezierControls,
   distanceToPath,
   edgePath,
   pointAtFraction,
@@ -2160,4 +2161,45 @@ test('a wheel over a mounted body zooms the graph', async () => {
     Math.abs(after.x - under.x) < 0.5 && Math.abs(after.y - under.y) < 0.5,
     `about the pointer: ${JSON.stringify(under)} -> ${JSON.stringify(after)}`,
   );
+});
+
+test('a curve is drawn within a fifth of a pixel of itself at any zoom', () => {
+  // A backwards S-bend — the edge doubling back past its own cards — zoomed
+  // in threefold, in screen space as the pane routes it. The count was
+  // clamp(length / 6, 8, 48) and uniform: chords of tens of pixels across a
+  // tight bend, the facets visible in a zoomed-in graph.
+  const zoom = 3;
+  const source = { x: 900, y: 200, position: 'right' as const };
+  const target = { x: 100, y: 700, position: 'left' as const };
+  const route = { ...ROUTE, stepOffset: 20 * zoom, scale: zoom };
+  const drawn = edgePath('bezier', source, target, route);
+  // the curve itself, from its own control points
+  const [c0, c1] = bezierControls(source, target, zoom);
+  let worst = 0;
+  for (let i = 0; i <= 2000; i++) {
+    const t = i / 2000;
+    const u = 1 - t;
+    const p = {
+      x:
+        u * u * u * source.x +
+        3 * u * u * t * c0.x +
+        3 * u * t * t * c1.x +
+        t * t * t * target.x,
+      y:
+        u * u * u * source.y +
+        3 * u * u * t * c0.y +
+        3 * u * t * t * c1.y +
+        t * t * t * target.y,
+    };
+    worst = Math.max(worst, distanceToPath(drawn, p));
+  }
+  assert.ok(worst <= 0.2 + 1e-6, `strays ${worst.toFixed(3)} px`);
+  // and a gentle curve at the fitted zoom is not paying for it
+  const gentle = edgePath(
+    'bezier',
+    { x: 0, y: 0, position: 'right' },
+    { x: 60, y: 10, position: 'left' },
+    ROUTE,
+  );
+  assert.ok(gentle.length <= 12, `${gentle.length} vertices`);
 });
