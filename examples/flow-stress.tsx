@@ -21,7 +21,7 @@
 // docs/components/flow.md, "What the pane batches".
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactElement } from 'react';
-import { Button, createRoot } from 'react-x11';
+import { Button, Checkbox, createRoot } from 'react-x11';
 import { startTrace } from 'react-x11/debug';
 import type { TraceSession } from 'react-x11/debug';
 
@@ -31,6 +31,7 @@ import type {
   FlowFrameStats,
   FlowInstance,
   FlowNode,
+  FlowNodeType,
   HandlePosition,
 } from '../src/index.js';
 
@@ -223,6 +224,152 @@ function lattice(): Scene {
   };
 }
 
+// --- 400 nodes, each with a React body ---------------------------------------
+//
+// The heaviest scene: every node's type has a `render`, so every node on
+// screen is a real react-x11 subtree — a status line, a progress bar, a
+// checkbox and a button, laid out by yoga — mounted over its card. Two
+// things bound how many exist at once, and both are the pane's design rather
+// than this example's: bodies mount only at a zoom of 0.6 and above (below
+// it a card is too small to hold a widget), and only while their card is in
+// the pane. **0.6×** jumps to the densest view where they all mount.
+//
+// **tick** re-renders every mounted body ten times a second from a shared
+// clock — a node's *content* changing, with the graph itself untouched, which
+// is the case a text field typed into, or a value streaming in, costs.
+
+/** A shared 10 Hz clock the bodies subscribe to, and the count of bodies
+ *  mounted — both module state, so ticking never touches the graph's props. */
+export const ticker = {
+  value: 0,
+  listeners: new Set<() => void>(),
+  timer: null as ReturnType<typeof setInterval> | null,
+  start(): void {
+    if (this.timer) return;
+    this.timer = setInterval(() => {
+      this.value++;
+      for (const listen of this.listeners) listen();
+    }, 100);
+  },
+  stop(): void {
+    if (this.timer) clearInterval(this.timer);
+    this.timer = null;
+  },
+};
+export const mounted = { count: 0 };
+
+interface WidgetData {
+  label: string;
+  seed: number;
+}
+
+function WidgetBody(props: { node: FlowNode<WidgetData> }): ReactElement {
+  const { seed } = props.node.data ?? { seed: 0 };
+  const [tick, setTick] = useState(ticker.value);
+  const [enabled, setEnabled] = useState(seed % 3 !== 0);
+  const [runs, setRuns] = useState(0);
+  useEffect(() => {
+    mounted.count++;
+    const listen = (): void => setTick(ticker.value);
+    ticker.listeners.add(listen);
+    return () => {
+      mounted.count--;
+      ticker.listeners.delete(listen);
+    };
+  }, []);
+  const queue = (seed * 7 + tick * 3) % 50;
+  const progress = ((seed * 13 + tick * 2) % 100) / 100;
+  return (
+    <box style={{ flexGrow: 1, padding: 6, gap: 5 }}>
+      <box style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+        <box
+          style={{
+            width: 8,
+            height: 8,
+            borderRadius: 4,
+            backgroundColor: enabled ? '#3fb950' : '$textMuted',
+          }}
+        />
+        <text style={{ fontSize: 11 }}>
+          {enabled ? `queue ${queue}` : 'paused'}
+        </text>
+      </box>
+      <box
+        style={{
+          height: 6,
+          borderRadius: 3,
+          backgroundColor: '$border',
+          overflow: 'hidden',
+        }}
+      >
+        <box
+          style={{
+            width: `${Math.round(progress * 100)}%`,
+            height: 6,
+            backgroundColor: '$accent',
+          }}
+        />
+      </box>
+      <box style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+        <Checkbox
+          label="on"
+          checked={enabled}
+          onChange={(ev) => setEnabled(ev.value)}
+        />
+        <Button label={`run ${runs}`} onPress={() => setRuns((n) => n + 1)} />
+      </box>
+    </box>
+  );
+}
+
+const widgetType: FlowNodeType<WidgetData> = {
+  size: { width: 200, height: 124 },
+  headerHeight: 26,
+  handles: [
+    { type: 'target', position: 'left' },
+    { type: 'source', position: 'right' },
+  ],
+  render: ({ node }) => <WidgetBody node={node} />,
+};
+
+export const WIDGET_TYPES = { widget: widgetType } as Record<
+  string,
+  FlowNodeType<unknown>
+>;
+
+export function widgets(): Scene {
+  const count = 400;
+  const cols = 25;
+  const nodes: FlowNode[] = [];
+  for (let i = 0; i < count; i++) {
+    nodes.push({
+      id: `w${i}`,
+      type: 'widget',
+      position: { x: (i % cols) * 250, y: Math.floor(i / cols) * 180 },
+      data: { label: `worker ${i}`, seed: i } as unknown as FlowNode['data'],
+    });
+  }
+  const edges: FlowEdge[] = [];
+  for (let i = 0; i < count; i++) {
+    for (let k = 1; k <= 2; k++) {
+      const target = (i + cols + k * 3) % count;
+      if (target === i) continue;
+      edges.push({
+        id: `we${i}-${k}`,
+        source: `w${i}`,
+        target: `w${target}`,
+        animated: i % 29 === 0,
+      });
+    }
+  }
+  return {
+    name: '400 · widgets',
+    detail: `${count} nodes with React bodies, ${edges.length} edges`,
+    nodes,
+    edges,
+  };
+}
+
 const EMPTY: Scene = { name: 'empty', detail: 'nothing', nodes: [], edges: [] };
 
 function App(): ReactElement {
@@ -234,7 +381,13 @@ function App(): ReactElement {
   const flow = useRef<FlowInstance>(null);
   const trace = useRef<TraceSession | null>(null);
 
-  const scenes = useMemo(() => [spiral(), lattice(), fanOut()], []);
+  const scenes = useMemo(() => [spiral(), lattice(), fanOut(), widgets()], []);
+  const [ticking, setTicking] = useState(false);
+  useEffect(() => {
+    if (ticking) ticker.start();
+    else ticker.stop();
+    return () => ticker.stop();
+  }, [ticking]);
   const [gl, setGl] = useState(false);
   // Every frame the pane drew, on either renderer, from `onFrame`, drained by
   // the readout below. A ref, not state: setting state per frame would
@@ -343,6 +496,7 @@ function App(): ReactElement {
         }
       }
       if (dragged > 0) parts.push(`drag ${(dragged / dt).toFixed(0)} steps/s`);
+      if (mounted.count > 0) parts.push(`${mounted.count} bodies mounted`);
       setStats(parts.join(' · '));
     }, 600);
     return () => clearInterval(report);
@@ -372,6 +526,19 @@ function App(): ReactElement {
           />
           <Button label="fit" onPress={() => flow.current?.fitView()} />
           <Button label="gl" primary={gl} onPress={() => setGl((on) => !on)} />
+          <Button
+            label="0.6×"
+            onPress={() => {
+              // the densest view that still mounts bodies (RENDER_ZOOM)
+              const v = flow.current?.getViewport();
+              if (v) flow.current?.setViewport({ ...v, zoom: 0.6 });
+            }}
+          />
+          <Button
+            label={ticking ? 'stop tick' : 'tick'}
+            primary={ticking}
+            onPress={() => setTicking((on) => !on)}
+          />
         </box>
         <text style={{ fontSize: 12, color: '$textMuted' }}>{stats}</text>
         <Flow
@@ -382,6 +549,7 @@ function App(): ReactElement {
           ref={flow}
           defaultNodes={scene.nodes}
           defaultEdges={scene.edges}
+          nodeTypes={WIDGET_TYPES}
           onNodesChange={() => {
             // one batch per gesture step — counted, never stored: a setState
             // here would re-render this component per pointer move, and the
