@@ -83,14 +83,20 @@ rect_ itself, and the measurement is unambiguous:
 
 | gesture, 200 nodes       | p50 ms | of the pane repainted |
 | ------------------------ | ------ | --------------------- |
-| node drag, 60 steps      | 27.2   | **93%**               |
-| edge drag, 60 steps      | 28.0   | **94%**               |
-| pan, 60 steps            | 7.8    | 40%                   |
-| zoom, 40 steps           | 31.6   | 100%                  |
+| node drag, 60 steps      | 36.4   | **93%**               |
+| edge drag, 60 steps      | 36.2   | **94%**               |
+| pan, 60 steps            | 12.9   | 40%                   |
+| zoom, 40 steps           | 40.0   | 100%                  |
 | node body re-render, 60× | 33.4   | **96%**               |
 
+All five rows from one session, before any of the work below. They are
+comparable with each other and with nothing measured on another day: the
+same gesture on the same code moved 27 → 32 ms between two sessions here,
+which is the machine and not the code — "Reproduce" has the rule that
+follows from it.
+
 Dragging one node out of two hundred repaints nine tenths of the pane, and
-costs three and a half times what panning the whole graph costs. The reason is structural
+costs three times what panning the whole graph costs. The reason is structural
 rather than a bug: a node's damage is the union of its own box with the bounds
 of every edge touching it, and in any graph where edges are longer than a
 screenful that union _is_ the screenful. Culling harder cannot fix it, because
@@ -268,15 +274,48 @@ behind it — the arrangement `src/maps/gl/pane.ts` already documents.
 
    It was meant to be cost-neutral and was not — the frame got **materially
    faster**, because resolving each node once (`_source`) replaced repeated
-   `rectOf`/`_handlesOf`/`_grips` calls per node per pass: 200 nodes fitted
-   went 5.29 → 2.68 ms, 800 at zoom 1.0 went 22.0 → 9.84, and the four
-   gestures fell 21–40%. The geometry primitives are exported from
-   `scene.ts` and the element's hit testing calls the same ones the drawing
-   does, so the two can no longer drift.
+   `rectOf`/`_handlesOf`/`_grips` calls per node per pass. Confirmed by an
+   interleaved A/B (the old `node.ts` and the new one swapped in turn, two
+   rounds, one session): 200 nodes fitted 5.1/5.4 → 2.7/2.6 ms, 200 at zoom
+   1.0 11.6/12.1 → 8.4/8.2, 800 at zoom 1.0 22.1/21.8 → 10.7. An earlier
+   draft of this said the four gestures fell 21–40%; that compared sessions,
+   and is withdrawn. The geometry primitives are exported from `scene.ts`
+   and the element's hit testing calls the same ones the drawing does, so
+   the two can no longer drift.
 
-2. **The graph-space edge cache.** The scene build is now visible and, at
-   scale, dominant. This is the next thing, and it pays off on the 2D path
-   before any GL exists.
+2. ~~**The graph-space edge cache.**~~ **Done.** `SceneCache` keeps each
+   edge's route, arrowheads and bounds between frames. It rests on one
+   property of the routing: **every edge type is translation-equivariant and
+   none is scale-equivariant** — a pan moves both endpoints by one vector and
+   the route with them, while a zoom changes a bezier's shoulder, a step's
+   offset and a loop's reach against pixel clamps. So routes are stored in
+   screen space beside the origin they were built at, a pan is one addition
+   per vertex into arrays that already exist, and a zoom rebuilds (hit rate
+   100% on a pan, 2% on a zoom, measured).
+
+   What it bought, honestly stated:
+   - **The scene build, which is what a GPU renderer still pays:** 2000
+     nodes fitted, built output, 7.04 → **3.76 ms** (1.9×); 200 nodes 0.65 →
+     0.54.
+   - **The 2D path: nothing measurable.** An interleaved A/B of the real
+     gestures with the cache on and off is within noise on all four. That
+     is the expected answer rather than a disappointing one — the scene is
+     well under a millisecond of a 30 ms 2D drag, the drawing is the rest,
+     and the cache was built for the renderer whose drawing is 0.6 ms.
+
+   `test/flow-scene.test.ts` holds a cached route to a fresh one, vertex for
+   vertex, after pans and across every edge type, and holds a whole cached
+   frame to an uncached one. It found a bug on its first run that no gesture
+   test could have: `trimEnd` returns a shallow copy, so the stroke and the
+   route shared their vertex _objects_, and a pan moved each shared vertex
+   twice — the stroke slid away from its own arrowhead by the distance
+   panned. The test fails seven ways with that bug put back.
+
+   One measurement trap found on the way, now in the bench: `tsx`
+   transpiles with esbuild's `keepNames`, and its `__name` helper was a sixth
+   of the scene profile — the same code built by `tsc` ran **2.2× faster**.
+   `--build=dist` times what an application runs.
+
 3. **Geometry on the GPU.** The four programs, behind an explicit
    `renderer="gl"`. Measurable, not yet shippable.
 4. **Labels.** Atlas, buckets, the admission budget.
@@ -303,6 +342,12 @@ nothing else in the file matters.
 
 Traps worth knowing before trusting a number:
 
+- **Compare within one session, interleaved.** The same gesture on the same
+  code measured 27 ms one session and 32 the next. An A/B is two arms
+  alternated — old, new, old, new — in one sitting, or it is two
+  measurements of the weather.
+- **Time the built output for anything JavaScript-bound.** `tsx` runs the
+  scene build 2.2× slower than `tsc`'s output does (`--build=dist`).
 - **Read p50, never the mean.** A window that loses focus takes a multi-second
   stall, and a backgrounded Cocoa window makes an A/B comparison worthless.
 - **A live rate can only be a submultiple of the display period.** Two

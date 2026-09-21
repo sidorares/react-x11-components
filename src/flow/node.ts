@@ -77,6 +77,7 @@ import {
   anchorsOf,
   buildScene,
   connectionPath,
+  SceneCache,
   CULL_MARGIN,
   edgeCoarseBox,
   edgeRoute,
@@ -392,6 +393,8 @@ export class FlowGraphNode extends Node implements FlowInstance {
   /** Inside `paint`, where an invalidation would only schedule a redraw of
    * the frame being drawn. */
   private _painting = false;
+  /** Routes that survived the last frame — see {@link SceneCache}. */
+  private readonly _sceneCache = new SceneCache();
   /** Inside a live input dispatch — what makes a body emission `sync`.
    * Motion and the wheel run at continuous priority, whose React updates
    * can trail the pane's own painting by frames; an emission made under
@@ -2505,6 +2508,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
   override destroySubtree(): void {
     this._stopAnimation();
     this._dropGridTile();
+    this._sceneCache.clear();
     super.destroySubtree();
   }
 
@@ -2719,6 +2723,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
       controls: this._controlButtons(),
       scale: this._scale,
       measure: this._measureBox,
+      cache: this._sceneCache,
     };
   }
 

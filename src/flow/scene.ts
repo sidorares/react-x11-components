@@ -56,6 +56,7 @@ import {
 } from './paths.js';
 import type {
   BackgroundVariant,
+  EdgeMarker,
   EdgeType,
   FlowEdge,
   FlowNode,
@@ -96,6 +97,306 @@ export const MIN_GRID_PX = 16;
 export const CULL_MARGIN = 16;
 
 const DEFAULT_DASH = [7, 5];
+
+// --- the cache ----------------------------------------------------------------
+
+/**
+ * One edge's route, kept between frames.
+ *
+ * The saved work is everything above the arithmetic: resolving which handle
+ * each end uses (which allocates an anchor per spec), evaluating the curve
+ * (up to 48 points), and dropping the vertices that crowd each other.
+ *
+ * What makes it reusable is a property of the routing rather than of the
+ * cache: **every edge type is translation-equivariant and none is
+ * scale-equivariant.** Move both endpoints by the same vector and the whole
+ * route moves with them, because every route is built from distances
+ * between the two ends; change the zoom and it does not, because a bezier's
+ * shoulder, a step's offset, a fillet's radius and a loop's reach are all
+ * clamped against pixel constants that do not scale. So the route is stored
+ * in screen space next to the viewport origin it was built at, and a pan —
+ * which keeps the zoom and moves the origin — is an addition per vertex
+ * into an array that already exists. A zoom rebuilds.
+ *
+ * The screen arrays are **reused and mutated in place**, which is where the
+ * allocation goes: a frame of 2000 edges was spending a sixth of itself in
+ * the collector. A scene is built and drawn inside one paint and nothing
+ * retains it, so the only rule is the one stated on {@link buildScene} —
+ * do not hold a scene past the frame that made it.
+ */
+interface CachedRoute {
+  // what it was built from
+  zoom: number;
+  originX: number;
+  originY: number;
+  sx: number;
+  sy: number;
+  sw: number;
+  sh: number;
+  tx: number;
+  ty: number;
+  tw: number;
+  th: number;
+  sourceSpecs: readonly HandleSpec[];
+  targetSpecs: readonly HandleSpec[];
+  sourceHandle: string | null;
+  targetHandle: string | null;
+  /** The node ids too: an id can be reused for a different pair between
+   *  commits, and the rects alone would not notice two nodes that happen to
+   *  sit in the same place. */
+  source: string;
+  target: string;
+  type: EdgeType | undefined;
+  loop: boolean;
+  /** The arrowheads' shapes and sizes, which decide where the stroke stops
+   *  and what the heads look like. Their *colours* are not here: those
+   *  change with selection and hover and move no geometry. */
+  markerKey: string;
+  // what came out, in screen space at `originX`/`originY`
+  points: XYPosition[];
+  /** The stroke's own points, stopped behind the arrowhead — null when
+   *  there is no head and the stroke is the whole route. Kept apart from
+   *  `points` because the label sits at the middle of the *whole* route. */
+  trimmed: XYPosition[] | null;
+  endHead: XYPosition[] | null;
+  startHead: XYPosition[] | null;
+  from: HandleAnchor;
+  to: HandleAnchor;
+  bounds: FlowRect;
+}
+
+/** Bounded, so a graph that churns edge ids cannot turn this into a leak. */
+const ROUTE_LIMIT = 20000;
+
+/**
+ * Move a polyline, in place.
+ *
+ * Addition in place drifts by float rounding — `(x + a) + b` is not always
+ * `x + (a + b)` — so a route panned many times sits a few units in the last
+ * place off one routed fresh. That is ~1e-14 px a pan, the painter puts
+ * every coordinate on the device grid before it draws, and any zoom or node
+ * move rebuilds the route from scratch and resets it. Reading through a
+ * per-frame copy instead would be exact and would bring back the allocation
+ * this cache exists to remove.
+ */
+function shift(points: XYPosition[], dx: number, dy: number): void {
+  for (const p of points) {
+    p.x += dx;
+    p.y += dy;
+  }
+}
+
+/**
+ * What a renderer keeps between frames. Owned by whoever draws — the
+ * element, or a GL renderer — and handed to {@link buildScene}, which reads
+ * and fills it. Passing none is correct and simply recomputes everything.
+ */
+/**
+ * One edge routed from scratch, arrowheads and all — the miss path of
+ * {@link SceneCache}, and the whole path for a caller that keeps none.
+ */
+function buildRoute(
+  v: Viewport,
+  edge: AnyEdge,
+  from: SceneNodeSource,
+  to: SceneNodeSource,
+  markerEnd: EdgeMarker | null,
+  markerStart: EdgeMarker | null,
+  into?: CachedRoute,
+): CachedRoute | null {
+  const routed = edgeRoute(v, edge, from, to);
+  if (!routed) return null;
+  const markerKey = markerKeyOf(markerEnd, markerStart);
+  const loop = edge.source === edge.target;
+  // The tip stops short of the handle rather than at it: the handle dot is
+  // drawn *over* the edges, with the nodes, so an arrow aimed at the
+  // handle's centre is an arrow mostly hidden under a white circle.
+  const inset = v.zoom >= HANDLE_ZOOM ? handleRadius(v.zoom) + 1 : 1;
+  const all = routed.points;
+  let trimmed: XYPosition[] | null = null;
+  let endHead: XYPosition[] | null = null;
+  let startHead: XYPosition[] | null = null;
+  if (markerEnd) {
+    const size = (markerEnd.size ?? DEFAULT_MARKER_SIZE) * v.zoom;
+    const last = all[all.length - 1];
+    const angle = endAngle(all);
+    // and the stroke stops behind the head, so a filled triangle is a
+    // triangle rather than a triangle with a line through it
+    // Copied vertex by vertex, not just sliced. `trimEnd` returns a shallow
+    // copy — the same point *objects* as the route, less the last — and a
+    // pan moves both arrays in place, so a shared vertex moved twice: the
+    // stroke slid away from its own head by the pan's distance. Caught by
+    // test/flow-scene.test.ts, which the gesture tests could not have seen.
+    trimmed = trimEnd(all, size * 0.8 + inset).map((p) => ({ x: p.x, y: p.y }));
+    endHead = markerPoints(
+      {
+        x: last.x - Math.cos(angle) * inset,
+        y: last.y - Math.sin(angle) * inset,
+      },
+      angle,
+      markerEnd.type,
+      size,
+    );
+  }
+  if (markerStart) {
+    const size = (markerStart.size ?? DEFAULT_MARKER_SIZE) * v.zoom;
+    const angle = startAngle(all);
+    startHead = markerPoints(
+      {
+        x: all[0].x - Math.cos(angle) * inset,
+        y: all[0].y - Math.sin(angle) * inset,
+      },
+      angle,
+      markerStart.type,
+      size,
+    );
+  }
+  // Written over the entry this edge already had, where there is one. A
+  // zoom misses on every edge of every frame, and allocating a fresh record
+  // for each — plus the `Map.set` to file it — cost more than the routing
+  // the cache saves: a drag and a zoom both came out ~10% slower than with
+  // no cache at all, before this.
+  const entry = into ?? ({} as CachedRoute);
+  Object.assign(entry, {
+    zoom: v.zoom,
+    originX: v.x,
+    originY: v.y,
+    sx: from.rect.x,
+    sy: from.rect.y,
+    sw: from.rect.width,
+    sh: from.rect.height,
+    tx: to.rect.x,
+    ty: to.rect.y,
+    tw: to.rect.width,
+    th: to.rect.height,
+    sourceSpecs: from.specs,
+    targetSpecs: to.specs,
+    sourceHandle: edge.sourceHandle ?? null,
+    targetHandle: edge.targetHandle ?? null,
+    source: edge.source,
+    target: edge.target,
+    type: edge.type,
+    loop,
+    markerKey,
+    points: all,
+    trimmed,
+    endHead,
+    startHead,
+    from: routed.from,
+    to: routed.to,
+    bounds: pathBounds(all),
+  });
+  return entry;
+}
+
+/** Which arrowheads a route was built for — their shapes and sizes, never
+ *  their colours, which move nothing. */
+function markerKeyOf(
+  markerEnd: EdgeMarker | null,
+  markerStart: EdgeMarker | null,
+): string {
+  return `${markerEnd?.type ?? ''}:${markerEnd?.size ?? ''}|${
+    markerStart?.type ?? ''
+  }:${markerStart?.size ?? ''}`;
+}
+
+/** A route with nothing kept between frames. */
+export function uncachedRoute(
+  v: Viewport,
+  edge: AnyEdge,
+  from: SceneNodeSource,
+  to: SceneNodeSource,
+  markerEnd: EdgeMarker | null,
+  markerStart: EdgeMarker | null,
+): CachedRoute | null {
+  return buildRoute(v, edge, from, to, markerEnd, markerStart);
+}
+
+export class SceneCache {
+  private readonly routes = new Map<string, CachedRoute>();
+  /** The node index, memoized on the array it was built from: at two
+   *  thousand nodes, rebuilding this Map every frame was a tenth of the
+   *  build. */
+  private index: Map<string, SceneNodeSource> | null = null;
+  private indexFor: readonly SceneNodeSource[] | null = null;
+
+  /** Everything is derived, so forgetting it is always safe. */
+  clear(): void {
+    this.routes.clear();
+    this.index = null;
+    this.indexFor = null;
+  }
+
+  byId(all: readonly SceneNodeSource[]): Map<string, SceneNodeSource> {
+    if (this.indexFor === all && this.index) return this.index;
+    const map = new Map<string, SceneNodeSource>();
+    for (const source of all) map.set(source.node.id, source);
+    this.index = map;
+    this.indexFor = all;
+    return map;
+  }
+
+  route(
+    v: Viewport,
+    edge: AnyEdge,
+    from: SceneNodeSource,
+    to: SceneNodeSource,
+    markerEnd: EdgeMarker | null,
+    markerStart: EdgeMarker | null,
+  ): CachedRoute | null {
+    const loop = edge.source === edge.target;
+    const markerKey = markerKeyOf(markerEnd, markerStart);
+    const hit = this.routes.get(edge.id);
+    if (
+      hit &&
+      hit.zoom === v.zoom &&
+      hit.sx === from.rect.x &&
+      hit.sy === from.rect.y &&
+      hit.sw === from.rect.width &&
+      hit.sh === from.rect.height &&
+      hit.tx === to.rect.x &&
+      hit.ty === to.rect.y &&
+      hit.tw === to.rect.width &&
+      hit.th === to.rect.height &&
+      hit.sourceSpecs === from.specs &&
+      hit.targetSpecs === to.specs &&
+      hit.sourceHandle === (edge.sourceHandle ?? null) &&
+      hit.targetHandle === (edge.targetHandle ?? null) &&
+      hit.source === edge.source &&
+      hit.target === edge.target &&
+      hit.type === edge.type &&
+      hit.loop === loop &&
+      hit.markerKey === markerKey
+    ) {
+      const dx = v.x - hit.originX;
+      const dy = v.y - hit.originY;
+      if (dx !== 0 || dy !== 0) {
+        shift(hit.points, dx, dy);
+        // `trimmed` is null when it would be `points`, so nothing is moved
+        // twice — the bug that aliasing invites here.
+        if (hit.trimmed) shift(hit.trimmed, dx, dy);
+        if (hit.endHead) shift(hit.endHead, dx, dy);
+        if (hit.startHead) shift(hit.startHead, dx, dy);
+        hit.bounds.x += dx;
+        hit.bounds.y += dy;
+        hit.originX = v.x;
+        hit.originY = v.y;
+      }
+      return hit;
+    }
+
+    const entry = buildRoute(v, edge, from, to, markerEnd, markerStart, hit);
+    if (!entry) {
+      this.routes.delete(edge.id);
+      return null;
+    }
+    if (!hit) {
+      if (this.routes.size >= ROUTE_LIMIT) this.routes.clear();
+      this.routes.set(edge.id, entry);
+    }
+    return entry;
+  }
+}
 
 // --- what goes in -------------------------------------------------------------
 
@@ -198,6 +499,9 @@ export interface SceneInput {
     text: string,
     options?: TextOptions,
   ): { width: number; height: number };
+  /** What survived the last frame. Optional: without one every route is
+   *  computed again, which is correct and slower. */
+  cache?: SceneCache;
 }
 
 // --- what comes out -----------------------------------------------------------
@@ -471,7 +775,16 @@ function markerPoints(
 
 // --- the builder --------------------------------------------------------------
 
-/** The scene for one pass. Pure: the same input gives the same scene. */
+/**
+ * The scene for one pass.
+ *
+ * Pure but for one thing, and it is worth stating plainly: with a
+ * {@link SceneCache} the routes it returns are **arrays the cache owns and
+ * the next frame will move in place**. A scene is built and drawn inside one
+ * paint and nothing keeps it, so the rule is simply that — do not hold a
+ * scene past the frame that made it, and do not mutate what it hands back.
+ * Without a cache every array is fresh and the rule is vacuous.
+ */
 export function buildScene(input: SceneInput): FlowScene {
   const { viewport: v, pane, clip, palette } = input;
   const region = clip ? intersect(pane, clip) : pane;
@@ -546,12 +859,20 @@ function buildGrid(input: SceneInput, region: FlowRect): SceneGrid | null {
   };
 }
 
+function indexOf(
+  all: readonly SceneNodeSource[],
+): Map<string, SceneNodeSource> {
+  const map = new Map<string, SceneNodeSource>();
+  for (const source of all) map.set(source.node.id, source);
+  return map;
+}
+
 function buildEdges(input: SceneInput, scene: FlowScene): SceneEdge[] {
   const { viewport: v, pane, clip, palette, hover, scale } = input;
   const labels = v.zoom >= LABEL_ZOOM;
   const out: SceneEdge[] = [];
-  const byId = new Map<string, SceneNodeSource>();
-  for (const source of input.all) byId.set(source.node.id, source);
+  const cache = input.cache;
+  const byId = cache ? cache.byId(input.all) : indexOf(input.all);
   let animBox: FlowRect | null = null;
 
   for (const edge of input.edges) {
@@ -570,9 +891,22 @@ function buildEdges(input: SceneInput, scene: FlowScene): SceneEdge[] {
     if (edge.animated) scene.animated = true;
     if (clip && !rectsOverlap(coarse, clip)) continue;
 
-    const geometry = edgeRoute(v, edge, from, to);
-    if (!geometry) continue;
-    if (!rectsOverlap(pathBounds(geometry.points), pane)) continue;
+    // `markerEnd` left out means an arrow: a directed graph whose edges do
+    // not say which way they point is a set of lines. `null` opts out.
+    const markerEnd = normalizeMarker(
+      edge.markerEnd === undefined ? 'arrowclosed' : edge.markerEnd,
+    );
+    const markerStart = normalizeMarker(edge.markerStart);
+
+    // The route, from the cache where there is one: a pan keeps the zoom, so
+    // the cached route is the same curve translated, and re-deriving it —
+    // the handles, the curve, the arrowheads — is the work this skips.
+    const routed = cache
+      ? cache.route(v, edge, from, to, markerEnd, markerStart)
+      : uncachedRoute(v, edge, from, to, markerEnd, markerStart);
+    if (!routed) continue;
+    const bounds = routed.bounds;
+    if (!rectsOverlap(bounds, pane)) continue;
 
     const selected = edge.selected ?? false;
     const hovered = hover.edgeId === edge.id;
@@ -583,54 +917,20 @@ function buildEdges(input: SceneInput, scene: FlowScene): SceneEdge[] {
       1,
       (edge.style?.strokeWidth ?? (selected ? 2 : 1.5)) * v.zoom,
     );
-    // `markerEnd` left out means an arrow: a directed graph whose edges do
-    // not say which way they point is a set of lines. `null` opts out.
-    const markerEnd = normalizeMarker(
-      edge.markerEnd === undefined ? 'arrowclosed' : edge.markerEnd,
-    );
-    const markerStart = normalizeMarker(edge.markerStart);
-
-    // The tip stops short of the handle rather than at it: the handle dot is
-    // drawn *over* the edges, with the nodes, so an arrow aimed at the
-    // handle's centre is an arrow mostly hidden under a white circle.
-    const inset = v.zoom >= HANDLE_ZOOM ? handleRadius(v.zoom) + 1 : 1;
+    // The heads' geometry came with the route; only their ink is this
+    // frame's, because selection and hover recolour without moving anything.
     const markers: SceneMarker[] = [];
-    let points: readonly XYPosition[] = geometry.points;
-    if (markerEnd) {
-      const size = (markerEnd.size ?? DEFAULT_MARKER_SIZE) * v.zoom;
-      const last = geometry.points[geometry.points.length - 1];
-      const outAngle = endAngle(geometry.points);
-      // and the stroke stops behind the head, so a filled triangle is a
-      // triangle rather than a triangle with a line through it
-      points = trimEnd(points, size * 0.8 + inset);
+    if (routed.endHead && markerEnd) {
       markers.push({
-        points: markerPoints(
-          {
-            x: last.x - Math.cos(outAngle) * inset,
-            y: last.y - Math.sin(outAngle) * inset,
-          },
-          outAngle,
-          markerEnd.type,
-          size,
-        ),
+        points: routed.endHead,
         filled: markerEnd.type === 'arrowclosed',
         color: markerEnd.color ?? stroke,
         lineWidth,
       });
     }
-    if (markerStart) {
-      const size = (markerStart.size ?? DEFAULT_MARKER_SIZE) * v.zoom;
-      const inAngle = startAngle(geometry.points);
+    if (routed.startHead && markerStart) {
       markers.push({
-        points: markerPoints(
-          {
-            x: geometry.points[0].x - Math.cos(inAngle) * inset,
-            y: geometry.points[0].y - Math.sin(inAngle) * inset,
-          },
-          inAngle,
-          markerStart.type,
-          size,
-        ),
+        points: routed.startHead,
         filled: markerStart.type === 'arrowclosed',
         color: markerStart.color ?? stroke,
         lineWidth,
@@ -643,13 +943,13 @@ function buildEdges(input: SceneInput, scene: FlowScene): SceneEdge[] {
       // slack repaints a card-sized halo of neighbours sixteen times a
       // second — so the box the ticks invalidate comes off the *drawn*
       // geometry.
-      const tight = inflateRect(pathBounds(geometry.points), CULL_MARGIN);
+      const tight = inflateRect(bounds, CULL_MARGIN);
       animBox = animBox ? unionRects(animBox, tight) : tight;
     }
 
     const item: SceneEdge = {
       id: edge.id,
-      points,
+      points: routed.trimmed ?? routed.points,
       stroke,
       lineWidth,
       dash: dash?.map((d) => d * v.zoom),
@@ -658,7 +958,7 @@ function buildEdges(input: SceneInput, scene: FlowScene): SceneEdge[] {
     };
 
     if (labels && edge.label) {
-      const at = pointAtFraction(geometry.points, 0.5);
+      const at = pointAtFraction(routed.points, 0.5);
       const size = Math.max(8, 11 * v.zoom);
       const metrics = input.measure(edge.label, { size });
       const padX = 5 * v.zoom;

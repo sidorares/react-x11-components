@@ -69,6 +69,18 @@ const paneWidth = Number(arg('width', '1200'));
 const paneHeight = Number(arg('height', '800'));
 const segments = Number(arg('segments', '24'));
 const jsonOut = arg('json', '');
+/**
+ * Which build of `src/flow/` the `scene` stage times.
+ *
+ * `tsx` transpiles with esbuild's `keepNames`, which wraps every function in
+ * a `__name` helper: at two thousand nodes that helper alone was a sixth of
+ * the profile, and the whole stage ran **2.2x slower** than the same code
+ * built by `tsc`. An application runs the built output, so `--build=dist`
+ * (after `npm run build`) is the number to quote and `src` is the convenient
+ * one. The other stages are dominated by the graphics backend rather than by
+ * JavaScript, so they are left on `src`.
+ */
+const build = arg('build', 'src');
 
 /** Median rather than mean: one GC pause in a hundred frames moves a mean and
  *  does not move a median, and the question is what a frame usually costs. */
@@ -320,9 +332,15 @@ async function stageRetained(): Promise<void> {
  * this stage runs anywhere, including CI.
  */
 async function stageScene(): Promise<void> {
-  const { buildScene } = await import('../../src/flow/scene.js');
+  const from = build === 'dist' ? '../../dist' : '../../src';
+  const { buildScene, SceneCache } = (await import(
+    `${from}/flow/scene.js`
+  )) as typeof import('../../src/flow/scene.js');
   const { measureNode, normalizeBackground, resolveHandles, resolvePalette } =
-    await import('../../src/flow/model.js');
+    (await import(
+      `${from}/flow/model.js`
+    )) as typeof import('../../src/flow/model.js');
+  process.stdout.write(`  timing ${build}/flow\n`);
   const palette = resolvePalette(null, undefined);
   const pane = { x: 0, y: 0, width: paneWidth, height: paneHeight };
   // No font stack out here, so the same estimate `measureText` falls back to
@@ -367,8 +385,9 @@ async function stageScene(): Promise<void> {
       (paneHeight * 0.92) / extent.y,
     );
 
-    const run = (label: string, viewport: Viewport): void => {
+    const run = (label: string, viewport: Viewport, cached: boolean): void => {
       const base = {
+        cache: cached ? new SceneCache() : undefined,
         viewport,
         pane,
         clip: null,
@@ -408,8 +427,13 @@ async function stageScene(): Promise<void> {
       results[`scene/${graph.name}/${label}`] = summarize(samples);
     };
 
-    run('fitted', { x: 20, y: 20, zoom: fitted });
-    run('zoom 1.0', { x: 20, y: 20, zoom: 1 });
+    // Both ways round, because the gap between them is the claim: a pan
+    // keeps the zoom, so every route the cache holds is still the right
+    // curve, one addition per vertex away.
+    run('fitted, uncached', { x: 20, y: 20, zoom: fitted }, false);
+    run('fitted, cached', { x: 20, y: 20, zoom: fitted }, true);
+    run('zoom 1.0, uncached', { x: 20, y: 20, zoom: 1 }, false);
+    run('zoom 1.0, cached', { x: 20, y: 20, zoom: 1 }, true);
   }
 }
 
