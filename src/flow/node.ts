@@ -424,11 +424,6 @@ export class FlowGraphNode extends Node implements FlowInstance {
   private _bodiesHeld = false;
   private _seenZoom = NaN;
   private _bodiesRest: unknown = null;
-  /** The viewport the last window flush placed the bodies at — what a GL
-   *  frame draws while bodies are live (`glFrame`) — and, while one is
-   *  being built, the viewport it is built at. */
-  private _bodiesView: Viewport | null = null;
-  private _viewOverride: Viewport | null = null;
   /** The budget's model (`_holdBodies`, `_frameTick`): what a body adds to a
    *  zoom step, what a step costs with none re-scaled, the last frame's
    *  time, and what the step awaiting its frame did. */
@@ -845,7 +840,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
   // --- coordinates ---------------------------------------------------------
 
   private _viewport(): Viewport {
-    return this._viewOverride ?? this._prop<Viewport>('viewport') ?? this._vp;
+    return this._prop<Viewport>('viewport') ?? this._vp;
   }
 
   /** The viewport with the pane's window origin folded in — what every
@@ -2656,7 +2651,6 @@ export class FlowGraphNode extends Node implements FlowInstance {
       // so every change the 2D renderer would repaint is one GL frame.
       this._sync();
       this._emitBodies();
-      this._bodiesView = { ...this._viewport() };
       this._glRequest?.();
       return;
     }
@@ -2857,37 +2851,6 @@ export class FlowGraphNode extends Node implements FlowInstance {
    * pending fit, the dash timer, the first scene announcement, the bodies.
    */
   glFrame(lastKey: string | null): {
-    world: FlowScene | null;
-    key: string;
-    offset: XYPosition;
-    overlay: FlowScene;
-    phase: number;
-  } | null {
-    // **In step with the bodies.** A GL frame is drawn and swapped at the top
-    // of a window tick; the bodies over it are laid out and painted in that
-    // tick's flush and reach the screen after it — ~19 ms later during a
-    // zoom, when every body is re-laid out at the new scale. Drawing the
-    // newest viewport put new cards under old bodies for that long: the
-    // bodies trailing the zoom by a frame, visible on GL only (the 2D
-    // renderer presents both in the one flush). So while bodies are live, a
-    // GL frame draws the viewport the last flush placed them at, and that
-    // flush asks for the frame that catches up — the next tick's, which
-    // lands right after the bodies'. It costs the graph a frame of latency,
-    // and only then: with no bodies, or bodies held out of a zoom, the frame
-    // draws the newest viewport as before.
-    const live =
-      this._bodies.length > 0 &&
-      !this._bodiesHeld &&
-      this._prop('onNodeBodies') != null;
-    this._viewOverride = live ? this._bodiesView : null;
-    try {
-      return this._glFrameAt(lastKey);
-    } finally {
-      this._viewOverride = null;
-    }
-  }
-
-  private _glFrameAt(lastKey: string | null): {
     world: FlowScene | null;
     key: string;
     offset: XYPosition;
