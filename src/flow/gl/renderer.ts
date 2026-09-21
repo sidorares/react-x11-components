@@ -12,7 +12,13 @@
 import type { FlowFrameStats, FlowRect, XYPosition } from '../types.js';
 import type { FlowScene } from '../scene.js';
 import { BOX_STRIDE, LINE_STRIDE, ScenePacker, TRI_STRIDE } from './pack.js';
-import type { DrawRange, PackedScene, PackLayer } from './pack.js';
+import type {
+  DrawRange,
+  PackedScene,
+  PackLayer,
+  TextResolver,
+} from './pack.js';
+import type { LabelAtlas } from './text.js';
 import {
   ATTRIBUTES,
   BOX_FRAGMENT,
@@ -83,9 +89,9 @@ class Layer {
    *  rather than `bufferSubData`: the driver hands back fresh storage
    *  instead of waiting for the last frame's draws to finish reading the
    *  old. */
-  update(scene: FlowScene, layer: PackLayer): number {
+  update(scene: FlowScene, layer: PackLayer, text?: TextResolver): number {
     const gl = this.gl;
-    const packed = this.packer.pack(scene, layer);
+    const packed = this.packer.pack(scene, layer, text);
     this.packed = packed;
     this.scene = scene;
     let bytes = 0;
@@ -120,6 +126,9 @@ export class FlowGlRenderer {
   private readonly world: Layer;
   private readonly overlay: Layer;
   private readonly colors = new ColorCache();
+  /** Whether this context has had the atlas's texture made in it — a new
+   *  renderer is a new context, into which every raster is uploaded again. */
+  private atlasBound = false;
 
   constructor(gl: GL) {
     this.gl = gl;
@@ -127,7 +136,13 @@ export class FlowGlRenderer {
       ...UNIFORMS,
       'u_phase',
     ]);
-    this.box = linkProgram(gl, BOX_VERTEX, BOX_FRAGMENT, UNIFORMS);
+    this.box = linkProgram(gl, BOX_VERTEX, BOX_FRAGMENT, [
+      ...UNIFORMS,
+      'u_atlas',
+    ]);
+    // the label atlas is always on unit 0
+    gl.useProgram(this.box.program);
+    gl.uniform1i(this.box.uniforms.u_atlas, 0);
     this.tri = linkProgram(gl, TRI_VERTEX, TRI_FRAGMENT, UNIFORMS);
     this.grid = linkProgram(gl, GRID_VERTEX, GRID_FRAGMENT, [
       ...UNIFORMS,
@@ -153,11 +168,19 @@ export class FlowGlRenderer {
 
   /** A whole scene, in one layer, at no offset — what a test or a one-off
    *  render wants, and the same drawing the two-layer frame composes. */
-  draw(scene: FlowScene, target: FlowGlTarget): FlowGlDrawStats {
+  draw(
+    scene: FlowScene,
+    target: FlowGlTarget,
+    atlas?: LabelAtlas,
+  ): FlowGlDrawStats {
     const packStart = now();
-    const bytes = this.overlay.update(scene, 'all');
+    const bytes = this.overlay.update(
+      scene,
+      'all',
+      atlas ? (t) => atlas.quad(t) : undefined,
+    );
     const drawStart = now();
-    this.begin(target);
+    this.begin(target, atlas);
     const packed = this.overlay.packed!;
     // Every marching edge in one scene has the same phase baked in.
     const phase = scene.edges.find((e) => e.animated)?.dashOffset ?? 0;
@@ -175,15 +198,25 @@ export class FlowGlRenderer {
 
   /** One frame: the overlay under the world, the world at its offset, the
    *  overlay over it. */
-  drawFrame(frame: FlowGlFrame, target: FlowGlTarget): FlowGlDrawStats {
+  drawFrame(
+    frame: FlowGlFrame,
+    target: FlowGlTarget,
+    atlas?: LabelAtlas,
+  ): FlowGlDrawStats {
     const packStart = now();
     let bytes = 0;
     const rebuilt = frame.world != null;
-    if (frame.world) bytes += this.world.update(frame.world, 'world');
+    if (frame.world) {
+      bytes += this.world.update(
+        frame.world,
+        'world',
+        atlas ? (t) => atlas.quad(t) : undefined,
+      );
+    }
     bytes += this.overlay.update(frame.overlay, 'overlay');
     const drawStart = now();
 
-    this.begin(target);
+    this.begin(target, atlas);
     const over = this.overlay.packed!;
     let calls = this.ranges(
       over.ranges.slice(0, over.split),
@@ -249,8 +282,12 @@ export class FlowGlRenderer {
     };
   }
 
-  private begin(target: FlowGlTarget): void {
+  private begin(target: FlowGlTarget, atlas?: LabelAtlas): void {
     const gl = this.gl;
+    if (atlas) {
+      atlas.bind(gl, !this.atlasBound);
+      this.atlasBound = true;
+    }
     gl.bindVertexArray(this.vao);
     gl.viewport(0, 0, target.width, target.height);
     gl.disable(gl.DEPTH_TEST);

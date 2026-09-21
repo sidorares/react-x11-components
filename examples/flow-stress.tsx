@@ -12,8 +12,10 @@
 //           delivers rather than at a timer's 60/s.
 //   drag  — grab any node; the line adds the gesture's steps a second.
 //   gl    — switches the pane to `renderer="gl"` (docs/prd-flow-gl.md): the
-//           graph drawn through a `<glarea>`, a pan a uniform write. It draws
-//           no text yet, and the line says how many strings a frame left out.
+//           graph drawn through a `<glarea>`, a pan a uniform write. Labels
+//           at a new size arrive a frame or two after a zoom stops — the line
+//           counts any a frame was still waiting on — and a node type's
+//           mounted body is not over the surface yet.
 //
 // On the 2D renderer the line also reports X requests and bytes per frame
 // from `react-x11/debug`'s trace — everything that renderer draws is X
@@ -486,7 +488,7 @@ function App(): ReactElement {
         if (renderer === 'gl') {
           parts.push(`${frames.filter((f) => f.worldRebuilt).length} rebuilds`);
           const text = frames[frames.length - 1].gaps.text;
-          if (text) parts.push(`${text} labels not drawn yet`);
+          if (text) parts.push(`${text} labels still being set`);
         } else if (requests > 0) {
           // X protocol per frame — what the 2D renderer costs on the wire
           parts.push(

@@ -663,10 +663,13 @@ export interface FlowProps<N = FlowNodeData, E = unknown> {
    * `useSupports('shaders')`; where it has none, or its surface fails, the
    * pane falls back to `'retained'` and says so through `onError`.
    *
-   * **Not yet a replacement.** The GL renderer draws the graph's geometry —
-   * cards, edges, arrowheads, handles, the grid, the minimap — and no text
-   * yet, nor a node type's own `paint`; `onFrame`'s `gaps` counts what a
-   * frame left out. `docs/prd-flow-gl.md` has the plan and the numbers.
+   * **Not yet a replacement.** The GL renderer draws the graph — cards,
+   * edges, arrowheads, handles, labels, the grid, the minimap — but not yet
+   * a node type's own `paint`, nor a mounted body over the surface, and a
+   * label set at a new size arrives a frame or two after the zoom that
+   * asked for it (drawn scaled from the nearest size meanwhile);
+   * `onFrame`'s `gaps` counts what a frame left out.
+   * `docs/prd-flow-gl.md` has the plan and the numbers.
    */
   renderer?: 'retained' | 'gl';
   /**

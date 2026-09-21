@@ -23,8 +23,8 @@
 //    of frame, because the renderer has two: a *pan*, where the graph is
 //    already on the GPU and only its offset moves, and a *rebuild* — what a
 //    drag step or a zoom step costs — where the graph is built, packed and
-//    uploaded again. No text yet: the renderer draws none
-//    (docs/prd-flow-gl.md, "Labels").
+//    uploaded again. No labels: a zoom-fitted graph is below the zoom that
+//    draws them, and the atlas is the `live` stage's to exercise.
 //  - **live** — `<Flow renderer="gl">` in a real window, panned from its own
 //    frame callback, every delivered frame counted: the rate a user gets,
 //    through `<glarea>`'s clock and swap.

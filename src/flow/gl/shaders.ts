@@ -128,7 +128,10 @@ void main() {
  * differs when the border is translucent, and a hovered card's is.
  *
  * A disc is a box whose side is twice its corner radius, which is why
- * handles are drawn here too.
+ * handles are drawn here too — and a label is a box that samples the atlas
+ * (`./text.ts`) instead, flagged in `a_i1.z` with its texture rect in
+ * `a_i3`, which is what keeps every label in the box stream at exactly the
+ * place in the order the 2D painter draws it.
  *
  * Instance: a_i0 = x, y, width, height; a_i1 = corner radius, border width;
  * a_i2 = fill; a_i3 = border colour.
@@ -144,8 +147,27 @@ varying vec2 v_half;
 varying vec2 v_shape;
 varying vec4 v_fill;
 varying vec4 v_border;
+varying vec2 v_uv;
+varying float v_text;
 void main() {
   vec2 corner = vec2(a_corner.x, a_corner.y * 0.5 + 0.5);
+  v_text = a_i1.z;
+  if (a_i1.z > 0.5) {
+    // A label: its raster, texel for pixel. The top-left goes on the device
+    // grid *after* the pan's offset, which is where the grid is — the 2D
+    // painter rounds the same corner — so a label at rest is exactly as
+    // crisp as the text engine made it.
+    vec2 origin = floor(device(a_i0.xy) + 0.5);
+    v_uv = mix(a_i3.xy, a_i3.zw, corner);
+    v_fill = a_i2;
+    v_local = vec2(0.0);
+    v_half = vec2(0.0);
+    v_shape = vec2(0.0);
+    v_border = vec4(0.0);
+    gl_Position = clip(origin + corner * a_i0.zw * u_scale);
+    return;
+  }
+  v_uv = vec2(0.0);
   vec2 size = a_i0.zw * u_scale;
   vec2 half_ = size * 0.5;
   // a pixel of fringe all round, for the antialiased edge to fade into
@@ -160,12 +182,22 @@ void main() {
 `;
 
 export const BOX_FRAGMENT = `precision highp float;
+uniform sampler2D u_atlas;
 varying vec2 v_local;
 varying vec2 v_half;
 varying vec2 v_shape;
 varying vec4 v_fill;
 varying vec4 v_border;
+varying vec2 v_uv;
+varying float v_text;
 void main() {
+  if (v_text > 0.5) {
+    // coverage from the atlas, ink from the instance
+    float a = texture2D(u_atlas, v_uv).a;
+    if (a <= 0.0) discard;
+    gl_FragColor = v_fill * a;
+    return;
+  }
   float r = min(v_shape.x, min(v_half.x, v_half.y));
   vec2 q = abs(v_local) - (v_half - r);
   float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;

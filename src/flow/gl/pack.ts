@@ -29,13 +29,21 @@ import type {
 } from '../scene.js';
 import { ColorCache } from './color.js';
 import type { Rgba } from './color.js';
+import type { GlyphQuad } from './text.js';
+
+/** Turns a string into the quad that draws it — `./text.ts`'s atlas, or
+ *  nothing, in which case the string is counted as a gap. */
+export type TextResolver = (text: SceneText) => GlyphQuad | null;
 
 /** Floats per line segment: the ends; then half-width, the distance along
  *  the line at the first end, and the dash; then the dash's offset and
  *  whether it marches; then the colour. */
 export const LINE_STRIDE = 16;
 /** Floats per box: the rect, the corner radius and border width, the fill,
- *  the border colour. */
+ *  the border colour. A *label* is a box too — its rect the raster's, a flag
+ *  where the corner radius's neighbours are, its ink in the fill and its
+ *  place in the atlas where a border colour would be — so labels share the
+ *  box stream and land in it exactly where the 2D painter draws them. */
 export const BOX_STRIDE = 16;
 /** Floats per triangle *vertex*: position and colour. */
 export const TRI_STRIDE = 6;
@@ -133,7 +141,14 @@ export class ScenePacker {
   /** The scissor for whatever is appended until it is changed. */
   private scissor: FlowRect | undefined;
 
-  pack(scene: FlowScene, layer: PackLayer = 'all'): PackedScene {
+  private text: TextResolver | undefined;
+
+  pack(
+    scene: FlowScene,
+    layer: PackLayer = 'all',
+    text?: TextResolver,
+  ): PackedScene {
+    this.text = text;
     const world = layer !== 'overlay';
     const overlay = layer !== 'world';
     this.lineStream.reset();
@@ -197,7 +212,7 @@ export class ScenePacker {
         }
       }
       for (const edge of scene.edges) if (edge.chip) this.box(edge.chip);
-      for (const edge of scene.edges) if (edge.label) this.gaps.text++;
+      for (const edge of scene.edges) if (edge.label) this.label(edge.label);
 
       for (const node of scene.nodes) {
         if (node.custom) {
@@ -336,11 +351,44 @@ export class ScenePacker {
     const fill = this.colors.get(h.fill);
     const ring = h.stroke ? this.colors.get(h.stroke) : fill;
     this.boxRaw(h.at.x - r, h.at.y - r, r * 2, r * 2, r, pen, fill, ring);
-    if (h.label) this.gaps.text++;
+    if (h.label) this.label(h.label);
+  }
+
+  /** A string as a box that samples the atlas; counted as a gap when the
+   *  atlas has nothing to draw it from yet. */
+  private label(t: SceneText): void {
+    const q = this.text?.(t);
+    if (!q) {
+      this.gaps.text++;
+      return;
+    }
+    const color = this.colors.get(t.color);
+    if (color[3] <= 0) return;
+    const s = this.boxStream;
+    const index = s.length;
+    const at = s.next();
+    const d = s.data;
+    d[at] = q.x;
+    d[at + 1] = q.y;
+    d[at + 2] = q.w;
+    d[at + 3] = q.h;
+    d[at + 4] = 0;
+    d[at + 5] = 0;
+    d[at + 6] = 1; // a label, not a box
+    d[at + 7] = 0;
+    d[at + 8] = color[0];
+    d[at + 9] = color[1];
+    d[at + 10] = color[2];
+    d[at + 11] = color[3];
+    d[at + 12] = q.u0;
+    d[at + 13] = q.v0;
+    d[at + 14] = q.u1;
+    d[at + 15] = q.v1;
+    this.record('box', index);
   }
 
   private ink(item: SceneText | SceneRule): void {
-    if (item.kind === 'text') this.gaps.text++;
+    if (item.kind === 'text') this.label(item);
     else this.rule(item);
   }
 

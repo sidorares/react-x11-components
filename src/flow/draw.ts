@@ -189,6 +189,30 @@ export function measureText(
   return { width: entry.width, height: entry.height };
 }
 
+/**
+ * Cut a string to fit `max` logical pixels, with an ellipsis. Linear from
+ * the end rather than a binary search: labels that need it are short, and
+ * the widths it walks through are the ones the cache already holds.
+ *
+ * Both renderers call this, so a label cut on one is cut the same on the
+ * other — the GL one sets whatever this returns as a raster.
+ */
+export function fitText(
+  opts: PainterOptions,
+  text: string,
+  options: TextOptions | undefined,
+  max: number,
+): string {
+  if (measureText(opts, text, options).width <= max) return text;
+  let cut = text.length;
+  while (cut > 1) {
+    cut--;
+    const candidate = `${text.slice(0, cut).trimEnd()}…`;
+    if (measureText(opts, candidate, options).width <= max) return candidate;
+  }
+  return '…';
+}
+
 class Painter implements FlowPainter {
   readonly raw: unknown;
   readonly scale: number;
@@ -431,28 +455,10 @@ class Painter implements FlowPainter {
     return measureText(this.opts, text, options);
   }
 
-  /** Cut a string to fit, with an ellipsis. Linear from the end rather than
-   * a binary search: labels that need it are short, and the widths it walks
-   * through are the ones the cache already holds. */
-  private fit(
-    text: string,
-    options: TextOptions | undefined,
-    max: number,
-  ): string {
-    if (this.measureText(text, options).width <= max) return text;
-    let cut = text.length;
-    while (cut > 1) {
-      cut--;
-      const candidate = `${text.slice(0, cut).trimEnd()}…`;
-      if (this.measureText(candidate, options).width <= max) return candidate;
-    }
-    return '…';
-  }
-
   text(text: string, x: number, y: number, options?: TextOptions): void {
     if (!text) return;
     const shown = options?.maxWidth
-      ? this.fit(text, options, options.maxWidth)
+      ? fitText(this.opts, text, options, options.maxWidth)
       : text;
     const entry = shape(this.opts, shown, options);
     if (!entry) return;

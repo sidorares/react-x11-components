@@ -2773,6 +2773,15 @@ export class FlowGraphNode extends Node implements FlowInstance {
     return this.props.renderer === 'gl' && this._glRequest != null;
   }
 
+  /** What the GL renderer's label atlas sets strings with: this pane's app,
+   *  for its staging surface, and the options its 2D painter measures with
+   *  — so a label is cut and placed the same on both renderers. Null where
+   *  there is no text engine to ask. */
+  glText(): { app: unknown; options: PainterOptions } | null {
+    const options = this._textOptions();
+    return options.fonts ? { app: this.app, options } : null;
+  }
+
   /**
    * The GL surface's hook: how it asks for frames. Set while a surface draws
    * this pane, cleared when it goes — and until it is set the pane draws

@@ -14,11 +14,14 @@ import type { ReactElement } from 'react';
 
 import type { FlowFrameStats } from '../types.js';
 import { FlowGlRenderer, now } from './renderer.js';
+import { LabelAtlas } from './text.js';
+import type { TextSource } from './text.js';
 import type { FlowGlFrame, FlowGlTarget } from './renderer.js';
 
 /** What the surface needs of the pane — `FlowGraphNode`, structurally. */
 export interface FlowGlSource {
   glFrame(lastKey: string | null): (FlowGlFrame & { key: string }) | null;
+  glText?(): TextSource | null;
   setGlRequest(request: (() => void) | null): void;
 }
 
@@ -94,6 +97,15 @@ class Driver {
   /** The key of the world now on the GPU — null when there is none, which
    *  is what makes the next frame build one. */
   private worldKey: string | null = null;
+  /** The label atlas, and the face and scale it was made for: either
+   *  changing is every raster wrong, so it is made again. */
+  private atlas: LabelAtlas | null = null;
+  private atlasKey = '';
+  /** The zoom the last frame drew at, and the timer that brings a frame
+   *  once a zoom stops — new label sizes are only set at rest, and a pane
+   *  that has stopped zooming asks for no frame by itself. */
+  private lastZoom = NaN;
+  private settle: unknown = null;
   private failed = false;
 
   constructor(props: FlowGlSurfaceProps) {
@@ -118,6 +130,11 @@ class Driver {
 
   detach(): void {
     this.props.pane.current?.setGlRequest(null);
+    if (this.settle != null) timers.clearTimeout?.(this.settle);
+    this.settle = null;
+    this.atlas?.dispose();
+    this.atlas = null;
+    this.atlasKey = '';
   }
 
   readonly draw = (gl: unknown, info: DrawInfoLike): void => {
@@ -132,17 +149,66 @@ class Driver {
       }
       const pane = this.props.pane.current;
       if (!pane) return;
+      const atlas = this.atlasFor(pane);
       const started = now();
       const frame = pane.glFrame(this.worldKey);
       if (!frame) return;
       const sceneMs = now() - started;
-      const stats = this.renderer.drawFrame(frame, targetOf(info));
+      if (atlas) this.admit(atlas, frame.overlay.viewport.zoom);
+      const stats = this.renderer.drawFrame(
+        frame,
+        targetOf(info),
+        atlas ?? undefined,
+      );
       if (frame.world) this.worldKey = frame.key;
+      // Labels this frame drew soft, or could not draw at all, are set now,
+      // a batch at a time, between frames; the world is repacked when a
+      // batch lands, which is what swaps them in.
+      if (atlas?.wanting) {
+        void atlas.pump().then(
+          (landed) => {
+            if (!landed || this.failed) return;
+            this.worldKey = null;
+            this.request();
+          },
+          (error: unknown) => this.fail(error),
+        );
+      }
       this.props.onFrame?.({ renderer: 'gl', sceneMs, ...stats });
     } catch (error) {
       this.fail(error);
     }
   };
+
+  /** The atlas for this pane's face and scale, made again when either
+   *  changes — and dropped where there is no text engine at all. */
+  private atlasFor(pane: FlowGlSource): LabelAtlas | null {
+    const text = pane.glText?.() ?? null;
+    if (!text) return null;
+    const key = `${text.options.family}|${text.options.scale}`;
+    if (!this.atlas || key !== this.atlasKey) {
+      this.atlas?.dispose();
+      this.atlas = new LabelAtlas(text);
+      this.atlasKey = key;
+      this.worldKey = null;
+    }
+    return this.atlas;
+  }
+
+  /** New sizes only while the zoom holds still; a frame is asked for once
+   *  it has, so the labels a zoom left soft are set without a nudge. */
+  private admit(atlas: LabelAtlas, zoom: number): void {
+    const moving = zoom !== this.lastZoom;
+    this.lastZoom = zoom;
+    atlas.admit = !moving;
+    if (moving) {
+      if (this.settle != null) timers.clearTimeout?.(this.settle);
+      this.settle = timers.setTimeout?.(() => {
+        this.settle = null;
+        this.request();
+      }, 120);
+    }
+  }
 
   readonly surfaceError = (error: Error): void => {
     this.fail(error);
@@ -176,6 +242,12 @@ class Driver {
  * pointer — so the day they move in, the surface becomes the pane's child
  * instead, as `<Map>`'s is, and events bubble to the pane from there.
  */
+/** Timers, through `globalThis`: `src/` compiles with `types: []`. */
+const timers = globalThis as {
+  setTimeout?(fn: () => void, ms: number): unknown;
+  clearTimeout?(id: unknown): void;
+};
+
 const FILL = {
   position: 'absolute',
   left: 0,
