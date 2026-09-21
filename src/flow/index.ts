@@ -127,10 +127,6 @@ function loadGl(): Promise<GlModule> {
   return glLoading;
 }
 
-/** Where held bodies wait (`_holdBodies` in ./node.ts): far enough off any
- *  pane that core culls the box, near enough that no coordinate overflows. */
-const HELD_AWAY = -30000;
-
 /** What `forwardWheel` reads off a wheel that landed on a body. */
 interface WheelLike {
   x: number;
@@ -637,16 +633,8 @@ export function Flow<N = FlowNodeData, E = unknown>(
               // every press in that span: no pan, no pane click, no selecting
               // a node by its header. Its bodies take the pointer; it does not.
               pointerEvents: 'box-none',
-              // Held bodies go off screen rather than `display: 'none'`, and
-              // that is about the GL renderer: with no child on screen, core
-              // drops the <glarea>'s overlay layer, and on Cocoa it goes with
-              // Core Animation's implicit fade — the bodies turning
-              // translucent at their old scale while the cards zoom on — and
-              // comes back with another. Off screen the box is still a
-              // child, culled by its own box at no cost, the layer stays,
-              // and nothing about the bodies has to be laid out again when
-              // they return.
-              ...(held ? { left: HELD_AWAY, top: HELD_AWAY } : null),
+              // held through a zoom gesture: see `_holdBodies` in ./node.ts
+              display: held ? 'none' : 'flex',
             },
             onWheel: forwardWheel,
             ...forwardPress,

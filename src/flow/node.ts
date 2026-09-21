@@ -3106,8 +3106,9 @@ export class FlowGraphNode extends Node implements FlowInstance {
    * the graph alone costs 13 ms a step. So each step of a zoom *gesture*
    * predicts what re-scaling the bodies on screen would add, and when that
    * is over `BODY_BUDGET_MS` they sit the gesture out: still mounted — no
-   * state is lost — but hidden and untouched, while the cards, their labels
-   * and the edges carry it. Once the zoom has held still for
+   * state is lost — but hidden (`display: 'none'`) and untouched, while the
+   * cards, their labels and the edges carry it. Once the zoom has held still
+   * for
    * `BODY_ZOOM_REST_MS` they come back, laid out once at the new scale. A
    * handful of bodies fits the budget and zooms live.
    *

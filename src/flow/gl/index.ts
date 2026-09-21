@@ -42,14 +42,13 @@ interface AreaNode {
   requestFrame?(): void;
 }
 
-/** What core's `<glarea>` hands `onDraw` — as it is, not as its type says:
- *  react-x11 2.17's `DrawInfo` declares a `scale` the element does not
- *  pass, so the scale is read off the node. */
+/** What core's `<glarea>` hands `onDraw` (react-x11 ≥ 2.18.0 passes the
+ *  display scale — sidorares/react-x11#634). */
 export interface DrawInfoLike {
   width: number;
   height: number;
-  scale?: number;
-  node: { abs: { x: number; y: number }; scale?: number };
+  scale: number;
+  node: { abs: { x: number; y: number } };
 }
 
 /**
@@ -65,7 +64,7 @@ export interface DrawInfoLike {
  * back to the 2D renderer through `onError` rather than drawing nothing.
  */
 export function targetOf(info: DrawInfoLike): FlowGlTarget {
-  const scale = info.scale ?? info.node.scale ?? 1;
+  const scale = info.scale;
   const target = {
     origin: { x: info.node.abs.x / scale, y: info.node.abs.y / scale },
     scale,

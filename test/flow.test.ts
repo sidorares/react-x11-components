@@ -104,11 +104,9 @@ function bodyBox(index = 0): RetainedNode {
   return retained(box);
 }
 
-/** The bodies are held off the pane (`_holdBodies`): their box is
- *  nowhere near it. */
+/** The bodies are held through a zoom gesture (`_holdBodies`). */
 function bodiesAway(): boolean {
-  const { abs } = bodyLayer();
-  return abs.x + abs.width < 0 && abs.y + abs.height < 0;
+  return (bodyLayer().props.style as { display?: string }).display === 'none';
 }
 
 /** Where a mounted body's box sits in the pane: the bodies' one box's
@@ -2102,14 +2100,7 @@ test('bodies over the budget sit a wheel zoom out, mounted and hidden, and come 
   for (let notch = 0; notch < 4; notch++) {
     await userEvent.wheel(node, { ...at(40, 40), deltaY: -24 });
   }
-  // off the pane, not `display: 'none'` — which empties a <glarea>'s
-  // overlay, and on Cocoa that layer leaves with an implicit fade
-  assert.ok(bodiesAway(), 'off screen while the wheel turns');
-  assert.notStrictEqual(
-    (bodyLayer().props.style as { display?: string }).display,
-    'none',
-    'and still laid out',
-  );
+  assert.ok(bodiesAway(), 'hidden while the wheel turns');
   assert.strictEqual(renders, before, 'and not rendered once per notch');
 
   await act(() => new Promise((resolve) => setTimeout(resolve, 250)));
