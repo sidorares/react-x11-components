@@ -213,9 +213,12 @@ async function bundleChunks(
     text: f.text,
   }));
   assert.ok(files.length, 'esbuild wrote no output to read');
-  return files.sort((a, b) =>
-    a.path.includes('entry') ? -1 : b.path.includes('entry') ? 1 : 0,
-  );
+  // The entry first, which callers read as `chunks[0]`. esbuild names a
+  // `stdin` entry `stdin.js` whatever its `sourcefile` says.
+  const isEntry = (file: { path: string }): boolean =>
+    path.basename(file.path) === 'stdin.js';
+  assert.ok(files.some(isEntry), 'esbuild wrote no entry chunk');
+  return files.sort((a, b) => Number(isEntry(b)) - Number(isEntry(a)));
 }
 
 /**
@@ -258,24 +261,66 @@ test('the vt backend is a lazy chunk, not part of <Terminal>', async () => {
  * anywhere under `<Map>` would put all of it into every bundle that names a
  * map. The markers are the pane element only the GL renderer registers, and
  * a word only its shaders write.
+ *
+ * The assertion is over the entry's static closure, not its own text: a
+ * static import of `./gl/index.js` alongside the dynamic one leaves the entry
+ * chunk clean — esbuild splits the renderer into a chunk both share — and
+ * was checked to fail here only once the closure is what is searched.
  */
 test('the GL map renderer is a lazy chunk, not part of <Map>', async () => {
   const chunks = await bundleChunks(
     "import { Map } from './dist/maps/index.js';\n" +
       'globalThis.__keep = Map;\n',
   );
-  const [entry] = chunks;
+  const eager = staticClosure(chunks);
   for (const marker of ['mapglpane', 'gl_FragColor']) {
+    const holder = eager.find((chunk) => chunk.text.includes(marker));
     assert.ok(
-      !entry.text.includes(marker),
-      `the map entry chunk should not contain the GL renderer (${marker})`,
+      !holder,
+      `loading <Map> should not load the GL renderer (${marker} is in ` +
+        `${holder?.path.split('/').pop()}, which the entry imports statically)`,
     );
   }
   assert.ok(
-    chunks.slice(1).some((chunk) => chunk.text.includes('mapglpane')),
+    chunks.some((chunk) => chunk.text.includes('mapglpane')),
     'and the GL renderer should still be reachable, in a chunk of its own',
   );
 });
+
+/**
+ * Every chunk the entry loads *statically*, the entry included — following
+ * `import … from "./chunk"` and bare `import "./chunk"`, never `import()`.
+ *
+ * Checking the entry chunk's own text is not enough, and was found not to be
+ * by putting a static import back: a module imported both statically and
+ * dynamically is split into a chunk the two *share*, so the entry holds none
+ * of its text and still pays for all of it. What the entry costs is its
+ * static closure.
+ */
+function staticClosure(
+  chunks: readonly { path: string; text: string }[],
+): { path: string; text: string }[] {
+  const byName = new Map(
+    chunks.map((chunk) => [chunk.path.split('/').pop()!, chunk]),
+  );
+  const seen = new Set<string>();
+  const out: { path: string; text: string }[] = [];
+  const visit = (chunk: { path: string; text: string }): void => {
+    const name = chunk.path.split('/').pop()!;
+    if (seen.has(name)) return;
+    seen.add(name);
+    out.push(chunk);
+    const imports = chunk.text.matchAll(
+      /(?:from\s*|import\s*)["']\.\/([^"']+)["']/g,
+    );
+    for (const [, target] of imports) {
+      const next = byName.get(target);
+      if (next) visit(next);
+    }
+  };
+  visit(chunks[0]);
+  return out;
+}
 
 test('each component is also importable on its own', async () => {
   for (const { exportName, dir } of COMPONENTS) {
