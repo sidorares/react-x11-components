@@ -326,12 +326,6 @@ function App(): React.ReactElement {
                 label: p.label,
               }))}
               onChange={(event) => setProviderId(event.value)}
-              // Drawn, not AppKit's popup, until sidorares/react-x11#552: a
-              // native menu opened from a trigger this near the window's top,
-              // with anything but the first option chosen, closes on the next
-              // layout pass — which the status line below brings twice a
-              // second.
-              native={false}
               style={{ width: 240 }}
             />
             <Button onClick={() => start('pan')}>Pan</Button>

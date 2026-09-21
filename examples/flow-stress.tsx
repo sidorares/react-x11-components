@@ -650,10 +650,6 @@ function App(): ReactElement {
             value={budget}
             options={BUDGETS}
             onChange={(event) => setBudget(event.value)}
-            // drawn rather than AppKit's popup — sidorares/react-x11#552, as
-            // in maps-gl: a native menu this near the window's top closes on
-            // the readout's next layout pass
-            native={false}
             style={{ width: 170 }}
           />
           <Button
