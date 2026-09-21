@@ -656,4 +656,43 @@ export interface FlowProps<N = FlowNodeData, E = unknown> {
    * synchronously or the mounted bodies visibly trail the drawn cards.
    */
   onNodeBodies?: (bodies: readonly NodeBodyRect[], sync: boolean) => void;
+  /**
+   * Which renderer draws the graph. `'retained'` (the default) draws through
+   * the 2D context, everywhere a window can. `'gl'` draws through a
+   * `<glarea>`, every frame from the whole scene, and needs direct GL —
+   * `useSupports('shaders')`; where it has none, or its surface fails, the
+   * pane falls back to `'retained'` and says so through `onError`.
+   *
+   * **Not yet a replacement.** The GL renderer draws the graph's geometry —
+   * cards, edges, arrowheads, handles, the grid, the minimap — and no text
+   * yet, nor a node type's own `paint`; `onGlFrame`'s `gaps` counts what a
+   * frame left out. `docs/prd-flow-gl.md` has the plan and the numbers.
+   */
+  renderer?: 'retained' | 'gl';
+  /** Every GL frame, counted. Only under `renderer="gl"`. */
+  onGlFrame?: (stats: FlowGlFrameStats) => void;
+  /** The GL renderer could not draw, and the pane went back to the 2D one. */
+  onError?: (error: Error) => void;
+}
+
+/** One GL frame — see {@link FlowProps.onGlFrame}. */
+export interface FlowGlFrameStats {
+  /** Milliseconds building the scene: routing, culling, colours. */
+  sceneMs: number;
+  /** Milliseconds packing it into instance streams. */
+  packMs: number;
+  /** Milliseconds issuing it: uploads and draw calls. */
+  drawMs: number;
+  drawCalls: number;
+  lines: number;
+  boxes: number;
+  triangles: number;
+  /** Bytes handed to the GPU this frame. */
+  uploadBytes: number;
+  /** Whether the graph was rebuilt and re-uploaded this frame, rather than
+   *  drawn from the GPU where a pan moved it. False on a pan. */
+  worldRebuilt: boolean;
+  /** What the frame could not draw yet: strings, and nodes whose type
+   *  paints itself. */
+  gaps: { text: number; custom: number };
 }

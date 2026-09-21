@@ -86,7 +86,12 @@ import {
   screenRect,
   screenViewport,
 } from './scene.js';
-import type { SceneGrid, SceneInput, SceneNodeSource } from './scene.js';
+import type {
+  FlowScene,
+  SceneGrid,
+  SceneInput,
+  SceneNodeSource,
+} from './scene.js';
 import type {
   BackgroundOptions,
   BackgroundVariant,
@@ -172,6 +177,7 @@ const VISUAL_PROPS = [
   'nodesConnectable',
   'nodesResizable',
   'disabled',
+  'renderer',
 ] as const;
 
 const CONTROL_SIZE = 26;
@@ -396,6 +402,24 @@ export class FlowGraphNode extends Node implements FlowInstance {
   private _painting = false;
   /** Routes that survived the last frame — see {@link SceneCache}. */
   private readonly _sceneCache = new SceneCache();
+  /** Asks the GL surface for a frame, while one is drawing this pane. */
+  private _glRequest: (() => void) | null = null;
+  /**
+   * Bumped by every repaint this element asks for that is *not* a pure pan
+   * — which is how the GL surface knows the graph it holds on the GPU is
+   * still the graph, and a frame is only a new offset. Errs one way on
+   * purpose: anything it cannot see is covered by the rest of the key
+   * (`glFrame`), and a rebuild too many costs a frame's packing, where one
+   * too few draws the wrong graph.
+   */
+  private _worldVersion = 0;
+  /** Set only across the repaint a pure pan asks for. */
+  private _panOnly = false;
+  /** The overscan the GL world was culled to, in its own pinned
+   *  coordinates, and the key it was built under. */
+  private _worldCull: FlowRect | null = null;
+  private _worldCullId = 0;
+  private _worldZoom = NaN;
   /** Inside a live input dispatch — what makes a body emission `sync`.
    * Motion and the wheel run at continuous priority, whose React updates
    * can trail the pane's own painting by frames; an emission made under
@@ -1005,7 +1029,14 @@ export class FlowGraphNode extends Node implements FlowInstance {
     // this frame will draw, so asking for another one would only draw the
     // same picture twice.
     if (!controlled && !this._painting) {
-      if (!this._blitPan(previous, v)) this._repaint('scroll');
+      // A translation leaves the graph where it was on the GPU: only its
+      // offset moves, and the GL world must not be rebuilt for it.
+      this._panOnly = previous.zoom === v.zoom;
+      try {
+        if (!this._blitPan(previous, v)) this._repaint('scroll');
+      } finally {
+        this._panOnly = false;
+      }
       // same-frame compositing for mounted bodies — see `_dragStep`
       this._emitBodies();
     }
@@ -1037,6 +1068,9 @@ export class FlowGraphNode extends Node implements FlowInstance {
    *    both the top and the bottom of a short one).
    */
   private _blitPan(previous: Viewport, next: Viewport): boolean {
+    // There is no backing store to scroll under GL: the surface redraws the
+    // whole scene every frame, and a pan is its cheapest frame of all.
+    if (this._gl) return false;
     if (next.zoom !== previous.zoom) return false;
     if (this._bodiesKey !== '') return false;
     // Device pixels: the blit copies the backing store, and its grid is the
@@ -2513,6 +2547,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
   }
 
   override destroySubtree(): void {
+    this._glRequest = null;
     this._stopAnimation();
     this._dropGridTile();
     this._sceneCache.clear();
@@ -2569,6 +2604,17 @@ export class FlowGraphNode extends Node implements FlowInstance {
     if (!insideInner) super.paint(ctx);
 
     if (!this._visible()) return;
+    if (this._gl) {
+      // The surface over this box draws the graph. What the 2D pass still
+      // owes is the part of a paint that is not drawing — the derived graph
+      // brought up to date, the bodies placed — and then the frame itself,
+      // asked of the surface. Every claim this element makes arrives here,
+      // so every change the 2D renderer would repaint is one GL frame.
+      this._sync();
+      this._emitBodies();
+      this._glRequest?.();
+      return;
+    }
     const painter = createPainter(ctx, this._textOptions());
     if (!painter) return; // a backend with no path API: geometry only
 
@@ -2667,6 +2713,127 @@ export class FlowGraphNode extends Node implements FlowInstance {
    * dragged node lifted to the top, and `all` is every node, because the
    * minimap summarises the graph rather than the pass.
    */
+  override invalidate(
+    layout?: boolean,
+    damage?: Parameters<Node['invalidate']>[1],
+    reason?: string,
+  ): void {
+    // A pure pan moves the world's offset, and a dash tick its phase: both
+    // are uniforms on the GPU, so neither is a change to the world.
+    if (!this._panOnly && reason !== 'animation') this._worldVersion++;
+    super.invalidate(layout, damage, reason);
+  }
+
+  private get _gl(): boolean {
+    return this.props.renderer === 'gl' && this._glRequest != null;
+  }
+
+  /**
+   * The GL surface's hook: how it asks for frames. Set while a surface draws
+   * this pane, cleared when it goes — and until it is set the pane draws
+   * itself, so a surface that is still loading shows the 2D graph rather
+   * than an empty box.
+   */
+  setGlRequest(request: (() => void) | null): void {
+    if (this._glRequest === request) return;
+    this._glRequest = request;
+    // whichever renderer now draws, it draws the whole pane
+    this._repaint('props');
+  }
+
+  /**
+   * One GL frame's worth of scene, in the two layers the renderer keeps
+   * apart (`./gl/renderer.ts`): the **world**, rebuilt only when it changed
+   * since the key the surface last drew, and the **overlay**, every frame.
+   *
+   * The world is built at a pinned origin and culled to an *overscan* — the
+   * view grown by a pane in every direction — so a pan inside it changes
+   * nothing but `offset`. When the view leaves the overscan, or the zoom
+   * moves, the overscan is re-centred and the world rebuilt; at every other
+   * frame of a pan the world comes back `null` and the renderer draws the
+   * buffers already on the GPU.
+   *
+   * The key is everything the world is a function of that this element can
+   * name: its version (every repaint but a pure pan moves it), the overscan,
+   * the zoom, and the palette and face — the two a theme change moves, which
+   * core announces to the window rather than to this element.
+   *
+   * Everything a 2D paint does around its drawing happens here too: the
+   * pending fit, the dash timer, the first scene announcement, the bodies.
+   */
+  glFrame(lastKey: string | null): {
+    world: FlowScene | null;
+    key: string;
+    offset: XYPosition;
+    overlay: FlowScene;
+    phase: number;
+  } | null {
+    if (!this._visible()) return null;
+    this._sync();
+    this._painting = true;
+    this._frameClip = null;
+    if (this._fitPending) {
+      this._fitPending = false;
+      this._fit(this._prop<FitViewOptions>('fitViewOptions'));
+    }
+    const v = this._viewport();
+    const pane = this._pane();
+    const palette = this._palette();
+
+    // The view in the world's own coordinates: graph × zoom, the pan left
+    // out — it is what `offset` puts back.
+    const view = { x: -v.x, y: -v.y, width: pane.width, height: pane.height };
+    const cull = this._worldCull;
+    if (
+      !cull ||
+      this._worldZoom !== v.zoom ||
+      view.x < cull.x ||
+      view.y < cull.y ||
+      view.x + view.width > cull.x + cull.width ||
+      view.y + view.height > cull.y + cull.height
+    ) {
+      this._worldCull = {
+        x: view.x - view.width,
+        y: view.y - view.height,
+        width: view.width * 3,
+        height: view.height * 3,
+      };
+      this._worldZoom = v.zoom;
+      this._worldCullId++;
+    }
+    const key =
+      `${this._worldVersion}|${this._worldCullId}|${v.zoom}|` +
+      `${this._fontSeen}|${JSON.stringify(palette)}`;
+
+    let world: FlowScene | null = null;
+    if (key !== lastKey) {
+      world = buildScene(
+        this._sceneInput(palette, { world: this._worldCull! }),
+      );
+      // The dash timer lives as long as an animated edge is in the world;
+      // its ticks repaint, which moves the version and rebuilds it.
+      if (world.animated) this._startAnimation();
+      else this._stopAnimation();
+    }
+    const overlay = buildScene(this._sceneInput(palette, 'overlay'));
+    this._painting = false;
+
+    if (!this._sceneAnnounced) {
+      this._sceneAnnounced = true;
+      this.notifyA11ySceneChanged();
+    }
+    this._emitBodies();
+    return {
+      world,
+      key,
+      offset: { x: pane.x + v.x, y: pane.y + v.y },
+      overlay,
+      // the scene bakes `-phase * zoom` into a marching edge; the GPU is
+      // handed the same number as a uniform
+      phase: -this._dashPhase * v.zoom,
+    };
+  }
+
   /** Whether this pass's damage reaches the minimap's corner at all —
    *  answered from the panel's box alone, without resolving the map. */
   private _miniMapReached(): boolean {
@@ -2685,7 +2852,22 @@ export class FlowGraphNode extends Node implements FlowInstance {
     );
   }
 
-  private _sceneInput(palette: FlowPalette): SceneInput {
+  /**
+   * Everything `buildScene` reads, for one of three uses:
+   *
+   * - `'all'` — the 2D renderer's pass: the pane as it is, culled to this
+   *   pass's damage.
+   * - `{ world }` — the GL graph: built at a **pinned origin** (the viewport's
+   *   translation and the pane's origin both left out, so a pan does not
+   *   change a vertex) and culled to the overscan `world` rather than the
+   *   pane, with none of the pane's furniture.
+   * - `'overlay'` — the GL furniture: the pane's background, grid, selection,
+   *   minimap and controls, and no graph at all.
+   */
+  private _sceneInput(
+    palette: FlowPalette,
+    layer: 'all' | 'overlay' | { world: FlowRect } = 'all',
+  ): SceneInput {
     const dragging = this._dragTo;
     const order: NodeEntry[] = [];
     const deferred: NodeEntry[] = [];
@@ -2700,24 +2882,36 @@ export class FlowGraphNode extends Node implements FlowInstance {
     // more than the panel it skips. The dot for a mid-drag node goes stale
     // until the release repaints in full; that is the trade, and it is
     // deliberate.
-    const map = this._miniMapReached() ? this._miniMap() : null;
+    const world = typeof layer === 'object' ? layer.world : null;
+    const overlay = layer === 'overlay';
+    const map = !world && this._miniMapReached() ? this._miniMap() : null;
+    const viewport = this._viewport();
+    const pane = this._pane();
+    const all =
+      overlay && !map ? [] : this._entries.map((entry) => this._source(entry));
     return {
-      viewport: this._viewport(),
-      pane: this._pane(),
-      clip: this._frameClip,
+      viewport: world ? { x: 0, y: 0, zoom: viewport.zoom } : viewport,
+      pane: world
+        ? { x: 0, y: 0, width: pane.width, height: pane.height }
+        : pane,
+      clip: world || overlay ? null : this._frameClip,
+      cull: world,
       palette,
       paneBackground: this.style.backgroundColor as string | undefined,
       background: normalizeBackground(
         this.props.background as
           BackgroundOptions | string | boolean | undefined,
       ),
-      nodes: [...order, ...deferred].map((entry) => this._source(entry)),
-      all: this._entries.map((entry) => this._source(entry)),
-      edges: this._edges,
+      nodes: overlay
+        ? []
+        : [...order, ...deferred].map((entry) => this._source(entry)),
+      all,
+      edges: overlay ? [] : this._edges,
       dashPhase: this._dashPhase,
       hover: this._hover,
-      connection: gesture?.kind === 'connect' ? gesture : null,
-      selection: gesture?.kind === 'select' ? selectBoxRect(gesture) : null,
+      connection: !overlay && gesture?.kind === 'connect' ? gesture : null,
+      selection:
+        !world && gesture?.kind === 'select' ? selectBoxRect(gesture) : null,
       miniMap: map
         ? {
             panel: map.panel,
@@ -2727,7 +2921,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
             maskColor: map.options.maskColor,
           }
         : null,
-      controls: this._controlButtons(),
+      controls: world ? [] : this._controlButtons(),
       scale: this._scale,
       measure: this._measureBox,
       cache: this._sceneCache,

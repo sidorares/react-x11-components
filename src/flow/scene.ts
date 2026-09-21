@@ -473,6 +473,15 @@ export interface SceneInput {
    * null, and the scene is the whole pane.
    */
   clip: FlowRect | null;
+  /**
+   * What is kept, in the same window pixels — the pane when left out.
+   *
+   * A renderer that keeps a scene across frames wants more than the pane:
+   * the GL one builds the graph at a pinned origin and pans it by moving a
+   * uniform, so it culls to an *overscan* region round the view, and only
+   * rebuilds once the view leaves it (`./node.ts`, `glFrame`).
+   */
+  cull?: FlowRect | null;
   palette: FlowPalette;
   /** The pane's own background, when its style set one. */
   paneBackground?: string;
@@ -557,6 +566,10 @@ export interface SceneEdge {
   lineWidth: number;
   dash?: readonly number[];
   dashOffset: number;
+  /** Whether the dash marches. `dashOffset` already holds this frame's
+   *  phase; a renderer that keeps edges across frames reads this instead and
+   *  moves the phase itself, so a tick is not a rebuild. */
+  animated: boolean;
   markers: readonly SceneMarker[];
   /** The plate behind a label, so it sits above every edge. */
   chip?: SceneRect;
@@ -887,6 +900,7 @@ function indexOf(
 function buildEdges(input: SceneInput, scene: FlowScene): SceneEdge[] {
   const { pane, clip, palette, hover, scale } = input;
   const v = screenViewport(input.viewport, pane);
+  const kept = input.cull ?? pane;
   const labels = v.zoom >= LABEL_ZOOM;
   const out: SceneEdge[] = [];
   const cache = input.cache;
@@ -901,7 +915,7 @@ function buildEdges(input: SceneInput, scene: FlowScene): SceneEdge[] {
 
     // Two rejects: one from the nodes alone, one from the route it took.
     const coarse = edgeCoarseBox(v, from, to, scale);
-    if (!rectsOverlap(coarse, pane)) continue;
+    if (!rectsOverlap(coarse, kept)) continue;
     // Tracked before the damage skip, deliberately: whether the dash timer
     // runs is a question about the viewport, not about what this particular
     // pass repaints — deciding it after the skip is how a drag in one corner
@@ -924,7 +938,7 @@ function buildEdges(input: SceneInput, scene: FlowScene): SceneEdge[] {
       : uncachedRoute(v, edge, from, to, markerEnd, markerStart);
     if (!routed) continue;
     const bounds = routed.bounds;
-    if (!rectsOverlap(bounds, pane)) continue;
+    if (!rectsOverlap(bounds, kept)) continue;
 
     const selected = edge.selected ?? false;
     const hovered = hover.edgeId === edge.id;
@@ -972,6 +986,7 @@ function buildEdges(input: SceneInput, scene: FlowScene): SceneEdge[] {
       lineWidth,
       dash: dash?.map((d) => d * v.zoom),
       dashOffset: edge.animated ? -input.dashPhase * v.zoom : 0,
+      animated: edge.animated ?? false,
       markers,
     };
 
@@ -1098,11 +1113,12 @@ export function endpoint(
 function buildNodes(input: SceneInput): SceneNodeItem[] {
   const { pane, clip, hover, scale } = input;
   const v = screenViewport(input.viewport, pane);
+  const kept = input.cull ?? pane;
   const out: SceneNodeItem[] = [];
   for (const source of input.nodes) {
     if (source.node.hidden) continue;
     const rect = screenRect(v, source.rect, scale);
-    if (!rectsOverlap(rect, pane)) continue;
+    if (!rectsOverlap(rect, kept)) continue;
     // inflated by the margin its handles and grips can ink outside the box —
     // the same margin every invalidate grew by, so the two agree
     if (clip && !rectsOverlap(inflateRect(rect, CULL_MARGIN), clip)) continue;

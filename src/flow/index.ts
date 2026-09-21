@@ -22,7 +22,7 @@ import React, {
   useState,
 } from 'react';
 import type { Dispatch, ReactElement, SetStateAction } from 'react';
-import { Renderer } from 'react-x11';
+import { Renderer, useTheme } from 'react-x11';
 import { registerElement, registeredElements } from 'react-x11/host';
 import { createStyles, flattenStyle } from 'react-x11/style';
 // Loads the module the JSX augmentation at the bottom targets: nothing in
@@ -31,7 +31,7 @@ import { createStyles, flattenStyle } from 'react-x11/style';
 // addition. Type-only, so it is erased.
 import type {} from 'react-x11/jsx-runtime';
 
-import { applyEdgeChanges, applyNodeChanges } from './model.js';
+import { applyEdgeChanges, applyNodeChanges, resolvePalette } from './model.js';
 import { ELEMENT, FlowGraphNode, SELF_DAMAGED_PROPS } from './node.js';
 import type {
   EdgeChange,
@@ -102,6 +102,29 @@ const flushSync: (fn: () => void) => void =
           Renderer as { flushSyncFromReconciler: (fn: () => void) => void }
         ).flushSyncFromReconciler(fn)
     : (fn) => fn();
+
+/**
+ * The GL renderer's module, once it has loaded — reached by dynamic
+ * `import()` and never statically, so an application that never asks for
+ * `renderer="gl"` bundles none of it.
+ */
+type GlModule = typeof import('./gl/index.js');
+
+let glModule: GlModule | null = null;
+let glLoading: Promise<GlModule> | null = null;
+
+/** Load the GL renderer, once per process however many panes ask. A failed
+ *  load is forgotten, so the next pane to ask tries again. */
+function loadGl(): Promise<GlModule> {
+  glLoading ??= import('./gl/index.js').then(
+    (module) => (glModule = module),
+    (error: unknown) => {
+      glLoading = null;
+      throw error;
+    },
+  );
+  return glLoading;
+}
 
 interface FlowNodeBodyProps {
   type: FlowNodeType<unknown>;
@@ -188,6 +211,9 @@ export function Flow<N = FlowNodeData, E = unknown>(
     onWheel,
     style,
     ref,
+    renderer,
+    onGlFrame,
+    onError,
     ...rest
   } = props;
 
@@ -359,6 +385,56 @@ export function Flow<N = FlowNodeData, E = unknown>(
       })
     : null;
 
+  // --- the GL surface -----------------------------------------------------
+  //
+  // Loaded when it is asked for and not before — see `./gl/index.ts` for why
+  // the import is dynamic. Until it arrives, and for good once it has failed,
+  // the pane draws itself: `renderer` reaches the element only while a
+  // surface is there to draw, so there is never a frame with neither.
+  const theme = useTheme();
+  const wantGl = renderer === 'gl';
+  const [gl, setGl] = useState<GlModule | null>(glModule);
+  const [glFailed, setGlFailed] = useState(false);
+  const latestError = useRef(onError);
+  latestError.current = onError;
+  const failGl = useMemo(
+    () =>
+      (error: Error): void => {
+        setGlFailed(true);
+        latestError.current?.(error);
+      },
+    [],
+  );
+  useEffect(() => {
+    if (!wantGl || gl || glFailed) return;
+    let live = true;
+    loadGl().then(
+      (module) => {
+        if (live) setGl(module);
+      },
+      (error: unknown) => {
+        if (live)
+          failGl(error instanceof Error ? error : new Error(String(error)));
+      },
+    );
+    return () => {
+      live = false;
+    };
+  }, [wantGl, gl, glFailed]);
+  const drawsGl = wantGl && gl != null && !glFailed;
+  const surface = drawsGl
+    ? React.createElement(gl.FlowGlSurface, {
+        key: 'gl',
+        pane,
+        clearColor: resolvePalette(
+          theme as unknown as Record<string, unknown> | null,
+          rest.palette,
+        ).background,
+        onFrame: onGlFrame,
+        onError: failGl,
+      })
+    : null;
+
   // The pane and the bodies are siblings rather than parent and children:
   // a registered element's own drawing happens *after* `super.paint` has
   // painted its children, so anything mounted inside the pane would be
@@ -380,10 +456,16 @@ export function Flow<N = FlowNodeData, E = unknown>(
       // `<flowgraph>` element zooms and hovers on its own.
       onWheel,
       onNodeBodies: mounts ? handleBodies : undefined,
+      renderer: drawsGl ? 'gl' : undefined,
       style: styles.fill,
       role: 'group',
       'aria-label': rest['aria-label'] ?? 'Flow graph',
     }),
+    // After the pane, so the surface covers exactly its box. The bodies come
+    // after that in the tree and still land under the surface — a
+    // `<glarea>` is over everything 2D in its window — which is the next
+    // piece of work: they belong inside it, as its overlay children.
+    surface,
     overlays,
   );
 }
