@@ -2259,3 +2259,103 @@ test('`adaptive` sets the body budget, and every frame reports it', async () => 
     cleanup();
   }
 });
+
+test('the pane between mounted bodies takes the pointer, and so does a card’s header', async () => {
+  // The bodies' one box spans every body, gaps and headers included. Taking
+  // the pointer itself, it ate every press between the cards — no pan, no
+  // pane click — and every header inside its span — no selecting the node.
+  const nodeClicks: string[] = [];
+  let paneClicks = 0;
+  await mount({
+    nodes: [
+      {
+        id: 'a',
+        type: 'form',
+        position: { x: 60, y: 60 },
+        width: 200,
+        height: 120,
+      },
+      {
+        id: 'b',
+        type: 'form',
+        position: { x: 460, y: 260 },
+        width: 200,
+        height: 120,
+      },
+    ],
+    edges: [],
+    nodeTypes: { form: sizedType },
+    onPaneClick: () => void paneClicks++,
+    onNodeClick: (_ev: unknown, node: FlowNode) =>
+      void nodeClicks.push(node.id),
+  });
+  await act();
+  const node = pane() as unknown as DrawnNode;
+  // bare pane, inside the span of the bodies' box
+  await userEvent.click(node, at(360, 220));
+  assert.strictEqual(
+    paneClicks,
+    1,
+    'the press between the cards reached the pane',
+  );
+  // b's header: inside the span, above b's body
+  await userEvent.click(node, at(560, 270));
+  assert.deepStrictEqual(nodeClicks, ['b'], 'the header selects its node');
+});
+
+test('a press on a body’s plain part selects and drags its node; its controls keep theirs', async () => {
+  // Core runs a press's defaults on the node that took it, so a body took
+  // the card's select and drag with it — a card mostly body could barely be
+  // grabbed. Its controls still get theirs.
+  let pressed = 0;
+  const withButton: FlowNodeType = {
+    size: { width: 200, height: 120 },
+    headerHeight: 20,
+    render: () =>
+      h(
+        'box',
+        { style: { flexGrow: 1, padding: 10 } },
+        h('box', {
+          style: { width: 40, height: 20, backgroundColor: '#888' },
+          onClick: () => void pressed++,
+        }),
+      ),
+  };
+  const { recorded } = await mount({
+    nodes: [
+      {
+        id: 'a',
+        type: 'form',
+        position: { x: 100, y: 100 },
+        width: 200,
+        height: 120,
+      },
+    ],
+    edges: [],
+    nodeTypes: { form: withButton },
+  });
+  await act();
+  const node = pane() as unknown as DrawnNode;
+  // the control: 10 px into the body (x 105 + 10, y 120 + 10)
+  await userEvent.click(node, at(125, 135));
+  assert.strictEqual(pressed, 1, 'the control inside the body took its click');
+  assert.strictEqual(ofType(recorded.nodeChanges, 'position').length, 0);
+
+  // the body's plain part, well clear of the control: drag it 30 px
+  await act(() => {
+    fireEvent.mouseDown(node, at(250, 190));
+    fireEvent.mouseMove(node, at(265, 200));
+    fireEvent.mouseMove(node, at(280, 210));
+    fireEvent.mouseUp(node, at(280, 210));
+  });
+  const moved = ofType(recorded.nodeChanges, 'position');
+  const last = moved[moved.length - 1];
+  assert.ok(last?.type === 'position', 'the drag moved the node');
+  assert.deepStrictEqual(last.position, { x: 130, y: 120 });
+  const selected = ofType(recorded.nodeChanges, 'select');
+  assert.ok(
+    selected.some((c) => c.type === 'select' && c.id === 'a' && c.selected),
+    'and selected it',
+  );
+  assert.strictEqual(pressed, 1, 'the control saw none of it');
+});

@@ -144,7 +144,82 @@ interface WheelLike {
 interface WheelTarget {
   parent?: WheelTarget | null;
   scale?: number;
+  kind?: string;
+  props?: Record<string, unknown>;
+  style?: { cursor?: string };
   canScroll?(dx: number, dy: number): boolean;
+}
+
+/** What `forwardPress` reads off a press, a drag step or a release. */
+interface PressLike extends WheelLike {
+  button?: number;
+  capturePointer?(): void;
+}
+
+/** The pane's half of a pointer gesture, as `forwardPress` drives it. */
+interface PressSink {
+  scale?: number;
+  parent?: unknown;
+  defaultMouseDown?(ev: never): void;
+  defaultMouseDrag?(ev: never): void;
+  defaultMouseUp?(ev: never): void;
+}
+
+/** Roles a press means something to — the body keeps those presses. */
+const INTERACTIVE_ROLES = new Set([
+  'button',
+  'checkbox',
+  'radio',
+  'switch',
+  'slider',
+  'spinbutton',
+  'textbox',
+  'searchbox',
+  'combobox',
+  'listbox',
+  'option',
+  'menuitem',
+  'tab',
+  'link',
+  'scrollbar',
+]);
+
+/**
+ * Whether a press on `n` is the body's own: a control, something that
+ * listens for the press, something whose cursor says it can be clicked or
+ * typed into, or something that scrolls. Everything else in a body — its
+ * padding, a label, a progress bar — is the card, and a press there is the
+ * card's: it selects and drags the node, as it would on a card with no body.
+ */
+function interactive(n: WheelTarget): boolean {
+  const props = n.props ?? {};
+  if (
+    typeof props.onMouseDown === 'function' ||
+    typeof props.onClick === 'function' ||
+    typeof props.onPress === 'function' ||
+    typeof props.onChange === 'function' ||
+    typeof props.onMouseUp === 'function'
+  ) {
+    return true;
+  }
+  if (typeof props.role === 'string' && INTERACTIVE_ROLES.has(props.role)) {
+    return true;
+  }
+  if (typeof props.tabIndex === 'number' && props.tabIndex >= 0) return true;
+  const cursor = n.style?.cursor;
+  if (cursor === 'pointer' || cursor === 'text') return true;
+  if (n.kind === 'textinput' || n.kind === 'textarea') return true;
+  return Boolean(n.canScroll?.(0, 1) || n.canScroll?.(1, 0));
+}
+
+/** The event as the pane reads it: its coordinates taken out of the unit of
+ *  the body they landed in (`scale`, the zoom) and into the window's. */
+function inPaneUnits<E extends WheelLike>(ev: E, sink: PressSink): E {
+  const ratio = (ev.target?.scale ?? 1) / (sink.scale || 1);
+  return Object.assign(Object.create(ev) as E, {
+    x: ev.x * ratio,
+    y: ev.y * ratio,
+  });
 }
 
 interface FlowNodeBodyProps {
@@ -491,18 +566,60 @@ export function Flow<N = FlowNodeData, E = unknown>(
         ) {
           if (n.canScroll?.(wheel.deltaX, wheel.deltaY)) return;
         }
-        // The body's coordinates are in its own zoomed unit; the pane's are
-        // the window's.
-        const ratio = (wheel.target?.scale ?? 1) / (node.scale || 1);
-        const forwarded = Object.assign(Object.create(wheel) as WheelLike, {
-          x: wheel.x * ratio,
-          y: wheel.y * ratio,
-        });
-        node.defaultWheel(forwarded as never);
+        node.defaultWheel(inPaneUnits(wheel, node) as never);
         wheel.preventDefault();
       },
     [],
   );
+  // A press on a body's card-like part is a press on the card. Core runs a
+  // press's default actions — select, drag, and the drag's steps and
+  // release — on the node that took it, so a body took them all: the cards
+  // of a graph whose nodes are mostly body could not be selected or dragged
+  // by most of their area. A press that bubbles up here from something that
+  // is not a control is the pane's instead: its default is vetoed on the
+  // body, the pointer captured so the drag and the release come back here
+  // wherever they wander, and each step handed to the pane.
+  const pressing = useRef(false);
+  const forwardPress = useMemo(() => {
+    // From the pressed node up to the bodies' box — which listens for the
+    // press itself, and is where the walk stops.
+    const within = (ev: PressLike, sink: PressSink): boolean => {
+      for (
+        let n: WheelTarget | null | undefined = ev.target;
+        n && n !== (sink.parent as unknown);
+        n = n.parent
+      ) {
+        if (n.props?.onMouseDown === handlers.onMouseDown) return true;
+        if (interactive(n)) return false;
+      }
+      return true;
+    };
+    const handlers = {
+      onMouseDown: (ev: unknown): void => {
+        const press = ev as PressLike;
+        const sink = pane.current as unknown as PressSink | null;
+        if (!sink || press.defaultPrevented || (press.button ?? 1) !== 1)
+          return;
+        if (!within(press, sink)) return;
+        pressing.current = true;
+        press.preventDefault();
+        press.capturePointer?.();
+        sink.defaultMouseDown?.(inPaneUnits(press, sink) as never);
+      },
+      onMouseMove: (ev: unknown): void => {
+        if (!pressing.current) return;
+        const sink = pane.current as unknown as PressSink | null;
+        sink?.defaultMouseDrag?.(inPaneUnits(ev as PressLike, sink) as never);
+      },
+      onMouseUp: (ev: unknown): void => {
+        if (!pressing.current) return;
+        pressing.current = false;
+        const sink = pane.current as unknown as PressSink | null;
+        sink?.defaultMouseUp?.(inPaneUnits(ev as PressLike, sink) as never);
+      },
+    };
+    return handlers;
+  }, []);
   const layer =
     overlays && overlays.length > 0
       ? React.createElement(
@@ -515,6 +632,11 @@ export function Flow<N = FlowNodeData, E = unknown>(
               top: origin.y + extent.y,
               width: extent.width,
               height: extent.height,
+              // The box spans every body, the gaps between them and the
+              // cards' headers with them — taking the pointer itself, it ate
+              // every press in that span: no pan, no pane click, no selecting
+              // a node by its header. Its bodies take the pointer; it does not.
+              pointerEvents: 'box-none',
               // Held bodies go off screen rather than `display: 'none'`, and
               // that is about the GL renderer: with no child on screen, core
               // drops the <glarea>'s overlay layer, and on Cocoa it goes with
@@ -527,6 +649,7 @@ export function Flow<N = FlowNodeData, E = unknown>(
               ...(held ? { left: HELD_AWAY, top: HELD_AWAY } : null),
             },
             onWheel: forwardWheel,
+            ...forwardPress,
           },
           overlays,
         )
