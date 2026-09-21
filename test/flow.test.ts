@@ -2350,3 +2350,51 @@ test('a press on a body’s plain part selects and drags its node; its controls 
   );
   assert.strictEqual(pressed, 1, 'the control saw none of it');
 });
+
+test('under GL, a frame draws the viewport the bodies were last placed at', async () => {
+  // A GL frame is swapped at the top of a window tick and the bodies over it
+  // reach the screen after that tick's flush — ~19 ms later in a zoom. A
+  // frame drawing the newest viewport put new cards under old bodies for
+  // that long. With bodies live it draws where the last flush put them, and
+  // catches up on the frame that flush asks for.
+  for (const withBodies of [true, false]) {
+    let requested = 0;
+    await renderX11(
+      h(FLOW_ELEMENT, {
+        nodes: bodyNode(),
+        edges: [],
+        nodeTypes: { form: sizedType },
+        renderer: 'gl',
+        onNodeBodies: withBodies ? () => {} : undefined,
+        style: { flexGrow: 1 },
+      }),
+    );
+    const node = pane() as unknown as {
+      setGlRequest(fn: () => void): void;
+      setViewport(v: object): void;
+      invalidate(): void;
+      glFrame(key: string | null): { overlay: { viewport: { zoom: number } } };
+    };
+    node.setGlRequest(() => void requested++);
+    await act(() => node.invalidate());
+    const asked = requested;
+    assert.ok(asked > 0, 'precondition: the flush asked for a frame');
+    node.setViewport({ x: 0, y: 0, zoom: 1.5 });
+    // before the window's flush has placed anything at 1.5
+    const early = node.glFrame(null).overlay.viewport.zoom;
+    assert.strictEqual(
+      early,
+      withBodies ? 1 : 1.5,
+      withBodies
+        ? 'the bodies are still at 1: so is the frame'
+        : 'no bodies to wait for',
+    );
+    await act();
+    assert.ok(
+      requested > asked,
+      'the flush that placed them asked for the frame',
+    );
+    assert.strictEqual(node.glFrame(null).overlay.viewport.zoom, 1.5);
+    cleanup();
+  }
+});
