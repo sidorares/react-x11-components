@@ -2057,3 +2057,107 @@ test('bodies are painted with the graph’s origin panned off the pane', async (
     message: 'the body is painted on its card',
   });
 });
+
+test('bodies over the budget sit a wheel zoom out, mounted and hidden, and come back at the new scale', async () => {
+  // Re-scaling a body is a restyle, a layout and a repaint of its whole
+  // subtree, about a millisecond each per zoom step; over 42 bodies that
+  // held a zoom to 15 frames a second. Ten are predicted over the budget,
+  // so a gesture zoom hides them and leaves them alone, and they return
+  // once it rests.
+  let renders = 0;
+  let unmounts = 0;
+  const counted: FlowNodeType = {
+    size: { width: 200, height: 120 },
+    headerHeight: 20,
+    render: () => {
+      renders++;
+      React.useEffect(() => () => void unmounts++, []);
+      return h('text', null, 'body');
+    },
+  };
+  await mount({
+    // ten cards in two rows, all on screen
+    nodes: Array.from({ length: 10 }, (_, i) => ({
+      id: `n${i}`,
+      type: 'counted',
+      position: { x: 20 + (i % 5) * 140, y: 60 + Math.floor(i / 5) * 150 },
+      width: 120,
+      height: 100,
+    })),
+    edges: [],
+    nodeTypes: { counted },
+  });
+  await act();
+  assert.strictEqual(bodyLayer().children.length, 10, 'precondition');
+  const before = renders;
+  const node = pane();
+  for (let notch = 0; notch < 4; notch++) {
+    await userEvent.wheel(node, { ...at(40, 40), deltaY: -24 });
+  }
+  const layer = (): { display?: string } =>
+    bodyLayer().props.style as { display?: string };
+  assert.strictEqual(layer().display, 'none', 'hidden while the wheel turns');
+  assert.strictEqual(renders, before, 'and not rendered once per notch');
+
+  await act(() => new Promise((resolve) => setTimeout(resolve, 250)));
+  assert.strictEqual(layer().display, 'flex', 'back once the zoom rests');
+  // the zoom pushed some cards off the pane, and theirs leave; the rest
+  // were mounted throughout — their state survives — and render once each
+  const still = bodyLayer().children.length;
+  assert.ok(still > 0 && still < 10, `precondition: some left (${still})`);
+  assert.strictEqual(renders, before + still, 'once each, at the new scale');
+  assert.strictEqual(unmounts, 10 - still, 'no body still on screen remounted');
+  const scale = retained(bodyBox().children[0]).props.scale as number;
+  assert.ok(scale > 1, `at the zoom the wheel left (${scale})`);
+});
+
+test('a body that fits the budget zooms live with the wheel', async () => {
+  await mount({ nodes: bodyNode(), edges: [], nodeTypes: { form: sizedType } });
+  await userEvent.wheel(pane() as unknown as DrawnNode, {
+    ...at(40, 40),
+    deltaY: -48,
+  });
+  const style = bodyLayer().props.style as { display?: string };
+  assert.strictEqual(style.display, 'flex', 'one body is not held');
+  const scale = retained(bodyBox().children[0]).props.scale as number;
+  assert.ok(scale > 1, `and it is at the new zoom (${scale})`);
+});
+
+test('a programmatic zoom applies to bodies at once', async () => {
+  const { flow } = await mount({
+    nodes: bodyNode(),
+    edges: [],
+    nodeTypes: { form: sizedType },
+  });
+  await act(() => flow.current!.setViewport({ zoom: 1.5 }));
+  await act(() => flow.current!.setViewport({ zoom: 2 }));
+  const style = bodyLayer().props.style as { display?: string };
+  assert.strictEqual(style.display, 'flex');
+  assert.strictEqual(retained(bodyBox().children[0]).props.scale, 2);
+});
+
+test('a wheel over a mounted body zooms the graph', async () => {
+  // The bodies are the pane's siblings, so a wheel over one never reached
+  // the pane: over a graph of cards with bodies, the zoom stalled wherever
+  // the pointer rested.
+  const { flow } = await mount({
+    nodes: bodyNode(),
+    edges: [],
+    nodeTypes: { form: sizedType },
+  });
+  // at 2×, so the body's own unit is not the pane's
+  await act(() => flow.current!.setViewport({ x: 0, y: 0, zoom: 2 }));
+  const mark = retained(screen.getByText('mark'));
+  const point = {
+    x: mark.abs.x + mark.abs.width / 2,
+    y: mark.abs.y + mark.abs.height / 2,
+  };
+  const under = flow.current!.screenToFlowPosition(point);
+  await userEvent.wheel(mark as unknown as DrawnNode, { deltaY: -48 });
+  assert.ok(flow.current!.getViewport().zoom > 2, 'the wheel zoomed');
+  const after = flow.current!.screenToFlowPosition(point);
+  assert.ok(
+    Math.abs(after.x - under.x) < 0.5 && Math.abs(after.y - under.y) < 0.5,
+    `about the pointer: ${JSON.stringify(under)} -> ${JSON.stringify(after)}`,
+  );
+});

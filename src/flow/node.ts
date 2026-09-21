@@ -148,7 +148,20 @@ interface PatternLike {
 const timers = globalThis as {
   setInterval?(fn: () => void, ms: number): unknown;
   clearInterval?(id: unknown): void;
+  setTimeout?(fn: () => void, ms: number): unknown;
+  clearTimeout?(id: unknown): void;
 };
+
+/** How long the zoom has to hold still before mounted bodies come back at
+ *  the new scale. Wheel notches in a flick land well inside it. */
+const BODY_ZOOM_REST_MS = 150;
+/** What re-scaling the mounted bodies may add to one step of a zoom
+ *  gesture before they sit the gesture out (`_holdBodies`). */
+const BODY_BUDGET_MS = 8;
+/** What one body costs a zoom step until the pane has measured it: 1.1–1.2
+ *  ms on an M-series Mac, the 400-widget scene on Cocoa (42 bodies added
+ *  49 ms to a 13 ms step, 9 added 10). Learned from then on. */
+const BODY_STEP_PRIOR_MS = 1.2;
 
 /** How often the dash on an animated edge moves. Slow enough that a graph
  * full of them is not a repaint storm, fast enough to read as motion. */
@@ -404,6 +417,18 @@ export class FlowGraphNode extends Node implements FlowInstance {
    *  moved, and that origin. */
   private _bodies: readonly NodeBodyRect[] = [];
   private _bodiesOrigin: XYPosition = { x: 0, y: 0 };
+  /** Bodies held back while the zoom moves (`_holdBodies`): whether they
+   *  are, the zoom last seen, and the timer that brings them back. */
+  private _bodiesHeld = false;
+  private _seenZoom = NaN;
+  private _bodiesRest: unknown = null;
+  /** The budget's model (`_holdBodies`, `_frameTick`): what a body adds to a
+   *  zoom step, what a step costs with none re-scaled, the last frame's
+   *  time, and what the step awaiting its frame did. */
+  private _bodyStepMs = BODY_STEP_PRIOR_MS;
+  private _baseStepMs = NaN;
+  private _lastFrameAt = -Infinity;
+  private _zoomStep: { live: boolean; bodies: number } | null = null;
   private _dashPhase = 0;
   private _animTimer: unknown = null;
   /** Inside `paint`, where an invalidation would only schedule a redraw of
@@ -2557,6 +2582,8 @@ export class FlowGraphNode extends Node implements FlowInstance {
 
   override destroySubtree(): void {
     this._glRequest = null;
+    if (this._bodiesRest != null) timers.clearTimeout?.(this._bodiesRest);
+    this._bodiesRest = null;
     this._stopAnimation();
     this._dropGridTile();
     this._sceneCache.clear();
@@ -2587,6 +2614,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
   // --- painting ------------------------------------------------------------
 
   override paint(ctx: Context2D): void {
+    this._frameTick();
     // What this pass is repainting. The renderer paints each damage rect as
     // its own clipped pass; content outside it survives on the window, so
     // everything we skip here is content the last frame already drew — the
@@ -2827,6 +2855,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
     phase: number;
   } | null {
     if (!this._visible()) return null;
+    this._frameTick();
     this._sync();
     this._painting = true;
     this._frameClip = null;
@@ -3006,10 +3035,18 @@ export class FlowGraphNode extends Node implements FlowInstance {
           bodies: readonly NodeBodyRect[],
           sync: boolean,
           origin: XYPosition,
+          held: boolean,
         ) => void
       >('onNodeBodies');
     if (!notify) return;
     const v = this._viewport();
+    if (this._holdBodies(v.zoom)) {
+      if (!this._bodiesHeld) {
+        this._bodiesHeld = true;
+        notify(this._bodies, this._gestureSync, this._bodiesOrigin, true);
+      }
+      return;
+    }
     const pane = this._pane();
     const origin = { x: Math.round(v.x), y: Math.round(v.y) };
     const bodies: NodeBodyRect[] = [];
@@ -3045,13 +3082,88 @@ export class FlowGraphNode extends Node implements FlowInstance {
       .join('|');
     const moved =
       origin.x !== this._bodiesOrigin.x || origin.y !== this._bodiesOrigin.y;
-    if (key === this._bodiesKey && !moved) return;
+    const released = this._bodiesHeld;
+    if (key === this._bodiesKey && !moved && !released) return;
     if (key !== this._bodiesKey) {
       this._bodiesKey = key;
       this._bodies = bodies;
     }
     this._bodiesOrigin = origin;
-    notify(this._bodies, this._gestureSync, origin);
+    this._bodiesHeld = false;
+    notify(this._bodies, this._gestureSync, origin, false);
+  }
+
+  /**
+   * Whether mounted bodies sit this zoom out.
+   *
+   * A zoom changes every body's scale, and a scale is not a transform: each
+   * body is styled, laid out, its text shaped and its pixels painted again,
+   * at the new size, per step. That is about a millisecond a body on this
+   * class of machine — 42 bodies held a zoom to 15 frames a second where
+   * the graph alone costs 13 ms a step. So each step of a zoom *gesture*
+   * predicts what re-scaling the bodies on screen would add, and when that
+   * is over `BODY_BUDGET_MS` they sit the gesture out: still mounted — no
+   * state is lost — but hidden and untouched, while the cards, their labels
+   * and the edges carry it. Once the zoom has held still for
+   * `BODY_ZOOM_REST_MS` they come back, laid out once at the new scale. A
+   * handful of bodies fits the budget and zooms live.
+   *
+   * The prediction is bodies × what one costs, measured from the pane's own
+   * frames (`_frameTick`) — so a slower machine holds sooner. Once held, a
+   * gesture stays held until it rests: bodies blinking in and out as the
+   * count crosses the line would be worse than either.
+   *
+   * Only gestures count — the wheel, a pinch, the keys: the `_gestureSync`
+   * ones, which arrive as a stream. A programmatic jump — `fitView`,
+   * `setViewport`, a control's button — applies at once, so an app that
+   * sets the viewport and reads the result sees it; the pane never animates
+   * a viewport of its own.
+   */
+  private _holdBodies(zoom: number): boolean {
+    if (zoom !== this._seenZoom) {
+      const first = Number.isNaN(this._seenZoom);
+      this._seenZoom = zoom;
+      if (first || (!this._gestureSync && !this._bodiesHeld)) return false;
+      const bodies = this._bodies.length;
+      if (!this._bodiesHeld && bodies * this._bodyStepMs <= BODY_BUDGET_MS) {
+        this._zoomStep = { live: true, bodies };
+        return false;
+      }
+      this._zoomStep = { live: false, bodies: 0 };
+      if (this._bodiesRest != null) timers.clearTimeout?.(this._bodiesRest);
+      this._bodiesRest = timers.setTimeout?.(() => {
+        this._bodiesRest = null;
+        this._emitBodies();
+      }, BODY_ZOOM_REST_MS);
+      return true;
+    }
+    return this._bodiesHeld && this._bodiesRest != null;
+  }
+
+  /**
+   * A frame was drawn: time the zoom step it carried, into the model
+   * `_holdBodies` predicts from. A step with no body re-scaled is the
+   * baseline; one that re-scaled some says what each cost over it. Passes
+   * a millisecond or two apart are one frame (the 2D renderer paints a
+   * frame's damage as several), and a gap long enough to be the user
+   * pausing is not a step at all.
+   */
+  private _frameTick(): void {
+    const t = now();
+    const dt = t - this._lastFrameAt;
+    if (dt < 2) return;
+    this._lastFrameAt = t;
+    const step = this._zoomStep;
+    this._zoomStep = null;
+    if (!step || dt > 250) return;
+    if (!step.live || step.bodies === 0) {
+      this._baseStepMs = Number.isNaN(this._baseStepMs)
+        ? dt
+        : this._baseStepMs * 0.7 + dt * 0.3;
+    } else if (!Number.isNaN(this._baseStepMs)) {
+      const each = Math.max(0, dt - this._baseStepMs) / step.bodies;
+      this._bodyStepMs = this._bodyStepMs * 0.7 + each * 0.3;
+    }
   }
 
   /**

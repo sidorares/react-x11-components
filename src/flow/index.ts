@@ -127,6 +127,22 @@ function loadGl(): Promise<GlModule> {
   return glLoading;
 }
 
+/** What `forwardWheel` reads off a wheel that landed on a body. */
+interface WheelLike {
+  x: number;
+  y: number;
+  deltaX: number;
+  deltaY: number;
+  defaultPrevented?: boolean;
+  preventDefault(): void;
+  target?: WheelTarget;
+}
+interface WheelTarget {
+  parent?: WheelTarget | null;
+  scale?: number;
+  canScroll?(dx: number, dy: number): boolean;
+}
+
 interface FlowNodeBodyProps {
   type: FlowNodeType<unknown>;
   node: FlowNode<unknown>;
@@ -344,17 +360,22 @@ export function Flow<N = FlowNodeData, E = unknown>(
   // one box placed here, so a pan — which moves this and nothing else — is
   // one style change rather than a render of every body.
   const [origin, setOrigin] = useState<XYPosition>({ x: 0, y: 0 });
+  // Hidden while a zoom moves, and nothing else about them touched — see
+  // `_holdBodies` in ./node.ts for what re-scaling them every step cost.
+  const [held, setHeld] = useState(false);
   // Gesture-time emissions commit inline (see `flushSync` above); the rest —
   // a programmatic `fitView`, the first paint — take the ordinary path.
   const handleBodies = (
     next: readonly NodeBodyRect[],
     sync: boolean,
     at: XYPosition,
+    hold: boolean,
   ): void => {
     const apply = (): void => {
       // the same array on a pan: React bails out of this update
       setBodies(next);
       setOrigin((was) => (was.x === at.x && was.y === at.y ? was : at));
+      setHeld(hold);
     };
     if (sync) flushSync(apply);
     else apply();
@@ -445,6 +466,39 @@ export function Flow<N = FlowNodeData, E = unknown>(
         : null,
     [mounts, bodies, extent, byId, nodeTypes],
   );
+  // A wheel over a body is a wheel over the graph. Core runs the wheel's
+  // default action on the node under the pointer and scrolls up from there,
+  // and the bodies are the pane's siblings, not its children — so over a
+  // card's body the pane never heard it, and zooming a graph whose cards
+  // are mostly bodies stalled wherever the pointer rested. Forwarded unless
+  // something between the pointer and the pane can scroll that way itself:
+  // a list inside a card keeps its wheel.
+  const forwardWheel = useMemo(
+    () =>
+      (ev: unknown): void => {
+        const node = pane.current;
+        const wheel = ev as WheelLike;
+        if (!node || wheel.defaultPrevented) return;
+        const stop = node.parent;
+        for (
+          let n: WheelTarget | null | undefined = wheel.target;
+          n && n !== (stop as unknown);
+          n = n.parent
+        ) {
+          if (n.canScroll?.(wheel.deltaX, wheel.deltaY)) return;
+        }
+        // The body's coordinates are in its own zoomed unit; the pane's are
+        // the window's.
+        const ratio = (wheel.target?.scale ?? 1) / (node.scale || 1);
+        const forwarded = Object.assign(Object.create(wheel) as WheelLike, {
+          x: wheel.x * ratio,
+          y: wheel.y * ratio,
+        });
+        node.defaultWheel(forwarded as never);
+        wheel.preventDefault();
+      },
+    [],
+  );
   const layer =
     overlays && overlays.length > 0
       ? React.createElement(
@@ -457,7 +511,9 @@ export function Flow<N = FlowNodeData, E = unknown>(
               top: origin.y + extent.y,
               width: extent.width,
               height: extent.height,
+              display: held ? 'none' : 'flex',
             },
+            onWheel: forwardWheel,
           },
           overlays,
         )

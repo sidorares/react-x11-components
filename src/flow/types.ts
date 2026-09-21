@@ -660,11 +660,17 @@ export interface FlowProps<N = FlowNodeData, E = unknown> {
    * priority, which React may hold across several frames while the pane
    * paints each step immediately; a gesture-time receiver must commit
    * synchronously or the mounted bodies visibly trail the drawn cards.
+   *
+   * `held` is true while a zoom is moving: the bodies are to stay mounted
+   * and be hidden, and `bodies`/`origin` are the last ones sent, unchanged.
+   * The next call, once the zoom has rested, has `held` false and the
+   * bodies at the new scale.
    */
   onNodeBodies?: (
     bodies: readonly NodeBodyRect[],
     sync: boolean,
     origin: XYPosition,
+    held: boolean,
   ) => void;
   /**
    * Which renderer draws the graph. `'retained'` (the default) draws through
