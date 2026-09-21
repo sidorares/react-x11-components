@@ -244,25 +244,39 @@ are CPU work over graph-space geometry, they are not in the profile, and a
 `<glarea>` being a child window means the gestures arrive at a pane element
 behind it — the arrangement `src/maps/gl/pane.ts` already documents.
 
-## What is still unproven
+## What is still open
 
-- **Labels in the frame.** The 0.59 ms prototype draws none. The atlas is a
-  known quantity from maps, but the bucket scheme is new and its cost at a
-  bucket crossing is the number this design most needs next.
-- **Node bodies over the surface.** `useSupports('glOverlay')` answers true on
-  both backends and core documents the mechanism, but nothing here has yet put
-  a real `<Flow>` body on a real surface. Note that Cocoa's window capture
-  does not see the GL layer, so this cannot be verified by snapshot — it needs
-  an eyeball or X11.
-- **The `shaders` probe is asynchronous on Cocoa.** The overlay probe reported
-  `shaders=false` on its first render and `true` on its second, which is the
-  `'pending'` state `chooseRenderer` exists for. `<Flow renderer="auto">` will
-  need the same three-way answer maps has, or it will draw the retained
-  renderer for two frames and throw it away.
-- **`FlowPainter` for custom node types.** A node type with a `paint` draws
-  through a 2D vocabulary. Most of it (rect, circle, polyline, text) maps onto
-  the instance streams directly; a type that reaches for `painter.raw` cannot
-  be served and has to be able to find that out.
+- **The overlay's cost is core's now.** With bodies over the surface, 26.5% of
+  a GL pan over 49 widget bodies is core re-painting the overlay (on Cocoa, a
+  `<glarea>`'s children share one transparent layer the size of the surface,
+  and moving their box repaints all of it) and ~10–16% is layout. Panes that
+  move with their content instead of repainting — or a layer per body — are
+  the next order of magnitude, and they are core work.
+- **`box-none` has to ship.** Bodies over the surface need
+  sidorares/react-x11#637; on 2.17.1 the value reads as `'auto'` and a pane
+  with bodies under GL would lose its bare-surface clicks. The floor moves
+  with that release, and not before.
+- **Rebuild frames are whole rebuilds.** A zoom step or a drag step rebuilds
+  and repacks the world: 2.3 ms at 200 nodes, 15 ms at 2000 (offscreen,
+  `glFinish`). Incremental packing — rewrite the dragged node's and its
+  edges' instances in place — is what 2000 nodes at 120 Hz _while dragging_
+  needs; 200 do not.
+- **The `shaders` probe is asynchronous on Cocoa.** `useSupports('shaders')`
+  answers `false` on the first render and `true` on the second, which is the
+  `'pending'` state maps' `chooseRenderer` exists for. `renderer="auto"`
+  needs the same three-way answer, or it draws two frames on the 2D renderer
+  and throws them away.
+- **`FlowPainter` for custom node types.** A type with its own `paint` is
+  counted in `onFrame`'s `gaps.custom` and not drawn on GL. Most of that
+  vocabulary (rect, circle, polyline, text) maps onto the instance streams;
+  a type that reaches for `painter.raw` cannot be served and has to be able
+  to find that out.
+- **X11 is unmeasured.** Everything here was measured on the Cocoa backend.
+  The GL surface, the overlay (opaque child windows per region there) and the
+  wheel through a child window want a pass on an X server with direct GL.
+- **The label atlas and maps' are the same idea twice.** `AGENTS.md` keeps
+  components from importing each other; the shared part is a candidate for a
+  module of its own.
 
 ## Order of work
 
@@ -316,11 +330,47 @@ behind it — the arrangement `src/maps/gl/pane.ts` already documents.
    of the scene profile — the same code built by `tsc` ran **2.2× faster**.
    `--build=dist` times what an application runs.
 
-3. **Geometry on the GPU.** The four programs, behind an explicit
-   `renderer="gl"`. Measurable, not yet shippable.
-4. **Labels.** Atlas, buckets, the admission budget.
-5. **Node bodies and custom paint.** `glOverlay` children, a GL `FlowPainter`,
-   `renderer="auto"`.
+3. ~~**Geometry on the GPU.**~~ **Done**, behind an explicit
+   `renderer="gl"`. The renderer reads the same `FlowScene` the 2D painter
+   does; `gl/pack.ts` appends every shape to one of three instance streams in
+   the painter's z-order, and a frame is ~10 ranged instanced draws. A disc
+   is a rounded box whose corners meet, so cards, handles, chips and panels
+   are one program. The graph is a **world** built at a pinned origin,
+   culled to an overscan three panes wide and uploaded only when it changes;
+   the pane's furniture is a small **overlay** packed every frame; a pan is
+   the world's offset and a marching dash its phase — both uniforms.
+
+   Panning the lattice on a real window (Cocoa, 120 Hz): 117.8 / 120.0 /
+   118.8 fps at 200 / 800 / 2000 nodes, 0.36–0.70 ms of this thread a frame,
+   no world rebuilt during the pan; the same under Bun. A node drag at 200
+   nodes is 3.1 ms a frame (2D: 28).
+
+   Three things found on the way, each with a test now: a closed arrowhead
+   alternated a triangle and a hairline and cost 807 draws a frame where 10
+   do; the surface swallowed every press until it was made transparent to the
+   pointer; and the surface drew nothing at all — it divided by a `scale` core
+   declares on `onDraw`'s info and did not pass (sidorares/react-x11#634,
+   fixed in #635), which every counter it keeps could not see, because NaN
+   vertices cost the GPU nothing. The surface now reads the node's scale and
+   throws on a target that is not finite.
+
+4. ~~**Labels.**~~ **Done.** An atlas: strings shaped by the app's own text
+   engine in white, read back in batches of up to 48, packed into a 2048²
+   texture, and drawn by the _box_ program sampling it — so each label sits
+   in the box stream exactly where the painter draws it and a frame is still
+   ~10 draws. A label is drawn from the raster of its exact size, or from the
+   nearest size the atlas holds, scaled, while the zoom moves; exact sizes are
+   set once it holds still. Offscreen against the 2D painter the text is
+   indistinguishable. A 200-node lattice at zoom 1 fills its 311 labels in
+   five batches after a zoom settles and pans at 120 fps with every label
+   drawn; 2000 nodes, 119.8.
+5. **Node bodies** — ~~over the surface~~ **done** on this branch, pending
+   react-x11's `box-none` (#637): bodies are the `<glarea>`'s children, and
+   the surface is `box-none` while it holds them. And a pan moves one box of
+   bodies instead of re-committing each one's position. The widget scene (49
+   bodies at 0.6×) pans at 27–28 fps on GL against 23 on 2D, both now drawing
+   the bodies; see "What is still open" for what bounds it. Custom `paint`
+   types and `renderer="auto"` remain.
 
 ## Reproduce
 
