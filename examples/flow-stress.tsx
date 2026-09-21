@@ -21,18 +21,27 @@
 // from `react-x11/debug`'s trace — everything that renderer draws is X
 // protocol on an X server — and the opcode tally is printed on exit. See
 // docs/components/flow.md, "What the pane batches".
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import type { ReactElement } from 'react';
 import { Button, Checkbox, createRoot } from 'react-x11';
 import { startTrace } from 'react-x11/debug';
 import type { TraceSession } from 'react-x11/debug';
 
-import { Flow } from '../src/index.js';
+import { Flow, useEdgesState, useNodesState } from '../src/index.js';
 import type {
   FlowEdge,
   FlowFrameStats,
   FlowInstance,
   FlowNode,
+  FlowNodeData,
   FlowNodeType,
   HandlePosition,
 } from '../src/index.js';
@@ -236,51 +245,53 @@ function lattice(): Scene {
 // it a card is too small to hold a widget), and only while their card is in
 // the pane. **0.6×** jumps to the densest view where they all mount.
 //
-// **tick** re-renders every mounted body ten times a second from a shared
-// clock — a node's *content* changing, with the graph itself untouched, which
-// is the case a text field typed into, or a value streaming in, costs.
+// A body's state is its node's `data`, held in the example's graph state
+// (`useNodesState`) — not in the body. A body is unmounted whenever its card
+// leaves the pane or the zoom drops below 0.6, and a `useState` inside it
+// goes with it; the graph's `data` does not, so a checkbox ticked, zoomed
+// out and zoomed back in is still ticked.
+//
+// **tick** streams new values into a tenth of the nodes, ten times a second —
+// a node's *content* changing with the graph's shape untouched, the case a
+// value streaming in or a field typed into costs. The line counts every body
+// render a second, and how many of them were handed the *same* `data` object
+// as last time: a render that had nothing new to show, which is the number
+// to watch when a pan or a drag should be moving boxes and nothing else.
 
-/** A shared 10 Hz clock the bodies subscribe to, and the count of bodies
- *  mounted — both module state, so ticking never touches the graph's props. */
-export const ticker = {
-  value: 0,
-  listeners: new Set<() => void>(),
-  timer: null as ReturnType<typeof setInterval> | null,
-  start(): void {
-    if (this.timer) return;
-    this.timer = setInterval(() => {
-      this.value++;
-      for (const listen of this.listeners) listen();
-    }, 100);
-  },
-  stop(): void {
-    if (this.timer) clearInterval(this.timer);
-    this.timer = null;
-  },
-};
+/** Bodies mounted now, and body renders counted — module state, read by the
+ *  readout, so counting costs no render of its own. */
 export const mounted = { count: 0 };
+export const renders = { total: 0, sameData: 0 };
 
-interface WidgetData {
+export interface WidgetData {
   label: string;
   seed: number;
+  enabled: boolean;
+  runs: number;
+  queue: number;
+  progress: number;
 }
 
+/** How a body changes its own node: the example's setter, through context,
+ *  so the node type can stay one stable object. */
+const PatchWidget = createContext<
+  (id: string, patch: Partial<WidgetData>) => void
+>(() => {});
+
 function WidgetBody(props: { node: FlowNode<WidgetData> }): ReactElement {
-  const { seed } = props.node.data ?? { seed: 0 };
-  const [tick, setTick] = useState(ticker.value);
-  const [enabled, setEnabled] = useState(seed % 3 !== 0);
-  const [runs, setRuns] = useState(0);
+  const patch = useContext(PatchWidget);
+  const { node } = props;
+  const data = node.data!;
+  const seen = useRef<WidgetData | null>(null);
+  renders.total++;
+  if (seen.current === data) renders.sameData++;
+  seen.current = data;
   useEffect(() => {
     mounted.count++;
-    const listen = (): void => setTick(ticker.value);
-    ticker.listeners.add(listen);
     return () => {
       mounted.count--;
-      ticker.listeners.delete(listen);
     };
   }, []);
-  const queue = (seed * 7 + tick * 3) % 50;
-  const progress = ((seed * 13 + tick * 2) % 100) / 100;
   return (
     <box style={{ flexGrow: 1, padding: 6, gap: 5 }}>
       <box style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
@@ -289,11 +300,11 @@ function WidgetBody(props: { node: FlowNode<WidgetData> }): ReactElement {
             width: 8,
             height: 8,
             borderRadius: 4,
-            backgroundColor: enabled ? '#3fb950' : '$textMuted',
+            backgroundColor: data.enabled ? '#3fb950' : '$textMuted',
           }}
         />
         <text style={{ fontSize: 11 }}>
-          {enabled ? `queue ${queue}` : 'paused'}
+          {data.enabled ? `queue ${data.queue}` : 'paused'}
         </text>
       </box>
       <box
@@ -306,7 +317,7 @@ function WidgetBody(props: { node: FlowNode<WidgetData> }): ReactElement {
       >
         <box
           style={{
-            width: `${Math.round(progress * 100)}%`,
+            width: `${Math.round(data.progress * 100)}%`,
             height: 6,
             backgroundColor: '$accent',
           }}
@@ -315,10 +326,13 @@ function WidgetBody(props: { node: FlowNode<WidgetData> }): ReactElement {
       <box style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
         <Checkbox
           label="on"
-          checked={enabled}
-          onChange={(ev) => setEnabled(ev.value)}
+          checked={data.enabled}
+          onChange={(ev) => patch(node.id, { enabled: ev.value })}
         />
-        <Button label={`run ${runs}`} onPress={() => setRuns((n) => n + 1)} />
+        <Button
+          label={`run ${data.runs}`}
+          onPress={() => patch(node.id, { runs: data.runs + 1 })}
+        />
       </box>
     </box>
   );
@@ -339,6 +353,17 @@ export const WIDGET_TYPES = { widget: widgetType } as Record<
   FlowNodeType<unknown>
 >;
 
+/** A streamed value for node `seed` at tick `tick`. */
+function streamed(
+  seed: number,
+  tick: number,
+): Pick<WidgetData, 'queue' | 'progress'> {
+  return {
+    queue: (seed * 7 + tick * 3) % 50,
+    progress: ((seed * 13 + tick * 2) % 100) / 100,
+  };
+}
+
 export function widgets(): Scene {
   const count = 400;
   const cols = 25;
@@ -348,7 +373,13 @@ export function widgets(): Scene {
       id: `w${i}`,
       type: 'widget',
       position: { x: (i % cols) * 250, y: Math.floor(i / cols) * 180 },
-      data: { label: `worker ${i}`, seed: i } as unknown as FlowNode['data'],
+      data: {
+        label: `worker ${i}`,
+        seed: i,
+        enabled: i % 3 !== 0,
+        runs: 0,
+        ...streamed(i, 0),
+      } as unknown as FlowNode['data'],
     });
   }
   const edges: FlowEdge[] = [];
@@ -376,6 +407,21 @@ const EMPTY: Scene = { name: 'empty', detail: 'nothing', nodes: [], edges: [] };
 
 function App(): ReactElement {
   const [scene, setScene] = useState<Scene>(EMPTY);
+  // The graph lives here, not in the pane, so a body's state — its node's
+  // `data` — outlives the body.
+  const [nodes, setNodes, onNodesChange] = useNodesState<FlowNodeData>([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+  const patchWidget = useCallback(
+    (id: string, patch: Partial<WidgetData>) =>
+      setNodes((current) =>
+        current.map((n) =>
+          n.id === id
+            ? { ...n, data: { ...n.data, ...patch } as FlowNodeData }
+            : n,
+        ),
+      ),
+    [setNodes],
+  );
   const [panning, setPanning] = useState(false);
   const [stats, setStats] = useState(
     'press a scene, then drag a node — or pan for the full-frame loop',
@@ -386,10 +432,29 @@ function App(): ReactElement {
   const scenes = useMemo(() => [spiral(), lattice(), fanOut(), widgets()], []);
   const [ticking, setTicking] = useState(false);
   useEffect(() => {
-    if (ticking) ticker.start();
-    else ticker.stop();
-    return () => ticker.stop();
-  }, [ticking]);
+    if (!ticking) return;
+    let tick = 0;
+    const timer = setInterval(() => {
+      tick++;
+      // A tenth of the widgets a tick, each a new `data`; the rest keep
+      // theirs, identity and all — which is what lets a render with
+      // nothing new in it be told apart.
+      setNodes((current) =>
+        current.map((n, i) => {
+          if (n.type !== 'widget' || (i + tick) % 10 !== 0) return n;
+          const data = n.data as unknown as WidgetData;
+          return {
+            ...n,
+            data: {
+              ...data,
+              ...streamed(data.seed, tick),
+            } as unknown as FlowNodeData,
+          };
+        }),
+      );
+    }, 100);
+    return () => clearInterval(timer);
+  }, [ticking, setNodes]);
   const [gl, setGl] = useState(false);
   // Every frame the pane drew, on either renderer, from `onFrame`, drained by
   // the readout below. A ref, not state: setting state per frame would
@@ -417,6 +482,8 @@ function App(): ReactElement {
 
   const load = useCallback((next: Scene) => {
     setScene(next);
+    setNodes(next.nodes);
+    setEdges(next.edges);
     setStats(`${next.nodes.length} nodes, ${next.edges.length} edges`);
   }, []);
 
@@ -449,7 +516,14 @@ function App(): ReactElement {
   // zoom, or nothing. Both renderers draw on change and not otherwise, so an
   // idle pane is 0 frames/s and says so rather than going quiet.
   useEffect(() => {
-    const last = { requests: 0, bytes: 0, steps: 0, at: Date.now() };
+    const last = {
+      requests: 0,
+      bytes: 0,
+      steps: 0,
+      renders: renders.total,
+      sameData: renders.sameData,
+      at: Date.now(),
+    };
     const seed = trace.current?.stats;
     if (seed) {
       last.requests = seed.requests;
@@ -467,6 +541,10 @@ function App(): ReactElement {
         last.bytes = wire.bytesOut;
       }
       last.steps = steps.current;
+      const rendered = renders.total - last.renders;
+      const wasted = renders.sameData - last.sameData;
+      last.renders = renders.total;
+      last.sameData = renders.sameData;
       last.at = now;
 
       const frames = drawn.current.splice(0, drawn.current.length);
@@ -499,6 +577,12 @@ function App(): ReactElement {
       }
       if (dragged > 0) parts.push(`drag ${(dragged / dt).toFixed(0)} steps/s`);
       if (mounted.count > 0) parts.push(`${mounted.count} bodies mounted`);
+      if (rendered > 0) {
+        parts.push(
+          `${(rendered / dt).toFixed(0)} body renders/s ` +
+            `(${(wasted / dt).toFixed(0)}/s with data unchanged)`,
+        );
+      }
       setStats(parts.join(' · '));
     }, 600);
     return () => clearInterval(report);
@@ -543,36 +627,40 @@ function App(): ReactElement {
           />
         </box>
         <text style={{ fontSize: 12, color: '$textMuted' }}>{stats}</text>
-        <Flow
-          // A remount per scene: `defaultNodes` is read once, and the
-          // uncontrolled pane owning the arrays is what makes every node
-          // draggable with no state wiring up here.
-          key={scene.name}
-          ref={flow}
-          defaultNodes={scene.nodes}
-          defaultEdges={scene.edges}
-          nodeTypes={WIDGET_TYPES}
-          onNodesChange={() => {
-            // one batch per gesture step — counted, never stored: a setState
-            // here would re-render this component per pointer move, and the
-            // pane's own cost is what is being measured
-            steps.current++;
-          }}
-          fitView
-          fitViewOptions={{ padding: 0.06 }}
-          renderer={gl ? 'gl' : 'retained'}
-          onFrame={onFrame}
-          onError={(error) => setStats(`gl failed: ${error.message}`)}
-          minimap
-          controls
-          background={{ variant: 'dots', gap: 24 }}
-          style={{
-            flexGrow: 1,
-            borderWidth: 1,
-            borderColor: '$border',
-            borderRadius: 6,
-          }}
-        />
+        <PatchWidget.Provider value={patchWidget}>
+          <Flow
+            // A remount per scene: `defaultNodes` is read once, and the
+            // uncontrolled pane owning the arrays is what makes every node
+            // draggable with no state wiring up here.
+            key={scene.name}
+            ref={flow}
+            nodes={nodes}
+            edges={edges}
+            onEdgesChange={onEdgesChange}
+            nodeTypes={WIDGET_TYPES}
+            onNodesChange={(changes) => {
+              // Stored, as an application holding its graph stores it — which
+              // re-renders this component each step, and that is part of what
+              // a controlled graph costs, so it is in the numbers.
+              onNodesChange(changes);
+              steps.current++;
+            }}
+            fitView
+            fitViewOptions={{ padding: 0.06 }}
+            renderer={gl ? 'gl' : 'retained'}
+            onFrame={onFrame}
+            onError={(error) => setStats(`gl failed: ${error.message}`)}
+            minimap
+            controls
+            background={{ variant: 'dots', gap: 24 }}
+            style={{
+              flexGrow: 1,
+              borderWidth: 1,
+              borderColor: '$border',
+              borderRadius: 6,
+            }}
+          />
+        </PatchWidget.Provider>
       </box>
     </window>
   );
