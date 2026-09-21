@@ -23,6 +23,7 @@ export interface FlowGlSource {
   glFrame(lastKey: string | null): (FlowGlFrame & { key: string }) | null;
   glText?(): TextSource | null;
   setGlRequest(request: (() => void) | null): void;
+  bodyBudget(): FlowFrameStats['bodies'];
 }
 
 export interface FlowGlSurfaceProps {
@@ -182,7 +183,12 @@ class Driver {
           },
         );
       }
-      this.props.onFrame?.({ renderer: 'gl', sceneMs, ...stats });
+      this.props.onFrame?.({
+        renderer: 'gl',
+        sceneMs,
+        ...stats,
+        bodies: pane.bodyBudget(),
+      });
     } catch (error) {
       this.fail(error);
     }

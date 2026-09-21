@@ -99,6 +99,7 @@ import type {
   EdgeChange,
   FitViewOptions,
   FlowEdge,
+  FlowBodyBudget,
   FlowFrameStats,
   FlowNode,
   FlowNodeData,
@@ -323,6 +324,7 @@ export const SELF_DAMAGED_PROPS: readonly string[] = [
   'zoomOnDoubleClick',
   'selectionOnDrag',
   'deleteOnKey',
+  'adaptive',
   'snapToGrid',
   'snapGrid',
 ];
@@ -2797,6 +2799,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
         uploadBytes: 0,
         worldRebuilt: false,
         gaps: { text: 0, custom: 0 },
+        bodies: this.bodyBudget(),
       });
     });
   }
@@ -3125,7 +3128,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
       this._seenZoom = zoom;
       if (first || (!this._gestureSync && !this._bodiesHeld)) return false;
       const bodies = this._bodies.length;
-      if (!this._bodiesHeld && bodies * this._bodyStepMs <= BODY_BUDGET_MS) {
+      if (!this._bodiesHeld && bodies * this._bodyStepMs <= this._budgetMs()) {
         this._zoomStep = { live: true, bodies };
         return false;
       }
@@ -3138,6 +3141,29 @@ export class FlowGraphNode extends Node implements FlowInstance {
       return true;
     }
     return this._bodiesHeld && this._bodiesRest != null;
+  }
+
+  /** `adaptive` as a number of milliseconds: `Infinity` never holds. */
+  private _budgetMs(): number {
+    const adaptive = this._prop<boolean | { budgetMs?: number }>('adaptive');
+    if (adaptive === false) return Infinity;
+    if (typeof adaptive === 'object' && adaptive?.budgetMs != null) {
+      return Math.max(0, adaptive.budgetMs);
+    }
+    return BODY_BUDGET_MS;
+  }
+
+  /** Where the mounted bodies stand against the budget — reported with
+   *  every frame (`FlowFrameStats.bodies`). */
+  bodyBudget(): FlowBodyBudget {
+    const count = this._bodies.length;
+    return {
+      count,
+      held: this._bodiesHeld,
+      perBodyMs: this._bodyStepMs,
+      predictedMs: count * this._bodyStepMs,
+      budgetMs: this._budgetMs(),
+    };
   }
 
   /**

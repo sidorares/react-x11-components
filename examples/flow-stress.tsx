@@ -14,8 +14,12 @@
 //   gl    — switches the pane to `renderer="gl"` (docs/prd-flow-gl.md): the
 //           graph drawn through a `<glarea>`, a pan a uniform write. Labels
 //           at a new size arrive a frame or two after a zoom stops — the line
-//           counts any a frame was still waiting on — and a node type's
-//           mounted body is not over the surface yet.
+//           counts any a frame was still waiting on.
+//   bodies ≤ N ms — `<Flow adaptive>`: what re-scaling mounted bodies may
+//           add to one step of a zoom gesture. Over it they sit the gesture
+//           out, off screen and still mounted, and come back at the new
+//           scale when it rests; the line says which, and what the pane
+//           predicted.
 //
 // On the 2D renderer the line also reports X requests and bytes per frame
 // from `react-x11/debug`'s trace — everything that renderer draws is X
@@ -31,7 +35,7 @@ import {
   useState,
 } from 'react';
 import type { ReactElement } from 'react';
-import { Button, Checkbox, createRoot } from 'react-x11';
+import { Button, Checkbox, Select, createRoot } from 'react-x11';
 import { startTrace } from 'react-x11/debug';
 import type { TraceSession } from 'react-x11/debug';
 
@@ -403,6 +407,18 @@ export function widgets(): Scene {
   };
 }
 
+/** The body budgets the dropdown offers (`<Flow adaptive>`): what re-scaling
+ *  mounted bodies may add to one step of a zoom gesture before they sit it
+ *  out. `live` never holds them; `0` always does. */
+const BUDGETS = [
+  { value: '4', label: 'bodies ≤ 4 ms' },
+  { value: '8', label: 'bodies ≤ 8 ms' },
+  { value: '16', label: 'bodies ≤ 16 ms' },
+  { value: '32', label: 'bodies ≤ 32 ms' },
+  { value: '0', label: 'bodies: always hold' },
+  { value: 'live', label: 'bodies: always live' },
+];
+
 const EMPTY: Scene = { name: 'empty', detail: 'nothing', nodes: [], edges: [] };
 
 function App(): ReactElement {
@@ -456,6 +472,7 @@ function App(): ReactElement {
     return () => clearInterval(timer);
   }, [ticking, setNodes]);
   const [gl, setGl] = useState(false);
+  const [budget, setBudget] = useState('8');
   // Every frame the pane drew, on either renderer, from `onFrame`, drained by
   // the readout below. A ref, not state: setting state per frame would
   // re-render this component 120 times a second, and that is not what is
@@ -577,6 +594,15 @@ function App(): ReactElement {
       }
       if (dragged > 0) parts.push(`drag ${(dragged / dt).toFixed(0)} steps/s`);
       if (mounted.count > 0) parts.push(`${mounted.count} bodies mounted`);
+      // what the budget made of the last zoom step
+      const held = frames[frames.length - 1]?.bodies;
+      if (held && held.count > 0) {
+        parts.push(
+          `${held.held ? 'held' : 'live'}: ${held.predictedMs.toFixed(1)} ms ` +
+            `predicted (${held.perBodyMs.toFixed(2)} ms/body)` +
+            (Number.isFinite(held.budgetMs) ? ` vs ${held.budgetMs}` : ''),
+        );
+      }
       if (rendered > 0) {
         parts.push(
           `${(rendered / dt).toFixed(0)} body renders/s ` +
@@ -620,6 +646,16 @@ function App(): ReactElement {
               if (v) flow.current?.setViewport({ ...v, zoom: 0.6 });
             }}
           />
+          <Select
+            value={budget}
+            options={BUDGETS}
+            onChange={(event) => setBudget(event.value)}
+            // drawn rather than AppKit's popup — sidorares/react-x11#552, as
+            // in maps-gl: a native menu this near the window's top closes on
+            // the readout's next layout pass
+            native={false}
+            style={{ width: 170 }}
+          />
           <Button
             label={ticking ? 'stop tick' : 'tick'}
             primary={ticking}
@@ -648,6 +684,7 @@ function App(): ReactElement {
             fitView
             fitViewOptions={{ padding: 0.06 }}
             renderer={gl ? 'gl' : 'retained'}
+            adaptive={budget === 'live' ? false : { budgetMs: Number(budget) }}
             onFrame={onFrame}
             onError={(error) => setStats(`gl failed: ${error.message}`)}
             minimap

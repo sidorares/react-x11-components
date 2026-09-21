@@ -35,7 +35,10 @@ import type { GL, Program } from './shaders.js';
 import { ColorCache } from './color.js';
 
 /** One frame's drawing, counted; `<Flow>` adds the scene's share. */
-export type FlowGlDrawStats = Omit<FlowFrameStats, 'sceneMs' | 'renderer'>;
+export type FlowGlDrawStats = Omit<
+  FlowFrameStats,
+  'sceneMs' | 'renderer' | 'bodies'
+>;
 
 /** Where the surface sits and how big it is: the pane's content box in
  *  logical window pixels, and the surface in device pixels. */

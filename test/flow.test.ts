@@ -104,6 +104,13 @@ function bodyBox(index = 0): RetainedNode {
   return retained(box);
 }
 
+/** The bodies are held off the pane (`_holdBodies`): their box is
+ *  nowhere near it. */
+function bodiesAway(): boolean {
+  const { abs } = bodyLayer();
+  return abs.x + abs.width < 0 && abs.y + abs.height < 0;
+}
+
 /** Where a mounted body's box sits in the pane: the bodies' one box's
  *  place plus the body's own inside it. */
 function bodyPlace(index = 0): { left: number; top: number } {
@@ -2095,13 +2102,18 @@ test('bodies over the budget sit a wheel zoom out, mounted and hidden, and come 
   for (let notch = 0; notch < 4; notch++) {
     await userEvent.wheel(node, { ...at(40, 40), deltaY: -24 });
   }
-  const layer = (): { display?: string } =>
-    bodyLayer().props.style as { display?: string };
-  assert.strictEqual(layer().display, 'none', 'hidden while the wheel turns');
+  // off the pane, not `display: 'none'` — which empties a <glarea>'s
+  // overlay, and on Cocoa that layer leaves with an implicit fade
+  assert.ok(bodiesAway(), 'off screen while the wheel turns');
+  assert.notStrictEqual(
+    (bodyLayer().props.style as { display?: string }).display,
+    'none',
+    'and still laid out',
+  );
   assert.strictEqual(renders, before, 'and not rendered once per notch');
 
   await act(() => new Promise((resolve) => setTimeout(resolve, 250)));
-  assert.strictEqual(layer().display, 'flex', 'back once the zoom rests');
+  assert.ok(!bodiesAway(), 'back once the zoom rests');
   // the zoom pushed some cards off the pane, and theirs leave; the rest
   // were mounted throughout — their state survives — and render once each
   const still = bodyLayer().children.length;
@@ -2118,8 +2130,7 @@ test('a body that fits the budget zooms live with the wheel', async () => {
     ...at(40, 40),
     deltaY: -48,
   });
-  const style = bodyLayer().props.style as { display?: string };
-  assert.strictEqual(style.display, 'flex', 'one body is not held');
+  assert.ok(!bodiesAway(), 'one body is not held');
   const scale = retained(bodyBox().children[0]).props.scale as number;
   assert.ok(scale > 1, `and it is at the new zoom (${scale})`);
 });
@@ -2132,8 +2143,7 @@ test('a programmatic zoom applies to bodies at once', async () => {
   });
   await act(() => flow.current!.setViewport({ zoom: 1.5 }));
   await act(() => flow.current!.setViewport({ zoom: 2 }));
-  const style = bodyLayer().props.style as { display?: string };
-  assert.strictEqual(style.display, 'flex');
+  assert.ok(!bodiesAway());
   assert.strictEqual(retained(bodyBox().children[0]).props.scale, 2);
 });
 
@@ -2202,4 +2212,50 @@ test('a curve is drawn within a fifth of a pixel of itself at any zoom', () => {
     ROUTE,
   );
   assert.ok(gentle.length <= 12, `${gentle.length} vertices`);
+});
+
+test('`adaptive` sets the body budget, and every frame reports it', async () => {
+  // ten bodies, predicted at 12 ms: held under the default 8, live under 20
+  // or with `adaptive={false}`, held through any gesture under 0
+  const cards = Array.from({ length: 10 }, (_, i) => ({
+    id: `n${i}`,
+    type: 'form',
+    position: { x: 20 + (i % 5) * 140, y: 60 + Math.floor(i / 5) * 150 },
+    width: 120,
+    height: 100,
+  }));
+  for (const [adaptive, held] of [
+    [undefined, true],
+    [{ budgetMs: 20 }, false],
+    [false, false],
+    [{ budgetMs: 0 }, true],
+  ] as const) {
+    const frames: FlowFrameStats[] = [];
+    await mount({
+      nodes: cards,
+      edges: [],
+      nodeTypes: { form: sizedType },
+      adaptive,
+      onFrame: (f) => void frames.push(f),
+    });
+    await userEvent.wheel(pane() as unknown as DrawnNode, {
+      ...at(10, 10),
+      deltaY: -24,
+    });
+    assert.strictEqual(
+      bodiesAway(),
+      held,
+      `adaptive ${JSON.stringify(adaptive)}`,
+    );
+    await act();
+    const last = frames[frames.length - 1];
+    assert.ok(last, 'a frame was reported');
+    assert.strictEqual(last.bodies.held, held);
+    assert.ok(last.bodies.count > 0 && last.bodies.count <= 10);
+    assert.strictEqual(
+      last.bodies.budgetMs,
+      adaptive === false ? Infinity : (adaptive?.budgetMs ?? 8),
+    );
+    cleanup();
+  }
 });

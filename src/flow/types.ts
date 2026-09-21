@@ -698,6 +698,19 @@ export interface FlowProps<N = FlowNodeData, E = unknown> {
    * draw on change and not otherwise, so an idle pane reports nothing.
    */
   onFrame?: (stats: FlowFrameStats) => void;
+  /**
+   * How mounted node bodies ride a zoom gesture. Re-scaling a body is a
+   * restyle, a layout and a repaint of its whole subtree on every step —
+   * about a millisecond each — so each step predicts what the bodies on
+   * screen would add, and over the budget they sit the gesture out: mounted,
+   * state intact, off screen, back at the new scale once the zoom rests.
+   *
+   * `true` (the default) budgets 8 ms a step; `{ budgetMs }` picks another,
+   * `0` holding them through every gesture zoom; `false` never holds them —
+   * every body zooms live, whatever it costs. A pan or a programmatic
+   * viewport change never holds them.
+   */
+  adaptive?: boolean | { budgetMs?: number };
   /** The GL renderer could not draw, and the pane went back to the 2D one. */
   onError?: (error: Error) => void;
 }
@@ -726,4 +739,20 @@ export interface FlowFrameStats {
   /** What the frame could not draw yet: strings, and nodes whose type
    *  paints itself. */
   gaps: { text: number; custom: number };
+  /** The mounted bodies' budget (`adaptive`) as the frame found it. */
+  bodies: FlowBodyBudget;
+}
+
+/** Where mounted node bodies stand against `adaptive`'s budget. */
+export interface FlowBodyBudget {
+  /** Bodies on screen. */
+  count: number;
+  /** Sitting the current zoom gesture out. */
+  held: boolean;
+  /** What re-scaling one body adds to a zoom step, learned from frames. */
+  perBodyMs: number;
+  /** `count × perBodyMs`: what a zoom step would pay to re-scale them. */
+  predictedMs: number;
+  /** The budget that is held against — `Infinity` when `adaptive` is off. */
+  budgetMs: number;
 }
