@@ -90,12 +90,16 @@ export interface RenderFrame {
   /** The camera zoom: what zoom ramps and layer ranges resolve at. */
   zoom: number;
   /**
-   * The zoom the layers' `minZoom`/`maxZoom` are decided at, when that is
-   * not `zoom` — a scene being faded out keeps the layers it was drawn
-   * with, so a layer the camera has just zoomed out of fades with it
-   * rather than leaving both scenes at once.
+   * How much of each of the style's layers to draw, by the layer's index in
+   * `style.layers` — a layer the camera is zooming past `minZoom` is ramped
+   * out rather than cut, and what is not listed is `drawsAt`'s own answer.
+   *
+   * Per layer rather than per scene because the flips overlap: the zoom a
+   * layer ends at is not where the pyramid changes level, so a scene-wide
+   * cross-fade of the two would keep retargeting, and each retarget is a
+   * step in the picture. An opacity is a number that can move on its own.
    */
-  gateZoom?: number;
+  layerAlpha?: readonly number[];
   /** Device pixels per logical pixel: what style lengths are multiplied by. */
   scale: number;
   style: PreparedStyle;
@@ -304,15 +308,38 @@ function drawsAt(layer: MapStyleLayer, zoom: number, detail: number): boolean {
 }
 
 /**
- * Which of a style's layers draw at this zoom, as a key: two zooms with the
- * same key draw the same layers, so a change of key is a layer appearing or
- * leaving — something to fade rather than cut.
+ * How much of a layer this frame draws: its `layerAlpha` where the frame
+ * has one, and otherwise the zoom gate alone. A layer being ramped still
+ * answers to adaptive quality's `detail`, which is a moving frame's budget
+ * rather than a thing the style says, and to `visible: false`.
  */
-export function gatesAt(style: PreparedStyle, zoom: number): string {
-  let key = '';
-  for (const { layer } of style.layers)
-    key += drawsAt(layer, zoom, 0) ? '1' : '0';
-  return key;
+function gateOf(
+  frame: RenderFrame,
+  index: number,
+  layer: MapStyleLayer,
+  detail: number,
+): number {
+  const ramp = frame.layerAlpha?.[index];
+  if (ramp === undefined) return drawsAt(layer, frame.zoom, detail) ? 1 : 0;
+  if (!(ramp > 0) || layer.visible === false) return 0;
+  if (layer.type !== 'fill' && layer.type !== 'line' && layer.type !== 'circle')
+    return 0;
+  if (
+    detail > 0 &&
+    layer.minZoom !== undefined &&
+    layer.minZoom > frame.zoom - detail
+  ) {
+    return 0;
+  }
+  return Math.min(1, ramp);
+}
+
+/**
+ * Which of a style's layers the zoom gate draws, as a `layerAlpha` of ones
+ * and zeroes — what a ramp moves towards.
+ */
+export function gatesAt(style: PreparedStyle, zoom: number): number[] {
+  return style.layers.map(({ layer }) => (drawsAt(layer, zoom, 0) ? 1 : 0));
 }
 
 /** Label rasters taken into the atlas texture per frame at most. */
@@ -447,7 +474,7 @@ export class GlMapRenderer {
       );
       for (let i = 0; i < layers.length; i++) {
         const layer = layers[i].layer;
-        if (!drawsAt(layer, frame.gateZoom ?? frame.zoom, detail)) continue;
+        if (gateOf(frame, i, layer, detail) <= 0) continue;
         let records = 0;
         for (let t = 0; t < tiles.length; t++) {
           if (!visible[t]) continue;
@@ -629,15 +656,20 @@ export class GlMapRenderer {
       }
       for (let i = 0; i < layers.length; i++) {
         const layer = layers[i].layer;
-        if (!drawsAt(layer, frame.gateZoom ?? frame.zoom, detail)) continue;
+        const gate = gateOf(frame, i, layer, detail);
+        if (gate <= 0) continue;
         if (layer.type === 'fill') {
-          if (this._fill(frame, tiles, i, layer, scissors, edges)) {
+          if (this._fill(frame, tiles, i, layer, scissors, edges, gate)) {
             stats.layers++;
           }
         } else if (layer.type === 'line') {
-          if (this._lines(frame, tiles, i, layer, scissors)) stats.layers++;
+          if (this._lines(frame, tiles, i, layer, scissors, gate)) {
+            stats.layers++;
+          }
         } else if (layer.type === 'circle') {
-          if (this._circles(frame, tiles, i, layer, scissors)) stats.layers++;
+          if (this._circles(frame, tiles, i, layer, scissors, gate)) {
+            stats.layers++;
+          }
         }
       }
     }
@@ -655,10 +687,12 @@ export class GlMapRenderer {
     layer: Extract<MapStyleLayer, { type: 'fill' }>,
     scissors: (number[] | null)[],
     edges: boolean,
+    gate = 1,
   ): boolean {
     const zoom = frame.zoom;
     const opacity =
-      layer.opacity === undefined ? 1 : resolveZoomed(layer.opacity, zoom);
+      (layer.opacity === undefined ? 1 : resolveZoomed(layer.opacity, zoom)) *
+      gate;
     if (opacity <= 0) return false;
     const base = this._color(resolveZoomed(layer.color, zoom));
     if (!base) return false;
@@ -791,12 +825,14 @@ export class GlMapRenderer {
     index: number,
     layer: Extract<MapStyleLayer, { type: 'line' }>,
     scissors: (number[] | null)[],
+    gate = 1,
   ): boolean {
     const zoom = frame.zoom;
     const logical = resolveZoomed(layer.width, zoom);
     if (!(logical > 0)) return false;
     const opacity =
-      layer.opacity === undefined ? 1 : resolveZoomed(layer.opacity, zoom);
+      (layer.opacity === undefined ? 1 : resolveZoomed(layer.opacity, zoom)) *
+      gate;
     if (opacity <= 0) return false;
     const base = this._color(resolveZoomed(layer.color, zoom));
     if (!base) return false;
@@ -828,6 +864,7 @@ export class GlMapRenderer {
     index: number,
     layer: Extract<MapStyleLayer, { type: 'circle' }>,
     scissors: (number[] | null)[],
+    gate = 1,
   ): boolean {
     const zoom = frame.zoom;
     const radius =
@@ -835,7 +872,8 @@ export class GlMapRenderer {
       frame.scale;
     if (!(radius > 0)) return false;
     const opacity =
-      layer.opacity === undefined ? 1 : resolveZoomed(layer.opacity, zoom);
+      (layer.opacity === undefined ? 1 : resolveZoomed(layer.opacity, zoom)) *
+      gate;
     if (opacity <= 0) return false;
     const base = this._color(resolveZoomed(layer.color, zoom));
     if (!base) return false;

@@ -250,9 +250,6 @@ export interface LevelPlan {
   base: CoverResult;
   next: CoverResult | null;
   alpha: number;
-  /** The zoom the base scene's layers are decided at (`RenderFrame.
-   *  gateZoom`); the arriving scene's are the camera's. */
-  baseGate: number;
 }
 
 /**
@@ -266,25 +263,15 @@ export interface LevelPlan {
  * from is sixteen times the tiles), and a change of target halfway
  * through a fade takes the half-shown level as the one it fades from.
  *
- * A scene is its level *and* the layers the style draws at its zoom. A
- * layer's `minZoom` is a zoom, not a level: zooming out past it would take
- * the layer out of both scenes on one frame — the fade only ever showed
- * detail leaving if the coarser level's tiles happened not to carry it,
- * which is how buildings faded in and cut out. So the shown scene keeps
- * the zoom its layers were decided at, and a change in which layers draw
- * fades like a change of level, whether or not the level changed with it.
+ * What it cannot carry is a layer the style starts or stops drawing, which
+ * is {@link GateFader}'s: see there for why that is a separate thing and
+ * not a scene of its own.
  */
 export class LevelFader {
   /** The level the frame is drawn from, once one has been drawn. */
   shown: number | null = null;
-  /** The zoom the shown scene's layers were decided at, and what they were. */
-  private _gate = 0;
-  private _gates = '';
   private _fade: {
     to: number;
-    gates: string;
-    /** The camera's zoom when the arriving scene was last drawn. */
-    zoom: number;
     start: number | null;
     waitSince: number;
   } | null = null;
@@ -297,58 +284,114 @@ export class LevelFader {
   plan(
     target: CoverResult,
     cover: (level: number) => CoverResult,
-    options: {
-      at: number;
-      fadeMs: number;
-      /** The camera's zoom. */
-      zoom: number;
-      /** `gatesAt` for the style being drawn. */
-      gatesAt: (zoom: number) => string;
-    },
+    options: { at: number; fadeMs: number },
   ): LevelPlan {
-    const { at, fadeMs, zoom } = options;
+    const { at, fadeMs } = options;
     const to = target.level;
-    const gates = options.gatesAt(zoom);
-    const plain = (): LevelPlan => {
-      this.shown = to;
-      this._gate = zoom;
-      this._gates = gates;
-      this._fade = null;
-      return { base: target, next: null, alpha: 0, baseGate: zoom };
-    };
+    const plain = { base: target, next: null, alpha: 0 };
     if (fadeMs <= 0 || this.shown === null || Math.abs(to - this.shown) > 1) {
-      return plain();
+      this.shown = to;
+      this._fade = null;
+      return plain;
     }
-    // The shown scene's layers under the style drawn now — a restyle
-    // changes what they are without anything having to fade.
-    this._gates = options.gatesAt(this._gate);
-    if (to === this.shown && gates === this._gates) return plain();
+    if (to === this.shown) {
+      this._fade = null;
+      return plain;
+    }
     let fade = this._fade;
-    if (!fade || fade.to !== to || fade.gates !== gates) {
+    if (!fade || fade.to !== to) {
       if (fade && fade.start !== null && (at - fade.start) / fadeMs >= 0.5) {
         this.shown = fade.to;
-        this._gate = fade.zoom;
-        this._gates = fade.gates;
       }
-      if (this.shown === to && this._gates === gates) return plain();
-      fade = this._fade = { to, gates, zoom, start: null, waitSince: at };
+      if (this.shown === to) {
+        this._fade = null;
+        return plain;
+      }
+      fade = this._fade = { to, start: null, waitSince: at };
     }
-    fade.zoom = zoom;
-    const base = to === this.shown ? target : cover(this.shown);
+    const base = cover(this.shown);
     if (fade.start === null) {
       if (target.missing.length > 0 && at - fade.waitSince < FADE_WAIT_MS) {
-        return { base, next: null, alpha: 0, baseGate: this._gate };
+        return { base, next: null, alpha: 0 };
       }
       fade.start = at;
     }
     const p = (at - fade.start) / fadeMs;
-    if (p >= 1) return plain();
-    return {
-      base,
-      next: target,
-      alpha: p * p * (3 - 2 * p),
-      baseGate: this._gate,
-    };
+    if (p >= 1) {
+      this.shown = to;
+      this._fade = null;
+      return plain;
+    }
+    return { base, next: target, alpha: p * p * (3 - 2 * p) };
+  }
+}
+
+/**
+ * The zoom gate's fade: how much of each style layer to draw, as the camera
+ * zooms past the `minZoom` and `maxZoom` the style gives them.
+ *
+ * **Why this is not a scene.** A level fade cross-fades two whole pictures,
+ * and a picture is the natural unit for a change of level. A layer ending
+ * is not: `minZoom` is a zoom, the pyramid changes level at a different
+ * zoom, and the two flips land on different frames — so carrying the gate
+ * as a second scene means a fade retargeted in the middle of another one,
+ * which can only either snap to the arriving scene or restart from the
+ * outgoing one. Both are a step in the picture, and stepping is what the
+ * fade is for. That is what made buildings vanish for one wheel notch and
+ * come back for the next. An opacity per layer has no such conflict: each
+ * layer's number moves on its own, through any number of level fades, and
+ * both scenes of a level fade draw with the same numbers — so the one
+ * thing an opacity ramp is bad at, a map dissolving layer by layer, cannot
+ * happen here, because only the layers actually crossing a gate move.
+ */
+export class GateFader {
+  /** Per style layer, in the prepared style's order. */
+  private _alpha: number[] = [];
+  private _at: number | null = null;
+  private _fading = false;
+
+  /** Whether any layer is between the gate's ends — a frame to ask for. */
+  get fading(): boolean {
+    return this._fading;
+  }
+
+  /**
+   * The frame's `layerAlpha`, or null for "what the gate says" — which is
+   * every frame where nothing is crossing one, and every frame at all with
+   * the fade turned off.
+   */
+  step(
+    style: PreparedStyle,
+    options: { at: number; fadeMs: number; zoom: number },
+  ): readonly number[] | null {
+    const { at, fadeMs, zoom } = options;
+    const targets = gatesAt(style, zoom);
+    // The first frame, a restyle that changes the layer count, and the fade
+    // turned off: the gate, with nothing to advance.
+    const first = this._at === null || this._alpha.length !== targets.length;
+    if (fadeMs <= 0 || first) {
+      this._alpha = targets;
+      this._at = at;
+      this._fading = false;
+      return null;
+    }
+    const step = (at - (this._at ?? at)) / fadeMs;
+    this._at = at;
+    let fading = false;
+    let moved = false;
+    for (let i = 0; i < targets.length; i++) {
+      const to = targets[i];
+      const from = this._alpha[i];
+      if (from !== to) {
+        const next =
+          to > from ? Math.min(to, from + step) : Math.max(to, from - step);
+        this._alpha[i] = next;
+        if (next !== to) fading = true;
+      }
+      if (this._alpha[i] !== to) moved = true;
+    }
+    this._fading = fading;
+    return moved ? this._alpha : null;
   }
 }
 
@@ -402,6 +445,7 @@ class GlMapDriver implements MapView {
   private _rung = 0;
   private readonly _cost = new CostModel();
   private readonly _fader = new LevelFader();
+  private readonly _gates = new GateFader();
   private readonly _placer = new LabelPlacer();
   private readonly _markers = new MarkerBatcher();
   /** The overlays' bucket, and what it was built from. */
@@ -784,27 +828,26 @@ class GlMapDriver implements MapView {
             level,
           })
         : EMPTY_COVER;
+    const fadeMs = map.levelFade ?? 0;
     const plan: LevelPlan = primary
-      ? this._fader.plan(primary.target, coverAt, {
-          at,
-          fadeMs: map.levelFade ?? 0,
-          zoom: camera.zoom,
-          gatesAt: (zoom) => gatesAt(prepared, zoom),
-        })
-      : { base: EMPTY_COVER, next: null, alpha: 0, baseGate: camera.zoom };
+      ? this._fader.plan(primary.target, coverAt, { at, fadeMs })
+      : { base: EMPTY_COVER, next: null, alpha: 0 };
+    // A layer the camera is zooming past the end of: ramped out over the
+    // same milliseconds, in both of a level fade's scenes.
+    const layerAlpha = this._gates.step(prepared, {
+      at,
+      fadeMs,
+      zoom: camera.zoom,
+    });
     if (primary && plan.base !== primary.target) {
       primary.store.want(plan.base.missing);
     }
 
-    const frameOf = (
-      tiles: RenderTile[][],
-      rung: Rung,
-      gateZoom = camera.zoom,
-    ): RenderFrame => ({
+    const frameOf = (tiles: RenderTile[][], rung: Rung): RenderFrame => ({
       width: info.width,
       height: info.height,
       zoom: camera.zoom,
-      gateZoom,
+      layerAlpha: layerAlpha ?? undefined,
       scale,
       style: prepared,
       background: style.background,
@@ -830,7 +873,7 @@ class GlMapDriver implements MapView {
         arriving.push(i === 0 && plan.next ? plan.next.tiles : c.target.tiles);
       });
       return {
-        frame: frameOf(base, q, plan.baseGate),
+        frame: frameOf(base, q),
         fade: plan.next
           ? { frame: frameOf(arriving, q), alpha: plan.alpha }
           : null,
@@ -1023,7 +1066,14 @@ class GlMapDriver implements MapView {
     const wanted = this._attributionWanted;
     const attributing =
       wanted !== null && this._atlas?.entry(wanted.text, wanted.size) != null;
-    if (more || this._fader.fading || labelling || attributing) this.request();
+    if (
+      more ||
+      this._fader.fading ||
+      this._gates.fading ||
+      labelling ||
+      attributing
+    )
+      this.request();
     if (!this._announced) {
       this._announced = true;
       this._pane?.notifyA11ySceneChanged?.();

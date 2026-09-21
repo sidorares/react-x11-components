@@ -27,6 +27,7 @@ import {
   unprojectPoint,
 } from '../src/maps/proj.js';
 import {
+  GateFader,
   LevelFader,
   QUALITY_LADDER,
   chooseQuality,
@@ -887,19 +888,83 @@ test('a fade draws the arriving level whole, offscreen, and composites it once',
   assert.strictEqual(framebuffers(none.calls), 0);
 });
 
-test("a scene's layers are decided at its gate zoom, not the camera's", () => {
-  // Buildings from 14, the rest always: at zoom 12 only the gate decides.
-  const style = STYLE.map((l) =>
-    l.id === 'buildings' ? { ...l, minZoom: 14 } : l,
+/** The style of {@link STYLE} with the buildings kept for zoom 14 up. */
+const GATED = STYLE.map((l) =>
+  l.id === 'buildings' ? { ...l, minZoom: 14 } : l,
+);
+/** Buildings are the first layer, so their alpha is the first one. */
+const BUILDINGS = 0;
+
+test('a layer crossing the zoom gate is drawn at its ramp, not cut', () => {
+  const data = buildTileBuckets(fixtureTile(), prepareStyle({ layers: GATED }));
+  // The camera is at 12 throughout: only `layerAlpha` decides.
+  const draw = (alpha?: number) => {
+    const gl = recordingGl(true);
+    const layerAlpha =
+      alpha === undefined ? undefined : GATED.map((_, i) => (i ? 1 : alpha));
+    const stats = new GlMapRenderer(gl.gl).render({
+      ...frameOver(data, GATED),
+      layerAlpha,
+    });
+    // Every colour the frame set, premultiplied — a ramped layer's is the
+    // only one whose alpha is neither 0 nor 1.
+    const alphas = gl.log
+      .filter((c) => c.name === 'uniform4f')
+      .map((c) => c.args[4] as number);
+    return { layers: stats.layers, alphas };
+  };
+  // Below the gate and with no ramp given, the style's own answer stands.
+  const gated = draw();
+  assert.strictEqual(draw(1).layers, gated.layers + 1, 'a ramp of 1 draws it');
+  assert.strictEqual(draw(0).layers, gated.layers, 'a ramp of 0 does not');
+  assert.ok(
+    draw(1).alphas.every((a) => a === 0 || a === 1),
+    'and drawn whole it is set in whole colours',
   );
-  const data = buildTileBuckets(fixtureTile(), prepareStyle({ layers: style }));
-  const draw = (gateZoom?: number) =>
-    new GlMapRenderer(recordingGl(true).gl).render({
-      ...frameOver(data, style),
-      gateZoom,
-    }).layers;
-  assert.strictEqual(draw(14), draw() + 1);
-  assert.strictEqual(draw(13.99), draw());
+  const half = draw(0.5);
+  assert.strictEqual(half.layers, gated.layers + 1);
+  assert.ok(
+    half.alphas.some((a) => Math.abs(a - 0.5) < 1e-6),
+    `and half of it is half drawn: ${half.alphas.join(' ')}`,
+  );
+});
+
+test('the zoom gate ramps a layer rather than cutting it, both ways', () => {
+  const style = prepareStyle({ layers: GATED });
+  const gates = new GateFader();
+  const step = (zoom: number, at: number) =>
+    gates.step(style, { at, fadeMs: 200, zoom });
+
+  // The first frame is the gate itself: nothing to fade from.
+  assert.strictEqual(step(14.2, 0), null);
+  assert.strictEqual(gates.fading, false);
+  // Out past 14: the layer leaves over the fade, not on one frame.
+  const out = step(13.9, 50);
+  assert.ok(out, 'the crossing is a ramp');
+  assert.ok(
+    Math.abs(out![BUILDINGS] - 0.75) < 1e-6,
+    `a quarter of the way out: ${out![BUILDINGS]}`,
+  );
+  assert.strictEqual(gates.fading, true, 'and asks for the frame after it');
+  assert.ok(
+    Math.abs(step(13.8, 150)![BUILDINGS] - 0.25) < 1e-6,
+    'three quarters out',
+  );
+  assert.strictEqual(step(13.8, 260), null, 'gone: the gate again');
+  assert.strictEqual(gates.fading, false);
+  // The layers that do not cross a gate are untouched throughout.
+  const back = step(14.1, 300)!;
+  assert.ok(back, 'and it ramps back in');
+  assert.ok(
+    back.slice(1).every((a) => a === 1),
+    'nothing else moved',
+  );
+
+  // With the fade off, the gate is a cut, as it was.
+  const cut = new GateFader();
+  assert.strictEqual(cut.step(style, { at: 0, fadeMs: 0, zoom: 14.2 }), null);
+  assert.strictEqual(cut.step(style, { at: 50, fadeMs: 0, zoom: 13.9 }), null);
+  assert.strictEqual(cut.fading, false);
 });
 
 /** A cover of a level, with nothing missing. */
@@ -913,56 +978,42 @@ const coverOf = (level: number): CoverResult => ({
   inView: [],
 });
 
-test('a layer the camera zooms out of fades out with the scene it was in', () => {
-  // The building layer's minZoom 14 against a pyramid whose level is not
-  // the zoom's floor — level 13 from zoom 13.5 — so the gate flips on its
-  // own, inside one level. Before, both scenes left it on the same frame.
-  const gatesAt = (zoom: number) => (zoom >= 14 ? 'buildings' : '');
-  const levelAt = (zoom: number) => (zoom >= 13.5 ? 13 : 12);
-  const fader = new LevelFader();
-  const plan = (zoom: number, at: number) =>
-    fader.plan(coverOf(levelAt(zoom)), coverOf, {
-      at,
-      fadeMs: 200,
-      zoom,
-      gatesAt,
-    });
-
-  assert.strictEqual(plan(14.2, 0).next, null, 'nothing to fade at first');
-  assert.strictEqual(plan(14.05, 16).next, null, 'nor while nothing changes');
-  // Out past 14: the old scene keeps its buildings, the new one fades in
-  // without them — the same level both, only the layers differ.
-  const out = plan(13.9, 32);
-  assert.ok(out.next, 'the gate flip fades');
-  assert.strictEqual(out.baseGate, 14.05, 'the old scene keeps its layers');
-  assert.strictEqual(out.base.level, 13);
-  assert.strictEqual(out.alpha, 0);
-  const mid = plan(13.8, 132);
-  assert.ok(mid.alpha > 0.4 && mid.alpha < 0.6, `halfway: ${mid.alpha}`);
-  assert.strictEqual(mid.baseGate, 14.05);
-  // Done: one scene again, decided at the camera's zoom.
-  const done = plan(13.8, 240);
-  assert.strictEqual(done.next, null);
-  assert.strictEqual(done.baseGate, 13.8);
-  assert.strictEqual(fader.fading, false);
-
-  // And in again: the same fade the other way.
-  const back = plan(14.1, 300);
-  assert.ok(back.next, 'zooming back in fades too');
-  assert.strictEqual(back.baseGate, 13.8);
-
-  // No fade asked for: a cut, as before.
-  const cut = new LevelFader();
-  const plain = (zoom: number) =>
-    cut.plan(coverOf(levelAt(zoom)), coverOf, {
-      at: 0,
-      fadeMs: 0,
-      zoom,
-      gatesAt,
-    });
-  plain(14.1);
-  assert.strictEqual(plain(13.9).next, null);
-  assert.strictEqual(plain(13.9).baseGate, 13.9);
+test('a gate crossing inside a level fade neither cuts nor comes back', () => {
+  // The bug this pair replaced: carried as a second scene, the gate flip
+  // and the level flip were two fades over one composite, and the second
+  // to start retargeted the first — buildings vanished for one wheel notch
+  // and came back for the next. The two are independent now, so a sweep
+  // out across both flips only ever has fewer buildings than the frame
+  // before it.
+  const style = prepareStyle({ layers: GATED });
+  const level = new LevelFader();
+  const gates = new GateFader();
+  const shown: number[] = [];
+  // A zoom out from 14.2 to 13.2 over 250 ms, a frame every 16 ms: the
+  // gate is crossed at 14, the pyramid's level at 13.5.
+  for (let at = 0; at <= 400; at += 16) {
+    const zoom = Math.max(13.2, 14.2 - at / 250);
+    const levelAt = zoom >= 13.5 ? 13 : 12;
+    const plan = level.plan(coverOf(levelAt), coverOf, { at, fadeMs: 200 });
+    const alpha = gates.step(style, { at, fadeMs: 200, zoom });
+    // What the eye sees of the layer: the same in both of the fade's
+    // scenes, which is the point — a level fade cannot step it.
+    shown.push(alpha ? alpha[BUILDINGS] : zoom >= 14 ? 1 : 0);
+    assert.ok(plan.alpha >= 0 && plan.alpha <= 1);
+  }
+  assert.strictEqual(shown[0], 1, 'buildings to begin with');
+  assert.strictEqual(shown[shown.length - 1], 0, 'and none at the end');
+  for (let i = 1; i < shown.length; i++) {
+    assert.ok(
+      shown[i] <= shown[i - 1] + 1e-9,
+      `frame ${i} brought buildings back: ${shown[i - 1]} -> ${shown[i]}`,
+    );
+  }
+  // And it took the fade to go, rather than a frame.
+  assert.ok(
+    shown.filter((a) => a > 0 && a < 1).length >= 8,
+    `a ramp, not a cut: ${shown.join(' ')}`,
+  );
 });
 
 test('adaptive quality takes the lowest rung that fits, and climbs back only with room', () => {
