@@ -362,10 +362,16 @@ export class GateFader {
    */
   step(
     style: PreparedStyle,
-    options: { at: number; fadeMs: number; zoom: number },
+    options: {
+      at: number;
+      fadeMs: number;
+      zoom: number;
+      /** Adaptive quality's, from the rung this frame is drawn at. */
+      detail: number;
+    },
   ): readonly number[] | null {
-    const { at, fadeMs, zoom } = options;
-    const targets = gatesAt(style, zoom);
+    const { at, fadeMs, zoom, detail } = options;
+    const targets = gatesAt(style, zoom, detail);
     // The first frame, a restyle that changes the layer count, and the fade
     // turned off: the gate, with nothing to advance.
     const first = this._at === null || this._alpha.length !== targets.length;
@@ -421,7 +427,13 @@ export interface GlMapPaneProps {
   children?: ReactNode;
 }
 
-class GlMapDriver implements MapView {
+/**
+ * The driver: everything a frame is, between the controller's camera and
+ * the renderer. Exported for the tests that drive it against a recording
+ * GL table — there is no other way to see a whole frame's decisions, and
+ * this host cannot render one (indirect GLX has no shaders).
+ */
+export class GlMapDriver implements MapView {
   props: GlMapPaneProps;
   theme: unknown = null;
   private readonly _controller: MapController;
@@ -832,13 +844,6 @@ class GlMapDriver implements MapView {
     const plan: LevelPlan = primary
       ? this._fader.plan(primary.target, coverAt, { at, fadeMs })
       : { base: EMPTY_COVER, next: null, alpha: 0 };
-    // A layer the camera is zooming past the end of: ramped out over the
-    // same milliseconds, in both of a level fade's scenes.
-    const layerAlpha = this._gates.step(prepared, {
-      at,
-      fadeMs,
-      zoom: camera.zoom,
-    });
     if (primary && plan.base !== primary.target) {
       primary.store.want(plan.base.missing);
     }
@@ -847,7 +852,6 @@ class GlMapDriver implements MapView {
       width: info.width,
       height: info.height,
       zoom: camera.zoom,
-      layerAlpha: layerAlpha ?? undefined,
       scale,
       style: prepared,
       background: style.background,
@@ -900,6 +904,24 @@ class GlMapDriver implements MapView {
     }
     this._rung = rung;
     const { frame, fade } = build(rung);
+
+    // A layer crossing a gate — the style's `minZoom`, or this rung's
+    // `detail` — is ramped rather than cut, and both of a level fade's
+    // scenes draw it at the same ramp. Decided after the rung, because the
+    // rung is one of the gates: a moving frame that drops the style's
+    // newest layers to make its budget would otherwise take them out in
+    // one frame and hand them back in one more when the camera settled,
+    // which is a flicker on exactly the layers a zoom is looking at.
+    const layerAlpha = this._gates.step(prepared, {
+      at,
+      fadeMs,
+      zoom: camera.zoom,
+      detail: QUALITY_LADDER[rung].detail,
+    });
+    if (layerAlpha) {
+      frame.layerAlpha = layerAlpha;
+      if (fade) fade.frame.layerAlpha = layerAlpha;
+    }
 
     // The text: the labels, and the attribution, set in the same atlas.
     let labels: LabelBatch | null = null;

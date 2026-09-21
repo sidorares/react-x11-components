@@ -309,37 +309,41 @@ function drawsAt(layer: MapStyleLayer, zoom: number, detail: number): boolean {
 
 /**
  * How much of a layer this frame draws: its `layerAlpha` where the frame
- * has one, and otherwise the zoom gate alone. A layer being ramped still
- * answers to adaptive quality's `detail`, which is a moving frame's budget
- * rather than a thing the style says, and to `visible: false`.
+ * has one, and otherwise the gate. The ramp is the whole answer where there
+ * is one — whoever set it has already folded in every gate, `detail`
+ * included — but never for a layer the style has turned off or a kind this
+ * renderer does not draw.
+ *
+ * Exported for the tests that watch a swept frame decide.
  */
-function gateOf(
+export function gateOf(
   frame: RenderFrame,
   index: number,
   layer: MapStyleLayer,
   detail: number,
 ): number {
-  const ramp = frame.layerAlpha?.[index];
-  if (ramp === undefined) return drawsAt(layer, frame.zoom, detail) ? 1 : 0;
-  if (!(ramp > 0) || layer.visible === false) return 0;
+  if (layer.visible === false) return 0;
   if (layer.type !== 'fill' && layer.type !== 'line' && layer.type !== 'circle')
     return 0;
-  if (
-    detail > 0 &&
-    layer.minZoom !== undefined &&
-    layer.minZoom > frame.zoom - detail
-  ) {
-    return 0;
-  }
-  return Math.min(1, ramp);
+  const ramp = frame.layerAlpha?.[index];
+  if (ramp === undefined) return drawsAt(layer, frame.zoom, detail) ? 1 : 0;
+  return ramp > 0 ? Math.min(1, ramp) : 0;
 }
 
 /**
- * Which of a style's layers the zoom gate draws, as a `layerAlpha` of ones
- * and zeroes — what a ramp moves towards.
+ * Which of a style's layers the gates draw, as a `layerAlpha` of ones and
+ * zeroes — what a ramp moves towards. `detail` is adaptive quality's, so a
+ * rung that drops the style's newest layers is something to ramp like any
+ * other gate rather than a step in the picture.
  */
-export function gatesAt(style: PreparedStyle, zoom: number): number[] {
-  return style.layers.map(({ layer }) => (drawsAt(layer, zoom, 0) ? 1 : 0));
+export function gatesAt(
+  style: PreparedStyle,
+  zoom: number,
+  detail = 0,
+): number[] {
+  return style.layers.map(({ layer }) =>
+    drawsAt(layer, zoom, detail) ? 1 : 0,
+  );
 }
 
 /** Label rasters taken into the atlas texture per frame at most. */
@@ -474,7 +478,12 @@ export class GlMapRenderer {
       );
       for (let i = 0; i < layers.length; i++) {
         const layer = layers[i].layer;
-        if (gateOf(frame, i, layer, detail) <= 0) continue;
+        // The gate, not the ramp: what a rung is priced at is what it
+        // settles at. A layer on its way out is still being drawn, and
+        // pricing that would put the next rung's estimate above the budget
+        // — which would drop another layer, which would ramp, which is a
+        // ladder that climbs on its own transients.
+        if (!drawsAt(layer, frame.zoom, detail)) continue;
         let records = 0;
         for (let t = 0; t < tiles.length; t++) {
           if (!visible[t]) continue;
