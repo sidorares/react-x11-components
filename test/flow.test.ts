@@ -2350,3 +2350,87 @@ test('a press on a body’s plain part selects and drags its node; its controls 
   );
   assert.strictEqual(pressed, 1, 'the control saw none of it');
 });
+
+test('an opaque body over a lower card’s body hides it, in the cards’ paint order', async () => {
+  // Every body is over every card — they share one layer above the graph —
+  // so a transparent body showed whatever body lay under it: two cards'
+  // controls mixed in one box. The lower card's body here is solid red to
+  // its edges; the upper card, selected (so painted later), has an empty
+  // body over the overlap.
+  const redType: FlowNodeType = {
+    size: { width: 200, height: 120 },
+    headerHeight: 20,
+    render: () =>
+      h('box', { style: { flexGrow: 1, backgroundColor: '#ff0000' } }),
+  };
+  const emptyType: FlowNodeType = {
+    size: { width: 200, height: 120 },
+    headerHeight: 20,
+    render: () => h('box', { style: { flexGrow: 1 } }),
+  };
+  const { ctx } = await renderX11(
+    h(TypedFlow, {
+      nodes: [
+        { id: 'under', type: 'red', position: { x: 100, y: 100 } },
+        {
+          id: 'over',
+          type: 'empty',
+          position: { x: 160, y: 140 },
+          selected: true,
+        },
+      ],
+      edges: [],
+      nodeTypes: { red: redType, empty: emptyType },
+    }),
+  );
+  await act();
+  assert.strictEqual(bodyLayer().children.length, 2, 'precondition');
+  // inside the overlap, well inside the upper card's body: x 160+5..,
+  // y 140+20..; and inside the lower card's red body (100+5..295, 120..215)
+  assert.ok(
+    !isNear(await pixelAt(ctx, 220, 190), '#ff0000'),
+    'the upper body hides the red body under it',
+  );
+  await expectPixel(ctx, 130, 150, '#ff0000', {
+    message: 'and the red body shows where nothing is over it',
+  });
+});
+
+test('a dragged node’s body is lifted over the others, as its card is', async () => {
+  await mount({
+    nodes: [
+      {
+        id: 'a',
+        type: 'form',
+        position: { x: 100, y: 100 },
+        width: 200,
+        height: 120,
+      },
+      {
+        id: 'b',
+        type: 'form',
+        position: { x: 400, y: 100 },
+        width: 200,
+        height: 120,
+      },
+    ],
+    edges: [],
+    nodeTypes: { form: sizedType },
+  });
+  await act();
+  const firstBody = () => retained(bodyLayer().children[0]).abs.x;
+  const node = pane() as unknown as DrawnNode;
+  // drag `a` (declared first, so painted first) by its header
+  await act(() => {
+    fireEvent.mouseDown(node, at(150, 108));
+    fireEvent.mouseMove(node, at(170, 118));
+    fireEvent.mouseMove(node, at(190, 128));
+  });
+  const last = bodyLayer().children[bodyLayer().children.length - 1];
+  assert.ok(
+    retained(last).abs.x < retained(bodyLayer().children[0]).abs.x,
+    'mid-drag, `a`’s body (the left one) is the last child — on top',
+  );
+  await act(() => fireEvent.mouseUp(node, at(190, 128)));
+  assert.ok(firstBody() < 400, 'after the drop, back in declaration order');
+});

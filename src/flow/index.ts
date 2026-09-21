@@ -481,6 +481,13 @@ export function Flow<N = FlowNodeData, E = unknown>(
     return { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
   }, [bodies]);
 
+  // The fill a card is drawn in, which its body's box takes too.
+  const theme = useTheme();
+  const nodeFill = resolvePalette(
+    theme as unknown as Record<string, unknown> | null,
+    rest.palette,
+  ).nodeBackground;
+
   // Memoized on the bodies array, which a pan does not replace: the box they
   // sit in moves, and React reconciles none of them.
   const overlays = useMemo(
@@ -514,6 +521,16 @@ export function Flow<N = FlowNodeData, E = unknown>(
                   // fallback, a long line — and this is what stops it spilling
                   // over the graph.
                   overflow: 'hidden',
+                  // Opaque, in the card's own fill. Every body is over every
+                  // card — they share one layer above the graph — so a body
+                  // that let what is under it show through showed the body
+                  // of any card it overlapped: two cards' controls mixed in
+                  // one box. Stacked in the cards' paint order, an opaque
+                  // body covers the bodies under it as its card covers
+                  // theirs.
+                  backgroundColor:
+                    (node.style as { background?: string } | undefined)
+                      ?.background ?? nodeFill,
                 },
               },
               React.createElement(
@@ -539,7 +556,7 @@ export function Flow<N = FlowNodeData, E = unknown>(
             );
           })
         : null,
-    [mounts, bodies, extent, byId, nodeTypes],
+    [mounts, bodies, extent, byId, nodeTypes, nodeFill],
   );
   // A wheel over a body is a wheel over the graph. Core runs the wheel's
   // default action on the node under the pointer and scrolls up from there,
@@ -649,7 +666,6 @@ export function Flow<N = FlowNodeData, E = unknown>(
   // the import is dynamic. Until it arrives, and for good once it has failed,
   // the pane draws itself: `renderer` reaches the element only while a
   // surface is there to draw, so there is never a frame with neither.
-  const theme = useTheme();
   const wantGl = renderer === 'gl';
   const [gl, setGl] = useState<GlModule | null>(glModule);
   const [glFailed, setGlFailed] = useState(false);

@@ -2954,18 +2954,30 @@ export class FlowGraphNode extends Node implements FlowInstance {
    * - `'overlay'` — the GL furniture: the pane's background, grid, selection,
    *   minimap and controls, and no graph at all.
    */
+  /**
+   * The order nodes are drawn in, bottom to top: `zIndex`, then selection,
+   * then declaration (`_order`), with a node being dragged lifted over all
+   * of them. The one order both halves of a node follow — its card in the
+   * scene, its mounted body in `_emitBodies` — so a body is stacked over
+   * the bodies of the cards under its own, and under the ones above.
+   */
+  private _paintOrder(): NodeEntry[] {
+    const dragging = this._dragTo;
+    if (!dragging || dragging.size === 0) return this._order;
+    const order: NodeEntry[] = [];
+    const lifted: NodeEntry[] = [];
+    for (const entry of this._order) {
+      if (dragging.has(entry.node.id)) lifted.push(entry);
+      else order.push(entry);
+    }
+    return order.concat(lifted);
+  }
+
   private _sceneInput(
     palette: FlowPalette,
     layer: 'all' | 'overlay' | { world: FlowRect } = 'all',
   ): SceneInput {
-    const dragging = this._dragTo;
-    const order: NodeEntry[] = [];
-    const deferred: NodeEntry[] = [];
-    for (const entry of this._order) {
-      // a dragged node comes to the top
-      if (dragging?.has(entry.node.id)) deferred.push(entry);
-      else order.push(entry);
-    }
+    const order = this._paintOrder();
     const gesture = this._gesture;
     // The panel cull comes before `_miniMap()`, which walks every node to
     // find the graph's bounds — during a drag that walk per pass would cost
@@ -2994,7 +3006,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
       ),
       nodes: overlay
         ? []
-        : [...order, ...deferred].map((entry) => this._source(entry)),
+        : order.map((entry) => this._source(entry)),
       all,
       edges: overlay ? [] : this._edges,
       dashPhase: this._dashPhase,
@@ -3053,7 +3065,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
     const pane = this._pane();
     const origin = { x: Math.round(v.x), y: Math.round(v.y) };
     const bodies: NodeBodyRect[] = [];
-    for (const entry of this._order) {
+    for (const entry of this._paintOrder()) {
       if (entry.node.hidden || !this._mounted(entry)) continue;
       const rect = this._screenRect(entry);
       if (!rectsOverlap(rect, pane)) continue;
