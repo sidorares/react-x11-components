@@ -99,6 +99,7 @@ import type {
   EdgeChange,
   FitViewOptions,
   FlowEdge,
+  FlowFrameStats,
   FlowNode,
   FlowNodeData,
   FlowNodeType,
@@ -179,6 +180,10 @@ const VISUAL_PROPS = [
   'disabled',
   'renderer',
 ] as const;
+
+/** The clock, through `globalThis`: `src/` compiles with `types: []`. */
+const clock = globalThis as { performance?: { now(): number } };
+const now = (): number => clock.performance?.now() ?? Date.now();
 
 const CONTROL_SIZE = 26;
 const PANEL_MARGIN = 10;
@@ -2678,8 +2683,11 @@ export class FlowGraphNode extends Node implements FlowInstance {
           ),
         ));
     painter.clipRect(x, y, width, height, nearCorner ? radius : 0);
+    const started = now();
     const scene = buildScene(this._sceneInput(palette));
+    const built = now();
     paintScene(painter, scene, this._grid);
+    this._reportFrame(built - started, now() - built);
     // The box the dash ticks invalidate comes off the *drawn* geometry; a
     // pass that culled every animated edge keeps the one before it, because
     // the endpoints did not move, or that move's own damage would have
@@ -2722,6 +2730,43 @@ export class FlowGraphNode extends Node implements FlowInstance {
     // are uniforms on the GPU, so neither is a change to the world.
     if (!this._panOnly && reason !== 'animation') this._worldVersion++;
     super.invalidate(layout, damage, reason);
+  }
+
+  /** A 2D frame's cost so far, while its flush is still painting passes. */
+  private _frameCost: { sceneMs: number; drawMs: number } | null = null;
+
+  /**
+   * One `onFrame` per window flush, however many damage passes it painted.
+   * The window paints its passes one after another in a single task, so a
+   * microtask queued by the first runs after the last — and reports the
+   * frame whole, which is what a frame rate counts.
+   */
+  private _reportFrame(sceneMs: number, drawMs: number): void {
+    if (!this.props.onFrame) return;
+    if (this._frameCost) {
+      this._frameCost.sceneMs += sceneMs;
+      this._frameCost.drawMs += drawMs;
+      return;
+    }
+    this._frameCost = { sceneMs, drawMs };
+    void Promise.resolve().then(() => {
+      const cost = this._frameCost;
+      this._frameCost = null;
+      if (!cost || this.destroyed) return;
+      this._prop<(stats: FlowFrameStats) => void>('onFrame')?.({
+        renderer: 'retained',
+        sceneMs: cost.sceneMs,
+        packMs: 0,
+        drawMs: cost.drawMs,
+        drawCalls: 0,
+        lines: 0,
+        boxes: 0,
+        triangles: 0,
+        uploadBytes: 0,
+        worldRebuilt: false,
+        gaps: { text: 0, custom: 0 },
+      });
+    });
   }
 
   private get _gl(): boolean {

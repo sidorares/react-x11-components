@@ -43,6 +43,7 @@ import type {
   Connection,
   EdgeChange,
   FlowEdge,
+  FlowFrameStats,
   FlowInstance,
   FlowNode,
   FlowNodeData,
@@ -1910,4 +1911,24 @@ test('off the window origin, a card is drawn where the pane puts it', async () =
     !isNear(await pixelAt(ctx, 105, 105), '#ff0000'),
     'and not at the graph numbers read as window ones',
   );
+});
+
+// --- onFrame -------------------------------------------------------------------
+
+test('onFrame reports each 2D frame once, whatever it painted', async () => {
+  // `<Map onFrame>`'s contract: a frame, not a paint. The 2D renderer can
+  // paint several damage rects in one flush, and an FPS read off this must
+  // count the flush once.
+  const frames: FlowFrameStats[] = [];
+  const { flow } = await mount({
+    onFrame: (stats: FlowFrameStats) => void frames.push(stats),
+  });
+  await act();
+  frames.length = 0;
+  flow.current?.setViewport({ x: 30 });
+  await act();
+  assert.strictEqual(frames.length, 1, 'one viewport change, one frame');
+  assert.strictEqual(frames[0].renderer, 'retained');
+  assert.ok(frames[0].sceneMs >= 0 && frames[0].drawMs >= 0);
+  assert.strictEqual(frames[0].drawCalls, 0, 'draw calls are the GL one’s');
 });

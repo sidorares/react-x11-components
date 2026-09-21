@@ -665,23 +665,35 @@ export interface FlowProps<N = FlowNodeData, E = unknown> {
    *
    * **Not yet a replacement.** The GL renderer draws the graph's geometry —
    * cards, edges, arrowheads, handles, the grid, the minimap — and no text
-   * yet, nor a node type's own `paint`; `onGlFrame`'s `gaps` counts what a
+   * yet, nor a node type's own `paint`; `onFrame`'s `gaps` counts what a
    * frame left out. `docs/prd-flow-gl.md` has the plan and the numbers.
    */
   renderer?: 'retained' | 'gl';
-  /** Every GL frame, counted. Only under `renderer="gl"`. */
-  onGlFrame?: (stats: FlowGlFrameStats) => void;
+  /**
+   * Every frame the pane drew, on either renderer, with what it cost this
+   * thread — `<Map onFrame>`'s shape, for the same reason: one callback an
+   * application can read an FPS off without caring which renderer drew.
+   *
+   * A frame, not a paint: the 2D renderer may paint several damage rects in
+   * one window flush, and those are reported once, summed. Both renderers
+   * draw on change and not otherwise, so an idle pane reports nothing.
+   */
+  onFrame?: (stats: FlowFrameStats) => void;
   /** The GL renderer could not draw, and the pane went back to the 2D one. */
   onError?: (error: Error) => void;
 }
 
-/** One GL frame — see {@link FlowProps.onGlFrame}. */
-export interface FlowGlFrameStats {
+/** One frame — see {@link FlowProps.onFrame}. The draw-call and buffer
+ *  counts are the GL renderer's, and always `0` on the retained one. */
+export interface FlowFrameStats {
+  /** Which renderer drew the frame. */
+  renderer: 'retained' | 'gl';
   /** Milliseconds building the scene: routing, culling, colours. */
   sceneMs: number;
-  /** Milliseconds packing it into instance streams. */
+  /** Milliseconds packing it into instance streams — `0` on the retained
+   *  renderer, which packs nothing. */
   packMs: number;
-  /** Milliseconds issuing it: uploads and draw calls. */
+  /** Milliseconds issuing it: the 2D calls, or the uploads and draws. */
   drawMs: number;
   drawCalls: number;
   lines: number;

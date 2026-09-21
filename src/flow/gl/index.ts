@@ -12,7 +12,7 @@
 import React, { useEffect, useMemo } from 'react';
 import type { ReactElement } from 'react';
 
-import type { FlowGlFrameStats } from '../types.js';
+import type { FlowFrameStats } from '../types.js';
 import { FlowGlRenderer, now } from './renderer.js';
 import type { FlowGlFrame } from './renderer.js';
 
@@ -27,7 +27,7 @@ export interface FlowGlSurfaceProps {
   /** The colour a frame starts from — the palette's background, so the
    *  instant before the first frame is the graph's ground, not black. */
   clearColor: string;
-  onFrame?: (stats: FlowGlFrameStats) => void;
+  onFrame?: (stats: FlowFrameStats) => void;
   /** The surface could not draw; `<Flow>` goes back to the 2D renderer. */
   onError: (error: Error) => void;
 }
@@ -106,7 +106,7 @@ class Driver {
         height: info.height,
       });
       if (frame.world) this.worldKey = frame.key;
-      this.props.onFrame?.({ sceneMs, ...stats });
+      this.props.onFrame?.({ renderer: 'gl', sceneMs, ...stats });
     } catch (error) {
       this.fail(error);
     }

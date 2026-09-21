@@ -9,7 +9,7 @@
 // a handful of draw calls over buffers already on the GPU. The **overlay** —
 // the background, the grid, the selection, the minimap and the controls — is
 // pinned to the pane, is a few dozen boxes, and is packed every frame.
-import type { FlowGlFrameStats, FlowRect, XYPosition } from '../types.js';
+import type { FlowFrameStats, FlowRect, XYPosition } from '../types.js';
 import type { FlowScene } from '../scene.js';
 import { BOX_STRIDE, LINE_STRIDE, ScenePacker, TRI_STRIDE } from './pack.js';
 import type { DrawRange, PackedScene, PackLayer } from './pack.js';
@@ -29,7 +29,7 @@ import type { GL, Program } from './shaders.js';
 import { ColorCache } from './color.js';
 
 /** One frame's drawing, counted; `<Flow>` adds the scene's share. */
-export type FlowGlDrawStats = Omit<FlowGlFrameStats, 'sceneMs'>;
+export type FlowGlDrawStats = Omit<FlowFrameStats, 'sceneMs' | 'renderer'>;
 
 /** Where the surface sits and how big it is: the pane's content box in
  *  logical window pixels, and the surface in device pixels. */

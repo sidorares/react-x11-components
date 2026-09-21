@@ -212,7 +212,7 @@ export function Flow<N = FlowNodeData, E = unknown>(
     style,
     ref,
     renderer,
-    onGlFrame,
+    onFrame,
     onError,
     ...rest
   } = props;
@@ -430,7 +430,7 @@ export function Flow<N = FlowNodeData, E = unknown>(
           theme as unknown as Record<string, unknown> | null,
           rest.palette,
         ).background,
-        onFrame: onGlFrame,
+        onFrame: onFrame,
         onError: failGl,
       })
     : null;
@@ -457,6 +457,9 @@ export function Flow<N = FlowNodeData, E = unknown>(
       onWheel,
       onNodeBodies: mounts ? handleBodies : undefined,
       renderer: drawsGl ? 'gl' : undefined,
+      // the element reports the 2D renderer's frames, the surface the GL
+      // one's — one callback either way
+      onFrame,
       style: styles.fill,
       role: 'group',
       'aria-label': rest['aria-label'] ?? 'Flow graph',
@@ -535,6 +538,7 @@ export type {
   EdgeType,
   FitViewOptions,
   FlowEdge,
+  FlowFrameStats,
   FlowInstance,
   FlowNode,
   FlowNodeData,

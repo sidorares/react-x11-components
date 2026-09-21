@@ -1,23 +1,24 @@
 // Run with: npm run examples:flow-stress   (needs an X server / DISPLAY)
 //
 // The `<Flow>` example that exists to be measured rather than to look nice.
-// Pick a scene, press **pan** to drive the viewport continuously, and read
-// the counters: nodes, edges, X requests per frame, bytes per frame, and the
-// rate the pan loop actually achieved.
+// Pick a scene and read the line under the buttons: it is always there, and
+// always says how many frames a second the pane drew and what each cost
+// this thread — whether you are panning, dragging a node, zooming, or doing
+// nothing (both renderers draw on change and not otherwise, so an idle pane
+// reads 0 and says it is idle). The numbers come from `<Flow onFrame>`.
 //
-// Everything the pane draws ends up as X protocol, so `react-x11/debug`'s
-// trace is the measurement: `requests` and `bytesOut`, and `byOpcode` for
-// where a regression came from. Two numbers, two interactive paths:
+//   pan   — drives the viewport continuously, each step asked for by the
+//           frame that drew the last, so the loop runs at the rate the window
+//           delivers rather than at a timer's 60/s.
+//   drag  — grab any node; the line adds the gesture's steps a second.
+//   gl    — switches the pane to `renderer="gl"` (docs/prd-flow-gl.md): the
+//           graph drawn through a `<glarea>`, a pan a uniform write. It draws
+//           no text yet, and the line says how many strings a frame left out.
 //
-//   pan   — repaints everything (the whole scene translated), so it measures
-//           the full-frame cost per scene. Press **pan** for the loop.
-//   drag  — repaints only the box the node moved through: the pane claims
-//           damage for the moved node and its edges, and everything outside
-//           it survives on the window from the last frame. Grab any node and
-//           the readout shows what each step actually cost.
-//
-// The readout is per pan frame while the loop runs, and per drag step while
-// you drag. See docs/components/flow.md, "What the pane batches".
+// On the 2D renderer the line also reports X requests and bytes per frame
+// from `react-x11/debug`'s trace — everything that renderer draws is X
+// protocol on an X server — and the opcode tally is printed on exit. See
+// docs/components/flow.md, "What the pane batches".
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactElement } from 'react';
 import { Button, createRoot } from 'react-x11';
@@ -27,6 +28,7 @@ import type { TraceSession } from 'react-x11/debug';
 import { Flow } from '../src/index.js';
 import type {
   FlowEdge,
+  FlowFrameStats,
   FlowInstance,
   FlowNode,
   HandlePosition,
@@ -178,12 +180,50 @@ function fanOut(): Scene {
   };
 }
 
-const EMPTY: Scene = { name: 'empty', detail: 'nothing', nodes: [], edges: [] };
+/**
+ * 200 nodes in a lattice, two edges out of each, some labelled and some
+ * marching — `scripts/bench/flow.ts`'s `grid` scene, so what this window
+ * shows and what the bench measures are the same graph.
+ */
+function lattice(): Scene {
+  const count = 200;
+  const cols = Math.ceil(Math.sqrt(count * 1.6));
+  const nodes: FlowNode[] = [];
+  for (let i = 0; i < count; i++) {
+    nodes.push({
+      id: `n${i}`,
+      position: { x: (i % cols) * 170, y: Math.floor(i / cols) * 90 },
+      width: 120,
+      height: 48,
+      data: { label: `node ${i}`, description: 'a second line' },
+      sourcePosition: 'right',
+      targetPosition: 'left',
+    });
+  }
+  const edges: FlowEdge[] = [];
+  for (let i = 0; i < count; i++) {
+    for (let k = 1; k <= 2; k++) {
+      const target = (i + cols + k * 3) % count;
+      if (target === i) continue;
+      edges.push({
+        id: `e${i}-${k}`,
+        source: `n${i}`,
+        target: `n${target}`,
+        type: 'bezier',
+        label: i % 7 === 0 ? `w${i}` : undefined,
+        animated: i % 23 === 0,
+      });
+    }
+  }
+  return {
+    name: '200 · lattice',
+    detail: `${nodes.length} nodes, ${edges.length} edges`,
+    nodes,
+    edges,
+  };
+}
 
-/** One pan step per tick. 16ms asks for 60/s; what the readout shows is what
- * the loop *achieved*, so a frame that costs more than the interval drags the
- * measured rate down — which is the whole point of the number. */
-const TICK_MS = 16;
+const EMPTY: Scene = { name: 'empty', detail: 'nothing', nodes: [], edges: [] };
 
 function App(): ReactElement {
   const [scene, setScene] = useState<Scene>(EMPTY);
@@ -194,17 +234,38 @@ function App(): ReactElement {
   const flow = useRef<FlowInstance>(null);
   const trace = useRef<TraceSession | null>(null);
 
-  const scenes = useMemo(() => [spiral(), fanOut()], []);
+  const scenes = useMemo(() => [spiral(), lattice(), fanOut()], []);
+  const [gl, setGl] = useState(false);
+  // Every frame the pane drew, on either renderer, from `onFrame`, drained by
+  // the readout below. A ref, not state: setting state per frame would
+  // re-render this component 120 times a second, and that is not what is
+  // being measured.
+  const drawn = useRef<FlowFrameStats[]>([]);
+  const panningRef = useRef(false);
+  panningRef.current = panning;
+  const dx = useRef(2);
+  const steps = useRef(0);
+  const onFrame = useCallback((stats: FlowFrameStats) => {
+    drawn.current.push(stats);
+    if (!panningRef.current) return;
+    // The next pan step, asked for by the frame that drew the last one — on
+    // both renderers, so the loop runs at whatever rate the window delivers
+    // rather than the 60/s a 16 ms timer can ask for.
+    setImmediate(() => {
+      const viewport = flow.current?.getViewport();
+      if (!viewport) return;
+      // reverse at the edges so the graph stays on screen
+      if (viewport.x < -400 || viewport.x > 400) dx.current = -dx.current;
+      flow.current?.setViewport({ x: viewport.x + dx.current });
+    });
+  }, []);
 
   const load = useCallback((next: Scene) => {
     setScene(next);
     setStats(`${next.nodes.length} nodes, ${next.edges.length} edges`);
   }, []);
 
-  // One trace for the whole run: the readout below reports deltas out of it,
-  // so it measures the pan loop and a manual drag alike.
-  const frames = useRef(0);
-  const steps = useRef(0);
+  // One trace for the whole run: the readout reports deltas out of it.
   useEffect(() => {
     const session = startTrace({ sink: 'summary' });
     trace.current = session;
@@ -224,58 +285,68 @@ function App(): ReactElement {
 
   useEffect(() => {
     if (!panning) return;
-    let dx = 2;
-    const tick = setInterval(() => {
-      const viewport = flow.current?.getViewport();
-      if (!viewport) return;
-      // reverse at the edges so the graph stays on screen
-      if (viewport.x < -400 || viewport.x > 400) dx = -dx;
-      flow.current?.setViewport({ x: viewport.x + dx });
-      frames.current++;
-    }, TICK_MS);
-    return () => clearInterval(tick);
-  }, [panning]);
+    // one nudge; every frame after asks for the next (`onFrame`)
+    const viewport = flow.current?.getViewport();
+    if (viewport) flow.current?.setViewport({ x: viewport.x + 1 });
+  }, [panning, gl]);
 
+  // The readout: every 600 ms, whatever is happening — a pan, a drag, a
+  // zoom, or nothing. Both renderers draw on change and not otherwise, so an
+  // idle pane is 0 frames/s and says so rather than going quiet.
   useEffect(() => {
-    const last = { requests: 0, bytes: 0, frames: 0, steps: 0, at: Date.now() };
+    const last = { requests: 0, bytes: 0, steps: 0, at: Date.now() };
     const seed = trace.current?.stats;
     if (seed) {
       last.requests = seed.requests;
       last.bytes = seed.bytesOut;
     }
     const report = setInterval(() => {
-      const stats = trace.current?.stats;
-      if (!stats) return;
       const now = Date.now();
       const dt = (now - last.at) / 1000;
-      const requests = stats.requests - last.requests;
-      const kb = (stats.bytesOut - last.bytes) / 1024;
-      const panned = frames.current - last.frames;
+      const wire = trace.current?.stats;
+      const requests = wire ? wire.requests - last.requests : 0;
+      const kb = wire ? (wire.bytesOut - last.bytes) / 1024 : 0;
       const dragged = steps.current - last.steps;
-      last.requests = stats.requests;
-      last.bytes = stats.bytesOut;
-      last.frames = frames.current;
+      if (wire) {
+        last.requests = wire.requests;
+        last.bytes = wire.bytesOut;
+      }
       last.steps = steps.current;
       last.at = now;
-      const head = `${scene.nodes.length} nodes · ${scene.edges.length} edges — `;
-      if (panned > 0) {
-        setStats(
-          head +
-            `pan: ${(requests / panned).toFixed(0)} req/frame · ` +
-            `${(kb / panned).toFixed(1)} KB/frame · ` +
-            `${(panned / dt).toFixed(0)} frames/s`,
+
+      const frames = drawn.current.splice(0, drawn.current.length);
+      const renderer =
+        frames[frames.length - 1]?.renderer ?? (gl ? 'gl' : 'retained');
+      const parts = [
+        `${scene.nodes.length} nodes · ${scene.edges.length} edges`,
+        `${renderer}: ${(frames.length / dt).toFixed(0)} fps`,
+      ];
+      if (frames.length === 0) {
+        parts.push('idle — draws only on change');
+      } else {
+        const cpu = frames
+          .map((f) => f.sceneMs + f.packMs + f.drawMs)
+          .sort((a, b) => a - b);
+        parts.push(
+          `${cpu[cpu.length >> 1].toFixed(2)} ms/frame on this thread`,
         );
-      } else if (dragged > 0) {
-        setStats(
-          head +
-            `drag: ${(requests / dragged).toFixed(0)} req/step · ` +
-            `${(kb / dragged).toFixed(1)} KB/step · ` +
-            `${(dragged / dt).toFixed(0)} steps/s`,
-        );
+        if (renderer === 'gl') {
+          parts.push(`${frames.filter((f) => f.worldRebuilt).length} rebuilds`);
+          const text = frames[frames.length - 1].gaps.text;
+          if (text) parts.push(`${text} labels not drawn yet`);
+        } else if (requests > 0) {
+          // X protocol per frame — what the 2D renderer costs on the wire
+          parts.push(
+            `${(requests / frames.length).toFixed(0)} req/frame`,
+            `${(kb / frames.length).toFixed(1)} KB/frame`,
+          );
+        }
       }
+      if (dragged > 0) parts.push(`drag ${(dragged / dt).toFixed(0)} steps/s`);
+      setStats(parts.join(' · '));
     }, 600);
     return () => clearInterval(report);
-  }, [scene]);
+  }, [scene, gl]);
 
   return (
     <window
@@ -300,6 +371,7 @@ function App(): ReactElement {
             onPress={() => setPanning((on) => !on)}
           />
           <Button label="fit" onPress={() => flow.current?.fitView()} />
+          <Button label="gl" primary={gl} onPress={() => setGl((on) => !on)} />
         </box>
         <text style={{ fontSize: 12, color: '$textMuted' }}>{stats}</text>
         <Flow
@@ -318,6 +390,9 @@ function App(): ReactElement {
           }}
           fitView
           fitViewOptions={{ padding: 0.06 }}
+          renderer={gl ? 'gl' : 'retained'}
+          onFrame={onFrame}
+          onError={(error) => setStats(`gl failed: ${error.message}`)}
           minimap
           controls
           background={{ variant: 'dots', gap: 24 }}
@@ -336,6 +411,8 @@ function App(): ReactElement {
 export default App;
 
 if (!process.env.REACT_X11_NO_AUTORUN) {
-  const root = await createRoot();
+  // `glPolicy: 'auto'` so an X11 server with direct GL gets it; the Cocoa
+  // backend draws through the GPU either way.
+  const root = await createRoot({ glPolicy: 'auto' });
   root.render(<App />);
 }
