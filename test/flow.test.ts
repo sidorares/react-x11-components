@@ -103,6 +103,14 @@ function bodyBox(index = 0): RetainedNode {
   return retained(box);
 }
 
+/** Where a mounted body's box sits in the pane: the bodies' one box's
+ *  place plus the body's own inside it. */
+function bodyPlace(index = 0): { left: number; top: number } {
+  const layer = bodyLayer().props.style as { left: number; top: number };
+  const own = bodyBox(index).props.style as { left: number; top: number };
+  return { left: layer.left + own.left, top: layer.top + own.top };
+}
+
 /** A window coordinate as the offset from the pane's centre that
  *  `fireEvent` wants. The pane fills the test window, and the default
  *  viewport is the identity, so window coordinates *are* graph
@@ -1505,10 +1513,6 @@ test('the body commit is synchronous inside the gesture dispatch', async () => {
   // the dispatch returns: the overlay box's committed style already carries
   // the step's position when `defaultMouseDrag` comes back, with no flush,
   // no settle, no frame in between.
-  const overlay = (): { style?: { left?: number; top?: number } } =>
-    bodyBox().props as {
-      style?: { left?: number; top?: number };
-    };
   await renderX11(
     h(TypedFlow, {
       nodes: [
@@ -1546,9 +1550,9 @@ test('the body commit is synchronous inside the gesture dispatch', async () => {
 
   // No act, no await: the dispatch itself must leave the box committed.
   seam.defaultMouseDrag(synth(paneAbs.x + 250, paneAbs.y + 140));
-  const style = overlay().style;
-  assert.strictEqual(style?.left, 155, 'left committed inside the dispatch');
-  assert.strictEqual(style?.top, 150, 'top committed inside the dispatch');
+  const place = bodyPlace();
+  assert.strictEqual(place.left, 155, 'left committed inside the dispatch');
+  assert.strictEqual(place.top, 150, 'top committed inside the dispatch');
 
   await act(() => seam.defaultMouseUp(synth(paneAbs.x + 250, paneAbs.y + 140)));
 });
@@ -1821,15 +1825,12 @@ test('at a display scale of 2 the card lands on device pixels and its body on lo
   // tall. Doubled numbers here were the body sitting a node's width away
   // from its card.
   const style = bodyBox().props.style as {
-    left?: number;
-    top?: number;
     width?: number;
     height?: number;
   };
   assert.deepStrictEqual(
     {
-      left: style.left,
-      top: style.top,
+      ...bodyPlace(),
       width: style.width,
       height: style.height,
     },
@@ -2002,13 +2003,16 @@ test('a pan moves the bodies’ one box, and re-renders no body', async () => {
   await act();
   const before = renders;
   const bodyLeft = bodyBox().props.style as { left: number };
+  const start = {
+    ...(bodyLayer().props.style as { left: number; top: number }),
+  };
   for (let step = 1; step <= 5; step++) {
     await act(() => flow.current!.setViewport({ x: step * 7, y: step * 3 }));
   }
   assert.strictEqual(renders, before, 'five pan steps, no body render');
   const layer = bodyLayer().props.style as { left: number; top: number };
   assert.deepStrictEqual(
-    { left: layer.left, top: layer.top },
+    { left: layer.left - start.left, top: layer.top - start.top },
     { left: 35, top: 15 },
     'the box moved by the pan',
   );
@@ -2017,4 +2021,39 @@ test('a pan moves the bodies’ one box, and re-renders no body', async () => {
     bodyLeft.left,
     'and the body inside it did not',
   );
+});
+
+test('bodies are painted with the graph’s origin panned off the pane', async () => {
+  // The bodies' one box sat at the graph's origin, 0×0 — and core culls a
+  // child whose *own* box is off screen before it looks at what the child
+  // holds. So a graph panned or zoomed past the pane's top-left, which is
+  // every real view of a large graph, painted no body at all: the cards
+  // drew, and the checkboxes and buttons inside them did not.
+  const filled: FlowNodeType = {
+    size: { width: 200, height: 120 },
+    headerHeight: 20,
+    render: () =>
+      h('box', { style: { flexGrow: 1, backgroundColor: '#ff00ff' } }),
+  };
+  const flow: { current: FlowInstance | null } = { current: null };
+  const { ctx } = await renderX11(
+    h(TypedFlow, {
+      ref: flow,
+      nodes: [{ id: 'far', type: 'filled', position: { x: 600, y: 400 } }],
+      edges: [],
+      nodeTypes: { filled },
+    }),
+  );
+  await act();
+  // the origin 500 px left of the pane and 300 above; the card at (100,100)
+  await act(() => flow.current!.setViewport({ x: -500, y: -300 }));
+  await act();
+  const layer = bodyLayer();
+  assert.ok(
+    layer.abs.x + layer.abs.width > 0 && layer.abs.y + layer.abs.height > 0,
+    `the bodies' box reaches the pane (${JSON.stringify(layer.abs)})`,
+  );
+  await expectPixel(ctx, 200, 180, '#ff00ff', {
+    message: 'the body is painted on its card',
+  });
 });

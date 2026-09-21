@@ -365,6 +365,26 @@ export function Flow<N = FlowNodeData, E = unknown>(
     return map;
   }, [mounts, currentNodes]);
 
+  // The box the bodies are laid out in covers exactly them. It has to have a
+  // real size: core culls a child whose *own* box is off screen or outside
+  // a clipping ancestor before it looks at the child's subtree, and a 0×0
+  // box at the graph's origin is off screen whenever the graph has been
+  // panned past the pane's top-left — which took every body with it.
+  const extent = useMemo(() => {
+    if (bodies.length === 0) return { x: 0, y: 0, width: 0, height: 0 };
+    let x0 = Infinity;
+    let y0 = Infinity;
+    let x1 = -Infinity;
+    let y1 = -Infinity;
+    for (const body of bodies) {
+      x0 = Math.min(x0, body.x);
+      y0 = Math.min(y0, body.y);
+      x1 = Math.max(x1, body.x + body.width);
+      y1 = Math.max(y1, body.y + body.height);
+    }
+    return { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
+  }, [bodies]);
+
   // Memoized on the bodies array, which a pan does not replace: the box they
   // sit in moves, and React reconciles none of them.
   const overlays = useMemo(
@@ -390,8 +410,8 @@ export function Flow<N = FlowNodeData, E = unknown>(
                 key: body.id,
                 style: {
                   position: 'absolute',
-                  left: body.x,
-                  top: body.y,
+                  left: body.x - extent.x,
+                  top: body.y - extent.y,
                   width: body.width,
                   height: body.height,
                   // A body is free to overflow what it was given — a popup's
@@ -423,7 +443,7 @@ export function Flow<N = FlowNodeData, E = unknown>(
             );
           })
         : null,
-    [mounts, bodies, byId, nodeTypes],
+    [mounts, bodies, extent, byId, nodeTypes],
   );
   const layer =
     overlays && overlays.length > 0
@@ -433,10 +453,10 @@ export function Flow<N = FlowNodeData, E = unknown>(
             key: 'bodies',
             style: {
               position: 'absolute',
-              left: origin.x,
-              top: origin.y,
-              width: 0,
-              height: 0,
+              left: origin.x + extent.x,
+              top: origin.y + extent.y,
+              width: extent.width,
+              height: extent.height,
             },
           },
           overlays,
