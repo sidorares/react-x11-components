@@ -89,6 +89,11 @@ export function targetOf(info: DrawInfoLike): FlowGlTarget {
   return target;
 }
 
+/** Batches one zoom's settle may set before the world is repacked with what
+ *  has landed — a bound, so a screen whose labels outgrow the atlas still
+ *  shows the ones that fit. */
+const MAX_BATCHES = 24;
+
 /** The surface's state across renders: the renderer lives as long as the GL
  *  context it was made for, which is longer than any one props object. */
 class Driver {
@@ -109,6 +114,8 @@ class Driver {
   private lastZoom = NaN;
   private settle: unknown = null;
   private failed = false;
+  /** Labels are being set (`setLabels`); one run at a time. */
+  private setting = false;
 
   constructor(props: FlowGlSurfaceProps) {
     this.props = props;
@@ -164,16 +171,15 @@ class Driver {
       );
       if (frame.world) this.worldKey = frame.key;
       // Labels this frame drew soft, or could not draw at all, are set now,
-      // a batch at a time, between frames; the world is repacked when a
-      // batch lands, which is what swaps them in.
-      if (atlas?.wanting) {
-        void atlas.pump().then(
-          (landed) => {
-            if (!landed || this.failed) return;
-            this.worldKey = null;
-            this.request();
+      // between frames.
+      if (atlas?.wanting && !this.setting) {
+        this.setting = true;
+        this.setLabels(atlas).then(
+          () => (this.setting = false),
+          (error: unknown) => {
+            this.setting = false;
+            this.fail(error);
           },
-          (error: unknown) => this.fail(error),
         );
       }
       this.props.onFrame?.({ renderer: 'gl', sceneMs, ...stats });
@@ -181,6 +187,30 @@ class Driver {
       this.fail(error);
     }
   };
+
+  /**
+   * Set batches until nothing the world on screen draws is wanted, then
+   * repack it **once** — which is what swaps the labels in, all in the same
+   * frame. Repacking a batch at a time swapped them in waves, a visible
+   * flicker after every zoom, and paid a full world pack per wave.
+   *
+   * Stops early, repacking what landed, when the atlas moved its rasters
+   * (the world's texture coordinates are stale until it is repacked), when
+   * the zoom starts moving again, or after a bound on batches.
+   */
+  private async setLabels(atlas: LabelAtlas): Promise<void> {
+    let landed = false;
+    for (let batch = 0; batch < MAX_BATCHES; batch++) {
+      const set = await atlas.pump();
+      if (this.failed || this.atlas !== atlas) return;
+      if (!set) break;
+      landed = true;
+      if (atlas.relocated || !atlas.wanting) break;
+    }
+    if (!landed) return;
+    this.worldKey = null;
+    this.request();
+  }
 
   /** The atlas for this pane's face and scale, made again when either
    *  changes — and dropped where there is no text engine at all. */

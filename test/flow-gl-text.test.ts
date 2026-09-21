@@ -14,7 +14,10 @@ import type { SceneText } from '../src/flow/scene.js';
 
 after(() => cleanup());
 
-async function atlasAt(scale: number): Promise<{
+async function atlasAt(
+  scale: number,
+  side?: number,
+): Promise<{
   atlas: LabelAtlas;
   options: PainterOptions;
 }> {
@@ -32,7 +35,7 @@ async function atlasAt(scale: number): Promise<{
     scale,
     cache: new Map(),
   };
-  return { atlas: new LabelAtlas({ app, options }), options };
+  return { atlas: new LabelAtlas({ app, options }, side), options };
 }
 
 function label(extra: Partial<SceneText> = {}): SceneText {
@@ -100,6 +103,62 @@ test('nothing new is set while the zoom is moving', async () => {
   assert.ok(atlas.wanting, 'still wanted, for when it stops');
   atlas.admit = true;
   assert.strictEqual(await atlas.pump(), true);
+});
+
+test('only the sizes the world on screen asks for are set, not every step of a zoom', async () => {
+  const { atlas } = await atlasAt(2);
+  atlas.beginPack();
+  atlas.quad(label({ size: 11 }));
+  await settle(atlas);
+  // a zoom: each step's world asks for its own size, and none is set yet
+  atlas.admit = false;
+  for (const size of [12, 13, 14]) {
+    atlas.beginPack();
+    atlas.quad(label({ size }));
+  }
+  // it stops at 15
+  atlas.admit = true;
+  atlas.beginPack();
+  atlas.quad(label({ size: 15 }));
+  assert.strictEqual(await atlas.pump(), true);
+  assert.ok(!atlas.wanting, 'one batch, and nothing left wanted');
+  atlas.beginPack();
+  atlas.quad(label({ size: 13 }));
+  assert.ok(atlas.wanting, 'a size the zoom passed through was never set');
+});
+
+test('a full atlas keeps what the screen draws, moved, and drops only the rest', async () => {
+  // A small atlas, so two dozen labels fill it. Before, a full atlas was
+  // cleared: every label with no other size set vanished until its batch
+  // came round again — text blinking out after a zoom.
+  const { atlas } = await atlasAt(2, 256);
+  const names = (prefix: string) =>
+    Array.from({ length: 12 }, (_, i) => `${prefix} ${i}`);
+  atlas.beginPack();
+  for (const text of names('node')) atlas.quad(label({ text }));
+  await settle(atlas);
+  assert.ok(!atlas.relocated, 'precondition: twelve fit');
+
+  // The next world draws `node 0` and asks for twelve more.
+  atlas.beginPack();
+  const before = atlas.quad(label({ text: 'node 0' }))!;
+  assert.ok(before, 'precondition: node 0 is set');
+  for (const text of names('edge')) atlas.quad(label({ text }));
+  await settle(atlas);
+
+  assert.ok(atlas.relocated, 'the rasters moved: the world must be repacked');
+  assert.ok(!atlas.wanting, 'and every one asked for was set');
+  atlas.beginPack();
+  const after = atlas.quad(label({ text: 'node 0' }));
+  assert.ok(after, 'the label on screen survived the atlas filling');
+  assert.strictEqual(after.w, before.w, 'from its own raster, not a stand-in');
+  for (const text of names('edge')) {
+    assert.ok(atlas.quad(label({ text })), `${text} is drawn`);
+  }
+  const dropped = names('node')
+    .slice(1)
+    .filter((text) => atlas.quad(label({ text })) === null);
+  assert.ok(dropped.length > 0, 'the labels off screen made the room');
 });
 
 test('a label cut to its card is cut where the 2D painter cuts it', async () => {

@@ -21,7 +21,17 @@
 //    same string, scaled — soft for the frames it takes to set it again, but
 //    never missing and never late. New sizes are only set while the zoom is
 //    at rest (`admit`), because setting every label again on every step of a
-//    zoom is the cost that made maps admit labels at rest too.
+//    zoom is the cost that made maps admit labels at rest too. And a zoom
+//    that stops swaps every label in **one** frame: `Driver` sets batches
+//    until nothing on screen is wanted and repacks the world once, rather
+//    than once a batch — a label per batch changing raster, frame after
+//    frame, is what a settled zoom looked like before, text visibly
+//    flickering in waves after the pane stopped moving.
+//  - **The atlas fills.** Every size a zoom settles at is every label again.
+//    When there is no room left the rasters the world on screen does not
+//    draw from are dropped and the rest are moved together (`compact`), so a
+//    full atlas costs a repack, never a label: clearing it outright blanked
+//    every label with no other size to fall back on until it was set again.
 //  - **Truncation.** A card's label is cut to its width with an ellipsis;
 //    `fitText` is the 2D painter's own, so both renderers cut at the same
 //    character.
@@ -61,6 +71,8 @@ interface Entry {
   /** The device size it was set at. */
   size: number;
   pixels: Uint8Array | null;
+  /** The last world pack that drew from it (`LabelAtlas.beginPack`). */
+  used: number;
 }
 
 interface ImageLike {
@@ -138,12 +150,40 @@ export class LabelAtlas {
   private texture: unknown = null;
   private textureGeneration = -1;
   private cleared = false;
+  /** Counts world packs; an entry stamped with the current one is on screen. */
+  private epoch = 0;
+  /** Rasters have moved since the world was last packed: its texture
+   *  coordinates are stale, and it must be packed again before the texture
+   *  is drawn from. */
+  relocated = false;
 
-  constructor(source: TextSource) {
+  /** The texture's side, device pixels. */
+  private readonly side: number;
+
+  /** `side` is for tests, which fill an atlas without setting thousands of
+   *  labels. */
+  constructor(source: TextSource, side = ATLAS_SIZE) {
     this.source = source;
+    this.side = side;
     // Measured and shaped in one ink, whatever the label's: widths do not
     // depend on colour, and the raster is coverage, coloured by the shader.
     this.white = { ...source.options, color: '#ffffff' };
+  }
+
+  /**
+   * A world pack is starting: the labels it asks for are the ones on screen
+   * until the next, what compaction keeps — and **all** that is wanted.
+   * What earlier packs asked for is forgotten here: every step of a zoom
+   * asks for its own size, none of them is set while it moves, and set
+   * after it stopped they were a thousand rasters at sizes no longer on
+   * screen (1275 after one 0.7→1.9 zoom over 400 nodes) — a second of
+   * batches, the atlas compacting on each and the world repacked after
+   * each, the labels swapping in waves.
+   */
+  beginPack(): void {
+    this.epoch++;
+    this.relocated = false;
+    this.missing.clear();
   }
 
   /**
@@ -189,16 +229,17 @@ export class LabelAtlas {
       if (!entry) return null;
       ratio = size / best;
     }
+    entry.used = this.epoch;
     const pad = (PAD * ratio) / scale;
     return {
       x: t.x + dx - pad,
       y: t.y + dy - pad,
       w: (entry.width * ratio) / scale,
       h: (entry.height * ratio) / scale,
-      u0: entry.x / ATLAS_SIZE,
-      v0: entry.y / ATLAS_SIZE,
-      u1: (entry.x + entry.width) / ATLAS_SIZE,
-      v1: (entry.y + entry.height) / ATLAS_SIZE,
+      u0: entry.x / this.side,
+      v0: entry.y / this.side,
+      u1: (entry.x + entry.width) / this.side,
+      v1: (entry.y + entry.height) / this.side,
     };
   }
 
@@ -294,11 +335,17 @@ export class LabelAtlas {
       const image = await ctx.getImageData(0, 0, STAGING_WIDTH, used);
       for (const p of placed) {
         this.missing.delete(p.key);
-        const place = this.allot(p.w, p.h);
+        let place = this.allot(p.w, p.h);
         if (!place) {
-          // Full: forget everything and start again. The labels on screen
-          // are set again at the sizes they are drawn at now, which is all a
-          // compaction would have kept.
+          // Full: keep what the world on screen draws from, moved together,
+          // and make room for the rest of this batch in what that frees.
+          this.compact();
+          place = this.allot(p.w, p.h);
+        }
+        if (!place) {
+          // Still full — the screen alone needs more than the atlas holds.
+          // Forget everything; the labels on screen are asked for again by
+          // the next pack.
           this.clear();
           return true;
         }
@@ -315,6 +362,8 @@ export class LabelAtlas {
           height: p.h,
           size: p.size,
           pixels,
+          // on screen as soon as the world is packed with it
+          used: this.epoch,
         });
         this.pending.add(p.key);
         const family = `${p.weight ?? 400}|${p.text}`;
@@ -330,16 +379,49 @@ export class LabelAtlas {
   }
 
   private allot(w: number, h: number): { x: number; y: number } | null {
-    if (this.shelfX + w > ATLAS_SIZE) {
+    if (this.shelfX + w > this.side) {
       this.shelfX = 0;
       this.shelfY += this.shelfH;
       this.shelfH = 0;
     }
-    if (this.shelfY + h > ATLAS_SIZE) return null;
+    if (this.shelfY + h > this.side) return null;
     const place = { x: this.shelfX, y: this.shelfY };
     this.shelfX += w;
     this.shelfH = Math.max(this.shelfH, h);
     return place;
+  }
+
+  /**
+   * Drop every raster the world on screen does not draw from and pack the
+   * rest again from the copies kept here, tallest first. They all move, so
+   * the whole texture is uploaded again and the world must be repacked
+   * before it is drawn from (`relocated`).
+   */
+  private compact(): void {
+    const kept = [...this.entries].filter(([, e]) => e.used === this.epoch);
+    kept.sort((a, b) => b[1].height - a[1].height);
+    this.entries.clear();
+    this.sizes.clear();
+    this.pending.clear();
+    this.shelfX = 0;
+    this.shelfY = 0;
+    this.shelfH = 0;
+    for (const [key, entry] of kept) {
+      const place = this.allot(entry.width, entry.height);
+      if (!place) break;
+      entry.x = place.x;
+      entry.y = place.y;
+      this.entries.set(key, entry);
+      this.pending.add(key);
+      const bar = key.indexOf('|');
+      const family = key.slice(bar + 1);
+      const sizes = this.sizes.get(family) ?? [];
+      sizes.push(entry.size);
+      this.sizes.set(family, sizes);
+    }
+    this.cleared = true;
+    this.relocated = true;
+    this.generation++;
   }
 
   private clear(): void {
@@ -350,6 +432,7 @@ export class LabelAtlas {
     this.shelfY = 0;
     this.shelfH = 0;
     this.cleared = true;
+    this.relocated = true;
     this.generation++;
   }
 
@@ -367,8 +450,8 @@ export class LabelAtlas {
         gl.TEXTURE_2D,
         0,
         gl.RGBA,
-        ATLAS_SIZE,
-        ATLAS_SIZE,
+        this.side,
+        this.side,
         0,
         gl.RGBA,
         gl.UNSIGNED_BYTE,

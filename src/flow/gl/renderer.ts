@@ -207,6 +207,7 @@ export class FlowGlRenderer {
     let bytes = 0;
     const rebuilt = frame.world != null;
     if (frame.world) {
+      atlas?.beginPack();
       bytes += this.world.update(
         frame.world,
         'world',
