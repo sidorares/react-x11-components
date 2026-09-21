@@ -26,7 +26,11 @@ import {
   unproject,
   unprojectPoint,
 } from '../src/maps/proj.js';
-import { QUALITY_LADDER, chooseQuality } from '../src/maps/gl/view.js';
+import {
+  LevelFader,
+  QUALITY_LADDER,
+  chooseQuality,
+} from '../src/maps/gl/view.js';
 import { Map as MapView } from '../src/maps/index.js';
 import type { MapHandle } from '../src/maps/index.js';
 import {
@@ -72,6 +76,7 @@ import {
 import type { GlTileData } from '../src/maps/gl/buckets.js';
 import { parseColor, premultiplied } from '../src/maps/gl/color.js';
 import { renderCover } from '../src/maps/gl/cover.js';
+import type { CoverResult } from '../src/maps/gl/cover.js';
 import {
   LABEL_STRIDE,
   LabelField,
@@ -880,6 +885,84 @@ test('a fade draws the arriving level whole, offscreen, and composites it once',
     fade: { frame: frameOver(data), alpha: 0 },
   });
   assert.strictEqual(framebuffers(none.calls), 0);
+});
+
+test("a scene's layers are decided at its gate zoom, not the camera's", () => {
+  // Buildings from 14, the rest always: at zoom 12 only the gate decides.
+  const style = STYLE.map((l) =>
+    l.id === 'buildings' ? { ...l, minZoom: 14 } : l,
+  );
+  const data = buildTileBuckets(fixtureTile(), prepareStyle({ layers: style }));
+  const draw = (gateZoom?: number) =>
+    new GlMapRenderer(recordingGl(true).gl).render({
+      ...frameOver(data, style),
+      gateZoom,
+    }).layers;
+  assert.strictEqual(draw(14), draw() + 1);
+  assert.strictEqual(draw(13.99), draw());
+});
+
+/** A cover of a level, with nothing missing. */
+const coverOf = (level: number): CoverResult => ({
+  tiles: [],
+  missing: [],
+  level,
+  own: 0,
+  ancestors: 0,
+  descendants: 0,
+  inView: [],
+});
+
+test('a layer the camera zooms out of fades out with the scene it was in', () => {
+  // The building layer's minZoom 14 against a pyramid whose level is not
+  // the zoom's floor — level 13 from zoom 13.5 — so the gate flips on its
+  // own, inside one level. Before, both scenes left it on the same frame.
+  const gatesAt = (zoom: number) => (zoom >= 14 ? 'buildings' : '');
+  const levelAt = (zoom: number) => (zoom >= 13.5 ? 13 : 12);
+  const fader = new LevelFader();
+  const plan = (zoom: number, at: number) =>
+    fader.plan(coverOf(levelAt(zoom)), coverOf, {
+      at,
+      fadeMs: 200,
+      zoom,
+      gatesAt,
+    });
+
+  assert.strictEqual(plan(14.2, 0).next, null, 'nothing to fade at first');
+  assert.strictEqual(plan(14.05, 16).next, null, 'nor while nothing changes');
+  // Out past 14: the old scene keeps its buildings, the new one fades in
+  // without them — the same level both, only the layers differ.
+  const out = plan(13.9, 32);
+  assert.ok(out.next, 'the gate flip fades');
+  assert.strictEqual(out.baseGate, 14.05, 'the old scene keeps its layers');
+  assert.strictEqual(out.base.level, 13);
+  assert.strictEqual(out.alpha, 0);
+  const mid = plan(13.8, 132);
+  assert.ok(mid.alpha > 0.4 && mid.alpha < 0.6, `halfway: ${mid.alpha}`);
+  assert.strictEqual(mid.baseGate, 14.05);
+  // Done: one scene again, decided at the camera's zoom.
+  const done = plan(13.8, 240);
+  assert.strictEqual(done.next, null);
+  assert.strictEqual(done.baseGate, 13.8);
+  assert.strictEqual(fader.fading, false);
+
+  // And in again: the same fade the other way.
+  const back = plan(14.1, 300);
+  assert.ok(back.next, 'zooming back in fades too');
+  assert.strictEqual(back.baseGate, 13.8);
+
+  // No fade asked for: a cut, as before.
+  const cut = new LevelFader();
+  const plain = (zoom: number) =>
+    cut.plan(coverOf(levelAt(zoom)), coverOf, {
+      at: 0,
+      fadeMs: 0,
+      zoom,
+      gatesAt,
+    });
+  plain(14.1);
+  assert.strictEqual(plain(13.9).next, null);
+  assert.strictEqual(plain(13.9).baseGate, 13.9);
 });
 
 test('adaptive quality takes the lowest rung that fits, and climbs back only with room', () => {

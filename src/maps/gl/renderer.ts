@@ -89,6 +89,13 @@ export interface RenderFrame {
   height: number;
   /** The camera zoom: what zoom ramps and layer ranges resolve at. */
   zoom: number;
+  /**
+   * The zoom the layers' `minZoom`/`maxZoom` are decided at, when that is
+   * not `zoom` — a scene being faded out keeps the layers it was drawn
+   * with, so a layer the camera has just zoomed out of fades with it
+   * rather than leaving both scenes at once.
+   */
+  gateZoom?: number;
   /** Device pixels per logical pixel: what style lengths are multiplied by. */
   scale: number;
   style: PreparedStyle;
@@ -296,6 +303,18 @@ function drawsAt(layer: MapStyleLayer, zoom: number, detail: number): boolean {
   return true;
 }
 
+/**
+ * Which of a style's layers draw at this zoom, as a key: two zooms with the
+ * same key draw the same layers, so a change of key is a layer appearing or
+ * leaving — something to fade rather than cut.
+ */
+export function gatesAt(style: PreparedStyle, zoom: number): string {
+  let key = '';
+  for (const { layer } of style.layers)
+    key += drawsAt(layer, zoom, 0) ? '1' : '0';
+  return key;
+}
+
 /** Label rasters taken into the atlas texture per frame at most. */
 const ATLAS_UPLOADS_PER_FRAME = 24;
 
@@ -428,7 +447,7 @@ export class GlMapRenderer {
       );
       for (let i = 0; i < layers.length; i++) {
         const layer = layers[i].layer;
-        if (!drawsAt(layer, frame.zoom, detail)) continue;
+        if (!drawsAt(layer, frame.gateZoom ?? frame.zoom, detail)) continue;
         let records = 0;
         for (let t = 0; t < tiles.length; t++) {
           if (!visible[t]) continue;
@@ -610,7 +629,7 @@ export class GlMapRenderer {
       }
       for (let i = 0; i < layers.length; i++) {
         const layer = layers[i].layer;
-        if (!drawsAt(layer, frame.zoom, detail)) continue;
+        if (!drawsAt(layer, frame.gateZoom ?? frame.zoom, detail)) continue;
         if (layer.type === 'fill') {
           if (this._fill(frame, tiles, i, layer, scissors, edges)) {
             stats.layers++;
