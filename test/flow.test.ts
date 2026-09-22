@@ -2562,3 +2562,68 @@ test('the graph leaves out the cards the bodies’ layer shows, and takes them b
   assert.ok(bodiesAway(), 'precondition: held');
   assert.strictEqual(shown().size, 0, 'held bodies hand their cards back');
 });
+
+test('under GL a pan asks for a GL frame and claims nothing of the 2D pane', async () => {
+  // The pan is the surface's offset uniform. Claiming the pane's box every
+  // step repainted it under the surface for nothing, and with bodies
+  // mounted the claim reached core's overlay too (react-x11#644).
+  await renderX11(
+    h(FLOW_ELEMENT, {
+      nodes: bodyNode(),
+      edges: [],
+      renderer: 'gl',
+      style: { flexGrow: 1 },
+    }),
+  );
+  const node = pane() as unknown as {
+    setGlRequest(fn: () => void): void;
+    setViewport(v: object): void;
+    invalidate(...a: unknown[]): void;
+  };
+  let asked = 0;
+  node.setGlRequest(() => void asked++);
+  await act();
+  const claims: unknown[][] = [];
+  const own = node.invalidate.bind(node);
+  node.invalidate = (...a: unknown[]) => {
+    claims.push(a);
+    own(...a);
+  };
+  const before = asked;
+  node.setViewport({ x: 30, y: 10, zoom: 1 });
+  assert.ok(asked > before, 'a GL frame was asked for');
+  assert.strictEqual(claims.length, 0, 'and nothing of the pane was claimed');
+  // a zoom still goes through the pane
+  node.setViewport({ x: 30, y: 10, zoom: 1.5 });
+  assert.ok(claims.length > 0, 'a zoom is not a pan');
+});
+
+test('a panel canvas is asked to repaint its own box, not the window', async () => {
+  // A claim with no region is the whole window: every pan step and every
+  // dash tick became a full frame.
+  await mount({
+    nodes: bodyNode(),
+    edges: [],
+    nodeTypes: { form: sizedType },
+    minimap: true,
+    controls: true,
+  });
+  await act();
+  const calls: unknown[][] = [];
+  const canvas = {
+    invalidate: (...a: unknown[]) => void calls.push(a),
+  };
+  const node = pane() as unknown as {
+    setPanelCanvases(c: unknown[]): void;
+    setViewport(v: object): void;
+  };
+  node.setPanelCanvases([canvas]);
+  calls.length = 0;
+  node.setViewport({ x: 12, y: 0, zoom: 1 });
+  assert.ok(calls.length > 0, 'the canvas is asked to repaint');
+  for (const [layout, damage, reason] of calls) {
+    assert.strictEqual(layout, false);
+    assert.strictEqual(damage, canvas, 'its own box');
+    assert.strictEqual(reason, 'props');
+  }
+});

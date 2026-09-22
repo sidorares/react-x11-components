@@ -144,6 +144,12 @@ interface PatternLike {
   _picture?: { destroy?(): void };
 }
 
+/** A canvas `<Flow>` paints a panel on: a core node, asked to repaint its
+ *  own box. */
+interface PanelCanvas {
+  invalidate(layout: boolean, damage: unknown, reason: string): void;
+}
+
 /** Timers, through `globalThis`: `src/` compiles with `types: []` so a Node
  * global that wandered in would become an implicit `@types/node` dependency
  * a consumer has to satisfy. */
@@ -430,7 +436,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
   private _shownBodies: ReadonlySet<string> = new Set();
   /** The canvases `<Flow>` paints the minimap and controls on, over the
    *  bodies — while there are any, the graph leaves the panels out. */
-  private _panelCanvases: readonly { invalidate(): void }[] = [];
+  private _panelCanvases: readonly PanelCanvas[] = [];
   private _panelsKey = '';
   /** The budget's model (`_holdBodies`, `_frameTick`): what a body adds to a
    *  zoom step, what a step costs with none re-scaled, the last frame's
@@ -1068,7 +1074,10 @@ export class FlowGraphNode extends Node implements FlowInstance {
     const v = { x: next.x, y: next.y, zoom };
     const controlled = this.props.viewport !== undefined;
     if (!controlled) this._vp = v;
-    for (const canvas of this._panelCanvases) canvas.invalidate();
+    // Each claims its own box: a claim with no region is the whole window,
+    // which made every pan step and dash tick a full frame.
+    for (const canvas of this._panelCanvases)
+      canvas.invalidate(false, canvas, 'props');
     this._prop<(vp: Viewport) => void>('onViewportChange')?.(v);
     // The `fitView` that runs at the top of a paint has already changed what
     // this frame will draw, so asking for another one would only draw the
@@ -1078,7 +1087,13 @@ export class FlowGraphNode extends Node implements FlowInstance {
       // offset moves, and the GL world must not be rebuilt for it.
       this._panOnly = previous.zoom === v.zoom;
       try {
-        if (!this._blitPan(previous, v)) this._repaint('scroll');
+        if (this._gl && this._panOnly) {
+          // Under GL a pan is the surface's offset uniform and nothing else:
+          // the 2D pane under the surface shows none of the graph, and
+          // claiming its box every step repainted it for nothing (~4 ms a
+          // frame) — and, with bodies mounted, reached core's overlay too.
+          this._glRequest?.();
+        } else if (!this._blitPan(previous, v)) this._repaint('scroll');
       } finally {
         this._panOnly = false;
       }
@@ -2773,7 +2788,10 @@ export class FlowGraphNode extends Node implements FlowInstance {
   ): void {
     // whatever changed the graph may have changed the minimap or the
     // controls, which `<Flow>` may be painting on canvases of its own
-    for (const canvas of this._panelCanvases) canvas.invalidate();
+    // Each claims its own box: a claim with no region is the whole window,
+    // which made every pan step and dash tick a full frame.
+    for (const canvas of this._panelCanvases)
+      canvas.invalidate(false, canvas, 'props');
     // A pure pan moves the world's offset, and a dash tick its phase: both
     // are uniforms on the GPU, so neither is a change to the world.
     if (!this._panOnly && reason !== 'animation') this._worldVersion++;
@@ -3251,7 +3269,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
    * them to repaint. Presses still land on the pane: the canvases take
    * none.
    */
-  setPanelCanvases(canvases: readonly { invalidate(): void }[]): void {
+  setPanelCanvases(canvases: readonly PanelCanvas[]): void {
     const had = this._panelCanvases.length > 0;
     this._panelCanvases = canvases;
     if (had !== canvases.length > 0) this.invalidate();

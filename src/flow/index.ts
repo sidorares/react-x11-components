@@ -458,7 +458,11 @@ export function Flow<N = FlowNodeData, E = unknown>(
   // Where the minimap and controls are, painted over the bodies when there
   // are any to be over.
   const [panels, setPanels] = useState<readonly FlowRect[]>([]);
-  const panelCanvases = useRef<({ invalidate(): void } | null)[]>([]);
+  const panelCanvases = useRef<
+    ({
+      invalidate(layout: boolean, damage: unknown, reason: string): void;
+    } | null)[]
+  >([]);
   // Gesture-time emissions commit inline (see `flushSync` above); the rest —
   // a programmatic `fitView`, the first paint — take the ordinary path.
   const handleBodies = (
@@ -734,7 +738,15 @@ export function Flow<N = FlowNodeData, E = unknown>(
       ? panels.map((rect, i) =>
           React.createElement('canvas', {
             key: `panel-${i}`,
-            ref: (node: { invalidate(): void } | null) => {
+            ref: (
+              node: {
+                invalidate(
+                  layout: boolean,
+                  damage: unknown,
+                  reason: string,
+                ): void;
+              } | null,
+            ) => {
               panelCanvases.current[i] = node;
             },
             style: {
@@ -753,7 +765,7 @@ export function Flow<N = FlowNodeData, E = unknown>(
   useLayoutEffect(() => {
     const live = panelCanvases.current
       .slice(0, panelLayer?.length ?? 0)
-      .filter((c): c is { invalidate(): void } => c != null);
+      .filter((c) => c != null);
     pane.current?.setPanelCanvases(live);
   }, [panelLayer?.length, panels]);
 
