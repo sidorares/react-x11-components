@@ -23,7 +23,7 @@ import React, {
   useState,
 } from 'react';
 import type { Dispatch, ReactElement, SetStateAction } from 'react';
-import { Renderer, useApp, useTheme } from 'react-x11';
+import { Renderer, useApp, useSupports, useTheme } from 'react-x11';
 import { registerElement, registeredElements } from 'react-x11/host';
 import { createStyles, flattenStyle } from 'react-x11/style';
 // Loads the module the JSX augmentation at the bottom targets: nothing in
@@ -769,7 +769,6 @@ export function Flow<N = FlowNodeData, E = unknown>(
     pane.current?.setPanelCanvases(live);
   }, [panelLayer?.length, panels]);
 
-  const wantGlEarly = renderer === 'gl';
   // On X11 a <glarea>'s children are not composited over its frame: each
   // child gets an opaque child window, as big as the region it reaches,
   // filled with the surface's clear colour (react-x11's src/gloverlay.js).
@@ -778,36 +777,15 @@ export function Flow<N = FlowNodeData, E = unknown>(
   // edge. There each card is the surface's child in its own right, placed
   // at the origin itself, and a pane covers a card and nothing more. Where
   // panes composite (Cocoa) the one box stays — a pan moves it alone.
-  const app = useApp() as {
-    createOverlayPane?: unknown;
-    glCapabilities?: () => Promise<{ flavor?: string }> | { flavor?: string };
-    _glCapsResolved?: { flavor?: string };
-  } | null;
+  const app = useApp() as { createOverlayPane?: unknown } | null;
   const composited = typeof app?.createOverlayPane === 'function';
-  // …and on XQuartz's direct GL they are not shown at all. Apple-DRI's
-  // frames never enter the X server: the window server composites the
-  // surface over the window's X content, child windows included, so a pane
-  // is only seen where it covers the whole surface. Captured through the
-  // stress example: with a pane per card, no frame of 129 showed a body.
-  // There, a graph whose types mount bodies draws with the 2D renderer —
-  // for as long as the pane lives, not per zoom, so the surface does not
-  // come and go as bodies mount.
-  const [overlayHidden, setOverlayHidden] = useState(
-    () => app?._glCapsResolved?.flavor === 'appledri',
-  );
-  useEffect(() => {
-    if (!wantGlEarly || composited || !mounts || overlayHidden) return;
-    let live = true;
-    Promise.resolve(app?.glCapabilities?.()).then(
-      (caps) => {
-        if (live && caps?.flavor === 'appledri') setOverlayHidden(true);
-      },
-      () => {},
-    );
-    return () => {
-      live = false;
-    };
-  }, [wantGlEarly, composited, mounts, overlayHidden]);
+  // …and on XQuartz not shown at all: the macOS window server composites
+  // every GL surface there above everything the X server draws, panes
+  // included. Core says so (`useSupports('glOverlay')` false, from the first
+  // render — sidorares/react-x11#653), and there a graph whose node types
+  // mount bodies draws with the 2D renderer: for as long as the pane lives,
+  // not per zoom, so the surface does not come and go as bodies mount.
+  const overlaySupported = useSupports('glOverlay');
   const cardsDirect: ReactElement[] = [];
   for (const el of overlays ?? []) {
     if (!el) continue;
@@ -862,7 +840,7 @@ export function Flow<N = FlowNodeData, E = unknown>(
     };
   }, [wantGl, gl, glFailed]);
   const drawsGl =
-    wantGl && gl != null && !glFailed && !(mounts && overlayHidden);
+    wantGl && gl != null && !glFailed && !(mounts && !overlaySupported);
   const surface = drawsGl
     ? React.createElement(gl.FlowGlSurface, {
         key: 'gl',
