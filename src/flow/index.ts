@@ -23,7 +23,7 @@ import React, {
   useState,
 } from 'react';
 import type { Dispatch, ReactElement, SetStateAction } from 'react';
-import { Renderer, useTheme } from 'react-x11';
+import { Renderer, useApp, useTheme } from 'react-x11';
 import { registerElement, registeredElements } from 'react-x11/host';
 import { createStyles, flattenStyle } from 'react-x11/style';
 // Loads the module the JSX augmentation at the bottom targets: nothing in
@@ -769,6 +769,63 @@ export function Flow<N = FlowNodeData, E = unknown>(
     pane.current?.setPanelCanvases(live);
   }, [panelLayer?.length, panels]);
 
+  const wantGlEarly = renderer === 'gl';
+  // On X11 a <glarea>'s children are not composited over its frame: each
+  // child gets an opaque child window, as big as the region it reaches,
+  // filled with the surface's clear colour (react-x11's src/gloverlay.js).
+  // The bodies' one box reaches every card and the gaps between them, so it
+  // became one window over the whole view: cards and bodies, and not one
+  // edge. There each card is the surface's child in its own right, placed
+  // at the origin itself, and a pane covers a card and nothing more. Where
+  // panes composite (Cocoa) the one box stays — a pan moves it alone.
+  const app = useApp() as {
+    createOverlayPane?: unknown;
+    glCapabilities?: () => Promise<{ flavor?: string }> | { flavor?: string };
+    _glCapsResolved?: { flavor?: string };
+  } | null;
+  const composited = typeof app?.createOverlayPane === 'function';
+  // …and on XQuartz's direct GL they are not shown at all. Apple-DRI's
+  // frames never enter the X server: the window server composites the
+  // surface over the window's X content, child windows included, so a pane
+  // is only seen where it covers the whole surface. Captured through the
+  // stress example: with a pane per card, no frame of 129 showed a body.
+  // There, a graph whose types mount bodies draws with the 2D renderer —
+  // for as long as the pane lives, not per zoom, so the surface does not
+  // come and go as bodies mount.
+  const [overlayHidden, setOverlayHidden] = useState(
+    () => app?._glCapsResolved?.flavor === 'appledri',
+  );
+  useEffect(() => {
+    if (!wantGlEarly || composited || !mounts || overlayHidden) return;
+    let live = true;
+    Promise.resolve(app?.glCapabilities?.()).then(
+      (caps) => {
+        if (live && caps?.flavor === 'appledri') setOverlayHidden(true);
+      },
+      () => {},
+    );
+    return () => {
+      live = false;
+    };
+  }, [wantGlEarly, composited, mounts, overlayHidden]);
+  const cardsDirect: ReactElement[] = [];
+  for (const el of overlays ?? []) {
+    if (!el) continue;
+    const own = (el.props as { style: { left: number; top: number } }).style;
+    cardsDirect.push(
+      React.cloneElement(el as ReactElement<Record<string, unknown>>, {
+        style: {
+          ...own,
+          left: own.left + origin.x + extent.x,
+          top: own.top + origin.y + extent.y,
+          display: held ? 'none' : 'flex',
+        },
+        onWheel: forwardWheel,
+        ...forwardPress,
+      }),
+    );
+  }
+
   // --- the GL surface -----------------------------------------------------
   //
   // Loaded when it is asked for and not before — see `./gl/index.ts` for why
@@ -804,7 +861,8 @@ export function Flow<N = FlowNodeData, E = unknown>(
       live = false;
     };
   }, [wantGl, gl, glFailed]);
-  const drawsGl = wantGl && gl != null && !glFailed;
+  const drawsGl =
+    wantGl && gl != null && !glFailed && !(mounts && overlayHidden);
   const surface = drawsGl
     ? React.createElement(gl.FlowGlSurface, {
         key: 'gl',
@@ -818,7 +876,9 @@ export function Flow<N = FlowNodeData, E = unknown>(
         // A `<glarea>`'s children are drawn over its surface, so that is
         // where the bodies go under GL — beside the pane, they would be
         // under it.
-        children: [layer, panelLayer],
+        children: composited
+          ? [layer, panelLayer]
+          : [cardsDirect.length > 0 ? cardsDirect : null, panelLayer],
       })
     : null;
 
