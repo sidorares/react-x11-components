@@ -672,6 +672,13 @@ export interface FlowProps<N = FlowNodeData, E = unknown> {
    * The next call, once the zoom has rested, has `held` false and the
    * bodies at the new scale.
    */
+  /**
+   * Where the minimap and the controls are, relative to the pane's top-left
+   * — sent when that changes. `<Flow>` paints them on canvases of its own
+   * over the node bodies (`setPanelCanvases`).
+   * @internal
+   */
+  onPanels?: (rects: readonly FlowRect[]) => void;
   onNodeBodies?: (
     bodies: readonly NodeBodyRect[],
     sync: boolean,

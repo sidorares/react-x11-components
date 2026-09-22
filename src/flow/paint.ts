@@ -348,7 +348,16 @@ export function paintScene(
     painter.circle(tip.at.x, tip.at.y, tip.radius, { fill: tip.fill });
   }
   if (scene.selection) paintRect(painter, scene.selection);
+  paintPanels(painter, scene);
+}
 
+/** The panels that float over the graph — the minimap and the controls —
+ *  alone: the last of a scene's paint, and what `<Flow>` paints on its own
+ *  canvases over mounted bodies (`FlowGraphNode.paintPanels`). */
+export function paintPanels(
+  painter: FlowPainter,
+  scene: Pick<FlowScene, 'miniMap' | 'controls'>,
+): void {
   if (scene.miniMap) {
     const map = scene.miniMap;
     paintRect(painter, map.panel);

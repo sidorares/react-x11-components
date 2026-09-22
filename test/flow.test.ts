@@ -44,6 +44,7 @@ import type {
   EdgeChange,
   FlowEdge,
   FlowFrameStats,
+  FlowRect,
   FlowInstance,
   FlowNode,
   FlowNodeData,
@@ -2491,4 +2492,73 @@ test('a card over another card’s body is painted over it, border and header', 
   await expectPixel(ctx, 130, 150, '#ff0000', {
     message: 'the lower body still shows where nothing is over it',
   });
+});
+
+test('the minimap and the controls stay over mounted bodies', async () => {
+  // The bodies' layer is over the graph, and the panels were the graph's:
+  // a card that reached a corner covered them. With bodies mounted they are
+  // painted on canvases over the bodies' layer.
+  const redType: FlowNodeType = {
+    size: { width: 400, height: 300 },
+    headerHeight: 20,
+    render: () =>
+      h('box', { style: { flexGrow: 1, backgroundColor: '#ff0000' } }),
+  };
+  const { ctx } = await renderX11(
+    h(TypedFlow, {
+      // one big card under both corners the panels sit in
+      nodes: [{ id: 'big', type: 'red', position: { x: -20, y: 40 } }],
+      edges: [],
+      nodeTypes: { red: redType },
+      minimap: true,
+      controls: true,
+      palette: { surface: '#00ff00', surfaceBorder: '#00ff00' },
+      style: { width: 380, height: 360 },
+    }),
+    { width: 380, height: 360 },
+  );
+  await act();
+  const node = pane() as unknown as { panelRects(): FlowRect[] };
+  const [map, controls] = node.panelRects();
+  assert.ok(map && controls, 'precondition: both panels are shown');
+  // each panel's centre, over the card's red body (x −15..375, y 60..335)
+  const inside = (r: FlowRect) => ({
+    x: Math.round(r.x + r.width / 2),
+    y: Math.round(r.y + r.height / 2),
+  });
+  for (const [name, r] of [
+    ['minimap', map],
+    ['controls', controls],
+  ] as const) {
+    const p = inside(r);
+    assert.ok(
+      !isNear(await pixelAt(ctx, p.x, p.y), '#ff0000'),
+      `the ${name} is over the red body at (${p.x}, ${p.y})`,
+    );
+  }
+});
+
+test('the graph leaves out the cards the bodies’ layer shows, and takes them back while bodies are held', async () => {
+  await mount({
+    nodes: Array.from({ length: 10 }, (_, i) => ({
+      id: `n${i}`,
+      type: 'form',
+      position: { x: 20 + (i % 5) * 140, y: 60 + Math.floor(i / 5) * 150 },
+      width: 120,
+      height: 100,
+    })),
+    edges: [],
+    nodeTypes: { form: sizedType },
+  });
+  await act();
+  const shown = () =>
+    (pane() as unknown as { _shownBodies: ReadonlySet<string> })._shownBodies;
+  assert.strictEqual(shown().size, 10, 'every mounted card is the layer’s');
+  // a wheel zoom over the budget holds the bodies: their cards come back
+  await userEvent.wheel(pane() as unknown as DrawnNode, {
+    ...at(10, 10),
+    deltaY: -24,
+  });
+  assert.ok(bodiesAway(), 'precondition: held');
+  assert.strictEqual(shown().size, 0, 'held bodies hand their cards back');
 });

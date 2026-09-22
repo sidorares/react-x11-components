@@ -72,7 +72,7 @@ import {
   ZOOM_STEP,
 } from './model.js';
 import { distanceToPath, pathBounds } from './paths.js';
-import { paintNodeItem, paintScene } from './paint.js';
+import { paintNodeItem, paintPanels, paintScene } from './paint.js';
 import {
   anchorsOf,
   buildNodeItems,
@@ -425,6 +425,13 @@ export class FlowGraphNode extends Node implements FlowInstance {
   private _bodiesHeld = false;
   private _seenZoom = NaN;
   private _bodiesRest: unknown = null;
+  /** Mounted cards `<Flow>` shows, painted in the bodies' layer — the
+   *  graph leaves them out (`setShownBodies`). */
+  private _shownBodies: ReadonlySet<string> = new Set();
+  /** The canvases `<Flow>` paints the minimap and controls on, over the
+   *  bodies — while there are any, the graph leaves the panels out. */
+  private _panelCanvases: readonly { invalidate(): void }[] = [];
+  private _panelsKey = '';
   /** The budget's model (`_holdBodies`, `_frameTick`): what a body adds to a
    *  zoom step, what a step costs with none re-scaled, the last frame's
    *  time, and what the step awaiting its frame did. */
@@ -1061,6 +1068,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
     const v = { x: next.x, y: next.y, zoom };
     const controlled = this.props.viewport !== undefined;
     if (!controlled) this._vp = v;
+    for (const canvas of this._panelCanvases) canvas.invalidate();
     this._prop<(vp: Viewport) => void>('onViewportChange')?.(v);
     // The `fitView` that runs at the top of a paint has already changed what
     // this frame will draw, so asking for another one would only draw the
@@ -2652,6 +2660,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
       // so every change the 2D renderer would repaint is one GL frame.
       this._sync();
       this._emitBodies();
+      this._emitPanels();
       this._glRequest?.();
       return;
     }
@@ -2747,6 +2756,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
     // to put the node bodies it mounts, and it is answered from the geometry
     // this frame just used — the same numbers, never a second derivation.
     this._emitBodies();
+    this._emitPanels();
   }
 
   /**
@@ -2761,6 +2771,9 @@ export class FlowGraphNode extends Node implements FlowInstance {
     damage?: Parameters<Node['invalidate']>[1],
     reason?: string,
   ): void {
+    // whatever changed the graph may have changed the minimap or the
+    // controls, which `<Flow>` may be painting on canvases of its own
+    for (const canvas of this._panelCanvases) canvas.invalidate();
     // A pure pan moves the world's offset, and a dash tick its phase: both
     // are uniforms on the GPU, so neither is a change to the world.
     if (!this._panOnly && reason !== 'animation') this._worldVersion++;
@@ -2977,6 +2990,8 @@ export class FlowGraphNode extends Node implements FlowInstance {
   private _sceneInput(
     palette: FlowPalette,
     layer: 'all' | 'overlay' | { world: FlowRect } = 'all',
+    /** The panels even while `<Flow>` paints them itself — for that paint. */
+    panels = false,
   ): SceneInput {
     const order = this._paintOrder();
     const gesture = this._gesture;
@@ -3005,7 +3020,12 @@ export class FlowGraphNode extends Node implements FlowInstance {
         this.props.background as
           BackgroundOptions | string | boolean | undefined,
       ),
-      nodes: overlay ? [] : order.map((entry) => this._source(entry)),
+      // a card `<Flow>` paints in the bodies' layer is not painted twice
+      nodes: overlay
+        ? []
+        : order
+            .filter((entry) => !this._shownBodies.has(entry.node.id))
+            .map((entry) => this._source(entry)),
       all,
       edges: overlay ? [] : this._edges,
       dashPhase: this._dashPhase,
@@ -3013,16 +3033,20 @@ export class FlowGraphNode extends Node implements FlowInstance {
       connection: !overlay && gesture?.kind === 'connect' ? gesture : null,
       selection:
         !world && gesture?.kind === 'select' ? selectBoxRect(gesture) : null,
-      miniMap: map
-        ? {
-            panel: map.panel,
-            bounds: map.bounds,
-            scale: map.scale,
-            nodeColor: map.options.nodeColor,
-            maskColor: map.options.maskColor,
-          }
-        : null,
-      controls: world ? [] : this._controlButtons(),
+      miniMap:
+        map && (panels || this._panelCanvases.length === 0)
+          ? {
+              panel: map.panel,
+              bounds: map.bounds,
+              scale: map.scale,
+              nodeColor: map.options.nodeColor,
+              maskColor: map.options.maskColor,
+            }
+          : null,
+      controls:
+        world || (!panels && this._panelCanvases.length > 0)
+          ? []
+          : this._controlButtons(),
       scale: this._scale,
       measure: this._measureBox,
       cache: this._sceneCache,
@@ -3203,6 +3227,97 @@ export class FlowGraphNode extends Node implements FlowInstance {
     } finally {
       c.restore();
     }
+  }
+
+  /**
+   * The cards `<Flow>` has on screen in the bodies' layer (`paintCard`),
+   * which the graph then leaves out — on the GL renderer that is the whole
+   * of what drawing them cost, twice. Told after the commit that shows
+   * them, so no frame lacks both; told the empty set while bodies are held
+   * out of a zoom, when their cards are the graph's again.
+   */
+  setShownBodies(ids: ReadonlySet<string>): void {
+    const was = this._shownBodies;
+    if (was.size === ids.size && [...ids].every((id) => was.has(id))) return;
+    this._shownBodies = ids;
+    this.invalidate();
+  }
+
+  /**
+   * The canvases `<Flow>` paints the minimap and controls on, over its
+   * bodies (`paintPanels`): the bodies' layer is over the graph, so panels
+   * the graph drew went under any card that reached them. While there are
+   * any the graph leaves the panels out, and every change to the pane asks
+   * them to repaint. Presses still land on the pane: the canvases take
+   * none.
+   */
+  setPanelCanvases(canvases: readonly { invalidate(): void }[]): void {
+    const had = this._panelCanvases.length > 0;
+    this._panelCanvases = canvases;
+    if (had !== canvases.length > 0) this.invalidate();
+  }
+
+  /** Where the minimap and the controls are, relative to the pane's
+   *  top-left, logical — with a pixel round for their borders. */
+  panelRects(): FlowRect[] {
+    const pane = this._pane();
+    const rects: FlowRect[] = [];
+    const map = this._miniMapOptions();
+    if (map) {
+      const panel = this._corner(
+        map.position,
+        map.width ?? MINIMAP_W,
+        map.height ?? MINIMAP_H,
+        'bottom-right',
+      );
+      if (pane.width >= panel.width * 1.6 && pane.height >= panel.height * 1.6)
+        rects.push(panel);
+    }
+    const buttons = this._controlButtons();
+    if (buttons.length > 0) {
+      rects.push(unionRects(buttons[0].rect, buttons[buttons.length - 1].rect));
+    }
+    return rects.map((r) => ({
+      x: Math.floor(r.x - pane.x) - 1,
+      y: Math.floor(r.y - pane.y) - 1,
+      width: Math.ceil(r.width) + 2,
+      height: Math.ceil(r.height) + 2,
+    }));
+  }
+
+  /** Paint the minimap and the controls into `ctx`, a canvas whose place in
+   *  the window, in device pixels, is `abs` — as the scene paints them. */
+  paintPanels(ctx: unknown, abs: XYPosition): void {
+    const painter = createPainter(ctx, this._textOptions());
+    if (!painter) return;
+    const scene = buildScene(
+      this._sceneInput(this._palette(), 'overlay', true),
+    );
+    const c = ctx as {
+      save(): void;
+      restore(): void;
+      translate(x: number, y: number): void;
+    };
+    c.save();
+    try {
+      c.translate(-abs.x, -abs.y);
+      paintPanels(painter, scene);
+    } finally {
+      c.restore();
+    }
+  }
+
+  /** Tell `<Flow>` where the panels are when that changed (`onPanels`). */
+  private _emitPanels(): void {
+    const notify = this._prop<(rects: readonly FlowRect[]) => void>('onPanels');
+    if (!notify) return;
+    const rects = this.panelRects();
+    const key = rects
+      .map((r) => `${r.x},${r.y},${r.width},${r.height}`)
+      .join('|');
+    if (key === this._panelsKey) return;
+    this._panelsKey = key;
+    notify(rects);
   }
 
   /** `adaptive` as a number of milliseconds: `Infinity` never holds. */

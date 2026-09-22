@@ -16,6 +16,7 @@
 // constraint").
 import React, {
   useEffect,
+  useLayoutEffect,
   useImperativeHandle,
   useMemo,
   useRef,
@@ -42,6 +43,7 @@ import type {
   FlowNodeData,
   FlowNodeType,
   FlowProps,
+  FlowRect,
   NodeBodyRect,
   NodeChange,
   XYPosition,
@@ -453,6 +455,10 @@ export function Flow<N = FlowNodeData, E = unknown>(
   // Hidden while a zoom moves, and nothing else about them touched — see
   // `_holdBodies` in ./node.ts for what re-scaling them every step cost.
   const [held, setHeld] = useState(false);
+  // Where the minimap and controls are, painted over the bodies when there
+  // are any to be over.
+  const [panels, setPanels] = useState<readonly FlowRect[]>([]);
+  const panelCanvases = useRef<({ invalidate(): void } | null)[]>([]);
   // Gesture-time emissions commit inline (see `flushSync` above); the rest —
   // a programmatic `fitView`, the first paint — take the ordinary path.
   const handleBodies = (
@@ -710,6 +716,47 @@ export function Flow<N = FlowNodeData, E = unknown>(
         )
       : null;
 
+  // The cards whose canvases are on screen, told to the pane once they are,
+  // so it stops drawing them itself — and the empty set while bodies are
+  // held out of a zoom, when their cards are the graph's again.
+  useLayoutEffect(() => {
+    const shown = new Set<string>();
+    if (mounts && !held) for (const body of bodies) shown.add(body.id);
+    pane.current?.setShownBodies(shown);
+  }, [mounts, held, bodies]);
+
+  // The minimap and the controls over the bodies: the bodies' layer is over
+  // the graph, so panels the graph drew went under any card that reached
+  // them. Painted by the pane (`paintPanels`) on canvases after the layer,
+  // which take no pointer — a press on a button is the pane's, as before.
+  const panelLayer =
+    mounts && panels.length > 0
+      ? panels.map((rect, i) =>
+          React.createElement('canvas', {
+            key: `panel-${i}`,
+            ref: (node: { invalidate(): void } | null) => {
+              panelCanvases.current[i] = node;
+            },
+            style: {
+              position: 'absolute',
+              left: rect.x,
+              top: rect.y,
+              width: rect.width,
+              height: rect.height,
+              pointerEvents: 'none',
+            },
+            onDraw: (ctx: unknown, info: { node: { abs: XYPosition } }) =>
+              pane.current?.paintPanels(ctx, info.node.abs),
+          }),
+        )
+      : null;
+  useLayoutEffect(() => {
+    const live = panelCanvases.current
+      .slice(0, panelLayer?.length ?? 0)
+      .filter((c): c is { invalidate(): void } => c != null);
+    pane.current?.setPanelCanvases(live);
+  }, [panelLayer?.length, panels]);
+
   // --- the GL surface -----------------------------------------------------
   //
   // Loaded when it is asked for and not before — see `./gl/index.ts` for why
@@ -759,7 +806,7 @@ export function Flow<N = FlowNodeData, E = unknown>(
         // A `<glarea>`'s children are drawn over its surface, so that is
         // where the bodies go under GL — beside the pane, they would be
         // under it.
-        children: layer,
+        children: [layer, panelLayer],
       })
     : null;
 
@@ -784,6 +831,7 @@ export function Flow<N = FlowNodeData, E = unknown>(
       // `<flowgraph>` element zooms and hovers on its own.
       onWheel,
       onNodeBodies: mounts ? handleBodies : undefined,
+      onPanels: mounts ? setPanels : undefined,
       renderer: drawsGl ? 'gl' : undefined,
       // the element reports the 2D renderer's frames, the surface the GL
       // one's — one callback either way
@@ -796,6 +844,7 @@ export function Flow<N = FlowNodeData, E = unknown>(
     // bodies inside it under GL, or beside the pane without.
     surface,
     drawsGl ? null : layer,
+    drawsGl ? null : panelLayer,
   );
 }
 
