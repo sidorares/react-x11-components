@@ -39,7 +39,19 @@ import { Button, Checkbox, Select, createRoot } from 'react-x11';
 import { startTrace } from 'react-x11/debug';
 import type { TraceSession } from 'react-x11/debug';
 
-import { Flow, useEdgesState, useNodesState } from '../src/index.js';
+import {
+  ChartContainer,
+  Flow,
+  LineChart,
+  LineSeries,
+  ScatterChart,
+  ScatterSeries,
+  XAxis,
+  YAxis,
+  useEdgesState,
+  useNodesState,
+} from '../src/index.js';
+import { cloudData, millionData } from './chart-data.js';
 import type {
   FlowEdge,
   FlowFrameStats,
@@ -352,7 +364,96 @@ const widgetType: FlowNodeType<WidgetData> = {
   render: ({ node }) => <WidgetBody node={node} />,
 };
 
-export const WIDGET_TYPES = { widget: widgetType } as Record<
+// --- 200 nodes, each a chart over the big datasets ---------------------------
+//
+// The heaviest bodies there are: every other card is a line chart over the
+// million-point random walk, the rest a scatter of 200,000 points — the two
+// datasets examples/charts.tsx tours one at a time (./chart-data.ts, shared,
+// one copy for every chart). A chart's cost follows its pixels, not its
+// points — the walk reduces to per-column min/max spans, the cloud to an
+// occupancy grid — so this measures what a card of real drawing costs as it
+// pans, zooms and re-scales with the graph.
+
+interface ChartNodeData {
+  label: string;
+  kind: 'line' | 'scatter';
+}
+
+function ChartBody(props: { node: FlowNode<ChartNodeData> }): ReactElement {
+  const { kind } = props.node.data!;
+  renders.total++;
+  useEffect(() => {
+    mounted.count++;
+    return () => {
+      mounted.count--;
+    };
+  }, []);
+  return (
+    <ChartContainer style={{ flexGrow: 1, margin: 4 }}>
+      {kind === 'line' ? (
+        <LineChart data={millionData()}>
+          <XAxis hide />
+          <YAxis hide />
+          <LineSeries dataKey="walk" strokeWidth={1} color="#00b894" />
+        </LineChart>
+      ) : (
+        <ScatterChart data={cloudData()}>
+          <XAxis dataKey="x" hide />
+          <YAxis hide />
+          <ScatterSeries dataKey="y" size={1} color="$accent" />
+        </ScatterChart>
+      )}
+    </ChartContainer>
+  );
+}
+
+const chartType: FlowNodeType<ChartNodeData> = {
+  size: { width: 260, height: 170 },
+  headerHeight: 24,
+  handles: [
+    { type: 'target', position: 'left' },
+    { type: 'source', position: 'right' },
+  ],
+  render: ({ node }) => <ChartBody node={node} />,
+};
+
+export function chartWidgets(): Scene {
+  const count = 200;
+  const cols = 16;
+  const nodes: FlowNode[] = [];
+  for (let i = 0; i < count; i++) {
+    nodes.push({
+      id: `c${i}`,
+      type: 'chart',
+      position: { x: (i % cols) * 320, y: Math.floor(i / cols) * 230 },
+      data: {
+        label: i % 2 ? `scatter ${i} · 200k` : `walk ${i} · 1M`,
+        kind: i % 2 ? 'scatter' : 'line',
+      } as unknown as FlowNode['data'],
+    });
+  }
+  const edges: FlowEdge[] = [];
+  for (let i = 0; i < count; i++) {
+    for (let k = 1; k <= 2; k++) {
+      const target = (i + cols + k * 3) % count;
+      if (target === i) continue;
+      edges.push({
+        id: `ce${i}-${k}`,
+        source: `c${i}`,
+        target: `c${target}`,
+        animated: i % 29 === 0,
+      });
+    }
+  }
+  return {
+    name: '200 · chart widgets',
+    detail: `${count} charts over 1M / 200k points, ${edges.length} edges`,
+    nodes,
+    edges,
+  };
+}
+
+export const WIDGET_TYPES = { widget: widgetType, chart: chartType } as Record<
   string,
   FlowNodeType<unknown>
 >;
@@ -445,7 +546,10 @@ function App(): ReactElement {
   const flow = useRef<FlowInstance>(null);
   const trace = useRef<TraceSession | null>(null);
 
-  const scenes = useMemo(() => [spiral(), lattice(), fanOut(), widgets()], []);
+  const scenes = useMemo(
+    () => [spiral(), lattice(), fanOut(), widgets(), chartWidgets()],
+    [],
+  );
   const [ticking, setTicking] = useState(false);
   useEffect(() => {
     if (!ticking) return;

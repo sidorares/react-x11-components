@@ -44,6 +44,12 @@ import type {
   ChartPlotHandle,
 } from '../src/index.js';
 
+import {
+  MILLION,
+  cloudData as sharedCloud,
+  millionData as sharedMillion,
+} from './chart-data.js';
+
 // --- shared bits -----------------------------------------------------------
 
 function Section(props: {
@@ -145,19 +151,8 @@ function Streaming(): ReactElement {
 
 // --- 2. a million points ---------------------------------------------------
 
-const MILLION = 1_000_000;
-const million = new Float64Array(MILLION);
-{
-  let v = 0;
-  for (let i = 0; i < MILLION; i++) {
-    v += (Math.random() - 0.5) * 2;
-    million[i] =
-      v +
-      40 * Math.sin(i / 40_000) +
-      8 * Math.sin(i / 900) * Math.sin(i / 90_000);
-  }
-}
-const millionData = { length: MILLION, columns: { walk: million } };
+// the data lives in ./chart-data.ts, shared with examples/flow-stress.tsx
+const millionData = sharedMillion();
 
 const MILLION_FULL: readonly [number, number] = [0, MILLION - 1];
 const MIN_ZOOM_SPAN = 64;
@@ -417,19 +412,7 @@ function Areas(): ReactElement {
 
 // --- 6. scatter ------------------------------------------------------------
 
-const CLOUD = 200_000;
-const cloudX = new Float64Array(CLOUD);
-const cloudY = new Float64Array(CLOUD);
-{
-  const gauss = () =>
-    (Math.random() + Math.random() + Math.random() + Math.random() - 2) / 2;
-  for (let i = 0; i < CLOUD; i++) {
-    const arm = i % 3;
-    cloudX[i] = gauss() * 30 + (arm - 1) * 45;
-    cloudY[i] = gauss() * 22 + (arm - 1) * 18 + cloudX[i] * 0.25;
-  }
-}
-const cloudData = { length: CLOUD, columns: { x: cloudX, y: cloudY } };
+const cloudData = sharedCloud();
 
 function Cloud(): ReactElement {
   const { onFrameStats, hud } = useHud();
