@@ -421,6 +421,18 @@ again. On the stress example's lattice at 1.25× the 2D pan went from 74
 frames a second (7.1 ms a flush) to 127 (4.1 ms) with this and the
 paragraph above.
 
+**Labels ride a 2D zoom.** A zoom step repaints the pane, and it shaped
+every label on screen again at a size the next step moved off — half of
+what the step cost. Inside a gesture each label is drawn from the size it
+already has, scaled through the context, and set at its own size once the
+zoom has rested for `GL_ZOOM_REST_MS` (120 ms), the same rest the GL
+renderer rebuilds its world after; a single step — a button, `fitView`, an
+app's `setViewport` — is set exactly at once. Only where the context says
+it scales text with its transform (`scalesText`, the Windows and macOS
+contexts): on X11 ntk draws glyphs at the size they were shaped at, so a
+zoom step there still shapes its labels. On the stress lattice at 1.25× on
+Windows a zoom went from 34 to 39 frames a second.
+
 **The grid tiles.** At an integral device pitch the background is one
 `createPattern('repeat')` composite (ntk#263) — the phase baked into the
 tile, so alignment with the graph's own coordinates is exact — and at a

@@ -38,6 +38,8 @@ interface CanvasLike {
   lineDashOffset?: number;
   save(): void;
   restore(): void;
+  translate(x: number, y: number): void;
+  scale(x: number, y: number): void;
   beginPath(): void;
   closePath(): void;
   moveTo(x: number, y: number): void;
@@ -99,6 +101,14 @@ export interface PainterOptions {
    * no amount of batching on the wire would have fixed.
    */
   cache: Map<string, CachedText>;
+  /**
+   * While a zoom gesture moves: a label may be drawn from a layout shaped
+   * at another size, scaled to the one asked for, rather than shaped again
+   * at every step. The pane sets it only where the context scales text
+   * with its transform (`scalesText`), and paints the exact sizes once the
+   * gesture rests.
+   */
+  approximateText?: boolean;
 }
 
 function isCanvas(ctx: unknown): ctx is CanvasLike {
@@ -110,6 +120,13 @@ function isCanvas(ctx: unknown): ctx is CanvasLike {
 
 /** Bound, so a pathological graph cannot turn the width cache into a leak. */
 const CACHE_LIMIT = 4000;
+
+/** The sizes each string has been shaped at, per cache — what a label drawn
+ *  mid-zoom looks for instead of shaping itself again (`approximateText`). */
+const shapedSizes = new WeakMap<
+  Map<string, CachedText>,
+  Map<string, number[]>
+>();
 
 /**
  * A logical value on the device grid.
@@ -159,11 +176,16 @@ function shape(
   // The colour is part of the key: it is baked into the layout, so two
   // labels that differ only in ink are two shaped runs. The scale is not:
   // it is constant for the life of the pane that owns the cache.
-  const key = `${family}|${size}|${options?.weight ?? 400}|${options?.color ?? opts.color}|${text}`;
+  const base = `${family}|${options?.weight ?? 400}|${options?.color ?? opts.color}|${text}`;
+  const key = `${size}|${base}`;
   const hit = cache.get(key);
   if (hit) return hit;
   const layout = fonts.layout(text, fontStyle(opts, options));
-  if (cache.size >= CACHE_LIMIT) cache.clear();
+  let sizes = shapedSizes.get(cache);
+  if (cache.size >= CACHE_LIMIT) {
+    cache.clear();
+    sizes?.clear();
+  }
   const s = opts.scale;
   const entry = {
     width: layout.width / s,
@@ -171,7 +193,46 @@ function shape(
     layout,
   };
   cache.set(key, entry);
+  if (!sizes) shapedSizes.set(cache, (sizes = new Map()));
+  const shaped = sizes.get(base);
+  if (shaped) shaped.push(size);
+  else sizes.set(base, [size]);
   return entry;
+}
+
+/**
+ * The layout a label is drawn from, and the scale it is drawn at: its own
+ * size where it has one, and mid-zoom (`approximateText`) the size nearest
+ * it that was shaped already — the one the gesture started from, for every
+ * label on screen. Shaping is most of what a zoom step costs in text, and
+ * a step that re-shapes every label at a size the next step moves off was
+ * paying it for nothing.
+ */
+function shapeNear(
+  opts: PainterOptions,
+  text: string,
+  options: TextOptions | undefined,
+): { entry: CachedText; scale: number } | null {
+  if (opts.approximateText) {
+    const size = options?.size ?? 13;
+    const family = options?.family ?? opts.family;
+    const base = `${family}|${options?.weight ?? 400}|${options?.color ?? opts.color}|${text}`;
+    const exact = opts.cache.get(`${size}|${base}`);
+    if (exact) return { entry: exact, scale: 1 };
+    const shaped = shapedSizes.get(opts.cache)?.get(base);
+    if (shaped && shaped.length > 0) {
+      let best = shaped[0];
+      for (const at of shaped) {
+        if (Math.abs(Math.log(at / size)) < Math.abs(Math.log(best / size))) {
+          best = at;
+        }
+      }
+      const entry = opts.cache.get(`${best}|${base}`);
+      if (entry) return { entry, scale: size / best };
+    }
+  }
+  const entry = shape(opts, text, options);
+  return entry ? { entry, scale: 1 } : null;
 }
 
 export function measureText(
@@ -180,13 +241,14 @@ export function measureText(
   options?: TextOptions,
 ): { width: number; height: number } {
   const size = options?.size ?? 13;
-  const entry = shape(opts, text, options);
-  if (!entry) {
+  const near = shapeNear(opts, text, options);
+  if (!near) {
     // No font stack to ask. An estimate keeps layout plausible rather than
     // collapsing every node to its own padding.
     return { width: text.length * size * 0.55, height: size * 1.3 };
   }
-  return { width: entry.width, height: entry.height };
+  const { entry, scale } = near;
+  return { width: entry.width * scale, height: entry.height * scale };
 }
 
 /**
@@ -460,23 +522,32 @@ class Painter implements FlowPainter {
     const shown = options?.maxWidth
       ? fitText(this.opts, text, options, options.maxWidth)
       : text;
-    const entry = shape(this.opts, shown, options);
-    if (!entry) return;
-    const layout = entry;
+    const near = shapeNear(this.opts, shown, options);
+    if (!near) return;
+    const { entry, scale } = near;
+    const width = entry.width * scale;
+    const height = entry.height * scale;
     const align = options?.align ?? 'left';
-    const dx =
-      align === 'center'
-        ? -layout.width / 2
-        : align === 'right'
-          ? -layout.width
-          : 0;
-    const dy = options?.baseline === 'middle' ? -layout.height / 2 : 0;
-    // Rounded on the device grid, where the glyphs land.
-    entry.layout.draw(
-      this.raw,
-      Math.round(this.d(x + dx)),
-      Math.round(this.d(y + dy)),
-    );
+    const dx = align === 'center' ? -width / 2 : align === 'right' ? -width : 0;
+    const dy = options?.baseline === 'middle' ? -height / 2 : 0;
+    if (scale === 1) {
+      // Rounded on the device grid, where the glyphs land.
+      entry.layout.draw(
+        this.raw,
+        Math.round(this.d(x + dx)),
+        Math.round(this.d(y + dy)),
+      );
+      return;
+    }
+    // Mid-zoom, a layout shaped at another size, scaled through the context
+    // — which draws it as outlines, glyphs and all (`scalesText`). Not on
+    // the grid: the whole label is moving, and it is set exactly at rest.
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.translate(this.d(x + dx), this.d(y + dy));
+    ctx.scale(scale, scale);
+    entry.layout.draw(this.raw, 0, 0);
+    ctx.restore();
   }
 }
 

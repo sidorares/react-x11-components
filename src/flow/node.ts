@@ -490,6 +490,9 @@ export class FlowGraphNode extends Node implements FlowInstance {
   private _zoomAt = -Infinity;
   private _zoomStream = false;
   private _zoomRest: unknown = null;
+  /** A 2D paint drew labels scaled mid-zoom, and owes them at their own
+   *  sizes once it rests. */
+  private _textApproximated = false;
   /** Inside a live input dispatch — what makes a body emission `sync`.
    * Motion and the wheel run at continuous priority, whose React updates
    * can trail the pane's own painting by frames; an emission made under
@@ -2842,8 +2845,23 @@ export class FlowGraphNode extends Node implements FlowInstance {
       this._glRequest?.();
       return;
     }
-    const painter = createPainter(ctx, this._textOptions());
+    // Mid-gesture, labels come from the layouts they already have, scaled:
+    // shaping every one again at each step of a zoom was half of what a 2D
+    // step cost, at sizes the next step moves off. Only where the context
+    // scales text with its transform — X11's draws glyphs at the size they
+    // were shaped at — and set exactly once the zoom rests (`_restZoom`).
+    const approximateText =
+      this._zoomMoving() &&
+      (ctx as { scalesText?: boolean }).scalesText === true;
+    const painter = createPainter(ctx, {
+      ...this._textOptions(),
+      approximateText,
+    });
     if (!painter) return; // a backend with no path API: geometry only
+    if (approximateText) {
+      this._textApproximated = true;
+      this._restZoom();
+    }
 
     this._sync();
     this._painting = true;
@@ -3192,10 +3210,23 @@ export class FlowGraphNode extends Node implements FlowInstance {
       () => {
         this._zoomRest = null;
         if (now() - this._zoomAt < GL_ZOOM_REST_MS) this._restZoom();
-        else this._glRequest?.();
+        else if (this._gl) this._glRequest?.();
+        else if (this._textApproximated) {
+          // …and in 2D, the labels the gesture drew scaled, set at their
+          // own sizes
+          this._textApproximated = false;
+          this._repaint('content');
+        }
       },
       Math.max(0, wait) + 1,
     );
+  }
+
+  /** Whether a zoom gesture is moving: a stream of zoom steps, the last of
+   *  them under `GL_ZOOM_REST_MS` ago. A single step — a button, `fitView`,
+   *  an app's `setViewport` — is not one. */
+  private _zoomMoving(): boolean {
+    return this._zoomStream && now() - this._zoomAt < GL_ZOOM_REST_MS;
   }
 
   /** Whether this pass's damage reaches the minimap's corner at all —

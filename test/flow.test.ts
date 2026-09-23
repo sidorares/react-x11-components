@@ -823,6 +823,49 @@ test('the wheel zooms about the pointer, and the point under it stays put', asyn
   assert.ok(Math.abs(after.y - before.y) < 0.001);
 });
 
+test('a 2D zoom gesture draws the labels it has, and sets them at rest', async () => {
+  // Shaping every label again at every step of a zoom was half of what a
+  // 2D step cost. Where the context scales text with its transform — the
+  // Windows and macOS one says so; X11's does not, so this test says it for
+  // the headless server's — a step inside a gesture draws each label from
+  // the size it already has, and the pane sets them exactly once it rests.
+  await mount();
+  const root = pane().root as unknown as { _ctx: object };
+  Object.defineProperty(root._ctx, 'scalesText', {
+    value: true,
+    configurable: true,
+  });
+  const fonts = (
+    pane() as unknown as {
+      app: {
+        fonts: { layout(text: string, style: { size: number }): unknown };
+      };
+    }
+  ).app.fonts;
+  const own = fonts.layout;
+  const shaped: number[] = [];
+  fonts.layout = function (text, style) {
+    shaped.push(style.size);
+    return own.call(this, text, style);
+  };
+  try {
+    const node = pane() as unknown as DrawnNode;
+    await userEvent.wheel(node, { ...at(200, 200), deltaY: -48 });
+    const first = shaped.length;
+    assert.ok(first > 0, 'the first step is not a gesture yet: set exactly');
+    for (let i = 0; i < 4; i++) {
+      await userEvent.wheel(node, { ...at(200, 200), deltaY: -48 });
+    }
+    assert.strictEqual(shaped.length, first, 'nothing shaped mid-gesture');
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    await act();
+    assert.ok(shaped.length > first, 'and set at their own sizes at rest');
+  } finally {
+    fonts.layout = own;
+    delete (root._ctx as { scalesText?: boolean }).scalesText;
+  }
+});
+
 test('zoom is clamped to the range it was given', async () => {
   const { flow } = await mount({ minZoom: 0.5, maxZoom: 1.5 });
   await act(() => {
