@@ -2593,9 +2593,103 @@ test('under GL a pan asks for a GL frame and claims nothing of the 2D pane', asy
   node.setViewport({ x: 30, y: 10, zoom: 1 });
   assert.ok(asked > before, 'a GL frame was asked for');
   assert.strictEqual(claims.length, 0, 'and nothing of the pane was claimed');
-  // a zoom still goes through the pane
+  // nor does a zoom: the frame decides what it rebuilds
+  const zoomed = asked;
   node.setViewport({ x: 30, y: 10, zoom: 1.5 });
-  assert.ok(claims.length > 0, 'a zoom is not a pan');
+  assert.ok(asked > zoomed, 'a zoom asks for a GL frame');
+  assert.strictEqual(claims.length, 0, 'and claims nothing either');
+});
+
+/** The GL frame `<Flow>`'s surface asks the pane for, and how it asks. */
+interface GlPane {
+  setGlRequest(fn: () => void): void;
+  setViewport(v: object): void;
+  glFrame(lastKey: string | null): {
+    world: unknown;
+    key: string;
+    zoom: number;
+  } | null;
+}
+
+async function glPane(): Promise<{ node: GlPane; asked: () => number }> {
+  await renderX11(
+    h(FLOW_ELEMENT, {
+      nodes: nodes(),
+      edges: edges(),
+      renderer: 'gl',
+      style: { flexGrow: 1 },
+    }),
+  );
+  const node = pane() as unknown as GlPane;
+  let asked = 0;
+  node.setGlRequest(() => void asked++);
+  await act();
+  return { node, asked: () => asked };
+}
+
+test('under GL a zoom gesture draws the world it has, scaled, and rebuilds it once the zoom rests', async () => {
+  // Every step of a zoom built, packed and uploaded the whole world again
+  // — 19 ms a step on a 300-node graph, where a step of a pan is a uniform.
+  const { node, asked } = await glPane();
+  let frame = node.glFrame(null)!;
+  assert.ok(frame.world, 'the first frame builds the world');
+  // a zoom alone is a jump — a control's button, fitView — drawn exactly
+  node.setViewport({ x: 0, y: 0, zoom: 1.2 });
+  frame = node.glFrame(frame.key)!;
+  assert.ok(frame.world, 'a jump rebuilds at once');
+  assert.strictEqual(frame.zoom, 1);
+  const key = frame.key;
+  // the steps that follow it are a gesture
+  node.setViewport({ x: 0, y: 0, zoom: 1.5 });
+  frame = node.glFrame(key)!;
+  assert.strictEqual(frame.world, null, 'a step of a gesture rebuilds nothing');
+  assert.strictEqual(frame.key, key, 'the world on the GPU is still the one');
+  assert.ok(
+    Math.abs(frame.zoom - 1.5 / 1.2) < 1e-9,
+    `and is drawn magnified from the zoom it was built at: ${frame.zoom}`,
+  );
+  node.setViewport({ x: 0, y: 0, zoom: 1.4 });
+  frame = node.glFrame(key)!;
+  assert.strictEqual(frame.world, null, 'out as well as in');
+  // once it holds still, the pane asks for the frame that rebuilds it
+  const before = asked();
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.ok(asked() > before, 'the rest asks for a frame by itself');
+  frame = node.glFrame(key)!;
+  assert.ok(frame.world, 'which rebuilds the world at the zoom it rested at');
+  assert.strictEqual(frame.zoom, 1);
+});
+
+test('under GL a zoom gesture never magnifies one build past the span', async () => {
+  const { node } = await glPane();
+  let frame = node.glFrame(null)!;
+  node.setViewport({ x: 0, y: 0, zoom: 1.1 });
+  frame = node.glFrame(frame.key)!;
+  node.setViewport({ x: 0, y: 0, zoom: 1.6 });
+  frame = node.glFrame(frame.key)!;
+  assert.strictEqual(frame.world, null, 'precondition: a scaled step');
+  // 2.4 is more than twice the 1.1 the world was built at
+  node.setViewport({ x: 0, y: 0, zoom: 2.4 });
+  frame = node.glFrame(frame.key)!;
+  assert.ok(frame.world, 'a step past the span rebuilds, mid-gesture');
+  assert.strictEqual(frame.zoom, 1);
+  node.setViewport({ x: 0, y: 0, zoom: 2.5 });
+  frame = node.glFrame(frame.key)!;
+  assert.strictEqual(frame.world, null, 'and the gesture scales from there');
+  assert.ok(Math.abs(frame.zoom - 2.5 / 2.4) < 1e-9);
+});
+
+test('under GL a change to the graph mid-zoom rebuilds at the zoom of the moment', async () => {
+  const { node } = await glPane();
+  let frame = node.glFrame(null)!;
+  node.setViewport({ x: 0, y: 0, zoom: 1.1 });
+  frame = node.glFrame(frame.key)!;
+  node.setViewport({ x: 0, y: 0, zoom: 1.3 });
+  // the world the surface holds is not the one the pane last built — an
+  // atlas reset, or anything that moved the version
+  frame = node.glFrame(null)!;
+  assert.ok(frame.world, 'rebuilt');
+  assert.strictEqual(frame.zoom, 1, 'at the zoom it is drawn at, unscaled');
 });
 
 test('a panel canvas is asked to repaint its own box, not the window', async () => {

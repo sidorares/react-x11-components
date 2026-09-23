@@ -176,6 +176,12 @@ const BODY_STEP_PRIOR_MS = 1.2;
 
 /** How often the dash on an animated edge moves. Slow enough that a graph
  * full of them is not a repaint storm, fast enough to read as motion. */
+/** Under GL, how long a zoom holds still before the world is rebuilt at it
+ *  — until then each step draws the world already on the GPU, scaled
+ *  (`glFrame`) — and how far that scaling may go before a step rebuilds
+ *  anyway, so a long gesture never magnifies one build by more than this. */
+const GL_ZOOM_REST_MS = 120;
+const GL_ZOOM_SPAN = 2;
 const ANIMATION_MS = 60;
 const ANIMATION_SPEED = 1.4; // px of dash travel per tick, at zoom 1
 
@@ -466,13 +472,17 @@ export class FlowGraphNode extends Node implements FlowInstance {
    * too few draws the wrong graph.
    */
   private _worldVersion = 0;
-  /** Set only across the repaint a pure pan asks for. */
-  private _panOnly = false;
   /** The overscan the GL world was culled to, in its own pinned
    *  coordinates, and the key it was built under. */
   private _worldCull: FlowRect | null = null;
   private _worldCullId = 0;
   private _worldZoom = NaN;
+  /** When the zoom last moved, whether that move continued a stream of
+   *  them — a gesture, where one alone is a jump — and the timer that asks
+   *  for the frame that rebuilds the GL world once the stream stops. */
+  private _zoomAt = -Infinity;
+  private _zoomStream = false;
+  private _zoomRest: unknown = null;
   /** Inside a live input dispatch — what makes a body emission `sync`.
    * Motion and the wheel run at continuous priority, whose React updates
    * can trail the pane's own painting by frames; an emission made under
@@ -1083,6 +1093,11 @@ export class FlowGraphNode extends Node implements FlowInstance {
     const v = { x: next.x, y: next.y, zoom };
     const controlled = this.props.viewport !== undefined;
     if (!controlled) this._vp = v;
+    if (previous.zoom !== v.zoom) {
+      const t = now();
+      this._zoomStream = t - this._zoomAt < GL_ZOOM_REST_MS;
+      this._zoomAt = t;
+    }
     // Each claims its own box: a claim with no region is the whole window,
     // which made every pan step and dash tick a full frame.
     for (const canvas of this._panelCanvases)
@@ -1092,20 +1107,16 @@ export class FlowGraphNode extends Node implements FlowInstance {
     // this frame will draw, so asking for another one would only draw the
     // same picture twice.
     if (!controlled && !this._painting) {
-      // A translation leaves the graph where it was on the GPU: only its
-      // offset moves, and the GL world must not be rebuilt for it.
-      this._panOnly = previous.zoom === v.zoom;
-      try {
-        if (this._gl && this._panOnly) {
-          // Under GL a pan is the surface's offset uniform and nothing else:
-          // the 2D pane under the surface shows none of the graph, and
-          // claiming its box every step repainted it for nothing (~4 ms a
-          // frame) — and, with bodies mounted, reached core's overlay too.
-          this._glRequest?.();
-        } else if (!this._blitPan(previous, v)) this._repaint('scroll');
-      } finally {
-        this._panOnly = false;
-      }
+      if (this._gl) {
+        // Under GL a pan is the surface's offset uniform and nothing else,
+        // and a zoom is the frame's to decide — the world scaled while the
+        // gesture moves, rebuilt once it rests (`glFrame`). Neither is a
+        // change to the world, and the 2D pane under the surface shows none
+        // of the graph: claiming its box every step repainted it for
+        // nothing (~4 ms a frame) — and, with bodies mounted, reached
+        // core's overlay too.
+        this._glRequest?.();
+      } else if (!this._blitPan(previous, v)) this._repaint('scroll');
       // same-frame compositing for mounted bodies — see `_dragStep`
       this._emitBodies();
     }
@@ -2638,6 +2649,8 @@ export class FlowGraphNode extends Node implements FlowInstance {
     this._glRequest = null;
     if (this._bodiesRest != null) timers.clearTimeout?.(this._bodiesRest);
     this._bodiesRest = null;
+    if (this._zoomRest != null) timers.clearTimeout?.(this._zoomRest);
+    this._zoomRest = null;
     this._stopAnimation();
     this._dropGridTile();
     this._sceneCache.clear();
@@ -2825,9 +2838,9 @@ export class FlowGraphNode extends Node implements FlowInstance {
       for (const canvas of this._panelCanvases)
         canvas.invalidate(false, canvas, 'props');
     }
-    // A pure pan moves the world's offset, and a dash tick its phase: both
-    // are uniforms on the GPU, so neither is a change to the world.
-    if (!this._panOnly && reason !== 'animation') this._worldVersion++;
+    // A dash tick moves the phase, a uniform on the GPU, so it is no change
+    // to the world. A pan or a zoom never gets here under GL.
+    if (reason !== 'animation') this._worldVersion++;
     // Under GL the surface over this box draws the graph and the 2D pane
     // under it shows nothing: a claim of its pixels was a window pass over
     // them, unseen, whose one job was to reach `paint` and ask the surface
@@ -2925,10 +2938,25 @@ export class FlowGraphNode extends Node implements FlowInstance {
    * frame of a pan the world comes back `null` and the renderer draws the
    * buffers already on the GPU.
    *
+   * A zoom *gesture* is drawn the same way: while the zoom keeps moving,
+   * each step draws the world on the GPU magnified by `zoom` — the view's
+   * zoom over the one it was built at — and the world is rebuilt at the
+   * zoom the gesture stopped at, `GL_ZOOM_REST_MS` after its last step.
+   * Rebuilding every step was the whole of a zoom's cost: a scene built,
+   * packed and uploaded per step, 19 ms of it on a 300-node graph, where a
+   * pan step is a uniform. What a magnified world gets wrong until then is
+   * what a zoom does not scale linearly — a label's raster, the hairlines
+   * with a floor of a pixel, the detail that appears past a zoom — which is
+   * what every map does during a pinch. A single jump — a control's button,
+   * `fitView`, `setViewport` — is not a stream and rebuilds at once, and so
+   * does a step that would magnify one build by more than `GL_ZOOM_SPAN`
+   * or show more of the graph than the overscan holds.
+   *
    * The key is everything the world is a function of that this element can
-   * name: its version (every repaint but a pure pan moves it), the overscan,
-   * the zoom, and the palette and face — the two a theme change moves, which
-   * core announces to the window rather than to this element.
+   * name: its version (every repaint but a view change moves it), the
+   * overscan, the zoom it was built at, and the palette and face — the two
+   * a theme change moves, which core announces to the window rather than
+   * to this element.
    *
    * Everything a 2D paint does around its drawing happens here too: the
    * pending fit, the dash timer, the first scene announcement, the bodies.
@@ -2937,6 +2965,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
     world: FlowScene | null;
     key: string;
     offset: XYPosition;
+    zoom: number;
     overlay: FlowScene;
     phase: number;
   } | null {
@@ -2953,30 +2982,48 @@ export class FlowGraphNode extends Node implements FlowInstance {
     const pane = this._pane();
     const palette = this._palette();
 
-    // The view in the world's own coordinates: graph × zoom, the pan left
-    // out — it is what `offset` puts back.
-    const view = { x: -v.x, y: -v.y, width: pane.width, height: pane.height };
+    const keyOf = (): string =>
+      `${this._worldVersion}|${this._worldCullId}|${this._worldZoom}|` +
+      `${this._fontSeen}|${JSON.stringify(palette)}`;
+    let key = keyOf();
+    // The view in the world's own coordinates — graph × the zoom it was
+    // built at, the pan left out: `offset` puts the pan back, and `zoom`
+    // the rest of the zoom.
+    const zoom = v.zoom / this._worldZoom;
+    const view = {
+      x: -v.x / zoom,
+      y: -v.y / zoom,
+      width: pane.width / zoom,
+      height: pane.height / zoom,
+    };
     const cull = this._worldCull;
-    if (
-      !cull ||
-      this._worldZoom !== v.zoom ||
-      view.x < cull.x ||
-      view.y < cull.y ||
-      view.x + view.width > cull.x + cull.width ||
-      view.y + view.height > cull.y + cull.height
-    ) {
+    const inside =
+      cull != null &&
+      view.x >= cull.x &&
+      view.y >= cull.y &&
+      view.x + view.width <= cull.x + cull.width &&
+      view.y + view.height <= cull.y + cull.height;
+    const scaled =
+      inside &&
+      zoom !== 1 &&
+      key === lastKey &&
+      this._zoomStream &&
+      now() - this._zoomAt < GL_ZOOM_REST_MS &&
+      zoom <= GL_ZOOM_SPAN &&
+      zoom >= 1 / GL_ZOOM_SPAN;
+    if (scaled) {
+      this._restZoom();
+    } else if (!inside || zoom !== 1) {
       this._worldCull = {
-        x: view.x - view.width,
-        y: view.y - view.height,
-        width: view.width * 3,
-        height: view.height * 3,
+        x: -v.x - pane.width,
+        y: -v.y - pane.height,
+        width: pane.width * 3,
+        height: pane.height * 3,
       };
       this._worldZoom = v.zoom;
       this._worldCullId++;
+      key = keyOf();
     }
-    const key =
-      `${this._worldVersion}|${this._worldCullId}|${v.zoom}|` +
-      `${this._fontSeen}|${JSON.stringify(palette)}`;
 
     let world: FlowScene | null = null;
     if (key !== lastKey) {
@@ -3000,11 +3047,28 @@ export class FlowGraphNode extends Node implements FlowInstance {
       world,
       key,
       offset: { x: pane.x + v.x, y: pane.y + v.y },
+      zoom: scaled ? zoom : 1,
       overlay,
       // the scene bakes `-phase * zoom` into a marching edge; the GPU is
       // handed the same number as a uniform
       phase: -this._dashPhase * v.zoom,
     };
+  }
+
+  /** The frame that rebuilds the GL world once a zoom gesture stops — asked
+   *  for `GL_ZOOM_REST_MS` after its last step, however many steps the
+   *  timer outlived. */
+  private _restZoom(): void {
+    if (this._zoomRest != null) return;
+    const wait = this._zoomAt + GL_ZOOM_REST_MS - now();
+    this._zoomRest = timers.setTimeout?.(
+      () => {
+        this._zoomRest = null;
+        if (now() - this._zoomAt < GL_ZOOM_REST_MS) this._restZoom();
+        else this._glRequest?.();
+      },
+      Math.max(0, wait) + 1,
+    );
   }
 
   /** Whether this pass's damage reaches the minimap's corner at all —

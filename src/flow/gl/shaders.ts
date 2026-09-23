@@ -9,17 +9,21 @@
 // **logical window pixels**, what `../scene.ts` builds in — and leave in
 // clip space via device pixels:
 //
-//     device = (logical + u_offset - u_origin) * u_scale
+//     device = (logical * u_zoom + u_offset - u_origin) * u_scale
 //
 // where `u_origin` is where the surface's top-left sits in the window (the
 // pane's content box, which the surface covers exactly) and `u_scale` is the
 // display scale. `u_offset` is the pan: the graph's world is built at a
 // pinned origin and moved here, so a pan is this one uniform and nothing
-// else (`./renderer.ts`). The overlay, pinned to the pane, draws with it at
-// zero. So the one multiply `../draw.ts` does on the way to the 2D
-// context happens here, per vertex, and every antialiasing ramp below is
-// measured in device pixels — which is what makes a 1px line one pixel of
-// coverage on any panel.
+// else (`./renderer.ts`). `u_zoom` is the part of a zoom the world was not
+// built at — 1 at rest, and while a zoom gesture moves, the view's zoom over
+// the one the world on the GPU was built for, so a step of the gesture is a
+// uniform too, and every length an instance carries is multiplied by it
+// with its position. The overlay, pinned to the pane and built every frame,
+// draws with no offset and a zoom of 1. So the one multiply `../draw.ts`
+// does on the way to the 2D context happens here, per vertex, and every
+// antialiasing ramp below is measured in device pixels — which is what makes
+// a 1px line one pixel of coverage on any panel.
 
 /** Attribute locations, shared so one quad buffer feeds every program. */
 export const ATTRIBUTES = {
@@ -34,8 +38,11 @@ const PRELUDE = `precision highp float;
 uniform vec2 u_origin;
 uniform vec2 u_offset;
 uniform float u_scale;
+uniform float u_zoom;
 uniform vec2 u_viewport;
-vec2 device(vec2 logical) { return (logical + u_offset - u_origin) * u_scale; }
+vec2 device(vec2 logical) {
+  return (logical * u_zoom + u_offset - u_origin) * u_scale;
+}
 vec4 clip(vec2 d) {
   return vec4(d.x / u_viewport.x * 2.0 - 1.0,
               1.0 - d.y / u_viewport.y * 2.0, 0.0, 1.0);
@@ -78,17 +85,19 @@ void main() {
   float len = length(d);
   vec2 t = len > 0.0001 ? d / len : vec2(1.0, 0.0);
   vec2 n = vec2(-t.y, t.x);
-  float half_ = a_i1.x * u_scale;
+  float half_ = a_i1.x * u_zoom * u_scale;
   float e = half_ + 1.0;
   float along = mix(-e, len + e, a_corner.x);
   float across = a_corner.y * e;
   v_local = vec2(along, across);
   v_len = len;
   v_half = half_;
-  v_along = a_i1.y * u_scale + along;
+  v_along = a_i1.y * u_zoom * u_scale + along;
   // a marching dash takes the timer's phase from a uniform, so a tick moves
-  // every dash on the GPU without a byte uploaded
-  v_dash = vec3(a_i1.z, a_i1.w, a_i2.x + a_i2.y * u_phase) * u_scale;
+  // every dash on the GPU without a byte uploaded — and the phase is the
+  // view's, already at its zoom, where the pattern is the world's
+  v_dash = (vec3(a_i1.z, a_i1.w, a_i2.x) * u_zoom +
+            vec3(0.0, 0.0, a_i2.y * u_phase)) * u_scale;
   v_color = a_i3;
   gl_Position = clip(a + t * along + n * across);
 }
@@ -164,17 +173,17 @@ void main() {
     v_half = vec2(0.0);
     v_shape = vec2(0.0);
     v_border = vec4(0.0);
-    gl_Position = clip(origin + corner * a_i0.zw * u_scale);
+    gl_Position = clip(origin + corner * a_i0.zw * u_zoom * u_scale);
     return;
   }
   v_uv = vec2(0.0);
-  vec2 size = a_i0.zw * u_scale;
+  vec2 size = a_i0.zw * u_zoom * u_scale;
   vec2 half_ = size * 0.5;
   // a pixel of fringe all round, for the antialiased edge to fade into
   vec2 local = (corner - 0.5) * (size + 2.0);
   v_local = local;
   v_half = half_;
-  v_shape = vec2(a_i1.x, a_i1.y) * u_scale;
+  v_shape = vec2(a_i1.x, a_i1.y) * u_zoom * u_scale;
   v_fill = a_i2;
   v_border = a_i3;
   gl_Position = clip(device(a_i0.xy) + half_ + local);

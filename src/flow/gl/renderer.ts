@@ -57,6 +57,10 @@ export interface FlowGlFrame {
   /** Where the world's pinned origin lands in the window, in logical
    *  pixels: the pane's origin plus the viewport's translation. */
   offset: XYPosition;
+  /** How much the world on the GPU is magnified: the view's zoom over the
+   *  zoom it was built at. 1 — or absent — except while a zoom gesture
+   *  moves, when the world is drawn scaled rather than rebuilt a step. */
+  zoom?: number;
   /** The pane's furniture, every frame. */
   overlay: FlowScene;
   /** How far a marching dash has moved, in the world's logical pixels — a
@@ -64,7 +68,13 @@ export interface FlowGlFrame {
   phase: number;
 }
 
-const UNIFORMS = ['u_origin', 'u_offset', 'u_scale', 'u_viewport'] as const;
+const UNIFORMS = [
+  'u_origin',
+  'u_offset',
+  'u_scale',
+  'u_zoom',
+  'u_viewport',
+] as const;
 
 /** The clock, through `globalThis`: `src/` compiles with `types: []`. */
 const globals = globalThis as { performance?: { now(): number } };
@@ -192,6 +202,7 @@ export class FlowGlRenderer {
       this.overlay,
       scene,
       ZERO,
+      1,
       phase,
       target,
     );
@@ -227,6 +238,7 @@ export class FlowGlRenderer {
       this.overlay,
       frame.overlay,
       ZERO,
+      1,
       0,
       target,
     );
@@ -237,6 +249,7 @@ export class FlowGlRenderer {
         this.world,
         this.world.scene,
         frame.offset,
+        frame.zoom ?? 1,
         frame.phase,
         target,
       );
@@ -246,6 +259,7 @@ export class FlowGlRenderer {
       this.overlay,
       frame.overlay,
       ZERO,
+      1,
       0,
       target,
     );
@@ -305,6 +319,7 @@ export class FlowGlRenderer {
     layer: Layer,
     scene: FlowScene,
     offset: XYPosition,
+    zoom: number,
     phase: number,
     target: FlowGlTarget,
   ): number {
@@ -321,6 +336,7 @@ export class FlowGlRenderer {
           LINE_STRIDE,
           range,
           offset,
+          zoom,
           target,
           phase,
         );
@@ -331,10 +347,11 @@ export class FlowGlRenderer {
           BOX_STRIDE,
           range,
           offset,
+          zoom,
           target,
         );
       } else {
-        this.drawTriangles(layer.tris, range, offset, target);
+        this.drawTriangles(layer.tris, range, offset, zoom, target);
       }
       calls++;
     }
@@ -344,6 +361,7 @@ export class FlowGlRenderer {
   private uniforms(
     program: Program,
     offset: XYPosition,
+    zoom: number,
     target: FlowGlTarget,
   ): void {
     const gl = this.gl;
@@ -351,6 +369,7 @@ export class FlowGlRenderer {
     gl.uniform2f(program.uniforms.u_origin, target.origin.x, target.origin.y);
     gl.uniform2f(program.uniforms.u_offset, offset.x, offset.y);
     gl.uniform1f(program.uniforms.u_scale, target.scale);
+    gl.uniform1f(program.uniforms.u_zoom, zoom);
     gl.uniform2f(program.uniforms.u_viewport, target.width, target.height);
   }
 
@@ -369,11 +388,12 @@ export class FlowGlRenderer {
     stride: number,
     range: DrawRange,
     offset: XYPosition,
+    zoom: number,
     target: FlowGlTarget,
     phase?: number,
   ): void {
     const gl = this.gl;
-    this.uniforms(program, offset, target);
+    this.uniforms(program, offset, zoom, target);
     // only the line program declares it, and only after `uniforms` has made
     // that program current
     if (phase !== undefined) gl.uniform1f(program.uniforms.u_phase, phase);
@@ -406,10 +426,11 @@ export class FlowGlRenderer {
     buffer: unknown,
     range: DrawRange,
     offset: XYPosition,
+    zoom: number,
     target: FlowGlTarget,
   ): void {
     const gl = this.gl;
-    this.uniforms(this.tri, offset, target);
+    this.uniforms(this.tri, offset, zoom, target);
     gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
     const bytes = TRI_STRIDE * 4;
     // Per vertex, not per instance: a triangle is three records.
@@ -432,7 +453,7 @@ export class FlowGlRenderer {
   private drawGrid(scene: FlowScene, target: FlowGlTarget): void {
     const gl = this.gl;
     const grid = scene.grid!;
-    this.uniforms(this.grid, ZERO, target);
+    this.uniforms(this.grid, ZERO, 1, target);
     this.corners();
     for (const location of [
       ATTRIBUTES.a_i0,
