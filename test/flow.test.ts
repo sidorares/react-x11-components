@@ -2627,3 +2627,208 @@ test('a panel canvas is asked to repaint its own box, not the window', async () 
     assert.strictEqual(reason, 'props');
   }
 });
+
+// --- the device-pixel grid at a fractional scale ------------------------------
+//
+// Windows runs most laptops at 125%, where one logical pixel is 1.25 device
+// ones and layout rounds a box's two edges to the device grid separately.
+// These pin what that broke.
+
+const AT_125 = {
+  scale: 1.25,
+  width: 480,
+  height: 320,
+  screen: { width: 1000, height: 800 },
+} as unknown as RenderX11Options;
+
+/** Three mounted cards side by side. */
+function threeBodies(): FlowNode[] {
+  return ['a', 'b', 'c'].map((id, i) => ({
+    id,
+    type: 'form',
+    position: { x: 20 + i * 150, y: 60 },
+    width: 130,
+    height: 100,
+  }));
+}
+
+test('at 1.25x a pan moves the bodies’ box by whole pixels, the same size, and re-renders no card', async () => {
+  // The pane rounded a card's offset from the graph's origin to logical
+  // pixels, against an origin rounded separately — so as a pan's fraction
+  // cycled against the device grid, a card's offset flipped by a pixel,
+  // the bodies were handed out anew, and the box around them changed size
+  // with them. Core moves a `<glarea>` child's pixels only when it moved
+  // and nothing else (react-x11#644): every step of a GL pan over bodies
+  // repainted all of them. 20 frames a second on the widgets scene; 50
+  // with the box on the grid.
+  const flow: { current: FlowInstance | null } = { current: null };
+  await renderX11(
+    h(TypedFlow, {
+      ref: flow,
+      nodes: threeBodies(),
+      edges: [],
+      nodeTypes: { form: sizedType },
+    }),
+    AT_125,
+  );
+  await act();
+  const layer0 = bodyLayer().abs;
+  const offsets = (): string =>
+    bodyLayer()
+      .children.map((c) => {
+        const r = retained(c).abs;
+        return `${r.x - bodyLayer().abs.x},${r.y - bodyLayer().abs.y},${r.width}x${r.height}`;
+      })
+      .join('|');
+  const inside = offsets();
+  const cardProps = bodyLayer().children.map((c) => retained(c).props);
+  for (const [x, y] of [
+    [1.7, 0.3],
+    [4.1, 2.9],
+    [7.35, 3.3],
+    [9.8, 5.05],
+    [12.6, 7.4],
+  ]) {
+    await act(() => flow.current!.setViewport({ x, y }));
+    const layer = bodyLayer().abs;
+    assert.deepStrictEqual(
+      [layer.width, layer.height],
+      [layer0.width, layer0.height],
+      `the box kept its size at (${x}, ${y})`,
+    );
+    assert.ok(
+      Number.isInteger(layer.x) && Number.isInteger(layer.y),
+      'and sits on whole device pixels',
+    );
+    assert.strictEqual(offsets(), inside, 'every card rode along unchanged');
+  }
+  bodyLayer().children.forEach((c, i) =>
+    assert.ok(retained(c).props === cardProps[i], `card ${i} not re-rendered`),
+  );
+});
+
+test('a drag step re-renders the card that moved and no other', async () => {
+  // Every card element was made anew whenever any body moved, and each card
+  // canvas got a new `onDraw` with it — which core reads as new content and
+  // repaints (src/nodes/canvas.js). A drag over 36 bodies claimed 36 canvases
+  // a step, past the frame's rect cap: one claim the size of the pane, every
+  // card and every widget painted again, to move one of them.
+  await mount({
+    nodes: threeBodies(),
+    edges: [],
+    nodeTypes: { form: sizedType },
+  });
+  await act();
+  const cards = () => bodyLayer().children.map((c) => retained(c));
+  const [, b0, c0] = cards();
+  const before = {
+    b: b0.props,
+    c: c0.props,
+    bDraw: retained(b0.children[0]).props.onDraw,
+  };
+  const seam = pane() as unknown as {
+    defaultMouseDown(ev: unknown): void;
+    defaultMouseDrag(ev: unknown): void;
+    defaultMouseUp(ev: unknown): void;
+  };
+  const synth = (x: number, y: number) => ({
+    x,
+    y,
+    button: 1,
+    shiftKey: false,
+    ctrlKey: false,
+    detail: 1,
+    preventDefault() {},
+    capturePointer() {},
+  });
+  const abs = pane().abs;
+  // card `a` by its header strip
+  await act(() => seam.defaultMouseDown(synth(abs.x + 80, abs.y + 70)));
+  for (let step = 1; step <= 4; step++) {
+    await act(() =>
+      seam.defaultMouseDrag(
+        synth(abs.x + 80 + step * 7, abs.y + 70 + step * 3),
+      ),
+    );
+  }
+  await act(() => seam.defaultMouseUp(synth(abs.x + 108, abs.y + 82)));
+  const after = cards();
+  const b1 = after.find((c) => c.props === before.b);
+  const c1 = after.find((c) => c.props === before.c);
+  assert.ok(b1, 'card b was not re-rendered');
+  assert.ok(c1, 'card c was not re-rendered');
+  assert.strictEqual(
+    retained(b1.children[0]).props.onDraw,
+    before.bDraw,
+    'and its canvas kept its `onDraw`',
+  );
+});
+
+test('a dash tick repaints neither the minimap nor the controls', async () => {
+  // The panels draw no dashes. Asked to repaint on every change to the
+  // pane, dash ticks included, an idle pane with one animated edge kept
+  // painting both canvases 17 times a second — and a tick landing in a pan
+  // frame put a claim inside the band the pan was about to move.
+  await mount({
+    nodes: [...threeBodies().slice(0, 2)],
+    edges: [{ id: 'a-b', source: 'a', target: 'b', animated: true }],
+    nodeTypes: { form: sizedType },
+    minimap: true,
+    controls: true,
+  });
+  await act();
+  const reasons: string[] = [];
+  const canvas = {
+    invalidate: (_layout: boolean, _damage: unknown, reason: string) =>
+      void reasons.push(reason),
+  };
+  const node = pane() as unknown as {
+    setPanelCanvases(c: unknown[]): void;
+    invalidate(...a: unknown[]): void;
+  };
+  node.setPanelCanvases([canvas]);
+  const ticks: unknown[] = [];
+  const own = node.invalidate.bind(node);
+  node.invalidate = (...a: unknown[]) => {
+    if (a[2] === 'animation') ticks.push(a);
+    own(...a);
+  };
+  reasons.length = 0;
+  await new Promise((r) => setTimeout(r, 200));
+  assert.ok(ticks.length >= 2, 'the dash moved');
+  assert.deepStrictEqual(reasons, [], 'and the panels were left alone');
+});
+
+test('a pan past panel canvases still moves the pane’s pixels', async () => {
+  // Where node types mount bodies the minimap and controls are canvases of
+  // `<Flow>`'s own, over the pane, and each asks to repaint on every change
+  // to it — a claim of its paint bounds, core's damage slop included. The
+  // bands a pan carves out for its furniture stopped at the panel's box, so
+  // that pixel of slop landed inside the band the pan moves, and core, which
+  // will not move pixels something else just claimed, repainted the whole
+  // pane on every step instead.
+  await mount({
+    // mounting types, and nodes that use none of them: the stress
+    // example's lattice
+    nodes: nodes(),
+    edges: edges(),
+    nodeTypes: { form: sizedType },
+    minimap: true,
+    controls: true,
+  });
+  await act();
+  const wnd = pane().root!.window as unknown as {
+    scrollRegion(rect: unknown, dx: number, dy: number): boolean;
+  };
+  const moved: number[] = [];
+  const own = wnd.scrollRegion.bind(wnd);
+  wnd.scrollRegion = (rect, dx, dy) => {
+    moved.push(dx);
+    return own(rect, dx, dy);
+  };
+  const flow = pane() as unknown as { setViewport(v: object): void };
+  for (let step = 1; step <= 3; step++) {
+    await act(() => flow.setViewport({ x: step * 4, y: 0, zoom: 1 }));
+  }
+  assert.deepStrictEqual(moved, [4, 4, 4], 'every step moved the pixels');
+});

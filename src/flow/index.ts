@@ -23,7 +23,7 @@ import React, {
   useState,
 } from 'react';
 import type { Dispatch, ReactElement, SetStateAction } from 'react';
-import { Renderer, useApp, useSupports, useTheme } from 'react-x11';
+import { Renderer, useApp, useScale, useSupports, useTheme } from 'react-x11';
 import { registerElement, registeredElements } from 'react-x11/host';
 import { createStyles, flattenStyle } from 'react-x11/style';
 // Loads the module the JSX augmentation at the bottom targets: nothing in
@@ -133,6 +133,13 @@ function loadGl(): Promise<GlModule> {
 /** How far a card's handles and grips ink outside its box — the canvas
  *  its card is painted on in the bodies' layer reaches that far round it. */
 const CARD_INK = CULL_MARGIN;
+
+/** The grid the bodies' layer grows to, in logical pixels. Every card is
+ *  placed relative to the layer's corner, so a corner that followed the
+ *  cards exactly moved — and moved every card with it — whenever the one
+ *  being dragged was the outermost; grown to this grid it moves only when
+ *  a card crosses a line of it. */
+const EXTENT_STEP = 256;
 
 /** A number per node object, for a card's cache key: a node whose label or
  *  style changed is a new object, and its card is painted again. */
@@ -300,6 +307,129 @@ const FlowNodeBody = React.memo(
     a.width === b.width &&
     a.height === b.height,
 );
+
+/** What one mounted card is drawn from — see {@link FlowBodyCard}. */
+interface FlowBodyCardProps {
+  body: NodeBodyRect;
+  node: FlowNode<unknown>;
+  type: FlowNodeType<unknown>;
+  /** The card's box in the layer it sits in, on the device-pixel grid. */
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+  /** The card's fill, which its body's box takes too. */
+  fill: string;
+  cacheKey: string;
+  /** One per card for as long as what paints cards holds (`drawCard`). */
+  onDraw: (ctx: unknown, info: { node: { abs: XYPosition } }) => void;
+  /** Where each card is the surface's child in its own right (no layer),
+   *  where the layer would have put it, whether it sits a zoom out, and
+   *  the forwarding it does for itself. */
+  offsetX?: number;
+  offsetY?: number;
+  hidden?: boolean;
+  handlers?: Record<string, (ev: unknown) => void>;
+}
+
+/**
+ * One mounted node: its card, painted by the pane's own 2D painter
+ * (`FlowGraphNode.paintCard`), and its body over it. A component of its own
+ * so that React can skip it: every prop is a value or a reference that
+ * holds while the card does, and a drag re-renders the card that moved.
+ */
+const FlowBodyCard = React.memo(function FlowBodyCard(
+  props: FlowBodyCardProps,
+): ReactElement {
+  const { body, node, type } = props;
+  const { card } = body;
+  // The two boxes are two units. The outer one is the pane's: it is
+  // positioned and clipped in the same logical window pixels the pane
+  // painted the card in, so the body lands on the card exactly. The inner
+  // one is the body's, and `scale` is what makes the difference between
+  // them the zoom (react-x11#449, core 2.6): every length under it is
+  // multiplied by that factor, so a body sized in graph units comes out at
+  // the size the card is drawn at, with its text shaped at that size rather
+  // than stretched.
+  const width = body.width / body.zoom;
+  const height = body.height / body.zoom;
+  const bodyBox = React.createElement(
+    'box',
+    {
+      key: 'body',
+      style: {
+        position: 'absolute',
+        left: body.x - card.x + CARD_INK,
+        top: body.y - card.y + CARD_INK,
+        width: body.width,
+        height: body.height,
+        // A body is free to overflow what it was given — a popup's
+        // fallback, a long line — and this is what stops it spilling over
+        // the graph.
+        overflow: 'hidden',
+        // Opaque, in the card's own fill: the card painted under it shows
+        // none of what a transparent body would let through.
+        backgroundColor: props.fill,
+      },
+    },
+    React.createElement(
+      'box',
+      {
+        scale: body.zoom,
+        // Sized in the unit it establishes, which is what makes it fill the
+        // outer box at every zoom.
+        style: { width, height },
+      },
+      React.createElement(FlowNodeBody, {
+        type,
+        node,
+        selected: body.selected,
+        zoom: body.zoom,
+        // Graph units, like everything else the body sees.
+        x: body.x / body.zoom,
+        y: body.y / body.zoom,
+        width,
+        height,
+      }),
+    ),
+  );
+  // The card, just under its body: the bodies share one layer over every
+  // card the graph draws, so without it a body covered the header, border
+  // and handles of any card over its own.
+  const cardCanvas = React.createElement('canvas', {
+    key: 'card',
+    style: {
+      position: 'absolute',
+      left: 0,
+      top: 0,
+      width: card.width + CARD_INK * 2,
+      height: card.height + CARD_INK * 2,
+      pointerEvents: 'none',
+    },
+    cacheKey: props.cacheKey,
+    onDraw: props.onDraw,
+  });
+  return React.createElement(
+    'box',
+    {
+      style: {
+        position: 'absolute',
+        left: props.left + (props.offsetX ?? 0),
+        top: props.top + (props.offsetY ?? 0),
+        width: props.width,
+        height: props.height,
+        // the card's presses are the pane's; its body's are the body's
+        pointerEvents: 'box-none',
+        ...(props.hidden === undefined
+          ? null
+          : { display: props.hidden ? 'none' : 'flex' }),
+      },
+      ...props.handlers,
+    },
+    cardCanvas,
+    bodyBox,
+  );
+});
 
 /**
  * A directed graph.
@@ -486,6 +616,19 @@ export function Flow<N = FlowNodeData, E = unknown>(
     return map;
   }, [mounts, currentNodes]);
 
+  // Every box the bodies are laid out in sits on the device-pixel grid.
+  // Layout rounds a box's two edges to whole device pixels separately, so at
+  // a fractional scale (1.25, 1.5) a box that moved by a fraction of a
+  // device pixel also changed size by one — and core moves a `<glarea>`
+  // child's pixels on its pane only when it moved and nothing else
+  // (sidorares/react-x11#644): a pan over bodies repainted every one of
+  // them, every step. On the grid, a pan moves the layer by whole pixels
+  // and every card in it by exactly as many.
+  const rootScale = useScale();
+  // the pane's own, where it is mounted: a `scale` prop above it counts
+  const deviceScale = pane.current?.scale ?? rootScale;
+  const snap = (v: number): number => Math.round(v * deviceScale) / deviceScale;
+
   // The box the bodies are laid out in covers exactly them. It has to have a
   // real size: core culls a child whose *own* box is off screen or outside
   // a clipping ancestor before it looks at the child's subtree, and a 0×0
@@ -503,8 +646,14 @@ export function Flow<N = FlowNodeData, E = unknown>(
       x1 = Math.max(x1, card.x + card.width + CARD_INK);
       y1 = Math.max(y1, card.y + card.height + CARD_INK);
     }
+    const out = (v: number, up: boolean): number =>
+      snap((up ? Math.ceil : Math.floor)(v / EXTENT_STEP) * EXTENT_STEP);
+    x0 = out(x0, false);
+    y0 = out(y0, false);
+    x1 = out(x1, true);
+    y1 = out(y1, true);
     return { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
-  }, [bodies]);
+  }, [bodies, deviceScale]);
 
   // The fill a card is drawn in, which its body's box takes too.
   const theme = useTheme();
@@ -513,110 +662,83 @@ export function Flow<N = FlowNodeData, E = unknown>(
     rest.palette,
   ).nodeBackground;
 
-  // Memoized on the bodies array, which a pan does not replace: the box they
-  // sit in moves, and React reconciles none of them.
-  const overlays = useMemo(
-    () =>
-      mounts
-        ? bodies.map((body) => {
-            const node = byId.get(body.id);
-            const type = node && nodeTypes?.[node.type ?? 'default'];
-            if (!node || !type?.render) return null;
-            // The two boxes are two units. The outer one is the pane's: it is
-            // positioned and clipped in the same logical window pixels the pane
-            // painted the card in, so the body lands on the card exactly. The
-            // inner one is the body's, and `scale` is what makes the difference
-            // between them the zoom (react-x11#449, core 2.6): every length
-            // under it is multiplied by that factor, so a body sized in graph
-            // units comes out at the size the card is drawn at, with its text
-            // shaped at that size rather than stretched.
-            const width = body.width / body.zoom;
-            const height = body.height / body.zoom;
-            const { card } = body;
-            const bodyBox = React.createElement(
-              'box',
-              {
-                key: 'body',
-                style: {
-                  position: 'absolute',
-                  left: body.x - card.x + CARD_INK,
-                  top: body.y - card.y + CARD_INK,
-                  width: body.width,
-                  height: body.height,
-                  // A body is free to overflow what it was given — a popup's
-                  // fallback, a long line — and this is what stops it spilling
-                  // over the graph.
-                  overflow: 'hidden',
-                  // Opaque, in the card's own fill: the card painted under it
-                  // shows none of what a transparent body would let through.
-                  backgroundColor:
-                    (node.style as { background?: string } | undefined)
-                      ?.background ?? nodeFill,
-                },
-              },
-              React.createElement(
-                'box',
-                {
-                  scale: body.zoom,
-                  // Sized in the unit it establishes, which is what makes it
-                  // fill the outer box at every zoom.
-                  style: { width, height },
-                },
-                React.createElement(FlowNodeBody, {
-                  type: type as FlowNodeType<unknown>,
-                  node: node as FlowNode<unknown>,
-                  selected: body.selected,
-                  zoom: body.zoom,
-                  // Graph units, like everything else the body sees.
-                  x: body.x / body.zoom,
-                  y: body.y / body.zoom,
-                  width,
-                  height,
-                }),
-              ),
-            );
-            // The card, painted by the pane's own 2D painter just under its
-            // body (`FlowGraphNode.paintCard`): the bodies share one layer
-            // over every card the graph draws, so without it a body covered
-            // the header, border and handles of any card over its own.
-            // Cached until something it shows changes; the node object is in
-            // the key by identity, so a new label or style repaints it.
-            const cardCanvas = React.createElement('canvas', {
-              key: 'card',
-              style: {
-                position: 'absolute',
-                left: 0,
-                top: 0,
-                width: card.width + CARD_INK * 2,
-                height: card.height + CARD_INK * 2,
-                pointerEvents: 'none',
-              },
-              cacheKey:
-                `${body.id}:${serialOf(node)}:${card.width}x${card.height}:` +
-                `${body.zoom}:${body.selected}:${body.hovered}`,
-              onDraw: (ctx: unknown, info: { node: { abs: XYPosition } }) =>
-                pane.current?.paintCard(body.id, ctx, info.node.abs),
-            });
-            return React.createElement(
-              'box',
-              {
-                key: body.id,
-                style: {
-                  position: 'absolute',
-                  left: card.x - CARD_INK - extent.x,
-                  top: card.y - CARD_INK - extent.y,
-                  width: card.width + CARD_INK * 2,
-                  height: card.height + CARD_INK * 2,
-                  // the card's presses are the pane's; its body's are the body's
-                  pointerEvents: 'box-none',
-                },
-              },
-              cardCanvas,
-              bodyBox,
-            );
-          })
-        : null,
-    [mounts, bodies, extent, byId, nodeTypes, nodeFill],
+  // One `onDraw` per card for as long as what paints cards holds: core
+  // repaints a canvas whose `onDraw` is a new function (react-x11
+  // src/nodes/canvas.js), and a closure made per render made every step of
+  // a drag repaint every card on screen and every body over them — 36
+  // claims, past the frame's rect cap, one rect the size of the pane. What a
+  // card shows is in its `cacheKey`; the palette, the theme and the node
+  // types are what paint it, and a change to any of them starts over.
+  const cardPaint = useMemo(
+    () => ({
+      drawers: new Map<
+        string,
+        (ctx: unknown, info: { node: { abs: XYPosition } }) => void
+      >(),
+    }),
+    [theme, rest.palette, nodeTypes],
+  );
+  const drawCard = (
+    id: string,
+  ): ((ctx: unknown, info: { node: { abs: XYPosition } }) => void) => {
+    let draw = cardPaint.drawers.get(id);
+    if (!draw) {
+      draw = (ctx, info) => pane.current?.paintCard(id, ctx, info.node.abs);
+      cardPaint.drawers.set(id, draw);
+    }
+    return draw;
+  };
+
+  // One card per body, each a memoized component: a drag step moves one
+  // card and hands the others the same props they had — the same body
+  // object (`_emitBodies` reuses it), the same node object, the same
+  // `onDraw` — so React re-renders the card that moved and bails out of the
+  // rest. Built as one element list per render, which a pan does not
+  // trigger: the box they sit in moves, and nothing here is asked.
+  const cards = useMemo(() => {
+    if (!mounts) return null;
+    const out: FlowBodyCardProps[] = [];
+    for (const body of bodies) {
+      const node = byId.get(body.id);
+      const type = node && nodeTypes?.[node.type ?? 'default'];
+      if (!node || !type?.render) continue;
+      const { card } = body;
+      // on the grid, like the layer (`snap` above)
+      const left = snap(card.x - CARD_INK);
+      const top = snap(card.y - CARD_INK);
+      out.push({
+        body,
+        node: node as FlowNode<unknown>,
+        type: type as FlowNodeType<unknown>,
+        left: left - extent.x,
+        top: top - extent.y,
+        width: snap(card.x + card.width + CARD_INK) - left,
+        height: snap(card.y + card.height + CARD_INK) - top,
+        fill:
+          (node.style as { background?: string } | undefined)?.background ??
+          nodeFill,
+        // Cached until something it shows changes; the node object is in
+        // the key by identity, so a new label or style repaints it.
+        cacheKey:
+          `${body.id}:${serialOf(node)}:${card.width}x${card.height}:` +
+          `${body.zoom}:${body.selected}:${body.hovered}:` +
+          `${serialOf(cardPaint)}`,
+        onDraw: drawCard(body.id),
+      });
+    }
+    return out;
+  }, [
+    mounts,
+    bodies,
+    extent,
+    byId,
+    nodeTypes,
+    nodeFill,
+    deviceScale,
+    cardPaint,
+  ]);
+  const overlays = cards?.map((props) =>
+    React.createElement(FlowBodyCard, { key: props.body.id, ...props }),
   );
   // A wheel over a body is a wheel over the graph. Core runs the wheel's
   // default action on the node under the pointer and scrolls up from there,
@@ -693,6 +815,11 @@ export function Flow<N = FlowNodeData, E = unknown>(
     };
     return handlers;
   }, []);
+  // what each card forwards on its own where it is the surface's child
+  const directHandlers = useMemo(
+    () => ({ onWheel: forwardWheel, ...forwardPress }),
+    [forwardWheel, forwardPress],
+  );
   const layer =
     overlays && overlays.length > 0
       ? React.createElement(
@@ -701,8 +828,8 @@ export function Flow<N = FlowNodeData, E = unknown>(
             key: 'bodies',
             style: {
               position: 'absolute',
-              left: origin.x + extent.x,
-              top: origin.y + extent.y,
+              left: snap(origin.x) + extent.x,
+              top: snap(origin.y) + extent.y,
               width: extent.width,
               height: extent.height,
               // The box spans every body, the gaps between them and the
@@ -787,21 +914,21 @@ export function Flow<N = FlowNodeData, E = unknown>(
   // not per zoom, so the surface does not come and go as bodies mount.
   const overlaySupported = useSupports('glOverlay');
   const cardsDirect: ReactElement[] = [];
-  for (const el of overlays ?? []) {
-    if (!el) continue;
-    const own = (el.props as { style: { left: number; top: number } }).style;
-    cardsDirect.push(
-      React.cloneElement(el as ReactElement<Record<string, unknown>>, {
-        style: {
-          ...own,
-          left: own.left + origin.x + extent.x,
-          top: own.top + origin.y + extent.y,
-          display: held ? 'none' : 'flex',
-        },
-        onWheel: forwardWheel,
-        ...forwardPress,
-      }),
-    );
+  if (cards && !composited) {
+    const offsetX = snap(origin.x) + extent.x;
+    const offsetY = snap(origin.y) + extent.y;
+    for (const props of cards) {
+      cardsDirect.push(
+        React.createElement(FlowBodyCard, {
+          key: props.body.id,
+          ...props,
+          offsetX,
+          offsetY,
+          hidden: held,
+          handlers: directHandlers,
+        }),
+      );
+    }
   }
 
   // --- the GL surface -----------------------------------------------------

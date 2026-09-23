@@ -148,6 +148,9 @@ interface PatternLike {
  *  own box. */
 interface PanelCanvas {
   invalidate(layout: boolean, damage: unknown, reason: string): void;
+  /** Where a claim of the canvas lands: its box and core's damage slop,
+   *  device pixels. */
+  paintBounds?(): FlowRect;
 }
 
 /** Timers, through `globalThis`: `src/` compiles with `types: []` so a Node
@@ -419,12 +422,12 @@ export class FlowGraphNode extends Node implements FlowInstance {
   private _dragTo: Map<string, XYPosition> | null = null;
   /** The box a resize is currently making, for the same reason. */
   private _resizeTo: { id: string; rect: FlowRect } | null = null;
-  /** What was last handed to `onNodeBodies`, so the React half is told only
-   * when something actually moved. */
-  private _bodiesKey = '';
   /** The bodies last sent, re-sent as the same array when only the origin
-   *  moved, and that origin. */
+   *  moved, and that origin — and each one by id, reused as the same object
+   *  when nothing about it changed, so the React half re-renders the card
+   *  that moved and not the ones beside it. */
   private _bodies: readonly NodeBodyRect[] = [];
+  private _bodiesById = new Map<string, NodeBodyRect>();
   private _bodiesOrigin: XYPosition = { x: 0, y: 0 };
   /** Bodies held back while the zoom moves (`_holdBodies`): whether they
    *  are, the zoom last seen, and the timer that brings them back. */
@@ -1132,7 +1135,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
     // whole scene every frame, and a pan is its cheapest frame of all.
     if (this._gl) return false;
     if (next.zoom !== previous.zoom) return false;
-    if (this._bodiesKey !== '') return false;
+    if (this._bodies.length > 0) return false;
     // Device pixels: the blit copies the backing store, and its grid is the
     // panel's. A pointer step lands on it whatever the scale — it came off
     // the wire as whole device pixels — so every real pan gesture blits.
@@ -1182,8 +1185,23 @@ export class FlowGraphNode extends Node implements FlowInstance {
     // the three sit edge to edge on whole pixels — a claim overlapping the
     // blit rect by a pixel is a foreign claim, and declines the blit.
     const box = this.contentBox();
-    const top = Math.ceil(toDevice(topBand, s));
-    const bottom = Math.ceil(toDevice(bottomBand, s));
+    let top = Math.ceil(toDevice(topBand, s));
+    let bottom = Math.ceil(toDevice(bottomBand, s));
+    // Where `<Flow>` paints the panels on canvases of its own (over mounted
+    // bodies), those claim themselves on every change to the pane — this
+    // pan's included — and a claim is the canvas's paint bounds: its box,
+    // rounded where layout put it, and core's damage slop around that. So
+    // the bands reach as far as those do, or every pan frame's blit was
+    // poisoned by the minimap a pixel inside it.
+    for (const canvas of this._panelCanvases) {
+      const reach = canvas.paintBounds?.();
+      if (!reach) continue;
+      if (reach.y + reach.height / 2 < box.y + box.height / 2) {
+        top = Math.max(top, Math.ceil(reach.y + reach.height - box.y));
+      } else {
+        bottom = Math.max(bottom, Math.ceil(box.y + box.height - reach.y));
+      }
+    }
     const blit: FlowRect = {
       x: box.x,
       y: box.y + top,
@@ -2789,9 +2807,14 @@ export class FlowGraphNode extends Node implements FlowInstance {
     // whatever changed the graph may have changed the minimap or the
     // controls, which `<Flow>` may be painting on canvases of its own
     // Each claims its own box: a claim with no region is the whole window,
-    // which made every pan step and dash tick a full frame.
-    for (const canvas of this._panelCanvases)
-      canvas.invalidate(false, canvas, 'props');
+    // which made every pan step and dash tick a full frame. A dash tick
+    // changes neither — the minimap draws no dashes — and repainting both
+    // canvases on every one kept an idle pane painting them 17 times a
+    // second, and put a claim in the middle of any pan frame it landed in.
+    if (reason !== 'animation') {
+      for (const canvas of this._panelCanvases)
+        canvas.invalidate(false, canvas, 'props');
+    }
     // A pure pan moves the world's offset, and a dash tick its phase: both
     // are uniforms on the GPU, so neither is a change to the world.
     if (!this._panOnly && reason !== 'animation') this._worldVersion++;
@@ -3104,53 +3127,74 @@ export class FlowGraphNode extends Node implements FlowInstance {
       return;
     }
     const pane = this._pane();
-    const origin = { x: Math.round(v.x), y: Math.round(v.y) };
+    // Exact, and every rect below relative to it and free of the pan: a
+    // card's offset from the graph's origin is its graph position times the
+    // zoom, so a pan re-sends the same array and moves only the origin.
+    // Nothing here is rounded — `<Flow>` puts the boxes on the device-pixel
+    // grid, once. Rounded here as well, to logical pixels against a rounded
+    // origin, a card's offset flipped by a pixel as the pan's fraction
+    // cycled against the device grid `_screenRect` snaps to: the array was
+    // new on most steps of a pan, and at 1.25× the layer changed size with
+    // it — every body repainted, where core would have moved them.
+    const origin = { x: v.x, y: v.y };
+    const was = this._bodies;
     const bodies: NodeBodyRect[] = [];
+    let changed = false;
     for (const entry of this._paintOrder()) {
       if (entry.node.hidden || !this._mounted(entry)) continue;
-      const rect = this._screenRect(entry);
-      if (!rectsOverlap(rect, pane)) continue;
+      if (!rectsOverlap(this._screenRect(entry), pane)) continue;
+      const graph = this.rectOf(entry);
+      const x = graph.x * v.zoom;
+      const y = graph.y * v.zoom;
+      const cardWidth = graph.width * v.zoom;
+      const cardHeight = graph.height * v.zoom;
       const header = this._headerHeight(entry) * v.zoom;
       const inset = NODE_BODY_INSET * v.zoom;
-      const width = rect.width - inset * 2;
-      const height = rect.height - header - inset;
+      const width = cardWidth - inset * 2;
+      const height = cardHeight - header - inset;
       if (width <= 1 || height <= 1) continue;
-      bodies.push({
-        id: entry.node.id,
-        card: {
-          x: Math.round(rect.x - pane.x) - origin.x,
-          y: Math.round(rect.y - pane.y) - origin.y,
-          width: Math.round(rect.width),
-          height: Math.round(rect.height),
-        },
-        hovered: this._hover.nodeId === entry.node.id,
-        // logical, and relative to the graph's origin on screen — the
-        // box they are laid out in sits at `origin` in the pane
-        x: Math.round(rect.x + inset - pane.x) - origin.x,
-        y: Math.round(rect.y + header - pane.y) - origin.y,
-        width: Math.round(width),
-        height: Math.round(height),
-        zoom: v.zoom,
-        selected: entry.node.selected ?? false,
-      });
+      const id = entry.node.id;
+      const hovered = this._hover.nodeId === id;
+      const selected = entry.node.selected ?? false;
+      // The zoom counts as well as the rect it produced: it is the body's
+      // subtree scale, and two zooms a hair apart can leave a box where it
+      // was while the text inside it should have moved.
+      const old = this._bodiesById.get(id);
+      const body =
+        old &&
+        old.zoom === v.zoom &&
+        old.selected === selected &&
+        old.hovered === hovered &&
+        old.card.x === x &&
+        old.card.y === y &&
+        old.card.width === cardWidth &&
+        old.card.height === cardHeight &&
+        old.height === height
+          ? old
+          : {
+              id,
+              card: { x, y, width: cardWidth, height: cardHeight },
+              hovered,
+              // logical, and relative to the graph's origin on screen — the
+              // box they are laid out in sits at `origin` in the pane
+              x: x + inset,
+              y: y + header,
+              width,
+              height,
+              zoom: v.zoom,
+              selected,
+            };
+      if (body !== was[bodies.length]) changed = true;
+      bodies.push(body);
     }
-    // The zoom is in the key as well as the rect it produced: it is the
-    // body's subtree scale now, and two zooms a rounding apart can leave a
-    // box on the same integers while the text inside it should have moved.
-    const key = bodies
-      .map(
-        (b) =>
-          `${b.id}:${b.x},${b.y},${b.width},${b.height},${b.zoom},${b.selected},${b.hovered},` +
-          `${b.card.x},${b.card.y},${b.card.width},${b.card.height}`,
-      )
-      .join('|');
+    if (bodies.length !== was.length) changed = true;
     const moved =
       origin.x !== this._bodiesOrigin.x || origin.y !== this._bodiesOrigin.y;
     const released = this._bodiesHeld;
-    if (key === this._bodiesKey && !moved && !released) return;
-    if (key !== this._bodiesKey) {
-      this._bodiesKey = key;
+    if (!changed && !moved && !released) return;
+    if (changed) {
       this._bodies = bodies;
+      this._bodiesById = new Map(bodies.map((body) => [body.id, body]));
     }
     this._bodiesOrigin = origin;
     this._bodiesHeld = false;
