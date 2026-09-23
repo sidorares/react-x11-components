@@ -211,7 +211,12 @@ type is its outline, scaled, antialiased across one device pixel.
 
 Everything else about labels is maps' answer: `app.fonts.layout()` shapes
 it, an offscreen `Surface` draws it, `getImageData` reads coverage back, one
-atlas texture, colour in the shader. Flow's labels are always axis-aligned,
+atlas texture, colour in the shader. Where the text engine answers a
+layout's own coverage (sidorares/react-x11#673), the surface and the
+readback go: on Windows that step was 16-27 ms for the lattice's and the
+fan's 219-300 labels and is 3-10 ms, and the labels are on screen no
+sooner — the fields are most of it. No difference shows in the pixels: the
+two frames' mean luminance agrees to 0.2%. Flow's labels are always axis-aligned,
 which makes the vertex shader simpler than maps'.
 
 ## Then, and only then, the budget

@@ -117,6 +117,7 @@ import {
 import { GlTileStore } from '../src/maps/gl/store.js';
 import { LabelAtlas, SurfaceTextEngine } from '../src/maps/gl/text.js';
 import { glideClock } from '../src/maps/controller.js';
+import { SDF_EDGE } from '../src/internal/sdf.js';
 import type { TextEngine } from '../src/maps/gl/text.js';
 
 test.afterEach(async () => {
@@ -2383,6 +2384,69 @@ test('a label keeps its place against a newcomer that would win a tie, and fades
 });
 
 // --- labels: the atlas and the draw ----------------------------------------------------
+
+test("a string is set from its layout's own coverage where the engine answers it, with no surface", async () => {
+  // The engine's coverage (react-x11#673): one byte a pixel, the layout box
+  // with the pad round it. An app with no Surface behind it would throw the
+  // moment anything reached for the staging path.
+  const asked: number[] = [];
+  const fonts = {
+    layout: (text: string, style: Record<string, unknown>) => ({
+      width: text.length * 10.5,
+      height: 20.25,
+      draw: () => {},
+      coverage: ({ pad = 0 }: { pad?: number } = {}) => {
+        asked.push(pad);
+        const width = Math.ceil(text.length * 10.5) + pad * 2;
+        const height = Math.ceil(20.25) + pad * 2;
+        const data = new Uint8Array(width * height);
+        // the box itself covered, the pad clear
+        for (let y = pad; y < height - pad; y++)
+          for (let x = pad; x < width - pad; x++) data[y * width + x] = 255;
+        return { width, height, data };
+      },
+      size: style.size,
+    }),
+  };
+  const engine = new SurfaceTextEngine({}, fonts as never, 'sans-serif');
+  const [raster] = await engine.rasterize([{ text: 'Main', size: 16 }], 6);
+  assert.ok(raster, 'set');
+  assert.deepStrictEqual(asked, [6], 'asked once, with the pad');
+  assert.strictEqual(
+    raster.stride,
+    1,
+    'one byte a pixel, as the engine gave it',
+  );
+  assert.strictEqual(raster.width, Math.ceil(4 * 10.5) + 12);
+  assert.strictEqual(raster.height, 21 + 12);
+  // …and the atlas makes its field from that one byte, not the fourth.
+  const atlas = new LabelAtlas(
+    {
+      measure: (text, size) => ({ width: text.length * size, height: size }),
+      rasterize: async () => [raster],
+      dispose: () => {},
+    },
+    { base: 16, pad: 6 },
+  );
+  atlas.beginFrame(Infinity);
+  atlas.entry('Main');
+  atlas.pump();
+  await new Promise((resolve) => setImmediate(resolve));
+  atlas.makeFields(Infinity);
+  const [entry] = atlas.takeUploads(10);
+  assert.ok(entry, 'a field was made');
+  const at = (x: number, y: number) => entry.pixels[y * entry.width + x];
+  const middle = Math.floor(entry.height / 2);
+  assert.ok(
+    at(Math.floor(entry.width / 2), middle) > 255 * SDF_EDGE,
+    'inside the box',
+  );
+  assert.strictEqual(
+    at(0, middle),
+    0,
+    'a pad away is as far as the field reaches',
+  );
+});
 
 test('a frame makes fields out of what its text budget has left, and never asks twice', async (t) => {
   // Every reading of the clock is 0.7 ms later: a 2 ms budget covers a

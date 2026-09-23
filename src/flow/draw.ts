@@ -58,6 +58,17 @@ interface LayoutLike {
   width: number;
   height: number;
   draw(ctx: unknown, x: number, y: number): void;
+  /** The engine's own coverage of the layout, one byte a device pixel, with
+   *  `pad` round its box — where the engine answers it (react-x11#673). */
+  coverage?(options?: { pad?: number }): TextCoverage | null;
+}
+
+/** A layout's coverage: `width` × `height` bytes, the layout's origin at
+ *  (pad, pad). */
+export interface TextCoverage {
+  width: number;
+  height: number;
+  data: Uint8Array;
 }
 
 /** One shaped string, kept between frames. `width` and `height` are

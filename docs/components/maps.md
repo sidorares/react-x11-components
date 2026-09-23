@@ -664,6 +664,16 @@ engine sets it at small sizes, and the ink is biased outward 0.15 pixels
 so it keeps the engine's weight. A slanted street name comes out sharper
 than a resampled bitmap did.
 
+Where the text engine answers a layout's own coverage
+(sidorares/react-x11#673 — DirectWrite through `@windowkit/win32`, ntk's
+layout on X11), a name is set from that instead of drawn onto an offscreen
+surface and read back: no staging surface, no readback, and the outlines'
+own coverage rather than the ink the screen gets. Icons, which are paths,
+still go through the surface, and so does everything on an engine that
+cannot answer. Measured on Windows, a cold map's settle frames spent 5.9 ms
+on labels where they spent 6.4, and had 10-20% more names up by the end
+of it.
+
 While the camera moves no new name is admitted (names already shown ride
 along), so the view that lands is named once rather than at every step on
 the way; a name then fades in over 220 ms. Around that:

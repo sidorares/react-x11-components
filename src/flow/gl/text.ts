@@ -194,6 +194,9 @@ export class LabelAtlas {
   private staging: SurfaceLike | null = null;
   private stagingCtx: StagingContext | null = null;
   private busy = false;
+  /** Whether the layouts answer their own coverage (react-x11#673): unknown
+   *  until the first string asks, and false for good once one does not. */
+  private coverage: boolean | null = null;
   /** Bumped whenever a field lands or the atlas is cleared — the renderer
    *  uploads, and the surface repacks the world, when it moves. */
   generation = 0;
@@ -325,6 +328,16 @@ export class LabelAtlas {
       }
     }
     if (this.missing.size === 0 || !this.source.options.fonts) return false;
+    if (this.coverage !== false) {
+      this.busy = true;
+      try {
+        await nextTask();
+        const landed = this.coverageSlice();
+        if (landed !== null) return landed;
+      } finally {
+        this.busy = false;
+      }
+    }
     this.busy = true;
     try {
       if (!this.staging) {
@@ -395,6 +408,50 @@ export class LabelAtlas {
     } finally {
       this.busy = false;
     }
+  }
+
+  /**
+   * One slice of strings set from their layouts' own coverage, where the
+   * engine answers it: no staging surface and no readback, so a string
+   * shaped this slice is a field this slice, until the budget is spent — at
+   * least one. Null when the layouts cannot answer, and the batches read
+   * back instead from then on.
+   */
+  private coverageSlice(): boolean | null {
+    const started = now();
+    let landed = false;
+    for (const [key, want] of this.missing) {
+      if (landed && now() - started >= this.fieldBudgetMs) break;
+      const shaped = shape(this.white, want.text, {
+        size: this.base,
+        weight: want.weight,
+        color: '#ffffff',
+      });
+      const coverage = shaped?.layout.coverage?.({ pad: this.pad }) ?? null;
+      if (!coverage) {
+        if (landed || this.coverage) break;
+        this.coverage = false;
+        return null;
+      }
+      this.coverage = true;
+      this.missing.delete(key);
+      if (coverage.width > STAGING_WIDTH || coverage.height > STAGING_HEIGHT) {
+        // wider than a batch could set: never drawn, as there
+        continue;
+      }
+      const field = distanceField(
+        coverage.data,
+        coverage.width,
+        coverage.height,
+        this.pad,
+        1,
+        0,
+      );
+      landed = true;
+      if (!this.add(key, coverage.width, coverage.height, field)) break;
+    }
+    if (landed) this.generation++;
+    return landed;
   }
 
   /**

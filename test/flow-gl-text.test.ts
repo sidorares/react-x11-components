@@ -274,6 +274,49 @@ test('a centred label is centred on its anchor, as the 2D painter centres it', a
   assert.ok(Math.abs(q.y - (50 - height / 2)) < 0.5, `top edge ${q.y}`);
 });
 
+test('a layout that answers its own coverage is set with no readback, a field the same slice', async () => {
+  const { atlas, options } = await atlasAt(1);
+  // The engine's coverage (react-x11#673), stood in for over the headless
+  // server's layouts: the box covered, the pad clear.
+  const fonts = options.fonts as unknown as {
+    layout(...args: unknown[]): Record<string, unknown>;
+  };
+  const own = fonts.layout.bind(fonts);
+  const asked: number[] = [];
+  fonts.layout = (...args: unknown[]) => {
+    const layout = own(...args) as { width: number; height: number };
+    return Object.assign(layout, {
+      coverage({ pad = 0 }: { pad?: number } = {}) {
+        asked.push(pad);
+        const width = Math.ceil(layout.width) + pad * 2;
+        const height = Math.ceil(layout.height) + pad * 2;
+        const data = new Uint8Array(width * height);
+        for (let y = pad; y < height - pad; y++)
+          for (let x = pad; x < width - pad; x++) data[y * width + x] = 255;
+        return { width, height, data };
+      },
+    });
+  };
+  const names = ['node 1', 'node 2', 'node 3'];
+  atlas.beginPack();
+  for (const text of names) atlas.quad(label({ text }));
+  assert.strictEqual(await atlas.pump(), true, 'one slice');
+  for (const text of names) {
+    assert.ok(atlas.quad(label({ text })), `${text} is drawable after it`);
+  }
+  assert.ok(!atlas.wanting);
+  assert.deepStrictEqual(
+    asked,
+    names.map(() => fieldPad(fieldBase(1))),
+  );
+  const q = atlas.quad(label({ text: 'node 1' }))!;
+  assert.strictEqual(
+    fieldOf(q).width,
+    Math.ceil(baseWidth(options, 'node 1')) + fieldPad(fieldBase(1)) * 2,
+    'the field is the layout box with its margin',
+  );
+});
+
 test('the texture holds fields: white, the distance in alpha', async () => {
   const { atlas } = await atlasAt(1);
   atlas.quad(label());

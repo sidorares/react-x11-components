@@ -52,12 +52,15 @@ export interface TextItem {
   icon?: { name: MapIcon; part: IconPart };
 }
 
-/** A rasterized string: RGBA as read back, coverage in alpha, `pad`
- *  pixels of clear margin included. */
+/** A rasterized string, `pad` pixels of clear margin included: RGBA as
+ *  read back, coverage in alpha — or, with `stride` 1, the text engine's own
+ *  coverage, one byte a pixel. */
 export interface TextRaster {
   width: number;
   height: number;
   pixels: Uint8Array;
+  /** Bytes a pixel: 4 (the default) for a readback, 1 for coverage. */
+  stride?: 1 | 4;
 }
 
 /** What the atlas asks of a text engine. */
@@ -85,6 +88,12 @@ interface FontsLike {
     width: number;
     height: number;
     draw(ctx: unknown, x: number, y: number): void;
+    /** The engine's own coverage of the layout, one byte a pixel, with
+     *  `pad` round its box — where the engine answers it
+     *  (sidorares/react-x11#673). */
+    coverage?(options?: {
+      pad?: number;
+    }): { width: number; height: number; data: Uint8Array } | null;
   };
 }
 
@@ -138,6 +147,9 @@ export class SurfaceTextEngine implements TextEngine {
   >();
   private _surface: SurfaceLike | null = null;
   private _ctx: ContextLike | null = null;
+  /** Whether the layouts answer their own coverage: unknown until a string
+   *  asks, and false for good once one does not. */
+  private _coverage: boolean | null = null;
 
   constructor(app: unknown, fonts: FontsLike, family: string) {
     this._app = app;
@@ -177,7 +189,50 @@ export class SurfaceTextEngine implements TextEngine {
     return { width: Math.ceil(layout.width), height: Math.ceil(layout.height) };
   }
 
+  /**
+   * Strings the layouts set themselves, where the engine answers a layout's
+   * coverage (react-x11#673): no staging surface and no readback. The rest —
+   * icons, which are paths, and every string on an engine that cannot — go
+   * through the surface.
+   */
   async rasterize(
+    items: readonly TextItem[],
+    pad: number,
+  ): Promise<(TextRaster | null | undefined)[]> {
+    if (this._coverage === false) return this._stage(items, pad);
+    const out: (TextRaster | null | undefined)[] = new Array(items.length);
+    const rest: number[] = [];
+    items.forEach((item, i) => {
+      const coverage =
+        !item.icon && this._coverage !== false
+          ? (this._layout(item.text, item.size).coverage?.({ pad }) ?? null)
+          : null;
+      if (!coverage) {
+        if (!item.icon && this._coverage === null) this._coverage = false;
+        rest.push(i);
+        return;
+      }
+      this._coverage = true;
+      out[i] =
+        coverage.width > STAGING_WIDTH || coverage.height > STAGING_HEIGHT
+          ? null // wider than the surface could set: never drawn, as there
+          : {
+              width: coverage.width,
+              height: coverage.height,
+              pixels: coverage.data,
+              stride: 1,
+            };
+    });
+    if (rest.length === 0) return out;
+    const staged = await this._stage(
+      rest.map((i) => items[i]),
+      pad,
+    );
+    rest.forEach((i, k) => (out[i] = staged[k]));
+    return out;
+  }
+
+  private async _stage(
     items: readonly TextItem[],
     pad: number,
   ): Promise<(TextRaster | null | undefined)[]> {
@@ -599,7 +654,15 @@ export class LabelAtlas {
    *  readback's alpha; the field spans `pad` texels either side of the
    *  edge, which is the margin the engine set it with. */
   private _field(raster: TextRaster): Uint8Array {
-    return distanceField(raster.pixels, raster.width, raster.height, this.pad);
+    const stride = raster.stride ?? 4;
+    return distanceField(
+      raster.pixels,
+      raster.width,
+      raster.height,
+      this.pad,
+      stride,
+      stride === 4 ? 3 : 0,
+    );
   }
 
   private _add(
