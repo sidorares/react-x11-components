@@ -334,8 +334,13 @@ behind it — the arrangement `src/maps/gl/pane.ts` already documents.
    `renderer="gl"`. The renderer reads the same `FlowScene` the 2D painter
    does; `gl/pack.ts` appends every shape to one of three instance streams in
    the painter's z-order, and a frame is ~10 ranged instanced draws. A disc
-   is a rounded box whose corners meet, so cards, handles, chips and panels
-   are one program. The graph is a **world** built at a pinned origin,
+   is a rounded box whose corners meet, and a hairline across or down — the
+   rule under a title bar — is a box one pen tall, so cards, handles, chips,
+   rules and panels are one program. (The rule went in as a line at first,
+   which put a change of program between two boxes of every titled card: a
+   board of widget cards drew 566 ranges a frame, two dozen calls into the
+   GL bridge each, and panned at 90 frames a second where it pans at 159
+   with six.) The graph is a **world** built at a pinned origin,
    culled to an overscan three panes wide and uploaded only when it changes;
    the pane's furniture is a small **overlay** packed every frame; a pan is
    the world's offset and a marching dash its phase — both uniforms.

@@ -124,6 +124,53 @@ test('a frame is a handful of draws, however big the graph', () => {
   );
 });
 
+test('cards with title bars are one range, not three a card', () => {
+  // A card whose body is mounted draws a title bar with a hairline under
+  // it, and the hairline went in as a line: box, line, box for every card,
+  // and every change of program is a draw. On a board of widget cards
+  // that was 566 draws a frame. A rule across or down is a box now.
+  const packer = new ScenePacker();
+  const counts = [20, 200].map((n) => {
+    const { nodes, edges } = graph(n);
+    const titled = nodes.map((node) => ({
+      ...node,
+      mounted: true,
+      header: 26,
+    }));
+    const packed = packer.pack(buildScene(input(titled, edges)));
+    return packed.ranges.length;
+  });
+  assert.ok(counts[1] <= 16, `200 titled cards drew in ${counts[1]} ranges`);
+  assert.strictEqual(counts[0], counts[1], 'however many there are');
+});
+
+test('a rule across a card is a box one pen tall, where the stroke was', () => {
+  const { nodes } = graph(1);
+  const titled = nodes.map((node) => ({ ...node, mounted: true, header: 26 }));
+  const scene = buildScene(input(titled, []));
+  const rule = scene.nodes[0].ink.find((item) => item.kind === 'rule');
+  assert.ok(rule && rule.kind === 'rule', 'the title bar has its hairline');
+  const packed = new ScenePacker().pack(scene, 'world');
+  const [a, b] = rule.points;
+  const boxes: number[][] = [];
+  for (let i = 0; i < packed.boxCount; i++) {
+    boxes.push(
+      Array.from(packed.boxes.subarray(i * BOX_STRIDE, i * BOX_STRIDE + 4)),
+    );
+  }
+  assert.ok(
+    boxes.some(
+      ([x, y, w, h]) =>
+        x === Math.min(a.x, b.x) &&
+        y === a.y - rule.lineWidth / 2 &&
+        w === Math.abs(b.x - a.x) &&
+        h === rule.lineWidth,
+    ),
+    'a box from end to end, centred on the stroke',
+  );
+  assert.strictEqual(packed.lineCount, 0, 'and no line: there are no edges');
+});
+
 test('the world has no furniture and the overlay no graph', () => {
   // The split a pan relies on: the world is drawn at an offset, so anything
   // pinned to the pane in it would pan away with the graph — and anything of

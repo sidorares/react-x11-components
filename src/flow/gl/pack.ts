@@ -393,6 +393,49 @@ export class ScenePacker {
   }
 
   private rule(item: SceneRule): void {
+    // A hairline across or down — every rule a scene draws, the one under a
+    // title bar and the one between two control buttons — is a box: the
+    // pixels of the butt-capped stroke the 2D painter lays. As a line it put
+    // the line program between a card's boxes, and a range is one program:
+    // every card with a title bar opened three draw ranges where the rest
+    // of the world's nodes shared one — 566 draws a frame on a board of
+    // widget cards, each two dozen calls into the GL bridge.
+    const [a, b] = item.points;
+    if (item.points.length === 2 && (a.y === b.y || a.x === b.x)) {
+      const color = this.colors.get(item.color);
+      if (color[3] <= 0) return;
+      const half = item.lineWidth / 2;
+      if (a.y === b.y) {
+        const w = Math.abs(b.x - a.x);
+        if (w > 0) {
+          this.boxRaw(
+            Math.min(a.x, b.x),
+            a.y - half,
+            w,
+            item.lineWidth,
+            0,
+            0,
+            color,
+            color,
+          );
+        }
+      } else {
+        const h = Math.abs(b.y - a.y);
+        if (h > 0) {
+          this.boxRaw(
+            a.x - half,
+            Math.min(a.y, b.y),
+            item.lineWidth,
+            h,
+            0,
+            0,
+            color,
+            color,
+          );
+        }
+      }
+      return;
+    }
     this.polyline(
       item.points,
       item.lineWidth,
