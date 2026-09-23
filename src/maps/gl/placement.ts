@@ -132,6 +132,9 @@ const NEW_PADDING = 3;
 const EDGE = 6;
 /** How long a label takes to appear or leave. */
 export const FADE_MS = 220;
+/** How long a settled view's labels keep their old size waiting for every
+ *  new one, at most. */
+export const SWAP_WAIT_MS = 400;
 /** How near a new anchor must be, in label heights, to a shown label of
  *  the same name to be that label — across a level change, say. */
 const MATCH = 2;
@@ -234,7 +237,16 @@ export class LabelPlacer {
    *  once per anchor per frame. */
   private readonly _ems = new Map<string, number>();
   private _instances = new Float32Array(LABEL_INSTANCE * 64);
+  /** When the settled view first had a label waiting for its new size's
+   *  raster — null while none is. */
+  private _swapSince: number | null = null;
   stats: PlacementStats = { candidates: 0, placed: 0, drawn: 0, ms: 0 };
+
+  /** Labels holding the size they have until every one of them can take
+   *  its new one: another frame is worth drawing, to make the swap. */
+  get swapping(): boolean {
+    return this._swapSince !== null;
+  }
 
   /** Labels still changing visibility: another frame is worth drawing. */
   get animating(): boolean {
@@ -509,13 +521,39 @@ export class LabelPlacer {
     const halfH = frame.height / 2;
     let count = 0;
     let labels = 0;
+    // A zoom that settles leaves every label at a size its ramp has moved
+    // on from, and each new raster lands when its batch does — a label at a
+    // time, over a few frames: the text visibly re-set in waves after the
+    // map had stopped. So the sizes change together, in the frame the last
+    // of them is in the texture; the wait is bounded, so that a string that
+    // cannot be set holds nothing back for long. (`<Flow>`'s atlas makes
+    // the same call, for the same waves.)
+    let hold = frame.moving;
+    if (!frame.moving) {
+      let waiting = false;
+      for (const shown of this._shown) {
+        if (!shown.placed || shown.drawn === 0 || shown.drawn === shown.size)
+          continue;
+        if (!atlas.entry(shown.text, shown.size)) waiting = true;
+      }
+      if (!waiting) this._swapSince = null;
+      else this._swapSince ??= frame.now;
+      hold =
+        this._swapSince !== null && frame.now - this._swapSince < SWAP_WAIT_MS;
+    } else {
+      this._swapSince = null;
+    }
     for (const shown of [...this._shown]) {
       const layer = layers[shown.layer];
       let entry: AtlasEntry | null;
-      if (frame.moving && shown.drawn > 0 && shown.drawn !== shown.size) {
+      if (hold && shown.drawn > 0 && shown.drawn !== shown.size) {
         // Its zoom ramp has moved on; the size it has serves until the
-        // view is still.
-        entry = atlas.entry(shown.text, shown.drawn);
+        // view is still and every label's new size is in hand.
+        entry =
+          atlas.entry(shown.text, shown.drawn) ??
+          atlas.entry(shown.text, shown.size);
+        if (entry && entry.key.startsWith(`${shown.size}|`))
+          shown.drawn = shown.size;
       } else {
         entry = atlas.entry(shown.text, shown.size);
         if (entry) shown.drawn = shown.size;

@@ -105,6 +105,7 @@ import {
   FADE_MS,
   LABEL_INSTANCE,
   LabelPlacer,
+  SWAP_WAIT_MS,
 } from '../src/maps/gl/placement.js';
 import type { PlacementFrame } from '../src/maps/gl/placement.js';
 import type { RenderFrame } from '../src/maps/gl/renderer.js';
@@ -2407,19 +2408,186 @@ test('the atlas keeps what is drawn when it fills, and draws nothing the texture
   assert.strictEqual(atlas.entry('a', 10), null);
   assert.strictEqual(upload(), 8);
   assert.ok(atlas.entry('a', 10));
-  // Much later, only two of them still drawn; a ninth forces a compaction.
-  for (let i = 0; i < 130; i++) atlas.beginFrame(Infinity);
-  assert.ok(atlas.entry('a', 10) && atlas.entry('b', 10));
-  await land(['i']);
-  assert.strictEqual(atlas.entries, 3);
-  // What was kept has moved: it goes up again before it is drawn again.
-  assert.strictEqual(atlas.entry('a', 10), null);
-  assert.strictEqual(upload(), 3);
-  assert.ok(atlas.entry('a', 10) && atlas.entry('i', 10));
+
+  // Full, with 'a' and 'b' on screen: a ninth takes the shelf drawn longest
+  // ago in place. What is on screen does not move, so it is drawable in the
+  // very frame the ninth lands — a compaction took it out of the texture
+  // for the frames its upload took, every label on screen at once.
+  for (let i = 0; i < 3; i++) atlas.beginFrame(Infinity);
+  await land(['a', 'b', 'i']);
+  assert.strictEqual(atlas.entries, 7, 'one shelf of two gave way to one');
+  assert.ok(atlas.entry('a', 10) && atlas.entry('b', 10), 'still drawable');
+  assert.strictEqual(upload(), 1, 'only the newcomer goes up');
+  assert.ok(atlas.entry('i', 10));
+  // What gave way is off screen, and is set again when it is asked for.
+  assert.strictEqual(atlas.entry('c', 10), null);
+  assert.ok(atlas.pending);
+
+  // Every shelf under a label of the last frame: nothing is taken, and the
+  // string that found no room is not given up on — room is a fact about
+  // the moment, not about the string.
+  // ('c', asked for above, takes the half of the shelf 'i' left.)
+  await land(['a', 'b', 'i', 'e', 'f', 'g', 'h', 'j']);
+  const drawn = ['a', 'b', 'i', 'e', 'f', 'g', 'h'];
+  upload();
+  assert.ok(
+    drawn.every((t) => atlas.entry(t, 10)),
+    'nothing drawn moved',
+  );
+  assert.strictEqual(atlas.entry('j', 10), null);
+  atlas.beginFrame(Infinity);
+  for (const t of ['a', 'b', 'j']) atlas.entry(t, 10);
+  atlas.pump();
+  await new Promise((resolve) => setImmediate(resolve));
+  upload();
+  assert.ok(atlas.entry('j', 10), 'asked for again, it lands');
+
   // A new texture — a new context — has none of it, and gets all of it.
   atlas.restart();
   assert.strictEqual(atlas.entry('b', 10), null);
-  assert.strictEqual(upload(), 3);
+  assert.strictEqual(upload(), atlas.entries);
+});
+
+test('a full atlas compacts only as a last resort, and never for nothing', async () => {
+  let tall = false;
+  const engine: TextEngine = {
+    measure: () => ({ width: 18, height: 2 }),
+    rasterize: async (items) =>
+      items.map(() =>
+        tall
+          ? { width: 30, height: 30, pixels: new Uint8Array(30 * 30 * 4) }
+          : { width: 30, height: 14, pixels: new Uint8Array(30 * 14 * 4) },
+      ),
+    dispose: () => {},
+  };
+  const atlas = new LabelAtlas(engine, { size: 64, pad: 6 });
+  const land = async (texts: string[]) => {
+    atlas.beginFrame(Infinity);
+    for (const t of texts) atlas.entry(t, 10);
+    atlas.pump();
+    await new Promise((resolve) => setImmediate(resolve));
+    for (const entry of atlas.takeUploads(Infinity)) entry.ready = true;
+  };
+  await land(['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']);
+  // A raster of another height has no shelf to take in place. Everything
+  // was drawn a moment ago, so a compaction would keep all of it — moved,
+  // and out of the texture — and free nothing: it is not done.
+  tall = true;
+  await land(['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'T']);
+  assert.strictEqual(atlas.entries, 8);
+  assert.ok(atlas.entry('a', 10), 'nothing moved');
+  assert.strictEqual(atlas.entry('T', 10), null);
+  // Long after, with only 'a' drawn: now it frees room, and is done.
+  for (let i = 0; i < 130; i++) atlas.beginFrame(Infinity);
+  atlas.entry('a', 10);
+  atlas.beginFrame(Infinity);
+  atlas.entry('a', 10);
+  atlas.entry('T', 10);
+  atlas.pump();
+  await new Promise((resolve) => setImmediate(resolve));
+  // Moved, and drawable all the same: the frame that draws it takes it
+  // into the texture where it now is first, however many there are.
+  assert.ok(atlas.entry('a', 10), 'kept, and never out of the texture');
+  const taken = atlas.takeUploads(0);
+  assert.deepStrictEqual(
+    taken.map((e) => e.key),
+    ['10|a'],
+    'every moved raster, ahead of any cap',
+  );
+  for (const entry of atlas.takeUploads(Infinity)) entry.ready = true;
+  assert.ok(atlas.entry('T', 10), 'the tall one landed');
+  assert.strictEqual(atlas.entries, 2);
+});
+
+test('a settled zoom changes every label to its new size in one frame', async () => {
+  // Only the strings let through are set, as a batch that has not landed.
+  const allow = new Set<string>();
+  const engine: TextEngine = {
+    measure: (text, size) => ({
+      width: text.length * size * 0.5,
+      height: size,
+    }),
+    rasterize: async (items, pad) =>
+      items.map((item) => {
+        if (!allow.has(`${item.size}|${item.text}`)) return undefined;
+        const width = item.text.length * item.size * 0.5 + pad * 2;
+        const height = item.size + pad * 2;
+        return { width, height, pixels: new Uint8Array(width * height * 4) };
+      }),
+    dispose: () => {},
+  };
+  const style = prepareStyle({
+    layers: [
+      {
+        id: 'places',
+        type: 'symbol',
+        sourceLayer: 'place_labels',
+        textField: 'name',
+        rank: 100,
+        textColor: '#222222',
+        textHaloColor: '#ffffff',
+        textHaloWidth: 1.5,
+        textSize: {
+          stops: [
+            [15, 14],
+            [16, 20],
+            [17, 26],
+          ],
+        },
+      },
+    ],
+  });
+  const labels = handAnchors([
+    ['Townsville', 1024, 1024, 0, -1],
+    ['Otherville', 3072, 3072, 0, -1],
+  ]);
+  const frame = (zoom: number, now: number): PlacementFrame => ({
+    ...labelFrame(labels, now),
+    zoom,
+    style,
+  });
+  const atlas = new LabelAtlas(engine, { pad: 6 });
+  const placer = new LabelPlacer();
+  const step = async (f: PlacementFrame) => {
+    atlas.beginFrame(Infinity);
+    placer.place(f, atlas);
+    atlas.pump();
+    await new Promise((resolve) => setImmediate(resolve));
+    for (const entry of atlas.takeUploads(Infinity)) entry.ready = true;
+    const batch = placer.batch(f, atlas);
+    const widths: number[] = [];
+    for (let i = 0; i < batch.count; i++) {
+      widths.push(batch.instances[i * LABEL_INSTANCE + 6]);
+    }
+    return widths.sort((a, b) => a - b);
+  };
+  const at14 = 10 * 14 * 0.5 + 12;
+  const at20 = 10 * 20 * 0.5 + 12;
+
+  allow.add('14|Townsville').add('14|Otherville');
+  await step(frame(15, 0));
+  assert.deepStrictEqual(await step(frame(15, FADE_MS)), [at14, at14]);
+
+  // Settled at 16 with one new raster in hand: both keep the size they
+  // have — the one that could change waits for the other.
+  allow.add('20|Townsville');
+  assert.deepStrictEqual(await step(frame(16, 1000)), [at14, at14]);
+  assert.ok(placer.swapping, 'and the frame after is asked for');
+  // The other lands: both change, in the same frame.
+  allow.add('20|Otherville');
+  assert.deepStrictEqual(await step(frame(16, 1020)), [at20, at20]);
+  assert.ok(!placer.swapping);
+
+  // A raster that never comes holds the rest only so long.
+  const at26 = 10 * 26 * 0.5 + 12;
+  allow.add('26|Townsville');
+  assert.deepStrictEqual(await step(frame(17, 2000)), [at20, at20]);
+  assert.deepStrictEqual(await step(frame(17, 2010)), [at20, at20]);
+  assert.deepStrictEqual(
+    await step(frame(17, 2000 + SWAP_WAIT_MS)),
+    [at20, at26],
+    'past the wait, what is in hand changes',
+  );
 });
 
 test('labels are one instanced draw over the scene, once their rasters are uploaded', async () => {

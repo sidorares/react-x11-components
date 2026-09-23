@@ -351,6 +351,9 @@ export class LabelAtlas {
   private readonly _entries = new Map<string, AtlasEntry>();
   /** Entries the texture does not have where they are, oldest first. */
   private _uploads: AtlasEntry[] = [];
+  /** Drawable entries a compaction moved: all of them go up in the next
+   *  frame, ahead of any cap, before it draws. */
+  private _moved: AtlasEntry[] = [];
   private readonly _wanted = new Map<string, TextItem>();
   private readonly _failed = new Set<string>();
   private readonly _measured = new Map<string, TextBox>();
@@ -471,7 +474,11 @@ export class LabelAtlas {
           if (raster === undefined) return;
           const key = keys[i];
           this._wanted.delete(key);
-          if (raster === null || !this._add(key, raster)) this._failed.add(key);
+          // A string with no raster never will have one; a raster with no
+          // room is a fact about this moment, and the string is asked for
+          // again by the next frame that still shows it.
+          if (raster === null) this._failed.add(key);
+          else this._add(key, raster);
         });
         this.onChange?.();
       },
@@ -486,16 +493,23 @@ export class LabelAtlas {
     );
   }
 
-  /** Up to `max` rasters for the texture, oldest first. The renderer marks
-   *  each `ready` once it is uploaded. */
+  /** Rasters for the texture: every one a compaction moved, then up to
+   *  `max` new ones, oldest first. The renderer marks each `ready` once it
+   *  is uploaded — a moved one already is, because the frame that takes it
+   *  draws after taking it. */
   takeUploads(max: number): AtlasEntry[] {
-    return this._uploads.splice(0, max);
+    const moved = this._moved;
+    this._moved = [];
+    return moved.length > 0
+      ? moved.concat(this._uploads.splice(0, max))
+      : this._uploads.splice(0, max);
   }
 
   /** The texture is new, and has none of it: everything goes up again. */
   restart(): void {
     for (const entry of this._entries.values()) entry.ready = false;
     this._uploads = [...this._entries.values()];
+    this._moved = [];
   }
 
   dispose(): void {
@@ -504,8 +518,10 @@ export class LabelAtlas {
   }
 
   private _add(key: string, raster: TextRaster): boolean {
-    let place = this._allocate(raster.width, raster.height);
-    if (!place) {
+    let place =
+      this._allocate(raster.width, raster.height) ??
+      this._reuseShelf(raster.width, raster.height);
+    if (!place && this._compactable()) {
       this._compact();
       place = this._allocate(raster.width, raster.height);
     }
@@ -544,9 +560,66 @@ export class LabelAtlas {
     return { x: 0, y: shelf.y };
   }
 
+  /**
+   * Room made in place: the shelf of this height whose rasters were drawn
+   * longest ago, emptied and filled again from its left.
+   *
+   * **Nothing that stays moves.** A compaction moves every raster it keeps,
+   * and a moved raster is not drawn until it is in the texture again — at
+   * {@link takeUploads}' pace, so every label on screen went out together
+   * and came back over the next few frames, at full opacity. A full atlas
+   * is the ordinary state of a session (a thousand strings at 1x, a quarter
+   * of that at 2x), so that was a flash of the whole label layer at the end
+   * of most settles. A shelf any label of the last frame stands on is not
+   * taken: what is dropped is off screen, and asked for again if it
+   * returns.
+   */
+  private _reuseShelf(w: number, h: number): { x: number; y: number } | null {
+    if (w > this.size) return null;
+    const height = Math.ceil(h / 8) * 8;
+    const newest = new Map<number, number>();
+    for (const entry of this._entries.values()) {
+      const seen = newest.get(entry.y);
+      if (seen === undefined || entry.used > seen)
+        newest.set(entry.y, entry.used);
+    }
+    let shelf: { y: number; height: number; x: number } | null = null;
+    let oldest = this._frame;
+    for (const candidate of this._shelves) {
+      if (candidate.height !== height) continue;
+      const used = newest.get(candidate.y) ?? -Infinity;
+      if (used < oldest) {
+        oldest = used;
+        shelf = candidate;
+      }
+    }
+    if (!shelf) return null;
+    const y = shelf.y;
+    for (const [key, entry] of this._entries) {
+      if (entry.y === y) this._entries.delete(key);
+    }
+    this._uploads = this._uploads.filter((entry) => entry.y !== y);
+    this._moved = this._moved.filter((entry) => entry.y !== y);
+    shelf.x = w;
+    return { x: 0, y };
+  }
+
+  /** Whether a compaction would free anything: something kept past its
+   *  last use. One that keeps everything only moves it — every label on
+   *  screen out of the texture for the frames its upload takes, for no
+   *  room at all. */
+  private _compactable(): boolean {
+    for (const entry of this._entries.values()) {
+      if (entry.used < this._frame - KEEP_FRAMES) return true;
+    }
+    return false;
+  }
+
   /** Drop what has not been drawn for a while and pack the rest again,
-   *  tallest first. Everything kept has moved, so none of it is drawn
-   *  until the renderer has uploaded it where it now is. */
+   *  tallest first — the last resort, when no shelf of the height wanted
+   *  can be taken in place. What was drawable stays drawable: it is
+   *  uploaded where it now is, all of it, by the next frame before that
+   *  frame draws ({@link takeUploads}); what was waiting still waits. */
   private _compact(): void {
     const keep = [...this._entries.values()]
       .filter((e) => e.used >= this._frame - KEEP_FRAMES)
@@ -555,14 +628,15 @@ export class LabelAtlas {
     this._shelves = [];
     this._top = 0;
     this._uploads = [];
+    this._moved = [];
     for (const entry of keep) {
       const place = this._allocate(entry.width, entry.height);
       if (!place) continue;
       entry.x = place.x;
       entry.y = place.y;
-      entry.ready = false;
       this._entries.set(entry.key, entry);
-      this._uploads.push(entry);
+      if (entry.ready) this._moved.push(entry);
+      else this._uploads.push(entry);
     }
   }
 }

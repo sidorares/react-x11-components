@@ -1074,12 +1074,14 @@ export class GlMapDriver implements MapView {
         textPending: this._atlas?.pending ?? false,
       },
     };
-    // A label still fading, strings this frame had no budget to measure, or
-    // rasters still to go into the texture want the next frame; a raster
+    // A label still fading, sizes waiting to change together, strings this
+    // frame had no budget to measure, or rasters still to go into the
+    // texture want the next frame; a raster
     // in flight asks for one itself when it lands.
     const labelling =
       labels !== null &&
       (this._placer.animating ||
+        this._placer.swapping ||
         this._atlas?.starved === true ||
         this._atlas?.uploading === true);
     // An attribution this frame could not draw may have gone into the
