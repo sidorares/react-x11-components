@@ -394,8 +394,8 @@ imports — `react-x11` itself plus `/host`, `/node`, `/style`, `/keysyms`,
 `/ntk`, `/yoga`, `/jsx-runtime`, and `/test` and `/debug` from the suite.
 Both specs are ordinary registry ranges:
 
-- `peerDependencies.react-x11` is `^2.22.0` — what a consumer must supply.
-- `devDependencies.react-x11` is `^2.22.0` — what the suite runs against.
+- `peerDependencies.react-x11` is `^2.18.6` — what a consumer must supply.
+- `devDependencies.react-x11` is `^2.18.6` — what the suite runs against.
 
 Keep them the same range. They are one decision written twice, and a
 devDependency that drifts above the peer range means the suite passes
@@ -443,11 +443,18 @@ it up. **The floor is a running one and moves often** — every move since
   by hand). Each failed by drawing nothing rather than by throwing, so the
   terminal came up empty under `REACT_X11_BACKEND=wayland` while the rest
   of the UI was fine (#17).
-- `^2.22.0` — `scrollContents`'s `pinned` rects (react-x11#682): a scroll
-  that reveals `<CodeEditor>`'s caret a line or a character away is a blit
-  of the view, with the rows that changed pinned and repainted where they
-  land. Before it, a claim inside a blitted region refused the blit, so the
-  scroll repainted the editor whole.
+- `^2.18.4` — `useSupports('glOverlay')`, false from the first render on
+  XQuartz, where the macOS window server composites every GL surface above
+  the window's X content (react-x11#653, fixed by #654): `<Flow>` draws a
+  graph whose node types mount bodies with the 2D renderer there, rather
+  than mounting bodies nobody can see.
+- `^2.18.6` — `<Flow>`'s Windows round. The layers a `<glarea>`'s children
+  are drawn on (2.18.5, react-x11#656, over windowkit/win32#2) need the
+  bridge that has them, and core's range reaches `@windowkit/win32` 0.0.2
+  only from 2.18.6 (#660 — a caret on 0.0.x is exact). The same two releases
+  hold pointer motion for the next frame (#657), claim a move inside a
+  surface on its panes alone (#659), and give the Windows and macOS context
+  the `lineDashOffset` an animated edge marches with (#664).
 
 Do not reach back for a `github:` spec to get at unreleased core — cut a core
 release instead.
