@@ -397,7 +397,9 @@ minimap and controls up (the strip repaints; it holds the minimap's three
 hundred dots), from ~2,465 requests and ~1.8 MB when every pan frame
 repainted the world. Mounted bodies still force the repaint path: their
 gesture-time commits claim inside the rect, which declines a blit by
-design.
+design. With none on screen a pan commits nothing: node types that _can_
+mount bodies used to cost `<Flow>` a render per step for the origin of a
+layer that was not there.
 
 **The grid tiles.** At an integral device pitch the background is one
 `createPattern('repeat')` composite (ntk#263) — the phase baked into the

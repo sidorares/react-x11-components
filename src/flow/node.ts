@@ -3427,8 +3427,13 @@ export class FlowGraphNode extends Node implements FlowInstance {
       bodies.push(body);
     }
     if (bodies.length !== was.length) changed = true;
+    // An origin with no bodies laid out at it is nobody's news: a pan over a
+    // graph whose node types mount bodies, with none on screen, sent one per
+    // step, and `<Flow>` re-rendered for it — its panels' canvases with it.
+    // The origin is still kept, and goes out with the first body to arrive.
     const moved =
-      origin.x !== this._bodiesOrigin.x || origin.y !== this._bodiesOrigin.y;
+      was.length > 0 &&
+      (origin.x !== this._bodiesOrigin.x || origin.y !== this._bodiesOrigin.y);
     const released = this._bodiesHeld;
     if (!changed && !moved && !released) return;
     if (changed) {

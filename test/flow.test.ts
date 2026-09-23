@@ -3213,6 +3213,31 @@ test('a pan past panel canvases still moves the pane’s pixels', async () => {
   assert.deepStrictEqual(moved, [4, 4, 4], 'every step moved the pixels');
 });
 
+test('a pan with no body on screen commits nothing', async () => {
+  // The pane sent the bodies' origin on every step of a pan whether or not
+  // any body was laid out at it, and `<Flow>` re-rendered for each — the
+  // panels' canvases with it, whose new `onDraw` repainted the controls on
+  // every frame of a pan over a graph of plain cards.
+  await mount({
+    nodes: nodes(),
+    edges: edges(),
+    nodeTypes: { form: sizedType },
+    minimap: true,
+    controls: true,
+  });
+  await act();
+  const { map, controls } = panelCanvases();
+  const before = [map.props, controls.props];
+  const flow = pane() as unknown as { setViewport(v: object): void };
+  for (let step = 1; step <= 3; step++) {
+    await act(() => flow.setViewport({ x: step * 4, y: 0, zoom: 1 }));
+  }
+  assert.ok(
+    map.props === before[0] && controls.props === before[1],
+    'neither canvas was committed to',
+  );
+});
+
 test('under GL a drag step asks for a GL frame and claims nothing of the window', async () => {
   // The 2D pane under the surface shows nothing, and every claim of it was
   // a window pass over it — a BeginDraw, a walk and a commit a drag step —
