@@ -449,3 +449,45 @@ test('a minimap’s run of one colour is one fill, in the order it was drawn', (
     'rect view',
   ]);
 });
+
+// --- the box a dash tick repaints ------------------------------------------
+
+/** A pass over `clip` of the scene `nodes` and `edges` make. */
+function pass(
+  nodes: readonly SceneNodeSource[],
+  edges: readonly FlowEdge[],
+  clip: { x: number; y: number; width: number; height: number },
+): FlowScene {
+  return buildScene({
+    ...input(nodes, edges, { x: 0, y: 0, zoom: 1 }),
+    clip,
+  });
+}
+
+test('every animated edge on screen is in the box a dash tick repaints', () => {
+  // The box came off the edges the pass drew, so a pass that reached one
+  // animated edge — a node dragged beside it — made it the only one the
+  // next tick repainted, and every other dash on screen stopped.
+  const nodes = [
+    source(node('a', 0, 0)),
+    source(node('b', 300, 0)),
+    source(node('c', 0, 600)),
+    source(node('d', 300, 600)),
+  ];
+  const edges: FlowEdge[] = [
+    { id: 'top', source: 'a', target: 'b', animated: true },
+    { id: 'bottom', source: 'c', target: 'd', animated: true },
+  ];
+  const whole = buildScene(input(nodes, edges, { x: 0, y: 0, zoom: 1 }));
+  const top = pass(nodes, edges, { x: 150, y: 0, width: 20, height: 60 });
+  assert.deepStrictEqual(
+    top.edges.map((e) => e.id),
+    ['top'],
+    'the pass draws one of them',
+  );
+  assert.deepStrictEqual(top.animBox, whole.animBox, 'and ticks both');
+  // …and the timer runs for a pass that draws neither
+  const neither = pass(nodes, edges, { x: 900, y: 300, width: 20, height: 20 });
+  assert.strictEqual(neither.animated, true);
+  assert.deepStrictEqual(neither.animBox, whole.animBox);
+});

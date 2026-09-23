@@ -922,9 +922,13 @@ function buildEdges(input: SceneInput, scene: FlowScene): SceneEdge[] {
     // Tracked before the damage skip, deliberately: whether the dash timer
     // runs is a question about the viewport, not about what this particular
     // pass repaints — deciding it after the skip is how a drag in one corner
-    // would stop the dash marching in the other.
+    // would stop the dash marching in the other. And so is the box the ticks
+    // repaint, below, for the same reason: a pass over one corner that
+    // reached one animated edge made that edge the only one the next tick
+    // repainted, and every other dash on screen stopped.
     if (edge.animated) scene.animated = true;
-    if (clip && !rectsOverlap(coarse, clip)) continue;
+    const reached = !clip || rectsOverlap(coarse, clip);
+    if (!reached && !edge.animated) continue;
 
     // `markerEnd` left out means an arrow: a directed graph whose edges do
     // not say which way they point is a set of lines. `null` opts out.
@@ -942,6 +946,15 @@ function buildEdges(input: SceneInput, scene: FlowScene): SceneEdge[] {
     if (!routed) continue;
     const bounds = routed.bounds;
     if (!rectsOverlap(bounds, kept)) continue;
+    if (edge.animated) {
+      // The coarse box carries the bezier's slack, and a tick that repaints
+      // slack repaints a card-sized halo of neighbours sixteen times a
+      // second — so the box the ticks invalidate comes off the *drawn*
+      // geometry.
+      const tight = inflateRect(bounds, CULL_MARGIN);
+      animBox = animBox ? unionRects(animBox, tight) : tight;
+    }
+    if (!reached) continue;
 
     const selected = edge.selected ?? false;
     const hovered = hover.edgeId === edge.id;
@@ -973,14 +986,6 @@ function buildEdges(input: SceneInput, scene: FlowScene): SceneEdge[] {
     }
 
     const dash = edge.style?.dash ?? (edge.animated ? DEFAULT_DASH : undefined);
-    if (edge.animated) {
-      // The coarse box carries the bezier's slack, and a tick that repaints
-      // slack repaints a card-sized halo of neighbours sixteen times a
-      // second — so the box the ticks invalidate comes off the *drawn*
-      // geometry.
-      const tight = inflateRect(bounds, CULL_MARGIN);
-      animBox = animBox ? unionRects(animBox, tight) : tight;
-    }
 
     const item: SceneEdge = {
       id: edge.id,

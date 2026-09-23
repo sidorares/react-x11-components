@@ -365,8 +365,10 @@ minimap and controls outside it are skipped, and their pixels survive on the
 window from the previous frame. The window's backing is the composition
 cache; the damage rect is the dirty state. Resize, the connection line,
 hover and the selection box all claim the same way, and an animated edge's
-dash timer invalidates the box the animated edges were last drawn in rather
-than the pane.
+dash timer invalidates the box the animated edges on screen are drawn in
+rather than the pane — all of them, whatever the last pass reached: a box
+taken from the edges one pass drew left a node dragged beside one animated
+edge the only dash still marching.
 
 The other half is the commit. The app applies each step's `position` change,
 so the pane's props get a new `nodes` array per step — and a new identity for
