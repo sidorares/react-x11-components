@@ -557,6 +557,54 @@ test('dense scatter reduces to alpha-bucketed cells, bounded by the grid', () =>
   assert.strictEqual(env.stats.series[0].mode, 'columns');
 });
 
+test('a pass that reaches a strip of the plot draws the marks in it, and no others', () => {
+  // A strip a pan exposed along a chart's edge: the pass clips everything
+  // else away, and drawing it all anyway was most of each step of a panned
+  // graph of scatter plots.
+  const n = 50_000;
+  const xs = new Float64Array(n);
+  const ys = new Float64Array(n);
+  let seed = 11;
+  const rand = () =>
+    (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+  for (let i = 0; i < n; i++) {
+    xs[i] = rand() * 100;
+    ys[i] = rand() * 100;
+  }
+  const geometry = (): SeriesGeometry => {
+    const xCol = column(xs);
+    return {
+      spec: seriesSpec({ type: 'scatter', size: 3 }),
+      y: column(ys),
+      base: 0,
+      x: xCol,
+      xIdx: xIndexFor(xCol),
+      group: { index: 0, count: 1 },
+      color: '#123456',
+    };
+  };
+  const whole = fakeCtx();
+  const all = makeEnv(whole, 120, 90, [0, 100], [0, 100]);
+  renderScatter(all, geometry());
+
+  const strip = { x: 116, y: 0, width: 4, height: 90 };
+  const ctx = fakeCtx();
+  const env = { ...makeEnv(ctx, 120, 90, [0, 100], [0, 100]), clip: strip };
+  renderScatter(env, geometry());
+  assert.ok(ctx.rects.length > 0, 'the strip’s own marks are drawn');
+  assert.ok(
+    ctx.rects.length * 10 < whole.rects.length,
+    `${ctx.rects.length} of ${whole.rects.length} rects`,
+  );
+  for (const [x, , w] of ctx.rects) {
+    assert.ok(x < strip.x + strip.width && x + w > strip.x, 'each reaches it');
+  }
+  assert.ok(
+    env.stats.estimatedWireBytes < all.stats.estimatedWireBytes / 10,
+    'and the wire estimate counts what went out',
+  );
+});
+
 test('a saturated 1px scatter flips to the density image when the host can', () => {
   const w = 60;
   const hgt = 40;

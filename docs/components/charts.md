@@ -168,6 +168,11 @@ The three guarantees, and where they come from
    occupancy grid in ≤8 alpha-bucketed batches, flipping to one
    client-built density image only when the grid would out-weigh it
    (`occupied > plotW·plotH/2` — computed, not guessed).
+4. **A pass draws what it reaches.** A frame that repaints part of a chart
+   — the strip a scroll or a pan exposed along its edge — sends the marks
+   inside that damage and none of the rest, which the pass would have
+   clipped away. A scatter plot in a panned `<Flow>` body drew every cell
+   of its grid on each step before this.
 
 `onFrameStats` reports what a frame actually cost — per-series mode
 (`'polyline' | 'minmax' | 'bars' | 'scatter' | 'density'`), drawing

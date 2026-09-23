@@ -761,6 +761,8 @@ export class ChartPlotNode extends Node {
       stats,
       host: this._renderHost(),
       scale: this._scale,
+      // the pass's damage: a chart it merely touches draws what it reaches
+      clip: this.paintDamage(),
     };
     for (const geom of layout.geoms) renderSeries(env, geom);
     if (clipped) c.restore();
