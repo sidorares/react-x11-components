@@ -460,6 +460,8 @@ export class FlowGraphNode extends Node implements FlowInstance {
   private _lastFrameAt = -Infinity;
   private _zoomStep: { live: boolean; bodies: number } | null = null;
   private _dashPhase = 0;
+  /** When a pan last asked to blit — the dash timer waits for it. */
+  private _blittedPanAt = -Infinity;
   private _animTimer: unknown = null;
   /** Inside `paint`, where an invalidation would only schedule a redraw of
    * the frame being drawn. */
@@ -1262,6 +1264,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
       return false;
     }
     this.scrollContents(blit, dx, dy);
+    this._blittedPanAt = now();
     if (top > 0) {
       this.invalidate(
         false,
@@ -2773,6 +2776,13 @@ export class FlowGraphNode extends Node implements FlowInstance {
     if (this._animTimer != null) return;
     this._animTimer =
       timers.setInterval?.(() => {
+        // A pan that blits copies the pane's pixels, dashes and all, and a
+        // tick claims the dashes inside the band it copies — which declines
+        // the copy: every frame a tick landed in repainted the whole pane,
+        // a sixth of a pan's frames and all of its stutter. So the dashes
+        // sit the pan out, phase and all, and what the pan copies and what
+        // it draws agree; they march again once it has held still.
+        if (now() - this._blittedPanAt < ANIMATION_MS * 2) return;
         this._dashPhase += ANIMATION_SPEED;
         // the box the last paint saw animated edges in, not the pane: a
         // marching dash should not cost a full grid repaint per tick

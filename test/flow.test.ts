@@ -3213,6 +3213,48 @@ test('a pan past panel canvases still moves the pane’s pixels', async () => {
   assert.deepStrictEqual(moved, [4, 4, 4], 'every step moved the pixels');
 });
 
+test('the dashes sit a pan out, and every step of it moves the pixels', async () => {
+  // A tick claims the dashes inside the band a pan copies, which declines
+  // the copy: every frame a tick landed in repainted the pane whole.
+  await mount({
+    nodes: [
+      { id: 'a', position: { x: 100, y: 100 }, data: { label: 'a' } },
+      { id: 'b', position: { x: 400, y: 300 }, data: { label: 'b' } },
+    ],
+    edges: [{ id: 'a-b', source: 'a', target: 'b', animated: true }],
+  });
+  await act();
+  const wnd = (pane().root as unknown as { window: unknown }).window as {
+    scrollRegion(rect: unknown, dx: number, dy: number): boolean;
+  };
+  let moved = 0;
+  const own = wnd.scrollRegion.bind(wnd);
+  wnd.scrollRegion = (rect, dx, dy) => {
+    moved++;
+    return own(rect, dx, dy);
+  };
+  const node = pane() as unknown as {
+    setViewport(v: object): void;
+    invalidate(...a: unknown[]): void;
+  };
+  let ticks = 0;
+  const invalidate = node.invalidate.bind(node);
+  node.invalidate = (...a: unknown[]) => {
+    if (a[2] === 'animation') ticks++;
+    invalidate(...a);
+  };
+  const steps = 16;
+  for (let step = 1; step <= steps; step++) {
+    await act(() => node.setViewport({ x: step * 4, y: 0, zoom: 1 }));
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  await act();
+  assert.strictEqual(ticks, 0, 'no tick in the middle of the pan');
+  assert.strictEqual(moved, steps, 'and every step was a copy');
+  await new Promise((r) => setTimeout(r, 300));
+  assert.ok(ticks >= 2, `the dashes march again once it stops (${ticks})`);
+});
+
 test('a pan with no body on screen commits nothing', async () => {
   // The pane sent the bodies' origin on every step of a pan whether or not
   // any body was laid out at it, and `<Flow>` re-rendered for each — the

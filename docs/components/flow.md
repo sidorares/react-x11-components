@@ -401,7 +401,12 @@ repainted the world. Mounted bodies still force the repaint path: their
 gesture-time commits claim inside the rect, which declines a blit by
 design. With none on screen a pan commits nothing: node types that _can_
 mount bodies used to cost `<Flow>` a render per step for the origin of a
-layer that was not there.
+layer that was not there. And animated edges hold their dashes while a pan
+blits — a tick claims the dashes inside the band the pan copies, which
+declines the copy, and a sixth of a pan's frames repainted the pane whole:
+120 frames a second against 175 on the stress example's lattice, and every
+stutter in it. They march again once the pan has held still for two ticks.
+Under GL a dash is a uniform and never waits.
 
 **A pass draws what it reaches.** Each damage rect is its own pass, and each
 builds the scene for its rect: an edge is kept by the curve it takes, not
