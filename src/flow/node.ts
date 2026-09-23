@@ -3058,10 +3058,36 @@ export class FlowGraphNode extends Node implements FlowInstance {
 
   private _sceneInput(
     palette: FlowPalette,
-    layer: 'all' | 'overlay' | { world: FlowRect } = 'all',
+    layer: 'all' | 'overlay' | 'card' | { world: FlowRect } = 'all',
     /** The panels even while `<Flow>` paints them itself — for that paint. */
     panels = false,
   ): SceneInput {
+    // One card, for `paintCard`, which hands in the node itself: nothing
+    // about the rest of the graph is read, where the whole input — every
+    // node's source twice over, the minimap's walk for its bounds — was most
+    // of what a card cost to paint, and a zoom repaints every one of them.
+    if (layer === 'card') {
+      const gesture = this._gesture;
+      return {
+        viewport: this._viewport(),
+        pane: this._pane(),
+        clip: null,
+        palette,
+        background: normalizeBackground(undefined),
+        nodes: [],
+        all: [],
+        edges: [],
+        dashPhase: this._dashPhase,
+        hover: this._hover,
+        connection: gesture?.kind === 'connect' ? gesture : null,
+        selection: null,
+        miniMap: null,
+        controls: [],
+        scale: this._scale,
+        measure: this._measureBox,
+        cache: this._sceneCache,
+      };
+    }
     const order = this._paintOrder();
     const gesture = this._gesture;
     // The panel cull comes before `_miniMap()`, which walks every node to
@@ -3298,7 +3324,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
     const painter = createPainter(ctx, this._textOptions());
     if (!painter) return;
     const palette = this._palette();
-    const input = this._sceneInput(palette);
+    const input = this._sceneInput(palette, 'card');
     const [item] = buildNodeItems({
       ...input,
       nodes: [this._source(entry)],
