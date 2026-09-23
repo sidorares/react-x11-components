@@ -3130,6 +3130,48 @@ test('at 1.25x a pan moves the bodies’ box by whole pixels, the same size, and
   );
 });
 
+test('at 1.25x a dragged card’s box moves and keeps its size', async () => {
+  // The box a card is laid out in was the gap between two edges, each put
+  // on the device grid: dragged a fraction of a pixel, the edges rounded
+  // apart and the box grew or shrank by one. A box that changed size is not
+  // a box that only moved, so every step of a drag measured the content
+  // floors and repainted the card where core would have moved it.
+  const flow: { current: FlowInstance | null } = { current: null };
+  const graph = (x: number): FlowNode[] => [
+    { ...threeBodies()[0], position: { x, y: 100 } },
+  ];
+  const { rerender } = await renderX11(
+    h(TypedFlow, {
+      ref: flow,
+      nodes: graph(100),
+      edges: [],
+      nodeTypes: { form: sizedType },
+    }),
+    AT_125,
+  );
+  await act();
+  const card = (): { width: number; height: number } =>
+    retained(bodyLayer().children[0]).abs;
+  const size = card();
+  for (const x of [100.3, 100.9, 101.45, 102.2, 103.7]) {
+    await act(() =>
+      rerender(
+        h(TypedFlow, {
+          ref: flow,
+          nodes: graph(x),
+          edges: [],
+          nodeTypes: { form: sizedType },
+        }),
+      ),
+    );
+    assert.deepStrictEqual(
+      [card().width, card().height],
+      [size.width, size.height],
+      `the card at x=${x} kept its size`,
+    );
+  }
+});
+
 test('a drag step re-renders the card that moved and no other', async () => {
   // Every card element was made anew whenever any body moved, and each card
   // canvas got a new `onDraw` with it — which core reads as new content and

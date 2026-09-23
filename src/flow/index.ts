@@ -712,8 +712,16 @@ export function Flow<N = FlowNodeData, E = unknown>(
         type: type as FlowNodeType<unknown>,
         left: left - extent.x,
         top: top - extent.y,
-        width: snap(card.x + card.width + CARD_INK) - left,
-        height: snap(card.y + card.height + CARD_INK) - top,
+        // Sized from the card alone, not as the gap between two edges each
+        // put on the grid: at 1.25x a card dragged a fraction of a pixel
+        // grew or shrank by one as its edges rounded apart, and a box that
+        // changed size is no longer a box that only moved — every step of
+        // a drag measured the content floors and repainted the card where
+        // core would have moved it. The box draws nothing and takes no
+        // pointer; the canvas and the body inside it keep sizes of their
+        // own.
+        width: snap(card.width + CARD_INK * 2),
+        height: snap(card.height + CARD_INK * 2),
         fill:
           (node.style as { background?: string } | undefined)?.background ??
           nodeFill,
