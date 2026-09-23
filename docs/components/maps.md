@@ -651,6 +651,36 @@ Placing in world rather than screen pixels is what lets a pan translate an
 existing placement rather than recompute it, which is what keeps the pan a
 blit.
 
+**On the GL renderer, names arrive when the view settles, and nothing a
+glide can know is left until then.** Labels there are placed per frame in
+screen space, and the text is set by the app's own text engine into an
+atlas the GPU draws from — measured, rasterized off-screen, read back and
+uploaded, a batch between frames. While the camera moves no new name is
+admitted (names already shown ride along), so the view that lands is named
+once rather than at every step on the way; a name then fades in over 220
+ms. Three things keep that from looking like more than one event:
+
+- **A wheel's glide sets its destination's labels on the way.** The glide
+  knows where it stops, so while its frames are drawn the view it will
+  land on is placed out of sight and every name it will show is measured
+  and set — its tiles asked for, behind the current view's. On a Cocoa
+  panel over London, 82% of the strings a notch's destination needed were
+  set during its glide rather than after it. A drag, a touchpad and an
+  application's own animation have no destination to ask about, and are
+  named when they stop.
+- **A zoom that changes names' sizes changes them in one frame.** A ramped
+  `textSize` means a new raster per name, and each landed with its batch,
+  so text re-set in waves after the map had stopped. The labels keep the
+  size they have until every new one is in the texture (400 ms at most),
+  and swap together.
+- **A full atlas never takes a name off screen.** It fills in ordinary use —
+  a thousand strings at 1x, about a quarter of that on a 2x panel — and it
+  used to repack, which took every label out of the texture for the frames
+  the re-upload took: the whole layer blinked out and back. Room is made
+  in place from the row of rasters drawn longest ago, and the repack that
+  remains as a last resort uploads what it moved before the frame that
+  draws it.
+
 **A street's name follows its street — straight.** Both renderers take
 their anchors from `src/maps/anchors.ts`: a street's pieces are merged into
 the polylines they were cut from and walked into straight runs, and a name

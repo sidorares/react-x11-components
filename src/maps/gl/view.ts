@@ -459,6 +459,15 @@ export class GlMapDriver implements MapView {
   private readonly _fader = new LevelFader();
   private readonly _gates = new GateFader();
   private readonly _placer = new LabelPlacer();
+  /** Places the labels of the view a glide stops at, and shows nothing:
+   *  what it asks the atlas for is measured and set while the glide is
+   *  still being drawn. */
+  private readonly _scout = new LabelPlacer();
+  /** The destination the scout last placed, and whether that placement
+   *  measured everything it offered — a frame's text budget can run out
+   *  first, and then the next frame places it again. */
+  private _scoutedFor = '';
+  private _scoutDone = false;
   private readonly _markers = new MarkerBatcher();
   /** The overlays' bucket, and what it was built from. */
   private _overlay: {
@@ -831,6 +840,24 @@ export class GlMapDriver implements MapView {
       return { source, store, pyramid, target };
     });
 
+    // Where a wheel's glide stops, while one is running: its tiles are
+    // asked for after the view's own, so the view the glide lands on is
+    // loaded — and its labels set, below — by the time it gets there.
+    const destination = moving ? controller.destination() : null;
+    const ahead = destination
+      ? covers.map((c) => {
+          const cover = renderCover(
+            destination,
+            pane,
+            scale,
+            c.pyramid,
+            c.store,
+          );
+          c.store.want(cover.missing);
+          return cover;
+        })
+      : null;
+
     // The level fade and adaptive quality are the first source's — the
     // basemap's; a pyramid over it is drawn at its own level throughout.
     const primary = covers[0] ?? null;
@@ -940,6 +967,12 @@ export class GlMapDriver implements MapView {
           // for a later one — for as long as names keep arriving.
           attribution = this._attributionFor(atlas, frame);
           labels = this._labelsFor(atlas, frame, fade, at, moving);
+          if (destination && ahead) {
+            this._scoutFor(atlas, frame, destination, ahead, at);
+          } else if (this._scoutedFor !== '') {
+            this._scout.reset();
+            this._scoutedFor = '';
+          }
           this._pumpSoon();
         }
       } catch (error) {
@@ -1221,6 +1254,58 @@ export class GlMapDriver implements MapView {
       this._placedAt = at;
     }
     return this._placer.batch(placement, atlas);
+  }
+
+  /**
+   * Render ahead: place the labels of the view a glide stops at, so that
+   * every string it will show is measured and asked of the atlas while the
+   * glide's own frames are drawn. Nothing it places is drawn — the frame's
+   * placer places the destination again when it gets there, and finds every
+   * box measured and every raster in the texture, so the labels fade in
+   * when the view settles rather than a readback and an upload after.
+   *
+   * A fresh placement each time (the scout keeps no labels between runs;
+   * holding a place is for what is on screen), and not every frame: when
+   * the destination moves — another notch — or more of its tiles land, or
+   * the last placement ran out of the frame's text budget before it had
+   * measured everything. It measures out of that budget, after the frame's
+   * own labels.
+   */
+  private _scoutFor(
+    atlas: LabelAtlas,
+    frame: RenderFrame,
+    destination: MapCamera,
+    covers: readonly CoverResult[],
+    at: number,
+  ): void {
+    // The destination is recomputed from each frame's camera, so its last
+    // digits wander; to a millionth of a degree it is the same place. And
+    // it is a different question once more of its tiles are in hand.
+    let held = 0;
+    for (const c of covers) held += c.own;
+    const key = `${destination.zoom}|${destination.center.lon.toFixed(6)}|${destination.center.lat.toFixed(6)}|${held}`;
+    if (key === this._scoutedFor && this._scoutDone) return;
+    this._scoutedFor = key;
+    const centre = project(destination.center);
+    this._scout.reset();
+    this._scout.place(
+      {
+        width: frame.width,
+        height: frame.height,
+        scale: frame.scale,
+        zoom: destination.zoom,
+        style: frame.style,
+        tiles: covers.flatMap((c) => c.tiles),
+        centerX: centre.x,
+        centerY: centre.y,
+        world: worldSize(destination.zoom, DEFAULT_TILE_SIZE) * frame.scale,
+        now: at,
+        admit: true,
+        moving: false,
+      },
+      atlas,
+    );
+    this._scoutDone = !atlas.starved;
   }
 
   /**

@@ -116,7 +116,8 @@ import {
   scissorOf,
 } from '../src/maps/gl/renderer.js';
 import { GlTileStore } from '../src/maps/gl/store.js';
-import { LabelAtlas } from '../src/maps/gl/text.js';
+import { LabelAtlas, SurfaceTextEngine } from '../src/maps/gl/text.js';
+import { glideClock } from '../src/maps/controller.js';
 import type { TextEngine } from '../src/maps/gl/text.js';
 
 test.afterEach(async () => {
@@ -1446,6 +1447,11 @@ const LABEL_STYLE: MapStyleLayer[] = [
  * straight stretch; and two places, one of them in the tile's buffer.
  */
 function labelTile() {
+  return parseTile(labelTileBytes());
+}
+
+/** {@link labelTile}, encoded: what a source serves. */
+function labelTileBytes(): Uint8Array {
   const street = (name: number, kind: number, points: [number, number][]) => ({
     type: GeomType.LineString,
     tags: [0, name, 1, kind],
@@ -1458,48 +1464,46 @@ function labelTile() {
     tags: [0, name],
     geometry: [...command(1, 1), zigzag_(x), zigzag_(y)],
   });
-  return parseTile(
-    new Uint8Array([
-      ...layer(
-        'street_labels',
-        4096,
-        ['name', 'kind'],
-        ['Long Street', 'Cross Street', 'Zig Zag', 'primary', 'residential'],
-        [
-          street(0, 4, [
-            [200, 1000],
-            [800, 1000],
-          ]),
-          // Reversed: pieces meet end to end in either direction.
-          street(0, 4, [
-            [1600, 1000],
-            [1200, 1000],
-            [800, 1000],
-          ]),
-          street(0, 4, [
-            [1600, 1000],
-            [2400, 1004],
-          ]),
-          street(1, 3, [
-            [1200, 400],
-            [1200, 1000],
-          ]),
-          street(1, 3, [
-            [1200, 1000],
-            [1200, 1600],
-          ]),
-          street(2, 4, zigzag),
-        ],
-      ),
-      ...layer(
-        'place_labels',
-        4096,
-        ['name'],
-        ['Townsville', 'Elsewhere'],
-        [place(0, 2048, 2048), place(1, -50, 100)],
-      ),
-    ]),
-  );
+  return new Uint8Array([
+    ...layer(
+      'street_labels',
+      4096,
+      ['name', 'kind'],
+      ['Long Street', 'Cross Street', 'Zig Zag', 'primary', 'residential'],
+      [
+        street(0, 4, [
+          [200, 1000],
+          [800, 1000],
+        ]),
+        // Reversed: pieces meet end to end in either direction.
+        street(0, 4, [
+          [1600, 1000],
+          [1200, 1000],
+          [800, 1000],
+        ]),
+        street(0, 4, [
+          [1600, 1000],
+          [2400, 1004],
+        ]),
+        street(1, 3, [
+          [1200, 400],
+          [1200, 1000],
+        ]),
+        street(1, 3, [
+          [1200, 1000],
+          [1200, 1600],
+        ]),
+        street(2, 4, zigzag),
+      ],
+    ),
+    ...layer(
+      'place_labels',
+      4096,
+      ['name'],
+      ['Townsville', 'Elsewhere'],
+      [place(0, 2048, 2048), place(1, -50, 100)],
+    ),
+  ]);
 }
 const zigzag_ = zigzag;
 
@@ -2588,6 +2592,106 @@ test('a settled zoom changes every label to its new size in one frame', async ()
     [at20, at26],
     'past the wait, what is in hand changes',
   );
+});
+
+test('a glide sets the labels of the view it stops at while it is still gliding', async (t) => {
+  const set: string[] = [];
+  const engine: TextEngine = {
+    measure: (text, size) => ({
+      width: text.length * size * 0.5,
+      height: size,
+    }),
+    rasterize: async (items, pad) =>
+      items.map((item) => {
+        set.push(`${item.size}|${item.text}`);
+        const width = item.text.length * item.size * 0.5 + pad * 2;
+        const height = item.size + pad * 2;
+        return { width, height, pixels: new Uint8Array(width * height * 4) };
+      }),
+    dispose: () => {},
+  };
+  t.mock.method(SurfaceTextEngine, 'forApp', () => engine);
+  // The glide held: its first step is taken under the wheel, and no other.
+  let clockAt = 0;
+  t.mock.method(glideClock, 'now', () => clockAt);
+  t.mock.method(glideClock, 'arm', (tick: () => void) => tick);
+  t.mock.method(glideClock, 'disarm', () => {});
+
+  const loaded: number[] = [];
+  // Every tile names a place at its centre. Centres are at most 1024
+  // pixels apart at any zoom, so a pane of 1536 has one at least 256 in
+  // from every edge, whatever the camera: a name placed at both ends.
+  const controller = new MapController({
+    center: { lon: -0.1281, lat: 51.508 },
+    zoom: 12,
+  });
+  const driver = new GlMapDriver(controller, {
+    controller,
+    map: {
+      sources: [
+        {
+          id: 'labels',
+          minZoom: 0,
+          maxZoom: 14,
+          tileSize: 512,
+          load: (request: { z: number }) => {
+            loaded.push(request.z);
+            return { kind: 'vector' as const, data: labelTileBytes() };
+          },
+        },
+      ],
+      mapStyle: {
+        layers: [
+          {
+            id: 'places',
+            type: 'symbol',
+            sourceLayer: 'place_labels',
+            textField: 'name',
+            rank: 100,
+            textColor: '#222222',
+            textHaloColor: '#ffffff',
+            textSize: {
+              stops: [
+                [12, 10],
+                [14, 20],
+              ],
+            },
+          },
+        ],
+      },
+      adaptive: false,
+    },
+    onFailure: (error: Error) => {
+      throw error;
+    },
+  });
+  const gl = recordingGl(true).gl;
+  const info = { width: 1536, height: 1536, node: { scale: 1 } };
+  const frame = async () => {
+    driver.draw(gl, info);
+    for (let i = 0; i < 3; i++) await new Promise((r) => setTimeout(r, 0));
+  };
+  // Settled at 12, labels and all. The settle window is wall-clock.
+  for (let i = 0; i < 12; i++) {
+    await frame();
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  assert.ok(set.includes('10|Townsville'), `settled: ${set.join(', ')}`);
+  assert.ok(!loaded.includes(14));
+
+  // Two levels in, and the glide held after its first step.
+  controller.wheel({ x: 768, y: 768 }, -250);
+  const zoom = controller.camera().zoom;
+  assert.ok(zoom > 12 && zoom < 13, `under way: ${zoom}`);
+  await frame();
+  await frame();
+  assert.strictEqual(controller.camera().zoom, zoom, 'and nowhere near 14');
+  assert.ok(loaded.includes(14), `the tiles it stops on: ${loaded.join(',')}`);
+  assert.ok(
+    set.includes('20|Townsville'),
+    `and the names they carry, at the size they will be: ${set.join(', ')}`,
+  );
+  driver.dispose();
 });
 
 test('labels are one instanced draw over the scene, once their rasters are uploaded', async () => {
