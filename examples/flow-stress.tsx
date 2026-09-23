@@ -35,7 +35,7 @@ import {
   useState,
 } from 'react';
 import type { ReactElement } from 'react';
-import { Button, Checkbox, Select, createRoot } from 'react-x11';
+import { Button, Checkbox, Select, createRoot, useScale } from 'react-x11';
 import { startTrace } from 'react-x11/debug';
 import type { TraceSession } from 'react-x11/debug';
 
@@ -62,7 +62,7 @@ import type {
   HandlePosition,
 } from '../src/index.js';
 
-interface Scene {
+export interface Scene {
   name: string;
   detail: string;
   nodes: FlowNode[];
@@ -86,7 +86,7 @@ function facing(from: FlowNode, to: FlowNode): HandlePosition {
  * handles, so this is the case where per-node cost shows up undiluted, and
  * every edge kind has to route between two nodes at an arbitrary angle.
  */
-function spiral(): Scene {
+export function spiral(): Scene {
   const count = 20;
   const width = 104;
   // One and a half turns, starting far enough out that the arc between two
@@ -142,7 +142,7 @@ function spiral(): Scene {
  * dropping detail. Between them the two scenes bracket the interesting
  * range.
  */
-function fanOut(): Scene {
+export function fanOut(): Scene {
   // A lens: layer widths follow a half sine, scaled so the whole thing is
   // 300 nodes. Eighteen layers rather than ten because the pane is a wide
   // rectangle, and a graph that is taller than it is wide gets fitted to its
@@ -213,7 +213,7 @@ function fanOut(): Scene {
  * marching — `scripts/bench/flow.ts`'s `grid` scene, so what this window
  * shows and what the bench measures are the same graph.
  */
-function lattice(): Scene {
+export function lattice(): Scene {
   const count = 200;
   const cols = Math.ceil(Math.sqrt(count * 1.6));
   const nodes: FlowNode[] = [];
@@ -584,7 +584,12 @@ function App(): ReactElement {
   const drawn = useRef<FlowFrameStats[]>([]);
   const panningRef = useRef(false);
   panningRef.current = panning;
-  const dx = useRef(2);
+  // Two logical pixels a step, rounded to whole device pixels — which is how
+  // a pointer's pan moves (it comes off the wire in them), and what lets the
+  // 2D renderer move the pane's pixels instead of repainting them. At 125%
+  // a plain 2 is 2.5 device pixels, which no pan gesture ever is.
+  const scale = useScale();
+  const dx = useRef(Math.round(2 * scale) / scale);
   const steps = useRef(0);
   const onFrame = useCallback((stats: FlowFrameStats) => {
     drawn.current.push(stats);
