@@ -397,9 +397,16 @@ copy and the frame stays a blit. Measured on the 300-node scene: **19
 requests and 1.6 KB a frame** bare, **~550 requests and ~170 KB** with the
 minimap and controls up (the strip repaints; it holds the minimap's three
 hundred dots), from ~2,465 requests and ~1.8 MB when every pan frame
-repainted the world. Mounted bodies still force the repaint path: their
-gesture-time commits claim inside the rect, which declines a blit by
-design. With none on screen a pan commits nothing: node types that _can_
+repainted the world. Mounted bodies ride it: they are laid out in one box a
+pan moves by exactly the pan, which the pane hands to `scrollContents` as a
+rider (react-x11#671), so their pixels are copied with the graph's and the
+box's commit claims nothing. `<Flow>` puts that box inside one that clips it
+to the pane, so what it leaves outside the copy is the bands the furniture
+repaints anyway. A body entering or leaving the pane, or changing as it
+goes, claims inside the rect and makes that one step a repaint. On the
+stress example's widgets board, 56 bodies mounted, a 2D pan went from 44 to
+84 frames a second, 20.6 ms a flush to 8.4. With none on screen a pan
+commits nothing: node types that _can_
 mount bodies used to cost `<Flow>` a render per step for the origin of a
 layer that was not there. And animated edges hold their dashes while a pan
 blits — a tick claims the dashes inside the band the pan copies, which

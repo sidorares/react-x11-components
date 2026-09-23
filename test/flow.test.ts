@@ -93,7 +93,9 @@ function pane(): RetainedNode {
 /** The one box `<Flow>` lays mounted bodies out in, at the graph's origin
  *  in the pane — a pan moves it and nothing inside it. */
 function bodyLayer(): RetainedNode {
-  const layer = pane().parent!.children.find((c) => c.kind === 'box');
+  // inside the box that clips it to the pane
+  const clip = pane().parent!.children.find((c) => c.kind === 'box');
+  const layer = clip?.children.find((c) => c.kind === 'box');
   assert.ok(layer, 'the bodies’ box is mounted');
   return retained(layer);
 }
@@ -3314,6 +3316,38 @@ test('a dash tick claims only what the pane shows of its edges', async () => {
       `a tick claimed ${JSON.stringify(claim)}, past ${JSON.stringify(box)}`,
     );
   }
+});
+
+test('a 2D pan over mounted bodies moves their pixels with the graph’s', async () => {
+  // The bodies are laid out in one box a pan moves by exactly the pan, and
+  // that box sat over the region the pane blits: every step declined the
+  // copy and repainted the pane and every body on it. The pane hands the
+  // box over as a rider (react-x11#671), and `<Flow>` clips it to the pane.
+  await mount({
+    nodes: threeBodies(),
+    edges: [],
+    nodeTypes: { form: sizedType },
+    minimap: true,
+    controls: true,
+  });
+  await act();
+  assert.ok(bodyLayer().children.length > 0, 'the bodies are mounted');
+  const wnd = (pane().root as unknown as { window: unknown }).window as {
+    scrollRegion(rect: unknown, dx: number, dy: number): boolean;
+  };
+  const moved: number[] = [];
+  const own = wnd.scrollRegion.bind(wnd);
+  wnd.scrollRegion = (rect, dx, dy) => {
+    moved.push(dx);
+    return own(rect, dx, dy);
+  };
+  const flow = pane() as unknown as { setViewport(v: object): void };
+  const layerX = bodyLayer().abs.x;
+  for (let step = 1; step <= 3; step++) {
+    await act(() => flow.setViewport({ x: step * 4, y: 0, zoom: 1 }));
+  }
+  assert.deepStrictEqual(moved, [4, 4, 4], 'every step moved the pixels');
+  assert.strictEqual(bodyLayer().abs.x, layerX + 12, 'and the bodies went too');
 });
 
 test('a pan past panel canvases still moves the pane’s pixels', async () => {

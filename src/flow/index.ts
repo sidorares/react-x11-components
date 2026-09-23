@@ -79,6 +79,19 @@ const styles = createStyles({
   pane: { flexGrow: 1, overflow: 'hidden' },
   clip: { overflow: 'hidden' },
   fill: { flexGrow: 1 },
+  // Over the pane, holding the bodies' layer and clipping it to the pane:
+  // a 2D pan carries the layer's pixels in its blit, and what the layer can
+  // paint outside the pane — in the border round it — would be repainted
+  // on every step (`_blitPan` in ./node.ts).
+  bodiesClip: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    right: 0,
+    bottom: 0,
+    overflow: 'hidden',
+    pointerEvents: 'box-none',
+  },
 });
 
 /**
@@ -478,6 +491,9 @@ export function Flow<N = FlowNodeData, E = unknown>(
   } = props;
 
   const pane = useRef<FlowGraphNode | null>(null);
+  // whether the surface draws the graph, as of the last render — read by a
+  // layout effect declared before the surface is decided
+  const drawsGlRef = useRef(false);
 
   const [ownNodes, setOwnNodes] = useState<readonly FlowNode<N>[]>(
     () => defaultNodes ?? [],
@@ -828,12 +844,14 @@ export function Flow<N = FlowNodeData, E = unknown>(
     () => ({ onWheel: forwardWheel, ...forwardPress }),
     [forwardWheel, forwardPress],
   );
+  const bodiesLayer = useRef<unknown>(null);
   const layer =
     overlays && overlays.length > 0
       ? React.createElement(
           'box',
           {
             key: 'bodies',
+            ref: bodiesLayer,
             style: {
               position: 'absolute',
               left: snap(origin.x) + extent.x,
@@ -854,6 +872,13 @@ export function Flow<N = FlowNodeData, E = unknown>(
           overlays,
         )
       : null;
+
+  // The box a 2D pan carries along with the pane's pixels (`_blitPan`).
+  useLayoutEffect(() => {
+    pane.current?.setBodiesLayer(
+      drawsGlRef.current ? null : bodiesLayer.current,
+    );
+  });
 
   // The cards whose canvases are on screen, told to the pane once they are,
   // so it stops drawing them itself — and the empty set while bodies are
@@ -976,6 +1001,7 @@ export function Flow<N = FlowNodeData, E = unknown>(
   }, [wantGl, gl, glFailed]);
   const drawsGl =
     wantGl && gl != null && !glFailed && !(mounts && !overlaySupported);
+  drawsGlRef.current = drawsGl;
   const surface = drawsGl
     ? React.createElement(gl.FlowGlSurface, {
         key: 'gl',
@@ -1028,7 +1054,13 @@ export function Flow<N = FlowNodeData, E = unknown>(
     // After the pane, so the surface covers exactly its box — and with the
     // bodies inside it under GL, or beside the pane without.
     surface,
-    drawsGl ? null : layer,
+    drawsGl || !layer
+      ? null
+      : React.createElement(
+          'box',
+          { key: 'bodies-clip', style: styles.bodiesClip },
+          layer,
+        ),
     drawsGl ? null : panelLayer,
   );
 }

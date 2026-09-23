@@ -461,6 +461,8 @@ export class FlowGraphNode extends Node implements FlowInstance {
   private _lastFrameAt = -Infinity;
   private _zoomStep: { live: boolean; bodies: number } | null = null;
   private _dashPhase = 0;
+  /** The box the bodies are laid out in, which a 2D pan carries. */
+  private _bodiesLayer: Node | null = null;
   /** When a pan last asked to blit — the dash timer waits for it. */
   private _blittedPanAt = -Infinity;
   private _animTimer: unknown = null;
@@ -1176,12 +1178,19 @@ export class FlowGraphNode extends Node implements FlowInstance {
    * the pane is copied, the strips repaint with the new viewport, and the
    * panels repaint in place.
    *
+   * Mounted node bodies ride it. They are laid out in one box beside the
+   * pane, which a pan moves by exactly the pan, so their pixels move with
+   * the pane's: the box goes to `scrollContents` as a rider
+   * (react-x11#671), its commit claims nothing, and what it leaves or
+   * reaches outside the rect — the bands, which repaint anyway — is all it
+   * costs. `<Flow>` clips it to the pane for that. A body entering or
+   * leaving the pane, or changing as it goes, claims inside the rect and
+   * declines that frame's blit; the next one blits again.
+   *
    * Still a full repaint when:
    *  - the zoom moved (scaling is not a blit) or the shift is fractional on
    *    the device grid — every real pan gesture is whole device pixels;
-   *  - mounted node bodies exist: they are core-owned siblings whose
-   *    gesture-time commits claim *inside* the rect every step, which
-   *    declines the blit anyway — bailing early skips the churn;
+   *  - bodies are mounted and `<Flow>` has not handed their box over;
    *  - the furniture bands would eat the pane (a tiny pane, or panels on
    *    both the top and the bottom of a short one).
    */
@@ -1190,7 +1199,8 @@ export class FlowGraphNode extends Node implements FlowInstance {
     // whole scene every frame, and a pan is its cheapest frame of all.
     if (this._gl) return false;
     if (next.zoom !== previous.zoom) return false;
-    if (this._bodies.length > 0) return false;
+    const riders = this._bodies.length > 0 ? this._bodiesLayer : null;
+    if (this._bodies.length > 0 && !riders) return false;
     // Device pixels: the blit copies the backing store, and its grid is the
     // panel's. A pointer step lands on it whatever the scale — it came off
     // the wire as whole device pixels — so every real pan gesture blits.
@@ -1267,7 +1277,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
     if (Math.abs(dx) >= blit.width || Math.abs(dy) >= blit.height) {
       return false;
     }
-    this.scrollContents(blit, dx, dy);
+    this.scrollContents(blit, dx, dy, riders ? [riders] : undefined);
     this._blittedPanAt = now();
     if (top > 0) {
       this.invalidate(
@@ -3610,6 +3620,16 @@ export class FlowGraphNode extends Node implements FlowInstance {
     if (!corner) return [];
     const box = this._device(corner);
     return canvases.filter((c) => !c.abs || rectsOverlap(c.abs, box));
+  }
+
+  /**
+   * The box `<Flow>` lays the node bodies out in, beside this pane, under
+   * the 2D renderer — null under GL, and with no bodies to lay out. A pan
+   * hands it to `scrollContents` as a rider: its pixels move with the
+   * pane's.
+   */
+  setBodiesLayer(layer: unknown): void {
+    this._bodiesLayer = (layer as Node | null) ?? null;
   }
 
   setPanelCanvases(canvases: readonly PanelCanvas[]): void {
