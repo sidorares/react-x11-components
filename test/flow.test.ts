@@ -1217,6 +1217,156 @@ test('a moved node keeps its measured size; a relabelled one is re-measured', as
   );
 });
 
+/** A drag's motion reaches the pane with ntk's next frame, which is paced
+ *  on a timer of its own: `act` alone can resolve before it lands. A press
+ *  or a release flushes it too, but a release ends the gesture. */
+async function motionLands(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  await act();
+}
+
+/** Every rect claimed of the window from here on — `null` for a claim of
+ *  all of it. A node's claim of its own box is its box; core's "nothing I
+ *  draw changed" is no claim at all. */
+function claimsOf(node: RetainedNode): (FlowRect | null)[] {
+  const root = node.root as unknown as {
+    invalidate(layout: boolean, damage: unknown, ...rest: unknown[]): void;
+  };
+  const claims: (FlowRect | null)[] = [];
+  const own = root.invalidate.bind(root);
+  root.invalidate = (layout, damage, ...rest) => {
+    if (damage == null) claims.push(null);
+    else if (typeof damage === 'object' && 'width' in damage) {
+      claims.push(damage as FlowRect);
+    } else if (typeof damage === 'object' && 'abs' in damage) {
+      claims.push((damage as { abs: FlowRect }).abs);
+    }
+    own(layout, damage, ...rest);
+  };
+  return claims;
+}
+
+const inside = (r: FlowRect | null, x: number, y: number): boolean =>
+  r === null ||
+  (x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height);
+
+test('a box selection step claims the bands its moving sides swept, not the box', async () => {
+  // Claiming the box round the old and new selection repainted everything
+  // under it, every node and edge, on every step — 21 ms a step on the
+  // stress example's 300-node fan-out, and the pointer left behind.
+  await mount({ selectionOnDrag: true });
+  const node = pane() as unknown as DrawnNode;
+  await act(() => {
+    fireEvent.mouseDown(node, at(20, 20));
+    fireEvent.mouseMove(node, at(300, 250));
+  });
+  const claims = claimsOf(pane());
+  // clear of both nodes, so no selection changes on the way
+  await act(() => fireEvent.mouseMove(node, at(310, 256)));
+  await motionLands();
+  assert.ok(claims.length > 0, 'the step claimed something');
+  assert.ok(
+    claims.some((c) => inside(c, 305, 130)),
+    'the band the right side swept',
+  );
+  assert.ok(
+    claims.some((c) => inside(c, 150, 253)),
+    'and the one the bottom swept',
+  );
+  assert.ok(
+    !claims.some((c) => inside(c, 150, 130)),
+    `but not the middle, where both boxes lay the same tint: ${JSON.stringify(claims)}`,
+  );
+  assert.ok(
+    !claims.some((c) => inside(c, 20, 130) || inside(c, 150, 20)),
+    'nor the two sides the box is anchored by',
+  );
+  await act(() => fireEvent.mouseUp(node, at(310, 256)));
+});
+
+test('a selection change repaints the node, not the pane', async () => {
+  // Selection lifts a node over its neighbours, which read as structural:
+  // every node re-measured and the whole pane repainted — on every step of
+  // a box selection that took a node in.
+  const flow: { current: FlowInstance | null } = { current: null };
+  const base = nodes();
+  const { rerender } = await renderX11(
+    h(TypedFlow, { ref: flow, nodes: base, edges: edges() }),
+  );
+  await act();
+  const claims = claimsOf(pane());
+  const picked = base.map((n) => (n.id === 'a' ? { ...n, selected: true } : n));
+  await act(() =>
+    rerender(h(TypedFlow, { ref: flow, nodes: picked, edges: edges() })),
+  );
+  assert.ok(claims.length > 0, 'the change claimed something');
+  assert.ok(!claims.includes(null), 'none of it the whole window');
+  assert.ok(
+    claims.some((c) => inside(c, 160, 120)),
+    'the selected node repaints',
+  );
+  assert.ok(
+    !claims.some((c) => inside(c, 160, 320)),
+    'the one beside it does not',
+  );
+});
+
+test('a selected node is painted over the one it overlaps, without a rebuild', async () => {
+  const flow: { current: FlowInstance | null } = { current: null };
+  const overlapping: FlowNode[] = [
+    {
+      id: 'top',
+      position: { x: 100, y: 100 },
+      width: 120,
+      height: 40,
+      data: { label: 'T' },
+    },
+    {
+      id: 'under',
+      position: { x: 60, y: 90 },
+      width: 120,
+      height: 40,
+      data: { label: 'U' },
+    },
+  ];
+  const { rerender } = await renderX11(
+    h(TypedFlow, { ref: flow, nodes: overlapping, edges: [] }),
+  );
+  await act();
+  // declaration order: `under` is drawn last, over `top`
+  const order = () =>
+    (pane() as unknown as { _paintOrder(): { node: FlowNode }[] })
+      ._paintOrder()
+      .map((e) => e.node.id);
+  assert.deepStrictEqual(order(), ['top', 'under']);
+  const picked = overlapping.map((n) =>
+    n.id === 'top' ? { ...n, selected: true } : n,
+  );
+  await act(() =>
+    rerender(h(TypedFlow, { ref: flow, nodes: picked, edges: [] })),
+  );
+  assert.deepStrictEqual(order(), ['under', 'top'], 'selection lifts it');
+});
+
+test('under GL a box selection step is a frame, not a new world', async () => {
+  const { node, asked } = await glPane({ selectionOnDrag: true });
+  let frame = node.glFrame(null)!;
+  const target = pane() as unknown as DrawnNode;
+  await act(() => {
+    fireEvent.mouseDown(target, at(20, 20));
+    fireEvent.mouseMove(target, at(60, 60));
+  });
+  await motionLands();
+  frame = node.glFrame(frame.key)!;
+  const before = asked();
+  await act(() => fireEvent.mouseMove(target, at(70, 66)));
+  await motionLands();
+  assert.ok(asked() > before, 'the step asks for a frame');
+  frame = node.glFrame(frame.key)!;
+  assert.strictEqual(frame.world, null, 'and the world on the GPU stands');
+  await act(() => fireEvent.mouseUp(target, at(70, 66)));
+});
+
 test('screenToFlowPosition and back is a round trip at any viewport', async () => {
   const { flow } = await mount();
   await act(() => flow.current!.setViewport({ x: -37, y: 12, zoom: 1.75 }));
@@ -2611,13 +2761,16 @@ interface GlPane {
   } | null;
 }
 
-async function glPane(): Promise<{ node: GlPane; asked: () => number }> {
+async function glPane(
+  props: Record<string, unknown> = {},
+): Promise<{ node: GlPane; asked: () => number }> {
   await renderX11(
     h(FLOW_ELEMENT, {
       nodes: nodes(),
       edges: edges(),
       renderer: 'gl',
       style: { flexGrow: 1 },
+      ...props,
     }),
   );
   const node = pane() as unknown as GlPane;

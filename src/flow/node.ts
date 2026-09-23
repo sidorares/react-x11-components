@@ -182,6 +182,9 @@ const BODY_STEP_PRIOR_MS = 1.2;
  *  anyway, so a long gesture never magnifies one build by more than this. */
 const GL_ZOOM_REST_MS = 120;
 const GL_ZOOM_SPAN = 2;
+/** How far round a box selection's outline its step claims: the pen, the
+ *  corner's radius and a pixel of antialiasing, with room to spare. */
+const SELECT_BAND = 4;
 const ANIMATION_MS = 60;
 const ANIMATION_SPEED = 1.4; // px of dash travel per tick, at zoom 1
 
@@ -700,7 +703,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
    * Returns `'full'` after a rebuild, a damage rect after an in-place fold,
    * and `null` when nothing visual changed at all.
    */
-  private _applyNodes(nodes: readonly AnyNode[]): 'full' | FlowRect | null {
+  private _applyNodes(nodes: readonly AnyNode[]): 'full' | FlowRect[] {
     const prev = this._entries;
     this._nodesSeen = this.props.nodes;
     let structural = nodes.length !== prev.length;
@@ -712,7 +715,6 @@ export class FlowGraphNode extends Node implements FlowInstance {
         if (
           n.id !== o.id ||
           n.type !== o.type ||
-          n.selected !== o.selected ||
           n.hidden !== o.hidden ||
           n.zIndex !== o.zIndex ||
           n.handles !== o.handles ||
@@ -730,12 +732,25 @@ export class FlowGraphNode extends Node implements FlowInstance {
       this._rebuildNodes();
       return 'full';
     }
-    let damage: FlowRect | null = null;
+    const damage: FlowRect[] = [];
+    // A node that is selected, or no longer is, is restyled and restacked —
+    // selection lifts it over its neighbours — and both happen inside its
+    // own box: edges are drawn under every node. Treated as structural, a
+    // selection change re-measured every node and repainted the pane, which
+    // a box selection does on every step that takes a node in.
+    let reordered = false;
+    // round the box: its handles, and the resize grips a selected node
+    // grows at its corners, which at a deep zoom reach past the cull margin
+    const margin = Math.max(
+      CULL_MARGIN,
+      RESIZE_GRIP * this._viewport().zoom + 2,
+    );
     for (let i = 0; i < nodes.length; i++) {
       const entry = prev[i];
       const next = nodes[i];
       const old = entry.node;
       if (next === old) continue;
+      if (next.selected !== old.selected) reordered = true;
       const moved =
         next.position.x !== old.position.x ||
         next.position.y !== old.position.y;
@@ -749,7 +764,8 @@ export class FlowGraphNode extends Node implements FlowInstance {
         next.data !== old.data ||
         next.width !== old.width ||
         next.height !== old.height;
-      const restyled = next.style !== old.style;
+      const restyled =
+        next.style !== old.style || next.selected !== old.selected;
       if (!moved && !reshaped && !restyled) {
         // a behavioural flag (draggable, deletable…) — nothing drawn reads it
         entry.node = next;
@@ -774,9 +790,15 @@ export class FlowGraphNode extends Node implements FlowInstance {
         box,
         moved || grew ? this._nodeDamage(entry) : this._screenRect(entry),
       );
-      damage = damage ? unionRects(damage, box) : box;
+      damage.push(inflateRect(box, margin));
     }
-    return damage ? inflateRect(damage, CULL_MARGIN) : null;
+    if (reordered) {
+      this._sortOrder();
+      // the minimap marks what is selected, in its corner of the pane
+      const map = this._miniMapCorner();
+      if (map) damage.push(map);
+    }
+    return damage;
   }
 
   /**
@@ -825,7 +847,13 @@ export class FlowGraphNode extends Node implements FlowInstance {
     }
     this._entries = entries;
     this._byId = byId;
-    this._order = entries
+    this._sortOrder();
+  }
+
+  /** The paint order: by `zIndex`, a selected node over the rest of its
+   *  layer, and declaration order breaking ties. */
+  private _sortOrder(): void {
+    this._order = this._entries
       .map((entry, index) => ({ entry, index }))
       .sort((a, b) => {
         const az = a.entry.node.zIndex ?? 0;
@@ -1927,13 +1955,10 @@ export class FlowGraphNode extends Node implements FlowInstance {
         gesture.x = ev.x;
         gesture.y = ev.y;
         this._selectBox(gesture);
-        // The box outline is all that moves this step; a node crossing the
-        // boundary changes `selected`, and that repaints through the
-        // controlled round trip like any other selection change.
-        this._claim(
-          inflateRect(unionRects(oldBox, selectBoxRect(gesture)), CULL_MARGIN),
-          'style-state',
-        );
+        // The box is all that moves this step; a node crossing the boundary
+        // changes `selected`, and that repaints through the controlled round
+        // trip like any other selection change.
+        this._claimSelectStep(oldBox, selectBoxRect(gesture));
         return;
       }
       case 'minimap': {
@@ -2285,6 +2310,76 @@ export class FlowGraphNode extends Node implements FlowInstance {
     return check ? check(connection) !== false : true;
   }
 
+  /**
+   * What one step of a box selection changes on screen: a band round each
+   * side of the box that moved, across the whole of both boxes. That covers
+   * the outline where it was and where it is, and the tint where one box
+   * lies over the graph and the other does not; a side that held still —
+   * the two the gesture is anchored by — changed only where a moving side
+   * shortened or lengthened it, which that side's band covers. Claiming the
+   * box round both repainted everything under the selection, every node and
+   * edge in it, on every step: 21 ms of a step on the stress example's
+   * fan-out, which is what made a sweep lag the pointer.
+   *
+   * The bands are cut on the device grid so that none of them overlaps
+   * another: core merges overlapping damage into the box round it, which is
+   * the whole selection again — and a pass over a translucent tint must not
+   * paint it twice. Claimed past this element's own `invalidate`, whose one
+   * job here would be to repaint the minimap and the controls on their
+   * canvases, and a box selection moves nothing on either.
+   *
+   * Under GL the box is the overlay's, drawn every frame: a step is a frame
+   * and not a change to the world, which a claim would have rebuilt.
+   */
+  private _claimSelectStep(from: FlowRect, to: FlowRect): void {
+    if (this._gl) {
+      this._glRequest!();
+      return;
+    }
+    const s = this._scale;
+    const lo = (v: number): number => Math.floor(toDevice(v - SELECT_BAND, s));
+    const hi = (v: number): number => Math.ceil(toDevice(v + SELECT_BAND, s));
+    /** The bands round the sides that moved along one axis, merged where
+     *  they meet, in device pixels. */
+    const bands = (
+      a0: number,
+      a1: number,
+      b0: number,
+      b1: number,
+    ): [number, number][] => {
+      const out: [number, number][] = [];
+      if (a0 !== b0) out.push([lo(Math.min(a0, b0)), hi(Math.max(a0, b0))]);
+      if (a1 !== b1) out.push([lo(Math.min(a1, b1)), hi(Math.max(a1, b1))]);
+      out.sort((m, n) => m[0] - n[0]);
+      if (out.length === 2 && out[1][0] <= out[0][1]) {
+        return [[out[0][0], Math.max(out[0][1], out[1][1])]];
+      }
+      return out;
+    };
+    const outer = unionRects(from, to);
+    const x0 = lo(outer.x);
+    const x1 = hi(outer.x + outer.width);
+    const y0 = lo(outer.y);
+    const y1 = hi(outer.y + outer.height);
+    const columns = bands(from.x, from.x + from.width, to.x, to.x + to.width);
+    const rows = bands(from.y, from.y + from.height, to.y, to.y + to.height);
+    const claim = (x: number, y: number, width: number, height: number) => {
+      if (width > 0 && height > 0) {
+        super.invalidate(false, { x, y, width, height }, 'style-state');
+      }
+    };
+    for (const [c0, c1] of columns) claim(c0, y0, c1 - c0, y1 - y0);
+    for (const [r0, r1] of rows) {
+      // across both boxes, less the columns already claimed
+      let x = x0;
+      for (const [c0, c1] of columns) {
+        claim(x, r0, c0 - x, r1 - r0);
+        x = Math.max(x, c1);
+      }
+      claim(x, r0, x1 - x, r1 - r0);
+    }
+  }
+
   private _selectBox(gesture: Extract<Gesture, { kind: 'select' }>): void {
     const a = this._toGraph(gesture.startX, gesture.startY);
     const b = this._toGraph(gesture.x, gesture.y);
@@ -2602,7 +2697,10 @@ export class FlowGraphNode extends Node implements FlowInstance {
     // changed — a moved node repaints the box it moved through, an edit to
     // anything else on the visual list repaints in full, and handler churn
     // repaints nothing.
-    let damage: 'full' | FlowRect | null = null;
+    // Boxes rather than the box around them: the nodes a box selection
+    // takes in one step lie along both of its moving edges, and the box
+    // round an L of nodes is the whole selection again.
+    let damage: 'full' | FlowRect[] = [];
     if (
       !shallowEqual(nextProps.nodeTypes, before.nodeTypes) ||
       !shallowEqual(nextProps.defaultEdgeOptions, before.defaultEdgeOptions)
@@ -2611,16 +2709,14 @@ export class FlowGraphNode extends Node implements FlowInstance {
       damage = 'full';
     } else {
       if (nextProps.edges !== before.edges) {
-        damage = this._applyEdges(this._rawEdges());
+        const edgeDamage = this._applyEdges(this._rawEdges());
+        if (edgeDamage === 'full') damage = 'full';
+        else if (edgeDamage) damage.push(edgeDamage);
       }
       if (damage !== 'full' && nextProps.nodes !== before.nodes) {
         const nodeDamage = this._applyNodes(this._nodes());
-        damage =
-          nodeDamage === 'full' || damage === null
-            ? nodeDamage
-            : nodeDamage === null
-              ? damage
-              : unionRects(damage, nodeDamage);
+        if (nodeDamage === 'full') damage = 'full';
+        else damage.push(...nodeDamage);
       }
     }
     // `fitView` is a one-shot: turning it on later refits, and it stays off
@@ -2638,11 +2734,11 @@ export class FlowGraphNode extends Node implements FlowInstance {
       }
     }
     if (damage === 'full') this._repaint('props');
-    else if (damage) this._claim(damage, 'props');
+    else for (const box of damage) this._claim(box, 'props');
     // Core re-reads the scene for aria-prop commits; a `nodes`/`edges`
     // change is invisible to it, so the re-read is asked for by name.
     // Free when no assistive technology is listening.
-    if (damage) this.notifyA11ySceneChanged();
+    if (damage === 'full' || damage.length > 0) this.notifyA11ySceneChanged();
   }
 
   override destroySubtree(): void {
@@ -3074,18 +3170,21 @@ export class FlowGraphNode extends Node implements FlowInstance {
   /** Whether this pass's damage reaches the minimap's corner at all —
    *  answered from the panel's box alone, without resolving the map. */
   private _miniMapReached(): boolean {
-    const options = this._miniMapOptions();
-    if (!options) return false;
+    const corner = this._miniMapCorner();
+    if (!corner) return false;
     const clip = this._frameClip;
-    if (!clip) return true;
-    return rectsOverlap(
-      this._corner(
-        options.position,
-        options.width ?? MINIMAP_W,
-        options.height ?? MINIMAP_H,
-        'bottom-right',
-      ),
-      clip,
+    return !clip || rectsOverlap(corner, clip);
+  }
+
+  /** The minimap's panel, in logical window pixels, or null without one. */
+  private _miniMapCorner(): FlowRect | null {
+    const options = this._miniMapOptions();
+    if (!options) return null;
+    return this._corner(
+      options.position,
+      options.width ?? MINIMAP_W,
+      options.height ?? MINIMAP_H,
+      'bottom-right',
     );
   }
 
