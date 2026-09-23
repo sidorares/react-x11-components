@@ -651,35 +651,36 @@ Placing in world rather than screen pixels is what lets a pan translate an
 existing placement rather than recompute it, which is what keeps the pan a
 blit.
 
-**On the GL renderer, names arrive when the view settles, and nothing a
-glide can know is left until then.** Labels there are placed per frame in
-screen space, and the text is set by the app's own text engine into an
-atlas the GPU draws from — measured, rasterized off-screen, read back and
-uploaded, a batch between frames. While the camera moves no new name is
-admitted (names already shown ride along), so the view that lands is named
-once rather than at every step on the way; a name then fades in over 220
-ms. Three things keep that from looking like more than one event:
+**On the GL renderer, a name is set once and drawn at every size.** Labels
+there are placed per frame in screen space, and the text comes from the
+app's own text engine — CoreText on a Mac, the X11 backend's shaper — set
+once per string at a base size (16 pixels, 32 on a 2x panel), read back,
+and kept as a **signed distance field** in an atlas the GPU draws from. A
+name drawn at 11 pixels and the same name at 20 are one field scaled, so a
+zoom ramp grows the type continuously and asks for nothing new, and a halo
+of any width is a threshold on the same distances. What it gives up is the
+engine's hinting: a name is its outline scaled, a hair narrower than the
+engine sets it at small sizes, and the ink is biased outward 0.15 pixels
+so it keeps the engine's weight. A slanted street name comes out sharper
+than a resampled bitmap did.
+
+While the camera moves no new name is admitted (names already shown ride
+along), so the view that lands is named once rather than at every step on
+the way; a name then fades in over 220 ms. Around that:
 
 - **A wheel's glide sets its destination's labels on the way.** The glide
   knows where it stops, so while its frames are drawn the view it will
   land on is placed out of sight and every name it will show is measured
-  and set — its tiles asked for, behind the current view's. On a Cocoa
-  panel over London, 82% of the strings a notch's destination needed were
-  set during its glide rather than after it. A drag, a touchpad and an
-  application's own animation have no destination to ask about, and are
-  named when they stop.
-- **A zoom that changes names' sizes changes them in one frame.** A ramped
-  `textSize` means a new raster per name, and each landed with its batch,
-  so text re-set in waves after the map had stopped. The labels keep the
-  size they have until every new one is in the texture (400 ms at most),
-  and swap together.
-- **A full atlas never takes a name off screen.** It fills in ordinary use —
-  a thousand strings at 1x, about a quarter of that on a 2x panel — and it
-  used to repack, which took every label out of the texture for the frames
-  the re-upload took: the whole layer blinked out and back. Room is made
-  in place from the row of rasters drawn longest ago, and the repack that
-  remains as a last resort uploads what it moved before the frame that
-  draws it.
+  and set — its tiles asked for, behind the current view's. A drag, a
+  touchpad and an application's own animation have no destination to ask
+  about, and are named when they stop.
+- **A field is made in the frame, out of the text budget.** A field is
+  about 0.2 ms of work, so a batch of them at once was several
+  milliseconds beside the frames; each frame makes what placement left of
+  its budget time for (at least one), and its own draw uploads them.
+- **A full atlas never takes a name off screen.** Room is made in place
+  from the row of fields drawn longest ago; the repack that remains as a
+  last resort uploads what it moved before the frame that draws it.
 
 **A street's name follows its street — straight.** Both renderers take
 their anchors from `src/maps/anchors.ts`: a street's pieces are merged into

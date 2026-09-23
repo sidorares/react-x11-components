@@ -13,18 +13,27 @@
 // A label is rasterized **whole**, not glyph by glyph: placement sets every
 // line label on a straight stretch, so a label is one rigid piece of type —
 // one textured quad, rotated as a unit — and shaping, kerning and scripts
-// stay the text engine's business. What is stored is **coverage**, drawn in
-// white and read from the alpha channel; colour and halo are the shader's
-// (see `./shaders.ts`), so one raster serves every palette and a
-// light-to-dark switch re-rasterizes nothing.
+// stay the text engine's business.
 //
-// An icon's two pieces (`../icons.ts`) are rasters here too, drawn as
-// coverage from the same paths the retained renderer fills, and coloured by
-// the same shader.
+// **One raster per string, at every size.** The engine sets a string once,
+// at the atlas's `base` size, as coverage; what is stored is its signed
+// distance field (`./sdf.ts`), one byte a texel. A name drawn at 11 pixels
+// and the same name at 20 are one raster scaled, so a zoom ramp that grows
+// the type asks for nothing new, and a halo of any width is a threshold on
+// the same distances. Colour and halo are the shader's (see `./shaders.ts`),
+// so one raster serves every palette and a light-to-dark switch
+// re-rasterizes nothing. What it costs is the engine's hinting — the text
+// is its outline, scaled — which at map-label sizes is the right trade:
+// one shaping and one readback per name for the life of the atlas.
+//
+// An icon's two pieces (`../icons.ts`) are fields here too, drawn as
+// coverage from the same paths the retained renderer fills, at the same
+// base size, and coloured by the same shader.
 import { Surface } from 'react-x11/ntk';
 
 import { traceGlyph, tracePlate } from '../icons.js';
 import type { IconPathContext, MapIcon } from '../icons.js';
+import { SDF_EDGE, distanceField } from './sdf.js';
 
 /** A set string's box, in device pixels. */
 export interface TextBox {
@@ -281,8 +290,8 @@ export interface AtlasEntry {
   y: number;
   width: number;
   height: number;
-  /** The raster, kept to upload again — after a compaction moves it, or
-   *  into the texture of a new context. */
+  /** The distance field, one byte a texel — kept to upload again, after a
+   *  compaction moves it or into the texture of a new context. */
   pixels: Uint8Array;
   /** In the texture where it is now; only then is it drawn. Set by the
    *  renderer that uploads it. */
@@ -291,22 +300,37 @@ export interface AtlasEntry {
   used: number;
 }
 
-const keyOf = (text: string, size: number): string => `${size}|${text}`;
+/** A string's key: the text alone, because one field serves every size. */
+const keyOf = (text: string): string => `|${text}`;
 /** An icon piece's key: `#` where a string's has `|`, so no string can
  *  be taken for one. */
-const iconKey = (name: MapIcon, part: IconPart, size: number): string =>
-  `${size}#${part}:${name}`;
+const iconKey = (name: MapIcon, part: IconPart): string => `#${part}:${name}`;
 
 /**
- * The widest halo a raster's margin holds, in pixels. The drawn quad sits
- * {@link quadInset} inside the margin and a halo samples up to this far
- * past the quad, so its samples stay a texel inside the raster's own clear
- * margin and never reach a neighbour's.
+ * Texels the drawn quad leaves off each side of a field: bilinear samples
+ * at its edge then stay inside the field's own margin, never reaching the
+ * shelf's unwritten rows or a neighbour.
  */
-export const haloReach = (pad: number): number =>
-  Math.max(0, Math.floor((pad - 2) / 2));
+export const QUAD_INSET = 1;
 
-export const quadInset = (pad: number): number => pad - haloReach(pad) - 1;
+/**
+ * How far past the glyphs' edge a field can see, in its own texels — the
+ * widest halo it holds, and the reach of its distances before they
+ * saturate — for a field set with `pad` texels of margin and `pad` of
+ * spread. Scale by the drawn size over the base for screen pixels.
+ */
+export const fieldReach = (pad: number): number =>
+  Math.max(0, Math.min(pad * SDF_EDGE, pad - QUAD_INSET) - 0.5);
+
+/** The base size a display scale sets fields at, in device pixels: 16 at
+ *  1x, 32 at 2x — the size most map labels are drawn at or just under, so
+ *  a field is mostly sampled down, where it is sharpest. */
+export const fieldBase = (scale: number): number =>
+  Math.round(16 * Math.min(2, Math.max(1, scale)));
+
+/** A field's margin and spread at a base size: room for a halo of a
+ *  quarter of the type's height. */
+export const fieldPad = (base: number): number => Math.ceil(base * 0.375);
 
 /** Strings a frame measures however little budget it has left, so a frame
  *  that starts late still makes progress. One: on X11 a string's first
@@ -341,8 +365,11 @@ const KEEP_FRAMES = 120;
  */
 export class LabelAtlas {
   readonly size: number;
-  /** Clear margin rasterized around every string, in pixels — what a halo
-   *  grows into, and what keeps it from sampling a neighbour. */
+  /** The device-pixel size every string and icon is set at: a label drawn
+   *  at `size` scales its field by `size / base`. */
+  readonly base: number;
+  /** The margin set around every field, in its texels, which is also the
+   *  distance its values span — what a halo grows into. */
   readonly pad: number;
   /** A frame's measuring ran out of budget: there is more to place. */
   starved = false;
@@ -356,6 +383,10 @@ export class LabelAtlas {
   private _moved: AtlasEntry[] = [];
   private readonly _wanted = new Map<string, TextItem>();
   private readonly _failed = new Set<string>();
+  /** Rasters read back and waiting for their fields, oldest first — asked
+   *  for as much as anything in `_wanted`, so a frame never asks again. */
+  private _fieldQueue: { key: string; raster: TextRaster }[] = [];
+  private readonly _queued = new Set<string>();
   private readonly _measured = new Map<string, TextBox>();
   private _busy = false;
   private _shelves: { y: number; height: number; x: number }[] = [];
@@ -366,16 +397,18 @@ export class LabelAtlas {
 
   constructor(
     engine: TextEngine | null,
-    options: { size?: number; pad: number },
+    options: { size?: number; base?: number; pad?: number } = {},
   ) {
     this._engine = engine;
     this.size = options.size ?? 2048;
-    this.pad = options.pad;
+    this.base = options.base ?? fieldBase(1);
+    this.pad = options.pad ?? fieldPad(this.base);
   }
 
-  /** Strings asked for and not yet rasterized, or a batch in flight. */
+  /** Strings asked for and not yet set: waiting, being read back, or
+   *  waiting for their fields. */
   get pending(): boolean {
-    return this._busy || this._wanted.size > 0;
+    return this._busy || this._wanted.size > 0 || this._fieldQueue.length > 0;
   }
 
   /** Rasters waiting for the texture. */
@@ -395,40 +428,43 @@ export class LabelAtlas {
     this.starved = false;
   }
 
-  /** The box a string sets in, or null when this frame's budget is spent. */
+  /** The box a string sets in at `size`, or null when this frame's budget
+   *  is spent. Measured once, at the base size, and scaled — the same
+   *  arithmetic that scales its field, so the box placement collides and
+   *  the quad the frame draws are one size. */
   measure(text: string, size: number): TextBox | null {
-    const key = keyOf(text, size);
-    const hit = this._measured.get(key);
-    if (hit) return hit;
-    const engine = this._engine;
-    if (!engine) return null;
-    if (this._measures >= MIN_MEASURES && now() > this._deadline) {
-      this.starved = true;
-      return null;
+    const key = keyOf(text);
+    let box = this._measured.get(key);
+    if (!box) {
+      const engine = this._engine;
+      if (!engine) return null;
+      if (this._measures >= MIN_MEASURES && now() > this._deadline) {
+        this.starved = true;
+        return null;
+      }
+      this._measures++;
+      box = engine.measure(text, this.base);
+      if (this._measured.size > 20000) this._measured.clear();
+      this._measured.set(key, box);
     }
-    this._measures++;
-    const box = engine.measure(text, size);
-    if (this._measured.size > 20000) this._measured.clear();
-    this._measured.set(key, box);
-    return box;
+    const k = size / this.base;
+    return { width: box.width * k, height: box.height * k };
   }
 
-  /** The string's raster, once the texture has it; null until then —
-   *  asking is what gets it rasterized. */
-  entry(text: string, size: number): AtlasEntry | null {
-    return this._lookup(keyOf(text, size), text, size, null, 'plate');
+  /** The string's field, once the texture has it; null until then —
+   *  asking is what gets it set. One field whatever size it is drawn at. */
+  entry(text: string): AtlasEntry | null {
+    return this._lookup(keyOf(text), text, null, 'plate');
   }
 
-  /** One piece of an icon `size` pixels across, as {@link entry} answers
-   *  for a string. */
-  icon(name: MapIcon, part: IconPart, size: number): AtlasEntry | null {
-    return this._lookup(iconKey(name, part, size), '', size, name, part);
+  /** One piece of an icon, as {@link entry} answers for a string. */
+  icon(name: MapIcon, part: IconPart): AtlasEntry | null {
+    return this._lookup(iconKey(name, part), '', name, part);
   }
 
   private _lookup(
     key: string,
     text: string,
-    size: number,
     icon: MapIcon | null,
     part: IconPart,
   ): AtlasEntry | null {
@@ -437,7 +473,12 @@ export class LabelAtlas {
       entry.used = this._frame;
       return entry.ready ? entry : null;
     }
-    if (!this._failed.has(key) && !this._wanted.has(key)) {
+    if (
+      !this._failed.has(key) &&
+      !this._wanted.has(key) &&
+      !this._queued.has(key)
+    ) {
+      const size = this.base;
       this._wanted.set(
         key,
         icon ? { text, size, icon: { name: icon, part } } : { text, size },
@@ -446,12 +487,12 @@ export class LabelAtlas {
     return null;
   }
 
-  /** Whether an icon can never be drawn at this size — the engine has no
-   *  path to fill it with. A name set beside it is then set alone. */
-  iconFailed(name: MapIcon, size: number): boolean {
+  /** Whether an icon can never be drawn — the engine has no path to fill
+   *  it with. A name set beside it is then set alone. */
+  iconFailed(name: MapIcon): boolean {
     return (
-      this._failed.has(iconKey(name, 'plate', size)) ||
-      this._failed.has(iconKey(name, 'glyph', size))
+      this._failed.has(iconKey(name, 'plate')) ||
+      this._failed.has(iconKey(name, 'glyph'))
     );
   }
 
@@ -477,9 +518,17 @@ export class LabelAtlas {
           // A string with no raster never will have one; a raster with no
           // room is a fact about this moment, and the string is asked for
           // again by the next frame that still shows it.
-          if (raster === null) this._failed.add(key);
-          else this._add(key, raster);
+          if (raster === null) {
+            this._failed.add(key);
+          } else {
+            this._fieldQueue.push({ key, raster });
+            this._queued.add(key);
+          }
         });
+        // The staging surface is free again as soon as the pixels are
+        // copied out, so the next batch is read back while this one waits
+        // for its fields; and a frame is asked for, to make them.
+        this.pump();
         this.onChange?.();
       },
       () => {
@@ -515,24 +564,64 @@ export class LabelAtlas {
   dispose(): void {
     this._engine?.dispose();
     this._engine = null;
+    this._fieldQueue = [];
+    this._queued.clear();
   }
 
-  private _add(key: string, raster: TextRaster): boolean {
+  /** Read back and waiting for their fields: another frame is worth
+   *  drawing, to make them. */
+  get fielding(): boolean {
+    return this._fieldQueue.length > 0;
+  }
+
+  /**
+   * Make fields for what has been read back until `deadline` — at least
+   * one — in the frame, whose own draw then takes them into the texture.
+   *
+   * A field is about 0.2 ms. A batch of them made as it landed was 4-9 ms
+   * beside the frames, measured as event-loop stalls on a jump to a view
+   * whose every name was new; slices on timers of their own each waited
+   * behind a frame, and names arrived late. In the frame, on a budget,
+   * they are made at a known cost and drawn the frame after.
+   */
+  makeFields(deadline: number): void {
+    if (!this._engine) return;
+    let made = 0;
+    while (this._fieldQueue.length > 0 && (made === 0 || now() < deadline)) {
+      const { key, raster } = this._fieldQueue.shift()!;
+      this._queued.delete(key);
+      this._add(key, raster.width, raster.height, this._field(raster));
+      made++;
+    }
+  }
+
+  /** A raster's coverage as its distance field. The coverage is the
+   *  readback's alpha; the field spans `pad` texels either side of the
+   *  edge, which is the margin the engine set it with. */
+  private _field(raster: TextRaster): Uint8Array {
+    return distanceField(raster.pixels, raster.width, raster.height, this.pad);
+  }
+
+  private _add(
+    key: string,
+    width: number,
+    height: number,
+    pixels: Uint8Array,
+  ): boolean {
     let place =
-      this._allocate(raster.width, raster.height) ??
-      this._reuseShelf(raster.width, raster.height);
+      this._allocate(width, height) ?? this._reuseShelf(width, height);
     if (!place && this._compactable()) {
       this._compact();
-      place = this._allocate(raster.width, raster.height);
+      place = this._allocate(width, height);
     }
     if (!place) return false;
     const entry: AtlasEntry = {
       key,
       x: place.x,
       y: place.y,
-      width: raster.width,
-      height: raster.height,
-      pixels: raster.pixels,
+      width,
+      height,
+      pixels,
       ready: false,
       used: this._frame,
     };

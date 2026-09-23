@@ -105,7 +105,6 @@ import {
   FADE_MS,
   LABEL_INSTANCE,
   LabelPlacer,
-  SWAP_WAIT_MS,
 } from '../src/maps/gl/placement.js';
 import type { PlacementFrame } from '../src/maps/gl/placement.js';
 import type { RenderFrame } from '../src/maps/gl/renderer.js';
@@ -117,6 +116,7 @@ import {
 } from '../src/maps/gl/renderer.js';
 import { GlTileStore } from '../src/maps/gl/store.js';
 import { LabelAtlas, SurfaceTextEngine } from '../src/maps/gl/text.js';
+import { SDF_EDGE, distanceField } from '../src/maps/gl/sdf.js';
 import { glideClock } from '../src/maps/controller.js';
 import type { TextEngine } from '../src/maps/gl/text.js';
 
@@ -1450,8 +1450,9 @@ function labelTile() {
   return parseTile(labelTileBytes());
 }
 
-/** {@link labelTile}, encoded: what a source serves. */
-function labelTileBytes(): Uint8Array {
+/** {@link labelTile}, encoded: what a source serves — with the place at
+ *  its centre named `placeName`. */
+function labelTileBytes(placeName = 'Townsville'): Uint8Array {
   const street = (name: number, kind: number, points: [number, number][]) => ({
     type: GeomType.LineString,
     tags: [0, name, 1, kind],
@@ -1500,7 +1501,7 @@ function labelTileBytes(): Uint8Array {
       'place_labels',
       4096,
       ['name'],
-      ['Townsville', 'Elsewhere'],
+      [placeName, 'Elsewhere'],
       [place(0, 2048, 2048), place(1, -50, 100)],
     ),
   ]);
@@ -1999,6 +2000,7 @@ async function settleStops(labels: GlLabelData, atlas: LabelAtlas) {
   placer.place(frame(0), atlas);
   atlas.pump();
   await new Promise((resolve) => setImmediate(resolve));
+  atlas.makeFields(Infinity);
   for (const entry of atlas.takeUploads(Infinity)) entry.ready = true;
   placer.batch(frame(0), atlas);
   return placer.batch(frame(FADE_MS), atlas);
@@ -2020,9 +2022,9 @@ test('the GL renderer draws an icon as its plate and glyph on the point, and the
     ...premultiplied(parseColor('#ff0000')!, 1),
   ]);
   assert.deepStrictEqual(rgba(1), [1, 1, 1, 1], 'a white glyph');
-  // The name's string is its raster less the margin, and its left edge is
-  // the gap past the plate's right edge.
-  const string = at(2, 6) - 2 * atlas.pad;
+  // The name's string is its field less the margin, drawn at its scale,
+  // and its left edge is the gap past the plate's right edge.
+  const string = (at(2, 6) - 2 * atlas.pad) * at(2, 18);
   assert.strictEqual(at(2, 0) - string / 2, 256 + 7 + ICON_GAP);
   assert.strictEqual(at(2, 1), 256);
 });
@@ -2295,6 +2297,7 @@ async function settle(
   placer.place(labelFrame(labels, from), atlas);
   atlas.pump();
   await new Promise((resolve) => setImmediate(resolve));
+  atlas.makeFields(Infinity);
   // What a renderer does with them.
   for (const entry of atlas.takeUploads(Infinity)) entry.ready = true;
   placer.batch(labelFrame(labels, from), atlas);
@@ -2382,6 +2385,134 @@ test('a label keeps its place against a newcomer that would win a tie, and fades
 
 // --- labels: the atlas and the draw ----------------------------------------------------
 
+// --- labels: distance fields ------------------------------------------------------
+
+/** A coverage raster, alpha only, from a predicate on texel centres. */
+function coverage(
+  width: number,
+  height: number,
+  inside: (x: number, y: number) => number,
+): Uint8Array {
+  const alpha = new Uint8Array(width * height);
+  for (let y = 0; y < height; y++)
+    for (let x = 0; x < width; x++) alpha[y * width + x] = inside(x, y);
+  return alpha;
+}
+
+/** The byte a field holds `d` texels past the edge (negative inside). */
+const fieldByte = (d: number, radius: number) =>
+  Math.min(
+    255,
+    Math.max(0, Math.round(255 - 255 * (d / radius + 1 - SDF_EDGE))),
+  );
+
+test("a distance field holds each texel's distance to the edge, saturating either side", () => {
+  // A 12-texel square, fully covered, in a 32-texel raster.
+  const alpha = coverage(32, 32, (x, y) =>
+    x >= 10 && x < 22 && y >= 10 && y < 22 ? 255 : 0,
+  );
+  const field = distanceField(alpha, 32, 32, 8, 1, 0);
+  const at = (x: number, y: number) => field[y * 32 + x];
+  // Texel centres a whole texel either side of the boundary between them.
+  assert.strictEqual(at(10, 16), fieldByte(-1, 8), 'first texel in');
+  assert.strictEqual(at(9, 16), fieldByte(1, 8), 'first texel out');
+  assert.strictEqual(at(5, 16), fieldByte(5, 8), 'five out');
+  // Diagonally off a corner the distance is Euclidean, not a count.
+  assert.strictEqual(at(7, 7), fieldByte(3 * Math.SQRT2, 8));
+  assert.strictEqual(at(16, 16), 255, 'deep inside saturates');
+  assert.strictEqual(at(0, 0), 0, 'far outside saturates');
+});
+
+test('a half-covered texel sits on the edge', () => {
+  // A column of full coverage, then one half covered: the edge runs
+  // through that texel's centre.
+  const alpha = coverage(16, 8, (x) => (x < 6 ? 255 : x === 6 ? 128 : 0));
+  const field = distanceField(alpha, 16, 8, 8, 1, 0);
+  const edge = field[4 * 16 + 6];
+  assert.ok(
+    Math.abs(edge - 255 * SDF_EDGE) <= 1,
+    `the half-covered texel is the edge: ${edge}`,
+  );
+  // And a texel beyond it is measured from there, not from the full column.
+  assert.ok(Math.abs(field[4 * 16 + 8] - fieldByte(2, 8)) <= 1);
+});
+
+test('the distance transform is exact against brute force on an irregular shape', () => {
+  const w = 24;
+  const h = 20;
+  let seed = 7;
+  const rnd = () =>
+    (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+  const blobs = [0, 1, 2, 3].map(() => [rnd() * w, rnd() * h, 2 + rnd() * 4]);
+  const alpha = coverage(w, h, (x, y) =>
+    blobs.some(([cx, cy, r]) => (x - cx) ** 2 + (y - cy) ** 2 < r * r)
+      ? 255
+      : 0,
+  );
+  const field = distanceField(alpha, w, h, 8, 1, 0);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const inside = alpha[y * w + x] === 255;
+      let nearest = Infinity;
+      for (let v = 0; v < h; v++)
+        for (let u = 0; u < w; u++)
+          if ((alpha[v * w + u] === 255) !== inside)
+            nearest = Math.min(nearest, Math.hypot(u - x, v - y));
+      const d = inside ? -nearest : nearest;
+      assert.strictEqual(field[y * w + x], fieldByte(d, 8), `at ${x}, ${y}`);
+    }
+  }
+});
+
+test('a frame makes fields out of what its text budget has left, and never asks twice', async (t) => {
+  // Every reading of the clock is 0.7 ms later: a 2 ms budget covers a
+  // few fields, and the rest wait for the frames after.
+  let clock = 0;
+  t.mock.method(globalThis.performance, 'now', () => (clock += 0.7));
+  const set: string[] = [];
+  const engine: TextEngine = {
+    measure: (text, size) => ({ width: text.length * size, height: size }),
+    rasterize: async (items, pad) =>
+      items.map((item) => {
+        set.push(item.text);
+        const width = item.text.length * item.size + pad * 2;
+        const height = item.size + pad * 2;
+        return { width, height, pixels: new Uint8Array(width * height * 4) };
+      }),
+    dispose: () => {},
+  };
+  const atlas = new LabelAtlas(engine);
+  const names = 'abcdefghij'.split('').map((c) => `Street ${c}`);
+  atlas.beginFrame(Infinity);
+  for (const name of names) atlas.entry(name);
+  atlas.pump();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.strictEqual(atlas.entries, 0, 'read back is not made');
+  assert.ok(atlas.fielding && atlas.pending);
+  // One frame's worth: its budget, and at least one field.
+  atlas.makeFields(performance.now() + 2);
+  const first = atlas.entries;
+  assert.ok(first > 0 && first < names.length, `one frame made ${first}`);
+  atlas.makeFields(-Infinity);
+  assert.strictEqual(
+    atlas.entries,
+    first + 1,
+    'a spent budget still makes one',
+  );
+  // Frames go on asking for every name while its field waits: read back
+  // and not yet made is still asked for, never asked again.
+  for (let i = 0; i < 20 && atlas.fielding; i++) {
+    atlas.beginFrame(Infinity);
+    for (const name of names) atlas.entry(name);
+    atlas.pump();
+    await new Promise((resolve) => setImmediate(resolve));
+    atlas.makeFields(performance.now() + 2);
+  }
+  assert.strictEqual(atlas.entries, names.length);
+  assert.deepStrictEqual(set, names, 'each set once');
+  assert.ok(!atlas.pending, 'and nothing left to do');
+});
+
 test('the atlas keeps what is drawn when it fills, and draws nothing the texture does not have', async () => {
   const engine: TextEngine = {
     measure: () => ({ width: 18, height: 2 }),
@@ -2397,9 +2528,10 @@ test('the atlas keeps what is drawn when it fills, and draws nothing the texture
   const atlas = new LabelAtlas(engine, { size: 64, pad: 6 });
   const land = async (texts: string[]) => {
     atlas.beginFrame(Infinity);
-    for (const t of texts) atlas.entry(t, 10);
+    for (const t of texts) atlas.entry(t);
     atlas.pump();
     await new Promise((resolve) => setImmediate(resolve));
+    atlas.makeFields(Infinity);
   };
   const upload = () => {
     const taken = atlas.takeUploads(Infinity);
@@ -2409,9 +2541,9 @@ test('the atlas keeps what is drawn when it fills, and draws nothing the texture
   await land(['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']);
   assert.strictEqual(atlas.entries, 8);
   // Landed is not drawable: not until the texture has it.
-  assert.strictEqual(atlas.entry('a', 10), null);
+  assert.strictEqual(atlas.entry('a'), null);
   assert.strictEqual(upload(), 8);
-  assert.ok(atlas.entry('a', 10));
+  assert.ok(atlas.entry('a'));
 
   // Full, with 'a' and 'b' on screen: a ninth takes the shelf drawn longest
   // ago in place. What is on screen does not move, so it is drawable in the
@@ -2420,11 +2552,11 @@ test('the atlas keeps what is drawn when it fills, and draws nothing the texture
   for (let i = 0; i < 3; i++) atlas.beginFrame(Infinity);
   await land(['a', 'b', 'i']);
   assert.strictEqual(atlas.entries, 7, 'one shelf of two gave way to one');
-  assert.ok(atlas.entry('a', 10) && atlas.entry('b', 10), 'still drawable');
+  assert.ok(atlas.entry('a') && atlas.entry('b'), 'still drawable');
   assert.strictEqual(upload(), 1, 'only the newcomer goes up');
-  assert.ok(atlas.entry('i', 10));
+  assert.ok(atlas.entry('i'));
   // What gave way is off screen, and is set again when it is asked for.
-  assert.strictEqual(atlas.entry('c', 10), null);
+  assert.strictEqual(atlas.entry('c'), null);
   assert.ok(atlas.pending);
 
   // Every shelf under a label of the last frame: nothing is taken, and the
@@ -2435,20 +2567,21 @@ test('the atlas keeps what is drawn when it fills, and draws nothing the texture
   const drawn = ['a', 'b', 'i', 'e', 'f', 'g', 'h'];
   upload();
   assert.ok(
-    drawn.every((t) => atlas.entry(t, 10)),
+    drawn.every((t) => atlas.entry(t)),
     'nothing drawn moved',
   );
-  assert.strictEqual(atlas.entry('j', 10), null);
+  assert.strictEqual(atlas.entry('j'), null);
   atlas.beginFrame(Infinity);
-  for (const t of ['a', 'b', 'j']) atlas.entry(t, 10);
+  for (const t of ['a', 'b', 'j']) atlas.entry(t);
   atlas.pump();
   await new Promise((resolve) => setImmediate(resolve));
+  atlas.makeFields(Infinity);
   upload();
-  assert.ok(atlas.entry('j', 10), 'asked for again, it lands');
+  assert.ok(atlas.entry('j'), 'asked for again, it lands');
 
   // A new texture — a new context — has none of it, and gets all of it.
   atlas.restart();
-  assert.strictEqual(atlas.entry('b', 10), null);
+  assert.strictEqual(atlas.entry('b'), null);
   assert.strictEqual(upload(), atlas.entries);
 });
 
@@ -2467,9 +2600,10 @@ test('a full atlas compacts only as a last resort, and never for nothing', async
   const atlas = new LabelAtlas(engine, { size: 64, pad: 6 });
   const land = async (texts: string[]) => {
     atlas.beginFrame(Infinity);
-    for (const t of texts) atlas.entry(t, 10);
+    for (const t of texts) atlas.entry(t);
     atlas.pump();
     await new Promise((resolve) => setImmediate(resolve));
+    atlas.makeFields(Infinity);
     for (const entry of atlas.takeUploads(Infinity)) entry.ready = true;
   };
   await land(['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']);
@@ -2479,33 +2613,33 @@ test('a full atlas compacts only as a last resort, and never for nothing', async
   tall = true;
   await land(['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'T']);
   assert.strictEqual(atlas.entries, 8);
-  assert.ok(atlas.entry('a', 10), 'nothing moved');
-  assert.strictEqual(atlas.entry('T', 10), null);
+  assert.ok(atlas.entry('a'), 'nothing moved');
+  assert.strictEqual(atlas.entry('T'), null);
   // Long after, with only 'a' drawn: now it frees room, and is done.
   for (let i = 0; i < 130; i++) atlas.beginFrame(Infinity);
-  atlas.entry('a', 10);
+  atlas.entry('a');
   atlas.beginFrame(Infinity);
-  atlas.entry('a', 10);
-  atlas.entry('T', 10);
+  atlas.entry('a');
+  atlas.entry('T');
   atlas.pump();
   await new Promise((resolve) => setImmediate(resolve));
+  atlas.makeFields(Infinity);
   // Moved, and drawable all the same: the frame that draws it takes it
   // into the texture where it now is first, however many there are.
-  assert.ok(atlas.entry('a', 10), 'kept, and never out of the texture');
+  assert.ok(atlas.entry('a'), 'kept, and never out of the texture');
   const taken = atlas.takeUploads(0);
   assert.deepStrictEqual(
     taken.map((e) => e.key),
-    ['10|a'],
+    ['|a'],
     'every moved raster, ahead of any cap',
   );
   for (const entry of atlas.takeUploads(Infinity)) entry.ready = true;
-  assert.ok(atlas.entry('T', 10), 'the tall one landed');
+  assert.ok(atlas.entry('T'), 'the tall one landed');
   assert.strictEqual(atlas.entries, 2);
 });
 
-test('a settled zoom changes every label to its new size in one frame', async () => {
-  // Only the strings let through are set, as a batch that has not landed.
-  const allow = new Set<string>();
+test('one field draws a name at every size its zoom ramp passes through', async () => {
+  const set: string[] = [];
   const engine: TextEngine = {
     measure: (text, size) => ({
       width: text.length * size * 0.5,
@@ -2513,7 +2647,7 @@ test('a settled zoom changes every label to its new size in one frame', async ()
     }),
     rasterize: async (items, pad) =>
       items.map((item) => {
-        if (!allow.has(`${item.size}|${item.text}`)) return undefined;
+        set.push(`${item.size}|${item.text}`);
         const width = item.text.length * item.size * 0.5 + pad * 2;
         const height = item.size + pad * 2;
         return { width, height, pixels: new Uint8Array(width * height * 4) };
@@ -2535,63 +2669,47 @@ test('a settled zoom changes every label to its new size in one frame', async ()
           stops: [
             [15, 14],
             [16, 20],
-            [17, 26],
           ],
         },
       },
     ],
   });
-  const labels = handAnchors([
-    ['Townsville', 1024, 1024, 0, -1],
-    ['Otherville', 3072, 3072, 0, -1],
-  ]);
+  const labels = handAnchors([['Townsville', 1024, 1024, 0, -1]]);
   const frame = (zoom: number, now: number): PlacementFrame => ({
     ...labelFrame(labels, now),
     zoom,
     style,
   });
-  const atlas = new LabelAtlas(engine, { pad: 6 });
+  const atlas = new LabelAtlas(engine, { base: 16 });
   const placer = new LabelPlacer();
-  const step = async (f: PlacementFrame) => {
+  const drawnAt = async (zoom: number, now: number) => {
     atlas.beginFrame(Infinity);
-    placer.place(f, atlas);
+    placer.place(frame(zoom, now), atlas);
     atlas.pump();
     await new Promise((resolve) => setImmediate(resolve));
+    atlas.makeFields(Infinity);
     for (const entry of atlas.takeUploads(Infinity)) entry.ready = true;
-    const batch = placer.batch(f, atlas);
-    const widths: number[] = [];
-    for (let i = 0; i < batch.count; i++) {
-      widths.push(batch.instances[i * LABEL_INSTANCE + 6]);
-    }
-    return widths.sort((a, b) => a - b);
+    const batch = placer.batch(frame(zoom, now), atlas);
+    // The first frame starts the fade at nothing, and draws nothing.
+    assert.strictEqual(batch.count, now === 0 ? 0 : 1);
+    const at = (f: number) => batch.instances[f];
+    // The string's width on screen: its field less the margin, scaled.
+    return { scale: at(18), string: (at(6) - 2 * atlas.pad) * at(18) };
   };
-  const at14 = 10 * 14 * 0.5 + 12;
-  const at20 = 10 * 20 * 0.5 + 12;
 
-  allow.add('14|Townsville').add('14|Otherville');
-  await step(frame(15, 0));
-  assert.deepStrictEqual(await step(frame(15, FADE_MS)), [at14, at14]);
-
-  // Settled at 16 with one new raster in hand: both keep the size they
-  // have — the one that could change waits for the other.
-  allow.add('20|Townsville');
-  assert.deepStrictEqual(await step(frame(16, 1000)), [at14, at14]);
-  assert.ok(placer.swapping, 'and the frame after is asked for');
-  // The other lands: both change, in the same frame.
-  allow.add('20|Otherville');
-  assert.deepStrictEqual(await step(frame(16, 1020)), [at20, at20]);
-  assert.ok(!placer.swapping);
-
-  // A raster that never comes holds the rest only so long.
-  const at26 = 10 * 26 * 0.5 + 12;
-  allow.add('26|Townsville');
-  assert.deepStrictEqual(await step(frame(17, 2000)), [at20, at20]);
-  assert.deepStrictEqual(await step(frame(17, 2010)), [at20, at20]);
-  assert.deepStrictEqual(
-    await step(frame(17, 2000 + SWAP_WAIT_MS)),
-    [at20, at26],
-    'past the wait, what is in hand changes',
-  );
+  await drawnAt(15, 0);
+  const at15 = await drawnAt(15, FADE_MS);
+  assert.strictEqual(at15.scale, 14 / 16);
+  assert.strictEqual(at15.string, 10 * 14 * 0.5, 'set at 16, drawn at 14');
+  // Half a level on, the type is 17 pixels — not rounded — and still the
+  // one field: nothing new is set however the ramp moves.
+  const between = await drawnAt(15.5, FADE_MS + 20);
+  assert.strictEqual(between.scale, 17 / 16);
+  const at16 = await drawnAt(16, FADE_MS + 40);
+  assert.strictEqual(at16.string, 10 * 20 * 0.5);
+  assert.deepStrictEqual(set, ['16|Townsville'], 'set once, at the base');
+  // And the box placement collides is the box that is drawn.
+  assert.strictEqual(atlas.measure('Townsville', 20)!.width, at16.string);
 });
 
 test('a glide sets the labels of the view it stops at while it is still gliding', async (t) => {
@@ -2636,7 +2754,12 @@ test('a glide sets the labels of the view it stops at while it is still gliding'
           tileSize: 512,
           load: (request: { z: number }) => {
             loaded.push(request.z);
-            return { kind: 'vector' as const, data: labelTileBytes() };
+            // Every level names its places differently, so a name the
+            // destination shows is one nothing before the glide has set.
+            return {
+              kind: 'vector' as const,
+              data: labelTileBytes(`Place ${request.z}`),
+            };
           },
         },
       ],
@@ -2676,7 +2799,11 @@ test('a glide sets the labels of the view it stops at while it is still gliding'
     await frame();
     await new Promise((r) => setTimeout(r, 20));
   }
-  assert.ok(set.includes('10|Townsville'), `settled: ${set.join(', ')}`);
+  const settled = [...set];
+  assert.ok(
+    settled.some((k) => k.includes('Place 12')),
+    `settled: ${settled.join(', ')}`,
+  );
   assert.ok(!loaded.includes(14));
 
   // Two levels in, and the glide held after its first step.
@@ -2688,8 +2815,8 @@ test('a glide sets the labels of the view it stops at while it is still gliding'
   assert.strictEqual(controller.camera().zoom, zoom, 'and nowhere near 14');
   assert.ok(loaded.includes(14), `the tiles it stops on: ${loaded.join(',')}`);
   assert.ok(
-    set.includes('20|Townsville'),
-    `and the names they carry, at the size they will be: ${set.join(', ')}`,
+    set.some((k) => k.includes('Place 14') && !settled.includes(k)),
+    `and the names they carry: ${set.join(', ')}`,
   );
   driver.dispose();
 });
@@ -2698,10 +2825,11 @@ test('labels are one instanced draw over the scene, once their rasters are uploa
   const data = buildTileBuckets(fixtureTile(), prepareStyle({ layers: STYLE }));
   const atlas = instantAtlas();
   atlas.beginFrame(Infinity);
-  assert.strictEqual(atlas.entry('Main Street', 11), null);
+  assert.strictEqual(atlas.entry('Main Street'), null);
   atlas.pump();
   await new Promise((resolve) => setImmediate(resolve));
-  assert.strictEqual(atlas.entry('Main Street', 11), null, 'not uploaded');
+  atlas.makeFields(Infinity);
+  assert.strictEqual(atlas.entry('Main Street'), null, 'not uploaded');
   const { gl, calls } = recordingGl(true);
   const renderer = new GlMapRenderer(gl);
   const instances = new Float32Array(LABEL_INSTANCE);
@@ -2711,7 +2839,7 @@ test('labels are one instanced draw over the scene, once their rasters are uploa
   });
   assert.strictEqual(empty.labels, 0);
   assert.strictEqual(calls.filter((c) => c === 'texSubImage2D').length, 1);
-  const entry = atlas.entry('Main Street', 11)!;
+  const entry = atlas.entry('Main Street')!;
   assert.ok(entry, 'drawable once uploaded');
   instances.set([
     100,
@@ -3191,18 +3319,19 @@ test('over the scene: the labels, the markers in one draw, then the attribution 
   const data = buildTileBuckets(fixtureTile(), prepareStyle({ layers: STYLE }));
   const atlas = instantAtlas();
   atlas.beginFrame(Infinity);
-  atlas.entry('Main Street', 11);
-  atlas.entry('© OSM', 9);
+  atlas.entry('Main Street');
+  atlas.entry('© OSM');
   atlas.pump();
   await new Promise((resolve) => setImmediate(resolve));
+  atlas.makeFields(Infinity);
   const { gl, calls, log } = recordingGl(true);
   const renderer = new GlMapRenderer(gl);
   // A frame with nothing to draw takes the rasters into the texture.
   renderer.render(frameOver(data), {
     labels: { atlas, instances: new Float32Array(LABEL_INSTANCE), count: 0 },
   });
-  const label = atlas.entry('Main Street', 11)!;
-  const text = atlas.entry('© OSM', 9)!;
+  const label = atlas.entry('Main Street')!;
+  const text = atlas.entry('© OSM')!;
   assert.ok(label && text, 'both rasters are in the texture');
   const quad = (
     entry: { x: number; y: number; width: number; height: number },
