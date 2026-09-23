@@ -884,7 +884,7 @@ export function Flow<N = FlowNodeData, E = unknown>(
               height: rect.height,
               pointerEvents: 'none',
             },
-            onDraw: (ctx: unknown, info: { node: { abs: XYPosition } }) =>
+            onDraw: (ctx: unknown, info: { node: { abs: FlowRect } }) =>
               pane.current?.paintPanels(ctx, info.node.abs),
           }),
         )

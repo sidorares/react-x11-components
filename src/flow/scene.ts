@@ -718,15 +718,18 @@ export function screenRect(
   rect: FlowRect,
   scale: number,
 ): FlowRect {
-  const p = toScreen(v, rect);
-  const grid = (value: number): number => Math.round(value * scale) / scale;
-  const x = grid(p.x);
-  const y = grid(p.y);
+  // Written out rather than through `toScreen` and a rounding closure: a
+  // drag or a pan asks this of every node in the graph each step, to find
+  // the few on screen, and the two allocations a call were most of it.
+  const px = rect.x * v.zoom + v.x;
+  const py = rect.y * v.zoom + v.y;
+  const x = Math.round(px * scale) / scale;
+  const y = Math.round(py * scale) / scale;
   return {
     x,
     y,
-    width: grid(p.x + rect.width * v.zoom) - x,
-    height: grid(p.y + rect.height * v.zoom) - y,
+    width: Math.round((px + rect.width * v.zoom) * scale) / scale - x,
+    height: Math.round((py + rect.height * v.zoom) * scale) / scale - y,
   };
 }
 

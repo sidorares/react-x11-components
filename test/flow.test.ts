@@ -1367,6 +1367,63 @@ test('under GL a box selection step is a frame, not a new world', async () => {
   await act(() => fireEvent.mouseUp(target, at(70, 66)));
 });
 
+test('under GL a drag step routes no edges for a rect nobody reads', async () => {
+  const { node } = await glPane();
+  const pane2 = node as unknown as {
+    _nodeDamage(e: unknown): unknown;
+    _gesture: unknown;
+  };
+  let routed = 0;
+  const own = pane2._nodeDamage.bind(pane2);
+  pane2._nodeDamage = (e) => {
+    routed++;
+    return own(e);
+  };
+  const target = pane() as unknown as DrawnNode;
+  await act(() => {
+    fireEvent.mouseDown(target, at(115, 110));
+    fireEvent.mouseMove(target, at(135, 125));
+    fireEvent.mouseMove(target, at(155, 140));
+    fireEvent.mouseUp(target, at(155, 140));
+  });
+  assert.strictEqual(routed, 0);
+});
+
+test('under GL a commit that moved a node claims nothing of the window', async () => {
+  // The 2D pane under the surface shows nothing; a claim billed as `props`
+  // was a window pass over it on every step of a drag an app stores.
+  // the pane itself, as `<Flow>` renders it over a surface that drew
+  const element = (list: FlowNode[]) =>
+    h(FLOW_ELEMENT, {
+      nodes: list,
+      edges: edges(),
+      renderer: 'gl',
+      style: { flexGrow: 1 },
+    });
+  const base = nodes();
+  const { rerender } = await renderX11(element(base));
+  const node = pane() as unknown as { setGlRequest(fn: () => void): void };
+  let asked = 0;
+  node.setGlRequest(() => void asked++);
+  await act();
+  const claims: unknown[] = [];
+  const root = pane().root as unknown as {
+    invalidate(l: boolean, d: unknown, r: unknown, s: unknown): void;
+  };
+  const own = root.invalidate.bind(root);
+  root.invalidate = (l, d, r, s) => {
+    if (s === pane()) claims.push(d);
+    own(l, d, r, s);
+  };
+  const before = asked;
+  const moved = base.map((n) =>
+    n.id === 'a' ? { ...n, position: { x: 140, y: 120 } } : n,
+  );
+  await act(() => rerender(element(moved)));
+  assert.ok(asked > before, 'a GL frame is asked for');
+  assert.deepStrictEqual(claims, [], 'and the window is claimed for nothing');
+});
+
 test('screenToFlowPosition and back is a round trip at any viewport', async () => {
   const { flow } = await mount();
   await act(() => flow.current!.setViewport({ x: -37, y: 12, zoom: 1.75 }));
@@ -2873,6 +2930,82 @@ test('a panel canvas is asked to repaint its own box, not the window', async () 
     assert.strictEqual(damage, canvas, 'its own box');
     assert.strictEqual(reason, 'props');
   }
+});
+
+/** The pane's two panel canvases, each told apart by its box, as `<Flow>`
+ *  mounts them where node types mount bodies. */
+function panelCanvases(): { map: RetainedNode; controls: RetainedNode } {
+  const canvases = (pane() as unknown as { _panelCanvases: RetainedNode[] })
+    ._panelCanvases;
+  assert.strictEqual(canvases.length, 2, 'the minimap’s and the controls’');
+  // the minimap sits bottom-right, the controls bottom-left
+  const [a, b] = canvases;
+  return a.abs.x > b.abs.x ? { map: a, controls: b } : { map: b, controls: a };
+}
+
+test('a change to the graph repaints the minimap’s canvas, and not the controls’', async () => {
+  // The controls draw nothing of the graph. Repainting their canvas with
+  // every step of a drag repainted the minimap with it, since each canvas
+  // built the panels its box reached — and theirs reached both.
+  await mount({
+    nodes: bodyNode(),
+    edges: [],
+    nodeTypes: { form: sizedType },
+    minimap: true,
+    controls: true,
+  });
+  await act();
+  const { map, controls } = panelCanvases();
+  const asked = new Map<RetainedNode, number>();
+  for (const canvas of [map, controls]) {
+    const own = canvas.invalidate.bind(canvas);
+    canvas.invalidate = ((...a: Parameters<typeof own>) => {
+      asked.set(canvas, (asked.get(canvas) ?? 0) + 1);
+      own(...a);
+    }) as typeof canvas.invalidate;
+  }
+  const node = pane() as unknown as DrawnNode;
+  await act(() => {
+    fireEvent.mouseDown(node, at(115, 110));
+    fireEvent.mouseMove(node, at(135, 125));
+    fireEvent.mouseUp(node, at(135, 125));
+  });
+  assert.ok((asked.get(map) ?? 0) > 0, 'the minimap follows the node');
+  assert.strictEqual(asked.get(controls) ?? 0, 0, 'the controls do not');
+  // …and a pan is the minimap's alone too: its view box moves
+  asked.clear();
+  (pane() as unknown as { setViewport(v: object): void }).setViewport({
+    x: 20,
+    y: 0,
+    zoom: 1,
+  });
+  assert.ok((asked.get(map) ?? 0) > 0);
+  assert.strictEqual(asked.get(controls) ?? 0, 0);
+});
+
+test('the controls’ canvas paints the controls without walking the graph', async () => {
+  await mount({
+    nodes: bodyNode(),
+    edges: [],
+    nodeTypes: { form: sizedType },
+    minimap: true,
+    controls: true,
+  });
+  await act();
+  const { map, controls } = panelCanvases();
+  const node = pane() as unknown as { _miniMap(): unknown };
+  let walks = 0;
+  const own = node._miniMap.bind(node);
+  node._miniMap = () => {
+    walks++;
+    return own();
+  };
+  await act(() => controls.invalidate(false, controls, 'props'));
+  await act();
+  assert.strictEqual(walks, 0, 'the minimap is not the controls’ to build');
+  await act(() => map.invalidate(false, map, 'props'));
+  await act();
+  assert.ok(walks > 0, 'the minimap’s canvas builds it');
 });
 
 // --- the device-pixel grid at a fractional scale ------------------------------

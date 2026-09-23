@@ -151,6 +151,8 @@ interface PanelCanvas {
   /** Where a claim of the canvas lands: its box and core's damage slop,
    *  device pixels. */
   paintBounds?(): FlowRect;
+  /** Its box, device pixels. */
+  readonly abs?: FlowRect;
 }
 
 /** Timers, through `globalThis`: `src/` compiles with `types: []` so a Node
@@ -1127,8 +1129,10 @@ export class FlowGraphNode extends Node implements FlowInstance {
       this._zoomAt = t;
     }
     // Each claims its own box: a claim with no region is the whole window,
-    // which made every pan step and dash tick a full frame.
-    for (const canvas of this._panelCanvases)
+    // which made every pan step and dash tick a full frame. The minimap's
+    // alone: its view box moves, and the controls show nothing of the
+    // viewport.
+    for (const canvas of this._miniMapCanvases())
       canvas.invalidate(false, canvas, 'props');
     this._prop<(vp: Viewport) => void>('onViewportChange')?.(v);
     // The `fitView` that runs at the top of a paint has already changed what
@@ -2153,22 +2157,30 @@ export class FlowGraphNode extends Node implements FlowInstance {
     }
     // Old places first, new places second: the union is everything this
     // step uncovers plus everything it covers, and nothing else — with the
-    // edges that follow the moved nodes, coarse, on both sides.
+    // edges that follow the moved nodes, coarse, on both sides. Under GL
+    // there is nothing to size: the step is a frame of the surface's, and
+    // routing each moved node's edges for a rect nobody reads was a third
+    // of a millisecond a step.
+    const sized = !this._gl;
     let damage: FlowRect | null = null;
-    for (const id of gesture.ids) {
-      const entry = this._byId.get(id);
-      if (entry) damage = unionMaybe(damage, this._nodeDamage(entry));
+    if (sized) {
+      for (const id of gesture.ids) {
+        const entry = this._byId.get(id);
+        if (entry) damage = unionMaybe(damage, this._nodeDamage(entry));
+      }
     }
     this._dragTo = to;
-    for (const id of gesture.ids) {
-      const entry = this._byId.get(id);
-      if (entry) damage = unionMaybe(damage, this._nodeDamage(entry));
+    if (sized) {
+      for (const id of gesture.ids) {
+        const entry = this._byId.get(id);
+        if (entry) damage = unionMaybe(damage, this._nodeDamage(entry));
+      }
     }
     this._emitNodes(changes);
     if (damage) {
       this._claim(inflateRect(damage, CULL_MARGIN), 'content');
     } else {
-      this._repaint();
+      this._repaint('content');
     }
     // Inside the gesture dispatch, deliberately: the body-rect setState this
     // triggers is a discrete-priority update, so React commits the moved
@@ -2733,8 +2745,12 @@ export class FlowGraphNode extends Node implements FlowInstance {
         }
       }
     }
+    // What moved, restyled or reshaped is the graph's own content: under GL
+    // it is a frame of the surface's, where a claim billed as `props` went
+    // on to a window pass over the 2D pane under it — every step of a drag
+    // an app stores, 1.2 ms of each, for pixels the surface covers.
     if (damage === 'full') this._repaint('props');
-    else for (const box of damage) this._claim(box, 'props');
+    else for (const box of damage) this._claim(box, 'content');
     // Core re-reads the scene for aria-prop commits; a `nodes`/`edges`
     // change is invisible to it, so the re-read is asked for by name.
     // Free when no assistive technology is listening.
@@ -2923,16 +2939,21 @@ export class FlowGraphNode extends Node implements FlowInstance {
     damage?: Parameters<Node['invalidate']>[1],
     reason?: string,
   ): void {
-    // whatever changed the graph may have changed the minimap or the
-    // controls, which `<Flow>` may be painting on canvases of its own
-    // Each claims its own box: a claim with no region is the whole window,
-    // which made every pan step and dash tick a full frame. A dash tick
-    // changes neither — the minimap draws no dashes — and repainting both
-    // canvases on every one kept an idle pane painting them 17 times a
-    // second, and put a claim in the middle of any pan frame it landed in.
+    // Whatever changed the graph may have changed the minimap, which
+    // `<Flow>` may be painting on a canvas of its own; a change to this
+    // element's props may have changed the controls too. The controls draw
+    // nothing of the graph, and repainting them with every step of a drag
+    // repainted the minimap with them — each canvas builds the panels its
+    // box reaches, and theirs reached both. Each claims its own box: a
+    // claim with no region is the whole window, which made every pan step
+    // and dash tick a full frame. A dash tick changes neither — the minimap
+    // draws no dashes — and repainting both canvases on every one kept an
+    // idle pane painting them 17 times a second, and put a claim in the
+    // middle of any pan frame it landed in.
     if (reason !== 'animation') {
-      for (const canvas of this._panelCanvases)
-        canvas.invalidate(false, canvas, 'props');
+      const canvases =
+        reason === 'props' ? this._panelCanvases : this._miniMapCanvases();
+      for (const canvas of canvases) canvas.invalidate(false, canvas, 'props');
     }
     // A dash tick moves the phase, a uniform on the GPU, so it is no change
     // to the world. A pan or a zoom never gets here under GL.
@@ -3532,6 +3553,17 @@ export class FlowGraphNode extends Node implements FlowInstance {
    * them to repaint. Presses still land on the pane: the canvases take
    * none.
    */
+  /** The panel canvases the minimap is painted on — the ones whose box
+   *  reaches its corner. */
+  private _miniMapCanvases(): readonly PanelCanvas[] {
+    const canvases = this._panelCanvases;
+    if (canvases.length === 0) return canvases;
+    const corner = this._miniMapCorner();
+    if (!corner) return [];
+    const box = this._device(corner);
+    return canvases.filter((c) => !c.abs || rectsOverlap(c.abs, box));
+  }
+
   setPanelCanvases(canvases: readonly PanelCanvas[]): void {
     const had = this._panelCanvases.length > 0;
     this._panelCanvases = canvases;
@@ -3568,12 +3600,26 @@ export class FlowGraphNode extends Node implements FlowInstance {
 
   /** Paint the minimap and the controls into `ctx`, a canvas whose place in
    *  the window, in device pixels, is `abs` — as the scene paints them. */
-  paintPanels(ctx: unknown, abs: XYPosition): void {
+  paintPanels(ctx: unknown, abs: FlowRect): void {
     const painter = createPainter(ctx, this._textOptions());
     if (!painter) return;
-    const scene = buildScene(
-      this._sceneInput(this._palette(), 'overlay', true),
-    );
+    // Only the panels this canvas's box reaches: the minimap's canvas and
+    // the controls' each built and painted both, which for the controls
+    // was every node in the graph, clipped away. The frame clip is set to
+    // the box too, for the minimap's own reach test — a canvas paints
+    // outside this element's paint, where the clip is the last pass's.
+    const bounds = abs.width > 0 && abs.height > 0 ? this._logical(abs) : null;
+    const clip = this._frameClip;
+    this._frameClip = bounds;
+    let scene: FlowScene;
+    try {
+      scene = buildScene({
+        ...this._sceneInput(this._palette(), 'overlay', true),
+        clip: bounds,
+      });
+    } finally {
+      this._frameClip = clip;
+    }
     const c = ctx as {
       save(): void;
       restore(): void;

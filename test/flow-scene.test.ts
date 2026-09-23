@@ -18,6 +18,7 @@ import {
   resolveHandles,
   resolvePalette,
 } from '../src/flow/model.js';
+import { paintPanels } from '../src/flow/paint.js';
 import { buildScene, SceneCache } from '../src/flow/scene.js';
 import type {
   FlowScene,
@@ -382,4 +383,69 @@ test('a scene built with a cache is the scene built without one', () => {
       assert.strictEqual(cached.animBox, null, 'no animBox');
     }
   }
+});
+
+test('a minimap’s run of one colour is one fill, in the order it was drawn', () => {
+  // A call apiece was 400 of them on every repaint of a drag. Runs are
+  // consecutive, not grouped: two colours that overlap keep their order.
+  const calls: string[] = [];
+  const noop = (): void => {};
+  const painter = {
+    raw: null,
+    scale: 1,
+    save: noop,
+    restore: noop,
+    clipRect: noop,
+    rect: (
+      _x: number,
+      _y: number,
+      _w: number,
+      _h: number,
+      _r: number,
+      o: { fill?: string },
+    ) => void calls.push(`rect ${o.fill}`),
+    polygons: (shapes: readonly unknown[], o: { fill?: string }) =>
+      void calls.push(`polygons ${shapes.length} ${o.fill}`),
+    circle: noop,
+    polyline: noop,
+    polygon: noop,
+    strokeRuns: noop,
+    dots: noop,
+    text: noop,
+    measureText: () => ({ width: 0, height: 0 }),
+  };
+  const node = (x: number, fill: string) => ({
+    rect: { x, y: 0, width: 4, height: 3 },
+    radius: 0,
+    fill,
+  });
+  paintPanels(painter, {
+    miniMap: {
+      panel: {
+        rect: { x: 0, y: 0, width: 40, height: 20 },
+        radius: 4,
+        fill: 'panel',
+      },
+      nodes: [
+        node(0, 'a'),
+        node(5, 'a'),
+        node(10, 'a'),
+        node(15, 'b'),
+        node(20, 'a'),
+      ],
+      view: {
+        rect: { x: 0, y: 0, width: 10, height: 10 },
+        radius: 0,
+        fill: 'view',
+      },
+    },
+    controls: null,
+  });
+  assert.deepStrictEqual(calls, [
+    'rect panel',
+    'polygons 3 a',
+    'rect b',
+    'rect a',
+    'rect view',
+  ]);
 });

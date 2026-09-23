@@ -49,6 +49,11 @@ function paintRect(painter: FlowPainter, item: SceneRect): void {
   );
 }
 
+/** A rect `paintRect` would fill and nothing else. */
+function plainSquare(item: SceneRect): boolean {
+  return item.radius <= 0 && !item.stroke && item.fill != null;
+}
+
 function paintText(painter: FlowPainter, item: SceneText): void {
   painter.text(item.text, item.x, item.y, {
     size: item.size,
@@ -369,7 +374,39 @@ export function paintPanels(
       map.panel.rect.height,
       4,
     );
-    for (const node of map.nodes) paintRect(painter, node);
+    // A run of square, unstroked nodes of one colour is one path and one
+    // fill — every node of a graph's minimap is usually one run, and a call
+    // apiece was 400 of them on every repaint of a drag.
+    const nodes = map.nodes;
+    for (let i = 0; i < nodes.length;) {
+      const first = nodes[i];
+      let end = i + 1;
+      if (plainSquare(first)) {
+        while (
+          end < nodes.length &&
+          plainSquare(nodes[end]) &&
+          nodes[end].fill === first.fill
+        ) {
+          end++;
+        }
+      }
+      if (end - i > 1) {
+        const shapes: XYPosition[][] = [];
+        for (let k = i; k < end; k++) {
+          const { x, y, width, height } = nodes[k].rect;
+          shapes.push([
+            { x, y },
+            { x: x + width, y },
+            { x: x + width, y: y + height },
+            { x, y: y + height },
+          ]);
+        }
+        painter.polygons(shapes, { fill: first.fill });
+      } else {
+        paintRect(painter, first);
+      }
+      i = end;
+    }
     paintRect(painter, map.view);
     painter.restore();
   }
