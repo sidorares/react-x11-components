@@ -7,7 +7,7 @@
 import type { ReactElement } from 'react';
 import { createRoot } from 'react-x11';
 
-import { Code } from '../src/index.js';
+import { Code } from '../src/code/index.js';
 
 const SNIPPET = `// the language seam at work
 export function greet(name: string): string {

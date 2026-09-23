@@ -37,12 +37,12 @@ import {
   ScatterSeries,
   XAxis,
   YAxis,
-} from '../src/index.js';
+} from '../src/charts/index.js';
 import type {
   ChartConfig,
   ChartFrameStats,
   ChartPlotHandle,
-} from '../src/index.js';
+} from '../src/charts/index.js';
 
 import {
   MILLION,

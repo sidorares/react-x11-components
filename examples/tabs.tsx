@@ -21,8 +21,8 @@ import {
   TabsIndicator,
   TabsList,
   TabsTrigger,
-} from '../src/index.js';
-import type { TabsSize, TabsVariant } from '../src/index.js';
+} from '../src/tabs/index.js';
+import type { TabsSize, TabsVariant } from '../src/tabs/index.js';
 
 const VARIANTS: TabsVariant[] = [
   'line',

@@ -41,16 +41,14 @@ import type { TraceSession } from 'react-x11/debug';
 
 import {
   ChartContainer,
-  Flow,
   LineChart,
   LineSeries,
   ScatterChart,
   ScatterSeries,
   XAxis,
   YAxis,
-  useEdgesState,
-  useNodesState,
-} from '../src/index.js';
+} from '../src/charts/index.js';
+import { Flow, useEdgesState, useNodesState } from '../src/flow/index.js';
 import { cloudData, millionData } from './chart-data.js';
 import type {
   FlowEdge,
@@ -60,7 +58,7 @@ import type {
   FlowNodeData,
   FlowNodeType,
   HandlePosition,
-} from '../src/index.js';
+} from '../src/flow/index.js';
 
 export interface Scene {
   name: string;

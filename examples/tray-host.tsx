@@ -12,8 +12,8 @@ import { useState } from 'react';
 import type { ReactElement } from 'react';
 import { createRoot } from 'react-x11';
 
-import { TrayHost } from '../src/index.js';
-import type { TrayStatus } from '../src/index.js';
+import { TrayHost } from '../src/tray-host/index.js';
+import type { TrayStatus } from '../src/tray-host/index.js';
 
 function App(): ReactElement {
   const [count, setCount] = useState(0);

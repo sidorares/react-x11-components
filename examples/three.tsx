@@ -20,8 +20,8 @@ import { useRef, useState } from 'react';
 import type { ReactElement } from 'react';
 import { Button, Switch, createRoot, useSupports } from 'react-x11';
 
-import { Canvas, useFrame } from '../src/index.js';
-import type { Mesh, Group, RootState, ThreeEvent } from '../src/index.js';
+import { Canvas, useFrame } from '../src/three/index.js';
+import type { Mesh, Group, RootState, ThreeEvent } from '../src/three/index.js';
 
 /** The one shader: bands of the base colour, swept by time — the kind of
  * surface the fixed-function pipeline cannot express at all. */
