@@ -394,8 +394,8 @@ imports — `react-x11` itself plus `/host`, `/node`, `/style`, `/keysyms`,
 `/ntk`, `/yoga`, `/jsx-runtime`, and `/test` and `/debug` from the suite.
 Both specs are ordinary registry ranges:
 
-- `peerDependencies.react-x11` is `^2.18.6` — what a consumer must supply.
-- `devDependencies.react-x11` is `^2.18.6` — what the suite runs against.
+- `peerDependencies.react-x11` is `^2.19.0` — what a consumer must supply.
+- `devDependencies.react-x11` is `^2.19.0` — what the suite runs against.
 
 Keep them the same range. They are one decision written twice, and a
 devDependency that drifts above the peer range means the suite passes
@@ -455,6 +455,12 @@ it up. **The floor is a running one and moves often** — every move since
   hold pointer motion for the next frame (#657), claim a move inside a
   surface on its panes alone (#659), and give the Windows and macOS context
   the `lineDashOffset` an animated edge marches with (#664).
+- `^2.19.0` — `scalesText` on the context (react-x11#666), which
+  `<Flow>`'s 2D zoom asks before drawing labels from the sizes it has; the
+  content floors measured inside the card that changed (#668), half of a
+  frame that ticks forty widget bodies; and the paint cache drawing through
+  the translation an overlay pane paints with (#667), without which every
+  card over a GL surface was painted live on Windows.
 
 Do not reach back for a `github:` spec to get at unreleased core — cut a core
 release instead.
