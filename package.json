@@ -172,6 +172,8 @@
     "examples:flow-stress": "tsx examples/flow-stress.tsx",
     "examples:formula": "tsx examples/formula.tsx",
     "examples:html": "tsx examples/html.tsx",
+    "examples:json-render": "tsx examples/json-render/json-render.tsx",
+    "examples:json-render-check": "tsx examples/json-render/check.ts",
     "examples:maps": "tsx examples/maps.tsx",
     "examples:maps-gl": "tsx examples/maps-gl.tsx",
     "examples:markdown": "tsx examples/markdown.tsx",
@@ -230,6 +232,8 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.32.0",
+    "@json-render/core": "^0.21.0",
+    "@json-render/react": "^0.21.0",
     "@lydell/node-pty": "^1.2.0-beta.15",
     "@types/node": "^26.2.0",
     "@types/react": "^19.2.17",
@@ -243,7 +247,8 @@
     "typescript": "^7.0.2",
     "y-prosemirror": "^1.3.7",
     "y-protocols": "^1.0.7",
-    "yjs": "^13.6.32"
+    "yjs": "^13.6.32",
+    "zod": "^4.6.5"
   },
   "publishConfig": {
     "access": "public"
