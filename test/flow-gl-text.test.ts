@@ -300,6 +300,9 @@ test('a layout that answers its own coverage is set with no readback, a field th
   const names = ['node 1', 'node 2', 'node 3'];
   atlas.beginPack();
   for (const text of names) atlas.quad(label({ text }));
+  // One slice whatever the machine: the budget is wall-clock, and a slow
+  // runner spent 3 ms before the third field.
+  atlas.fieldBudgetMs = Infinity;
   assert.strictEqual(await atlas.pump(), true, 'one slice');
   for (const text of names) {
     assert.ok(atlas.quad(label({ text })), `${text} is drawable after it`);
