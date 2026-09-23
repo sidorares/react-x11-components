@@ -403,6 +403,19 @@ design. With none on screen a pan commits nothing: node types that _can_
 mount bodies used to cost `<Flow>` a render per step for the origin of a
 layer that was not there.
 
+**A pass draws what it reaches.** Each damage rect is its own pass, and each
+builds the scene for its rect: an edge is kept by the curve it takes, not
+just by the box around its two nodes, and of an edge that is kept only the
+runs of segments that come near the rect are stroked — a label plate or an
+arrowhead beside it is left to the pass that holds it. The strip a pan
+exposes down the pane's edge is crossed by every long edge in the graph, and
+its pass traced every point of every one of them; the band beside the
+minimap drew a hundred edges whose boxes reached it and whose curves did
+not. A dashed edge is drawn whole, because a run would start its pattern
+again. On the stress example's lattice at 1.25× the 2D pan went from 74
+frames a second (7.1 ms a flush) to 127 (4.1 ms) with this and the
+paragraph above.
+
 **The grid tiles.** At an integral device pitch the background is one
 `createPattern('repeat')` composite (ntk#263) — the phase baked into the
 tile, so alignment with the graph's own coordinates is exact — and at a

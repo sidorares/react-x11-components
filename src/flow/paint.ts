@@ -123,9 +123,11 @@ function paintEdges(painter: FlowPainter, edges: readonly SceneEdge[]): void {
   const strokes = new StrokeBuckets();
   const markers = new Map<string, MarkerBucket>();
   for (const edge of edges) {
-    if (edge.points.length >= 2) {
+    // the part of the route this pass reaches, where it reaches only part
+    for (const points of edge.runs ?? [edge.points]) {
+      if (points.length < 2) continue;
       strokes.push(
-        edge.points,
+        points,
         edge.stroke,
         edge.lineWidth,
         edge.dash,

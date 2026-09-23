@@ -570,6 +570,10 @@ export interface SceneEdge {
    *  phase; a renderer that keeps edges across frames reads this instead and
    *  moves the phase itself, so a tick is not a rebuild. */
   animated: boolean;
+  /** The pieces of `points` a pass that reaches only part of the edge draws
+   *  — each run of segments whose ink can land in its rect. Absent where the
+   *  whole route is drawn. */
+  runs?: readonly (readonly XYPosition[])[];
   markers: readonly SceneMarker[];
   /** The plate behind a label, so it sits above every edge. */
   chip?: SceneRect;
@@ -986,10 +990,11 @@ function buildEdges(input: SceneInput, scene: FlowScene): SceneEdge[] {
     }
 
     const dash = edge.style?.dash ?? (edge.animated ? DEFAULT_DASH : undefined);
+    const points = routed.trimmed ?? routed.points;
 
     const item: SceneEdge = {
       id: edge.id,
-      points: routed.trimmed ?? routed.points,
+      points,
       stroke,
       lineWidth,
       dash: dash?.map((d) => d * v.zoom),
@@ -997,6 +1002,18 @@ function buildEdges(input: SceneInput, scene: FlowScene): SceneEdge[] {
       animated: edge.animated ?? false,
       markers,
     };
+    // A pass over part of the edge draws the part it reaches: a strip down
+    // the pane's edge crossed by a hundred long edges traced every point of
+    // every one of them, to keep the handful of segments inside it. How far
+    // ink reaches from a segment is the pen and its join — a miter at the
+    // sharpest corner a route takes stays well inside three widths. Not a
+    // dashed edge, whose pattern would start again at every run a context
+    // cannot be told the phase of.
+    const reach = lineWidth * 3 + 2;
+    if (clip && !dash) {
+      const runs = runsReaching(points, clip, reach);
+      if (runs) item.runs = runs;
+    }
 
     if (labels && edge.label) {
       const at = pointAtFraction(routed.points, 0.5);
@@ -1025,11 +1042,85 @@ function buildEdges(input: SceneInput, scene: FlowScene): SceneEdge[] {
         baseline: 'middle',
       };
     }
+    // …and of what is left, only what this pass reaches: an arrowhead or a
+    // label plate beside the rect is drawn by the pass that holds it, and an
+    // edge with nothing here is not drawn at all.
+    if (clip) {
+      if (item.chip && !rectsOverlap(item.chip.rect, clip)) {
+        item.chip = undefined;
+        item.label = undefined;
+      }
+      if (markers.length > 0) {
+        item.markers = markers.filter((m) =>
+          rectsOverlap(inflateRect(pointsBox(m.points), reach), clip),
+        );
+      }
+      const stroked = item.runs
+        ? item.runs.length > 0
+        : rectsOverlap(inflateRect(bounds, reach), clip);
+      if (!stroked && !item.chip && item.markers.length === 0) continue;
+    }
     out.push(item);
   }
 
   scene.animBox = animBox;
   return out;
+}
+
+/** The box around a handful of points. */
+function pointsBox(points: readonly XYPosition[]): FlowRect {
+  let x0 = Infinity;
+  let y0 = Infinity;
+  let x1 = -Infinity;
+  let y1 = -Infinity;
+  for (const p of points) {
+    if (p.x < x0) x0 = p.x;
+    if (p.y < y0) y0 = p.y;
+    if (p.x > x1) x1 = p.x;
+    if (p.y > y1) y1 = p.y;
+  }
+  return { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
+}
+
+/**
+ * The runs of `points` whose ink can land in `clip`: each maximal run of
+ * segments whose box comes within `reach` of it, or null when every segment
+ * does and the route is one run already. A run ends at a vertex farther
+ * than `reach` from the rect, so the cap and the join the cut replaced are
+ * drawn where the rect cannot see them.
+ */
+export function runsReaching(
+  points: readonly XYPosition[],
+  clip: FlowRect,
+  reach: number,
+): (readonly XYPosition[])[] | null {
+  const x0 = clip.x - reach;
+  const y0 = clip.y - reach;
+  const x1 = clip.x + clip.width + reach;
+  const y1 = clip.y + clip.height + reach;
+  let runs: (readonly XYPosition[])[] | null = null;
+  let start = -1;
+  for (let i = 0; i + 1 < points.length; i++) {
+    const a = points[i];
+    const b = points[i + 1];
+    const inside =
+      (a.x > b.x ? a.x : b.x) >= x0 &&
+      (a.x < b.x ? a.x : b.x) <= x1 &&
+      (a.y > b.y ? a.y : b.y) >= y0 &&
+      (a.y < b.y ? a.y : b.y) <= y1;
+    if (inside) {
+      if (start < 0) start = i;
+    } else {
+      runs ??= [];
+      if (start >= 0) {
+        runs.push(points.slice(start, i + 1));
+        start = -1;
+      }
+    }
+  }
+  if (!runs) return null;
+  if (start >= 0) runs.push(points.slice(start));
+  return runs;
 }
 
 /** The box two nodes' edge cannot leave, before it is routed. */

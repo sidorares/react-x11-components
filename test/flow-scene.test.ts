@@ -19,7 +19,7 @@ import {
   resolvePalette,
 } from '../src/flow/model.js';
 import { paintPanels } from '../src/flow/paint.js';
-import { buildScene, SceneCache } from '../src/flow/scene.js';
+import { buildScene, runsReaching, SceneCache } from '../src/flow/scene.js';
 import type {
   FlowScene,
   SceneInput,
@@ -450,7 +450,14 @@ test('a minimap’s run of one colour is one fill, in the order it was drawn', (
   ]);
 });
 
-// --- the box a dash tick repaints ------------------------------------------
+// --- a pass draws what it reaches ----------------------------------------
+//
+// A partial repaint builds the scene for its own rect. The strip a pan
+// exposes down the pane's edge is crossed by every long edge in the graph,
+// and a pass over it traced every point of every one of them — a lattice of
+// wrap-around edges put a hundred through a strip four pixels wide — and
+// the band beside a minimap drew a hundred more whose coarse boxes reached
+// it and whose curves did not.
 
 /** A pass over `clip` of the scene `nodes` and `edges` make. */
 function pass(
@@ -463,6 +470,100 @@ function pass(
     clip,
   });
 }
+
+const drawn = (edge: FlowScene['edges'][number]): number =>
+  (edge.runs ?? [edge.points]).reduce((sum, run) => sum + run.length, 0);
+
+test('a pass over part of a long edge draws the segments it reaches', () => {
+  const nodes = [source(node('a', 0, 0)), source(node('b', 900, 500))];
+  const edges: FlowEdge[] = [{ id: 'e', source: 'a', target: 'b' }];
+  const whole = buildScene(input(nodes, edges, { x: 0, y: 0, zoom: 1 }));
+  const route = whole.edges[0].points;
+  assert.ok(route.length > 20, `a curve of ${route.length} points`);
+
+  // a strip down the middle of the curve, four pixels wide
+  const strip = { x: 500, y: 0, width: 4, height: 800 };
+  const edge = pass(nodes, edges, strip).edges[0];
+  assert.ok(edge?.runs, 'the edge is drawn in part');
+  assert.ok(
+    drawn(edge) < route.length / 4,
+    `${drawn(edge)} points of ${route.length}`,
+  );
+  // …and every segment that comes near the strip is in one of the runs
+  const reach = edge.lineWidth * 3 + 2;
+  for (let i = 0; i + 1 < route.length; i++) {
+    const a = route[i];
+    const b = route[i + 1];
+    if (Math.max(a.x, b.x) < strip.x - reach) continue;
+    if (Math.min(a.x, b.x) > strip.x + strip.width + reach) continue;
+    assert.ok(
+      edge.runs.some((run) =>
+        run.some(
+          (p, k) =>
+            k + 1 < run.length &&
+            p.x === a.x &&
+            p.y === a.y &&
+            run[k + 1].x === b.x &&
+            run[k + 1].y === b.y,
+        ),
+      ),
+      `segment ${i} near the strip is drawn`,
+    );
+  }
+});
+
+test('an edge whose curve misses the pass is not drawn, whatever its box', () => {
+  // Diagonal: the corner of the box between the two nodes is far from the
+  // curve, and the coarse reject is a box.
+  const nodes = [source(node('a', 0, 0)), source(node('b', 900, 500))];
+  const edges: FlowEdge[] = [{ id: 'e', source: 'a', target: 'b' }];
+  const corner = { x: 820, y: 20, width: 40, height: 40 };
+  assert.deepStrictEqual(pass(nodes, edges, corner).edges, []);
+});
+
+test('a label plate and an arrowhead are left to the pass that holds them', () => {
+  const nodes = [source(node('a', 0, 0)), source(node('b', 900, 0))];
+  const edges: FlowEdge[] = [
+    { id: 'e', source: 'a', target: 'b', label: 'the middle' },
+  ];
+  const whole = buildScene(input(nodes, edges, { x: 0, y: 0, zoom: 1 }));
+  const chip = whole.edges[0].chip!.rect;
+  const head = whole.edges[0].markers[0].points;
+
+  // near the start: the stroke, and neither the plate nor the head
+  const start = pass(nodes, edges, { x: 120, y: 0, width: 20, height: 60 });
+  assert.strictEqual(start.edges.length, 1);
+  assert.strictEqual(start.edges[0].chip, undefined);
+  assert.strictEqual(start.edges[0].label, undefined);
+  assert.deepStrictEqual(start.edges[0].markers, []);
+
+  // over the plate: the plate and its text
+  const middle = pass(nodes, edges, chip);
+  assert.ok(middle.edges[0].chip && middle.edges[0].label);
+
+  // over the head: the head
+  const at = head[0];
+  const end = pass(nodes, edges, {
+    x: at.x - 2,
+    y: at.y - 2,
+    width: 4,
+    height: 4,
+  });
+  assert.strictEqual(end.edges[0].markers.length, 1);
+});
+
+test('a dashed edge is drawn whole, and its phase with it', () => {
+  // A run would start the pattern again, and no context this draws into can
+  // be told where in it a run begins.
+  const nodes = [source(node('a', 0, 0)), source(node('b', 900, 500))];
+  const edges: FlowEdge[] = [
+    { id: 'e', source: 'a', target: 'b', animated: true },
+  ];
+  const edge = pass(nodes, edges, { x: 500, y: 0, width: 4, height: 800 })
+    .edges[0];
+  assert.ok(edge, 'drawn');
+  assert.strictEqual(edge.runs, undefined);
+});
 
 test('every animated edge on screen is in the box a dash tick repaints', () => {
   // The box came off the edges the pass drew, so a pass that reached one
@@ -490,4 +591,43 @@ test('every animated edge on screen is in the box a dash tick repaints', () => {
   const neither = pass(nodes, edges, { x: 900, y: 300, width: 20, height: 20 });
   assert.strictEqual(neither.animated, true);
   assert.deepStrictEqual(neither.animBox, whole.animBox);
+});
+
+test('runsReaching cuts at the vertices the rect cannot see', () => {
+  const line = [
+    { x: 0, y: 0 },
+    { x: 10, y: 0 },
+    { x: 20, y: 0 },
+    { x: 30, y: 0 },
+    { x: 40, y: 0 },
+    { x: 50, y: 0 },
+  ];
+  // all of it: no runs, the route is the run
+  assert.strictEqual(
+    runsReaching(line, { x: -5, y: -5, width: 60, height: 10 }, 1),
+    null,
+  );
+  // the middle: one run, from the vertex before to the vertex after
+  assert.deepStrictEqual(
+    runsReaching(line, { x: 24, y: -2, width: 2, height: 4 }, 1),
+    [line.slice(2, 4)],
+  );
+  // two stretches: two runs
+  const zigzag = [
+    { x: 0, y: 0 },
+    { x: 10, y: 0 },
+    { x: 10, y: 100 },
+    { x: 20, y: 100 },
+    { x: 20, y: 0 },
+    { x: 30, y: 0 },
+  ];
+  assert.deepStrictEqual(
+    runsReaching(zigzag, { x: 0, y: -2, width: 40, height: 4 }, 1),
+    [zigzag.slice(0, 3), zigzag.slice(3)],
+  );
+  // none of it: no runs at all
+  assert.deepStrictEqual(
+    runsReaching(line, { x: 0, y: 50, width: 50, height: 10 }, 1),
+    [],
+  );
 });
