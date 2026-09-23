@@ -1029,24 +1029,36 @@ export function edgeCoarseBox(
   v: Viewport,
   from: SceneNodeSource,
   to: SceneNodeSource,
-  scale: number,
+  // unused: a coarse box with pixels of slack has no use for the device
+  // grid `screenRect` snaps to, and snapping two rects per edge was most of
+  // what this cost — every edge, every frame of a drag
+  _scale?: number,
 ): FlowRect {
-  const a = screenRect(v, from.rect, scale);
-  const b = screenRect(v, to.rect, scale);
+  const z = v.zoom;
+  const f = from.rect;
+  const t = to.rect;
+  const ax = f.x * z + v.x;
+  const ay = f.y * z + v.y;
+  const aw = f.width * z;
+  const ah = f.height * z;
+  const bx = t.x * z + v.x;
+  const by = t.y * z + v.y;
+  const bw = t.width * z;
+  const bh = t.height * z;
   const span = Math.hypot(
-    a.x + a.width / 2 - (b.x + b.width / 2),
-    a.y + a.height / 2 - (b.y + b.height / 2),
+    ax + aw / 2 - (bx + bw / 2),
+    ay + ah / 2 - (by + bh / 2),
   );
   const slack =
-    Math.max(5, EDGE_SLOP * v.zoom) +
-    Math.max(EDGE_STEP_OFFSET * 3 * v.zoom, 8 * Math.sqrt(v.zoom * span));
-  const x = Math.min(a.x, b.x) - slack;
-  const y = Math.min(a.y, b.y) - slack;
+    Math.max(5, EDGE_SLOP * z) +
+    Math.max(EDGE_STEP_OFFSET * 3 * z, 8 * Math.sqrt(z * span));
+  const x = Math.min(ax, bx) - slack;
+  const y = Math.min(ay, by) - slack;
   return {
     x,
     y,
-    width: Math.max(a.x + a.width, b.x + b.width) + slack - x,
-    height: Math.max(a.y + a.height, b.y + b.height) + slack - y,
+    width: Math.max(ax + aw, bx + bw) + slack - x,
+    height: Math.max(ay + ah, by + bh) + slack - y,
   };
 }
 

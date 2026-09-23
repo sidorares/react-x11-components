@@ -1056,8 +1056,14 @@ export class FlowGraphNode extends Node implements FlowInstance {
    * testing reads the same rect, so what is drawn and what is clicked still
    * agree to the pixel.
    */
-  private _screenRect(entry: NodeEntry): FlowRect {
-    return screenRect(this._screenViewport(), this.rectOf(entry), this._scale);
+  private _screenRect(
+    entry: NodeEntry,
+    // A loop over the nodes passes it in: the viewport reads the pane's
+    // content box off layout, and asked once per node it was most of what a
+    // hit test cost on a large graph — every pointer move, 400 times.
+    sv: Viewport = this._screenViewport(),
+  ): FlowRect {
+    return screenRect(sv, this.rectOf(entry), this._scale);
   }
 
   private _visible(): boolean {
@@ -1416,10 +1422,11 @@ export class FlowGraphNode extends Node implements FlowInstance {
   /** The topmost node under a window point, or null. Walks paint order
    * backwards, which is what "topmost" means. */
   private _nodeAt(x: number, y: number): NodeEntry | null {
+    const sv = this._screenViewport();
     for (let i = this._order.length - 1; i >= 0; i--) {
       const entry = this._order[i];
       if (entry.node.hidden) continue;
-      if (rectContains(this._screenRect(entry), { x, y })) return entry;
+      if (rectContains(this._screenRect(entry, sv), { x, y })) return entry;
     }
     return null;
   }
@@ -1431,13 +1438,14 @@ export class FlowGraphNode extends Node implements FlowInstance {
   ): HandleAnchor | null {
     const zoom = this._viewport().zoom;
     const reach = Math.max(7, (HANDLE_RADIUS + HANDLE_SLOP) * zoom);
+    const sv = this._screenViewport();
     for (let i = this._order.length - 1; i >= 0; i--) {
       const entry = this._order[i];
       if (entry.node.hidden) continue;
       if (!this._connectable(entry)) continue;
       // cheap reject: the handles are on the node's border, so nothing more
       // than `reach` outside its box can be one
-      const rect = this._screenRect(entry);
+      const rect = this._screenRect(entry, sv);
       if (
         x < rect.x - reach ||
         x > rect.x + rect.width + reach ||
@@ -1467,12 +1475,13 @@ export class FlowGraphNode extends Node implements FlowInstance {
   ): { entry: NodeEntry; dir: XYPosition } | null {
     const zoom = this._viewport().zoom;
     const reach = Math.max(6, (RESIZE_GRIP + RESIZE_SLOP) * zoom);
+    const sv = this._screenViewport();
     for (let i = this._order.length - 1; i >= 0; i--) {
       const entry = this._order[i];
       if (entry.node.hidden) continue;
       const grips = this._grips(entry);
       if (grips.length === 0) continue;
-      const rect = this._screenRect(entry);
+      const rect = this._screenRect(entry, sv);
       if (
         x < rect.x - reach ||
         x > rect.x + rect.width + reach ||
@@ -2398,10 +2407,11 @@ export class FlowGraphNode extends Node implements FlowInstance {
   override a11yScene(): A11ySceneItem[] {
     this._sync();
     const pane = this._pane();
+    const sv = screenViewport(this._viewport(), pane);
     const items: A11ySceneItem[] = [];
     for (const entry of this._order) {
       if (entry.node.hidden) continue;
-      const rect = this._screenRect(entry);
+      const rect = this._screenRect(entry, sv);
       if (!rectsOverlap(rect, pane)) continue;
       const data = entry.node.data as FlowNodeData | undefined;
       const out = this._edgesByNode.get(entry.node.id) ?? [];
@@ -3155,12 +3165,13 @@ export class FlowGraphNode extends Node implements FlowInstance {
     // new on most steps of a pan, and at 1.25× the layer changed size with
     // it — every body repainted, where core would have moved them.
     const origin = { x: v.x, y: v.y };
+    const sv = screenViewport(v, pane);
     const was = this._bodies;
     const bodies: NodeBodyRect[] = [];
     let changed = false;
     for (const entry of this._paintOrder()) {
       if (entry.node.hidden || !this._mounted(entry)) continue;
-      if (!rectsOverlap(this._screenRect(entry), pane)) continue;
+      if (!rectsOverlap(this._screenRect(entry, sv), pane)) continue;
       const graph = this.rectOf(entry);
       const x = graph.x * v.zoom;
       const y = graph.y * v.zoom;
