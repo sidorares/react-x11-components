@@ -213,12 +213,15 @@ export interface RenderHost {
   /**
    * Composite a straight-RGBA image over the plot, preserving what is
    * already painted underneath. False when this backend cannot (no
-   * XRender surface — the mock), in which case the caller uses rects.
+   * offscreen surface — the mock), in which case the caller uses rects.
    * `contentKey` names what `fill` would produce: an unchanged key lets
    * the host re-composite its retained surface without refilling or
-   * re-uploading a pixel.
+   * re-uploading a pixel. `id` is the series': each keeps a surface of its
+   * own, or two dense series in one plot would refill one surface for each
+   * other on every frame.
    */
   blitImage(
+    id: string,
     x: number,
     y: number,
     w: number,
@@ -827,6 +830,10 @@ export interface ScatterGrid {
   consumedN: number;
   /** rects per alpha bucket, rebuilt only when the grid changed */
   buckets: number[][] | null;
+  /** the content the last paint drew — see `renderScatter` */
+  painted: string;
+  /** the content last handed to the host as an image, which it keeps */
+  imaged: string;
 }
 
 export function makeScatterGrid(
@@ -845,10 +852,26 @@ export function makeScatterGrid(
     maxCount: 0,
     consumedN: 0,
     buckets: null,
+    painted: '',
+    imaged: '',
   };
 }
 
 const ALPHA_LEVELS = 8;
+
+/** The alpha bucket a cell's count falls in: square-root density, so a
+ *  lone point stays visible beside a pile of a thousand. */
+function alphaLevel(count: number, maxCount: number): number {
+  return Math.min(
+    ALPHA_LEVELS - 1,
+    Math.floor(Math.sqrt(count / maxCount) * ALPHA_LEVELS),
+  );
+}
+
+/** The opacity a bucket is drawn at, by either path. */
+function levelAlpha(level: number): number {
+  return 0.3 + (0.7 * (level + 1)) / ALPHA_LEVELS;
+}
 
 /** #rgb/#rrggbb/#rrggbbaa → [r,g,b,a?]; null for anything fancier, which
  * simply keeps the rect path. */
@@ -937,21 +960,38 @@ export function renderScatter(env: SeriesEnv, g: SeriesGeometry): void {
   const rectBytes = grid.occupied * BYTES_PER_RECT;
   const imageBytes = plot.width * plot.height * BYTES_PER_PIXEL;
   const rgb = parseHexColor(g.color);
-  if (rectBytes > imageBytes && rgb) {
+  // The crossover is a question about one frame, and a grid painted again
+  // unchanged — a pan or a drag carrying the plot, a crosshair over it —
+  // answers it differently: the host keeps the surface it filled, so every
+  // paint of it after the first is one composite, while the rects go out
+  // again in full every frame. On a backend where each rect is a primitive
+  // of its own rather than a line of one request, that was 30,000 of them
+  // a frame across a board of scatter plots. A grid whose data moves keeps
+  // the crossover, because every paint of it is its first.
+  const contentKey = `${grid.key}#${grid.consumedN}|${g.color}`;
+  const repeat = grid.painted === contentKey;
+  grid.painted = contentKey;
+  if ((repeat || rectBytes > imageBytes) && rgb) {
+    const kept = grid.imaged === contentKey;
     const drawn = env.host.blitImage(
+      g.spec.id,
       plot.x,
       plot.y,
       gw * cell,
       gh * cell,
       (data) => {
-        const [r, gg, b] = rgb;
+        const [r, gg, b, ca] = rgb;
+        // The rects' opacities exactly, colour alpha included, so which
+        // path drew a frame never shows — and a plot that changes path as
+        // it goes from moving to still does not change shade.
+        const alphas = Array.from({ length: ALPHA_LEVELS }, (_, level) =>
+          Math.round(levelAlpha(level) * ca),
+        );
         for (let cy = 0; cy < gh; cy++) {
           for (let cx = 0; cx < gw; cx++) {
             const count = grid.counts[cy * gw + cx];
             if (count === 0) continue;
-            const a = Math.round(
-              255 * (0.3 + 0.7 * Math.sqrt(count / grid.maxCount)),
-            );
+            const a = alphas[alphaLevel(count, grid.maxCount)];
             for (let dy = 0; dy < cell; dy++) {
               let at = ((cy * cell + dy) * gw * cell + cx * cell) * 4;
               for (let dx = 0; dx < cell; dx++) {
@@ -967,11 +1007,12 @@ export function renderScatter(env: SeriesEnv, g: SeriesGeometry): void {
       },
       // same grid content + colour → the host recomposites its retained
       // surface: no refill, no upload
-      `${grid.key}#${grid.consumedN}|${g.color}`,
+      contentKey,
     );
     if (drawn) {
+      grid.imaged = contentKey;
       stats.commands++;
-      stats.estimatedWireBytes += imageBytes;
+      stats.estimatedWireBytes += kept ? 0 : imageBytes;
       stats.series.push({ id: g.spec.id, mode: 'image', points: n });
       return;
     }
@@ -988,11 +1029,12 @@ export function renderScatter(env: SeriesEnv, g: SeriesGeometry): void {
       for (let cx = 0; cx < gw; cx++) {
         const count = grid.counts[cy * gw + cx];
         if (count === 0) continue;
-        const level = Math.min(
-          ALPHA_LEVELS - 1,
-          Math.floor(Math.sqrt(count / grid.maxCount) * ALPHA_LEVELS),
+        buckets[alphaLevel(count, grid.maxCount)].push(
+          cx * cell,
+          cy * cell,
+          cell,
+          cell,
         );
-        buckets[level].push(cx * cell, cy * cell, cell, cell);
       }
     }
     grid.buckets = buckets;
@@ -1002,9 +1044,7 @@ export function renderScatter(env: SeriesEnv, g: SeriesGeometry): void {
   for (let level = 0; level < ALPHA_LEVELS; level++) {
     const local = grid.buckets[level];
     if (!local.length) continue;
-    if (ctx.globalAlpha !== undefined) {
-      ctx.globalAlpha = 0.3 + (0.7 * (level + 1)) / ALPHA_LEVELS;
-    }
+    if (ctx.globalAlpha !== undefined) ctx.globalAlpha = levelAlpha(level);
     // translate manually: ctx.translate would kick fillRects off ntk's
     // single-FillRectangles fast path (it requires an identity transform)
     const rects = new Array<number>(local.length);
