@@ -2818,6 +2818,24 @@ export class FlowGraphNode extends Node implements FlowInstance {
     // A pure pan moves the world's offset, and a dash tick its phase: both
     // are uniforms on the GPU, so neither is a change to the world.
     if (!this._panOnly && reason !== 'animation') this._worldVersion++;
+    // Under GL the surface over this box draws the graph and the 2D pane
+    // under it shows nothing: a claim of its pixels was a window pass over
+    // them, unseen, whose one job was to reach `paint` and ask the surface
+    // for a frame — a BeginDraw, a walk and a commit on every step of a
+    // drag, 2.6 ms of each. The graph's own claims ask for the frame
+    // directly; the frame does what `paint` did (`glFrame`). A layout change
+    // and a change of props — which may move the panels — still go through.
+    if (
+      !layout &&
+      damage != null &&
+      (reason === 'content' ||
+        reason === 'style-state' ||
+        reason === 'animation') &&
+      this._gl
+    ) {
+      this._glRequest!();
+      return;
+    }
     super.invalidate(layout, damage, reason);
   }
 
@@ -3302,7 +3320,8 @@ export class FlowGraphNode extends Node implements FlowInstance {
     const was = this._shownBodies;
     if (was.size === ids.size && [...ids].every((id) => was.has(id))) return;
     this._shownBodies = ids;
-    this.invalidate();
+    // the pane, not the window — and under GL, a frame
+    this._repaint('content');
   }
 
   /**
@@ -3316,7 +3335,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
   setPanelCanvases(canvases: readonly PanelCanvas[]): void {
     const had = this._panelCanvases.length > 0;
     this._panelCanvases = canvases;
-    if (had !== canvases.length > 0) this.invalidate();
+    if (had !== canvases.length > 0) this._repaint('props');
   }
 
   /** Where the minimap and the controls are, relative to the pane's

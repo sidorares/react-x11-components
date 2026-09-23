@@ -2832,3 +2832,59 @@ test('a pan past panel canvases still moves the pane’s pixels', async () => {
   }
   assert.deepStrictEqual(moved, [4, 4, 4], 'every step moved the pixels');
 });
+
+test('under GL a drag step asks for a GL frame and claims nothing of the window', async () => {
+  // The 2D pane under the surface shows nothing, and every claim of it was
+  // a window pass over it — a BeginDraw, a walk and a commit a drag step —
+  // whose one job was to reach `paint` and ask the surface for a frame.
+  await renderX11(
+    h(FLOW_ELEMENT, {
+      nodes: nodes(),
+      edges: edges(),
+      renderer: 'gl',
+      style: { flexGrow: 1 },
+    }),
+  );
+  const node = pane() as unknown as {
+    setGlRequest(fn: () => void): void;
+    defaultMouseDown(ev: unknown): void;
+    defaultMouseDrag(ev: unknown): void;
+    defaultMouseUp(ev: unknown): void;
+  };
+  let asked = 0;
+  node.setGlRequest(() => void asked++);
+  await act();
+  const root = pane().root as unknown as {
+    invalidate(...a: unknown[]): void;
+  };
+  const claims: unknown[][] = [];
+  const own = root.invalidate.bind(root);
+  root.invalidate = (...a: unknown[]) => {
+    claims.push(a);
+    own(...a);
+  };
+  const synth = (x: number, y: number) => ({
+    x,
+    y,
+    button: 1,
+    shiftKey: false,
+    ctrlKey: false,
+    detail: 1,
+    preventDefault() {},
+    capturePointer() {},
+  });
+  const abs = pane().abs;
+  // node `a` (100,100 120×40) by its middle
+  node.defaultMouseDown(synth(abs.x + 160, abs.y + 120));
+  const before = asked;
+  for (let step = 1; step <= 3; step++) {
+    node.defaultMouseDrag(synth(abs.x + 160 + step * 10, abs.y + 120));
+  }
+  node.defaultMouseUp(synth(abs.x + 190, abs.y + 120));
+  assert.ok(asked > before, 'the drag asked for GL frames');
+  assert.deepStrictEqual(
+    claims.filter(([, , reason]) => reason === 'content'),
+    [],
+    'and claimed none of the window for them',
+  );
+});
