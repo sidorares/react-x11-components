@@ -394,8 +394,8 @@ imports — `react-x11` itself plus `/host`, `/node`, `/style`, `/keysyms`,
 `/ntk`, `/yoga`, `/jsx-runtime`, and `/test` and `/debug` from the suite.
 Both specs are ordinary registry ranges:
 
-- `peerDependencies.react-x11` is `^2.19.0` — what a consumer must supply.
-- `devDependencies.react-x11` is `^2.19.0` — what the suite runs against.
+- `peerDependencies.react-x11` is `^2.20.0` — what a consumer must supply.
+- `devDependencies.react-x11` is `^2.20.0` — what the suite runs against.
 
 Keep them the same range. They are one decision written twice, and a
 devDependency that drifts above the peer range means the suite passes
@@ -461,6 +461,12 @@ it up. **The floor is a running one and moves often** — every move since
   frame that ticks forty widget bodies; and the paint cache drawing through
   the translation an overlay pane paints with (#667), without which every
   card over a GL surface was painted live on Windows.
+- `^2.20.0` — `scrollContents`'s riders (react-x11#671): the box `<Flow>`
+  lays node bodies out in moves with a 2D pan, and now rides its blit
+  instead of declining it. The same release claims a moved subtree once,
+  clipped to what clips it, and moves the nodes Yoga did not lay out again
+  instead of reading them back (#670) — a pan over bodies stopped
+  repainting the whole window.
 
 Do not reach back for a `github:` spec to get at unreleased core — cut a core
 release instead.
