@@ -2817,7 +2817,7 @@ test('a pan past panel canvases still moves the pane’s pixels', async () => {
     controls: true,
   });
   await act();
-  const wnd = pane().root!.window as unknown as {
+  const wnd = (pane().root as unknown as { window: unknown }).window as {
     scrollRegion(rect: unknown, dx: number, dy: number): boolean;
   };
   const moved: number[] = [];
