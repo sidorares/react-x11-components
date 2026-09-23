@@ -3264,6 +3264,43 @@ test('a dash tick repaints neither the minimap nor the controls', async () => {
   assert.deepStrictEqual(reasons, [], 'and the panels were left alone');
 });
 
+test('a dash tick claims only what the pane shows of its edges', async () => {
+  // The box a tick repaints is the drawn edges', and an animated edge on
+  // its way out of the pane takes that box past the pane's sides — here
+  // two thousand pixels past. Claimed whole, a tick repainted everything
+  // the window has beside the graph, sixteen times a second.
+  await mount({
+    nodes: [
+      { id: 'a', position: { x: 100, y: 100 }, data: { label: 'a' } },
+      { id: 'b', position: { x: 2600, y: 900 }, data: { label: 'b' } },
+    ],
+    edges: [{ id: 'a-b', source: 'a', target: 'b', animated: true }],
+  });
+  await act();
+  const node = pane() as unknown as {
+    contentBox(): { x: number; y: number; width: number; height: number };
+    invalidate(...a: unknown[]): void;
+  };
+  const claims: { x: number; y: number; width: number; height: number }[] = [];
+  const own = node.invalidate.bind(node);
+  node.invalidate = (...a: unknown[]) => {
+    if (a[2] === 'animation') claims.push(a[1] as (typeof claims)[number]);
+    own(...a);
+  };
+  await new Promise((r) => setTimeout(r, 200));
+  assert.ok(claims.length >= 2, 'the dash moved');
+  const box = node.contentBox();
+  for (const claim of claims) {
+    assert.ok(
+      claim.x >= box.x &&
+        claim.y >= box.y &&
+        claim.x + claim.width <= box.x + box.width &&
+        claim.y + claim.height <= box.y + box.height,
+      `a tick claimed ${JSON.stringify(claim)}, past ${JSON.stringify(box)}`,
+    );
+  }
+});
+
 test('a pan past panel canvases still moves the pane’s pixels', async () => {
   // Where node types mount bodies the minimap and controls are canvases of
   // `<Flow>`'s own, over the pane, and each asks to repaint on every change

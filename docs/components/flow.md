@@ -406,7 +406,11 @@ blits — a tick claims the dashes inside the band the pan copies, which
 declines the copy, and a sixth of a pan's frames repainted the pane whole:
 120 frames a second against 175 on the stress example's lattice, and every
 stutter in it. They march again once the pan has held still for two ticks.
-Under GL a dash is a uniform and never waits.
+Under GL a dash is a uniform and never waits. A tick claims the box of the
+animated edges it drew, and only as much of it as the pane shows: an edge
+on its way out of the pane takes that box past the pane's sides, and
+claimed whole, every tick repainted whatever the window has beside the
+graph.
 
 **A pass draws what it reaches.** Each damage rect is its own pass, and each
 builds the scene for its rect: an edge is kept by the curve it takes, not

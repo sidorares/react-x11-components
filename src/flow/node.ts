@@ -51,6 +51,7 @@ import {
   HANDLE_SLOP,
   gripPoint,
   inflateRect,
+  intersectRects,
   measureNode,
   MIN_NODE_HEIGHT,
   MIN_NODE_WIDTH,
@@ -2788,12 +2789,13 @@ export class FlowGraphNode extends Node implements FlowInstance {
         if (now() - this._blittedPanAt < ANIMATION_MS * 2) return;
         this._dashPhase += ANIMATION_SPEED;
         // the box the last paint saw animated edges in, not the pane: a
-        // marching dash should not cost a full grid repaint per tick
-        this.invalidate(
-          false,
-          this._animBox ? this._device(this._animBox) : this.abs,
-          'animation',
-        );
+        // marching dash should not cost a full grid repaint per tick. And
+        // only the part of it the pane shows — an edge on its way out of
+        // the pane takes the box past it, and claimed whole, a tick
+        // repainted everything the window has beside the graph.
+        const box = this._animBox ? this._device(this._animBox) : this.abs;
+        const shown = intersectRects(box, this.contentBox());
+        if (shown) this.invalidate(false, shown, 'animation');
       }, ANIMATION_MS) ?? null;
   }
 
