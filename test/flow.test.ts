@@ -53,6 +53,7 @@ import type {
   NodeBodyRect,
   NodeChange,
   NodeRenderContext,
+  XYPosition,
 } from '../src/index.js';
 import {
   boundsOf,
@@ -2828,6 +2829,46 @@ test('the graph leaves out the cards the bodies’ layer shows, and takes them b
   });
   assert.ok(bodiesAway(), 'precondition: held');
   assert.strictEqual(shown().size, 0, 'held bodies hand their cards back');
+});
+
+test('under GL a shown card stays in the world until the bodies’ layer has painted it', async () => {
+  // The layer is 2D, over the surface: it reaches the screen with the
+  // window's paint, and a GL frame presents at once. Leaving the card out
+  // of the world from the commit that mounted its body showed edges with no
+  // cards under them for as long as that paint took — the whole first paint
+  // of a scene of charts, and again after every zoom that held the bodies.
+  const { ctx } = await renderX11(
+    h(FLOW_ELEMENT, {
+      nodes: bodyNode(),
+      edges: [],
+      renderer: 'gl',
+      style: { flexGrow: 1 },
+    }),
+  );
+  const node = pane() as unknown as GlPane & {
+    setShownBodies(ids: ReadonlySet<string>): void;
+    paintCard(id: string, ctx: unknown, abs: XYPosition): void;
+  };
+  let asked = 0;
+  node.setGlRequest(() => void asked++);
+  await act();
+  const cards = () =>
+    (node.glFrame(null)!.world as { nodes: { id: string }[] }).nodes.map(
+      (n) => n.id,
+    );
+  assert.deepStrictEqual(cards(), ['a'], 'precondition: the world draws it');
+  // the commit that mounts its body
+  node.setShownBodies(new Set(['a']));
+  assert.deepStrictEqual(cards(), ['a'], 'shown and not yet painted: kept');
+  // the layer's paint
+  const before = asked;
+  node.paintCard('a', ctx, { x: 0, y: 0 });
+  assert.ok(asked > before, 'a frame is asked for once the layer has it');
+  assert.deepStrictEqual(cards(), [], 'and the world leaves it out');
+  // held out of a zoom, then shown again: kept until it is painted again
+  node.setShownBodies(new Set());
+  node.setShownBodies(new Set(['a']));
+  assert.deepStrictEqual(cards(), ['a'], 'a card shown again is kept again');
 });
 
 test('under GL a pan asks for a GL frame and claims nothing of the 2D pane', async () => {

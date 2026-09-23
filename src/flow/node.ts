@@ -449,6 +449,17 @@ export class FlowGraphNode extends Node implements FlowInstance {
   /** Mounted cards `<Flow>` shows, painted in the bodies' layer — the
    *  graph leaves them out (`setShownBodies`). */
   private _shownBodies: ReadonlySet<string> = new Set();
+  /**
+   * Under GL, the shown cards the bodies' layer has painted since it was
+   * told they were shown (`paintCard`). The layer is 2D, over the surface:
+   * it reaches the screen with the window's paint, and a GL frame presents
+   * at once. Leaving a card to the layer from the commit that mounted its
+   * body, as the 2D renderer can, left edges with no cards under them for as
+   * long as that paint took — the whole of a scene of charts' first paint,
+   * and again after every zoom that held the bodies. So the world keeps a
+   * card until its canvas has painted.
+   */
+  private _paintedCards = new Set<string>();
   /** The canvases `<Flow>` paints the minimap and controls on, over the
    *  bodies — while there are any, the graph leaves the panels out. */
   private _panelCanvases: readonly PanelCanvas[] = [];
@@ -3356,7 +3367,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
       nodes: overlay
         ? []
         : order
-            .filter((entry) => !this._shownBodies.has(entry.node.id))
+            .filter((entry) => !this._cardInLayer(entry.node.id))
             .map((entry) => this._source(entry)),
       all,
       edges: overlay ? [] : this._edges,
@@ -3586,19 +3597,40 @@ export class FlowGraphNode extends Node implements FlowInstance {
     } finally {
       c.restore();
     }
+    if (this._gl && this._shownBodies.has(id) && !this._paintedCards.has(id)) {
+      // The layer has it now: the world stops drawing it, in a frame after
+      // the one this paint is part of. The world's version and a frame, and
+      // not `_repaint` — nothing of the 2D pane or its panels moved.
+      this._paintedCards.add(id);
+      this._worldVersion++;
+      this._glRequest?.();
+    }
+  }
+
+  /** Whether a card is the bodies' layer's to draw rather than the
+   *  graph's: shown there — and under GL, painted there already. */
+  private _cardInLayer(id: string): boolean {
+    if (!this._shownBodies.has(id)) return false;
+    return !this._gl || this._paintedCards.has(id);
   }
 
   /**
    * The cards `<Flow>` has on screen in the bodies' layer (`paintCard`),
    * which the graph then leaves out — on the GL renderer that is the whole
    * of what drawing them cost, twice. Told after the commit that shows
-   * them, so no frame lacks both; told the empty set while bodies are held
-   * out of a zoom, when their cards are the graph's again.
+   * them, so no 2D frame lacks both; told the empty set while bodies are
+   * held out of a zoom, when their cards are the graph's again. Under GL a
+   * card is left out only once its canvas has painted (`_paintedCards`).
    */
   setShownBodies(ids: ReadonlySet<string>): void {
     const was = this._shownBodies;
     if (was.size === ids.size && [...ids].every((id) => was.has(id))) return;
     this._shownBodies = ids;
+    // a card that left the layer is painted there again before the world
+    // leaves it out again
+    for (const id of this._paintedCards) {
+      if (!ids.has(id)) this._paintedCards.delete(id);
+    }
     // the pane, not the window — and under GL, a frame
     this._repaint('content');
   }
