@@ -688,18 +688,33 @@ test('a row grows to hold a label that wraps', async () => {
       h(Tree, {
         rowHeight: 40,
         items: [
-          { id: 'a', label: LONG },
+          // Two copies, so the label clears the floor in any face. One copy
+          // is five lines of Hiragino Sans, which is what `sans-serif` was
+          // on a Mac until ntk 8.8.2 named Helvetica ahead of it — and three
+          // lines of Helvetica, leading trimmed, are 38px: under the floor,
+          // where a row that never grew would pass the checks below.
+          { id: 'a', label: `${LONG} ${LONG}` },
           { id: 'b', label: 'b' },
         ],
       }),
     ),
   );
   const [first, second] = rowNodes().map((n) => retained(n));
-  const text = first.children.find(
-    (n) => (n as RetainedNode).kind === 'text',
-  ) as RetainedNode | undefined;
-  assert.ok(text, 'the default label is a <text>');
-  assert.ok(text.abs.height > 40, 'the label really did wrap');
+  const label = (row: RetainedNode) =>
+    row.children.find((n) => (n as RetainedNode).kind === 'text') as
+      RetainedNode | undefined;
+  const text = label(first);
+  const line = label(second);
+  assert.ok(text && line, 'the default label is a <text>');
+  // measured against one line in the same face, not against a number
+  assert.ok(
+    text.abs.height >= 2 * line.abs.height,
+    `the label really did wrap: ${text.abs.height}px, one line is ${line.abs.height}px`,
+  );
+  assert.ok(
+    text.abs.height > 40,
+    `the label is taller than the floor: ${text.abs.height}px`,
+  );
   assert.ok(
     first.abs.height >= text.abs.height,
     `the row is ${first.abs.height}px and its label ${text.abs.height}px`,
