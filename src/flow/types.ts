@@ -694,10 +694,10 @@ export interface FlowProps<N = FlowNodeData, E = unknown> {
    *
    * **Not yet a replacement.** The GL renderer draws the graph — cards,
    * edges, arrowheads, handles, labels, the grid, the minimap — but not yet
-   * a node type's own `paint`, nor a mounted body over the surface, and a
-   * label set at a new size arrives a frame or two after the zoom that
-   * asked for it (drawn scaled from the nearest size meanwhile);
-   * `onFrame`'s `gaps` counts what a frame left out.
+   * a node type's own `paint`, nor a mounted body over the surface. Labels
+   * are drawn from distance fields, sharp at every zoom, and a string drawn
+   * for the first time arrives a frame or two after the frame that asked
+   * for it; `onFrame`'s `gaps` counts what a frame left out.
    * `docs/prd-flow-gl.md` has the plan and the numbers.
    */
   renderer?: 'retained' | 'gl';

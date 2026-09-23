@@ -152,6 +152,7 @@ export class FlowGlRenderer {
     this.box = linkProgram(gl, BOX_VERTEX, BOX_FRAGMENT, [
       ...UNIFORMS,
       'u_atlas',
+      'u_spread',
     ]);
     // the label atlas is always on unit 0
     gl.useProgram(this.box.program);
@@ -305,6 +306,9 @@ export class FlowGlRenderer {
     if (atlas) {
       atlas.bind(gl, !this.atlasBound);
       this.atlasBound = true;
+      // how many texels a field's values span, for the label ramp
+      gl.useProgram(this.box.program);
+      gl.uniform1f(this.box.uniforms.u_spread, atlas.pad);
     }
     gl.bindVertexArray(this.vao);
     gl.viewport(0, 0, target.width, target.height);

@@ -163,8 +163,11 @@ function fontStyle(
  * repaint — a node with no explicit size is measured when the graph changes,
  * which is also when a hit test has to know how big it is — so measuring
  * cannot live behind the painter the way drawing does.
+ *
+ * Exported for the GL renderer's label atlas (`./gl/text.ts`), which draws
+ * the layout it measured onto a staging surface of its own.
  */
-function shape(
+export function shape(
   opts: PainterOptions,
   text: string,
   options: TextOptions | undefined,

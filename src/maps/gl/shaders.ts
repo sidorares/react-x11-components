@@ -22,7 +22,7 @@
 // A segment that touches a sentinel collapses to a point outside the clip
 // volume — see `buckets.ts` for why sentinels beat an index buffer.
 
-import { SDF_EDGE } from './sdf.js';
+import { SDF_EDGE, SDF_INK_BIAS_PX } from '../../internal/sdf.js';
 
 /** Where each attribute lives, shared by every program. Locations 5-9 are
  *  the label program's, one label per instance (see {@link LABEL_VERTEX}). */
@@ -269,9 +269,6 @@ void main() {
  * one texture read, where a halo dilated from coverage took thirty-three,
  * and exactly as wide as the style asks up to the field's reach.
  */
-/** Device pixels the ink's edge sits outside a field's outline. */
-const INK_BIAS_PX = 0.15;
-
 export const LABEL_FRAGMENT = `precision highp float;
 uniform sampler2D u_image;
 uniform float u_spread;
@@ -284,10 +281,8 @@ void main() {
   float field = texture2D(u_image, v_uv).a;
   // Device pixels past the glyphs' edge: positive outside, negative in.
   float d = (${SDF_EDGE.toFixed(4)} - field) * u_spread * v_scale;
-  // The ink's edge a little outside the outline: a text engine darkens
-  // stems at small sizes, a field thresholded at half coverage gives that
-  // back, and a name looks a weight lighter than the same name set.
-  float ink = clamp(0.5 + ${INK_BIAS_PX.toFixed(2)} - d, 0.0, 1.0);
+  // The ink's edge a little outside the outline (SDF_INK_BIAS_PX).
+  float ink = clamp(0.5 + ${SDF_INK_BIAS_PX.toFixed(2)} - d, 0.0, 1.0);
   float halo = v_radius > 0.0 ? clamp(0.5 + v_radius - d, 0.0, 1.0) : 0.0;
   vec4 color = v_ink * ink + v_halo * (halo * (1.0 - ink));
   if (color.a <= 0.0) discard;

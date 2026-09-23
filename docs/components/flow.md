@@ -444,6 +444,17 @@ contexts): on X11 ntk draws glyphs at the size they were shaped at, so a
 zoom step there still shapes its labels. On the stress lattice at 1.25× on
 Windows a zoom went from 34 to 39 frames a second.
 
+**Under GL a label is a distance field.** Each string is set once, at 16
+device pixels (32 at 2x), and kept as the distance of every texel to its
+glyphs' edge; the shader draws it sharp at any size, every frame of a zoom
+included, so a zoom sets no labels at all. The first cut set a raster per
+size and re-set every label after every zoom — 70 ms of label work and a
+second world rebuild after an eight-notch wheel zoom over the stress
+lattice. What fields cost is a string's first appearance, about a quarter of
+a millisecond more each, and the engine's hinting at the drawn size. The
+field is `<Map>`'s own (`src/internal/sdf.ts`); `docs/prd-flow-gl.md` has
+the numbers.
+
 **The grid tiles.** At an integral device pitch the background is one
 `createPattern('repeat')` composite (ntk#263) — the phase baked into the
 tile, so alignment with the graph's own coordinates is exact — and at a

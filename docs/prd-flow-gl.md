@@ -150,8 +150,8 @@ The three caches the GL renderer needs, and what each kills:
    does. This is the structural one: it is what makes a pan a uniform write,
    and it is what brings the 8.97 ms scene build at 2000 nodes down — because
    a pan changes no endpoint, so a cached route survives it whole.
-2. **Label rasters, keyed by text, weight and size _bucket_.** 80 ms cold,
-   nothing warm. See below.
+2. **Label fields, keyed by text and weight — not size.** One signed
+   distance field per string serves it at every zoom. See below.
 3. **Node instance data, keyed by node identity.** A drag rewrites one card's
    16 floats with `bufferSubData`, not two hundred.
 
@@ -187,17 +187,32 @@ raster + readback, 400 labels    53.0 ms in 6 batches
 ```
 
 **~80 ms to set a 200-node graph's labels cold** — ten frames at 120 Hz — and
-a zoom gesture would ask for that on every frame. So labels are rastered at
-**size buckets** and scaled in the shader between them: at a ratio of √2, the
-nearest bucket is never more than 19% off, and eight buckets cover the whole
-zoom range. A bucket change re-rasters, which is the one unbounded cost in the
-frame and the reason the next section exists.
+a zoom gesture would ask for that on every frame. The first cut set each
+label at the exact size a zoom came to rest at and drew the nearest size it
+had, scaled, until then; that re-set every label after every zoom (369
+strings, 70 ms of label work and two world rebuilds after an eight-notch
+wheel zoom over the lattice, the labels soft for the ~130 ms it took).
 
-Everything else about labels is maps' answer unchanged: `app.fonts.layout()`
-shapes it, an offscreen `Surface` draws it, `getImageData` reads coverage
-back, one atlas texture, one instanced draw, colour and halo in the shader.
-Flow's labels are always axis-aligned, which makes the vertex shader simpler
-than maps'.
+So a label is a **signed distance field** instead, as maps' labels are
+(`src/internal/sdf.ts`, the module both share): set once at a base size (16
+device pixels, 32 at 2x), measured and cut to its card at that size and
+scaled, and turned back into ink by the box program at whatever size it is
+drawn — every frame of a zoom gesture included. A zoom asks the atlas for
+nothing; only strings it uncovers are set, when it rests. Measured on
+Windows over the same eight notches: 0 strings and ~1 ms of label work
+instead of 273-369 strings and 70 ms, one world rebuild instead of two, half
+the upload, and the gesture's frames 105-120 → 137-149 per second.
+
+What it costs is the first appearance of a string: its field is 0.25 ms on
+top of shaping, drawing and reading it back, so the 219 labels of the
+lattice at zoom 1 are 96 ms of label work where they were 50, and on screen
+~60 ms later (176 ms). And the text engine's hinting at the drawn size — the
+type is its outline, scaled, antialiased across one device pixel.
+
+Everything else about labels is maps' answer: `app.fonts.layout()` shapes
+it, an offscreen `Surface` draws it, `getImageData` reads coverage back, one
+atlas texture, colour in the shader. Flow's labels are always axis-aligned,
+which makes the vertex shader simpler than maps'.
 
 ## Then, and only then, the budget
 
@@ -217,18 +232,17 @@ make sense rather than out of a quality ladder.
   budgeted, measured ceiling 1.41 ms at 2000 nodes. A drag whose edges lag the
   node is a broken drag; this group is what makes the answer to "where am I
   putting this" correct.
-- **Group 1 — labels already in the atlas.** Drawn from whatever bucket
-  exists, scaled if it is not exact. One instanced draw, free.
-- **Group 2 — labels that need rastering.** Admitted against a per-frame
-  budget on the order of maps' 1.5 ms, nearest-to-the-centre first, and
-  **suspended entirely while a gesture is running**. This is maps' own lesson
-  restated: label churn during a zoom was the cost, and labels are admitted at
-  rest.
+- **Group 1 — labels already in the atlas.** Drawn from their field at
+  whatever size, sharp. One instanced draw, free.
+- **Group 2 — labels that need setting.** Set between frames, their fields
+  made a few milliseconds at a time, and **suspended entirely while a zoom is
+  running**. This is maps' own lesson restated: label churn during a zoom was
+  the cost, and labels are admitted at rest.
 
 The degradation that buys is honest. During a fast zoom the graph is correct
-and complete, with labels one bucket stale — slightly soft, never missing,
-never late. One or two frames after the gesture stops they are crisp. Nothing
-pops in or out, because group 1 always draws whatever raster exists.
+and complete, and every label it has drawn before is sharp; a string the zoom
+uncovers appears once it stops. Nothing pops in or out of what was drawn,
+because group 1 always has its field.
 
 ## The four gestures, under this design
 
@@ -275,8 +289,9 @@ behind it — the arrangement `src/maps/gl/pane.ts` already documents.
   The GL surface, the overlay (opaque child windows per region there) and the
   wheel through a child window want a pass on an X server with direct GL.
 - **The label atlas and maps' are the same idea twice.** `AGENTS.md` keeps
-  components from importing each other; the shared part is a candidate for a
-  module of its own.
+  components from importing each other; the distance field is shared now
+  (`src/internal/sdf.ts`), the atlases are not — a map's labels have halos,
+  rotate and fade, a graph's sit in its box stream.
 
 ## Order of work
 
@@ -363,10 +378,10 @@ behind it — the arrangement `src/maps/gl/pane.ts` already documents.
    engine in white, read back in batches of up to 48, packed into a 2048²
    texture, and drawn by the _box_ program sampling it — so each label sits
    in the box stream exactly where the painter draws it and a frame is still
-   ~10 draws. A label is drawn from the raster of its exact size, or from the
-   nearest size the atlas holds, scaled, while the zoom moves; exact sizes are
-   set once it holds still. Offscreen against the 2D painter the text is
-   indistinguishable. A 200-node lattice at zoom 1 fills its 311 labels in
+   ~10 draws. A label is drawn from the one distance field its string has,
+   at every size (see "Zoom changes the size of every label"); the first cut
+   set a raster per size and was indistinguishable offscreen from the 2D
+   painter, at the cost of re-setting every label after every zoom. A 200-node lattice at zoom 1 fills its 311 labels in
    five batches after a zoom settles and pans at 120 fps with every label
    drawn; 2000 nodes, 119.8.
 5. **Node bodies** — ~~over the surface~~ **done** on this branch, pending

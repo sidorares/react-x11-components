@@ -1,5 +1,7 @@
 // A label's raster as a signed distance field: what lets one raster serve a
-// name at every size its zoom ramp passes through, and a halo of any width.
+// name at every size a zoom passes through, and a halo of any width. Under
+// the GL labels of both `<Map>` (`src/maps/gl/text.ts`) and `<Flow>`
+// (`src/flow/gl/text.ts`), which is why it is here rather than in either.
 //
 // The text engine sets a string as coverage — alpha, antialiased — at one
 // base size. Each texel here becomes its distance to the glyphs' edge,
@@ -24,6 +26,14 @@ export const SDF_CUTOFF = 0.25;
 
 /** The byte value of the glyphs' edge, as a fraction: `1 − SDF_CUTOFF`. */
 export const SDF_EDGE = 1 - SDF_CUTOFF;
+
+/**
+ * Device pixels outside a field's outline that its ink's edge is drawn. A
+ * text engine darkens stems at small sizes; a field thresholded at half
+ * coverage gives that back, and a string drawn from one looks a weight
+ * lighter than the same string set. Both GL label shaders draw it.
+ */
+export const SDF_INK_BIAS_PX = 0.15;
 
 /** Large enough to be "no edge in reach", small enough that the transform's
  *  arithmetic on it never becomes `Infinity − Infinity`. */

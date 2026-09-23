@@ -17,7 +17,7 @@
 //
 // **One raster per string, at every size.** The engine sets a string once,
 // at the atlas's `base` size, as coverage; what is stored is its signed
-// distance field (`./sdf.ts`), one byte a texel. A name drawn at 11 pixels
+// distance field (`src/internal/sdf.ts`), one byte a texel. A name drawn at 11 pixels
 // and the same name at 20 are one raster scaled, so a zoom ramp that grows
 // the type asks for nothing new, and a halo of any width is a threshold on
 // the same distances. Colour and halo are the shader's (see `./shaders.ts`),
@@ -33,7 +33,7 @@ import { Surface } from 'react-x11/ntk';
 
 import { traceGlyph, tracePlate } from '../icons.js';
 import type { IconPathContext, MapIcon } from '../icons.js';
-import { SDF_EDGE, distanceField } from './sdf.js';
+import { SDF_EDGE, distanceField } from '../../internal/sdf.js';
 
 /** A set string's box, in device pixels. */
 export interface TextBox {

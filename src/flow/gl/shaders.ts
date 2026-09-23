@@ -24,6 +24,7 @@
 // does on the way to the 2D context happens here, per vertex, and every
 // antialiasing ramp below is measured in device pixels — which is what makes
 // a 1px line one pixel of coverage on any panel.
+import { SDF_EDGE, SDF_INK_BIAS_PX } from '../../internal/sdf.js';
 
 /** Attribute locations, shared so one quad buffer feeds every program. */
 export const ATTRIBUTES = {
@@ -137,13 +138,16 @@ void main() {
  * differs when the border is translucent, and a hovered card's is.
  *
  * A disc is a box whose side is twice its corner radius, which is why
- * handles are drawn here too — and a label is a box that samples the atlas
- * (`./text.ts`) instead, flagged in `a_i1.z` with its texture rect in
- * `a_i3`, which is what keeps every label in the box stream at exactly the
- * place in the order the 2D painter draws it.
+ * handles are drawn here too — and a label is a box that samples its
+ * distance field in the atlas (`./text.ts`) instead, flagged in `a_i1.z`,
+ * which is what keeps every label in the box stream at exactly the place in
+ * the order the 2D painter draws it.
  *
  * Instance: a_i0 = x, y, width, height; a_i1 = corner radius, border width;
- * a_i2 = fill; a_i3 = border colour.
+ * a_i2 = fill; a_i3 = border colour. For a label: a_i0 = the text's corner
+ * and the quad's size; a_i1 = the quad's margin before that corner, 0, 1,
+ * and the logical pixels a field texel covers; a_i2 = ink; a_i3 = its rect
+ * in the atlas.
  */
 export const BOX_VERTEX = `${PRELUDE}
 attribute vec2 a_corner;
@@ -162,18 +166,20 @@ void main() {
   vec2 corner = vec2(a_corner.x, a_corner.y * 0.5 + 0.5);
   v_text = a_i1.z;
   if (a_i1.z > 0.5) {
-    // A label: its raster, texel for pixel. The top-left goes on the device
-    // grid *after* the pan's offset, which is where the grid is — the 2D
-    // painter rounds the same corner — so a label at rest is exactly as
-    // crisp as the text engine made it.
-    vec2 origin = floor(device(a_i0.xy) + 0.5);
+    // A label: its field, scaled to the size it is drawn at. The text's
+    // corner goes on the device grid *after* the pan's offset, which is
+    // where the grid is — the 2D painter rounds the same corner — and the
+    // quad reaches its margin before it.
+    float k = u_zoom * u_scale;
+    vec2 origin = floor(device(a_i0.xy) + 0.5) - a_i1.x * k;
     v_uv = mix(a_i3.xy, a_i3.zw, corner);
     v_fill = a_i2;
     v_local = vec2(0.0);
     v_half = vec2(0.0);
-    v_shape = vec2(0.0);
+    // device pixels a field texel covers, for the fragment's ramp
+    v_shape = vec2(a_i1.w * k, 0.0);
     v_border = vec4(0.0);
-    gl_Position = clip(origin + corner * a_i0.zw * u_zoom * u_scale);
+    gl_Position = clip(origin + corner * a_i0.zw * k);
     return;
   }
   v_uv = vec2(0.0);
@@ -190,8 +196,15 @@ void main() {
 }
 `;
 
+/**
+ * A label's field says how far a pixel is from the glyphs' edge — in texels,
+ * `u_spread` of them across the byte range, and so in device pixels once
+ * scaled by how many a texel covers — and ink is that distance ramped across
+ * one device pixel, whatever size the label is drawn at.
+ */
 export const BOX_FRAGMENT = `precision highp float;
 uniform sampler2D u_atlas;
+uniform float u_spread;
 varying vec2 v_local;
 varying vec2 v_half;
 varying vec2 v_shape;
@@ -201,10 +214,12 @@ varying vec2 v_uv;
 varying float v_text;
 void main() {
   if (v_text > 0.5) {
-    // coverage from the atlas, ink from the instance
-    float a = texture2D(u_atlas, v_uv).a;
-    if (a <= 0.0) discard;
-    gl_FragColor = v_fill * a;
+    float field = texture2D(u_atlas, v_uv).a;
+    // device pixels past the glyphs' edge: positive outside, negative in
+    float d = (${SDF_EDGE.toFixed(4)} - field) * u_spread * v_shape.x;
+    float ink = clamp(0.5 + ${SDF_INK_BIAS_PX.toFixed(2)} - d, 0.0, 1.0);
+    if (ink <= 0.0) discard;
+    gl_FragColor = v_fill * ink;
     return;
   }
   float r = min(v_shape.x, min(v_half.x, v_half.y));

@@ -89,10 +89,11 @@ export function targetOf(info: DrawInfoLike): FlowGlTarget {
   return target;
 }
 
-/** Batches one zoom's settle may set before the world is repacked with what
- *  has landed — a bound, so a screen whose labels outgrow the atlas still
+/** Slices of setting — a batch drawn and read back, or a few milliseconds
+ *  of its fields — one run may take before the world is repacked with what
+ *  has landed: a bound, so a screen whose labels outgrow the atlas still
  *  shows the ones that fit. */
-const MAX_BATCHES = 24;
+const MAX_SLICES = 64;
 
 /** The surface's state across renders: the renderer lives as long as the GL
  *  context it was made for, which is longer than any one props object. */
@@ -105,12 +106,12 @@ class Driver {
    *  is what makes the next frame build one. */
   private worldKey: string | null = null;
   /** The label atlas, and the face and scale it was made for: either
-   *  changing is every raster wrong, so it is made again. */
+   *  changing is every field wrong, so it is made again. */
   private atlas: LabelAtlas | null = null;
   private atlasKey = '';
   /** The zoom the last frame drew at, and the timer that brings a frame
-   *  once a zoom stops — new label sizes are only set at rest, and a pane
-   *  that has stopped zooming asks for no frame by itself. */
+   *  once a zoom stops — strings a zoom uncovered are only set at rest, and
+   *  a pane that has stopped zooming asks for no frame by itself. */
   private lastZoom = NaN;
   private settle: unknown = null;
   private failed = false;
@@ -170,8 +171,7 @@ class Driver {
         atlas ?? undefined,
       );
       if (frame.world) this.worldKey = frame.key;
-      // Labels this frame drew soft, or could not draw at all, are set now,
-      // between frames.
+      // Labels this frame could not draw yet are set now, between frames.
       if (atlas?.wanting && !this.setting) {
         this.setting = true;
         this.setLabels(atlas).then(
@@ -194,18 +194,18 @@ class Driver {
   };
 
   /**
-   * Set batches until nothing the world on screen draws is wanted, then
-   * repack it **once** — which is what swaps the labels in, all in the same
-   * frame. Repacking a batch at a time swapped them in waves, a visible
-   * flicker after every zoom, and paid a full world pack per wave.
+   * Set strings until nothing the world on screen draws is wanted, then
+   * repack it **once** — which is what brings the labels in, all in the
+   * same frame. Repacking a batch at a time brought them in waves, and paid
+   * a full world pack per wave.
    *
-   * Stops early, repacking what landed, when the atlas moved its rasters
+   * Stops early, repacking what landed, when the atlas moved its fields
    * (the world's texture coordinates are stale until it is repacked), when
-   * the zoom starts moving again, or after a bound on batches.
+   * the zoom starts moving again, or after a bound on slices.
    */
   private async setLabels(atlas: LabelAtlas): Promise<void> {
     let landed = false;
-    for (let batch = 0; batch < MAX_BATCHES; batch++) {
+    for (let slice = 0; slice < MAX_SLICES; slice++) {
       const set = await atlas.pump();
       if (this.failed || this.atlas !== atlas) return;
       if (!set) break;
@@ -232,8 +232,8 @@ class Driver {
     return this.atlas;
   }
 
-  /** New sizes only while the zoom holds still; a frame is asked for once
-   *  it has, so the labels a zoom left soft are set without a nudge. */
+  /** New strings only while the zoom holds still; a frame is asked for once
+   *  it has, so the labels a zoom uncovered are set without a nudge. */
   private admit(atlas: LabelAtlas, zoom: number): void {
     const moving = zoom !== this.lastZoom;
     this.lastZoom = zoom;

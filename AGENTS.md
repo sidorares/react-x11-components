@@ -136,9 +136,10 @@ finds out from a blank window has been failed by the page.
   scroll-reveal under `<Tree>`, `<Table>` and a long `<RichTextEditor>`,
   the typed `hx()` every composed widget writes its
   elements
-  with, and the change event and dismiss-on-blur subscription under
-  `<Calendar>`/`<DatePicker>` and `<ColorPicker>`/`<ColorField>` — that no
-  app needs yet. Deliberately without an `index.ts`,
+  with, the change event and dismiss-on-blur subscription under
+  `<Calendar>`/`<DatePicker>` and `<ColorPicker>`/`<ColorField>`, and the
+  signed distance field `<Map>`'s and `<Flow>`'s GL labels are drawn from
+  (`sdf.ts`) — that no app needs yet. Deliberately without an `index.ts`,
   so it has no subpath and no docs page; `test/docs.test.ts` and
   `scripts/check-package.ts` both key on `src/<name>/index.ts`, and that
   is the seam this uses. Giving it an `index.ts` and the full

@@ -40,10 +40,12 @@ export type TextResolver = (text: SceneText) => GlyphQuad | null;
  *  whether it marches; then the colour. */
 export const LINE_STRIDE = 16;
 /** Floats per box: the rect, the corner radius and border width, the fill,
- *  the border colour. A *label* is a box too — its rect the raster's, a flag
- *  where the corner radius's neighbours are, its ink in the fill and its
- *  place in the atlas where a border colour would be — so labels share the
- *  box stream and land in it exactly where the 2D painter draws them. */
+ *  the border colour. A *label* is a box too — the text's corner and the
+ *  quad's size where the rect is, its margin, a flag and the size of a
+ *  field texel where the corner radius and border are, its ink in the fill
+ *  and its place in the atlas where a border colour would be — so labels
+ *  share the box stream and land in it exactly where the 2D painter draws
+ *  them. */
 export const BOX_STRIDE = 16;
 /** Floats per triangle *vertex*: position and colour. */
 export const TRI_STRIDE = 6;
@@ -354,8 +356,8 @@ export class ScenePacker {
     if (h.label) this.label(h.label);
   }
 
-  /** A string as a box that samples the atlas; counted as a gap when the
-   *  atlas has nothing to draw it from yet. */
+  /** A string as a box that samples its field in the atlas; counted as a
+   *  gap when the atlas has nothing to draw it from yet. */
   private label(t: SceneText): void {
     const q = this.text?.(t);
     if (!q) {
@@ -372,10 +374,10 @@ export class ScenePacker {
     d[at + 1] = q.y;
     d[at + 2] = q.w;
     d[at + 3] = q.h;
-    d[at + 4] = 0;
+    d[at + 4] = q.margin;
     d[at + 5] = 0;
     d[at + 6] = 1; // a label, not a box
-    d[at + 7] = 0;
+    d[at + 7] = q.texel;
     d[at + 8] = color[0];
     d[at + 9] = color[1];
     d[at + 10] = color[2];
