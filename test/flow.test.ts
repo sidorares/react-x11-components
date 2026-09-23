@@ -848,19 +848,34 @@ test('a 2D zoom gesture draws the labels it has, and sets them at rest', async (
     shaped.push(style.size);
     return own.call(this, text, style);
   };
+  // A step is part of a gesture when it lands within 120 ms of the last,
+  // which a loaded CI runner missed between two awaited wheels — and then
+  // shaped the labels the test says a gesture does not. The pane's clock
+  // (`performance.now`) runs at the test's pace while the steps go in: a
+  // wheel's worth of time between them, however long each one took.
+  const perf = globalThis.performance;
+  let at16 = perf.now();
+  Object.defineProperty(perf, 'now', {
+    value: () => at16,
+    configurable: true,
+  });
   try {
     const node = pane() as unknown as DrawnNode;
     await userEvent.wheel(node, { ...at(200, 200), deltaY: -48 });
     const first = shaped.length;
     assert.ok(first > 0, 'the first step is not a gesture yet: set exactly');
     for (let i = 0; i < 4; i++) {
+      at16 += 16;
       await userEvent.wheel(node, { ...at(200, 200), deltaY: -48 });
     }
     assert.strictEqual(shaped.length, first, 'nothing shaped mid-gesture');
+    // the real clock again, which is long past the last step
+    delete (perf as { now?: unknown }).now;
     await new Promise((resolve) => setTimeout(resolve, 250));
     await act();
     assert.ok(shaped.length > first, 'and set at their own sizes at rest');
   } finally {
+    delete (perf as { now?: unknown }).now;
     fonts.layout = own;
     delete (root._ctx as { scalesText?: boolean }).scalesText;
   }
