@@ -166,20 +166,14 @@ class Driver {
       const target = targetOf(info);
       if (atlas) {
         this.admit(atlas, frame.moving ?? false);
-        // the middle of the view, in the world's coordinates
+        // the view, in the world's coordinates
         const zoom = frame.zoom ?? 1;
-        atlas.focus = {
-          x:
-            (target.origin.x +
-              target.width / target.scale / 2 -
-              frame.offset.x) /
-            zoom,
-          y:
-            (target.origin.y +
-              target.height / target.scale / 2 -
-              frame.offset.y) /
-            zoom,
-        };
+        atlas.setView({
+          x: (target.origin.x - frame.offset.x) / zoom,
+          y: (target.origin.y - frame.offset.y) / zoom,
+          width: target.width / target.scale / zoom,
+          height: target.height / target.scale / zoom,
+        });
       }
       const stats = this.renderer.drawFrame(frame, target, atlas ?? undefined);
       if (frame.world) this.worldKey = frame.key;
@@ -213,20 +207,13 @@ class Driver {
    * set, nearest the middle of the view first, where they used to wait for
    * the last of them and a world packed again.
    *
-   * Stops, repacking, when the atlas moved its fields — the world's texture
-   * coordinates are stale until it is packed again — and stops when the
-   * zoom starts moving again, or after a bound on slices.
+   * Stops when the zoom starts moving again, or after a bound on slices.
    */
   private async setLabels(atlas: LabelAtlas): Promise<void> {
     for (let slice = 0; slice < MAX_SLICES; slice++) {
       const set = await atlas.pump();
       if (this.failed || this.atlas !== atlas) return;
       if (!set) break;
-      if (atlas.relocated) {
-        this.worldKey = null;
-        this.request();
-        return;
-      }
       this.request();
       if (!atlas.wanting) break;
     }

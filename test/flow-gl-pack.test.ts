@@ -302,12 +302,15 @@ test('what the GPU cannot draw yet is counted, not dropped silently', () => {
 // --- labels still being set --------------------------------------------------
 
 /** A label atlas that has set nothing, until `land()`: every string is a
- *  placeholder, then every one is drawable at the same field. */
+ *  placeholder, then every one is drawable at the same field — on page 2,
+ *  in its `slot`th placement, until `drop()` takes it away again. */
 function waitingAtlas() {
   let landed = false;
+  let slot = 0;
   const atlas = {
     generation: 0,
-    relocated: false,
+    moves: 0,
+    wanted: [] as string[],
     pad: 4,
     beginPack() {},
     bind() {},
@@ -321,6 +324,8 @@ function waitingAtlas() {
         h: 12,
         margin: 1,
         texel: 0.5,
+        page: landed ? 2 : 0,
+        slot: landed ? slot : 0,
         u0: landed ? 0.1 : 0,
         v0: landed ? 0.2 : 0,
         u1: landed ? 0.3 : 0,
@@ -330,8 +335,20 @@ function waitingAtlas() {
     landing(key: string, t: { x: number; y: number; text: string }) {
       return landed ? atlas.quad(t) : null;
     },
+    slotOf() {
+      return landed ? slot : -1;
+    },
+    want(key: string) {
+      atlas.wanted.push(key);
+    },
     land() {
       landed = true;
+      slot++;
+      atlas.generation++;
+    },
+    drop() {
+      landed = false;
+      atlas.moves++;
       atlas.generation++;
     },
   };
@@ -443,4 +460,77 @@ test('a label that lands is written into the world on the GPU, not packed again'
   for (let i = 0; i + BOX_STRIDE <= boxes.length; i += BOX_STRIDE) {
     assert.notStrictEqual(boxes[i + 6], 2, 'no label still waits');
   }
+});
+
+test('a label whose field is dropped waits again, and comes back without a world packed', async () => {
+  const { FlowGlRenderer } = await import('../src/flow/gl/renderer.js');
+  const { nodes, edges } = graph(6);
+  const atlas = waitingAtlas();
+  const { gl, log } = recordingGl();
+  const renderer = new FlowGlRenderer(gl);
+  const world = buildScene(input(nodes, edges, { selection: null }));
+  const overlay = buildScene(input([], [], { selection: null }));
+  const target = { origin: { x: 0, y: 0 }, scale: 1, width: 800, height: 600 };
+  const frame = { world, offset: { x: 0, y: 0 }, zoom: 1, overlay, phase: 0 };
+  atlas.land();
+  const first = renderer.drawFrame(frame, target, atlas as never);
+  assert.strictEqual(first.gaps.text, 0, 'precondition: every label drawn');
+  // A label's record: flagged 1 or 2, at the fake's texel of 0.5.
+  const isLabel = (d: Float32Array, i: number) =>
+    (d[i + 6] === 1 || d[i + 6] === 2) && d[i + 7] === 0.5;
+  const lastBoxes = () =>
+    log
+      .filter((c) => c.name === 'bufferData')
+      .map((c) => c.args[1] as Float32Array)
+      .filter((data) => {
+        for (let i = 0; i + BOX_STRIDE <= data.length; i += BOX_STRIDE) {
+          if (isLabel(data, i)) return true;
+        }
+        return false;
+      })
+      .at(-1)!;
+  /** Each label's flag and page, in turn. */
+  const labels = (data: Float32Array) => {
+    const flags: number[] = [];
+    for (let i = 0; i + BOX_STRIDE <= data.length; i += BOX_STRIDE) {
+      if (isLabel(data, i)) flags.push(data[i + 6], data[i + 5]);
+    }
+    return flags;
+  };
+  assert.ok(
+    labels(lastBoxes()).every((v, i) => (i % 2 ? v === 2 : v === 1)),
+    'drawn from page 2',
+  );
+
+  // The field goes: every label drawn from it is drawn as nothing, and
+  // wanted again.
+  atlas.drop();
+  log.length = 0;
+  const dropped = renderer.drawFrame(
+    { ...frame, world: null },
+    target,
+    atlas as never,
+  );
+  assert.strictEqual(dropped.worldRebuilt, false, 'no world packed');
+  assert.strictEqual(dropped.gaps.text, first.gaps.text + atlas.wanted.length);
+  assert.ok(atlas.wanted.length > 0, 'its labels asked for it again');
+  assert.ok(
+    labels(lastBoxes()).every((v, i) => i % 2 || v === 2),
+    'every label waits',
+  );
+
+  // It lands again, in a new placement: written in again.
+  atlas.land();
+  log.length = 0;
+  const back = renderer.drawFrame(
+    { ...frame, world: null },
+    target,
+    atlas as never,
+  );
+  assert.strictEqual(back.worldRebuilt, false, 'no world packed');
+  assert.strictEqual(back.gaps.text, 0, 'every label drawn again');
+  assert.ok(
+    labels(lastBoxes()).every((v, i) => (i % 2 ? v === 2 : v === 1)),
+    'from its field',
+  );
 });

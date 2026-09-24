@@ -145,8 +145,8 @@ void main() {
  *
  * Instance: a_i0 = x, y, width, height; a_i1 = corner radius, border width;
  * a_i2 = fill; a_i3 = border colour. For a label: a_i0 = the text's corner
- * and the quad's size; a_i1 = the quad's margin before that corner, 0, 1,
- * and the logical pixels a field texel covers; a_i2 = ink; a_i3 = its rect
+ * and the quad's size; a_i1 = the quad's margin before that corner, its
+ * field's page, 1, and the logical pixels a field texel covers; a_i2 = ink; a_i3 = its rect
  * in the atlas.
  */
 export const BOX_VERTEX = `${PRELUDE}
@@ -181,8 +181,9 @@ void main() {
     v_fill = a_i2;
     v_local = vec2(0.0);
     v_half = vec2(0.0);
-    // device pixels a field texel covers, for the fragment's ramp
-    v_shape = vec2(a_i1.w * k, 0.0);
+    // device pixels a field texel covers, for the fragment's ramp, and the
+    // page its field is on
+    v_shape = vec2(a_i1.w * k, a_i1.y);
     v_border = vec4(0.0);
     gl_Position = clip(origin + corner * a_i0.zw * k);
     return;
@@ -219,7 +220,11 @@ varying vec2 v_uv;
 varying float v_text;
 void main() {
   if (v_text > 0.5) {
-    float field = texture2D(u_atlas, v_uv).a;
+    // Four pages, one a channel: alpha is page 0, red, green and blue
+    // pages 1 to 3 (CHANNELS in ./text.ts).
+    vec4 pages = texture2D(u_atlas, v_uv);
+    vec4 pick = 1.0 - min(abs(vec4(v_shape.y) - vec4(1.0, 2.0, 3.0, 0.0)), 1.0);
+    float field = dot(pages, pick);
     // device pixels past the glyphs' edge: positive outside, negative in
     float d = (${SDF_EDGE.toFixed(4)} - field) * u_spread * v_shape.x;
     float ink = clamp(0.5 + ${SDF_INK_BIAS_PX.toFixed(2)} - d, 0.0, 1.0);

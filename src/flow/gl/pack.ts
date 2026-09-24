@@ -93,6 +93,13 @@ export interface WaitingLabel {
   text: SceneText;
 }
 
+/** A label packed drawn from a field, and the placement of the field it
+ *  was drawn from (`LabelAtlas.slotOf`): a box whose field was dropped or
+ *  moved is found by comparing the two. */
+export interface DrawnLabel extends WaitingLabel {
+  slot: number;
+}
+
 export interface PackedScene {
   lines: Float32Array;
   lineCount: number;
@@ -108,6 +115,8 @@ export interface PackedScene {
   /** Labels in `boxes` drawn as nothing until their fields land — the
    *  renderer writes each in when it does. */
   waiting: WaitingLabel[];
+  /** Labels in `boxes` drawn from their fields. */
+  drawn: DrawnLabel[];
 }
 
 /**
@@ -152,6 +161,7 @@ export class ScenePacker {
   private ranges: DrawRange[] = [];
   private gaps: PackGaps = { text: 0, custom: 0 };
   private waiting: WaitingLabel[] = [];
+  private drawn: DrawnLabel[] = [];
   /** The scissor for whatever is appended until it is changed. */
   private scissor: FlowRect | undefined;
 
@@ -171,6 +181,7 @@ export class ScenePacker {
     this.ranges = [];
     this.gaps = { text: 0, custom: 0 };
     this.waiting = [];
+    this.drawn = [];
     this.scissor = undefined;
 
     let split = 0;
@@ -290,6 +301,7 @@ export class ScenePacker {
       split,
       gaps: this.gaps,
       waiting: this.waiting,
+      drawn: this.drawn,
     };
   }
 
@@ -391,7 +403,8 @@ export class ScenePacker {
     d[at + 2] = q.w;
     d[at + 3] = q.h;
     d[at + 4] = q.margin;
-    d[at + 5] = 0;
+    // the page its field is on: which channel the shader reads
+    d[at + 5] = q.page;
     // a label, not a box — and 2 for one whose field is still being set
     d[at + 6] = q.ready ? 1 : 2;
     d[at + 7] = q.texel;
@@ -406,6 +419,8 @@ export class ScenePacker {
     if (!q.ready) {
       this.gaps.text++;
       this.waiting.push({ index, key: q.key, text: t });
+    } else {
+      this.drawn.push({ index, key: q.key, text: t, slot: q.slot });
     }
     this.record('box', index);
   }

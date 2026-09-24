@@ -16,6 +16,7 @@ import type {
   DrawRange,
   PackedScene,
   PackLayer,
+  DrawnLabel,
   TextResolver,
   WaitingLabel,
 } from './pack.js';
@@ -99,6 +100,10 @@ class Layer {
    *  atlas's generation they were last checked against. */
   waiting: WaitingLabel[] = [];
   checked = -1;
+  /** Labels drawn from their fields, and the atlas's count of dropped
+   *  fields they were last checked against. */
+  drawn: DrawnLabel[] = [];
+  moved = -1;
 
   constructor(private readonly gl: GL) {
     this.lines = gl.createBuffer();
@@ -117,6 +122,8 @@ class Layer {
     this.scene = scene;
     this.waiting = packed.waiting;
     this.checked = -1;
+    this.drawn = packed.drawn;
+    this.moved = -1;
     let bytes = 0;
     const put = (buf: unknown, data: Float32Array, used: number): void => {
       if (used === 0) return;
@@ -299,13 +306,40 @@ export class FlowGlRenderer {
    * A label arriving used to be the world packed again once everything on
    * screen had its field — every label at once, after all of them — and is
    * now a few floats and one upload, as each lands. Answers the bytes sent.
+   *
+   * First, the other way: a label whose field the atlas dropped for one
+   * nearer the view — or set again somewhere else — is drawn as nothing
+   * and waits again, its field wanted from where it is. Only a full atlas
+   * drops anything, so a graph under the limit never walks this list.
    */
   private landLabels(layer: Layer, atlas: LabelAtlas): number {
     const packed = layer.packed;
-    if (!packed || layer.waiting.length === 0) return 0;
-    if (layer.checked === atlas.generation) return 0;
-    layer.checked = atlas.generation;
+    if (!packed) return 0;
     const d = packed.boxes;
+    let lost = 0;
+    if (layer.moved !== atlas.moves) {
+      layer.moved = atlas.moves;
+      const kept: DrawnLabel[] = [];
+      for (const l of layer.drawn) {
+        if (atlas.slotOf(l.key) === l.slot) {
+          kept.push(l);
+          continue;
+        }
+        d[l.index * BOX_STRIDE + 6] = 2;
+        layer.waiting.push({ index: l.index, key: l.key, text: l.text });
+        atlas.want(l.key, l.text);
+        lost++;
+      }
+      if (lost > 0) {
+        layer.drawn = kept;
+        packed.gaps.text += lost;
+        layer.checked = -1;
+      }
+    }
+    if (layer.waiting.length === 0 || layer.checked === atlas.generation) {
+      return lost > 0 ? layer.uploadBoxes() : 0;
+    }
+    layer.checked = atlas.generation;
     const still: WaitingLabel[] = [];
     let landed = 0;
     for (const w of layer.waiting) {
@@ -314,6 +348,12 @@ export class FlowGlRenderer {
         still.push(w);
         continue;
       }
+      layer.drawn.push({
+        index: w.index,
+        key: q.key,
+        text: w.text,
+        slot: q.slot,
+      });
       // the whole quad: one the pack did not measure was a box of no size
       const at = w.index * BOX_STRIDE;
       d[at] = q.x;
@@ -321,6 +361,7 @@ export class FlowGlRenderer {
       d[at + 2] = q.w;
       d[at + 3] = q.h;
       d[at + 4] = q.margin;
+      d[at + 5] = q.page;
       d[at + 6] = 1;
       d[at + 7] = q.texel;
       d[at + 12] = q.u0;
@@ -329,7 +370,7 @@ export class FlowGlRenderer {
       d[at + 15] = q.v1;
       landed++;
     }
-    if (landed === 0) return 0;
+    if (landed === 0) return lost > 0 ? layer.uploadBoxes() : 0;
     layer.waiting = still;
     packed.gaps.text -= landed;
     return layer.uploadBoxes();

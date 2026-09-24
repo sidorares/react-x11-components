@@ -44,16 +44,23 @@
 //    are set when it stops, as maps admit labels at rest. A single step —
 //    `setCenter`, a button — is not a gesture, and its labels are set at
 //    once.
-//  - **The atlas fills.** When there is no room, the fields the world on
-//    screen does not draw from are dropped and the rest moved together
-//    (`compact`), so a full atlas costs a repack, never a label on screen.
+//  - **The atlas fills.** A world is built for three panes each way round
+//    the view, so a big graph zoomed out asks for many more strings than
+//    are on screen — 2,000 titles in the 2,000-node lattice at 0.6, where
+//    one page holds 660 at 2x. The texture's four channels are four pages,
+//    alpha first, so an atlas under the old limit is what it was. Past
+//    them, a field is dropped in place for a label nearer the view: first
+//    what no pack draws, then what is drawn farthest off screen, never
+//    what is on it (`room`). A box drawn from a dropped field is drawn as
+//    nothing until its field is back (`slotOf`), with no world packed
+//    again; a label that finds no room waits until the view moves.
 import { Surface } from 'react-x11/ntk';
 
 import { distanceField } from '../../internal/sdf.js';
 import { fitText, shape } from '../draw.js';
 import type { PainterOptions } from '../draw.js';
 import type { SceneText } from '../scene.js';
-import type { TextOptions } from '../types.js';
+import type { FlowRect, TextOptions } from '../types.js';
 
 /**
  * A label's quad and where its field sits in the atlas, all at the scene's
@@ -78,6 +85,10 @@ export interface GlyphQuad {
   h: number;
   margin: number;
   texel: number;
+  /** The page its field is on: which channel of the texture holds it. */
+  page: number;
+  /** Its field's placement (`LabelAtlas.slotOf`); 0 when not ready. */
+  slot: number;
   u0: number;
   v0: number;
   u1: number;
@@ -102,6 +113,38 @@ interface Entry {
   field: Uint8Array;
   /** The last world pack that drew from it (`LabelAtlas.beginPack`). */
   used: number;
+  /** Where that pack draws it — x, y, width, height, the world's units —
+   *  for how far off screen it is when room is wanted. */
+  at: number[];
+  page: number;
+  shelf: Shelf;
+  /** Which placement this is: a new one each time a field lands. */
+  slot: number;
+}
+
+/** A row of one height on a page, filled left to right, with the gaps the
+ *  fields dropped from it left. */
+interface Shelf {
+  page: number;
+  y: number;
+  height: number;
+  /** Where the next field goes, past every gap. */
+  end: number;
+  gaps: { x: number; w: number }[];
+}
+
+interface Place {
+  shelf: Shelf;
+  x: number;
+}
+
+/** A field that may be dropped, and how far from the view it is drawn —
+ *  Infinity for one no pack draws. */
+interface Victim {
+  key: string;
+  d: number;
+  used: number;
+  entry: Entry;
 }
 
 interface ImageLike {
@@ -121,9 +164,16 @@ interface SurfaceLike {
   destroy(): void;
 }
 
-/** The atlas texture's side, texels: 16 MB of RGBA, a couple of thousand
- *  strings at 1x — a graph's worth. */
+/** The atlas texture's side, texels: 16 MB of RGBA, four pages of fields —
+ *  some 8,000 titles at 1x and 2,600 at 2x. */
 export const ATLAS_SIZE = 2048;
+/** Pages in the texture: its four channels, each a field a texel. */
+const PAGES = 4;
+/** The channel each page is in: alpha first, which is where one page's
+ *  fields went before there were pages. */
+const CHANNELS = [3, 0, 1, 2];
+/** Shelf heights round up to this many texels. */
+const SHELF_STEP = 4;
 /** The surface a batch is set on. A readback has to stay inside it. */
 const STAGING_WIDTH = 1024;
 const STAGING_HEIGHT = 512;
@@ -223,9 +273,16 @@ export class LabelAtlas {
    *  its values span — the shader's `u_spread`. */
   readonly pad: number;
   private readonly entries = new Map<string, Entry>();
-  /** Wanted and not yet set: key → what to set it from, and where the first
-   *  label to ask for it is. */
+  /** Wanted and not yet set: key → what to set it from, and where the
+   *  label nearest the view that asks for it is. */
   private readonly missing = new Map<string, Want>();
+  /**
+   * Wanted, and waiting for room: the atlas is full of fields at least as
+   * near the view as these, so nothing is set for them until the view
+   * moves (`setView`) or a pack starts. Every key here is in `missing` too;
+   * what `wanting` counts is the rest.
+   */
+  private readonly stalled = new Set<string>();
   /**
    * Requests measured: request → the string as cut. Measuring is what a
    * label's first appearance costs the frame that packs it — 60-80 µs a
@@ -251,21 +308,44 @@ export class LabelAtlas {
     width: number;
     height: number;
     pixels: Uint8Array;
+    want: Want;
   }[] = [];
   private readonly queued = new Set<string>();
-  /** Shelf packing into the atlas. */
-  private shelfX = 0;
-  private shelfY = 0;
-  private shelfH = 0;
+  /** The pages' shelves, and how far down each page they reach. */
+  private shelves: Shelf[] = [];
+  private readonly tops: number[];
+  /** Pages in the texture: one per channel, alpha first. */
+  private readonly pages: number;
+  /**
+   * The whole texture, four bytes a texel, made when the first field goes
+   * on a page past the first. An upload writes every channel of the rect
+   * it covers, so from then on a field is uploaded from here, with the
+   * fields of the other pages under it. An atlas that never fills its first
+   * page never makes it: 16 MB, paid only past the old limit.
+   */
+  private mirror: Uint8Array | null = null;
+  /** The last placement found no room, and nothing has been freed since:
+   *  a want that cannot evict is stalled before it is shaped. */
+  private full = false;
+  /** Fields that may be dropped for a nearer one, farthest from the view
+   *  first — made when first needed in a slice, and consumed in order. */
+  private victims: Victim[] | null = null;
+  private victimAt = 0;
+  /** Placements, counted: a field's `slot` changes whenever it lands, so a
+   *  box drawn from an old one is found by comparing the two. */
+  private nextSlot = 1;
   private staging: SurfaceLike | null = null;
   private stagingCtx: StagingContext | null = null;
   private busy = false;
   /** Whether the layouts answer their own coverage (react-x11#673): unknown
    *  until the first string asks, and false for good once one does not. */
   private coverage: boolean | null = null;
-  /** Bumped whenever a field lands or the atlas is cleared — the renderer
-   *  uploads, and the surface repacks the world, when it moves. */
+  /** Bumped whenever a field lands or is dropped — the renderer writes in
+   *  what landed, and uploads, when it moves. */
   generation = 0;
+  /** Bumped whenever a field is dropped: the renderer finds the boxes that
+   *  drew from it (`slotOf`) and draws them as nothing until it is back. */
+  moves = 0;
   /** Fields set are uploaded when the renderer next binds the atlas. */
   private readonly pending = new Set<string>();
   /** Whether new strings may be set: false while the zoom is moving. */
@@ -276,25 +356,23 @@ export class LabelAtlas {
   shapeBudgetMs = SHAPE_BUDGET_MS;
   private texture: unknown = null;
   private textureGeneration = -1;
-  /** Fields widened to RGBA for the upload: the shader reads alpha, and a
-   *  one-channel texture is a format GLES 2 and a core profile do not
-   *  share. Grown to the largest field, and its colour bytes left white. */
+  /** A field's rect as uploaded: widened to RGBA — the shader reads one
+   *  channel, and a one-channel texture is a format GLES 2 and a core
+   *  profile do not share. Grown to the largest field. */
   private scratch = new Uint8Array(0);
-  /** Counts world packs; an entry stamped with the current one is on screen. */
+  /** Counts world packs; an entry stamped with the current one is drawn. */
   private epoch = 0;
-  /** Fields have moved since the world was last packed: its texture
-   *  coordinates are stale, and it must be packed again before the texture
-   *  is drawn from. */
-  relocated = false;
 
   /** The texture's side, texels. */
   private readonly side: number;
 
-  /** `side` is for tests, which fill an atlas without setting thousands of
-   *  labels. */
-  constructor(source: TextSource, side = ATLAS_SIZE) {
+  /** `side` and `pages` are for tests, which fill an atlas without setting
+   *  thousands of labels. */
+  constructor(source: TextSource, side = ATLAS_SIZE, pages = PAGES) {
     this.source = source;
     this.side = side;
+    this.pages = Math.max(1, Math.min(PAGES, pages));
+    this.tops = new Array<number>(this.pages).fill(0);
     this.base = fieldBase(source.options.scale);
     this.pad = fieldPad(this.base);
     this.white = {
@@ -307,17 +385,82 @@ export class LabelAtlas {
   }
 
   /**
-   * A world pack is starting: the labels it asks for are the ones on screen
-   * until the next, what compaction keeps — and **all** that is wanted.
-   * What earlier packs asked for and nothing has set is forgotten here: the
-   * strings a pan went past are not worth a batch once it has.
+   * A world pack is starting: the labels it asks for are the ones drawn
+   * until the next — and **all** that is wanted. What earlier packs asked
+   * for and nothing has set is forgotten here: the strings a pan went past
+   * are not worth a batch once it has.
    */
   beginPack(): void {
     this.epoch++;
-    this.relocated = false;
     this.missing.clear();
+    this.stalled.clear();
+    this.victims = null;
     this.spent = 0;
     this.measured = 0;
+  }
+
+  /**
+   * The view's centre, in the world's coordinates. What is wanted is set
+   * nearest it first: on a first appearance the labels arrive over a
+   * hundred milliseconds or more, and the ones in the middle of the view
+   * are the ones being read.
+   */
+  focus: { x: number; y: number } | null = null;
+  /** The view, in the world's coordinates — the surface says where each
+   *  frame. Null draws everything as if it were on screen. */
+  private view: FlowRect | null = null;
+
+  /**
+   * Where the view is now. A field on screen is never dropped for another;
+   * one off it is dropped for a label nearer the view, and a move of the
+   * view is what can make a stalled label nearer than one that is set.
+   */
+  setView(view: FlowRect | null): void {
+    const v = this.view;
+    if (
+      v === view ||
+      (v &&
+        view &&
+        v.x === view.x &&
+        v.y === view.y &&
+        v.width === view.width &&
+        v.height === view.height)
+    ) {
+      return;
+    }
+    this.view = view;
+    if (view) {
+      this.focus = { x: view.x + view.width / 2, y: view.y + view.height / 2 };
+    }
+    this.stalled.clear();
+    this.victims = null;
+  }
+
+  /** How far a rect is from the view, in the world's units: 0 on it. */
+  private far(x: number, y: number, w: number, h: number): number {
+    const v = this.view;
+    if (!v) return 0;
+    const dx = Math.max(v.x - (x + w), x - (v.x + v.width), 0);
+    const dy = Math.max(v.y - (y + h), y - (v.y + v.height), 0);
+    return dx > dy ? dx + dy / 2 : dy + dx / 2;
+  }
+
+  /** How near a label is, for ordering what is wanted: from the view,
+   *  then from its middle. */
+  private nearness(x: number, y: number): [number, number] {
+    const f = this.focus;
+    const d = f ? (x - f.x) * (x - f.x) + (y - f.y) * (y - f.y) : 0;
+    return [this.far(x, y, 0, 0), d];
+  }
+
+  /** A want moved to the label asking for it nearest the view. */
+  private nearer(want: Want, t: { x: number; y: number }): void {
+    const [a, b] = this.nearness(want.x, want.y);
+    const [c, d] = this.nearness(t.x, t.y);
+    if (c < a || (c === a && d < b)) {
+      want.x = t.x;
+      want.y = t.y;
+    }
   }
 
   /**
@@ -336,7 +479,9 @@ export class LabelAtlas {
         // Past the pack's budget: measured between frames, and the whole
         // quad written in once its field lands (`landing`).
         const key = `?${request.key}`;
-        if (!this.missing.has(key)) {
+        const had = this.missing.get(key);
+        if (had) this.nearer(had, t);
+        else {
           this.missing.set(key, {
             text: t.text,
             weight: t.weight,
@@ -355,6 +500,8 @@ export class LabelAtlas {
           h: 0,
           margin: 0,
           texel,
+          page: 0,
+          slot: 0,
           u0: 0,
           v0: 0,
           u1: 0,
@@ -394,13 +541,17 @@ export class LabelAtlas {
     const entry = this.entries.get(key);
     const inset = QUAD_INSET;
     if (!entry) {
-      if (!this.queued.has(key) && !this.missing.has(key)) {
-        this.missing.set(key, {
-          text: shown,
-          weight: t.weight,
-          x: t.x,
-          y: t.y,
-        });
+      if (!this.queued.has(key)) {
+        const had = this.missing.get(key);
+        if (had) this.nearer(had, t);
+        else {
+          this.missing.set(key, {
+            text: shown,
+            weight: t.weight,
+            x: t.x,
+            y: t.y,
+          });
+        }
       }
       // Its field will be the layout box in whole pixels and the margin,
       // which is known now: packed where it will be drawn, and drawn once
@@ -414,14 +565,15 @@ export class LabelAtlas {
         h: (Math.ceil(shaped.height) + (this.pad - inset) * 2) * texel,
         margin: (this.pad - inset) * texel,
         texel,
+        page: 0,
+        slot: 0,
         u0: 0,
         v0: 0,
         u1: 0,
         v1: 0,
       };
     }
-    entry.used = this.epoch;
-    return {
+    const q: GlyphQuad = {
       key,
       ready: true,
       x: t.x + dx,
@@ -430,11 +582,20 @@ export class LabelAtlas {
       h: (entry.height - inset * 2) * texel,
       margin: (this.pad - inset) * texel,
       texel,
+      page: entry.page,
+      slot: entry.slot,
       u0: (entry.x + inset) / this.side,
       v0: (entry.y + inset) / this.side,
       u1: (entry.x + entry.width - inset) / this.side,
       v1: (entry.y + entry.height - inset) / this.side,
     };
+    // Where it is drawn this pack, for how far from the view it is.
+    if (entry.used !== this.epoch) {
+      entry.used = this.epoch;
+      entry.at.length = 0;
+    }
+    entry.at.push(q.x - q.margin, q.y - q.margin, q.w, q.h);
+    return q;
   }
 
   /**
@@ -456,6 +617,29 @@ export class LabelAtlas {
     return q?.ready ? q : null;
   }
 
+  /** The placement a field is at now — -1 when it is not set — for a box
+   *  to tell whether the field it was drawn from is still there. */
+  slotOf(key: string): number {
+    return this.entries.get(key)?.slot ?? -1;
+  }
+
+  /** A field a drawn label lost, wanted again from where that label is. */
+  want(key: string, t: SceneText): void {
+    if (this.entries.has(key) || this.queued.has(key)) return;
+    const had = this.missing.get(key);
+    if (had) {
+      this.nearer(had, t);
+      return;
+    }
+    const bar = key.indexOf('|');
+    this.missing.set(key, {
+      text: key.slice(bar + 1),
+      weight: t.weight,
+      x: t.x,
+      y: t.y,
+    });
+  }
+
   /** A string cut to the width it fits, measured at the base size. */
   private cut(
     text: string,
@@ -472,52 +656,68 @@ export class LabelAtlas {
     this.resolved.set(request, shown);
   }
 
+  /** No longer wanted: set, or given up on. */
+  private unwant(key: string): void {
+    this.missing.delete(key);
+    this.stalled.delete(key);
+  }
+
   /**
    * A request the pack left unmeasured, measured: its string cut and
    * shaped, and wanted under its field's key from then on. Null when that
-   * field is set, or being set, already — the request is answered, and a
-   * frame writes its labels in.
+   * field is set, being set or waiting for room already — the request is
+   * answered, and a frame writes its labels in.
    */
   private resolve(
     key: string,
     want: Want,
-  ): { key: string; text: string } | null {
-    if (want.request === undefined) return { key, text: want.text };
-    this.missing.delete(key);
+  ): { key: string; text: string; want: Want } | null {
+    if (want.request === undefined) return { key, text: want.text, want };
+    this.unwant(key);
     const shown = this.cut(want.text, want.weight, want.fit);
     this.remember(want.request, shown);
     if (!shown) return null;
     const field = `${want.weight ?? 400}|${shown}`;
-    if (this.entries.has(field) || this.queued.has(field)) return null;
-    if (!this.missing.has(field)) {
-      this.missing.set(field, { ...want, text: shown, request: undefined });
+    if (
+      this.entries.has(field) ||
+      this.queued.has(field) ||
+      this.stalled.has(field)
+    ) {
+      return null;
     }
-    return { key: field, text: shown };
+    let wanted = this.missing.get(field);
+    if (wanted) this.nearer(wanted, want);
+    else {
+      wanted = { ...want, text: shown, request: undefined };
+      this.missing.set(field, wanted);
+    }
+    return { key: field, text: shown, want: wanted };
+  }
+
+  /** What is wanted and not waiting for room, nearest the view first. */
+  private wanted(): [string, Want][] {
+    const list: [string, Want, number, number][] = [];
+    for (const [key, want] of this.missing) {
+      if (this.stalled.has(key)) continue;
+      const [a, b] = this.nearness(want.x, want.y);
+      list.push([key, want, a, b]);
+    }
+    if (list.length > 1) list.sort((p, q) => p[2] - q[2] || p[3] - q[3]);
+    return list.map(([key, want]) => [key, want]);
+  }
+
+  /** Whether any label drawn so far is still waiting for a field that can
+   *  be set — not counting those waiting for room. */
+  get wanting(): boolean {
+    return this.fieldQueue.length > 0 || this.missing.size > this.stalled.size;
   }
 
   /**
-   * The view's centre, in the world's coordinates — the surface says where
-   * each frame. What is wanted is set nearest it first: on a first
-   * appearance the labels arrive over a hundred milliseconds or more, and
-   * the ones in the middle of the view are the ones being read.
+   * Whether a want this far from the view is worth shaping: not when the
+   * atlas is full and holds nothing farther to drop for it.
    */
-  focus: { x: number; y: number } | null = null;
-
-  /** What is wanted, nearest the focus first. */
-  private wanted(): [string, Want][] {
-    const list = [...this.missing];
-    const f = this.focus;
-    if (f && list.length > 1) {
-      const d = (w: { x: number; y: number }) =>
-        (w.x - f.x) * (w.x - f.x) + (w.y - f.y) * (w.y - f.y);
-      list.sort((a, b) => d(a[1]) - d(b[1]));
-    }
-    return list;
-  }
-
-  /** Whether any label drawn so far is still waiting for its field. */
-  get wanting(): boolean {
-    return this.missing.size > 0 || this.fieldQueue.length > 0;
+  private hopeful(distance: number): boolean {
+    return !this.full || this.victim(distance) !== null;
   }
 
   /**
@@ -531,7 +731,7 @@ export class LabelAtlas {
   async pump(): Promise<boolean> {
     if (this.busy || !this.admit) return false;
     const fonts = this.source.options.fonts;
-    if (this.fieldQueue.length === 0 && (this.missing.size === 0 || !fonts)) {
+    if (this.fieldQueue.length === 0 && (!this.wanting || !fonts)) {
       return false;
     }
     this.busy = true;
@@ -542,8 +742,10 @@ export class LabelAtlas {
       // on, and a whole appearance ran as one task — every label at the
       // end of it, and no frame in between.
       await nextTask();
+      // what may be dropped is worked out again: the view may have moved
+      this.victims = null;
       if (this.fieldQueue.length > 0) return this.makeFields();
-      if (this.missing.size === 0) return false;
+      if (!this.wanting) return false;
       if (this.coverage !== false) {
         const landed = this.coverageSlice();
         if (landed !== null) return landed;
@@ -579,6 +781,7 @@ export class LabelAtlas {
     const pad = this.pad;
     const placed: {
       key: string;
+      want: Want;
       x: number;
       y: number;
       w: number;
@@ -595,6 +798,10 @@ export class LabelAtlas {
         measuring > this.shapeBudgetMs
       ) {
         break;
+      }
+      if (!this.hopeful(this.far(wanted.x, wanted.y, 0, 0))) {
+        this.stalled.add(asked);
+        continue;
       }
       const measured = now();
       const want = this.resolve(asked, wanted);
@@ -616,7 +823,7 @@ export class LabelAtlas {
       const h = Math.ceil(layout.height || this.base * 1.3) + pad * 2;
       if (w > STAGING_WIDTH || h > STAGING_HEIGHT) {
         // wider than anything can set: never drawn, and never asked again
-        this.missing.delete(key);
+        this.unwant(key);
         continue;
       }
       if (x + w > STAGING_WIDTH) {
@@ -628,7 +835,7 @@ export class LabelAtlas {
       const drawn = now();
       layout.draw(ctx, x + pad, y + pad);
       drawing += now() - drawn;
-      placed.push({ key, x, y, w, h });
+      placed.push({ key, want: want.want, x, y, w, h });
       x += w;
       row = Math.max(row, h);
     }
@@ -640,7 +847,7 @@ export class LabelAtlas {
     const used = Math.max(...placed.map((p) => p.y + p.h));
     const image = await ctx.getImageData(0, 0, STAGING_WIDTH, used);
     for (const p of placed) {
-      this.missing.delete(p.key);
+      this.unwant(p.key);
       // Row by row, as the readback has them; the field reads alpha.
       const rowBytes = p.w * 4;
       const pixels = new Uint8Array(rowBytes * p.h);
@@ -648,7 +855,13 @@ export class LabelAtlas {
         const src = ((p.y + r) * image.width + p.x) * 4;
         pixels.set(image.data.subarray(src, src + rowBytes), r * rowBytes);
       }
-      this.fieldQueue.push({ key: p.key, width: p.w, height: p.h, pixels });
+      this.fieldQueue.push({
+        key: p.key,
+        width: p.w,
+        height: p.h,
+        pixels,
+        want: p.want,
+      });
       this.queued.add(p.key);
     }
     if (this.makeFields()) return true;
@@ -670,6 +883,13 @@ export class LabelAtlas {
     let answered = false;
     for (const [asked, wanted] of this.wanted()) {
       if ((landed || answered) && now() - started >= this.fieldBudgetMs) break;
+      const distance = this.far(wanted.x, wanted.y, 0, 0);
+      if (!this.hopeful(distance)) {
+        // Full of fields at least as near: not shaped, and not asked for
+        // again until the view moves.
+        this.stalled.add(asked);
+        continue;
+      }
       const want = this.resolve(asked, wanted);
       if (!want) {
         answered = true;
@@ -688,11 +908,17 @@ export class LabelAtlas {
         return null;
       }
       this.coverage = true;
-      this.missing.delete(key);
       if (coverage.width > STAGING_WIDTH || coverage.height > STAGING_HEIGHT) {
         // wider than a batch could set: never drawn, as there
+        this.unwant(key);
         continue;
       }
+      const place = this.room(coverage.width, coverage.height, distance);
+      if (!place) {
+        this.stalled.add(key);
+        continue;
+      }
+      this.unwant(key);
       const field = distanceField(
         coverage.data,
         coverage.width,
@@ -702,7 +928,7 @@ export class LabelAtlas {
         0,
       );
       landed = true;
-      if (!this.add(key, coverage.width, coverage.height, field)) break;
+      this.put(key, place, coverage.width, coverage.height, field, want.want);
     }
     if (landed || answered) this.generation++;
     return landed || answered;
@@ -720,98 +946,241 @@ export class LabelAtlas {
       this.fieldQueue.length > 0 &&
       (!landed || now() - started < this.fieldBudgetMs)
     ) {
-      const { key, width, height, pixels } = this.fieldQueue.shift()!;
+      const { key, width, height, pixels, want } = this.fieldQueue.shift()!;
       this.queued.delete(key);
+      const place = this.room(width, height, this.far(want.x, want.y, 0, 0));
+      if (!place) {
+        // no room nearer than it: wanted again once the view moves
+        this.missing.set(key, want);
+        this.stalled.add(key);
+        continue;
+      }
       const field = distanceField(pixels, width, height, this.pad);
       landed = true;
-      if (!this.add(key, width, height, field)) break;
+      this.put(key, place, width, height, field, want);
     }
     if (landed) this.generation++;
     return landed;
   }
 
-  /** A field into the atlas; false when nothing would fit and the atlas
-   *  was cleared instead. */
-  private add(
-    key: string,
-    width: number,
-    height: number,
-    field: Uint8Array,
-  ): boolean {
-    let place = this.allot(width, height);
-    if (!place) {
-      // Full: keep what the world on screen draws from, moved together,
-      // and make room for the rest in what that frees.
-      this.compact();
-      place = this.allot(width, height);
+  /**
+   * Room for a field of a label this far from the view: free room, or room
+   * made by dropping fields — first the ones no pack draws, then the ones
+   * drawn farthest from the view, so long as they are farther than it.
+   * Nothing on screen is dropped for anything. Null when there is none, and
+   * the atlas is `full` until something is freed.
+   */
+  private room(w: number, h: number, distance: number): Place | null {
+    let place = this.allot(w, h) ?? this.squeeze(w, h);
+    while (!place) {
+      const v = this.victim(distance);
+      if (!v) {
+        this.full = true;
+        return null;
+      }
+      this.evict(v.key);
+      this.victimAt++;
+      place = this.allot(w, h) ?? this.squeeze(w, h);
     }
-    if (!place) {
-      // Still full — the screen alone needs more than the atlas holds.
-      // Forget everything; the labels on screen are asked for again by the
-      // next pack.
-      this.clear();
-      return false;
-    }
-    this.entries.set(key, {
-      x: place.x,
-      y: place.y,
-      width,
-      height,
-      field,
-      // on screen as soon as the world is packed with it
-      used: this.epoch,
-    });
-    this.pending.add(key);
-    return true;
-  }
-
-  private allot(w: number, h: number): { x: number; y: number } | null {
-    if (this.shelfX + w > this.side) {
-      this.shelfX = 0;
-      this.shelfY += this.shelfH;
-      this.shelfH = 0;
-    }
-    if (this.shelfY + h > this.side) return null;
-    const place = { x: this.shelfX, y: this.shelfY };
-    this.shelfX += w;
-    this.shelfH = Math.max(this.shelfH, h);
     return place;
   }
 
   /**
-   * Drop every field the world on screen does not draw from and pack the
-   * rest again, tallest first. They all move, so the whole texture is
-   * uploaded again and the world must be repacked before it is drawn from
-   * (`relocated`).
+   * Room made by sliding a shelf's fields together over its gaps: fields
+   * of one height are not one width — `node 7` and `node 1234` — and a
+   * narrow one dropped leaves a gap a wide one does not fit, so gaps apart
+   * are room nothing uses. The fields moved are new placements: a box
+   * drawn from one is written again from where it is now, in the same
+   * frame (`slotOf`).
    */
-  private compact(): void {
-    const kept = [...this.entries].filter(([, e]) => e.used === this.epoch);
-    kept.sort((a, b) => b[1].height - a[1].height);
-    this.entries.clear();
-    this.pending.clear();
-    this.shelfX = 0;
-    this.shelfY = 0;
-    this.shelfH = 0;
-    for (const [key, entry] of kept) {
-      const place = this.allot(entry.width, entry.height);
-      if (!place) break;
-      entry.x = place.x;
-      entry.y = place.y;
-      this.entries.set(key, entry);
-      this.pending.add(key);
+  private squeeze(w: number, h: number): Place | null {
+    const height = Math.ceil(h / SHELF_STEP) * SHELF_STEP;
+    const shelf = this.shelves.find(
+      (s) =>
+        s.height === height &&
+        s.gaps.length > 0 &&
+        s.gaps.reduce((n, g) => n + g.w, this.side - s.end) >= w,
+    );
+    if (!shelf) return null;
+    const on = [...this.entries]
+      .filter(([, e]) => e.shelf === shelf)
+      .sort((a, b) => a[1].x - b[1].x);
+    let x = 0;
+    for (const [key, e] of on) {
+      if (e.x !== x) {
+        e.x = x;
+        e.slot = this.nextSlot++;
+        this.pending.add(key);
+        if (this.mirror) this.paint(e);
+      }
+      x += e.width;
     }
-    this.relocated = true;
+    shelf.gaps = [];
+    shelf.end = x;
+    this.moves++;
+    this.generation++;
+    return this.allot(w, h);
+  }
+
+  /** The next field that may go for a label this far from the view, or
+   *  null — skipping the ones already gone, or set again since. */
+  private victim(distance: number): Victim | null {
+    if (!this.victims) {
+      const list: Victim[] = [];
+      for (const [key, e] of this.entries) {
+        const d = e.used < this.epoch ? Infinity : this.reach(e);
+        if (d > 0) list.push({ key, d, used: e.used, entry: e });
+      }
+      list.sort((a, b) => b.d - a.d || a.used - b.used);
+      this.victims = list;
+      this.victimAt = 0;
+    }
+    const list = this.victims;
+    while (this.victimAt < list.length) {
+      const v = list[this.victimAt];
+      if (this.entries.get(v.key) !== v.entry) {
+        this.victimAt++;
+        continue;
+      }
+      return v.d > distance ? v : null;
+    }
+    return null;
+  }
+
+  /** How far from the view the nearest label drawn from a field is. */
+  private reach(e: Entry): number {
+    let d = Infinity;
+    for (let i = 0; i < e.at.length && d > 0; i += 4) {
+      d = Math.min(d, this.far(e.at[i], e.at[i + 1], e.at[i + 2], e.at[i + 3]));
+    }
+    return d === Infinity ? 0 : d;
+  }
+
+  /** A field into the place made for it — drawn, until a pack says where,
+   *  where the label that asked for it is. */
+  private put(
+    key: string,
+    place: Place,
+    width: number,
+    height: number,
+    field: Uint8Array,
+    want: Want,
+  ): void {
+    const entry: Entry = {
+      x: place.x,
+      y: place.shelf.y,
+      width,
+      height,
+      field,
+      // drawn as soon as its labels are written in
+      used: this.epoch,
+      at: [want.x, want.y, 0, 0],
+      page: place.shelf.page,
+      shelf: place.shelf,
+      slot: this.nextSlot++,
+    };
+    this.entries.set(key, entry);
+    if (entry.page > 0 && !this.mirror) {
+      this.mirror = new Uint8Array(this.side * this.side * 4);
+      for (const e of this.entries.values()) this.paint(e);
+    } else if (this.mirror) {
+      this.paint(entry);
+    }
+    this.pending.add(key);
+  }
+
+  /** A field written into its channel of the mirror. */
+  private paint(e: Entry): void {
+    const m = this.mirror!;
+    const channel = CHANNELS[e.page];
+    const side = this.side;
+    const field = e.field;
+    for (let r = 0; r < e.height; r++) {
+      let at = ((e.y + r) * side + e.x) * 4 + channel;
+      const row = r * e.width;
+      for (let c = 0; c < e.width; c++, at += 4) m[at] = field[row + c];
+    }
+  }
+
+  /** A field dropped, and its room given back to its shelf. */
+  private evict(key: string): void {
+    const e = this.entries.get(key);
+    if (!e) return;
+    this.entries.delete(key);
+    this.pending.delete(key);
+    this.free(e);
+    this.full = false;
+    this.moves++;
     this.generation++;
   }
 
-  private clear(): void {
-    this.entries.clear();
-    this.pending.clear();
-    this.shelfX = 0;
-    this.shelfY = 0;
-    this.shelfH = 0;
-    this.relocated = true;
-    this.generation++;
+  /**
+   * Shelves by height, in steps: a label's field is as tall as the base
+   * size's line and the margin, so nearly every field is one height, and a
+   * field dropped leaves a gap the next one fits. The first fit in a gap,
+   * then the end of a shelf, then a new shelf — on the first page with
+   * room, alpha first.
+   */
+  private allot(w: number, h: number): Place | null {
+    if (w > this.side || h > this.side) return null;
+    const height = Math.ceil(h / SHELF_STEP) * SHELF_STEP;
+    for (const shelf of this.shelves) {
+      if (shelf.height !== height) continue;
+      const gaps = shelf.gaps;
+      for (let i = 0; i < gaps.length; i++) {
+        const gap = gaps[i];
+        if (gap.w < w) continue;
+        const x = gap.x;
+        gap.x += w;
+        gap.w -= w;
+        if (gap.w === 0) gaps.splice(i, 1);
+        return { shelf, x };
+      }
+    }
+    for (const shelf of this.shelves) {
+      if (shelf.height !== height || shelf.end + w > this.side) continue;
+      const x = shelf.end;
+      shelf.end += w;
+      return { shelf, x };
+    }
+    for (let page = 0; page < this.pages; page++) {
+      const y = this.tops[page];
+      if (y + height > this.side) continue;
+      const shelf: Shelf = { page, y, height, end: w, gaps: [] };
+      this.tops[page] = y + height;
+      this.shelves.push(shelf);
+      return { shelf, x: 0 };
+    }
+    return null;
+  }
+
+  /** A field's room back to its shelf, merged with the gaps beside it; a
+   *  shelf left empty at the bottom of its page goes back to the page. */
+  private free(e: Entry): void {
+    const shelf = e.shelf;
+    const gaps = shelf.gaps;
+    gaps.push({ x: e.x, w: e.width });
+    gaps.sort((a, b) => a.x - b.x);
+    let n = 0;
+    for (const gap of gaps) {
+      const last = n > 0 ? gaps[n - 1] : null;
+      if (last && last.x + last.w === gap.x) last.w += gap.w;
+      else gaps[n++] = gap;
+    }
+    gaps.length = n;
+    const last = gaps[n - 1];
+    if (last && last.x + last.w === shelf.end) {
+      shelf.end = last.x;
+      gaps.pop();
+    }
+    if (
+      shelf.end === 0 &&
+      gaps.length === 0 &&
+      shelf.y + shelf.height === this.tops[shelf.page]
+    ) {
+      this.tops[shelf.page] = shelf.y;
+      this.shelves.splice(this.shelves.indexOf(shelf), 1);
+    }
   }
 
   /**
@@ -824,6 +1193,7 @@ export class LabelAtlas {
     if (!this.texture || fresh) {
       this.texture = gl.createTexture();
       gl.bindTexture(gl.TEXTURE_2D, this.texture);
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
       gl.texImage2D(
         gl.TEXTURE_2D,
         0,
@@ -833,13 +1203,15 @@ export class LabelAtlas {
         0,
         gl.RGBA,
         gl.UNSIGNED_BYTE,
-        null,
+        this.mirror,
       );
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-      for (const key of this.entries.keys()) this.pending.add(key);
+      // the mirror went up whole; without one, every field goes up again
+      if (this.mirror) this.pending.clear();
+      else for (const key of this.entries.keys()) this.pending.add(key);
     }
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.texture);
@@ -847,6 +1219,7 @@ export class LabelAtlas {
       return;
     }
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    const side = this.side;
     for (const key of this.pending) {
       const entry = this.entries.get(key);
       if (!entry) continue;
@@ -855,8 +1228,26 @@ export class LabelAtlas {
         this.scratch = new Uint8Array(texels * 4).fill(255);
       }
       const rgba = this.scratch.subarray(0, texels * 4);
-      const field = entry.field;
-      for (let i = 0; i < texels; i++) rgba[i * 4 + 3] = field[i];
+      const mirror = this.mirror;
+      if (mirror) {
+        // the rect as the mirror has it: this field, and the other pages'
+        for (let r = 0; r < entry.height; r++) {
+          const src = ((entry.y + r) * side + entry.x) * 4;
+          rgba.set(
+            mirror.subarray(src, src + entry.width * 4),
+            r * entry.width * 4,
+          );
+        }
+      } else {
+        // the first page alone: white, the field in alpha
+        const field = entry.field;
+        for (let i = 0; i < texels; i++) {
+          rgba[i * 4] = 255;
+          rgba[i * 4 + 1] = 255;
+          rgba[i * 4 + 2] = 255;
+          rgba[i * 4 + 3] = field[i];
+        }
+      }
       gl.texSubImage2D(
         gl.TEXTURE_2D,
         0,

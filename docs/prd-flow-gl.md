@@ -233,6 +233,26 @@ sooner — the fields are most of it. No difference shows in the pixels: the
 two frames' mean luminance agrees to 0.2%. Flow's labels are always axis-aligned,
 which makes the vertex shader simpler than maps'.
 
+**When the atlas fills.** The world is built for three panes each way round
+the view, so the atlas is asked for nine screens of strings: the 2,000-node
+lattice at zoom 0.6 wants every one of its 2,000 titles, where one 2048²
+page of fields holds about 660 at 2x (8,000 at 1x fit in 81% of it). A full
+atlas used to be cleared, and the next pack asked for everything again, so
+the titles blinked and the pane never stopped drawing. Now the texture's
+four channels are four pages, alpha first, so a graph under the old limit
+uploads exactly what it did and the 16 MB copy the other pages need is made
+only past it. Past all four, a field makes room by dropping others in
+place: first the ones no pack draws, then the ones drawn farthest off
+screen, and only for a label nearer the view than they are. A field on
+screen is never dropped. A shelf whose gaps are too narrow is slid together.
+The renderer finds the boxes whose field went or moved by its placement
+(`slotOf`) and draws them as nothing until it is back, all in the same frame
+and with no world packed again. A label that finds no room waits until the
+view moves. Measured on Cocoa at 2x: no title on screen is missing at 0.6
+or 0.8, no world is rebuilt at rest, and without marching edges the pane
+draws 0 frames at rest, where it drew continuously. The lattice's marching
+edges still tick the dashes at about 16 frames a second, 0.8 ms each.
+
 ## Then, and only then, the budget
 
 The instinct to carry maps' adaptive-quality ladder over is worth resisting,

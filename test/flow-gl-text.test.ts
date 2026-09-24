@@ -25,6 +25,7 @@ after(() => cleanup());
 async function atlasAt(
   scale: number,
   side?: number,
+  pages?: number,
 ): Promise<{
   atlas: LabelAtlas;
   options: PainterOptions;
@@ -43,7 +44,7 @@ async function atlasAt(
     scale,
     cache: new Map(),
   };
-  return { atlas: new LabelAtlas({ app, options }, side), options };
+  return { atlas: new LabelAtlas({ app, options }, side, pages), options };
 }
 
 function label(extra: Partial<SceneText> = {}): SceneText {
@@ -252,27 +253,43 @@ test('a batch makes its fields in slices, so no one task holds a frame back', as
   assert.strictEqual(drawable(), names.length, 'every one in the end');
 });
 
-/** The shelf packer's arithmetic, to size an atlas for a test. */
+/** The shelf packer's arithmetic on one empty page, to size an atlas for
+ *  a test: shelves by height, rounded up to 4, each filled left to right. */
 function fits(side: number, fields: { width: number; height: number }[]) {
-  let x = 0;
-  let y = 0;
-  let row = 0;
+  const shelves: { height: number; end: number }[] = [];
+  let top = 0;
   for (const f of fields) {
-    if (x + f.width > side) {
-      x = 0;
-      y += row;
-      row = 0;
+    const height = Math.ceil(f.height / 4) * 4;
+    let shelf = shelves.find(
+      (s) => s.height === height && s.end + f.width <= side,
+    );
+    if (!shelf) {
+      if (top + height > side || f.width > side) return false;
+      shelf = { height, end: 0 };
+      shelves.push(shelf);
+      top += height;
     }
-    if (y + f.height > side) return false;
-    x += f.width;
-    row = Math.max(row, f.height);
+    shelf.end += f.width;
   }
   return true;
 }
 
-test('a full atlas keeps what the screen draws, moved, and drops only the rest', async () => {
+/** The side of one page that holds `n` of these fields and not one more. */
+function sideFor(n: number, fields: { width: number; height: number }[]) {
+  let side = 16;
+  while (!(
+    fits(side, fields.slice(0, n)) && !fits(side, fields.slice(0, n + 1))
+  )) {
+    side += 2;
+    assert.ok(side < 2048, 'precondition: a side exists');
+  }
+  return side;
+}
+
+test('a full atlas keeps what the screen draws where it is, and drops only the rest', async () => {
   // Before, a full atlas was cleared: every label on screen vanished until
-  // its batch came round again — text blinking out after a pan.
+  // its batch came round again — text blinking out after a pan. Then it
+  // was compacted, which moved every field and packed the world again.
   const names = (prefix: string) =>
     Array.from({ length: 12 }, (_, i) => `${prefix} ${i}`);
   // The fields' sizes, from an atlas with room for all of them…
@@ -300,11 +317,13 @@ test('a full atlas keeps what the screen draws, moved, and drops only the rest',
     assert.ok(side < 2048, 'precondition: a side exists');
   }
 
-  const { atlas } = await atlasAt(1, side);
+  const { atlas } = await atlasAt(1, side, 1);
   atlas.beginPack();
   for (const text of names('node')) atlas.quad(label({ text }));
   await settle(atlas);
-  assert.ok(!atlas.relocated, 'precondition: twelve fit');
+  for (const text of names('node')) {
+    assert.ok(drawn(atlas.quad(label({ text }))), `precondition: ${text} fits`);
+  }
 
   // The next world draws `node 0` and asks for twelve more.
   atlas.beginPack();
@@ -313,19 +332,222 @@ test('a full atlas keeps what the screen draws, moved, and drops only the rest',
   for (const text of names('edge')) atlas.quad(label({ text }));
   await settle(atlas);
 
-  assert.ok(atlas.relocated, 'the fields moved: the world must be repacked');
-  assert.ok(!atlas.wanting, 'and every one asked for was set');
+  assert.ok(!atlas.wanting, 'every one asked for was set');
   atlas.beginPack();
   const after = drawn(atlas.quad(label({ text: 'node 0' })));
   assert.ok(after, 'the label on screen survived the atlas filling');
-  assert.strictEqual(after.w, before.w, 'from its own field');
+  assert.deepStrictEqual(
+    [after.slot, after.u0, after.v0],
+    [before.slot, before.u0, before.v0],
+    'where it was: nothing drawn from it has to be written again',
+  );
   for (const text of names('edge')) {
     assert.ok(drawn(atlas.quad(label({ text }))), `${text} is drawn`);
   }
   const dropped = names('node')
     .slice(1)
     .filter((text) => drawn(atlas.quad(label({ text }))) === null);
-  assert.ok(dropped.length > 0, 'the labels off screen made the room');
+  assert.ok(dropped.length > 0, 'the labels no pack draws made the room');
+});
+
+/** Twenty labels in a row, 100 apart — all two digits, so a field
+ *  dropped leaves room for any other — and the fields' sizes. */
+const row = Array.from({ length: 20 }, (_, i) => `row ${i + 10}`);
+const rowLabel = (i: number) => label({ text: row[i], x: i * 100, y: 50 });
+
+async function rowSizes() {
+  const probe = (await atlasAt(1)).atlas;
+  probe.beginPack();
+  for (let i = 0; i < row.length; i++) probe.quad(rowLabel(i));
+  await settle(probe);
+  return row.map((_, i) => fieldOf(probe.quad(rowLabel(i))!));
+}
+
+test('more labels than the atlas holds: the ones on screen are drawn, and it goes quiet', async () => {
+  // The 2,000-node lattice at 2x: a world of 2,000 titles, one page of
+  // 660, and an atlas that dropped and set the same fields for as long as
+  // the window was open — titles blinking, frames that never stopped.
+  const side = sideFor(8, await rowSizes());
+  const { atlas } = await atlasAt(1, side, 1);
+  // on screen: the first six
+  atlas.setView({ x: 0, y: 0, width: 560, height: 100 });
+  const pack = () => {
+    atlas.beginPack();
+    return row.map((_, i) => atlas.quad(rowLabel(i)));
+  };
+  pack();
+  await settle(atlas);
+  assert.ok(!atlas.wanting, 'nothing left it could set');
+  const quads = pack();
+  for (let i = 0; i < 6; i++) {
+    assert.ok(drawn(quads[i]), `${row[i]}, on screen, is drawn`);
+  }
+  const set = quads.filter((q) => drawn(q)).length;
+  assert.ok(set <= 8, 'no more than one page holds');
+  assert.ok(set > 6, 'and the nearest ones off screen, while there is room');
+
+  // The same view packed again changes nothing: no field dropped, none set.
+  const slots = quads.map((q) => drawn(q)?.slot ?? 0);
+  const generation = atlas.generation;
+  await settle(atlas);
+  assert.strictEqual(await atlas.pump(), false, 'a slice finds nothing to do');
+  assert.strictEqual(atlas.generation, generation, 'nothing landed or went');
+  assert.deepStrictEqual(
+    pack().map((q) => drawn(q)?.slot ?? 0),
+    slots,
+    'every field where it was',
+  );
+});
+
+test('a pan brings its labels in, dropping the ones farthest behind it', async () => {
+  const side = sideFor(8, await rowSizes());
+  const { atlas } = await atlasAt(1, side, 1);
+  atlas.setView({ x: 0, y: 0, width: 560, height: 100 });
+  atlas.beginPack();
+  for (let i = 0; i < row.length; i++) atlas.quad(rowLabel(i));
+  await settle(atlas);
+  const moves = atlas.moves;
+
+  // The world is not packed again for a pan: the view moves, and what the
+  // pack asked for and could not have is set now.
+  atlas.setView({ x: 1400, y: 0, width: 560, height: 100 });
+  assert.ok(atlas.wanting, 'the labels now on screen are wanted');
+  await settle(atlas);
+  assert.ok(atlas.moves > moves, 'fields were dropped for them');
+  assert.ok(!atlas.wanting, 'and then it is quiet');
+  const shown = row.map((_, i) => drawn(atlas.quad(rowLabel(i))));
+  for (let i = 14; i < 20; i++) {
+    assert.ok(shown[i], `${row[i]}, on screen now, is drawn`);
+  }
+  assert.ok(!shown[0], 'the farthest behind went first');
+
+  // Nothing on screen is dropped for anything off it.
+  const slots = row.slice(14).map((_, i) => shown[14 + i]!.slot);
+  atlas.beginPack();
+  for (let i = 0; i < row.length; i++) atlas.quad(rowLabel(i));
+  await settle(atlas);
+  assert.deepStrictEqual(
+    row.slice(14).map((_, i) => drawn(atlas.quad(rowLabel(14 + i)))?.slot),
+    slots,
+  );
+});
+
+test('more on screen than a page holds: what is drawn stays drawn', async () => {
+  // Ten on screen, room for eight: the two left out wait, rather than
+  // taking a field from another label on screen — which would ask for
+  // that one back, and so on, blinking for as long as the view held.
+  const side = sideFor(8, await rowSizes());
+  const { atlas } = await atlasAt(1, side, 1);
+  atlas.setView({ x: 0, y: 0, width: 1000, height: 100 });
+  const pack = () => {
+    atlas.beginPack();
+    return row.map((_, i) => drawn(atlas.quad(rowLabel(i))));
+  };
+  pack();
+  await settle(atlas);
+  const first = pack();
+  assert.strictEqual(first.filter(Boolean).length, 8, 'the page, full');
+  assert.ok(
+    first.every((q, i) => !q || i < 10),
+    'of labels on screen',
+  );
+  await settle(atlas);
+  assert.deepStrictEqual(
+    pack().map((q) => q?.slot ?? 0),
+    first.map((q) => q?.slot ?? 0),
+    'the same eight, where they were',
+  );
+});
+
+test('a narrow field dropped for a wide one: the shelf slides together to fit it', async () => {
+  // `row 7` and `row 17` are one height and not one width, so the gaps two
+  // narrow fields leave apart on a shelf fit no wide one; slid together,
+  // they do.
+  const names = Array.from({ length: 20 }, (_, i) => `row ${i}`);
+  const at = (i: number) => label({ text: names[i], x: i * 100, y: 50 });
+  const probe = (await atlasAt(1)).atlas;
+  probe.beginPack();
+  for (let i = 0; i < 20; i++) probe.quad(at(i));
+  await settle(probe);
+  const narrow = fieldOf(probe.quad(at(0))!).width;
+  const wide = fieldOf(probe.quad(at(10))!).width;
+  assert.ok(wide > narrow, 'precondition: two digits are wider than one');
+  // three narrow fields a shelf, and two wide
+  const side = narrow * 3 + 2;
+  assert.ok(wide * 2 <= side, 'precondition: two wide fields a shelf');
+
+  const { atlas } = await atlasAt(1, side, 1);
+  atlas.setView({ x: 0, y: 0, width: 1000, height: 100 });
+  atlas.beginPack();
+  for (let i = 0; i < 20; i++) atlas.quad(at(i));
+  await settle(atlas);
+  atlas.setView({ x: 1000, y: 0, width: 1000, height: 100 });
+  await settle(atlas);
+  for (let i = 10; i < 20; i++) {
+    assert.ok(drawn(atlas.quad(at(i))), `${names[i]}, on screen, is drawn`);
+  }
+});
+
+test('past the first page, fields go on the next, each in a channel of its own', async () => {
+  const sizes = await rowSizes();
+  const side = sideFor(8, sizes);
+  const { atlas } = await atlasAt(1, side, 2);
+  atlas.beginPack();
+  for (let i = 0; i < 12; i++) atlas.quad(rowLabel(i));
+  await settle(atlas);
+  const quads = Array.from({ length: 12 }, (_, i) =>
+    drawn(atlas.quad(rowLabel(i))),
+  );
+  assert.ok(quads.every(Boolean), 'twelve drawn from two pages of eight');
+  const second = quads.filter((q) => q!.page === 1);
+  assert.ok(second.length > 0, 'some on the second page');
+  assert.ok(
+    quads.some((q) => q!.page === 0),
+    'the rest on the first',
+  );
+
+  let texture: Uint8Array | null = null;
+  const gl = {
+    TEXTURE_2D: 1,
+    RGBA: 2,
+    UNSIGNED_BYTE: 3,
+    TEXTURE0: 4,
+    createTexture: () => ({}),
+    bindTexture() {},
+    texImage2D(...args: unknown[]) {
+      texture = args[8] as Uint8Array | null;
+    },
+    texParameteri() {},
+    activeTexture() {},
+    pixelStorei() {},
+    texSubImage2D() {},
+  };
+  atlas.bind(gl, true);
+  assert.ok(texture, 'the texture goes up whole, pages and all');
+  const pixels: Uint8Array = texture;
+  // Inside a field's rect, how many texels are inside the glyphs, read
+  // from one channel.
+  const inside = (q: GlyphQuad, channel: number) => {
+    let n = 0;
+    const x0 = Math.round(q.u0 * side);
+    const y0 = Math.round(q.v0 * side);
+    const x1 = Math.round(q.u1 * side);
+    const y1 = Math.round(q.v1 * side);
+    for (let y = y0; y < y1; y++) {
+      for (let x = x0; x < x1; x++) {
+        if (pixels[(y * side + x) * 4 + channel] > 255 * SDF_EDGE) n++;
+      }
+    }
+    return n;
+  };
+  // The first field on each page is at the same texels: four pages, one
+  // texture, each read from its own channel.
+  const onFirst = quads.find(
+    (q) => q!.page === 0 && q!.u0 === second[0]!.u0 && q!.v0 === second[0]!.v0,
+  );
+  assert.ok(onFirst, 'a first-page field at the same place');
+  assert.ok(inside(second[0]!, 0) > 0, 'the second page’s, in red');
+  assert.ok(inside(onFirst, 3) > 0, 'the first page’s, in alpha');
 });
 
 test('a label cut to its card is cut where the 2D painter cuts it', async () => {
