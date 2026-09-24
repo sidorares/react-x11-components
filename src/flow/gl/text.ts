@@ -183,9 +183,11 @@ export const fieldBase = (scale: number): number =>
  * A field's margin and spread at a base size, texels. A graph's labels have
  * no halo, so the field only has to reach as far as the antialiasing ramp
  * of the smallest label drawn: a handle's 10 at `LABEL_ZOOM`, under a
- * third of the base, is a ramp of about two texels.
+ * third of the base, is a ramp of 2.3 texels, and a sixth of the base
+ * reaches three. A quarter, which the first cut used, drew the same pixels
+ * to within 5/255 from fields 12% larger, whose every texel was made.
  */
-export const fieldPad = (base: number): number => Math.ceil(base / 4);
+export const fieldPad = (base: number): number => Math.ceil(base / 6);
 
 /** The clock, through `globalThis`: `src/` compiles with `types: []`. */
 const globals = globalThis as {
