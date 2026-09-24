@@ -184,6 +184,10 @@ interface ZoomShot {
 interface LiftShot {
   under: ShotSurface;
   over: ShotSurface;
+  /** Where the cards' picture has anything, in the pane's logical pixels:
+   *  each card and the reach of its handles. Blended in there and nowhere
+   *  else — a step's box between the cards has none to blend. */
+  cards: FlowRect[];
   gesture: object;
   version: number;
   viewport: Viewport;
@@ -3124,9 +3128,9 @@ export class FlowGraphNode extends Node implements FlowInstance {
       );
       scene = buildScene(this._sceneInput(palette, 'overlay'));
       const built = now();
-      this._compositeLift(ctx, liftShot, liftShot.under);
+      this._compositeLift(ctx, liftShot, liftShot.under, null);
       paintGraphEdges(painter, lifted);
-      this._compositeLift(ctx, liftShot, liftShot.over);
+      this._compositeLift(ctx, liftShot, liftShot.over, liftShot.cards);
       paintGraphNodes(painter, lifted);
       paintFloat(painter, scene);
       this._reportFrame(built - started, now() - built);
@@ -3734,6 +3738,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
     this._liftShot = {
       under: under.surface,
       over: over.surface,
+      cards: rest.nodes.map((item) => inflateRect(item.rect, CULL_MARGIN)),
       gesture,
       version: this._worldVersion,
       viewport: { ...v },
@@ -3743,22 +3748,54 @@ export class FlowGraphNode extends Node implements FlowInstance {
     return this._liftShot;
   }
 
-  /** One of a drag's pictures, copied into this pass's rect of the pane —
-   *  the whole pane on a full pass. */
+  /**
+   * One of a drag's pictures, copied into this pass's rect of the pane —
+   * the whole pane on a full pass. The ground's picture is opaque and is
+   * *copied*, which the server does as a copy rather than a blend (`copy`
+   * is XRender's `Src`, and a memcpy on Cocoa); the cards' picture is
+   * blended in only where a card is (`only`). On XQuartz the two blends of
+   * the step's box — as big as the moved node's longest edge — were most
+   * of what a drag cost the server.
+   */
   private _compositeLift(
     ctx: Context2D,
     shot: LiftShot,
     surface: ShotSurface,
+    only: FlowRect[] | null,
   ): void {
-    const draw = (
-      ctx as unknown as {
-        drawImage?(image: unknown, ...args: number[]): void;
-      }
-    ).drawImage;
-    if (typeof draw !== 'function') return;
+    const c = ctx as unknown as {
+      drawImage?(image: unknown, ...args: number[]): void;
+      globalCompositeOperation?: string;
+    };
+    if (typeof c.drawImage !== 'function') return;
     const pane = this._pane();
     const rect = this._frameClip ? intersectRects(pane, this._frameClip) : pane;
     if (!rect) return;
+    if (only) {
+      for (const card of only) {
+        const part = intersectRects(rect, card);
+        if (part) this._copyShotRect(c, shot, surface, part);
+      }
+      return;
+    }
+    const before = c.globalCompositeOperation;
+    c.globalCompositeOperation = 'copy';
+    try {
+      this._copyShotRect(c, shot, surface, rect);
+    } finally {
+      c.globalCompositeOperation = before ?? 'source-over';
+    }
+  }
+
+  /** A rect of the pane, logical pixels, drawn from the same rect of a
+   *  picture of it — on whole device pixels, so nothing is resampled. */
+  private _copyShotRect(
+    ctx: { drawImage?(image: unknown, ...args: number[]): void },
+    shot: LiftShot,
+    surface: ShotSurface,
+    rect: FlowRect,
+  ): void {
+    const pane = this._pane();
     const s = this._scale;
     const ox = pane.x * s;
     const oy = pane.y * s;
@@ -3772,7 +3809,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
     if (x1 <= x0 || y1 <= y0) return;
     const w = x1 - x0;
     const h = y1 - y0;
-    draw.call(ctx, surface, x0, y0, w, h, ox + x0, oy + y0, w, h);
+    ctx.drawImage!(surface, x0, y0, w, h, ox + x0, oy + y0, w, h);
   }
 
   private _dropLiftShot(): void {
