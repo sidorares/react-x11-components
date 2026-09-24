@@ -614,6 +614,17 @@ they do not, because a complete blurry picture beats a sharp one with holes
 in it. A cold map with neither shows its background. `MapFrameStats` counts
 both as `fromAncestor` and `fromDescendant`.
 
+**The GL renderer keeps an overview, so a zoom out always has an ancestor.**
+Descendants only reach four levels, and a trackpad's momentum can zoom out
+fifteen in a quarter of a second — past everything cached, onto levels
+nothing has loaded, where each frame drew the background alone: the whole
+map one flat colour, every label gone with its tiles, then back. So the view's
+ancestors every other level up to the root are asked for after its own
+tiles and kept, a tile or two a level (a view is a speck at those zooms),
+and any level a zoom out lands on has one within two levels above it:
+blurred, never blank. Measured over hard trackpad flicks, frames with
+nothing to draw went from 28 to 1.
+
 **A frame that only continues a redraw claims one pixel.** There is no "call
 me next frame" on the element seam — damage is what schedules a paint — so a
 rasterization in progress asks for its next frame with a single-pixel claim.

@@ -1173,6 +1173,62 @@ const biggestStep = (frames: Awaited<ReturnType<typeof sweep>>): number => {
   return most;
 };
 
+test('a view keeps an overview of its ancestors, so a fast zoom out never lands on nothing', async () => {
+  const loaded: number[] = [];
+  const controller = new MapController({
+    center: { lon: -0.1281, lat: 51.508 },
+    zoom: 15,
+  });
+  const driver = new GlMapDriver(controller, {
+    controller,
+    map: {
+      sources: [
+        {
+          id: 'fixture',
+          minZoom: 0,
+          maxZoom: 14,
+          tileSize: 512,
+          load: (request: { z: number }) => {
+            loaded.push(request.z);
+            return { kind: 'vector' as const, data: fixtureBytes() };
+          },
+        },
+      ],
+      mapStyle: { layers: STYLE },
+      adaptive: false,
+    },
+    onFailure: (error: Error) => {
+      throw error;
+    },
+  });
+  const gl = recordingGl(true).gl;
+  const info = { width: 512, height: 512, node: { scale: 1 } };
+  const frame = async () => {
+    driver.draw(gl, info);
+    for (let i = 0; i < 3; i++) await new Promise((r) => setTimeout(r, 0));
+  };
+  for (let i = 0; i < 12; i++) await frame();
+  // Every other level from the one above the view's to the root — the
+  // budget off, which is where it used to be asked for.
+  for (const z of [13, 11, 9, 7, 5, 3, 1, 0]) {
+    assert.ok(
+      loaded.includes(z),
+      `level ${z} in ${[...new Set(loaded)].join(',')}`,
+    );
+  }
+  // A momentum's worth of zoom out in one step: the first frame at 5.5 has
+  // none of its own tiles, and draws the level above from the overview.
+  controller.setCamera({ zoom: 5.5 });
+  driver.draw(gl, info);
+  const stats = driver.stats()!;
+  assert.ok(stats.tiles > 0);
+  assert.ok(
+    stats.ready + stats.fromAncestor > 0,
+    `drawn from something: ${JSON.stringify({ tiles: stats.tiles, ready: stats.ready, up: stats.fromAncestor })}`,
+  );
+  driver.dispose();
+});
+
 test("a zoom out across a layer's minZoom dissolves it, in every frame it draws", async () => {
   // The camera 0.02 of a level per frame, past the buildings' minZoom of
   // 14, with the pyramid's own level changing on the way — and the tiles

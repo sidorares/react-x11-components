@@ -915,13 +915,28 @@ export class GlMapDriver implements MapView {
     };
     let rung = 0;
     let predictedMs = 0;
+    // An overview of the view: its ancestors every other level up to the
+    // pyramid's root, asked for after the view's own tiles and looked up
+    // every frame, so they stay loaded. A view is a speck at those levels,
+    // so this is a tile or two a level. It is what a fast zoom out lands
+    // on: a trackpad's momentum can cross fifteen levels in a quarter of a
+    // second, and every level it passes that has no tile draws the style's
+    // background alone — a frame of one flat colour, labels gone with the
+    // tiles, where a coarser tile would have drawn the place, blurred. With
+    // one level of it in reach two levels up, a hole is always filled from
+    // above (`renderCover`'s ancestors reach eight). The level just above
+    // the view comes first: it is also what the ladder's last rungs draw.
+    if (primary) {
+      const top = primary.pyramid.minZoom;
+      for (
+        let level = primary.target.level - 1;
+        level >= top;
+        level = level - 2 < top && level > top ? top : level - 2
+      ) {
+        primary.store.want(coverAt(level).missing);
+      }
+    }
     if (budget !== null && moving && primary) {
-      // The coarser level is what the ladder's last rungs draw, so ask for
-      // it too — after the view's own tiles, which come first.
-      primary.store.want(
-        coverAt(Math.max(primary.pyramid.minZoom, primary.target.level - 1))
-          .missing,
-      );
       const predict = (r: number): number => {
         const built = build(r);
         const work =
