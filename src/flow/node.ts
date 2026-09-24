@@ -73,7 +73,14 @@ import {
   ZOOM_STEP,
 } from './model.js';
 import { distanceToPath, pathBounds } from './paths.js';
-import { paintNodeItem, paintPanels, paintScene } from './paint.js';
+import {
+  paintFloat,
+  paintGraph,
+  paintGround,
+  paintNodeItem,
+  paintPanels,
+  paintScene,
+} from './paint.js';
 import {
   anchorsOf,
   buildNodeItems,
@@ -145,6 +152,25 @@ interface PatternLike {
   _picture?: { destroy?(): void };
 }
 
+/** The slice of ntk's Surface a 2D zoom gesture paints the graph onto. */
+interface ShotSurface {
+  getContext(name: '2d'): unknown;
+  destroy?(): void;
+}
+type ShotCtor = new (
+  app: unknown,
+  options: { width: number; height: number; format: string },
+) => ShotSurface;
+
+/** The graph as a 2D zoom gesture's first step drew it, and the viewport
+ *  it drew at. */
+interface ZoomShot {
+  surface: ShotSurface;
+  viewport: Viewport;
+  width: number;
+  height: number;
+}
+
 /** A canvas `<Flow>` paints a panel on: a core node, asked to repaint its
  *  own box. */
 interface PanelCanvas {
@@ -177,17 +203,21 @@ const BODY_BUDGET_MS = 8;
  *  49 ms to a 13 ms step, 9 added 10). Learned from then on. */
 const BODY_STEP_PRIOR_MS = 1.2;
 
-/** How often the dash on an animated edge moves. Slow enough that a graph
- * full of them is not a repaint storm, fast enough to read as motion. */
 /** Under GL, how long a zoom holds still before the world is rebuilt at it
  *  — until then each step draws the world already on the GPU, scaled
  *  (`glFrame`) — and how far that scaling may go before a step rebuilds
- *  anyway, so a long gesture never magnifies one build by more than this. */
+ *  anyway, so a long gesture never magnifies one build by more than this.
+ *  The 2D renderer's zoom picture keeps to both. */
 const GL_ZOOM_REST_MS = 120;
 const GL_ZOOM_SPAN = 2;
+/** How much of the pane a 2D zoom step may paint live, round the picture it
+ *  composites — the ring a zoom out uncovers — before it paints a new one. */
+const ZOOM_SHOT_LIVE = 0.5;
 /** How far round a box selection's outline its step claims: the pen, the
  *  corner's radius and a pixel of antialiasing, with room to spare. */
 const SELECT_BAND = 4;
+/** How often the dash on an animated edge moves. Slow enough that a graph
+ * full of them is not a repaint storm, fast enough to read as motion. */
 const ANIMATION_MS = 60;
 const ANIMATION_SPEED = 1.4; // px of dash travel per tick, at zoom 1
 
@@ -507,6 +537,16 @@ export class FlowGraphNode extends Node implements FlowInstance {
   /** A 2D paint drew labels scaled mid-zoom, and owes them at their own
    *  sizes once it rests. */
   private _textApproximated = false;
+  /**
+   * Mid-zoom on the 2D renderer: the graph and its ground as the gesture
+   * drew them once, on a surface of their own, composited scaled for every
+   * step after — the GL renderer's world drawn scaled, in a bitmap. A step
+   * used to stroke every edge, fill every card and lay the grid again, 20 ms
+   * of Direct2D a step over the stress lattice, for a picture the next step
+   * moved off. Dropped when the zoom rests, which paints it all again
+   * exactly, and whenever the graph itself changes.
+   */
+  private _zoomShot: ZoomShot | null = null;
   /** Inside a live input dispatch — what makes a body emission `sync`.
    * Motion and the wheel run at continuous priority, whose React updates
    * can trail the pane's own painting by frames; an emission made under
@@ -2808,6 +2848,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
   }
 
   override destroySubtree(): void {
+    this._dropZoomShot();
     this._glRequest = null;
     if (this._bodiesRest != null) timers.clearTimeout?.(this._bodiesRest);
     this._bodiesRest = null;
@@ -2969,10 +3010,45 @@ export class FlowGraphNode extends Node implements FlowInstance {
         ));
     painter.clipRect(x, y, width, height, nearCorner ? radius : 0);
     const started = now();
-    const scene = buildScene(this._sceneInput(palette));
-    const built = now();
-    paintScene(painter, scene, this._grid);
-    this._reportFrame(built - started, now() - built);
+    // Not under a drag or a connection: the picture would hold the moving
+    // node, or the line, where they were
+    const shot =
+      this._zoomMoving() && !this._gesture
+        ? this._zoomShotFor(palette, approximateText)
+        : null;
+    let scene: FlowScene;
+    if (shot) {
+      // the graph and the ground under it as the gesture drew them, scaled;
+      // both live wherever the picture does not reach; and the pane's
+      // furniture over them at the zoom of the moment
+      scene = buildScene(this._sceneInput(palette, 'overlay'));
+      const bands = this._uncovered(shot);
+      const input = bands.length > 0 ? this._sceneInput(palette) : null;
+      const live = input
+        ? bands.map((band) => ({
+            band,
+            scene: buildScene({ ...input, clip: band }),
+          }))
+        : [];
+      const built = now();
+      this._compositeShot(ctx, shot);
+      for (const { band, scene: part } of live) {
+        painter.save();
+        painter.clipRect(band.x, band.y, band.width, band.height, 0);
+        paintGround(painter, part, this._grid);
+        paintGraph(painter, part);
+        painter.restore();
+      }
+      paintFloat(painter, scene);
+      this._textApproximated = true;
+      this._restZoom();
+      this._reportFrame(built - started, now() - built);
+    } else {
+      scene = buildScene(this._sceneInput(palette));
+      const built = now();
+      paintScene(painter, scene, this._grid);
+      this._reportFrame(built - started, now() - built);
+    }
     // The box the dash ticks invalidate comes off the *drawn* geometry; a
     // pass that culled every animated edge keeps the one before it, because
     // the endpoints did not move, or that move's own damage would have
@@ -3031,6 +3107,9 @@ export class FlowGraphNode extends Node implements FlowInstance {
     // A dash tick moves the phase, a uniform on the GPU, so it is no change
     // to the world. A pan or a zoom never gets here under GL.
     if (reason !== 'animation') this._worldVersion++;
+    // …and what a 2D zoom gesture composites is the graph as it was: a
+    // change to it is a picture that no longer is
+    if (reason !== 'animation' && reason !== 'scroll') this._dropZoomShot();
     // Under GL the surface over this box draws the graph and the 2D pane
     // under it shows nothing: a claim of its pixels was a window pass over
     // them, unseen, whose one job was to reach `paint` and ask the surface
@@ -3259,6 +3338,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
         if (now() - this._zoomAt < GL_ZOOM_REST_MS) this._restZoom();
         else if (this._gl) this._glRequest?.();
         else if (this._textApproximated) {
+          this._dropZoomShot();
           // …and in 2D, the labels the gesture drew scaled, set at their
           // own sizes
           this._textApproximated = false;
@@ -3267,6 +3347,156 @@ export class FlowGraphNode extends Node implements FlowInstance {
       },
       Math.max(0, wait) + 1,
     );
+  }
+
+  /**
+   * The graph painted once onto a surface of its own for the zoom gesture
+   * under way — made at the gesture's first step that finds none — or null
+   * where there is no surface to paint on.
+   */
+  private _zoomShotFor(
+    palette: FlowPalette,
+    approximateText: boolean,
+  ): ZoomShot | null {
+    const held = this._zoomShot;
+    if (held) {
+      // Kept while it is sharp enough and covers enough: magnified past
+      // `GL_ZOOM_SPAN` it is soft, and a zoom out uncovers a ring the step
+      // paints live, which past `ZOOM_SHOT_LIVE` of the pane costs what a
+      // new picture does.
+      const k = this._viewport().zoom / held.viewport.zoom;
+      const pane = this._pane();
+      const live =
+        this._uncovered(held).reduce((sum, r) => sum + r.width * r.height, 0) /
+        Math.max(1, pane.width * pane.height);
+      if (k <= GL_ZOOM_SPAN && live <= ZOOM_SHOT_LIVE) return held;
+      this._dropZoomShot();
+    }
+    const ctor = (ntk as unknown as { Surface?: ShotCtor }).Surface;
+    if (typeof ctor !== 'function') return null;
+    const pane = this._pane();
+    const scale = this._scale;
+    const width = Math.max(1, Math.ceil(pane.width * scale));
+    const height = Math.max(1, Math.ceil(pane.height * scale));
+    let surface: ShotSurface;
+    try {
+      surface = new ctor(this.app, { width, height, format: 'argb32' });
+    } catch {
+      return null;
+    }
+    const sctx = surface.getContext('2d') as {
+      translate?(x: number, y: number): void;
+    } | null;
+    // its labels drawn as a step inside the gesture draws them — from the
+    // sizes they have, where the window's context scales text — so the one
+    // paint of the gesture shapes nothing the gesture would not
+    const painter = sctx
+      ? createPainter(sctx, { ...this._textOptions(), approximateText })
+      : null;
+    if (!sctx || !painter || typeof sctx.translate !== 'function') {
+      surface.destroy?.();
+      return null;
+    }
+    // The surface's corner is the pane's, and the whole of the pane is in
+    // it whatever this pass's damage, since every step after composites it.
+    // The ground too: a grid at the fractional pitch a zoom passes through
+    // is thousands of runs, 7 ms of Direct2D a step over the stress
+    // lattice's pane once the graph was a picture. Drawn as runs here —
+    // the tile is a pattern on the window's context, phased in its pixels,
+    // and a zoom's pitch is a fraction of a pixel almost always.
+    sctx.translate(-pane.x * scale, -pane.y * scale);
+    const whole = buildScene({ ...this._sceneInput(palette), clip: null });
+    paintGround(painter, whole);
+    paintGraph(painter, whole);
+    this._zoomShot = { surface, viewport: this._viewport(), width, height };
+    return this._zoomShot;
+  }
+
+  /** Where the gesture's picture lands at the viewport of the moment, in
+   *  the pane's logical pixels: a world point drawn at `w·z₀ + v₀` is at
+   *  `w·z + v`, so the picture is scaled by `z / z₀` about the pane's corner
+   *  and moved by `v − v₀·z/z₀`. */
+  private _shotRect(shot: ZoomShot): FlowRect {
+    const v = this._viewport();
+    const v0 = shot.viewport;
+    const k = v.zoom / v0.zoom;
+    const pane = this._pane();
+    const s = this._scale;
+    return {
+      x: pane.x + v.x - v0.x * k,
+      y: pane.y + v.y - v0.y * k,
+      width: (shot.width / s) * k,
+      height: (shot.height / s) * k,
+    };
+  }
+
+  private _compositeShot(ctx: Context2D, shot: ZoomShot): void {
+    const draw = (
+      ctx as unknown as {
+        drawImage?(image: unknown, ...args: number[]): void;
+      }
+    ).drawImage;
+    if (typeof draw !== 'function') return;
+    const to = this._shotRect(shot);
+    const s = this._scale;
+    draw.call(
+      ctx,
+      shot.surface,
+      0,
+      0,
+      shot.width,
+      shot.height,
+      to.x * s,
+      to.y * s,
+      to.width * s,
+      to.height * s,
+    );
+  }
+
+  /**
+   * The pane this pass reaches that the gesture's picture does not: nothing
+   * while zooming in about a point in the pane, a ring round it zooming out,
+   * a side after a pan. Up to four bands — above, below, and either side
+   * between them — each reaching a pixel under the picture's edge, which
+   * its filtering leaves half there.
+   */
+  private _uncovered(shot: ZoomShot): FlowRect[] {
+    const pane = this._frameClip
+      ? intersectRects(this._pane(), this._frameClip)
+      : this._pane();
+    if (!pane) return [];
+    const inner = inflateRect(this._shotRect(shot), -1);
+    const x0 = Math.max(pane.x, inner.x);
+    const y0 = Math.max(pane.y, inner.y);
+    const x1 = Math.min(pane.x + pane.width, inner.x + inner.width);
+    const y1 = Math.min(pane.y + pane.height, inner.y + inner.height);
+    if (x1 <= x0 || y1 <= y0) return [pane];
+    const right = pane.x + pane.width;
+    const bottom = pane.y + pane.height;
+    const bands: FlowRect[] = [];
+    if (y0 > pane.y) {
+      bands.push({
+        x: pane.x,
+        y: pane.y,
+        width: pane.width,
+        height: y0 - pane.y,
+      });
+    }
+    if (bottom > y1) {
+      bands.push({ x: pane.x, y: y1, width: pane.width, height: bottom - y1 });
+    }
+    if (x0 > pane.x) {
+      bands.push({ x: pane.x, y: y0, width: x0 - pane.x, height: y1 - y0 });
+    }
+    if (right > x1) {
+      bands.push({ x: x1, y: y0, width: right - x1, height: y1 - y0 });
+    }
+    return bands;
+  }
+
+  private _dropZoomShot(): void {
+    this._zoomShot?.surface.destroy?.();
+    this._zoomShot = null;
   }
 
   /** Whether a zoom gesture is moving: a stream of zoom steps, the last of

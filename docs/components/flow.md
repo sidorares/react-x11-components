@@ -440,9 +440,29 @@ zoom has rested for `GL_ZOOM_REST_MS` (120 ms), the same rest the GL
 renderer rebuilds its world after; a single step — a button, `fitView`, an
 app's `setViewport` — is set exactly at once. Only where the context says
 it scales text with its transform (`scalesText`, the Windows and macOS
-contexts): on X11 ntk draws glyphs at the size they were shaped at, so a
-zoom step there still shapes its labels. On the stress lattice at 1.25× on
-Windows a zoom went from 34 to 39 frames a second.
+contexts): on X11 ntk draws glyphs at the size they were shaped at, so the
+labels a zoom step draws there are shaped at their size — which, with the
+picture below, is the ones in the ring a zoom out uncovers. On the stress
+lattice at 1.25× on Windows a zoom went from 34 to 39 frames a second.
+
+**A 2D zoom gesture composites a picture.** From a gesture's second step
+the pane paints the graph and its ground — the background and the grid —
+once, onto an offscreen `Surface`, and every step after composites that
+picture scaled: the GL renderer's world drawn scaled, as a bitmap. What the
+picture does not reach is painted live, culled to up to four bands round it
+— the ring a zoom out uncovers, a side a pan exposes — and so are the
+selection box and the panels, at the zoom of the moment. Once that ring is
+half the pane, or the picture has been magnified past 2× (the span GL
+keeps to), a step paints a new one. A drag or a connection under way gets
+no picture, since it would hold the moving node or the line where they
+were; any change to the graph drops it; and the rest repaints everything
+exactly. The grid is in the picture because a zoom passes through
+fractional pitches, where the grid is thousands of runs rather than one
+tile: with the graph composited and the grid still live, the grid was 7 of
+the 9 ms left in a step. On the stress example on Windows, in a 2014×993
+pane on a 180 Hz display, a wheel zoom went from 39–40 frames a second to
+150–178 on the lattice, from 31 to about 150 on the fan-out, and from 43
+to 142–148 with 80 widget bodies mounted.
 
 **Under GL a label is a distance field.** Each string is set once, at 16
 device pixels (32 at 2x), and kept as the distance of every texel to its

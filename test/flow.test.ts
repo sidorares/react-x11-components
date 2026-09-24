@@ -53,6 +53,7 @@ import type {
   NodeBodyRect,
   NodeChange,
   NodeRenderContext,
+  Viewport,
   XYPosition,
 } from '../src/index.js';
 import {
@@ -882,6 +883,173 @@ test('a 2D zoom gesture draws the labels it has, and sets them at rest', async (
     fonts.layout = own;
     delete (root._ctx as { scalesText?: boolean }).scalesText;
   }
+});
+
+/** A red card, at graph (40, 40) and 80×40 unless told otherwise, in a
+ *  400×300 pane; the flow instance to read the viewport off. */
+async function redCard(
+  position: XYPosition = { x: 40, y: 40 },
+  width = 80,
+  height = 40,
+  options = { width: 400, height: 300 } as RenderX11Options,
+  props: Partial<FlowProps<FlowNodeData, unknown>> = {},
+): Promise<{
+  ctx: Parameters<typeof pixelAt>[0];
+  flow: { current: FlowInstance | null };
+}> {
+  const flow: { current: FlowInstance | null } = { current: null };
+  const { ctx } = await renderX11(
+    h(TypedFlow, {
+      ref: flow,
+      nodes: [
+        {
+          id: 'r',
+          position,
+          width,
+          height,
+          data: { label: ' ' },
+          style: {
+            background: '#ff0000',
+            borderColor: '#ff0000',
+            borderRadius: 0,
+          },
+        },
+      ],
+      edges: [],
+      style: { width: 400, height: 300 },
+      ...props,
+    }),
+    options,
+  );
+  await act();
+  return { ctx, flow };
+}
+
+/** The viewport the 2D zoom gesture's picture was drawn at, if it has one. */
+function shotViewport(): Viewport | null {
+  return (
+    (pane() as unknown as { _zoomShot: { viewport: Viewport } | null })
+      ._zoomShot?.viewport ?? null
+  );
+}
+
+/** Wheel steps a gesture's pace apart, on a clock pinned to the test. */
+async function zoomSteps(
+  x: number,
+  y: number,
+  steps: number,
+  deltaY: number,
+  between?: () => void,
+  point: (x: number, y: number) => { dx: number; dy: number } = at,
+): Promise<void> {
+  const perf = globalThis.performance;
+  let clock = perf.now();
+  Object.defineProperty(perf, 'now', {
+    value: () => clock,
+    configurable: true,
+  });
+  try {
+    const node = pane() as unknown as DrawnNode;
+    for (let i = 0; i < steps; i++) {
+      clock += 16;
+      await userEvent.wheel(node, { ...point(x, y), deltaY });
+      between?.();
+    }
+    await act();
+  } finally {
+    delete (perf as { now?: unknown }).now;
+  }
+}
+
+test('a 2D zoom gesture composites the graph it drew once, where the zoom of the moment puts it', async () => {
+  // A step inside a gesture used to stroke every edge and fill every card
+  // again; now the gesture paints the graph once, onto a surface of its
+  // own, and composites that scaled. Sampled where the card is at the last
+  // step's zoom and was not at the zoom the picture was drawn at: an
+  // unscaled composite, or one moved wrong, leaves the pane's ground there.
+  const { ctx, flow } = await redCard();
+  const { abs } = pane();
+  let drawnAt: Viewport | null = null;
+  // about the card's corner, which stays put as the card grows from it
+  await zoomSteps(abs.x + 40, abs.y + 40, 4, -1, () => {
+    drawnAt ??= shotViewport();
+  });
+  const last = flow.current!.getViewport();
+  assert.ok(drawnAt, 'precondition: the gesture drew a picture');
+  const shot: Viewport = drawnAt;
+  assert.ok(last.zoom > shot.zoom * 1.05, 'precondition: zoomed past it');
+  // the card's right edge where the picture has it and where this zoom does,
+  // and a point between them, halfway down
+  const right = (v: Viewport) => abs.x + v.x + 120 * v.zoom;
+  const px = Math.round((right(shot) + right(last)) / 2);
+  const py = Math.round(abs.y + last.y + 60 * last.zoom);
+  assert.ok(
+    px > right(shot) + 1 && px < right(last) - 1,
+    'precondition: a point the picture has outside the card',
+  );
+  await expectPixel(ctx, px, py, '#ff0000', {
+    message: 'the card is where this zoom puts it',
+  });
+});
+
+test('a 2D zoom out paints the ring its picture no longer covers', async () => {
+  // Zoomed out, the picture is smaller than the pane, and the graph round it
+  // was never in it. The card starts right of the pane, and zooming out
+  // about the pane's centre brings its far end into that ring.
+  // a ground of its own, so the ring's shows: core clears what it repaints
+  // to the window's, not to the pane's
+  const { ctx, flow } = await redCard({ x: 410, y: 130 }, 60, 40, undefined, {
+    palette: { background: '#00ff00' },
+    background: false,
+  });
+  const { abs } = pane();
+  let drawnAt: Viewport | null = null;
+  await zoomSteps(abs.x + 200, abs.y + 150, 4, 1, () => {
+    drawnAt ??= shotViewport();
+  });
+  const last = flow.current!.getViewport();
+  assert.ok(drawnAt, 'precondition: the gesture drew a picture');
+  const shot: Viewport = drawnAt;
+  const k = last.zoom / shot.zoom;
+  assert.ok(k < 0.95, 'precondition: zoomed out past it');
+  // the picture's right edge, and the card's far end, at this zoom
+  const pictureRight = abs.x + last.x - shot.x * k + 400 * k;
+  const cardRight = abs.x + last.x + 470 * last.zoom;
+  const px = Math.round((pictureRight + cardRight) / 2);
+  const py = Math.round(abs.y + last.y + 150 * last.zoom);
+  assert.ok(
+    px > pictureRight + 1 && px < cardRight - 1 && px < abs.x + 400,
+    'precondition: a point of the card in the ring',
+  );
+  await expectPixel(ctx, px, py, '#ff0000', {
+    message: 'the card is drawn in the ring',
+  });
+  // and just past its end, the pane's ground
+  await expectPixel(ctx, Math.round(cardRight) + 6, py, '#00ff00', {
+    message: 'the ground is drawn in the ring',
+  });
+  // …as it is inside the picture, which carries its own
+  await expectPixel(ctx, abs.x + 200, abs.y + 150, '#00ff00', {
+    message: 'and in the picture',
+  });
+});
+
+test('a 2D zoom gesture draws a new picture once it has magnified the old one far enough', async () => {
+  const { flow } = await redCard();
+  const { abs } = pane();
+  const drawn = new Set<number>();
+  const magnified: number[] = [];
+  await zoomSteps(abs.x + 200, abs.y + 150, 10, -1, () => {
+    const at = shotViewport();
+    if (!at) return;
+    drawn.add(at.zoom);
+    magnified.push(flow.current!.getViewport().zoom / at.zoom);
+  });
+  assert.ok(drawn.size >= 2, `a second picture: ${[...drawn]}`);
+  assert.ok(
+    magnified.every((k) => k <= 2 + 1e-9),
+    `no step magnified its picture past 2: ${magnified}`,
+  );
 });
 
 test('zoom is clamped to the range it was given', async () => {
@@ -2061,6 +2229,39 @@ test('the display scale is the floor the body zoom multiplies', async () => {
   // one that took only the panel two thirds of it.
   const { width, height } = retained(screen.getByText('mark')).abs;
   assert.deepStrictEqual({ width, height }, { width: 120, height: 60 });
+});
+
+test('at a display scale of 2 a 2D zoom gesture composites its picture on device pixels', async () => {
+  // The picture is device-sized and the viewport logical; mixing the two
+  // puts the card at half or twice where the zoom has it.
+  const { ctx, flow } = await redCard({ x: 40, y: 40 }, 80, 40, AT_2X);
+  const origin = { x: pane().abs.x / 2, y: pane().abs.y / 2 };
+  let drawnAt: Viewport | null = null;
+  await zoomSteps(
+    origin.x + 40,
+    origin.y + 40,
+    4,
+    -1,
+    () => {
+      drawnAt ??= shotViewport();
+    },
+    at2x,
+  );
+  const last = flow.current!.getViewport();
+  assert.ok(drawnAt, 'precondition: the gesture drew a picture');
+  const shot: Viewport = drawnAt;
+  assert.ok(last.zoom > shot.zoom * 1.05, 'precondition: zoomed past it');
+  // logical, like the viewport; sampled in device pixels
+  const right = (v: Viewport) => origin.x + v.x + 120 * v.zoom;
+  const px = Math.round((right(shot) + right(last)) / 2) * 2;
+  const py = Math.round(origin.y + last.y + 60 * last.zoom) * 2;
+  await expectPixel(ctx, px, py, '#ff0000', {
+    message: 'the card is where this zoom puts it, in device pixels',
+  });
+  assert.ok(
+    !isNear(await pixelAt(ctx, Math.round(right(last) * 2) + 8, py), '#ff0000'),
+    'and nothing of it past its right edge',
+  );
 });
 
 test('at a display scale of 2 the card lands on device pixels and its body on logical ones', async () => {

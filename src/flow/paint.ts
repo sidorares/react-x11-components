@@ -337,14 +337,28 @@ export function paintScene(
   grid?: GridPainter,
 ): void {
   if (!scene.region) return;
+  paintGround(painter, scene, grid);
+  paintGraph(painter, scene);
+  paintFloat(painter, scene);
+}
+
+/** Under the graph, pinned to the pane: the background and the grid. */
+export function paintGround(
+  painter: FlowPainter,
+  scene: FlowScene,
+  grid?: GridPainter,
+): void {
   if (scene.background) paintRect(painter, scene.background);
   if (scene.grid && !(grid?.(painter, scene.grid) ?? false)) {
     paintGrid(painter, scene.grid, scene.viewport.zoom);
   }
+}
 
+/** The graph: edges, nodes, and the line a connection gesture draws. What
+ *  a 2D zoom gesture composites scaled from one paint of it. */
+export function paintGraph(painter: FlowPainter, scene: FlowScene): void {
   paintEdges(painter, scene.edges);
   for (const item of scene.nodes) paintNode(painter, item, scene);
-
   if (scene.connection) {
     painter.polyline(scene.connection.points, {
       stroke: scene.connection.stroke,
@@ -354,6 +368,10 @@ export function paintScene(
     const tip = scene.connection.tip;
     painter.circle(tip.at.x, tip.at.y, tip.radius, { fill: tip.fill });
   }
+}
+
+/** Over the graph, pinned to the pane: the selection box and the panels. */
+export function paintFloat(painter: FlowPainter, scene: FlowScene): void {
   if (scene.selection) paintRect(painter, scene.selection);
   paintPanels(painter, scene);
 }
