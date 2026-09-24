@@ -534,3 +534,61 @@ test('a label whose field is dropped waits again, and comes back without a world
     'from its field',
   );
 });
+
+test('a world pack says where its cards begin, and the lifted layer is drawn round them', async () => {
+  const { FlowGlRenderer } = await import('../src/flow/gl/renderer.js');
+  const { nodes, edges } = graph(6);
+  // The pack: every range before `nodesAt` is the edges', and the first
+  // card opens a range of its own even where it is a box like a chip.
+  const packed = new ScenePacker().pack(
+    buildScene(input(nodes, edges, { selection: null })),
+  );
+  assert.ok(packed.nodesAt > 0, 'edges first');
+  assert.ok(packed.nodesAt < packed.ranges.length, 'then cards');
+  const cards = packed.ranges[packed.nodesAt];
+  assert.strictEqual(cards.kind, 'box');
+
+  // The frame: the world's edges, the lifted edges, the world's cards, the
+  // lifted cards — a dragged node's edges under every card, it over them.
+  const { gl, log } = recordingGl();
+  const renderer = new FlowGlRenderer(gl);
+  const layers = renderer as unknown as Record<
+    'world' | 'lifted',
+    { lines: unknown; boxes: unknown; tris: unknown }
+  >;
+  const lifted = graph(2);
+  const target = { origin: { x: 0, y: 0 }, scale: 1, width: 800, height: 600 };
+  renderer.drawFrame(
+    {
+      world: buildScene(input(nodes, edges, { selection: null })),
+      lifted: buildScene(
+        input(lifted.nodes, lifted.edges, { selection: null }),
+      ),
+      offset: { x: 0, y: 0 },
+      zoom: 1,
+      overlay: buildScene(input([], [], { selection: null })),
+      phase: 0,
+    },
+    target,
+  );
+  const owner = (buffer: unknown): string | null => {
+    for (const name of ['world', 'lifted'] as const) {
+      const l = layers[name];
+      if (buffer === l.lines || buffer === l.boxes || buffer === l.tris) {
+        return name;
+      }
+    }
+    return null;
+  };
+  const drawn: string[] = [];
+  let bound: string | null = null;
+  let drawing = false;
+  for (const call of log) {
+    if (call.name === 'bufferData') drawing = true;
+    if (call.name === 'bindBuffer') bound = owner(call.args[1]);
+    if (drawing && /^draw/.test(call.name) && bound) {
+      if (drawn[drawn.length - 1] !== bound) drawn.push(bound);
+    }
+  }
+  assert.deepStrictEqual(drawn, ['world', 'lifted', 'world', 'lifted']);
+});

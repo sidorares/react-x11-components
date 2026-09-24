@@ -525,6 +525,25 @@ export class FlowGraphNode extends Node implements FlowInstance {
    * too few draws the wrong graph.
    */
   private _worldVersion = 0;
+  /**
+   * The same for the nodes a drag is moving under GL, which are lifted out
+   * of the world for as long as it moves them (`_lifted`): a step changes
+   * them and nothing else, so it moves this and the world stays on the GPU.
+   * Rebuilding the world was the whole of a drag step's cost — 5-7 ms of
+   * scene and packing a step at 2,000 nodes, for one card.
+   */
+  private _liftVersion = 0;
+  /** The lifted ids, for the drag gesture they were made for, and a count
+   *  of every change to them — the world's key, since the world is built
+   *  without them. */
+  private _liftSet: Set<string> | null = null;
+  private _liftFor: object | null = null;
+  private _liftGen = 0;
+  /** Whether a marching edge is in the world, or in the lifted layer. */
+  private _worldAnimated = false;
+  private _liftedAnimated = false;
+  /** The last nodes commit changed lifted nodes and nothing else. */
+  private _liftOnly = false;
   /** The overscan the GL world was culled to, in its own pinned
    *  coordinates, and the key it was built under. */
   private _worldCull: FlowRect | null = null;
@@ -777,6 +796,12 @@ export class FlowGraphNode extends Node implements FlowInstance {
     };
     const prev = this._entries;
     this._nodesSeen = this.props.nodes;
+    // Whether every node this commit changed is one a drag has lifted out
+    // of the GL world — the commit of the drag's own step, when the app
+    // stores it — so the world on the GPU is still the world.
+    const lift = this._lifted();
+    let onlyLifted = lift != null;
+    this._liftOnly = false;
     let structural = nodes.length !== prev.length;
     if (!structural) {
       for (let i = 0; i < nodes.length; i++) {
@@ -821,6 +846,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
       const next = nodes[i];
       const old = entry.node;
       if (next === old) continue;
+      if (!lift?.has(next.id)) onlyLifted = false;
       if (next.selected !== old.selected) reordered = true;
       const moved =
         next.position.x !== old.position.x ||
@@ -883,6 +909,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
       const map = this._miniMapCorner();
       if (map) damage.push(map);
     }
+    this._liftOnly = onlyLifted;
     return damage;
   }
 
@@ -2202,6 +2229,31 @@ export class FlowGraphNode extends Node implements FlowInstance {
     );
   }
 
+  /**
+   * The nodes a drag is moving under GL, once it has moved them: lifted out
+   * of the world for the rest of the gesture and drawn as a layer of their
+   * own (`glFrame`), so each step packs them and their edges and leaves the
+   * world on the GPU. Null otherwise — and the change back is a change of
+   * the world's key, which rebuilds it with them in.
+   */
+  private _lifted(): ReadonlySet<string> | null {
+    const g = this._gesture;
+    if (!this._gl || g?.kind !== 'drag' || !g.moved || g.ids.length === 0) {
+      if (this._liftSet) {
+        this._liftSet = null;
+        this._liftFor = null;
+        this._liftGen++;
+      }
+      return null;
+    }
+    if (this._liftFor !== g) {
+      this._liftSet = new Set(g.ids);
+      this._liftFor = g;
+      this._liftGen++;
+    }
+    return this._liftSet;
+  }
+
   private _dragStep(
     gesture: Extract<Gesture, { kind: 'drag' }>,
     ev: MouseEvent,
@@ -2272,7 +2324,8 @@ export class FlowGraphNode extends Node implements FlowInstance {
     if (damage) {
       this._claim(inflateRect(damage, CULL_MARGIN), 'content');
     } else {
-      this._repaint('content');
+      // under GL: a frame, and — while the nodes are lifted — of them alone
+      this._repaint(this._lifted() ? 'lift' : 'content');
     }
     // Inside the gesture dispatch, deliberately: the body-rect setState this
     // triggers is a discrete-priority update, so React commits the moved
@@ -2805,6 +2858,8 @@ export class FlowGraphNode extends Node implements FlowInstance {
     // takes in one step lie along both of its moving edges, and the box
     // round an L of nodes is the whole selection again.
     let damage: 'full' | FlowRect[] = [];
+    let edgesRedrawn = false;
+    this._liftOnly = false;
     if (
       !shallowEqual(nextProps.nodeTypes, before.nodeTypes) ||
       !shallowEqual(nextProps.defaultEdgeOptions, before.defaultEdgeOptions)
@@ -2815,7 +2870,10 @@ export class FlowGraphNode extends Node implements FlowInstance {
       if (nextProps.edges !== before.edges) {
         const edgeDamage = this._applyEdges(this._rawEdges());
         if (edgeDamage === 'full') damage = 'full';
-        else if (edgeDamage) damage.push(edgeDamage);
+        else if (edgeDamage) {
+          damage.push(edgeDamage);
+          edgesRedrawn = true;
+        }
       }
       if (damage !== 'full' && nextProps.nodes !== before.nodes) {
         const nodeDamage = this._applyNodes(this._nodes());
@@ -2842,7 +2900,12 @@ export class FlowGraphNode extends Node implements FlowInstance {
     // on to a window pass over the 2D pane under it — every step of a drag
     // an app stores, 1.2 ms of each, for pixels the surface covers.
     if (damage === 'full') this._repaint('props');
-    else for (const box of damage) this._claim(box, 'content');
+    else {
+      // a commit of lifted nodes alone is a frame of the lifted layer
+      const reason = this._liftOnly && !edgesRedrawn ? 'lift' : 'content';
+      for (const box of damage) this._claim(box, reason);
+    }
+    this._liftOnly = false;
     // Core re-reads the scene for aria-prop commits; a `nodes`/`edges`
     // change is invisible to it, so the re-read is asked for by name.
     // Free when no assistive technology is listening.
@@ -3108,7 +3171,8 @@ export class FlowGraphNode extends Node implements FlowInstance {
     }
     // A dash tick moves the phase, a uniform on the GPU, so it is no change
     // to the world. A pan or a zoom never gets here under GL.
-    if (reason !== 'animation') this._worldVersion++;
+    if (reason === 'lift') this._liftVersion++;
+    else if (reason !== 'animation') this._worldVersion++;
     // …and what a 2D zoom gesture composites is the graph as it was: a
     // change to it is a picture that no longer is
     if (reason !== 'animation' && reason !== 'scroll') this._dropZoomShot();
@@ -3124,7 +3188,8 @@ export class FlowGraphNode extends Node implements FlowInstance {
       damage != null &&
       (reason === 'content' ||
         reason === 'style-state' ||
-        reason === 'animation') &&
+        reason === 'animation' ||
+        reason === 'lift') &&
       this._gl
     ) {
       this._glRequest!();
@@ -3232,9 +3297,14 @@ export class FlowGraphNode extends Node implements FlowInstance {
    * Everything a 2D paint does around its drawing happens here too: the
    * pending fit, the dash timer, the first scene announcement, the bodies.
    */
-  glFrame(lastKey: string | null): {
+  glFrame(
+    lastKey: string | null,
+    lastLifted: string | null = null,
+  ): {
     world: FlowScene | null;
     key: string;
+    lifted: FlowScene | null | undefined;
+    liftedKey: string | null;
     offset: XYPosition;
     zoom: number;
     overlay: FlowScene;
@@ -3254,9 +3324,10 @@ export class FlowGraphNode extends Node implements FlowInstance {
     const pane = this._pane();
     const palette = this._palette();
 
+    const lift = this._lifted();
     const keyOf = (): string =>
       `${this._worldVersion}|${this._worldCullId}|${this._worldZoom}|` +
-      `${this._fontSeen}|${JSON.stringify(palette)}`;
+      `${this._fontSeen}|${JSON.stringify(palette)}|${this._liftGen}`;
     let key = keyOf();
     // The view in the world's own coordinates — graph × the zoom it was
     // built at, the pan left out: `offset` puts the pan back, and `zoom`
@@ -3300,11 +3371,33 @@ export class FlowGraphNode extends Node implements FlowInstance {
     let world: FlowScene | null = null;
     if (key !== lastKey) {
       world = buildScene(
-        this._sceneInput(palette, { world: this._worldCull! }),
+        this._sceneInput(palette, {
+          world: this._worldCull!,
+          lift: lift ? { ids: lift, only: false } : undefined,
+        }),
       );
-      // The dash timer lives as long as an animated edge is in the world;
-      // its ticks repaint, which moves the version and rebuilds it.
-      if (world.animated) this._startAnimation();
+      this._worldAnimated = world.animated;
+    }
+    // The nodes a drag moves, and their edges, on their own: a step
+    // rebuilds them and not the world (`_liftVersion`).
+    let lifted: FlowScene | null | undefined;
+    const liftedKey = lift ? `${this._liftVersion}|${key}` : null;
+    if (lift && liftedKey !== lastLifted) {
+      lifted = buildScene(
+        this._sceneInput(palette, {
+          world: this._worldCull!,
+          lift: { ids: lift, only: true },
+        }),
+      );
+      this._liftedAnimated = lifted.animated;
+    } else if (!lift && lastLifted != null) {
+      lifted = null;
+      this._liftedAnimated = false;
+    }
+    if (world || lifted !== undefined) {
+      // The dash timer lives as long as an animated edge is drawn; its
+      // ticks move the phase, a uniform.
+      if (this._worldAnimated || this._liftedAnimated) this._startAnimation();
       else this._stopAnimation();
     }
     const overlay = buildScene(this._sceneInput(palette, 'overlay'));
@@ -3318,6 +3411,8 @@ export class FlowGraphNode extends Node implements FlowInstance {
     return {
       world,
       key,
+      lifted,
+      liftedKey,
       offset: { x: pane.x + v.x, y: pane.y + v.y },
       zoom: scaled ? zoom : 1,
       overlay,
@@ -3562,7 +3657,16 @@ export class FlowGraphNode extends Node implements FlowInstance {
 
   private _sceneInput(
     palette: FlowPalette,
-    layer: 'all' | 'overlay' | 'card' | { world: FlowRect } = 'all',
+    layer:
+      | 'all'
+      | 'overlay'
+      | 'card'
+      | {
+          world: FlowRect;
+          /** The world without the lifted nodes and their edges, or those
+           *  alone (`only`). */
+          lift?: { ids: ReadonlySet<string>; only: boolean };
+        } = 'all',
     /** The panels even while `<Flow>` paints them itself — for that paint. */
     panels = false,
   ): SceneInput {
@@ -3600,12 +3704,38 @@ export class FlowGraphNode extends Node implements FlowInstance {
     // until the release repaints in full; that is the trade, and it is
     // deliberate.
     const world = typeof layer === 'object' ? layer.world : null;
+    const lift = typeof layer === 'object' ? layer.lift : undefined;
     const overlay = layer === 'overlay';
     const map = !world && this._miniMapReached() ? this._miniMap() : null;
     const viewport = this._viewport();
     const pane = this._pane();
-    const all =
-      overlay && !map ? [] : this._entries.map((entry) => this._source(entry));
+    // An edge is the lifted layer's when either end is lifted.
+    const edges = lift
+      ? this._edges.filter(
+          (e) =>
+            (lift.ids.has(e.source) || lift.ids.has(e.target)) === lift.only,
+        )
+      : this._edges;
+    let all: SceneNodeSource[];
+    if (lift?.only) {
+      // the lifted nodes and the far ends of their edges: all the lifted
+      // layer routes to, where every node's source was most of a step
+      const ids = new Set(lift.ids);
+      for (const e of edges) {
+        ids.add(e.source);
+        ids.add(e.target);
+      }
+      all = [];
+      for (const id of ids) {
+        const entry = this._byId.get(id);
+        if (entry) all.push(this._source(entry));
+      }
+    } else {
+      all =
+        overlay && !map
+          ? []
+          : this._entries.map((entry) => this._source(entry));
+    }
     return {
       viewport: world ? { x: 0, y: 0, zoom: viewport.zoom } : viewport,
       pane: world
@@ -3623,10 +3753,14 @@ export class FlowGraphNode extends Node implements FlowInstance {
       nodes: overlay
         ? []
         : order
-            .filter((entry) => !this._cardInLayer(entry.node.id))
+            .filter(
+              (entry) =>
+                !this._cardInLayer(entry.node.id) &&
+                (!lift || lift.ids.has(entry.node.id) === lift.only),
+            )
             .map((entry) => this._source(entry)),
       all,
-      edges: overlay ? [] : this._edges,
+      edges: overlay ? [] : edges,
       dashPhase: this._dashPhase,
       hover: this._hover,
       connection: !overlay && gesture?.kind === 'connect' ? gesture : null,

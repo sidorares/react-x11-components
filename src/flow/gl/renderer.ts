@@ -71,6 +71,16 @@ export interface FlowGlFrame {
   /** A zoom gesture is moving: a stream of zoom steps, not a single one —
    *  what the label atlas holds new strings back for. */
   moving?: boolean;
+  /**
+   * The nodes a drag is moving and their edges, lifted out of the world —
+   * which is built without them while they move — and packed on their own
+   * when they changed: absent to draw the ones already on the GPU, null for
+   * none. A drag step packs a card or two and their edges, where it packed
+   * the whole world: 3-4 ms a step at 2,000 nodes. Drawn in two halves, its
+   * edges under every card and its cards over them, as the painter orders
+   * a dragged node.
+   */
+  lifted?: FlowScene | null;
 }
 
 const UNIFORMS = [
@@ -150,6 +160,16 @@ class Layer {
     return view.byteLength;
   }
 
+  /** Nothing to draw, until the next `update`. */
+  clear(): void {
+    this.packed = null;
+    this.scene = null;
+    this.waiting = [];
+    this.drawn = [];
+    this.checked = -1;
+    this.moved = -1;
+  }
+
   dispose(): void {
     for (const buffer of [this.lines, this.boxes, this.tris]) {
       this.gl.deleteBuffer(buffer);
@@ -166,6 +186,7 @@ export class FlowGlRenderer {
   private readonly vao: unknown;
   private readonly quad: unknown;
   private readonly world: Layer;
+  private readonly lifted: Layer;
   private readonly overlay: Layer;
   private readonly colors = new ColorCache();
   /** Whether this context has had the atlas's texture made in it — a new
@@ -206,6 +227,7 @@ export class FlowGlRenderer {
       gl.STATIC_DRAW,
     );
     this.world = new Layer(gl);
+    this.lifted = new Layer(gl);
     this.overlay = new Layer(gl);
   }
 
@@ -258,8 +280,20 @@ export class FlowGlRenderer {
         atlas ? (t) => atlas.quad(t) : undefined,
       );
     }
+    if (frame.lifted) {
+      bytes += this.lifted.update(
+        frame.lifted,
+        'world',
+        atlas ? (t) => atlas.quad(t, true) : undefined,
+      );
+    } else if (frame.lifted === null) {
+      this.lifted.clear();
+    }
     bytes += this.overlay.update(frame.overlay, 'overlay');
-    if (atlas) bytes += this.landLabels(this.world, atlas);
+    if (atlas) {
+      bytes += this.landLabels(this.world, atlas);
+      bytes += this.landLabels(this.lifted, atlas, true);
+    }
     const drawStart = now();
 
     this.begin(target, atlas);
@@ -273,18 +307,29 @@ export class FlowGlRenderer {
       0,
       target,
     );
+    // The world's edges, the lifted edges, the world's cards, the lifted
+    // cards: a dragged node's edges go under every card, and it over them.
     const world = this.world.packed;
-    if (world && this.world.scene) {
+    const lifted = this.lifted.packed;
+    const half = (layer: Layer, first: boolean): void => {
+      const packed = layer.packed;
+      if (!packed || !layer.scene) return;
       calls += this.ranges(
-        world.ranges,
-        this.world,
-        this.world.scene,
+        first
+          ? packed.ranges.slice(0, packed.nodesAt)
+          : packed.ranges.slice(packed.nodesAt),
+        layer,
+        layer.scene,
         frame.offset,
         frame.zoom ?? 1,
         frame.phase,
         target,
       );
-    }
+    };
+    half(this.world, true);
+    half(this.lifted, true);
+    half(this.world, false);
+    half(this.lifted, false);
     calls += this.ranges(
       over.ranges.slice(over.split),
       this.overlay,
@@ -295,7 +340,7 @@ export class FlowGlRenderer {
       target,
     );
     this.gl.disable(this.gl.SCISSOR_TEST);
-    const packs = world ? [world, over] : [over];
+    const packs = [world, lifted, over].filter((p) => p != null);
     return this.stats(packStart, drawStart, bytes, calls, packs, rebuilt);
   }
 
@@ -312,7 +357,7 @@ export class FlowGlRenderer {
    * and waits again, its field wanted from where it is. Only a full atlas
    * drops anything, so a graph under the limit never walks this list.
    */
-  private landLabels(layer: Layer, atlas: LabelAtlas): number {
+  private landLabels(layer: Layer, atlas: LabelAtlas, lifted = false): number {
     const packed = layer.packed;
     if (!packed) return 0;
     const d = packed.boxes;
@@ -343,7 +388,7 @@ export class FlowGlRenderer {
     const still: WaitingLabel[] = [];
     let landed = 0;
     for (const w of layer.waiting) {
-      const q = atlas.landing(w.key, w.text);
+      const q = atlas.landing(w.key, w.text, lifted);
       if (!q) {
         still.push(w);
         continue;
@@ -624,6 +669,7 @@ export class FlowGlRenderer {
     const gl = this.gl;
     gl.deleteBuffer(this.quad);
     this.world.dispose();
+    this.lifted.dispose();
     this.overlay.dispose();
     for (const program of [this.line, this.box, this.tri, this.grid]) {
       gl.deleteProgram(program.program);

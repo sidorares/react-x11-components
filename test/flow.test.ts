@@ -3280,10 +3280,15 @@ test('under GL a pan asks for a GL frame and claims nothing of the 2D pane', asy
 interface GlPane {
   setGlRequest(fn: () => void): void;
   setViewport(v: object): void;
-  glFrame(lastKey: string | null): {
+  glFrame(
+    lastKey: string | null,
+    lastLifted?: string | null,
+  ): {
     world: unknown;
     key: string;
     zoom: number;
+    lifted?: unknown;
+    liftedKey?: string | null;
   } | null;
 }
 
@@ -3918,4 +3923,116 @@ test('under GL a drag step asks for a GL frame and claims nothing of the window'
     [],
     'and claimed none of the window for them',
   );
+});
+
+test('under GL a drag lifts its nodes out of the world, and a step packs them alone', async () => {
+  // A drag step rebuilt the whole world for one card: 5-7 ms of scene and
+  // packing a step at 2,000 nodes, a node dragged at 63 fps on X11 where
+  // it drags at 92 now.
+  const { node } = await glPane({
+    nodes: [
+      ...nodes(),
+      {
+        id: 'c',
+        position: { x: 400, y: 100 },
+        width: 120,
+        height: 40,
+        data: { label: 'C' },
+      },
+    ],
+  });
+  type Scene = {
+    nodes: { id: string; rect?: { x: number } }[];
+    edges: { id: string }[];
+  };
+  const ids = (scene: unknown) => ({
+    nodes: (scene as Scene).nodes.map((n) => n.id).sort(),
+    edges: (scene as Scene).edges.map((e) => e.id).sort(),
+  });
+  let frame = node.glFrame(null, null)!;
+  assert.deepStrictEqual(ids(frame.world), {
+    nodes: ['a', 'b', 'c'],
+    edges: ['a-b'],
+  });
+  assert.strictEqual(frame.lifted, undefined, 'nothing lifted');
+
+  const target = pane() as unknown as DrawnNode;
+  await act(() => {
+    fireEvent.mouseDown(target, at(160, 120));
+    fireEvent.mouseMove(target, at(180, 120));
+  });
+  await motionLands();
+  // The first frame of the drag builds the world without `a` and its edge,
+  // and `a` and its edge on their own.
+  frame = node.glFrame(frame.key, frame.liftedKey)!;
+  assert.deepStrictEqual(ids(frame.world), { nodes: ['b', 'c'], edges: [] });
+  assert.deepStrictEqual(ids(frame.lifted), { nodes: ['a'], edges: ['a-b'] });
+
+  // A step after it: the world on the GPU stands, and `a` is packed again.
+  await act(() => fireEvent.mouseMove(target, at(200, 120)));
+  await motionLands();
+  frame = node.glFrame(frame.key, frame.liftedKey)!;
+  assert.strictEqual(frame.world, null, 'the world stands');
+  assert.deepStrictEqual(ids(frame.lifted), { nodes: ['a'], edges: ['a-b'] });
+  // nothing moved: the lifted layer stands too
+  const still = node.glFrame(frame.key, frame.liftedKey)!;
+  assert.strictEqual(still.world, null);
+  assert.strictEqual(still.lifted, undefined, 'and so does the lifted layer');
+
+  // The release puts `a` back in the world, and the layer goes.
+  await act(() => fireEvent.mouseUp(target, at(200, 120)));
+  await motionLands();
+  frame = node.glFrame(frame.key, frame.liftedKey)!;
+  assert.deepStrictEqual(ids(frame.world), {
+    nodes: ['a', 'b', 'c'],
+    edges: ['a-b'],
+  });
+  assert.strictEqual(frame.lifted, null, 'the lifted layer is gone');
+});
+
+test('under GL a drag the app stores keeps the world on the GPU', async () => {
+  // A controlled graph commits every step back: the moved node's new
+  // position, as a new `nodes` array. A commit that changed lifted nodes
+  // and nothing else is a frame of the lifted layer, not a new world.
+  let graph = nodes();
+  const stored: NodeChange[][] = [];
+  const render = () =>
+    h(FLOW_ELEMENT, {
+      nodes: graph,
+      edges: edges(),
+      renderer: 'gl',
+      onNodesChange: (c: NodeChange[]) => void stored.push(c),
+      style: { flexGrow: 1 },
+    });
+  const { rerender } = await renderX11(render());
+  const node = pane() as unknown as GlPane;
+  node.setGlRequest(() => {});
+  await act();
+  let frame = node.glFrame(null, null)!;
+  const target = pane() as unknown as DrawnNode;
+  await act(() => {
+    fireEvent.mouseDown(target, at(160, 120));
+    fireEvent.mouseMove(target, at(180, 120));
+  });
+  await motionLands();
+  frame = node.glFrame(frame.key, frame.liftedKey)!;
+  assert.ok(frame.world && frame.lifted, 'precondition: lifted');
+  for (let step = 1; step <= 3; step++) {
+    await act(() => fireEvent.mouseMove(target, at(180 + step * 10, 120)));
+    await motionLands();
+    // the app stores what it was sent
+    const moved = stored
+      .flat()
+      .filter((c) => c.type === 'position' && c.id === 'a')
+      .at(-1) as { position: { x: number; y: number } } | undefined;
+    assert.ok(moved, 'precondition: a position change');
+    graph = graph.map((n) =>
+      n.id === 'a' ? { ...n, position: moved.position, dragging: true } : n,
+    );
+    await act(() => rerender(render()));
+    frame = node.glFrame(frame.key, frame.liftedKey)!;
+    assert.strictEqual(frame.world, null, `step ${step}: the world stands`);
+    assert.ok(frame.lifted, `step ${step}: the lifted layer is packed`);
+  }
+  await act(() => fireEvent.mouseUp(target, at(210, 120)));
 });

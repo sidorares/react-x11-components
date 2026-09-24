@@ -318,11 +318,19 @@ behind it — the arrangement `src/maps/gl/pane.ts` already documents.
   sidorares/react-x11#637; on 2.17.1 the value reads as `'auto'` and a pane
   with bodies under GL would lose its bare-surface clicks. The floor moves
   with that release, and not before.
-- **Rebuild frames are whole rebuilds.** A zoom step or a drag step rebuilds
-  and repacks the world: 2.3 ms at 200 nodes, 15 ms at 2000 (offscreen,
-  `glFinish`). Incremental packing — rewrite the dragged node's and its
-  edges' instances in place — is what 2000 nodes at 120 Hz _while dragging_
-  needs; 200 do not.
+- ~~**Rebuild frames are whole rebuilds.**~~ **Done for a drag.** A zoom
+  step draws the world it has, scaled, and rebuilds once it rests. A drag
+  lifts the nodes it moves out of the world once they have moved: the world
+  is built once without them and their edges, and the rest of the gesture
+  packs a layer of just those. It is drawn in two halves: its edges after
+  the world's, its cards after the world's cards. That keeps the painter's
+  order, with every edge under every card and the dragged node on top. The
+  app's own commit of a step, when it stores the graph, is billed to that
+  layer when it changed the lifted nodes and nothing else. On XQuartz at
+  2,000 nodes a step packed 3-4 ms and built 2-2.8 ms of scene, and dragged
+  at 63-68 fps. It packs 0.2 ms now and drags at 92 fps. 200 nodes went
+  from 77 to 98, and Cocoa holds 119 at half the CPU. What a step still
+  builds is the overlay, whose minimap walks every node: 1 ms at 2,000.
 - **The `shaders` probe is asynchronous on Cocoa.** `useSupports('shaders')`
   answers `false` on the first render and `true` on the second, which is the
   `'pending'` state maps' `chooseRenderer` exists for. `renderer="auto"`

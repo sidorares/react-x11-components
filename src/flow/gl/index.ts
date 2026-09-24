@@ -20,7 +20,10 @@ import type { FlowGlFrame, FlowGlTarget } from './renderer.js';
 
 /** What the surface needs of the pane — `FlowGraphNode`, structurally. */
 export interface FlowGlSource {
-  glFrame(lastKey: string | null): (FlowGlFrame & { key: string }) | null;
+  glFrame(
+    lastKey: string | null,
+    lastLifted?: string | null,
+  ): (FlowGlFrame & { key: string; liftedKey?: string | null }) | null;
   glText?(): TextSource | null;
   setGlRequest(request: (() => void) | null): void;
   bodyBudget(): FlowFrameStats['bodies'];
@@ -105,6 +108,8 @@ class Driver {
   /** The key of the world now on the GPU — null when there is none, which
    *  is what makes the next frame build one. */
   private worldKey: string | null = null;
+  /** The same for the lifted layer — the nodes a drag is moving. */
+  private liftedKey: string | null = null;
   /** The label atlas, and the face and scale it was made for: either
    *  changing is every field wrong, so it is made again. */
   private atlas: LabelAtlas | null = null;
@@ -155,12 +160,13 @@ class Driver {
         this.renderer = new FlowGlRenderer(gl);
         this.context = gl;
         this.worldKey = null;
+        this.liftedKey = null;
       }
       const pane = this.props.pane.current;
       if (!pane) return;
       const atlas = this.atlasFor(pane);
       const started = now();
-      const frame = pane.glFrame(this.worldKey);
+      const frame = pane.glFrame(this.worldKey, this.liftedKey);
       if (!frame) return;
       const sceneMs = now() - started;
       const target = targetOf(info);
@@ -177,6 +183,7 @@ class Driver {
       }
       const stats = this.renderer.drawFrame(frame, target, atlas ?? undefined);
       if (frame.world) this.worldKey = frame.key;
+      if (frame.lifted !== undefined) this.liftedKey = frame.liftedKey ?? null;
       // Labels this frame could not draw yet are set now, between frames.
       if (atlas?.wanting && !this.setting) {
         this.setting = true;
@@ -230,6 +237,7 @@ class Driver {
       this.atlas = new LabelAtlas(text);
       this.atlasKey = key;
       this.worldKey = null;
+      this.liftedKey = null;
     }
     return this.atlas;
   }

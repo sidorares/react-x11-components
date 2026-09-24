@@ -111,6 +111,10 @@ export interface PackedScene {
   /** For an overlay: the ranges before this index go under the world and
    *  the rest over it. */
   split: number;
+  /** For a world: the ranges before this index are the edges, and the rest
+   *  the cards — where a layer of lifted nodes goes in two halves, its
+   *  edges under every card and its cards over them. */
+  nodesAt: number;
   gaps: PackGaps;
   /** Labels in `boxes` drawn as nothing until their fields land — the
    *  renderer writes each in when it does. */
@@ -166,6 +170,9 @@ export class ScenePacker {
   private scissor: FlowRect | undefined;
 
   private text: TextResolver | undefined;
+  /** The next range recorded is a new one, whatever the last was. */
+  private cut = false;
+  private nodesAt = 0;
 
   pack(
     scene: FlowScene,
@@ -182,6 +189,8 @@ export class ScenePacker {
     this.gaps = { text: 0, custom: 0 };
     this.waiting = [];
     this.drawn = [];
+    this.cut = false;
+    this.nodesAt = 0;
     this.scissor = undefined;
 
     let split = 0;
@@ -240,6 +249,8 @@ export class ScenePacker {
       for (const edge of scene.edges) if (edge.chip) this.box(edge.chip);
       for (const edge of scene.edges) if (edge.label) this.label(edge.label);
 
+      this.nodesAt = this.ranges.length;
+      this.cut = true;
       for (const node of scene.nodes) {
         if (node.custom) {
           this.gaps.custom++;
@@ -298,6 +309,7 @@ export class ScenePacker {
       tris: this.triStream.data,
       triCount: this.triStream.length,
       ranges: this.ranges,
+      nodesAt: this.nodesAt,
       split,
       gaps: this.gaps,
       waiting: this.waiting,
@@ -310,10 +322,16 @@ export class ScenePacker {
    *  however the kinds interleave. */
   private record(kind: 'line' | 'box' | 'tri', first: number): void {
     const last = this.ranges[this.ranges.length - 1];
-    if (last && last.kind === kind && last.scissor === this.scissor) {
+    if (
+      last &&
+      !this.cut &&
+      last.kind === kind &&
+      last.scissor === this.scissor
+    ) {
       last.count++;
       return;
     }
+    this.cut = false;
     this.ranges.push({ kind, first, count: 1, scissor: this.scissor });
   }
 

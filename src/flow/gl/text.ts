@@ -116,6 +116,11 @@ interface Entry {
   /** Where that pack draws it — x, y, width, height, the world's units —
    *  for how far off screen it is when room is wanted. */
   at: number[];
+  /** Where a lifted layer draws it (`quad`'s `lifted`), and the pack that
+   *  was current then: one place, written over by every step of a drag
+   *  rather than added to, since the layer is packed again each step. */
+  live: number[] | null;
+  liveAt: number;
   page: number;
   shelf: Shelf;
   /** Which placement this is: a new one each time a field lands. */
@@ -467,7 +472,7 @@ export class LabelAtlas {
    * A label's quad, or null when there is nothing to draw it from yet —
    * which asks for its field.
    */
-  quad(t: SceneText): GlyphQuad | null {
+  quad(t: SceneText, lifted = false): GlyphQuad | null {
     // Logical pixels, at the scene's zoom, per device pixel at the base
     // size: one texel of the field.
     const texel = t.size / this.base;
@@ -594,7 +599,12 @@ export class LabelAtlas {
       entry.used = this.epoch;
       entry.at.length = 0;
     }
-    entry.at.push(q.x - q.margin, q.y - q.margin, q.w, q.h);
+    if (lifted) {
+      entry.live = [q.x - q.margin, q.y - q.margin, q.w, q.h];
+      entry.liveAt = this.epoch;
+    } else {
+      entry.at.push(q.x - q.margin, q.y - q.margin, q.w, q.h);
+    }
     return q;
   }
 
@@ -604,7 +614,7 @@ export class LabelAtlas {
    * key) is placed now, from the string its request resolved to: the pack
    * gave it a box of no size, and this is its whole quad.
    */
-  landing(key: string, t: SceneText): GlyphQuad | null {
+  landing(key: string, t: SceneText, lifted = false): GlyphQuad | null {
     if (key.startsWith('?')) {
       const shown = this.resolved.get(key.slice(1));
       if (shown === undefined) return null;
@@ -613,7 +623,7 @@ export class LabelAtlas {
       return null;
     }
     // measured and set: `quad` does no work but place it, and marks it
-    const q = this.quad(t);
+    const q = this.quad(t, lifted);
     return q?.ready ? q : null;
   }
 
@@ -1049,7 +1059,10 @@ export class LabelAtlas {
 
   /** How far from the view the nearest label drawn from a field is. */
   private reach(e: Entry): number {
-    let d = Infinity;
+    let d =
+      e.live && e.liveAt === this.epoch
+        ? this.far(e.live[0], e.live[1], e.live[2], e.live[3])
+        : Infinity;
     for (let i = 0; i < e.at.length && d > 0; i += 4) {
       d = Math.min(d, this.far(e.at[i], e.at[i + 1], e.at[i + 2], e.at[i + 3]));
     }
@@ -1075,6 +1088,8 @@ export class LabelAtlas {
       // drawn as soon as its labels are written in
       used: this.epoch,
       at: [want.x, want.y, 0, 0],
+      live: null,
+      liveAt: -1,
       page: place.shelf.page,
       shelf: place.shelf,
       slot: this.nextSlot++,
