@@ -123,15 +123,18 @@ function paintEdges(painter: FlowPainter, edges: readonly SceneEdge[]): void {
   const strokes = new StrokeBuckets();
   const markers = new Map<string, MarkerBucket>();
   for (const edge of edges) {
-    // the part of the route this pass reaches, where it reaches only part
-    for (const points of edge.runs ?? [edge.points]) {
+    // the part of the route this pass reaches, where it reaches only part —
+    // a dashed run picking its pattern up where it starts along the edge
+    const runs = edge.runs ?? [edge.points];
+    for (let i = 0; i < runs.length; i++) {
+      const points = runs[i];
       if (points.length < 2) continue;
       strokes.push(
         points,
         edge.stroke,
         edge.lineWidth,
         edge.dash,
-        edge.dashOffset,
+        edge.dashOffset + (edge.runStarts?.[i] ?? 0),
       );
     }
     for (const marker of edge.markers) {

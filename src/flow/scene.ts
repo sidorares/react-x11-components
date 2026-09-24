@@ -574,6 +574,10 @@ export interface SceneEdge {
    *  — each run of segments whose ink can land in its rect. Absent where the
    *  whole route is drawn. */
   runs?: readonly (readonly XYPosition[])[];
+  /** For a dashed edge with `runs`: how far along `points` each run
+   *  starts, logical pixels — its pattern goes on from there rather than
+   *  starting again at every cut. */
+  runStarts?: readonly number[];
   markers: readonly SceneMarker[];
   /** The plate behind a label, so it sits above every edge. */
   chip?: SceneRect;
@@ -1006,13 +1010,22 @@ function buildEdges(input: SceneInput, scene: FlowScene): SceneEdge[] {
     // the pane's edge crossed by a hundred long edges traced every point of
     // every one of them, to keep the handful of segments inside it. How far
     // ink reaches from a segment is the pen and its join — a miter at the
-    // sharpest corner a route takes stays well inside three widths. Not a
-    // dashed edge, whose pattern would start again at every run a context
-    // cannot be told the phase of.
+    // sharpest corner a route takes stays well inside three widths.
+    //
+    // A dashed edge too, with where each run starts along it: the pattern
+    // is picked up there through the dash offset (`paintEdges`). Left
+    // whole, every marching edge a 2D pan's strip crossed was stroked end
+    // to end, and on X11 that is a coverage mask the size of the edge's box
+    // uploaded for a strip two pixels wide — 1.1 MB a frame over the
+    // stress example's widgets, a pan held to 38 fps by ten dashed edges.
     const reach = lineWidth * 3 + 2;
-    if (clip && !dash) {
-      const runs = runsReaching(points, clip, reach);
-      if (runs) item.runs = runs;
+    if (clip) {
+      const starts: number[] | undefined = dash ? [] : undefined;
+      const runs = runsReaching(points, clip, reach, starts);
+      if (runs) {
+        item.runs = runs;
+        if (starts) item.runStarts = distancesAt(points, starts);
+      }
     }
 
     if (labels && edge.label) {
@@ -1093,6 +1106,8 @@ export function runsReaching(
   points: readonly XYPosition[],
   clip: FlowRect,
   reach: number,
+  /** Filled, when given, with the index in `points` each run starts at. */
+  starts?: number[],
 ): (readonly XYPosition[])[] | null {
   const x0 = clip.x - reach;
   const y0 = clip.y - reach;
@@ -1114,13 +1129,37 @@ export function runsReaching(
       runs ??= [];
       if (start >= 0) {
         runs.push(points.slice(start, i + 1));
+        starts?.push(start);
         start = -1;
       }
     }
   }
   if (!runs) return null;
-  if (start >= 0) runs.push(points.slice(start));
+  if (start >= 0) {
+    runs.push(points.slice(start));
+    starts?.push(start);
+  }
   return runs;
+}
+
+/** How far along a polyline each of `indices` is, in its own units. */
+function distancesAt(
+  points: readonly XYPosition[],
+  indices: readonly number[],
+): number[] {
+  const out: number[] = [];
+  let at = 0;
+  let length = 0;
+  for (const index of indices) {
+    for (; at < index; at++) {
+      length += Math.hypot(
+        points[at + 1].x - points[at].x,
+        points[at + 1].y - points[at].y,
+      );
+    }
+    out.push(length);
+  }
+  return out;
 }
 
 /** The box two nodes' edge cannot leave, before it is routed. */

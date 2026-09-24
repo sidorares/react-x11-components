@@ -552,17 +552,53 @@ test('a label plate and an arrowhead are left to the pass that holds them', () =
   assert.strictEqual(end.edges[0].markers.length, 1);
 });
 
-test('a dashed edge is drawn whole, and its phase with it', () => {
-  // A run would start the pattern again, and no context this draws into can
-  // be told where in it a run begins.
+test('a dashed edge is cut to the pass, each run knowing how far along it starts', () => {
+  // It used to be drawn whole, on the grounds that a run would start the
+  // pattern again — and so every marching edge a 2D pan's two-pixel strip
+  // crossed was stroked end to end, on X11 a mask the size of its box. The
+  // dash offset carries the pattern on from where a run starts (the pixels
+  // are held to the whole edge's in test/flow.test.ts).
   const nodes = [source(node('a', 0, 0)), source(node('b', 900, 500))];
   const edges: FlowEdge[] = [
     { id: 'e', source: 'a', target: 'b', animated: true },
   ];
+  const whole = buildScene(input(nodes, edges, { x: 0, y: 0, zoom: 1 }))
+    .edges[0];
   const edge = pass(nodes, edges, { x: 500, y: 0, width: 4, height: 800 })
     .edges[0];
   assert.ok(edge, 'drawn');
-  assert.strictEqual(edge.runs, undefined);
+  assert.ok(edge.runs && edge.runs.length > 0, 'cut to what the pass reaches');
+  assert.ok(edge.runStarts, 'with where each run starts');
+  assert.strictEqual(edge.runStarts.length, edge.runs.length);
+  // each start is the length of the route up to the run's first point
+  const points = whole.points;
+  for (let r = 0; r < edge.runs.length; r++) {
+    const first = edge.runs[r][0];
+    let length = 0;
+    let i = 0;
+    for (; i < points.length; i++) {
+      if (points[i].x === first.x && points[i].y === first.y) break;
+      if (i + 1 < points.length) {
+        length += Math.hypot(
+          points[i + 1].x - points[i].x,
+          points[i + 1].y - points[i].y,
+        );
+      }
+    }
+    assert.ok(i < points.length, 'a run starts at a point of the route');
+    assert.ok(
+      Math.abs(edge.runStarts[r] - length) < 1e-6,
+      `run ${r} starts ${length} along, not ${edge.runStarts[r]}`,
+    );
+  }
+  // an undashed edge carries no starts
+  const plain = pass(nodes, [{ id: 'e', source: 'a', target: 'b' }], {
+    x: 500,
+    y: 0,
+    width: 4,
+    height: 800,
+  }).edges[0];
+  assert.ok(plain.runs && !plain.runStarts);
 });
 
 test('every animated edge on screen is in the box a dash tick repaints', () => {

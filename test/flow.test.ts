@@ -4172,3 +4172,75 @@ test('a 2D drag drops its pictures on release, and paints live once the view mov
     'none again once the view moved',
   );
 });
+
+test('a pass over part of a dashed edge draws its dashes where the whole edge has them', async () => {
+  // A dashed edge was stroked end to end by every pass that reached any
+  // of it — on X11 a coverage mask the size of its box for a pan's strip
+  // two pixels wide. It is cut to the runs the pass reaches now, each
+  // picking the pattern up where it starts along the edge; a run that
+  // started it again would put its dashes somewhere else.
+  const result = await renderX11(
+    h(FLOW_ELEMENT, {
+      nodes: [
+        {
+          id: 'a',
+          position: { x: 20, y: 20 },
+          width: 60,
+          height: 30,
+          data: { label: '' },
+        },
+        {
+          id: 'b',
+          position: { x: 330, y: 300 },
+          width: 60,
+          height: 30,
+          data: { label: '' },
+        },
+      ],
+      // dashed and still: a marching one moves between two paints
+      edges: [{ id: 'a-b', source: 'a', target: 'b', style: { dash: [7, 5] } }],
+      // the edge alone in the strip: the grid's tile is its own question
+      background: false,
+      style: { flexGrow: 1 },
+    }),
+    { backend: 'xserver', width: 420, height: 380 },
+  );
+  await act();
+  const node = pane() as unknown as {
+    invalidate(layout: boolean, rect: unknown, reason: string): void;
+  };
+  const strip = { x: 203, y: 0, width: 9, height: 380 };
+  const read = async (): Promise<Uint8ClampedArray> =>
+    (
+      await (
+        result.ctx as unknown as {
+          getImageData(
+            x: number,
+            y: number,
+            w: number,
+            h: number,
+          ): Promise<{ data: Uint8ClampedArray }>;
+        }
+      ).getImageData(strip.x, strip.y, strip.width, strip.height)
+    ).data;
+  await act(() => node.invalidate(false, null, 'content'));
+  await motionLands();
+  const whole = await read();
+  // the strip alone, painted again
+  await act(() => node.invalidate(false, strip, 'content'));
+  await motionLands();
+  const part = await read();
+  let inked = 0;
+  let differ = 0;
+  for (let i = 0; i < whole.length; i += 4) {
+    const d = Math.max(
+      Math.abs(whole[i] - part[i]),
+      Math.abs(whole[i + 1] - part[i + 1]),
+      Math.abs(whole[i + 2] - part[i + 2]),
+    );
+    if (d > 2) differ++;
+    if (whole[i] !== whole[0] || whole[i + 1] !== whole[1]) inked++;
+  }
+  assert.ok(inked > 0, 'precondition: the edge crosses the strip');
+  assert.strictEqual(differ, 0, `${differ} pixels of the strip moved`);
+});
