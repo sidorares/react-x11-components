@@ -3680,6 +3680,15 @@ export class FlowGraphNode extends Node implements FlowInstance {
     if (this._holdBodies(v.zoom)) {
       if (!this._bodiesHeld) {
         this._bodiesHeld = true;
+        // The cards are the graph's again from this frame, not from the
+        // commit that hides the bodies: GL frames do not wait for React's,
+        // and one that landed between the two drew neither — edges with no
+        // nodes under them, for a frame at the start of a zoom. What the
+        // layer painted is forgotten too, so the cards stay the graph's
+        // until the bodies are back and their canvases have painted again.
+        this._paintedCards.clear();
+        this._worldVersion++;
+        this._glRequest?.();
         notify(this._bodies, this._gestureSync, this._bodiesOrigin, true);
       }
       return;
@@ -3878,9 +3887,11 @@ export class FlowGraphNode extends Node implements FlowInstance {
   }
 
   /** Whether a card is the bodies' layer's to draw rather than the
-   *  graph's: shown there — and under GL, painted there already. */
+   *  graph's: shown there — and under GL, painted there already — and the
+   *  bodies not held out of a zoom. */
   private _cardInLayer(id: string): boolean {
-    if (!this._shownBodies.has(id)) return false;
+    // held: hidden, or on the way to it, whatever `<Flow>` last reported
+    if (this._bodiesHeld || !this._shownBodies.has(id)) return false;
     return !this._gl || this._paintedCards.has(id);
   }
 

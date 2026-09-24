@@ -3187,6 +3187,58 @@ test('under GL a shown card stays in the world until the bodies’ layer has pai
   assert.deepStrictEqual(cards(), ['a'], 'a card shown again is kept again');
 });
 
+test('under GL a zoom that holds the bodies draws their cards from its first frame', async () => {
+  // The bodies are hidden by <Flow>'s commit, and the graph used to take
+  // their cards back only when that commit reported it (`setShownBodies`).
+  // A GL frame does not wait for React's: one that landed between the two
+  // drew neither — edges and no nodes, for a frame at the start of a zoom.
+  // The raw pane, with nothing to report back, is that frame.
+  const held: boolean[] = [];
+  const { ctx } = await renderX11(
+    h(FLOW_ELEMENT, {
+      nodes: bodyNode(),
+      edges: [],
+      nodeTypes: { form: sizedType },
+      renderer: 'gl',
+      // every gesture zoom holds the bodies
+      adaptive: { budgetMs: 0 },
+      onNodeBodies: (_b: unknown, _s: boolean, _o: unknown, h: boolean) =>
+        void held.push(h),
+      style: { flexGrow: 1 },
+    }),
+  );
+  const node = pane() as unknown as GlPane & {
+    setShownBodies(ids: ReadonlySet<string>): void;
+    paintCard(id: string, ctx: unknown, abs: XYPosition): void;
+  };
+  node.setGlRequest(() => {});
+  await act();
+  const cards = () =>
+    (node.glFrame(null)!.world as { nodes: { id: string }[] }).nodes.map(
+      (n) => n.id,
+    );
+  // shown in the layer and painted there: the graph leaves it out
+  node.setShownBodies(new Set(['a']));
+  node.paintCard('a', ctx, { x: 0, y: 0 });
+  assert.deepStrictEqual(cards(), [], 'precondition: the layer draws it');
+  await heldClock(async () => {
+    await userEvent.wheel(pane() as unknown as DrawnNode, {
+      ...at(150, 150),
+      deltaY: -24,
+    });
+  });
+  assert.ok(held.includes(true), 'precondition: the zoom held the bodies');
+  assert.deepStrictEqual(
+    cards(),
+    ['a'],
+    'the graph draws the card before anything reports the body hidden',
+  );
+  // …and keeps it once the report comes and goes, until painted again
+  node.setShownBodies(new Set());
+  node.setShownBodies(new Set(['a']));
+  assert.deepStrictEqual(cards(), ['a']);
+});
+
 test('under GL a pan asks for a GL frame and claims nothing of the 2D pane', async () => {
   // The pan is the surface's offset uniform. Claiming the pane's box every
   // step repainted it under the surface for nothing, and with bodies
