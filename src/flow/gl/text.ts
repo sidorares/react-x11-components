@@ -134,6 +134,36 @@ const DRAW_BUDGET_MS = 2;
 /** Milliseconds of fields one slice may make — about a dozen strings at
  *  1x — before the frames have the thread back. */
 const FIELD_BUDGET_MS = 3;
+/** Milliseconds of measuring new strings a world pack may spend, past the
+ *  first: what is left is measured between frames. */
+const SHAPE_BUDGET_MS = 4;
+
+/** What is wanted: the string to set, where the first label to ask for it
+ *  is — and, for a request the pack did not measure, the request, and the
+ *  width its string is cut to. */
+interface Want {
+  text: string;
+  weight: SceneText['weight'];
+  x: number;
+  y: number;
+  request?: string;
+  fit?: number;
+}
+
+/**
+ * A label's request: its weight, its string, and the width it is cut to in
+ * device pixels at the base size — the same at every zoom, since a card's
+ * width and its label's size scale together, so one request resolves once.
+ */
+function requestOf(
+  t: SceneText,
+  texel: number,
+): { key: string; fit: number | undefined } {
+  const fit = t.maxWidth
+    ? Math.round((t.maxWidth / texel) * 64) / 64
+    : undefined;
+  return { key: `${t.weight ?? 400}|${fit ?? ''}|${t.text}`, fit };
+}
 
 /**
  * Texels the drawn quad leaves off each side of a field: a bilinear sample
@@ -193,10 +223,25 @@ export class LabelAtlas {
   private readonly entries = new Map<string, Entry>();
   /** Wanted and not yet set: key → what to set it from, and where the first
    *  label to ask for it is. */
-  private readonly missing = new Map<
-    string,
-    { text: string; weight: SceneText['weight']; x: number; y: number }
-  >();
+  private readonly missing = new Map<string, Want>();
+  /**
+   * Requests measured: request → the string as cut. Measuring is what a
+   * label's first appearance costs the frame that packs it — 60-80 µs a
+   * string, on DirectWrite and on ntk alike, so a view of three hundred new
+   * labels was one frame 20 ms long before any of them could arrive. A pack
+   * measures for `shapeBudgetMs` and leaves the rest to the slices between
+   * frames; the ones it measured no pack measures again.
+   */
+  private readonly resolved = new Map<string, string>();
+  /**
+   * What the pack under way has spent measuring, and how many strings it
+   * has measured — at least one a pack. Measuring alone is charged: a pack
+   * writes every edge before its first label, and a deadline from its start
+   * put off, after a zoom, labels whose cut had moved a fraction of a pixel
+   * and whose every measurement was cached.
+   */
+  private spent = 0;
+  private measured = 0;
   /** Read back and waiting for their fields, oldest first — as wanted as
    *  anything in `missing`, so a pack does not ask for them again. */
   private fieldQueue: {
@@ -225,6 +270,8 @@ export class LabelAtlas {
   admit = true;
   /** Milliseconds of fields one slice may make, past the first field. */
   fieldBudgetMs = FIELD_BUDGET_MS;
+  /** Milliseconds of measuring new strings a world pack may spend. */
+  shapeBudgetMs = SHAPE_BUDGET_MS;
   private texture: unknown = null;
   private textureGeneration = -1;
   /** Fields widened to RGBA for the upload: the shader reads alpha, and a
@@ -267,6 +314,8 @@ export class LabelAtlas {
     this.epoch++;
     this.relocated = false;
     this.missing.clear();
+    this.spent = 0;
+    this.measured = 0;
   }
 
   /**
@@ -278,15 +327,57 @@ export class LabelAtlas {
     // size: one texel of the field.
     const texel = t.size / this.base;
     if (!(texel > 0)) return null;
+    const request = requestOf(t, texel);
+    let shown = this.resolved.get(request.key);
+    if (shown === undefined) {
+      if (this.measured > 0 && this.spent > this.shapeBudgetMs) {
+        // Past the pack's budget: measured between frames, and the whole
+        // quad written in once its field lands (`landing`).
+        const key = `?${request.key}`;
+        if (!this.missing.has(key)) {
+          this.missing.set(key, {
+            text: t.text,
+            weight: t.weight,
+            x: t.x,
+            y: t.y,
+            request: request.key,
+            fit: request.fit,
+          });
+        }
+        return {
+          key,
+          ready: false,
+          x: t.x,
+          y: t.y,
+          w: 0,
+          h: 0,
+          margin: 0,
+          texel,
+          u0: 0,
+          v0: 0,
+          u1: 0,
+          v1: 0,
+        };
+      }
+      this.measured++;
+      const started = now();
+      shown = this.cut(t.text, t.weight, request.fit);
+      this.remember(request.key, shown);
+      if (shown) {
+        shape(this.white, shown, {
+          size: this.base,
+          weight: t.weight,
+          color: '#ffffff',
+        });
+      }
+      this.spent += now() - started;
+    }
+    if (!shown) return null;
     const style: TextOptions = {
       size: this.base,
       weight: t.weight,
       color: '#ffffff',
     };
-    const shown = t.maxWidth
-      ? fitText(this.white, t.text, style, t.maxWidth / texel)
-      : t.text;
-    if (!shown) return null;
     const shaped = shape(this.white, shown, style);
     if (!shaped) return null;
     const width = shaped.width * texel;
@@ -345,31 +436,61 @@ export class LabelAtlas {
   }
 
   /**
-   * Where a label packed before its field existed draws from, now that it
-   * has landed: its place in the atlas and its size in texels past the
-   * inset — null until then. Drawn from from now on, as `quad` would mark
-   * it.
+   * The quad a label packed before its field existed draws from, now that
+   * it can be drawn — null until then. One the pack did not measure (a `?`
+   * key) is placed now, from the string its request resolved to: the pack
+   * gave it a box of no size, and this is its whole quad.
    */
-  landed(key: string): {
-    u0: number;
-    v0: number;
-    u1: number;
-    v1: number;
-    columns: number;
-    rows: number;
-  } | null {
-    const entry = this.entries.get(key);
-    if (!entry) return null;
-    entry.used = this.epoch;
-    const inset = QUAD_INSET;
-    return {
-      u0: (entry.x + inset) / this.side,
-      v0: (entry.y + inset) / this.side,
-      u1: (entry.x + entry.width - inset) / this.side,
-      v1: (entry.y + entry.height - inset) / this.side,
-      columns: entry.width - inset * 2,
-      rows: entry.height - inset * 2,
-    };
+  landing(key: string, t: SceneText): GlyphQuad | null {
+    if (key.startsWith('?')) {
+      const shown = this.resolved.get(key.slice(1));
+      if (shown === undefined) return null;
+      if (!this.entries.has(`${t.weight ?? 400}|${shown}`)) return null;
+    } else if (!this.entries.has(key)) {
+      return null;
+    }
+    // measured and set: `quad` does no work but place it, and marks it
+    const q = this.quad(t);
+    return q?.ready ? q : null;
+  }
+
+  /** A string cut to the width it fits, measured at the base size. */
+  private cut(
+    text: string,
+    weight: SceneText['weight'],
+    fit: number | undefined,
+  ): string {
+    if (fit === undefined) return text;
+    const style: TextOptions = { size: this.base, weight, color: '#ffffff' };
+    return fitText(this.white, text, style, fit);
+  }
+
+  private remember(request: string, shown: string): void {
+    if (this.resolved.size > 20000) this.resolved.clear();
+    this.resolved.set(request, shown);
+  }
+
+  /**
+   * A request the pack left unmeasured, measured: its string cut and
+   * shaped, and wanted under its field's key from then on. Null when that
+   * field is set, or being set, already — the request is answered, and a
+   * frame writes its labels in.
+   */
+  private resolve(
+    key: string,
+    want: Want,
+  ): { key: string; text: string } | null {
+    if (want.request === undefined) return { key, text: want.text };
+    this.missing.delete(key);
+    const shown = this.cut(want.text, want.weight, want.fit);
+    this.remember(want.request, shown);
+    if (!shown) return null;
+    const field = `${want.weight ?? 400}|${shown}`;
+    if (this.entries.has(field) || this.queued.has(field)) return null;
+    if (!this.missing.has(field)) {
+      this.missing.set(field, { ...want, text: shown, request: undefined });
+    }
+    return { key: field, text: shown };
   }
 
   /**
@@ -381,7 +502,7 @@ export class LabelAtlas {
   focus: { x: number; y: number } | null = null;
 
   /** What is wanted, nearest the focus first. */
-  private wanted(): [string, { text: string; weight: SceneText['weight'] }][] {
+  private wanted(): [string, Want][] {
     const list = [...this.missing];
     const f = this.focus;
     if (f && list.length > 1) {
@@ -407,98 +528,131 @@ export class LabelAtlas {
    */
   async pump(): Promise<boolean> {
     if (this.busy || !this.admit) return false;
-    if (this.fieldQueue.length > 0) {
-      this.busy = true;
-      try {
-        // A frame first, if one is waiting: a batch's fields are several
-        // times its budget, and made in one go they held a frame back.
-        await nextTask();
-        return this.makeFields();
-      } finally {
-        this.busy = false;
-      }
-    }
-    if (this.missing.size === 0 || !this.source.options.fonts) return false;
-    if (this.coverage !== false) {
-      this.busy = true;
-      try {
-        await nextTask();
-        const landed = this.coverageSlice();
-        if (landed !== null) return landed;
-      } finally {
-        this.busy = false;
-      }
+    const fonts = this.source.options.fonts;
+    if (this.fieldQueue.length === 0 && (this.missing.size === 0 || !fonts)) {
+      return false;
     }
     this.busy = true;
     try {
-      if (!this.staging) {
-        this.staging = new Surface(this.source.app as never, {
-          width: STAGING_WIDTH,
-          height: STAGING_HEIGHT,
-        }) as unknown as SurfaceLike;
-        this.stagingCtx = this.staging.getContext('2d');
+      // A frame first, if one is waiting: every slice is a task of its own.
+      // A readback can answer at once (the Windows surface does), so a
+      // batch that set its fields in the same slice left nothing to wait
+      // on, and a whole appearance ran as one task — every label at the
+      // end of it, and no frame in between.
+      await nextTask();
+      if (this.fieldQueue.length > 0) return this.makeFields();
+      if (this.missing.size === 0) return false;
+      if (this.coverage !== false) {
+        const landed = this.coverageSlice();
+        if (landed !== null) return landed;
       }
-      const staging = this.staging;
-      const ctx = this.stagingCtx!;
-      staging.clear();
-      const started = now();
-      const pad = this.pad;
-      const placed: {
-        key: string;
-        x: number;
-        y: number;
-        w: number;
-        h: number;
-      }[] = [];
-      let x = 0;
-      let y = 0;
-      let row = 0;
-      for (const [key, want] of this.wanted()) {
-        if (placed.length >= BATCH || now() - started > DRAW_BUDGET_MS) break;
-        const shaped = shape(this.white, want.text, {
-          size: this.base,
-          weight: want.weight,
-          color: '#ffffff',
-        });
-        if (!shaped) break;
-        const layout = shaped.layout;
-        const w = Math.ceil(layout.width) + pad * 2;
-        const h = Math.ceil(layout.height || this.base * 1.3) + pad * 2;
-        if (w > STAGING_WIDTH || h > STAGING_HEIGHT) {
-          // wider than anything can set: never drawn, and never asked again
-          this.missing.delete(key);
-          continue;
-        }
-        if (x + w > STAGING_WIDTH) {
-          x = 0;
-          y += row;
-          row = 0;
-        }
-        if (y + h > STAGING_HEIGHT) break;
-        layout.draw(ctx, x + pad, y + pad);
-        placed.push({ key, x, y, w, h });
-        x += w;
-        row = Math.max(row, h);
-      }
-      if (placed.length === 0) return false;
-      const used = Math.max(...placed.map((p) => p.y + p.h));
-      const image = await ctx.getImageData(0, 0, STAGING_WIDTH, used);
-      for (const p of placed) {
-        this.missing.delete(p.key);
-        // Row by row, as the readback has them; the field reads alpha.
-        const rowBytes = p.w * 4;
-        const pixels = new Uint8Array(rowBytes * p.h);
-        for (let r = 0; r < p.h; r++) {
-          const src = ((p.y + r) * image.width + p.x) * 4;
-          pixels.set(image.data.subarray(src, src + rowBytes), r * rowBytes);
-        }
-        this.fieldQueue.push({ key: p.key, width: p.w, height: p.h, pixels });
-        this.queued.add(p.key);
-      }
-      return this.makeFields();
+      return await this.readBack();
     } finally {
       this.busy = false;
     }
+  }
+
+  /**
+   * One batch drawn onto the staging surface and read back, and the first
+   * of its fields: the way a string is set on an engine whose layouts do not
+   * answer their own coverage.
+   */
+  private async readBack(): Promise<boolean> {
+    if (!this.staging) {
+      this.staging = new Surface(this.source.app as never, {
+        width: STAGING_WIDTH,
+        height: STAGING_HEIGHT,
+      }) as unknown as SurfaceLike;
+      this.stagingCtx = this.staging.getContext('2d');
+    }
+    const staging = this.staging;
+    const ctx = this.stagingCtx!;
+    staging.clear();
+    // Drawing and measuring are budgeted apart: a batch read back costs
+    // what it costs however few strings are in it, so measuring the ones
+    // the pack left out of the drawing's budget made the batches small and
+    // the readbacks many.
+    let drawing = 0;
+    let measuring = 0;
+    const pad = this.pad;
+    const placed: {
+      key: string;
+      x: number;
+      y: number;
+      w: number;
+      h: number;
+    }[] = [];
+    let x = 0;
+    let y = 0;
+    let row = 0;
+    let answered = false;
+    for (const [asked, wanted] of this.wanted()) {
+      if (
+        placed.length >= BATCH ||
+        drawing > DRAW_BUDGET_MS ||
+        measuring > this.shapeBudgetMs
+      ) {
+        break;
+      }
+      const measured = now();
+      const want = this.resolve(asked, wanted);
+      if (!want) {
+        measuring += now() - measured;
+        answered = true;
+        continue;
+      }
+      const key = want.key;
+      const shaped = shape(this.white, want.text, {
+        size: this.base,
+        weight: wanted.weight,
+        color: '#ffffff',
+      });
+      measuring += now() - measured;
+      if (!shaped) break;
+      const layout = shaped.layout;
+      const w = Math.ceil(layout.width) + pad * 2;
+      const h = Math.ceil(layout.height || this.base * 1.3) + pad * 2;
+      if (w > STAGING_WIDTH || h > STAGING_HEIGHT) {
+        // wider than anything can set: never drawn, and never asked again
+        this.missing.delete(key);
+        continue;
+      }
+      if (x + w > STAGING_WIDTH) {
+        x = 0;
+        y += row;
+        row = 0;
+      }
+      if (y + h > STAGING_HEIGHT) break;
+      const drawn = now();
+      layout.draw(ctx, x + pad, y + pad);
+      drawing += now() - drawn;
+      placed.push({ key, x, y, w, h });
+      x += w;
+      row = Math.max(row, h);
+    }
+    if (placed.length === 0) {
+      if (!answered) return false;
+      this.generation++;
+      return true;
+    }
+    const used = Math.max(...placed.map((p) => p.y + p.h));
+    const image = await ctx.getImageData(0, 0, STAGING_WIDTH, used);
+    for (const p of placed) {
+      this.missing.delete(p.key);
+      // Row by row, as the readback has them; the field reads alpha.
+      const rowBytes = p.w * 4;
+      const pixels = new Uint8Array(rowBytes * p.h);
+      for (let r = 0; r < p.h; r++) {
+        const src = ((p.y + r) * image.width + p.x) * 4;
+        pixels.set(image.data.subarray(src, src + rowBytes), r * rowBytes);
+      }
+      this.fieldQueue.push({ key: p.key, width: p.w, height: p.h, pixels });
+      this.queued.add(p.key);
+    }
+    if (this.makeFields()) return true;
+    if (!answered) return false;
+    this.generation++;
+    return true;
   }
 
   /**
@@ -511,16 +665,23 @@ export class LabelAtlas {
   private coverageSlice(): boolean | null {
     const started = now();
     let landed = false;
-    for (const [key, want] of this.wanted()) {
-      if (landed && now() - started >= this.fieldBudgetMs) break;
+    let answered = false;
+    for (const [asked, wanted] of this.wanted()) {
+      if ((landed || answered) && now() - started >= this.fieldBudgetMs) break;
+      const want = this.resolve(asked, wanted);
+      if (!want) {
+        answered = true;
+        continue;
+      }
+      const key = want.key;
       const shaped = shape(this.white, want.text, {
         size: this.base,
-        weight: want.weight,
+        weight: wanted.weight,
         color: '#ffffff',
       });
       const coverage = shaped?.layout.coverage?.({ pad: this.pad }) ?? null;
       if (!coverage) {
-        if (landed || this.coverage) break;
+        if (landed || answered || this.coverage) break;
         this.coverage = false;
         return null;
       }
@@ -541,8 +702,8 @@ export class LabelAtlas {
       landed = true;
       if (!this.add(key, coverage.width, coverage.height, field)) break;
     }
-    if (landed) this.generation++;
-    return landed;
+    if (landed || answered) this.generation++;
+    return landed || answered;
   }
 
   /**

@@ -203,20 +203,25 @@ Windows over the same eight notches: 0 strings and ~1 ms of label work
 instead of 273-369 strings and 70 ms, one world rebuild instead of two, half
 the upload, and the gesture's frames 105-120 → 137-149 per second.
 
-What it costs is the first appearance of a string, and three things bring
+What it costs is the first appearance of a string, and four things bring
 that down. A field is made only where it can change a byte (0.26 → 0.14 ms
 each, `src/internal/sdf.ts`). The world packs a box for every label before
 its field exists — its size is known from the measurement — and a frame
 writes each field in as it lands, so labels arrive a slice at a time,
 nearest the middle of the view first, instead of all at once after a
-second world pack. And only a zoom _gesture_ holds new strings back: a
-single step — `setCenter`, a button, `fitView` — used to wait out the
-120 ms rest timer before setting any. On Windows, moving the stress lattice
-into label range put its first labels on screen at 56 ms and the last at
-111, where all 219 used to arrive together at 142; the fan's 300 at 66 and
-104, where they arrived at 217. What remains is the text engine's hinting
-at the drawn size — the type is its outline, scaled, antialiased across one
-device pixel.
+second world pack. Only a zoom _gesture_ holds new strings back: a single
+step — `setCenter`, a button, `fitView` — used to wait out the 120 ms rest
+timer before setting any. And a pack measures new strings for 4 ms of
+measuring and no more: measuring is 60-80 µs a string on DirectWrite and
+on ntk alike, so three hundred new labels made the frame that packed them
+20 ms long; past the budget a label is a box of no size, measured between
+frames and written in whole when its field lands. On Windows, moving the
+stress lattice into label range put its first labels on screen at 50 ms and
+the last at 109, where all 219 used to arrive together at 142; the fan's
+300 at 45 and 112, where they arrived at 217 — and the frame that packs
+them is 25 ms of the pane's where it was 42. What remains is the text
+engine's hinting at the drawn size — the type is its outline, scaled,
+antialiased across one device pixel.
 
 Everything else about labels is maps' answer: `app.fonts.layout()` shapes
 it, an offscreen `Surface` draws it, `getImageData` reads coverage back, one

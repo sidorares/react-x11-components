@@ -295,7 +295,7 @@ export class FlowGlRenderer {
   /**
    * The labels of a layer packed before their fields existed, drawn from
    * them now they have landed: the flag, the place in the atlas and the
-   * field's own size written into each box, and the stream uploaded again.
+   * quad written into each box, and the stream uploaded again.
    * A label arriving used to be the world packed again once everything on
    * screen had its field — every label at once, after all of them — and is
    * now a few floats and one upload, as each lands. Answers the bytes sent.
@@ -309,20 +309,24 @@ export class FlowGlRenderer {
     const still: WaitingLabel[] = [];
     let landed = 0;
     for (const w of layer.waiting) {
-      const field = atlas.landed(w.key);
-      if (!field) {
+      const q = atlas.landing(w.key, w.text);
+      if (!q) {
         still.push(w);
         continue;
       }
+      // the whole quad: one the pack did not measure was a box of no size
       const at = w.index * BOX_STRIDE;
-      const texel = d[at + 7];
-      d[at + 2] = field.columns * texel;
-      d[at + 3] = field.rows * texel;
+      d[at] = q.x;
+      d[at + 1] = q.y;
+      d[at + 2] = q.w;
+      d[at + 3] = q.h;
+      d[at + 4] = q.margin;
       d[at + 6] = 1;
-      d[at + 12] = field.u0;
-      d[at + 13] = field.v0;
-      d[at + 14] = field.u1;
-      d[at + 15] = field.v1;
+      d[at + 7] = q.texel;
+      d[at + 12] = q.u0;
+      d[at + 13] = q.v0;
+      d[at + 14] = q.u1;
+      d[at + 15] = q.v1;
       landed++;
     }
     if (landed === 0) return 0;

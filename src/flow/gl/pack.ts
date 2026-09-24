@@ -85,11 +85,12 @@ export interface PackGaps {
  */
 export type PackLayer = 'all' | 'world' | 'overlay';
 
-/** A label packed before its field landed: which box it is, and the field
- *  it waits for (`LabelAtlas.landed`). */
+/** A label packed before its field landed: which box it is, the field or
+ *  request it waits for, and the label itself (`LabelAtlas.landing`). */
 export interface WaitingLabel {
   index: number;
   key: string;
+  text: SceneText;
 }
 
 export interface PackedScene {
@@ -404,7 +405,7 @@ export class ScenePacker {
     d[at + 15] = q.v1;
     if (!q.ready) {
       this.gaps.text++;
-      this.waiting.push({ index, key: q.key });
+      this.waiting.push({ index, key: q.key, text: t });
     }
     this.record('box', index);
   }

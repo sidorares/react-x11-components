@@ -327,10 +327,8 @@ function waitingAtlas() {
         v1: landed ? 0.4 : 0,
       };
     },
-    landed() {
-      return landed
-        ? { u0: 0.1, v0: 0.2, u1: 0.3, v1: 0.4, columns: 100, rows: 30 }
-        : null;
+    landing(key: string, t: { x: number; y: number; text: string }) {
+      return landed ? atlas.quad(t) : null;
     },
     land() {
       landed = true;

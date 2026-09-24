@@ -133,13 +133,54 @@ test('a label still being set is packed where it will be drawn, as nothing', asy
     [set.x, set.y, set.w, set.h, set.margin, set.texel],
     'in the place and at the size it is drawn once set',
   );
-  const landed = atlas.landed(early.key)!;
+  const landed = atlas.landing(early.key, t)!;
+  assert.deepStrictEqual(landed, set, 'and `landing` hands the same quad over');
+});
+
+test('a pack measures new strings for its budget, and the rest land with their whole quad', async () => {
+  // Measuring a string is what its first appearance costs the frame that
+  // packs it; past the budget a label is a box of no size, measured between
+  // frames, and written in whole once its field lands.
+  const { atlas } = await atlasAt(1);
+  atlas.shapeBudgetMs = 0;
+  atlas.beginPack();
+  const first = label({ text: 'measured now', x: 10 });
+  const later = label({ text: 'measured later', x: 200, maxWidth: 60 });
+  const a = atlas.quad(first)!;
+  const b = atlas.quad(later)!;
+  assert.ok(a.w > 0, 'the first string of a pack is measured whatever');
+  assert.strictEqual(b.ready, false);
+  assert.strictEqual(b.w, 0, 'past the budget: no size yet');
+  assert.ok(b.key.startsWith('?'), 'waiting on its request, not a field');
+  assert.strictEqual(atlas.landing(b.key, later), null, 'nothing to draw yet');
+  await settle(atlas);
+  const landed = atlas.landing(b.key, later)!;
+  assert.ok(landed, 'measured, cut and set between frames');
+  assert.strictEqual(landed.ready, true);
   assert.deepStrictEqual(
-    [landed.u0, landed.v0, landed.u1, landed.v1],
-    [set.u0, set.v0, set.u1, set.v1],
-    'and `landed` hands the same field over',
+    landed,
+    drawn(atlas.quad(later)),
+    'the quad a pack would give it now, whole',
   );
-  assert.strictEqual(landed.columns * set.texel, set.w);
+  assert.ok(!atlas.wanting);
+});
+
+test('a request answered by a field already set lands without a field of its own', async () => {
+  const { atlas } = await atlasAt(1);
+  atlas.beginPack();
+  atlas.quad(label({ text: 'shared' }));
+  await settle(atlas);
+  // the same string on another card, past a pack's budget
+  atlas.shapeBudgetMs = 0;
+  atlas.beginPack();
+  atlas.quad(label({ text: 'first of the pack' }));
+  const other = label({ text: 'shared', x: 400, maxWidth: 200 });
+  const q = atlas.quad(other)!;
+  assert.strictEqual(q.ready, false, 'precondition: deferred');
+  const before = atlas.generation;
+  await settle(atlas);
+  assert.ok(atlas.generation > before, 'a frame is owed: it writes it in');
+  assert.ok(atlas.landing(q.key, other), 'drawn from the field it shares');
 });
 
 test('what is wanted is set nearest the focus first', async () => {
