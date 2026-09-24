@@ -725,6 +725,14 @@ export class FlowGraphNode extends Node implements FlowInstance {
    * and `null` when nothing visual changed at all.
    */
   private _applyNodes(nodes: readonly AnyNode[]): 'full' | FlowRect[] {
+    const sameCardText = (a: AnyNode, b: AnyNode): boolean => {
+      const da = a.data as FlowNodeData | undefined;
+      const db = b.data as FlowNodeData | undefined;
+      return (
+        (da?.label ?? a.id) === (db?.label ?? b.id) &&
+        da?.description === db?.description
+      );
+    };
     const prev = this._entries;
     this._nodesSeen = this.props.nodes;
     let structural = nodes.length !== prev.length;
@@ -803,6 +811,20 @@ export class FlowGraphNode extends Node implements FlowInstance {
         entry.specs = resolveHandles(next, entry.type);
       }
       const grew = entry.width !== widthBefore || entry.height !== heightBefore;
+      // Nothing the pane draws changed, while the node holds its place and
+      // its size, when its card is the bodies' layer's — the layer repaints
+      // it, if anything it shows changed — or when what changed is data its
+      // card does not show: a card shows the label, the description and the
+      // style, and a type that paints its own may show anything. A board of
+      // live widgets, a tenth of them patching their data ten times a
+      // second, rebuilt the GL world on every patch, and on the 2D renderer
+      // repainted cards that showed none of it.
+      if (!moved && !grew) {
+        if (this._cardInLayer(next.id)) continue;
+        if (!restyled && !entry.type?.paint && sameCardText(old, next)) {
+          continue;
+        }
+      }
       // The edges ride along only when an endpoint actually moved — a
       // label edit that kept the box is the box's own business, and a
       // keystroke that unioned its node's edges swept half the layer's

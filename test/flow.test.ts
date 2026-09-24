@@ -2831,6 +2831,97 @@ test('the graph leaves out the cards the bodies’ layer shows, and takes them b
   assert.strictEqual(shown().size, 0, 'held bodies hand their cards back');
 });
 
+test('a card is painted again for what it shows, not for its body’s own data', async () => {
+  // A live body patches its data a few times a second — a queue length, a
+  // chart's points. Keyed on the node object, its card repainted on every
+  // patch, the title shaped and drawn again for nothing.
+  const at = (data: Record<string, unknown>) =>
+    [
+      {
+        id: 'a',
+        type: 'form',
+        position: { x: 100, y: 100 },
+        data,
+      },
+    ] as FlowNode[];
+  // held, as an app holds its node types: what paints cards is keyed on it
+  const nodeTypes = { form: sizedType };
+  const element = (list: FlowNode[]) =>
+    h(TypedFlow, { nodes: list, edges: [], nodeTypes });
+  const { rerender } = await renderX11(element(at({ label: 'a', queue: 1 })));
+  await act();
+  const key = () =>
+    (cardBox().children[0].props as { cacheKey: string }).cacheKey;
+  const first = key();
+  await act(() => rerender(element(at({ label: 'a', queue: 2 }))));
+  assert.strictEqual(key(), first, 'a body’s own data paints nothing of it');
+  await act(() => rerender(element(at({ label: 'renamed', queue: 2 }))));
+  assert.notStrictEqual(key(), first, 'its label does');
+});
+
+test('a data change to a node whose card the layer draws claims nothing, and rebuilds no GL world', async () => {
+  // Nothing of it is the pane's, or the world's: the layer repaints the
+  // card, if anything it shows changed.
+  const element = (list: FlowNode[]) =>
+    h(FLOW_ELEMENT, {
+      nodes: list,
+      edges: edges(),
+      renderer: 'gl',
+      style: { flexGrow: 1 },
+    });
+  const base = nodes();
+  const { rerender, ctx } = await renderX11(element(base));
+  const node = pane() as unknown as GlPane & {
+    setShownBodies(ids: ReadonlySet<string>): void;
+    paintCard(id: string, ctx: unknown, abs: XYPosition): void;
+    invalidate(...a: unknown[]): void;
+  };
+  node.setGlRequest(() => {});
+  await act();
+  node.setShownBodies(new Set(['a']));
+  node.paintCard('a', ctx, { x: 0, y: 0 });
+  const world = node.glFrame(null)!;
+  const claims: unknown[][] = [];
+  const own = node.invalidate.bind(node);
+  node.invalidate = (...a: unknown[]) => {
+    claims.push(a);
+    own(...a);
+  };
+  const patched = base.map((n) =>
+    n.id === 'a' ? { ...n, data: { ...(n.data ?? {}), queue: 7 } } : n,
+  );
+  await act(() => rerender(element(patched)));
+  assert.deepStrictEqual(claims, [], 'nothing of the pane is claimed');
+  assert.strictEqual(
+    node.glFrame(world.key)!.world,
+    null,
+    'and the GL world on the GPU is still the graph',
+  );
+});
+
+test('a data change a card does not show claims nothing, and one it shows claims its card', async () => {
+  const element = (list: FlowNode[]) =>
+    h(FLOW_ELEMENT, { nodes: list, edges: edges(), style: { flexGrow: 1 } });
+  const base = nodes();
+  const { rerender } = await renderX11(element(base));
+  await act();
+  const node = pane() as unknown as { invalidate(...a: unknown[]): void };
+  const claims: unknown[][] = [];
+  const own = node.invalidate.bind(node);
+  node.invalidate = (...a: unknown[]) => {
+    claims.push(a);
+    own(...a);
+  };
+  const patch = (data: Record<string, unknown>) =>
+    base.map((n) =>
+      n.id === 'a' ? { ...n, data: { ...(n.data ?? {}), ...data } } : n,
+    );
+  await act(() => rerender(element(patch({ queue: 7 }))));
+  assert.deepStrictEqual(claims, [], 'a field the card does not draw');
+  await act(() => rerender(element(patch({ queue: 7, label: 'renamed' }))));
+  assert.ok(claims.length > 0, 'its label, which it does');
+});
+
 test('under GL a shown card stays in the world until the bodies’ layer has painted it', async () => {
   // The layer is 2D, over the surface: it reaches the screen with the
   // window's paint, and a GL frame presents at once. Leaving the card out

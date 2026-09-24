@@ -154,14 +154,36 @@ const CARD_INK = CULL_MARGIN;
  *  a card crosses a line of it. */
 const EXTENT_STEP = 256;
 
-/** A number per node object, for a card's cache key: a node whose label or
- *  style changed is a new object, and its card is painted again. */
+/** A number per object, for a card's cache key: a style or a handle list
+ *  that changed is a new object, and its card is painted again. */
 const serials = new WeakMap<object, number>();
 let serial = 0;
 function serialOf(node: object): number {
   let n = serials.get(node);
   if (n === undefined) serials.set(node, (n = ++serial));
   return n;
+}
+
+/**
+ * What of a node its card draws, for the card's cache key: the label, the
+ * description, the style and the handles. A body's own data — a queue
+ * length, a chart's points — is none of it: keyed on the node object, a
+ * live body that patched its data repainted its card on every patch, the
+ * title's text shaped and drawn again for nothing. A type that paints its
+ * own card may draw anything of the node, so it is keyed on the node whole.
+ */
+function cardShows(
+  node: FlowNode<unknown>,
+  type: FlowNodeType<unknown>,
+): string {
+  if (type.paint) return `n${serialOf(node)}`;
+  const data = node.data as FlowNodeData | undefined;
+  const style = node.style ? serialOf(node.style) : 0;
+  const handles = node.handles ? serialOf(node.handles) : 0;
+  return (
+    `${style}:${handles}:${String(data?.label ?? '')}` +
+    `\u0000${String(data?.description ?? '')}`
+  );
 }
 
 /** What `forwardWheel` reads off a wheel that landed on a body. */
@@ -741,10 +763,11 @@ export function Flow<N = FlowNodeData, E = unknown>(
         fill:
           (node.style as { background?: string } | undefined)?.background ??
           nodeFill,
-        // Cached until something it shows changes; the node object is in
-        // the key by identity, so a new label or style repaints it.
+        // Cached until something it shows changes (`cardShows`): a new
+        // label or style repaints it, a body's own data does not.
         cacheKey:
-          `${body.id}:${serialOf(node)}:${card.width}x${card.height}:` +
+          `${body.id}:${cardShows(node as FlowNode<unknown>, type as FlowNodeType<unknown>)}:` +
+          `${card.width}x${card.height}:` +
           `${body.zoom}:${body.selected}:${body.hovered}:` +
           `${serialOf(cardPaint)}`,
         onDraw: drawCard(body.id),
