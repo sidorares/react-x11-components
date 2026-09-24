@@ -15,6 +15,8 @@
 //           graph drawn through a `<glarea>`, a pan a uniform write. Labels
 //           at a new size arrive a frame or two after a zoom stops — the line
 //           counts any a frame was still waiting on.
+//   map   — the minimap on or off: it summarises every node, so a step
+//           that moves one repaints it, whatever the view shows.
 //   bodies ≤ N ms — `<Flow adaptive>`: what re-scaling mounted bodies may
 //           add to one step of a zoom gesture. Over it they sit the gesture
 //           out, off screen and still mounted, and come back at the new
@@ -507,6 +509,7 @@ function App(): ReactElement {
     return () => clearInterval(timer);
   }, [ticking, setNodes]);
   const [gl, setGl] = useState(false);
+  const [miniMap, setMiniMap] = useState(true);
   const [budget, setBudget] = useState('8');
   // Every frame the pane drew, on either renderer, from `onFrame`, drained by
   // the readout below. A ref, not state: setting state per frame would
@@ -679,6 +682,11 @@ function App(): ReactElement {
           <Button label="fit" onPress={() => flow.current?.fitView()} />
           <Button label="gl" primary={gl} onPress={() => setGl((on) => !on)} />
           <Button
+            label="map"
+            primary={miniMap}
+            onPress={() => setMiniMap((on) => !on)}
+          />
+          <Button
             label="0.6×"
             onPress={() => {
               // the densest view that still mounts bodies (RENDER_ZOOM)
@@ -723,7 +731,7 @@ function App(): ReactElement {
             adaptive={budget === 'live' ? false : { budgetMs: Number(budget) }}
             onFrame={onFrame}
             onError={(error) => setStats(`gl failed: ${error.message}`)}
-            minimap
+            minimap={miniMap}
             controls
             background={{ variant: 'dots', gap: 24 }}
             style={{
