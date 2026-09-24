@@ -4244,3 +4244,50 @@ test('a pass over part of a dashed edge draws its dashes where the whole edge ha
   assert.ok(inked > 0, 'precondition: the edge crosses the strip');
   assert.strictEqual(differ, 0, `${differ} pixels of the strip moved`);
 });
+
+test('2D dashes hold still through a pan whose frames come slowly, and keep their speed when ticks are cheap', async () => {
+  // A tick repaints the box the dashes are in. Over a dense graph in a
+  // large window that was 75 ms on XQuartz against a 60 ms timer, and the
+  // pan's steps — each asked for by the frame before — came slower than
+  // the 120 ms the dashes waited: ticks and pan steps took turns, 2 frames
+  // a second. The wait follows what frames cost now.
+  await renderX11(
+    h(FLOW_ELEMENT, {
+      nodes: nodes(),
+      edges: [{ id: 'a-b', source: 'a', target: 'b', animated: true }],
+      style: { flexGrow: 1 },
+    }),
+  );
+  await act();
+  const node = pane() as unknown as {
+    _dashPhase: number;
+    _tickCost: number;
+    setViewport(v: object): void;
+  };
+  const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  await wait(200);
+  // frames that cost 150 ms, and a pan stepping at that pace
+  node._tickCost = 150;
+  let phase = node._dashPhase;
+  for (let step = 1; step <= 6; step++) {
+    await act(() => node.setViewport({ x: step * 4, y: 0, zoom: 1 }));
+    node._tickCost = 150;
+    await wait(150);
+  }
+  assert.strictEqual(node._dashPhase, phase, 'still while the view moves');
+  // held still, they march again
+  await wait(700);
+  assert.ok(node._dashPhase > phase, 'and march once it rests');
+  // cheap frames: a tick every 60 ms, at the speed they always had
+  node._tickCost = 0;
+  phase = node._dashPhase;
+  const started = Date.now();
+  await wait(600);
+  node._tickCost = 0;
+  const ticks = (node._dashPhase - phase) / 1.4;
+  const expected = (Date.now() - started) / 60;
+  assert.ok(
+    ticks >= expected * 0.6,
+    `${ticks.toFixed(1)} ticks' worth in ${expected.toFixed(1)} tick times`,
+  );
+});

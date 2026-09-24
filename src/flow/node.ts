@@ -532,6 +532,15 @@ export class FlowGraphNode extends Node implements FlowInstance {
   private _bodiesLayer: Node | null = null;
   /** When a pan last asked to blit — the dash timer waits for it. */
   private _blittedPanAt = -Infinity;
+  /** When the view last moved, and when the dash timer last came round,
+   *  ticking or not: a 2D pan's dashes wait for a view that held still. */
+  private _viewMovedAt = -Infinity;
+  private _tickAt = -Infinity;
+  /** When the dash timer last marched, and what a 2D frame has cost lately
+   *  — the paint, and the server's answer to the frame before it; a running
+   *  mean, ms: what a tick waits on. */
+  private _marchedAt = -Infinity;
+  private _tickCost = 0;
   private _animTimer: unknown = null;
   /** Inside `paint`, where an invalidation would only schedule a redraw of
    * the frame being drawn. */
@@ -1262,6 +1271,9 @@ export class FlowGraphNode extends Node implements FlowInstance {
     const v = { x: next.x, y: next.y, zoom };
     const controlled = this.props.viewport !== undefined;
     if (!controlled) this._vp = v;
+    if (previous.x !== v.x || previous.y !== v.y || previous.zoom !== v.zoom) {
+      this._viewMovedAt = now();
+    }
     if (previous.zoom !== v.zoom) {
       const t = now();
       this._zoomStream = t - this._zoomAt < GL_ZOOM_REST_MS;
@@ -2968,8 +2980,45 @@ export class FlowGraphNode extends Node implements FlowInstance {
         // a sixth of a pan's frames and all of its stutter. So the dashes
         // sit the pan out, phase and all, and what the pan copies and what
         // it draws agree; they march again once it has held still.
-        if (now() - this._blittedPanAt < ANIMATION_MS * 2) return;
-        this._dashPhase += ANIMATION_SPEED;
+        //
+        // And the view moving at all is what they wait out, not a blit that
+        // happened: a tick declines the blit it lands beside, so a pan
+        // whose frames ran past the wait had its ticks back, each one
+        // cancelling the next blit and repainting the pane — over the
+        // stress example's widgets in a large window, 2 frames a second,
+        // ticks and pan steps taking turns. A step since the last tick, or
+        // one within two ticks, holds the dashes still whatever a frame
+        // costs. Under GL a tick is a uniform and blits nothing, and they
+        // march through a pan as before.
+        //
+        // A 2D tick is a repaint of the box the dashes are in, which over a
+        // dense graph in a large window is most of the pane: 75 ms a tick on
+        // XQuartz, against a timer of 60. So the wait scales with what
+        // frames cost: the view held still for two frames' worth, and one
+        // tick every two frames at most — the dashes slow down before the
+        // thread is theirs, and a pan whose frames come slowly still sees
+        // them hold still.
+        const t = now();
+        const lastTick = this._tickAt;
+        this._tickAt = t;
+        if (t - this._blittedPanAt < ANIMATION_MS * 2) return;
+        let steps = 1;
+        if (!this._gl) {
+          const cost = this._tickCost * 2;
+          const still = Math.max(ANIMATION_MS * 2, cost);
+          if (this._viewMovedAt > lastTick || t - this._viewMovedAt < still) {
+            return;
+          }
+          // a tick under ANIMATION_MS apart, less a millisecond of timer
+          // slop; further while ticks are dear — and then the dashes cover
+          // the ground the skipped ticks would have, so they slow down in
+          // steps and not in speed
+          const since = t - this._marchedAt;
+          if (since < Math.max(ANIMATION_MS, cost) - 1) return;
+          steps = Math.min(4, Math.max(1, Math.round(since / ANIMATION_MS)));
+        }
+        this._marchedAt = t;
+        this._dashPhase += ANIMATION_SPEED * steps;
         // the box the last paint saw animated edges in, not the pane: a
         // marching dash should not cost a full grid repaint per tick. And
         // only the part of it the pane shows — an edge on its way out of
@@ -2991,6 +3040,8 @@ export class FlowGraphNode extends Node implements FlowInstance {
 
   override paint(ctx: Context2D): void {
     this._frameTick();
+    const paintStart = now();
+
     // What this pass is repainting. The renderer paints each damage rect as
     // its own clipped pass; content outside it survives on the window, so
     // everything we skip here is content the last frame already drew — the
@@ -3174,6 +3225,19 @@ export class FlowGraphNode extends Node implements FlowInstance {
     painter.restore();
     this._painting = false;
     this._frameClip = null;
+    {
+      // What a frame costs, for the dash timer (`_startAnimation`): this
+      // paint, and how long the server took to answer the frame before it
+      // — on XQuartz most of it.
+      const latency = (
+        this.root as { window?: { frameLatency?: number } } | null
+      )?.window?.frameLatency;
+      const cost =
+        now() -
+        paintStart +
+        (typeof latency === 'number' && latency < 1000 ? latency : 0);
+      this._tickCost = this._tickCost * 0.7 + cost * 0.3;
+    }
 
     // The timer exists only while something on screen needs it.
     if (scene.animated) this._startAnimation();
