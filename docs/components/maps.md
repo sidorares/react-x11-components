@@ -665,8 +665,8 @@ so it keeps the engine's weight. A slanted street name comes out sharper
 than a resampled bitmap did.
 
 Where the text engine answers a layout's own coverage
-(sidorares/react-x11#673 — DirectWrite through `@windowkit/win32`, ntk's
-layout on X11), a name is set from that instead of drawn onto an offscreen
+(sidorares/react-x11#673 — every engine core has, ntk's, DirectWrite's and
+CoreText's, from react-x11 2.21.1), a name is set from that instead of drawn onto an offscreen
 surface and read back: no staging surface, no readback, and the outlines'
 own coverage rather than the ink the screen gets. Icons, which are paths,
 still go through the surface, and so does everything on an engine that
