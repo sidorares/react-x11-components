@@ -1313,20 +1313,16 @@ export class FlowGraphNode extends Node implements FlowInstance {
    * the shift exposed — which `paintDamage()` then hands to `paint`, so the
    * existing culling draws the sliver and nothing else.
    *
-   * The furniture — minimap, zoom controls — is pinned to the pane while
-   * its pixels would ride the blit, so its bands are carved out of the
-   * region that shifts and claimed as ordinary damage. The blit gate tests
-   * foreign claims against the *rect* (react-x11#309/#310), so a claim
-   * sitting edge to edge with it leaves the frame a blit: the middle of
-   * the pane is copied, the strips repaint with the new viewport, and the
-   * panels repaint in place.
+   * The furniture — minimap, zoom controls — stays put while the graph
+   * moves, so it is handed over as `pinned` (react-x11#682, 2.22): the
+   * whole pane is copied, and core repaints each panel and the image of
+   * it the copy dragged along, with the strips the shift exposed.
    *
    * Mounted node bodies ride it. They are laid out in one box beside the
    * pane, which a pan moves by exactly the pan, so their pixels move with
    * the pane's: the box goes to `scrollContents` as a rider
    * (react-x11#671), its commit claims nothing, and what it leaves or
-   * reaches outside the rect — the bands, which repaint anyway — is all it
-   * costs. `<Flow>` clips it to the pane for that. A body entering or
+   * reaches outside the rect is all it costs. `<Flow>` clips it to the pane for that. A body entering or
    * leaving the pane, or changing as it goes, claims inside the rect and
    * declines that frame's blit; the next one blits again.
    *
@@ -1334,8 +1330,8 @@ export class FlowGraphNode extends Node implements FlowInstance {
    *  - the zoom moved (scaling is not a blit) or the shift is fractional on
    *    the device grid — every real pan gesture is whole device pixels;
    *  - bodies are mounted and `<Flow>` has not handed their box over;
-   *  - the furniture bands would eat the pane (a tiny pane, or panels on
-   *    both the top and the bottom of a short one).
+   *  - the pane is too small to be worth it; and core falls back itself
+   *    when the repairs would repaint most of it.
    */
   private _blitPan(previous: Viewport, next: Viewport): boolean {
     // There is no backing store to scroll under GL: the surface redraws the
@@ -1354,93 +1350,68 @@ export class FlowGraphNode extends Node implements FlowInstance {
     const dy = Math.round(shiftY);
     if (dx === 0 && dy === 0) return true; // sub-pixel: nothing to show yet
     if (shiftX !== dx || shiftY !== dy) return false;
-    const pane = this._pane();
-
-    // The horizontal bands the furniture lives in. Full-width, because the
-    // graph beside a panel must repaint too — it does not ride the blit.
-    let topBand = 0;
-    let bottomBand = 0;
-    const claim = (panel: FlowRect, position: string | undefined): void => {
-      if ((position ?? 'bottom-right').startsWith('top')) {
-        topBand = Math.max(topBand, panel.y + panel.height - pane.y);
-      } else {
-        bottomBand = Math.max(bottomBand, pane.y + pane.height - panel.y);
-      }
-    };
-    const map = this._miniMapOptions();
-    if (map) {
-      claim(
-        this._corner(
-          map.position,
-          map.width ?? MINIMAP_W,
-          map.height ?? MINIMAP_H,
-          'bottom-right',
-        ),
-        map.position,
-      );
-    }
-    const buttons = this._controlButtons();
-    if (buttons.length > 0) {
-      const first = buttons[0].rect;
-      const last = buttons[buttons.length - 1].rect;
-      claim(
-        unionRects(first, last),
-        this._controlsOptions()?.position ?? 'bottom-left',
-      );
-    }
-    // From here on, device pixels: `scrollContents` and the claims speak
-    // core's units. The bands round *up* and the blit is what is left, so
-    // the three sit edge to edge on whole pixels — a claim overlapping the
-    // blit rect by a pixel is a foreign claim, and declines the blit.
+    // The furniture — minimap, zoom controls — stays put while the graph
+    // moves under it: pinned inside the region, which core repaints after
+    // the copy, with the stale image the copy dragged along (react-x11
+    // #682, 2.22). It used to be carved out of the region, and a region is
+    // one rectangle, so controls in one bottom corner and the minimap in the
+    // other carved a band the pane's full width — every card, label and edge
+    // in it repainted on every pan frame: 47 fps over the stress example's
+    // widgets on XQuartz, where a pane with no furniture pans at 80.
+    //
+    // Device pixels, rounded out, and a pixel over: a panel's own claims —
+    // the minimap's view box moves with every pan — must land inside its
+    // pinned rect, or they decline the blit.
     const box = this.contentBox();
-    let top = Math.ceil(toDevice(topBand, s));
-    let bottom = Math.ceil(toDevice(bottomBand, s));
-    // Where `<Flow>` paints the panels on canvases of its own (over mounted
-    // bodies), those claim themselves on every change to the pane — this
-    // pan's included — and a claim is the canvas's paint bounds: its box,
-    // rounded where layout put it, and core's damage slop around that. So
-    // the bands reach as far as those do, or every pan frame's blit was
-    // poisoned by the minimap a pixel inside it.
-    for (const canvas of this._panelCanvases) {
-      const reach = canvas.paintBounds?.();
-      if (!reach) continue;
-      if (reach.y + reach.height / 2 < box.y + box.height / 2) {
-        top = Math.max(top, Math.ceil(reach.y + reach.height - box.y));
-      } else {
-        bottom = Math.max(bottom, Math.ceil(box.y + box.height - reach.y));
+    if (box.width < 64 * s || box.height < 64 * s) return false;
+    if (Math.abs(dx) >= box.width || Math.abs(dy) >= box.height) return false;
+    const pinned: FlowRect[] = [];
+    const pin = (rect: FlowRect): void => {
+      const x0 = Math.max(box.x, Math.floor(rect.x) - 1);
+      const y0 = Math.max(box.y, Math.floor(rect.y) - 1);
+      const x1 = Math.min(
+        box.x + box.width,
+        Math.ceil(rect.x + rect.width) + 1,
+      );
+      const y1 = Math.min(
+        box.y + box.height,
+        Math.ceil(rect.y + rect.height) + 1,
+      );
+      if (x1 > x0 && y1 > y0) {
+        pinned.push({ x: x0, y: y0, width: x1 - x0, height: y1 - y0 });
+      }
+    };
+    if (this._panelCanvases.length > 0) {
+      // Painted on canvases of their own, over mounted bodies: a node laid
+      // over the region is pinned by its paint bounds, which carry core's
+      // slop round its box.
+      for (const canvas of this._panelCanvases) {
+        const reach = canvas.paintBounds?.();
+        if (reach) pin(reach);
+      }
+    } else {
+      const map = this._miniMapOptions();
+      if (map) {
+        pin(
+          this._device(
+            this._corner(
+              map.position,
+              map.width ?? MINIMAP_W,
+              map.height ?? MINIMAP_H,
+              'bottom-right',
+            ),
+          ),
+        );
+      }
+      const buttons = this._controlButtons();
+      if (buttons.length > 0) {
+        const first = buttons[0].rect;
+        const last = buttons[buttons.length - 1].rect;
+        pin(this._device(unionRects(first, last)));
       }
     }
-    const blit: FlowRect = {
-      x: box.x,
-      y: box.y + top,
-      width: box.width,
-      height: box.height - top - bottom,
-    };
-    if (blit.width < 64 * s || blit.height < 64 * s) return false;
-    if (Math.abs(dx) >= blit.width || Math.abs(dy) >= blit.height) {
-      return false;
-    }
-    this.scrollContents(blit, dx, dy, riders ? [riders] : undefined);
+    this.scrollContents(box, dx, dy, riders ? [riders] : null, pinned);
     this._blittedPanAt = now();
-    if (top > 0) {
-      this.invalidate(
-        false,
-        { x: box.x, y: box.y, width: box.width, height: top },
-        'scroll',
-      );
-    }
-    if (bottom > 0) {
-      this.invalidate(
-        false,
-        {
-          x: box.x,
-          y: blit.y + blit.height,
-          width: box.width,
-          height: bottom,
-        },
-        'scroll',
-      );
-    }
     return true;
   }
 
@@ -3232,10 +3203,16 @@ export class FlowGraphNode extends Node implements FlowInstance {
       const latency = (
         this.root as { window?: { frameLatency?: number } } | null
       )?.window?.frameLatency;
+      // A reply can take seconds on a server that is waiting for a
+      // display — a Mac's asleep — and that is when ticks most need to
+      // hold; clamped rather than dropped, so one outlier does not stand
+      // for long in the mean.
       const cost =
         now() -
         paintStart +
-        (typeof latency === 'number' && latency < 1000 ? latency : 0);
+        (typeof latency === 'number' && latency > 0
+          ? Math.min(latency, 2000)
+          : 0);
       this._tickCost = this._tickCost * 0.7 + cost * 0.3;
     }
 

@@ -4291,3 +4291,97 @@ test('2D dashes hold still through a pan whose frames come slowly, and keep thei
     `${ticks.toFixed(1)} ticks' worth in ${expected.toFixed(1)} tick times`,
   );
 });
+
+test('a 2D pan blits the whole pane and pins the furniture, and draws what a repaint draws', async () => {
+  // The minimap and the controls were carved out of the region a pan
+  // blits, and a region is one rectangle, so the two bottom corners cost a
+  // band the pane's full width — repainted every frame: 47 fps over the
+  // stress example's widgets on XQuartz where a bare pane pans at 80. They
+  // are pinned inside it now (react-x11#682), and core repaints them and
+  // the image the copy dragged along.
+  const result = await renderX11(
+    h(FLOW_ELEMENT, {
+      nodes: nodes(),
+      edges: edges(),
+      minimap: true,
+      controls: true,
+      style: { flexGrow: 1 },
+    }),
+    { backend: 'xserver', width: 420, height: 380 },
+  );
+  await act();
+  const node = pane() as unknown as {
+    scrollContents(...a: unknown[]): boolean;
+    invalidate(layout: boolean, rect: unknown, reason: string): void;
+    setViewport(v: object): void;
+    contentBox(): { x: number; y: number; width: number; height: number };
+  };
+  const calls: unknown[][] = [];
+  const scroll = node.scrollContents.bind(node);
+  node.scrollContents = (...a: unknown[]) => {
+    calls.push(a);
+    return scroll(...a);
+  };
+  const claims: string[] = [];
+  const own = node.invalidate.bind(node);
+  node.invalidate = (layout, rect, reason) => {
+    claims.push(reason);
+    own(layout, rect, reason);
+  };
+  for (let step = 1; step <= 3; step++) {
+    await act(() => node.setViewport({ x: step * 3, y: step * 2, zoom: 1 }));
+    await motionLands();
+  }
+  const box = node.contentBox();
+  assert.strictEqual(calls.length, 3, 'every step is a blit');
+  const [rect, , , , pinned] = calls[0] as [
+    { width: number; height: number },
+    number,
+    number,
+    unknown,
+    { width: number; height: number }[],
+  ];
+  assert.deepStrictEqual(
+    { width: rect.width, height: rect.height },
+    { width: box.width, height: box.height },
+    'the whole pane shifts',
+  );
+  assert.strictEqual(pinned.length, 2, 'the minimap and the controls pinned');
+  const area = pinned.reduce((sum, r) => sum + r.width * r.height, 0);
+  assert.ok(
+    area < box.width * box.height * 0.3,
+    `the furniture is a corner each, not a band: ${area} of ${box.width * box.height}`,
+  );
+  assert.ok(!claims.includes('scroll'), 'no band claimed beside the blit');
+
+  // What the copy and its repairs left is what a full repaint draws.
+  const read = async (): Promise<Uint8ClampedArray> =>
+    (
+      await (
+        result.ctx as unknown as {
+          getImageData(
+            x: number,
+            y: number,
+            w: number,
+            h: number,
+          ): Promise<{ data: Uint8ClampedArray }>;
+        }
+      ).getImageData(box.x, box.y, box.width, box.height)
+    ).data;
+  const panned = await read();
+  await act(() => own(false, null, 'content'));
+  await motionLands();
+  const whole = await read();
+  let differ = 0;
+  for (let i = 0; i < whole.length; i += 4) {
+    const d = Math.max(
+      Math.abs(whole[i] - panned[i]),
+      Math.abs(whole[i + 1] - panned[i + 1]),
+      Math.abs(whole[i + 2] - panned[i + 2]),
+    );
+    // four pixels at the corners of the minimap's rounded view box round
+    // three levels apart, drawn under the pinned rect's clip or the pane's
+    if (d > 4) differ++;
+  }
+  assert.strictEqual(differ, 0, `${differ} pixels differ from a repaint`);
+});

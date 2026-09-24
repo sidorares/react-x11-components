@@ -395,8 +395,8 @@ imports — `react-x11` itself plus `/host`, `/node`, `/style`, `/keysyms`,
 `/ntk`, `/yoga`, `/jsx-runtime`, and `/test` and `/debug` from the suite.
 Both specs are ordinary registry ranges:
 
-- `peerDependencies.react-x11` is `^2.21.1` — what a consumer must supply.
-- `devDependencies.react-x11` is `^2.21.1` — what the suite runs against.
+- `peerDependencies.react-x11` is `^2.22.0` — what a consumer must supply.
+- `devDependencies.react-x11` is `^2.22.0` — what the suite runs against.
 
 Keep them the same range. They are one decision written twice, and a
 devDependency that drifts above the peer range means the suite passes
@@ -478,6 +478,14 @@ it up. **The floor is a running one and moves often** — every move since
   0.0.x is exact, the `^2.18.6` story again), so 2.21.0 still answered
   null on Windows. The atlases still feature-detect it and keep the
   readback, for an engine that answers null.
+- `^2.22.0` — `scrollContents`'s `pinned` rects (react-x11#682): `<Flow>`'s
+  2D pan copies the whole pane and has core repaint the minimap and the
+  controls in place, where it had to carve a band the pane's full width
+  out of the copy. The same release copies an opaque subtree that only
+  moved rather than repainting it (#681) and stops a rounded box masking
+  every fill inside it to round its corners (#685). Neither needed a
+  change here; the stress example's widgets are what they were measured
+  on.
 
 Do not reach back for a `github:` spec to get at unreleased core — cut a core
 release instead.

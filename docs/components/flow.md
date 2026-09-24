@@ -413,19 +413,23 @@ The seams this stands on are public API: `paintDamage()` and the
 on its own.
 
 **Panning blits.** A pan frame is `scrollContents` (react-x11#303) on the
-pane with the furniture bands carved out, plus ordinary claims for the
-strips — the blit gate tests foreign claims against the _rect_
-(react-x11#309, landed as #310), so the strips sit edge to edge with the
-copy and the frame stays a blit. Measured on the 300-node scene: **19
-requests and 1.6 KB a frame** bare, **~550 requests and ~170 KB** with the
-minimap and controls up (the strip repaints; it holds the minimap's three
-hundred dots), from ~2,465 requests and ~1.8 MB when every pan frame
-repainted the world. Mounted bodies ride it: they are laid out in one box a
+whole pane, with the minimap and the controls handed over as _pinned_
+(react-x11#682, 2.22): the copy moves everything, and core repaints each
+panel and the stale image of it the copy dragged along, as well as the
+strips the shift exposed. They used to be carved out of the region
+instead, and a region is one rectangle, so controls in one bottom corner
+and the minimap in the other cost a band the pane's full width, every
+card, label and edge in it repainted on every pan frame. Over the stress
+example's widgets on XQuartz that was 47 frames a second, where a pane
+with no furniture pans at 80. Before any of this, on the 300-node scene,
+every pan frame repainted the world: ~2,465 requests and ~1.8 MB. A panel
+repainted by itself is drawn exactly as the whole pane draws it, which a
+pinned panel is every pan frame. Until that held, the controls' glyphs
+took their line caps from whatever the pass had stroked before them. Mounted bodies ride it: they are laid out in one box a
 pan moves by exactly the pan, which the pane hands to `scrollContents` as a
 rider (react-x11#671), so their pixels are copied with the graph's and the
 box's commit claims nothing. `<Flow>` puts that box inside one that clips it
-to the pane, so what it leaves outside the copy is the bands the furniture
-repaints anyway. A body entering or leaving the pane, or changing as it
+to the pane, so it leaves nothing outside the copy. A body entering or leaving the pane, or changing as it
 goes, claims inside the rect and makes that one step a repaint. On the
 stress example's widgets board, 56 bodies mounted, a 2D pan went from 44 to
 84 frames a second, 20.6 ms a flush to 8.4. With none on screen a pan
