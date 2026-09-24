@@ -168,6 +168,15 @@ both backends here. On Cocoa it is a transparent layer above the GL layer; on
 X11 it is one opaque child window per region the children reach, which is
 acceptable precisely because a node body is an opaque card.
 
+XQuartz is the exception: the macOS window server composites every GL
+surface there above everything the X server draws, so `glOverlay` is false,
+and a graph with a node whose type has a `render` draws with the 2D renderer
+for as long as it has one. It is the nodes that count, not the registry. A
+registry is an app's whole vocabulary, and the stress example registers its
+widget types for every scene, so counting the registry put its lattices on
+the 2D renderer on XQuartz. One node dragged there ran at 20 fps where GL
+drags it at 75.
+
 This is also the row of the table with the most to gain, and the gain is not
 speed but correctness of scope. Typing one character into a child textarea
 today costs a 33.4 ms repaint of 96% of the graph. Under GL it should cost

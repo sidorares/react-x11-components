@@ -3839,9 +3839,13 @@ test('a pan with no body on screen commits nothing', async () => {
   // The pane sent the bodies' origin on every step of a pan whether or not
   // any body was laid out at it, and `<Flow>` re-rendered for each — the
   // panels' canvases with it, whose new `onDraw` repainted the controls on
-  // every frame of a pan over a graph of plain cards.
+  // every frame of a pan over a graph of plain cards. One node has a body,
+  // far off screen: a graph with none mounts no panels at all.
   await mount({
-    nodes: nodes(),
+    nodes: [
+      ...nodes(),
+      { id: 'far', type: 'form', position: { x: 5000, y: 5000 } },
+    ],
     edges: edges(),
     nodeTypes: { form: sizedType },
     minimap: true,

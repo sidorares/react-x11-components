@@ -3,7 +3,8 @@
 // answers `useSupports('glOverlay')` false for (sidorares/react-x11#653).
 // There the mounted node bodies, which are the surface's children, would
 // never be seen: a graph whose node types mount bodies draws with the 2D
-// renderer instead. node-x11's in-process server is made to advertise the
+// renderer instead — a graph with such a node, not a registry with such a
+// type. node-x11's in-process server is made to advertise the
 // extension; the same server without it is the control.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -37,7 +38,10 @@ const form: FlowNodeType = {
   render: () => h('text', null, 'body'),
 };
 
-async function run(xquartz: boolean): Promise<{
+async function run(
+  xquartz: boolean,
+  type: string | null = 'form',
+): Promise<{
   renderers: Set<string>;
   glareas: number;
   errors: string[];
@@ -60,7 +64,7 @@ async function run(xquartz: boolean): Promise<{
           { width: 640, height: 480 },
           h(Flow, {
             defaultNodes: [
-              { id: 'a', type: 'form', position: { x: 40, y: 40 } },
+              { id: 'a', type: type ?? undefined, position: { x: 40, y: 40 } },
             ],
             defaultEdges: [],
             nodeTypes: { form } as Record<string, FlowNodeType<unknown>>,
@@ -115,5 +119,16 @@ test('elsewhere the same graph asks for a GL surface', async () => {
   assert.ok(
     glareas > 0 || errors.length > 0,
     `a GL surface was attempted (glareas ${glareas}, errors ${JSON.stringify(errors)})`,
+  );
+});
+
+test('on XQuartz, a body type no node uses does not cost the graph its GL surface', async () => {
+  // The registry is an app's whole vocabulary: the stress example registers
+  // its widget types for every scene, and its lattices of plain cards drew
+  // in 2D on XQuartz — a node dragged at 20 fps where GL drags it at 75.
+  const { renderers, glareas, errors } = await run(true, null);
+  assert.ok(
+    glareas > 0 || errors.length > 0,
+    `a GL surface was attempted (glareas ${glareas}, errors ${JSON.stringify(errors)}, frames ${[...renderers]})`,
   );
 });

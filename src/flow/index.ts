@@ -604,16 +604,28 @@ export function Flow<N = FlowNodeData, E = unknown>(
 
   // --- mounted node bodies ------------------------------------------------
   //
-  // Only the node types that asked for one cost anything: with no `render`
-  // in the registry the pane is never given `onNodeBodies`, never computes a
-  // rect, and this half of the component is one `useState` that stays empty.
+  // Only the nodes whose type asked for one cost anything: with none in the
+  // graph the pane is never given `onNodeBodies`, never computes a rect, and
+  // this half of the component is one `useState` that stays empty. Asked of
+  // the nodes and not of the registry, because the registry is an app's
+  // whole vocabulary: a type with a body that no node uses is not a body,
+  // and it cost a graph of plain cards the GL surface on XQuartz (below) —
+  // the stress example registers its widget types for every scene, and its
+  // lattices drew in 2D there, a node dragged at 20 fps where GL drags it
+  // at 75. A scan per render of the nodes, a few microseconds at 2,000.
   const { nodeTypes } = rest;
+  const bodyTypes = useMemo(() => {
+    if (!nodeTypes) return null;
+    const names = Object.keys(nodeTypes).filter(
+      (name) => nodeTypes[name]?.render != null,
+    );
+    return names.length > 0 ? new Set(names) : null;
+  }, [nodeTypes]);
   const mounts = useMemo(
     () =>
-      nodeTypes
-        ? Object.values(nodeTypes).some((type) => type?.render != null)
-        : false,
-    [nodeTypes],
+      bodyTypes != null &&
+      currentNodes.some((node) => bodyTypes.has(node.type ?? 'default')),
+    [bodyTypes, currentNodes],
   );
   const [bodies, setBodies] = useState<readonly NodeBodyRect[]>([]);
   // Where the graph's origin sits in the pane. The bodies are laid out in
@@ -965,9 +977,9 @@ export function Flow<N = FlowNodeData, E = unknown>(
   // …and on XQuartz not shown at all: the macOS window server composites
   // every GL surface there above everything the X server draws, panes
   // included. Core says so (`useSupports('glOverlay')` false, from the first
-  // render — sidorares/react-x11#653), and there a graph whose node types
-  // mount bodies draws with the 2D renderer: for as long as the pane lives,
-  // not per zoom, so the surface does not come and go as bodies mount.
+  // render — sidorares/react-x11#653), and there a graph with nodes whose
+  // types mount bodies draws with the 2D renderer: for as long as it has
+  // one, not per zoom, so the surface does not come and go as bodies mount.
   const overlaySupported = useSupports('glOverlay');
   const cardsDirect: ReactElement[] = [];
   if (cards && !composited) {
