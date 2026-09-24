@@ -933,6 +933,24 @@ function shotViewport(): Viewport | null {
   );
 }
 
+/**
+ * Runs `fn` with the pane's clock (`performance.now`) held still. Whether a
+ * zoom is still moving, and when held bodies come back, are judged on that
+ * clock; on a loaded runner a wheel's notches and the assertion after them
+ * could take longer than the rest they are meant to happen inside of, and
+ * the bodies were back before the test looked.
+ */
+async function heldClock<T>(fn: () => Promise<T>): Promise<T> {
+  const perf = globalThis.performance;
+  const at = perf.now();
+  Object.defineProperty(perf, 'now', { value: () => at, configurable: true });
+  try {
+    return await fn();
+  } finally {
+    delete (perf as { now?: unknown }).now;
+  }
+}
+
 /** Wheel steps a gesture's pace apart, on a clock pinned to the test. */
 async function zoomSteps(
   x: number,
@@ -2579,11 +2597,13 @@ test('bodies over the budget sit a wheel zoom out, mounted and hidden, and come 
   assert.strictEqual(bodyLayer().children.length, 10, 'precondition');
   const before = renders;
   const node = pane();
-  for (let notch = 0; notch < 4; notch++) {
-    await userEvent.wheel(node, { ...at(40, 40), deltaY: -24 });
-  }
-  assert.ok(bodiesAway(), 'hidden while the wheel turns');
-  assert.strictEqual(renders, before, 'and not rendered once per notch');
+  await heldClock(async () => {
+    for (let notch = 0; notch < 4; notch++) {
+      await userEvent.wheel(node, { ...at(40, 40), deltaY: -24 });
+    }
+    assert.ok(bodiesAway(), 'hidden while the wheel turns');
+    assert.strictEqual(renders, before, 'and not rendered once per notch');
+  });
 
   await act(() => new Promise((resolve) => setTimeout(resolve, 250)));
   assert.ok(!bodiesAway(), 'back once the zoom rests');
@@ -2711,24 +2731,26 @@ test('`adaptive` sets the body budget, and every frame reports it', async () => 
       adaptive,
       onFrame: (f) => void frames.push(f),
     });
-    await userEvent.wheel(pane() as unknown as DrawnNode, {
-      ...at(10, 10),
-      deltaY: -24,
+    await heldClock(async () => {
+      await userEvent.wheel(pane() as unknown as DrawnNode, {
+        ...at(10, 10),
+        deltaY: -24,
+      });
+      assert.strictEqual(
+        bodiesAway(),
+        held,
+        `adaptive ${JSON.stringify(adaptive)}`,
+      );
+      await act();
+      const last = frames[frames.length - 1];
+      assert.ok(last, 'a frame was reported');
+      assert.strictEqual(last.bodies.held, held);
+      assert.ok(last.bodies.count > 0 && last.bodies.count <= 10);
+      assert.strictEqual(
+        last.bodies.budgetMs,
+        adaptive === false ? Infinity : (adaptive?.budgetMs ?? 8),
+      );
     });
-    assert.strictEqual(
-      bodiesAway(),
-      held,
-      `adaptive ${JSON.stringify(adaptive)}`,
-    );
-    await act();
-    const last = frames[frames.length - 1];
-    assert.ok(last, 'a frame was reported');
-    assert.strictEqual(last.bodies.held, held);
-    assert.ok(last.bodies.count > 0 && last.bodies.count <= 10);
-    assert.strictEqual(
-      last.bodies.budgetMs,
-      adaptive === false ? Infinity : (adaptive?.budgetMs ?? 8),
-    );
     cleanup();
   }
 });
@@ -3024,12 +3046,14 @@ test('the graph leaves out the cards the bodies’ layer shows, and takes them b
     (pane() as unknown as { _shownBodies: ReadonlySet<string> })._shownBodies;
   assert.strictEqual(shown().size, 10, 'every mounted card is the layer’s');
   // a wheel zoom over the budget holds the bodies: their cards come back
-  await userEvent.wheel(pane() as unknown as DrawnNode, {
-    ...at(10, 10),
-    deltaY: -24,
+  await heldClock(async () => {
+    await userEvent.wheel(pane() as unknown as DrawnNode, {
+      ...at(10, 10),
+      deltaY: -24,
+    });
+    assert.ok(bodiesAway(), 'precondition: held');
+    assert.strictEqual(shown().size, 0, 'held bodies hand their cards back');
   });
-  assert.ok(bodiesAway(), 'precondition: held');
-  assert.strictEqual(shown().size, 0, 'held bodies hand their cards back');
 });
 
 test('a card is painted again for what it shows, not for its body’s own data', async () => {

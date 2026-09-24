@@ -472,10 +472,12 @@ export class FlowGraphNode extends Node implements FlowInstance {
   private _bodiesById = new Map<string, NodeBodyRect>();
   private _bodiesOrigin: XYPosition = { x: 0, y: 0 };
   /** Bodies held back while the zoom moves (`_holdBodies`): whether they
-   *  are, the zoom last seen, and the timer that brings them back. */
+   *  are, the zoom last seen, the timer that brings them back and when the
+   *  last held step was. */
   private _bodiesHeld = false;
   private _seenZoom = NaN;
   private _bodiesRest: unknown = null;
+  private _bodiesAt = 0;
   /** Mounted cards `<Flow>` shows, painted in the bodies' layer — the
    *  graph leaves them out (`setShownBodies`). */
   private _shownBodies: ReadonlySet<string> = new Set();
@@ -3801,14 +3803,28 @@ export class FlowGraphNode extends Node implements FlowInstance {
         return false;
       }
       this._zoomStep = { live: false, bodies: 0 };
-      if (this._bodiesRest != null) timers.clearTimeout?.(this._bodiesRest);
-      this._bodiesRest = timers.setTimeout?.(() => {
-        this._bodiesRest = null;
-        this._emitBodies();
-      }, BODY_ZOOM_REST_MS);
+      this._bodiesAt = now();
+      this._restBodies();
       return true;
     }
     return this._bodiesHeld && this._bodiesRest != null;
+  }
+
+  /** Bring the held bodies back once the zoom has held still for
+   *  `BODY_ZOOM_REST_MS` — judged on the pane's clock, like the zoom's own
+   *  rest (`_restZoom`): a timer that comes due while steps are still
+   *  arriving waits out what is left of the rest instead. */
+  private _restBodies(): void {
+    if (this._bodiesRest != null) return;
+    const wait = this._bodiesAt + BODY_ZOOM_REST_MS - now();
+    this._bodiesRest = timers.setTimeout?.(
+      () => {
+        this._bodiesRest = null;
+        if (now() - this._bodiesAt < BODY_ZOOM_REST_MS) this._restBodies();
+        else this._emitBodies();
+      },
+      Math.max(0, wait) + 1,
+    );
   }
 
   /**
