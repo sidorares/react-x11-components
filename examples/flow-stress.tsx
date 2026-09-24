@@ -57,7 +57,6 @@ import type {
   FlowNode,
   FlowNodeData,
   FlowNodeType,
-  HandlePosition,
 } from '../src/flow/index.js';
 
 export interface Scene {
@@ -67,78 +66,12 @@ export interface Scene {
   edges: FlowEdge[];
 }
 
-/** Which side of a node faces a point — so a chain's handles follow the
- * chain instead of all pointing down. */
-function facing(from: FlowNode, to: FlowNode): HandlePosition {
-  const dx = to.position.x - from.position.x;
-  const dy = to.position.y - from.position.y;
-  if (Math.abs(dx) >= Math.abs(dy)) return dx >= 0 ? 'right' : 'left';
-  return dy >= 0 ? 'bottom' : 'top';
-}
-
-/**
- * 20 nodes on an Archimedean spiral, joined in one chain.
- *
- * A spiral rather than a row because it is the small scene's whole job to be
- * *readable*: every node is on screen at a zoom that draws labels and
- * handles, so this is the case where per-node cost shows up undiluted, and
- * every edge kind has to route between two nodes at an arbitrary angle.
- */
-export function spiral(): Scene {
-  const count = 20;
-  const width = 104;
-  // One and a half turns, starting far enough out that the arc between two
-  // consecutive nodes is wider than a node. Tighter than that and the inner
-  // ring overlaps itself, which reads as a bug rather than as a spiral.
-  const turns = 1.5;
-  const step = (Math.PI * 2 * turns) / count;
-  const inner = Math.ceil(width / step);
-  const nodes: FlowNode[] = [];
-  for (let i = 0; i < count; i++) {
-    const theta = i * step;
-    const radius = inner + 30 * theta;
-    nodes.push({
-      id: `s${i}`,
-      position: {
-        // stretched across, because the pane is wider than it is tall
-        x: Math.round(Math.cos(theta) * radius * 1.25),
-        y: Math.round(Math.sin(theta) * radius),
-      },
-      width,
-      height: 38,
-      data: { label: `step ${i + 1}` },
-    });
-  }
-  for (let i = 0; i < count; i++) {
-    const next = nodes[i + 1];
-    if (!next) continue;
-    nodes[i].sourcePosition = facing(nodes[i], next);
-    next.targetPosition = facing(next, nodes[i]);
-  }
-  const edges: FlowEdge[] = [];
-  for (let i = 0; i + 1 < count; i++) {
-    edges.push({
-      id: `s${i}-s${i + 1}`,
-      source: `s${i}`,
-      target: `s${i + 1}`,
-      label: i % 4 === 0 ? `${i}` : undefined,
-      animated: i === count - 2,
-    });
-  }
-  return {
-    name: '20 · spiral',
-    detail: 'one chain, every node readable',
-    nodes,
-    edges,
-  };
-}
-
 /**
  * 300 nodes in layers, each fanning out to two or three in the next — the
  * shape that makes edges rather than nodes the cost, and the one a fitted
  * viewport draws small enough that the pane's zoom thresholds start
- * dropping detail. Between them the two scenes bracket the interesting
- * range.
+ * dropping detail. With the lattices it brackets the interesting range:
+ * nodes the cost there, edges here.
  */
 export function fanOut(): Scene {
   // A lens: layer widths follow a half sine, scaled so the whole thing is
@@ -207,12 +140,12 @@ export function fanOut(): Scene {
 }
 
 /**
- * 200 nodes in a lattice, two edges out of each, some labelled and some
+ * `count` nodes in a lattice, two edges out of each, some labelled and some
  * marching — `scripts/bench/flow.ts`'s `grid` scene, so what this window
- * shows and what the bench measures are the same graph.
+ * shows and what the bench measures are the same graph. 200 by default;
+ * 2,000 is the heavy one, for a pane that no longer notices 200.
  */
-export function lattice(): Scene {
-  const count = 200;
+export function lattice(count = 200): Scene {
   const cols = Math.ceil(Math.sqrt(count * 1.6));
   const nodes: FlowNode[] = [];
   for (let i = 0; i < count; i++) {
@@ -242,7 +175,7 @@ export function lattice(): Scene {
     }
   }
   return {
-    name: '200 · lattice',
+    name: `${count.toLocaleString('en')} · lattice`,
     detail: `${nodes.length} nodes, ${edges.length} edges`,
     nodes,
     edges,
@@ -545,7 +478,7 @@ function App(): ReactElement {
   const trace = useRef<TraceSession | null>(null);
 
   const scenes = useMemo(
-    () => [spiral(), lattice(), fanOut(), widgets(), chartWidgets()],
+    () => [lattice(), lattice(2000), fanOut(), widgets(), chartWidgets()],
     [],
   );
   const [ticking, setTicking] = useState(false);

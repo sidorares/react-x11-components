@@ -498,8 +498,9 @@ side by side — drawn `task` cards and a mounted, resizable `options` node made
 of real checkboxes, buttons and a textarea.
 
 `npm run examples:flow-stress` is the one to reach for when changing how the
-pane draws: two scene buttons (20 nodes on a spiral, 300 nodes and 745 edges
-in a fan), a **pan** button that drives the viewport continuously, and a live
+pane draws: scene buttons (lattices of 200 and 2,000 nodes, 300 nodes and 745
+edges in a fan, and 400 and 200 nodes with mounted widget and chart bodies),
+a **pan** button that drives the viewport continuously, and a live
 readout from the trace — per pan frame while the loop runs, per drag step
 while you drag a node. Pan measures the full-frame path; dragging measures
 the damage-scoped one.
