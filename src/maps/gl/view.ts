@@ -196,6 +196,9 @@ const TEXT_BUDGET_MOVING_MS = 1;
 /** Milliseconds a frame may spend making label fields (`text.ts`), about
  *  0.2 ms each, when there are any to make. */
 const FIELD_BUDGET_MS = 4;
+/** With `labelsWhileMoving`: milliseconds a frame may spend setting the
+ *  text of names it has just placed, so they draw in it. */
+const LIVE_TEXT_BUDGET_MS = 8;
 const TEXT_BUDGET_SETTLED_MS = 4;
 /**
  * How often a moving view is placed again, in milliseconds — every other
@@ -977,8 +980,12 @@ export class GlMapDriver implements MapView {
       try {
         const atlas = this._atlasFor(info.node, style, scale);
         if (atlas) {
+          // Live labels measure at the settled budget while moving too:
+          // what they admit mid-zoom has to be measured mid-zoom.
+          const live = map.labelsWhileMoving === true;
           const textDeadline =
-            now() + (moving ? TEXT_BUDGET_MOVING_MS : TEXT_BUDGET_SETTLED_MS);
+            now() +
+            (moving && !live ? TEXT_BUDGET_MOVING_MS : TEXT_BUDGET_SETTLED_MS);
           atlas.beginFrame(textDeadline);
           // The attribution before the names: it is one string, measured
           // once, and a frame whose budget went on names would leave it
@@ -1256,6 +1263,7 @@ export class GlMapDriver implements MapView {
     at: number,
     moving: boolean,
   ): LabelBatch {
+    const live = this.props.map.labelsWhileMoving === true;
     const from = fade && fade.alpha >= 0.5 ? fade.frame : frame;
     const centre = project(this._controller.camera().center);
     const placement: PlacementFrame = {
@@ -1270,12 +1278,17 @@ export class GlMapDriver implements MapView {
       // The projection's world, which the cover lays every source out on.
       world: worldSize(frame.zoom, DEFAULT_TILE_SIZE) * frame.scale,
       now: at,
-      admit: at - this._zoomedAt >= ZOOM_QUIET_MS,
+      // Live: every name the view offers, at every step of a zoom.
+      admit: live || at - this._zoomedAt >= ZOOM_QUIET_MS,
     };
-    if (!moving || at - this._placedAt >= PLACE_INTERVAL_MS) {
+    if (live || !moving || at - this._placedAt >= PLACE_INTERVAL_MS) {
       this._placer.place(placement, atlas);
       this._placedAt = at;
     }
+    // Live: what placement asked for is set now, before the batch, so a
+    // name placed in this frame is drawn in it — its field goes into the
+    // texture ahead of the cap, before this frame's labels draw.
+    if (live) atlas.setNow(now() + LIVE_TEXT_BUDGET_MS);
     return this._placer.batch(placement, atlas);
   }
 

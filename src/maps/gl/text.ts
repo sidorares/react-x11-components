@@ -76,6 +76,13 @@ export interface TextEngine {
     items: readonly TextItem[],
     pad: number,
   ): Promise<(TextRaster | null | undefined)[]>;
+  /**
+   * One item set now, synchronously, where the engine can: a raster;
+   * `null` for one that can never be drawn; `undefined` for one it can only
+   * set through {@link rasterize} (an icon's paths, or an engine whose
+   * layouts answer no coverage of their own). Optional.
+   */
+  rasterizeNow?(item: TextItem, pad: number): TextRaster | null | undefined;
   dispose(): void;
 }
 
@@ -195,6 +202,31 @@ export class SurfaceTextEngine implements TextEngine {
    * icons, which are paths, and every string on an engine that cannot — go
    * through the surface.
    */
+  /**
+   * A string the layout sets itself, synchronously, where the engine
+   * answers a layout's coverage — no surface, no readback, nothing to wait
+   * for. `undefined` for an icon, and for every string once the engine has
+   * shown it cannot.
+   */
+  rasterizeNow(item: TextItem, pad: number): TextRaster | null | undefined {
+    if (item.icon || this._coverage === false) return undefined;
+    const coverage =
+      this._layout(item.text, item.size).coverage?.({ pad }) ?? null;
+    if (!coverage) {
+      if (this._coverage === null) this._coverage = false;
+      return undefined;
+    }
+    this._coverage = true;
+    return coverage.width > STAGING_WIDTH || coverage.height > STAGING_HEIGHT
+      ? null // wider than the surface could set: never drawn, as there
+      : {
+          width: coverage.width,
+          height: coverage.height,
+          pixels: coverage.data,
+          stride: 1,
+        };
+  }
+
   async rasterize(
     items: readonly TextItem[],
     pad: number,
@@ -203,25 +235,12 @@ export class SurfaceTextEngine implements TextEngine {
     const out: (TextRaster | null | undefined)[] = new Array(items.length);
     const rest: number[] = [];
     items.forEach((item, i) => {
-      const coverage =
-        !item.icon && this._coverage !== false
-          ? (this._layout(item.text, item.size).coverage?.({ pad }) ?? null)
-          : null;
-      if (!coverage) {
-        if (!item.icon && this._coverage === null) this._coverage = false;
+      const raster = this.rasterizeNow(item, pad);
+      if (raster === undefined) {
         rest.push(i);
         return;
       }
-      this._coverage = true;
-      out[i] =
-        coverage.width > STAGING_WIDTH || coverage.height > STAGING_HEIGHT
-          ? null // wider than the surface could set: never drawn, as there
-          : {
-              width: coverage.width,
-              height: coverage.height,
-              pixels: coverage.data,
-              stride: 1,
-            };
+      out[i] = raster;
     });
     if (rest.length === 0) return out;
     const staged = await this._stage(
@@ -639,6 +658,42 @@ export class LabelAtlas {
    * behind a frame, and names arrived late. In the frame, on a budget,
    * they are made at a known cost and drawn the frame after.
    */
+  /**
+   * Set what placement asked for, in the frame, until `deadline` (at least
+   * one): what was read back already, then every string the engine can set
+   * synchronously. What is set here is drawable in this frame — it goes
+   * into the texture ahead of any cap, before this frame draws (the
+   * `labelsWhileMoving` path, `view.ts`). Icons, and an engine with no
+   * synchronous path, still go through {@link pump}.
+   */
+  setNow(deadline: number): void {
+    const engine = this._engine;
+    if (!engine) return;
+    let made = 0;
+    while (this._fieldQueue.length > 0 && (made === 0 || now() < deadline)) {
+      const { key, raster } = this._fieldQueue.shift()!;
+      this._queued.delete(key);
+      this._add(key, raster.width, raster.height, this._field(raster), true);
+      made++;
+    }
+    if (!engine.rasterizeNow) return;
+    for (const [key, item] of this._wanted) {
+      if (made > 0 && now() >= deadline) {
+        this.starved = true;
+        break;
+      }
+      const raster = engine.rasterizeNow(item, this.pad);
+      if (raster === undefined) continue;
+      this._wanted.delete(key);
+      if (raster === null) {
+        this._failed.add(key);
+        continue;
+      }
+      this._add(key, raster.width, raster.height, this._field(raster), true);
+      made++;
+    }
+  }
+
   makeFields(deadline: number): void {
     if (!this._engine) return;
     let made = 0;
@@ -670,6 +725,8 @@ export class LabelAtlas {
     width: number,
     height: number,
     pixels: Uint8Array,
+    /** Drawable in this frame: uploaded ahead of any cap before it draws. */
+    immediate = false,
   ): boolean {
     let place =
       this._allocate(width, height) ?? this._reuseShelf(width, height);
@@ -685,11 +742,12 @@ export class LabelAtlas {
       width,
       height,
       pixels,
-      ready: false,
+      ready: immediate,
       used: this._frame,
     };
     this._entries.set(key, entry);
-    this._uploads.push(entry);
+    if (immediate) this._moved.push(entry);
+    else this._uploads.push(entry);
     return true;
   }
 
@@ -722,7 +780,7 @@ export class LabelAtlas {
    * and came back over the next few frames, at full opacity. A full atlas
    * is the ordinary state of a session (a thousand strings at 1x, a quarter
    * of that at 2x), so that was a flash of the whole label layer at the end
-   * of most settles. A shelf any label of the last frame stands on is not
+   * of most settles. A shelf any label of the last two frames stands on is not
    * taken: what is dropped is off screen, and asked for again if it
    * returns.
    */
@@ -736,7 +794,10 @@ export class LabelAtlas {
         newest.set(entry.y, entry.used);
     }
     let shelf: { y: number; height: number; x: number } | null = null;
-    let oldest = this._frame;
+    // Not a shelf any label of this frame or the last stands on: fields can
+    // be made before a frame's labels are batched (`setNow`), when a label
+    // still fading out has not been asked for yet.
+    let oldest = this._frame - 1;
     for (const candidate of this._shelves) {
       if (candidate.height !== height) continue;
       const used = newest.get(candidate.y) ?? -Infinity;

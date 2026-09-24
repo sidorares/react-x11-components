@@ -2666,6 +2666,21 @@ test('the atlas keeps what is drawn when it fills, and draws nothing the texture
     'nothing drawn moved',
   );
   assert.strictEqual(atlas.entry('j'), null);
+  // One frame on, a shelf drawn from in the last frame is still spared —
+  // for a label fading out that this frame has not asked for yet, which
+  // fields made before the frame's labels are batched would otherwise take.
+  atlas.beginFrame(Infinity);
+  for (const t of ['a', 'b', 'j']) atlas.entry(t);
+  atlas.pump();
+  await new Promise((resolve) => setImmediate(resolve));
+  atlas.makeFields(Infinity);
+  upload();
+  assert.strictEqual(
+    atlas.entry('j'),
+    null,
+    'no room taken from the last frame',
+  );
+  // Two frames on, it is taken.
   atlas.beginFrame(Infinity);
   for (const t of ['a', 'b', 'j']) atlas.entry(t);
   atlas.pump();
@@ -2914,6 +2929,185 @@ test('a glide sets the labels of the view it stops at while it is still gliding'
     `and the names they carry: ${set.join(', ')}`,
   );
   driver.dispose();
+});
+
+test('setNow makes a field drawable in the frame that asks for it, ahead of any cap', async () => {
+  const sync: string[] = [];
+  const engine: TextEngine = {
+    measure: (text, size) => ({
+      width: text.length * size * 0.5,
+      height: size,
+    }),
+    rasterize: async (items, pad) =>
+      items.map((item) => {
+        const width = 20 + pad * 2;
+        const height = item.size + pad * 2;
+        return { width, height, pixels: new Uint8Array(width * height * 4) };
+      }),
+    rasterizeNow: (item, pad) => {
+      if (item.icon) return undefined;
+      sync.push(item.text);
+      const width = item.text.length * item.size * 0.5 + pad * 2;
+      const height = item.size + pad * 2;
+      return {
+        width,
+        height,
+        pixels: new Uint8Array(width * height),
+        stride: 1,
+      };
+    },
+    dispose: () => {},
+  };
+  const atlas = new LabelAtlas(engine);
+  atlas.beginFrame(Infinity);
+  const names = Array.from({ length: 30 }, (_, i) => `Street ${i}`);
+  for (const name of names) assert.strictEqual(atlas.entry(name), null);
+  atlas.icon('bus', 'plate');
+  atlas.setNow(Infinity);
+  // Drawable at once — the frame that asked draws it…
+  assert.ok(
+    names.every((n) => atlas.entry(n)),
+    'every string set now',
+  );
+  assert.deepStrictEqual(sync, names, 'synchronously, each once');
+  // …because all of it goes into the texture before that frame draws,
+  // past the per-frame cap.
+  assert.strictEqual(atlas.takeUploads(0).length, names.length);
+  // An icon is paths: it waits for the staging surface.
+  assert.strictEqual(atlas.icon('bus', 'plate'), null);
+  assert.ok(atlas.pending);
+
+  // An engine with no synchronous path sets nothing now.
+  const later = new LabelAtlas({ ...engine, rasterizeNow: undefined });
+  later.beginFrame(Infinity);
+  later.entry('Main Street');
+  later.setNow(Infinity);
+  assert.strictEqual(later.entries, 0);
+});
+
+test('labelsWhileMoving places and draws names in the frame, mid-zoom', async (t) => {
+  const engine: TextEngine = {
+    measure: (text, size) => ({
+      width: text.length * size * 0.5,
+      height: size,
+    }),
+    rasterize: async (items, pad) =>
+      items.map((item) => {
+        const width = item.text.length * item.size * 0.5 + pad * 2;
+        const height = item.size + pad * 2;
+        return { width, height, pixels: new Uint8Array(width * height * 4) };
+      }),
+    rasterizeNow: (item, pad) => {
+      if (item.icon) return undefined;
+      const width = item.text.length * item.size * 0.5 + pad * 2;
+      const height = item.size + pad * 2;
+      return {
+        width,
+        height,
+        pixels: new Uint8Array(width * height),
+        stride: 1,
+      };
+    },
+    dispose: () => {},
+  };
+  t.mock.method(SurfaceTextEngine, 'forApp', () => engine);
+  // Every placement and the labels each batch drew, frame by frame.
+  const frames: { placed: string[]; visible: string[] }[] = [];
+  const batch = LabelPlacer.prototype.batch;
+  t.mock.method(
+    LabelPlacer.prototype,
+    'batch',
+    function (this: LabelPlacer, ...args: Parameters<LabelPlacer['batch']>) {
+      const out = batch.apply(this, args);
+      const shown = (
+        this as unknown as {
+          _shown: Set<{ text: string; placed: boolean; opacity: number }>;
+        }
+      )._shown;
+      // Visible: a label only starts its fade once its field is in hand.
+      frames.push({
+        placed: [...shown].filter((s) => s.placed).map((s) => s.text),
+        visible: [...shown].filter((s) => s.opacity > 0).map((s) => s.text),
+      });
+      return out;
+    },
+  );
+  const run = async (live: boolean) => {
+    frames.length = 0;
+    const controller = new MapController({
+      center: { lon: -0.1281, lat: 51.508 },
+      zoom: 12,
+    });
+    const driver = new GlMapDriver(controller, {
+      controller,
+      map: {
+        sources: [
+          {
+            id: 'labels',
+            minZoom: 0,
+            maxZoom: 14,
+            tileSize: 512,
+            // Each level names its places differently: what a level offers
+            // is new when the zoom reaches it.
+            load: (request: { z: number }) => ({
+              kind: 'vector' as const,
+              data: labelTileBytes(`Place ${request.z}`),
+            }),
+          },
+        ],
+        mapStyle: {
+          layers: [
+            {
+              id: 'places',
+              type: 'symbol',
+              sourceLayer: 'place_labels',
+              textField: 'name',
+              rank: 100,
+              textColor: '#222222',
+              textHaloColor: '#ffffff',
+            },
+          ],
+        },
+        adaptive: false,
+        labelsWhileMoving: live,
+      },
+      onFailure: (error: Error) => {
+        throw error;
+      },
+    });
+    const gl = recordingGl(true).gl;
+    const info = { width: 1536, height: 1536, node: { scale: 1 } };
+    const frame = async () => {
+      driver.draw(gl, info);
+      for (let i = 0; i < 3; i++) await new Promise((r) => setTimeout(r, 0));
+    };
+    // Settled at 12, then zooming in, a step a frame, past level 13.
+    for (let i = 0; i < 8; i++) {
+      await frame();
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    const from = frames.length;
+    for (let z = 12.1; z < 13.8; z += 0.1) {
+      controller.setCamera({ zoom: z });
+      await frame();
+    }
+    driver.dispose();
+    return frames.slice(from);
+  };
+
+  const live = await run(true);
+  const first = live.findIndex((f) => f.placed.some((p) => p === 'Place 13'));
+  assert.ok(first >= 0, 'a name of level 13 is placed mid-zoom');
+  assert.ok(
+    live[first].visible.includes('Place 13'),
+    'and drawn in the frame it is placed in',
+  );
+
+  const settled = await run(false);
+  assert.ok(
+    settled.every((f) => !f.placed.includes('Place 13')),
+    'without it, nothing new is admitted while the zoom moves',
+  );
 });
 
 test('labels are one instanced draw over the scene, once their rasters are uploaded', async () => {

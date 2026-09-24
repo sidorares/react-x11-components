@@ -384,6 +384,20 @@ export interface MapGlProps {
    * have to know that to keep its own clock running.
    */
   adaptive?: boolean | { budgetMs?: number };
+  /**
+   * Place labels in every frame while the camera moves, and set a new
+   * name's text in the frame it is placed in, so the names always match
+   * the zoom on screen. Off by default: new names then wait until the zoom
+   * has been still for 120 ms, and arrive a readback later.
+   *
+   * What it costs: a zoom crosses several label sets, so names arrive and
+   * leave at every step of it (each fading, over 220 ms), and each new name
+   * is set on this thread in the frame that needs it — up to 8 ms a frame,
+   * the rest the frame after. Needs a text engine that sets a string
+   * synchronously (react-x11 2.21's layout coverage); on one that cannot,
+   * names still arrive a readback later, but are placed every frame.
+   */
+  labelsWhileMoving?: boolean;
   /** Build tiles' geometry on this many worker threads, so no frame pays
    *  for a tile arriving. `0` (the default) builds on this thread, a few
    *  milliseconds a frame. */
