@@ -384,6 +384,29 @@ Measured on the 300-node scene, one drag step went from a full repaint
 step from ~380 ms (its animated edge was invalidating the pane per tick) to
 ~70 ms.
 
+**What did not move is copied, not painted.** The rect a step claims is only
+as small as the moved node's edges are short. A long edge's bounds are most
+of the pane, and the stress lattice sends its last rows' edges back to its
+first nodes, so dragging one of those repainted the window every step. Every
+card and edge in it was drawn again, at 46-57 fps on Cocoa. So a drag's
+first paint draws the rest of the graph into two pictures of the pane: the
+ground and the edges, then the cards on a clear ground. Each step copies
+the claimed rect from the first, draws the moved nodes' edges, copies from
+the second, and draws the moved nodes. That is the painter's order, with
+every edge under every card and the dragged node over all of them. The same
+drag runs at 112-114 fps. The pictures go on release, or when anything else
+about the graph changes. If the view moves under the gesture, that gesture
+paints live from then on, since remaking both pictures every step would
+cost two full paints a step. Marching dashes stand still while the pictures
+are up. Cutting the damage finer was tried first and did not help: core
+paints at most four rects a frame and merges the rest, and the pieces of a
+long diagonal merge back into most of the pane.
+
+Under GL the same idea is a layer. The world is built once without the
+moved nodes and their edges, and a step packs just those, drawn in two
+halves around the world's cards. At 2,000 nodes a step went from 5-7 ms of
+scene and packing to about 1 ms.
+
 The seams this stands on are public API: `paintDamage()` and the
 `selfDamagedProps` registration (react-x11#301), and `defaultWheel`/
 `defaultMouseMove` (react-x11#302) — a bare `<flowgraph>` zooms and hovers

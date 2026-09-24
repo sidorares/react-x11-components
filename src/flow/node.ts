@@ -76,6 +76,8 @@ import { distanceToPath, pathBounds } from './paths.js';
 import {
   paintFloat,
   paintGraph,
+  paintGraphEdges,
+  paintGraphNodes,
   paintGround,
   paintNodeItem,
   paintPanels,
@@ -166,6 +168,24 @@ type ShotCtor = new (
  *  it drew at. */
 interface ZoomShot {
   surface: ShotSurface;
+  viewport: Viewport;
+  width: number;
+  height: number;
+}
+
+/**
+ * What a 2D drag copies from instead of repainting: the graph without the
+ * nodes it moves, in two pictures of the pane — the ground and the edges,
+ * and the cards on a clear ground over them — so the moved nodes' edges go
+ * between the two and the nodes over both, as the painter orders them.
+ * Good for the gesture it was made in, at the viewport and the version of
+ * the graph it was painted at.
+ */
+interface LiftShot {
+  under: ShotSurface;
+  over: ShotSurface;
+  gesture: object;
+  version: number;
   viewport: Viewport;
   width: number;
   height: number;
@@ -568,6 +588,11 @@ export class FlowGraphNode extends Node implements FlowInstance {
    * exactly, and whenever the graph itself changes.
    */
   private _zoomShot: ZoomShot | null = null;
+  /** A 2D drag's pictures (`_liftShotFor`), and the gesture that is not to
+   *  have any: one whose view moved under it, where a picture a step would
+   *  cost two full paints a step. */
+  private _liftShot: LiftShot | null = null;
+  private _liftShotRefused: object | null = null;
   /** Inside a live input dispatch — what makes a body emission `sync`.
    * Motion and the wheel run at continuous priority, whose React updates
    * can trail the pane's own painting by frames; an emission made under
@@ -2230,15 +2255,17 @@ export class FlowGraphNode extends Node implements FlowInstance {
   }
 
   /**
-   * The nodes a drag is moving under GL, once it has moved them: lifted out
-   * of the world for the rest of the gesture and drawn as a layer of their
-   * own (`glFrame`), so each step packs them and their edges and leaves the
-   * world on the GPU. Null otherwise — and the change back is a change of
-   * the world's key, which rebuilds it with them in.
+   * The nodes a drag is moving, once it has moved them: lifted out of the
+   * rest of the graph for the rest of the gesture. Under GL the world is
+   * built without them and they are a layer of their own (`glFrame`), so
+   * each step packs them and their edges and leaves the world on the GPU;
+   * in 2D the rest is two pictures a step copies from (`_liftShotFor`).
+   * Null otherwise — and under GL the change back is a change of the
+   * world's key, which rebuilds it with them in.
    */
   private _lifted(): ReadonlySet<string> | null {
     const g = this._gesture;
-    if (!this._gl || g?.kind !== 'drag' || !g.moved || g.ids.length === 0) {
+    if (g?.kind !== 'drag' || !g.moved || g.ids.length === 0) {
       if (this._liftSet) {
         this._liftSet = null;
         this._liftFor = null;
@@ -2321,11 +2348,12 @@ export class FlowGraphNode extends Node implements FlowInstance {
       }
     }
     this._emitNodes(changes);
+    const reason = this._lifted() ? 'lift' : 'content';
     if (damage) {
-      this._claim(inflateRect(damage, CULL_MARGIN), 'content');
+      this._claim(inflateRect(damage, CULL_MARGIN), reason);
     } else {
       // under GL: a frame, and — while the nodes are lifted — of them alone
-      this._repaint(this._lifted() ? 'lift' : 'content');
+      this._repaint(reason);
     }
     // Inside the gesture dispatch, deliberately: the body-rect setState this
     // triggers is a discrete-priority update, so React commits the moved
@@ -2914,6 +2942,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
 
   override destroySubtree(): void {
     this._dropZoomShot();
+    this._dropLiftShot();
     this._glRequest = null;
     if (this._bodiesRest != null) timers.clearTimeout?.(this._bodiesRest);
     this._bodiesRest = null;
@@ -3081,8 +3110,27 @@ export class FlowGraphNode extends Node implements FlowInstance {
       this._zoomMoving() && !this._gesture
         ? this._zoomShotFor(palette, approximateText)
         : null;
+    // A drag's nodes over pictures of the rest (`_liftShotFor`), in 2D and
+    // not mid-zoom.
+    const lift = shot || approximateText ? null : this._lifted();
+    const liftShot = lift ? this._liftShotFor(palette, lift) : null;
+    if (!lift && this._liftShot) this._dropLiftShot();
     let scene: FlowScene;
-    if (shot) {
+    if (liftShot && lift) {
+      // the pictures, with the moved nodes' edges between them and the
+      // nodes over both; the pane's furniture over it all
+      const lifted = buildScene(
+        this._sceneInput(palette, { lift: { ids: lift, only: true } }),
+      );
+      scene = buildScene(this._sceneInput(palette, 'overlay'));
+      const built = now();
+      this._compositeLift(ctx, liftShot, liftShot.under);
+      paintGraphEdges(painter, lifted);
+      this._compositeLift(ctx, liftShot, liftShot.over);
+      paintGraphNodes(painter, lifted);
+      paintFloat(painter, scene);
+      this._reportFrame(built - started, now() - built);
+    } else if (shot) {
       // the graph and the ground under it as the gesture drew them, scaled;
       // both live wherever the picture does not reach; and the pane's
       // furniture over them at the zoom of the moment
@@ -3195,7 +3243,8 @@ export class FlowGraphNode extends Node implements FlowInstance {
       this._glRequest!();
       return;
     }
-    super.invalidate(layout, damage, reason);
+    // a lift is this element's own bookkeeping; core knows it as content
+    super.invalidate(layout, damage, reason === 'lift' ? 'content' : reason);
   }
 
   /** A 2D frame's cost so far, while its flush is still painting passes. */
@@ -3596,6 +3645,142 @@ export class FlowGraphNode extends Node implements FlowInstance {
     this._zoomShot = null;
   }
 
+  /**
+   * The pictures a 2D drag copies from — made on the first pass of the
+   * gesture that has its nodes lifted, and kept while the graph under them
+   * and the view hold still. A drag step repainted the box round the moved
+   * node and every edge on it, and an edge is as long as it is: the stress
+   * lattice sends its last rows' edges back to its first nodes, so dragging
+   * one repainted the window a step, every card and edge in it, at 46-57
+   * fps on Cocoa. Cutting the damage finer did not help — core merges a
+   * frame's rects down to four, and a long diagonal's pieces merge back to
+   * most of the pane. Copying what did not move is what does.
+   *
+   * Null where there is no offscreen surface, and for a gesture whose view
+   * moved while it held pictures: it paints live from then on, rather than
+   * paint the graph twice a step.
+   */
+  private _liftShotFor(
+    palette: FlowPalette,
+    lift: ReadonlySet<string>,
+  ): LiftShot | null {
+    const gesture = this._liftFor;
+    if (!gesture || this._liftShotRefused === gesture) return null;
+    const v = this._viewport();
+    const pane = this._pane();
+    const scale = this._scale;
+    const width = Math.max(1, Math.ceil(pane.width * scale));
+    const height = Math.max(1, Math.ceil(pane.height * scale));
+    const held = this._liftShot;
+    if (held) {
+      const still =
+        held.viewport.x === v.x &&
+        held.viewport.y === v.y &&
+        held.viewport.zoom === v.zoom;
+      if (
+        held.gesture === gesture &&
+        still &&
+        held.version === this._worldVersion &&
+        held.width === width &&
+        held.height === height
+      ) {
+        return held;
+      }
+      this._dropLiftShot();
+      if (held.gesture === gesture && !still) {
+        this._liftShotRefused = gesture;
+        return null;
+      }
+    }
+    const ctor = (ntk as unknown as { Surface?: ShotCtor }).Surface;
+    if (typeof ctor !== 'function') return null;
+    const make = (): {
+      surface: ShotSurface;
+      painter: FlowPainter;
+    } | null => {
+      let surface: ShotSurface;
+      try {
+        surface = new ctor(this.app, { width, height, format: 'argb32' });
+      } catch {
+        return null;
+      }
+      const sctx = surface.getContext('2d') as {
+        translate?(x: number, y: number): void;
+        clearRect?(x: number, y: number, w: number, h: number): void;
+      } | null;
+      const painter = sctx ? createPainter(sctx, this._textOptions()) : null;
+      if (!sctx || !painter || typeof sctx.translate !== 'function') {
+        surface.destroy?.();
+        return null;
+      }
+      // a clear ground: the cards' picture goes over the edges
+      sctx.clearRect?.(0, 0, width, height);
+      sctx.translate(-pane.x * scale, -pane.y * scale);
+      return { surface, painter };
+    };
+    const under = make();
+    const over = under ? make() : null;
+    if (!under || !over) {
+      under?.surface.destroy?.();
+      return null;
+    }
+    const rest = buildScene({
+      ...this._sceneInput(palette, { lift: { ids: lift, only: false } }),
+      clip: null,
+    });
+    paintGround(under.painter, rest);
+    paintGraphEdges(under.painter, rest);
+    paintGraphNodes(over.painter, rest);
+    this._liftShot = {
+      under: under.surface,
+      over: over.surface,
+      gesture,
+      version: this._worldVersion,
+      viewport: { ...v },
+      width,
+      height,
+    };
+    return this._liftShot;
+  }
+
+  /** One of a drag's pictures, copied into this pass's rect of the pane —
+   *  the whole pane on a full pass. */
+  private _compositeLift(
+    ctx: Context2D,
+    shot: LiftShot,
+    surface: ShotSurface,
+  ): void {
+    const draw = (
+      ctx as unknown as {
+        drawImage?(image: unknown, ...args: number[]): void;
+      }
+    ).drawImage;
+    if (typeof draw !== 'function') return;
+    const pane = this._pane();
+    const rect = this._frameClip ? intersectRects(pane, this._frameClip) : pane;
+    if (!rect) return;
+    const s = this._scale;
+    const ox = pane.x * s;
+    const oy = pane.y * s;
+    const x0 = Math.max(0, Math.floor(rect.x * s - ox));
+    const y0 = Math.max(0, Math.floor(rect.y * s - oy));
+    const x1 = Math.min(shot.width, Math.ceil((rect.x + rect.width) * s - ox));
+    const y1 = Math.min(
+      shot.height,
+      Math.ceil((rect.y + rect.height) * s - oy),
+    );
+    if (x1 <= x0 || y1 <= y0) return;
+    const w = x1 - x0;
+    const h = y1 - y0;
+    draw.call(ctx, surface, x0, y0, w, h, ox + x0, oy + y0, w, h);
+  }
+
+  private _dropLiftShot(): void {
+    this._liftShot?.under.destroy?.();
+    this._liftShot?.over.destroy?.();
+    this._liftShot = null;
+  }
+
   /** Whether a zoom gesture is moving: a stream of zoom steps, the last of
    *  them under `GL_ZOOM_REST_MS` ago. A single step — a button, `fitView`,
    *  an app's `setViewport` — is not one. */
@@ -3662,9 +3847,11 @@ export class FlowGraphNode extends Node implements FlowInstance {
       | 'overlay'
       | 'card'
       | {
-          world: FlowRect;
-          /** The world without the lifted nodes and their edges, or those
-           *  alone (`only`). */
+          /** The GL world's overscan; left out, the pane as a 2D pass sees
+           *  it. */
+          world?: FlowRect;
+          /** Without the lifted nodes and their edges, or those alone
+           *  (`only`). */
           lift?: { ids: ReadonlySet<string>; only: boolean };
         } = 'all',
     /** The panels even while `<Flow>` paints them itself — for that paint. */
@@ -3703,10 +3890,13 @@ export class FlowGraphNode extends Node implements FlowInstance {
     // more than the panel it skips. The dot for a mid-drag node goes stale
     // until the release repaints in full; that is the trade, and it is
     // deliberate.
-    const world = typeof layer === 'object' ? layer.world : null;
+    const world = typeof layer === 'object' ? (layer.world ?? null) : null;
     const lift = typeof layer === 'object' ? layer.lift : undefined;
     const overlay = layer === 'overlay';
-    const map = !world && this._miniMapReached() ? this._miniMap() : null;
+    // the furniture is the overlay's: a lifted layer or the graph under it
+    // has none of its own
+    const map =
+      !world && !lift && this._miniMapReached() ? this._miniMap() : null;
     const viewport = this._viewport();
     const pane = this._pane();
     // An edge is the lifted layer's when either end is lifted.
@@ -3777,7 +3967,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
             }
           : null,
       controls:
-        world || (!panels && this._panelCanvases.length > 0)
+        world || lift || (!panels && this._panelCanvases.length > 0)
           ? []
           : this._controlButtons(),
       scale: this._scale,

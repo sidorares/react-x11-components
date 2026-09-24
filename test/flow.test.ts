@@ -4036,3 +4036,139 @@ test('under GL a drag the app stores keeps the world on the GPU', async () => {
   }
   await act(() => fireEvent.mouseUp(target, at(210, 120)));
 });
+
+test('a 2D drag copies the rest of the graph from pictures, and draws what a live paint draws', async () => {
+  // A drag step repainted the box round the moved node and all its edges,
+  // which with one long edge is the whole pane: every card and edge in it
+  // stroked again, 46-57 fps on Cocoa. The rest of the graph is two
+  // pictures now — the ground and the edges, the cards over them — and the
+  // moved node's edges go between the two: under `c`, which the edge from
+  // `a` passes beneath, as a live paint draws it.
+  const graph: FlowNode[] = [
+    ...nodes(),
+    {
+      id: 'c',
+      position: { x: 80, y: 190 },
+      width: 200,
+      height: 40,
+      data: { label: 'C' },
+    },
+  ];
+  const result = await renderX11(
+    h(FLOW_ELEMENT, {
+      nodes: graph,
+      edges: [{ id: 'a-b', source: 'a', target: 'b', label: 'ab' }],
+      style: { flexGrow: 1 },
+    }),
+    { backend: 'xserver', width: 420, height: 380 },
+  );
+  await act();
+  const target = pane() as unknown as DrawnNode;
+  const node = pane() as unknown as {
+    _liftShot: unknown;
+    _liftFor: unknown;
+    _liftShotRefused: unknown;
+    _dropLiftShot(): void;
+    invalidate(layout: boolean, rect: unknown, reason: string): void;
+  };
+  await act(() => {
+    fireEvent.mouseDown(target, at(160, 120));
+    fireEvent.mouseMove(target, at(175, 120));
+  });
+  await motionLands();
+  await act(() => fireEvent.mouseMove(target, at(190, 124)));
+  await motionLands();
+  assert.ok(node._liftShot, 'the step was painted over the pictures');
+
+  const { width, height } = pane().abs;
+  const read = async (): Promise<Uint8ClampedArray> =>
+    (
+      await (
+        result.ctx as unknown as {
+          getImageData(
+            x: number,
+            y: number,
+            w: number,
+            h: number,
+          ): Promise<{ data: Uint8ClampedArray }>;
+        }
+      ).getImageData(0, 0, width, height)
+    ).data;
+  const lifted = await read();
+
+  // The same frame painted live: no pictures for this gesture.
+  node._liftShotRefused = node._liftFor;
+  node._dropLiftShot();
+  await act(() => node.invalidate(false, null, 'content'));
+  await motionLands();
+  assert.ok(!node._liftShot, 'precondition: painted live');
+  const live = await read();
+
+  // The same pixels, but for rounding where the moved edge meets a card's
+  // antialiased border: a card blended onto a clear picture and then onto
+  // the edge rounds a few levels away from one blended onto the edge.
+  let differ = 0;
+  let worst = 0;
+  for (let i = 0; i < live.length; i += 4) {
+    const d = Math.max(
+      Math.abs(live[i] - lifted[i]),
+      Math.abs(live[i + 1] - lifted[i + 1]),
+      Math.abs(live[i + 2] - lifted[i + 2]),
+    );
+    if (d > 2) differ++;
+    worst = Math.max(worst, d);
+  }
+  assert.ok(worst <= 16, `a pixel ${worst} levels off a live paint`);
+  assert.ok(differ < 32, `${differ} pixels differ from a live paint`);
+  await act(() => fireEvent.mouseUp(target, at(190, 124)));
+});
+
+test('a 2D drag drops its pictures on release, and paints live once the view moves under it', async () => {
+  const drag = async (moveView: boolean): Promise<boolean[]> => {
+    cleanup();
+    await renderX11(
+      h(FLOW_ELEMENT, {
+        nodes: nodes(),
+        edges: edges(),
+        style: { flexGrow: 1 },
+      }),
+      { backend: 'xserver', width: 420, height: 380 },
+    );
+    await act();
+    const target = pane() as unknown as DrawnNode;
+    const node = pane() as unknown as {
+      _liftShot: unknown;
+      setViewport(v: object): void;
+    };
+    const seen: boolean[] = [];
+    await act(() => {
+      fireEvent.mouseDown(target, at(160, 120));
+      fireEvent.mouseMove(target, at(175, 120));
+    });
+    await motionLands();
+    seen.push(!!node._liftShot);
+    if (moveView) {
+      // the view moves under the gesture: a picture a step would be two
+      // full paints a step
+      await act(() => node.setViewport({ x: 12, y: 0, zoom: 1 }));
+      await motionLands();
+    }
+    await act(() => fireEvent.mouseMove(target, at(190, 120)));
+    await motionLands();
+    seen.push(!!node._liftShot);
+    await act(() => fireEvent.mouseUp(target, at(190, 120)));
+    await motionLands();
+    seen.push(!!node._liftShot);
+    return seen;
+  };
+  assert.deepStrictEqual(
+    await drag(false),
+    [true, true, false],
+    'pictures while the drag moves, none after',
+  );
+  assert.deepStrictEqual(
+    await drag(true),
+    [true, false, false],
+    'none again once the view moved',
+  );
+});

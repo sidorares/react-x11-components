@@ -357,7 +357,18 @@ export function paintGround(
 /** The graph: edges, nodes, and the line a connection gesture draws. What
  *  a 2D zoom gesture composites scaled from one paint of it. */
 export function paintGraph(painter: FlowPainter, scene: FlowScene): void {
+  paintGraphEdges(painter, scene);
+  paintGraphNodes(painter, scene);
+}
+
+/** The graph's edges alone: the first half of `paintGraph`, which a drag's
+ *  pictures take apart so the dragged node's edges go between them. */
+export function paintGraphEdges(painter: FlowPainter, scene: FlowScene): void {
   paintEdges(painter, scene.edges);
+}
+
+/** The graph's nodes, and the connection line over them: the second half. */
+export function paintGraphNodes(painter: FlowPainter, scene: FlowScene): void {
   for (const item of scene.nodes) paintNode(painter, item, scene);
   if (scene.connection) {
     painter.polyline(scene.connection.points, {
