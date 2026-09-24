@@ -467,6 +467,15 @@ class Painter implements FlowPainter {
     }
     if (!any) return;
     this.applyStroke(options);
+    // Set, not inherited: this was whatever the last `polyline` left, so a
+    // pass that stroked an edge alone before the zoom controls drew their
+    // glyphs with round ends, and one that reached only the controls drew
+    // them square — a panel repainted by itself, as a pan repaints its
+    // pinned furniture every frame, came out lighter than the panel it
+    // replaced. The same for batched edges, whose joins changed with what
+    // the pass had drawn first.
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
     ctx.stroke();
     this.clearDash();
   }
