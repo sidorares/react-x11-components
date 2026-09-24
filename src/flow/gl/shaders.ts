@@ -165,6 +165,11 @@ varying float v_text;
 void main() {
   vec2 corner = vec2(a_corner.x, a_corner.y * 0.5 + 0.5);
   v_text = a_i1.z;
+  if (a_i1.z > 1.5) {
+    // a label whose field is still being set: nothing, until it lands
+    gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
+    return;
+  }
   if (a_i1.z > 0.5) {
     // A label: its field, scaled to the size it is drawn at. The text's
     // corner goes on the device grid *after* the pan's offset, which is

@@ -33,14 +33,17 @@
 //
 // Three things a graph needs that a map does not:
 //
-//  - **Strings arrive while nothing moves, and swap in together.** A pan to
-//    an unseen part of the graph asks for hundreds at once. `Driver` sets
-//    batches until nothing on screen is wanted and repacks the world
-//    **once**: a label is a box in the world's stream, so each landing batch
-//    was a full world pack, and the labels appeared in waves.
-//  - **Nothing new while the zoom moves** (`admit`). A zoom asks for nothing
-//    it has drawn before, but zooming out uncovers strings; they are set
-//    when it stops, as maps admit labels at rest.
+//  - **Strings arrive a slice at a time, nearest the middle first.** A pan
+//    to an unseen part of the graph asks for hundreds at once. The world
+//    packs a box for every label, the ones still being set drawn as
+//    nothing (`GlyphQuad.ready`), and each frame writes in the fields that
+//    landed since the last (`FlowGlRenderer.landLabels`) — where the labels
+//    used to wait for the last of them and a world packed again.
+//  - **Nothing new while a zoom gesture moves** (`admit`). A zoom asks for
+//    nothing it has drawn before, but zooming out uncovers strings; they
+//    are set when it stops, as maps admit labels at rest. A single step —
+//    `setCenter`, a button — is not a gesture, and its labels are set at
+//    once.
 //  - **The atlas fills.** When there is no room, the fields the world on
 //    screen does not draw from are dropped and the rest moved together
 //    (`compact`), so a full atlas costs a repack, never a label on screen.
@@ -59,8 +62,16 @@ import type { TextOptions } from '../types.js';
  * the corner it draws a layout from — and the quad starts `margin` before
  * it in both axes and is `w` by `h`. `texel` is the logical pixels one texel
  * of the field covers; `u0`..`v1` are texture coordinates.
+ *
+ * A label whose field is still being set is a quad too, `ready` false and
+ * no place in the atlas: its size is known from the measurement before its
+ * field exists, so it is packed where it will be drawn, and its field is
+ * written in when it lands (`landed`) — without packing the world again.
  */
 export interface GlyphQuad {
+  /** The field it draws from: its weight and the string, as cut. */
+  key: string;
+  ready: boolean;
   x: number;
   y: number;
   w: number;
@@ -150,13 +161,20 @@ export const fieldPad = (base: number): number => Math.ceil(base / 4);
 const globals = globalThis as {
   performance?: { now(): number };
   setTimeout?(fn: () => void, ms: number): unknown;
+  setImmediate?(fn: () => void): unknown;
 };
 const now = (): number => globals.performance?.now() ?? Date.now();
 
-/** The next task: what lets a frame in between two slices of fields. */
+/**
+ * The next task: what lets a frame in between two slices. `setImmediate`,
+ * after the loop has polled for what came in — a frame's callback among it
+ * — where a timeout of 0 is a millisecond at least, idle, between every
+ * slice of a first appearance.
+ */
 const nextTask = (): Promise<void> =>
   new Promise((resolve) => {
-    if (globals.setTimeout) globals.setTimeout(resolve, 0);
+    if (globals.setImmediate) globals.setImmediate(resolve);
+    else if (globals.setTimeout) globals.setTimeout(resolve, 0);
     else resolve();
   });
 
@@ -173,10 +191,11 @@ export class LabelAtlas {
    *  its values span — the shader's `u_spread`. */
   readonly pad: number;
   private readonly entries = new Map<string, Entry>();
-  /** Wanted and not yet set: key → what to set it from. */
+  /** Wanted and not yet set: key → what to set it from, and where the first
+   *  label to ask for it is. */
   private readonly missing = new Map<
     string,
-    { text: string; weight: SceneText['weight'] }
+    { text: string; weight: SceneText['weight']; x: number; y: number }
   >();
   /** Read back and waiting for their fields, oldest first — as wanted as
    *  anything in `missing`, so a pack does not ask for them again. */
@@ -280,15 +299,38 @@ export class LabelAtlas {
     const dy = t.baseline === 'middle' ? -height / 2 : 0;
     const key = `${t.weight ?? 400}|${shown}`;
     const entry = this.entries.get(key);
+    const inset = QUAD_INSET;
     if (!entry) {
-      if (!this.queued.has(key)) {
-        this.missing.set(key, { text: shown, weight: t.weight });
+      if (!this.queued.has(key) && !this.missing.has(key)) {
+        this.missing.set(key, {
+          text: shown,
+          weight: t.weight,
+          x: t.x,
+          y: t.y,
+        });
       }
-      return null;
+      // Its field will be the layout box in whole pixels and the margin,
+      // which is known now: packed where it will be drawn, and drawn once
+      // its field lands.
+      return {
+        key,
+        ready: false,
+        x: t.x + dx,
+        y: t.y + dy,
+        w: (Math.ceil(shaped.width) + (this.pad - inset) * 2) * texel,
+        h: (Math.ceil(shaped.height) + (this.pad - inset) * 2) * texel,
+        margin: (this.pad - inset) * texel,
+        texel,
+        u0: 0,
+        v0: 0,
+        u1: 0,
+        v1: 0,
+      };
     }
     entry.used = this.epoch;
-    const inset = QUAD_INSET;
     return {
+      key,
+      ready: true,
       x: t.x + dx,
       y: t.y + dy,
       w: (entry.width - inset * 2) * texel,
@@ -302,6 +344,54 @@ export class LabelAtlas {
     };
   }
 
+  /**
+   * Where a label packed before its field existed draws from, now that it
+   * has landed: its place in the atlas and its size in texels past the
+   * inset — null until then. Drawn from from now on, as `quad` would mark
+   * it.
+   */
+  landed(key: string): {
+    u0: number;
+    v0: number;
+    u1: number;
+    v1: number;
+    columns: number;
+    rows: number;
+  } | null {
+    const entry = this.entries.get(key);
+    if (!entry) return null;
+    entry.used = this.epoch;
+    const inset = QUAD_INSET;
+    return {
+      u0: (entry.x + inset) / this.side,
+      v0: (entry.y + inset) / this.side,
+      u1: (entry.x + entry.width - inset) / this.side,
+      v1: (entry.y + entry.height - inset) / this.side,
+      columns: entry.width - inset * 2,
+      rows: entry.height - inset * 2,
+    };
+  }
+
+  /**
+   * The view's centre, in the world's coordinates — the surface says where
+   * each frame. What is wanted is set nearest it first: on a first
+   * appearance the labels arrive over a hundred milliseconds or more, and
+   * the ones in the middle of the view are the ones being read.
+   */
+  focus: { x: number; y: number } | null = null;
+
+  /** What is wanted, nearest the focus first. */
+  private wanted(): [string, { text: string; weight: SceneText['weight'] }][] {
+    const list = [...this.missing];
+    const f = this.focus;
+    if (f && list.length > 1) {
+      const d = (w: { x: number; y: number }) =>
+        (w.x - f.x) * (w.x - f.x) + (w.y - f.y) * (w.y - f.y);
+      list.sort((a, b) => d(a[1]) - d(b[1]));
+    }
+    return list;
+  }
+
   /** Whether any label drawn so far is still waiting for its field. */
   get wanting(): boolean {
     return this.missing.size > 0 || this.fieldQueue.length > 0;
@@ -311,7 +401,8 @@ export class LabelAtlas {
    * One slice of setting what was asked for: fields for what was read back
    * already, in a task of their own, or else one batch drawn and read back
    * and the first of its fields. Resolves true when any field landed — the
-   * caller repacks then — and does nothing while one is already in flight,
+   * caller asks for a frame then, which draws what landed — and does
+   * nothing while one is already in flight,
    * while the zoom is moving, or with nothing to set.
    */
   async pump(): Promise<boolean> {
@@ -362,7 +453,7 @@ export class LabelAtlas {
       let x = 0;
       let y = 0;
       let row = 0;
-      for (const [key, want] of this.missing) {
+      for (const [key, want] of this.wanted()) {
         if (placed.length >= BATCH || now() - started > DRAW_BUDGET_MS) break;
         const shaped = shape(this.white, want.text, {
           size: this.base,
@@ -420,7 +511,7 @@ export class LabelAtlas {
   private coverageSlice(): boolean | null {
     const started = now();
     let landed = false;
-    for (const [key, want] of this.missing) {
+    for (const [key, want] of this.wanted()) {
       if (landed && now() - started >= this.fieldBudgetMs) break;
       const shaped = shape(this.white, want.text, {
         size: this.base,

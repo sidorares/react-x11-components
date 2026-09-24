@@ -85,6 +85,13 @@ export interface PackGaps {
  */
 export type PackLayer = 'all' | 'world' | 'overlay';
 
+/** A label packed before its field landed: which box it is, and the field
+ *  it waits for (`LabelAtlas.landed`). */
+export interface WaitingLabel {
+  index: number;
+  key: string;
+}
+
 export interface PackedScene {
   lines: Float32Array;
   lineCount: number;
@@ -97,6 +104,9 @@ export interface PackedScene {
    *  the rest over it. */
   split: number;
   gaps: PackGaps;
+  /** Labels in `boxes` drawn as nothing until their fields land — the
+   *  renderer writes each in when it does. */
+  waiting: WaitingLabel[];
 }
 
 /**
@@ -140,6 +150,7 @@ export class ScenePacker {
   private readonly triStream = new Stream(TRI_STRIDE, 256);
   private ranges: DrawRange[] = [];
   private gaps: PackGaps = { text: 0, custom: 0 };
+  private waiting: WaitingLabel[] = [];
   /** The scissor for whatever is appended until it is changed. */
   private scissor: FlowRect | undefined;
 
@@ -158,6 +169,7 @@ export class ScenePacker {
     this.triStream.reset();
     this.ranges = [];
     this.gaps = { text: 0, custom: 0 };
+    this.waiting = [];
     this.scissor = undefined;
 
     let split = 0;
@@ -276,6 +288,7 @@ export class ScenePacker {
       ranges: this.ranges,
       split,
       gaps: this.gaps,
+      waiting: this.waiting,
     };
   }
 
@@ -357,7 +370,9 @@ export class ScenePacker {
   }
 
   /** A string as a box that samples its field in the atlas; counted as a
-   *  gap when the atlas has nothing to draw it from yet. */
+   *  gap when the atlas has nothing to draw it from yet — and packed all
+   *  the same when its field is being set, drawn as nothing until it lands
+   *  (`waiting`). */
   private label(t: SceneText): void {
     const q = this.text?.(t);
     if (!q) {
@@ -376,7 +391,8 @@ export class ScenePacker {
     d[at + 3] = q.h;
     d[at + 4] = q.margin;
     d[at + 5] = 0;
-    d[at + 6] = 1; // a label, not a box
+    // a label, not a box — and 2 for one whose field is still being set
+    d[at + 6] = q.ready ? 1 : 2;
     d[at + 7] = q.texel;
     d[at + 8] = color[0];
     d[at + 9] = color[1];
@@ -386,6 +402,10 @@ export class ScenePacker {
     d[at + 13] = q.v0;
     d[at + 14] = q.u1;
     d[at + 15] = q.v1;
+    if (!q.ready) {
+      this.gaps.text++;
+      this.waiting.push({ index, key: q.key });
+    }
     this.record('box', index);
   }
 

@@ -17,6 +17,7 @@ import type {
   PackedScene,
   PackLayer,
   TextResolver,
+  WaitingLabel,
 } from './pack.js';
 import type { LabelAtlas } from './text.js';
 import {
@@ -66,6 +67,9 @@ export interface FlowGlFrame {
   /** How far a marching dash has moved, in the world's logical pixels — a
    *  uniform, so the dash timer's tick redraws without a rebuild. */
   phase: number;
+  /** A zoom gesture is moving: a stream of zoom steps, not a single one —
+   *  what the label atlas holds new strings back for. */
+  moving?: boolean;
 }
 
 const UNIFORMS = [
@@ -91,6 +95,10 @@ class Layer {
   readonly tris: unknown;
   packed: PackedScene | null = null;
   scene: FlowScene | null = null;
+  /** Labels packed before their fields landed, not yet written in, and the
+   *  atlas's generation they were last checked against. */
+  waiting: WaitingLabel[] = [];
+  checked = -1;
 
   constructor(private readonly gl: GL) {
     this.lines = gl.createBuffer();
@@ -107,6 +115,8 @@ class Layer {
     const packed = this.packer.pack(scene, layer, text);
     this.packed = packed;
     this.scene = scene;
+    this.waiting = packed.waiting;
+    this.checked = -1;
     let bytes = 0;
     const put = (buf: unknown, data: Float32Array, used: number): void => {
       if (used === 0) return;
@@ -119,6 +129,18 @@ class Layer {
     put(this.boxes, packed.boxes, packed.boxCount * BOX_STRIDE);
     put(this.tris, packed.tris, packed.triCount * TRI_STRIDE);
     return bytes;
+  }
+
+  /** The box stream again, whole — orphaned as `update` does, so no draw
+   *  of the last frame is waited for. Answers the bytes sent. */
+  uploadBoxes(): number {
+    const packed = this.packed;
+    if (!packed || packed.boxCount === 0) return 0;
+    const gl = this.gl;
+    const view = packed.boxes.subarray(0, packed.boxCount * BOX_STRIDE);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.boxes);
+    gl.bufferData(gl.ARRAY_BUFFER, view, gl.DYNAMIC_DRAW);
+    return view.byteLength;
   }
 
   dispose(): void {
@@ -230,6 +252,7 @@ export class FlowGlRenderer {
       );
     }
     bytes += this.overlay.update(frame.overlay, 'overlay');
+    if (atlas) bytes += this.landLabels(this.world, atlas);
     const drawStart = now();
 
     this.begin(target, atlas);
@@ -267,6 +290,45 @@ export class FlowGlRenderer {
     this.gl.disable(this.gl.SCISSOR_TEST);
     const packs = world ? [world, over] : [over];
     return this.stats(packStart, drawStart, bytes, calls, packs, rebuilt);
+  }
+
+  /**
+   * The labels of a layer packed before their fields existed, drawn from
+   * them now they have landed: the flag, the place in the atlas and the
+   * field's own size written into each box, and the stream uploaded again.
+   * A label arriving used to be the world packed again once everything on
+   * screen had its field — every label at once, after all of them — and is
+   * now a few floats and one upload, as each lands. Answers the bytes sent.
+   */
+  private landLabels(layer: Layer, atlas: LabelAtlas): number {
+    const packed = layer.packed;
+    if (!packed || layer.waiting.length === 0) return 0;
+    if (layer.checked === atlas.generation) return 0;
+    layer.checked = atlas.generation;
+    const d = packed.boxes;
+    const still: WaitingLabel[] = [];
+    let landed = 0;
+    for (const w of layer.waiting) {
+      const field = atlas.landed(w.key);
+      if (!field) {
+        still.push(w);
+        continue;
+      }
+      const at = w.index * BOX_STRIDE;
+      const texel = d[at + 7];
+      d[at + 2] = field.columns * texel;
+      d[at + 3] = field.rows * texel;
+      d[at + 6] = 1;
+      d[at + 12] = field.u0;
+      d[at + 13] = field.v0;
+      d[at + 14] = field.u1;
+      d[at + 15] = field.v1;
+      landed++;
+    }
+    if (landed === 0) return 0;
+    layer.waiting = still;
+    packed.gaps.text -= landed;
+    return layer.uploadBoxes();
   }
 
   private stats(

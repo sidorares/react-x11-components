@@ -298,3 +298,151 @@ test('what the GPU cannot draw yet is counted, not dropped silently', () => {
   assert.strictEqual(gaps.text, 4);
   assert.strictEqual(gaps.custom, 1);
 });
+
+// --- labels still being set --------------------------------------------------
+
+/** A label atlas that has set nothing, until `land()`: every string is a
+ *  placeholder, then every one is drawable at the same field. */
+function waitingAtlas() {
+  let landed = false;
+  const atlas = {
+    generation: 0,
+    relocated: false,
+    pad: 4,
+    beginPack() {},
+    bind() {},
+    quad(t: { x: number; y: number; text: string }) {
+      return {
+        key: t.text,
+        ready: landed,
+        x: t.x,
+        y: t.y,
+        w: 40,
+        h: 12,
+        margin: 1,
+        texel: 0.5,
+        u0: landed ? 0.1 : 0,
+        v0: landed ? 0.2 : 0,
+        u1: landed ? 0.3 : 0,
+        v1: landed ? 0.4 : 0,
+      };
+    },
+    landed() {
+      return landed
+        ? { u0: 0.1, v0: 0.2, u1: 0.3, v1: 0.4, columns: 100, rows: 30 }
+        : null;
+    },
+    land() {
+      landed = true;
+      atlas.generation++;
+    },
+  };
+  return atlas;
+}
+
+test('a label still being set is packed where it goes, drawn as nothing, and waits', () => {
+  const { nodes, edges } = graph(6);
+  const atlas = waitingAtlas();
+  const packed = new ScenePacker().pack(
+    buildScene(input(nodes, edges)),
+    'all',
+    (t) => atlas.quad(t),
+  );
+  assert.ok(packed.waiting.length > 0, 'precondition: labels to wait for');
+  assert.strictEqual(
+    packed.gaps.text,
+    packed.waiting.length,
+    'counted as gaps',
+  );
+  for (const w of packed.waiting) {
+    const at = w.index * BOX_STRIDE;
+    assert.strictEqual(
+      packed.boxes[at + 6],
+      2,
+      'flagged: its field is not set',
+    );
+    assert.strictEqual(packed.boxes[at + 2], 40, 'at the size it will be');
+    assert.strictEqual(w.key.length > 0, true);
+  }
+});
+
+/** A GL context that records every call and answers the rest with numbers:
+ *  enough for the renderer to make its programs and buffers. */
+function recordingGl() {
+  const log: { name: string; args: unknown[] }[] = [];
+  let next = 1;
+  const constants = new Map<string, number>();
+  const target: Record<string, unknown> = {
+    getShaderParameter: () => true,
+    getProgramParameter: () => true,
+    getUniformLocation: () => next++,
+  };
+  return {
+    log,
+    gl: new Proxy(target, {
+      get(obj, name: string) {
+        if (name in obj) return obj[name];
+        if (/^[A-Z][A-Z0-9_]*$/.test(name)) {
+          if (!constants.has(name))
+            constants.set(name, 0x1000 + constants.size);
+          return constants.get(name);
+        }
+        return (...args: unknown[]) => {
+          log.push({ name, args });
+          return name.startsWith('create') ? next++ : undefined;
+        };
+      },
+    }),
+  };
+}
+
+test('a label that lands is written into the world on the GPU, not packed again', async () => {
+  const { FlowGlRenderer } = await import('../src/flow/gl/renderer.js');
+  const { nodes, edges } = graph(6);
+  const atlas = waitingAtlas();
+  const { gl, log } = recordingGl();
+  const renderer = new FlowGlRenderer(gl);
+  const world = buildScene(input(nodes, edges, { selection: null }));
+  const overlay = buildScene(input([], [], { selection: null }));
+  const target = { origin: { x: 0, y: 0 }, scale: 1, width: 800, height: 600 };
+  const frame = { world, offset: { x: 0, y: 0 }, zoom: 1, overlay, phase: 0 };
+  const first = renderer.drawFrame(frame, target, atlas as never);
+  assert.ok(first.gaps.text > 0, 'precondition: labels waiting');
+  const waiting = first.gaps.text;
+
+  // nothing new: the next frame writes nothing
+  log.length = 0;
+  const idle = renderer.drawFrame(
+    { ...frame, world: null },
+    target,
+    atlas as never,
+  );
+  assert.strictEqual(idle.gaps.text, waiting);
+
+  atlas.land();
+  log.length = 0;
+  const next = renderer.drawFrame(
+    { ...frame, world: null },
+    target,
+    atlas as never,
+  );
+  assert.strictEqual(next.worldRebuilt, false, 'no world packed');
+  assert.strictEqual(next.gaps.text, 0, 'every label drawn');
+  const uploads = log.filter((c) => c.name === 'bufferData');
+  const boxes = uploads
+    .map((c) => c.args[1] as Float32Array)
+    .find((data) => {
+      for (let i = 0; i + BOX_STRIDE <= data.length; i += BOX_STRIDE) {
+        if (data[i + 6] === 1 && Math.abs(data[i + 12] - 0.1) < 1e-6)
+          return true;
+      }
+      return false;
+    });
+  assert.ok(
+    boxes,
+    'the world’s boxes went up with the landed field written in',
+  );
+  for (let i = 0; i + BOX_STRIDE <= boxes.length; i += BOX_STRIDE) {
+    assert.notStrictEqual(boxes[i + 6], 2, 'no label still waits');
+  }
+});

@@ -450,10 +450,13 @@ glyphs' edge; the shader draws it sharp at any size, every frame of a zoom
 included, so a zoom sets no labels at all. The first cut set a raster per
 size and re-set every label after every zoom — 70 ms of label work and a
 second world rebuild after an eight-notch wheel zoom over the stress
-lattice. What fields cost is a string's first appearance, about a quarter of
-a millisecond more each, and the engine's hinting at the drawn size. The
-field is `<Map>`'s own (`src/internal/sdf.ts`); `docs/prd-flow-gl.md` has
-the numbers.
+lattice. What fields cost is a string's first appearance, and the engine's
+hinting at the drawn size. A label waiting for its field is packed as a box
+drawn as nothing, and written in when the field lands, so the labels of a
+view arrive over a few frames, nearest its middle first — the stress
+lattice's first at 56 ms on Windows and the last at 111. The field is
+`<Map>`'s own (`src/internal/sdf.ts`); `docs/prd-flow-gl.md` has the
+numbers.
 
 **The grid tiles.** At an integral device pitch the background is one
 `createPattern('repeat')` composite (ntk#263) — the phase baked into the

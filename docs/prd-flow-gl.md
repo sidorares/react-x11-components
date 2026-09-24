@@ -203,11 +203,20 @@ Windows over the same eight notches: 0 strings and ~1 ms of label work
 instead of 273-369 strings and 70 ms, one world rebuild instead of two, half
 the upload, and the gesture's frames 105-120 → 137-149 per second.
 
-What it costs is the first appearance of a string: its field is 0.25 ms on
-top of shaping, drawing and reading it back, so the 219 labels of the
-lattice at zoom 1 are 96 ms of label work where they were 50, and on screen
-~60 ms later (176 ms). And the text engine's hinting at the drawn size — the
-type is its outline, scaled, antialiased across one device pixel.
+What it costs is the first appearance of a string, and three things bring
+that down. A field is made only where it can change a byte (0.26 → 0.14 ms
+each, `src/internal/sdf.ts`). The world packs a box for every label before
+its field exists — its size is known from the measurement — and a frame
+writes each field in as it lands, so labels arrive a slice at a time,
+nearest the middle of the view first, instead of all at once after a
+second world pack. And only a zoom _gesture_ holds new strings back: a
+single step — `setCenter`, a button, `fitView` — used to wait out the
+120 ms rest timer before setting any. On Windows, moving the stress lattice
+into label range put its first labels on screen at 56 ms and the last at
+111, where all 219 used to arrive together at 142; the fan's 300 at 66 and
+104, where they arrived at 217. What remains is the text engine's hinting
+at the drawn size — the type is its outline, scaled, antialiased across one
+device pixel.
 
 Everything else about labels is maps' answer: `app.fonts.layout()` shapes
 it, an offscreen `Surface` draws it, `getImageData` reads coverage back, one

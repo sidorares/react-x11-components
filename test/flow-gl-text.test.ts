@@ -63,6 +63,10 @@ async function settle(atlas: LabelAtlas): Promise<void> {
   for (let i = 0; i < 200 && atlas.wanting; i++) await atlas.pump();
 }
 
+/** The quad a label is drawn from — null while its field is being set,
+ *  when the quad is a placeholder the frame draws as nothing. */
+const drawn = (q: GlyphQuad | null): GlyphQuad | null => (q?.ready ? q : null);
+
 /** A field's size in the atlas, texels, margin included, from its quad. */
 function fieldOf(q: GlyphQuad): { width: number; height: number } {
   return {
@@ -83,11 +87,15 @@ function baseWidth(options: PainterOptions, text: string): number {
 
 test('a label is wanted, then set, then drawn from its field', async () => {
   const { atlas, options } = await atlasAt(2);
-  assert.strictEqual(atlas.quad(label()), null, 'nothing to draw it from yet');
+  assert.strictEqual(
+    drawn(atlas.quad(label())),
+    null,
+    'nothing to draw it from yet',
+  );
   assert.ok(atlas.wanting, 'and it is asked for');
   await settle(atlas);
   assert.ok(!atlas.wanting);
-  const q = atlas.quad(label());
+  const q = drawn(atlas.quad(label()));
   assert.ok(q, 'drawn once set');
   // Set at the base size — 32 at a scale of 2 — and scaled to 13.
   const base = fieldBase(2);
@@ -107,17 +115,59 @@ test('a label is wanted, then set, then drawn from its field', async () => {
   assert.ok(!atlas.wanting, 'and drawing it asks for nothing');
 });
 
+test('a label still being set is packed where it will be drawn, as nothing', async () => {
+  // A frame packs a box for it now — the size its field will have is known
+  // from the measurement — and writes the field in when it lands, rather
+  // than packing the world again.
+  const { atlas } = await atlasAt(2);
+  const t = label({ align: 'center', baseline: 'middle', maxWidth: 70 });
+  const early = atlas.quad(t)!;
+  assert.ok(early, 'a quad before its field exists');
+  assert.strictEqual(early.ready, false);
+  await settle(atlas);
+  const set = atlas.quad(t)!;
+  assert.strictEqual(set.ready, true);
+  assert.strictEqual(set.key, early.key, 'the field it waited for');
+  assert.deepStrictEqual(
+    [early.x, early.y, early.w, early.h, early.margin, early.texel],
+    [set.x, set.y, set.w, set.h, set.margin, set.texel],
+    'in the place and at the size it is drawn once set',
+  );
+  const landed = atlas.landed(early.key)!;
+  assert.deepStrictEqual(
+    [landed.u0, landed.v0, landed.u1, landed.v1],
+    [set.u0, set.v0, set.u1, set.v1],
+    'and `landed` hands the same field over',
+  );
+  assert.strictEqual(landed.columns * set.texel, set.w);
+});
+
+test('what is wanted is set nearest the focus first', async () => {
+  const { atlas } = await atlasAt(1);
+  atlas.beginPack();
+  // a row of labels, the focus at the far end of it
+  const texts = Array.from({ length: 8 }, (_, i) => `row ${i}`);
+  texts.forEach((text, i) => atlas.quad(label({ text, x: i * 100 })));
+  atlas.focus = { x: 700, y: 50 };
+  atlas.fieldBudgetMs = 0;
+  await atlas.pump();
+  const set = texts.filter((text, i) =>
+    drawn(atlas.quad(label({ text, x: i * 100 }))),
+  );
+  assert.deepStrictEqual(set, ['row 7'], 'the one at the focus');
+});
+
 test('one field draws a label at every size, so a zoom asks for nothing', async () => {
   const { atlas } = await atlasAt(2);
   atlas.beginPack();
   atlas.quad(label({ size: 11 }));
   await settle(atlas);
-  const at11 = atlas.quad(label({ size: 11 }))!;
+  const at11 = drawn(atlas.quad(label({ size: 11 })))!;
   assert.ok(at11, 'precondition: set');
   // every step of a zoom, and where it comes to rest
   for (const size of [12, 13, 14, 26, 5]) {
     atlas.beginPack();
-    const q = atlas.quad(label({ size }));
+    const q = drawn(atlas.quad(label({ size })));
     assert.ok(q, `drawn at ${size}`);
     assert.deepStrictEqual(
       [q.u0, q.v0, q.u1, q.v1],
@@ -146,7 +196,7 @@ test('a batch makes its fields in slices, so no one task holds a frame back', as
   const { atlas } = await atlasAt(1);
   const names = Array.from({ length: 12 }, (_, i) => `label ${i}`);
   const drawable = () =>
-    names.filter((text) => atlas.quad(label({ text })) !== null).length;
+    names.filter((text) => drawn(atlas.quad(label({ text }))) !== null).length;
   atlas.beginPack();
   for (const text of names) atlas.quad(label({ text }));
   // No budget past the first field: a slice is one field.
@@ -217,7 +267,7 @@ test('a full atlas keeps what the screen draws, moved, and drops only the rest',
 
   // The next world draws `node 0` and asks for twelve more.
   atlas.beginPack();
-  const before = atlas.quad(label({ text: 'node 0' }))!;
+  const before = drawn(atlas.quad(label({ text: 'node 0' })))!;
   assert.ok(before, 'precondition: node 0 is set');
   for (const text of names('edge')) atlas.quad(label({ text }));
   await settle(atlas);
@@ -225,15 +275,15 @@ test('a full atlas keeps what the screen draws, moved, and drops only the rest',
   assert.ok(atlas.relocated, 'the fields moved: the world must be repacked');
   assert.ok(!atlas.wanting, 'and every one asked for was set');
   atlas.beginPack();
-  const after = atlas.quad(label({ text: 'node 0' }));
+  const after = drawn(atlas.quad(label({ text: 'node 0' })));
   assert.ok(after, 'the label on screen survived the atlas filling');
   assert.strictEqual(after.w, before.w, 'from its own field');
   for (const text of names('edge')) {
-    assert.ok(atlas.quad(label({ text })), `${text} is drawn`);
+    assert.ok(drawn(atlas.quad(label({ text }))), `${text} is drawn`);
   }
   const dropped = names('node')
     .slice(1)
-    .filter((text) => atlas.quad(label({ text })) === null);
+    .filter((text) => drawn(atlas.quad(label({ text }))) === null);
   assert.ok(dropped.length > 0, 'the labels off screen made the room');
 });
 
@@ -245,7 +295,7 @@ test('a label cut to its card is cut where the 2D painter cuts it', async () => 
   });
   atlas.quad(long);
   await settle(atlas);
-  const q = atlas.quad(long)!;
+  const q = drawn(atlas.quad(long))!;
   // The 2D painter cuts at the size it draws; the atlas at its base size,
   // to the width that size allows.
   const shown = fitText(options, long.text, { size: 13 }, 80);
@@ -257,7 +307,9 @@ test('a label cut to its card is cut where the 2D painter cuts it', async () => 
     'the field is the cut string',
   );
   // …and at another zoom, the same cut: one field.
-  const zoomed = atlas.quad({ ...long, size: 13 * 1.7, maxWidth: 80 * 1.7 });
+  const zoomed = drawn(
+    atlas.quad({ ...long, size: 13 * 1.7, maxWidth: 80 * 1.7 }),
+  );
   assert.ok(zoomed, 'drawn at 1.7x from the field it has');
   assert.deepStrictEqual([zoomed.u0, zoomed.v0], [q.u0, q.v0]);
 });
@@ -267,7 +319,7 @@ test('a centred label is centred on its anchor, as the 2D painter centres it', a
   const centred = label({ align: 'center', baseline: 'middle' });
   atlas.quad(centred);
   await settle(atlas);
-  const q = atlas.quad(centred)!;
+  const q = drawn(atlas.quad(centred))!;
   const { width, height } = measureText(options, centred.text, { size: 13 });
   // Measured at the base size and scaled: within a fraction of a pixel of
   // the 2D painter's own measure at 13.
@@ -306,14 +358,17 @@ test('a layout that answers its own coverage is set with no readback, a field th
   atlas.fieldBudgetMs = Infinity;
   assert.strictEqual(await atlas.pump(), true, 'one slice');
   for (const text of names) {
-    assert.ok(atlas.quad(label({ text })), `${text} is drawable after it`);
+    assert.ok(
+      drawn(atlas.quad(label({ text }))),
+      `${text} is drawable after it`,
+    );
   }
   assert.ok(!atlas.wanting);
   assert.deepStrictEqual(
     asked,
     names.map(() => fieldPad(fieldBase(1))),
   );
-  const q = atlas.quad(label({ text: 'node 1' }))!;
+  const q = drawn(atlas.quad(label({ text: 'node 1' })))!;
   assert.strictEqual(
     fieldOf(q).width,
     Math.ceil(baseWidth(options, 'node 1')) + fieldPad(fieldBase(1)) * 2,
@@ -339,7 +394,7 @@ test('a layout with no coverage of its own is set by drawing it and reading it b
   for (const text of names) atlas.quad(label({ text }));
   await settle(atlas);
   for (const text of names) {
-    const q = atlas.quad(label({ text }));
+    const q = drawn(atlas.quad(label({ text })));
     assert.ok(q, `${text} is drawn`);
     assert.strictEqual(
       fieldOf(q).width,
@@ -353,7 +408,7 @@ test('the texture holds fields: white, the distance in alpha', async () => {
   const { atlas } = await atlasAt(1);
   atlas.quad(label());
   await settle(atlas);
-  const q = atlas.quad(label())!;
+  const q = drawn(atlas.quad(label()))!;
   const uploads: { w: number; h: number; data: Uint8Array }[] = [];
   const gl = {
     TEXTURE_2D: 1,

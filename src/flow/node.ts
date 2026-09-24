@@ -3136,6 +3136,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
     zoom: number;
     overlay: FlowScene;
     phase: number;
+    moving: boolean;
   } | null {
     if (!this._visible()) return null;
     this._frameTick();
@@ -3220,6 +3221,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
       // the scene bakes `-phase * zoom` into a marching edge; the GPU is
       // handed the same number as a uniform
       phase: -this._dashPhase * v.zoom,
+      moving: this._zoomMoving(),
     };
   }
 

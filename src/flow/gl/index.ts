@@ -89,10 +89,10 @@ export function targetOf(info: DrawInfoLike): FlowGlTarget {
   return target;
 }
 
-/** Slices of setting — a batch drawn and read back, or a few milliseconds
- *  of its fields — one run may take before the world is repacked with what
- *  has landed: a bound, so a screen whose labels outgrow the atlas still
- *  shows the ones that fit. */
+/** Slices of setting — a few milliseconds of fields, and the batch drawn
+ *  and read back that an engine without coverage of its own needs — one
+ *  run may take: a bound, so a screen whose labels outgrow the atlas does
+ *  not set labels for ever. The next frame that wants any starts another. */
 const MAX_SLICES = 64;
 
 /** The surface's state across renders: the renderer lives as long as the GL
@@ -109,10 +109,9 @@ class Driver {
    *  changing is every field wrong, so it is made again. */
   private atlas: LabelAtlas | null = null;
   private atlasKey = '';
-  /** The zoom the last frame drew at, and the timer that brings a frame
-   *  once a zoom stops — strings a zoom uncovered are only set at rest, and
-   *  a pane that has stopped zooming asks for no frame by itself. */
-  private lastZoom = NaN;
+  /** The timer that brings a frame once a zoom gesture stops — strings it
+   *  uncovered are only set at rest, and a gesture that rebuilt its world
+   *  on the way asks for no frame by itself when it stops. */
   private settle: unknown = null;
   private failed = false;
   /** Labels are being set (`setLabels`); one run at a time. */
@@ -164,12 +163,25 @@ class Driver {
       const frame = pane.glFrame(this.worldKey);
       if (!frame) return;
       const sceneMs = now() - started;
-      if (atlas) this.admit(atlas, frame.overlay.viewport.zoom);
-      const stats = this.renderer.drawFrame(
-        frame,
-        targetOf(info),
-        atlas ?? undefined,
-      );
+      const target = targetOf(info);
+      if (atlas) {
+        this.admit(atlas, frame.moving ?? false);
+        // the middle of the view, in the world's coordinates
+        const zoom = frame.zoom ?? 1;
+        atlas.focus = {
+          x:
+            (target.origin.x +
+              target.width / target.scale / 2 -
+              frame.offset.x) /
+            zoom,
+          y:
+            (target.origin.y +
+              target.height / target.scale / 2 -
+              frame.offset.y) /
+            zoom,
+        };
+      }
+      const stats = this.renderer.drawFrame(frame, target, atlas ?? undefined);
       if (frame.world) this.worldKey = frame.key;
       // Labels this frame could not draw yet are set now, between frames.
       if (atlas?.wanting && !this.setting) {
@@ -194,27 +206,30 @@ class Driver {
   };
 
   /**
-   * Set strings until nothing the world on screen draws is wanted, then
-   * repack it **once** — which is what brings the labels in, all in the
-   * same frame. Repacking a batch at a time brought them in waves, and paid
-   * a full world pack per wave.
+   * Set strings until nothing the world on screen draws is wanted, a frame
+   * after every slice that set any: the world holds a box for every label,
+   * the ones still being set drawn as nothing, and the frame writes in what
+   * landed (`FlowGlRenderer.landLabels`). The labels arrive as they are
+   * set, nearest the middle of the view first, where they used to wait for
+   * the last of them and a world packed again.
    *
-   * Stops early, repacking what landed, when the atlas moved its fields
-   * (the world's texture coordinates are stale until it is repacked), when
-   * the zoom starts moving again, or after a bound on slices.
+   * Stops, repacking, when the atlas moved its fields — the world's texture
+   * coordinates are stale until it is packed again — and stops when the
+   * zoom starts moving again, or after a bound on slices.
    */
   private async setLabels(atlas: LabelAtlas): Promise<void> {
-    let landed = false;
     for (let slice = 0; slice < MAX_SLICES; slice++) {
       const set = await atlas.pump();
       if (this.failed || this.atlas !== atlas) return;
       if (!set) break;
-      landed = true;
-      if (atlas.relocated || !atlas.wanting) break;
+      if (atlas.relocated) {
+        this.worldKey = null;
+        this.request();
+        return;
+      }
+      this.request();
+      if (!atlas.wanting) break;
     }
-    if (!landed) return;
-    this.worldKey = null;
-    this.request();
   }
 
   /** The atlas for this pane's face and scale, made again when either
@@ -232,11 +247,16 @@ class Driver {
     return this.atlas;
   }
 
-  /** New strings only while the zoom holds still; a frame is asked for once
-   *  it has, so the labels a zoom uncovered are set without a nudge. */
-  private admit(atlas: LabelAtlas, zoom: number): void {
-    const moving = zoom !== this.lastZoom;
-    this.lastZoom = zoom;
+  /**
+   * New strings only while no zoom gesture moves, and a frame asked for once
+   * it has stopped, so the labels it uncovered are set without a nudge. A
+   * gesture is the pane's to say (`FlowGlFrame.moving`): a single step — a
+   * button, `fitView`, `setCenter` — is not one. Taking any change of zoom
+   * for one held every first appearance back by the whole rest timer: the
+   * stress fan's first label came 185 ms after a `setCenter`, and comes at
+   * 54.
+   */
+  private admit(atlas: LabelAtlas, moving: boolean): void {
     atlas.admit = !moving;
     if (moving) {
       if (this.settle != null) timers.clearTimeout?.(this.settle);
