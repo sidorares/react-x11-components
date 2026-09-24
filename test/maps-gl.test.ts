@@ -2385,6 +2385,61 @@ test('a label keeps its place against a newcomer that would win a tie, and fades
 
 // --- labels: the atlas and the draw ----------------------------------------------------
 
+test("the engine's coverage and a surface read back put a name's ink in the same place", async () => {
+  // ntk's layouts answer coverage (react-x11#673) on the headless server;
+  // with it hidden, the same engine draws onto its staging surface and
+  // reads back — the path every engine without it still takes. Both have
+  // to hand the atlas the same box with the layout's origin at the pad.
+  const { app } = await renderX11(React.createElement('box'), {
+    backend: 'xserver',
+    width: 64,
+    height: 64,
+  });
+  type Fonts = { layout(...a: unknown[]): Record<string, unknown> };
+  const fonts = (app as unknown as { fonts: Fonts }).fonts;
+  const bare: Fonts = {
+    layout: (...a: unknown[]) => {
+      const layout = fonts.layout(...a);
+      layout.coverage = undefined;
+      return layout;
+    },
+  };
+  const own = new SurfaceTextEngine(app, fonts as never, 'sans-serif');
+  const read = new SurfaceTextEngine(app, bare as never, 'sans-serif');
+  const item = { text: 'Hamburg', size: 24 };
+  const [a] = await own.rasterize([item], 6);
+  const [b] = await read.rasterize([item], 6);
+  own.dispose();
+  read.dispose();
+  assert.ok(a && b, 'both set it');
+  assert.strictEqual(a.stride, 1, "the engine's own coverage, a byte a pixel");
+  assert.strictEqual(b.stride ?? 4, 4, 'a readback, RGBA');
+  assert.deepStrictEqual([a.width, a.height], [b.width, b.height], 'one box');
+  const centre = (
+    r: { width: number; height: number; pixels: Uint8Array },
+    step: number,
+    at: number,
+  ) => {
+    let sum = 0;
+    let sx = 0;
+    let sy = 0;
+    for (let y = 0; y < r.height; y++)
+      for (let x = 0; x < r.width; x++) {
+        const v = r.pixels[(y * r.width + x) * step + at];
+        sum += v;
+        sx += v * x;
+        sy += v * y;
+      }
+    return [sx / sum, sy / sum];
+  };
+  const [ax, ay] = centre(a, 1, 0);
+  const [bx, by] = centre(b, 4, 3);
+  assert.ok(
+    Math.abs(ax - bx) < 0.75 && Math.abs(ay - by) < 0.75,
+    `ink centred at ${ax.toFixed(2)},${ay.toFixed(2)} and ${bx.toFixed(2)},${by.toFixed(2)}`,
+  );
+});
+
 test("a string is set from its layout's own coverage where the engine answers it, with no surface", async () => {
   // The engine's coverage (react-x11#673): one byte a pixel, the layout box
   // with the pad round it. An app with no Surface behind it would throw the

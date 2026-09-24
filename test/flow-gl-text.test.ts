@@ -1,5 +1,6 @@
 // `src/flow/gl/text.ts` — the GL renderer's label atlas, against a real text
-// engine and a real staging surface (the headless X server's), with no GPU:
+// engine (the headless X server's: ntk's layouts, which answer their own
+// coverage, and a staging surface for a test that hides it), with no GPU:
 // what it hands the packer, and when.
 import { test, after } from 'node:test';
 import assert from 'node:assert';
@@ -318,6 +319,34 @@ test('a layout that answers its own coverage is set with no readback, a field th
     Math.ceil(baseWidth(options, 'node 1')) + fieldPad(fieldBase(1)) * 2,
     'the field is the layout box with its margin',
   );
+});
+
+test('a layout with no coverage of its own is set by drawing it and reading it back', async () => {
+  // Every engine that cannot answer coverage — CoreText today, and any
+  // engine before the release that added it — takes the staging surface.
+  const { atlas, options } = await atlasAt(1);
+  const fonts = options.fonts as unknown as {
+    layout(...args: unknown[]): Record<string, unknown>;
+  };
+  const own = fonts.layout.bind(fonts);
+  fonts.layout = (...args: unknown[]) => {
+    const layout = own(...args);
+    layout.coverage = undefined;
+    return layout;
+  };
+  const names = ['node 1', 'node 2', 'node 3'];
+  atlas.beginPack();
+  for (const text of names) atlas.quad(label({ text }));
+  await settle(atlas);
+  for (const text of names) {
+    const q = atlas.quad(label({ text }));
+    assert.ok(q, `${text} is drawn`);
+    assert.strictEqual(
+      fieldOf(q).width,
+      Math.ceil(baseWidth(options, text)) + fieldPad(fieldBase(1)) * 2,
+      'from a field the size of the layout box and its margin',
+    );
+  }
 });
 
 test('the texture holds fields: white, the distance in alpha', async () => {
