@@ -395,8 +395,8 @@ imports — `react-x11` itself plus `/host`, `/node`, `/style`, `/keysyms`,
 `/ntk`, `/yoga`, `/jsx-runtime`, and `/test` and `/debug` from the suite.
 Both specs are ordinary registry ranges:
 
-- `peerDependencies.react-x11` is `^2.20.0` — what a consumer must supply.
-- `devDependencies.react-x11` is `^2.20.0` — what the suite runs against.
+- `peerDependencies.react-x11` is `^2.21.0` — what a consumer must supply.
+- `devDependencies.react-x11` is `^2.21.0` — what the suite runs against.
 
 Keep them the same range. They are one decision written twice, and a
 devDependency that drifts above the peer range means the suite passes
@@ -468,6 +468,14 @@ it up. **The floor is a running one and moves often** — every move since
   clipped to what clips it, and moves the nodes Yoga did not lay out again
   instead of reading them back (#670) — a pan over bodies stopped
   repainting the whole window.
+- `^2.21.0` — a text layout's own coverage, `layout.coverage({ pad })`
+  (react-x11#673, #674): the GL label atlases of `<Flow>` and `<Map>` set
+  a string's distance field from it rather than drawing the string onto a
+  staging surface and reading it back. ntk's layouts answer it (8.11.0,
+  X11, Wayland and the mock), CoreText's through `@windowkit/appkit` 0.13
+  and DirectWrite's through `@windowkit/win32` 0.0.4. The atlases still
+  feature-detect it and keep the readback, for an engine that answers
+  null.
 
 Do not reach back for a `github:` spec to get at unreleased core — cut a core
 release instead.
