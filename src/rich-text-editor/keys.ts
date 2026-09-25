@@ -24,6 +24,7 @@
 // key at a position, the position of a key, the node under a key — and
 // `test/rich-text-editor-model.test.ts` asks it the rest.
 import type { Node as PMNode } from 'prosemirror-model';
+import { Mapping } from 'prosemirror-transform';
 import type { Mappable } from 'prosemirror-transform';
 import { spliceAll } from '../internal/splice.js';
 
@@ -127,15 +128,22 @@ export class BlockKeys {
     const end = this._firstAtOrAfter(wasTo);
     const old = entries.slice(first, end);
 
-    // 1. Where each old block's start went.
+    // 1. Where each old block's start went — nowhere, when nothing in the
+    // mapping moves a position: a mark added or taken off, an attribute set.
+    // Bold over a whole document is one step a paragraph, and mapping every
+    // block through every one of them was a third of the command.
     const carried = new Map<number, string>();
-    if (mapping) {
+    if (mapping && !movesNothing(mapping)) {
       for (const { pos, key } of old) {
         const result = mapping.mapResult(pos, 1);
         // the token after the start is the block's own opening — gone means
         // the block is gone, merged into whatever preceded it
         if (result.deletedAfter) continue;
         if (!carried.has(result.pos)) carried.set(result.pos, key);
+      }
+    } else if (mapping) {
+      for (const { pos, key } of old) {
+        if (!carried.has(pos)) carried.set(pos, key);
       }
     }
     // 2. Which old node objects are still here, for when nothing mapped.
@@ -204,4 +212,17 @@ export class BlockKeys {
     }
     return lo;
   }
+}
+
+/** Whether a mapping is made only of steps that move no position. */
+function movesNothing(mapping: Mappable): boolean {
+  if (!(mapping instanceof Mapping)) return false;
+  for (const map of mapping.maps) {
+    let moved = false;
+    map.forEach(() => {
+      moved = true;
+    });
+    if (moved) return false;
+  }
+  return true;
 }
