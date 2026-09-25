@@ -794,10 +794,12 @@ it. The jump: 38 and 24 ms, the rest being the lines newly in view laid out.
 Typing during the walk pays about 1 ms at the 95th percentile.
 
 Deciding by distance rather than by trying matters: trying a thousand lines
-first cost more than the guess. And the two bugs the mutation tests found
-were the same bug twice — a pair whose state had been replaced without its
-tokens going: an edit inside a guessed run, and a walk's turn ending on a
-guessed line.
+first cost more than the guess. The mutation tests found two bugs that were
+the same bug twice — a pair whose state had been replaced without its tokens
+going: an edit inside a guessed run, and a walk's turn ending on a guessed
+line. CI on Node 24 then found the opposite: tokens dropped before the line
+ran again left nothing to compare with, so a guess corrected on the way was
+never reported to the host.
 
 ## Lessons
 
