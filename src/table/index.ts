@@ -82,6 +82,7 @@ import {
   SETTLE_BUDGET,
   useVirtualWindow,
 } from '../internal/window.js';
+import type { VirtualViewport } from '../internal/window.js';
 import {
   MIN_COLUMN,
   columnValue,
@@ -887,6 +888,33 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
     virtual === true ||
     (virtual === 'auto' && ordered.length > VIRTUAL_THRESHOLD);
 
+  /**
+   * One drawn row into the height index, for the window's trim: it may drop
+   * a row only once the index knows the height the row is laid out at, and
+   * a flick reaches the trailing rows long before `measureRows` does (see
+   * `measure` on the window's inputs). The gates are `measureRows`'s, for
+   * its reasons — no viewport yet, a row drawn against a list that has
+   * moved, a row laid out against a grid the columns no longer resolve to.
+   */
+  const measureDrawn = useCallback(
+    (id: TableRowId, at: number, viewport: VirtualViewport): boolean => {
+      const drawn = rowNodes.current.get(id);
+      if (!drawn || drawn.at !== at || viewport.width <= 0) return false;
+      const expected = resolveWidths(
+        columnsRef.current,
+        userWidthsRef.current,
+        Math.max(0, viewport.width - rowInsetRef.current * 2),
+      ).total;
+      const s = scaleOf(drawn.node);
+      if (Math.abs(drawn.node.abs.width / s - expected) >= 1) return false;
+      heights.measure(id, at, drawn.node.abs.height / s);
+      return heights.isMeasured(at);
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `heights` is a
+    // stable instance
+    [],
+  );
+
   /** The viewport, and the slice worth building from it — the machinery
    *  shared with `<Tree>` (`../internal/window.ts`). */
   const win = useVirtualWindow({
@@ -902,6 +930,7 @@ export function Table<Row = any>(props: TableProps<Row>): ReactElement {
     threshold: catchup?.threshold ?? SKELETON_THRESHOLD,
     burstBudget: catchup?.burst ?? BURST_BUDGET,
     settleBudget: catchup?.settle ?? SETTLE_BUDGET,
+    measure: measureDrawn,
   });
   const { view, viewRef } = win;
   const { first, last, above, below } = win.slice;

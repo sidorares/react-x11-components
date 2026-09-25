@@ -1162,6 +1162,64 @@ test('a big tree builds only the rows near the viewport', async () => {
   assert.strictEqual(retained(rowNodes()[0]).props['aria-setsize'], 10000);
 });
 
+test('a long flick keeps the window to its budget, and the rows it keeps hold still', async () => {
+  // The table's case (its test of the same name), on the window the two
+  // share: a flick defers measuring to the settle, and the trim used to drop
+  // only rows the index had measured, so a long flick downward kept every
+  // row it passed. Measured on their way out, they go, and the spacer that
+  // takes their place is exactly as tall.
+  const LONG = 'a label long enough to wrap onto a second line';
+  const items = Array.from({ length: 2000 }, (_, i) => ({
+    id: i,
+    label: i % 3 ? `row ${i}` : `${LONG} ${i}`,
+  }));
+  await renderX11(
+    h(
+      'box',
+      { style: { width: 200, height: 220, minHeight: 0 } },
+      h(Tree, { items, virtual: true }),
+    ),
+  );
+  await idle(600);
+  /** Where each laid-out row sits in the content, by its place in the list. */
+  const offsets = (): Map<number, number> => {
+    const pane = treePane();
+    const top = retained(pane).abs.y;
+    const out = new Map<number, number>();
+    for (const node of rowNodes().map(retained)) {
+      if (!(node.abs.height > 0)) continue;
+      out.set(
+        Number(node.props['aria-posinset']),
+        node.abs.y - top + pane.scrollY,
+      );
+    }
+    return out;
+  };
+  let most = 0;
+  let moved: string | null = null;
+  let before = offsets();
+  for (let i = 0; i < 150; i++) {
+    treePane().scrollTo({ y: treePane().scrollY + 96 });
+    await new Promise((res) => setTimeout(res, 15));
+    await act();
+    most = Math.max(most, rowNodes().length);
+    const now = offsets();
+    for (const [row, y] of now) {
+      const was = before.get(row);
+      if (moved === null && was !== undefined && Math.abs(y - was) > 0.5) {
+        moved = `row ${row} moved in the content, ${was} -> ${y}, step ${i}`;
+      }
+    }
+    before = now;
+  }
+  assert.ok(
+    treePane().scrollY > 8000,
+    `the flick stopped at ${treePane().scrollY}`,
+  );
+  assert.strictEqual(moved, null);
+  assert.ok(most < 160, `${most} rows mounted at once during the flick`);
+});
+
 test('the spacers make the scrollbar measure the whole tree', async () => {
   await renderX11(
     h(

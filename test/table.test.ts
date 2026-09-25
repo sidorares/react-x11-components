@@ -608,6 +608,79 @@ test('a wheel burst then idle: the view stays where the user left it', async () 
   );
 });
 
+test('a long flick keeps the window to its budget, and the rows it keeps hold still', async () => {
+  // A flick defers measuring to the settle, and the trim used to drop only
+  // rows the index had measured — so a long flick downward dropped nothing,
+  // and every row it passed stayed mounted: four seconds of trackpad fling
+  // through the 100,000-row example had 1,250 rows laid out every frame. The
+  // trim measures a row on its way out now, so the spacer that takes its
+  // place is exactly as tall, and nothing still mounted moves. At scale 2,
+  // because the height it records is read off `abs`, which is device.
+  const LONG =
+    'a message long enough to wrap over more than one line of this column';
+  await mount(
+    {
+      rows: many(2000),
+      columns: [
+        {
+          id: 'name',
+          label: 'Name',
+          render: (f: File) =>
+            h(
+              'text',
+              { key: 't' },
+              f.id % 3 ? `row ${f.id}` : `${LONG} ${f.id}`,
+            ),
+        },
+      ],
+      virtual: true,
+    },
+    240,
+    220,
+    2,
+  );
+  await idle(600);
+  const s = 2;
+  /** Where each laid-out row sits in the content, logical, by its place in
+   *  the list. */
+  const offsets = (): Map<number, number> => {
+    const pane = bodyPane();
+    const top = retained(pane).abs.y;
+    const out = new Map<number, number>();
+    for (const node of rowNodes().map(retained)) {
+      if (!(node.abs.height > 0)) continue;
+      out.set(
+        Number(node.props['aria-posinset']),
+        (node.abs.y - top + pane.scrollY) / s,
+      );
+    }
+    return out;
+  };
+  let most = 0;
+  let moved: string | null = null;
+  let before = offsets();
+  for (let i = 0; i < 150; i++) {
+    bodyPane().scrollTo({ y: bodyPane().scrollY / s + 96 });
+    await new Promise((res) => setTimeout(res, 15));
+    await act();
+    most = Math.max(most, rowNodes().length);
+    const now = offsets();
+    for (const [row, y] of now) {
+      const was = before.get(row);
+      if (moved === null && was !== undefined && Math.abs(y - was) > 0.5) {
+        moved = `row ${row} moved in the content, ${was} -> ${y}, step ${i}`;
+      }
+    }
+    before = now;
+  }
+  assert.ok(
+    bodyPane().scrollY / s > 8000,
+    `the flick stopped at ${bodyPane().scrollY / s}`,
+  );
+  assert.strictEqual(moved, null);
+  assert.ok(most < 160, `${most} rows mounted at once during the flick`);
+});
+
 test('a teleport shows skeleton rows first, then fills them in', async () => {
   // A thumb dragged across the list outruns any band: the whole window is
   // new, and the first commits answer with skeletons. Engagement is
