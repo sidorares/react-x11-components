@@ -1206,6 +1206,58 @@ export class FlowGraphNode extends Node implements FlowInstance {
     return entry.type?.render != null && this._viewport().zoom >= RENDER_ZOOM;
   }
 
+  /**
+   * The frame being painted: each node's scene source, and the two lists a
+   * 2D pass builds its scene from. A frame paints its damage as several
+   * passes — a pan's strips, its pinned furniture, the corners of a rounded
+   * pane — and the scene cache culls the graph to the screen once for all
+   * of them (`SceneCache.edgesOnScreen`), keyed on these very lists, so
+   * every pass has to be handed the same ones. The passes run one after
+   * another in a single task, so a microtask queued by the first forgets
+   * the frame after the last — the same reasoning as `_reportFrame`.
+   */
+  private _frame: {
+    sources: Map<NodeEntry, SceneNodeSource>;
+    lists: { all: SceneNodeSource[]; nodes: SceneNodeSource[] } | null;
+  } | null = null;
+
+  private _paintedFrame(): NonNullable<FlowGraphNode['_frame']> {
+    let frame = this._frame;
+    if (!frame) {
+      frame = this._frame = { sources: new Map(), lists: null };
+      void Promise.resolve().then(() => {
+        this._frame = null;
+      });
+    }
+    return frame;
+  }
+
+  private _sourceOf(entry: NodeEntry): SceneNodeSource {
+    if (!this._painting) return this._source(entry);
+    const { sources } = this._paintedFrame();
+    let source = sources.get(entry);
+    if (!source) {
+      source = this._source(entry);
+      sources.set(entry, source);
+    }
+    return source;
+  }
+
+  /** A 2D pass's node lists, the same arrays for every pass of a frame. */
+  private _frameLists(order: readonly NodeEntry[]): {
+    all: SceneNodeSource[];
+    nodes: SceneNodeSource[];
+  } {
+    const frame = this._paintedFrame();
+    frame.lists ??= {
+      all: this._entries.map((entry) => this._sourceOf(entry)),
+      nodes: order
+        .filter((entry) => !this._cardInLayer(entry.node.id))
+        .map((entry) => this._sourceOf(entry)),
+    };
+    return frame.lists;
+  }
+
   private _source(entry: NodeEntry): SceneNodeSource {
     return {
       node: entry.node,
@@ -3996,13 +4048,14 @@ export class FlowGraphNode extends Node implements FlowInstance {
       all = [];
       for (const id of ids) {
         const entry = this._byId.get(id);
-        if (entry) all.push(this._source(entry));
+        if (entry) all.push(this._sourceOf(entry));
       }
+    } else if (overlay && !map) {
+      all = [];
+    } else if (layer === 'all' && this._painting) {
+      all = this._frameLists(order).all;
     } else {
-      all =
-        overlay && !map
-          ? []
-          : this._entries.map((entry) => this._source(entry));
+      all = this._entries.map((entry) => this._sourceOf(entry));
     }
     return {
       viewport: world ? { x: 0, y: 0, zoom: viewport.zoom } : viewport,
@@ -4020,13 +4073,15 @@ export class FlowGraphNode extends Node implements FlowInstance {
       // a card `<Flow>` paints in the bodies' layer is not painted twice
       nodes: overlay
         ? []
-        : order
-            .filter(
-              (entry) =>
-                !this._cardInLayer(entry.node.id) &&
-                (!lift || lift.ids.has(entry.node.id) === lift.only),
-            )
-            .map((entry) => this._source(entry)),
+        : layer === 'all' && this._painting
+          ? this._frameLists(order).nodes
+          : order
+              .filter(
+                (entry) =>
+                  !this._cardInLayer(entry.node.id) &&
+                  (!lift || lift.ids.has(entry.node.id) === lift.only),
+              )
+              .map((entry) => this._sourceOf(entry)),
       all,
       edges: overlay ? [] : edges,
       dashPhase: this._dashPhase,

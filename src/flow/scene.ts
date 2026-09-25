@@ -312,6 +312,114 @@ export function uncachedRoute(
   return buildRoute(v, edge, from, to, markerEnd, markerStart);
 }
 
+/** An edge a pass may draw: both ends resolved and its coarse box on
+ *  screen, which is everything about it no pass's clip changes. */
+interface EdgeCandidate {
+  edge: AnyEdge;
+  from: SceneNodeSource;
+  to: SceneNodeSource;
+  coarse: FlowRect;
+}
+
+/** A node on screen, with its screen box. */
+interface NodeCandidate {
+  source: SceneNodeSource;
+  rect: FlowRect;
+}
+
+/** What a list of candidates was culled for: the arrays it came from, the
+ *  viewport and the rect it was culled to. */
+interface CullKey {
+  from: readonly unknown[];
+  all: readonly SceneNodeSource[] | null;
+  vx: number;
+  vy: number;
+  zoom: number;
+  kx: number;
+  ky: number;
+  kw: number;
+  kh: number;
+  scale: number;
+}
+
+function sameCull(
+  key: CullKey | null,
+  from: readonly unknown[],
+  all: readonly SceneNodeSource[] | null,
+  v: Viewport,
+  kept: FlowRect,
+  scale: number,
+): boolean {
+  return (
+    key != null &&
+    key.from === from &&
+    key.all === all &&
+    key.vx === v.x &&
+    key.vy === v.y &&
+    key.zoom === v.zoom &&
+    key.kx === kept.x &&
+    key.ky === kept.y &&
+    key.kw === kept.width &&
+    key.kh === kept.height &&
+    key.scale === scale
+  );
+}
+
+function cullEdges(
+  v: Viewport,
+  kept: FlowRect,
+  edges: readonly AnyEdge[],
+  byId: ReadonlyMap<string, SceneNodeSource>,
+  scale: number,
+): EdgeCandidate[] {
+  const list: EdgeCandidate[] = [];
+  for (const edge of edges) {
+    if (edge.hidden) continue;
+    const from = byId.get(edge.source);
+    const to = byId.get(edge.target);
+    if (!from || !to || from.node.hidden || to.node.hidden) continue;
+    const coarse = edgeCoarseBox(v, from, to, scale);
+    if (rectsOverlap(coarse, kept)) list.push({ edge, from, to, coarse });
+  }
+  return list;
+}
+
+function cullNodes(
+  v: Viewport,
+  kept: FlowRect,
+  nodes: readonly SceneNodeSource[],
+  scale: number,
+): NodeCandidate[] {
+  const list: NodeCandidate[] = [];
+  for (const source of nodes) {
+    if (source.node.hidden) continue;
+    const rect = screenRect(v, source.rect, scale);
+    if (rectsOverlap(rect, kept)) list.push({ source, rect });
+  }
+  return list;
+}
+
+function cullKey(
+  from: readonly unknown[],
+  all: readonly SceneNodeSource[] | null,
+  v: Viewport,
+  kept: FlowRect,
+  scale: number,
+): CullKey {
+  return {
+    from,
+    all,
+    vx: v.x,
+    vy: v.y,
+    zoom: v.zoom,
+    kx: kept.x,
+    ky: kept.y,
+    kw: kept.width,
+    kh: kept.height,
+    scale,
+  };
+}
+
 export class SceneCache {
   private readonly routes = new Map<string, CachedRoute>();
   /** The node index, memoized on the array it was built from: at two
@@ -319,12 +427,55 @@ export class SceneCache {
    *  build. */
   private index: Map<string, SceneNodeSource> | null = null;
   private indexFor: readonly SceneNodeSource[] | null = null;
+  /** The edges and nodes on screen, for the passes of one frame. */
+  private edgeCull: { key: CullKey; list: EdgeCandidate[] } | null = null;
+  private nodeCull: { key: CullKey; list: NodeCandidate[] } | null = null;
 
   /** Everything is derived, so forgetting it is always safe. */
   clear(): void {
     this.routes.clear();
     this.index = null;
     this.indexFor = null;
+    this.edgeCull = null;
+    this.nodeCull = null;
+  }
+
+  /**
+   * The edges whose coarse box reaches `kept`, with their ends — the list a
+   * pass walks, culled once for every pass of a frame. A 2D frame paints its
+   * damage as several passes, a pan's strips and corners and furniture, and
+   * each one walked every edge in the graph to throw nearly all of them
+   * away: at four thousand edges that was most of what a pan frame cost
+   * once the drawing had become a copy. Keyed on the arrays themselves, so
+   * the element has to hand the same ones to every pass of a frame.
+   */
+  edgesOnScreen(
+    v: Viewport,
+    kept: FlowRect,
+    edges: readonly AnyEdge[],
+    all: readonly SceneNodeSource[],
+    scale: number,
+  ): EdgeCandidate[] {
+    const hit = this.edgeCull;
+    if (hit && sameCull(hit.key, edges, all, v, kept, scale)) return hit.list;
+    const list = cullEdges(v, kept, edges, this.byId(all), scale);
+    this.edgeCull = { key: cullKey(edges, all, v, kept, scale), list };
+    return list;
+  }
+
+  /** The nodes whose screen box reaches `kept`, culled once for every pass
+   *  of a frame the way `edgesOnScreen` culls the edges. */
+  nodesOnScreen(
+    v: Viewport,
+    kept: FlowRect,
+    nodes: readonly SceneNodeSource[],
+    scale: number,
+  ): NodeCandidate[] {
+    const hit = this.nodeCull;
+    if (hit && sameCull(hit.key, nodes, null, v, kept, scale)) return hit.list;
+    const list = cullNodes(v, kept, nodes, scale);
+    this.nodeCull = { key: cullKey(nodes, null, v, kept, scale), list };
+    return list;
   }
 
   byId(all: readonly SceneNodeSource[]): Map<string, SceneNodeSource> {
@@ -915,18 +1066,14 @@ function buildEdges(input: SceneInput, scene: FlowScene): SceneEdge[] {
   const labels = v.zoom >= LABEL_ZOOM;
   const out: SceneEdge[] = [];
   const cache = input.cache;
-  const byId = cache ? cache.byId(input.all) : indexOf(input.all);
   let animBox: FlowRect | null = null;
 
-  for (const edge of input.edges) {
-    if (edge.hidden) continue;
-    const from = byId.get(edge.source);
-    const to = byId.get(edge.target);
-    if (!from || !to || from.node.hidden || to.node.hidden) continue;
-
-    // Two rejects: one from the nodes alone, one from the route it took.
-    const coarse = edgeCoarseBox(v, from, to, scale);
-    if (!rectsOverlap(coarse, kept)) continue;
+  // Two rejects: one from the nodes alone — the coarse box, culled once for
+  // every pass of a frame where there is a cache — and one from the route
+  // the edge took.
+  for (const { edge, from, to, coarse } of cache
+    ? cache.edgesOnScreen(v, kept, input.edges, input.all, scale)
+    : cullEdges(v, kept, input.edges, indexOf(input.all), scale)) {
     // Tracked before the damage skip, deliberately: whether the dash timer
     // runs is a question about the viewport, not about what this particular
     // pass repaints — deciding it after the skip is how a drag in one corner
@@ -1271,10 +1418,9 @@ function buildNodes(input: SceneInput): SceneNodeItem[] {
   const v = screenViewport(input.viewport, pane);
   const kept = input.cull ?? pane;
   const out: SceneNodeItem[] = [];
-  for (const source of input.nodes) {
-    if (source.node.hidden) continue;
-    const rect = screenRect(v, source.rect, scale);
-    if (!rectsOverlap(rect, kept)) continue;
+  for (const { source, rect } of input.cache
+    ? input.cache.nodesOnScreen(v, kept, input.nodes, scale)
+    : cullNodes(v, kept, input.nodes, scale)) {
     // inflated by the margin its handles and grips can ink outside the box —
     // the same margin every invalidate grew by, so the two agree
     if (clip && !rectsOverlap(inflateRect(rect, CULL_MARGIN), clip)) continue;

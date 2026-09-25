@@ -385,6 +385,72 @@ test('a scene built with a cache is the scene built without one', () => {
   }
 });
 
+test('the passes of one frame cull the graph once, and draw what they would alone', () => {
+  // A 2D frame paints its damage as several passes — a pan's strips, the
+  // pinned furniture, a rounded pane's corners — and the cache culls the
+  // graph to the screen once for all of them, keyed on the lists and the
+  // viewport. Each pass has to come out as it would built alone, and a
+  // frame with the graph moved has to cull again.
+  const place = (moved: boolean): SceneNodeSource[] => {
+    const out: SceneNodeSource[] = [];
+    for (let i = 0; i < 40; i++) {
+      const x = (i % 8) * 170 + (moved && i === 9 ? 600 : 0);
+      out.push(source(node(`n${i}`, x, Math.floor(i / 8) * 90)));
+    }
+    return out;
+  };
+  const edges: FlowEdge[] = [];
+  for (let i = 0; i < 40; i++) {
+    edges.push({
+      id: `e${i}`,
+      source: `n${i}`,
+      target: `n${(i + 11) % 40}`,
+      animated: i % 9 === 0,
+    });
+  }
+  const cache = new SceneCache();
+  const v: Viewport = { x: -120, y: 20, zoom: 0.8 };
+  const clips = [
+    { x: 0, y: 0, width: 6, height: 800 }, // a strip a pan exposed
+    { x: 1180, y: 0, width: 20, height: 800 },
+    { x: 0, y: 792, width: 8, height: 8 }, // a rounded corner
+    { x: 900, y: 600, width: 260, height: 170 }, // the minimap's repair
+    null,
+  ];
+  for (const moved of [false, true]) {
+    const nodes = place(moved);
+    for (const clip of clips) {
+      const cached = buildScene({ ...input(nodes, edges, v, cache), clip });
+      const fresh = buildScene({ ...input(nodes, edges, v), clip });
+      assert.deepStrictEqual(
+        cached.edges.map((e) => [e.id, e.runs?.length ?? 0]),
+        fresh.edges.map((e) => [e.id, e.runs?.length ?? 0]),
+        `the edges of the pass over ${JSON.stringify(clip)}`,
+      );
+      for (let i = 0; i < fresh.edges.length; i++) {
+        assertSameLine(
+          cached.edges[i].points,
+          fresh.edges[i].points,
+          `${fresh.edges[i].id} over ${JSON.stringify(clip)}`,
+        );
+      }
+      assert.deepStrictEqual(
+        cached.nodes.map((n) => [n.id, n.rect]),
+        fresh.nodes.map((n) => [n.id, n.rect]),
+        `the nodes of the pass over ${JSON.stringify(clip)}`,
+      );
+      assert.strictEqual(cached.animated, fresh.animated);
+    }
+    // one cull for the frame: the same lists and viewport get the same list
+    const pane = { x: 0, y: 0, width: 1200, height: 800 };
+    const sv = { x: v.x, y: v.y, zoom: v.zoom };
+    assert.strictEqual(
+      cache.edgesOnScreen(sv, pane, edges, nodes, 2),
+      cache.edgesOnScreen(sv, pane, edges, nodes, 2),
+    );
+  }
+});
+
 test('a minimap’s run of one colour is one fill, in the order it was drawn', () => {
   // A call apiece was 400 of them on every repaint of a drag. Runs are
   // consecutive, not grouped: two colours that overlap keep their order.

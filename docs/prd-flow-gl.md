@@ -401,6 +401,17 @@ behind it — the arrangement `src/maps/gl/pane.ts` already documents.
    of the scene profile — the same code built by `tsc` ran **2.2× faster**.
    `--build=dist` times what an application runs.
 
+   **And the 2D path, later, once a pan was a copy** (2026-09-25). With the
+   drawing down to a strip or two, a 2D pan frame's cost moved into the
+   scene: a frame paints its damage as several passes — the exposed strips,
+   the pinned minimap and controls, a rounded pane's corners — and every
+   pass walked all two thousand nodes and four thousand edges to throw
+   nearly all of them away. `SceneCache.edgesOnScreen`/`nodesOnScreen` now
+   cull the graph to the pane once for a frame's passes, keyed on the lists
+   and the viewport, so the element hands every pass of a frame the same
+   lists (`_frameLists`). 2000 nodes panned at zoom 0.5: X11 40 → 48 fps,
+   macOS 58 → 72, the scene 9 → 5.5 ms a frame.
+
 3. ~~**Geometry on the GPU.**~~ **Done**, behind an explicit
    `renderer="gl"`. The renderer reads the same `FlowScene` the 2D painter
    does; `gl/pack.ts` appends every shape to one of three instance streams in
