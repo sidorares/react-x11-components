@@ -58,6 +58,7 @@ import {
 } from 'react-x11/keysyms';
 
 import { startInterval, stopInterval } from '../code-language/timers.js';
+import { spliceAll } from '../internal/splice.js';
 import type { TimerId } from '../code-language/timers.js';
 import {
   clampPos,
@@ -235,8 +236,19 @@ interface ClipboardLike {
   read(options?: { selection?: string }): Promise<unknown>;
 }
 
-interface HistoryEntry {
-  value: string;
+/**
+ * One undoable change: the lines `[from, from + before.length)` of the text
+ * before it became `after`, the selection it found, which an undo restores,
+ * and the one it left, which a redo does. A change and not a copy of the
+ * text: a history of copies held two hundred of them, which for a 2.5 MB
+ * file is half a gigabyte, and put every undo through a full reset.
+ */
+interface HistoryStep {
+  from: number;
+  before: readonly string[];
+  after: readonly string[];
+  caretBefore: Position;
+  anchorBefore: Position;
   caret: Position;
   anchor: Position;
 }
@@ -322,6 +334,17 @@ interface LineCacheEntry {
   layout: LayoutLike | null;
   map: TabMap;
 }
+
+/** A line's tokens with no language. One array, so that a cached line
+ *  entry, which is checked against its tokens by identity, is found again —
+ *  a fresh `[]` per lookup made every paint of a plain-text editor lay out
+ *  every line in view. */
+const NO_TOKENS: readonly Token[] = Object.freeze([]);
+
+/** Line entries past which the ones farthest from the view are let go. An
+ *  entry holds a text layout, native memory on every backend, and a file
+ *  scrolled end to end had one for every line in it. */
+const LINE_CACHE_MAX = 2048;
 
 /** Display code units past which a line is laid out in pieces
  *  (`ChunkedLayout`). */
@@ -481,8 +504,10 @@ function chunkSpans(
 export class CodeEditorNode extends Node implements CodeEditorHandle {
   private _lines: string[];
   /** What `_lines` was last built from — how a controlled `value` that the
-   * parent refused to update snaps back on the next read (see `_syncProps`). */
-  private _synced: string;
+   * parent refused to update snaps back on the next read (see `_syncProps`).
+   * Null where no `value` prop reads it: the text is joined only for a
+   * reader. */
+  private _synced: string | null;
   private _caret: Position = { line: 0, ch: 0 };
   private _anchor: Position = { line: 0, ch: 0 };
   private _scrollX = 0;
@@ -498,7 +523,8 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
   /** Escape was the last key, so the next Tab leaves instead of indenting —
    * the editor's way of not being a keyboard trap (see `defaultKeyDown`). */
   private _tabEscapes = false;
-  private _history: HistoryEntry[];
+  /** The steps, oldest first; `_historyIndex` of them are applied. */
+  private _history: HistoryStep[] = [];
   private _historyIndex = 0;
   private _undoRun: string | null = null;
   private _pendingValue: string | null = null;
@@ -521,9 +547,6 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
           : '';
     this._lines = initial.split('\n');
     this._synced = initial;
-    this._history = [
-      { value: initial, caret: this._caret, anchor: this._anchor },
-    ];
     // Without this nothing focuses the editor and no key ever reaches it —
     // an app's `focusable`/`tabIndex` prop still overrides either way, which
     // is how `<CodeEditor disabled>` stays out of the tab order.
@@ -570,7 +593,6 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
     const text = next == null ? '' : String(next);
     if (text === this._lines.join('\n')) return;
     this._setText(text);
-    this._noteExternal();
     this._repaint();
   }
 
@@ -603,17 +625,29 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
     const text = String(v);
     if (text === this._synced) return;
     this._setText(text);
-    this._noteExternal();
   }
 
+  /**
+   * A text from outside — a controlled `value`, the `value` setter — as an
+   * undoable step of its own, and as the edit it really is: the lines it
+   * shares with the text before it at either end are neither tokenized nor
+   * laid out again. A formatter's output, or a parent echoing a value back
+   * with one line changed, used to reset the whole editor.
+   */
   private _setText(text: string): void {
-    this._lines = text.split('\n');
+    const next = text.split('\n');
+    const caret = clampPos(next, this._caret);
+    const anchor = clampPos(next, this._anchor);
     this._synced = text;
-    this._caret = clampPos(this._lines, this._caret);
-    this._anchor = clampPos(this._lines, this._anchor);
-    this._lineCache.clear();
-    this._widest = 0;
-    this._tokenizer()?.setLines(this._lines);
+    this._edit(0, this._lines.length, next, null, caret, anchor);
+    this._caret = caret;
+    this._anchor = anchor;
+    // the widest line may have gone: what is known of the lines left
+    let widest = 0;
+    for (const entry of this._lineCache.values()) {
+      widest = Math.max(widest, entry.layout?.width ?? 0);
+    }
+    this._widest = widest;
   }
 
   // --- tokenizer -----------------------------------------------------------
@@ -795,7 +829,7 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
   private _lineEntry(line: number): LineCacheEntry {
     const raw = this._lines[line];
     const tabSize = this._tabSize();
-    const tokens = this._tokenizer()?.lineTokens(line) ?? [];
+    const tokens = this._tokenizer()?.lineTokens(line) ?? NO_TOKENS;
     const styleKey = this._metricsKey;
     const cached = this._lineCache.get(line);
     // the line's own string, not its display: building the tab map is
@@ -1139,15 +1173,17 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
     return ev;
   }
 
+  /** `value` is a thunk where joining the text is the caller's cost: the
+   *  text is joined for a handler that is there to read it, and only then. */
   private _fire(
     prop: 'onChange' | 'onSubmit' | 'onSelectionChange',
-    value: string,
+    value: string | (() => string),
   ): void {
     const handler = this.props[prop] as
       ((ev: CodeEditorEvent) => void) | undefined;
     if (!handler) return;
     const previous = this._pendingValue;
-    this._pendingValue = value;
+    this._pendingValue = typeof value === 'function' ? value() : value;
     try {
       handler(
         this._makeEvent(
@@ -1170,21 +1206,67 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
 
   // --- history -------------------------------------------------------------
 
-  private _noteExternal(): void {
-    this._undoRun = null;
-    const value = this._lines.join('\n');
-    const top = this._history[this._historyIndex];
-    if (top && top.value === value) return;
-    this._pushHistory({ value, caret: this._caret, anchor: this._anchor });
-  }
-
-  private _pushHistory(entry: HistoryEntry): void {
-    this._history.length = this._historyIndex + 1;
-    this._history.push(entry);
+  /**
+   * Record a change about to be made — `removed` lines at `from` becoming
+   * `lines` — and the selection it will leave. Called before the lines
+   * change, because merging needs the text the step before it left.
+   *
+   * `run` names a coalescable kind of edit: a change of the same run as
+   * the last one, on lines that one touched or beside them, joins its step
+   * rather than starting one — a word typed is one undo.
+   */
+  private _record(
+    from: number,
+    removed: number,
+    lines: readonly string[],
+    run: string | null,
+    caret: Position,
+    anchor: Position,
+  ): void {
+    const top = this._history[this._historyIndex - 1];
+    const text = this._lines;
+    if (
+      top &&
+      run !== null &&
+      run === this._undoRun &&
+      this._historyIndex === this._history.length &&
+      from <= top.from + top.after.length &&
+      from + removed >= top.from
+    ) {
+      // One step from the text before `top` to the text after this: the
+      // union of the two ranges, in the text between them, read on either
+      // side of what each changed.
+      const lo = Math.min(top.from, from);
+      const hi = Math.max(top.from + top.after.length, from + removed);
+      top.before = [
+        ...text.slice(lo, top.from),
+        ...top.before,
+        ...text.slice(top.from + top.after.length, hi),
+      ];
+      top.after = [
+        ...text.slice(lo, from),
+        ...lines,
+        ...text.slice(from + removed, hi),
+      ];
+      top.from = lo;
+      top.caret = caret;
+      top.anchor = anchor;
+      return;
+    }
+    this._history.length = this._historyIndex;
+    this._history.push({
+      from,
+      before: text.slice(from, from + removed),
+      after: lines,
+      caretBefore: this._caret,
+      anchorBefore: this._anchor,
+      caret,
+      anchor,
+    });
     if (this._history.length > UNDO_LIMIT) {
       this._history.splice(0, this._history.length - UNDO_LIMIT);
     }
-    this._historyIndex = this._history.length - 1;
+    this._historyIndex = this._history.length;
   }
 
   breakUndoRun(): void {
@@ -1196,30 +1278,41 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
   }
 
   get canRedo(): boolean {
-    return this._historyIndex < this._history.length - 1;
+    return this._historyIndex < this._history.length;
   }
 
   undo(): void {
     this._syncProps();
     if (!this.canUndo) return;
-    this._historyIndex--;
-    this._applyHistory(this._history[this._historyIndex]);
+    // the selection the change found, so an undo lands where the change
+    // was made — not where the one before it left the caret, which for the
+    // first change of a session was the top of the file
+    const step = this._history[--this._historyIndex];
+    this._applyStep(step.from, step.after.length, step.before, {
+      caret: step.caretBefore,
+      anchor: step.anchorBefore,
+    });
   }
 
   redo(): void {
     this._syncProps();
     if (!this.canRedo) return;
-    this._historyIndex++;
-    this._applyHistory(this._history[this._historyIndex]);
+    const step = this._history[this._historyIndex++];
+    this._applyStep(step.from, step.before.length, step.after, step);
   }
 
-  private _applyHistory(entry: HistoryEntry): void {
+  private _applyStep(
+    from: number,
+    removed: number,
+    lines: readonly string[],
+    selection: { caret: Position; anchor: Position },
+  ): void {
     this._undoRun = null;
     this._goalX = null;
-    this._applyLines(entry.value.split('\n'), null);
-    this._caret = clampPos(this._lines, entry.caret);
-    this._anchor = clampPos(this._lines, entry.anchor);
-    this._afterEdit(entry.value);
+    this._replaceLines(from, removed, lines);
+    this._caret = clampPos(this._lines, selection.caret);
+    this._anchor = clampPos(this._lines, selection.anchor);
+    this._afterEdit();
   }
 
   // --- editing core --------------------------------------------------------
@@ -1269,75 +1362,123 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
     inserted[0] = before + inserted[0];
     const caretCh = inserted[inserted.length - 1].length;
     inserted[inserted.length - 1] += after;
-    const newLines = this._lines.slice();
-    newLines.splice(a.line, b.line - a.line + 1, ...inserted);
-
-    const coalesce =
-      run !== null &&
-      run === this._undoRun &&
-      this._historyIndex === this._history.length - 1;
-    this._applyLines(newLines, {
-      fromLine: a.line,
-      removed: b.line - a.line + 1,
-      inserted: inserted.length,
-    });
-    this._caret = clampPos(this._lines, {
-      line: a.line + inserted.length - 1,
-      ch: caretCh,
-    });
-    this._anchor = { ...this._caret };
+    const caret = { line: a.line + inserted.length - 1, ch: caretCh };
+    this._edit(a.line, b.line - a.line + 1, inserted, run, caret, { ...caret });
+    this._caret = caret;
+    this._anchor = { ...caret };
     this._goalX = null;
+    this._afterEdit();
+  }
 
-    const value = this._lines.join('\n');
-    if (coalesce) {
-      this._history[this._historyIndex] = {
-        value,
-        caret: this._caret,
-        anchor: this._anchor,
-      };
-    } else {
-      this._pushHistory({ value, caret: this._caret, anchor: this._anchor });
+  /**
+   * The one way the lines change: `removed` lines at `from` become `lines`,
+   * recorded for undo under `run` with the selection the change leaves.
+   * Narrowed first to the lines it really changes — a replacement that
+   * leaves lines at either end as they were, a select-all and paste of the
+   * same file or a formatter's output, touches only the ones between — and
+   * a change that changes nothing is not one.
+   */
+  private _edit(
+    from: number,
+    removed: number,
+    lines: readonly string[],
+    run: string | null,
+    caret: Position,
+    anchor: Position,
+  ): void {
+    const text = this._lines;
+    let head = 0;
+    while (
+      head < removed &&
+      head < lines.length &&
+      text[from + head] === lines[head]
+    ) {
+      head++;
+    }
+    let tail = 0;
+    while (
+      tail < removed - head &&
+      tail < lines.length - head &&
+      text[from + removed - 1 - tail] === lines[lines.length - 1 - tail]
+    ) {
+      tail++;
+    }
+    const gone = removed - head - tail;
+    const added = lines.slice(head, lines.length - tail);
+    if (gone > 0 || added.length > 0) {
+      this._record(from + head, gone, added, run, caret, anchor);
+      this._replaceLines(from + head, gone, added);
     }
     this._undoRun = run;
-    this._afterEdit(value);
   }
 
-  private _applyLines(
-    newLines: string[],
-    edit: { fromLine: number; removed: number; inserted: number } | null,
+  /**
+   * `removed` lines at `from` become `lines`, in the live array. A
+   * tokenizer keeps the array `setLines` handed it (that is the contract in
+   * `Tokenizer`) and is told about changes through `edit()` alone, so an
+   * edit has to *mutate* it — swapping in a fresh one would leave every
+   * engine tokenizing the pre-edit text at the new line numbers, painting a
+   * split line with its neighbour's colours.
+   */
+  private _replaceLines(
+    from: number,
+    removed: number,
+    lines: readonly string[],
   ): void {
-    if (edit) {
-      // A tokenizer keeps the array `setLines` handed it (that is the
-      // contract in `Tokenizer`) and is told about changes through `edit()`
-      // alone, so an incremental edit has to *mutate* the live array —
-      // swapping in a fresh one would leave every engine tokenizing the
-      // pre-edit text at the new line numbers, painting a split line with
-      // its neighbour's colours. Callers only touch the edited span, so
-      // splicing that span across reproduces `newLines` exactly.
-      this._lines.splice(
-        edit.fromLine,
-        edit.removed,
-        ...newLines.slice(edit.fromLine, edit.fromLine + edit.inserted),
-      );
-    } else {
-      this._lines = newLines;
-    }
-    const tok = this._tokenizer();
-    if (edit && tok) {
-      tok.edit(edit);
-      // line indices at and below the edit moved or changed; drop them
-      for (const key of [...this._lineCache.keys()]) {
-        if (key >= edit.fromLine) this._lineCache.delete(key);
+    spliceAll(this._lines, from, removed, lines);
+    const edit = { fromLine: from, removed, inserted: lines.length };
+    this._tokenizer()?.edit(edit);
+    this._moveLineCache(edit);
+  }
+
+  /** Let go of the line entries farther than a quarter of the cache from
+   *  the lines in view — see `LINE_CACHE_MAX`. */
+  private _trimLineCache(first: number, last: number): void {
+    const reach = LINE_CACHE_MAX / 4;
+    for (const line of this._lineCache.keys()) {
+      if (line < first - reach || line > last + reach) {
+        this._lineCache.delete(line);
       }
-      if (edit.removed !== edit.inserted) this._lineCache.clear();
-    } else {
-      tok?.setLines(this._lines);
-      this._lineCache.clear();
     }
   }
 
-  private _afterEdit(value: string): void {
-    this._synced = value;
+  /**
+   * The line cache across an edit: the edited lines' entries go, and the
+   * ones after them move by the lines it added or took away. Every other
+   * entry stays. An entry is checked against its line's text and tokens
+   * whenever it is asked for (`_lineEntry`), so a line an edit re-coloured
+   * — an opened comment, a closed string — is laid out again then, and a
+   * line it left alone is not: typing on the first line of a file used to
+   * lay out every line in view again on every keystroke.
+   */
+  private _moveLineCache(edit: {
+    fromLine: number;
+    removed: number;
+    inserted: number;
+  }): void {
+    const end = edit.fromLine + edit.removed;
+    const shift = edit.inserted - edit.removed;
+    if (shift === 0) {
+      for (let line = edit.fromLine; line < end; line++) {
+        this._lineCache.delete(line);
+      }
+      return;
+    }
+    const moved = new Map<number, LineCacheEntry>();
+    for (const [line, entry] of this._lineCache) {
+      if (line < edit.fromLine) moved.set(line, entry);
+      else if (line >= end) moved.set(line + shift, entry);
+    }
+    this._lineCache = moved;
+  }
+
+  private _afterEdit(): void {
+    // The whole text as one string is what `onChange`, `onSelectionChange`
+    // and a controlled `value` speak, and joining fifty thousand lines is a
+    // millisecond or two a keystroke — joined when one of them reads it.
+    let joined: string | null = null;
+    const value = (): string => (joined ??= this._lines.join('\n'));
+    this._synced = this.props.value != null ? value() : null;
     this._ensureCaretVisible();
     this._repaint();
     this._fire('onChange', value);
@@ -1356,7 +1497,7 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
     if (!extend) this._anchor = { ...this._caret };
     this._ensureCaretVisible();
     this._repaint();
-    this._fire('onSelectionChange', this.value);
+    this._fire('onSelectionChange', () => this.value);
   }
 
   select(anchor: Position, head: Position): void {
@@ -1366,7 +1507,7 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
     this._caret = clampPos(this._lines, head);
     this._ensureCaretVisible();
     this._repaint();
-    this._fire('onSelectionChange', this.value);
+    this._fire('onSelectionChange', () => this.value);
   }
 
   // `: this`, matching the base declaration core grew in #294 — a subclass
@@ -1481,19 +1622,19 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
     fromLine: number,
     toLine: number,
   ): void {
-    const caret = this._caret;
-    const anchor = this._anchor;
-    this._applyLines(newLines, {
+    const caret = clampPos(newLines, this._caret);
+    const anchor = clampPos(newLines, this._anchor);
+    this._edit(
       fromLine,
-      removed: toLine - fromLine + 1,
-      inserted: toLine - fromLine + 1,
-    });
-    this._caret = clampPos(this._lines, caret);
-    this._anchor = clampPos(this._lines, anchor);
-    this._undoRun = null;
-    const value = this._lines.join('\n');
-    this._pushHistory({ value, caret: this._caret, anchor: this._anchor });
-    this._afterEdit(value);
+      toLine - fromLine + 1,
+      newLines.slice(fromLine, toLine + 1),
+      null,
+      caret,
+      anchor,
+    );
+    this._caret = caret;
+    this._anchor = anchor;
+    this._afterEdit();
   }
 
   // --- input: keyboard -----------------------------------------------------
@@ -2014,6 +2155,7 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
       this._lines.length - 1,
       Math.ceil((this._scrollY + content.height) / lineH),
     );
+    if (this._lineCache.size > LINE_CACHE_MAX) this._trimLineCache(first, last);
     // Only the lines this pass repaints, and one either side for ink that
     // overhangs its row: a scroll blit hands over the band it exposed, and
     // a blink the caret's row. The clip would throw the rest away after

@@ -73,15 +73,20 @@ test('stream engine: lazy, incremental, converging', () => {
   assert.equal(tok.lineTokens(4)[0].type, 'string');
   assert.equal(runs, 5);
 
-  // edit line 3 (same line count): re-tokenizes 3 and 4, then the entry
-  // state matches the cache and everything below survives. (The engine
-  // converges one line past the edit — the splice punches the candidate for
-  // the first following line — which is a line of wasted work, not two.)
+  // edit line 3 (same line count): re-tokenizes 3, then the state leaving
+  // it matches the one line 4 was tokenized from, and everything below
+  // survives — line 4 included, which is the line an editor then need not
+  // lay out again
+  const below = tok.lineTokens(4);
   lines[3] = 'c!';
   tok.edit({ fromLine: 3, removed: 1, inserted: 1 });
   runs = 0;
-  assert.equal(tok.lineTokens(4)[0].type, 'string');
-  assert.equal(runs, 2, 'converged just after the edited line');
+  assert.equal(
+    tok.lineTokens(4),
+    below,
+    'the line after the edit kept its tokens',
+  );
+  assert.equal(runs, 1, 'converged at the edited line');
 
   // edit line 0 so the *state* downstream changes: no convergence
   lines[0] = 'open';
