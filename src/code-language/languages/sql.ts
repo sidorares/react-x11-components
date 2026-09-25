@@ -77,8 +77,7 @@ export interface SqlOptions {
   hashComments?: boolean;
 }
 
-/** SQL. `sql()` for the generic dialect, options for the house one. */
-export function sql(options: SqlOptions = {}): Language {
+function build(options: SqlOptions = {}): Language {
   const extra = new Set(
     (options.keywords ?? []).map((word) => word.toLowerCase()),
   );
@@ -162,4 +161,25 @@ export function sql(options: SqlOptions = {}): Language {
     startState: () => ({ comment: false, string: false }),
     token,
   });
+}
+
+// One Language per set of options, made the first time it is asked for: a
+// render that writes `language={sql()}` inline hands the editor the same
+// object each time, where a new one meant a new tokenizer and every line in
+// view laid out again, on every keystroke of a controlled editor.
+let made: Map<string, Language> | undefined;
+
+/** SQL. `sql()` for the generic dialect, options for the house one. */
+export function sql(options: SqlOptions = {}): Language {
+  const key = JSON.stringify([
+    options.keywords ?? [],
+    options.hashComments ?? false,
+  ]);
+  made ??= new Map();
+  let language = made.get(key);
+  if (!language) {
+    language = build(options);
+    made.set(key, language);
+  }
+  return language;
 }

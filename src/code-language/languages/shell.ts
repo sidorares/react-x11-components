@@ -198,8 +198,7 @@ function dquoteToken(stream: StringStream, state: ShellState): string | null {
   return 'string';
 }
 
-/** POSIX shell / bash. */
-export function shell(): Language {
+function build(): Language {
   return streamLanguage<ShellState>({
     name: 'shell',
     languageData: {
@@ -218,4 +217,15 @@ export function shell(): Language {
     }),
     token,
   });
+}
+
+// One Language per set of options, made the first time it is asked for: a
+// render that writes `language={shell()}` inline hands the editor the same
+// object each time, where a new one meant a new tokenizer and every line in
+// view laid out again, on every keystroke of a controlled editor.
+let made: Language | undefined;
+
+/** POSIX shell / bash. */
+export function shell(): Language {
+  return (made ??= build());
 }

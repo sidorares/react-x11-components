@@ -51,7 +51,7 @@ const SELF = new Set(['this', 'super', 'globalThis']);
  *   one; and, with JSX on: `N` an opening tag before its name, `A` its
  *   attribute zone, `M` a closing tag before its name, `K` a closing tag
  *   awaiting `>`, `E` element children, `J` a `{…}` expression container.
- * - `str` is `'`/`"` while a string continues across a `\` line break.
+ * - `str` is `'`/`"` while a string continues across a `` line break.
  * - `value` is true when the previous significant token produced a value —
  *   which is exactly the bit that disambiguates `/` (divide after a value,
  *   regex otherwise) and `<` (compare after a value, JSX otherwise).
@@ -167,7 +167,7 @@ function eatEscape(stream: StringStream): boolean {
 }
 
 /** Consume string content up to the closing quote / EOL. Returns the type,
- * updating `state.str` when a trailing `\` continues the string. */
+ * updating `state.str` when a trailing `` continues the string. */
 function stringToken(
   stream: StringStream,
   state: JsState,
@@ -391,8 +391,7 @@ export interface JavascriptOptions {
   jsx?: boolean;
 }
 
-/** JavaScript — or TypeScript, JSX and TSX, by options. */
-export function javascript(options: JavascriptOptions = {}): Language {
+function build(options: JavascriptOptions = {}): Language {
   const typescript = options.typescript ?? false;
   const jsx = options.jsx ?? false;
   return streamLanguage<JsState>({
@@ -416,4 +415,22 @@ export function javascript(options: JavascriptOptions = {}): Language {
     startState: () => ({ ctx: '', str: '', value: false }),
     token: makeToken(typescript, jsx),
   });
+}
+
+// One Language per set of options, made the first time it is asked for: a
+// render that writes `language={javascript()}` inline hands the editor the same
+// object each time, where a new one meant a new tokenizer and every line in
+// view laid out again, on every keystroke of a controlled editor.
+let made: Map<string, Language> | undefined;
+
+/** JavaScript — or TypeScript, JSX and TSX, by options. */
+export function javascript(options: JavascriptOptions = {}): Language {
+  const key = `${options.typescript ?? false}|${options.jsx ?? false}`;
+  made ??= new Map();
+  let language = made.get(key);
+  if (!language) {
+    language = build(options);
+    made.set(key, language);
+  }
+  return language;
 }
