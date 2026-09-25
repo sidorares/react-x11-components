@@ -126,6 +126,10 @@ export interface CodeEditorHandle {
   readonly language: Language | null;
   readonly canUndo: boolean;
   readonly canRedo: boolean;
+  /** The `diagnostics` prop as it stands in the text now: moved with every
+   * edit since the prop was set, the way the code they point at moved, and
+   * without the ones whose code an edit took away. */
+  readonly diagnostics: readonly Diagnostic[];
   selectedText(): string;
   replaceRange(from: Position, to: Position, text: string): void;
   insertText(text: string): void;
@@ -272,6 +276,53 @@ const SEVERITY_COLORS: Record<string, string> = {
   hint: '#8b8f98',
 };
 
+/** Two token style maps that colour alike — the same object, or an
+ *  inline one written again with the same entries, which a render hands
+ *  over every time and which laid every line out again. */
+function sameTokenStyles(
+  a: TokenStyles | undefined,
+  b: TokenStyles | undefined,
+): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  const ka = Object.keys(a);
+  if (ka.length !== Object.keys(b).length) return false;
+  for (const k of ka) {
+    const x = (a as Record<string, Record<string, unknown> | undefined>)[k];
+    const y = (b as Record<string, Record<string, unknown> | undefined>)[k];
+    if (x === y) continue;
+    if (!x || !y) return false;
+    const fx = Object.keys(x);
+    if (fx.length !== Object.keys(y).length) return false;
+    for (const f of fx) if (x[f] !== y[f]) return false;
+  }
+  return true;
+}
+
+/** Two diagnostics lists that say the same thing, in the same order. */
+function sameDiagnostics(
+  a: readonly Diagnostic[] | undefined,
+  b: readonly Diagnostic[] | undefined,
+): boolean {
+  if (a === b) return true;
+  if ((a?.length ?? 0) !== (b?.length ?? 0)) return false;
+  if (!a || !b) return true; // both empty
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i];
+    const y = b[i];
+    if (
+      !posEqual(x.from, y.from) ||
+      !posEqual(x.to, y.to) ||
+      x.severity !== y.severity ||
+      x.message !== y.message ||
+      x.source !== y.source
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function cpToUtf16(text: string, cp: number): number {
   let i = 0;
   for (let n = 0; n < cp && i < text.length; n++) {
@@ -387,6 +438,17 @@ const CHUNK_MAX = 2048;
  * ligature that straddles one is set as two. Code is set in a monospace
  * face, and a seam is one place in a few hundred characters.
  */
+/** A layout's first baseline, from its top — where its text sits, whatever
+ *  fallback face in it is taller than the base. Both engines give their
+ *  lines one (ntk's `lines[].baseline`, the CoreText bridge's too); null
+ *  for one that does not. */
+function baselineOf(layout: LayoutLike): number | null {
+  const lines = (layout as { lines?: ReadonlyArray<{ baseline?: unknown }> })
+    .lines;
+  const b = lines?.[0]?.baseline;
+  return typeof b === 'number' && Number.isFinite(b) ? b : null;
+}
+
 class ChunkedLayout implements LayoutLike {
   readonly width: number;
   readonly height: number;
@@ -450,12 +512,25 @@ class ChunkedLayout implements LayoutLike {
     this.drawSpan(ctx, x, y, -Infinity, Infinity);
   }
 
-  /** The pieces that reach into `[from, to)` across the line. */
-  drawSpan(ctx: unknown, x: number, y: number, from: number, to: number) {
+  /**
+   * The pieces that reach into `[from, to)` across the line, each with its
+   * first baseline at `baseline` — a piece holding an emoji is laid out
+   * taller than the rest, and set by its top it sat on a baseline of its
+   * own. `y` places a piece whose engine gives no baseline.
+   */
+  drawSpan(
+    ctx: unknown,
+    x: number,
+    y: number,
+    from: number,
+    to: number,
+    baseline: number | null = null,
+  ) {
     for (const piece of this.chunks) {
       if (piece.x >= to) break;
       if (piece.x + piece.layout.width <= from) continue;
-      piece.layout.draw(ctx, x + piece.x, y);
+      const b = baseline == null ? null : baselineOf(piece.layout);
+      piece.layout.draw(ctx, x + piece.x, b == null ? y : baseline! - b);
     }
   }
 }
@@ -546,6 +621,10 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
   private _undoRun: string | null = null;
   /** The lines the last change replaced, in the text it left: what
    *  `_repaintSince` claims of an edit. */
+  /** The `diagnostics` prop, moved through the edits since it was set —
+   *  see `_mapDiagnostics` — and the prop array it was taken from. */
+  private _diagnostics: Diagnostic[] = [];
+  private _diagnosticsFrom: readonly Diagnostic[] | undefined = undefined;
   private _lastEdit: {
     fromLine: number;
     removed: number;
@@ -559,6 +638,12 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
   private _metricsKey = '';
   private _lineH = 0;
   private _charW = 0;
+  /** The base face's first baseline and the bottom of its glyphs, from the
+   *  top of a row: every row's text sits on the one, and a squiggle hugs
+   *  the other, whatever a fallback face in the row would make of its own
+   *  layout. Null baseline: an engine that does not say (see `paint`). */
+  private _baseline: number | null = null;
+  private _textBottom = 0;
   private _widest = 0;
 
   constructor(props: Record<string, unknown>, app: unknown) {
@@ -616,8 +701,10 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
   set value(next: string) {
     const text = next == null ? '' : String(next);
     if (text === this._lines.join('\n')) return;
+    const view = this._viewBefore();
     this._setText(text);
-    this._repaint();
+    this._repaintSince(view, this._lastEdit);
+    this._lastEdit = null;
   }
 
   get name(): string | undefined {
@@ -767,6 +854,13 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
     const probe = fonts.layout('Mg', s);
     this._lineH = probe.height || Number(s.size) * 1.4;
     this._charW = fonts.layout('0', s).width || Number(s.size) * 0.6;
+    this._baseline = baselineOf(probe);
+    const line = (probe as { lines?: ReadonlyArray<{ descent?: unknown }> })
+      .lines?.[0];
+    this._textBottom =
+      this._baseline != null && typeof line?.descent === 'number'
+        ? this._baseline + line.descent
+        : this._lineH;
   }
 
   private _lineHeight(): number {
@@ -1277,6 +1371,79 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
   }
 
   /**
+   * Rows (inclusive ranges, any order) as the device-pixel bands they are
+   * drawn in, `[top, bottom)`, merged where they touch and cut to the
+   * content box. Glyphs ink a little past their row — a descender's
+   * anti-aliasing below it, an accent above — into pixels the next row's
+   * claim covers and this row's does not: a line edited left its old
+   * descenders in the row under it. So a band reaches that far into its
+   * neighbours, which the paint draws for it (`paint` culls a row either
+   * side).
+   */
+  private _rowBands(rows: Array<[number, number]>): Array<[number, number]> {
+    const content = this._contentRect();
+    const lineH = this._lineH;
+    const spill = 2 * this._scale;
+    const bands: Array<[number, number]> = [];
+    const band = (from: number, to: number): void => {
+      const top = Math.max(
+        content.y,
+        Math.floor(content.y + from * lineH - this._scrollY - spill),
+      );
+      const bottom = Math.min(
+        content.y + content.height,
+        Math.ceil(content.y + (to + 1) * lineH - this._scrollY + spill),
+      );
+      if (bottom > top) bands.push([top, bottom]);
+    };
+    const sorted = rows.slice().sort((a, b) => a[0] - b[0]);
+    let open: [number, number] | null = null;
+    for (const [a, b] of sorted) {
+      if (open && a <= open[1] + 1) open[1] = Math.max(open[1], b);
+      else {
+        if (open) band(open[0], open[1]);
+        open = [a, b];
+      }
+    }
+    if (open) band(open[0], open[1]);
+    return bands;
+  }
+
+  /** Claim the rows the squiggles of both lists are on: a linter's answer
+   *  arriving is a few rows, not the editor, and the layouts stay. */
+  private _repaintDiagnostics(
+    before: readonly Diagnostic[],
+    after: readonly Diagnostic[],
+  ): void {
+    const content = this._contentRect();
+    const lineH = this._lineH;
+    if (!this.root || content.width <= 0 || !(lineH > 0)) return;
+    const first = Math.floor(this._scrollY / lineH);
+    const bottom = Math.ceil((this._scrollY + content.height) / lineH);
+    const rows: Array<[number, number]> = [];
+    const last = this._lines.length - 1;
+    for (const d of [...before, ...after]) {
+      // where the paint puts it: clamped to the text
+      const a = Math.max(
+        first,
+        Math.min(last, Math.min(d.from.line, d.to.line)),
+      );
+      const b = Math.min(
+        bottom,
+        Math.min(last, Math.max(d.from.line, d.to.line)),
+      );
+      if (a <= b) rows.push([a, b]);
+    }
+    for (const [top, end] of this._rowBands(rows)) {
+      this.invalidate(
+        false,
+        { x: content.x, y: top, width: content.width, height: end - top },
+        'text',
+      );
+    }
+  }
+
+  /**
    * Claim what a change since `before` moved: the rows it touched rather
    * than the editor, so a keystroke paints its line, not the forty in view.
    *
@@ -1319,15 +1486,15 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
       return;
     }
     const first = Math.max(0, Math.floor(this._scrollY / lineH));
-    const last = Math.min(
-      this._lines.length - 1,
-      Math.ceil((this._scrollY + content.height) / lineH),
-    );
+    // rows in view, text or not: a row past the last line is still where a
+    // line was drawn before an edit took it away
+    const bottom = Math.ceil((this._scrollY + content.height) / lineH);
+    const last = Math.min(this._lines.length - 1, bottom);
     // rows as inclusive ranges, merged below
     const rows: Array<[number, number]> = [];
     const add = (from: number, to: number): void => {
       const a = Math.max(first, Math.min(from, to));
-      const b = Math.min(last, Math.max(from, to));
+      const b = Math.min(bottom, Math.max(from, to));
       if (a <= b) rows.push([a, b]);
     };
     add(before.caretLine, before.caretLine);
@@ -1356,7 +1523,7 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
         this._lineEntry(i);
       }
       if (edit.inserted !== edit.removed) {
-        add(edit.fromLine, last);
+        add(edit.fromLine, bottom);
       } else {
         add(edit.fromLine, edit.fromLine + edit.inserted - 1);
         // the rows after it that its tokens re-coloured
@@ -1377,29 +1544,7 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
         }
       }
     }
-    rows.sort((a, b) => a[0] - b[0]);
-    // the merged rows, as device-pixel bands: [top, bottom)
-    const bands: Array<[number, number]> = [];
-    let open: [number, number] | null = null;
-    const band = (from: number, to: number): void => {
-      const top = Math.max(
-        content.y,
-        Math.floor(content.y + from * lineH - this._scrollY),
-      );
-      const bottom = Math.min(
-        content.y + content.height,
-        Math.ceil(content.y + (to + 1) * lineH - this._scrollY),
-      );
-      if (bottom > top) bands.push([top, bottom]);
-    };
-    for (const [a, b] of rows) {
-      if (open && a <= open[1] + 1) open[1] = Math.max(open[1], b);
-      else {
-        if (open) band(open[0], open[1]);
-        open = [a, b];
-      }
-    }
-    if (open) band(open[0], open[1]);
+    const bands = this._rowBands(rows);
     if (shiftX !== 0 || shiftY !== 0) {
       // the rows inside the region are pinned: core repaints them after the
       // copy, changed or not, so what is left to claim is what of them lies
@@ -1556,6 +1701,106 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
     return this._historyIndex > 0;
   }
 
+  get diagnostics(): readonly Diagnostic[] {
+    return this._currentDiagnostics();
+  }
+
+  private _currentDiagnostics(): Diagnostic[] {
+    const prop = (this.props as unknown as CodeEditorProps).diagnostics;
+    if (prop !== this._diagnosticsFrom) {
+      // A render hands the same answer over as a new array — a list mapped
+      // from the linter's result inline — and that is not a new answer: the
+      // squiggles stay where the edits since the last one moved them,
+      // rather than going back to where the old text had them.
+      if (!sameDiagnostics(prop, this._diagnosticsFrom)) {
+        this._diagnostics = prop ? prop.slice() : [];
+      }
+      this._diagnosticsFrom = prop;
+    }
+    return this._diagnostics;
+  }
+
+  /**
+   * Move the diagnostics through `removed` lines at `from` becoming `lines`,
+   * before the text changes. A squiggle is where a linter looked, and the
+   * linter is asked again only once the text settles: meanwhile, typing a
+   * line above one left it under the line that had been there. The change
+   * is narrowed to the characters it really touched — the text the old and
+   * new lines share at either end — and a position in that text keeps its
+   * character. One inside the change goes to its edge: a diagnostic's start
+   * to the far side of what was inserted there, so typing before a flagged
+   * word moves the flag along with it, and its end to the near side, so
+   * typing after the word does not stretch the flag over the new text. A
+   * diagnostic whose whole range the edit took away goes with it; one that
+   * points at a place rather than a range stays.
+   */
+  private _mapDiagnostics(
+    from: number,
+    removed: number,
+    lines: readonly string[],
+  ): void {
+    const list = this._currentDiagnostics();
+    if (list.length === 0) return;
+    const before = this._lines.slice(from, from + removed).join('\n');
+    const after = lines.join('\n');
+    let head = 0;
+    const most = Math.min(before.length, after.length);
+    while (head < most && before.charCodeAt(head) === after.charCodeAt(head)) {
+      head++;
+    }
+    let tail = 0;
+    while (
+      tail < most - head &&
+      before.charCodeAt(before.length - 1 - tail) ===
+        after.charCodeAt(after.length - 1 - tail)
+    ) {
+      tail++;
+    }
+    const shift = lines.length - removed;
+    const grow = after.length - before.length;
+    // where each old line starts inside `before`
+    const starts: number[] = [];
+    for (let i = 0, at = 0; i < removed; i++) {
+      starts.push(at);
+      at += this._lines[from + i].length + 1;
+    }
+    const move = (p: Position, far: boolean): Position => {
+      if (p.line < from) return p;
+      if (p.line >= from + removed) return { line: p.line + shift, ch: p.ch };
+      const text = this._lines[p.line];
+      const o = starts[p.line - from] + Math.min(p.ch, text.length);
+      let n: number;
+      if (o < head) n = o;
+      else if (o > before.length - tail) n = o + grow;
+      else n = far ? after.length - tail : head;
+      // back to a line and column of the new lines
+      let line = 0;
+      let at = 0;
+      while (line < lines.length - 1 && n > at + lines[line].length) {
+        at += lines[line].length + 1;
+        line++;
+      }
+      return { line: from + line, ch: n - at };
+    };
+    const kept: Diagnostic[] = [];
+    for (const d of list) {
+      const a = minPos(d.from, d.to);
+      const b = maxPos(d.from, d.to);
+      const point = posEqual(a, b);
+      const start = move(a, !point);
+      const end = move(b, false);
+      if (comparePos(end, start) < 0 || (!point && posEqual(start, end))) {
+        if (!point) continue; // what it pointed at is gone
+      }
+      kept.push({
+        ...d,
+        from: start,
+        to: comparePos(end, start) < 0 ? start : end,
+      });
+    }
+    this._diagnostics = kept;
+  }
+
   get canRedo(): boolean {
     return this._historyIndex < this._history.length;
   }
@@ -1706,11 +1951,26 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
     removed: number,
     lines: readonly string[],
   ): void {
+    this._mapDiagnostics(from, removed, lines);
+    // the widest line known going: what it was is the widest of the lines
+    // still laid out — the one edited is laid out again before it is drawn
+    let widestGoes = false;
+    for (let i = from; i < from + removed && !widestGoes; i++) {
+      const width = this._lineCache.get(i)?.layout?.width ?? 0;
+      widestGoes = width > 0 && width >= this._widest;
+    }
     spliceAll(this._lines, from, removed, lines);
     const edit = { fromLine: from, removed, inserted: lines.length };
     this._tokenizer()?.edit(edit);
     this._moveLineCache(edit);
     this._lastEdit = edit;
+    if (widestGoes) {
+      let widest = 0;
+      for (const entry of this._lineCache.values()) {
+        widest = Math.max(widest, entry.layout?.width ?? 0);
+      }
+      this._widest = widest;
+    }
   }
 
   /** Let go of the line entries farther than a quarter of the cache from
@@ -2362,21 +2622,42 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
     prevProps: Record<string, unknown>,
   ): void {
     const before = prevProps ?? this.props;
+    // the squiggles on screen, before the prop they came from is replaced
+    const shown = this._diagnostics;
     super.applyProps(nextProps, prevProps);
-    if (nextProps.value != null) this._syncProps();
+    if (nextProps.value != null && String(nextProps.value) !== this._synced) {
+      // the rows the new value changed, as an edit claims them
+      const view = this._viewBefore();
+      this._syncProps();
+      this._repaintSince(view, this._lastEdit);
+      this._lastEdit = null;
+    }
     if (nextProps.language !== before.language) {
       this._tokenizer(); // re-resolves against the new props
       this._repaint();
     }
     if (nextProps.rows !== before.rows) this.invalidateMeasure('props');
     if (
-      nextProps.tokenStyles !== before.tokenStyles ||
-      nextProps.diagnostics !== before.diagnostics ||
-      nextProps.tabSize !== before.tabSize ||
-      nextProps.lineNumbers !== before.lineNumbers
+      !sameTokenStyles(
+        nextProps.tokenStyles as TokenStyles | undefined,
+        before.tokenStyles as TokenStyles | undefined,
+      ) ||
+      nextProps.tabSize !== before.tabSize
     ) {
       this._lineCache.clear();
       this._repaint();
+    } else if (nextProps.lineNumbers !== before.lineNumbers) {
+      this._repaint(); // every column moves with the gutter; no layout does
+    } else if (
+      !sameDiagnostics(
+        nextProps.diagnostics as readonly Diagnostic[] | undefined,
+        before.diagnostics as readonly Diagnostic[] | undefined,
+      )
+    ) {
+      this._repaintDiagnostics(
+        shown,
+        (nextProps.diagnostics as readonly Diagnostic[] | undefined) ?? [],
+      );
     }
   }
 
@@ -2407,6 +2688,7 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
       stroke?(): void;
       strokeStyle?: unknown;
       lineWidth?: number;
+      lineJoin?: string;
     };
     if (typeof c.fillRect !== 'function') return; // mock backend: geometry only
     const content = this._contentRect();
@@ -2435,6 +2717,18 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
       return true;
     };
     const dark = this._onDark();
+    // What of a line this pass can show, in the line's own x: a band, a
+    // squiggle or a caret is drawn over that and no further. A selection
+    // across a minified line was one rectangle as wide as the line, and past
+    // 32,767 device pixels an X11 coordinate does not fit its 16 bits — the
+    // paint threw, and the window stopped painting.
+    const reachFrom = this._scrollX - 8 * s;
+    const reachTo = this._scrollX + content.width - gutterW + 8 * s;
+    const within = (x0: number, x1: number): [number, number] | null => {
+      const a = Math.max(x0, reachFrom);
+      const b = Math.min(x1, reachTo);
+      return b > a ? [a, b] : null;
+    };
 
     let first = Math.max(0, Math.floor(this._scrollY / lineH));
     let last = Math.min(
@@ -2515,12 +2809,9 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
           i === b.line
             ? this._caretX({ line: i, ch: b.ch })
             : (entry.layout?.width ?? 0) + this._charW * 0.5; // the newline
-        c.fillRect(
-          textX + startX,
-          lineY(i),
-          Math.max(2 * s, endX - startX),
-          lineH,
-        );
+        const band = within(startX, startX + Math.max(2 * s, endX - startX));
+        if (band)
+          c.fillRect(textX + band[0], lineY(i), band[1] - band[0], lineH);
       }
     }
 
@@ -2535,7 +2826,9 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
           if (pos.line < first || pos.line > last) continue;
           const x0 = this._caretX(pos);
           const x1 = this._caretX({ line: pos.line, ch: pos.ch + 1 });
-          c.fillRect(textX + x0, lineY(pos.line), Math.max(s, x1 - x0), lineH);
+          const box = within(x0, x0 + Math.max(s, x1 - x0));
+          if (box)
+            c.fillRect(textX + box[0], lineY(pos.line), box[1] - box[0], lineH);
         }
       }
     }
@@ -2580,17 +2873,40 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
         const entry = this._lineEntry(i);
         const layout = entry.layout;
         if (!layout || layout.width < shownFrom) continue;
-        const y = lineY(i) + (lineH - (layout.height || lineH)) / 2;
+        // Every row's text on the base face's baseline. Centred by its own
+        // height, a line with an emoji in it — laid out taller, in a
+        // fallback face — sat a pixel off every other line.
+        const top = lineY(i);
+        const base = this._baseline;
+        const own = base == null ? null : baselineOf(layout);
+        const y =
+          own == null
+            ? top + (lineH - (layout.height || lineH)) / 2
+            : top + base! - own;
+        // …and a row laid out taller than the base keeps its ink in its
+        // own row: past it, the next row's pixels are ones an edit to this
+        // row does not repaint, and an old descender stayed there
+        const tall =
+          layout.height > lineH + 0.5 &&
+          clipTo(content.x + gutterW, top, content.width - gutterW, lineH);
         if (layout instanceof ChunkedLayout) {
-          layout.drawSpan(ctx, textX, y, shownFrom, shownTo);
+          layout.drawSpan(
+            ctx,
+            textX,
+            y,
+            shownFrom,
+            shownTo,
+            base == null ? null : top + base,
+          );
         } else {
           layout.draw(ctx, textX, y);
         }
+        if (tall) c.restore!();
       }
     }
 
     // diagnostics
-    const diagnostics = props.diagnostics ?? [];
+    const diagnostics = this._currentDiagnostics();
     for (const d of diagnostics) {
       const color = SEVERITY_COLORS[d.severity ?? 'error'] ?? '#e5484d';
       const from = clampPos(this._lines, d.from);
@@ -2611,10 +2927,16 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
         // short text — measure where the drawn layout actually ends
         const entry = this._lineEntry(i);
         const glyphBottom =
-          lineY(i) +
-          (lineH - (entry.layout?.height || lineH)) / 2 +
-          (entry.layout?.height || lineH);
-        const y = Math.min(lineY(i) + lineH - 2 * s, glyphBottom - s);
+          this._baseline != null
+            ? lineY(i) + this._textBottom
+            : lineY(i) +
+              (lineH - (entry.layout?.height || lineH)) / 2 +
+              (entry.layout?.height || lineH);
+        // …and inside its own row: the zigzag is 2px tall and stroked 1px
+        // wide, so it inks half a stroke past its path either way. Ink past
+        // the row's bottom is in the next row's pixels, which an edit to
+        // this row does not repaint — the old squiggle left a speck there.
+        const y = Math.min(lineY(i) + lineH - 2.5 * s, glyphBottom - s);
         const width = Math.max(this._charW * 0.6, x1 - x0);
         if (
           typeof c.beginPath === 'function' &&
@@ -2622,30 +2944,44 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
           typeof c.lineTo === 'function' &&
           typeof c.stroke === 'function'
         ) {
-          c.beginPath();
           // a hairline zig-zag, 4px a step and 2px tall, on the panel's grid
+          // — the steps in reach, each where it would be if all were drawn
           const step = 4 * s;
-          let up = true;
-          for (let x = 0; x <= width; x += step) {
-            const px = textX + x0 + x;
-            const py = y + (up ? 0 : 2 * s);
-            if (x === 0) c.moveTo(px, py);
-            else c.lineTo(px, py);
-            up = !up;
+          const from = Math.max(0, Math.floor((reachFrom - x0) / step));
+          const to = Math.min(
+            Math.floor(width / step),
+            Math.ceil((reachTo - x0) / step),
+          );
+          if (to > from) {
+            c.beginPath();
+            for (let k = from; k <= to; k++) {
+              const px = textX + x0 + k * step;
+              const py = y + (k % 2 === 0 ? 0 : 2 * s);
+              if (k === from) c.moveTo(px, py);
+              else c.lineTo(px, py);
+            }
+            c.strokeStyle = color;
+            c.lineWidth = s;
+            // mitred, the zig-zag's corners reach half a pixel past the
+            // stroke — into the next row, at the bottom ones
+            c.lineJoin = 'round';
+            c.stroke();
           }
-          c.strokeStyle = color;
-          c.lineWidth = s;
-          c.stroke();
         } else {
-          c.fillStyle = color;
-          c.fillRect(textX + x0, y + s, width, s);
+          const line = within(x0, x0 + width);
+          if (line) {
+            c.fillStyle = color;
+            c.fillRect(textX + line[0], y + s, line[1] - line[0], s);
+          }
         }
       }
     }
 
     // caret — 2 logical px, in the (theme-resolved) text colour
-    if (this._focused && this._caretOn) {
-      const x = this._caretX(this._caret);
+    const caretAt =
+      this._focused && this._caretOn ? this._caretX(this._caret) : 0;
+    if (this._focused && this._caretOn && within(caretAt, caretAt + 2 * s)) {
+      const x = caretAt;
       c.fillStyle = this._resolveColor(props.caretColor) ?? baseColor;
       c.fillRect(
         Math.round(textX + x),

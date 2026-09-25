@@ -50,7 +50,11 @@ interface LanguageData {
 
 ## Built-in languages
 
-Zero dependencies, hand-written stream tokenizers:
+Zero dependencies, hand-written stream tokenizers. Each factory returns the
+same `Language` for the same options, so `language={sql()}` written inline
+costs nothing on a re-render. A new language object means a new tokenizer
+and every line in view laid out again, and a controlled editor re-renders
+on every keystroke.
 
 ```ts
 sql(options?); // SqlOptions — dialect keywords, schema-aware

@@ -105,8 +105,7 @@ function token(stream: StringStream, state: GlslState): string | null {
   return null;
 }
 
-/** GLSL. */
-export function glsl(): Language {
+function build(): Language {
   return streamLanguage<GlslState>({
     name: 'glsl',
     languageData: {
@@ -117,4 +116,15 @@ export function glsl(): Language {
     startState: () => ({ comment: false }),
     token,
   });
+}
+
+// One Language per set of options, made the first time it is asked for: a
+// render that writes `language={glsl()}` inline hands the editor the same
+// object each time, where a new one meant a new tokenizer and every line in
+// view laid out again, on every keystroke of a controlled editor.
+let made: Language | undefined;
+
+/** GLSL. */
+export function glsl(): Language {
+  return (made ??= build());
 }

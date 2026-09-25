@@ -61,12 +61,22 @@ function token(stream: StringStream, state: JsonState): string | null {
   return 'invalid';
 }
 
-/** JSON. */
-export function json(): Language {
+function build(): Language {
   return streamLanguage<JsonState>({
     name: 'json',
     languageData: { indentAfter: /[[{]\s*$/ },
     startState: () => ({ ctx: '', expectKey: false }),
     token,
   });
+}
+
+// One Language per set of options, made the first time it is asked for: a
+// render that writes `language={json()}` inline hands the editor the same
+// object each time, where a new one meant a new tokenizer and every line in
+// view laid out again, on every keystroke of a controlled editor.
+let made: Language | undefined;
+
+/** JSON. */
+export function json(): Language {
+  return (made ??= build());
 }

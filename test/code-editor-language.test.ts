@@ -788,3 +788,47 @@ test('stream engine: an edit in a guessed run re-runs the line under it, and tel
   assert.deepEqual(told, [6006]);
   tok.dispose?.();
 });
+
+test('stream engine: an edit above the frontier does not take the tokens the walk left behind', () => {
+  // A walk stops with its last line's state replaced and that line not yet
+  // run again. An edit above moves the frontier back past it, and
+  // convergence then took those tokens as the line's: the line under the
+  // view kept the colours it had before a comment opened above it.
+  const { language } = blocks();
+  const tok = language.createTokenizer(host);
+  const lines: string[] = Array.from({ length: 100 }, () => 'x');
+  tok.setLines(lines);
+  for (let i = 0; i < 100; i++) tok.lineTokens(i);
+  lines[10] = '<<';
+  tok.edit({ fromLine: 10, removed: 1, inserted: 1 });
+  assert.equal(tok.lineTokens(20)[0].type, 'comment');
+  lines[2] = 'y';
+  tok.edit({ fromLine: 2, removed: 1, inserted: 1 });
+  assert.equal(tok.lineTokens(2)[0].type, 'keyword');
+  assert.equal(
+    tok.lineTokens(21)[0].type,
+    'comment',
+    'the line under the walk',
+  );
+  assert.equal(tok.lineTokens(99)[0].type, 'comment');
+});
+
+test('the built-in languages are one object per set of options', () => {
+  // `language={javascript()}` inline hands the editor a new object every
+  // render, and a new language is a new tokenizer and every line laid out
+  // again — on every keystroke of a controlled editor.
+  assert.strictEqual(javascript(), javascript());
+  assert.strictEqual(
+    javascript({ typescript: true }),
+    javascript({ typescript: true }),
+  );
+  assert.notStrictEqual(javascript({ typescript: true }), javascript());
+  assert.strictEqual(
+    sql({ keywords: ['merge'] }),
+    sql({ keywords: ['merge'] }),
+  );
+  assert.notStrictEqual(sql({ keywords: ['merge'] }), sql());
+  assert.strictEqual(json(), json());
+  assert.strictEqual(shell(), shell());
+  assert.strictEqual(glsl(), glsl());
+});

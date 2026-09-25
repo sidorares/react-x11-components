@@ -251,6 +251,13 @@ class StreamTokenizer<S> implements Tokenizer {
   /** The first line whose trusted tokens differed from the ones it had —
    *  what the host is told after a turn of the walk. */
   private changedFrom = -1;
+  /**
+   * Tokens taken out of `tokens` because the state entering their line was
+   * replaced — kept, by line, for the comparison `run` makes when the line
+   * is run again, and out of the array so that nothing takes them as the
+   * line's meanwhile. See `edit` for how a line gets here.
+   */
+  private stale = new Map<number, Token[]>();
 
   constructor(
     private readonly mode: LineMode<S>,
@@ -264,6 +271,7 @@ class StreamTokenizer<S> implements Tokenizer {
     this.states[0] = this.mode.startState();
     this.frontier = 0;
     this.guessedTo = -1;
+    this.stale.clear();
     this.stopWorker();
   }
 
@@ -282,6 +290,26 @@ class StreamTokenizer<S> implements Tokenizer {
     spliceAll(this.states, fromLine + 1, removed, new Array(inserted));
     if (inserted > 0) this.states[fromLine + inserted] = after;
     spliceAll(this.tokens, fromLine, removed, new Array(inserted));
+    const shift = inserted - removed;
+    if (this.stale.size > 0) {
+      const moved = new Map<number, Token[]>();
+      for (const [line, held] of this.stale) {
+        if (line < fromLine) moved.set(line, held);
+        else if (line >= fromLine + removed) moved.set(line + shift, held);
+      }
+      this.stale = moved;
+    }
+    // A walk that stops leaves the frontier's line with the state it gave
+    // it and the tokens it had before, from another: harmless while the
+    // frontier is there, since that line is the first one run. An edit
+    // above it moves the frontier back past it, and convergence would then
+    // take its tokens as the line's — the line under the view, once a
+    // comment opened in it, kept its colours from before and showed them
+    // the moment it was scrolled to. They are set aside instead.
+    const frontier = this.frontier;
+    if (fromLine < frontier && frontier >= fromLine + removed) {
+      this.setAside(frontier + shift);
+    }
     this.frontier = Math.min(this.frontier, fromLine);
     if (this.guessedTo >= fromLine) {
       this.guessedTo = Math.max(fromLine, this.guessedTo + inserted - removed);
@@ -404,13 +432,9 @@ class StreamTokenizer<S> implements Tokenizer {
       moved = next === undefined || !equals(state, next);
       if (moved) this.states[i + 1] = state;
     }
-    // past the line asked about, what ran from a replaced state goes: it is
-    // run again when asked for, and whoever was handed it is told
-    const after = line + 1;
-    if (moved && this.tokens[after] !== undefined) {
-      this.tokens[after] = undefined;
-      this.noteChange(after);
-    }
+    // past the line asked about, what ran from a replaced state is set
+    // aside: run again when asked for, and compared with what it had then
+    if (moved) this.setAside(line + 1);
     return this.tokens[line] ?? [];
   }
 
@@ -421,12 +445,24 @@ class StreamTokenizer<S> implements Tokenizer {
    * not, the line is noted for the host.
    */
   private run(i: number, state: S): Token[] {
-    const had = this.tokens[i];
+    let had = this.tokens[i];
+    if (had === undefined && this.stale.size > 0) {
+      had = this.stale.get(i);
+      this.stale.delete(i);
+    }
     const tokens = this.mode.runLine(cut(this.lines[i]), state);
     if (had === undefined) return tokens;
     if (sameTokens(had, tokens)) return had;
     this.noteChange(i);
     return tokens;
+  }
+
+  /** Take line `i`'s tokens out: the state entering it was replaced. */
+  private setAside(i: number): void {
+    const held = this.tokens[i];
+    if (held === undefined) return;
+    this.tokens[i] = undefined;
+    this.stale.set(i, held);
   }
 
   private noteChange(i: number): void {
