@@ -56,7 +56,22 @@ completion and focus props.
 | ------------- | ----------------------- | -------------------------------------------------------------------------- |
 | `language`    | `Language \| null`      | The [language seam](code-language.md). Absent or `null` paints plain text. |
 | `tokenStyles` | `TokenStyles`           | Token type → colour/weight/italic. Default `LIGHT_TOKEN_STYLES`.           |
-| `diagnostics` | `readonly Diagnostic[]` | Ranges to underline, LSP-shaped.                                           |
+| `diagnostics` | `readonly Diagnostic[]` | Ranges to underline, LSP-shaped. They follow the text; see below.          |
+
+**Squiggles follow the code they flag.** A linter answers once typing
+pauses, so for a moment its answer describes the text as it was before the
+latest keystrokes. Until the next answer arrives, the editor moves each
+diagnostic through every edit, the way the code it points at moved. Typing
+before a flagged word carries the squiggle along, typing inside it stretches
+it, and typing right after it does not. A line added above moves it down, and
+undo moves it back. When an edit takes away all of a diagnostic's code, the
+squiggle goes with it; a diagnostic that marks a point rather than a range
+stays. A new `diagnostics` prop replaces the moved ones, but only a new
+answer does: an array rebuilt on every render with the same contents keeps
+the squiggles where the edits put them, rather than snapping them back to
+the old text. `ref.current.diagnostics` reads them as they stand. A new
+answer repaints the rows its squiggles are on; the lines are not laid out
+again.
 
 ### Layout and chrome
 
@@ -139,8 +154,12 @@ line, and only the pieces in view are drawn. Measured on a 100,000-character
 line on macOS, putting the caret at its end took 4.3 s as one layout and
 2 ms in pieces; typing at the end of a million-character line answers in
 13 ms. On X11 a line wider than 32,767 pixels also stops throwing out of the
-paint, since no piece reaches that far. What it gives up is shaping across a
-seam: a kerning pair or a ligature that straddles one is set as two.
+paint, since no piece reaches that far. The same goes for everything drawn
+along the line — a selection band, a squiggle, a bracket's highlight, the
+caret — each drawn only as far as the view reaches. Before that, selecting
+across a minified line threw from the paint, and the window stopped
+painting. What it gives up is shaping across a seam: a kerning pair or a
+ligature that straddles one is set as two.
 
 Tokenizing stops 10,000 characters into a line (`TOKENIZE_LIMIT`, the same
 cut CodeMirror makes with `maxHighlightLength`): a line is tokenized again
@@ -158,8 +177,11 @@ ref.current.focus();
 ```
 
 `value` is assignable, which is the DOM-input contract form libraries rely
-on: setting it does **not** fire `onChange`. Read-only members:
-`name`, `selection`, `lines`, `language`, `canUndo`, `canRedo`. Methods:
+on: setting it does **not** fire `onChange`. Setting it, or passing a
+controlled `value` that differs from the text, changes only the lines that
+differ and repaints only those rows. Read-only members: `name`, `selection`,
+`lines`, `language`, `canUndo`, `canRedo`, `diagnostics` (the prop as it
+stands in the current text — see above). Methods:
 `selectedText()`, `replaceRange()`, `insertText()`, `moveCaret()`,
 `select()`, `selectAll()`, `undo()`, `redo()`, `indentSelection(dir)`,
 `toggleLineComment()`, `copySelection(sel?)`, `pasteFrom(sel?)`,

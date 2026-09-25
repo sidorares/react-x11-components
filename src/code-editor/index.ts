@@ -74,6 +74,22 @@ if (!registeredElements().includes(ELEMENT)) {
     // near-misses, so a future style vocabulary addition fails loudly here
     // rather than silently in an app.
     semanticNames: ['rows', 'tabSize'],
+    // The props the node's own `applyProps` claims the damage of — the rows
+    // an external `value` changed, the rows a linter's squiggles are on —
+    // or that change nothing drawn. Left to core, a new value or a new
+    // diagnostics array (a controlled editor gets both on every keystroke)
+    // was the whole editor repainted over the rows it had claimed.
+    selfDamagedProps: [
+      'value',
+      'defaultValue',
+      'name',
+      'language',
+      'tokenStyles',
+      'tabSize',
+      'diagnostics',
+      'lineNumbers',
+      'insertSpaces',
+    ],
     childrenAllowed: false,
   });
 }
