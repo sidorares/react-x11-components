@@ -69,10 +69,11 @@ the second file off for the tables alone.
 
 `results-2026-09-25.jsonl` is the final sweep of that round: components
 `master` with #128 and #134, react-x11 2.22.4 with react-x11#702, ntk 8.12.2
-with ntk#379, on an M1 Pro (Cocoa at scale 2, XQuartz 2.8.6 at scale 1). It
-is a baseline for that machine only. Four of its cells are the median of
-three reruns, because their first run was an outlier; a flagged cell in a
-new sweep deserves the same before it is believed.
+with ntk#379 — exactly what react-x11 2.22.5 and ntk 8.12.3 released — on an
+M1 Pro (Cocoa at scale 2, XQuartz 2.8.6 at scale 1). It is a baseline for
+that machine only. Four of its cells are the median of three reruns,
+because their first run was an outlier; a flagged cell in a new sweep
+deserves the same before it is believed.
 
 ## Reading a profile
 

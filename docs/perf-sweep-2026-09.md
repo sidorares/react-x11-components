@@ -27,16 +27,16 @@ comparable with these; the method is.
 | react-x11  | #695 Cocoa rounded-box children read back instead of path-clipped                 | released, 2.22.2    |
 | react-x11  | #698 a scrollbar thumb drag scrolls whole device pixels                           | released, 2.22.3    |
 | react-x11  | #700 column spines, exact-config copies, the absolutize skip                      | released, 2.22.4    |
-| react-x11  | #702 a document in a rounded card, and a virtual table, scroll by blitting        | open                |
+| react-x11  | #702 a document in a rounded card, and a virtual table, scroll by blitting        | released, 2.22.5    |
 | ntk        | #373, #375 coverage cropped to the clip; `fillRects` under a clip                 | released, 8.12.1    |
 | ntk        | #377 glyph runs past 16-bit coordinates culled, not thrown                        | released, 8.12.2    |
-| ntk        | #379 a layout reads the face once; bidi skipped for text nothing reverses         | open                |
+| ntk        | #379 a layout reads the face once; bidi skipped for text nothing reverses         | released, 8.12.3    |
 | components | #128 `<Flow>` GL renderer and its perf work, maps label shaping, lockfile         | open                |
 | components | #130 a long flick keeps the virtual window to its budget                          | merged              |
 | components | #131 code editor: long lines in pieces, scroll blit                               | merged              |
 | components | #132 code editor: a wheel notch scrolls a notch                                   | merged              |
 | components | #133 code editor: an edit costs the lines it changes                              | merged              |
-| components | #134 rich text editor: a keystroke costs the block it lands in                    | open                |
+| components | #134 rich text editor: a keystroke costs the block it lands in                    | merged              |
 
 ## Method
 
@@ -484,10 +484,11 @@ or one synchronous spawn that resolves all of a document's faces in parallel.
 
 Every probe, both backends, against one tree: components `master` (#130–#133)
 with #128 and #134 merged, on react-x11 2.22.4 with #702 applied and ntk
-8.12.2 with #379 applied — what an app gets once the open PRs land. 226 cells,
-the 136-cell Flow matrix among them; none failed. The numbers are the new
-baseline: `scripts/bench/sweep/results-2026-09-25.jsonl` holds them (the
-instrumented `DIAG` runs left out), and
+8.12.2 with #379 applied — the code react-x11 2.22.5 and ntk 8.12.3 then
+released, and nothing else. 226 cells, the 136-cell Flow matrix among them;
+none failed. The numbers are the new baseline:
+`scripts/bench/sweep/results-2026-09-25.jsonl` holds them (the instrumented
+`DIAG` runs left out), and
 
 ```bash
 npx tsx scripts/bench/sweep/tabulate.ts new.jsonl scripts/bench/sweep/results-2026-09-25.jsonl
