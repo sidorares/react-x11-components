@@ -323,6 +323,17 @@ interface LineCacheEntry {
   map: TabMap;
 }
 
+/** A line's tokens with no language. One array, so that a cached line
+ *  entry, which is checked against its tokens by identity, is found again —
+ *  a fresh `[]` per lookup made every paint of a plain-text editor lay out
+ *  every line in view. */
+const NO_TOKENS: readonly Token[] = Object.freeze([]);
+
+/** Line entries past which the ones farthest from the view are let go. An
+ *  entry holds a text layout, native memory on every backend, and a file
+ *  scrolled end to end had one for every line in it. */
+const LINE_CACHE_MAX = 2048;
+
 /** Display code units past which a line is laid out in pieces
  *  (`ChunkedLayout`). */
 const CHUNKED_PAST = 2048;
@@ -795,7 +806,7 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
   private _lineEntry(line: number): LineCacheEntry {
     const raw = this._lines[line];
     const tabSize = this._tabSize();
-    const tokens = this._tokenizer()?.lineTokens(line) ?? [];
+    const tokens = this._tokenizer()?.lineTokens(line) ?? NO_TOKENS;
     const styleKey = this._metricsKey;
     const cached = this._lineCache.get(line);
     // the line's own string, not its display: building the tab map is
@@ -1323,17 +1334,54 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
       this._lines = newLines;
     }
     const tok = this._tokenizer();
-    if (edit && tok) {
-      tok.edit(edit);
-      // line indices at and below the edit moved or changed; drop them
-      for (const key of [...this._lineCache.keys()]) {
-        if (key >= edit.fromLine) this._lineCache.delete(key);
-      }
-      if (edit.removed !== edit.inserted) this._lineCache.clear();
+    if (edit) {
+      tok?.edit(edit);
+      this._moveLineCache(edit);
     } else {
       tok?.setLines(this._lines);
       this._lineCache.clear();
     }
+  }
+
+  /** Let go of the line entries farther than a quarter of the cache from
+   *  the lines in view — see `LINE_CACHE_MAX`. */
+  private _trimLineCache(first: number, last: number): void {
+    const reach = LINE_CACHE_MAX / 4;
+    for (const line of this._lineCache.keys()) {
+      if (line < first - reach || line > last + reach) {
+        this._lineCache.delete(line);
+      }
+    }
+  }
+
+  /**
+   * The line cache across an edit: the edited lines' entries go, and the
+   * ones after them move by the lines it added or took away. Every other
+   * entry stays. An entry is checked against its line's text and tokens
+   * whenever it is asked for (`_lineEntry`), so a line an edit re-coloured
+   * — an opened comment, a closed string — is laid out again then, and a
+   * line it left alone is not: typing on the first line of a file used to
+   * lay out every line in view again on every keystroke.
+   */
+  private _moveLineCache(edit: {
+    fromLine: number;
+    removed: number;
+    inserted: number;
+  }): void {
+    const end = edit.fromLine + edit.removed;
+    const shift = edit.inserted - edit.removed;
+    if (shift === 0) {
+      for (let line = edit.fromLine; line < end; line++) {
+        this._lineCache.delete(line);
+      }
+      return;
+    }
+    const moved = new Map<number, LineCacheEntry>();
+    for (const [line, entry] of this._lineCache) {
+      if (line < edit.fromLine) moved.set(line, entry);
+      else if (line >= end) moved.set(line + shift, entry);
+    }
+    this._lineCache = moved;
   }
 
   private _afterEdit(value: string): void {
@@ -2014,6 +2062,7 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
       this._lines.length - 1,
       Math.ceil((this._scrollY + content.height) / lineH),
     );
+    if (this._lineCache.size > LINE_CACHE_MAX) this._trimLineCache(first, last);
     // Only the lines this pass repaints, and one either side for ink that
     // overhangs its row: a scroll blit hands over the band it exposed, and
     // a blink the caret's row. The clip would throw the rest away after

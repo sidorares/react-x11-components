@@ -1059,6 +1059,99 @@ test('a long line is laid out in pieces that agree with one layout', async () =>
   );
 });
 
+test('an edit lays out the lines it changed, and moves the rest', async () => {
+  // The line cache is keyed by line number. An edit used to drop every
+  // entry from the edited line down — and, with no language, every entry
+  // there was — so a key on the first line of a file laid out every line in
+  // view again. Entries now follow their lines, and one whose text or
+  // colours changed is caught when it is next asked for.
+  const value = Array.from(
+    { length: 60 },
+    (_, i) => `select c${i} from t${i};`,
+  ).join('\n');
+  for (const language of [sql(), null]) {
+    await renderX11(h(CodeEditor, { defaultValue: value, language }), {
+      width: 400,
+      height: 300,
+    });
+    const node = editorNode();
+    node.select({ line: 0, ch: 0 }, { line: 0, ch: 0 });
+    await act(() => {});
+    const app = (
+      node as unknown as {
+        app: { fonts: { layout: (...a: unknown[]) => unknown } };
+      }
+    ).app;
+    const inner = app.fonts.layout;
+    const laidOut: string[] = [];
+    app.fonts.layout = function (...a: unknown[]) {
+      const spans = a[0] as string | Array<{ text: string }>;
+      laidOut.push(
+        typeof spans === 'string' ? spans : spans.map((sp) => sp.text).join(''),
+      );
+      return inner.apply(this, a);
+    };
+    const what = language ? 'with a language' : 'with none';
+    try {
+      for (let i = 0; i < 3; i++) {
+        node.insertText('x');
+        await act(() => {});
+      }
+      assert.deepStrictEqual(
+        laidOut,
+        [
+          'xselect c0 from t0;',
+          'xxselect c0 from t0;',
+          'xxxselect c0 from t0;',
+        ],
+        `three keys on the first line, ${what}`,
+      );
+      laidOut.length = 0;
+      node.insertText('\n');
+      await act(() => {});
+      assert.deepStrictEqual(
+        laidOut.sort(),
+        ['select c0 from t0;', 'xxx'],
+        `a new line splits the first, and the ones below move, ${what}`,
+      );
+      laidOut.length = 0;
+      node.scrollBy(0, 48);
+      await act(() => {});
+      assert.ok(
+        laidOut.every((text) => /^select c\d+ from t\d+;$/.test(text)) &&
+          laidOut.length <= 4,
+        `a scroll after it lays out only the lines it brings in, ${what}: ${JSON.stringify(laidOut)}`,
+      );
+    } finally {
+      app.fonts.layout = inner;
+    }
+    await cleanup();
+  }
+});
+
+test('scrolling a long file keeps a bounded number of laid-out lines', async () => {
+  // Every line entry holds a text layout, native memory on every backend;
+  // a file scrolled end to end used to keep one for each of its lines. A
+  // viewport a step, so that every line of the file is laid out once.
+  const value = Array.from({ length: 6000 }, (_, i) => `line ${i}`).join('\n');
+  await renderX11(h(CodeEditor, { defaultValue: value }), {
+    width: 400,
+    height: 300,
+  });
+  const node = editorNode();
+  const kept = (): number =>
+    (node as unknown as { _lineCache: Map<number, unknown> })._lineCache.size;
+  let most = 0;
+  let steps = 0;
+  while (node.scrollBy(0, 250)) {
+    await act(() => {});
+    most = Math.max(most, kept());
+    steps++;
+  }
+  assert.ok(steps > 100, `${steps} steps to the end`);
+  assert.ok(most > 0 && most <= 2048 + 64, `${most} lines kept`);
+});
+
 test('typing at the end of a long line shapes the piece it lands in, not the line', async () => {
   const line = 'let alpha = beta(gamma, { delta: 1 }); '.repeat(160);
   await renderX11(h(CodeEditor, { defaultValue: line }), {

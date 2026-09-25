@@ -209,11 +209,20 @@ class StreamTokenizer<S> implements Tokenizer {
     // Align the caches below the edit with the new line numbering (their
     // contents may still be right — convergence will decide), and punch
     // `undefined` holes for the lines whose text actually changed.
+    //
+    // …all but one: the state entering the first line after the edit is
+    // put back at that line's new number. It is what convergence compares
+    // the edit's outgoing state with, paired with the tokens that line
+    // still has — punched out with the rest, every edit re-tokenized the
+    // line after it too, and handed back a new token array for text that
+    // had not changed.
+    const after = this.states[fromLine + removed];
     this.states.splice(
       fromLine + 1,
       removed,
       ...new Array<S | undefined>(inserted),
     );
+    if (inserted > 0) this.states[fromLine + inserted] = after;
     this.tokens.splice(
       fromLine,
       removed,
