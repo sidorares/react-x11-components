@@ -33,7 +33,7 @@ comparable with these; the method is.
 | ntk        | #377 glyph runs past 16-bit coordinates culled, not thrown                        | released, 8.12.2    |
 | ntk        | #379 a layout reads the face once; bidi skipped for text nothing reverses         | released, 8.12.3    |
 | ntk        | #381 a prewarm answers the first layout; a family's faces warm together           | released, 8.12.4    |
-| ntk        | #383 the shaping memo in two generations, a style's words under one kept key      | open                |
+| ntk        | #383 the shaping memo in two generations, a style's words under one kept key      | released, 8.12.5    |
 | components | #128 `<Flow>` GL renderer and its perf work, maps label shaping, lockfile         | open                |
 | components | #130 a long flick keeps the virtual window to its budget                          | merged              |
 | components | #131 code editor: long lines in pieces, scroll blit                               | merged              |
@@ -43,7 +43,7 @@ comparable with these; the method is.
 | components | #135 `<Html>`: an edit lays out again only the text it changed                    | merged              |
 | components | #136 rich text editor: a mark over the document keeps its blocks' keys            | merged              |
 | components | #137 code editor: a keystroke repaints its rows; revealing the caret is a blit    | merged              |
-| components | #138 code editor: a line far past the frontier is answered from a guess           | open                |
+| components | #138 code editor: a line far past the frontier is answered from a guess           | merged              |
 
 ## Method
 
