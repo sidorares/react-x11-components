@@ -46,7 +46,7 @@ comparable with these; the method is.
 | components | #138 code editor: a line far past the frontier is answered from a guess           | merged              |
 | react-x11  | #706 a scroll blit's band is copied once, as its frame takes its buffer           | open                |
 | react-x11  | #707 a paragraph laid out at another width reuses its typesetter                  | open                |
-| appkit     | #75 a paragraph's typesetter, kept; packed layout geometry                        | open                |
+| appkit     | #75 a paragraph's typesetter, kept; packed layout geometry                        | released, 0.14.0    |
 | ntk        | #385 a shaped glyph carries the characters it was shaped from                     | released, 8.12.6    |
 | components | #139 code editor: squiggles follow edits; what it paints stays true through them  | merged              |
 | components | #140 `<Html>`: a resize lays the document out once a frame                        | open                |
