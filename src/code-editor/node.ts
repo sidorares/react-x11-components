@@ -323,6 +323,8 @@ export interface EditorMouseEvent {
   preventDefault?(): void;
 }
 
+type Rect = { x: number; y: number; width: number; height: number };
+
 /** What `_repaintSince` compares a change against: the rows, offsets,
  *  gutter and thumbs the view had before it. */
 interface ViewBefore {
@@ -1055,18 +1057,24 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
 
   // --- scrolling -----------------------------------------------------------
 
+  // Both limits, and every offset a caret is revealed at, are whole device
+  // pixels: a line is a measured height, and a shift that is not whole is
+  // not a copy (`_blitScroll`).
   private _maxScrollY(): number {
     const content = this._contentRect();
     return Math.max(
       0,
-      this._lines.length * this._lineHeight() - content.height,
+      Math.ceil(this._lines.length * this._lineHeight() - content.height),
     );
   }
 
   private _maxScrollX(): number {
     const content = this._contentRect();
     const textW = content.width - this._gutterWidth();
-    return Math.max(0, this._widest + CARET_MARGIN * this._scale - textW);
+    return Math.max(
+      0,
+      Math.ceil(this._widest + CARET_MARGIN * this._scale - textW),
+    );
   }
 
   /** The wheel, in the unit core hands every scroller: logical pixels, not
@@ -1101,49 +1109,71 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
   }
 
   /**
-   * A vertical scroll as a blit (core's `scrollContents`): the text and the
-   * gutter move together, so inside the content box the new frame is the
-   * old one shifted — all but the scroll thumbs, which stay put while the
-   * text moves under them. Their strips are carved out of the region and
-   * claimed beside it, edge to edge, which leaves the frame a blit; the
-   * band the shift exposes is all `paint` draws (`paintDamage()`).
-   *
-   * False where the promise would not hold: sideways, the text moves under
-   * a gutter that stays; off the device grid, a shift is not a copy; and a
-   * background image does not translate. Core checks the rest — the
-   * border ring, a rounded corner, anything drawn over the box — and
-   * repaints the region itself when one of them fails.
+   * The rect a scroll of the view shifts (core's `scrollContents`): the
+   * content box less the scroll thumbs' strips, which stay put while the
+   * text moves under them — and sideways, less the gutter as well, which
+   * stays put while the text moves beside it.
    */
-  private _blitScroll(shiftX: number, shiftY: number): boolean {
-    if (shiftX !== 0 || shiftY === 0 || !Number.isInteger(shiftY)) {
-      return false;
-    }
-    if ((this.style as Record<string, unknown>).backgroundImage) return false;
+  private _scrollRegion(sideways: boolean): Rect {
     const box = this._contentRect();
     const bar = 4 * this._scale; // a thumb's inset, see `paint`
     const across = this._maxScrollX() > 0 ? bar : 0;
-    const rect = {
-      x: box.x,
+    const gutter = sideways ? this._gutterWidth() : 0;
+    return {
+      x: box.x + gutter,
       y: box.y,
-      width: box.width - bar,
+      width: box.width - gutter - bar,
       height: box.height - across,
     };
+  }
+
+  /**
+   * A scroll along one axis as a blit: inside `_scrollRegion` the new frame
+   * is the old one shifted. The thumbs' strips are carved out of the region
+   * and claimed beside it, edge to edge, which leaves the frame a blit; the
+   * band the shift exposes is all `paint` draws (`paintDamage()`).
+   * `pinned` are rows that change as well as move — an edit's, the
+   * caret's, when revealing it scrolled — which the frame repaints after
+   * the copy instead of refusing it, so the caller claims inside them.
+   *
+   * False where the promise would not hold: both ways at once, since the
+   * gutter moves with the text down and not across; off the device grid,
+   * where a shift is not a copy; and under a background image, which does
+   * not translate. Core checks the rest — the border ring, a rounded
+   * corner, anything drawn over the box — and repaints the region itself
+   * when one of them fails.
+   */
+  private _blitScroll(
+    shiftX: number,
+    shiftY: number,
+    pinned: Rect[] | null = null,
+  ): boolean {
+    if ((shiftX !== 0) === (shiftY !== 0)) return false;
+    if (!Number.isInteger(shiftX) || !Number.isInteger(shiftY)) return false;
+    if ((this.style as Record<string, unknown>).backgroundImage) return false;
+    const box = this._contentRect();
+    const bar = 4 * this._scale;
+    const rect = this._scrollRegion(shiftX !== 0);
     const whole = [rect.x, rect.y, rect.width, rect.height, bar];
     if (!whole.every(Number.isInteger)) return false;
-    if (rect.width <= 0 || Math.abs(shiftY) >= rect.height) return false;
-    this.scrollContents(rect, 0, shiftY);
+    if (rect.width <= 0 || rect.height <= 0) return false;
+    if (Math.abs(shiftX) >= rect.width || Math.abs(shiftY) >= rect.height) {
+      return false;
+    }
+    this.scrollContents(rect, shiftX, shiftY, null, pinned);
     this.invalidate(
       false,
-      { x: rect.x + rect.width, y: box.y, width: bar, height: box.height },
+      { x: box.x + box.width - bar, y: box.y, width: bar, height: box.height },
       'scroll',
     );
+    const across = box.height - rect.height;
     if (across > 0) {
       this.invalidate(
         false,
         {
           x: box.x,
           y: rect.y + rect.height,
-          width: rect.width,
+          width: box.width - bar,
           height: across,
         },
         'scroll',
@@ -1156,19 +1186,19 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
     this._metrics();
     const content = this._contentRect();
     const lineTop = this._caret.line * this._lineH;
-    if (lineTop < this._scrollY) this._scrollY = lineTop;
+    if (lineTop < this._scrollY) this._scrollY = Math.floor(lineTop);
     const lineBottom = lineTop + this._lineH;
     if (lineBottom > this._scrollY + content.height) {
-      this._scrollY = lineBottom - content.height;
+      this._scrollY = Math.ceil(lineBottom - content.height);
     }
     const textW = content.width - this._gutterWidth();
     const x = this._caretX(this._caret);
     const margin = CARET_MARGIN * this._scale;
     if (x < this._scrollX + margin) {
-      this._scrollX = Math.max(0, x - margin);
+      this._scrollX = Math.max(0, Math.floor(x - margin));
     }
     if (x > this._scrollX + textW - margin) {
-      this._scrollX = x - textW + margin;
+      this._scrollX = Math.ceil(x - textW + margin);
     }
     this._scrollY = Math.max(0, Math.min(this._scrollY, this._maxScrollY()));
     this._scrollX = Math.max(0, this._scrollX);
@@ -1259,9 +1289,11 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
    * out with). A thumb's strip goes with a change to what sizes it — the
    * line count, the widest line — and of the right one, only what no row
    * already repaints: a strip that overlapped a row would reach core as the
-   * box around both, which is the editor again. Whatever moves the whole
-   * view — a scroll to the caret, a gutter that grew a digit, the
-   * placeholder — is the editor.
+   * box around both, which is the editor again. A scroll to the caret along
+   * one axis is a blit (`_blitScroll`) with those rows pinned — repainted
+   * after the copy, where they now are. Whatever else moves the whole view
+   * — a scroll both ways, a gutter that grew a digit, the placeholder — is
+   * the editor.
    */
   private _repaintSince(
     before: ViewBefore,
@@ -1273,12 +1305,13 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
     const content = this._contentRect();
     const lineH = this._lineH;
     const empty = this._lines.length === 1 && this._lines[0].length === 0;
+    // how far the pixels move: the other way from the offsets
+    const shiftX = before.scrollX - this._scrollX;
+    const shiftY = before.scrollY - this._scrollY;
     if (
       content.width <= 0 ||
       content.height <= 0 ||
       !(lineH > 0) ||
-      before.scrollX !== this._scrollX ||
-      before.scrollY !== this._scrollY ||
       before.gutter !== this._gutterWidth() ||
       (before.empty !== empty && this.props.placeholder != null)
     ) {
@@ -1367,6 +1400,43 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
       }
     }
     if (open) band(open[0], open[1]);
+    if (shiftX !== 0 || shiftY !== 0) {
+      // the rows inside the region are pinned: core repaints them after the
+      // copy, changed or not, so what is left to claim is what of them lies
+      // beside it — the gutter, sideways; the thumbs' strips go with the blit
+      const region = this._scrollRegion(shiftX !== 0);
+      const pinned = bands.map(([top, bottom]) => ({
+        x: region.x,
+        y: top,
+        width: region.width,
+        height: bottom - top,
+      }));
+      if (!this._blitScroll(shiftX, shiftY, pinned)) {
+        this._repaint();
+        return;
+      }
+      if (region.x > content.x) {
+        // stopping where the region does: past it is the horizontal
+        // thumb's strip, claimed whole — and two claims that overlap reach
+        // core as the box around both, which here would take in the region
+        // and refuse the blit
+        const end = region.y + region.height;
+        for (const [top, bottom] of bands) {
+          if (Math.min(bottom, end) <= top) continue;
+          this.invalidate(
+            false,
+            {
+              x: content.x,
+              y: top,
+              width: region.x - content.x,
+              height: Math.min(bottom, end) - top,
+            },
+            'text',
+          );
+        }
+      }
+      return;
+    }
     for (const [top, bottom] of bands) {
       this.invalidate(
         false,

@@ -946,6 +946,7 @@ test('an edit repaints the rows it changed, and paints what a full repaint would
     15: '  return 1;',
     16: '}',
     20: `const wide = '${'w'.repeat(90)}';`,
+    59: `const tail = '${'t'.repeat(100)}';`,
   };
   const value = Array.from(
     { length: 60 },
@@ -976,7 +977,16 @@ test('an edit repaints the rows it changed, and paints what a full repaint would
     const at = (line: number, ch: number): Position => ({ line, ch });
     // the wide line moves as lines are split and joined above it
     const wide = (): number =>
-      node.value.split('\n').findIndex((l) => l.startsWith('const wide'));
+      node.value.split('\n').findIndex((l) => l.includes("wide = '"));
+    // the last row wholly in view
+    const view = node as unknown as {
+      _scrollY: number;
+      _lineH: number;
+      _contentRect(): { height: number };
+    };
+    const lastRow = (): number =>
+      Math.floor((view._scrollY + view._contentRect().height) / view._lineH) -
+      1;
     const steps: Array<[string, () => void, number]> = [
       ['a character typed', () => node.insertText('x'), 0.1],
       ['and another', () => node.insertText('y'), 0.1],
@@ -1036,6 +1046,52 @@ test('an edit repaints the rows it changed, and paints what a full repaint would
       ],
       ['a line split there', () => node.insertText('\n'), 0.5],
       ['and undone', () => node.undo(), 0.5],
+      // Revealing the caret a line or a character away is a blit of the
+      // view, with the rows that changed repainted where they land: down a
+      // line past the bottom, typing past the right edge (the text moves,
+      // the gutter does not), a line added at the end of the text.
+      [
+        'the caret to the last row',
+        () => node.moveCaret(at(lastRow(), 2), false),
+        0.15,
+      ],
+      [
+        'and down a line',
+        () => node.moveCaret(at(lastRow() + 1, 2), false),
+        0.3,
+      ],
+      ['a line split at the bottom', () => node.insertText('\n'), 0.3],
+      [
+        'the caret to the end of the wide line',
+        () => node.moveCaret(at(wide(), 999), false),
+        1,
+      ],
+      ['typed at the right edge', () => node.insertText('e'), 0.2],
+      ['and again', () => node.insertText('e'), 0.2],
+      // to a longer line two below: a little further across, and the
+      // gutter's active number moves with the caret
+      [
+        'the caret to a longer line',
+        () => node.moveCaret(at(wide() + 2, 115), false),
+        0.3,
+      ],
+      ['a sideways scroll', () => node.scrollBy(-40, 0), 0.25],
+      // the last row in view, where the horizontal thumb's strip is below
+      // the row rather than beside it
+      [
+        'the caret to the end of the last line',
+        () => node.moveCaret(at(1e6, 1e6), false),
+        1,
+      ],
+      ['typed at its right edge', () => node.insertText('e'), 0.2],
+      ['and once more', () => node.insertText('e'), 0.2],
+      [
+        'the caret to the end of the text',
+        () => node.moveCaret(at(1e6, 0), false),
+        1,
+      ],
+      ['a line added at the end', () => node.insertText('\n'), 0.3],
+      ['and another', () => node.insertText('\n'), 0.3],
     ];
     for (const [what, step, most] of steps) {
       const label = `${what} at ${scale}x`;
