@@ -312,11 +312,170 @@ export interface EditorMouseEvent {
 }
 
 interface LineCacheEntry {
+  /** The line it was built from — the same string until the line is
+   *  edited, so a lookup that finds it needs nothing else recomputed. */
+  raw: string;
+  tabSize: number;
   display: string;
   tokens: readonly Token[];
   styleKey: string;
   layout: LayoutLike | null;
   map: TabMap;
+}
+
+/** Display code units past which a line is laid out in pieces
+ *  (`ChunkedLayout`). */
+const CHUNKED_PAST = 2048;
+/** A piece is at least this long, and is cut here at the latest. */
+const CHUNK_MIN = 256;
+const CHUNK_MAX = 2048;
+
+/**
+ * A line too long to lay out whole, laid out in pieces placed end to end.
+ *
+ * A minified file or a log line of a hundred thousand characters is one
+ * text layout otherwise, and everything the editor asks of a layout is
+ * linear in its length or worse: putting the caret at the end of a
+ * 100,000-character line took 4.3 s in CoreText's caret lookup, every
+ * keystroke shaped the whole line again, and on X11 a line past 32,767
+ * device pixels threw out of the paint. A piece answers in a layout of its own size, only the
+ * pieces a keystroke changed are shaped again (`_chunkLayouts`, keyed by
+ * what a piece holds — which is why the cuts are made by content,
+ * `chunkBreaks`), and only the pieces in view are drawn (`drawSpan`).
+ *
+ * What it gives up is shaping across the seams: a kerning pair or a
+ * ligature that straddles one is set as two. Code is set in a monospace
+ * face, and a seam is one place in a few hundred characters.
+ */
+class ChunkedLayout implements LayoutLike {
+  readonly width: number;
+  readonly height: number;
+  constructor(
+    /** Each piece: where it starts in the line's display text, in code
+     *  points and in UTF-16 units, where it starts across, its text and its
+     *  layout. In order, and never empty. */
+    private readonly chunks: {
+      cp: number;
+      u16: number;
+      x: number;
+      text: string;
+      layout: LayoutLike;
+    }[],
+  ) {
+    const last = chunks[chunks.length - 1];
+    this.width = last.x + last.layout.width;
+    this.height = Math.max(...chunks.map((c) => c.layout.height));
+  }
+
+  /** The last piece whose `key` is at or before `at`. */
+  private _pieceAt(at: number, key: 'cp' | 'u16' | 'x') {
+    const chunks = this.chunks;
+    let lo = 0;
+    let hi = chunks.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (chunks[mid][key] <= at) lo = mid;
+      else hi = mid - 1;
+    }
+    return chunks[lo];
+  }
+
+  caretPosition(cp: number): { x: number; y: number; height: number } {
+    const piece = this._pieceAt(cp, 'cp');
+    const at = piece.layout.caretPosition(cp - piece.cp);
+    return { x: piece.x + at.x, y: at.y, height: at.height };
+  }
+
+  indexAt(x: number, y: number): number {
+    const piece = this._pieceAt(x, 'x');
+    return piece.cp + piece.layout.indexAt(x - piece.x, y);
+  }
+
+  /** `caretPosition`'s x for a UTF-16 offset into the display text, with
+   *  the code point counted inside the one piece rather than the line. */
+  caretXAt(u16: number): number {
+    const piece = this._pieceAt(u16, 'u16');
+    const cp = utf16ToCp(piece.text, u16 - piece.u16);
+    return piece.x + piece.layout.caretPosition(cp).x;
+  }
+
+  /** `indexAt`, answered as a UTF-16 offset into the display text. */
+  indexAtUtf16(x: number, y: number): number {
+    const piece = this._pieceAt(x, 'x');
+    const cp = piece.layout.indexAt(x - piece.x, y);
+    return piece.u16 + cpToUtf16(piece.text, cp);
+  }
+
+  draw(ctx: unknown, x: number, y: number): void {
+    this.drawSpan(ctx, x, y, -Infinity, Infinity);
+  }
+
+  /** The pieces that reach into `[from, to)` across the line. */
+  drawSpan(ctx: unknown, x: number, y: number, from: number, to: number) {
+    for (const piece of this.chunks) {
+      if (piece.x >= to) break;
+      if (piece.x + piece.layout.width <= from) continue;
+      piece.layout.draw(ctx, x + piece.x, y);
+    }
+  }
+}
+
+/** Where a long line is cut into pieces: after a delimiter that the few
+ *  characters before it pick out, between `CHUNK_MIN` and `CHUNK_MAX` apart.
+ *  Chosen by what the text says there rather than by how far the line has
+ *  come, so a character typed into a piece moves the cuts near it and none
+ *  of the rest — the pieces after it are the same text as before, and their
+ *  layouts are found again rather than shaped again. */
+function chunkBreaks(display: string): number[] {
+  const breaks = [0];
+  let last = 0;
+  for (let i = 1; i < display.length; i++) {
+    const since = i - last;
+    if (since < CHUNK_MIN) continue;
+    const code = display.charCodeAt(i - 1);
+    // never between the halves of a surrogate pair
+    if (code >= 0xd800 && code <= 0xdbff) continue;
+    const delimiter =
+      code === 32 || code === 44 || code === 59 || code === 123 || code === 125;
+    const picked =
+      delimiter &&
+      ((display.charCodeAt(i - 2) * 31 + display.charCodeAt(i - 3) * 7) &
+        15) ===
+        0;
+    if (picked || since >= CHUNK_MAX) {
+      breaks.push(i);
+      last = i;
+    }
+  }
+  return breaks;
+}
+
+/** A line's spans cut at `breaks`. */
+function chunkSpans(
+  spans: Array<Record<string, unknown>>,
+  breaks: readonly number[],
+): Array<Array<Record<string, unknown>>> {
+  const pieces: Array<Array<Record<string, unknown>>> = [];
+  let piece: Array<Record<string, unknown>> = [];
+  let at = 0;
+  let next = 1;
+  for (const span of spans) {
+    let text = span.text as string;
+    while (text.length > 0) {
+      const cut = next < breaks.length ? breaks[next] : Infinity;
+      const take = Math.min(text.length, cut - at);
+      piece.push({ ...span, text: text.slice(0, take) });
+      text = text.slice(take);
+      at += take;
+      if (at === cut) {
+        pieces.push(piece);
+        piece = [];
+        next += 1;
+      }
+    }
+  }
+  if (piece.length > 0) pieces.push(piece);
+  return pieces;
 }
 
 export class CodeEditorNode extends Node implements CodeEditorHandle {
@@ -633,18 +792,22 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
 
   private _lineEntry(line: number): LineCacheEntry {
     const raw = this._lines[line];
-    const map = tabMap(raw, this._tabSize());
+    const tabSize = this._tabSize();
     const tokens = this._tokenizer()?.lineTokens(line) ?? [];
     const styleKey = this._metricsKey;
     const cached = this._lineCache.get(line);
+    // the line's own string, not its display: building the tab map is
+    // linear in the line, and a long one is asked for many times a frame
     if (
       cached &&
-      cached.display === map.display &&
+      cached.raw === raw &&
+      cached.tabSize === tabSize &&
       cached.tokens === tokens &&
       cached.styleKey === styleKey
     ) {
       return cached;
     }
+    const map = tabMap(raw, tabSize);
     const fonts = this._fonts();
     const base = this._textStyle();
     let layout: LayoutLike | null = null;
@@ -676,9 +839,14 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
       if (cursor < map.display.length) {
         spans.push({ text: map.display.slice(cursor) });
       }
-      layout = fonts.layout(spans.length > 0 ? spans : [{ text: '' }], base);
+      layout =
+        map.display.length > CHUNKED_PAST
+          ? this._chunkedLayout(fonts, base, styleKey, spans)
+          : fonts.layout(spans.length > 0 ? spans : [{ text: '' }], base);
     }
     const entry: LineCacheEntry = {
+      raw,
+      tabSize,
       display: map.display,
       tokens,
       styleKey,
@@ -690,11 +858,63 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
     return entry;
   }
 
+  /**
+   * A long line in pieces (`ChunkedLayout`), each piece's layout kept by
+   * what it holds, so an edit shapes only the pieces whose text or colours
+   * it changed. Bounded like the line cache it serves.
+   */
+  private _chunkLayouts = new Map<string, LayoutLike>();
+
+  private _chunkedLayout(
+    fonts: FontsLike,
+    base: Record<string, unknown>,
+    styleKey: string,
+    spans: Array<Record<string, unknown>>,
+  ): LayoutLike {
+    const chunks: {
+      cp: number;
+      u16: number;
+      x: number;
+      text: string;
+      layout: LayoutLike;
+    }[] = [];
+    let cp = 0;
+    let u16 = 0;
+    let x = 0;
+    const display = spans.map((sp) => sp.text as string).join('');
+    for (const piece of chunkSpans(spans, chunkBreaks(display))) {
+      const key =
+        styleKey +
+        '|' +
+        piece
+          .map(
+            (sp) =>
+              `${sp.color ?? ''},${sp.weight ?? ''},${sp.style ?? ''},${sp.text}`,
+          )
+          .join('\u0000');
+      let layout = this._chunkLayouts.get(key);
+      if (!layout) {
+        if (this._chunkLayouts.size > 4096) this._chunkLayouts.clear();
+        layout = fonts.layout(piece, base);
+        this._chunkLayouts.set(key, layout);
+      }
+      const text = piece.map((sp) => sp.text as string).join('');
+      chunks.push({ cp, u16, x, text, layout });
+      cp += utf16ToCp(text, text.length);
+      u16 += text.length;
+      x += layout.width;
+    }
+    return new ChunkedLayout(chunks);
+  }
+
   /** Caret x (device pixels from the text origin) for a position. */
   private _caretX(pos: Position): number {
     const entry = this._lineEntry(pos.line);
     if (!entry.layout) return 0;
     const disp = entry.map.toDisplay(pos.ch);
+    if (entry.layout instanceof ChunkedLayout) {
+      return entry.layout.caretXAt(disp);
+    }
     return entry.layout.caretPosition(utf16ToCp(entry.display, disp)).x;
   }
 
@@ -712,8 +932,11 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
     );
     const entry = this._lineEntry(line);
     if (!entry.layout) return { line, ch: 0 };
-    const cp = entry.layout.indexAt(x - textX + this._scrollX, 0);
-    const disp = cpToUtf16(entry.display, cp);
+    const at = x - textX + this._scrollX;
+    const disp =
+      entry.layout instanceof ChunkedLayout
+        ? entry.layout.indexAtUtf16(at, 0)
+        : cpToUtf16(entry.display, entry.layout.indexAt(at, 0));
     return clampPos(this._lines, { line, ch: entry.map.toRaw(disp) });
   }
 
@@ -1464,8 +1687,11 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
     const entry = this._lineEntry(line);
     let ch = 0;
     if (entry.layout) {
-      const cp = entry.layout.indexAt(this._goalX, 0);
-      ch = entry.map.toRaw(cpToUtf16(entry.display, cp));
+      ch = entry.map.toRaw(
+        entry.layout instanceof ChunkedLayout
+          ? entry.layout.indexAtUtf16(this._goalX, 0)
+          : cpToUtf16(entry.display, entry.layout.indexAt(this._goalX, 0)),
+      );
     }
     const goal = this._goalX; // moveCaret clears it; this move keeps it
     this.moveCaret({ line, ch }, extend);
@@ -1815,13 +2041,19 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
         layout.draw(ctx, textX, lineY(0) + (lineH - layout.height) / 2);
       }
     } else {
+      // across, what the text region shows of a line, in its own x
+      const shownFrom = this._scrollX;
+      const shownTo = this._scrollX + content.width - gutterW;
       for (let i = first; i <= last; i++) {
         const entry = this._lineEntry(i);
-        entry.layout?.draw(
-          ctx,
-          textX,
-          lineY(i) + (lineH - (entry.layout.height || lineH)) / 2,
-        );
+        const layout = entry.layout;
+        if (!layout) continue;
+        const y = lineY(i) + (lineH - (layout.height || lineH)) / 2;
+        if (layout instanceof ChunkedLayout) {
+          layout.drawSpan(ctx, textX, y, shownFrom, shownTo);
+        } else {
+          layout.draw(ctx, textX, y);
+        }
       }
     }
 

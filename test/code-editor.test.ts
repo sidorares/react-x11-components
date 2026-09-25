@@ -830,3 +830,99 @@ test('at a display scale of 2 the completion popup opens at the caret', async ()
   const moved = await waitFor(completionPopup);
   near(moved.y - first.y, 3 * lineHeight, 'the list dropped three lines', 2);
 });
+
+// --- long lines --------------------------------------------------------------
+
+/** What the node answers inside, device pixels from the text origin — the
+ *  private surface the long-line pieces live behind. */
+interface LineInternals {
+  _caretX(pos: Position): number;
+  _lineEntry(line: number): {
+    layout: {
+      width: number;
+      caretXAt?(u16: number): number;
+      indexAtUtf16?(x: number, y: number): number;
+    } | null;
+  };
+}
+
+test('a long line is laid out in pieces that agree with one layout', async () => {
+  // A minified file is one line of a hundred thousand characters, and one
+  // text layout of that was linear or worse in everything asked of it —
+  // CoreText's caret lookup took seconds a call. The editor lays such a
+  // line out in pieces; in a monospace face every column must still land
+  // at column × advance, across the seams as well as inside the pieces.
+  const line = 'let alpha = beta(gamma, { delta: 1 }); '.repeat(160); // 6,240
+  await renderX11(h(CodeEditor, { defaultValue: `${line}\nshort` }), {
+    width: 600,
+    height: 200,
+  });
+  const node = editorNode();
+  const inside = node as unknown as LineInternals;
+  const layout = inside._lineEntry(0).layout;
+  assert.ok(layout?.caretXAt, 'the long line is in pieces');
+  const advance = inside._caretX({ line: 1, ch: 1 });
+  assert.ok(advance > 0, 'a monospace advance to measure against');
+  for (const ch of [
+    0, 1, 255, 256, 257, 1000, 2047, 2048, 2049, 4000, 6239, 6240,
+  ]) {
+    const x = inside._caretX({ line: 0, ch });
+    assert.ok(
+      Math.abs(x - ch * advance) < 0.01 * Math.max(1, ch / 100),
+      `column ${ch}: ${x}, not ${ch * advance}`,
+    );
+    if (ch < line.length) {
+      // and a point a quarter of a column in is that column again
+      assert.strictEqual(layout.indexAtUtf16!(x + advance / 4, 0), ch);
+    }
+  }
+  // as wide as one layout of the line: its ink, the trailing space not
+  // counted, as a layout never counts one
+  assert.ok(
+    Math.abs(layout.width - line.trimEnd().length * advance) < 1,
+    `the pieces are as wide as the line: ${layout.width}`,
+  );
+});
+
+test('typing at the end of a long line shapes the piece it lands in, not the line', async () => {
+  const line = 'let alpha = beta(gamma, { delta: 1 }); '.repeat(160);
+  await renderX11(h(CodeEditor, { defaultValue: line }), {
+    width: 600,
+    height: 200,
+  });
+  const node = editorNode();
+  const end = { line: 0, ch: line.length };
+  node.select(end, end);
+  await act(() => {});
+  const app = (
+    node as unknown as {
+      app: { fonts: { layout: (...a: unknown[]) => unknown } };
+    }
+  ).app;
+  const inner = app.fonts.layout;
+  // characters shaped, not calls: one whole-line layout a keystroke is one
+  // call, and is the cost this is about
+  let shaped = 0;
+  app.fonts.layout = function (...a: unknown[]) {
+    const spans = a[0] as string | Array<{ text: string }>;
+    shaped +=
+      typeof spans === 'string'
+        ? spans.length
+        : spans.reduce((n, sp) => n + sp.text.length, 0);
+    return inner.apply(this, a);
+  };
+  try {
+    for (let i = 0; i < 5; i++) {
+      node.insertText('x');
+      await act(() => {});
+    }
+  } finally {
+    app.fonts.layout = inner;
+  }
+  // the piece at the end, at most a couple of thousand characters, a key
+  assert.ok(
+    shaped < 5 * 2500,
+    `${shaped} characters shaped for five keys on a line of ${line.length}`,
+  );
+  assert.strictEqual(node.value, `${line}xxxxx`);
+});

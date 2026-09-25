@@ -98,6 +98,27 @@ toggling, bracket matching, and diagnostics squiggles.
 **Escape then Tab leaves the field**, so a multiline editor in a form is not
 a keyboard trap. Ctrl+Space asks for completions. Ctrl+Enter submits.
 
+## Long lines
+
+A minified file or a log line of a hundred thousand characters is laid out
+in pieces of a few hundred characters placed end to end, cut after a
+delimiter the text itself picks out, so that a character typed into one
+piece leaves the cuts after it where they were. Every question the editor
+asks of a line — where a column is, which column is under the pointer — is
+asked of one piece, a keystroke shapes the pieces it changed rather than the
+line, and only the pieces in view are drawn. Measured on a 100,000-character
+line on macOS, putting the caret at its end took 4.3 s as one layout and
+2 ms in pieces; typing at the end of a million-character line answers in
+13 ms. On X11 a line wider than 32,767 pixels also stops throwing out of the
+paint, since no piece reaches that far. What it gives up is shaping across a
+seam: a kerning pair or a ligature that straddles one is set as two.
+
+Tokenizing stops 10,000 characters into a line (`TOKENIZE_LIMIT`, the same
+cut CodeMirror makes with `maxHighlightLength`): a line is tokenized again
+whole on every edit to it, and the rest of a longer one is drawn unstyled.
+A construct that opens past the cut and closes on a later line is coloured
+as if it had not.
+
 ## `CodeEditorHandle`
 
 ```ts
