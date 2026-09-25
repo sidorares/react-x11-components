@@ -611,6 +611,10 @@ export class FlowGraphNode extends Node implements FlowInstance {
    * can trail the pane's own painting by frames; an emission made under
    * this flag asks the receiver to commit before the dispatch returns. */
   private _gestureSync = false;
+  /** Inside a call through `FlowInstance` (`fromHandle`) — an application's
+   * handler, timer or animation loop moving the viewport. Its emissions ask
+   * to commit inline too. */
+  private _handleSync = false;
   /** The scene has been offered to assistive tech at least once — items
    * only exist once layout has placed them, which no commit marks. */
   private _sceneAnnounced = false;
@@ -1506,6 +1510,27 @@ export class FlowGraphNode extends Node implements FlowInstance {
   }
 
   // --- the imperative surface (`FlowInstance`) -----------------------------
+
+  /**
+   * `fn`, as a call through the handle. A programmatic pan — an animation
+   * loop stepping `setViewport` — moves the pane at once and the bodies'
+   * box through React, and on React's schedule the box caught up with the
+   * pane in jumps: several steps' worth in one commit, landing in a frame
+   * whose blit shifted by one. A rider that moves by more than the blit is
+   * a layout move, so that frame repainted the pane whole — a fifth of the
+   * frames of a pan over mounted bodies (`_blitPan`). Marked like a
+   * gesture's, the emission commits before the call returns, and the box
+   * moves by exactly the pan in the frame that blits it.
+   */
+  fromHandle<T>(fn: () => T): T {
+    const was = this._handleSync;
+    this._handleSync = true;
+    try {
+      return fn();
+    } finally {
+      this._handleSync = was;
+    }
+  }
 
   getViewport(): Viewport {
     return { ...this._viewport() };
@@ -4146,7 +4171,12 @@ export class FlowGraphNode extends Node implements FlowInstance {
         this._paintedCards.clear();
         this._worldVersion++;
         this._glRequest?.();
-        notify(this._bodies, this._gestureSync, this._bodiesOrigin, true);
+        notify(
+          this._bodies,
+          this._gestureSync || this._handleSync,
+          this._bodiesOrigin,
+          true,
+        );
       }
       return;
     }
@@ -4228,7 +4258,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
     }
     this._bodiesOrigin = origin;
     this._bodiesHeld = false;
-    notify(this._bodies, this._gestureSync, origin, false);
+    notify(this._bodies, this._gestureSync || this._handleSync, origin, false);
   }
 
   /**

@@ -551,12 +551,20 @@ export function Flow<N = FlowNodeData, E = unknown>(
       // it: the ref attaches after the commit that created the node, and a
       // handle built once must still work for the whole mount.
       getViewport: () => pane.current?.getViewport() ?? { x: 0, y: 0, zoom: 1 },
-      setViewport: (viewport) => pane.current?.setViewport(viewport),
-      zoomIn: (step) => pane.current?.zoomIn(step),
-      zoomOut: (step) => pane.current?.zoomOut(step),
-      zoomTo: (zoom) => pane.current?.zoomTo(zoom),
-      fitView: (options) => pane.current?.fitView(options),
-      setCenter: (x, y, options) => pane.current?.setCenter(x, y, options),
+      // the ones that move the viewport, as calls through the handle
+      // (`FlowGraphNode.fromHandle`): their bodies commit with the pan
+      setViewport: (viewport) =>
+        pane.current?.fromHandle(() => pane.current?.setViewport(viewport)),
+      zoomIn: (step) =>
+        pane.current?.fromHandle(() => pane.current?.zoomIn(step)),
+      zoomOut: (step) =>
+        pane.current?.fromHandle(() => pane.current?.zoomOut(step)),
+      zoomTo: (zoom) =>
+        pane.current?.fromHandle(() => pane.current?.zoomTo(zoom)),
+      fitView: (options) =>
+        pane.current?.fromHandle(() => pane.current?.fitView(options)),
+      setCenter: (x, y, options) =>
+        pane.current?.fromHandle(() => pane.current?.setCenter(x, y, options)),
       screenToFlowPosition: (point) =>
         pane.current?.screenToFlowPosition(point) ?? point,
       flowToScreenPosition: (point) =>
@@ -643,8 +651,12 @@ export function Flow<N = FlowNodeData, E = unknown>(
       invalidate(layout: boolean, damage: unknown, reason: string): void;
     } | null)[]
   >([]);
-  // Gesture-time emissions commit inline (see `flushSync` above); the rest —
-  // a programmatic `fitView`, the first paint — take the ordinary path.
+  // Gesture-time emissions commit inline (see `flushSync` above), and so do a
+  // handle's — a programmatic pan (`FlowGraphNode.fromHandle`). One made
+  // while React is already committing, a pan from a layout effect, is not
+  // flushed there: the reconciler runs it at sync priority as the commit
+  // ends. The rest — the first paint, what the pane's own frames emit — take
+  // the ordinary path.
   const handleBodies = (
     next: readonly NodeBodyRect[],
     sync: boolean,

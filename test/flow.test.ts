@@ -28,6 +28,7 @@ import { drawnKinds, knownElements } from 'react-x11/host';
 import { isStyleProp } from 'react-x11/style';
 import { keysymOf, XK_DELETE, XK_ESCAPE, XK_RIGHT } from 'react-x11/keysyms';
 import type { Node as RetainedNode } from 'react-x11/node';
+import { Renderer } from 'react-x11';
 import type { DrawnNode } from 'react-x11';
 
 import {
@@ -2028,6 +2029,87 @@ test('the body commit is synchronous inside the gesture dispatch', async () => {
   assert.strictEqual(place.top, 150, 'top committed inside the dispatch');
 
   await act(() => seam.defaultMouseUp(synth(paneAbs.x + 250, paneAbs.y + 140)));
+});
+
+test('a pan through the handle commits the bodies’ box before the call returns', async () => {
+  // A programmatic pan — an animation loop stepping `setViewport` — moved
+  // the pane at once and the box the bodies ride in on React's schedule, so
+  // the box caught up in jumps: several steps in one commit, in a frame whose
+  // blit shifted by one. A rider that moves by more than the blit is a layout
+  // move, and that frame repainted the pane whole. The handle's emission
+  // commits inline now, as a gesture's does.
+  const { flow } = await mount({
+    nodes: [
+      {
+        id: 'form',
+        type: 'form',
+        position: { x: 100, y: 100 },
+        width: 200,
+        height: 120,
+      },
+    ],
+    edges: [],
+    nodeTypes: { form: mountedType },
+  });
+  await act();
+  const start = bodyPlace();
+  for (let step = 1; step <= 4; step++) {
+    // no act, no await: the call itself must leave the box committed
+    flow.current!.setViewport({ x: step * 6, y: 0 });
+    assert.deepStrictEqual(
+      bodyPlace(),
+      { left: start.left + step * 6, top: start.top },
+      `step ${step}: the box moved with the pane in the call`,
+    );
+  }
+});
+
+test('a pan through the handle from a layout effect lands with that commit, and says nothing', async () => {
+  // The other place a handle is called from: an effect following state with
+  // the view. React is committing there, and the reconciler does not flush
+  // inside a commit — the emission's update waits for the commit to end, at
+  // sync priority, and lands before the flush that caused it returns. Nor
+  // does it warn, which react-dom's `flushSync` does from a lifecycle.
+  let pan: (x: number) => void = () => {};
+  function Following(): React.ReactElement {
+    const ref = React.useRef<FlowInstance | null>(null);
+    const [x, setX] = React.useState(0);
+    pan = setX;
+    React.useLayoutEffect(() => {
+      if (x) ref.current?.setViewport({ x, y: 0 });
+    }, [x]);
+    return h(TypedFlow, {
+      ref,
+      nodes: [
+        {
+          id: 'form',
+          type: 'form',
+          position: { x: 100, y: 100 },
+          width: 200,
+          height: 120,
+        },
+      ],
+      edges: [],
+      nodeTypes: { form: mountedType },
+    });
+  }
+  await renderX11(h(Following));
+  await act();
+  const start = bodyPlace();
+  const errors: unknown[][] = [];
+  const origError = console.error;
+  console.error = (...args: unknown[]) => void errors.push(args);
+  try {
+    // no act: the flush itself must leave the box where the view put it
+    Renderer.flushSyncFromReconciler(() => pan(24));
+    assert.deepStrictEqual(bodyPlace(), {
+      left: start.left + 24,
+      top: start.top,
+    });
+  } finally {
+    console.error = origError;
+  }
+  assert.deepStrictEqual(errors, []);
 });
 
 test('a value-identical inline graph repaints nothing it can name', async () => {

@@ -240,7 +240,12 @@ the focus, not the node. Three things follow, and all three are the point:
   same frame; the body component stays memoized on the node, its
   selection, the zoom and its size, so the per-step cost is one style-only
   commit on one box. `render` is re-invoked only when what it shows could
-  have changed.
+  have changed. A call through the handle — `setViewport`, `zoomTo`,
+  `fitView` and the rest — commits the same way, so an animation loop that
+  steps the viewport moves the bodies in the frame that pans the pane. On
+  React's own schedule their box caught up in jumps, and a jump is a layout
+  move under the pan's blit: on macOS a fifth of a pan's frames repainted
+  the whole pane for it.
 - **It zooms with the pane.** The subtree is mounted in a box carrying
   core's `scale` prop (react-x11 2.6), which multiplies every length under it
   — CSS `zoom` semantics rather than a transform, so text is _shaped_ at the
