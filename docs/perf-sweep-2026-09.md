@@ -33,13 +33,17 @@ comparable with these; the method is.
 | ntk        | #377 glyph runs past 16-bit coordinates culled, not thrown                        | released, 8.12.2    |
 | ntk        | #379 a layout reads the face once; bidi skipped for text nothing reverses         | released, 8.12.3    |
 | ntk        | #381 a prewarm answers the first layout; a family's faces warm together           | released, 8.12.4    |
+| ntk        | #383 the shaping memo in two generations, a style's words under one kept key      | open                |
 | components | #128 `<Flow>` GL renderer and its perf work, maps label shaping, lockfile         | open                |
 | components | #130 a long flick keeps the virtual window to its budget                          | merged              |
 | components | #131 code editor: long lines in pieces, scroll blit                               | merged              |
 | components | #132 code editor: a wheel notch scrolls a notch                                   | merged              |
 | components | #133 code editor: an edit costs the lines it changes                              | merged              |
 | components | #134 rich text editor: a keystroke costs the block it lands in                    | merged              |
-| components | #135 `<Html>`: an edit lays out again only the text it changed                    | open                |
+| components | #135 `<Html>`: an edit lays out again only the text it changed                    | merged              |
+| components | #136 rich text editor: a mark over the document keeps its blocks' keys            | merged              |
+| components | #137 code editor: a keystroke repaints its rows; revealing the caret is a blit    | merged              |
+| components | #138 code editor: a line far past the frontier is answered from a guess           | open                |
 
 ## Method
 
@@ -52,16 +56,16 @@ live in `scripts/bench/sweep/`, with `run.sh` to run all of them on both
 backends, `tabulate.ts` to print a run as tables or mark what moved against
 an older one, and the final sweep's results (see the README there):
 
-| Probe             | Component              | Actions (`ACTION=`)                                                                                   | Knobs                                                          |
-| ----------------- | ---------------------- | ----------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
-| `matrix.tsx`      | `<Flow>`               | `pan`, `zoom`, `wheel`, `drag` over five scenes                                                       | `SCENE`, `GL`, `ZOOM`, `MAP`, `W`/`H`/`VX`/`VY`, `DIAG`        |
-| `mapsweep.tsx`    | `<Map>`                | `pan`, `drag`, `wheel`, `fly` over London z15                                                         | `RENDERER` (`retained`/`gl`), `DIAG`; tiles from `BENCH_TILES` |
-| `chartsweep.tsx`  | charts                 | `stream`, `pan1m`, `zoom1m`, `multiples`, `scatter`, `scroll`                                         |                                                                |
-| `tablesweep.tsx`  | `<Table>`              | `wheel`, `fling`, `thumb`, `jump` over 100k rows                                                      | `DIAG`, `PREFETCH`                                             |
-| `docsweep.tsx`    | `<Markdown>`, `<Html>` | `mount`, `edit`, `append`, `scroll`, `reflow`                                                         | `COMP`, `SIZE` (sections), `PHASES`, `NO_FLOORS`               |
-| `editorsweep.tsx` | `<CodeEditor>`         | `mount`, `scroll`, `type-end`, `type-mid`, `type-start`, `undo`, `replace`, `long-mount`, `long-type` | `COMP=code`, `LINES`, `LONG`, `PLAIN`                          |
-| `editorsweep.tsx` | `<RichTextEditor>`     | `mount`, `scroll`, `type-mid`, `type-hidden`, `type-long`, `bold-all`, `paste`                        | `COMP=rte`, `SIZE`                                             |
-| `docgen.ts`       | —                      | generates the test documents                                                                          | deterministic by seed                                          |
+| Probe             | Component              | Actions (`ACTION=`)                                                                                                                          | Knobs                                                          |
+| ----------------- | ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| `matrix.tsx`      | `<Flow>`               | `pan`, `zoom`, `wheel`, `drag` over five scenes                                                                                              | `SCENE`, `GL`, `ZOOM`, `MAP`, `W`/`H`/`VX`/`VY`, `DIAG`        |
+| `mapsweep.tsx`    | `<Map>`                | `pan`, `drag`, `wheel`, `fly` over London z15                                                                                                | `RENDERER` (`retained`/`gl`), `DIAG`; tiles from `BENCH_TILES` |
+| `chartsweep.tsx`  | charts                 | `stream`, `pan1m`, `zoom1m`, `multiples`, `scatter`, `scroll`                                                                                |                                                                |
+| `tablesweep.tsx`  | `<Table>`              | `wheel`, `fling`, `thumb`, `jump` over 100k rows                                                                                             | `DIAG`, `PREFETCH`                                             |
+| `docsweep.tsx`    | `<Markdown>`, `<Html>` | `mount`, `edit`, `append`, `scroll`, `reflow`                                                                                                | `COMP`, `SIZE` (sections), `PHASES`, `NO_FLOORS`               |
+| `editorsweep.tsx` | `<CodeEditor>`         | `mount`, `scroll`, `type-end`, `type-mid`, `type-start`, `undo`, `replace`, `long-mount`, `long-type`, `caret-down`, `enter-end`, `jump-end` | `COMP=code`, `LINES`, `LONG`, `PLAIN`                          |
+| `editorsweep.tsx` | `<RichTextEditor>`     | `mount`, `scroll`, `type-mid`, `type-hidden`, `type-long`, `bold-all`, `paste`                                                               | `COMP=rte`, `SIZE`                                             |
+| `docgen.ts`       | —                      | generates the test documents                                                                                                                 | deterministic by seed                                          |
 
 The diagnostic modes — `DIAG`, `DAMAGE`, `TIMELINE`, `CLAIMS`, `STACKS`,
 `PHASES` — are in that README, with what each found.
@@ -715,6 +719,86 @@ jump, at 8–14 ms each — the new window mounted and measured. The number read
 like a problem because it was a frame rate of something that is not a
 stream of frames.
 
+## Round 8: the still-open list, second pass
+
+### `<RichTextEditor>` bold over everything (components #136)
+
+Bold over a document is one `AddMarkStep` per paragraph, and the block keys
+mapped every changed block's start through the whole mapping: about 35 ms of
+a 140 ms toggle at 600 KB. A mark step moves nothing — its step map is
+empty — so a mapping made only of such steps is the identity, and the keys
+now keep their starts without mapping them. macOS 143 → 128 ms, XQuartz 95
+→ 72 ms. What is left is ProseMirror's `addMark`, React's render and the
+visible blocks laid out again in bold, all of which the command needs.
+
+### X11 reflow: the shaping memo (ntk #383)
+
+Half of a Markdown reflow's text layout on XQuartz was the shaping memo's
+own time: a key of seven concatenated fields for every word, hashed fresh,
+and an LRU's delete-and-set on every hit. It is two generations of 4,000
+words now — a hit is one lookup — and a style's words live under one key,
+kept per style object, so a hit hashes the word alone. A reflow step at
+600 KB: Markdown 264 → 232 ms, `<Html>` 339 → 253 ms. Cocoa's reflow is
+CoreText setting every paragraph again, which this does not touch.
+
+### `<CodeEditor>` repaints (components #137)
+
+Every edit, caret move and caret-revealing scroll repainted the whole editor.
+Three layers, each found by the one before:
+
+1. **An edit claims its rows**: the edited lines, the caret's row and line
+   number before and after, the selection's and the bracket pair's, and the
+   rows below whose tokens the edit changed or moved. The first cut still
+   painted 92% of the editor for a character, because it claimed both scroll
+   thumbs' strips on every edit, and **core merges overlapping claims into
+   the box around them** — a strip the editor's height beside a one-row band
+   is the editor. A strip is claimed now only when what sizes its thumb
+   changed, and only where no row already is.
+2. **Revealing the caret is a blit**: a line down past the bottom, Enter at
+   the end, a character past the right edge (where the region is the text
+   area and the gutter stays). The rows that changed go to core as `pinned`
+   rects (react-x11 #682), repainted where they land after the copy.
+   Scroll offsets are snapped to whole device pixels: the line height is a
+   measured, fractional number, so every reveal was a fractional shift, and
+   a fractional shift is not a copy.
+3. **A claim beside the region must not touch another one.** With the caret
+   on the last row, the row's gutter piece overlapped the horizontal thumb's
+   strip; merged, the two made a band that took in the region, and core
+   refused every sideways blit. The pixel test could not see it — its
+   sideways typing was never on the last row — and the probe's per-frame
+   blit outcomes (`byKind`) did: 103 frames armed and declined.
+
+A keystroke in view: 6.6 → 2.8 ms on macOS, 3.6 → 2.2 ms on XQuartz, from
+0.97 of the window per paint pass to 0.08. Typing for four seconds, most of
+it past the right edge: frame 5.1 → 1.6 ms and 3.5 → 1.7 ms. The caret down
+past the bottom: frame 5.4 → 3.9 and 3.9 → 2.6 ms; what is left on macOS is
+the scroll's double copy.
+
+It moved master's floor to `^2.22.0` for the `pinned` argument — the move
+#128 makes too, to the same lockfile versions. Every local run had passed
+against a newer core than master's lockfile: the scratch worktree had it
+installed `--no-save` for benchmarking, and CI's build failed on the call.
+
+### `<CodeEditor>` far jump (components #138)
+
+The first jump to the end of a freshly opened 50,000-line file tokenized
+every line above it before the frame: 298 ms on macOS, 207 ms on XQuartz.
+More than a thousand lines past the frontier, the stream engine now runs the
+line from the furthest state it has within a hundred lines above it, or else
+from the start state at the least indented of those lines (CodeMirror 5's
+`findStartLine`), and walks the frontier there in the background, 500 lines
+a turn. A guess is written as an ordinary state-and-tokens pair past the
+frontier, so the convergence the engine already had keeps a right guess as
+it is and tokenizes a wrong one again, and the host's `invalidate` repaints
+it. The jump: 38 and 24 ms, the rest being the lines newly in view laid out.
+Typing during the walk pays about 1 ms at the 95th percentile.
+
+Deciding by distance rather than by trying matters: trying a thousand lines
+first cost more than the guess. And the two bugs the mutation tests found
+were the same bug twice — a pair whose state had been replaced without its
+tokens going: an edit inside a guessed run, and a walk's turn ending on a
+guessed line.
+
 ## Lessons
 
 1. **Look for caches that never hit.** Identity-keyed caches handed a new
@@ -750,21 +834,34 @@ stream of frames.
 10. **A guard that is safe can still be useless — measure it before
     believing it.** The width pass's first safe rule stopped at every scroll
     pane, which is where documents live.
+11. **Claim beside, never over.** Core merges overlapping damage into the
+    box around it, so a strip beside a row, or a gutter piece touching a
+    thumb's strip, becomes the whole region. Count what each frame's passes
+    painted, and whether its blit happened, in the probe: a pixel test
+    proves the frame right, not cheap.
+12. **The tree you benchmark is not the tree CI builds.** A scratch
+    worktree with a newer core installed `--no-save` runs every test
+    against it; `npm ci` on the branch's own lockfile before pushing is the
+    only check that the floor is what the code needs.
+13. **A guess is safe when it is an ordinary cache entry.** The far jump's
+    guesses are the same pairs convergence already reasons about, so the
+    walk that corrects them is the one that already existed.
 
 ## Still open
 
-Ordered by practical impact, after round 7.
+Ordered by practical impact, after round 8.
 
 - **Reflow** (both document components): the text engines shape again at
-  every width. Shape once, break many — a CTTypesetter kept per paragraph —
-  needs an appkit native.
+  every width. On XQuartz ntk #383 takes an eighth off Markdown's and a
+  quarter off `<Html>`'s; on macOS, shape once and break many — a
+  CTTypesetter kept per paragraph — needs an appkit native.
 - **`<Markdown>` first paint** (1.24 s Cocoa, 0.99 s X11 for 600 KB): what
   is left is the height floors (~300 ms), React's render (~350 ms in
   development, less in production) and the layout.
 - **`<Html>` edit and append** (128 ms Cocoa, 93 ms X11): the re-parse, the
   cascade and the box tree run whole; the text engine no longer does.
-- **Cocoa scroll's double copy** (about 2 ms a frame at 2x, round 4).
-- **`<CodeEditor>`**: row-precise edit claims; imprecise far-jump
-  highlighting.
-- **`<RichTextEditor>`**: bold over everything, large pastes, a very long
-  paragraph.
+- **Cocoa scroll's double copy** (about 2 ms a frame at 2x, round 4) — now
+  also most of what is left of `<CodeEditor>`'s reveal-scroll frames.
+- **`<RichTextEditor>`**: large pastes (110–123 ms, mostly React's
+  development render), and a very long paragraph, which `<richtext>` lays
+  out whole on every keystroke.

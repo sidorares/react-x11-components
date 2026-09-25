@@ -481,7 +481,11 @@ it up. **The floor is a running one and moves often** — every move since
 - `^2.22.0` — `scrollContents`'s `pinned` rects (react-x11#682): `<Flow>`'s
   2D pan copies the whole pane and has core repaint the minimap and the
   controls in place, where it had to carve a band the pane's full width
-  out of the copy. The same release copies an opaque subtree that only
+  out of the copy. A scroll that reveals `<CodeEditor>`'s caret a line or a
+  character away is a blit of the view the same way, with the rows that
+  changed pinned and repainted where they land (#137); before it, a claim
+  inside the blitted region refused the blit, and the scroll repainted the
+  editor whole. The same release copies an opaque subtree that only
   moved rather than repainting it (#681) and stops a rounded box masking
   every fill inside it to round its corners (#685). Neither needed a
   change here; the stress example's widgets are what they were measured

@@ -11,16 +11,16 @@ RESULT {"suite":"docs","comp":"md","action":"edit","backend":"cocoa","fps":9,"fr
 They need a display — a real `$DISPLAY` for `x11`, a Mac for `cocoa` — and
 the window has to stay uncovered: an occluded Cocoa window gets no frames.
 
-| Probe             | What                                     | `ACTION=`                                                                                                                                          |
-| ----------------- | ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `matrix.tsx`      | `<Flow>`, five scenes                    | `pan`, `zoom`, `wheel`, `drag` (`SCENE`, `GL`, `ZOOM`, `MAP`)                                                                                      |
-| `mapsweep.tsx`    | `<Map>`, London z15                      | `pan`, `drag`, `wheel`, `fly` (`RENDERER=retained\|gl`; tiles from `BENCH_TILES`)                                                                  |
-| `chartsweep.tsx`  | the charts                               | `stream`, `pan1m`, `zoom1m`, `multiples`, `scatter`, `scroll`                                                                                      |
-| `tablesweep.tsx`  | `<Table>`, 100,000 log rows              | `wheel`, `fling`, `thumb`, `jump`                                                                                                                  |
-| `docsweep.tsx`    | `<Markdown>`, `<Html>` (`COMP=md\|html`) | `mount`, `edit`, `append`, `scroll`, `reflow` (`SIZE` sections, default 300 ≈ 600 KB)                                                              |
-| `editorsweep.tsx` | `<CodeEditor>` (`COMP=code`)             | `mount`, `scroll`, `type-end`, `type-mid`, `type-start`, `undo`, `replace`, `long-mount`, `long-type` (`LINES`, `LONG`, `PLAIN=1` for no language) |
-| `editorsweep.tsx` | `<RichTextEditor>` (`COMP=rte`)          | `mount`, `scroll`, `type-mid`, `type-hidden`, `type-long`, `bold-all`, `paste` (`SIZE`)                                                            |
-| `docgen.ts`       | the documents                            | a report of N sections, deterministic by seed; the Markdown and HTML spellings of the same content                                                 |
+| Probe             | What                                     | `ACTION=`                                                                                                                                                                                 |
+| ----------------- | ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `matrix.tsx`      | `<Flow>`, five scenes                    | `pan`, `zoom`, `wheel`, `drag` (`SCENE`, `GL`, `ZOOM`, `MAP`)                                                                                                                             |
+| `mapsweep.tsx`    | `<Map>`, London z15                      | `pan`, `drag`, `wheel`, `fly` (`RENDERER=retained\|gl`; tiles from `BENCH_TILES`)                                                                                                         |
+| `chartsweep.tsx`  | the charts                               | `stream`, `pan1m`, `zoom1m`, `multiples`, `scatter`, `scroll`                                                                                                                             |
+| `tablesweep.tsx`  | `<Table>`, 100,000 log rows              | `wheel`, `fling`, `thumb`, `jump`                                                                                                                                                         |
+| `docsweep.tsx`    | `<Markdown>`, `<Html>` (`COMP=md\|html`) | `mount`, `edit`, `append`, `scroll`, `reflow` (`SIZE` sections, default 300 ≈ 600 KB)                                                                                                     |
+| `editorsweep.tsx` | `<CodeEditor>` (`COMP=code`)             | `mount`, `scroll`, `type-end`, `type-mid`, `type-start`, `undo`, `replace`, `long-mount`, `long-type`, `caret-down`, `enter-end`, `jump-end` (`LINES`, `LONG`, `PLAIN=1` for no language) |
+| `editorsweep.tsx` | `<RichTextEditor>` (`COMP=rte`)          | `mount`, `scroll`, `type-mid`, `type-hidden`, `type-long`, `bold-all`, `paste` (`SIZE`)                                                                                                   |
+| `docgen.ts`       | the documents                            | a report of N sections, deterministic by seed; the Markdown and HTML spellings of the same content                                                                                        |
 
 What the fields mean: `fps` — frames that painted, per second; `frame50`,
 `frame95` — the window's flush time; `lat50`, `lat95` — from an input to the

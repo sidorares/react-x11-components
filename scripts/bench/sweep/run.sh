@@ -44,7 +44,7 @@ for b in ${=BACKENDS}; do
     done
   fi
   if has editors; then
-    for a in mount scroll type-end type-mid type-start undo replace long-mount long-type; do
+    for a in mount scroll type-end type-mid type-start undo replace long-mount long-type caret-down enter-end jump-end; do
       cell editorsweep.tsx REACT_X11_BACKEND=$b COMP=code ACTION=$a
     done
     cell editorsweep.tsx REACT_X11_BACKEND=$b COMP=code ACTION=type-mid PLAIN=1

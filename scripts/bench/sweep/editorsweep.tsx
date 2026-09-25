@@ -13,6 +13,10 @@
 //              long-mount   one line of LONG chars (default 1,000,000)
 //              long-type    a character at the end of that line every 16 ms
 //              replace      select all + replace with the same text, every 250 ms
+//              caret-down   the caret a line down every 16 ms, the view following
+//              enter-end    a new line at the end of the file every 16 ms
+//              jump-end     the caret to the end of the fresh file (`jump`), then
+//                           typing there while the tokenizer catches up
 //   COMP=rte   <RichTextEditor> over the generated report (./docgen.ts)
 //     SIZE     sections (default 300)
 //     ACTION   mount | scroll | type-mid (a character mid-document every 16 ms)
@@ -673,6 +677,30 @@ if (ACTION !== 'mount' && ACTION !== 'long-mount') {
         ed.selectAll();
         ed.insertText(initial);
       });
+    } else if (ACTION === 'caret-down') {
+      // the caret a line further every 16 ms from mid-file, at the bottom
+      // of the view: each step scrolls it a line
+      let line = Math.floor(lineCount / 2);
+      ed.select(at(line, 0), at(line, 0));
+      await every(16, () => {
+        line++;
+        ed.select(at(line, 0), at(line, 0));
+      });
+    } else if (ACTION === 'jump-end') {
+      // the caret to the end of the freshly mounted file — `jump` is that
+      // input's latency — then a character there every 16 ms while the
+      // tokenizer catches up behind it
+      const last = lineCount - 1;
+      const end = at(last, (Array.isArray(lines) ? lines[last] : '').length);
+      marks.push(performance.now());
+      ed.select(end, end);
+      await every(16, () => ed.insertText('x'));
+    } else if (ACTION === 'enter-end') {
+      // a new line at the end of the file every 16 ms: each scrolls a line
+      const last = lineCount - 1;
+      const end = at(last, (Array.isArray(lines) ? lines[last] : '').length);
+      ed.select(end, end);
+      await every(16, () => ed.insertText('\n'));
     }
   } else {
     const { AllSelection, TextSelection } = await import('prosemirror-state');
@@ -756,6 +784,7 @@ if (ACTION !== 'mount' && ACTION !== 'long-mount') {
       ),
     ),
     frameMax: r2(Math.max(...run.map((f) => f.ms))),
+    jump: ACTION === 'jump-end' ? r2(lats[0]) : undefined,
     lat50: r2(q(lats, 0.5)),
     lat95: r2(q(lats, 0.95)),
     latMax: r2(Math.max(...lats)),
