@@ -1335,6 +1335,18 @@ function countingLanguage(): { language: Language; runs: () => number } {
   return { language, runs: () => runs };
 }
 
+/** Until the tokenizer has walked to every line it answered from a guess
+ *  (a line far past its frontier — here, one scrolled to in a fresh file):
+ *  what a test counts after it is its own edit's tokenizing, not the walk's. */
+async function walked(node: CodeEditorNode): Promise<void> {
+  const tok = (node as unknown as { _tok: { guessedTo?: number } | null })._tok;
+  const start = Date.now();
+  while ((tok?.guessedTo ?? -1) >= 0) {
+    assert.ok(Date.now() - start < 10_000, 'the tokenizer caught up');
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}
+
 test('undo and redo apply the change they record, where it was made', async () => {
   // The history held a copy of the whole text per step, and undid by
   // resetting the editor to one: every line tokenized again from the first
@@ -1354,6 +1366,7 @@ test('undo and redo apply the change they record, where it was made', async () =
   await act(() => {});
   assert.strictEqual(node.lines[1500], 'lineabc 1500');
 
+  await walked(node);
   let before = runs();
   node.undo();
   await act(() => {});
@@ -1365,6 +1378,7 @@ test('undo and redo apply the change they record, where it was made', async () =
   assert.ok(runs() - before < 5, `undo tokenized ${runs() - before} lines`);
   assert.ok(!node.canUndo && node.canRedo);
 
+  await walked(node);
   before = runs();
   node.redo();
   await act(() => {});
@@ -1389,6 +1403,7 @@ test('a replacement is the lines it changes, and one that changes none is no ste
   // all shows the end of the file, which is tokenizing of its own.)
   node.selectAll();
   await act(() => {});
+  await walked(node);
   let before = runs();
   node.insertText(value);
   await act(() => {});
@@ -1400,6 +1415,7 @@ test('a replacement is the lines it changes, and one that changes none is no ste
   const edited = value.replace('line 2990\n', 'line 2990;\n');
   node.selectAll();
   await act(() => {});
+  await walked(node);
   before = runs();
   node.insertText(edited);
   await act(() => {});
@@ -1410,6 +1426,7 @@ test('a replacement is the lines it changes, and one that changes none is no ste
   assert.strictEqual(node.value, value, 'one undo takes it back');
 
   // a value set from outside that differs in one line is that line's edit
+  await walked(node);
   before = runs();
   node.value = edited;
   await act(() => {});

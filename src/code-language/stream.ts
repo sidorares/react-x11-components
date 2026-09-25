@@ -384,10 +384,14 @@ class StreamTokenizer<S> implements Tokenizer {
     }
     const copy = this.mode.copyState ?? defaultCopy;
     const equals = this.mode.stateEquals ?? defaultEquals;
+    // whether the state entering line `i` was just replaced, so its tokens
+    // ran from another and it is run again, beside what it had
+    let moved = false;
     for (let i = from; i <= line; i++) {
       // a pair past the frontier ran from the state beside it; the
       // frontier's may be from before the walk replaced its state
       if (
+        !moved &&
         i > this.frontier &&
         this.tokens[i] !== undefined &&
         this.states[i + 1] !== undefined
@@ -397,10 +401,15 @@ class StreamTokenizer<S> implements Tokenizer {
       const state = copy(this.states[i] as S);
       this.tokens[i] = this.run(i, state);
       const next = this.states[i + 1];
-      if (next === undefined || !equals(state, next)) {
-        this.states[i + 1] = state;
-        this.tokens[i + 1] = undefined;
-      }
+      moved = next === undefined || !equals(state, next);
+      if (moved) this.states[i + 1] = state;
+    }
+    // past the line asked about, what ran from a replaced state goes: it is
+    // run again when asked for, and whoever was handed it is told
+    const after = line + 1;
+    if (moved && this.tokens[after] !== undefined) {
+      this.tokens[after] = undefined;
+      this.noteChange(after);
     }
     return this.tokens[line] ?? [];
   }
@@ -416,8 +425,12 @@ class StreamTokenizer<S> implements Tokenizer {
     const tokens = this.mode.runLine(cut(this.lines[i]), state);
     if (had === undefined) return tokens;
     if (sameTokens(had, tokens)) return had;
-    if (this.changedFrom < 0 || i < this.changedFrom) this.changedFrom = i;
+    this.noteChange(i);
     return tokens;
+  }
+
+  private noteChange(i: number): void {
+    if (this.changedFrom < 0 || i < this.changedFrom) this.changedFrom = i;
   }
 
   private schedule(): void {
