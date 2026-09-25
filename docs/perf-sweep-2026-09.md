@@ -169,11 +169,10 @@ What worked:
 - **ntk**: coverage uploads cropped to the clip's extents (#373) and
   `fillRects` under a path clip as one masked composite for disjoint rects
   (#375).
-- **In `<Flow>`**: the scene culled once per frame (`fb69a8a`), dash ticks
-  held while the view moves (`040fab2`), dashed edges cut to a pass's runs
-  (`af0aed4`), dragged nodes lifted out of the world in GL (`df9614d`) and
-  into pane pictures in 2D (`f0838b9`), picture compositing with `copy` for
-  the ground (`1d424ef`).
+- **In `<Flow>`** (#128): the scene culled once per frame, dash ticks held
+  while the view moves, dashed edges cut to a pass's runs, dragged nodes
+  lifted out of the world in GL and into pane pictures in 2D, picture
+  compositing with `copy` for the ground.
 
 What did not:
 
@@ -230,7 +229,7 @@ Cocoa wheel zoom at 44 fps with 50 ms draw p95: the label shaper's cache
 (4,000 entries, cleared wholesale) thrashed across a six-level zoom — 360,000
 shape calls, 43,000 CoreText layouts and 11 clears in four seconds (812 ms).
 
-**Fix (`bb33e34`):** measuring split from shaping — a colour-blind measure
+**Fix (#128):** measuring split from shaping — a colour-blind measure
 cache (8,000 a generation, numbers only), shaping only at draw time for the
 names in the pane, two-generation eviction for both, a WeakMap from placed
 label to shaped label so a pan costs what it did. Layouts 43k → 7.8k; Cocoa
