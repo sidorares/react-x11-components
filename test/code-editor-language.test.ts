@@ -24,6 +24,7 @@ import type {
   Token,
 } from '../src/code-editor/index.js';
 import { tabMap } from '../src/code-editor/doc.js';
+import { TOKENIZE_LIMIT } from '../src/code-language/stream.js';
 import type { TextMateStateLike } from '../src/code-editor/index.js';
 
 const host = { invalidate: () => {} };
@@ -487,4 +488,17 @@ test('isDarkBackground and autoTokenStyles', async () => {
   assert.equal(autoTokenStyles('#282c34'), DARK_TOKEN_STYLES);
   assert.equal(autoTokenStyles('#fdfdfd'), LIGHT_TOKEN_STYLES);
   assert.equal(autoTokenStyles('nonsense'), LIGHT_TOKEN_STYLES);
+});
+
+test('stream engine: a line past the tokenizing limit is tokenized only so far', () => {
+  // CodeMirror's maxHighlightLength: a line is tokenized whole on every
+  // edit to it, and a minified file is one line.
+  const long = 'const a = "b"; '.repeat(2000); // 30,000 characters
+  const tokens = tokenize(javascript(), `${long}\nconst c = 1;`);
+  assert.ok(tokens[0].length > 0, 'the start is tokenized');
+  assert.ok(
+    tokens[0].every((t) => t.to <= TOKENIZE_LIMIT),
+    'nothing past the limit',
+  );
+  assert.ok(tokens[1].length > 0, 'the next line still is');
 });

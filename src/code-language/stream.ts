@@ -133,6 +133,17 @@ export interface LineMode<S> {
   stateEquals?(a: S, b: S): boolean;
 }
 
+/**
+ * How much of one line is tokenized; the rest of a longer one is drawn
+ * unstyled, and the next line starts from the state where this one was cut.
+ * CodeMirror's `maxHighlightLength`, and for the same reason: a line is
+ * tokenized again whole on every edit to it, and a minified file is one
+ * line — a keystroke at the end of a million characters ran the language
+ * over all of them. A construct that opens past the cut and closes on a
+ * later line is the price, on lines no one reads by their colours.
+ */
+export const TOKENIZE_LIMIT = 10_000;
+
 function defaultCopy<S>(state: S): S {
   if (state === null || typeof state !== 'object') return state;
   return { ...(state as object) } as S;
@@ -226,7 +237,11 @@ class StreamTokenizer<S> implements Tokenizer {
       // was written by the previous iteration. Copy before running — the
       // mode mutates in place, and the cached entry must stay pristine.
       const state = copy(this.states[i] as S);
-      this.tokens[i] = this.mode.runLine(this.lines[i], state);
+      const text = this.lines[i];
+      this.tokens[i] = this.mode.runLine(
+        text.length > TOKENIZE_LIMIT ? text.slice(0, TOKENIZE_LIMIT) : text,
+        state,
+      );
       const cached = this.states[i + 1];
       if (
         cached !== undefined &&

@@ -777,6 +777,158 @@ test('at a display scale of 2 the handle answers in logical pixels', async () =>
   );
 });
 
+/** The editor's pixels, as the server holds them. */
+async function editorPixels(
+  ctx: unknown,
+  node: CodeEditorNode,
+): Promise<Uint8ClampedArray> {
+  const { abs } = node as unknown as DrawnNode;
+  const { data } = await (
+    ctx as {
+      getImageData(
+        x: number,
+        y: number,
+        w: number,
+        h: number,
+      ): Promise<{ data: Uint8ClampedArray }>;
+    }
+  ).getImageData(abs.x, abs.y, abs.width, abs.height);
+  return data;
+}
+
+/** Every damage rect the editor was painted through, until `stop()`. */
+function recordPasses(node: CodeEditorNode): {
+  passes: Array<{ x: number; y: number; width: number; height: number } | null>;
+  stop(): void;
+} {
+  const passes: Array<{
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  } | null> = [];
+  const drawn = node as unknown as {
+    paint(ctx: unknown): void;
+    paintDamage(): {
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+    } | null;
+  };
+  const paint = drawn.paint;
+  drawn.paint = function (this: typeof drawn, ctx: unknown) {
+    passes.push(this.paintDamage());
+    paint.call(this, ctx);
+  };
+  return {
+    passes,
+    stop: () => {
+      drawn.paint = paint;
+    },
+  };
+}
+
+test('a scroll copies the lines it keeps, and paints what a full repaint would', async () => {
+  // A scroll moves every pixel of the text, so the frame copies the band
+  // that stays (core's `scrollContents`) and paints the strip the shift
+  // exposed, with the thumbs' strips beside it. Held to the one honest
+  // reference: the same editor repainted whole at the same offset, byte for
+  // byte. And to the passes themselves, because a blit that quietly fell
+  // back to repainting everything would pass the pixels. At 2x as well:
+  // every rect on this path is in device pixels.
+  const value = Array.from(
+    { length: 300 },
+    (_, i) =>
+      `select col${i}, 'text ${i}' from t${i} where x > ${i}; -- ${'n'.repeat(i % 40)}`,
+  ).join('\n');
+  for (const scale of [1, 2]) {
+    const { ctx, windowNode } = await renderX11(
+      h(CodeEditor, {
+        defaultValue: value,
+        language: sql(),
+        lineNumbers: true,
+        style: { flexGrow: 1 },
+      }),
+      {
+        scale,
+        width: 400,
+        height: 480,
+        screen: { width: 1000, height: 1200 },
+      },
+    );
+    const node = editorNode();
+    const { abs } = node as unknown as DrawnNode;
+    const area = abs.width * abs.height;
+    for (const dy of [48, 48, -48, 96, 17, -30]) {
+      const what = `a scroll by ${dy} at ${scale}x`;
+      const record = recordPasses(node);
+      await act(() => {
+        assert.ok(node.scrollBy(0, dy), `${what} moved`);
+      });
+      record.stop();
+      assert.ok(record.passes.length > 0, `${what} painted`);
+      const painted = record.passes.reduce(
+        (sum, d) => sum + (d ? d.width * d.height : area),
+        0,
+      );
+      assert.ok(
+        painted < area * 0.3,
+        `${what} painted ${Math.round((100 * painted) / area)}% of the editor`,
+      );
+      const blitted = await editorPixels(ctx, node);
+      await act(() => {
+        (
+          windowNode as unknown as { invalidate(all: boolean): void }
+        ).invalidate(true);
+      });
+      const whole = await editorPixels(ctx, node);
+      assert.ok(
+        Buffer.from(blitted).equals(Buffer.from(whole)),
+        `after ${what} the copy and a full repaint differ`,
+      );
+    }
+    await cleanup();
+  }
+});
+
+test("a caret blink repaints the caret's row, not the editor", async () => {
+  const value = Array.from({ length: 40 }, (_, i) => `line ${i}`).join('\n');
+  const { ctx, windowNode } = await renderX11(
+    h(CodeEditor, { defaultValue: value, style: { flexGrow: 1 } }),
+    { width: 400, height: 300 },
+  );
+  const node = editorNode();
+  const { abs } = node as unknown as DrawnNode;
+  node.focus();
+  node.moveCaret({ line: 3, ch: 2 }, false);
+  await act();
+  const record = recordPasses(node);
+  // the blink is on a timer of its own: wait for it to turn the caret off
+  await waitFor(() => assert.ok(record.passes.length > 0, 'a blink painted'), {
+    timeout: 2000,
+  });
+  record.stop();
+  const row = node.metrics().lineHeight;
+  for (const d of record.passes) {
+    assert.ok(d, 'the blink is a bounded pass');
+    assert.ok(
+      d.height <= row + 2 && d.width < abs.width,
+      `the blink repainted ${d.width}×${d.height} of a ${abs.width}×${abs.height} editor`,
+    );
+  }
+  const blinked = await editorPixels(ctx, node);
+  await act(() => {
+    (windowNode as unknown as { invalidate(all: boolean): void }).invalidate(
+      true,
+    );
+  });
+  assert.ok(
+    Buffer.from(blinked).equals(Buffer.from(await editorPixels(ctx, node))),
+    'the blinked frame is the frame a full repaint draws',
+  );
+});
+
 test('at a display scale of 2 the completion popup opens at the caret', async () => {
   await renderX11(
     editorWithRuler({
@@ -829,4 +981,100 @@ test('at a display scale of 2 the completion popup opens at the caret', async ()
   await waitFor(() => screen.getByText('select'));
   const moved = await waitFor(completionPopup);
   near(moved.y - first.y, 3 * lineHeight, 'the list dropped three lines', 2);
+});
+
+// --- long lines --------------------------------------------------------------
+
+/** What the node answers inside, device pixels from the text origin — the
+ *  private surface the long-line pieces live behind. */
+interface LineInternals {
+  _caretX(pos: Position): number;
+  _lineEntry(line: number): {
+    layout: {
+      width: number;
+      caretXAt?(u16: number): number;
+      indexAtUtf16?(x: number, y: number): number;
+    } | null;
+  };
+}
+
+test('a long line is laid out in pieces that agree with one layout', async () => {
+  // A minified file is one line of a hundred thousand characters, and one
+  // text layout of that was linear or worse in everything asked of it —
+  // CoreText's caret lookup took seconds a call. The editor lays such a
+  // line out in pieces; in a monospace face every column must still land
+  // at column × advance, across the seams as well as inside the pieces.
+  const line = 'let alpha = beta(gamma, { delta: 1 }); '.repeat(160); // 6,240
+  await renderX11(h(CodeEditor, { defaultValue: `${line}\nshort` }), {
+    width: 600,
+    height: 200,
+  });
+  const node = editorNode();
+  const inside = node as unknown as LineInternals;
+  const layout = inside._lineEntry(0).layout;
+  assert.ok(layout?.caretXAt, 'the long line is in pieces');
+  const advance = inside._caretX({ line: 1, ch: 1 });
+  assert.ok(advance > 0, 'a monospace advance to measure against');
+  for (const ch of [
+    0, 1, 255, 256, 257, 1000, 2047, 2048, 2049, 4000, 6239, 6240,
+  ]) {
+    const x = inside._caretX({ line: 0, ch });
+    assert.ok(
+      Math.abs(x - ch * advance) < 0.01 * Math.max(1, ch / 100),
+      `column ${ch}: ${x}, not ${ch * advance}`,
+    );
+    if (ch < line.length) {
+      // and a point a quarter of a column in is that column again
+      assert.strictEqual(layout.indexAtUtf16!(x + advance / 4, 0), ch);
+    }
+  }
+  // as wide as one layout of the line: its ink, the trailing space not
+  // counted, as a layout never counts one
+  assert.ok(
+    Math.abs(layout.width - line.trimEnd().length * advance) < 1,
+    `the pieces are as wide as the line: ${layout.width}`,
+  );
+});
+
+test('typing at the end of a long line shapes the piece it lands in, not the line', async () => {
+  const line = 'let alpha = beta(gamma, { delta: 1 }); '.repeat(160);
+  await renderX11(h(CodeEditor, { defaultValue: line }), {
+    width: 600,
+    height: 200,
+  });
+  const node = editorNode();
+  const end = { line: 0, ch: line.length };
+  node.select(end, end);
+  await act(() => {});
+  const app = (
+    node as unknown as {
+      app: { fonts: { layout: (...a: unknown[]) => unknown } };
+    }
+  ).app;
+  const inner = app.fonts.layout;
+  // characters shaped, not calls: one whole-line layout a keystroke is one
+  // call, and is the cost this is about
+  let shaped = 0;
+  app.fonts.layout = function (...a: unknown[]) {
+    const spans = a[0] as string | Array<{ text: string }>;
+    shaped +=
+      typeof spans === 'string'
+        ? spans.length
+        : spans.reduce((n, sp) => n + sp.text.length, 0);
+    return inner.apply(this, a);
+  };
+  try {
+    for (let i = 0; i < 5; i++) {
+      node.insertText('x');
+      await act(() => {});
+    }
+  } finally {
+    app.fonts.layout = inner;
+  }
+  // the piece at the end, at most a couple of thousand characters, a key
+  assert.ok(
+    shaped < 5 * 2500,
+    `${shaped} characters shaped for five keys on a line of ${line.length}`,
+  );
+  assert.strictEqual(node.value, `${line}xxxxx`);
 });
