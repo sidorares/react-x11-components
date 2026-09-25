@@ -44,6 +44,12 @@ comparable with these; the method is.
 | components | #136 rich text editor: a mark over the document keeps its blocks' keys            | merged              |
 | components | #137 code editor: a keystroke repaints its rows; revealing the caret is a blit    | merged              |
 | components | #138 code editor: a line far past the frontier is answered from a guess           | merged              |
+| react-x11  | #706 a scroll blit's band is copied once, as its frame takes its buffer           | open                |
+| react-x11  | #707 a paragraph laid out at another width reuses its typesetter                  | open                |
+| appkit     | #75 a paragraph's typesetter, kept; packed layout geometry                        | open                |
+| ntk        | #385 a shaped glyph carries the characters it was shaped from                     | open                |
+| components | #139 code editor: squiggles follow edits; what it paints stays true through them  | merged              |
+| components | #140 `<Html>`: a resize lays the document out once a frame                        | open                |
 
 ## Method
 
@@ -801,6 +807,147 @@ line. CI on Node 24 then found the opposite: tokens dropped before the line
 ran again left nothing to compare with, so a guess corrected on the way was
 never reported to the host.
 
+## Round 9: the editor's correctness, the scroll copy, reflow
+
+### `<CodeEditor>` correctness (components #139, ntk #385)
+
+Not a performance change, but it came out of the performance work and used
+the same tools. Two oracles do the checking. One is the tokenizer's state
+after a random sequence of edits, compared with a fresh tokenization of the
+text that results. The other is the editor's pixels after the same edits,
+compared with a fresh editor showing that text with the same selection and
+scroll, at 1x and 2x. Together they found:
+
+- **Stale tokens.** An edit above the frontier took the tokens the background
+  walk had left further down.
+- **Missed repaints.** After an edit that moved the text's end up, the rows
+  below the new end were not repainted.
+- **Squiggles that stayed put.** Diagnostics now follow the text until the
+  linter answers again.
+- **A misplaced squiggle.** Drawn at the bottom of the row box rather than
+  under the glyphs, it spilled into the next row.
+- **An emoji's row.** Its taller layout set the text off the baseline every
+  other row shares.
+- **Long lines.** A selection band, a squiggle or a bracket highlight along a
+  minified line threw out of the X11 paint past 32,767 pixels.
+- **Full repaints.** A controlled editor repainted everything on every
+  keystroke, and so did an inline `language` or `tokenStyles` object.
+- **ntk #385.** A glyph that fontkit first created without its characters —
+  drawing a composite `é` creates the `e` that way — put every caret after an
+  `e` on that line one character off for the rest of the session.
+
+The one CI failure is a lesson about the oracle. The squiggle-placement test
+diffed a frame with the squiggles against one without, inside a rounded row
+rect. With Linux's fractional line height, the row above inks the pixel row
+the two share, so one squiggle's end showed up in the next row. It passed on
+macOS, whose line height happened to round the other way. The test now draws
+one squiggle at a time. The same failure reproduces here at font sizes 11,
+13, 17, 19 and 21.
+
+### The Cocoa scroll's double copy (react-x11 #706)
+
+A scroll blit's frame wrote its band twice. The first draw of the frame took
+a buffer and caught it up to the frame on glass; the catch-up owed the band,
+because the frame before had blitted it too. Then `scrollSurface` moved the
+band inside that buffer. Now a scroll that is its frame's first draw copies
+the band across from the frame on glass already shifted, with appkit's
+`blitSurface`, and the catch-up copies everything else. The result is every
+pixel the two passes produced, the strips the shift exposes included.
+
+| scroll, Cocoa 2x                    | copies per frame | flush p50      |
+| ----------------------------------- | ---------------- | -------------- |
+| `<CodeEditor>`, 50,000 lines, wheel | 2.09 → 1.61 ms   | 4.00 → 3.72 ms |
+| `<Markdown>`, 600 KB, wheel         | 1.44 → 1.01 ms   | 6.02 → 5.55 ms |
+| `<Table>`, 100,000 rows, wheel      | 1.15 → 0.99 ms   | 2.66 → 2.68 ms |
+| `<Flow>`, a pan of the cards scene  | 1.36 → 0.80 ms   | —              |
+
+What is left is the band copy itself, and it runs at a fifth of the speed a
+benchmark of it shows. A 15 MB copy between two IOSurfaces takes 0.34 ms
+back to back, 45 GB/s. One copy every 16 ms, with the thread asleep in
+between, takes 1.8 ms at the median and 4 ms at the 90th percentile, and
+that is the rate the frames saw. It is not the IOSurface: plain `malloc`ed
+memory behaves the same. It is not QoS: user-interactive and utility measure
+alike. And it is not the core: splitting the rows over eight GCD threads
+halves the loop and leaves the paced copy where it was. The memory system
+slows down while the thread idles, and a copy made once a frame pays for
+waking it. The only lever is copying fewer bytes.
+
+### `<Html>`: three document layouts a frame (components #140)
+
+A frame of a window resize laid a 600 KB `<Html>` document out three times.
+The first pass was at the new width. Then came core's height-floor probe,
+which asks every leaf for its height at the width it was last measured at as
+well as the one it has now (`probeHeightFloors`, whose comment expects "a
+paragraph answers from its layout cache"). The document answered by laying
+itself out at the old width. Then yoga's next pass asked for the new width
+again. `TextLayoutCache` kept two generations and rotated them once a pass,
+so each pass missed what the one before had dropped. The stacks in
+`createLayout` gave it away: 65,337 calls for 25,769 distinct text-and-width
+pairs. The element now keeps the size each of its last four widths came to,
+until anything a layout reads changes. A reflow step: 573 → 196 ms on macOS,
+256 → 86 ms on XQuartz.
+
+### Cocoa reflow: the typesetter, kept (appkit #75, react-x11 #707)
+
+Timed inside `createLayout` over a 600 KB reflow:
+
+| part of `createLayout`                   | `<Markdown>` | `<Html>` |
+| ---------------------------------------- | ------------ | -------- |
+| the attributed string from the spans     | 30%          | 27%      |
+| `CTTypesetterCreateWithAttributedString` | 37%          | 40%      |
+| breaking lines, the `CTLine`s and runs   | 16%          | 16%      |
+| the result's objects                     | 17%          | 17%      |
+
+The first two are the same at every width. appkit now returns a paragraph's
+typesetter on request (`keep`) and lays out from it (`typesetter`), and it
+can return the geometry as two `Float64Array`s (`packed`). Core's CoreText
+engine keeps up to a megabyte of text's worth of typesetters, keyed by
+everything shaping reads. It also stopped building a code point table for
+text with no surrogate pair. A short paragraph costs 34 µs from its spans,
+16 µs from its typesetter and 8.6 µs packed.
+
+| 600 KB, Cocoa | reflow step, before | kept typesetters | with #140 too |
+| ------------- | ------------------- | ---------------- | ------------- |
+| `<Markdown>`  | 335 ms              | 228 ms           | 227 ms        |
+| `<Html>`      | 574 ms              | 273 ms           | 94 ms         |
+
+First paint improves too, because a paragraph's max-content measurement and
+its wrapped layout are now one shaping: Markdown 1255 → 1174 ms.
+
+### What is left of a Markdown reflow
+
+Per frame at 600 KB, X11 / Cocoa, in ms:
+
+| phase                                   | X11 | Cocoa |
+| --------------------------------------- | --- | ----- |
+| the first layout pass, at the new width | 104 | 194   |
+| height floors measured after the probe  | 32  | 46    |
+| the second pass, with the new floors    | 38  | 39    |
+| absolutize                              | 26  | 40    |
+
+These Cocoa times are from before the kept typesetters; they cut the first
+pass. The second pass lays out 13,000 nodes again because the floors that
+emulate CSS's `min-height: auto` come from the previous layout. At a
+narrower width the content is taller than the old floors, and the first pass
+shrinks paragraphs toward them. A live resize on Cocoa already skips the
+measurement until the drag ends (`_deferContentFloors`). A split pane or a
+sidebar drag, which changes a document's width without resizing the window,
+takes the measured path every frame. The fix would be yoga knowing
+content-based minimum sizes itself.
+
+### Regression check
+
+Every Cocoa probe of the maps, the charts, the table, the documents and the
+editors — 48 cells — ran twice. The first pass used master's files and the
+second the four changes, with the appkit #75 build under both. Nothing moved
+the wrong way beyond the noise. What moved the right way: Markdown reflow
+344 → 229 ms, `<Html>` reflow 584 → 94.8 ms (1.6 → 8.7 fps), and `<Table>`'s
+jump frame 15.3 → 13.4 ms. First paint moved inside the noise but the same
+way the A/B had it: Markdown 1238 → 1175 ms, `<Html>` 557 → 511 ms. One cell
+read the wrong way, the editor's scroll, at 3.47 → 4.29 ms a frame in one
+run each. Four interleaved runs of that cell alone read 3.90 → 3.76, with
+the change ahead in all four pairs.
+
 ## Lessons
 
 1. **Look for caches that never hit.** Identity-keyed caches handed a new
@@ -848,22 +995,43 @@ never reported to the host.
 13. **A guess is safe when it is an ordinary cache entry.** The far jump's
     guesses are the same pairs convergence already reasons about, so the
     walk that corrects them is the one that already existed.
+14. **A copy benchmarked in a loop is not the copy a frame makes.** On
+    Apple silicon a 15 MB copy runs five times slower when the thread has
+    slept since the last one, whatever the QoS and however many threads
+    share it. Benchmark with the frame's own idle gaps, and cut bytes rather
+    than tune the copy.
+15. **Core asks an element the same question at two widths every frame.**
+    The height-floor probe compares a leaf's height at the width it was
+    measured at with the one it has now. An element whose measurement is
+    expensive has to answer a width it has seen from memory. `<Html>` laid
+    the document out three times a frame until it did.
+16. **Split the time inside the native call before designing its
+    replacement.** A few counters inside `createLayout` said two thirds of
+    it was shaping, the same at every width; the typesetter cache followed,
+    and the packed geometry came from the same table.
+17. **An oracle built from a fresh instance finds correctness bugs a
+    targeted test does not**, and its own measurement needs the same care:
+    a pixel rect that rounds differently on another platform's metrics
+    reads a neighbour's ink.
 
 ## Still open
 
-Ordered by practical impact, after round 8.
+Ordered by practical impact, after round 9.
 
-- **Reflow** (both document components): the text engines shape again at
-  every width. On XQuartz ntk #383 takes an eighth off Markdown's and a
-  quarter off `<Html>`'s; on macOS, shape once and break many — a
-  CTTypesetter kept per paragraph — needs an appkit native.
-- **`<Markdown>` first paint** (1.24 s Cocoa, 0.99 s X11 for 600 KB): what
-  is left is the height floors (~300 ms), React's render (~350 ms in
-  development, less in production) and the layout.
-- **`<Html>` edit and append** (128 ms Cocoa, 93 ms X11): the re-parse, the
-  cascade and the box tree run whole; the text engine no longer does.
-- **Cocoa scroll's double copy** (about 2 ms a frame at 2x, round 4) — now
-  also most of what is left of `<CodeEditor>`'s reveal-scroll frames.
-- **`<RichTextEditor>`**: large pastes (110–123 ms, mostly React's
-  development render), and a very long paragraph, which `<richtext>` lays
-  out whole on every keystroke.
+- **Markdown reflow's second layout pass** (38 ms of a 224 ms X11 frame at
+  600 KB): the floors emulating `min-height: auto` come from the previous
+  layout, so a width change lays 13,000 nodes out twice. A live resize on
+  Cocoa defers them; a split-pane drag does not. The fix is content-based
+  minimum sizes in yoga.
+- **X11 reflow's text**: ntk's `TextLayout` spends about 64% of its time on
+  the width-independent part — spans, bidi levels, UAX #14 breaks, tokens —
+  roughly 25–30 ms of a 224 ms Markdown frame. ntk could keep a
+  paragraph's tokens across widths, as appkit #75 keeps the typesetter; the
+  cost is validating the spans against in-place mutation.
+- **`<Markdown>` first paint** (1.17 s Cocoa with the kept typesetters,
+  1.0 s X11): the height floors, React's development render and the layout.
+- **`<Html>` edit and append**: unchanged — the re-parse, the cascade and
+  the box tree run whole.
+- **Cocoa scroll**: what is left is the band copy itself, about 1.4 ms a
+  frame at 2x, memory-bound; see "The Cocoa scroll's double copy".
+- **`<RichTextEditor>`**: large pastes, mostly React's development render.
