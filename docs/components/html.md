@@ -272,6 +272,18 @@ next — which is why hit testing goes through the document's text index
 rather than through the run. The pass before's layouts are all that is
 kept, so a document costs one pass of them and the ones an edit replaced.
 
+**A resize lays the document out once a frame.** Core asks an element for
+its height at the width it was last measured at, as well as at the one it
+has now, to find out whether a relayout changed what the element needs.
+The boxes hold one width, and the document answered the other by laying
+itself out there, then at the new width again for the pass after: three
+passes over all of its text a frame. The size a width came to is kept
+instead, a few widths deep, and answers until anything a layout reads
+changes: the source, a stylesheet, a resource, the hover, the viewport
+height. Only a size comes from it; paint and the selection read the boxes,
+and those are only ever laid out for real. A frame of a window resize at
+600 KB went from 573 to 196 ms on macOS and from 256 to 86 ms on XQuartz.
+
 ## Types
 
 `Document`, `Element`, `AnyNode`, `ChildNode` and `ParentNode` are
