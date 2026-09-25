@@ -184,6 +184,33 @@ test('a scroll brings in the blocks it lands on', async () => {
   assert.ok(blocks().length < 150, `drew ${blocks().length} of 1000`);
 });
 
+test('a long flick keeps the window to its budget', async () => {
+  // The window's budget holds through a flick down a long document: the
+  // core of the view and a prefetch band each side, not every block the
+  // flick passed. A real flick defers the blocks' measurement to the
+  // settle, and the window drops a block only once it knows the height it
+  // is laid out at, so blocks are measured on their way out (`measure` on
+  // the window's inputs, as <Table> and <Tree> do). The harness lays out
+  // and measures between two wheel events, which a 60 Hz stream on a real
+  // display does not, so this holds the budget rather than reproducing the
+  // deferral — measured on macOS, eight seconds into a wheel scroll the
+  // window held 108 blocks with the hook and 174, still growing, without.
+  await mount({ defaultValue: lines(3000) });
+  const box = pane();
+  let most = 0;
+  for (let i = 0; i < 240; i++) {
+    await act(() => {
+      fireEvent.wheel(box as unknown as DrawnNode, { deltaY: 5 });
+    });
+    most = Math.max(most, blocks().length);
+  }
+  assert.ok(
+    box.scrollY > 240 * 5 * 48 * 0.5,
+    `scrolled ${box.scrollY} device pixels`,
+  );
+  assert.ok(most < 140, `${most} blocks mounted at once, of 1000`);
+});
+
 test('Ctrl+End goes to the last block, draws it and brings it into view', async () => {
   const editor = await mount({ defaultValue: lines(1000), autoFocus: true });
   await act(async () => {

@@ -109,8 +109,9 @@ export interface TextRun {
 
 /** The props `<richtext>` takes. */
 export interface RichTextProps {
-  /** The styled runs. Give a stable array identity — the layout cache and
-   *  the streaming path both key off it. */
+  /** The styled runs. Give a stable array identity where you can — the
+   *  streaming path keys off it; an equal new array keeps its layout, for
+   *  one pass over the runs (`sameRuns`). */
   runs: TextRun[];
   /** False lays the text out at its natural width, unwrapped — code. */
   wrap?: boolean;
@@ -210,6 +211,32 @@ function rangeBands(
     }
   }
   return bands;
+}
+
+/**
+ * Whether two `runs` props say the same thing. A component that builds its
+ * runs in render hands over a new array whenever it renders, whether or not
+ * the text changed — the rich text editor does on every keystroke, for
+ * paragraphs the keystroke never reached — and the array's identity was
+ * all a layout cache cleared on. A run's fields are all primitives, so one
+ * shallow pass decides it, where the layout it spares is a paragraph shaped
+ * and broken again.
+ */
+function sameRuns(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) {
+    return false;
+  }
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i] as Record<string, unknown>;
+    const y = b[i] as Record<string, unknown>;
+    if (x === y) continue;
+    if (!x || !y) return false;
+    const keys = Object.keys(x);
+    if (keys.length !== Object.keys(y).length) return false;
+    for (const key of keys) if (x[key] !== y[key]) return false;
+  }
+  return true;
 }
 
 export class RichTextNode extends Node {
@@ -327,13 +354,31 @@ export class RichTextNode extends Node {
   ): void {
     super.applyProps(nextProps, prevProps);
     if (
-      nextProps.runs !== prevProps.runs ||
-      nextProps.wrap !== prevProps.wrap
+      nextProps.wrap !== prevProps.wrap ||
+      !sameRuns(nextProps.runs, prevProps.runs)
     ) {
       this._layouts.clear();
       this._text = null;
       this.invalidateMeasure('content');
     }
+  }
+
+  /** A new `runs` array that says what the last one said changes nothing
+   *  drawn — see `sameRuns`. */
+  override paintChanged(
+    nextProps: Record<string, unknown>,
+    prevProps: Record<string, unknown>,
+  ): boolean {
+    if (
+      nextProps.runs !== prevProps.runs &&
+      sameRuns(nextProps.runs, prevProps.runs)
+    ) {
+      return super.paintChanged(
+        { ...nextProps, runs: prevProps.runs },
+        prevProps,
+      );
+    }
+    return super.paintChanged(nextProps, prevProps);
   }
 
   override destroySubtree(): void {

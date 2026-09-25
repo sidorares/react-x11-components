@@ -31,9 +31,13 @@ interface RichTextProps {
 }
 ```
 
-Give `runs` a **stable array identity** — the layout cache and the streaming
-path both key off it. `wrap: false` lays the text out at its natural width,
-unwrapped, which is what a code line wants.
+Give `runs` a **stable array identity** where you can — the streaming path
+keys off it. A new array that says what the last one said is recognised by
+its content and keeps its layout and its pixels, for one pass over the runs:
+a component that builds its runs in render, as the rich text editor does,
+is not laying its paragraphs out again on every render. `wrap: false` lays
+the text out at its natural width, unwrapped, which is what a code line
+wants.
 
 ```ts
 interface TextRun {
