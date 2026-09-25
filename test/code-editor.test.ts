@@ -1335,6 +1335,18 @@ function countingLanguage(): { language: Language; runs: () => number } {
   return { language, runs: () => runs };
 }
 
+/** Until the tokenizer has walked to every line it answered from a guess
+ *  (a line far past its frontier — here, one scrolled to in a fresh file):
+ *  what a test counts after it is its own edit's tokenizing, not the walk's. */
+async function walked(node: CodeEditorNode): Promise<void> {
+  const tok = (node as unknown as { _tok: { guessedTo?: number } | null })._tok;
+  const start = Date.now();
+  while ((tok?.guessedTo ?? -1) >= 0) {
+    assert.ok(Date.now() - start < 10_000, 'the tokenizer caught up');
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}
+
 test('undo and redo apply the change they record, where it was made', async () => {
   // The history held a copy of the whole text per step, and undid by
   // resetting the editor to one: every line tokenized again from the first
@@ -1354,6 +1366,7 @@ test('undo and redo apply the change they record, where it was made', async () =
   await act(() => {});
   assert.strictEqual(node.lines[1500], 'lineabc 1500');
 
+  await walked(node);
   let before = runs();
   node.undo();
   await act(() => {});
@@ -1365,6 +1378,7 @@ test('undo and redo apply the change they record, where it was made', async () =
   assert.ok(runs() - before < 5, `undo tokenized ${runs() - before} lines`);
   assert.ok(!node.canUndo && node.canRedo);
 
+  await walked(node);
   before = runs();
   node.redo();
   await act(() => {});
@@ -1389,6 +1403,7 @@ test('a replacement is the lines it changes, and one that changes none is no ste
   // all shows the end of the file, which is tokenizing of its own.)
   node.selectAll();
   await act(() => {});
+  await walked(node);
   let before = runs();
   node.insertText(value);
   await act(() => {});
@@ -1400,6 +1415,7 @@ test('a replacement is the lines it changes, and one that changes none is no ste
   const edited = value.replace('line 2990\n', 'line 2990;\n');
   node.selectAll();
   await act(() => {});
+  await walked(node);
   before = runs();
   node.insertText(edited);
   await act(() => {});
@@ -1410,6 +1426,7 @@ test('a replacement is the lines it changes, and one that changes none is no ste
   assert.strictEqual(node.value, value, 'one undo takes it back');
 
   // a value set from outside that differs in one line is that line's edit
+  await walked(node);
   before = runs();
   node.value = edited;
   await act(() => {});
@@ -1503,4 +1520,85 @@ test('typing at the end of a long line shapes the piece it lands in, not the lin
     `${shaped} characters shaped for five keys on a line of ${line.length}`,
   );
   assert.strictEqual(node.value, `${line}xxxxx`);
+});
+
+test('a jump far into a fresh file paints a guess, then the tokens the walk found', async () => {
+  // The first jump to the end of a file tokenized every line above it
+  // first. Now the lines in view run from a guess — here the top level,
+  // wrong, since a block opened on line 0 never closes — and the tokenizer
+  // walks there in the background and tells the editor, which repaints.
+  let runs = 0;
+  const language = lineModeLanguage<{ open: boolean }>({
+    name: 'blocks',
+    startState: () => ({ open: false }),
+    runLine(text, state) {
+      runs++;
+      if (text === '<<') state.open = true;
+      return text
+        ? [
+            {
+              from: 0,
+              to: text.length,
+              type: state.open ? 'comment' : 'keyword',
+            },
+          ]
+        : [];
+    },
+  });
+  const value = Array.from({ length: 20_000 }, (_, i) =>
+    i === 0 ? '<<' : `line ${i}`,
+  ).join('\n');
+  const { ctx, windowNode } = await renderX11(
+    h(CodeEditor, {
+      defaultValue: value,
+      language,
+      lineNumbers: true,
+      style: { flexGrow: 1 },
+    }),
+    { width: 400, height: 300, screen: { width: 1000, height: 1000 } },
+  );
+  const node = editorNode();
+  await act();
+  // the walk held until the guess has been painted, so the frame shows it
+  // whatever the timing
+  const tok = (
+    node as unknown as {
+      _tok: { guessedTo: number; worker: unknown; work(): void };
+    }
+  )._tok;
+  const work = tok.work;
+  let held = true;
+  tok.work = function (this: typeof tok) {
+    if (!held) return work.call(this);
+    this.worker = null;
+  };
+  runs = 0;
+  node.moveCaret({ line: 19_999, ch: 0 }, false);
+  assert.ok(runs < 300, `the jump ran ${runs} lines`);
+  await act();
+  assert.ok(tok.guessedTo >= 0, 'the lines in view are a guess');
+  const guessed = await editorPixels(ctx, node);
+  held = false;
+  tok.work();
+  const start = Date.now();
+  while (tok.guessedTo >= 0) {
+    assert.ok(Date.now() - start < 10_000, 'the walk finished');
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  await act();
+  const walked = await editorPixels(ctx, node);
+  assert.ok(
+    !Buffer.from(guessed).equals(Buffer.from(walked)),
+    'the guess was painted, and then corrected',
+  );
+  await act(() => {
+    (windowNode as unknown as { invalidate(all: boolean): void }).invalidate(
+      true,
+    );
+  });
+  assert.ok(
+    Buffer.from(walked).equals(Buffer.from(await editorPixels(ctx, node))),
+    'the corrected frame is what a full repaint paints',
+  );
+  await cleanup();
 });

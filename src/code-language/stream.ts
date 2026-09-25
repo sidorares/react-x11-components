@@ -16,8 +16,10 @@ import type {
   LineEdit,
   Token,
   Tokenizer,
+  TokenizerHost,
 } from './types.js';
 import { spliceAll } from '../internal/splice.js';
+import { startTimeout, stopTimeout, type TimerId } from './timers.js';
 
 /**
  * One line of text with a cursor, the surface a mode's `token()` reads
@@ -145,6 +147,45 @@ export interface LineMode<S> {
  */
 export const TOKENIZE_LIMIT = 10_000;
 
+/**
+ * How far past the frontier a request walks it on the spot. Further than
+ * that — the end of a file opened a moment ago, a line a search jumped to —
+ * the line is tokenized from a guessed state, and the frontier is walked
+ * there in the background, `SLICE_LINES` a turn, with the host told where a
+ * guess was wrong. CodeMirror 5's answer to the same jump, for the same
+ * reason: tokenizing a 50,000-line file is a fifth of a second, spent on
+ * lines no one is looking at. Decided by the distance rather than by trying:
+ * the lines a guess would take from the cache are the ones the walk would
+ * have found converged, and trying first is the cost this exists to avoid.
+ */
+export const SYNC_LINES = 1_000;
+const SLICE_LINES = 500;
+
+/** How far above a guessed line to look for a state to start from: one a
+ *  guess left, or else the least indented line, taken to be at the top
+ *  level (CodeMirror's `findStartLine`). */
+const GUESS_LOOKBACK = 100;
+
+function cut(text: string): string {
+  return text.length > TOKENIZE_LIMIT ? text.slice(0, TOKENIZE_LIMIT) : text;
+}
+
+function indentOf(text: string): number {
+  let n = 0;
+  while (n < text.length && (text[n] === ' ' || text[n] === '\t')) n++;
+  return n;
+}
+
+function sameTokens(a: readonly Token[], b: readonly Token[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i];
+    const y = b[i];
+    if (x.from !== y.from || x.to !== y.to || x.type !== y.type) return false;
+  }
+  return true;
+}
+
 function defaultCopy<S>(state: S): S {
   if (state === null || typeof state !== 'object') return state;
   return { ...(state as object) } as S;
@@ -185,18 +226,36 @@ function defaultEquals(a: unknown, b: unknown): boolean {
  * lines. The `undefined` holes are also what makes convergence sound across
  * multiple pending edits: the fast-forward below can never skip over a line
  * whose text changed, because that line's cache is a hole.
+ *
+ * A guess (`guess`) is one more such pair past the frontier: tokens run
+ * from a state that was not reached from line 0. Convergence is what makes
+ * that safe as well — the frontier's walk takes the rest of a guessed run
+ * as it is where it arrives with the same state, and tokenizes it again
+ * where it does not.
  */
 class StreamTokenizer<S> implements Tokenizer {
   private lines: readonly string[] = [''];
   /** states[i] = state entering line i. Trusted for i <= frontier; a
-   * defined entry beyond that is a pre-edit value, used only as a
-   * convergence candidate. */
+   * defined entry beyond that is a pre-edit value or a guess, used only as
+   * a convergence candidate. Past the frontier every defined `tokens[i]` was
+   * run from the `states[i]` beside it. */
   private states: (S | undefined)[] = [];
   private tokens: (Token[] | undefined)[] = [];
   /** Lines `[0, frontier)` have trusted tokens. */
   private frontier = 0;
+  /** The furthest line answered from a guess that the frontier has not
+   *  reached; -1 when there is none. While there is one, every line past
+   *  the frontier is answered the same way. */
+  private guessedTo = -1;
+  private worker: TimerId = null;
+  /** The first line whose trusted tokens differed from the ones it had —
+   *  what the host is told after a turn of the walk. */
+  private changedFrom = -1;
 
-  constructor(private readonly mode: LineMode<S>) {}
+  constructor(
+    private readonly mode: LineMode<S>,
+    private readonly host: TokenizerHost | null = null,
+  ) {}
 
   setLines(lines: readonly string[]): void {
     this.lines = lines;
@@ -204,6 +263,8 @@ class StreamTokenizer<S> implements Tokenizer {
     this.tokens = new Array(lines.length);
     this.states[0] = this.mode.startState();
     this.frontier = 0;
+    this.guessedTo = -1;
+    this.stopWorker();
   }
 
   edit({ fromLine, removed, inserted }: LineEdit): void {
@@ -222,28 +283,45 @@ class StreamTokenizer<S> implements Tokenizer {
     if (inserted > 0) this.states[fromLine + inserted] = after;
     spliceAll(this.tokens, fromLine, removed, new Array(inserted));
     this.frontier = Math.min(this.frontier, fromLine);
+    if (this.guessedTo >= fromLine) {
+      this.guessedTo = Math.max(fromLine, this.guessedTo + inserted - removed);
+    }
   }
 
   lineTokens(line: number): readonly Token[] {
     if (line < 0 || line >= this.lines.length) return [];
-    this.ensure(line);
+    if (line >= this.frontier) {
+      if (this.guessedTo >= 0 || line - this.frontier > SYNC_LINES) {
+        return this.guess(line);
+      }
+      this.ensure(line);
+      // the caller has the tokens: nobody else was holding the old ones
+      this.changedFrom = -1;
+    }
     return this.tokens[line] ?? [];
   }
 
-  private ensure(line: number): void {
+  dispose(): void {
+    this.stopWorker();
+  }
+
+  /**
+   * Walk the frontier to `line`, tokenizing at most `budget` lines on the
+   * way (a converged run skipped is free). False when the budget ran out
+   * first.
+   */
+  private ensure(line: number, budget = Infinity): boolean {
     const copy = this.mode.copyState ?? defaultCopy;
     const equals = this.mode.stateEquals ?? defaultEquals;
+    let spent = 0;
     while (this.frontier <= line) {
+      if (spent++ >= budget) return false;
       const i = this.frontier;
       // `states[i]` is trusted here: it is either below the old frontier or
       // was written by the previous iteration. Copy before running — the
       // mode mutates in place, and the cached entry must stay pristine.
       const state = copy(this.states[i] as S);
-      const text = this.lines[i];
-      this.tokens[i] = this.mode.runLine(
-        text.length > TOKENIZE_LIMIT ? text.slice(0, TOKENIZE_LIMIT) : text,
-        state,
-      );
+      this.tokens[i] = this.run(i, state);
       const cached = this.states[i + 1];
       if (
         cached !== undefined &&
@@ -268,6 +346,115 @@ class StreamTokenizer<S> implements Tokenizer {
       this.states[i + 1] = state;
       this.frontier = i + 1;
     }
+    return true;
+  }
+
+  /**
+   * Tokens for a line past the frontier, where the frontier is too far to
+   * walk to now: walked from the furthest state up the `GUESS_LOOKBACK`
+   * lines above it — the frontier's, when it is that close, or one a guess
+   * or an edit left — or, when there is none, from the language's start
+   * state at the least indented of those lines. The walk runs what has no
+   * tokens and passes over what has, so an edit's line is run again and the
+   * lines under it follow, the way the frontier walks after an edit; a line
+   * whose entering state it changes loses its tokens, since they ran from
+   * the state it replaced. What it writes are pairs like any other past the
+   * frontier, which the frontier's walk, started here, takes or tokenizes
+   * again when it arrives.
+   */
+  private guess(line: number): readonly Token[] {
+    this.guessedTo = Math.max(this.guessedTo, line);
+    this.schedule();
+    const floor = Math.max(this.frontier, line - GUESS_LOOKBACK);
+    let from = floor;
+    while (from < line && this.states[from] === undefined) from++;
+    if (this.states[from] === undefined) {
+      let least = Infinity;
+      for (let i = line; i >= floor; i--) {
+        const text = this.lines[i];
+        const indent = indentOf(text);
+        if (indent === text.length) continue; // blank says nothing
+        if (indent < least) {
+          least = indent;
+          from = i;
+        }
+      }
+      this.states[from] = this.mode.startState();
+      this.tokens[from] = undefined;
+    }
+    const copy = this.mode.copyState ?? defaultCopy;
+    const equals = this.mode.stateEquals ?? defaultEquals;
+    // whether the state entering line `i` was just replaced, so its tokens
+    // ran from another and it is run again, beside what it had
+    let moved = false;
+    for (let i = from; i <= line; i++) {
+      // a pair past the frontier ran from the state beside it; the
+      // frontier's may be from before the walk replaced its state
+      if (
+        !moved &&
+        i > this.frontier &&
+        this.tokens[i] !== undefined &&
+        this.states[i + 1] !== undefined
+      ) {
+        continue;
+      }
+      const state = copy(this.states[i] as S);
+      this.tokens[i] = this.run(i, state);
+      const next = this.states[i + 1];
+      moved = next === undefined || !equals(state, next);
+      if (moved) this.states[i + 1] = state;
+    }
+    // past the line asked about, what ran from a replaced state goes: it is
+    // run again when asked for, and whoever was handed it is told
+    const after = line + 1;
+    if (moved && this.tokens[after] !== undefined) {
+      this.tokens[after] = undefined;
+      this.noteChange(after);
+    }
+    return this.tokens[line] ?? [];
+  }
+
+  /**
+   * Run line `i` from `state`, which it leaves as the line leaves it. The
+   * tokens it had, when they come out the same, are kept rather than
+   * replaced — an editor holds a line's layout by them — and where they do
+   * not, the line is noted for the host.
+   */
+  private run(i: number, state: S): Token[] {
+    const had = this.tokens[i];
+    const tokens = this.mode.runLine(cut(this.lines[i]), state);
+    if (had === undefined) return tokens;
+    if (sameTokens(had, tokens)) return had;
+    this.noteChange(i);
+    return tokens;
+  }
+
+  private noteChange(i: number): void {
+    if (this.changedFrom < 0 || i < this.changedFrom) this.changedFrom = i;
+  }
+
+  private schedule(): void {
+    if (this.worker != null) return;
+    this.worker = startTimeout(() => this.work(), 0);
+  }
+
+  /** One turn of the walk to the furthest guess, and the host told of the
+   *  first line it found a guess wrong on. */
+  private work(): void {
+    this.worker = null;
+    if (this.guessedTo < 0) return;
+    const to = Math.min(this.guessedTo, this.lines.length - 1);
+    const done = this.ensure(to, SLICE_LINES);
+    const changed = this.changedFrom;
+    this.changedFrom = -1;
+    if (done) this.guessedTo = -1;
+    else this.schedule();
+    if (changed >= 0) this.host?.invalidate(changed);
+  }
+
+  private stopWorker(): void {
+    stopTimeout(this.worker);
+    this.worker = null;
   }
 }
 
@@ -306,7 +493,7 @@ export function lineModeLanguage<S>(mode: LineMode<S>): Language {
   return {
     name: mode.name,
     data: mode.languageData,
-    createTokenizer: () => new StreamTokenizer(mode),
+    createTokenizer: (host) => new StreamTokenizer(mode, host),
   };
 }
 

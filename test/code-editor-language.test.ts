@@ -24,7 +24,7 @@ import type {
   Token,
 } from '../src/code-editor/index.js';
 import { tabMap } from '../src/code-editor/doc.js';
-import { TOKENIZE_LIMIT } from '../src/code-language/stream.js';
+import { SYNC_LINES, TOKENIZE_LIMIT } from '../src/code-language/stream.js';
 import type { TextMateStateLike } from '../src/code-editor/index.js';
 
 const host = { invalidate: () => {} };
@@ -506,4 +506,285 @@ test('stream engine: a line past the tokenizing limit is tokenized only so far',
     'nothing past the limit',
   );
   assert.ok(tokens[1].length > 0, 'the next line still is');
+});
+
+// A language whose only state is whether a `<<` … `>>` block is open, and
+// which counts the lines it runs: every line is one token, `comment` inside
+// a block and `keyword` outside it.
+function blocks(): { language: Language; runs: () => number } {
+  let runs = 0;
+  const language = lineModeLanguage<{ open: boolean }>({
+    name: 'blocks',
+    startState: () => ({ open: false }),
+    runLine(text, state) {
+      runs++;
+      if (text === '<<') state.open = true;
+      const type = state.open ? 'comment' : 'keyword';
+      if (text === '>>') state.open = false;
+      return text ? [{ from: 0, to: text.length, type }] : [];
+    },
+  });
+  return { language, runs: () => runs };
+}
+
+async function until(done: () => boolean, what: string): Promise<void> {
+  const start = Date.now();
+  while (!done()) {
+    if (Date.now() - start > 5000) assert.fail(`timed out waiting for ${what}`);
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}
+
+test('stream engine: a line far past the frontier is a guess the walk corrects', async () => {
+  // A jump to the end of a file opened a moment ago tokenized every line
+  // above it first — a fifth of a second for 50,000 lines. Past SYNC_LINES
+  // the line runs from a guess instead (here: the top level, which is
+  // wrong, since a block opened on line 0 is still open), and the frontier
+  // is walked there in the background and tells the host where it was.
+  const { language, runs } = blocks();
+  const told: number[] = [];
+  const tok = language.createTokenizer({
+    invalidate: (from) => told.push(from),
+  });
+  const lines: string[] = Array.from({ length: 10_000 }, (_, i) =>
+    i === 0 ? '<<' : i === 8000 ? '>>' : 'x',
+  );
+  tok.setLines(lines);
+  const far = 6000;
+  assert.ok(far > SYNC_LINES);
+  assert.equal(tok.lineTokens(far)[0].type, 'keyword', 'answered from a guess');
+  assert.ok(runs() <= 102, `the guess ran ${runs()} lines`);
+  await until(
+    () => (tok as unknown as { guessedTo: number }).guessedTo < 0,
+    'the walk',
+  );
+  assert.equal(tok.lineTokens(far)[0].type, 'comment');
+  assert.equal(told.length, 1, 'told once, where the guess went wrong');
+  assert.ok(told[0] <= far && told[0] >= far - 100, `told at ${told[0]}`);
+  // within reach of the frontier now: exact, and no walk
+  assert.equal(tok.lineTokens(far + 500)[0].type, 'comment');
+  tok.dispose?.();
+});
+
+test('stream engine: a guess that was right is kept, and nobody is told', async () => {
+  const { language } = blocks();
+  const told: number[] = [];
+  const tok = language.createTokenizer({
+    invalidate: (from) => told.push(from),
+  });
+  const lines: string[] = Array.from({ length: 10_000 }, (_, i) =>
+    i === 10 ? '<<' : i === 20 ? '>>' : 'x',
+  );
+  tok.setLines(lines);
+  const guessed = tok.lineTokens(6000);
+  assert.equal(guessed[0].type, 'keyword');
+  await until(
+    () => (tok as unknown as { guessedTo: number }).guessedTo < 0,
+    'the walk',
+  );
+  assert.strictEqual(tok.lineTokens(6000), guessed, 'the same array');
+  assert.deepEqual(told, []);
+  tok.dispose?.();
+});
+
+test('stream engine: within reach, a line is tokenized exactly, with no walk', () => {
+  const { language, runs } = blocks();
+  const tok = language.createTokenizer(host);
+  const lines: string[] = Array.from({ length: 10_000 }, (_, i) =>
+    i === 0 ? '<<' : 'x',
+  );
+  tok.setLines(lines);
+  assert.equal(tok.lineTokens(SYNC_LINES)[0].type, 'comment');
+  assert.equal(runs(), SYNC_LINES + 1);
+  assert.equal((tok as unknown as { worker: unknown }).worker, null);
+});
+
+test('stream engine: dispose stops the walk', async () => {
+  const { language, runs } = blocks();
+  const told: number[] = [];
+  const tok = language.createTokenizer({
+    invalidate: (from) => told.push(from),
+  });
+  tok.setLines(
+    Array.from({ length: 10_000 }, (_, i) => (i === 0 ? '<<' : 'x')),
+  );
+  tok.lineTokens(9000);
+  const after = runs();
+  tok.dispose?.();
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(runs(), after, 'nothing ran after dispose');
+  assert.deepEqual(told, []);
+});
+
+test('stream engine: an edit above a guess is walked through to it', async () => {
+  // The block closes at the line edited, so the top level the guess
+  // assumed is right after all: the walk arrives with the guess's state and
+  // takes the guessed run as it is.
+  const { language } = blocks();
+  const told: number[] = [];
+  const tok = language.createTokenizer({
+    invalidate: (from) => told.push(from),
+  });
+  const lines: string[] = Array.from({ length: 10_000 }, (_, i) =>
+    i === 0 ? '<<' : 'x',
+  );
+  tok.setLines(lines);
+  const guessed = tok.lineTokens(6000);
+  assert.equal(guessed[0].type, 'keyword');
+  lines[3000] = '>>';
+  tok.edit({ fromLine: 3000, removed: 1, inserted: 1 });
+  await until(
+    () => (tok as unknown as { guessedTo: number }).guessedTo < 0,
+    'the walk',
+  );
+  assert.strictEqual(tok.lineTokens(6000), guessed);
+  assert.equal(tok.lineTokens(2999)[0].type, 'comment');
+  assert.equal(tok.lineTokens(3001)[0].type, 'keyword');
+  assert.deepEqual(told, []);
+  tok.dispose?.();
+});
+
+test('stream engine: an edit inside a guessed run recolours the guessed lines below it', () => {
+  // The walk is far away, so the lines under the edit have nothing but the
+  // guess to go on — which is walked again from the edit, as far as a line
+  // asked for, the way the frontier walks after an edit.
+  const { language } = blocks();
+  const tok = language.createTokenizer(host);
+  const lines: string[] = Array.from({ length: 10_000 }, () => 'x');
+  tok.setLines(lines);
+  assert.equal(tok.lineTokens(6000)[0].type, 'keyword');
+  lines[5990] = '<<';
+  tok.edit({ fromLine: 5990, removed: 1, inserted: 1 });
+  assert.equal(tok.lineTokens(5990)[0].type, 'comment');
+  assert.equal(tok.lineTokens(6000)[0].type, 'comment', 'the line below');
+  assert.equal(tok.lineTokens(5995)[0].type, 'comment', 'and one between');
+  tok.dispose?.();
+});
+
+test('stream engine: a guess starts at the least indented line above it', () => {
+  // …which is at the top level far more often than the line itself is: a
+  // guess started on a comment's continuation line would read it as code.
+  const block = [
+    '/*',
+    ' * a note',
+    ' * another',
+    ' */',
+    'function f() {',
+    '  return 1;',
+    '}',
+    '',
+  ];
+  const lines: string[] = Array.from(
+    { length: 4000 },
+    (_, i) => block[i % block.length],
+  );
+  const tok = javascript().createTokenizer(host);
+  tok.setLines(lines);
+  const far = 3001;
+  assert.ok(far > SYNC_LINES);
+  assert.equal(lines[far], ' * a note');
+  const tokens = tok.lineTokens(far);
+  assert.ok(
+    tokens.length > 0 && tokens.every((t) => t.type === 'comment'),
+    JSON.stringify(tokens),
+  );
+  tok.dispose?.();
+});
+
+// The walk by hand: one turn at a time, nothing left scheduled between them.
+type Walked = { work(): void; stopWorker(): void; frontier: number };
+
+test('stream engine: a guess at the frontier is run again from the state the walk left there', () => {
+  // A turn of the walk can end on a guessed line whose entering state it
+  // has just replaced; the guess the line holds ran from the state before,
+  // and a request for it then must not take it as it is.
+  const { language } = blocks();
+  const tok = language.createTokenizer(host);
+  tok.setLines(
+    Array.from({ length: 10_000 }, (_, i) => (i === 0 ? '<<' : 'x')),
+  );
+  assert.equal(tok.lineTokens(6000)[0].type, 'keyword');
+  const walked = tok as unknown as Walked;
+  walked.stopWorker();
+  while (walked.frontier < 6000) {
+    walked.work();
+    walked.stopWorker();
+  }
+  assert.equal(walked.frontier, 6000, 'a turn ended on the guessed line');
+  assert.equal(tok.lineTokens(6000)[0].type, 'comment');
+  tok.dispose?.();
+});
+
+test('stream engine: lines inserted above a guess move it, and the walk goes as far', async () => {
+  const { language } = blocks();
+  const told: number[] = [];
+  const tok = language.createTokenizer({
+    invalidate: (from) => told.push(from),
+  });
+  const lines: string[] = Array.from({ length: 10_000 }, (_, i) =>
+    i === 0 ? '<<' : 'x',
+  );
+  tok.setLines(lines);
+  assert.equal(tok.lineTokens(6000)[0].type, 'keyword');
+  lines.splice(100, 0, ...Array.from({ length: 10 }, () => 'x'));
+  tok.edit({ fromLine: 100, removed: 0, inserted: 10 });
+  await until(
+    () => (tok as unknown as { guessedTo: number }).guessedTo < 0,
+    'the walk',
+  );
+  assert.deepEqual(told, [6010], 'the guess, where it went');
+  assert.equal(tok.lineTokens(6010)[0].type, 'comment');
+  tok.dispose?.();
+});
+
+test('stream engine: a guess corrected on the way to another is told as well', () => {
+  // Once the frontier is within a guess's reach, the guess walks from it —
+  // and may find a line it answered before answered wrong. Whoever it
+  // handed that line to is told, at the walk's next turn.
+  const { language } = blocks();
+  const told: number[] = [];
+  const tok = language.createTokenizer({
+    invalidate: (from) => told.push(from),
+  });
+  tok.setLines(
+    Array.from({ length: 10_000 }, (_, i) => (i === 0 ? '<<' : 'x')),
+  );
+  assert.equal(tok.lineTokens(5600)[0].type, 'keyword');
+  const walked = tok as unknown as Walked;
+  walked.stopWorker();
+  while (walked.frontier < 5500) {
+    walked.work();
+    walked.stopWorker();
+  }
+  assert.equal(tok.lineTokens(5600)[0].type, 'comment');
+  walked.stopWorker();
+  walked.work();
+  assert.deepEqual(told, [5600]);
+  tok.dispose?.();
+});
+
+test('stream engine: an edit in a guessed run re-runs the line under it, and tells', () => {
+  // The walk from the edit stops at the line asked for; the line under it
+  // ran from the state that line used to leave, so it goes, and whoever
+  // was handed it as code is told.
+  const { language } = blocks();
+  const told: number[] = [];
+  const tok = language.createTokenizer({
+    invalidate: (from) => told.push(from),
+  });
+  const lines: string[] = Array.from({ length: 10_000 }, () => 'x');
+  tok.setLines(lines);
+  for (let i = 6000; i <= 6010; i++) {
+    assert.equal(tok.lineTokens(i)[0].type, 'keyword');
+  }
+  const walked = tok as unknown as Walked;
+  walked.stopWorker();
+  lines[6005] = '<<';
+  tok.edit({ fromLine: 6005, removed: 1, inserted: 1 });
+  assert.equal(tok.lineTokens(6005)[0].type, 'comment');
+  assert.equal(tok.lineTokens(6006)[0].type, 'comment', 'the line under it');
+  walked.stopWorker();
+  walked.work();
+  assert.deepEqual(told, [6006]);
+  tok.dispose?.();
 });
