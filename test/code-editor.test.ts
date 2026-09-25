@@ -32,10 +32,12 @@ import type { DrawnNode } from 'react-x11';
 import {
   CODE_EDITOR_ELEMENT,
   CodeEditor,
+  javascript,
   keywordCompletionSource,
   lineModeLanguage,
   sql,
 } from '../src/index.js';
+import { stopInterval } from '../src/code-language/timers.js';
 import type {
   CodeEditorEvent,
   CodeEditorNode,
@@ -928,6 +930,195 @@ test("a caret blink repaints the caret's row, not the editor", async () => {
     Buffer.from(blinked).equals(Buffer.from(await editorPixels(ctx, node))),
     'the blinked frame is the frame a full repaint draws',
   );
+});
+
+test('an edit repaints the rows it changed, and paints what a full repaint would', async () => {
+  // A keystroke used to claim the whole editor: forty lines, the gutter and
+  // the thumbs for one character. It claims its rows now — the edited ones,
+  // the caret's before and after, the selection's, the bracket pair's, and
+  // the lines below whose tokens it moved — so every step is held to the
+  // same editor repainted whole, byte for byte, at 1x and 2x, and the plain
+  // ones to how much of the editor they painted. A brace pair spans three
+  // lines, and one line is wider than the view, so there are two thumbs to
+  // keep true as well.
+  const special: Record<number, string> = {
+    14: 'function g() {',
+    15: '  return 1;',
+    16: '}',
+    20: `const wide = '${'w'.repeat(90)}';`,
+    59: `const tail = '${'t'.repeat(100)}';`,
+  };
+  const value = Array.from(
+    { length: 60 },
+    (_, i) => special[i] ?? `const v${i} = f(${i}, [${i} + 1]); // note ${i}`,
+  ).join('\n');
+  for (const scale of [1, 2]) {
+    const { ctx, windowNode } = await renderX11(
+      h(CodeEditor, {
+        defaultValue: value,
+        language: javascript(),
+        lineNumbers: true,
+        activeLine: true,
+        style: { flexGrow: 1 },
+      }),
+      { scale, width: 400, height: 480, screen: { width: 1000, height: 1200 } },
+    );
+    const node = editorNode();
+    const { abs } = node as unknown as DrawnNode;
+    const area = abs.width * abs.height;
+    node.focus();
+    // the blink runs on its own timer, and a comparison it lands between
+    // would see two carets
+    const inner = node as unknown as { _blinkTimer: unknown };
+    stopInterval(inner._blinkTimer as never);
+    inner._blinkTimer = null;
+    node.moveCaret({ line: 4, ch: 6 }, false);
+    await act();
+    const at = (line: number, ch: number): Position => ({ line, ch });
+    // the wide line moves as lines are split and joined above it
+    const wide = (): number =>
+      node.value.split('\n').findIndex((l) => l.includes("wide = '"));
+    // the last row wholly in view
+    const view = node as unknown as {
+      _scrollY: number;
+      _lineH: number;
+      _contentRect(): { height: number };
+    };
+    const lastRow = (): number =>
+      Math.floor((view._scrollY + view._contentRect().height) / view._lineH) -
+      1;
+    const steps: Array<[string, () => void, number]> = [
+      ['a character typed', () => node.insertText('x'), 0.1],
+      ['and another', () => node.insertText('y'), 0.1],
+      ['the caret down a line', () => node.moveCaret(at(5, 3), false), 0.15],
+      // after `{`: its `}` two lines down is highlighted as well
+      [
+        'the caret beside a brace',
+        () => node.moveCaret(at(14, 14), false),
+        0.15,
+      ],
+      // and let go of, from a line that is neither the caret's nor its
+      ['the caret off it', () => node.moveCaret(at(15, 2), false), 0.15],
+      ['a character typed there', () => node.insertText('z'), 0.15],
+      [
+        'a selection over four lines',
+        () => node.select(at(7, 2), at(10, 4)),
+        0.3,
+      ],
+      ['the selection let go', () => node.moveCaret(at(10, 4), false), 0.3],
+      // an opened comment re-colours every line after it
+      ['a comment opened', () => node.insertText('/*'), 1],
+      ['and closed', () => node.insertText('*/'), 1],
+      ['a line split', () => node.insertText('\n'), 1],
+      [
+        'and joined again',
+        () => node.replaceRange(at(10, 8), at(11, 0), ''),
+        1,
+      ],
+      ['undone', () => node.undo(), 1],
+      // the widest line grown: the horizontal thumb shrinks, and its strip
+      // is the only thing past the row that has to be repainted
+      [
+        'the caret to the wide line',
+        () => node.moveCaret(at(wide(), 0), false),
+        0.15,
+      ],
+      ['the wide line grown', () => node.insertText('w'), 0.15],
+      // two lines for two, the wider one not the caret's: the thumb is
+      // sized by a line the paint has not laid out yet
+      [
+        'two lines replaced',
+        () =>
+          node.replaceRange(
+            at(wide() + 2, 0),
+            at(wide() + 3, 999),
+            `${'q'.repeat(130)}\nshort`,
+          ),
+        0.15,
+      ],
+      ['a scroll', () => node.scrollBy(0, 200), 1],
+      // a line added below the right thumb moves it, up where no row is
+      // repainted
+      [
+        'the caret low in the view',
+        () => node.moveCaret(at(33, 3), false),
+        0.15,
+      ],
+      ['a line split there', () => node.insertText('\n'), 0.5],
+      ['and undone', () => node.undo(), 0.5],
+      // Revealing the caret a line or a character away is a blit of the
+      // view, with the rows that changed repainted where they land: down a
+      // line past the bottom, typing past the right edge (the text moves,
+      // the gutter does not), a line added at the end of the text.
+      [
+        'the caret to the last row',
+        () => node.moveCaret(at(lastRow(), 2), false),
+        0.15,
+      ],
+      [
+        'and down a line',
+        () => node.moveCaret(at(lastRow() + 1, 2), false),
+        0.3,
+      ],
+      ['a line split at the bottom', () => node.insertText('\n'), 0.3],
+      [
+        'the caret to the end of the wide line',
+        () => node.moveCaret(at(wide(), 999), false),
+        1,
+      ],
+      ['typed at the right edge', () => node.insertText('e'), 0.2],
+      ['and again', () => node.insertText('e'), 0.2],
+      // to a longer line two below: a little further across, and the
+      // gutter's active number moves with the caret
+      [
+        'the caret to a longer line',
+        () => node.moveCaret(at(wide() + 2, 115), false),
+        0.3,
+      ],
+      ['a sideways scroll', () => node.scrollBy(-40, 0), 0.25],
+      // the last row in view, where the horizontal thumb's strip is below
+      // the row rather than beside it
+      [
+        'the caret to the end of the last line',
+        () => node.moveCaret(at(1e6, 1e6), false),
+        1,
+      ],
+      ['typed at its right edge', () => node.insertText('e'), 0.2],
+      ['and once more', () => node.insertText('e'), 0.2],
+      [
+        'the caret to the end of the text',
+        () => node.moveCaret(at(1e6, 0), false),
+        1,
+      ],
+      ['a line added at the end', () => node.insertText('\n'), 0.3],
+      ['and another', () => node.insertText('\n'), 0.3],
+    ];
+    for (const [what, step, most] of steps) {
+      const label = `${what} at ${scale}x`;
+      const record = recordPasses(node);
+      await act(() => step());
+      record.stop();
+      const painted = record.passes.reduce(
+        (sum, d) => sum + (d ? d.width * d.height : area),
+        0,
+      );
+      assert.ok(
+        painted <= area * most,
+        `${label} painted ${Math.round((100 * painted) / area)}% of the editor`,
+      );
+      const drawn = await editorPixels(ctx, node);
+      await act(() => {
+        (
+          windowNode as unknown as { invalidate(all: boolean): void }
+        ).invalidate(true);
+      });
+      assert.ok(
+        Buffer.from(drawn).equals(Buffer.from(await editorPixels(ctx, node))),
+        `after ${label} the frame and a full repaint differ`,
+      );
+    }
+    await cleanup();
+  }
 });
 
 test('a wheel notch scrolls the text as far as it scrolls a pane', async () => {

@@ -394,8 +394,8 @@ imports — `react-x11` itself plus `/host`, `/node`, `/style`, `/keysyms`,
 `/ntk`, `/yoga`, `/jsx-runtime`, and `/test` and `/debug` from the suite.
 Both specs are ordinary registry ranges:
 
-- `peerDependencies.react-x11` is `^2.15.0` — what a consumer must supply.
-- `devDependencies.react-x11` is `^2.15.0` — what the suite runs against.
+- `peerDependencies.react-x11` is `^2.22.0` — what a consumer must supply.
+- `devDependencies.react-x11` is `^2.22.0` — what the suite runs against.
 
 Keep them the same range. They are one decision written twice, and a
 devDependency that drifts above the peer range means the suite passes
@@ -443,6 +443,11 @@ it up. **The floor is a running one and moves often** — every move since
   by hand). Each failed by drawing nothing rather than by throwing, so the
   terminal came up empty under `REACT_X11_BACKEND=wayland` while the rest
   of the UI was fine (#17).
+- `^2.22.0` — `scrollContents`'s `pinned` rects (react-x11#682): a scroll
+  that reveals `<CodeEditor>`'s caret a line or a character away is a blit
+  of the view, with the rows that changed pinned and repainted where they
+  land. Before it, a claim inside a blitted region refused the blit, so the
+  scroll repainted the editor whole.
 
 Do not reach back for a `github:` spec to get at unreleased core — cut a core
 release instead.

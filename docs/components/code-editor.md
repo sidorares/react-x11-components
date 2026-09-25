@@ -109,6 +109,24 @@ goes for a `value` set from outside, controlled or through the handle. The
 text is joined into one string only for a reader: an `onChange` or
 `onSelectionChange` handler, or a controlled `value`.
 
+**A keystroke repaints its rows, not the editor.** An edit or a caret move
+claims the rows it changed: the edited lines, the caret's line and its line
+number before and after, the selection's and the bracket pair's before and
+after, and the lines below an edit whose colours it changed. An opened
+comment recolours what follows it, and a line added or taken away moves
+everything below. A scrollbar thumb's strip is repainted only when what
+sizes it changed, and only where no claimed row already covers it: core
+merges overlapping claims into the box around them, and a strip the
+editor's height beside a one-line claim adds up to the whole editor again.
+Revealing the caret a line or a character away is a blit of the view — a
+line down past the bottom, a character past the right edge, where the text
+moves and the gutter does not — with the claimed rows pinned, so they are
+repainted where they land after the copy. That is why scroll offsets are
+whole device pixels. In a 50,000-line file a keystroke's frame went from
+5.1 to 1.6 ms on macOS and from 3.5 to 1.7 ms on XQuartz; stepping the caret
+down past the bottom of the view went from 5.4 to 3.9 ms and from 3.9 to
+2.6 ms.
+
 ## Long lines
 
 A minified file or a log line of a hundred thousand characters is laid out
