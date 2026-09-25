@@ -323,6 +323,21 @@ export interface EditorMouseEvent {
   preventDefault?(): void;
 }
 
+/** What `_repaintSince` compares a change against: the rows, offsets,
+ *  gutter and thumbs the view had before it. */
+interface ViewBefore {
+  caretLine: number;
+  selection: [number, number] | null;
+  brackets: [number, number] | null;
+  scrollX: number;
+  scrollY: number;
+  gutter: number;
+  empty: boolean;
+  /** What the thumbs are sized by: `_maxScrollX()` and `_maxScrollY()`. */
+  maxX: number;
+  maxY: number;
+}
+
 interface LineCacheEntry {
   /** The line it was built from — the same string until the line is
    *  edited, so a lookup that finds it needs nothing else recomputed. */
@@ -527,6 +542,13 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
   private _history: HistoryStep[] = [];
   private _historyIndex = 0;
   private _undoRun: string | null = null;
+  /** The lines the last change replaced, in the text it left: what
+   *  `_repaintSince` claims of an edit. */
+  private _lastEdit: {
+    fromLine: number;
+    removed: number;
+    inserted: number;
+  } | null = null;
   private _pendingValue: string | null = null;
   private _keyNative: unknown = null;
   private _tok: Tokenizer | null = null;
@@ -1204,6 +1226,193 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
     this.root?.invalidate(false, this.abs, 'text');
   }
 
+  /** What an edit or a caret move can change on screen, read before it. */
+  private _viewBefore(): ViewBefore {
+    const selection = this._hasSelection() ? this._selectionRange() : null;
+    const brackets =
+      this._focused && this.props.matchBrackets !== false
+        ? this._findBracketMatch()
+        : null;
+    return {
+      caretLine: this._caret.line,
+      selection: selection && [selection[0].line, selection[1].line],
+      brackets: brackets && [brackets[0].line, brackets[1].line],
+      scrollX: this._scrollX,
+      scrollY: this._scrollY,
+      gutter: this._gutterWidth(),
+      empty: this._lines.length === 1 && this._lines[0].length === 0,
+      maxX: this._maxScrollX(),
+      maxY: this._maxScrollY(),
+    };
+  }
+
+  /**
+   * Claim what a change since `before` moved: the rows it touched rather
+   * than the editor, so a keystroke paints its line, not the forty in view.
+   *
+   * A row is the caret's, the active line's and its gutter number's, before
+   * and after; every row of the selection and the bracket pair, before and
+   * after; the rows an edit replaced, and every row below them when it
+   * added or took lines away; and a row below the edit whose tokens it
+   * moved — an opened comment or string recolours what follows (the test
+   * `_lineEntry` makes: the line's tokens are no longer the ones it was laid
+   * out with). A thumb's strip goes with a change to what sizes it — the
+   * line count, the widest line — and of the right one, only what no row
+   * already repaints: a strip that overlapped a row would reach core as the
+   * box around both, which is the editor again. Whatever moves the whole
+   * view — a scroll to the caret, a gutter that grew a digit, the
+   * placeholder — is the editor.
+   */
+  private _repaintSince(
+    before: ViewBefore,
+    edit: { fromLine: number; removed: number; inserted: number } | null,
+  ): void {
+    this._caretOn = true;
+    const root = this.root;
+    if (!root) return;
+    const content = this._contentRect();
+    const lineH = this._lineH;
+    const empty = this._lines.length === 1 && this._lines[0].length === 0;
+    if (
+      content.width <= 0 ||
+      content.height <= 0 ||
+      !(lineH > 0) ||
+      before.scrollX !== this._scrollX ||
+      before.scrollY !== this._scrollY ||
+      before.gutter !== this._gutterWidth() ||
+      (before.empty !== empty && this.props.placeholder != null)
+    ) {
+      this._repaint();
+      return;
+    }
+    const first = Math.max(0, Math.floor(this._scrollY / lineH));
+    const last = Math.min(
+      this._lines.length - 1,
+      Math.ceil((this._scrollY + content.height) / lineH),
+    );
+    // rows as inclusive ranges, merged below
+    const rows: Array<[number, number]> = [];
+    const add = (from: number, to: number): void => {
+      const a = Math.max(first, Math.min(from, to));
+      const b = Math.min(last, Math.max(from, to));
+      if (a <= b) rows.push([a, b]);
+    };
+    add(before.caretLine, before.caretLine);
+    add(this._caret.line, this._caret.line);
+    if (before.selection) add(before.selection[0], before.selection[1]);
+    if (this._hasSelection()) {
+      const [a, b] = this._selectionRange();
+      add(a.line, b.line);
+    }
+    if (before.brackets) {
+      add(before.brackets[0], before.brackets[0]);
+      add(before.brackets[1], before.brackets[1]);
+    }
+    if (this._focused && this.props.matchBrackets !== false) {
+      const now = this._findBracketMatch();
+      if (now) {
+        add(now[0].line, now[0].line);
+        add(now[1].line, now[1].line);
+      }
+    }
+    if (edit) {
+      // laid out now rather than in the paint, so the widest line — what
+      // the horizontal thumb is sized by — is known before it is claimed
+      const to = Math.min(last, edit.fromLine + edit.inserted - 1);
+      for (let i = Math.max(first, edit.fromLine); i <= to; i++) {
+        this._lineEntry(i);
+      }
+      if (edit.inserted !== edit.removed) {
+        add(edit.fromLine, last);
+      } else {
+        add(edit.fromLine, edit.fromLine + edit.inserted - 1);
+        // the rows after it that its tokens re-coloured
+        const tok = this._tokenizer();
+        for (
+          let i = Math.max(first, edit.fromLine + edit.inserted);
+          tok && i <= last;
+          i++
+        ) {
+          const cached = this._lineCache.get(i);
+          if (
+            !cached ||
+            cached.raw !== this._lines[i] ||
+            cached.tokens !== (tok.lineTokens(i) ?? NO_TOKENS)
+          ) {
+            add(i, i);
+          }
+        }
+      }
+    }
+    rows.sort((a, b) => a[0] - b[0]);
+    // the merged rows, as device-pixel bands: [top, bottom)
+    const bands: Array<[number, number]> = [];
+    let open: [number, number] | null = null;
+    const band = (from: number, to: number): void => {
+      const top = Math.max(
+        content.y,
+        Math.floor(content.y + from * lineH - this._scrollY),
+      );
+      const bottom = Math.min(
+        content.y + content.height,
+        Math.ceil(content.y + (to + 1) * lineH - this._scrollY),
+      );
+      if (bottom > top) bands.push([top, bottom]);
+    };
+    for (const [a, b] of rows) {
+      if (open && a <= open[1] + 1) open[1] = Math.max(open[1], b);
+      else {
+        if (open) band(open[0], open[1]);
+        open = [a, b];
+      }
+    }
+    if (open) band(open[0], open[1]);
+    for (const [top, bottom] of bands) {
+      this.invalidate(
+        false,
+        { x: content.x, y: top, width: content.width, height: bottom - top },
+        'text',
+      );
+    }
+    const strip = 4 * this._scale; // a thumb's inset, see `paint`
+    const maxY = this._maxScrollY();
+    if (maxY !== before.maxY && (maxY > 0 || before.maxY > 0)) {
+      // the rows between the bands, in the right thumb's column
+      let y = content.y;
+      for (const [top, bottom] of [
+        ...bands,
+        [content.y + content.height, content.y + content.height],
+      ]) {
+        if (top > y) {
+          this.invalidate(
+            false,
+            {
+              x: content.x + content.width - strip,
+              y,
+              width: strip,
+              height: top - y,
+            },
+            'text',
+          );
+        }
+        y = Math.max(y, bottom);
+      }
+    }
+    const maxX = this._maxScrollX();
+    if (maxX !== before.maxX && (maxX > 0 || before.maxX > 0)) {
+      this.invalidate(
+        false,
+        {
+          x: content.x,
+          y: content.y + content.height - strip,
+          width: content.width,
+          height: strip,
+        },
+        'text',
+      );
+    }
+  }
+
   // --- history -------------------------------------------------------------
 
   /**
@@ -1307,12 +1516,13 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
     lines: readonly string[],
     selection: { caret: Position; anchor: Position },
   ): void {
+    const view = this._viewBefore();
     this._undoRun = null;
     this._goalX = null;
     this._replaceLines(from, removed, lines);
     this._caret = clampPos(this._lines, selection.caret);
     this._anchor = clampPos(this._lines, selection.anchor);
-    this._afterEdit();
+    this._afterEdit(view);
   }
 
   // --- editing core --------------------------------------------------------
@@ -1353,6 +1563,7 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
   ): void {
     this._syncProps();
     if (this.props.readOnly) return;
+    const view = this._viewBefore();
     const a = clampPos(this._lines, minPos(from, to));
     const b = clampPos(this._lines, maxPos(from, to));
     const insert = String(text).replace(/\r\n?/g, '\n');
@@ -1367,7 +1578,7 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
     this._caret = caret;
     this._anchor = { ...caret };
     this._goalX = null;
-    this._afterEdit();
+    this._afterEdit(view);
   }
 
   /**
@@ -1429,6 +1640,7 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
     const edit = { fromLine: from, removed, inserted: lines.length };
     this._tokenizer()?.edit(edit);
     this._moveLineCache(edit);
+    this._lastEdit = edit;
   }
 
   /** Let go of the line entries farther than a quarter of the cache from
@@ -1472,7 +1684,7 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
     this._lineCache = moved;
   }
 
-  private _afterEdit(): void {
+  private _afterEdit(before: ViewBefore): void {
     // The whole text as one string is what `onChange`, `onSelectionChange`
     // and a controlled `value` speak, and joining fifty thousand lines is a
     // millisecond or two a keystroke — joined when one of them reads it.
@@ -1480,7 +1692,8 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
     const value = (): string => (joined ??= this._lines.join('\n'));
     this._synced = this.props.value != null ? value() : null;
     this._ensureCaretVisible();
-    this._repaint();
+    this._repaintSince(before, this._lastEdit);
+    this._lastEdit = null;
     this._fire('onChange', value);
     this._fire('onSelectionChange', value);
   }
@@ -1493,20 +1706,22 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
   moveCaret(pos: Position, extend: boolean): void {
     this._syncProps();
     this.breakUndoRun();
+    const view = this._viewBefore();
     this._caret = clampPos(this._lines, pos);
     if (!extend) this._anchor = { ...this._caret };
     this._ensureCaretVisible();
-    this._repaint();
+    this._repaintSince(view, null);
     this._fire('onSelectionChange', () => this.value);
   }
 
   select(anchor: Position, head: Position): void {
     this._syncProps();
     this.breakUndoRun();
+    const view = this._viewBefore();
     this._anchor = clampPos(this._lines, anchor);
     this._caret = clampPos(this._lines, head);
     this._ensureCaretVisible();
-    this._repaint();
+    this._repaintSince(view, null);
     this._fire('onSelectionChange', () => this.value);
   }
 
@@ -1622,6 +1837,7 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
     fromLine: number,
     toLine: number,
   ): void {
+    const view = this._viewBefore();
     const caret = clampPos(newLines, this._caret);
     const anchor = clampPos(newLines, this._anchor);
     this._edit(
@@ -1634,7 +1850,7 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
     );
     this._caret = caret;
     this._anchor = anchor;
-    this._afterEdit();
+    this._afterEdit(view);
   }
 
   // --- input: keyboard -----------------------------------------------------
