@@ -33,6 +33,7 @@ import {
   CODE_EDITOR_ELEMENT,
   CodeEditor,
   keywordCompletionSource,
+  lineModeLanguage,
   sql,
 } from '../src/index.js';
 import type {
@@ -1127,6 +1128,124 @@ test('an edit lays out the lines it changed, and moves the rest', async () => {
     }
     await cleanup();
   }
+});
+
+/** A language that counts the lines it tokenizes. */
+function countingLanguage(): { language: Language; runs: () => number } {
+  let runs = 0;
+  const language = lineModeLanguage<{ n: number }>({
+    name: 'counting',
+    startState: () => ({ n: 0 }),
+    runLine(text) {
+      runs++;
+      return [{ from: 0, to: text.length, type: 'keyword' }];
+    },
+  });
+  return { language, runs: () => runs };
+}
+
+test('undo and redo apply the change they record, where it was made', async () => {
+  // The history held a copy of the whole text per step, and undid by
+  // resetting the editor to one: every line tokenized again from the first
+  // and every line in view laid out again, for the change of one character
+  // — and the caret put back where the change *before* it had left it,
+  // which for the first change of a session was the top of the file.
+  const { language, runs } = countingLanguage();
+  const value = Array.from({ length: 3000 }, (_, i) => `line ${i}`).join('\n');
+  await renderX11(h(CodeEditor, { defaultValue: value, language }), {
+    width: 400,
+    height: 300,
+  });
+  const node = editorNode();
+  node.select({ line: 1500, ch: 4 }, { line: 1500, ch: 4 });
+  await act(() => {});
+  for (const ch of 'abc') node.insertText(ch, 'type');
+  await act(() => {});
+  assert.strictEqual(node.lines[1500], 'lineabc 1500');
+
+  let before = runs();
+  node.undo();
+  await act(() => {});
+  assert.strictEqual(node.lines[1500], 'line 1500', 'the run is one step');
+  assert.deepStrictEqual(node.selection, {
+    anchor: { line: 1500, ch: 4 },
+    head: { line: 1500, ch: 4 },
+  });
+  assert.ok(runs() - before < 5, `undo tokenized ${runs() - before} lines`);
+  assert.ok(!node.canUndo && node.canRedo);
+
+  before = runs();
+  node.redo();
+  await act(() => {});
+  assert.strictEqual(node.lines[1500], 'lineabc 1500');
+  assert.deepStrictEqual(node.selection.head, { line: 1500, ch: 7 });
+  assert.ok(runs() - before < 5, `redo tokenized ${runs() - before} lines`);
+  assert.strictEqual(node.value.split('\n').length, 3000);
+});
+
+test('a replacement is the lines it changes, and one that changes none is no step', async () => {
+  const { language, runs } = countingLanguage();
+  const value = Array.from({ length: 3000 }, (_, i) => `line ${i}`).join('\n');
+  await renderX11(h(CodeEditor, { defaultValue: value, language }), {
+    width: 400,
+    height: 300,
+  });
+  const node = editorNode();
+  node.select({ line: 1500, ch: 0 }, { line: 1500, ch: 0 });
+  await act(() => {});
+
+  // select all, paste the same file: the text is as it was. (Selecting
+  // all shows the end of the file, which is tokenizing of its own.)
+  node.selectAll();
+  await act(() => {});
+  let before = runs();
+  node.insertText(value);
+  await act(() => {});
+  assert.strictEqual(node.value, value);
+  assert.ok(!node.canUndo, 'no change, no step');
+  assert.ok(runs() - before < 5, `tokenized ${runs() - before} lines`);
+
+  // …and one line of it different, the way a formatter hands a file back
+  const edited = value.replace('line 2990\n', 'line 2990;\n');
+  node.selectAll();
+  await act(() => {});
+  before = runs();
+  node.insertText(edited);
+  await act(() => {});
+  assert.strictEqual(node.value, edited);
+  assert.ok(runs() - before < 25, `tokenized ${runs() - before} lines`);
+  node.undo();
+  await act(() => {});
+  assert.strictEqual(node.value, value, 'one undo takes it back');
+
+  // a value set from outside that differs in one line is that line's edit
+  before = runs();
+  node.value = edited;
+  await act(() => {});
+  assert.strictEqual(node.lines[2990], 'line 2990;');
+  assert.ok(runs() - before < 25, `tokenized ${runs() - before} lines`);
+});
+
+test('a paste of two hundred thousand lines, and its undo', async () => {
+  // `splice(at, n, ...lines)` spreads its arguments onto the stack, and past
+  // a hundred thousand or so that throws: a pasted log did.
+  await renderX11(
+    h(CodeEditor, { defaultValue: 'first\nlast', language: sql() }),
+    { width: 400, height: 300 },
+  );
+  const node = editorNode();
+  node.select({ line: 1, ch: 0 }, { line: 1, ch: 0 });
+  const log = Array.from({ length: 200_000 }, (_, i) => `${i}`).join('\n');
+  node.insertText(log + '\n');
+  await act(() => {});
+  assert.strictEqual(node.lines.length, 200_002);
+  assert.strictEqual(node.lines[200_001], 'last');
+  node.undo();
+  await act(() => {});
+  assert.deepStrictEqual([...node.lines], ['first', 'last']);
+  node.redo();
+  await act(() => {});
+  assert.strictEqual(node.lines.length, 200_002);
 });
 
 test('scrolling a long file keeps a bounded number of laid-out lines', async () => {

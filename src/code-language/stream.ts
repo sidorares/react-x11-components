@@ -17,6 +17,7 @@ import type {
   Token,
   Tokenizer,
 } from './types.js';
+import { spliceAll } from '../internal/splice.js';
 
 /**
  * One line of text with a cursor, the surface a mode's `token()` reads
@@ -217,17 +218,9 @@ class StreamTokenizer<S> implements Tokenizer {
     // line after it too, and handed back a new token array for text that
     // had not changed.
     const after = this.states[fromLine + removed];
-    this.states.splice(
-      fromLine + 1,
-      removed,
-      ...new Array<S | undefined>(inserted),
-    );
+    spliceAll(this.states, fromLine + 1, removed, new Array(inserted));
     if (inserted > 0) this.states[fromLine + inserted] = after;
-    this.tokens.splice(
-      fromLine,
-      removed,
-      ...new Array<Token[] | undefined>(inserted),
-    );
+    spliceAll(this.tokens, fromLine, removed, new Array(inserted));
     this.frontier = Math.min(this.frontier, fromLine);
   }
 

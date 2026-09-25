@@ -98,6 +98,17 @@ toggling, bracket matching, and diagnostics squiggles.
 **Escape then Tab leaves the field**, so a multiline editor in a form is not
 a keyboard trap. Ctrl+Space asks for completions. Ctrl+Enter submits.
 
+**The history is a list of changes, not of copies.** A step holds the lines
+it changed and the selection it found and left, so an undo is an edit like
+any other: in a 50,000-line file it tokenizes and lays out the line it
+restores rather than the file, and it puts the caret back where the change
+was made. A replacement is narrowed to the lines it really changes — a
+select-all and paste of a formatter's output touches only the lines the
+formatter moved, and one that changes nothing is no step at all. The same
+goes for a `value` set from outside, controlled or through the handle. The
+text is joined into one string only for a reader: an `onChange` or
+`onSelectionChange` handler, or a controlled `value`.
+
 ## Long lines
 
 A minified file or a log line of a hundred thousand characters is laid out
