@@ -30,7 +30,8 @@
 //     forces them out, trailing side first — a direction reversal lands on
 //     rows still mounted instead of rebuilding them. The budget caps what a
 //     render can be asked to carry: the on-screen slice plus `prefetch` rows
-//     each side.
+//     each side — at any speed, which is why a row is measured on its way
+//     out when nothing has measured it yet.
 //   - **Skeletons.** A scroll that outruns everything — a thumb dragged
 //     across the list, a flick past the band — floods the window with rows
 //     no single render can build in time. Those render as *skeletons*: the
@@ -164,6 +165,18 @@ export interface VirtualWindowInputs {
    *  settled. `BURST_BUDGET` / `SETTLE_BUDGET` are the defaults. */
   burstBudget: number;
   settleBudget: number;
+  /**
+   * Record the height the drawn row `id`, at `index`, is laid out at in the
+   * index, now; answer whether the index has a real height for it after.
+   * The trim asks before it drops a row the measure tick has not reached
+   * (see the budget below), during render — so no nudge and no re-render:
+   * the row is still laid out at exactly that height, and nothing on screen
+   * moves until the spacer takes its place. `false` for a row with no
+   * honest measurement to give, which keeps it mounted. `viewport` is the
+   * event-fresh one (`viewRef`), for a component whose rows are laid out
+   * against it.
+   */
+  measure?: (id: RowKey, index: number, viewport: VirtualViewport) => boolean;
 }
 
 export interface VirtualWindow {
@@ -370,6 +383,7 @@ export function useVirtualWindow(inputs: VirtualWindowInputs): VirtualWindow {
     threshold,
     burstBudget,
     settleBudget,
+    measure,
   } = inputs;
   const count = rows.length;
 
@@ -448,15 +462,32 @@ export function useVirtualWindow(inputs: VirtualWindowInputs): VirtualWindow {
       // row laid out taller than the index believes contributes its real
       // height while mounted and its guessed one once dropped, so cutting
       // it silently shrinks the content above the viewport and the view
-      // yanks up by the difference with no debt left to put it right. Held
-      // a render or two longer, it gets measured, and the next trim takes
-      // it cleanly.
+      // yanks up by the difference with no debt left to put it right.
+      //
+      // So a row the index has no number for is measured *here*, where it
+      // is still laid out (`measure`): once the index holds the height it
+      // is drawn at, the spacer that replaces it is exactly as tall, and it
+      // goes like any other. Waiting for the measure tick instead is only
+      // safe while the tick runs — and a flick defers every measurement to
+      // the settle, so a long one downward trimmed nothing at all and the
+      // window grew by every row it passed: 1,250 rows mounted four seconds
+      // into a trackpad fling, each frame laying all of them out. A row the
+      // last render did not build in full needs nothing: a skeleton is
+      // drawn at the index's height, and a row never drawn is not in the
+      // layout at all. What cannot be measured — a row not laid out yet, or
+      // laid out against a grid it is about to leave — is held a render or
+      // two longer, as before.
       const budget = coreLast - coreFirst + 2 * prefetch;
       let excess = last - first - budget;
       if (excess > 0) {
+        const known = (i: number): boolean =>
+          exact ||
+          heights.isMeasured(i) ||
+          !real.current.has(rows[i].id) ||
+          measure?.(rows[i].id, i, viewRef.current) === true;
         const cutAbove = (want: number): number => {
           let k = 0;
-          while (k < want && (exact || heights.isMeasured(first + k))) k++;
+          while (k < want && known(first + k)) k++;
           return k;
         };
         const aboveExtra = coreFirst - first;

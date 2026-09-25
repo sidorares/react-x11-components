@@ -919,6 +919,24 @@ export function Tree<T = TreeItem>({
   const index = heights;
   index.sync(rows, estimate);
 
+  /**
+   * One drawn row into the height index, for the window's trim: it may drop
+   * a row only once the index knows the height the row is laid out at, and
+   * a flick reaches the trailing rows long before `measureRows` does (see
+   * `measure` on the window's inputs).
+   */
+  const measureDrawn = useCallback(
+    (id: TreeItemId, at: number): boolean => {
+      const drawn = rowNodes.current.get(id);
+      if (!drawn || drawn.at !== at) return false;
+      heights.measure(id, at, drawn.node.abs.height / scaleOf(drawn.node));
+      return heights.isMeasured(at);
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `heights` is a
+    // stable instance
+    [],
+  );
+
   /** The viewport, and the slice worth building from it — the machinery
    *  shared with `<Table>` (`../internal/window.ts`). */
   const win = useVirtualWindow({
@@ -934,6 +952,7 @@ export function Tree<T = TreeItem>({
     threshold: catchup?.threshold ?? SKELETON_THRESHOLD,
     burstBudget: catchup?.burst ?? BURST_BUDGET,
     settleBudget: catchup?.settle ?? SETTLE_BUDGET,
+    measure: measureDrawn,
   });
   const { view, viewRef } = win;
   /** Whether the fast-scroll pill is up — kept across renders so it does not

@@ -194,7 +194,10 @@ virtualization window works toward exactly that:
   travel by roughly where the scroll will be a few frames on.
 - **A kept band.** Rows already built stay mounted until a budget (the
   slice plus `prefetch` per side) forces them out, trailing side first — a
-  direction reversal lands on rows still there.
+  direction reversal lands on rows still there. The budget holds at any
+  speed: a flick defers measuring to the settle, so a row on its way out may
+  not have a real height yet, and it is measured as it goes — the spacer
+  that takes its place is exactly as tall, and nothing on screen moves.
 - **Skeleton rows.** A scroll that outruns everything — a thumb dragged
   across the list — floods the window with more rows than one render can
   build in time (`catchup.threshold`, default 16 entering rows; the build
