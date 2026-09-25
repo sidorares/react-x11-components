@@ -139,7 +139,9 @@ on: setting it does **not** fire `onChange`. Read-only members:
 Every length the handle takes or answers is in **logical pixels**, the unit
 a style is written in: `caretRect()` is the caret in the editor's own
 coordinates, which is exactly what a `<popup anchor={{ at }}>` takes, and
-`scrollBy(dx, dy)` moves by the same unit a `<box>`'s `scrollBy` does. So
+`scrollBy(dx, dy)` moves by the same unit a `<box>`'s `scrollBy` does —
+and the wheel scrolls it the way it scrolls a `<box>` pane, 48 logical
+pixels a notch and a touchpad by what it measured. So
 are the node's `metrics()` and `measureText()`, for an app laying out its
 own overlay against the text. On a 2x panel the editor shapes, hits and
 paints its text on the device grid itself; nothing an app touches changes.
