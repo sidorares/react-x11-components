@@ -490,6 +490,8 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
   private _focused = false;
   private _caretOn = false;
   private _blinkTimer: TimerId = null;
+  /** Whether the last paint drew a horizontal thumb — see `paint`. */
+  private _thumbAcross = false;
   private _goalX: number | null = null;
   private _drag: 'char' | 'word' | 'line' | null = null;
   private _dragOrigin: Position = { line: 0, ch: 0 };
@@ -1031,9 +1033,65 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
     const nx = Math.max(0, Math.min(this._scrollX + dx, this._maxScrollX()));
     const ny = Math.max(0, Math.min(this._scrollY + dy, this._maxScrollY()));
     if (nx === this._scrollX && ny === this._scrollY) return false;
+    const shiftX = this._scrollX - nx;
+    const shiftY = this._scrollY - ny;
     this._scrollX = nx;
     this._scrollY = ny;
-    this.root?.invalidate(false, this.abs, 'scroll');
+    if (!this._blitScroll(shiftX, shiftY)) {
+      this.root?.invalidate(false, this.abs, 'scroll');
+    }
+    return true;
+  }
+
+  /**
+   * A vertical scroll as a blit (core's `scrollContents`): the text and the
+   * gutter move together, so inside the content box the new frame is the
+   * old one shifted — all but the scroll thumbs, which stay put while the
+   * text moves under them. Their strips are carved out of the region and
+   * claimed beside it, edge to edge, which leaves the frame a blit; the
+   * band the shift exposes is all `paint` draws (`paintDamage()`).
+   *
+   * False where the promise would not hold: sideways, the text moves under
+   * a gutter that stays; off the device grid, a shift is not a copy; and a
+   * background image does not translate. Core checks the rest — the
+   * border ring, a rounded corner, anything drawn over the box — and
+   * repaints the region itself when one of them fails.
+   */
+  private _blitScroll(shiftX: number, shiftY: number): boolean {
+    if (shiftX !== 0 || shiftY === 0 || !Number.isInteger(shiftY)) {
+      return false;
+    }
+    if ((this.style as Record<string, unknown>).backgroundImage) return false;
+    const box = this._contentRect();
+    const bar = 4 * this._scale; // a thumb's inset, see `paint`
+    const across = this._maxScrollX() > 0 ? bar : 0;
+    const rect = {
+      x: box.x,
+      y: box.y,
+      width: box.width - bar,
+      height: box.height - across,
+    };
+    const whole = [rect.x, rect.y, rect.width, rect.height, bar];
+    if (!whole.every(Number.isInteger)) return false;
+    if (rect.width <= 0 || Math.abs(shiftY) >= rect.height) return false;
+    this.scrollContents(rect, 0, shiftY);
+    this.invalidate(
+      false,
+      { x: rect.x + rect.width, y: box.y, width: bar, height: box.height },
+      'scroll',
+    );
+    if (across > 0) {
+      this.invalidate(
+        false,
+        {
+          x: box.x,
+          y: rect.y + rect.height,
+          width: rect.width,
+          height: across,
+        },
+        'scroll',
+      );
+    }
     return true;
   }
 
@@ -1830,10 +1888,35 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
     if (this._blinkTimer == null) {
       this._blinkTimer = startInterval(() => {
         this._caretOn = !this._caretOn;
-        this.root?.invalidate(false, this.abs, 'text');
+        this._claimCaretRow();
       }, CARET_BLINK_MS);
     }
     this._repaint();
+  }
+
+  /** A blink changes the caret and nothing else: claim the text row it
+   *  is on rather than the editor, and `paint` draws that one line. The
+   *  whole row, so a caret x worked out a pixel off still falls inside. */
+  private _claimCaretRow(): void {
+    const content = this._contentRect();
+    const gutterW = this._gutterWidth();
+    const top = content.y + this._caret.line * this._lineH - this._scrollY;
+    const y = Math.max(content.y, Math.floor(top));
+    const bottom = Math.min(
+      content.y + content.height,
+      Math.ceil(top + this._lineH),
+    );
+    if (bottom <= y) return; // scrolled out of view
+    this.invalidate(
+      false,
+      {
+        x: content.x + gutterW,
+        y,
+        width: Math.max(0, content.width - gutterW),
+        height: bottom - y,
+      },
+      'text',
+    );
   }
 
   handleBlur(): void {
@@ -1925,11 +2008,21 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
     };
     const dark = this._onDark();
 
-    const first = Math.max(0, Math.floor(this._scrollY / lineH));
-    const last = Math.min(
+    let first = Math.max(0, Math.floor(this._scrollY / lineH));
+    let last = Math.min(
       this._lines.length - 1,
       Math.ceil((this._scrollY + content.height) / lineH),
     );
+    // Only the lines this pass repaints, and one either side for ink that
+    // overhangs its row: a scroll blit hands over the band it exposed, and
+    // a blink the caret's row. The clip would throw the rest away after
+    // they were laid out and drawn.
+    const damage = this.paintDamage();
+    if (damage) {
+      const from = damage.y - content.y + this._scrollY;
+      first = Math.max(first, Math.floor(from / lineH) - 1);
+      last = Math.min(last, Math.ceil((from + damage.height) / lineH) + 1);
+    }
     const lineY = (i: number): number => content.y + i * lineH - this._scrollY;
 
     // Everything the editor draws — gutter included — stays inside the
@@ -2041,13 +2134,23 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
         layout.draw(ctx, textX, lineY(0) + (lineH - layout.height) / 2);
       }
     } else {
-      // across, what the text region shows of a line, in its own x
-      const shownFrom = this._scrollX;
-      const shownTo = this._scrollX + content.width - gutterW;
-      for (let i = first; i <= last; i++) {
+      // across, what the text region shows of a line, in its own x — and
+      // of that, what this pass repaints, give or take a character of ink
+      // past a glyph's advance: a thumb's strip is a column at the right
+      // edge that most lines never reach
+      let shownFrom = this._scrollX;
+      let shownTo = this._scrollX + content.width - gutterW;
+      if (damage) {
+        shownFrom = Math.max(shownFrom, damage.x - textX - this._charW);
+        shownTo = Math.min(
+          shownTo,
+          damage.x + damage.width - textX + this._charW,
+        );
+      }
+      for (let i = first; shownFrom < shownTo && i <= last; i++) {
         const entry = this._lineEntry(i);
         const layout = entry.layout;
-        if (!layout) continue;
+        if (!layout || layout.width < shownFrom) continue;
         const y = lineY(i) + (lineH - (layout.height || lineH)) / 2;
         if (layout instanceof ChunkedLayout) {
           layout.drawSpan(ctx, textX, y, shownFrom, shownTo);
@@ -2125,8 +2228,9 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
 
     if (textClip) c.restore!();
 
-    // gutter numbers: inside the content clip, outside the text clip
-    if (gutterW > 0) {
+    // gutter numbers: inside the content clip, outside the text clip — and
+    // not for a pass that lies to the right of them
+    if (gutterW > 0 && !(damage && damage.x >= content.x + gutterW)) {
       const fonts = this._fonts();
       if (fonts) {
         const dim =
@@ -2187,6 +2291,25 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
         thumbW,
         3 * s,
       );
+    }
+    // A line this pass laid out wider than the view gives the text a
+    // horizontal thumb, where there was none when the scroll decided what
+    // to blit: the frame repaints the band it exposed and not the strip
+    // the thumb is drawn in, so the strip is claimed for the next one.
+    if (maxX > 0 !== this._thumbAcross) {
+      this._thumbAcross = maxX > 0;
+      if (damage) {
+        this.invalidate(
+          false,
+          {
+            x: content.x,
+            y: content.y + content.height - 4 * s,
+            width: content.width,
+            height: 4 * s,
+          },
+          'scroll',
+        );
+      }
     }
 
     if (outerClip) c.restore!();
