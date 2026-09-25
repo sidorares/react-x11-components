@@ -929,6 +929,29 @@ test("a caret blink repaints the caret's row, not the editor", async () => {
   );
 });
 
+test('a wheel notch scrolls the text as far as it scrolls a pane', async () => {
+  // Core hands every scroller the wheel in logical pixels, 48 a notch, and
+  // not in notches — which is how the editor read it, three lines to each,
+  // until a notch scrolled a hundred and forty-four lines. Held to the
+  // caret's rect rather than to the offset, at both scales, so that a notch
+  // measured in device pixels would be caught as well.
+  const value = Array.from({ length: 400 }, (_, i) => `line ${i}`).join('\n');
+  for (const options of [{ width: 400, height: 300 }, AT_2X]) {
+    const scale = options === AT_2X ? 2 : 1;
+    await renderX11(h(CodeEditor, { defaultValue: value, rows: 8 }), options);
+    const node = editorNode();
+    const drawn = node as unknown as DrawnNode;
+    const top = node.caretRect().y;
+    await userEvent.wheel(drawn, { deltaY: 1 });
+    near(node.caretRect().y, top - 48, `a notch at ${scale}x`);
+    await userEvent.wheel(drawn, { deltaY: 0.25, smooth: true });
+    near(node.caretRect().y, top - 60, `a quarter of a notch at ${scale}x`);
+    await userEvent.wheel(drawn, { deltaY: -2 });
+    near(node.caretRect().y, top, `back up, and no further, at ${scale}x`);
+    await cleanup();
+  }
+});
+
 test('at a display scale of 2 the completion popup opens at the caret', async () => {
   await renderX11(
     editorWithRuler({

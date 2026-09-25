@@ -1013,11 +1013,12 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
     return Math.max(0, this._widest + CARET_MARGIN * this._scale - textW);
   }
 
-  /** Wheel notches (deltaX/deltaY arrive as ±1 per notch) → three lines a
-   * notch, in the device pixels the offsets are kept in. */
+  /** The wheel, in the unit core hands every scroller: logical pixels, not
+   * notches — a notch is 48 of them (react-x11's `WHEEL_NOTCH_PX`) and a
+   * touchpad reports what it measured — so a notch moves the text as far
+   * as it moves a `<box>` pane beside the editor. */
   handleWheel(ev: { deltaX: number; deltaY: number }): boolean {
-    const step = this._lineHeight() * 3;
-    return this._scrollByDevice(ev.deltaX * step, ev.deltaY * step);
+    return this.scrollBy(ev.deltaX, ev.deltaY);
   }
 
   /** Logical pixels, like core's own `scrollBy`: application code writes
