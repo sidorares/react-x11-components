@@ -905,26 +905,30 @@ test('a value set from outside moves the diagnostics as an edit would', async ()
   assert.deepEqual(flags(node), ['3:0-3:3']);
 });
 
-/** The columns (device pixels, node-relative) where two frames differ inside
- *  `rect`: a squiggle, drawn in one and not the other. */
-function columnsOf(
+/** The box (device pixels, node-relative) where two frames of the editor
+ *  differ: a squiggle, drawn in one and not the other. */
+function inkOf(
   a: Buffer,
   b: Buffer,
   width: number,
-  rect: { x: number; y: number; width: number; height: number },
-): [number, number] | null {
-  let lo = Infinity;
-  let hi = -1;
-  for (let y = rect.y; y < rect.y + rect.height; y++) {
-    for (let x = rect.x; x < rect.x + rect.width; x++) {
+  height: number,
+): { x0: number; x1: number; y0: number; y1: number } | null {
+  let x0 = Infinity;
+  let x1 = -1;
+  let y0 = Infinity;
+  let y1 = -1;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
       const i = (y * width + x) * 4;
       if (a[i] !== b[i] || a[i + 1] !== b[i + 1] || a[i + 2] !== b[i + 2]) {
-        lo = Math.min(lo, x);
-        hi = Math.max(hi, x);
+        x0 = Math.min(x0, x);
+        x1 = Math.max(x1, x);
+        y0 = Math.min(y0, y);
+        y1 = Math.max(y1, y);
       }
     }
   }
-  return hi < 0 ? null : [lo, hi];
+  return x1 < 0 ? null : { x0, x1, y0, y1 };
 }
 
 type Metrics = {
@@ -936,8 +940,10 @@ type Metrics = {
 for (const scale of [1, 2]) {
   test(`a squiggle sits under the characters it flags, after tabs and an emoji, at ${scale}x`, async () => {
     // Held to a ruler rather than to the editor's own answer: each case's
-    // squiggle is drawn under a word, and the word's own glyphs — a keyword,
-    // in the keyword's colour — are where it has to start and end.
+    // squiggle is drawn under a word, and the word's own glyphs are where it
+    // has to start and end. One squiggle at a time, against a frame with
+    // none: a row's pixels are not all its own when the line height is
+    // fractional, and the row above may ink the one they share.
     const lines = ['let a = beta;', '\tlet a = beta;', '😀 let a = beta;'];
     const where = lines.map((text) => text.indexOf('beta'));
     const flagged = where.map((ch, line) => ({
@@ -951,7 +957,7 @@ for (const scale of [1, 2]) {
         diagnostics,
         style: { fontSize: 16, flexGrow: 1 },
       });
-    const { ctx, rerender } = await renderX11(editor(flagged), {
+    const { ctx, rerender } = await renderX11(editor([]), {
       scale,
       width: 400,
       height: 160,
@@ -959,22 +965,20 @@ for (const scale of [1, 2]) {
     });
     const node = editorNode();
     await act();
-    const withSquiggles = await editorPixels(ctx, node);
-    await rerender(editor([]));
-    await act();
     const m = node as unknown as Metrics & { _caretX(p: Position): number };
     const box = m._contentRect();
     const abs = (node as unknown as DrawnNode).abs;
     const without = await editorPixels(ctx, node);
     for (let line = 0; line < lines.length; line++) {
-      const row = {
-        x: 0,
-        y: Math.round(box.y - abs.y + line * m._lineH),
-        width: abs.width,
-        height: Math.floor(m._lineH),
-      };
-      const squiggle = columnsOf(withSquiggles, without, abs.width, row);
-      assert.ok(squiggle, `line ${line} has a squiggle`);
+      await rerender(editor([flagged[line]]));
+      await act();
+      const ink = inkOf(
+        await editorPixels(ctx, node),
+        without,
+        abs.width,
+        abs.height,
+      );
+      assert.ok(ink, `line ${line} has a squiggle`);
       // `beta`'s glyphs: the text between the caret before it and after it
       const x0 =
         box.x - abs.x + m._gutterWidth() + m._caretX({ line, ch: where[line] });
@@ -985,13 +989,19 @@ for (const scale of [1, 2]) {
         m._caretX({ line, ch: where[line] + 4 });
       const step = 4 * scale;
       assert.ok(
-        Math.abs(squiggle[0] - x0) <= 1 + scale &&
-          squiggle[1] <= x1 + scale &&
-          squiggle[1] >= x1 - step - 2 * scale - 1,
-        `line ${line}: the squiggle spans ${squiggle[0]}..${squiggle[1]}, the word ${x0.toFixed(1)}..${x1.toFixed(1)}`,
+        Math.abs(ink.x0 - x0) <= 1 + scale &&
+          ink.x1 <= x1 + scale &&
+          ink.x1 >= x1 - step - 2 * scale - 1,
+        `line ${line}: the squiggle spans ${ink.x0}..${ink.x1}, the word ${x0.toFixed(1)}..${x1.toFixed(1)}`,
       );
       // (the zigzag ends on its last whole 4px step, and anti-aliasing
       // fades the stroke at both ends: a pixel or two, not a column)
+      const top = box.y - abs.y + line * m._lineH;
+      assert.ok(
+        ink.y0 >= Math.floor(top + m._lineH / 2) &&
+          ink.y1 < Math.ceil(top + m._lineH),
+        `line ${line}: the squiggle inks rows ${ink.y0}..${ink.y1}, the line's lower half is ${(top + m._lineH / 2).toFixed(1)}..${(top + m._lineH).toFixed(1)}`,
+      );
     }
   });
 }
