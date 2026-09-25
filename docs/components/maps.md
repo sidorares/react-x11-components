@@ -663,6 +663,16 @@ Placing in world rather than screen pixels is what lets a pan translate an
 existing placement rather than recompute it, which is what keeps the pan a
 blit.
 
+**On the retained renderer, a name is measured where it is placed and
+shaped where it is drawn.** A zoom places again at every sixteenth of a
+level, over every name on the tiles loaded — thousands, most of them never
+on screen — so placement reads sizes from a cache of measurements, and only
+the names a frame draws are shaped. Both caches turn over in two
+generations rather than being cleared, so what is in use survives the
+bound. A wheel zoom through six levels shaped 43,000 strings in four
+seconds when placement shaped everything it measured; it shapes under 8,000
+now, and its slowest frames on a Mac went from 50 ms to 29.
+
 **On the GL renderer, a name is set once and drawn at every size.** Labels
 there are placed per frame in screen space, and the text comes from the
 app's own text engine — CoreText on a Mac, the X11 backend's shaper — set

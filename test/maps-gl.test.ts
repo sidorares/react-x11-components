@@ -1733,13 +1733,14 @@ test('the retained renderer fits a name to its straight stretch, and turns it al
 test('the retained renderer draws a street name turned about its centre, and a level one on whole pixels', () => {
   const calls: { name: string; args: number[] }[] = [];
   const ctx = recordingCanvas(calls);
-  const shaped = {
-    width: 60,
-    height: 11,
-    layout: {
+  // 60 × 11 logical, shaped at scale 2
+  const fonts = {
+    layout: () => ({
+      width: 120,
+      height: 22,
       draw: (_ctx: unknown, x: number, y: number) =>
         calls.push({ name: 'text', args: [x, y] }),
-    },
+    }),
   };
   const label = {
     id: 'a',
@@ -1763,7 +1764,6 @@ test('the retained renderer draws a street name turned about its centre, and a l
     wy: 256,
     width: 15,
     height: 64,
-    shaped,
   };
   drawLabels(
     ctx as never,
@@ -1776,7 +1776,7 @@ test('the retained renderer draws a street name turned about its centre, and a l
     { x: 0, y: 0, width: 512, height: 512 },
     2,
     null,
-    new LabelShaper(null, 'sans-serif', 2),
+    new LabelShaper(fonts, 'sans-serif', 2),
   );
   assert.deepStrictEqual(
     calls.slice(0, 5).map((c) => c.name),
@@ -1926,16 +1926,66 @@ test('the retained renderer places an icon and its name as one box, the name rig
   );
 });
 
+test('placement measures each name once, and only the names drawn are shaped', () => {
+  // A wheel zoom re-places at every step, over every name on the tiles
+  // loaded — thousands, most of them never drawn. Placement used to shape
+  // each one into a cache it cleared at 4,000, and a zoom through six
+  // levels shaped 43,000 strings in four seconds. It asks their sizes of a
+  // cache that keeps them now, and a label is shaped when it is drawn.
+  let layouts = 0;
+  const fonts = {
+    layout: (text: string, style: Record<string, unknown>) => {
+      layouts++;
+      const size = style.size as number;
+      return { width: text.length * size * 0.5, height: size, draw: () => {} };
+    },
+  };
+  const shaper = new LabelShaper(fonts, 'sans-serif', 1);
+  // 6,000 names 80 world pixels apart at zoom 14, around the middle of
+  // the world, none of them in another's way
+  const step = 80 / (512 * 2 ** 14);
+  const candidates = Array.from({ length: 6000 }, (_, i) => ({
+    ...pointLabel,
+    id: `p${i}`,
+    key: `places|${i}`,
+    text: `P${i}`,
+    mx: 0.5 + ((i % 80) - 40) * step,
+    my: 0.5 + (Math.floor(i / 80) - 37) * step,
+  }));
+  const place = () => placeLabels(candidates, 512 * 2 ** 14, shaper);
+  assert.strictEqual(place().length, 6000);
+  assert.strictEqual(layouts, 6000, 'each name measured once');
+  layouts = 0;
+  const placed = place();
+  assert.strictEqual(layouts, 0, 'and not again at the next step');
+  const drawn = drawLabels(
+    recordingCanvas([]) as never,
+    placed,
+    transformFor(
+      { center: { lon: 0, lat: 0 }, zoom: 14 },
+      { width: 512, height: 512 },
+      512,
+    ),
+    { x: 0, y: 0, width: 512, height: 512 },
+    1,
+    null,
+    shaper,
+  );
+  assert.ok(drawn > 0 && drawn < 100, `${drawn} drawn`);
+  assert.strictEqual(layouts, drawn, 'shaped: the names drawn, and no others');
+});
+
 test('the retained renderer draws the icon on the point and the name level beside it', () => {
   const calls: { name: string; args: number[] }[] = [];
   const ctx = recordingCanvas(calls);
-  const shaped = {
-    width: 20,
-    height: 10,
-    layout: {
+  // 20 × 10 logical, shaped at scale 2
+  const fonts = {
+    layout: () => ({
+      width: 40,
+      height: 20,
       draw: (_ctx: unknown, x: number, y: number) =>
         calls.push({ name: 'text', args: [x, y] }),
-    },
+    }),
   };
   drawLabels(
     ctx as never,
@@ -1950,7 +2000,6 @@ test('the retained renderer draws the icon on the point and the name level besid
         ox: 11.5,
         width: 41,
         height: 18,
-        shaped,
       },
     ],
     transformFor(
@@ -1961,7 +2010,7 @@ test('the retained renderer draws the icon on the point and the name level besid
     { x: 0, y: 0, width: 512, height: 512 },
     2,
     null,
-    new LabelShaper(null, 'sans-serif', 2),
+    new LabelShaper(fonts, 'sans-serif', 2),
   );
   // The halo's plate, the plate, the glyph — then the name, over them.
   assert.strictEqual(calls.filter((c) => c.name === 'fill').length, 3);
