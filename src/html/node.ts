@@ -58,6 +58,7 @@ import type { RootLook } from './css/style.js';
 import { buildBoxes } from './layout/boxes.js';
 import type { Box, BoxTree, ReplacedKind } from './layout/boxes.js';
 import { layoutDocument } from './layout/block.js';
+import { TextLayoutCache } from './layout/cache.js';
 import type { FontsLike } from './layout/inline.js';
 // Through the inline module rather than a second cache: the offsets table for
 // a layout is built once, on the first selection that needs it.
@@ -361,6 +362,20 @@ export class HtmlViewNode extends Node {
     return fonts ?? null;
   }
 
+  /** The text layouts the last pass made, for this one to reuse. */
+  private _layouts: TextLayoutCache | null = null;
+
+  /** The fonts a layout pass lays text out with: the engine's, through the
+   *  layouts the pass before made (`TextLayoutCache`). */
+  private _layoutFonts(): FontsLike | null {
+    const fonts = this._fonts();
+    if (!fonts) return null;
+    if (this._layouts?.engine !== fonts)
+      this._layouts = new TextLayoutCache(fonts);
+    this._layouts.begin();
+    return this._layouts.fonts;
+  }
+
   /** Bring the pipeline up to date for a width. */
   private _prepare(width: number): void {
     const target = Math.max(1, Math.floor(width));
@@ -409,7 +424,7 @@ export class HtmlViewNode extends Node {
     ) {
       const result = layoutDocument(
         this._tree,
-        this._fonts(),
+        this._layoutFonts(),
         target,
         this._viewportHeight(),
       );
@@ -605,7 +620,7 @@ export class HtmlViewNode extends Node {
     const tree = this._tree;
     if (!tree) return null;
     const local = this._toDocument(x, y);
-    return deepestAt(tree.root, local.x, local.y);
+    return deepestAt(tree, local.x, local.y);
   }
 
   /**
@@ -988,7 +1003,8 @@ function collectBands(
 }
 
 /** The deepest element box containing a document-space point. */
-function deepestAt(box: Box, x: number, y: number): Element | null {
+function deepestAt(tree: BoxTree, x: number, y: number): Element | null {
+  const box = tree.root;
   let found: Element | null = box.el;
   const visit = (node: Box): void => {
     // The paint index answers a point query too — the wide level of a flat
@@ -1037,7 +1053,11 @@ function deepestAt(box: Box, x: number, y: number): Element | null {
         }
         // An inline box has no box of its own — its extent is the runs on
         // this line — so the element under a point inside a paragraph is
-        // found from the run rather than from a rectangle.
+        // found from the run rather than from a rectangle: from where its
+        // text sits in the document, whose text boxes know their element.
+        // Not from the run itself, whose layout may be one an earlier parse
+        // made (`TextLayoutCache`), and which an engine may hand back with
+        // nothing on it but its extent.
         if (y >= line.y && y < line.y + line.height) {
           for (const text of line.texts) {
             const natural = text.layout.lines[text.layoutLine];
@@ -1045,8 +1065,10 @@ function deepestAt(box: Box, x: number, y: number): Element | null {
             for (const run of natural.runs) {
               const left = text.drawX + natural.x + run.x;
               if (x >= left && x < left + run.width) {
-                const owner = (run.span as { element?: Element } | undefined)
-                  ?.element;
+                const owner = ownerOf(
+                  tree.textBoxes,
+                  text.spans.documentAt(run.start),
+                );
                 if (owner) found = owner;
               }
             }
@@ -1057,6 +1079,20 @@ function deepestAt(box: Box, x: number, y: number): Element | null {
   };
   visit(box);
   return found;
+}
+
+/** The element whose text holds a document index: the text box around it,
+ *  found by bisecting the boxes in document order. */
+function ownerOf(boxes: readonly Box[], index: number): Element | null {
+  let lo = 0;
+  let hi = boxes.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (boxes[mid].textStart <= index) lo = mid;
+    else hi = mid - 1;
+  }
+  const box = boxes[lo];
+  return box && index >= box.textStart && index < box.textEnd ? box.el : null;
 }
 
 export type { ControlRect, ReplacedKind, ResourceRequest, ResourceResult };

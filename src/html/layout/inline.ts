@@ -25,8 +25,10 @@
 // and hands them back on the laid-out runs, so the decoration a `<span>`
 // carries reaches paint on the same object the glyphs did — which is exactly
 // the trick `<richtext>` is built on, and it is why paint reuses richtext's
-// decoration pass unchanged instead of reimplementing it.
-import type { Element } from 'domhandler';
+// decoration pass unchanged instead of reimplementing it. What a run does
+// *not* carry is its element: a layout outlives the parse it was made for
+// (`TextLayoutCache`), so the element under a run is found from its text's
+// place in the document (`LineText.spans`) instead.
 
 import { codeUnitOffsets } from '../../internal/text.js';
 import type { TextRun } from '../../richtext/index.js';
@@ -257,6 +259,7 @@ export function layoutInline(block: Box, options: InlineOptions): InlineResult {
           textStart: segment.spans.documentAt(natural.start),
           textEnd: segment.spans.documentAt(natural.end),
           layoutStart: natural.start,
+          spans: segment.spans,
         };
         lines.push({
           x: band.left + natural.x,
@@ -313,6 +316,7 @@ export function layoutInline(block: Box, options: InlineOptions): InlineResult {
       textStart: segment.spans.documentAt(first.start),
       textEnd: segment.spans.documentAt(first.end),
       layoutStart: first.start,
+      spans: segment.spans,
     });
     open.x += first.width;
     open.left = band.left;
@@ -384,6 +388,7 @@ function emitLayout(
       textStart: spans.documentAt(natural.start),
       textEnd: spans.documentAt(natural.end),
       layoutStart: natural.start,
+      spans,
     };
     lines.push({
       x: xOff + natural.x,
@@ -617,7 +622,7 @@ function collect(box: Box, out: Item[]): void {
         if (child.text) {
           out.push({
             kind: 'text',
-            run: runFor(child.text, child.style, child.el),
+            run: runFor(child.text, child.style),
             box: child,
             length: child.text.length,
           });
@@ -655,16 +660,11 @@ function collect(box: Box, out: Item[]): void {
   }
 }
 
-/** The `TextRun` one styled piece of text becomes. */
-function runFor(
-  text: string,
-  style: ComputedStyle,
-  owner: Element | null,
-): TextRun {
-  // ntk hands unknown span fields back on the laid-out runs untouched, which
-  // is how the element reaches the paint and hit-test passes without a
-  // parallel structure to keep in step.
-  const run: TextRun & { element?: Element } = {
+/** The `TextRun` one styled piece of text becomes: its text, and what paint
+ *  needs of its style — nothing that names a box or an element, so that a
+ *  layout made from it can be kept for the next parse (`TextLayoutCache`). */
+function runFor(text: string, style: ComputedStyle): TextRun {
+  const run: TextRun = {
     text,
     family: style.fontFamily,
     size: style.fontSize,
@@ -680,7 +680,6 @@ function runFor(
     run.bg = inkColor(style.backgroundColor as string, style.color);
     run.bgFill = 'line';
   }
-  if (owner) run.element = owner;
   if (style.textDecorationLine === 'underline') {
     run.underline = inkColor(
       style.textDecorationColor ?? 'currentColor',
