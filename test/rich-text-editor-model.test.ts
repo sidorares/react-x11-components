@@ -130,6 +130,37 @@ test('block keys carry through a wrap, and by identity when there is no mapping'
   assert.strictEqual(keys.keyAt(0), first);
 });
 
+test('a mark over everything keeps every key, and maps nothing to find them', () => {
+  // Bold over a whole document is a step a paragraph, none of which moves a
+  // position; mapping each block through each step was a third of the
+  // command in a long document.
+  const blocks = Array.from({ length: 40 }, (_, i) => p(`paragraph ${i}`));
+  const state = EditorState.create({ doc: doc(...blocks) });
+  const keys = new BlockKeys(state.doc);
+  const before = [];
+  for (let at = 0, i = 0; i < state.doc.childCount; i++) {
+    before.push([at, keys.keyAt(at)]);
+    at += state.doc.child(i).nodeSize;
+  }
+  const tr = state.tr.addMark(0, state.doc.content.size, M.strong.create());
+  assert.ok(tr.steps.length > 1, 'a step a paragraph');
+  let mapped = 0;
+  const mapResult = tr.mapping.mapResult.bind(tr.mapping);
+  tr.mapping.mapResult = (pos, assoc) => {
+    mapped++;
+    return mapResult(pos, assoc);
+  };
+  keys.update(tr.doc, tr.mapping);
+  assert.strictEqual(mapped, 0, 'nothing to map: no step moved anything');
+  for (const [at, key] of before) {
+    assert.strictEqual(keys.keyAt(at as number), key, `the block at ${at}`);
+  }
+  assert.ok(
+    tr.doc.child(3).firstChild!.marks.some((m) => m.type === M.strong),
+    'and it is bold',
+  );
+});
+
 test('block keys stay one per block, where it is, through a run of edits', () => {
   // Re-keyed from the edit rather than from the whole document: the blocks
   // before and after what changed keep their keys and only move. Whatever
