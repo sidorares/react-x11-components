@@ -124,6 +124,11 @@ export function registerHtmlView(): void {
   });
 }
 
+/** How many widths' sizes a document keeps (`HtmlViewNode._sizeAt`): the
+ *  two a frame of a resize asks, and a little slack for a drag that turns
+ *  back. */
+const SIZES_KEPT = 4;
+
 /** What changed, and therefore how far back up the pipeline to go. */
 const enum Stale {
   Nothing = 0,
@@ -145,6 +150,11 @@ export class HtmlViewNode extends Node {
   private _mediaBand = -1;
   private _documentHeight = 0;
   private _documentWidth = 0;
+  /** What the document came to at the widths it was last laid out at, while
+   *  nothing a layout reads has changed, and the viewport height those
+   *  layouts were made under (`_sizeAt`). */
+  private _sizes = new Map<number, { width: number; height: number }>();
+  private _sizesUnder = -1;
   private _textPoints: number[] | null = null;
   /** Whether code points and code units are the same index — true unless
    *  the text carries surrogate pairs. null until checked. */
@@ -386,6 +396,8 @@ export class HtmlViewNode extends Node {
       this._sweep();
       if (this._stale < Stale.Style) this._stale = Stale.Style;
     }
+    // the sizes other widths came to were read from what just changed
+    if (this._stale !== Stale.Nothing) this._sizes.clear();
     if (this._stale === Stale.Nothing && this._laidOutWidth === target) return;
 
     if (this._stale >= Stale.Style || !this._cascade) {
@@ -403,6 +415,10 @@ export class HtmlViewNode extends Node {
     if (!cascade) return;
     cascade.viewportWidth = target;
     cascade.viewportHeight = this._viewportHeight();
+    if (cascade.viewportHeight !== this._sizesUnder) {
+      this._sizes.clear();
+      this._sizesUnder = cascade.viewportHeight;
+    }
 
     if (this._stale >= Stale.Boxes || !this._tree) {
       const look = this._deviceLook();
@@ -431,6 +447,11 @@ export class HtmlViewNode extends Node {
       this._documentWidth = result.width;
       this._documentHeight = result.height;
       this._laidOutWidth = target;
+      this._sizes.delete(target);
+      this._sizes.set(target, { width: result.width, height: result.height });
+      if (this._sizes.size > SIZES_KEPT) {
+        this._sizes.delete(this._sizes.keys().next().value!);
+      }
       this._reportControls();
     }
     this._stale = Stale.Nothing;
@@ -472,11 +493,40 @@ export class HtmlViewNode extends Node {
    */
   override measureContent({ width }: MeasureConstraints): MeasuredSize {
     const offered = Number.isFinite(width) ? width : 800;
-    this._prepare(offered);
+    const size = this._sizeAt(offered);
     return {
-      width: Math.ceil(Math.min(this._documentWidth, offered)),
-      height: Math.ceil(this._documentHeight),
+      width: Math.ceil(Math.min(size.width, offered)),
+      height: Math.ceil(size.height),
     };
+  }
+
+  /**
+   * The size the document comes to at `width`.
+   *
+   * Core asks a leaf for its height at the width it was measured at as well
+   * as at the one it has now (`probeHeightFloors`), to learn whether a
+   * relayout changed what the leaf needs — so every frame of a resize asks
+   * two widths, and the boxes hold one. Laying the document out at the old
+   * width to answer, and then at the new one again for the pass after, was
+   * three whole passes a frame. The size a width came to is kept instead,
+   * and answers until anything a layout reads changes: the source, the
+   * styles, a resource, the viewport height. Nothing but a size comes from
+   * it — paint and the text accessors read the boxes, which are only ever
+   * laid out for real (`_prepare`).
+   */
+  private _sizeAt(width: number): { width: number; height: number } {
+    const target = Math.max(1, Math.floor(width));
+    if (
+      target !== this._laidOutWidth &&
+      this._stale === Stale.Nothing &&
+      (this._props().domRevision ?? 0) === this._reportedDomRevision &&
+      this._viewportHeight() === this._sizesUnder
+    ) {
+      const known = this._sizes.get(target);
+      if (known) return known;
+    }
+    this._prepare(width);
+    return { width: this._documentWidth, height: this._documentHeight };
   }
 
   override applyProps(

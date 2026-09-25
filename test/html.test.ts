@@ -1479,6 +1479,69 @@ metric('an edit lays out again only the text it changed', async () => {
 });
 
 metric(
+  'a resize lays the document out once a step, at the new width',
+  async () => {
+    // Core asks a leaf for its height at the width it was measured at as well
+    // as at the one it has now (`probeHeightFloors`). The document answered
+    // the old width by laying itself out there, and the new one again for the
+    // pass after: three passes over all of its text a frame of a resize.
+    const paras = [
+      'The first paragraph of the document, which wraps.',
+      'A second one, a little longer than the first, and wrapping too.',
+      'And a third.',
+    ];
+    const doc = (width: number) =>
+      h(
+        'box',
+        { style: { width, height: 300, flexDirection: 'column' } },
+        h(
+          'box',
+          { style: { flexGrow: 1, overflow: 'scroll' } },
+          h(Html, {
+            source: paras.map((p) => `<p>${p}</p>`).join(''),
+            partial: false,
+            'data-testname': 'doc',
+          }),
+        ),
+      );
+    const result = await renderX11(doc(400), {
+      width: 440,
+      height: 600,
+      fonts: FONTS!,
+    });
+    const el = view(screen.getByTestName('doc') as DrawnNode);
+    await act();
+    const end = el.textContent().length;
+    const shape = () => ({
+      height: el.measureContent({
+        width: el.abs.width,
+        height: Infinity,
+        widthMode: 'at-most',
+        heightMode: 'unconstrained',
+      }).height,
+      caret: el.textCaretRect(end),
+    });
+    const first = shape();
+    for (const width of [360, 300, 360, 400]) {
+      const laid = await laidOutDuring(el, async () => {
+        await act(() => result.rerender(doc(width)));
+        await act();
+      });
+      for (const p of paras) {
+        assert.strictEqual(
+          laid.filter((t) => t === p).length,
+          1,
+          `at ${width}: "${p.slice(0, 12)}…" laid out ${laid.filter((t) => t === p).length} times`,
+        );
+      }
+    }
+    // …and back where it started, it is where it started: a size kept for a
+    // width is never a layout for it
+    assert.deepStrictEqual(shape(), first);
+  },
+);
+
+metric(
   'a kept layout hit-tests the element of the parse it is shown for',
   async () => {
     // The layout of the first paragraph is the one the first parse made;
