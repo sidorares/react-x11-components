@@ -1342,7 +1342,13 @@ What to know before changing it:
   edit before them. `keys.ts` maps each block's key through the
   transaction's steps (by identity when there is no mapping), and a block
   asks the view for its position when it needs one. Textblock children are
-  never keyed.
+  never keyed. Only what the transaction changed is re-keyed: the top-level
+  blocks the two documents share at either end are the same node objects,
+  keep their keys and only move, so a keystroke costs the block it lands
+  in, where re-keying the document cost six milliseconds a key at 2 MB.
+  And a block whose node, key and place are what they were gets its last
+  element back (`blockElement` in `render.ts`), so React reconciles the
+  block a key changed rather than every block in the window.
 - **`InlineMap` is the one bridge** between ProseMirror positions (UTF-16, an
   inline leaf counts one) and what `<richtext>` draws (code points, an image
   as its alt text, widgets with no document width, the filler an empty block

@@ -25,13 +25,23 @@
 // `test/rich-text-editor-model.test.ts` asks it the rest.
 import type { Node as PMNode } from 'prosemirror-model';
 import type { Mappable } from 'prosemirror-transform';
+import { spliceAll } from '../internal/splice.js';
+
+/** A block: its key, where it starts, and the node it is. */
+interface Entry {
+  key: string;
+  pos: number;
+  node: PMNode;
+}
 
 export class BlockKeys {
   private counter = 0;
-  /** Block start position → key, for the current document. */
-  private byPos = new Map<number, string>();
-  private posByKey = new Map<string, number>();
-  private nodeByKey = new Map<string, PMNode>();
+  /** Every block, in document order — which is the order of their starts,
+   *  so a position is found by bisection. */
+  private entries: Entry[] = [];
+  private byKey = new Map<string, Entry>();
+  /** The document the entries describe. */
+  private doc: PMNode | null = null;
 
   constructor(doc: PMNode) {
     this.update(doc, null);
@@ -40,22 +50,32 @@ export class BlockKeys {
   /** How many blocks the document has — every non-inline node but the
    *  document itself. */
   get size(): number {
-    return this.byPos.size;
+    return this.entries.length;
   }
 
   /** The key of the block that starts at `pos`, if one does. */
   keyAt(pos: number): string | undefined {
-    return this.byPos.get(pos);
+    const entries = this.entries;
+    let lo = 0;
+    let hi = entries.length - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      const at = entries[mid].pos;
+      if (at === pos) return entries[mid].key;
+      if (at < pos) lo = mid + 1;
+      else hi = mid - 1;
+    }
+    return undefined;
   }
 
   /** Where the block under `key` starts now. */
   posOf(key: string): number | undefined {
-    return this.posByKey.get(key);
+    return this.byKey.get(key)?.pos;
   }
 
   /** The node the block under `key` is now. */
   nodeOf(key: string): PMNode | undefined {
-    return this.nodeByKey.get(key);
+    return this.byKey.get(key)?.node;
   }
 
   /**
@@ -63,14 +83,54 @@ export class BlockKeys {
    * transactions) that produced it from the one the keys were last built
    * for; null when nothing knows how the two relate.
    *
-   * O(blocks), which is the right order: 10,000 paragraphs is a millisecond,
-   * and the render that follows touches only the blocks whose node changed.
+   * The top-level blocks the two documents share at either end — the same
+   * node objects, which is what ProseMirror's structural sharing leaves
+   * everywhere an edit did not reach — keep their keys, and the blocks
+   * after the edit only move. What lies between is keyed as the whole
+   * document used to be, on every keystroke: a mapped start first, then a
+   * surviving node, then a fresh key. So a keystroke costs the block it
+   * lands in plus a pass that adds a number to each block after it, where
+   * it cost a walk of the document and three maps built from scratch —
+   * six milliseconds a key in a 2 MB document.
    */
   update(doc: PMNode, mapping: Mappable | null): void {
+    const was = this.doc;
+    this.doc = doc;
+    // the top-level children the two documents share at either end
+    let head = 0;
+    let tail = 0;
+    if (was) {
+      const shared = Math.min(was.childCount, doc.childCount);
+      while (head < shared && was.child(head) === doc.child(head)) head++;
+      while (
+        tail < shared - head &&
+        was.child(was.childCount - 1 - tail) ===
+          doc.child(doc.childCount - 1 - tail)
+      ) {
+        tail++;
+      }
+    }
+    let from = 0; // where the changed children start, in both documents
+    for (let i = 0; i < head; i++) from += doc.child(i).nodeSize;
+    let wasTo = from;
+    if (was) {
+      for (let i = head; i < was.childCount - tail; i++) {
+        wasTo += was.child(i).nodeSize;
+      }
+    }
+    let to = from;
+    for (let i = head; i < doc.childCount - tail; i++) {
+      to += doc.child(i).nodeSize;
+    }
+    const entries = this.entries;
+    const first = this._firstAtOrAfter(from);
+    const end = this._firstAtOrAfter(wasTo);
+    const old = entries.slice(first, end);
+
     // 1. Where each old block's start went.
     const carried = new Map<number, string>();
     if (mapping) {
-      for (const [pos, key] of this.byPos) {
+      for (const { pos, key } of old) {
         const result = mapping.mapResult(pos, 1);
         // the token after the start is the block's own opening — gone means
         // the block is gone, merged into whatever preceded it
@@ -81,39 +141,67 @@ export class BlockKeys {
     // 2. Which old node objects are still here, for when nothing mapped.
     const byNode = new Map<PMNode, string[]>();
     const carriedKeys = new Set(carried.values());
-    for (const [key, node] of this.nodeByKey) {
+    for (const { key, node } of old) {
       if (carriedKeys.has(key)) continue;
       const list = byNode.get(node);
       if (list) list.push(key);
       else byNode.set(node, [key]);
     }
+    for (const { key } of old) this.byKey.delete(key);
 
-    const byPos = new Map<number, string>();
-    const posByKey = new Map<string, number>();
-    const nodeByKey = new Map<string, PMNode>();
-    doc.descendants((node, pos) => {
+    // 3. The changed children, keyed.
+    const fresh: Entry[] = [];
+    const used = new Set<string>();
+    const visit = (node: PMNode, pos: number): boolean => {
       if (node.isInline) return false;
       let key = carried.get(pos);
-      if (key !== undefined && posByKey.has(key)) key = undefined;
+      if (key !== undefined && used.has(key)) key = undefined;
       if (key === undefined) {
         const list = byNode.get(node);
         while (list && list.length > 0) {
           const candidate = list.shift()!;
-          if (!posByKey.has(candidate)) {
+          if (!used.has(candidate)) {
             key = candidate;
             break;
           }
         }
       }
       if (key === undefined) key = `b${(this.counter++).toString(36)}`;
-      byPos.set(pos, key);
-      posByKey.set(key, pos);
-      nodeByKey.set(key, node);
+      used.add(key);
+      const entry = { key, pos, node };
+      fresh.push(entry);
+      this.byKey.set(key, entry);
       // a textblock's children are inline: nothing below it has a key
       return !node.isTextblock;
-    });
-    this.byPos = byPos;
-    this.posByKey = posByKey;
-    this.nodeByKey = nodeByKey;
+    };
+    let at = from;
+    for (let i = head; i < doc.childCount - tail; i++) {
+      const child = doc.child(i);
+      if (visit(child, at)) {
+        const base = at + 1;
+        child.descendants((node, pos) => visit(node, base + pos));
+      }
+      at += child.nodeSize;
+    }
+
+    // 4. The blocks after them moved, and are otherwise as they were.
+    const shift = to - wasTo;
+    if (shift !== 0) {
+      for (let i = end; i < entries.length; i++) entries[i].pos += shift;
+    }
+    spliceAll(entries, first, end - first, fresh);
+  }
+
+  /** The index of the first block starting at or after `pos`. */
+  private _firstAtOrAfter(pos: number): number {
+    const entries = this.entries;
+    let lo = 0;
+    let hi = entries.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (entries[mid].pos < pos) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
   }
 }

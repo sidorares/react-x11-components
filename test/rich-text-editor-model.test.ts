@@ -130,6 +130,119 @@ test('block keys carry through a wrap, and by identity when there is no mapping'
   assert.strictEqual(keys.keyAt(0), first);
 });
 
+test('block keys stay one per block, where it is, through a run of edits', () => {
+  // Re-keyed from the edit rather than from the whole document: the blocks
+  // before and after what changed keep their keys and only move. Whatever
+  // an edit is, every block has a key, the key says where the block is and
+  // which node it is, no key names two blocks, and a block no edit touched
+  // keeps its key.
+  let seed = 7;
+  const rand = (n: number): number => {
+    seed = (Math.imul(seed, 1103515245) + 12345) >>> 0;
+    return seed % n;
+  };
+  const para = (i: number): PMNode => p(`paragraph ${i} of the document`);
+  let state = EditorState.create({
+    doc: doc(...Array.from({ length: 40 }, (_, i) => para(i))),
+  });
+  const keys = new BlockKeys(state.doc);
+  const check = (what: string): void => {
+    const seen = new Set<string>();
+    let count = 0;
+    state.doc.descendants((node, pos) => {
+      if (node.isInline) return false;
+      count++;
+      const key = keys.keyAt(pos);
+      assert.ok(key, `${what}: the block at ${pos} has a key`);
+      assert.ok(!seen.has(key), `${what}: ${key} names one block`);
+      seen.add(key);
+      assert.strictEqual(keys.posOf(key), pos, `${what}: where ${key} is`);
+      assert.strictEqual(keys.nodeOf(key), node, `${what}: what ${key} is`);
+      return !node.isTextblock;
+    });
+    assert.strictEqual(keys.size, count, `${what}: as many keys as blocks`);
+  };
+  /** A text position inside the block at `index` of the top level. */
+  const inside = (index: number): number => {
+    let pos = 0;
+    for (let i = 0; i < index; i++) pos += state.doc.child(i).nodeSize;
+    return pos + 1 + Math.min(3, state.doc.child(index).content.size);
+  };
+  for (let step = 0; step < 120; step++) {
+    const count = state.doc.childCount;
+    const at = rand(count);
+    const before = new Map<PMNode, string>();
+    state.doc.forEach((node, offset) => {
+      before.set(node, keys.keyAt(offset)!);
+    });
+    let tr: Transaction;
+    let what: string;
+    switch (rand(6)) {
+      case 0:
+        what = `typing in block ${at}`;
+        tr = state.tr.insertText('x', inside(at));
+        break;
+      case 1:
+        what = `splitting block ${at}`;
+        tr = state.tr.split(inside(at));
+        break;
+      case 2: {
+        what = `joining block ${at} to the next`;
+        if (at + 1 >= count) continue;
+        let pos = 0;
+        for (let i = 0; i <= at; i++) pos += state.doc.child(i).nodeSize;
+        tr = state.tr.join(pos);
+        break;
+      }
+      case 3: {
+        what = `deleting from block ${at} into a later one`;
+        const to = Math.min(count - 1, at + 1 + rand(3));
+        tr = state.tr.delete(inside(at), inside(to));
+        break;
+      }
+      case 4:
+        what = `inserting a paragraph before block ${at}`;
+        tr = state.tr.insert(
+          inside(at) - 1 - Math.min(3, state.doc.child(at).content.size),
+          para(1000 + step),
+        );
+        break;
+      default: {
+        what = `a whole new document keeping block ${at}`;
+        const next = doc(
+          ...Array.from({ length: count }, (_, i) =>
+            i === at ? state.doc.child(i) : para(2000 + i),
+          ),
+        );
+        keys.update(next, null);
+        state = EditorState.create({ doc: next });
+        check(what);
+        assert.strictEqual(
+          keys.keyAt(inside(at) - 1 - Math.min(3, next.child(at).content.size)),
+          before.get(next.child(at)),
+          `${what}: the kept block keeps its key`,
+        );
+        continue;
+      }
+    }
+    keys.update(tr.doc, tr.mapping);
+    state = state.apply(tr);
+    check(`step ${step}, ${what}`);
+    // a top-level block the edit did not touch is the same node, and keeps
+    // its key
+    state.doc.forEach((node, offset) => {
+      const was = before.get(node);
+      if (was !== undefined) {
+        assert.strictEqual(
+          keys.keyAt(offset),
+          was,
+          `step ${step}, ${what}: an untouched block keeps its key`,
+        );
+      }
+    });
+  }
+});
+
 // --- the inline map ------------------------------------------------------------
 
 const LOOK: InlineLook = {

@@ -147,6 +147,53 @@ function isOrdered(list: PMNode): boolean {
   return domTagOf(list.type.spec, list)?.tag === 'ol';
 }
 
+/**
+ * The element last made for a block, by its node. A block whose node, key
+ * and surroundings are what they were gets that element back, and React
+ * bails out of an element it has rendered before without so much as
+ * comparing its props — so a keystroke reconciles the block it changed,
+ * where it made and compared an element for every block in view: a hundred
+ * of them in a long document's window. Weak, so a node nobody draws any
+ * more takes its element with it.
+ */
+const madeFor = new WeakMap<
+  PMNode,
+  {
+    key: string;
+    ctx: RenderContext;
+    bctx: BlockContext;
+    at: number;
+    register: RowProps['register'] | null;
+    element: ReactElement;
+  }
+>();
+
+function blockElement(
+  node: PMNode,
+  key: string,
+  ctx: RenderContext,
+  bctx: BlockContext,
+  at: number,
+  register: RowProps['register'] | null,
+): ReactElement {
+  const made = madeFor.get(node);
+  if (
+    made &&
+    made.key === key &&
+    made.ctx === ctx &&
+    made.bctx === bctx &&
+    made.at === at &&
+    made.register === register
+  ) {
+    return made.element;
+  }
+  const element = register
+    ? h(BlockRow, { key, blockKey: key, node, ctx, bctx, at, register })
+    : h(BlockView, { key, blockKey: key, node, ctx, bctx });
+  madeFor.set(node, { key, ctx, bctx, at, register, element });
+  return element;
+}
+
 /** The blocks inside `parent`, whose content starts at `contentStart`. */
 export function renderBlocks(
   parent: PMNode,
@@ -158,7 +205,7 @@ export function renderBlocks(
   parent.forEach((child, offset) => {
     const pos = contentStart + offset;
     const key = ctx.view.keys.keyAt(pos) ?? `p${pos}`;
-    out.push(h(BlockView, { key, blockKey: key, node: child, ctx, bctx }));
+    out.push(blockElement(child, key, ctx, bctx, -1, null));
   });
   return out;
 }
@@ -288,17 +335,7 @@ export function renderBlockRange(
   doc.forEach((child, offset, index) => {
     if (index < first || index >= last) return;
     const key = ctx.view.keys.keyAt(offset) ?? `p${offset}`;
-    out.push(
-      h(BlockRow, {
-        key,
-        blockKey: key,
-        node: child,
-        ctx,
-        bctx: PLAIN,
-        at: index,
-        register,
-      }),
-    );
+    out.push(blockElement(child, key, ctx, PLAIN, index, register));
   });
   return out;
 }

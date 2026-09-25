@@ -131,11 +131,36 @@ export function useBlockWindow(inputs: BlockWindowInputs): BlockWindowState {
   }
   heights.sync(rows, estimate);
 
+  /**
+   * One drawn block into the index, for the window's trim: it drops a block
+   * only once the index knows the height it is laid out at, and a scroll
+   * reaches the blocks behind it long before `measure` below has run — so
+   * it dropped none, and a scroll through a long document kept every block
+   * it passed mounted (the flick `<Table>` and `<Tree>` had, and the same
+   * hook: `measure` on the window's inputs).
+   */
+  const measureDrawn = useCallback(
+    (id: RowKey, at: number): boolean => {
+      const drawn = nodes.current.get(id);
+      if (!drawn || drawn.at !== at || !(drawn.node.abs.height > 0)) {
+        return false;
+      }
+      heights.measure(
+        id,
+        at,
+        drawn.node.abs.height / scaleOf(drawn.node) + gapRef.current,
+      );
+      return heights.isMeasured(at);
+    },
+    [heights],
+  );
+
   const win = useVirtualWindow({
     box,
     heights,
     rows,
     exact: false,
+    measure: measureDrawn,
     virtualizing,
     overscan: DEFAULT_OVERSCAN,
     prefetch: DEFAULT_PREFETCH,
