@@ -3660,6 +3660,20 @@ test('a drag step re-renders the card that moved and no other', async () => {
   );
 });
 
+/**
+ * Real time until `ready()` holds, or `ms` has gone by. A dash tick waits
+ * out twice what the pane's frames have been costing (`_tickCost`), so a
+ * slow machine — a CI runner painting through the in-process server — ticks
+ * later than a fast one, and a fixed wait for "two ticks" is a flake there:
+ * it failed on Node 20 and 24 runners that passed on Node 22.
+ */
+async function until(ready: () => boolean, ms = 3000): Promise<void> {
+  const end = Date.now() + ms;
+  while (!ready() && Date.now() < end) {
+    await new Promise((r) => setTimeout(r, 20));
+  }
+}
+
 test('a dash tick repaints neither the minimap nor the controls', async () => {
   // The panels draw no dashes. Asked to repaint on every change to the
   // pane, dash ticks included, an idle pane with one animated edge kept
@@ -3690,7 +3704,7 @@ test('a dash tick repaints neither the minimap nor the controls', async () => {
     own(...a);
   };
   reasons.length = 0;
-  await new Promise((r) => setTimeout(r, 200));
+  await until(() => ticks.length >= 2);
   assert.ok(ticks.length >= 2, 'the dash moved');
   assert.deepStrictEqual(reasons, [], 'and the panels were left alone');
 });
@@ -3718,7 +3732,7 @@ test('a dash tick claims only what the pane shows of its edges', async () => {
     if (a[2] === 'animation') claims.push(a[1] as (typeof claims)[number]);
     own(...a);
   };
-  await new Promise((r) => setTimeout(r, 200));
+  await until(() => claims.length >= 2);
   assert.ok(claims.length >= 2, 'the dash moved');
   const box = node.contentBox();
   for (const claim of claims) {
@@ -3836,7 +3850,7 @@ test('the dashes sit a pan out, and every step of it moves the pixels', async ()
   await act();
   assert.strictEqual(ticks, 0, 'no tick in the middle of the pan');
   assert.strictEqual(moved, steps, 'and every step was a copy');
-  await new Promise((r) => setTimeout(r, 300));
+  await until(() => ticks >= 2);
   assert.ok(ticks >= 2, `the dashes march again once it stops (${ticks})`);
 });
 
