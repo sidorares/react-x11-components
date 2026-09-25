@@ -28,15 +28,18 @@ comparable with these; the method is.
 | react-x11  | #698 a scrollbar thumb drag scrolls whole device pixels                           | released, 2.22.3    |
 | react-x11  | #700 column spines, exact-config copies, the absolutize skip                      | released, 2.22.4    |
 | react-x11  | #702 a document in a rounded card, and a virtual table, scroll by blitting        | released, 2.22.5    |
+| react-x11  | #704 the width pass shapes only the text a floor is read from                     | released, 2.22.6    |
 | ntk        | #373, #375 coverage cropped to the clip; `fillRects` under a clip                 | released, 8.12.1    |
 | ntk        | #377 glyph runs past 16-bit coordinates culled, not thrown                        | released, 8.12.2    |
 | ntk        | #379 a layout reads the face once; bidi skipped for text nothing reverses         | released, 8.12.3    |
+| ntk        | #381 a prewarm answers the first layout; a family's faces warm together           | released, 8.12.4    |
 | components | #128 `<Flow>` GL renderer and its perf work, maps label shaping, lockfile         | open                |
 | components | #130 a long flick keeps the virtual window to its budget                          | merged              |
 | components | #131 code editor: long lines in pieces, scroll blit                               | merged              |
 | components | #132 code editor: a wheel notch scrolls a notch                                   | merged              |
 | components | #133 code editor: an edit costs the lines it changes                              | merged              |
 | components | #134 rich text editor: a keystroke costs the block it lands in                    | merged              |
+| components | #135 `<Html>`: an edit lays out again only the text it changed                    | open                |
 
 ## Method
 
@@ -494,7 +497,9 @@ none failed. The numbers are the new baseline:
 npx tsx scripts/bench/sweep/tabulate.ts new.jsonl scripts/bench/sweep/results-2026-09-25.jsonl
 ```
 
-marks what a later sweep moved. They are this machine's numbers and no other's.
+marks what a later sweep moved. They are this machine's numbers and no other's. Round 7, after it, moved some of them on purpose —
+the Markdown and HTML mounts and edits, and every first paint on X11 — so a
+sweep after round 7 is the one to compare the next round with.
 
 An arrow compares a cell with the first measurement of the round that worked
 on it: the first Flow matrix (already past the stress view's 2 → 13 fps
@@ -638,6 +643,78 @@ applied:
 None of the four is a regression, and the baseline file holds the median of
 the three reruns with both PRs applied for each of them.
 
+## Round 7: the still-open list
+
+After the final sweep, the items it left open, in the order of what they cost
+someone using the component.
+
+### `<Markdown>` first paint: the width pass (react-x11 #704)
+
+Of a 1.94 s first paint on Cocoa, 1.05 s was the content floors' width pass:
+the whole tree laid out with no room on offer, every paragraph set a word to
+a line, for min-content widths that almost nothing reads. A width floor is
+written only on a row's items; a paragraph down a column has none and adds
+into no extent that has one.
+
+The pass now marks the leaves whose min-content width nothing reads, and
+their measure function answers a zero size without shaping them;
+`contentSpan` leaves the extents nobody reads unmeasured and walks on to the
+rows inside. A leaf is marked only where its answer cannot reach anything
+read: every box above it is as wide as something other than its content (a
+named width, or a column stretching it), no column above it wraps, and none
+hands out a share of space its height changed — which is how a height
+becomes a width, through an aspect ratio, a wrapping column or an image
+sized to its height.
+
+What did not work at first: the first version guarded widths only, and was
+wrong for two arrangements yoga turned out to have — a fixed-height column
+whose shrinking aspect-ratio box gives up the space a paragraph takes (a
+growing one, checked the same way, does not), and a box pinned to both edges
+of a column as tall as its content. Tightening to "every column above is as
+tall as its content" was safe and found nothing: core gives a scroll pane
+`flexBasis: 0` and `minHeight: 0`, so the walk stopped at the document's own
+pane and the first paint was unchanged. The rule that shipped asks the
+narrower question — does a column with a height of its own hold anything
+that grows or gives way in the pass. The differential test has one
+arrangement per guard, and each of nine mutations fails it.
+
+First paint, 600 KB of Markdown: Cocoa 1.86 → 1.24 s, X11 2.08 → 1.56 s.
+
+### X11 startup font matching (ntk #381)
+
+Five synchronous `fc-match` spawns sat on the first frame of the Markdown
+mount, 613 ms. The one for regular text duplicated the connect-time
+prewarm, whose answer reached only the event loop — held, for the whole
+first frame, by the render that needed it. A prewarm now writes its answer
+to files as well (shell builtins only), and a synchronous miss for a pattern
+in flight waits on those instead of spawning; the default family's four
+faces prewarm at connect, and any other family's four start together on its
+first miss. The "prewarm children cannot be read in time" dead end of round
+6 was right about the event loop and wrong about the answer: the file is
+readable without it.
+
+First paint on XQuartz: Markdown 1.53 → 0.99 s (with #704), `<Html>` 1.02 →
+0.66 s, `<RichTextEditor>` 0.73 → 0.22 s, `<CodeEditor>` 0.33 → 0.18 s.
+
+### `<Html>` edit and append (components #135)
+
+Three quarters of an edit was CoreText setting paragraphs exactly as it had
+the pass before. Text layouts are now kept under what went into them (runs,
+styles, width, alignment), two generations deep. What had made them
+unshareable was the element each run carried for hit testing, which pinned a
+layout to its parse; the element is now found from where the run's text sits
+in the document, which also made hit testing inside a paragraph work on the
+Cocoa engine, whose runs come back without their spans.
+
+An edit or an append to 670 KB of HTML: Cocoa 355 → 128 ms, X11 202 → 93 ms.
+
+### `<Table>` jumps: nothing to fix
+
+The probe jumps ten times a second, so 20–28 fps is two or three frames a
+jump, at 8–14 ms each — the new window mounted and measured. The number read
+like a problem because it was a frame rate of something that is not a
+stream of frames.
+
 ## Lessons
 
 1. **Look for caches that never hit.** Identity-keyed caches handed a new
@@ -666,29 +743,28 @@ the three reruns with both PRs applied for each of them.
    Every change here was measured where it was made; only the final sweep
    asks whether a later one undid it — and it has to be read with reruns,
    because a sweep of 226 cells has a few outliers by construction.
+9. **A cache whose entries carry identity cannot outlive what they were made
+   for.** `<Html>`'s layouts could not survive a re-parse while each run
+   named its element; moving the element out, and finding it from the
+   document instead, made them content-keyed.
+10. **A guard that is safe can still be useless — measure it before
+    believing it.** The width pass's first safe rule stopped at every scroll
+    pane, which is where documents live.
 
 ## Still open
 
-Ordered by practical impact.
+Ordered by practical impact, after round 7.
 
-- **`<Markdown>` first paint** (1.8 s Cocoa, 2.1 s X11 for 600 KB): core's
-  width floors lay out every paragraph broken at every opportunity for its
-  min-content width (1.07 s of it on Cocoa). Options: measure unbreakable
-  pieces with a per-face width cache (exactness against CoreText's line
-  metrics is the risk), a native `minContentWidth` in appkit, or width
-  floors measured only where a row reads them.
-- **`<Html>` edit and append** (350 ms Cocoa, 200 ms X11 for 600 KB): the
-  whole pipeline runs again. Reusing unchanged paragraphs' layouts across
-  passes needs the DOM element moved out of the text runs first — a reused
-  layout would otherwise hand out an element from the old parse.
 - **Reflow** (both document components): the text engines shape again at
   every width. Shape once, break many — a CTTypesetter kept per paragraph —
   needs an appkit native.
-- **X11 startup font matching** (about 0.5 s, see round 6).
+- **`<Markdown>` first paint** (1.24 s Cocoa, 0.99 s X11 for 600 KB): what
+  is left is the height floors (~300 ms), React's render (~350 ms in
+  development, less in production) and the layout.
+- **`<Html>` edit and append** (128 ms Cocoa, 93 ms X11): the re-parse, the
+  cascade and the box tree run whole; the text engine no longer does.
 - **Cocoa scroll's double copy** (about 2 ms a frame at 2x, round 4).
 - **`<CodeEditor>`**: row-precise edit claims; imprecise far-jump
   highlighting.
 - **`<RichTextEditor>`**: bold over everything, large pastes, a very long
   paragraph.
-- **`<Table>` jumps**: a far jump (the `jump` action) paints 20–28 fps with
-  9–15 ms frames on both backends. Not looked at this round.
