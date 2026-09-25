@@ -52,8 +52,8 @@ import {
   ChartContainer,
   XAxis,
   YAxis,
-} from '../../src/index.js';
-import type { ChartConfig } from '../../src/index.js';
+} from '../../src/charts/index.js';
+import type { ChartConfig } from '../../src/charts/index.js';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun'];
 
