@@ -1504,3 +1504,84 @@ test('typing at the end of a long line shapes the piece it lands in, not the lin
   );
   assert.strictEqual(node.value, `${line}xxxxx`);
 });
+
+test('a jump far into a fresh file paints a guess, then the tokens the walk found', async () => {
+  // The first jump to the end of a file tokenized every line above it
+  // first. Now the lines in view run from a guess — here the top level,
+  // wrong, since a block opened on line 0 never closes — and the tokenizer
+  // walks there in the background and tells the editor, which repaints.
+  let runs = 0;
+  const language = lineModeLanguage<{ open: boolean }>({
+    name: 'blocks',
+    startState: () => ({ open: false }),
+    runLine(text, state) {
+      runs++;
+      if (text === '<<') state.open = true;
+      return text
+        ? [
+            {
+              from: 0,
+              to: text.length,
+              type: state.open ? 'comment' : 'keyword',
+            },
+          ]
+        : [];
+    },
+  });
+  const value = Array.from({ length: 20_000 }, (_, i) =>
+    i === 0 ? '<<' : `line ${i}`,
+  ).join('\n');
+  const { ctx, windowNode } = await renderX11(
+    h(CodeEditor, {
+      defaultValue: value,
+      language,
+      lineNumbers: true,
+      style: { flexGrow: 1 },
+    }),
+    { width: 400, height: 300, screen: { width: 1000, height: 1000 } },
+  );
+  const node = editorNode();
+  await act();
+  // the walk held until the guess has been painted, so the frame shows it
+  // whatever the timing
+  const tok = (
+    node as unknown as {
+      _tok: { guessedTo: number; worker: unknown; work(): void };
+    }
+  )._tok;
+  const work = tok.work;
+  let held = true;
+  tok.work = function (this: typeof tok) {
+    if (!held) return work.call(this);
+    this.worker = null;
+  };
+  runs = 0;
+  node.moveCaret({ line: 19_999, ch: 0 }, false);
+  assert.ok(runs < 300, `the jump ran ${runs} lines`);
+  await act();
+  assert.ok(tok.guessedTo >= 0, 'the lines in view are a guess');
+  const guessed = await editorPixels(ctx, node);
+  held = false;
+  tok.work();
+  const start = Date.now();
+  while (tok.guessedTo >= 0) {
+    assert.ok(Date.now() - start < 10_000, 'the walk finished');
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  await act();
+  const walked = await editorPixels(ctx, node);
+  assert.ok(
+    !Buffer.from(guessed).equals(Buffer.from(walked)),
+    'the guess was painted, and then corrected',
+  );
+  await act(() => {
+    (windowNode as unknown as { invalidate(all: boolean): void }).invalidate(
+      true,
+    );
+  });
+  assert.ok(
+    Buffer.from(walked).equals(Buffer.from(await editorPixels(ctx, node))),
+    'the corrected frame is what a full repaint paints',
+  );
+  await cleanup();
+});

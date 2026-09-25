@@ -83,6 +83,25 @@ Override `copyState` and `stateEquals` together when the state is not a flat
 bag of primitives. `lineModeLanguage(mode)` is the layer underneath, for a
 mode that tokenizes a whole line at once rather than through a stream.
 
+**A line far past what has been tokenized is answered from a guess.** The
+engine tokenizes lazily, from the last line it has a state for down to the
+line it is asked about, and stops early where an edit's effect does. Asked
+about a line more than a thousand lines past that point — the end of a file
+opened a moment ago, or a line a search jumped to — it does not tokenize
+everything in between. It runs that line from the nearest state within a
+hundred lines above it, or else from the start state at the least indented
+of those lines, which is taken to be at the top level. That is CodeMirror
+5's answer to the same jump. The lines in between are then tokenized in the
+background, 500 lines per turn of the event loop. Where that pass reaches a
+guessed line with the state the guess assumed, it keeps the guessed lines
+as they are; where it does not, it tokenizes them again and calls the
+host's `invalidate(fromLine)`, and the editor repaints. On a freshly opened
+50,000-line TypeScript file, jumping to the end went from 298 to 38 ms on
+macOS and from 207 to 24 ms on XQuartz. A guess is wrong only when the line
+sits inside something that opened more than a hundred lines above it, such
+as a long comment or template string, and it stays wrong on screen until
+the background pass arrives, a fraction of a second later.
+
 ## Adapters to the grammar worlds
 
 ```ts

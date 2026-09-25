@@ -117,10 +117,11 @@ export interface LineEdit {
 
 /**
  * What the editor hands an engine at creation time. `invalidate(fromLine)`
- * is for engines that tokenize asynchronously (Lezer reparsing on a debounce,
- * an LSP answering semantic tokens): call it when lines at or below
- * `fromLine` have new tokens, and the editor repaints and pulls again.
- * Synchronous engines never need it.
+ * is for tokens that change after they were asked for (Lezer reparsing on a
+ * debounce, an LSP answering semantic tokens, the stream engine correcting a
+ * line it answered from a guess): call it when lines at or below `fromLine`
+ * have new tokens, and the editor repaints and pulls again. An engine that
+ * only ever answers exactly never needs it.
  */
 export interface TokenizerHost {
   invalidate(fromLine: number): void;
