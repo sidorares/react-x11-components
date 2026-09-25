@@ -93,6 +93,11 @@ export interface LineText {
   /** Code-unit offset within the layout's own text that `textStart` maps to,
    *  so a document index can be turned into a caret index in this layout. */
   layoutStart: number;
+  /** Any offset in the layout's own text as a document index — how a run
+   *  under the pointer finds the element whose text it is. Per pass: the
+   *  layout may be one an earlier pass made (`TextLayoutCache`), and the
+   *  document index is this parse's. */
+  spans: { documentAt(offset: number): number };
 }
 
 export interface AtomicPlacement {

@@ -1363,7 +1363,7 @@ function cocoaShaped(el: HtmlViewNode): void {
 }
 
 metric(
-  "runs that come back without their spans (react-x11's Cocoa engine) paint and hit-test without throwing",
+  "runs that come back without their spans (react-x11's Cocoa engine) paint, and hit-test through the document's text",
   async () => {
     const { node } = await render(
       '<style>p{margin:0}.hl{background:#ffee55}</style>' +
@@ -1411,10 +1411,120 @@ metric(
       'a highlight has no span to read its colour from',
     );
 
-    // Inside the link: no span, so no href, and the element under the point
-    // is the paragraph rather than the anchor.
-    assert.strictEqual(el.hrefAtPoint(x, y), null);
-    assert.strictEqual(el.elementAtPoint(x, y)?.name, 'p');
+    // Inside the link: no span, and no need of one — the run's place in the
+    // document text is what finds the anchor.
+    assert.strictEqual(el.hrefAtPoint(x, y), 'https://example.test/x');
+    assert.strictEqual(el.elementAtPoint(x, y)?.name, 'a');
+  },
+);
+
+// --- layouts kept across passes ------------------------------------------------
+//
+// An edit re-parses the document and lays it out again, and laying the text
+// out was most of that. A layout is kept under what went into it
+// (`TextLayoutCache`), so a pass asks the text engine only for what changed.
+
+/** The texts the engine is asked to lay out while `during` runs. */
+async function laidOutDuring(
+  el: HtmlViewNode,
+  during: () => Promise<void>,
+): Promise<string[]> {
+  const engine = (el as unknown as { app: { fonts: FontsLike } }).app.fonts;
+  const inner = engine.layout;
+  const laid: string[] = [];
+  engine.layout = function (content, style, options) {
+    laid.push(content.map((r) => r.text).join(''));
+    return inner.call(this, content, style, options);
+  };
+  try {
+    await during();
+  } finally {
+    engine.layout = inner;
+  }
+  return laid;
+}
+
+metric('an edit lays out again only the text it changed', async () => {
+  const doc = (word: string) =>
+    h(
+      'box',
+      { style: { width: 400, flexDirection: 'column' } },
+      h(Html, {
+        source:
+          '<h1>A title</h1><p>The first paragraph, unchanged.</p>' +
+          `<p>The second one, which is ${word}.</p>` +
+          '<ul><li>a list item</li></ul><p>And the last.</p>',
+        partial: false,
+        'data-testname': 'doc',
+      }),
+    );
+  const result = await renderX11(doc('edited'), {
+    width: 440,
+    height: 600,
+    fonts: FONTS!,
+  });
+  const el = view(screen.getByTestName('doc') as DrawnNode);
+  const laid = await laidOutDuring(el, async () => {
+    await act(() => result.rerender(doc('changed')));
+    await waitFor(() =>
+      assert.ok(el.textContent().includes('changed'), 'the edit arrived'),
+    );
+    await act();
+  });
+  assert.deepStrictEqual(
+    laid,
+    ['The second one, which is changed.'],
+    'the rest came from the last pass',
+  );
+});
+
+metric(
+  'a kept layout hit-tests the element of the parse it is shown for',
+  async () => {
+    // The layout of the first paragraph is the one the first parse made;
+    // the anchor under the pointer has to be the second parse's.
+    const doc = (word: string) =>
+      h(
+        'box',
+        { style: { width: 400, flexDirection: 'column' } },
+        h(Html, {
+          source:
+            '<p>see <a id="x" href="https://example.test/x">the link</a> now</p>' +
+            `<p>and ${word}</p>`,
+          partial: false,
+          'data-testname': 'doc',
+        }),
+      );
+    const result = await renderX11(doc('one'), {
+      width: 440,
+      height: 600,
+      fonts: FONTS!,
+    });
+    const el = view(screen.getByTestName('doc') as DrawnNode);
+    const laid = await laidOutDuring(el, async () => {
+      await act(() => result.rerender(doc('two')));
+      await waitFor(() => assert.ok(el.textContent().includes('two')));
+      await act();
+    });
+    assert.ok(!laid.some((t) => t.includes('the link')), 'kept, not laid out');
+    const caret = el.textCaretRect(6);
+    assert.ok(caret, 'the paragraph is laid out');
+    const found = el.elementAtPoint(caret.x + 1, caret.y + caret.height / 2);
+    const anchor = (function find(node: unknown): unknown {
+      const n = node as { attribs?: { id?: string }; children?: unknown[] };
+      if (n.attribs?.id === 'x') return n;
+      for (const child of n.children ?? []) {
+        const hit = find(child);
+        if (hit) return hit;
+      }
+      return null;
+    })(el.document);
+    assert.ok(anchor, 'the new parse has the anchor');
+    assert.strictEqual(found, anchor, 'the anchor of this parse, not the last');
+    assert.strictEqual(
+      el.hrefAtPoint(caret.x + 1, caret.y + caret.height / 2),
+      'https://example.test/x',
+    );
   },
 );
 

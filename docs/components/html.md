@@ -151,10 +151,10 @@ element: the `TextRun` vocabulary ntk's text layout takes, the per-run
 decoration painter, and the bidi-correct selection bands. See
 [richtext](richtext.md) — including its caveat about react-x11's Cocoa text
 engine, which hands runs back without their spans: there, inline
-`background` and `text-decoration` draw nothing and a point inside a
-paragraph resolves to the block rather than the `<a>` or `<span>` under
-it, so `hrefAtPoint` answers `null`. The document still lays out, draws
-and selects.
+`background` and `text-decoration` draw nothing. Hit testing does not need
+the span: a point inside a paragraph finds the `<a>` or `<span>` under it
+from where its text sits in the document, on every engine, so
+`hrefAtPoint` answers there too. The document lays out, draws and selects.
 
 **Form controls are real widgets, not pictures of them.** A `<select>` in a
 document drops the same menu as a `<Select>` in the window around it, because
@@ -259,6 +259,18 @@ the document. The selection walks prune the same way — by each subtree's
 document range, and by ink-bounds distance for hit testing — so a drag costs
 the paragraphs it crosses. And a paragraph is one glyph batch: ntk's text
 layout draws all of its lines in a single composite.
+
+**Text layouts are kept from one pass to the next.** An edit re-parses the
+document and lays it out again — any character of an HTML string can change
+any box — and most of a layout pass was the text engine setting paragraphs
+it had set the pass before. So each is kept under what went into it (the
+runs' text and styles, the width, the alignment), and a pass asks the engine
+only for what changed: an edit or an append to a 600 KB document went from
+355 to 128 ms on macOS and from 202 to 93 ms on XQuartz. A run carries no
+element for this to work — a layout made for one parse is shown for the
+next — which is why hit testing goes through the document's text index
+rather than through the run. The pass before's layouts are all that is
+kept, so a document costs one pass of them and the ones an edit replaced.
 
 ## Types
 
