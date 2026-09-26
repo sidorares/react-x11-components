@@ -2552,6 +2552,17 @@ test('a background-position keyword says which axis it is on', async () => {
   assert.deepStrictEqual(at('c'), [0, 10], 'in the shorthand');
 });
 
+metric("a table's width includes its borders", async () => {
+  // HTML's rendering rules give tables `box-sizing: border-box`, so mail's
+  // `<table width="600" border="1">` is 600 pixels wide, borders and all
+  const { node } = await render(
+    '<table id="t" style="width:200px;border:10px solid;border-spacing:0">' +
+      '<tr><td>x</td></tr></table>',
+  );
+  const t = boxOf(view(node), 't');
+  assert.strictEqual(t.width, 200);
+});
+
 metric("a table's height is shared among its rows", async () => {
   // CSS 2.1 17.5.3: the height is a least height, and what the rows come
   // short of it goes to them; `max-height` holds it back
