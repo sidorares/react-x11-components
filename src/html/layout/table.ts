@@ -14,16 +14,17 @@
 import { AUTO, isPct, resolveOrNull } from '../css/values.js';
 import type { Len } from '../css/values.js';
 import { Box } from './boxes.js';
-import { measureIntrinsicWidth, moveTo, resolveEdges } from './block.js';
+import {
+  clampHeight,
+  layoutBlockIn,
+  measureIntrinsicWidth,
+  moveContent,
+  moveTo,
+  resolveEdges,
+} from './block.js';
 import type { LayoutContext } from './block.js';
-
-interface Cell {
-  box: Box;
-  row: number;
-  column: number;
-  colSpan: number;
-  rowSpan: number;
-}
+import { gridOf, rowsOf } from './grid.js';
+import type { Cell } from './grid.js';
 
 /** Lay out a table's insides. Returns the content height. */
 export function layoutTable(
@@ -31,20 +32,15 @@ export function layoutTable(
   ctx: LayoutContext,
   contentWidth: number,
 ): number {
-  const rows: Box[] = [];
-  const captions: Box[] = [];
-  for (const child of table.children) {
-    if (child.kind === 'table-caption') captions.push(child);
-    else if (child.kind === 'table-row-group') {
-      for (const row of child.children) {
-        if (row.kind === 'table-row') rows.push(row);
-      }
-    } else if (child.kind === 'table-row') rows.push(child);
-  }
+  const { rows, captions } = rowsOf(table);
 
   const { cells, columnCount } = gridOf(rows);
-  if (!columnCount)
-    return layoutCaptionsOnly(captions, ctx, table, contentWidth);
+  table.captionTop = 0;
+  table.captionBottom = 0;
+  if (!columnCount) {
+    layoutCaptions(captions, ctx, table);
+    return 0;
+  }
 
   const style = table.style;
   const spacing = style.borderCollapse === 'collapse' ? 0 : style.borderSpacing;
@@ -59,12 +55,19 @@ export function layoutTable(
       : autoColumns(cells, columnCount, available, ctx, contentWidth);
 
   // --- place ---------------------------------------------------------------
-  let y = table.contentY;
-  for (const caption of captions) {
-    resolveEdges(caption, contentWidth);
-    ctx.layoutSubtree(caption, contentWidth);
-    moveTo(caption, table.contentX, y);
-    y += caption.height;
+  // an auto table is at least as wide as its widest caption can be
+  // (CSS 2.1 17.5.2)
+  if (style.width === AUTO && captions.length) {
+    const room = captionMinimum(captions, ctx) - table.horizontalExtra - gaps;
+    const sum = widths.reduce((a, b) => a + b, 0);
+    if (room > sum) {
+      for (let c = 0; c < columnCount; c += 1) {
+        widths[c] +=
+          sum > 0
+            ? (widths[c] / sum) * (room - sum)
+            : (room - sum) / columnCount;
+      }
+    }
   }
 
   const columnX: number[] = new Array<number>(columnCount);
@@ -82,7 +85,10 @@ export function layoutTable(
   const tableContentWidth = style.width === AUTO ? used : contentWidth;
   if (style.width === AUTO)
     table.width = tableContentWidth + table.horizontalExtra;
+  layoutCaptions(captions, ctx, table);
 
+  const top = table.contentY + table.captionTop;
+  let y = top;
   const rowTop: number[] = new Array<number>(rows.length);
   const rowHeight: number[] = new Array<number>(rows.length).fill(0);
   y += spacing;
@@ -121,6 +127,30 @@ export function layoutTable(
     if (missing > 0) rowHeight[last] += missing;
   }
 
+  // A table's own height, within its least and greatest, is a least
+  // height: what its rows come short of it goes to them, in proportion to
+  // what they have (CSS 2.1 17.5.3)
+  const wanted = resolveOrNull(style.height, table.percentHeightBase);
+  if (rows.length) {
+    const extraBox = table.verticalExtra;
+    const set =
+      wanted === null
+        ? 0
+        : style.boxSizing === 'border-box'
+          ? wanted
+          : wanted + extraBox;
+    const inner = clampHeight(table, set) - extraBox;
+    let total = 0;
+    for (const h of rowHeight) total += h;
+    const extra = inner - total - spacing * (rows.length + 1);
+    if (extra > 0) {
+      for (let r = 0; r < rows.length; r += 1) {
+        rowHeight[r] +=
+          total > 0 ? (extra * rowHeight[r]) / total : extra / rows.length;
+      }
+    }
+  }
+
   for (let r = 0; r < rows.length; r += 1) {
     rowTop[r] = y;
     y += rowHeight[r] + spacing;
@@ -134,14 +164,27 @@ export function layoutTable(
     const width = spannedWidth(widths, cell, spacing);
     const inner = cell.box.height;
     // `vertical-align` inside a cell moves the *content*, not the box: the
-    // box fills the row, and the content sits top, middle or bottom in it.
+    // box fills the row, background and all, and the content sits top,
+    // middle or bottom in it.
     let offset = 0;
     const va = cell.box.style.verticalAlign;
     if (va === 'middle') offset = Math.max(0, (height - inner) / 2);
     else if (va === 'bottom') offset = Math.max(0, height - inner);
-    moveTo(cell.box, columnX[cell.column], rowTop[cell.row] + offset);
+    moveTo(cell.box, columnX[cell.column], rowTop[cell.row]);
+    moveContent(cell.box, offset);
     cell.box.width = width;
-    cell.box.height = Math.max(inner, height - offset);
+    cell.box.height = Math.max(inner, height);
+  }
+
+  // where the grid lines fell, for the collapsed borders drawn along them
+  const collapsed = table.collapsed;
+  if (collapsed && collapsed.columns === columnCount) {
+    const last = columnCount - 1;
+    collapsed.lineX = columnX.map((cx) => cx - table.x);
+    collapsed.lineX.push(columnX[last] + widths[last] - table.x);
+    collapsed.lineY = rowTop.map((ry) => ry - table.y);
+    const bottom = rows.length - 1;
+    collapsed.lineY.push(rowTop[bottom] + rowHeight[bottom] - table.y);
   }
 
   for (let r = 0; r < rows.length; r += 1) {
@@ -164,23 +207,55 @@ export function layoutTable(
       child.y;
   }
 
-  return y - table.contentY;
+  return y - top;
 }
 
-function layoutCaptionsOnly(
-  captions: Box[],
-  ctx: LayoutContext,
-  table: Box,
-  contentWidth: number,
-): number {
-  let y = table.contentY;
+/**
+ * A table's captions, which are outside the table box (CSS 2.1 17.4): as
+ * wide as its border box, the ones on top above its border, and the ones
+ * at the bottom laid out here and placed below it by `finishCaptions`,
+ * once the table's height is known.
+ */
+function layoutCaptions(captions: Box[], ctx: LayoutContext, table: Box): void {
+  let y = table.y;
   for (const caption of captions) {
-    resolveEdges(caption, contentWidth);
-    ctx.layoutSubtree(caption, contentWidth);
-    moveTo(caption, table.contentX, y);
-    y += caption.height;
+    // laid out at the offset its margins give it across the table, which
+    // is where it stays across
+    layoutBlockIn(caption, ctx, table.width);
+    const height = caption.marginTop + caption.height + caption.marginBottom;
+    if (caption.style.captionSide === 'bottom') {
+      table.captionBottom += height;
+      continue;
+    }
+    moveTo(caption, table.x + caption.x, y + caption.marginTop);
+    y += height;
+    table.captionTop += height;
   }
-  return y - table.contentY;
+}
+
+/** The narrowest the widest caption can be, margins in: its own width
+ *  where it has one, and its longest word where it has not. */
+function captionMinimum(captions: Box[], ctx: LayoutContext): number {
+  let widest = 0;
+  for (const caption of captions) {
+    const width = measureIntrinsicWidth(caption, ctx, 1);
+    widest = Math.max(widest, width + caption.marginLeft + caption.marginRight);
+  }
+  return widest;
+}
+
+/** The table box has its height: the captions go around it, the bottom
+ *  ones below it, and the box grows to hold them. */
+export function finishCaptions(table: Box): void {
+  if (!table.captionTop && !table.captionBottom) return;
+  let y = table.y + table.captionTop + table.height;
+  for (const caption of table.children) {
+    if (caption.kind !== 'table-caption') continue;
+    if (caption.style.captionSide !== 'bottom') continue;
+    moveTo(caption, table.x + caption.x, y + caption.marginTop);
+    y += caption.marginTop + caption.height + caption.marginBottom;
+  }
+  table.height += table.captionTop + table.captionBottom;
 }
 
 function spannedWidth(widths: number[], cell: Cell, spacing: number): number {
@@ -188,47 +263,6 @@ function spannedWidth(widths: number[], cell: Cell, spacing: number): number {
   const last = Math.min(widths.length - 1, cell.column + cell.colSpan - 1);
   for (let c = cell.column; c <= last; c += 1) width += widths[c];
   return width + spacing * (last - cell.column);
-}
-
-/**
- * Assign every cell a row and a column, honouring `colspan` and `rowspan`.
- * The occupancy grid is what makes a `rowspan` in an earlier row push a
- * later row's cells to the right, which is the bug every naive table
- * renderer ships with.
- */
-function gridOf(rows: Box[]): { cells: Cell[]; columnCount: number } {
-  const cells: Cell[] = [];
-  const occupied: boolean[][] = [];
-  let columnCount = 0;
-
-  const mark = (r: number, c: number): void => {
-    (occupied[r] ??= [])[c] = true;
-  };
-  const taken = (r: number, c: number): boolean => occupied[r]?.[c] === true;
-
-  for (let r = 0; r < rows.length; r += 1) {
-    let c = 0;
-    for (const box of rows[r].children) {
-      if (box.kind !== 'table-cell') continue;
-      while (taken(r, c)) c += 1;
-      const colSpan = Math.max(1, spanAttr(box, 'colspan'));
-      const rowSpan = Math.max(1, spanAttr(box, 'rowspan'));
-      cells.push({ box, row: r, column: c, colSpan, rowSpan });
-      for (let dr = 0; dr < rowSpan; dr += 1) {
-        for (let dc = 0; dc < colSpan; dc += 1) mark(r + dr, c + dc);
-      }
-      c += colSpan;
-      columnCount = Math.max(columnCount, c);
-    }
-  }
-  return { cells, columnCount };
-}
-
-function spanAttr(box: Box, name: string): number {
-  const raw = box.el?.attribs?.[name];
-  if (!raw) return 1;
-  const n = parseInt(raw, 10);
-  return Number.isFinite(n) && n > 0 ? Math.min(n, 1000) : 1;
 }
 
 /** `table-layout: fixed` — the first row and any `width` decide, and the

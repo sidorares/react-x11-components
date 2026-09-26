@@ -206,6 +206,129 @@ test('a broken rule does not eat the rest of the sheet', () => {
   assert.strictEqual(h1.declarations[0].value, 'red');
 });
 
+test('escapes resolve in selectors, names and values', () => {
+  const sheet = parseStylesheet(
+    '\\64\\69\\76 { \\63\\6F\\6C\\6F\\72: \\67\\72\\65\\65\\6E }',
+  );
+  assert.deepStrictEqual(
+    sheet.rules.map((r) => [
+      r.selector,
+      r.declarations[0].prop,
+      r.declarations[0].value,
+    ]),
+    [['\\64\\69\\76', 'color', 'green']],
+  );
+});
+
+test('a rule runs to its block: a stray semicolon or a bare @ is part of it', () => {
+  // CSS Syntax: a style rule's selector is everything up to its block, so
+  // `@ import "x"; div {…}` is one rule whose selector is not one. A stray
+  // `;` used to end the sheet there, and `@ import` read as an at-rule let
+  // the rule after it through.
+  const sheet = parseStylesheet(
+    '@ import "red.css"; div { color: red }\n' +
+      'foo; span { color: red }\n' +
+      '@1import "red.css"; em { color: red }\n' +
+      'p { color: green }',
+  );
+  assert.deepStrictEqual(
+    sheet.rules.map((r) => r.selector),
+    ['p'],
+  );
+  assert.deepStrictEqual(sheet.imports, [], 'and nothing is imported');
+});
+
+test('one invalid selector drops its whole group', () => {
+  const sheet = parseStylesheet(
+    '[1digit="true"], div { color: red }\n' +
+      '.-1ident, .three { color: red }\n' +
+      '.-ident, #-ident, .-\\31ident, .x { color: green }\n' +
+      'a, , b { color: red }\n' +
+      'a > { color: red }',
+  );
+  assert.deepStrictEqual(
+    sheet.rules.map((r) => r.selector),
+    ['.-ident', '#-ident', '.-\\31ident', '.x'],
+  );
+});
+
+test('@import counts only first, and never inside @media', () => {
+  const first = parseStylesheet('@charset "utf-8"; @import "a.css"; p {}');
+  assert.deepStrictEqual(first.imports, ['a.css']);
+  const late = parseStylesheet('p { color: red } @import "b.css";');
+  assert.deepStrictEqual(late.imports, [], 'after a rule');
+  const nested = parseStylesheet('@media screen { @import "c.css"; }');
+  assert.deepStrictEqual(nested.imports, [], 'inside @media');
+});
+
+test('only a rule that is one closes the imports', () => {
+  // `@media;` and `@page;` want blocks, `@badat-rule` is no rule, `#` and
+  // `:unknownpseudo` are no selectors: each is dropped as though never
+  // written, and an `@import` after them still counts.
+  for (const sheet of [
+    '@media; @page; @charset; @import "a.css";',
+    '@badat-rule foo; @import "a.css";',
+    '# { color: red } :unknownpseudo { color: red } @import "a.css";',
+  ]) {
+    assert.deepStrictEqual(parseStylesheet(sheet).imports, ['a.css'], sheet);
+  }
+});
+
+test('an escape is read whole, and stays part of its identifier', () => {
+  // six hex digits take the white space after them — a newline included, so
+  // the string goes on — and an escape that names a tab is not a tab
+  const [content, color] = parseDeclarations(
+    'content: "Filler\\\nText\\00000a\n Filler"; color: red \\9',
+  );
+  assert.strictEqual(content.value, '"Filler\\\nText\\00000a\n Filler"');
+  assert.strictEqual(
+    color.value,
+    'red \\9',
+    'left for the value parser to refuse',
+  );
+});
+
+test('a declaration list reads at-rules and junk to where they end', () => {
+  const decls = (text: string) =>
+    parseDeclarations(text).map((d) => `${d.prop}:${d.value}`);
+  assert.deepStrictEqual(decls('color: red; @import "x.css"; color: green'), [
+    'color:red',
+    'color:green',
+  ]);
+  assert.deepStrictEqual(decls('@foo {color: red} color: green'), [
+    'color:green',
+  ]);
+  assert.deepStrictEqual(decls('12; color: green'), ['color:green']);
+  assert.deepStrictEqual(decls('color: green; 12 color: red'), ['color:green']);
+  assert.deepStrictEqual(
+    decls(
+      'background: red ! fail; color: red ! important fail; x: 1 !important',
+    ),
+    ['x:1'],
+    'a `!` that is not `!important` is not a value',
+  );
+  assert.deepStrictEqual(
+    decls('content: "a;b" ; background: url(a;b.png)'),
+    ['content:"a;b"', 'background:url(a;b.png)'],
+    'a semicolon in a string or a url ends nothing',
+  );
+});
+
+test('an escaped class selector matches its element', async () => {
+  // Tailwind writes its variants as escapes — `.md\\:flex`, `.w-1\\/2` —
+  // and a rule was filed under the name as written, cut at the escape, so it
+  // was never tried against the element it names.
+  const { node } = await render(
+    '<style>.md\\:green { color: #00ff00 } .w-1\\/2 { width: 50% }</style>' +
+      '<div id="d" class="md:green w-1/2">x</div>',
+  );
+  const d = boxOf(view(node), 'd') as LaidBox & {
+    style: { color: string; width: unknown };
+  };
+  assert.strictEqual(d.style.color, '#00ff00');
+  assert.deepStrictEqual(d.style.width, { pct: 50 });
+});
+
 // --- values -----------------------------------------------------------------
 
 test('lengths resolve the units a computed style can, and keep the ones it cannot', () => {
@@ -943,6 +1066,119 @@ test('quotes open and close by depth, and none writes nothing', async () => {
   );
 });
 
+/** The first letters a document has: the text in each, its colour, and
+ *  whether it floats. */
+async function firstLetters(
+  source: string,
+): Promise<{ text: string; color: string; float: boolean }[]> {
+  const { node } = await render(source, 300);
+  type B = {
+    pseudo: string | null;
+    text: string;
+    isFloat: boolean;
+    style: { color: string };
+    children: B[];
+  };
+  const root = (view(node) as unknown as { _tree: { root: B } })._tree.root;
+  const out: { text: string; color: string; float: boolean }[] = [];
+  const walk = (b: B): void => {
+    if (b.pseudo === 'first-letter') {
+      out.push({
+        text: b.children.map((c) => c.text).join(''),
+        color: b.style.color,
+        float: b.isFloat,
+      });
+    }
+    b.children.forEach(walk);
+  };
+  walk(root);
+  return out;
+}
+
+test('::first-letter takes the letter and the punctuation around it', async () => {
+  const green = parseColor('green');
+  assert.deepStrictEqual(
+    await firstLetters(
+      '<style>p::first-letter{color:green}</style><p>\u201cT\u201d est</p>',
+    ),
+    [{ text: '\u201cT\u201d', color: green, float: false }],
+  );
+  // CSS 2's single colon, down into the first block, inside a span, and a
+  // float for a drop cap; the text is the document's all the same
+  assert.deepStrictEqual(
+    await firstLetters(
+      '<style>div:first-letter{color:green;float:left}</style>' +
+        '<div><p><b>(Q)uick</b></p><p>Later</p></div>',
+    ),
+    [{ text: '(Q)', color: green, float: true }],
+  );
+  assert.strictEqual(
+    await documentText(
+      '<style>p::first-letter{color:green}</style><p>(Q)uick</p>',
+    ),
+    '(Q)uick',
+  );
+});
+
+test('::first-letter is not found past a break or an inline-block', async () => {
+  const css = '<style>p::first-letter{color:green}</style>';
+  assert.deepStrictEqual(await firstLetters(css + '<p><br>Two</p>'), []);
+  assert.deepStrictEqual(
+    await firstLetters(
+      css + '<p><span style="display:inline-block">x</span> y</p>',
+    ),
+    [],
+  );
+  // a float is no part of the line, and an empty element is nothing on it
+  assert.deepStrictEqual(
+    (
+      await firstLetters(
+        css + '<p><span style="float:left">f</span><i></i> Yes</p>',
+      )
+    ).map((l) => l.text),
+    ['Y'],
+  );
+  // `<q>`'s open quote is in a text of its own, and goes with the letter;
+  // a quote that no letter follows on its line gives the style back
+  const q = '<style>q::before{content:open-quote}</style>';
+  assert.deepStrictEqual(
+    (await firstLetters(css + q + '<p><q>Hi</q> there</p>')).map((l) => l.text),
+    ['\u201c', 'H'],
+  );
+  assert.deepStrictEqual(
+    await firstLetters(css + '<p><i>\u201c</i><br>Hi</p>'),
+    [],
+  );
+});
+
+test('an inline-block on a line is painted once', async () => {
+  // the line paints what is placed on it, and the paragraph's own walk
+  // over its children must not paint it again: a translucent fill drawn
+  // twice is twice as opaque, and text twice as heavy
+  const { node } = await render(
+    '<p>a <span style="display:inline-block;width:13px;height:11px;' +
+      'background:rgba(0,0,255,0.5)"></span> <img width="7" height="5"> b</p>',
+  );
+  const fills = await fillsOf(view(node));
+  assert.strictEqual(fills.filter((f) => f.w === 13 && f.h === 11).length, 1);
+});
+
+test('an anchor with no href is drawn as the text around it', async () => {
+  const { node } = await render(
+    '<p style="color:#123456"><a id="n">name</a> <a id="l" href="#">link</a></p>',
+  );
+  const el = view(node);
+  const styleOf = (id: string) =>
+    (
+      boxOf(el, id) as unknown as {
+        style: { color: string; textDecorationLine: string };
+      }
+    ).style;
+  assert.strictEqual(styleOf('n').color, parseColor('#123456'));
+  assert.strictEqual(styleOf('n').textDecorationLine, 'none');
+  assert.notStrictEqual(styleOf('l').color, parseColor('#123456'));
+});
+
 test('a pseudo-element is a box of its own display', async () => {
   const { node } = await render(
     '<style>.cf:after{content:"";display:block;height:10px}' +
@@ -1433,6 +1669,7 @@ interface PlacedText {
 }
 
 interface PlacedLine {
+  x: number;
   y: number;
   width: number;
   height: number;
@@ -1469,9 +1706,17 @@ interface Fill {
   radii: number[] | null;
 }
 
+/** What a paint did, in order: a fill, or a clip pushed or popped. */
+type PaintOp =
+  | ({ op: 'fill' } & Fill)
+  | { op: 'clip'; x: number; y: number; w: number; h: number }
+  | { op: 'save' }
+  | { op: 'restore' };
+
 /** What painting the document fills, in order. The glyphs are left out:
- *  the recorder has nowhere to draw them. */
-async function fillsOf(el: HtmlViewNode): Promise<Fill[]> {
+ *  the recorder has nowhere to draw them. `ops`, when given, gets the fills
+ *  and the clips around them. */
+async function fillsOf(el: HtmlViewNode, ops?: PaintOp[]): Promise<Fill[]> {
   const { paintDocument } = await import('../src/html/paint.js');
   type T = { lines: { texts: { layout: object }[] }[] | null; children: T[] };
   const tree = (el as unknown as { _tree: { root: T } })._tree;
@@ -1493,17 +1738,35 @@ async function fillsOf(el: HtmlViewNode): Promise<Fill[]> {
     set fillStyle(v: unknown) {
       fillStyle = v;
     },
-    save() {},
-    restore() {},
+    save() {
+      ops?.push({ op: 'save' });
+    },
+    restore() {
+      ops?.push({ op: 'restore' });
+    },
     fillRect(x: number, y: number, w: number, h: number) {
-      fills.push({ style: fillStyle, x, y, w, h, radii: null });
+      const fill = { style: fillStyle, x, y, w, h, radii: null };
+      fills.push(fill);
+      ops?.push({ op: 'fill', ...fill });
     },
     beginPath() {},
+    rect(x: number, y: number, w: number, h: number) {
+      path = { x, y, w, h, radii: null };
+    },
     roundRect(x: number, y: number, w: number, h: number, radii: number[]) {
       path = { x, y, w, h, radii };
     },
     fill() {
-      if (path) fills.push({ style: fillStyle, ...path });
+      if (path) {
+        const fill = { style: fillStyle, ...path };
+        fills.push(fill);
+        ops?.push({ op: 'fill', ...fill });
+      }
+      path = null;
+    },
+    clip() {
+      if (path)
+        ops?.push({ op: 'clip', x: path.x, y: path.y, w: path.w, h: path.h });
       path = null;
     },
   };
@@ -1811,6 +2074,46 @@ test('a border style alone draws a medium border, and a negative width is droppe
   );
 });
 
+test('negative or auto padding is no padding value', async () => {
+  // CSS 2.1 8.4: padding is never negative and never `auto`; a declaration
+  // that says so is dropped, and what came before it stands
+  const { node } = await render(
+    '<div id="a" style="padding:5px;padding-left:-1px">a</div>' +
+      '<div id="b" style="padding:5px;padding:2px -3px">b</div>' +
+      '<div id="c" style="padding:5px;padding:auto">c</div>',
+  );
+  const el = view(node);
+  const pads = (id: string) => {
+    const b = boxOf(el, id) as LaidBox & { padLeft: number; padTop: number };
+    return [b.padTop, b.padLeft];
+  };
+  assert.deepStrictEqual(pads('a'), [5, 5]);
+  assert.deepStrictEqual(pads('b'), [5, 5], 'the whole shorthand goes');
+  assert.deepStrictEqual(pads('c'), [5, 5]);
+});
+
+metric("ex is the font's x-height", async () => {
+  const { node } = await render(
+    '<div id="d" style="width:10ex;height:10px;font-size:20px"></div>',
+  );
+  const el = view(node);
+  const fonts = (
+    el as unknown as {
+      app: {
+        fonts: {
+          match(
+            f: string,
+            s: object,
+          ): { metrics(size: number): { xHeight?: number | null } };
+        };
+      };
+    }
+  ).app.fonts;
+  const x = fonts.match('sans-serif', { size: 20 }).metrics(20).xHeight;
+  assert.ok(x && x > 0, 'the face states one');
+  assert.ok(Math.abs(boxOf(el, 'd').width - 10 * x!) < 0.01);
+});
+
 metric('letter-spacing and word-spacing reach the text', async () => {
   const widthOf = async (style: string): Promise<number> => {
     const probe = await render(
@@ -1890,6 +2193,532 @@ test('a no-break space before an image is added back only where the engine strip
     'kept: left alone',
   );
   assert.ok(hungSpaces(engine(false), run).test('a '), 'a space always is');
+});
+
+metric(
+  'an anonymous block takes only what inherits from its parent',
+  async () => {
+    // `text` beside a block is wrapped in an anonymous block, which took the
+    // div's own style: its height, padding and border a second time, so the
+    // paragraph after it sat the height of the div further down.
+    const { node } = await render(
+      '<div id="d" style="margin:0;height:100px;padding:10px;border:2px solid;' +
+        'background:#ff0000">text<p id="p" style="margin:0">para</p></div>',
+    );
+    const el = view(node);
+    const d = boxOf(el, 'd') as LaidBox & { padTop: number };
+    const [anonymous, p] = d.children as (LaidBox & { padTop: number })[];
+    assert.strictEqual(anonymous.el, null, 'the text is in an anonymous block');
+    assert.strictEqual(anonymous.padTop, 0, 'with no padding of its own');
+    assert.strictEqual(
+      anonymous.y,
+      d.y + 12,
+      "inside the div's border and padding",
+    );
+    assert.strictEqual(
+      p.y,
+      anonymous.y + anonymous.height,
+      'and the paragraph after it',
+    );
+    const fills = await fillsOf(el);
+    assert.strictEqual(
+      fills.filter((f) => f.style === '#ff0000').length,
+      1,
+      'the background is painted once',
+    );
+  },
+);
+
+test('a percentage height resolves in a box whose height is set', async () => {
+  const { node } = await render(
+    '<div style="height:200px;padding:5px"><div id="half" style="height:50%">' +
+      '</div>x <span><span id="quarter" style="display:inline-block;' +
+      'width:10px;height:25%"></span></span></div>' +
+      '<div><div id="auto" style="height:50%"></div></div>',
+  );
+  const el = view(node);
+  assert.strictEqual(boxOf(el, 'half').height, 100, 'half of the content box');
+  assert.strictEqual(
+    boxOf(el, 'quarter').height,
+    50,
+    'through the anonymous block and the span around it',
+  );
+  assert.strictEqual(
+    boxOf(el, 'auto').height,
+    0,
+    'and auto under one that grew',
+  );
+});
+
+test("an empty block's margins collapse through it", async () => {
+  // CSS 2.1 8.3.1: nothing parts an empty block's top and bottom margins,
+  // so they and the margins on either side of it are one — the largest
+  const { node } = await render(
+    '<div><p id="a" style="margin:0 0 20px;height:10px"></p>' +
+      '<div style="margin:30px 0"></div>' +
+      '<p id="b" style="margin:10px 0 0;height:10px"></p></div>' +
+      // a min-height that sets the height keeps the margin inside the box
+      '<div id="p" style="min-height:200px"><div style="height:30px;' +
+      'margin-bottom:100px"></div><div id="m"></div></div>' +
+      '<div id="f" style="height:10px"></div>',
+  );
+  const el = view(node);
+  const [a, b, p, m, f] = ['a', 'b', 'p', 'm', 'f'].map((id) => boxOf(el, id));
+  assert.strictEqual(b.y - (a.y + a.height), 30);
+  assert.strictEqual(m.y, p.y + 130, 'the margin goes before the empty block');
+  assert.strictEqual(f.y, p.y + 200, 'and stays inside its parent');
+});
+
+test('html and body at 100% are a window tall, and hold what is longer', async () => {
+  // A percentage height on the root element resolves against the initial
+  // containing block, the viewport (CSS 2.1 10.1): the usual reset is a
+  // window tall, as in a browser. The document is as tall as what
+  // overflows it, so a message longer than the window is not cut off.
+  const { node } = await render(
+    '<html style="height:100%"><body style="height:100%;margin:0">' +
+      '<div id="tall" style="height:900px"></div></body></html>',
+  );
+  const el = view(node) as unknown as {
+    _tree: { root: LaidBox };
+    _documentHeight: number;
+  };
+  const html = el._tree.root.children.find(
+    (b) => (b as LaidBox & { el?: { name: string } }).el?.name === 'html',
+  )!;
+  assert.ok(
+    html.height < 900,
+    `the root element is a window tall: ${html.height}`,
+  );
+  assert.strictEqual(boxOf(view(node), 'tall').height, 900);
+  assert.ok(el._documentHeight >= 900, 'and the document holds all 900px');
+});
+
+metric("a table column is the table's, not a row of its own", async () => {
+  // A <colgroup> was taken for a stray child, wrapped in a row and a cell of
+  // its own, and drawn as one — a table of one row had two.
+  const { node } = await render(
+    '<table id="t" style="border-spacing:0"><colgroup style="border-top:3px ' +
+      'solid #00ff00"><col><col></colgroup><tr><td>a</td><td>b</td></tr></table>',
+  );
+  const el = view(node);
+  type T = LaidBox & { kind: string };
+  const rows: T[] = [];
+  const walk = (b: T): void => {
+    if (b.kind === 'table-row') rows.push(b);
+    (b.children as T[]).forEach(walk);
+  };
+  walk(boxOf(el, 't') as T);
+  assert.strictEqual(rows.length, 1, 'one row');
+  const fills = await fillsOf(el);
+  assert.ok(!fills.some((f) => f.style === '#00ff00'), 'and no column drawn');
+});
+
+metric(
+  'table cells outside a table get one around them, a row a run',
+  async () => {
+    // CSS 2.1 17.2.1: a run of cells is one anonymous row in one anonymous
+    // table — a block one in a block, an inline one in a line — where they
+    // used to be blocks one above the other, or inline-blocks a space apart.
+    const cell = (id: string, text: string) =>
+      `<span id="${id}" style="display:table-cell">${text}</span>`;
+    const { node } = await render(
+      `<div id="block">${cell('b1', 'b')} ${cell('b2', 'c')}</div>` +
+        `<p id="line" style="margin:0"><span>a ${cell('i1', 'b')} ` +
+        `${cell('i2', 'c')} d</span></p>`,
+    );
+    const el = view(node);
+    const [b1, b2, i1, i2] = ['b1', 'b2', 'i1', 'i2'].map((id) =>
+      boxOf(el, id),
+    );
+    assert.strictEqual(b1.y, b2.y, 'side by side in one row');
+    assert.strictEqual(b2.x, b1.x + b1.width, 'with nothing between them');
+    const paragraph = boxOf(el, 'line') as LaidBox & { lines: unknown[] };
+    assert.strictEqual(
+      paragraph.lines.length,
+      1,
+      'the inline table is on the line',
+    );
+    assert.strictEqual(i2.x, i1.x + i1.width, 'its cells as close');
+    assert.strictEqual(i1.y, i2.y);
+  },
+);
+
+metric(
+  'collapsed borders are one border an edge, the widest winning',
+  async () => {
+    // CSS 2.1 17.6.2: cells share the border between them, drawn once and
+    // centred on the edge they meet at, where each used to draw its own and
+    // the rule between two cells was two borders wide
+    const { node } = await render(
+      '<table style="border-collapse:collapse;border:1px solid #0000ff">' +
+        '<tr><td id="a" style="border:4px solid #ff0000">a</td>' +
+        '<td id="b" style="border:2px solid #00ff00">b</td></tr></table>',
+    );
+    const el = view(node);
+    const [a, b] = ['a', 'b'].map((id) => boxOf(el, id));
+    const edges = (box: LaidBox) =>
+      box as unknown as { borderLeft: number; borderRight: number };
+    assert.strictEqual(b.x, a.x + a.width, 'the cells meet');
+    assert.deepStrictEqual(
+      [edges(a).borderRight, edges(b).borderLeft, edges(b).borderRight],
+      [2, 2, 1],
+      'each holds half of the border along its edge',
+    );
+    const fills = await fillsOf(el);
+    const of = (color: string) =>
+      fills.filter((f) => f.style === parseColor(color));
+    assert.deepStrictEqual(of('#0000ff'), [], "the table's border lost");
+    const red = of('#ff0000').filter((f) => f.w === 4);
+    assert.strictEqual(red.length, 2, "a's left edge, and the one between");
+    assert.ok(
+      red.some((f) => f.x === Math.round(b.x) - 2),
+      'centred on the edge the cells share',
+    );
+    assert.strictEqual(of('#00ff00').filter((f) => f.w === 2).length, 1);
+  },
+);
+
+metric(
+  'a hidden border hides an edge, and a style outranks another',
+  async () => {
+    const { node } = await render(
+      '<table style="border-collapse:collapse"><tr>' +
+        '<td id="a" style="border:3px solid #ff0000;border-right-style:hidden">' +
+        'a</td><td id="b" style="border:5px double #00ff00">b</td>' +
+        '<td id="c" style="border:2px dotted #0000ff">c</td>' +
+        '<td id="d" style="border:2px dashed #ff00ff">d</td></tr></table>',
+    );
+    const el = view(node);
+    const left = (id: string) =>
+      (boxOf(el, id) as unknown as { borderLeft: number }).borderLeft;
+    assert.strictEqual(left('b'), 0, '`hidden` beats a wider double border');
+    const fills = await fillsOf(el);
+    const d = boxOf(el, 'd');
+    // between c and d the widths are equal, and dashed outranks dotted
+    assert.ok(
+      fills.some(
+        (f) => f.style === parseColor('#ff00ff') && f.x === Math.round(d.x) - 1,
+      ),
+    );
+  },
+);
+
+metric('a column group draws its borders where they collapse', async () => {
+  const { node } = await render(
+    '<table style="border-collapse:collapse"><colgroup ' +
+      'style="border-top:3px solid #ff0000"><col><col></colgroup>' +
+      '<tr><td>a</td><td>b</td></tr></table>',
+  );
+  const fills = await fillsOf(view(node));
+  assert.strictEqual(
+    fills.filter((f) => f.style === parseColor('#ff0000') && f.h === 3).length,
+    2,
+    'along both of its columns',
+  );
+});
+
+metric(
+  "a cell's box fills its row, and its content is aligned in it",
+  async () => {
+    // `vertical-align: middle` moved the whole cell down, so the row showed
+    // the table's background above every cell shorter than the row
+    const { node } = await render(
+      '<table style="border-spacing:0"><tr><td id="s">a</td>' +
+        '<td id="t" style="height:100px">b</td></tr></table>',
+    );
+    const el = view(node);
+    const [s, t] = [boxOf(el, 's'), boxOf(el, 't')];
+    assert.deepStrictEqual([s.y, s.height], [t.y, t.height]);
+    const [line] = linesOf(el, 's');
+    assert.ok(line.y > s.y + 30, 'the text is in the middle of the box');
+  },
+);
+
+metric("a caption is outside the table's border, above or below", async () => {
+  const { node } = await render(
+    '<table id="t" style="border:5px solid #0000ff"><caption id="c">' +
+      'Title</caption><tr><td>x</td></tr></table>' +
+      '<table id="u" style="border:5px solid #00ff00"><caption id="d" ' +
+      'style="caption-side:bottom">Note</caption><tr><td>y</td></tr></table>',
+  );
+  const el = view(node);
+  const [t, c, u, d] = ['t', 'c', 'u', 'd'].map((id) => boxOf(el, id));
+  const fills = await fillsOf(el);
+  const blue = fills.filter((f) => f.style === parseColor('#0000ff'));
+  const green = fills.filter((f) => f.style === parseColor('#00ff00'));
+  const top = Math.min(...blue.map((f) => f.y));
+  assert.ok(
+    top >= Math.round(c.y + c.height),
+    'the border is below the caption',
+  );
+  // (a border box is painted from a rounded top at a rounded-up height)
+  const bottom = Math.max(...green.map((f) => f.y + f.h));
+  assert.ok(bottom <= Math.round(d.y) + 1, 'and above a caption at the bottom');
+  // an auto table is at least as wide as its caption's longest word
+  assert.strictEqual(c.width, t.width);
+  assert.ok(d.y + d.height <= u.y + u.height, 'the box holds its caption');
+});
+
+test('a background-position keyword says which axis it is on', async () => {
+  const { node } = await render(
+    '<div id="a" style="background-position:bottom"></div>' +
+      '<div id="b" style="background-position:top right"></div>' +
+      '<div id="c" style="background:url(x.png) repeat-x left 10px"></div>',
+  );
+  const el = view(node);
+  const at = (id: string) => {
+    const s = (
+      boxOf(el, id) as unknown as {
+        style: { backgroundPositionX: unknown; backgroundPositionY: unknown };
+      }
+    ).style;
+    return [s.backgroundPositionX, s.backgroundPositionY];
+  };
+  assert.deepStrictEqual(at('a'), [{ pct: 50 }, { pct: 100 }], 'alone');
+  assert.deepStrictEqual(at('b'), [{ pct: 100 }, 0], 'either order');
+  assert.deepStrictEqual(at('c'), [0, 10], 'in the shorthand');
+});
+
+metric("a table's height is shared among its rows", async () => {
+  // CSS 2.1 17.5.3: the height is a least height, and what the rows come
+  // short of it goes to them; `max-height` holds it back
+  const { node } = await render(
+    '<table style="height:200px;border-spacing:0"><tr><td id="a">x</td></tr>' +
+      '<tr><td id="b">y</td></tr></table>' +
+      '<table style="height:300px;max-height:100px;border-spacing:0">' +
+      '<tr><td id="c">z</td></tr></table>',
+  );
+  const el = view(node);
+  const [a, b, c] = ['a', 'b', 'c'].map((id) => boxOf(el, id));
+  assert.ok(
+    Math.abs(a.height + b.height - 200) < 0.01,
+    `${a.height} ${b.height}`,
+  );
+  assert.ok(Math.abs(a.height - b.height) < 0.01, 'in proportion');
+  assert.ok(Math.abs(c.height - 100) < 0.01, `clamped: ${c.height}`);
+});
+
+metric("a footer group's rows come last wherever it stands", async () => {
+  const { node } = await render(
+    '<table><thead><tr><td id="h">h</td></tr></thead>' +
+      '<tfoot><tr><td id="f">f</td></tr></tfoot>' +
+      '<tbody><tr><td id="b">b</td></tr></tbody></table>',
+  );
+  const el = view(node);
+  const [h, f, b] = ['h', 'f', 'b'].map((id) => boxOf(el, id).y);
+  assert.ok(h < b && b < f, 'header, body, footer');
+});
+
+/** The clips standing when a fill of this colour was made, innermost last. */
+function clipsAround(ops: PaintOp[], color: string): PaintOp[][] {
+  const stack: (PaintOp | null)[] = [];
+  const out: PaintOp[][] = [];
+  for (const op of ops) {
+    if (op.op === 'save') stack.push(null);
+    else if (op.op === 'restore') stack.pop();
+    else if (op.op === 'clip') stack[stack.length - 1] = op;
+    else if (op.style === parseColor(color)) {
+      out.push(stack.filter((c): c is PaintOp => c !== null));
+    }
+  }
+  return out;
+}
+
+metric('overflow clips what a box holds to its padding box', async () => {
+  // HTML mail hides its preheader with `max-height: 0; overflow: hidden`,
+  // and a box that did not clip drew it over the message
+  const { node } = await render(
+    '<div id="o" style="overflow:hidden;width:50px;height:20px;' +
+      'padding:2px;border:3px solid #0000ff">' +
+      '<div style="width:200px;height:200px;background:#ff0000"></div>' +
+      '<div style="position:absolute;width:5px;height:5px;' +
+      'background:#00ff00"></div></div>',
+  );
+  const el = view(node);
+  const o = boxOf(el, 'o');
+  const ops: PaintOp[] = [];
+  await fillsOf(el, ops);
+  const [red] = clipsAround(ops, '#ff0000');
+  assert.deepStrictEqual(
+    red.map((c) => c.op === 'clip' && [c.x, c.y, c.w, c.h]),
+    [[Math.floor(o.x) + 3, Math.floor(o.y) + 3, 54, 24]],
+    'the content, clipped to the padding box',
+  );
+  const [blue] = clipsAround(ops, '#0000ff');
+  assert.deepStrictEqual(blue, [], 'and the box itself, not');
+  const [green] = clipsAround(ops, '#00ff00');
+  assert.deepStrictEqual(
+    green,
+    [],
+    'nor a positioned box whose containing block is outside it',
+  );
+});
+
+metric(
+  'an absolute box with auto offsets is where the flow put it',
+  async () => {
+    // CSS 2.1 10.3.7 and 10.6.4: with neither `left` nor `right`, and neither
+    // `top` nor `bottom`, the box takes its static position — where it would
+    // have been in the flow — not its containing block's corner
+    const { node } = await render(
+      '<div id="c" style="padding:10px;margin:0 20px">' +
+        '<p id="p" style="margin:0;height:30px">x</p>' +
+        '<div id="a" style="position:absolute;width:5px;height:5px"></div>' +
+        '<div id="b" style="position:absolute;top:0;width:5px;height:5px">' +
+        '</div></div>',
+    );
+    const el = view(node);
+    const [c, p, a, b] = ['c', 'p', 'a', 'b'].map((id) => boxOf(el, id));
+    assert.deepStrictEqual([a.x, a.y], [c.x + 10, p.y + p.height]);
+    assert.strictEqual(b.x, c.x + 10, 'one axis at a time');
+    assert.strictEqual(b.y, 0);
+  },
+);
+
+metric('a relative box after an absolute one is painted over it', async () => {
+  // both are positioned, and CSS paints positioned boxes in document order
+  // after the flow (CSS 2.1 Appendix E); the relative one was painted with
+  // the flow, under the absolute one
+  const { node } = await render(
+    '<div style="position:absolute;width:30px;height:30px;' +
+      'background:#ff0000"></div>' +
+      '<div style="position:relative;width:30px;height:30px;' +
+      'background:#00ff00"></div><div style="height:10px;' +
+      'background:#0000ff"></div>',
+  );
+  const fills = await fillsOf(view(node));
+  const order = (color: string) =>
+    fills.findIndex((f) => f.style === parseColor(color));
+  assert.ok(order('#0000ff') < order('#ff0000'), 'the flow first');
+  assert.ok(order('#ff0000') < order('#00ff00'), 'then in document order');
+});
+
+metric(
+  'a block with a formatting context of its own sits beside a float',
+  async () => {
+    // CSS 2.1 9.5: an `overflow: hidden` block beside a floated image is a
+    // rectangle in the room the float leaves, where it ran under the image;
+    // a table too wide for the room goes below the floats
+    const { node } = await render(
+      '<div id="c" style="width:400px">' +
+        '<div id="f" style="float:left;width:100px;height:50px"></div>' +
+        '<div id="b" style="overflow:hidden;height:20px">beside</div>' +
+        '<div id="g" style="float:left;width:300px;height:40px"></div>' +
+        '<table id="t" style="width:200px;border-spacing:0"><tr><td>x</td>' +
+        '</tr></table></div>',
+      500,
+    );
+    const el = view(node);
+    const [c, f, b, g, t] = ['c', 'f', 'b', 'g', 't'].map((id) =>
+      boxOf(el, id),
+    );
+    assert.deepStrictEqual([b.x, b.width], [f.x + f.width, c.width - 100]);
+    assert.strictEqual(g.x, f.x + f.width, 'the second float fits beside');
+    assert.ok(t.y >= g.y + g.height, `the table goes below both: ${t.y}`);
+  },
+);
+
+metric('a right-to-left block starts at the right', async () => {
+  // CSS 2.1 10.3.3: the margin that takes the slack is the one at the end,
+  // the left one in a right-to-left containing block; 16.1: the indent is
+  // at the start of the line; 10.3.7: so is an absolute box's static place
+  const { node } = await render(
+    '<div id="c" style="direction:rtl;width:300px;position:relative">' +
+      '<div id="b" style="width:100px;height:10px"></div>' +
+      '<p id="p" style="margin:0;text-indent:20px">word</p>' +
+      '<div id="a" style="position:absolute;width:50px;height:5px"></div>' +
+      '</div>' +
+      '<div style="position:relative;margin-left:100px"><div id="f" ' +
+      'style="position:fixed;left:0;top:0;width:10px;height:10px"></div></div>',
+  );
+  const el = view(node);
+  const [c, b, p, a, f] = ['c', 'b', 'p', 'a', 'f'].map((id) => boxOf(el, id));
+  assert.strictEqual(b.x, c.x + 200, 'a block of a set width');
+  const [line] = linesOf(el, 'p');
+  assert.ok(
+    Math.abs(line.x + line.width - (p.x + p.width - 20)) < 0.5,
+    `a line indented from the right: ${line.x + line.width}`,
+  );
+  assert.strictEqual(a.x, c.x + 250, 'an absolute box with auto offsets');
+  assert.strictEqual(f.x, 0, "and a fixed box's containing block is the view");
+});
+
+metric('an image set display: block is a block', async () => {
+  // mail writes `img { display: block }` to lose the gap under its images;
+  // they stacked on one line as inline images, and one beside a float
+  // went under it
+  const { node } = await render(
+    '<div style="width:300px"><div id="f" style="float:left;width:40px;' +
+      'height:100px"></div><img id="a" width="20" height="20" ' +
+      'style="display:block"><img id="b" width="20" height="20" ' +
+      'style="display:block"></div>',
+  );
+  const el = view(node);
+  const [f, a, b] = ['f', 'a', 'b'].map((id) => boxOf(el, id));
+  assert.strictEqual(b.y, a.y + a.height, 'one below the other');
+  assert.strictEqual(a.x, f.x + f.width, 'beside the float, not under it');
+});
+
+metric("a list item's marker goes where its item is moved", async () => {
+  // a table cell is laid out at the origin and then placed; the marker was
+  // left behind, a bullet at the document's corner
+  const { node } = await render(
+    '<table style="margin-left:60px"><tr><td>' +
+      '<ul style="margin:0"><li id="li">item</li></ul></td></tr></table>',
+  );
+  const el = view(node);
+  const li = boxOf(el, 'li') as LaidBox & { markerX: number; markerY: number };
+  assert.ok(
+    li.markerX < li.x + 40 && li.markerX > li.x - 40,
+    `beside its item: ${li.markerX} by ${li.x}`,
+  );
+  assert.ok(li.markerY >= li.y - 2 && li.markerY < li.y + li.height);
+});
+
+metric('clip shows the part of an absolute box it names', async () => {
+  const { node } = await render(
+    '<div id="a" style="position:absolute;top:0;left:0;width:40px;' +
+      'height:40px;background:#ff0000;clip:rect(5px, 25px, auto, 5px)"></div>' +
+      '<div style="position:absolute;width:40px;height:40px;' +
+      'background:#00ff00;clip:rect(0, 0, 0, 0)"></div>',
+  );
+  const el = view(node);
+  const a = boxOf(el, 'a');
+  const ops: PaintOp[] = [];
+  const fills = await fillsOf(el, ops);
+  const [red] = clipsAround(ops, '#ff0000');
+  assert.deepStrictEqual(
+    red.map((c) => c.op === 'clip' && [c.x, c.y, c.w, c.h]),
+    [[a.x + 5, a.y + 5, 20, 35]],
+    "its background too, and `auto` is the border box's edge",
+  );
+  assert.ok(
+    !fills.some((f) => f.style === parseColor('#00ff00')),
+    'an empty clip shows nothing',
+  );
+});
+
+metric("an inline-block's text sits on the line's baseline", async () => {
+  // CSS 2.1 10.8.1: an inline-block's baseline is its last line box's. Set
+  // bottom-on-baseline, a button's label sat its descent above the text
+  // beside it.
+  const { node } = await render(
+    '<p id="p" style="margin:0">x <span id="ib" style="display:inline-block;' +
+      'padding:4px;border:1px solid">Label</span> y</p>',
+  );
+  const el = view(node);
+  const [line] = linesOf(el, 'p');
+  const [outside] = line.texts;
+  const outsideBaseline =
+    outside.drawY + outside.layout.lines[outside.layoutLine].baseline;
+  const [inner] = linesOf(el, 'ib');
+  const [label] = inner.texts;
+  const labelBaseline =
+    label.drawY + label.layout.lines[label.layoutLine].baseline;
+  assert.ok(
+    Math.abs(labelBaseline - outsideBaseline) < 0.5,
+    `on one baseline: ${labelBaseline} and ${outsideBaseline}`,
+  );
 });
 
 metric('form controls carry default margins from the UA sheet', async () => {

@@ -111,7 +111,19 @@ test suite on both backends, is in
 **Layout:** block flow with margin collapsing, inline formatting with
 bidi and full shaping, `inline-block`, floats and `clear`, lists with their
 markers, tables (the auto algorithm and `table-layout: fixed`, with `colspan`
-and `rowspan`), `position: relative | absolute | fixed`, and `display: flex`.
+and `rowspan`, and the anonymous table CSS builds around table parts that
+have none), `position: relative | absolute | fixed`, and `display: flex`. An
+inline-block sits on its last line's baseline and an inline-table on its
+first row's.
+A table's borders collapse where it asks: one border along each edge of its
+grid, centred on it, chosen from the cells, rows, row groups, columns,
+column groups and the table that meet there as CSS 2.1 17.6.2.1 chooses —
+`hidden` first, then the widest, then the style, then the box. A caption is
+outside the table's border, above it or below it by `caption-side`, and an
+auto table is at least as wide as its caption's longest word. A header
+group's rows are drawn first and a footer group's last, wherever they stand
+in the markup, and a cell's background fills its row whatever
+`vertical-align` does with its content.
 A line with an inline-block or a padded element on it is put in visual order
 a piece at a time — the text engine orders the text inside each piece, and
 the line orders the pieces (UAX #9's L2) — so a right-to-left paragraph with
@@ -119,8 +131,13 @@ an image in it reads right to left, and it is aligned whole: a centred line
 is centred with its images, not text first and the image after it.
 
 **Boxes:** `width`/`height` with `min-`/`max-`, `margin`, `padding`,
-`border` (width, style, colour, radius), `box-sizing`, `overflow`,
-`opacity`, `visibility`, `z-index`. Inline elements have all of it but the
+`border` (width, style, colour, radius), `box-sizing`, `overflow`, `clip`,
+`opacity`, `visibility`, `z-index`. A box whose `overflow` is not `visible`
+clips what it holds to its padding box, rounded where the box is — all of
+it but a positioned box whose containing block is outside — and `scroll`
+and `auto` clip the same, with no scroll bars: the element around the
+document is what scrolls. `clip` shows the part of an absolutely positioned
+box it names. Inline elements have all of it but the
 sizes: an inline box's padding, border and margin take room on its line —
 the start side before its first fragment, the end side after its last, on
 the sides its `direction` says (CSS 2.1 8.6) — and its background and border
@@ -163,9 +180,22 @@ them, so numbered headings and nested outline numbers come out as they do in
 a browser. The generated text is part of the document's text, so a selection
 over it copies it.
 
+**First letters:** `::first-letter` (and `:first-letter`) styles the first
+letter of a block's first line, with the punctuation before and after it, as
+an inline box of its own — or a float, for a drop cap. It is found down
+through the block's inline content and its first child blocks, generated
+content included, and there is none when something other than a letter
+starts the line: a `<br>`, an image, an inline-block. The box sits inside
+whatever the letter is in, so `<p><b>T</b>his` has a bold first letter. An
+opening quote in a text of its own before the letter — `<q>`'s — takes the
+letter's style too.
+
 **Selectors:** everything [css-select] supports — combinators, attribute
 operators, `:nth-child(an+b)`, `:not()` — plus `:hover`, which is answered
-from this renderer's own pointer state. `@media` width and
+from this renderer's own pointer state. Escapes are read wherever they stand,
+so a Tailwind class such as `md:flex`, written `.md\:flex`, matches. A group
+with a selector in it that is not one — an unknown pseudo-class, a name that
+starts with a digit — is dropped whole, as CSS 2.1 drops it. `@media` width and
 `prefers-color-scheme` queries are evaluated — the scheme is the react-x11
 palette's in force, so a `<ThemeProvider colorScheme>` above the element
 answers it and a desktop that switches schemes re-cascades the document.
@@ -175,10 +205,17 @@ answers it and a desktop that switches schemes re-cascades the document.
 animations and transitions, multi-column, shadows, gradients,
 `background-size`, `background-attachment: fixed`, more than one background
 layer (the first is drawn), `position: sticky` (treated as `relative`),
-`::first-letter` and `::first-line`, and an image in `content` (the rest of
-the value is drawn). `border-collapse: collapse` is drawn as the separate
-model with zero spacing. A percentage `height` is `auto` except on an
-absolutely positioned box, whose containing block's height is known first.
+`::first-line`, and an image in `content` (the rest of the value is
+drawn). A `<col>` or a `<colgroup>` takes no part in layout: its width is
+not read, and its borders only where the table's collapse. A percentage
+`height` resolves where the containing block's height is set, and on an
+absolutely positioned box. The initial containing block is the viewport —
+the window's height, since the element sizes to its content — so
+`html, body { height: 100% }` is a window tall and `bottom: 0` with nothing
+positioned around it is the window's bottom, as in a browser; the document
+is as tall as what overflows its root, so nothing longer than the window is
+cut off. A fragment has no root element, and its blocks have the body's
+`auto` height to resolve against.
 Explicit bidi embeddings and overrides (U+202A–U+202E) that open on one side
 of an inline element with padding, border or margin and close on the other
 are resolved on each side of it separately: the text engine is handed the

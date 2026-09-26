@@ -53,6 +53,46 @@ export type Display =
   | 'table-column'
   | 'table-column-group';
 
+export interface ClipRect {
+  top: number | null;
+  right: number | null;
+  bottom: number | null;
+  left: number | null;
+}
+
+/** Whether a length is one `padding` takes: not `auto`, not negative. */
+function validPadding(len: Len | null): boolean {
+  if (len === null || len === AUTO) return false;
+  return typeof len === 'number' ? len >= 0 : len.pct >= 0;
+}
+
+/** `auto`, or `rect()` of four lengths or `auto`s, commas between them or
+ *  not; undefined for anything else, which leaves the value as it was. */
+function parseClip(
+  value: string,
+  ctx: UnitContext,
+): ClipRect | null | undefined {
+  const v = value.trim();
+  if (/^auto$/i.test(v)) return null;
+  const m = /^rect\(([^)]*)\)$/i.exec(v);
+  if (!m) return undefined;
+  const parts = m[1].includes(',')
+    ? m[1].split(',').map((p) => p.trim())
+    : m[1].trim().split(/\s+/);
+  if (parts.length !== 4) return undefined;
+  const edges: (number | null)[] = [];
+  for (const part of parts) {
+    if (/^auto$/i.test(part)) {
+      edges.push(null);
+      continue;
+    }
+    const len = parseLength(part, ctx);
+    if (typeof len !== 'number') return undefined;
+    edges.push(len);
+  }
+  return { top: edges[0], right: edges[1], bottom: edges[2], left: edges[3] };
+}
+
 export type BorderStyle =
   | 'none'
   | 'hidden'
@@ -89,6 +129,7 @@ export interface ComputedStyle {
   cursor: string | null;
   borderCollapse: 'separate' | 'collapse';
   borderSpacing: number;
+  captionSide: 'top' | 'bottom';
   /** Inherited so a `<td>` picks up the table's, which is how authors expect
    *  `text-align` on a `<table>` to behave. */
   tableTextAlignSet: boolean;
@@ -103,6 +144,10 @@ export interface ComputedStyle {
   boxSizing: 'content-box' | 'border-box';
   overflowX: 'visible' | 'hidden' | 'scroll' | 'auto';
   overflowY: 'visible' | 'hidden' | 'scroll' | 'auto';
+  /** `clip: rect(…)`: the part of an absolutely positioned box that shows,
+   *  its edges measured from the border box's top left, a null edge the
+   *  border box's own (CSS 2.1 11.1.2). Null for `auto`. */
+  clip: ClipRect | null;
   opacity: number;
   zIndex: number | 'auto';
   verticalAlign:
@@ -214,6 +259,7 @@ const INHERITED = [
   'cursor',
   'borderCollapse',
   'borderSpacing',
+  'captionSide',
   'tableTextAlignSet',
   'quotes',
 ] as const satisfies readonly (keyof ComputedStyle)[];
@@ -269,7 +315,10 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     listStylePosition: 'outside',
     cursor: null,
     borderCollapse: 'separate',
-    borderSpacing: 2,
+    // CSS's initial value; a `<table>` gets its 2px from the UA sheet, and
+    // an anonymous table, which no sheet names, has none
+    borderSpacing: 0,
+    captionSide: 'top',
     tableTextAlignSet: false,
     quotes: DEFAULT_QUOTES,
 
@@ -280,6 +329,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     boxSizing: 'content-box',
     overflowX: 'visible',
     overflowY: 'visible',
+    clip: null,
     opacity: 1,
     zIndex: AUTO,
     verticalAlign: 'baseline',
@@ -529,6 +579,11 @@ export function applyDeclaration(
       if (name !== 'overflow-x' && y) style.overflowY = y;
       return;
     }
+    case 'clip': {
+      const clip = parseClip(value, ctx);
+      if (clip !== undefined) style.clip = clip;
+      return;
+    }
     case 'opacity': {
       const a = parseAlpha(value);
       if (a !== null) style.opacity = a;
@@ -601,12 +656,12 @@ export function applyDeclaration(
       const keys = SIDE_PROPS[name];
       const parts = splitValue(value).map((p) => parseLength(p, ctx));
       if (parts.some((p) => p === null)) return;
+      // padding is never `auto` and never negative: a value that is either
+      // is no value, and the declaration goes (CSS 2.1 8.4)
+      if (name === 'padding' && !parts.every(validPadding)) return;
       const sides = fourSides(parts as Len[]);
-      // `padding: auto` is not a thing; a stray one computes to zero rather
-      // than making layout branch on an impossible value.
       for (let i = 0; i < 4; i += 1) {
-        const v = name === 'padding' && sides[i] === AUTO ? 0 : sides[i];
-        (style as unknown as Record<string, unknown>)[keys[i]] = v;
+        (style as unknown as Record<string, unknown>)[keys[i]] = sides[i];
       }
       return;
     }
@@ -620,9 +675,8 @@ export function applyDeclaration(
     case 'padding-left': {
       const len = parseLength(value, ctx);
       if (len === null) return;
-      const isPadding = name.startsWith('padding');
-      (style as unknown as Record<string, unknown>)[camel(name)] =
-        isPadding && len === AUTO ? 0 : len;
+      if (name.startsWith('padding') && !validPadding(len)) return;
+      (style as unknown as Record<string, unknown>)[camel(name)] = len;
       return;
     }
 
@@ -728,11 +782,10 @@ export function applyDeclaration(
       return;
     }
     case 'background-position': {
-      const parts = splitValue(value);
-      const x = backgroundPosition(parts[0], ctx);
-      const y = backgroundPosition(parts[1] ?? 'center', ctx);
-      if (x !== null) style.backgroundPositionX = x;
-      if (y !== null) style.backgroundPositionY = y;
+      const pair = positionPair(splitValue(value), ctx);
+      if (!pair) return;
+      style.backgroundPositionX = pair[0];
+      style.backgroundPositionY = pair[1];
       return;
     }
 
@@ -1037,6 +1090,11 @@ export function applyDeclaration(
       if (v === 'collapse' || v === 'separate') style.borderCollapse = v;
       return;
     }
+    case 'caption-side': {
+      const v = value.toLowerCase();
+      if (v === 'top' || v === 'bottom') style.captionSide = v;
+      return;
+    }
     case 'border-spacing': {
       const len = parseLength(splitValue(value)[0] ?? '', ctx);
       if (typeof len === 'number') style.borderSpacing = len;
@@ -1127,6 +1185,44 @@ function borderWidth(value: string, ctx: UnitContext): number | null {
   return typeof len === 'number' && len >= 0 ? len : null;
 }
 
+const HORIZONTAL: Record<string, number> = { left: 0, center: 50, right: 100 };
+const VERTICAL: Record<string, number> = { top: 0, center: 50, bottom: 100 };
+
+/**
+ * A `background-position` as its horizontal and vertical parts. A keyword
+ * says which axis it is on, so one value alone is centred on the other —
+ * `bottom` is the bottom, midway across — and two keywords come in either
+ * order; with a length or a percentage among two, the first is across and
+ * the second down (CSS 2.1 14.2.1).
+ */
+function positionPair(parts: string[], ctx: UnitContext): [Len, Len] | null {
+  if (parts.length === 0 || parts.length > 2) return null;
+  const words = parts.map((p) => p.toLowerCase());
+  const keyword = (w: string) => w in HORIZONTAL || w in VERTICAL;
+  const pct = (n: number): Len => (n === 0 ? 0 : { pct: n });
+  if (parts.length === 1) {
+    const [w] = words;
+    if (w in VERTICAL && !(w in HORIZONTAL)) return [pct(50), pct(VERTICAL[w])];
+    if (keyword(w)) return [pct(HORIZONTAL[w]), pct(50)];
+    const x = backgroundPosition(parts[0], ctx);
+    return x === null ? null : [x, pct(50)];
+  }
+  const [a, b] = words;
+  if (keyword(a) && keyword(b)) {
+    const swap =
+      (a in VERTICAL && !(a in HORIZONTAL)) ||
+      (b in HORIZONTAL && !(b in VERTICAL));
+    const [h, v] = swap ? [b, a] : [a, b];
+    if (!(h in HORIZONTAL) || !(v in VERTICAL)) return null;
+    return [pct(HORIZONTAL[h]), pct(VERTICAL[v])];
+  }
+  if (a in VERTICAL && !(a in HORIZONTAL)) return null;
+  if (b in HORIZONTAL && !(b in VERTICAL)) return null;
+  const x = backgroundPosition(parts[0], ctx);
+  const y = backgroundPosition(parts[1], ctx);
+  return x === null || y === null ? null : [x, y];
+}
+
 function backgroundPosition(
   value: string | undefined,
   ctx: UnitContext,
@@ -1202,7 +1298,7 @@ function applyBackgroundShorthand(
   style.backgroundImage = null;
   style.backgroundRepeat = 'repeat';
   style.backgroundSize = 'auto';
-  const positions: Len[] = [];
+  const positions: string[] = [];
   for (const part of splitValue(layer)) {
     const v = part.toLowerCase();
     if (v.startsWith('url(')) {
@@ -1237,12 +1333,12 @@ function applyBackgroundShorthand(
       style.backgroundColor = c;
       continue;
     }
-    const pos = backgroundPosition(part, ctx);
-    if (pos !== null) positions.push(pos);
+    if (backgroundPosition(part, ctx) !== null) positions.push(part);
   }
-  if (positions.length) {
-    style.backgroundPositionX = positions[0];
-    style.backgroundPositionY = positions[1] ?? { pct: 50 };
+  const pair = positions.length ? positionPair(positions, ctx) : null;
+  if (pair) {
+    style.backgroundPositionX = pair[0];
+    style.backgroundPositionY = pair[1];
   }
 }
 
@@ -1426,6 +1522,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'list-style-position': ['listStylePosition'],
   cursor: ['cursor'],
   'border-collapse': ['borderCollapse'],
+  'caption-side': ['captionSide'],
   quotes: ['quotes'],
   content: ['content'],
   'counter-reset': ['counterReset'],
@@ -1493,6 +1590,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   float: ['float'],
   clear: ['clear'],
   overflow: ['overflowX', 'overflowY'],
+  clip: ['clip'],
   'overflow-x': ['overflowX'],
   'overflow-y': ['overflowY'],
   opacity: ['opacity'],
@@ -1531,6 +1629,8 @@ export function blockify(style: ComputedStyle, inFlexContainer: boolean): void {
     case 'table-header-group':
     case 'table-footer-group':
     case 'table-caption':
+    case 'table-column':
+    case 'table-column-group':
       style.display = 'block';
       return;
     case 'inline-flex':

@@ -32,6 +32,8 @@ import type { ComputedStyle } from './css/style.js';
 import { Box } from './layout/boxes.js';
 import type { BoxTree, LineBox } from './layout/boxes.js';
 import { depthOf, layoutOffsets } from './layout/inline.js';
+import { halves } from './layout/collapse.js';
+import type { CollapsedBorder } from './layout/collapse.js';
 
 export interface Rect {
   x: number;
@@ -78,6 +80,8 @@ export interface PaintOptions {
   canvas?: Rect;
   /** @internal The box whose background went to the canvas instead. */
   canvasSource?: Box | null;
+  /** @internal The boxes clipping what is being painted, outermost first. */
+  clips?: ClipLevel[];
 }
 
 /**
@@ -147,8 +151,8 @@ function buildChildIndexes(box: Box): void {
   let paintable = 0;
   for (const child of box.children) {
     if (child.kind === 'text' || child.kind === 'break') continue;
-    if (child.outOfFlow) (positioned ??= []).push(child);
-    else paintable += 1;
+    if (layered(box, child)) (positioned ??= []).push(child);
+    else if (!onLine(box, child)) paintable += 1;
   }
   if (positioned) {
     // Pre-sorted once per layout instead of filtered and sorted per paint.
@@ -158,9 +162,8 @@ function buildChildIndexes(box: Box): void {
   if (paintable < PAINT_INDEX_MIN) return;
   const boxes: Box[] = [];
   for (const child of box.children) {
-    if (child.kind === 'text' || child.kind === 'break' || child.outOfFlow)
-      continue;
-    boxes.push(child);
+    if (child.kind === 'text' || child.kind === 'break') continue;
+    if (!layered(box, child) && !onLine(box, child)) boxes.push(child);
   }
   const order = boxes.map((_, i) => i);
   order.sort((a, b) => boxes[a].boundsY - boxes[b].boundsY);
@@ -281,14 +284,60 @@ function paintCanvas(
 function paddingBox(box: Box, options: PaintOptions): Rect {
   return {
     x: box.x + box.borderLeft + options.originX,
-    y: box.y + box.borderTop + options.originY,
+    y: frameY(box) + box.borderTop + options.originY,
     width: box.width - box.borderLeft - box.borderRight,
-    height: box.height - box.borderTop - box.borderBottom,
+    height: frameHeight(box) - box.borderTop - box.borderBottom,
   };
+}
+
+/** What the background and border painters read of a box — which an
+ *  inline box's fragment on a line is as well. */
+type Frame = Pick<
+  Box,
+  | 'x'
+  | 'y'
+  | 'width'
+  | 'height'
+  | 'captionTop'
+  | 'captionBottom'
+  | 'borderTop'
+  | 'borderRight'
+  | 'borderBottom'
+  | 'borderLeft'
+  | 'style'
+>;
+
+/** Where a box's background and border go: its border box, which for a
+ *  table leaves out the captions around it (CSS 2.1 17.4). */
+function frameY(box: Frame): number {
+  return box.y + box.captionTop;
+}
+
+function frameHeight(box: Frame): number {
+  return box.height - box.captionTop - box.captionBottom;
 }
 
 function paintBox(ctx: PaintContext, box: Box, options: PaintOptions): void {
   if (!intersects(box, options)) return;
+  // `clip` shows the part of an absolutely positioned box it names, its own
+  // background and borders among it (CSS 2.1 11.1.2)
+  const clip = box.outOfFlow && box.style.clip ? clipOf(box, options) : null;
+  if (clip) {
+    if (clip.w <= 0 || clip.h <= 0) return;
+    if (!pushClip(ctx, clip, null)) {
+      paintContent(ctx, box, options);
+      return;
+    }
+  }
+  paintContent(ctx, box, options);
+  if (clip) ctx.restore();
+}
+
+function paintContent(
+  ctx: PaintContext,
+  box: Box,
+  options: PaintOptions,
+): void {
   const style = box.style;
   const visible = style.visibility === 'visible';
 
@@ -299,9 +348,9 @@ function paintBox(ctx: PaintContext, box: Box, options: PaintOptions): void {
         const area = clampRect(
           options,
           Math.round(box.x + options.originX),
-          Math.round(box.y + options.originY),
+          Math.round(frameY(box) + options.originY),
           Math.ceil(box.width),
-          Math.ceil(box.height),
+          Math.ceil(frameHeight(box)),
         );
         if (area) {
           paintBackgroundImage(
@@ -314,9 +363,31 @@ function paintBox(ctx: PaintContext, box: Box, options: PaintOptions): void {
         }
       }
     }
-    paintBorders(ctx, box, options);
+    if (!box.bordersCollapsed) paintBorders(ctx, box, options);
     if (box.markerText) paintMarker(ctx, box, options);
     if (box.replaced === 'image') paintImage(ctx, box, options);
+  }
+
+  // A box that does not let its content overflow clips it to its padding
+  // box, rounded where the box is (CSS 2.1 11.1.1). Everything inside is
+  // clipped but a positioned box whose containing block is outside: that
+  // is painted once this clip is gone (`paintPositioned`).
+  let level: ClipLevel | null = null;
+  if (clipsOverflow(box)) {
+    // out to whole pixels, so that ink at a fractional edge is not cut
+    const inner = paddingBox(box, options);
+    const x = Math.floor(inner.x);
+    const y = Math.floor(inner.y);
+    const rect = {
+      x,
+      y,
+      w: Math.ceil(inner.x + inner.width) - x,
+      h: Math.ceil(inner.y + inner.height) - y,
+    };
+    if (pushClip(ctx, rect, innerRadii(box))) {
+      level = { box, deferred: [] };
+      (options.clips ??= []).push(level);
+    }
   }
 
   // In-flow and floated descendants first, then the inline content, then the
@@ -335,16 +406,184 @@ function paintBox(ctx: PaintContext, box: Box, options: PaintOptions): void {
   } else {
     for (const child of box.children) {
       if (child.kind === 'text' || child.kind === 'break') continue;
-      if (child.outOfFlow) continue;
+      if (layered(box, child) || onLine(box, child)) continue;
       paintBox(ctx, child, options);
     }
   }
 
   if (box.lines && visible) paintLines(ctx, box, options);
+  if (box.collapsed && visible) paintCollapsedBorders(ctx, box, options);
 
   if (box.positionedPaint) {
-    for (const child of box.positionedPaint) paintBox(ctx, child, options);
+    for (const child of box.positionedPaint) {
+      paintPositioned(ctx, child, options);
+    }
   }
+  if (level) {
+    ctx.restore();
+    options.clips!.pop();
+    for (const child of level.deferred) paintPositioned(ctx, child, options);
+  }
+}
+
+/** A box clipping what it holds, and the positioned boxes inside it that
+ *  escape the clip, waiting for it to end. */
+interface ClipLevel {
+  box: Box;
+  deferred: Box[];
+}
+
+/**
+ * A positioned box, painted under the clips of the boxes its containing
+ * block is inside and no others (CSS 2.1 11.1.1): a clip it escapes puts
+ * it off until that clip ends. A fixed box escapes them all.
+ */
+function paintPositioned(
+  ctx: PaintContext,
+  box: Box,
+  options: PaintOptions,
+): void {
+  const clips = options.clips;
+  if (clips?.length && box.outOfFlow) {
+    let escaped = clips.length;
+    if (box.style.position !== 'fixed') {
+      let containing = box.parent;
+      while (containing?.parent && containing.style.position === 'static') {
+        containing = containing.parent;
+      }
+      escaped = 0;
+      for (let i = clips.length - 1; i >= 0; i -= 1) {
+        if (holds(clips[i].box, containing)) break;
+        escaped += 1;
+      }
+    }
+    if (escaped > 0) {
+      clips[clips.length - escaped].deferred.push(box);
+      return;
+    }
+  }
+  paintBox(ctx, box, options);
+}
+
+/** Whether `inner` is `outer` or inside it. */
+function holds(outer: Box, inner: Box | null): boolean {
+  for (let at = inner; at; at = at.parent) if (at === outer) return true;
+  return false;
+}
+
+/**
+ * Whether a box clips its content: `overflow` other than `visible`, on a
+ * block container (CSS 2.1 11.1.1) — not a table, a row or a row group.
+ * The root element's `overflow` is the viewport's, and so is the
+ * `<body>`'s where the root's is `visible`, an `<html>` the markup left out
+ * among them; the viewport here is the element, which clips anyway.
+ */
+function clipsOverflow(box: Box): boolean {
+  const style = box.style;
+  if (style.overflowX === 'visible' && style.overflowY === 'visible') {
+    return false;
+  }
+  const parent = box.parent;
+  if (!parent) return false;
+  switch (box.kind) {
+    case 'block':
+    case 'table-cell':
+    case 'table-caption':
+    case 'flex':
+      break;
+    default:
+      return false;
+  }
+  const name = box.el?.name;
+  if (name === 'html') return false;
+  if (name === 'body') {
+    if (parent.el?.name !== 'html') return !!parent.parent;
+    return (
+      parent.style.overflowX !== 'visible' ||
+      parent.style.overflowY !== 'visible'
+    );
+  }
+  return true;
+}
+
+/** A box's `clip` region, in window coordinates. */
+function clipOf(
+  box: Box,
+  options: PaintOptions,
+): { x: number; y: number; w: number; h: number } {
+  const clip = box.style.clip!;
+  const left = clip.left ?? 0;
+  const top = clip.top ?? 0;
+  const right = clip.right ?? box.width;
+  const bottom = clip.bottom ?? box.height;
+  const x = Math.round(box.x + options.originX + left);
+  const y = Math.round(box.y + options.originY + top);
+  return {
+    x,
+    y,
+    w: Math.round(box.x + options.originX + right) - x,
+    h: Math.round(box.y + options.originY + bottom) - y,
+  };
+}
+
+/** The radii of a box's padding edge: its border radii less the borders. */
+function innerRadii(box: Box): number[] | null {
+  const radii = box.style.borderRadius;
+  if (!radii.some((r) => r > 0)) return null;
+  const [tl, tr, br, bl] = radii;
+  return [
+    Math.max(0, tl - Math.max(box.borderTop, box.borderLeft)),
+    Math.max(0, tr - Math.max(box.borderTop, box.borderRight)),
+    Math.max(0, br - Math.max(box.borderBottom, box.borderRight)),
+    Math.max(0, bl - Math.max(box.borderBottom, box.borderLeft)),
+  ];
+}
+
+/** Clip what follows to a rectangle, rounded where `radii` are: false
+ *  where the context cannot clip, and nothing was pushed. */
+function pushClip(
+  ctx: PaintContext,
+  rect: { x: number; y: number; w: number; h: number },
+  radii: number[] | null,
+): boolean {
+  if (!ctx.beginPath || !ctx.rect || !ctx.clip) return false;
+  ctx.save();
+  ctx.beginPath();
+  const w = Math.max(0, rect.w);
+  const h = Math.max(0, rect.h);
+  if (radii && ctx.roundRect) ctx.roundRect(rect.x, rect.y, w, h, radii);
+  else ctx.rect(rect.x, rect.y, w, h);
+  ctx.clip();
+  return true;
+}
+
+/**
+ * Whether a child is painted with the positioned boxes, after the flow
+ * rather than in it: an absolutely positioned box, and a relatively
+ * positioned block, which CSS paints among them in document order (CSS 2.1
+ * Appendix E) — a relative box after an absolute one covers it. An inline
+ * or an inline-block is painted by its line.
+ */
+function layered(parent: Box, child: Box): boolean {
+  if (child.outOfFlow) return true;
+  const position = child.style.position;
+  if (position !== 'relative' && position !== 'sticky') return false;
+  return child.kind !== 'inline' && !onLine(parent, child);
+}
+
+/**
+ * Whether a child is painted by its parent's lines rather than as a child:
+ * an inline-block or an image in a line of text is placed on the line, and
+ * `paintLines` paints it there. Painted as a child as well, its text was
+ * drawn twice — darker at every antialiased edge — and a translucent
+ * background had its alpha doubled.
+ */
+function onLine(parent: Box, child: Box): boolean {
+  if (parent.lines === null && parent.kind !== 'inline') return false;
+  if (child.isFloat || child.outOfFlow) return false;
+  return (
+    child.kind !== 'inline' && child.kind !== 'text' && child.kind !== 'break'
+  );
 }
 
 function byZIndex(a: Box, b: Box): number {
@@ -402,7 +641,7 @@ function clampRect(
 
 function paintBackground(
   ctx: PaintContext,
-  box: Box,
+  box: Frame,
   options: PaintOptions,
 ): void {
   const color = box.style.backgroundColor;
@@ -410,9 +649,9 @@ function paintBackground(
   const rect = clampRect(
     options,
     Math.round(box.x + options.originX),
-    Math.round(box.y + options.originY),
+    Math.round(frameY(box) + options.originY),
     Math.ceil(box.width),
-    Math.ceil(box.height),
+    Math.ceil(frameHeight(box)),
   );
   if (!rect) return;
   ctx.fillStyle = inkColor(color as string, box.style.color);
@@ -505,14 +744,14 @@ function paintBackgroundImage(
  */
 function paintBorders(
   ctx: PaintContext,
-  box: Box,
+  box: Frame,
   options: PaintOptions,
 ): void {
   const s = box.style;
   const x = Math.round(box.x + options.originX);
-  const y = Math.round(box.y + options.originY);
+  const y = Math.round(frameY(box) + options.originY);
   const w = Math.ceil(box.width);
-  const h = Math.ceil(box.height);
+  const h = Math.ceil(frameHeight(box));
   if (w <= 0 || h <= 0) return;
 
   const edge = (
@@ -566,6 +805,79 @@ function paintBorders(
       s.borderRightColor,
       false,
     );
+  }
+}
+
+/**
+ * A table's collapsed borders: one per segment of its grid, centred on the
+ * line, reaching across the borders it meets at either end. The winners
+ * are painted last, so where two cross, the corner is the one that won
+ * (CSS 2.1 17.6.2.1). Painted over the cells, as the table's borders are.
+ */
+function paintCollapsedBorders(
+  ctx: PaintContext,
+  table: Box,
+  options: PaintOptions,
+): void {
+  const grid = table.collapsed!;
+  const { rows: R, columns: C, lineX, lineY, horizontal, vertical } = grid;
+  if (lineX.length !== C + 1 || lineY.length !== R + 1) return;
+  const ox = Math.round(table.x + options.originX);
+  const oy = Math.round(table.y + options.originY);
+  const widthOf = (b: CollapsedBorder | null): number => (b ? b.width : 0);
+  const h = (line: number, c: number): number =>
+    c < 0 || c >= C ? 0 : widthOf(horizontal[line * C + c]);
+  const v = (r: number, line: number): number =>
+    r < 0 || r >= R ? 0 : widthOf(vertical[r * (C + 1) + line]);
+  const segments: {
+    border: CollapsedBorder;
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+    horizontal: boolean;
+  }[] = [];
+  for (let line = 0; line <= R; line += 1) {
+    for (let c = 0; c < C; c += 1) {
+      const border = horizontal[line * C + c];
+      if (!border) continue;
+      const start = halves(Math.max(v(line - 1, c), v(line, c)))[0];
+      const end = halves(Math.max(v(line - 1, c + 1), v(line, c + 1)))[1];
+      const x = ox + Math.round(lineX[c]) - start;
+      segments.push({
+        border,
+        x,
+        y: oy + Math.round(lineY[line]) - halves(border.width)[0],
+        w: ox + Math.round(lineX[c + 1]) + end - x,
+        h: border.width,
+        horizontal: true,
+      });
+    }
+  }
+  for (let r = 0; r < R; r += 1) {
+    for (let line = 0; line <= C; line += 1) {
+      const border = vertical[r * (C + 1) + line];
+      if (!border) continue;
+      const start = halves(Math.max(h(r, line - 1), h(r, line)))[0];
+      const end = halves(Math.max(h(r + 1, line - 1), h(r + 1, line)))[1];
+      const y = oy + Math.round(lineY[r]) - start;
+      segments.push({
+        border,
+        x: ox + Math.round(lineX[line]) - halves(border.width)[0],
+        y,
+        w: border.width,
+        h: oy + Math.round(lineY[r + 1]) + end - y,
+        horizontal: false,
+      });
+    }
+  }
+  segments.sort((a, b) => a.border.rank - b.border.rank);
+  for (const s of segments) {
+    if (isTransparent(s.border.color)) continue;
+    const rect = clampRect(options, s.x, s.y, s.w, s.h);
+    if (!rect) continue;
+    ctx.fillStyle = s.border.color;
+    fillEdge(ctx, rect, s.horizontal ? s.x : s.y, s.border.style, s.horizontal);
   }
 }
 
@@ -836,11 +1148,13 @@ function paintInlineBoxes(
     const leftEnds = rtl ? f.end : f.start;
     const rightEnds = rtl ? f.start : f.end;
     const [tl, tr, br, bl] = box.style.borderRadius;
-    const fragment = {
+    const fragment: Frame = {
       x: f.left,
       y: top,
       width: f.right - f.left,
       height: bottom - top,
+      captionTop: 0,
+      captionBottom: 0,
       borderTop: box.borderTop,
       borderBottom: box.borderBottom,
       borderLeft: leftEnds ? box.borderLeft : 0,
@@ -854,7 +1168,7 @@ function paintInlineBoxes(
           leftEnds ? bl : 0,
         ],
       },
-    } as unknown as Box;
+    };
     if (fragment.width <= 0) continue;
     paintBackground(ctx, fragment, options);
     paintBorders(ctx, fragment, options);

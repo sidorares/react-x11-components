@@ -27,9 +27,11 @@ import {
   NON_RENDERED,
   tagOf,
 } from '../dom.js';
-import type { Cascade } from '../css/cascade.js';
+import type { Cascade, FirstLetterRules } from '../css/cascade.js';
+import type { CollapsedTable } from './collapse.js';
 import { counterText, quoteAt } from '../css/content.js';
 import type { ContentItem } from '../css/content.js';
+import { inherit } from '../css/style.js';
 import type { ComputedStyle } from '../css/style.js';
 
 export type BoxKind =
@@ -260,11 +262,11 @@ export class Box {
    *  here), and giving it one would put a bullet in every copied list. */
   markerText = '';
   markerLayout: TextLayoutLike | null = null;
-  /** Which of an element's pseudo-elements this box is, for generated
-   *  content. Its `el` is null — it is no element — and its text box's is
-   *  the element it hangs off, so a click on a link's generated text is a
-   *  click on the link. */
-  pseudo: 'before' | 'after' | null = null;
+  /** Which of an element's pseudo-elements this box is. Its `el` is null —
+   *  it is no element — and its text box's is the element it hangs off, so
+   *  a click on a link's generated text or first letter is a click on the
+   *  link. */
+  pseudo: 'before' | 'after' | 'first-letter' | null = null;
   markerX = 0;
   markerY = 0;
 
@@ -315,6 +317,25 @@ export class Box {
   outOfFlow = false;
   /** Set on a float, for the same reason. */
   isFloat = false;
+  /** Where an out-of-flow box would have been in the flow it was taken
+   *  from — its static position (CSS 2.1 10.3.7, 10.6.4) — as an offset
+   *  from the box that flow is in, which may yet move. */
+  staticFrom: Box | null = null;
+  staticX = 0;
+  staticRight = 0;
+  staticY = 0;
+
+  /** A table's captions, above and below it: they are in the box's height,
+   *  and outside the table's own border and background (CSS 2.1 17.4). */
+  captionTop = 0;
+  captionBottom = 0;
+  /** A table whose borders collapse: the border each segment of its grid
+   *  carries, resolved once per build (`collapseTable`). */
+  collapsed: CollapsedTable | null = null;
+  /** Set on a table whose borders collapse, and on its cells: their border
+   *  widths are the halves the collapsing model leaves them, and the table
+   *  paints the borders rather than the boxes. */
+  bordersCollapsed = false;
 
   constructor(kind: BoxKind, el: Element | null, style: ComputedStyle) {
     this.kind = kind;
@@ -456,6 +477,10 @@ class Builder {
    *  space across element boundaries. */
   private _ws: Collapse = 'start';
   private _depth = 0;
+  /** The `::first-letter` whose letter is still to come, for the block
+   *  container whose first line has not begun. Null when there is none,
+   *  and once anything but a letter begins that line. */
+  private _firstLetter: LetterSearch | null = null;
 
   constructor(options: BuildOptions) {
     this._options = options;
@@ -475,7 +500,7 @@ class Builder {
     // it carries no margins of its own and cannot collapse with anything.
     this._children(root, rootBox, rootStyle, false, null, ROOT_SHARE_KEY);
     this._endLine();
-    fixUp(rootBox);
+    fixUp(rootBox, anonymousStyles(cascade.initial));
     assignSubtreeRanges(rootBox);
     return {
       root: rootBox,
@@ -539,6 +564,8 @@ class Builder {
     // whose *absence* of a box still has to reach the inline layout.
     if (tag === 'br') {
       this._endLine();
+      // the first line ends with no letter on it (CSS 2.1 5.12.2)
+      this._abandonLetter();
       const box = new Box('break', el, style);
       into.append(box);
       this._push('\n', box);
@@ -581,6 +608,22 @@ class Builder {
     const around = this._ws;
     if (flow === 'block') this._endLine();
     if (flow !== 'inline') this._ws = 'start';
+    // A first letter is looked for in the first line of a block container,
+    // down through its inline content and its first blocks. A float, a
+    // positioned box and a flex container are no part of that line, and
+    // an atomic inline is something other than a letter at its start
+    // (CSS 2.1 5.12.2). A block container with rules of its own takes the
+    // search over.
+    const outerLetter = this._firstLetter;
+    const skipped = flow === 'out' || flow === 'atomic' || kind === 'flex';
+    if (skipped) this._firstLetter = null;
+    // a block starts a line, and punctuation before it was on another
+    else if (flow === 'block' && outerLetter) giveBack(outerLetter);
+    const ownRules = hasFirstLetter(style.display)
+      ? this._options.cascade.firstLetterRules(el)
+      : null;
+    const ownLetter = ownRules ? { rules: ownRules, punctuation: [] } : null;
+    if (ownLetter) this._firstLetter = ownLetter;
     this._depth += 1;
     // a counter reset in here reaches the element's later children and not
     // past its end; `::before` and `::after` are children like any other
@@ -590,6 +633,7 @@ class Builder {
     this._pseudo(el, 'after', style, box);
     this._scopes.close();
     this._depth -= 1;
+    this._letterAfter(flow, skipped, outerLetter, ownLetter);
     if (flow !== 'inline') this._endLine();
     this._ws = after(flow, this._ws, around);
 
@@ -612,6 +656,7 @@ class Builder {
     const flow = flowOf(style, box);
     if (flow === 'block') this._endLine();
     this._ws = after(flow, this._ws, this._ws);
+    if (flow === 'atomic') this._abandonLetter();
 
     if (replaced === 'image') {
       // Both sources are CSS pixels — an image pixel is one, and so is an
@@ -691,7 +736,14 @@ class Builder {
     const around = this._ws;
     if (flow === 'block') this._endLine();
     if (flow !== 'inline') this._ws = 'start';
+    // the first letter can be generated, and is looked for here as in an
+    // element of the same display
+    const outerLetter = this._firstLetter;
+    const skipped = flow === 'out' || flow === 'atomic';
+    if (skipped) this._firstLetter = null;
+    else if (flow === 'block' && outerLetter) giveBack(outerLetter);
     if (text) this._textNode(text, box, style, el);
+    this._letterAfter(flow, skipped, outerLetter, null);
     if (flow !== 'inline') this._endLine();
     this._ws = after(flow, this._ws, around);
   }
@@ -786,6 +838,94 @@ class Builder {
       this._ws = last === 32 ? 'space' : last === 10 ? 'start' : 'content';
     }
     text = transformText(text, style.textTransform);
+    const search = this._firstLetter;
+    const letter = search ? FIRST_LETTER.exec(text) : null;
+    if (!search || !letter) {
+      const punctuation = search ? PUNCTUATION_ONLY.exec(text) : null;
+      if (!search || !punctuation) {
+        this._textBox(text, into, style, owner);
+        return;
+      }
+      // punctuation the letter comes after, in a text of its own —
+      // `<q>`'s open quote — takes the letter's style, and gives it back
+      // if no letter follows on the line
+      const start = punctuation[1].length;
+      if (start > 0) this._textBox(text.slice(0, start), into, style, owner);
+      search.punctuation.push(
+        this._letterBox(search, text.slice(start), into, style, owner),
+      );
+      return;
+    }
+    // The first letter, with the punctuation around it, in a box of its
+    // own inside the box it was found in, and so inheriting from that
+    // (CSS 2.1 5.12.2): `<p><b>T</b>his` has a bold first letter.
+    this._firstLetter = null;
+    const start = letter[1].length;
+    const end = letter[0].length;
+    if (start > 0) this._textBox(text.slice(0, start), into, style, owner);
+    this._letterBox(search, text.slice(start, end), into, style, owner);
+    if (end < text.length) {
+      this._textBox(text.slice(end), into, style, owner);
+    }
+  }
+
+  /** A box of the first letter's style around `text`, in `into`. */
+  private _letterBox(
+    search: LetterSearch,
+    text: string,
+    into: Box,
+    style: ComputedStyle,
+    owner: Element | null,
+  ): { box: Box; text: Box; style: ComputedStyle } {
+    const cascade = this._options.cascade;
+    const letterStyle = cascade.firstLetterStyle(search.rules, style);
+    const box = new Box(boxKindFor(letterStyle.display), null, letterStyle);
+    box.pseudo = 'first-letter';
+    if (letterStyle.float !== 'none') box.isFloat = true;
+    into.append(box);
+    if (letterStyle.textTransform !== style.textTransform) {
+      text = transformText(text, letterStyle.textTransform);
+    }
+    return { box, text: this._textBox(text, box, letterStyle, owner), style };
+  }
+
+  /**
+   * Where the search for a first letter stands after a box. A box that was
+   * no part of the line — a float, a positioned box — leaves it where it
+   * was, and one that was something other than a letter on it ends it. A
+   * block that looked for a letter of its own and found its first line
+   * ended its parent's too, and one that found no line leaves the parent
+   * looking. A block ends the line it is on.
+   */
+  private _letterAfter(
+    flow: 'inline' | 'atomic' | 'block' | 'out',
+    skipped: boolean,
+    outer: LetterSearch | null,
+    own: LetterSearch | null,
+  ): void {
+    const lined = own !== null && this._firstLetter !== own;
+    if (own && !lined) this._abandonLetter();
+    if (skipped || own) this._firstLetter = skipped || !lined ? outer : null;
+    if (lined && !skipped && outer) giveBack(outer);
+    if (flow === 'atomic') this._abandonLetter();
+    else if (flow === 'block' && this._firstLetter) giveBack(this._firstLetter);
+  }
+
+  /** The first line ended, or began with something other than a letter:
+   *  there is no first letter, and punctuation that took its style gives
+   *  it back. */
+  private _abandonLetter(): void {
+    const search = this._firstLetter;
+    this._firstLetter = null;
+    if (search) giveBack(search);
+  }
+
+  private _textBox(
+    text: string,
+    into: Box,
+    style: ComputedStyle,
+    owner: Element | null,
+  ): Box {
     // The owning element rides on the text box, and from there onto the
     // `TextRun`: hit testing inside a paragraph has no rectangle to test —
     // an inline box is the runs on its lines — so the run is what has to
@@ -794,6 +934,7 @@ class Builder {
     box.text = text;
     into.append(box);
     this._push(text, box);
+    return box;
   }
 
   /**
@@ -943,6 +1084,59 @@ function transformText(
  *  start of a line, just after a space that may collapse, or after anything
  *  else. */
 type Collapse = 'start' | 'space' | 'content';
+
+/**
+ * A text's first letter, with the punctuation before and after it that CSS
+ * 2.1 5.12.2 counts in — the Ps, Pe, Pi, Pf and Po classes — and the white
+ * space before it in the first group. No match when the text ends, or
+ * reaches a space, before any letter: its first letter is in a later text,
+ * as browsers read it.
+ */
+const FIRST_LETTER =
+  /^([ \t\n\r\f\u00a0]*)(?:[\p{Ps}\p{Pe}\p{Pi}\p{Pf}\p{Po}]\p{M}*)*[^ \t\n\r\f\u00a0\p{Ps}\p{Pe}\p{Pi}\p{Pf}\p{Po}]\p{M}*(?:[\p{Ps}\p{Pe}\p{Pi}\p{Pf}\p{Po}]\p{M}*)*/u;
+
+/** A text that is punctuation and nothing else, but for the white space
+ *  before it in the first group. */
+const PUNCTUATION_ONLY =
+  /^([ \t\n\r\f\u00a0]*)(?:[\p{Ps}\p{Pe}\p{Pi}\p{Pf}\p{Po}]\p{M}*)+$/u;
+
+/** A `::first-letter` looking for its letter. */
+interface LetterSearch {
+  rules: FirstLetterRules;
+  /** Punctuation already in the letter's style, from texts that ended
+   *  before the letter came. */
+  punctuation: { box: Box; text: Box; style: ComputedStyle }[];
+}
+
+/** Put punctuation a search styled back in its own box and style: the
+ *  letter it was waiting for is not on its line. */
+function giveBack(search: LetterSearch): void {
+  for (const { box, text, style } of search.punctuation) {
+    const parent = box.parent;
+    if (!parent) continue;
+    const at = parent.children.indexOf(box);
+    if (at < 0) continue;
+    parent.children[at] = text;
+    text.parent = parent;
+    text.style = style;
+  }
+  search.punctuation.length = 0;
+}
+
+/** Whether a box of this display is a block container, which is what can
+ *  have a first letter. */
+function hasFirstLetter(display: ComputedStyle['display']): boolean {
+  switch (display) {
+    case 'block':
+    case 'inline-block':
+    case 'list-item':
+    case 'table-cell':
+    case 'table-caption':
+      return true;
+    default:
+      return false;
+  }
+}
 
 /**
  * How a box sits in its parent's inline content, for white space. An inline
@@ -1175,23 +1369,27 @@ function assignSubtreeRanges(box: Box): { start: number; end: number } {
  *    straight to `<tr>`, and CSS says the missing row group is generated
  *    rather than the rows being dropped.
  */
-function fixUp(box: Box): void {
-  for (const child of box.children) fixUp(child);
+function fixUp(box: Box, anonymous: AnonymousStyle): void {
+  for (const child of box.children) fixUp(child, anonymous);
 
   if (box.kind === 'table') {
-    fixUpTable(box);
+    fixUpTable(box, anonymous);
     return;
   }
   if (box.kind === 'table-row-group') {
-    wrapOrphans(box, 'table-row', (k) => k === 'table-row');
+    wrapOrphans(box, 'table-row', (k) => k === 'table-row', anonymous);
     return;
   }
   if (box.kind === 'table-row') {
-    wrapOrphans(box, 'table-cell', (k) => k === 'table-cell');
+    wrapOrphans(box, 'table-cell', (k) => k === 'table-cell', anonymous);
     return;
   }
+  // a column group holds its columns, which are where they belong, and the
+  // builder kept nothing else in it
+  if (box.style.display === 'table-column-group') return;
 
   if (!box.children.length) return;
+  wrapTableParts(box, anonymous);
   let hasBlockLevel = false;
   let hasInlineLevel = false;
   for (const child of box.children) {
@@ -1216,7 +1414,7 @@ function fixUp(box: Box): void {
     // finds itself; it does not force an anonymous block on its own.
     if (isBlockLevel(child) && !child.outOfFlow && !child.isFloat) {
       if (run) {
-        next.push(anonymousBlock(box, run));
+        next.push(anonymousOf(box, 'block', run, anonymous));
         run = null;
       }
       next.push(child);
@@ -1231,20 +1429,44 @@ function fixUp(box: Box): void {
     if (run.every((c) => c.kind === 'text' && !c.text.trim())) {
       // trailing whitespace after the last block: same rule
     } else {
-      next.push(anonymousBlock(box, run));
+      next.push(anonymousOf(box, 'block', run, anonymous));
     }
   }
   box.children = next;
 }
 
-function anonymousBlock(parent: Box, run: Box[]): Box {
-  const box = new Box('block', null, parent.style);
-  box.parent = parent;
-  for (const child of run) {
-    child.parent = box;
-    box.children.push(child);
-  }
-  return box;
+/**
+ * The style of an anonymous box inside a parent: what the parent passes on
+ * by inheritance, and every other property at its initial value, as CSS 2.1
+ * gives anonymous boxes theirs (9.2.1.1, 17.2.1). An anonymous box that took
+ * the parent's style itself took its height, its padding and borders, its
+ * background, its relative offset and its opacity a second time — the text
+ * in `<div style="padding: 20px">text<p>…</p></div>` sat 40px in, and the
+ * paragraph after it the height of the div further down. One per parent
+ * style, which the cascade already shares between elements.
+ */
+type AnonymousStyle = (
+  parent: Box,
+  display: ComputedStyle['display'],
+) => ComputedStyle;
+
+function anonymousStyles(initial: ComputedStyle): AnonymousStyle {
+  const made = new WeakMap<ComputedStyle, Map<string, ComputedStyle>>();
+  return (parent, display) => {
+    let byDisplay = made.get(parent.style);
+    if (!byDisplay) {
+      byDisplay = new Map();
+      made.set(parent.style, byDisplay);
+    }
+    let style = byDisplay.get(display);
+    if (!style) {
+      // `display` is the one property it does not start from: it is the
+      // box the fix-up made, and layout asks the style what a box is
+      style = { ...inherit(parent.style, initial), display };
+      byDisplay.set(display, style);
+    }
+    return style;
+  };
 }
 
 function isBlockLevel(box: Box): boolean {
@@ -1259,6 +1481,14 @@ function isBlockLevel(box: Box): boolean {
       // An `inline-block` or `inline-flex` is a block *container* with an
       // inline-level outer role, so it belongs to the inline run around it.
       return !isInlineLevelDisplay(box.style.display);
+    case 'replaced':
+      // an image is inline unless it is told otherwise, and then it is a
+      // block: `img { display: block }`, which mail writes to lose the gap
+      // under its images, stacks them
+      return (
+        box.style.display !== 'inline' &&
+        !isInlineLevelDisplay(box.style.display)
+      );
     default:
       return false;
   }
@@ -1277,6 +1507,7 @@ function wrapOrphans(
   box: Box,
   kind: BoxKind,
   accept: (k: BoxKind) => boolean,
+  anonymous: AnonymousStyle,
 ): void {
   let needed = false;
   for (const child of box.children) {
@@ -1291,7 +1522,7 @@ function wrapOrphans(
   for (const child of box.children) {
     if (accept(child.kind)) {
       if (run) {
-        next.push(anonymousOf(box, kind, run));
+        next.push(anonymousOf(box, kind, run, anonymous));
         run = null;
       }
       next.push(child);
@@ -1300,12 +1531,18 @@ function wrapOrphans(
     if (isDroppableWhitespace(child)) continue;
     (run ??= []).push(child);
   }
-  if (run) next.push(anonymousOf(box, kind, run));
+  if (run) next.push(anonymousOf(box, kind, run, anonymous));
   box.children = next;
 }
 
-function anonymousOf(parent: Box, kind: BoxKind, run: Box[]): Box {
-  const box = new Box(kind, null, parent.style);
+function anonymousOf(
+  parent: Box,
+  kind: BoxKind,
+  run: Box[],
+  anonymous: AnonymousStyle,
+  display: ComputedStyle['display'] = kind as ComputedStyle['display'],
+): Box {
+  const box = new Box(kind, null, anonymous(parent, display));
   box.parent = parent;
   for (const child of run) {
     child.parent = box;
@@ -1318,14 +1555,90 @@ function isDroppableWhitespace(box: Box): boolean {
   return box.kind === 'text' && !box.text.trim();
 }
 
-function fixUpTable(table: Box): void {
+/** A box that belongs inside a table: a row group, a row, a cell, a
+ *  caption or a column. */
+function isTablePart(box: Box): boolean {
+  if (box.outOfFlow || box.isFloat) return false;
+  const display = box.style.display;
+  return (
+    box.kind === 'table-row-group' ||
+    box.kind === 'table-row' ||
+    box.kind === 'table-cell' ||
+    box.kind === 'table-caption' ||
+    display === 'table-column' ||
+    display === 'table-column-group'
+  );
+}
+
+/**
+ * Table parts outside a table get one around them (CSS 2.1 17.2.1, rule 3):
+ * each run of them — the white space between them no part of it — is
+ * wrapped in an anonymous table, an inline one where the parent is inline,
+ * and the table is then completed as any other. Laid out on their own, two
+ * cells side by side in a line were two inline-blocks with a space between
+ * them, and in a block two blocks, one above the other.
+ */
+function wrapTableParts(box: Box, anonymous: AnonymousStyle): void {
+  if (!box.children.some(isTablePart)) return;
+  const display = box.kind === 'inline' ? 'inline-table' : 'table';
+  const next: Box[] = [];
+  let run: Box[] | null = null;
+  let space: Box[] = [];
+  const flush = (): void => {
+    if (!run) return;
+    const table = anonymousOf(box, 'table', run, anonymous, display);
+    fixUpTable(table, anonymous);
+    next.push(table);
+    run = null;
+  };
+  for (const child of box.children) {
+    if (isTablePart(child)) {
+      run ??= [];
+      run.push(child);
+      space = [];
+      continue;
+    }
+    if (run && isDroppableWhitespace(child)) {
+      // held back: between two parts it goes, after the last it stays
+      space.push(child);
+      continue;
+    }
+    flush();
+    next.push(...space, child);
+    space = [];
+  }
+  flush();
+  next.push(...space);
+  box.children = next;
+  for (const child of next) child.parent = box;
+}
+
+function fixUpTable(table: Box, anonymous: AnonymousStyle): void {
   const groups: Box[] = [];
   const captions: Box[] = [];
+  const columns: Box[] = [];
   let looseRows: Box[] | null = null;
+  let looseCells: Box[] | null = null;
+  const flushCells = (): void => {
+    if (!looseCells) return;
+    (looseRows ??= []).push(
+      anonymousOf(table, 'table-row', looseCells, anonymous),
+    );
+    looseCells = null;
+  };
   for (const child of table.children) {
-    if (child.kind === 'table-row-group') {
+    const display = child.style.display;
+    if (display === 'table-column' || display === 'table-column-group') {
+      // A column is the table's, beside its rows: it lays out nothing and
+      // paints nothing (17.2.1). Taken for a stray child, it was wrapped in
+      // a row of its own and drawn as a cell.
+      columns.push(child);
+    } else if (child.kind === 'table-row-group') {
+      flushCells();
       if (looseRows) {
-        groups.push(anonymousOf(table, 'table-row-group', looseRows));
+        groups.push(
+          anonymousOf(table, 'table-row-group', looseRows, anonymous),
+        );
         looseRows = null;
       }
       groups.push(child);
@@ -1333,24 +1646,27 @@ function fixUpTable(table: Box): void {
       captions.push(child);
     } else if (isDroppableWhitespace(child)) {
       continue;
+    } else if (child.kind === 'table-row') {
+      flushCells();
+      (looseRows ??= []).push(child);
     } else {
-      // A `<tr>`, or anything else that ended up here: rows go into an
-      // anonymous group, and anything that is not a row becomes a cell in
-      // one, which is how a browser rescues `<table>text</table>`.
-      const row =
-        child.kind === 'table-row'
-          ? child
-          : anonymousOf(table, 'table-row', [child]);
-      (looseRows ??= []).push(row);
+      // Anything else that ended up here is a cell, or goes in one, and a
+      // run of them shares an anonymous row — which is how a browser
+      // rescues `<table>text</table>`, and how three cells in a table
+      // with no row are one row of three rather than three rows of one.
+      (looseCells ??= []).push(child);
     }
   }
-  if (looseRows) groups.push(anonymousOf(table, 'table-row-group', looseRows));
+  flushCells();
+  if (looseRows) {
+    groups.push(anonymousOf(table, 'table-row-group', looseRows, anonymous));
+  }
   for (const group of groups) {
-    wrapOrphans(group, 'table-row', (k) => k === 'table-row');
+    wrapOrphans(group, 'table-row', (k) => k === 'table-row', anonymous);
     for (const row of group.children) {
-      wrapOrphans(row, 'table-cell', (k) => k === 'table-cell');
+      wrapOrphans(row, 'table-cell', (k) => k === 'table-cell', anonymous);
     }
   }
-  table.children = [...captions, ...groups];
+  table.children = [...captions, ...columns, ...groups];
   for (const child of table.children) child.parent = table;
 }
