@@ -269,7 +269,9 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     listStylePosition: 'outside',
     cursor: null,
     borderCollapse: 'separate',
-    borderSpacing: 2,
+    // CSS's initial value; a `<table>` gets its 2px from the UA sheet, and
+    // an anonymous table, which no sheet names, has none
+    borderSpacing: 0,
     tableTextAlignSet: false,
     quotes: DEFAULT_QUOTES,
 
