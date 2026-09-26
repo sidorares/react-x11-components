@@ -2250,6 +2250,25 @@ test('a percentage height resolves in a box whose height is set', async () => {
   );
 });
 
+test("an empty block's margins collapse through it", async () => {
+  // CSS 2.1 8.3.1: nothing parts an empty block's top and bottom margins,
+  // so they and the margins on either side of it are one — the largest
+  const { node } = await render(
+    '<div><p id="a" style="margin:0 0 20px;height:10px"></p>' +
+      '<div style="margin:30px 0"></div>' +
+      '<p id="b" style="margin:10px 0 0;height:10px"></p></div>' +
+      // a min-height that sets the height keeps the margin inside the box
+      '<div id="p" style="min-height:200px"><div style="height:30px;' +
+      'margin-bottom:100px"></div><div id="m"></div></div>' +
+      '<div id="f" style="height:10px"></div>',
+  );
+  const el = view(node);
+  const [a, b, p, m, f] = ['a', 'b', 'p', 'm', 'f'].map((id) => boxOf(el, id));
+  assert.strictEqual(b.y - (a.y + a.height), 30);
+  assert.strictEqual(m.y, p.y + 130, 'the margin goes before the empty block');
+  assert.strictEqual(f.y, p.y + 200, 'and stays inside its parent');
+});
+
 test('html and body at 100% stay as tall as what they hold', async () => {
   // The element sizes to its content, so the initial containing block has
   // no height to give: a message with the usual reset is not cut off at a
