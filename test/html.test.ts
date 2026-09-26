@@ -2163,7 +2163,7 @@ test('negative or auto padding is no padding value', async () => {
   assert.deepStrictEqual(pads('c'), [5, 5]);
 });
 
-metric("ex is the font's x-height", async () => {
+metric("ex is the font's x-height, or half an em", async () => {
   const { node } = await render(
     '<div id="d" style="width:10ex;height:10px;font-size:20px"></div>',
   );
@@ -2180,9 +2180,11 @@ metric("ex is the font's x-height", async () => {
       };
     }
   ).app.fonts;
-  const x = fonts.match('sans-serif', { size: 20 }).metrics(20).xHeight;
-  assert.ok(x && x > 0, 'the face states one');
-  assert.ok(Math.abs(boxOf(el, 'd').width - 10 * x!) < 0.01);
+  // DejaVu Sans, which the Linux runs find, has an OS/2 table too old to
+  // state an x-height, and the engine answers NaN; an ex is half an em then
+  const stated = fonts.match('sans-serif', { size: 20 }).metrics(20).xHeight;
+  const x = typeof stated === 'number' && stated > 0 ? stated : 10;
+  assert.ok(Math.abs(boxOf(el, 'd').width - 10 * x) < 0.01);
 });
 
 metric('letter-spacing and word-spacing reach the text', async () => {
