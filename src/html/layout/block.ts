@@ -166,7 +166,14 @@ function layoutChildren(
       continue;
     }
     if (child.isFloat) {
-      layoutFloat(child, ctx, floats, y + pendingMargin, contentWidth);
+      layoutFloat(
+        child,
+        ctx,
+        floats,
+        y + pendingMargin,
+        contentLeft,
+        contentWidth,
+      );
       continue;
     }
 
@@ -219,7 +226,7 @@ function layoutInlineContent(
         containing: containingBlockFor(child) ?? box,
       });
     } else if (child.isFloat) {
-      layoutFloat(child, ctx, floats, contentTop, contentWidth);
+      layoutFloat(child, ctx, floats, contentTop, contentLeft, contentWidth);
     }
   }
   // Atomics have to be sized before the line breaker can place them.
@@ -634,12 +641,22 @@ function sizeReplaced(box: Box, containingWidth: number): void {
   }
 }
 
-/** Place and size a float, and register it with the formatting context. */
+/**
+ * Place and size a float, and register it with the formatting context.
+ *
+ * The formatting context holds every float in it, and its band is as wide
+ * as its root; a float is placed within its own containing block's content
+ * box, which may be narrower (CSS 2.1 9.5.1, rules 1 and 7). Floats placed
+ * earlier still push it over wherever they reach into that box. Placed in
+ * the formatting context's band, a float in a nested block sat at the
+ * root's edge — outside its parent's padding and the body's margin.
+ */
 function layoutFloat(
   box: Box,
   ctx: LayoutContext,
   floats: FloatContext,
   y: number,
+  containingLeft: number,
   containingWidth: number,
 ): void {
   resolveEdges(box, containingWidth);
@@ -651,12 +668,16 @@ function layoutFloat(
   const outerWidth = box.width + box.marginLeft + box.marginRight;
   const clearance = floats.clearance(box.style.clear);
   const from = Math.max(y, clearance === -Infinity ? y : clearance);
+  const left = containingLeft;
+  const right = containingLeft + containingWidth;
   const top = floats.placeAt(
     from,
     outerWidth,
     box.style.float === 'right' ? 'right' : 'left',
+    left,
+    right,
   );
-  const band = floats.bandAt(top, 1);
+  const band = floats.bandAt(top, 1, left, right);
   const x =
     box.style.float === 'right'
       ? band.right - outerWidth + box.marginLeft

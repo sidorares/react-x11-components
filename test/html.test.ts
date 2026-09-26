@@ -431,6 +431,35 @@ function lineCount(node: DrawnNode): number {
 }
 
 metric(
+  "a float sits inside its own containing block, not at the formatting context's edge",
+  async () => {
+    // Placed in the band the whole formatting context allows, a float in a
+    // padded block sat at the root's edge — outside the padding, and outside
+    // the body's margin (CSS 2.1 9.5.1, rules 1 and 7).
+    const { node } = await render(
+      '<style>.wrap{padding:0 30px 0 50px}.l,.r{width:40px;height:20px}' +
+        '.l{float:left}.r{float:right}</style>' +
+        '<div class="wrap"><div class="l"></div><div class="r"></div></div>',
+      300,
+    );
+    type B = { x: number; width: number; contentX: number; children: B[] };
+    const tree = (view(node) as unknown as { _tree: { root: B } })._tree;
+    const wrap = tree.root.children[0];
+    const [left, right] = wrap.children;
+    assert.strictEqual(
+      left.x,
+      wrap.contentX,
+      'the left float at the content edge',
+    );
+    assert.strictEqual(
+      right.x + right.width,
+      wrap.x + wrap.width - 30,
+      'the right float against the right padding',
+    );
+  },
+);
+
+metric(
   'a float shortens the lines beside it and not the ones below',
   async () => {
     const { node } = await render(
