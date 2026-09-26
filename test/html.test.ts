@@ -2106,6 +2106,59 @@ metric("a table column is the table's, not a row of its own", async () => {
   assert.ok(!fills.some((f) => f.style === '#00ff00'), 'and no column drawn');
 });
 
+metric(
+  'table cells outside a table get one around them, a row a run',
+  async () => {
+    // CSS 2.1 17.2.1: a run of cells is one anonymous row in one anonymous
+    // table — a block one in a block, an inline one in a line — where they
+    // used to be blocks one above the other, or inline-blocks a space apart.
+    const cell = (id: string, text: string) =>
+      `<span id="${id}" style="display:table-cell">${text}</span>`;
+    const { node } = await render(
+      `<div id="block">${cell('b1', 'b')} ${cell('b2', 'c')}</div>` +
+        `<p id="line" style="margin:0"><span>a ${cell('i1', 'b')} ` +
+        `${cell('i2', 'c')} d</span></p>`,
+    );
+    const el = view(node);
+    const [b1, b2, i1, i2] = ['b1', 'b2', 'i1', 'i2'].map((id) =>
+      boxOf(el, id),
+    );
+    assert.strictEqual(b1.y, b2.y, 'side by side in one row');
+    assert.strictEqual(b2.x, b1.x + b1.width, 'with nothing between them');
+    const paragraph = boxOf(el, 'line') as LaidBox & { lines: unknown[] };
+    assert.strictEqual(
+      paragraph.lines.length,
+      1,
+      'the inline table is on the line',
+    );
+    assert.strictEqual(i2.x, i1.x + i1.width, 'its cells as close');
+    assert.strictEqual(i1.y, i2.y);
+  },
+);
+
+metric("an inline-block's text sits on the line's baseline", async () => {
+  // CSS 2.1 10.8.1: an inline-block's baseline is its last line box's. Set
+  // bottom-on-baseline, a button's label sat its descent above the text
+  // beside it.
+  const { node } = await render(
+    '<p id="p" style="margin:0">x <span id="ib" style="display:inline-block;' +
+      'padding:4px;border:1px solid">Label</span> y</p>',
+  );
+  const el = view(node);
+  const [line] = linesOf(el, 'p');
+  const [outside] = line.texts;
+  const outsideBaseline =
+    outside.drawY + outside.layout.lines[outside.layoutLine].baseline;
+  const [inner] = linesOf(el, 'ib');
+  const [label] = inner.texts;
+  const labelBaseline =
+    label.drawY + label.layout.lines[label.layoutLine].baseline;
+  assert.ok(
+    Math.abs(labelBaseline - outsideBaseline) < 0.5,
+    `on one baseline: ${labelBaseline} and ${outsideBaseline}`,
+  );
+});
+
 metric('form controls carry default margins from the UA sheet', async () => {
   const { node } = await render('<p>a <input size="4"> b</p>');
   const tree = (
