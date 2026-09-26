@@ -84,6 +84,21 @@ export class FloatContext {
   }
 
   /**
+   * Where a line at `y`, `height` tall, next has more room: the nearest
+   * bottom edge of a float beside it. Null when no float is, so nothing
+   * below can widen the line.
+   */
+  nextEdgeBelow(y: number, height: number): number | null {
+    const bottom = y + Math.max(1, height);
+    let next: number | null = null;
+    for (const box of this._boxes) {
+      if (box.bottom <= y || box.top >= bottom) continue;
+      if (next === null || box.bottom < next) next = box.bottom;
+    }
+    return next;
+  }
+
+  /**
    * The lowest `y` a box with this `clear` may start at. `-Infinity` when
    * nothing is in the way, so a caller takes `Math.max(y, clearance)`.
    */

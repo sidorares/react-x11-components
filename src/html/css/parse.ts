@@ -246,6 +246,8 @@ export function splitSelectors(prelude: string): string[] {
  * specificity is their argument's. The approximation costs an author who
  * writes `:is(#id)` and expects it to beat a class; nothing else.
  */
+const LEGACY_PSEUDO_ELEMENTS = /^(?:before|after|first-line|first-letter)$/i;
+
 export function specificityOf(selector: string): number {
   let ids = 0;
   let classes = 0;
@@ -268,8 +270,14 @@ export function specificityOf(selector: string): number {
         types += 1;
         i = skipIdent(selector, i + 2);
       } else {
-        classes += 1;
-        i = skipIdent(selector, i + 1);
+        const end = skipIdent(selector, i + 1);
+        // CSS 2 spelled the four pseudo-elements it had with one colon
+        if (LEGACY_PSEUDO_ELEMENTS.test(selector.slice(i + 1, end))) {
+          types += 1;
+        } else {
+          classes += 1;
+        }
+        i = end;
         if (selector[i] === '(') i = skipBalanced(selector, i, '(', ')');
       }
     } else if (c === '*' || c === '|') {

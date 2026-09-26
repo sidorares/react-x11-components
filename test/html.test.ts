@@ -48,6 +48,12 @@ import {
   createElement,
   rawTextOf,
 } from '../src/html/dom.js';
+import {
+  counterText,
+  parseContent,
+  parseCounterList,
+  parseQuotes,
+} from '../src/html/css/content.js';
 
 const h = React.createElement;
 
@@ -716,6 +722,226 @@ metric('line-height: 0 lays lines on top of each other', async () => {
     Math.abs(lines[1].y - lines[0].y) < 0.01,
     `both lines at one height: ${lines[0].y} and ${lines[1].y}`,
   );
+});
+
+// --- white space ----------------------------------------------------------------
+
+test('white space collapses across elements, and not at a line start', async () => {
+  const text = async (source: string) =>
+    (
+      view((await render(source, 300)).node) as unknown as {
+        _tree: { text: string };
+      }
+    )._tree.text;
+  // CSS 2.1 16.6.1: a space at the start or the end of a line goes, and a
+  // space after another collapses into it, whichever element either is in
+  assert.strictEqual(await text('<p>\n   Hello world\n</p>'), 'Hello world');
+  assert.strictEqual(await text('<p>Hi<b> </b>there</p>'), 'Hi there');
+  assert.strictEqual(await text('<p>Hi <b> there</b></p>'), 'Hi there');
+  assert.strictEqual(await text('<p>one <br>\n two</p>'), 'one\ntwo');
+  // a space beside an image or an inline-block is a space; a float is no
+  // part of the line, so the space after it collapses into the one before
+  assert.strictEqual(await text('<p>a <img alt="i"> b</p>'), 'a i b');
+  assert.strictEqual(
+    await text('<p>a <span style="float:left">f</span> b</p>'),
+    'a fb',
+  );
+  // preserved spaces stay, and do not swallow the next one
+  assert.strictEqual(
+    await text('<p><span style="white-space:pre">a  </span> b</p>'),
+    'a   b',
+  );
+});
+
+metric('font-size: 0 leaves no room between inline-blocks', async () => {
+  // the common way to lose the spaces between columns set inline: at no
+  // size the space between them takes no room, where it used to be 1px. The
+  // row is wider than the body it sits in, which must not narrow its lines.
+  const { node } = await render(
+    '<div style="font-size:0;width:300px">' +
+      '<div id="a" style="display:inline-block;width:100px;height:10px"></div> ' +
+      '<div id="b" style="display:inline-block;width:100px;height:10px"></div> ' +
+      '<div id="c" style="display:inline-block;width:100px;height:10px"></div></div>',
+    300,
+  );
+  const el = view(node);
+  const xs = ['a', 'b', 'c'].map((id) => boxOf(el, id).x);
+  assert.deepStrictEqual(
+    xs.map((x) => x - xs[0]),
+    [0, 100, 200],
+  );
+  assert.strictEqual(boxOf(el, 'c').y, boxOf(el, 'a').y, 'one line');
+});
+
+metric('a word with no room beside a float goes below it, whole', async () => {
+  // CSS 2.1 9.5: a line too short for any of its content moves down until
+  // something fits. The word used to be cut to the room the float left.
+  const { node } = await render(
+    '<div id="box" style="width:200px;font-size:20px">' +
+      '<div style="float:left;width:60px;height:30px"></div>' +
+      'Antidisestablishment</div>',
+    300,
+  );
+  // the text sits in an anonymous block beside the float, so its lines are
+  // somewhere under the box rather than on it
+  type B = { lines: { y: number }[] | null; children: B[] };
+  const lines: { y: number }[] = [];
+  const walk = (b: B): void => {
+    lines.push(...(b.lines ?? []));
+    b.children.forEach(walk);
+  };
+  walk(boxOf(view(node), 'box') as unknown as B);
+  assert.strictEqual(lines.length, 1, 'one line, the word whole');
+  assert.ok(lines[0].y >= 30, `below the float: ${lines[0].y}`);
+});
+
+// --- generated content --------------------------------------------------------
+
+test('content values: strings with escapes, attr(), counters and quotes', () => {
+  assert.deepStrictEqual(parseContent('none'), 'none');
+  assert.deepStrictEqual(parseContent('NORMAL'), 'normal');
+  // a hex escape takes up to six digits and one space after them
+  assert.deepStrictEqual(parseContent('"\\201C x\\A0" attr(Title)'), [
+    { kind: 'string', text: '“x ' },
+    { kind: 'attr', name: 'title' },
+  ]);
+  assert.deepStrictEqual(
+    parseContent('counter(c, upper-roman) counters(c, ".") open-quote'),
+    [
+      { kind: 'counter', name: 'c', style: 'upper-roman' },
+      { kind: 'counters', name: 'c', separator: '.', style: 'decimal' },
+      { kind: 'open-quote' },
+    ],
+  );
+  // an image is dropped and the rest stands; what cannot be read drops all
+  assert.deepStrictEqual(parseContent('url(x.png) "a"'), [
+    { kind: 'string', text: 'a' },
+  ]);
+  assert.strictEqual(parseContent('"a", "b"'), null);
+  assert.strictEqual(parseContent('counter()'), null);
+  assert.deepStrictEqual(parseCounterList('a b 3 c -2', 1), [
+    { name: 'a', value: 1 },
+    { name: 'b', value: 3 },
+    { name: 'c', value: -2 },
+  ]);
+  assert.strictEqual(parseCounterList('none', 0), 'none');
+  assert.strictEqual(parseCounterList('a 1.5', 0), null);
+  assert.deepStrictEqual(parseQuotes('"<" ">" \'(\' \')\''), [
+    '<',
+    '>',
+    '(',
+    ')',
+  ]);
+  assert.strictEqual(parseQuotes('"<"'), null);
+});
+
+test('counter styles, and decimal past where a style has a form', () => {
+  const at = (n: number, style: string) => counterText(n, style);
+  assert.deepStrictEqual(
+    [at(4, 'upper-roman'), at(14, 'lower-roman'), at(4000, 'upper-roman')],
+    ['IV', 'xiv', '4000'],
+  );
+  assert.deepStrictEqual(
+    [at(1, 'lower-alpha'), at(27, 'upper-latin'), at(0, 'lower-alpha')],
+    ['a', 'AA', '0'],
+  );
+  assert.deepStrictEqual(
+    [at(3, 'lower-greek'), at(25, 'lower-greek')],
+    ['γ', 'αα'],
+  );
+  assert.deepStrictEqual(
+    [at(1, 'armenian'), at(1999, 'armenian'), at(10001, 'georgian')],
+    ['Ա', 'ՌՋՂԹ', 'ჵა'],
+  );
+  assert.deepStrictEqual(
+    [at(7, 'decimal-leading-zero'), at(-3, 'decimal-leading-zero')],
+    ['07', '-03'],
+  );
+  assert.deepStrictEqual([at(5, 'none'), at(5, 'square')], ['', '▪']);
+});
+
+/** The text a document's boxes hold, generated content included. */
+async function documentText(source: string): Promise<string> {
+  const { node } = await render(source, 300);
+  return (view(node) as unknown as { _tree: { text: string } })._tree.text;
+}
+
+test('::before and ::after hold their content, around the element', async () => {
+  assert.strictEqual(
+    await documentText(
+      '<style>p:before{content:"[" attr(title) "] "}' +
+        // the space after a hex escape is the escape's, so two for one
+        'p::after{content:" \\2014  end"}</style><p title="T">body</p>',
+    ),
+    '[T] body — end',
+  );
+  // `none` after a string makes no box, and nothing else gets content
+  assert.strictEqual(
+    await documentText(
+      '<style>div:before{content:"FAIL";content:none}' +
+        'div{content:"FAIL"}</style><div>ok</div>',
+    ),
+    'ok',
+  );
+});
+
+test('counters nest, and a reset reaches the siblings after it', async () => {
+  assert.strictEqual(
+    await documentText(
+      '<style>ol{counter-reset:item;list-style:none}' +
+        'li:before{counter-increment:item;content:counters(item,".") " "}' +
+        '</style><ol><li>a<ol><li>b</li><li>c</li></ol></li><li>d</li></ol>',
+    ),
+    '1 a1.1 b1.2 c2 d',
+  );
+  // `h1` resets `sub` for the `h2`s after it, and each `h2` counts both
+  assert.strictEqual(
+    await documentText(
+      '<style>body{counter-reset:sec}' +
+        'h1{counter-increment:sec;counter-reset:sub}' +
+        'h1:before{content:counter(sec) ". "}' +
+        'h2{counter-increment:sub}' +
+        'h2:before{content:counter(sec) "." counter(sub) " "}</style>' +
+        '<h1>A</h1><h2>x</h2><h2>y</h2><h1>B</h1><h2>z</h2>',
+    ),
+    '1. A1.1 x1.2 y2. B2.1 z',
+  );
+});
+
+test('quotes open and close by depth, and none writes nothing', async () => {
+  assert.strictEqual(
+    await documentText(
+      '<style>q:before{content:open-quote} q:after{content:close-quote}' +
+        '</style><p><q>outer <q>inner</q> back</q></p>',
+    ),
+    '“outer ‘inner’ back”',
+  );
+  assert.strictEqual(
+    await documentText(
+      '<style>q{quotes:"<" ">"} q:before{content:open-quote}' +
+        'q:after{content:close-quote} i:before{content:close-quote "!"}' +
+        '</style><q>a<q>b</q></q><i></i>',
+    ),
+    // the innermost pair repeats, and a close with nothing open writes
+    // nothing of its own
+    '<a<b>>!',
+  );
+});
+
+test('a pseudo-element is a box of its own display', async () => {
+  const { node } = await render(
+    '<style>.cf:after{content:"";display:block;height:10px}' +
+      '.cf:before{content:"x";display:table-column}</style>' +
+      '<div class="cf" id="cf"><span>in</span></div>',
+    300,
+  );
+  type B = { pseudo: string | null; kind: string; children: B[] };
+  const cf = boxOf(view(node), 'cf') as unknown as B;
+  const pseudos = cf.children
+    .filter((b) => b.pseudo)
+    .map((b) => [b.pseudo, b.kind]);
+  // the column renders nothing, so it makes no box
+  assert.deepStrictEqual(pseudos, [['after', 'block']]);
 });
 
 test('the font shorthand resets what it does not name', async () => {
