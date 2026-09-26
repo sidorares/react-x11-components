@@ -30,6 +30,7 @@ import {
 import type { Cascade } from '../css/cascade.js';
 import { counterText, quoteAt } from '../css/content.js';
 import type { ContentItem } from '../css/content.js';
+import { inherit } from '../css/style.js';
 import type { ComputedStyle } from '../css/style.js';
 
 export type BoxKind =
@@ -475,7 +476,7 @@ class Builder {
     // it carries no margins of its own and cannot collapse with anything.
     this._children(root, rootBox, rootStyle, false, null, ROOT_SHARE_KEY);
     this._endLine();
-    fixUp(rootBox);
+    fixUp(rootBox, anonymousStyles(cascade.initial));
     assignSubtreeRanges(rootBox);
     return {
       root: rootBox,
@@ -1175,19 +1176,19 @@ function assignSubtreeRanges(box: Box): { start: number; end: number } {
  *    straight to `<tr>`, and CSS says the missing row group is generated
  *    rather than the rows being dropped.
  */
-function fixUp(box: Box): void {
-  for (const child of box.children) fixUp(child);
+function fixUp(box: Box, anonymous: AnonymousStyle): void {
+  for (const child of box.children) fixUp(child, anonymous);
 
   if (box.kind === 'table') {
-    fixUpTable(box);
+    fixUpTable(box, anonymous);
     return;
   }
   if (box.kind === 'table-row-group') {
-    wrapOrphans(box, 'table-row', (k) => k === 'table-row');
+    wrapOrphans(box, 'table-row', (k) => k === 'table-row', anonymous);
     return;
   }
   if (box.kind === 'table-row') {
-    wrapOrphans(box, 'table-cell', (k) => k === 'table-cell');
+    wrapOrphans(box, 'table-cell', (k) => k === 'table-cell', anonymous);
     return;
   }
 
@@ -1216,7 +1217,7 @@ function fixUp(box: Box): void {
     // finds itself; it does not force an anonymous block on its own.
     if (isBlockLevel(child) && !child.outOfFlow && !child.isFloat) {
       if (run) {
-        next.push(anonymousBlock(box, run));
+        next.push(anonymousOf(box, 'block', run, anonymous));
         run = null;
       }
       next.push(child);
@@ -1231,20 +1232,44 @@ function fixUp(box: Box): void {
     if (run.every((c) => c.kind === 'text' && !c.text.trim())) {
       // trailing whitespace after the last block: same rule
     } else {
-      next.push(anonymousBlock(box, run));
+      next.push(anonymousOf(box, 'block', run, anonymous));
     }
   }
   box.children = next;
 }
 
-function anonymousBlock(parent: Box, run: Box[]): Box {
-  const box = new Box('block', null, parent.style);
-  box.parent = parent;
-  for (const child of run) {
-    child.parent = box;
-    box.children.push(child);
-  }
-  return box;
+/**
+ * The style of an anonymous box inside a parent: what the parent passes on
+ * by inheritance, and every other property at its initial value, as CSS 2.1
+ * gives anonymous boxes theirs (9.2.1.1, 17.2.1). An anonymous box that took
+ * the parent's style itself took its height, its padding and borders, its
+ * background, its relative offset and its opacity a second time — the text
+ * in `<div style="padding: 20px">text<p>…</p></div>` sat 40px in, and the
+ * paragraph after it the height of the div further down. One per parent
+ * style, which the cascade already shares between elements.
+ */
+type AnonymousStyle = (parent: Box, kind: BoxKind) => ComputedStyle;
+
+function anonymousStyles(initial: ComputedStyle): AnonymousStyle {
+  const made = new WeakMap<ComputedStyle, Map<BoxKind, ComputedStyle>>();
+  return (parent, kind) => {
+    let byKind = made.get(parent.style);
+    if (!byKind) {
+      byKind = new Map();
+      made.set(parent.style, byKind);
+    }
+    let style = byKind.get(kind);
+    if (!style) {
+      // `display` is the one property it does not start from: it is the
+      // box the fix-up made, and layout asks the style what a box is
+      style = {
+        ...inherit(parent.style, initial),
+        display: kind as ComputedStyle['display'],
+      };
+      byKind.set(kind, style);
+    }
+    return style;
+  };
 }
 
 function isBlockLevel(box: Box): boolean {
@@ -1277,6 +1302,7 @@ function wrapOrphans(
   box: Box,
   kind: BoxKind,
   accept: (k: BoxKind) => boolean,
+  anonymous: AnonymousStyle,
 ): void {
   let needed = false;
   for (const child of box.children) {
@@ -1291,7 +1317,7 @@ function wrapOrphans(
   for (const child of box.children) {
     if (accept(child.kind)) {
       if (run) {
-        next.push(anonymousOf(box, kind, run));
+        next.push(anonymousOf(box, kind, run, anonymous));
         run = null;
       }
       next.push(child);
@@ -1300,12 +1326,17 @@ function wrapOrphans(
     if (isDroppableWhitespace(child)) continue;
     (run ??= []).push(child);
   }
-  if (run) next.push(anonymousOf(box, kind, run));
+  if (run) next.push(anonymousOf(box, kind, run, anonymous));
   box.children = next;
 }
 
-function anonymousOf(parent: Box, kind: BoxKind, run: Box[]): Box {
-  const box = new Box(kind, null, parent.style);
+function anonymousOf(
+  parent: Box,
+  kind: BoxKind,
+  run: Box[],
+  anonymous: AnonymousStyle,
+): Box {
+  const box = new Box(kind, null, anonymous(parent, kind));
   box.parent = parent;
   for (const child of run) {
     child.parent = box;
@@ -1318,14 +1349,16 @@ function isDroppableWhitespace(box: Box): boolean {
   return box.kind === 'text' && !box.text.trim();
 }
 
-function fixUpTable(table: Box): void {
+function fixUpTable(table: Box, anonymous: AnonymousStyle): void {
   const groups: Box[] = [];
   const captions: Box[] = [];
   let looseRows: Box[] | null = null;
   for (const child of table.children) {
     if (child.kind === 'table-row-group') {
       if (looseRows) {
-        groups.push(anonymousOf(table, 'table-row-group', looseRows));
+        groups.push(
+          anonymousOf(table, 'table-row-group', looseRows, anonymous),
+        );
         looseRows = null;
       }
       groups.push(child);
@@ -1340,15 +1373,17 @@ function fixUpTable(table: Box): void {
       const row =
         child.kind === 'table-row'
           ? child
-          : anonymousOf(table, 'table-row', [child]);
+          : anonymousOf(table, 'table-row', [child], anonymous);
       (looseRows ??= []).push(row);
     }
   }
-  if (looseRows) groups.push(anonymousOf(table, 'table-row-group', looseRows));
+  if (looseRows) {
+    groups.push(anonymousOf(table, 'table-row-group', looseRows, anonymous));
+  }
   for (const group of groups) {
-    wrapOrphans(group, 'table-row', (k) => k === 'table-row');
+    wrapOrphans(group, 'table-row', (k) => k === 'table-row', anonymous);
     for (const row of group.children) {
-      wrapOrphans(row, 'table-cell', (k) => k === 'table-cell');
+      wrapOrphans(row, 'table-cell', (k) => k === 'table-cell', anonymous);
     }
   }
   table.children = [...captions, ...groups];

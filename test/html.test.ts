@@ -1892,6 +1892,40 @@ test('a no-break space before an image is added back only where the engine strip
   assert.ok(hungSpaces(engine(false), run).test('a '), 'a space always is');
 });
 
+metric(
+  'an anonymous block takes only what inherits from its parent',
+  async () => {
+    // `text` beside a block is wrapped in an anonymous block, which took the
+    // div's own style: its height, padding and border a second time, so the
+    // paragraph after it sat the height of the div further down.
+    const { node } = await render(
+      '<div id="d" style="margin:0;height:100px;padding:10px;border:2px solid;' +
+        'background:#ff0000">text<p id="p" style="margin:0">para</p></div>',
+    );
+    const el = view(node);
+    const d = boxOf(el, 'd') as LaidBox & { padTop: number };
+    const [anonymous, p] = d.children as (LaidBox & { padTop: number })[];
+    assert.strictEqual(anonymous.el, null, 'the text is in an anonymous block');
+    assert.strictEqual(anonymous.padTop, 0, 'with no padding of its own');
+    assert.strictEqual(
+      anonymous.y,
+      d.y + 12,
+      "inside the div's border and padding",
+    );
+    assert.strictEqual(
+      p.y,
+      anonymous.y + anonymous.height,
+      'and the paragraph after it',
+    );
+    const fills = await fillsOf(el);
+    assert.strictEqual(
+      fills.filter((f) => f.style === '#ff0000').length,
+      1,
+      'the background is painted once',
+    );
+  },
+);
+
 metric('form controls carry default margins from the UA sheet', async () => {
   const { node } = await render('<p>a <input size="4"> b</p>');
   const tree = (
