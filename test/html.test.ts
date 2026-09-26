@@ -2711,6 +2711,32 @@ metric(
   },
 );
 
+metric(
+  "a line starts with its block's strut: an image alone is a line-height tall",
+  async () => {
+    // CSS 2.1 10.8.1; and a list item with no line holds its marker's, and
+    // an inline table of empty rows stands on its first
+    const { node } = await render(
+      '<div id="a" style="line-height:96px"><img width="15" height="15" ' +
+        'style="vertical-align:bottom" src="x.png"></div>' +
+        '<ul style="margin:0"><li id="b"></li></ul>' +
+        '<div id="c"><table style="display:inline-table;border-spacing:0">' +
+        '<tr><td style="height:20px;padding:0"></td></tr>' +
+        '<tr><td style="height:20px;padding:0"></td></tr></table></div>' +
+        '<div id="z" style="font-size:0"><img width="15" height="15" src="x.png"></div>',
+    );
+    const el = view(node);
+    const [a, b, c, z] = ['a', 'b', 'c', 'z'].map((id) => boxOf(el, id));
+    assert.strictEqual(a.height, 96, 'the image on a line of the height');
+    assert.ok(b.height > 10, `an empty item a line tall: ${b.height}`);
+    assert.ok(
+      c.height - 40 < 1,
+      `the table on its first row, its second hanging below: ${c.height}`,
+    );
+    assert.strictEqual(z.height, 15, 'no strut at no size');
+  },
+);
+
 metric("a footer group's rows come last wherever it stands", async () => {
   const { node } = await render(
     '<table><thead><tr><td id="h">h</td></tr></thead>' +

@@ -44,6 +44,7 @@ import type {
   TextLayoutLike,
 } from './boxes.js';
 import type { FloatContext } from './floats.js';
+import { tableGrid } from './grid.js';
 
 /** The slice of ntk's font manager this needs. Structural, as everywhere. */
 export interface FontsLike {
@@ -253,6 +254,7 @@ export function layoutInline(block: Box, options: InlineOptions): InlineResult {
     pendingWidth = 0;
   };
 
+  const strut = fonts ? strutOf(fonts, style) : null;
   const close = (): void => {
     const line = finishLine(
       open,
@@ -262,6 +264,7 @@ export function layoutInline(block: Box, options: InlineOptions): InlineResult {
       (height) => bandAt(options, y, Math.max(height, style.fontSize * 1.4)),
       lineShift(style),
       style.direction === 'rtl',
+      strut,
     );
     if (!line) {
       open = openLine(0);
@@ -937,14 +940,27 @@ function finishLine(
   bandFor: (height: number) => { left: number; right: number },
   shift: number,
   rtl: boolean,
+  strut: InlineDecoration | null,
 ): LineBox | null {
   if (!open.texts.length && !open.atomics.length && !open.edges.length) {
     return null;
   }
   if (open.order.some((p) => needsOrdering(p, rtl))) reorderLine(open, rtl);
-  let ascent = 0;
-  let descent = 0;
-  let height = 0;
+  // Every line box starts with the block's strut, its face at its line
+  // height, so a line of images alone is still as tall as `line-height`
+  // makes a line (CSS 2.1 10.8.1). Not one with nothing on it that takes
+  // room, which has no height at all (9.4.2), nor one that holds a block
+  // an inline box was split around, which is no line of text.
+  const held =
+    strut &&
+    (open.texts.length > 0 ||
+      open.atomics.some((placed) =>
+        placed.box.style.display.startsWith('inline'),
+      ) ||
+      open.edges.some((edge) => edge.width !== 0));
+  let ascent = held ? strut.ascent : 0;
+  let descent = held ? strut.descent : 0;
+  let height = ascent + descent;
   for (const text of open.texts) {
     const natural = text.layout.lines[text.layoutLine];
     const own = natural.baseline - natural.y;
@@ -1233,8 +1249,27 @@ function atomicBaseline(box: Box): number {
     return bottom;
   }
   const baseline =
-    box.kind === 'table' ? firstBaselineIn(box) : lastBaselineIn(box);
+    box.kind === 'table' ? tableBaseline(box) : lastBaselineIn(box);
   return baseline === null ? bottom : box.marginTop + (baseline - box.y);
+}
+
+/**
+ * A table's baseline: its first row's (CSS 2.1 17.5.3), which is the first
+ * line of a cell in the row, or where no cell in it has a line, the bottom
+ * content edge of the row's lowest cell. Not the table's bottom: a table
+ * of empty rows stands on its first one, and the rest hang below the line.
+ */
+function tableBaseline(table: Box): number | null {
+  const { cells } = tableGrid(table);
+  let lowest = -Infinity;
+  for (const cell of cells) {
+    if (cell.row > 0) break;
+    const found = firstBaselineIn(cell.box);
+    if (found !== null) return found;
+    const b = cell.box;
+    lowest = Math.max(lowest, b.y + b.height - b.padBottom - b.borderBottom);
+  }
+  return lowest === -Infinity ? null : lowest;
 }
 
 /**
@@ -1796,6 +1831,29 @@ function naturalLineHeight(fonts: FontsLike, style: ComputedStyle): number {
   if (cache.size > 64) cache.clear();
   cache.set(key, height);
   return height;
+}
+
+/**
+ * A block's strut: the ascent and descent of a line of nothing in its face,
+ * the half-leading its `line-height` adds shared above and below, as the
+ * text engines set a line (CSS 2.1 10.8.1).
+ */
+export function strutOf(
+  fonts: FontsLike,
+  style: ComputedStyle,
+): InlineDecoration {
+  // text set at no size takes no room, and CoreText reads a size of 0 as
+  // its default twelve points
+  if (!(style.fontSize > 0)) return NO_EXTENT;
+  const face = faceExtent(fonts, style);
+  const target =
+    style.lineHeight === 'normal'
+      ? naturalLineHeight(fonts, style)
+      : style.lineHeightIsLength
+        ? (style.lineHeight as number)
+        : (style.lineHeight as number) * style.fontSize;
+  const half = (target - face.ascent - face.descent) / 2;
+  return { ascent: face.ascent + half, descent: face.descent + half };
 }
 
 /** Whether a line has nothing on it yet. */

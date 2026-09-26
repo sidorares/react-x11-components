@@ -15,7 +15,7 @@ import type { Len } from '../css/values.js';
 import { Box } from './boxes.js';
 import type { BoxTree, LineBox, Marker } from './boxes.js';
 import { FloatContext } from './floats.js';
-import { layoutInline, lineHeightMultiplier } from './inline.js';
+import { layoutInline, lineHeightMultiplier, strutOf } from './inline.js';
 import type { FontsLike } from './inline.js';
 import { layoutFlex } from './flex.js';
 import { finishCaptions, layoutTable } from './table.js';
@@ -566,16 +566,40 @@ function layoutInternals(
   const floats = ownFloats
     ? new FloatContext(box.contentX, box.contentX + contentWidth)
     : outerFloats;
+  // the line a pass before gave a marker, which this one may not
+  if (box.marker) box.lines = null;
   const flow = layoutChildren(box, ctx, floats, box.contentY, contentWidth);
+  // A list item with a marker and no line holds one, the marker's, a line
+  // of its own face tall: an empty `<li>` is a line tall in a browser, and
+  // an inline-block around one sits on its marker's baseline.
+  let height = flow.height;
+  if (box.marker && ctx.fonts && !firstLineIn(box)) {
+    const strut = strutOf(ctx.fonts, box.style);
+    const line = strut.ascent + strut.descent;
+    box.lines = [
+      {
+        x: box.contentX,
+        y: box.contentY,
+        width: 0,
+        height: line,
+        baseline: strut.ascent,
+        texts: [],
+        textStart: box.subtreeTextStart,
+        textEnd: box.subtreeTextStart,
+        atomics: [],
+      },
+    ];
+    height = Math.max(height, line);
+  }
   // A box that establishes a formatting context contains its own floats, so
   // it has to be at least as tall as they are. One that does not, does not —
   // that is the classic "collapsed parent" every author has met.
   const withFloats = ownFloats
     ? Math.max(
-        flow.height,
+        height,
         floats.bottom === -Infinity ? 0 : floats.bottom - box.contentY,
       )
-    : flow.height;
+    : height;
   finishHeight(box, withFloats);
   // The margin that escaped through this box's bottom edge becomes part of
   // its own: the parent's flow loop reads `child.marginBottom` for the next
