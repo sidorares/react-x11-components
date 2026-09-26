@@ -864,17 +864,37 @@ function lineHeightMultiplier(fonts: FontsLike, style: ComputedStyle): number {
   return Math.max(0.1, target / natural);
 }
 
+/**
+ * The font's natural line height in a style, which CSS's number form is
+ * converted against. Kept per font manager per style, like a space's
+ * advance: a pass asks once a paragraph — 8,800 times at 600 KB — and on
+ * CoreText every answer was a call to the native side.
+ */
+const NATURAL_LINE_HEIGHT = new WeakMap<FontsLike, Map<string, number>>();
+
 function naturalLineHeight(fonts: FontsLike, style: ComputedStyle): number {
+  let cache = NATURAL_LINE_HEIGHT.get(fonts);
+  if (!cache) {
+    cache = new Map();
+    NATURAL_LINE_HEIGHT.set(fonts, cache);
+  }
+  const key = `${style.fontFamily}|${style.fontSize}|${style.fontWeight}|${style.fontStyle}`;
+  const hit = cache.get(key);
+  if (hit !== undefined) return hit;
+  let height: number;
   try {
     const font = fonts.match(style.fontFamily, {
       size: style.fontSize,
       weight: style.fontWeight,
       style: style.fontStyle,
     });
-    return font.metrics(style.fontSize).lineHeight;
+    height = font.metrics(style.fontSize).lineHeight;
   } catch {
-    return style.fontSize * 1.2;
+    height = style.fontSize * 1.2;
   }
+  if (cache.size > 64) cache.clear();
+  cache.set(key, height);
+  return height;
 }
 
 function bandAt(
