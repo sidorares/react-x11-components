@@ -1209,6 +1209,18 @@ function flowOf(
     case 'inline-table':
     case 'inline-flex':
       return 'atomic';
+    case 'table-row-group':
+    case 'table-header-group':
+    case 'table-footer-group':
+    case 'table-row':
+    case 'table-cell':
+    case 'table-caption':
+    case 'table-column':
+    case 'table-column-group':
+      // table parts in an inline box are given an inline table around them
+      // (CSS 2.1 17.2.1), which sits in the line as an inline-block does:
+      // the white space either side of it is the line's
+      return box.parent?.kind === 'inline' ? 'atomic' : 'block';
     default:
       return 'block';
   }
@@ -1605,8 +1617,14 @@ function anonymousOf(
 }
 
 function isDroppableWhitespace(box: Box): boolean {
-  return box.kind === 'text' && !box.text.trim();
+  if (box.kind !== 'text' || !BLANK.test(box.text)) return false;
+  // preserved white space is content, and goes in a cell like any other
+  // (CSS 2.1 17.2.1, rule 1)
+  const ws = box.style.whiteSpace;
+  return ws !== 'pre' && ws !== 'pre-wrap';
 }
+
+const BLANK = /^\s*$/;
 
 /** White space that collapsing would change: anything but a lone space.
  *  Most of a document's text has none, and is its own collapsed form. */

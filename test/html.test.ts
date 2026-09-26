@@ -2675,6 +2675,23 @@ metric("a table's height is shared among its rows", async () => {
   assert.ok(Math.abs(c.height - 100) < 0.01, `clamped: ${c.height}`);
 });
 
+metric(
+  'table cells in an inline box are an inline table, with the spaces either side of it',
+  async () => {
+    // CSS 2.1 17.2.1: the anonymous table around them is inline-level,
+    // and sits in the line as an inline-block would, the white space
+    // around it kept
+    const { node } = await render(
+      '<p id="p" style="margin:0"><span>a<span id="c" style="display:table-cell">' +
+        'b</span> c</span></p>',
+    );
+    const el = view(node);
+    assert.strictEqual(el.textContent(), 'ab c', 'the space after it kept');
+    const [line] = linesOf(el, 'p');
+    assert.strictEqual(line.atomics.length, 1, 'the table is on the line');
+  },
+);
+
 metric("a footer group's rows come last wherever it stands", async () => {
   const { node } = await render(
     '<table><thead><tr><td id="h">h</td></tr></thead>' +
