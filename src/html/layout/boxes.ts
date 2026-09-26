@@ -28,6 +28,9 @@ import {
   tagOf,
 } from '../dom.js';
 import type { Cascade } from '../css/cascade.js';
+import { counterText, quoteAt } from '../css/content.js';
+import type { ContentItem } from '../css/content.js';
+import { inherit } from '../css/style.js';
 import type { ComputedStyle } from '../css/style.js';
 
 export type BoxKind =
@@ -51,6 +54,8 @@ export interface LineBox {
   y: number;
   width: number;
   height: number;
+  /** From the line's top — where a text engine's own lines carry theirs
+   *  from the top of the layout. */
   baseline: number;
   /**
    * The text on this line, as one or more fragments.
@@ -65,6 +70,9 @@ export interface LineBox {
   textEnd: number;
   /** Atomic items sitting on this line — images, inline-blocks, controls. */
   atomics: AtomicPlacement[];
+  /** The inline boxes that open or close on this line, where their own
+   *  margin, border and padding sit. */
+  edges?: EdgePlacement[];
 }
 
 /**
@@ -97,13 +105,30 @@ export interface LineText {
    *  under the pointer finds the element whose text it is. Per pass: the
    *  layout may be one an earlier pass made (`TextLayoutCache`), and the
    *  document index is this parse's. */
-  spans: { documentAt(offset: number): number };
+  spans: {
+    documentAt(offset: number): number;
+    /** The text box an offset's text is, where the layout knows. */
+    boxAt?(offset: number): Box | null;
+  };
 }
 
 export interface AtomicPlacement {
   box: Box;
   x: number;
   y: number;
+}
+
+/**
+ * Where an inline box's own margin, border and padding on one side sit on a
+ * line: CSS 2.1 puts the start side's before the box's first fragment and the
+ * end side's after its last, taking room on those lines (10.3.1). `x` is the
+ * edge's outer side, margin included, and `width` all three.
+ */
+export interface EdgePlacement {
+  box: Box;
+  side: 'start' | 'end';
+  x: number;
+  width: number;
 }
 
 /** The slice of ntk's `TextLayout` this renderer reads. Structural for the
@@ -185,6 +210,22 @@ export class Box {
   marginRight = 0;
   marginBottom = 0;
   marginLeft = 0;
+  /** An inline box with a background or a border to paint behind its
+   *  fragments, and the ascent and descent of its own face — the height CSS
+   *  paints them over (10.6.1). Set by the inline layout. */
+  decorated = false;
+  contentAscent = 0;
+  contentDescent = 0;
+  /** What a percentage `height` resolves against: an absolutely positioned
+   *  box's containing block's height, which is known before the box is laid
+   *  out (CSS 2.1 10.5). NaN everywhere else, where that height depends on
+   *  the content and a percentage is `auto`. */
+  percentHeightBase = NaN;
+  /** Whether this box's top margin collapsed through its parent's top edge
+   *  and was spent placing the parent (CSS 2.1 8.3.1): its own layout puts
+   *  it at the parent's content top, and applies no margin again. Set by
+   *  the parent's flow each pass. */
+  topAbsorbed = false;
 
   /** Text, for a `text` box: already whitespace-processed and transformed. */
   text = '';
@@ -220,6 +261,11 @@ export class Box {
    *  here), and giving it one would put a bullet in every copied list. */
   markerText = '';
   markerLayout: TextLayoutLike | null = null;
+  /** Which of an element's pseudo-elements this box is, for generated
+   *  content. Its `el` is null — it is no element — and its text box's is
+   *  the element it hangs off, so a click on a link's generated text is a
+   *  click on the link. */
+  pseudo: 'before' | 'after' | null = null;
   markerX = 0;
   markerY = 0;
 
@@ -328,7 +374,10 @@ export type ReplacedKind =
   | 'button'
   | 'checkbox'
   | 'radio'
-  | 'hr';
+  | 'hr'
+  /** An `<iframe>`, `<video>` or `<embed>`: what it would show is never
+   *  loaded, so it is a box of its size with nothing in it. */
+  | 'frame';
 
 /** What the builder produced, plus the document-wide text it indexed. */
 export interface BoxTree {
@@ -391,12 +440,22 @@ const ROOT_SHARE_KEY = 0;
 
 class Builder {
   private _options: BuildOptions;
-  private _text = '';
+  /** The document text, in the pieces it was pushed in — joined once at the
+   *  end, so that taking back a line's last space is not a copy of it. */
+  private _chunks: string[] = [];
+  private _length = 0;
   private _textBoxes: Box[] = [];
   private _controls: Box[] = [];
   private _links: Box[] = [];
   /** Counter stack for `<ol>` numbering, one entry per open list. */
   private _counters: number[] = [];
+  /** The CSS counters in scope, for `counter()` in generated content. */
+  private _scopes = new CounterScopes();
+  /** How many quotes generated content has opened and not closed. */
+  private _quoteDepth = 0;
+  /** Where the inline content being built stands, for collapsing white
+   *  space across element boundaries. */
+  private _ws: Collapse = 'start';
   private _depth = 0;
 
   constructor(options: BuildOptions) {
@@ -408,15 +467,20 @@ class Builder {
     cascade.beginSharing();
     const rootStyle = cascade.rootStyle(hasBody(root));
     const rootBox = new Box('block', null, rootStyle);
+    // a fragment's root stands in for a `<body>`, counters and all
+    if (rootStyle.counterReset || rootStyle.counterIncrement) {
+      this._counterChanges(rootStyle);
+    }
     // The DOM's `<html>`/`<body>` are ordinary elements with ordinary styles;
     // the box above them exists only to be the initial containing block, so
     // it carries no margins of its own and cannot collapse with anything.
     this._children(root, rootBox, rootStyle, false, null, ROOT_SHARE_KEY);
-    fixUp(rootBox);
+    this._endLine();
+    fixUp(rootBox, anonymousStyles(cascade.initial));
     assignSubtreeRanges(rootBox);
     return {
       root: rootBox,
-      text: this._text,
+      text: this._chunks.join(''),
       textBoxes: this._textBoxes,
       controls: this._controls,
       links: this._links,
@@ -432,13 +496,16 @@ class Builder {
     owner: Element | null,
     parentKey: number,
   ): void {
+    // CSS 2.1 17.2.1: a column group holds columns, and anything else in it
+    // is not rendered
+    const onlyColumns = parentStyle.display === 'table-column-group';
     for (const child of childrenOf(node as Element)) {
       if (isText(child)) {
-        this._textNode(child.data, into, parentStyle, owner);
+        if (!onlyColumns) this._textNode(child.data, into, parentStyle, owner);
         continue;
       }
       if (!isElement(child)) continue;
-      this._element(child, into, parentStyle, inFlex, parentKey);
+      this._element(child, into, parentStyle, inFlex, parentKey, onlyColumns);
     }
   }
 
@@ -448,6 +515,7 @@ class Builder {
     parentStyle: ComputedStyle,
     inFlex: boolean,
     parentKey: number,
+    onlyColumns = false,
   ): void {
     const tag = tagOf(el);
     if (NON_RENDERED.has(tag)) return;
@@ -461,13 +529,21 @@ class Builder {
       inFlex,
     );
     if (style.display === 'none') return;
+    if (onlyColumns && style.display !== 'table-column') return;
+    // before anything else of the element's, including its `::before`,
+    // and for the element whatever box it makes (CSS 2.1 12.4)
+    if (style.counterReset || style.counterIncrement) {
+      this._counterChanges(style);
+    }
 
     // `<br>` is a line break rather than a box, and it is the one element
     // whose *absence* of a box still has to reach the inline layout.
     if (tag === 'br') {
+      this._endLine();
       const box = new Box('break', el, style);
       into.append(box);
       this._push('\n', box);
+      this._ws = 'start';
       return;
     }
 
@@ -488,6 +564,9 @@ class Builder {
     if (attr(el, 'href') && (tag === 'a' || tag === 'area'))
       this._links.push(box);
 
+    // a column's content is not rendered at all (CSS 2.1 17.2.1)
+    if (style.display === 'table-column') return;
+
     if (style.display === 'list-item') {
       box.markerText = markerFor(el, style, this._counters);
     }
@@ -499,9 +578,21 @@ class Builder {
 
     const childInFlex =
       style.display === 'flex' || style.display === 'inline-flex';
+    const flow = flowOf(style, box);
+    const around = this._ws;
+    if (flow === 'block') this._endLine();
+    if (flow !== 'inline') this._ws = 'start';
     this._depth += 1;
+    // a counter reset in here reaches the element's later children and not
+    // past its end; `::before` and `::after` are children like any other
+    this._scopes.open();
+    this._pseudo(el, 'before', style, box);
     this._children(el, box, style, childInFlex, el, key);
+    this._pseudo(el, 'after', style, box);
+    this._scopes.close();
     this._depth -= 1;
+    if (flow !== 'inline') this._endLine();
+    this._ws = after(flow, this._ws, around);
 
     if (opensCounter) this._counters.pop();
   }
@@ -519,6 +610,9 @@ class Builder {
     if (style.position === 'absolute' || style.position === 'fixed')
       box.outOfFlow = true;
     else if (style.float !== 'none') box.isFloat = true;
+    const flow = flowOf(style, box);
+    if (flow === 'block') this._endLine();
+    this._ws = after(flow, this._ws, this._ws);
 
     if (replaced === 'image') {
       // Both sources are CSS pixels — an image pixel is one, and so is an
@@ -544,6 +638,14 @@ class Builder {
     }
 
     if (replaced === 'hr') return;
+    if (replaced === 'frame') {
+      // HTML's default object size, in CSS pixels; `width` and `height`
+      // attributes reach the style as presentational hints and win
+      const scale = this._options.scale ?? 1;
+      box.intrinsicWidth = 300 * scale;
+      box.intrinsicHeight = 150 * scale;
+      return;
+    }
 
     const size = this._options.controlSize(el, replaced, style);
     box.intrinsicWidth = size.width;
@@ -554,6 +656,104 @@ class Builder {
     // field, which no document viewer does.
   }
 
+  /**
+   * An element's `::before` or `::after`, when a rule gives it content: a
+   * box of its own `display`, holding the text its `content` comes to, which
+   * goes through the same white-space processing as the document's text.
+   */
+  private _pseudo(
+    el: Element,
+    which: 'before' | 'after',
+    elementStyle: ComputedStyle,
+    into: Box,
+  ): void {
+    const style = this._options.cascade.pseudoStyleFor(el, which, elementStyle);
+    if (!style || style.display === 'none') return;
+    // a column renders no content, and generated content is all it would
+    // hold; in a column group it is not a column either (CSS 2.1 17.2.1)
+    if (
+      style.display === 'table-column' ||
+      style.display === 'table-column-group' ||
+      elementStyle.display === 'table-column-group'
+    ) {
+      return;
+    }
+    if (style.counterReset || style.counterIncrement) {
+      this._counterChanges(style);
+    }
+    const box = new Box(boxKindFor(style.display), null, style);
+    box.pseudo = which;
+    into.append(box);
+    if (style.position === 'absolute' || style.position === 'fixed')
+      box.outOfFlow = true;
+    else if (style.float !== 'none') box.isFloat = true;
+    const text = this._generated(style.content as ContentItem[], style, el);
+    const flow = flowOf(style, box);
+    const around = this._ws;
+    if (flow === 'block') this._endLine();
+    if (flow !== 'inline') this._ws = 'start';
+    if (text) this._textNode(text, box, style, el);
+    if (flow !== 'inline') this._endLine();
+    this._ws = after(flow, this._ws, around);
+  }
+
+  /** `counter-reset`, then `counter-increment`, as CSS 2.1 orders them. */
+  private _counterChanges(style: ComputedStyle): void {
+    for (const { name, value } of style.counterReset ?? []) {
+      this._scopes.reset(name, value);
+    }
+    for (const { name, value } of style.counterIncrement ?? []) {
+      this._scopes.increment(name, value);
+    }
+  }
+
+  /** What `content` comes to here, in document order: the quotes it opens
+   *  and closes count for everything after it. */
+  private _generated(
+    items: ContentItem[],
+    style: ComputedStyle,
+    el: Element,
+  ): string {
+    let text = '';
+    for (const item of items) {
+      switch (item.kind) {
+        case 'string':
+          text += item.text;
+          break;
+        case 'attr':
+          text += attr(el, item.name) ?? '';
+          break;
+        case 'counter':
+          text += counterText(this._scopes.value(item.name), item.style);
+          break;
+        case 'counters':
+          text += this._scopes
+            .values(item.name)
+            .map((v) => counterText(v, item.style))
+            .join(item.separator);
+          break;
+        case 'open-quote':
+          text += quoteAt(style.quotes, this._quoteDepth, 0);
+          this._quoteDepth += 1;
+          break;
+        case 'close-quote':
+          // a close with nothing open writes nothing and closes nothing
+          if (this._quoteDepth > 0) {
+            this._quoteDepth -= 1;
+            text += quoteAt(style.quotes, this._quoteDepth, 1);
+          }
+          break;
+        case 'no-open-quote':
+          this._quoteDepth += 1;
+          break;
+        case 'no-close-quote':
+          if (this._quoteDepth > 0) this._quoteDepth -= 1;
+          break;
+      }
+    }
+    return text;
+  }
+
   /** A text node, whitespace-processed per the inherited `white-space`. */
   private _textNode(
     data: string,
@@ -561,20 +761,31 @@ class Builder {
     style: ComputedStyle,
     owner: Element | null,
   ): void {
+    // text set at no size draws nothing and takes no room, so it needs no
+    // box — and it is no part of the white space around it either
+    if (!(style.fontSize > 0)) return;
     const ws = style.whiteSpace;
     let text: string;
     if (ws === 'pre' || ws === 'pre-wrap') {
       text = data;
-    } else if (ws === 'pre-line') {
-      text = data.replace(/[ \t]+/g, ' ').replace(/ *\n */g, '\n');
+      if (!text) return;
+      // preserved spaces do not collapse with the ones after them
+      this._ws = text.endsWith('\n') ? 'start' : 'content';
     } else {
-      text = data.replace(/[\t\n\r\f ]+/g, ' ');
-      // A run of whitespace against the start of a block collapses away
-      // entirely; between two inline boxes it collapses to one space, which
-      // the replace above already did.
-      if (text === ' ' && !hasInlineContent(into)) return;
+      text =
+        ws === 'pre-line'
+          ? data.replace(/[ \t]+/g, ' ').replace(/ *\n */g, '\n')
+          : data.replace(/[\t\n\r\f ]+/g, ' ');
+      // A space at the start of a line goes, and so does one after another
+      // space, across element boundaries (CSS 2.1 16.6.1): `<p>\n  Hi` has
+      // no space before the H, and `Hi <b> there</b>` has one between.
+      if (text.charCodeAt(0) === 32 && this._ws !== 'content') {
+        text = text.slice(1);
+      }
+      if (!text) return;
+      const last = text.charCodeAt(text.length - 1);
+      this._ws = last === 32 ? 'space' : last === 10 ? 'start' : 'content';
     }
-    if (!text) return;
     text = transformText(text, style.textTransform);
     // The owning element rides on the text box, and from there onto the
     // `TextRun`: hit testing inside a paragraph has no rectangle to test —
@@ -586,12 +797,107 @@ class Builder {
     this._push(text, box);
   }
 
+  /**
+   * A line ends here — a block's inline content is over, or a `<br>` or a
+   * block interrupts it — and a collapsible space it ends on goes (CSS 2.1
+   * 16.6.1). Content standing on a space means that space was the last
+   * thing pushed, so taking it back is a character off the last chunk; a
+   * text box it empties goes with it.
+   */
+  private _endLine(): void {
+    if (this._ws !== 'space') return;
+    this._ws = 'start';
+    const box = this._textBoxes[this._textBoxes.length - 1];
+    if (!box || box.textEnd !== this._length || !box.text.endsWith(' ')) {
+      return;
+    }
+    box.text = box.text.slice(0, -1);
+    box.textEnd -= 1;
+    this._length -= 1;
+    const last = this._chunks.length - 1;
+    this._chunks[last] = this._chunks[last].slice(0, -1);
+    if (!box.text) {
+      this._textBoxes.pop();
+      const siblings = box.parent?.children;
+      const at = siblings ? siblings.lastIndexOf(box) : -1;
+      if (at >= 0) siblings!.splice(at, 1);
+    }
+  }
+
   /** Give a box its slice of the document text index. */
   private _push(text: string, box: Box): void {
-    box.textStart = this._text.length;
-    this._text += text;
-    box.textEnd = this._text.length;
+    box.textStart = this._length;
+    this._chunks.push(text);
+    this._length += text.length;
+    box.textEnd = this._length;
     if (box.kind === 'text') this._textBoxes.push(box);
+  }
+}
+
+/**
+ * The CSS counters in scope as the builder walks the document (CSS 2.1
+ * 12.4.1). A `counter-reset` makes an instance that reaches the element's
+ * descendants and its later siblings, so the instance belongs to the level
+ * the element is on — its parent's children — and goes when that level
+ * closes; a later reset on the same level takes its place. `counter()` reads
+ * the innermost instance and `counters()` all of them, outermost first. A
+ * counter used where none is in scope is reset to 0 there, as though the
+ * element had asked.
+ */
+class CounterScopes {
+  /** Per name, its instances, outermost first, with the level each is on. */
+  private _instances = new Map<string, { level: number; value: number }[]>();
+  /** The names each open level made an instance of, so closing it drops
+   *  exactly those. */
+  private _made: string[][] = [[]];
+
+  open(): void {
+    this._made.push([]);
+  }
+
+  close(): void {
+    const level = this._made.length - 1;
+    for (const name of this._made.pop() ?? []) {
+      const stack = this._instances.get(name);
+      if (stack && stack[stack.length - 1]?.level === level) stack.pop();
+    }
+  }
+
+  reset(name: string, value: number): void {
+    const level = this._made.length - 1;
+    let stack = this._instances.get(name);
+    if (!stack) {
+      stack = [];
+      this._instances.set(name, stack);
+    }
+    const top = stack[stack.length - 1];
+    if (top?.level === level) {
+      top.value = value;
+      return;
+    }
+    stack.push({ level, value });
+    this._made[level].push(name);
+  }
+
+  increment(name: string, by: number): void {
+    const stack = this._instances.get(name);
+    if (!stack?.length) this.reset(name, 0);
+    const innermost = this._instances.get(name)!;
+    innermost[innermost.length - 1].value += by;
+  }
+
+  value(name: string): number {
+    const stack = this._instances.get(name);
+    if (stack?.length) return stack[stack.length - 1].value;
+    this.reset(name, 0);
+    return 0;
+  }
+
+  values(name: string): number[] {
+    const stack = this._instances.get(name);
+    if (stack?.length) return stack.map((instance) => instance.value);
+    this.reset(name, 0);
+    return [0];
   }
 }
 
@@ -615,16 +921,6 @@ function numberAttr(el: Element, name: string): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-function hasInlineContent(box: Box): boolean {
-  for (let i = box.children.length - 1; i >= 0; i -= 1) {
-    const kind = box.children[i].kind;
-    if (kind === 'text' || kind === 'inline' || kind === 'replaced')
-      return true;
-    if (kind === 'block' || kind === 'flex' || kind === 'table') return false;
-  }
-  return false;
-}
-
 function transformText(
   text: string,
   transform: ComputedStyle['textTransform'],
@@ -641,6 +937,53 @@ function transformText(
       );
     default:
       return text;
+  }
+}
+
+/** Where the inline content being built stands, for white space: at the
+ *  start of a line, just after a space that may collapse, or after anything
+ *  else. */
+type Collapse = 'start' | 'space' | 'content';
+
+/**
+ * How a box sits in its parent's inline content, for white space. An inline
+ * box's content is its parent's own; an atomic inline — an inline-block, an
+ * image — is one piece of it; a block ends the line it interrupts and starts
+ * another; a float or a positioned box is no part of it at all.
+ */
+function flowOf(
+  style: ComputedStyle,
+  box: Box,
+): 'inline' | 'atomic' | 'block' | 'out' {
+  if (box.outOfFlow || box.isFloat) return 'out';
+  switch (style.display) {
+    case 'inline':
+      return box.kind === 'replaced' ? 'atomic' : 'inline';
+    case 'inline-block':
+    case 'inline-table':
+    case 'inline-flex':
+      return 'atomic';
+    default:
+      return 'block';
+  }
+}
+
+/** Where the inline content stands after a box, from where it stood inside
+ *  the box and before it. */
+function after(
+  flow: 'inline' | 'atomic' | 'block' | 'out',
+  inside: Collapse,
+  before: Collapse,
+): Collapse {
+  switch (flow) {
+    case 'inline':
+      return inside;
+    case 'atomic':
+      return 'content';
+    case 'out':
+      return before;
+    default:
+      return 'start';
   }
 }
 
@@ -683,6 +1026,10 @@ function replacedKind(el: Element, tag: string): ReplacedKind {
       return 'image';
     case 'hr':
       return 'hr';
+    case 'iframe':
+    case 'video':
+    case 'embed':
+      return 'frame';
     case 'textarea':
       return 'textarea';
     case 'select':
@@ -829,23 +1176,24 @@ function assignSubtreeRanges(box: Box): { start: number; end: number } {
  *    straight to `<tr>`, and CSS says the missing row group is generated
  *    rather than the rows being dropped.
  */
-function fixUp(box: Box): void {
-  for (const child of box.children) fixUp(child);
+function fixUp(box: Box, anonymous: AnonymousStyle): void {
+  for (const child of box.children) fixUp(child, anonymous);
 
   if (box.kind === 'table') {
-    fixUpTable(box);
+    fixUpTable(box, anonymous);
     return;
   }
   if (box.kind === 'table-row-group') {
-    wrapOrphans(box, 'table-row', (k) => k === 'table-row');
+    wrapOrphans(box, 'table-row', (k) => k === 'table-row', anonymous);
     return;
   }
   if (box.kind === 'table-row') {
-    wrapOrphans(box, 'table-cell', (k) => k === 'table-cell');
+    wrapOrphans(box, 'table-cell', (k) => k === 'table-cell', anonymous);
     return;
   }
 
   if (!box.children.length) return;
+  wrapTableParts(box, anonymous);
   let hasBlockLevel = false;
   let hasInlineLevel = false;
   for (const child of box.children) {
@@ -870,7 +1218,7 @@ function fixUp(box: Box): void {
     // finds itself; it does not force an anonymous block on its own.
     if (isBlockLevel(child) && !child.outOfFlow && !child.isFloat) {
       if (run) {
-        next.push(anonymousBlock(box, run));
+        next.push(anonymousOf(box, 'block', run, anonymous));
         run = null;
       }
       next.push(child);
@@ -885,20 +1233,44 @@ function fixUp(box: Box): void {
     if (run.every((c) => c.kind === 'text' && !c.text.trim())) {
       // trailing whitespace after the last block: same rule
     } else {
-      next.push(anonymousBlock(box, run));
+      next.push(anonymousOf(box, 'block', run, anonymous));
     }
   }
   box.children = next;
 }
 
-function anonymousBlock(parent: Box, run: Box[]): Box {
-  const box = new Box('block', null, parent.style);
-  box.parent = parent;
-  for (const child of run) {
-    child.parent = box;
-    box.children.push(child);
-  }
-  return box;
+/**
+ * The style of an anonymous box inside a parent: what the parent passes on
+ * by inheritance, and every other property at its initial value, as CSS 2.1
+ * gives anonymous boxes theirs (9.2.1.1, 17.2.1). An anonymous box that took
+ * the parent's style itself took its height, its padding and borders, its
+ * background, its relative offset and its opacity a second time — the text
+ * in `<div style="padding: 20px">text<p>…</p></div>` sat 40px in, and the
+ * paragraph after it the height of the div further down. One per parent
+ * style, which the cascade already shares between elements.
+ */
+type AnonymousStyle = (
+  parent: Box,
+  display: ComputedStyle['display'],
+) => ComputedStyle;
+
+function anonymousStyles(initial: ComputedStyle): AnonymousStyle {
+  const made = new WeakMap<ComputedStyle, Map<string, ComputedStyle>>();
+  return (parent, display) => {
+    let byDisplay = made.get(parent.style);
+    if (!byDisplay) {
+      byDisplay = new Map();
+      made.set(parent.style, byDisplay);
+    }
+    let style = byDisplay.get(display);
+    if (!style) {
+      // `display` is the one property it does not start from: it is the
+      // box the fix-up made, and layout asks the style what a box is
+      style = { ...inherit(parent.style, initial), display };
+      byDisplay.set(display, style);
+    }
+    return style;
+  };
 }
 
 function isBlockLevel(box: Box): boolean {
@@ -931,6 +1303,7 @@ function wrapOrphans(
   box: Box,
   kind: BoxKind,
   accept: (k: BoxKind) => boolean,
+  anonymous: AnonymousStyle,
 ): void {
   let needed = false;
   for (const child of box.children) {
@@ -945,7 +1318,7 @@ function wrapOrphans(
   for (const child of box.children) {
     if (accept(child.kind)) {
       if (run) {
-        next.push(anonymousOf(box, kind, run));
+        next.push(anonymousOf(box, kind, run, anonymous));
         run = null;
       }
       next.push(child);
@@ -954,12 +1327,18 @@ function wrapOrphans(
     if (isDroppableWhitespace(child)) continue;
     (run ??= []).push(child);
   }
-  if (run) next.push(anonymousOf(box, kind, run));
+  if (run) next.push(anonymousOf(box, kind, run, anonymous));
   box.children = next;
 }
 
-function anonymousOf(parent: Box, kind: BoxKind, run: Box[]): Box {
-  const box = new Box(kind, null, parent.style);
+function anonymousOf(
+  parent: Box,
+  kind: BoxKind,
+  run: Box[],
+  anonymous: AnonymousStyle,
+  display: ComputedStyle['display'] = kind as ComputedStyle['display'],
+): Box {
+  const box = new Box(kind, null, anonymous(parent, display));
   box.parent = parent;
   for (const child of run) {
     child.parent = box;
@@ -972,14 +1351,90 @@ function isDroppableWhitespace(box: Box): boolean {
   return box.kind === 'text' && !box.text.trim();
 }
 
-function fixUpTable(table: Box): void {
+/** A box that belongs inside a table: a row group, a row, a cell, a
+ *  caption or a column. */
+function isTablePart(box: Box): boolean {
+  if (box.outOfFlow || box.isFloat) return false;
+  const display = box.style.display;
+  return (
+    box.kind === 'table-row-group' ||
+    box.kind === 'table-row' ||
+    box.kind === 'table-cell' ||
+    box.kind === 'table-caption' ||
+    display === 'table-column' ||
+    display === 'table-column-group'
+  );
+}
+
+/**
+ * Table parts outside a table get one around them (CSS 2.1 17.2.1, rule 3):
+ * each run of them — the white space between them no part of it — is
+ * wrapped in an anonymous table, an inline one where the parent is inline,
+ * and the table is then completed as any other. Laid out on their own, two
+ * cells side by side in a line were two inline-blocks with a space between
+ * them, and in a block two blocks, one above the other.
+ */
+function wrapTableParts(box: Box, anonymous: AnonymousStyle): void {
+  if (!box.children.some(isTablePart)) return;
+  const display = box.kind === 'inline' ? 'inline-table' : 'table';
+  const next: Box[] = [];
+  let run: Box[] | null = null;
+  let space: Box[] = [];
+  const flush = (): void => {
+    if (!run) return;
+    const table = anonymousOf(box, 'table', run, anonymous, display);
+    fixUpTable(table, anonymous);
+    next.push(table);
+    run = null;
+  };
+  for (const child of box.children) {
+    if (isTablePart(child)) {
+      run ??= [];
+      run.push(child);
+      space = [];
+      continue;
+    }
+    if (run && isDroppableWhitespace(child)) {
+      // held back: between two parts it goes, after the last it stays
+      space.push(child);
+      continue;
+    }
+    flush();
+    next.push(...space, child);
+    space = [];
+  }
+  flush();
+  next.push(...space);
+  box.children = next;
+  for (const child of next) child.parent = box;
+}
+
+function fixUpTable(table: Box, anonymous: AnonymousStyle): void {
   const groups: Box[] = [];
   const captions: Box[] = [];
+  const columns: Box[] = [];
   let looseRows: Box[] | null = null;
+  let looseCells: Box[] | null = null;
+  const flushCells = (): void => {
+    if (!looseCells) return;
+    (looseRows ??= []).push(
+      anonymousOf(table, 'table-row', looseCells, anonymous),
+    );
+    looseCells = null;
+  };
   for (const child of table.children) {
-    if (child.kind === 'table-row-group') {
+    const display = child.style.display;
+    if (display === 'table-column' || display === 'table-column-group') {
+      // A column is the table's, beside its rows: it lays out nothing and
+      // paints nothing (17.2.1). Taken for a stray child, it was wrapped in
+      // a row of its own and drawn as a cell.
+      columns.push(child);
+    } else if (child.kind === 'table-row-group') {
+      flushCells();
       if (looseRows) {
-        groups.push(anonymousOf(table, 'table-row-group', looseRows));
+        groups.push(
+          anonymousOf(table, 'table-row-group', looseRows, anonymous),
+        );
         looseRows = null;
       }
       groups.push(child);
@@ -987,24 +1442,27 @@ function fixUpTable(table: Box): void {
       captions.push(child);
     } else if (isDroppableWhitespace(child)) {
       continue;
+    } else if (child.kind === 'table-row') {
+      flushCells();
+      (looseRows ??= []).push(child);
     } else {
-      // A `<tr>`, or anything else that ended up here: rows go into an
-      // anonymous group, and anything that is not a row becomes a cell in
-      // one, which is how a browser rescues `<table>text</table>`.
-      const row =
-        child.kind === 'table-row'
-          ? child
-          : anonymousOf(table, 'table-row', [child]);
-      (looseRows ??= []).push(row);
+      // Anything else that ended up here is a cell, or goes in one, and a
+      // run of them shares an anonymous row — which is how a browser
+      // rescues `<table>text</table>`, and how three cells in a table
+      // with no row are one row of three rather than three rows of one.
+      (looseCells ??= []).push(child);
     }
   }
-  if (looseRows) groups.push(anonymousOf(table, 'table-row-group', looseRows));
+  flushCells();
+  if (looseRows) {
+    groups.push(anonymousOf(table, 'table-row-group', looseRows, anonymous));
+  }
   for (const group of groups) {
-    wrapOrphans(group, 'table-row', (k) => k === 'table-row');
+    wrapOrphans(group, 'table-row', (k) => k === 'table-row', anonymous);
     for (const row of group.children) {
-      wrapOrphans(row, 'table-cell', (k) => k === 'table-cell');
+      wrapOrphans(row, 'table-cell', (k) => k === 'table-cell', anonymous);
     }
   }
-  table.children = [...captions, ...groups];
+  table.children = [...captions, ...columns, ...groups];
   for (const child of table.children) child.parent = table;
 }

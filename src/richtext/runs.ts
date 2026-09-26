@@ -34,10 +34,10 @@ export function canFill(ctx: unknown): ctx is FillContext {
  *
  * `span` and `run` are what ntk's layout hands back and what every
  * decoration is read from: the span the run came from, markers and all, and
- * the face it was shaped with. Both are optional because react-x11's Cocoa
- * engine (2.3.x) reports only a run's geometry — `{ x, width, start, end }`
- * — and a paint that assumed the rest threw on the first paragraph on
- * macOS. A run without its span has no decoration to draw; a run without
+ * the face it was shaped with. Both are optional because an engine may
+ * report only a run's geometry — `{ x, width, start, end }` — as react-x11's
+ * Windows engine does and its Cocoa engine did before 2.22.8, and a paint
+ * that assumed the rest threw on the first paragraph on macOS. A run without its span has no decoration to draw; a run without
  * its face takes its vertical extent from the line, which both engines
  * report.
  */
@@ -102,7 +102,8 @@ let warnedSpanless = false;
  * Say so, once, when a laid-out run arrives without the span it came from:
  * every decoration is read off that span, so none will be drawn, and a
  * document that suddenly has no code chips or link underlines should not be
- * a mystery. react-x11's Cocoa engine (2.3.x) is the one that does this.
+ * a mystery. react-x11's Windows engine does this, and its Cocoa engine did
+ * before 2.22.8.
  *
  * `process` and `console` come off `globalThis` because `src/` compiles
  * with `types: []` — a Node global that wandered in would fail the build
@@ -120,7 +121,8 @@ function warnSpanless(): void {
     '@react-x11/components: the text engine handed back laid-out runs ' +
       'without their spans, so run decorations (backgrounds, underlines, ' +
       "strikethrough) and inline link hit-testing are off. react-x11's " +
-      "Cocoa text engine (2.3.x) does this; ntk's does not.",
+      'Windows text engine does this, as its Cocoa engine did before ' +
+      "2.22.8; ntk's does not.",
   );
 }
 

@@ -307,6 +307,19 @@ export class HtmlViewNode extends Node {
     }
   }
 
+  /**
+   * Ask for every `background-image` the styles name. Known only once the
+   * cascade has run, where an `<img>` is known from the markup; the store
+   * asks once a URL, so a tree built again asks nothing new.
+   */
+  private _requestBackgrounds(box: Box): void {
+    const url = box.style.backgroundImage;
+    if (url && box.el) {
+      this._resources.request({ url, kind: 'image', element: box.el });
+    }
+    for (const child of box.children) this._requestBackgrounds(child);
+  }
+
   /** Rebuild the cascade — the document's sheets plus the host's. */
   private _restyle(width: number): void {
     const props = this._props();
@@ -432,6 +445,7 @@ export class HtmlViewNode extends Node {
       this._textPoints = null;
       this._pointsAreUnits = null;
       this._laidOutWidth = -1;
+      this._requestBackgrounds(this._tree.root);
     }
 
     if (
@@ -776,6 +790,9 @@ export class HtmlViewNode extends Node {
     paintDocument(ctx as PaintContext, tree, {
       originX: this.abs.x,
       originY: this.abs.y,
+      // the root's background covers the whole element, not only the
+      // document: an element grown past its content is canvas too
+      canvas: this.abs,
       scale: this._scale,
       damage,
       selection: range
@@ -784,6 +801,11 @@ export class HtmlViewNode extends Node {
       selectionColor: this.selectionColor,
       imageFor: (box) =>
         box.el ? this._resources.image(attr(box.el, 'src') ?? '') : null,
+      backgroundImageFor: (url) => {
+        const image = this._resources.image(url);
+        const size = image ? this._resources.imageSize(url) : null;
+        return image && size ? { image, ...size } : null;
+      },
     });
   }
 }

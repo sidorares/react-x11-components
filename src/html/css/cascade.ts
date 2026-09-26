@@ -21,7 +21,7 @@ import { Element as DomElement, isTag } from 'domhandler';
 import type { Element } from 'domhandler';
 
 import { attr, tagOf } from '../dom.js';
-import { mediaMatches } from './parse.js';
+import { mediaMatches, readIdent, startsIdent } from './parse.js';
 import type { Declaration, StyleRule, Stylesheet } from './parse.js';
 import { applyDeclaration, blockify, inherit, initialStyle } from './style.js';
 import type { ComputedStyle, RootLook } from './style.js';
@@ -112,9 +112,12 @@ class RuleIndex {
   readonly ownStyleClasses = new Set<string>();
   readonly ownStyleTags = new Set<string>();
   ownStyleEverywhere = false;
+  /** How many rules are in here, so an empty index costs one comparison. */
+  size = 0;
   private _nextId = 0;
 
   add(rule: StyleRule): void {
+    this.size += 1;
     const indexed: IndexedRule = {
       rule,
       match: null,
@@ -141,6 +144,35 @@ class RuleIndex {
             : this.universal;
     bucket.push(indexed);
   }
+}
+
+/** A selector's trailing `::before` or `::after`, or CSS 2's single-colon
+ *  spelling of either. */
+const PSEUDO_ELEMENT = /::?(before|after)$/i;
+
+/**
+ * A rule for a `::before` or `::after`, as the pseudo-element it styles and
+ * a rule for the element it hangs off, which is what gets matched. The
+ * specificity is the whole selector's, the pseudo-element counted in.
+ * `p::before` matches `p`; `p ::before` and `p > ::before` have nothing left
+ * of their last compound and match any child, `p *` and `p > *`.
+ */
+function splitPseudoElement(
+  rule: StyleRule,
+): { which: 'before' | 'after'; rule: StyleRule } | null {
+  const m = PSEUDO_ELEMENT.exec(rule.selector);
+  if (!m) return null;
+  const head = rule.selector.slice(0, m.index);
+  const trimmed = head.trimEnd();
+  const selector = !trimmed
+    ? '*'
+    : head !== trimmed || /[>+~]$/.test(trimmed)
+      ? `${trimmed} *`
+      : trimmed;
+  return {
+    which: m[1].toLowerCase() as 'before' | 'after',
+    rule: { ...rule, selector },
+  };
 }
 
 function mapBucket(
@@ -176,7 +208,9 @@ function rightmostKey(selector: string): {
       if (c === quote && selector[i - 1] !== '\\') quote = '';
       continue;
     }
-    if (c === '"' || c === "'") quote = c;
+    // an escaped character is part of a name, whatever it is
+    if (c === '\\') i += 1;
+    else if (c === '"' || c === "'") quote = c;
     else if (c === '(' || c === '[') depth += 1;
     else if (c === ')' || c === ']') depth = Math.max(0, depth - 1);
     else if (
@@ -193,24 +227,23 @@ function rightmostKey(selector: string): {
   let i = 0;
   while (i < compound.length) {
     const c = compound[i];
-    if (c === '#') {
-      const end = identEnd(compound, i + 1);
-      if (!id) id = compound.slice(i + 1, end);
-      i = end;
-    } else if (c === '.') {
-      const end = identEnd(compound, i + 1);
-      if (!cls) cls = compound.slice(i + 1, end);
-      i = end;
+    // Names as the matcher reads them, escapes resolved: `.md\:flex` is
+    // the class `md:flex`, and filed under its first half it never matched.
+    if (c === '#' || c === '.') {
+      const name = readIdent(compound, i + 1);
+      if (c === '#' && !id) id = name.value;
+      if (c === '.' && !cls) cls = name.value;
+      i = Math.max(name.end, i + 1);
     } else if (c === '[') {
       i = balancedEnd(compound, i, '[', ']');
     } else if (c === ':') {
       const skip = compound[i + 1] === ':' ? 2 : 1;
-      const end = identEnd(compound, i + skip);
+      const end = Math.max(readIdent(compound, i + skip).end, i + skip);
       i = compound[end] === '(' ? balancedEnd(compound, end, '(', ')') : end;
-    } else if (/[a-zA-Z]/.test(c)) {
-      const end = identEnd(compound, i);
-      if (!tag) tag = compound.slice(i, end).toLowerCase();
-      i = end;
+    } else if (startsIdent(compound, i)) {
+      const name = readIdent(compound, i);
+      if (!tag) tag = name.value.toLowerCase();
+      i = name.end;
     } else {
       i += 1;
     }
@@ -219,12 +252,6 @@ function rightmostKey(selector: string): {
   if (cls) return { kind: 'class', name: cls };
   if (tag && tag !== '*') return { kind: 'tag', name: tag };
   return { kind: 'any', name: '' };
-}
-
-function identEnd(text: string, from: number): number {
-  let i = from;
-  while (i < text.length && /[a-zA-Z0-9_\-\\]/.test(text[i])) i += 1;
-  return i;
 }
 
 function balancedEnd(
@@ -259,6 +286,9 @@ const NO_POINTER: PointerState = { hovered: new Set(), active: new Set() };
  */
 export class Cascade {
   private _index = new RuleIndex();
+  /** The rules for `::before` and `::after`, kept apart: they never style
+   *  the element itself, and a document with none of them asks nothing. */
+  private _pseudo = { before: new RuleIndex(), after: new RuleIndex() };
   private _adapter: CssSelectAdapter;
   private _pointer: PointerState = NO_POINTER;
   readonly initial: ComputedStyle;
@@ -282,13 +312,17 @@ export class Cascade {
     scale = 1,
   ) {
     this.look = look;
-    this.initial = initialStyle(look);
+    this.initial = initialStyle(look, scale);
     this.viewportWidth = viewportWidth;
     this.viewportHeight = viewportHeight;
     this.scale = scale;
     const breakpoints = new Set<number>();
     for (const sheet of sheets) {
-      for (const rule of sheet.rules) this._index.add(rule);
+      for (const rule of sheet.rules) {
+        const pseudo = splitPseudoElement(rule);
+        if (pseudo) this._pseudo[pseudo.which].add(pseudo.rule);
+        else this._index.add(rule);
+      }
       for (const bp of sheet.breakpoints) breakpoints.add(bp);
     }
     this.breakpoints = [...breakpoints].sort((a, b) => a - b);
@@ -310,7 +344,11 @@ export class Cascade {
 
   /** Whether a pointer move can change what this cascade produces. */
   get hoverSensitive(): boolean {
-    return this._index.hoverSensitive;
+    return (
+      this._index.hoverSensitive ||
+      this._pseudo.before.hoverSensitive ||
+      this._pseudo.after.hoverSensitive
+    );
   }
 
   setPointer(pointer: PointerState): void {
@@ -459,6 +497,37 @@ export class Cascade {
     );
   }
 
+  /**
+   * The style of an element's `::before` or `::after`, or null when it has
+   * none: no rule reaches it, or the rules that do leave `content` at
+   * `normal` or `none`, which make no box (CSS 2.1 12.2). It inherits from
+   * the element's own style, as a pseudo-element does, and a flex
+   * container's are flex items. Not shared: few elements have one, and where
+   * a rule gives every element one — a clearfix — the style is the cost of
+   * the box it makes.
+   */
+  pseudoStyleFor(
+    el: Element,
+    which: 'before' | 'after',
+    elementStyle: ComputedStyle,
+  ): ComputedStyle | null {
+    const index = this._pseudo[which];
+    if (!index.size) return null;
+    const candidates: Candidate[] = [];
+    this._matchInto(index, el, candidates);
+    if (!candidates.length) return null;
+    candidates.sort(byCascade);
+    const style = this._computeStyle(
+      el,
+      elementStyle,
+      elementStyle.display === 'flex' || elementStyle.display === 'inline-flex',
+      candidates,
+    );
+    return style.content === 'normal' || style.content === 'none'
+      ? null
+      : style;
+  }
+
   /** `styleFor`, from the rules and hints already gathered for `el`. */
   private _computeStyle(
     el: Element,
@@ -522,11 +591,14 @@ export class Cascade {
     return bodyStyle;
   }
 
-  /** Every rule and hint that applies to `el`, in cascade order — and, into
-   *  `matched` when it is passed, the ids of the rules, in the order they
-   *  were tried. */
-  private _candidates(el: Element, matched?: number[]): Candidate[] {
-    const out: Candidate[] = [];
+  /** The rules of `index` that match `el`, pushed onto `out` as candidates,
+   *  and their ids onto `matched` in the order they were tried. */
+  private _matchInto(
+    index: RuleIndex,
+    el: Element,
+    out: Candidate[],
+    matched?: number[],
+  ): void {
     // A media query's width is CSS pixels; the viewport is kept in device.
     const width = this.viewportWidth / this.scale;
 
@@ -559,15 +631,23 @@ export class Cascade {
     };
 
     const id = attr(el, 'id');
-    if (id) consider(this._index.byId.get(id));
+    if (id) consider(index.byId.get(id));
     const className = attr(el, 'class');
     if (className) {
       for (const name of className.split(/\s+/)) {
-        if (name) consider(this._index.byClass.get(name));
+        if (name) consider(index.byClass.get(name));
       }
     }
-    consider(this._index.byTag.get(tagOf(el)));
-    consider(this._index.universal);
+    consider(index.byTag.get(tagOf(el)));
+    consider(index.universal);
+  }
+
+  /** Every rule and hint that applies to `el`, in cascade order — and, into
+   *  `matched` when it is passed, the ids of the rules, in the order they
+   *  were tried. */
+  private _candidates(el: Element, matched?: number[]): Candidate[] {
+    const out: Candidate[] = [];
+    this._matchInto(this._index, el, out, matched);
 
     const hints = presentationHints(el);
     if (hints.length) {

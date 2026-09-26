@@ -1,8 +1,9 @@
 // `src/richtext/runs.ts` — the per-run decoration painter, against the two
 // run shapes it meets. ntk hands every laid-out run back with the span it
-// came from and the face it was shaped with; react-x11's Cocoa engine (2.3.x)
-// hands back a run's geometry and nothing else, and the painter threw on the
-// first paragraph on macOS before it learned to read that shape.
+// came from and the face it was shaped with; an engine may hand back a run's
+// geometry and nothing else — react-x11's Windows engine, and its Cocoa engine
+// before 2.22.8 — and the painter threw on the first paragraph on macOS
+// before it learned to read that shape.
 import { test } from 'node:test';
 import assert from 'node:assert';
 

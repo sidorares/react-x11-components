@@ -238,10 +238,12 @@ export function osmVectorSource(options: OsmSourceOptions): MapSource {
  * and it is already installed:
  *
  * ```ts
- * import ntk from 'react-x11/ntk';
+ * import * as ntk from 'react-x11/ntk';
+ * // a named export, not a property of the default one, and undeclared
+ * const { decodeImage } = ntk as unknown as { decodeImage(b: Uint8Array): {
+ *   width: number; height: number; data: Uint8Array } };
  * const decode = (bytes) => {
- *   const image = (ntk as { decodeImage(b: Uint8Array): {
- *     width: number; height: number; data: Uint8Array } }).decodeImage(bytes);
+ *   const image = decodeImage(bytes);
  *   return { width: image.width, height: image.height, data: image.data };
  * };
  * ```

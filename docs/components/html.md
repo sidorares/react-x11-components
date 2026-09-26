@@ -104,34 +104,95 @@ attributes and never invoked.
 
 The subset is aimed at documents an application is handed — mail, release
 notes, help pages, exported reports, generated summaries — rather than at the
-open web.
+open web. How much of CSS 2.1 that comes to, measured against the W3C's own
+test suite on both backends, is in
+[`<Html>` against the CSS 2.1 test suite](../html-conformance.md).
 
 **Layout:** block flow with margin collapsing, inline formatting with
 bidi and full shaping, `inline-block`, floats and `clear`, lists with their
 markers, tables (the auto algorithm and `table-layout: fixed`, with `colspan`
-and `rowspan`), `position: relative | absolute | fixed`, and `display: flex`.
+and `rowspan`, and the anonymous table CSS builds around table parts that
+have none), `position: relative | absolute | fixed`, and `display: flex`. An
+inline-block sits on its last line's baseline and an inline-table on its
+first row's.
+A line with an inline-block or a padded element on it is put in visual order
+a piece at a time — the text engine orders the text inside each piece, and
+the line orders the pieces (UAX #9's L2) — so a right-to-left paragraph with
+an image in it reads right to left, and it is aligned whole: a centred line
+is centred with its images, not text first and the image after it.
 
 **Boxes:** `width`/`height` with `min-`/`max-`, `margin`, `padding`,
 `border` (width, style, colour, radius), `box-sizing`, `overflow`,
-`opacity`, `visibility`, `z-index`.
+`opacity`, `visibility`, `z-index`. Inline elements have all of it but the
+sizes: an inline box's padding, border and margin take room on its line —
+the start side before its first fragment, the end side after its last, on
+the sides its `direction` says (CSS 2.1 8.6) — and its background and border
+are painted a fragment a line, over its face's height plus its vertical
+padding, which is why they do not make the line taller. Where it wraps it is
+sliced: no border and no rounded corner on a side it goes on from. A padded
+`<a>` set as an email's button, a pill badge and a `<kbd>` keycap render as
+a browser renders them.
+
+**Embedded content:** `<iframe>`, `<video>` and `<embed>` are boxes of their
+`width` and `height` — 300×150 without them, as HTML sizes them — with
+nothing in them, because nothing is loaded.
+
+**Backgrounds:** `background-color`, and `background-image` — through
+`onResource`, like an `<img>` — with `background-repeat` and
+`background-position`, positioned in the padding box and repeated across the
+border box. The root's background covers the whole canvas, as CSS 2.1 has
+it: `<html>`'s, or `<body>`'s where `<html>` has none, over the body's margin
+and down the whole element when an application grows it past the document —
+so an email's `<body bgcolor>` colours the message rather than a box inside
+it.
 
 **Text:** `font` and its longhands, `line-height`, `text-align`,
-`text-indent`, `text-transform`, `letter-spacing`, `white-space` (including
+`text-indent`, `text-transform`, `letter-spacing` and `word-spacing` (the
+first is the text engine's; the second is spacing added to each space and
+no-break space, so only text that asks for it is split into more runs),
+`white-space` (including
 `pre` and `pre-wrap`), `direction`, `vertical-align`, `text-decoration` in
-all five rule styles.
+all five rule styles. White space collapses across element boundaries as CSS
+2.1 16.6.1 has it — none at the start or the end of a line, one between two
+words whatever elements they are in — and text at `font-size: 0` takes no
+room, which is how a row of inline-blocks is set without gaps.
+
+**Generated content:** `::before` and `::after`, and CSS 2's `:before` and
+`:after`, as boxes of their own `display` holding what `content` comes to:
+strings with their escapes, `attr()`, `counter()` and `counters()` in every
+CSS 2.1 list style, and `open-quote`/`close-quote` over `quotes`.
+`counter-reset` and `counter-increment` are scoped as CSS 2.1 12.4.1 scopes
+them, so numbered headings and nested outline numbers come out as they do in
+a browser. The generated text is part of the document's text, so a selection
+over it copies it.
 
 **Selectors:** everything [css-select] supports — combinators, attribute
 operators, `:nth-child(an+b)`, `:not()` — plus `:hover`, which is answered
-from this renderer's own pointer state. `@media` width and
+from this renderer's own pointer state. Escapes are read wherever they stand,
+so a Tailwind class such as `md:flex`, written `.md\:flex`, matches. A group
+with a selector in it that is not one — an unknown pseudo-class, a name that
+starts with a digit — is dropped whole, as CSS 2.1 drops it. `@media` width and
 `prefers-color-scheme` queries are evaluated — the scheme is the react-x11
 palette's in force, so a `<ThemeProvider colorScheme>` above the element
 answers it and a desktop that switches schemes re-cascades the document.
 `@import` goes through the resource seam.
 
 **Not implemented:** CSS grid (degrades to block stacking), transforms,
-animations and transitions, multi-column, shadows, gradients, and
-`position: sticky` (treated as `relative`). `border-collapse: collapse` is
-drawn as the separate model with zero spacing.
+animations and transitions, multi-column, shadows, gradients,
+`background-size`, `background-attachment: fixed`, more than one background
+layer (the first is drawn), `position: sticky` (treated as `relative`),
+`::first-letter` and `::first-line`, and an image in `content` (the rest of
+the value is drawn). `border-collapse: collapse` is drawn as the separate
+model with zero spacing, and `<col>` and `<colgroup>` take no part in
+layout: neither their widths nor their borders are read. A percentage
+`height` resolves where the containing block's height is set, and on an
+absolutely positioned box; the document's root has no height to give, since
+the element sizes to its content, so `html, body { height: 100% }` is as
+tall as what it holds.
+Explicit bidi embeddings and overrides (U+202A–U+202E) that open on one side
+of an inline element with padding, border or margin and close on the other
+are resolved on each side of it separately: the text engine is handed the
+text a piece at a time there.
 
 ## The decisions
 
@@ -147,14 +208,14 @@ an inline formatting context and table column sizing are not expressible in
 it. Composing would mean approximating the layout model.
 
 What it reuses from `<richtext>` is everything that was not about the
-element: the `TextRun` vocabulary ntk's text layout takes, the per-run
-decoration painter, and the bidi-correct selection bands. See
-[richtext](richtext.md) — including its caveat about react-x11's Cocoa text
-engine, which hands runs back without their spans: there, inline
-`background` and `text-decoration` draw nothing. Hit testing does not need
-the span: a point inside a paragraph finds the `<a>` or `<span>` under it
-from where its text sits in the document, on every engine, so
-`hrefAtPoint` answers there too. The document lays out, draws and selects.
+element: the `TextRun` vocabulary ntk's text layout takes, the per-run rule
+painter for `text-decoration`, and the bidi-correct selection bands. See
+[richtext](richtext.md) — including its caveat about react-x11's Windows
+text engine, which hands runs back without their spans: there,
+`text-decoration` draws nothing. An inline element's background and border
+do not need the span, and neither does hit testing: a run finds the `<a>` or
+`<span>` it belongs to from where its text sits in the document, on every
+engine, so those are painted and `hrefAtPoint` answers there too.
 
 **Form controls are real widgets, not pictures of them.** A `<select>` in a
 document drops the same menu as a `<Select>` in the window around it, because

@@ -13,7 +13,7 @@
 // these requests", which an application cannot audit and a user did not ask
 // for. The host already knows its proxy, its cache, its offline policy and
 // whether this document is trusted; this does not.
-import ntk, { Image } from 'react-x11/ntk';
+import * as ntk from 'react-x11/ntk';
 import type { Element } from 'domhandler';
 
 /** What the host is asked for. */
@@ -186,24 +186,27 @@ function isPromise<T>(value: unknown): value is Promise<T> {
 }
 
 /**
- * Decode image bytes through ntk.
+ * Decode image bytes through ntk — PNG and JPEG.
  *
- * `decodeImage` is ntk's own front door — the one its `HtmlView` used — but
- * it is not on `react-x11/ntk`'s *typed* list, so it is reached through the
- * default export and probed at run time; a version that dropped it falls
- * back to the `Image` constructor shapes. A host that would rather decode
- * images itself hands back `{ image, width, height }` and never reaches
- * this.
+ * `decodeImage` is ntk's own front door — the one its `HtmlView` used. It is
+ * a **named** export of `react-x11/ntk`, which re-exports ntk with
+ * `export *`, and it is not in that subpath's declarations, so it is read off
+ * the module namespace and probed at run time; a version that dropped it
+ * falls back to the `Image` constructor shapes. It is not a property of the
+ * default export: this read it there, found nothing, and every image a host
+ * handed over as bytes drew as an empty frame. A host that would rather
+ * decode images itself hands back `{ image, width, height }` and never
+ * reaches this.
  */
 function decodeImage(bytes: Uint8Array): ImageLike | Promise<ImageLike> | null {
   try {
-    const decode = (ntk as Record<string, unknown>).decodeImage;
+    const decode = (ntk as unknown as Record<string, unknown>).decodeImage;
     if (typeof decode === 'function') {
       return (decode as (b: Uint8Array) => ImageLike | Promise<ImageLike>)(
         bytes,
       );
     }
-    const ctor = Image as unknown as ImageConstructor | undefined;
+    const ctor = ntk.Image as unknown as ImageConstructor | undefined;
     if (!ctor) return null;
     if (typeof ctor.fromBuffer === 'function') return ctor.fromBuffer(bytes);
     if (typeof ctor.decode === 'function') return ctor.decode(bytes);

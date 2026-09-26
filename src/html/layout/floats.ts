@@ -50,16 +50,21 @@ export class FloatContext {
   }
 
   /**
-   * The band left for a line of `height` starting at `y`.
+   * The band left for a line of `height` starting at `y`, between `left`
+   * and `right` — the formatting context's own edges unless a narrower
+   * containing block is asking.
    *
    * A float intersects a line when their vertical ranges overlap at all —
    * not when the line's top is inside the float — which is why this takes a
    * height rather than just a position. Getting that wrong lets the last
    * line of a wrapped paragraph slide under a floated image by a pixel.
    */
-  bandAt(y: number, height: number): Band {
-    let left = this.left;
-    let right = this.right;
+  bandAt(
+    y: number,
+    height: number,
+    left = this.left,
+    right = this.right,
+  ): Band {
     const bottom = y + Math.max(1, height);
     for (const box of this._boxes) {
       if (box.bottom <= y || box.top >= bottom) continue;
@@ -76,6 +81,21 @@ export class FloatContext {
       if (box.bottom > from && box.top < to) return true;
     }
     return false;
+  }
+
+  /**
+   * Where a line at `y`, `height` tall, next has more room: the nearest
+   * bottom edge of a float beside it. Null when no float is, so nothing
+   * below can widen the line.
+   */
+  nextEdgeBelow(y: number, height: number): number | null {
+    const bottom = y + Math.max(1, height);
+    let next: number | null = null;
+    for (const box of this._boxes) {
+      if (box.bottom <= y || box.top >= bottom) continue;
+      if (next === null || box.bottom < next) next = box.bottom;
+    }
+    return next;
   }
 
   /**
@@ -102,11 +122,19 @@ export class FloatContext {
   }
 
   /**
-   * The first `y` at or below `from` where a box `width` wide fits on `side`.
-   * A float that does not fit beside the ones already placed goes under
-   * them, which is the rule that makes two 60%-wide floats stack.
+   * The first `y` at or below `from` where a box `width` wide fits on `side`
+   * between `left` and `right`, its containing block's content edges. A
+   * float that does not fit beside the ones already placed goes under them,
+   * which is the rule that makes two 60%-wide floats stack; one wider than
+   * its containing block goes where nothing is beside it.
    */
-  placeAt(from: number, width: number, side: 'left' | 'right'): number {
+  placeAt(
+    from: number,
+    width: number,
+    side: 'left' | 'right',
+    left = this.left,
+    right = this.right,
+  ): number {
     let y = from;
     // Candidate positions are `from` and the bottom of every float below it;
     // there is no other height at which the band can get wider.
@@ -116,7 +144,7 @@ export class FloatContext {
     }
     candidates.sort((a, b) => a - b);
     for (const candidate of candidates) {
-      const band = this.bandAt(candidate, 1);
+      const band = this.bandAt(candidate, 1, left, right);
       if (band.right - band.left >= width) return candidate;
       y = candidate;
     }

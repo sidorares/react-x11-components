@@ -82,6 +82,10 @@ export interface TextRun {
   weight?: number | 'normal' | 'bold';
   style?: 'normal' | 'italic';
   color?: string;
+  /** Pixels added after every glyph — CSS's `letter-spacing`. Both text
+   *  engines take it on a span, and it passes through to them as the rest
+   *  of the ntk vocabulary does. */
+  letterSpacing?: number;
   /** Fill painted behind the run — the inline-code chip. */
   bg?: string;
   /**

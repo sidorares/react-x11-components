@@ -26,6 +26,13 @@ import {
   splitValue,
 } from './values.js';
 import type { Len, UnitContext } from './values.js';
+import {
+  DEFAULT_QUOTES,
+  parseContent,
+  parseCounterList,
+  parseQuotes,
+} from './content.js';
+import type { ContentItem, CounterChange } from './content.js';
 
 export type Display =
   | 'none'
@@ -85,6 +92,8 @@ export interface ComputedStyle {
   /** Inherited so a `<td>` picks up the table's, which is how authors expect
    *  `text-align` on a `<table>` to behave. */
   tableTextAlignSet: boolean;
+  /** The marks `open-quote` and `close-quote` write, pairs outermost first. */
+  quotes: readonly string[] | 'none';
 
   // --- not inherited --------------------------------------------------------
   display: Display;
@@ -174,6 +183,12 @@ export interface ComputedStyle {
   columnGap: number;
 
   tableLayout: 'auto' | 'fixed';
+
+  // generated content (CSS 2.1 12)
+  /** What a `::before` or `::after` holds; `normal` and `none` make none. */
+  content: ContentItem[] | 'normal' | 'none';
+  counterReset: CounterChange[] | null;
+  counterIncrement: CounterChange[] | null;
 }
 
 /** The properties that inherit. Named once, so `inherit()` and the `inherit`
@@ -200,6 +215,7 @@ const INHERITED = [
   'borderCollapse',
   'borderSpacing',
   'tableTextAlignSet',
+  'quotes',
 ] as const satisfies readonly (keyof ComputedStyle)[];
 
 /** What the document's root inherits from — the host's own text look, so an
@@ -230,7 +246,9 @@ export interface RootLook {
   controlRadius: number;
 }
 
-export function initialStyle(look: RootLook): ComputedStyle {
+export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
+  // `medium`, in device pixels
+  const medium = BORDER_WIDTH_KEYWORDS.medium * scale;
   return {
     color: look.color,
     fontFamily: look.fontFamily,
@@ -251,8 +269,11 @@ export function initialStyle(look: RootLook): ComputedStyle {
     listStylePosition: 'outside',
     cursor: null,
     borderCollapse: 'separate',
-    borderSpacing: 2,
+    // CSS's initial value; a `<table>` gets its 2px from the UA sheet, and
+    // an anonymous table, which no sheet names, has none
+    borderSpacing: 0,
     tableTextAlignSet: false,
+    quotes: DEFAULT_QUOTES,
 
     display: 'inline',
     position: 'static',
@@ -281,10 +302,13 @@ export function initialStyle(look: RootLook): ComputedStyle {
     paddingBottom: 0,
     paddingLeft: 0,
 
-    borderTopWidth: 0,
-    borderRightWidth: 0,
-    borderBottomWidth: 0,
-    borderLeftWidth: 0,
+    // `medium`, and drawn as nothing while the style is `none`: a width
+    // computes to zero there (CSS 2.1 8.5.1), which is the layout's to
+    // apply, so that `border-style: solid` alone brings a border back
+    borderTopWidth: medium,
+    borderRightWidth: medium,
+    borderBottomWidth: medium,
+    borderLeftWidth: medium,
     borderTopStyle: 'none',
     borderRightStyle: 'none',
     borderBottomStyle: 'none',
@@ -327,6 +351,10 @@ export function initialStyle(look: RootLook): ComputedStyle {
     columnGap: 0,
 
     tableLayout: 'auto',
+
+    content: 'normal',
+    counterReset: null,
+    counterIncrement: null,
   };
 }
 
@@ -710,6 +738,28 @@ export function applyDeclaration(
       return;
     }
 
+    // --- generated content --------------------------------------------------
+    case 'content': {
+      const parsed = parseContent(value);
+      if (parsed !== null) style.content = parsed;
+      return;
+    }
+    case 'counter-reset':
+    case 'counter-increment': {
+      const reset = name === 'counter-reset';
+      const parsed = parseCounterList(value, reset ? 0 : 1);
+      if (parsed === null) return;
+      const list = parsed === 'none' ? null : parsed;
+      if (reset) style.counterReset = list;
+      else style.counterIncrement = list;
+      return;
+    }
+    case 'quotes': {
+      const parsed = parseQuotes(value);
+      if (parsed !== null) style.quotes = parsed;
+      return;
+    }
+
     // --- text ---------------------------------------------------------------
     case 'font': {
       applyFontShorthand(style, parent, value, ctx);
@@ -732,10 +782,14 @@ export function applyDeclaration(
       }
       // `em` in a `font-size` is relative to the *parent's* size, not this
       // element's — the one place the unit context has to be overridden.
+      // 0 is a size — the text takes no room, which is what a container of
+      // inline-blocks sets to lose the spaces between them — and a negative
+      // one is no size at all, so the declaration goes
       const len = parseLength(value, { ...ctx, em: parent.fontSize });
-      if (typeof len === 'number') style.fontSize = Math.max(1, len);
-      else if (len && typeof len === 'object') {
-        style.fontSize = Math.max(1, (len.pct / 100) * parent.fontSize);
+      if (typeof len === 'number') {
+        if (len >= 0) style.fontSize = len;
+      } else if (len && typeof len === 'object' && len.pct >= 0) {
+        style.fontSize = (len.pct / 100) * parent.fontSize;
       }
       return;
     }
@@ -1070,7 +1124,9 @@ function borderWidth(value: string, ctx: UnitContext): number | null {
   // they take the display scale here.
   if (kw !== undefined) return kw * ctx.scale;
   const len = parseLength(value, ctx);
-  return typeof len === 'number' ? Math.max(0, len) : null;
+  // a negative width is not a width: the declaration is dropped, and the
+  // one before it stands (CSS 2.1 8.5.1)
+  return typeof len === 'number' && len >= 0 ? len : null;
 }
 
 function backgroundPosition(
@@ -1101,7 +1157,7 @@ function applyBorderShorthand(
   // `border: none` and `border: 0` both mean "no border", and neither names
   // all three components — so the shorthand resets all three first, which is
   // what the spec says and what an author relies on to undo a UA border.
-  let width: number | null = 3;
+  let width = BORDER_WIDTH_KEYWORDS.medium * ctx.scale;
   let borderStyle: BorderStyle = 'none';
   let color: string | null = 'currentColor';
   for (const part of splitValue(value)) {
@@ -1116,15 +1172,18 @@ function applyBorderShorthand(
       continue;
     }
     const c = parseColor(part);
-    if (c !== null) color = c;
+    if (c !== null) {
+      color = c;
+      continue;
+    }
+    // a negative width makes the whole shorthand invalid
+    const len = parseLength(part, ctx);
+    if (typeof len === 'number' && len < 0) return;
   }
-  // A shorthand with a style but no width takes the initial `medium`; one
-  // with neither paints nothing, so the width is irrelevant.
-  const effective =
-    borderStyle === 'none' || borderStyle === 'hidden' ? 0 : (width ?? 3);
+  // A width with no style is kept rather than zeroed — the layout draws
+  // nothing for `none` — so a later `border-style` alone finds it.
   for (const side of sides) {
-    (style as unknown as Record<string, unknown>)[`border${side}Width`] =
-      effective;
+    (style as unknown as Record<string, unknown>)[`border${side}Width`] = width;
     (style as unknown as Record<string, unknown>)[`border${side}Style`] =
       borderStyle;
     if (color !== null)
@@ -1199,23 +1258,43 @@ function applyFontShorthand(
   // has no table for; leaving the style alone is closer than guessing.
   const parts = splitValue(value);
   if (parts.length < 2) return;
+  let fontStyle: ComputedStyle['fontStyle'] = 'normal';
+  let weight: string | null = null;
   let i = 0;
   for (; i < parts.length; i += 1) {
     const v = parts[i].toLowerCase();
-    if (v === 'italic' || v === 'oblique') style.fontStyle = v;
+    if (v === 'italic' || v === 'oblique') fontStyle = v;
     else if (
       v === 'bold' ||
       v === 'bolder' ||
       v === 'lighter' ||
       /^\d{3}$/.test(v)
     ) {
-      style.fontWeight = parseWeight(v, parent.fontWeight);
+      weight = v;
     } else if (v === 'normal' || v === 'small-caps') continue;
     else break;
   }
-  const sizePart = parts[i];
-  if (!sizePart) return;
-  const [sizeText, lineText] = sizePart.split('/');
+  // `12px/1.5`, or the same with space round the slash
+  let [sizeText, lineText] = (parts[i] ?? '').split('/');
+  let next = i + 1;
+  if (lineText === '' || (lineText === undefined && parts[next]?.[0] === '/')) {
+    const slash = lineText === undefined ? parts[next++].slice(1) : '';
+    lineText = slash || parts[next++];
+  }
+  const family = parts.slice(next).join(' ');
+  // A size and a family, or the value is not a font and the declaration is
+  // dropped whole, as CSS drops any value it cannot read.
+  const size =
+    keywordFontSize(sizeText ?? '', parent.fontSize, ctx.rem) ??
+    parseLength(sizeText ?? '', { ...ctx, em: parent.fontSize });
+  if (!family || size === null || size === AUTO) return;
+  // What the shorthand does not name goes back to its initial value rather
+  // than keeping the parent's (CSS 2.1 15.8): `p { font: 12pt serif }`
+  // inside a document set at `20px/1em` has lines of normal height, not 20px.
+  style.fontStyle = fontStyle;
+  style.fontWeight = weight ? parseWeight(weight, parent.fontWeight) : 400;
+  style.lineHeight = 'normal';
+  style.lineHeightIsLength = false;
   applyDeclaration(style, parent, 'font-size', sizeText, ctx);
   if (lineText) {
     applyDeclaration(style, parent, 'line-height', lineText, {
@@ -1223,8 +1302,7 @@ function applyFontShorthand(
       em: style.fontSize,
     });
   }
-  const family = parts.slice(i + 1).join(' ');
-  if (family) applyDeclaration(style, parent, 'font-family', family, ctx);
+  applyDeclaration(style, parent, 'font-family', family, ctx);
 }
 
 function applyFlexShorthand(
@@ -1291,6 +1369,7 @@ const INHERITED_NAMES = new Set<string>([
   'cursor',
   'border-collapse',
   'border-spacing',
+  'quotes',
 ]);
 
 function isInherited(name: string): boolean {
@@ -1306,10 +1385,18 @@ function inheritOne(
 ): void {
   const keys = INHERIT_TARGETS[name];
   if (!keys) return;
+  // A border colour left to `currentColor` inherits as the keyword and
+  // takes the child's own colour (CSS Color 4) — not the parent's colour,
+  // which is what CSS 2.1 computed it to.
   for (const key of keys) {
     (style as unknown as Record<string, unknown>)[key] = parent[key];
   }
 }
+
+const SIDES = ['Top', 'Right', 'Bottom', 'Left'] as const;
+const sides = (
+  make: (side: (typeof SIDES)[number]) => keyof ComputedStyle,
+): (keyof ComputedStyle)[] => SIDES.map(make);
 
 const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   color: ['color'],
@@ -1317,7 +1404,16 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'font-size': ['fontSize'],
   'font-weight': ['fontWeight'],
   'font-style': ['fontStyle'],
-  font: ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight'],
+  // the unit travels with the height: a length inherited as a bare number
+  // would be read as a multiple of the font size
+  font: [
+    'fontFamily',
+    'fontSize',
+    'fontWeight',
+    'fontStyle',
+    'lineHeight',
+    'lineHeightIsLength',
+  ],
   'line-height': ['lineHeight', 'lineHeightIsLength'],
   'text-align': ['textAlign'],
   'text-indent': ['textIndent'],
@@ -1332,11 +1428,86 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'list-style-position': ['listStylePosition'],
   cursor: ['cursor'],
   'border-collapse': ['borderCollapse'],
+  quotes: ['quotes'],
+  content: ['content'],
+  'counter-reset': ['counterReset'],
+  'counter-increment': ['counterIncrement'],
   'border-spacing': ['borderSpacing'],
   display: ['display'],
   width: ['width'],
   height: ['height'],
+  'min-width': ['minWidth'],
+  'max-width': ['maxWidth'],
+  'min-height': ['minHeight'],
+  'max-height': ['maxHeight'],
+  'box-sizing': ['boxSizing'],
+  margin: sides((s) => `margin${s}`),
+  'margin-top': ['marginTop'],
+  'margin-right': ['marginRight'],
+  'margin-bottom': ['marginBottom'],
+  'margin-left': ['marginLeft'],
+  padding: sides((s) => `padding${s}`),
+  'padding-top': ['paddingTop'],
+  'padding-right': ['paddingRight'],
+  'padding-bottom': ['paddingBottom'],
+  'padding-left': ['paddingLeft'],
+  border: [
+    ...sides((s) => `border${s}Width`),
+    ...sides((s) => `border${s}Style`),
+    ...sides((s) => `border${s}Color`),
+  ],
+  'border-width': sides((s) => `border${s}Width`),
+  'border-style': sides((s) => `border${s}Style`),
+  'border-color': sides((s) => `border${s}Color`),
+  ...Object.fromEntries(
+    SIDES.flatMap((s) => {
+      const side = s.toLowerCase();
+      return [
+        [
+          `border-${side}`,
+          [`border${s}Width`, `border${s}Style`, `border${s}Color`],
+        ],
+        [`border-${side}-width`, [`border${s}Width`]],
+        [`border-${side}-style`, [`border${s}Style`]],
+        [`border-${side}-color`, [`border${s}Color`]],
+      ];
+    }),
+  ),
+  'border-radius': ['borderRadius'],
+  background: [
+    'backgroundColor',
+    'backgroundImage',
+    'backgroundRepeat',
+    'backgroundSize',
+    'backgroundPositionX',
+    'backgroundPositionY',
+  ],
   'background-color': ['backgroundColor'],
+  'background-image': ['backgroundImage'],
+  'background-repeat': ['backgroundRepeat'],
+  'background-size': ['backgroundSize'],
+  'background-position': ['backgroundPositionX', 'backgroundPositionY'],
+  position: ['position'],
+  top: ['top'],
+  right: ['right'],
+  bottom: ['bottom'],
+  left: ['left'],
+  float: ['float'],
+  clear: ['clear'],
+  overflow: ['overflowX', 'overflowY'],
+  'overflow-x': ['overflowX'],
+  'overflow-y': ['overflowY'],
+  opacity: ['opacity'],
+  'z-index': ['zIndex'],
+  'vertical-align': ['verticalAlign'],
+  'text-decoration': [
+    'textDecorationLine',
+    'textDecorationColor',
+    'textDecorationStyle',
+  ],
+  'text-decoration-line': ['textDecorationLine'],
+  'text-decoration-style': ['textDecorationStyle'],
+  'table-layout': ['tableLayout'],
 };
 
 /**

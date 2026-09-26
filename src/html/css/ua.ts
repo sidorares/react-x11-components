@@ -124,6 +124,8 @@ hr {
 }
 
 img { display: inline-block; }
+/* never loaded: a box of its own size, framed as a browser frames one */
+iframe { border: 2px inset; }
 figure { margin: 1em 2.5em; }
 
 table { display: table; border-collapse: separate; border-spacing: 2px; }

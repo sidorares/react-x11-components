@@ -395,8 +395,8 @@ imports — `react-x11` itself plus `/host`, `/node`, `/style`, `/keysyms`,
 `/ntk`, `/yoga`, `/jsx-runtime`, and `/test` and `/debug` from the suite.
 Both specs are ordinary registry ranges:
 
-- `peerDependencies.react-x11` is `^2.22.0` — what a consumer must supply.
-- `devDependencies.react-x11` is `^2.22.0` — what the suite runs against.
+- `peerDependencies.react-x11` is `^2.22.8` — what a consumer must supply.
+- `devDependencies.react-x11` is `^2.22.8` — what the suite runs against.
 
 Keep them the same range. They are one decision written twice, and a
 devDependency that drifts above the peer range means the suite passes
@@ -490,6 +490,15 @@ it up. **The floor is a running one and moves often** — every move since
   every fill inside it to round its corners (#685). Neither needed a
   change here; the stress example's widgets are what they were measured
   on.
+- `^2.22.8` — a Cocoa text layout's runs hang off the spans they came
+  from, as ntk's do (react-x11#710), so `<Html>`, `<Markdown>` and
+  `<RichText>` draw their link underlines, code chips, highlights and
+  strikethrough on macOS, where they drew none. The same release stops
+  `<text>` shifting a line's leading a second time (#709) and takes
+  @windowkit/appkit 0.15.0, which sets a line's glyphs where ntk does and
+  leaves the white space a line ends on out of its width (windowkit/appkit#80,
+  #81). All of it was found running the CSS 2.1 test suite through `<Html>`
+  on both backends (`docs/html-conformance.md`).
 
 Do not reach back for a `github:` spec to get at unreleased core — cut a core
 release instead.

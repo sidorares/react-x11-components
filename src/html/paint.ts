@@ -26,11 +26,12 @@ import {
   paintRunRules,
 } from '../richtext/runs.js';
 import type { FillContext } from '../richtext/runs.js';
-import { inkColor, isTransparent } from './css/values.js';
+import { inkColor, isPct, isTransparent } from './css/values.js';
+import type { Len } from './css/values.js';
 import type { ComputedStyle } from './css/style.js';
 import { Box } from './layout/boxes.js';
 import type { BoxTree, LineBox } from './layout/boxes.js';
-import { layoutOffsets } from './layout/inline.js';
+import { depthOf, layoutOffsets } from './layout/inline.js';
 
 export interface Rect {
   x: number;
@@ -48,6 +49,9 @@ export interface PaintContext extends FillContext {
   fill?(): void;
   clip?(): void;
   drawImage?(image: unknown, ...args: number[]): void;
+  /** ntk's X11 context has patterns; the Cocoa one does not, and tiles. */
+  createPattern?(image: unknown, repetition: string): unknown;
+  translate?(x: number, y: number): void;
 }
 
 export interface PaintOptions {
@@ -64,6 +68,16 @@ export interface PaintOptions {
   selectionColor: string | null;
   /** A decoded image for an element, when the host has one. */
   imageFor(box: Box): unknown | null;
+  /** A decoded `background-image`, with its size in CSS pixels, once it has
+   *  arrived. */
+  backgroundImageFor?(
+    url: string,
+  ): { image: unknown; width: number; height: number } | null;
+  /** The whole element in window coordinates: the canvas the root's
+   *  background covers (CSS 2.1 14.2). Absent, the root box is it. */
+  canvas?: Rect;
+  /** @internal The box whose background went to the canvas instead. */
+  canvasSource?: Box | null;
 }
 
 /**
@@ -200,8 +214,77 @@ export function paintDocument(
 ): void {
   if (!canFill(ctx)) return;
   ctx.save();
-  paintBox(ctx, tree.root, options);
+  const canvas = canvasBackground(tree.root);
+  if (canvas) paintCanvas(ctx, canvas, tree.root, options);
+  paintBox(ctx, tree.root, { ...options, canvasSource: canvas?.source });
   ctx.restore();
+}
+
+/**
+ * Whose background covers the canvas (CSS 2.1 14.2): the root element's,
+ * or — where `<html>` has neither a colour nor an image — the first
+ * `<body>`'s, which then paints no background of its own. A fragment's
+ * implied body is the root box itself. `anchor` is the box the image is
+ * positioned against: the root element's, whichever box it came from.
+ */
+function canvasBackground(root: Box): { source: Box; anchor: Box } | null {
+  const has = (b: Box) =>
+    !isTransparent(b.style.backgroundColor) || !!b.style.backgroundImage;
+  const html = root.children.find((c) => c.el?.name === 'html');
+  if (!html) return has(root) ? { source: root, anchor: root } : null;
+  if (has(html)) return { source: html, anchor: html };
+  const body = html.children.find((c) => c.el?.name === 'body');
+  return body && has(body) ? { source: body, anchor: html } : null;
+}
+
+function paintCanvas(
+  ctx: PaintContext,
+  { source, anchor }: { source: Box; anchor: Box },
+  root: Box,
+  options: PaintOptions,
+): void {
+  const whole = options.canvas ?? {
+    x: root.x + options.originX,
+    y: root.y + options.originY,
+    width: root.width,
+    height: root.height,
+  };
+  const area = clampRect(
+    options,
+    Math.round(whole.x),
+    Math.round(whole.y),
+    Math.ceil(whole.width),
+    Math.ceil(whole.height),
+  );
+  if (!area) return;
+  const style = source.style;
+  if (
+    !isTransparent(style.backgroundColor) &&
+    source.style.visibility !== 'hidden'
+  ) {
+    ctx.fillStyle = inkColor(style.backgroundColor as string, style.color);
+    ctx.fillRect(area.x, area.y, area.w, area.h);
+  }
+  if (style.backgroundImage) {
+    paintBackgroundImage(
+      ctx,
+      style,
+      area,
+      paddingBox(anchor, options),
+      options,
+    );
+  }
+}
+
+/** A box's padding box in window coordinates: where a background image is
+ *  positioned. */
+function paddingBox(box: Box, options: PaintOptions): Rect {
+  return {
+    x: box.x + box.borderLeft + options.originX,
+    y: box.y + box.borderTop + options.originY,
+    width: box.width - box.borderLeft - box.borderRight,
+    height: box.height - box.borderTop - box.borderBottom,
+  };
 }
 
 function paintBox(ctx: PaintContext, box: Box, options: PaintOptions): void {
@@ -210,7 +293,27 @@ function paintBox(ctx: PaintContext, box: Box, options: PaintOptions): void {
   const visible = style.visibility === 'visible';
 
   if (visible) {
-    paintBackground(ctx, box, options);
+    if (box !== options.canvasSource) {
+      paintBackground(ctx, box, options);
+      if (style.backgroundImage) {
+        const area = clampRect(
+          options,
+          Math.round(box.x + options.originX),
+          Math.round(box.y + options.originY),
+          Math.ceil(box.width),
+          Math.ceil(box.height),
+        );
+        if (area) {
+          paintBackgroundImage(
+            ctx,
+            style,
+            area,
+            paddingBox(box, options),
+            options,
+          );
+        }
+      }
+    }
     paintBorders(ctx, box, options);
     if (box.markerText) paintMarker(ctx, box, options);
     if (box.replaced === 'image') paintImage(ctx, box, options);
@@ -324,6 +427,70 @@ function paintBackground(
     return;
   }
   ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
+}
+
+/** How many tiles a repeating background may draw one by one, where the
+ *  context has no pattern to fill with. Past it, the image draws once. */
+const MAX_TILES = 4096;
+
+/**
+ * A `background-image` (CSS 2.1 14.2.1): positioned in `at`, the padding
+ * box, repeated across `area`, the border box within the damage, over the
+ * colour and under the borders. Filled with a pattern where the context has
+ * one, drawn a tile at a time where it does not.
+ */
+function paintBackgroundImage(
+  ctx: PaintContext,
+  style: ComputedStyle,
+  area: { x: number; y: number; w: number; h: number },
+  at: Rect,
+  options: PaintOptions,
+): void {
+  const url = style.backgroundImage;
+  const loaded = url ? options.backgroundImageFor?.(url) : null;
+  if (!loaded || !ctx.drawImage) return;
+  // an image pixel is a CSS pixel, and the box is device
+  const scale = options.scale ?? 1;
+  const iw = loaded.width * scale;
+  const ih = loaded.height * scale;
+  if (!(iw > 0 && ih > 0)) return;
+  const offset = (len: Len, extent: number, size: number): number =>
+    isPct(len) ? (len.pct / 100) * (extent - size) : (len as number);
+  const x0 = Math.round(at.x + offset(style.backgroundPositionX, at.width, iw));
+  const y0 = Math.round(
+    at.y + offset(style.backgroundPositionY, at.height, ih),
+  );
+  const repeat = style.backgroundRepeat;
+  const acrossX = repeat === 'repeat' || repeat === 'repeat-x';
+  const acrossY = repeat === 'repeat' || repeat === 'repeat-y';
+  // the tiles that reach the area: from the first at or before its edge
+  const fromX = acrossX ? x0 - Math.ceil((x0 - area.x) / iw) * iw : x0;
+  const fromY = acrossY ? y0 - Math.ceil((y0 - area.y) / ih) * ih : y0;
+  const toX = acrossX ? area.x + area.w : x0 + iw;
+  const toY = acrossY ? area.y + area.h : y0 + ih;
+
+  ctx.save();
+  if (ctx.beginPath && ctx.rect && ctx.clip) {
+    ctx.beginPath();
+    ctx.rect(area.x, area.y, area.w, area.h);
+    ctx.clip();
+  }
+  const tiles = Math.ceil((toX - fromX) / iw) * Math.ceil((toY - fromY) / ih);
+  if (tiles > 1 && scale === 1 && ctx.createPattern && ctx.translate) {
+    // a pattern tiles from the origin of the space it is filled in
+    ctx.fillStyle = ctx.createPattern(loaded.image, 'repeat');
+    ctx.translate(x0, y0);
+    ctx.fillRect(fromX - x0, fromY - y0, toX - fromX, toY - fromY);
+  } else if (tiles <= MAX_TILES) {
+    for (let y = fromY; y < toY; y += ih) {
+      for (let x = fromX; x < toX; x += iw) {
+        ctx.drawImage(loaded.image, x, y, iw, ih);
+      }
+    }
+  } else {
+    ctx.drawImage(loaded.image, x0, y0, iw, ih);
+  }
+  ctx.restore();
 }
 
 /**
@@ -526,6 +693,7 @@ function paintLines(ctx: PaintContext, box: Box, options: PaintOptions): void {
   if (!visible.length) return;
 
   for (const line of visible) {
+    paintInlineBoxes(ctx, line, options);
     for (const text of line.texts) {
       const natural = text.layout.lines[text.layoutLine];
       if (natural)
@@ -575,6 +743,145 @@ function paintLines(ctx: PaintContext, box: Box, options: PaintOptions): void {
     }
     for (const placed of line.atomics) paintBox(ctx, placed.box, options);
   }
+}
+
+/**
+ * The backgrounds and borders of the inline boxes on one line — a `<mark>`, a
+ * padded `<span>`, a link set as a button — under the text, a fragment each:
+ * from the ascent to the descent of the box's own face, with its vertical
+ * padding and border beyond (CSS 2.1 10.6.1, 10.8.1, which is also why they
+ * do not make the line taller), and across the box's text and atomics on
+ * this line out to its padding and border where it starts or ends. Outer
+ * boxes first, so a highlight shows behind a nested element's text too. A
+ * run finds its element from its place in the document, as a click does.
+ */
+function paintInlineBoxes(
+  ctx: PaintContext,
+  line: LineBox,
+  options: PaintOptions,
+): void {
+  let fragments: Map<Box, InlineFragment> | null = null;
+  const widen = (box: Box, left: number, right: number): void => {
+    fragments ??= new Map();
+    const f = fragments.get(box);
+    if (f) {
+      f.left = Math.min(f.left, left);
+      f.right = Math.max(f.right, right);
+    } else {
+      fragments.set(box, { left, right, start: false, end: false });
+    }
+  };
+  // Every text on a line is drawn on one baseline (`finishLine`), and an
+  // engine's is from the top of its layout rather than of the line.
+  let baseline = line.y + line.baseline;
+  for (const text of line.texts) {
+    const natural = text.layout.lines[text.layoutLine];
+    const boxAt = text.spans.boxAt;
+    if (!natural || !boxAt) continue;
+    baseline = text.drawY + natural.baseline;
+    const x = text.drawX + natural.x;
+    for (const run of natural.runs) {
+      const owner = boxAt.call(text.spans, run.start);
+      if (!owner) continue;
+      // Within the line: a space a line ends on hangs past it, and CoreText
+      // keeps it in the run it ends even where the line's width does not.
+      const left = Math.max(x, x + run.x);
+      const right = Math.min(x + natural.width, x + run.x + run.width);
+      if (right <= left) continue;
+      for (const box of decoratedAncestors(owner)) widen(box, left, right);
+    }
+  }
+  for (const placed of line.atomics) {
+    const atomic = placed.box;
+    for (const box of decoratedAncestors(atomic)) {
+      widen(
+        box,
+        placed.x - atomic.marginLeft,
+        placed.x + atomic.width + atomic.marginRight,
+      );
+    }
+  }
+  for (const edge of line.edges ?? []) {
+    const box = edge.box;
+    if (!box.decorated) continue;
+    // The element's `direction` says which side its start is on, whatever
+    // its text reads as (CSS 2.1 8.6); the edge's margin is outside the box,
+    // its border and padding inside.
+    const onLeft = (edge.side === 'start') !== (box.style.direction === 'rtl');
+    if (onLeft) {
+      const left = edge.x + box.marginLeft;
+      widen(box, left, left);
+    } else {
+      const right = edge.x + edge.width - box.marginRight;
+      widen(box, right, right);
+    }
+    const f = fragments!.get(box)!;
+    if (edge.side === 'start') f.start = true;
+    else f.end = true;
+  }
+  if (!fragments) return;
+  const boxes = [...(fragments as Map<Box, InlineFragment>).keys()].sort(
+    (a, b) => depthOf(a) - depthOf(b),
+  );
+  for (const box of boxes) {
+    if (box.style.visibility !== 'visible') continue;
+    const f = (fragments as Map<Box, InlineFragment>).get(box)!;
+    const top = baseline - box.contentAscent - box.padTop - box.borderTop;
+    const bottom =
+      baseline + box.contentDescent + box.padBottom + box.borderBottom;
+    // Sliced where the box goes on to another line: no border and no
+    // rounded corner on a side it does not end on (`box-decoration-break:
+    // slice`, CSS's default). Left and right swap for right-to-left text.
+    const rtl = box.style.direction === 'rtl';
+    const leftEnds = rtl ? f.end : f.start;
+    const rightEnds = rtl ? f.start : f.end;
+    const [tl, tr, br, bl] = box.style.borderRadius;
+    const fragment = {
+      x: f.left,
+      y: top,
+      width: f.right - f.left,
+      height: bottom - top,
+      borderTop: box.borderTop,
+      borderBottom: box.borderBottom,
+      borderLeft: leftEnds ? box.borderLeft : 0,
+      borderRight: rightEnds ? box.borderRight : 0,
+      style: {
+        ...box.style,
+        borderRadius: [
+          leftEnds ? tl : 0,
+          rightEnds ? tr : 0,
+          rightEnds ? br : 0,
+          leftEnds ? bl : 0,
+        ],
+      },
+    } as unknown as Box;
+    if (fragment.width <= 0) continue;
+    paintBackground(ctx, fragment, options);
+    paintBorders(ctx, fragment, options);
+  }
+}
+
+interface InlineFragment {
+  left: number;
+  right: number;
+  /** Whether the box opens or closes on this line. */
+  start: boolean;
+  end: boolean;
+}
+
+/** The inline boxes around a box, within its line's block, that paint a
+ *  background or a border — outermost last. */
+const DECORATED = new WeakMap<Box, Box[]>();
+
+function decoratedAncestors(box: Box): Box[] {
+  let found = DECORATED.get(box);
+  if (found) return found;
+  found = [];
+  for (let at = box.parent; at && at.kind === 'inline'; at = at.parent) {
+    if (at.decorated) found.push(at);
+  }
+  DECORATED.set(box, found);
+  return found;
 }
 
 /**
