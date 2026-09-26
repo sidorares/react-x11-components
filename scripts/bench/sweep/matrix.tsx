@@ -9,7 +9,7 @@
 //          30 notches a second, turning back every 15 — a user's zoom, which
 //          Flow treats as a gesture) | drag (a node in the middle of the view
 //          dragged by the pointer at 125 Hz)
-//   ZOOM, GL=1, MAP=0, W/H, VX/VY
+//   ZOOM, GL=1, MAP=0, W/H, VX/VY, NODES (the lattice's size, default 200)
 import { fileURLToPath } from 'node:url';
 import React, { useCallback } from 'react';
 import { createRoot } from 'react-x11';
@@ -27,7 +27,7 @@ const S: any = await import(`${ROOT}/examples/flow-stress.tsx`);
 const SC = process.env.SCENE ?? 'widgets';
 const scene =
   SC === 'lattice'
-    ? S.lattice()
+    ? S.lattice(Number(process.env.NODES ?? 200))
     : SC === 'lattice2000'
       ? S.lattice(2000)
       : SC === 'fanout'
