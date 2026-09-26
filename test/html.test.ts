@@ -2074,6 +2074,24 @@ test('a border style alone draws a medium border, and a negative width is droppe
   );
 });
 
+test('negative or auto padding is no padding value', async () => {
+  // CSS 2.1 8.4: padding is never negative and never `auto`; a declaration
+  // that says so is dropped, and what came before it stands
+  const { node } = await render(
+    '<div id="a" style="padding:5px;padding-left:-1px">a</div>' +
+      '<div id="b" style="padding:5px;padding:2px -3px">b</div>' +
+      '<div id="c" style="padding:5px;padding:auto">c</div>',
+  );
+  const el = view(node);
+  const pads = (id: string) => {
+    const b = boxOf(el, id) as LaidBox & { padLeft: number; padTop: number };
+    return [b.padTop, b.padLeft];
+  };
+  assert.deepStrictEqual(pads('a'), [5, 5]);
+  assert.deepStrictEqual(pads('b'), [5, 5], 'the whole shorthand goes');
+  assert.deepStrictEqual(pads('c'), [5, 5]);
+});
+
 metric('letter-spacing and word-spacing reach the text', async () => {
   const widthOf = async (style: string): Promise<number> => {
     const probe = await render(

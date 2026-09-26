@@ -60,6 +60,12 @@ export interface ClipRect {
   left: number | null;
 }
 
+/** Whether a length is one `padding` takes: not `auto`, not negative. */
+function validPadding(len: Len | null): boolean {
+  if (len === null || len === AUTO) return false;
+  return typeof len === 'number' ? len >= 0 : len.pct >= 0;
+}
+
 /** `auto`, or `rect()` of four lengths or `auto`s, commas between them or
  *  not; undefined for anything else, which leaves the value as it was. */
 function parseClip(
@@ -650,12 +656,12 @@ export function applyDeclaration(
       const keys = SIDE_PROPS[name];
       const parts = splitValue(value).map((p) => parseLength(p, ctx));
       if (parts.some((p) => p === null)) return;
+      // padding is never `auto` and never negative: a value that is either
+      // is no value, and the declaration goes (CSS 2.1 8.4)
+      if (name === 'padding' && !parts.every(validPadding)) return;
       const sides = fourSides(parts as Len[]);
-      // `padding: auto` is not a thing; a stray one computes to zero rather
-      // than making layout branch on an impossible value.
       for (let i = 0; i < 4; i += 1) {
-        const v = name === 'padding' && sides[i] === AUTO ? 0 : sides[i];
-        (style as unknown as Record<string, unknown>)[keys[i]] = v;
+        (style as unknown as Record<string, unknown>)[keys[i]] = sides[i];
       }
       return;
     }
@@ -669,9 +675,8 @@ export function applyDeclaration(
     case 'padding-left': {
       const len = parseLength(value, ctx);
       if (len === null) return;
-      const isPadding = name.startsWith('padding');
-      (style as unknown as Record<string, unknown>)[camel(name)] =
-        isPadding && len === AUTO ? 0 : len;
+      if (name.startsWith('padding') && !validPadding(len)) return;
+      (style as unknown as Record<string, unknown>)[camel(name)] = len;
       return;
     }
 
