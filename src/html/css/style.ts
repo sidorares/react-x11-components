@@ -782,11 +782,10 @@ export function applyDeclaration(
       return;
     }
     case 'background-position': {
-      const parts = splitValue(value);
-      const x = backgroundPosition(parts[0], ctx);
-      const y = backgroundPosition(parts[1] ?? 'center', ctx);
-      if (x !== null) style.backgroundPositionX = x;
-      if (y !== null) style.backgroundPositionY = y;
+      const pair = positionPair(splitValue(value), ctx);
+      if (!pair) return;
+      style.backgroundPositionX = pair[0];
+      style.backgroundPositionY = pair[1];
       return;
     }
 
@@ -1186,6 +1185,44 @@ function borderWidth(value: string, ctx: UnitContext): number | null {
   return typeof len === 'number' && len >= 0 ? len : null;
 }
 
+const HORIZONTAL: Record<string, number> = { left: 0, center: 50, right: 100 };
+const VERTICAL: Record<string, number> = { top: 0, center: 50, bottom: 100 };
+
+/**
+ * A `background-position` as its horizontal and vertical parts. A keyword
+ * says which axis it is on, so one value alone is centred on the other —
+ * `bottom` is the bottom, midway across — and two keywords come in either
+ * order; with a length or a percentage among two, the first is across and
+ * the second down (CSS 2.1 14.2.1).
+ */
+function positionPair(parts: string[], ctx: UnitContext): [Len, Len] | null {
+  if (parts.length === 0 || parts.length > 2) return null;
+  const words = parts.map((p) => p.toLowerCase());
+  const keyword = (w: string) => w in HORIZONTAL || w in VERTICAL;
+  const pct = (n: number): Len => (n === 0 ? 0 : { pct: n });
+  if (parts.length === 1) {
+    const [w] = words;
+    if (w in VERTICAL && !(w in HORIZONTAL)) return [pct(50), pct(VERTICAL[w])];
+    if (keyword(w)) return [pct(HORIZONTAL[w]), pct(50)];
+    const x = backgroundPosition(parts[0], ctx);
+    return x === null ? null : [x, pct(50)];
+  }
+  const [a, b] = words;
+  if (keyword(a) && keyword(b)) {
+    const swap =
+      (a in VERTICAL && !(a in HORIZONTAL)) ||
+      (b in HORIZONTAL && !(b in VERTICAL));
+    const [h, v] = swap ? [b, a] : [a, b];
+    if (!(h in HORIZONTAL) || !(v in VERTICAL)) return null;
+    return [pct(HORIZONTAL[h]), pct(VERTICAL[v])];
+  }
+  if (a in VERTICAL && !(a in HORIZONTAL)) return null;
+  if (b in HORIZONTAL && !(b in VERTICAL)) return null;
+  const x = backgroundPosition(parts[0], ctx);
+  const y = backgroundPosition(parts[1], ctx);
+  return x === null || y === null ? null : [x, y];
+}
+
 function backgroundPosition(
   value: string | undefined,
   ctx: UnitContext,
@@ -1261,7 +1298,7 @@ function applyBackgroundShorthand(
   style.backgroundImage = null;
   style.backgroundRepeat = 'repeat';
   style.backgroundSize = 'auto';
-  const positions: Len[] = [];
+  const positions: string[] = [];
   for (const part of splitValue(layer)) {
     const v = part.toLowerCase();
     if (v.startsWith('url(')) {
@@ -1296,12 +1333,12 @@ function applyBackgroundShorthand(
       style.backgroundColor = c;
       continue;
     }
-    const pos = backgroundPosition(part, ctx);
-    if (pos !== null) positions.push(pos);
+    if (backgroundPosition(part, ctx) !== null) positions.push(part);
   }
-  if (positions.length) {
-    style.backgroundPositionX = positions[0];
-    style.backgroundPositionY = positions[1] ?? { pct: 50 };
+  const pair = positions.length ? positionPair(positions, ctx) : null;
+  if (pair) {
+    style.backgroundPositionX = pair[0];
+    style.backgroundPositionY = pair[1];
   }
 }
 
