@@ -642,6 +642,61 @@ metric('line-height: 0 lays lines on top of each other', async () => {
   );
 });
 
+test('the font shorthand resets what it does not name', async () => {
+  // CSS 2.1 15.8: `font` sets the style, weight, size, line height and
+  // family, and whatever it leaves out goes back to its initial value rather
+  // than keeping the parent's. `p { font: 12pt serif }` in a document set at
+  // `20px/1em` has lines of normal height; the suite's margin-collapse tests
+  // are built on it, and 20px lines put their text a pixel low.
+  const { node } = await render(
+    '<div style="font: italic bold 20px/40px sans-serif">' +
+      '<p id="plain" style="font: 12px sans-serif">reset</p>' +
+      '<p id="named" style="font: oblique 600 14px / 2 sans-serif">named</p>' +
+      '<p id="sizeless" style="font: bold 14px">kept</p>' +
+      '<p id="inherits" style="font: 0 sans-serif; font: inherit">all</p></div>',
+    300,
+  );
+  type S = {
+    fontStyle: string;
+    fontWeight: number;
+    fontSize: number;
+    lineHeight: number | 'normal';
+    lineHeightIsLength: boolean;
+  };
+  const style = (id: string) => {
+    const { fontStyle, fontWeight, fontSize, lineHeight, lineHeightIsLength } =
+      (boxOf(view(node), id) as unknown as { style: S }).style;
+    return { fontStyle, fontWeight, fontSize, lineHeight, lineHeightIsLength };
+  };
+  assert.deepStrictEqual(style('plain'), {
+    fontStyle: 'normal',
+    fontWeight: 400,
+    fontSize: 12,
+    lineHeight: 'normal',
+    lineHeightIsLength: false,
+  });
+  assert.deepStrictEqual(style('named'), {
+    fontStyle: 'oblique',
+    fontWeight: 600,
+    fontSize: 14,
+    lineHeight: 2,
+    lineHeightIsLength: false,
+  });
+  // a size and no family is not a font: the declaration goes whole, and
+  // what the paragraph inherited stands
+  const inherited = {
+    fontStyle: 'italic',
+    fontWeight: 700,
+    fontSize: 20,
+    lineHeight: 40,
+    lineHeightIsLength: true,
+  };
+  assert.deepStrictEqual(style('sizeless'), inherited);
+  // and `font: inherit` takes all of it, the line height's unit included —
+  // 40 read as a multiple would be lines 800px tall
+  assert.deepStrictEqual(style('inherits'), inherited);
+});
+
 metric(
   'mixed-sign sibling margins collapse to the sum of the extremes',
   async () => {

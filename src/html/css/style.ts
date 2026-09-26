@@ -1199,23 +1199,43 @@ function applyFontShorthand(
   // has no table for; leaving the style alone is closer than guessing.
   const parts = splitValue(value);
   if (parts.length < 2) return;
+  let fontStyle: ComputedStyle['fontStyle'] = 'normal';
+  let weight: string | null = null;
   let i = 0;
   for (; i < parts.length; i += 1) {
     const v = parts[i].toLowerCase();
-    if (v === 'italic' || v === 'oblique') style.fontStyle = v;
+    if (v === 'italic' || v === 'oblique') fontStyle = v;
     else if (
       v === 'bold' ||
       v === 'bolder' ||
       v === 'lighter' ||
       /^\d{3}$/.test(v)
     ) {
-      style.fontWeight = parseWeight(v, parent.fontWeight);
+      weight = v;
     } else if (v === 'normal' || v === 'small-caps') continue;
     else break;
   }
-  const sizePart = parts[i];
-  if (!sizePart) return;
-  const [sizeText, lineText] = sizePart.split('/');
+  // `12px/1.5`, or the same with space round the slash
+  let [sizeText, lineText] = (parts[i] ?? '').split('/');
+  let next = i + 1;
+  if (lineText === '' || (lineText === undefined && parts[next]?.[0] === '/')) {
+    const slash = lineText === undefined ? parts[next++].slice(1) : '';
+    lineText = slash || parts[next++];
+  }
+  const family = parts.slice(next).join(' ');
+  // A size and a family, or the value is not a font and the declaration is
+  // dropped whole, as CSS drops any value it cannot read.
+  const size =
+    keywordFontSize(sizeText ?? '', parent.fontSize, ctx.rem) ??
+    parseLength(sizeText ?? '', { ...ctx, em: parent.fontSize });
+  if (!family || size === null || size === AUTO) return;
+  // What the shorthand does not name goes back to its initial value rather
+  // than keeping the parent's (CSS 2.1 15.8): `p { font: 12pt serif }`
+  // inside a document set at `20px/1em` has lines of normal height, not 20px.
+  style.fontStyle = fontStyle;
+  style.fontWeight = weight ? parseWeight(weight, parent.fontWeight) : 400;
+  style.lineHeight = 'normal';
+  style.lineHeightIsLength = false;
   applyDeclaration(style, parent, 'font-size', sizeText, ctx);
   if (lineText) {
     applyDeclaration(style, parent, 'line-height', lineText, {
@@ -1223,8 +1243,7 @@ function applyFontShorthand(
       em: style.fontSize,
     });
   }
-  const family = parts.slice(i + 1).join(' ');
-  if (family) applyDeclaration(style, parent, 'font-family', family, ctx);
+  applyDeclaration(style, parent, 'font-family', family, ctx);
 }
 
 function applyFlexShorthand(
@@ -1317,7 +1336,16 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'font-size': ['fontSize'],
   'font-weight': ['fontWeight'],
   'font-style': ['fontStyle'],
-  font: ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight'],
+  // the unit travels with the height: a length inherited as a bare number
+  // would be read as a multiple of the font size
+  font: [
+    'fontFamily',
+    'fontSize',
+    'fontWeight',
+    'fontStyle',
+    'lineHeight',
+    'lineHeightIsLength',
+  ],
   'line-height': ['lineHeight', 'lineHeightIsLength'],
   'text-align': ['textAlign'],
   'text-indent': ['textIndent'],
