@@ -1478,6 +1478,58 @@ metric('an edit lays out again only the text it changed', async () => {
   );
 });
 
+metric('an edit asks the engine for no line height it has had', async () => {
+  // `line-height: 1.5` is converted against the font's natural line height,
+  // which every paragraph asks for; on CoreText each answer was a call to
+  // the native side. It is kept per style, so an edit asks for none.
+  const doc = (word: string) =>
+    h(
+      'box',
+      { style: { width: 400, flexDirection: 'column' } },
+      h(Html, {
+        source:
+          '<style>body { line-height: 1.5 }</style>' +
+          '<p>The first paragraph.</p><p><b>Bold</b> and <i>italic</i>.</p>' +
+          `<p>The third one, which is ${word}.</p><h2>A heading</h2>`,
+        partial: false,
+        'data-testname': 'doc',
+      }),
+    );
+  const result = await renderX11(doc('edited'), {
+    width: 440,
+    height: 600,
+    fonts: FONTS!,
+  });
+  const el = view(screen.getByTestName('doc') as DrawnNode);
+  await act();
+  // what the document asks, through the fonts its passes lay out with —
+  // not the engine's own questions about the paragraph the edit changed
+  const fonts = (el as unknown as { _layouts: { fonts: FontsLike } })._layouts
+    .fonts;
+  const match = fonts.match;
+  let asked = 0;
+  fonts.match = (family, style) =>
+    new Proxy(match(family, style), {
+      get(face, name, receiver) {
+        if (name !== 'metrics') return Reflect.get(face, name, receiver);
+        return (size: number) => {
+          asked += 1;
+          return face.metrics(size);
+        };
+      },
+    });
+  try {
+    await act(() => result.rerender(doc('changed')));
+    await waitFor(() =>
+      assert.ok(el.textContent().includes('changed'), 'the edit arrived'),
+    );
+    await act();
+  } finally {
+    fonts.match = match;
+  }
+  assert.strictEqual(asked, 0);
+});
+
 metric(
   'a resize lays the document out once a step, at the new width',
   async () => {
