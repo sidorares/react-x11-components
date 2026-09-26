@@ -2092,6 +2092,28 @@ test('negative or auto padding is no padding value', async () => {
   assert.deepStrictEqual(pads('c'), [5, 5]);
 });
 
+metric("ex is the font's x-height", async () => {
+  const { node } = await render(
+    '<div id="d" style="width:10ex;height:10px;font-size:20px"></div>',
+  );
+  const el = view(node);
+  const fonts = (
+    el as unknown as {
+      app: {
+        fonts: {
+          match(
+            f: string,
+            s: object,
+          ): { metrics(size: number): { xHeight?: number | null } };
+        };
+      };
+    }
+  ).app.fonts;
+  const x = fonts.match('sans-serif', { size: 20 }).metrics(20).xHeight;
+  assert.ok(x && x > 0, 'the face states one');
+  assert.ok(Math.abs(boxOf(el, 'd').width - 10 * x!) < 0.01);
+});
+
 metric('letter-spacing and word-spacing reach the text', async () => {
   const widthOf = async (style: string): Promise<number> => {
     const probe = await render(
