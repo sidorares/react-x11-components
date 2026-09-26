@@ -1,5 +1,46 @@
 # Changelog
 
+## [0.10.0](https://github.com/sidorares/react-x11-components/compare/v0.9.0...v0.10.0) (2026-09-26)
+
+
+### Features
+
+* **code-editor:** squiggles follow edits, and what the editor paints stays true through them ([#139](https://github.com/sidorares/react-x11-components/issues/139)) ([5da30ba](https://github.com/sidorares/react-x11-components/commit/5da30bafbb044f7f9f0174d895357f5d08a68f3d))
+* **html:** background images, and the layout fixes the CSS 2.1 suite found ([#145](https://github.com/sidorares/react-x11-components/issues/145)) ([5faf0c3](https://github.com/sidorares/react-x11-components/commit/5faf0c39a3772c641a3d14af8dc15abae0f9edb6))
+* **html:** generated content, and the layout fixes it brought to light ([#146](https://github.com/sidorares/react-x11-components/issues/146)) ([73d3f34](https://github.com/sidorares/react-x11-components/commit/73d3f34b24fcc6087abe2d935515f7c3e03ca05b))
+* **html:** inline boxes take their padding, border and margin ([#148](https://github.com/sidorares/react-x11-components/issues/148)) ([788d83b](https://github.com/sidorares/react-x11-components/commit/788d83b51679d6f4d535e731104e0cee7e6d7c76))
+* **maps:** a bus on a bus stop, house numbers from zoom 18, and snapBuildingNumbers to set them inside their buildings ([#113](https://github.com/sidorares/react-x11-components/issues/113)) ([9fbf881](https://github.com/sidorares/react-x11-components/commit/9fbf881fa374d23744be2e9f7cbf776a7fe9cb4a))
+
+
+### Bug Fixes
+
+* **code-editor:** a wheel notch scrolls a notch, not forty-eight of them ([#132](https://github.com/sidorares/react-x11-components/issues/132)) ([d4acdf9](https://github.com/sidorares/react-x11-components/commit/d4acdf90f851e25c0d3f8517caab2e979dcd72af))
+* **examples:** the GL map's error line outlasts the frame summary — a failed map said "idle" ([#122](https://github.com/sidorares/react-x11-components/issues/122)) ([13a1791](https://github.com/sidorares/react-x11-components/commit/13a1791de829e118f1501bf8f72ab6bc19258025))
+* **maps:** cover a zoom-out's holes from the finer tiles in hand, a quarter at a time and up to four levels down — the view went blank at its edges and on a quick zoom out ([#115](https://github.com/sidorares/react-x11-components/issues/115)) ([3e6c006](https://github.com/sidorares/react-x11-components/commit/3e6c0067042f5adbc0e8b53b51e6b4abde4bfb00))
+* **maps:** draw the sea over parks in the OpenMapTiles style — a marine reserve painted the water green ([#116](https://github.com/sidorares/react-x11-components/issues/116)) ([de06c3a](https://github.com/sidorares/react-x11-components/commit/de06c3a65508bee7fb56407a9c282a8af40ef31a))
+* **maps:** fade a layer the camera zooms out of — a scene's layers are its own, not the camera's ([#125](https://github.com/sidorares/react-x11-components/issues/125)) ([f6e5027](https://github.com/sidorares/react-x11-components/commit/f6e502753a960562b90107fc44c4eafdac86f3d7))
+* **reorder,maps:** a drop position is a slot; a camera moved during a frame still schedules the next ([#124](https://github.com/sidorares/react-x11-components/issues/124)) ([3a69e34](https://github.com/sidorares/react-x11-components/commit/3a69e3400b6b83e136e2e2e5c1e60c56a70c29b3))
+* **richtext:** react-x11 ^2.22.8, so macOS draws the decorations it lays out ([#147](https://github.com/sidorares/react-x11-components/issues/147)) ([0e370cd](https://github.com/sidorares/react-x11-components/commit/0e370cddf82f8e86cc81f78c2b7fd4caf4490ac2))
+* **table, tree:** a long flick keeps the virtual window to its budget ([#130](https://github.com/sidorares/react-x11-components/issues/130)) ([d99d355](https://github.com/sidorares/react-x11-components/commit/d99d35585473f4eb6dbf0e190127e50d62da95bf))
+* **terminal:** react-x11 ^2.15.0 — the vt grid's Wayland gaps are closed in core, so it draws there ([#119](https://github.com/sidorares/react-x11-components/issues/119)) ([3b82678](https://github.com/sidorares/react-x11-components/commit/3b82678a2fdc715f83eaf2da4b1e18f402ca3c13))
+* **three:** put a hovered object's cursor on the window on Cocoa, through the &lt;glarea&gt;'s style — the surface there is a layer with no cursor of its own ([#114](https://github.com/sidorares/react-x11-components/issues/114)) ([04a34b8](https://github.com/sidorares/react-x11-components/commit/04a34b8e9292f172ff955c5d8cb8df2ed3319786))
+* **three:** take the pointer from the &lt;glarea&gt;'s own handlers where core forwards it — listening on the surface's window took presses and the wheel from the tree ([#111](https://github.com/sidorares/react-x11-components/issues/111)) ([4d2da84](https://github.com/sidorares/react-x11-components/commit/4d2da840a560ff1d3c563ff29e1d3d3b01f57129))
+
+
+### Performance Improvements
+
+* **code-editor:** a keystroke repaints its rows, and revealing the caret is a blit ([#137](https://github.com/sidorares/react-x11-components/issues/137)) ([7a0eff5](https://github.com/sidorares/react-x11-components/commit/7a0eff5c99a258b7cfa3cbe194aa1a0a63714f75))
+* **code-editor:** an edit costs the lines it changes — typing, undo, replace ([#133](https://github.com/sidorares/react-x11-components/issues/133)) ([a9bd9fc](https://github.com/sidorares/react-x11-components/commit/a9bd9fc198f79f50b55a5c75e63a4277d22f8228))
+* **code-editor:** long lines in pieces, and a scroll that copies what it keeps ([#131](https://github.com/sidorares/react-x11-components/issues/131)) ([40f31d7](https://github.com/sidorares/react-x11-components/commit/40f31d7f46e229bd7f1e0ca26be276e0847a5f1d))
+* **code-language:** a line far past the frontier is answered from a guess ([#138](https://github.com/sidorares/react-x11-components/issues/138)) ([9319bd4](https://github.com/sidorares/react-x11-components/commit/9319bd450670f87bba9cd5a1115125c77199828d))
+* **html:** a kept layout is found by comparing, and a line height is kept ([#142](https://github.com/sidorares/react-x11-components/issues/142)) ([da551e9](https://github.com/sidorares/react-x11-components/commit/da551e92e6026d59fd10d2ca432f7baf0b35d089))
+* **html:** a resize lays the document out once a frame ([#140](https://github.com/sidorares/react-x11-components/issues/140)) ([4509289](https://github.com/sidorares/react-x11-components/commit/4509289c2e129828e8a0d610503d2821a862d12f))
+* **html:** a style is computed once per kind of element ([#141](https://github.com/sidorares/react-x11-components/issues/141)) ([23ede16](https://github.com/sidorares/react-x11-components/commit/23ede16faea013f6fd63522ab1a4094f84263c08))
+* **html:** an edit lays out again only the text it changed ([#135](https://github.com/sidorares/react-x11-components/issues/135)) ([2587ac6](https://github.com/sidorares/react-x11-components/commit/2587ac69c6bd2a5689a9b0378da3af44da800415))
+* **markdown:** a list item, its marker and a table cell lay out without a box around them ([#143](https://github.com/sidorares/react-x11-components/issues/143)) ([901f37d](https://github.com/sidorares/react-x11-components/commit/901f37d786dfc299338ce3e51f37b94db0e68638))
+* **rich-text-editor:** a keystroke costs the block it lands in ([#134](https://github.com/sidorares/react-x11-components/issues/134)) ([6caf687](https://github.com/sidorares/react-x11-components/commit/6caf68745afa80c9410e297cfaf40d8ab85b0c0e))
+* **rich-text-editor:** a mark over the document keeps its blocks' keys without mapping them ([#136](https://github.com/sidorares/react-x11-components/issues/136)) ([e10b20d](https://github.com/sidorares/react-x11-components/commit/e10b20da39661e910519d603503fce6375d4731c))
+
 ## [0.9.0](https://github.com/sidorares/react-x11-components/compare/v0.8.0...v0.9.0) (2026-09-12)
 
 
