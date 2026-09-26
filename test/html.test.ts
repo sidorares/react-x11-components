@@ -1105,6 +1105,38 @@ test('a stylesheet handed back by the seam reaches the cascade', async () => {
   void result;
 });
 
+test('an image handed over as bytes is decoded and drawn', async (t) => {
+  // `decodeImage` is a named export of react-x11/ntk; read off the default
+  // one it was undefined, and every image a host returned as bytes drew as
+  // an empty frame. A red square, then: its middle is red or it is not.
+  if (!FONTS) return t.skip('no font files for the in-process server');
+  // a 10x10 PNG, solid #ff0000
+  const bytes = new Uint8Array(
+    Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAIAAAACUFjqAAAAIUlEQVR4AX3BAQEAAAiDMKR/' +
+        '59uA7UaRJEmSJEmSJEmS9EEsAROhAw00AAAAAElFTkSuQmCC',
+      'base64',
+    ),
+  );
+  const result = await renderX11(
+    h(
+      'box',
+      { style: { width: 200, flexDirection: 'column' } },
+      h(Html, {
+        source: '<img src="red.png" style="display: block">',
+        partial: false,
+        onResource: (r: { kind: string }) =>
+          r.kind === 'image' ? { kind: 'image' as const, bytes } : null,
+      }),
+    ),
+    { width: 240, height: 100, fonts: FONTS },
+  );
+  // the body's 8px margin, and the middle of the square
+  await expectPixel(result.ctx, 13, 13, '#ff0000', {
+    message: 'the decoded image is drawn',
+  });
+});
+
 test('a document with no seams renders anyway', async () => {
   const { node } = await render(
     '<img src="nope.png" alt="x"><p>still here</p>',
