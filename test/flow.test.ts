@@ -935,6 +935,22 @@ function shotViewport(): Viewport | null {
 }
 
 /**
+ * The pane measured as costly to paint live, which is what a zoom's picture
+ * is for (`ZOOM_SHOT_WORTH_MS`): the graphs here paint in a millisecond, and
+ * a zoom over one paints live.
+ */
+function paintsSlowly(): void {
+  const node = pane() as unknown as {
+    _graphPaints: number[];
+    _noteGraphPaint(ms: number): void;
+  };
+  node._graphPaints = [1000, 1000, 1000, 1000, 1000];
+  // …and stays so: under the clock the zoom helpers hold still, every paint
+  // would measure nothing
+  node._noteGraphPaint = () => {};
+}
+
+/**
  * Runs `fn` with the pane's clock (`performance.now`) held still. Whether a
  * zoom is still moving, and when held bodies come back, are judged on that
  * clock; on a loaded runner a wheel's notches and the assertion after them
@@ -987,6 +1003,7 @@ test('a 2D zoom gesture composites the graph it drew once, where the zoom of the
   // step's zoom and was not at the zoom the picture was drawn at: an
   // unscaled composite, or one moved wrong, leaves the pane's ground there.
   const { ctx, flow } = await redCard();
+  paintsSlowly();
   const { abs } = pane();
   let drawnAt: Viewport | null = null;
   // about the card's corner, which stays put as the card grows from it
@@ -1011,6 +1028,95 @@ test('a 2D zoom gesture composites the graph it drew once, where the zoom of the
   });
 });
 
+test('a graph that paints quickly zooms live, with no picture', async () => {
+  // A picture is for a graph too big to paint at every step, and costs one
+  // that is not: on macOS at 2x its composite is ~20 ms a step whatever the
+  // graph, where thirty nodes paint live in 7. This card paints in a
+  // millisecond, so every step of the zoom paints it where the step puts it.
+  const { ctx, flow } = await redCard();
+  const { abs } = pane();
+  let pictured = false;
+  await zoomSteps(abs.x + 40, abs.y + 40, 4, -1, () => {
+    pictured ||= shotViewport() !== null;
+  });
+  assert.ok(!pictured, 'no picture');
+  const last = flow.current!.getViewport();
+  assert.ok(last.zoom > 1.05, 'precondition: zoomed');
+  const px = Math.round(abs.x + last.x + 120 * last.zoom) - 3;
+  const py = Math.round(abs.y + last.y + 60 * last.zoom);
+  await expectPixel(ctx, px, py, '#ff0000', {
+    message: 'the card is where this zoom puts it',
+  });
+});
+
+test('two slow paints do not make a zoom a picture, and three do', async () => {
+  // A collection, or the server catching up, makes a paint slow on a graph
+  // that paints in a millisecond; the median of the last five is what a
+  // zoom decides on, so that graph stays live. A graph that has grown pays
+  // three slow steps before its zooms are pictures.
+  await redCard();
+  const kept = pane() as unknown as { _graphPaints: number[] };
+  const { abs } = pane();
+  kept._graphPaints = [1, 1, 1, 1000, 1000];
+  let pictured = false;
+  await zoomSteps(abs.x + 40, abs.y + 40, 3, -1, () => {
+    pictured ||= shotViewport() !== null;
+  });
+  assert.ok(!pictured, 'two slow paints: live');
+  await new Promise((r) => setTimeout(r, 200));
+  kept._graphPaints = [1, 1, 1000, 1000, 1000];
+  await zoomSteps(abs.x + 40, abs.y + 40, 3, 1, () => {
+    pictured ||= shotViewport() !== null;
+  });
+  assert.ok(pictured, 'three: a picture');
+});
+
+test("a zoom's first step is not what its steps cost", async () => {
+  // A single step sets every label at its size, where the steps of a stream
+  // draw the ones they have: one slow first step told a thirty-node graph
+  // on macOS that it was worth a picture, and every zoom was one.
+  await redCard();
+  const kept = pane() as unknown as { _graphPaints: number[] };
+  const { abs } = pane();
+  await zoomSteps(abs.x + 40, abs.y + 40, 1, -1);
+  assert.equal(kept._graphPaints.length, 0, 'a single step: nothing');
+  await new Promise((r) => setTimeout(r, 200));
+  await zoomSteps(abs.x + 40, abs.y + 40, 3, -1);
+  assert.equal(
+    kept._graphPaints.length,
+    2,
+    'a stream: its steps after the first',
+  );
+});
+
+test('a picture gives way when the graph paints quickly again', async () => {
+  // Measured slow, a zoom composites a picture; measured quick in the middle
+  // of that zoom — the pictures painted for it say what a step costs — its
+  // next step paints live.
+  const { ctx, flow } = await redCard();
+  const kept = pane() as unknown as { _graphPaints: number[] };
+  const { abs } = pane();
+  kept._graphPaints = [1000, 1000, 1000, 1000, 1000];
+  let pictured = false;
+  let dropped = false;
+  let step = 0;
+  await zoomSteps(abs.x + 40, abs.y + 40, 5, -1, () => {
+    if (++step === 3) {
+      pictured = shotViewport() !== null;
+      kept._graphPaints = [1, 1, 1, 1, 1];
+    }
+    if (step === 5) dropped = shotViewport() === null;
+  });
+  assert.ok(pictured, 'precondition: measured slow, a picture');
+  assert.ok(dropped, 'measured quick, no picture');
+  const last = flow.current!.getViewport();
+  const px = Math.round(abs.x + last.x + 120 * last.zoom) - 3;
+  const py = Math.round(abs.y + last.y + 60 * last.zoom);
+  await expectPixel(ctx, px, py, '#ff0000', {
+    message: 'the card is where this zoom puts it',
+  });
+});
+
 test('a 2D zoom out paints the ring its picture no longer covers', async () => {
   // Zoomed out, the picture is smaller than the pane, and the graph round it
   // was never in it. The card starts right of the pane, and zooming out
@@ -1021,6 +1127,7 @@ test('a 2D zoom out paints the ring its picture no longer covers', async () => {
     palette: { background: '#00ff00' },
     background: false,
   });
+  paintsSlowly();
   const { abs } = pane();
   let drawnAt: Viewport | null = null;
   await zoomSteps(abs.x + 200, abs.y + 150, 4, 1, () => {
@@ -1055,6 +1162,7 @@ test('a 2D zoom out paints the ring its picture no longer covers', async () => {
 
 test('a 2D zoom gesture draws a new picture once it has magnified the old one far enough', async () => {
   const { flow } = await redCard();
+  paintsSlowly();
   const { abs } = pane();
   const drawn = new Set<number>();
   const magnified: number[] = [];
@@ -2335,6 +2443,7 @@ test('at a display scale of 2 a 2D zoom gesture composites its picture on device
   // The picture is device-sized and the viewport logical; mixing the two
   // puts the card at half or twice where the zoom has it.
   const { ctx, flow } = await redCard({ x: 40, y: 40 }, 80, 40, AT_2X);
+  paintsSlowly();
   const origin = { x: pane().abs.x / 2, y: pane().abs.y / 2 };
   let drawnAt: Viewport | null = null;
   await zoomSteps(

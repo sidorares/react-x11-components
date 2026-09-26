@@ -480,11 +480,12 @@ labels a zoom step draws there are shaped at their size — which, with the
 picture below, is the ones in the ring a zoom out uncovers. On the stress
 lattice at 1.25× on Windows a zoom went from 34 to 39 frames a second.
 
-**A 2D zoom gesture composites a picture.** From a gesture's second step
-the pane paints the graph and its ground — the background and the grid —
-once, onto an offscreen `Surface`, and every step after composites that
-picture scaled: the GL renderer's world drawn scaled, as a bitmap. What the
-picture does not reach is painted live, culled to up to four bands round it
+**A 2D zoom gesture composites a picture**, where the graph costs more
+than a frame to paint. From a gesture's second step the pane paints the
+graph and its ground — the background and the grid — once, onto an
+offscreen `Surface`, and every step after composites that picture scaled:
+the GL renderer's world drawn scaled, as a bitmap. What the picture does
+not reach is painted live, culled to up to four bands round it
 — the ring a zoom out uncovers, a side a pan exposes — and so are the
 selection box and the panels, at the zoom of the moment. Once that ring is
 half the pane, or the picture has been magnified past 2× (the span GL
@@ -498,6 +499,18 @@ the 9 ms left in a step. On the stress example on Windows, in a 2014×993
 pane on a 180 Hz display, a wheel zoom went from 39–40 frames a second to
 150–178 on the lattice, from 31 to about 150 on the fan-out, and from 43
 to 142–148 with 80 widget bodies mounted.
+
+A picture costs a graph that paints quickly: its composite is ~20 ms a step
+at 2x on macOS whatever the graph, a new one was a 50–150 ms step on X11,
+and it holds a surface the size of the pane — 15 MB for a 1200×800 pane at
+2x. So a zoom composites one only once painting the graph whole has cost
+more than 16 ms, and paints live again under 12, judged on the median of
+the last five whole paints: the steps of a zoom painted live, and the
+pictures painted for zooms, less their ground. A zoom's first step is not
+one of them — it sets every label at its new size, which the steps after it
+do not — and a slow paint or two decide nothing. A thirty-node graph zooms
+live: on macOS at 92–94 frames a second, where its picture held it to 46,
+and on XQuartz with its slowest frames at 22 ms rather than 57–60.
 
 **Under GL a label is a distance field.** Each string is set once, at 16
 device pixels (32 at 2x), and kept as the distance of every texel to its

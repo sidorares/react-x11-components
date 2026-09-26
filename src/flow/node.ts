@@ -237,6 +237,24 @@ const GL_ZOOM_SPAN = 2;
 /** How much of the pane a 2D zoom step may paint live, round the picture it
  *  composites — the ring a zoom out uncovers — before it paints a new one. */
 const ZOOM_SHOT_LIVE = 0.5;
+
+/**
+ * What painting the graph whole has to cost, ms, before a zoom paints a
+ * picture of it and composites that (`_zoomShotFor`) — and what it has to
+ * fall under before a zoom paints it live again. A picture pays for a graph
+ * too big to paint at every step and costs one that is not: on macOS at 2x
+ * its composite is ~20 ms a step whatever the graph, on X11 each new
+ * picture was a 50–150 ms step, and either way it holds a surface the size
+ * of the pane. A thirty-node graph painted live in 7 ms a step on Cocoa and
+ * zoomed at 90 frames a second where its picture held it to 45. A frame at
+ * 60 Hz to start, and a margin under it to stop, so a graph near the line
+ * does not go back and forth; judged on the median of the last
+ * `GRAPH_PAINTS_KEPT` whole paints, so a slow paint or two — a collection,
+ * the server catching up — decide nothing.
+ */
+const ZOOM_SHOT_WORTH_MS = 16;
+const ZOOM_SHOT_DROP_MS = 12;
+const GRAPH_PAINTS_KEPT = 5;
 /** How far round a box selection's outline its step claims: the pen, the
  *  corner's radius and a pixel of antialiasing, with room to spare. */
 const SELECT_BAND = 4;
@@ -601,6 +619,14 @@ export class FlowGraphNode extends Node implements FlowInstance {
    * exactly, and whenever the graph itself changes.
    */
   private _zoomShot: ZoomShot | null = null;
+  /** What the last `GRAPH_PAINTS_KEPT` whole paints of the graph cost, ms,
+   *  newest last: the steps of a zoom painted live and the pictures painted
+   *  for zooms, the two passes that say what a step would cost live — and
+   *  not a zoom's first step, which sets every label at its size once and
+   *  says what the steps after it will not. Whether a zoom is worth a
+   *  picture (`ZOOM_SHOT_WORTH_MS`); empty until a zoom has painted, so the
+   *  first one starts live. */
+  private _graphPaints: number[] = [];
   /** A 2D drag's pictures (`_liftShotFor`), and the gesture that is not to
    *  have any: one whose view moved under it, where a picture a step would
    *  cost two full paints a step. */
@@ -3209,8 +3235,15 @@ export class FlowGraphNode extends Node implements FlowInstance {
     const started = now();
     // Not under a drag or a connection: the picture would hold the moving
     // node, or the line, where they were
+    // …and only for a graph that costs more than a frame to paint live
+    // (`ZOOM_SHOT_WORTH_MS`, `ZOOM_SHOT_DROP_MS`)
+    const zooming = this._zoomMoving() && !this._gesture;
+    const paintMs = zooming ? this._graphPaintMs() : 0;
+    if (zooming && this._zoomShot !== null && paintMs < ZOOM_SHOT_DROP_MS) {
+      this._dropZoomShot();
+    }
     const shot =
-      this._zoomMoving() && !this._gesture
+      zooming && (this._zoomShot !== null || paintMs > ZOOM_SHOT_WORTH_MS)
         ? this._zoomShotFor(palette, approximateText)
         : null;
     // A drag's nodes over pictures of the rest (`_liftShotFor`), in 2D and
@@ -3263,7 +3296,12 @@ export class FlowGraphNode extends Node implements FlowInstance {
       scene = buildScene(this._sceneInput(palette));
       const built = now();
       paintScene(painter, scene, this._grid);
-      this._reportFrame(built - started, now() - built);
+      const done = now();
+      this._reportFrame(built - started, done - built);
+      // a zoom's step, whole and live: what the next one would cost
+      if (this._zoomMoving() && this._wholePane(clip)) {
+        this._noteGraphPaint(done - started);
+      }
     }
     // The box the dash ticks invalidate comes off the *drawn* geometry; a
     // pass that culled every animated edge keeps the one before it, because
@@ -3617,6 +3655,30 @@ export class FlowGraphNode extends Node implements FlowInstance {
     );
   }
 
+  /** A whole paint of the graph took `ms` (`_graphPaints`). */
+  private _noteGraphPaint(ms: number): void {
+    this._graphPaints.push(ms);
+    if (this._graphPaints.length > GRAPH_PAINTS_KEPT) this._graphPaints.shift();
+  }
+
+  /** The median of the graph's last whole paints — the lower of the two
+   *  middle ones for an even count — or zero before the first. */
+  private _graphPaintMs(): number {
+    const paints = this._graphPaints;
+    if (paints.length === 0) return 0;
+    const sorted = [...paints].sort((a, b) => a - b);
+    return sorted[(sorted.length - 1) >> 1];
+  }
+
+  /** Whether a pass over `clip` painted the whole pane — what a zoom step
+   *  paints, and the only pass whose cost says what one would. */
+  private _wholePane(clip: FlowRect | null): boolean {
+    if (clip === null) return true;
+    const pane = this._pane();
+    const s = this._scale;
+    return clip.width * clip.height >= 0.9 * pane.width * s * pane.height * s;
+  }
+
   /**
    * The graph painted once onto a surface of its own for the zoom gesture
    * under way — made at the gesture's first step that finds none — or null
@@ -3673,9 +3735,17 @@ export class FlowGraphNode extends Node implements FlowInstance {
     // the tile is a pattern on the window's context, phased in its pixels,
     // and a zoom's pitch is a fraction of a pixel almost always.
     sctx.translate(-pane.x * scale, -pane.y * scale);
+    const building = now();
     const whole = buildScene({ ...this._sceneInput(palette), clip: null });
+    const built = now();
     paintGround(painter, whole);
+    const grounded = now();
     paintGraph(painter, whole);
+    // What a step would cost live: the scene and the graph. Not the ground,
+    // which is runs here and a tile on the window — on X11 it made a
+    // picture's paint half as dear again as a step, and kept the picture of
+    // a graph that did not need one.
+    this._noteGraphPaint(built - building + (now() - grounded));
     this._zoomShot = { surface, viewport: this._viewport(), width, height };
     return this._zoomShot;
   }
