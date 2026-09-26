@@ -271,6 +271,14 @@ element for this to work — a layout made for one parse is shown for the
 next — which is why hit testing goes through the document's text index
 rather than through the run. The pass before's layouts are all that is
 kept, so a document costs one pass of them and the ones an edit replaced.
+A layout is filed under its width and its text, and found by comparing the
+rest of what it was made from, field by field. Spelling all of it into one
+string key meant 3 MB of strings a pass at 600 KB, built, hashed and
+compared, and a tenth of an edit went on finding the layouts. The natural
+line height a `line-height: 1.5` is converted against is kept per style for
+the same reason: every paragraph asks, and on CoreText every answer was a
+call to the native side. Together they took an edit from 111 to 86 ms on
+macOS and from 80 to 70 ms on XQuartz.
 
 **A resize lays the document out once a frame.** Core asks an element for
 its height at the width it was last measured at, as well as at the one it
@@ -283,6 +291,21 @@ changes: the source, a stylesheet, a resource, the hover, the viewport
 height. Only a size comes from it; paint and the selection read the boxes,
 and those are only ever laid out for real. A frame of a window resize at
 600 KB went from 573 to 196 ms on macOS and from 256 to 86 ms on XQuartz.
+
+**A style is computed once per kind of element.** An edit builds the box
+tree again, and building it matched every element against the stylesheets
+and computed its style: 9,039 of them for a 600 KB report. A document is a
+few kinds of element many times over, though, and a style depends only on
+the parent's, the element's own tag and attributes, and its ancestors' —
+unless a rule reads siblings, position or contents: `+`, `~`,
+`:nth-child()`, `:first-child`, `:empty`, `:has()` and css-select's other
+names for them. So an element that looks, from the root down, like one
+already styled in the same build takes that style object without matching
+anything. An element such a rule could reach is matched, and then shares by
+what it matched, so the cells of a striped table come in two kinds rather
+than needing a style each. The report computes 110 styles, and 112 with its tables striped.
+An edit went from 111 to 76 ms on macOS and from 80 to 54 ms on XQuartz, an
+append from 118 to 83 ms and from 88 to 59 ms.
 
 ## Types
 

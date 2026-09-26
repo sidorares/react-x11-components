@@ -385,6 +385,10 @@ export function buildBoxes(
  */
 const MAX_DEPTH = 512;
 
+/** The sharing key the root box's children share under: one root style per
+ *  build, and the shared styles last a build (`Cascade.beginSharing`). */
+const ROOT_SHARE_KEY = 0;
+
 class Builder {
   private _options: BuildOptions;
   private _text = '';
@@ -401,12 +405,13 @@ class Builder {
 
   run(root: Element): BoxTree {
     const cascade = this._options.cascade;
+    cascade.beginSharing();
     const rootStyle = cascade.rootStyle(hasBody(root));
     const rootBox = new Box('block', null, rootStyle);
     // The DOM's `<html>`/`<body>` are ordinary elements with ordinary styles;
     // the box above them exists only to be the initial containing block, so
     // it carries no margins of its own and cannot collapse with anything.
-    this._children(root, rootBox, rootStyle, false);
+    this._children(root, rootBox, rootStyle, false, null, ROOT_SHARE_KEY);
     fixUp(rootBox);
     assignSubtreeRanges(rootBox);
     return {
@@ -424,7 +429,8 @@ class Builder {
     into: Box,
     parentStyle: ComputedStyle,
     inFlex: boolean,
-    owner: Element | null = null,
+    owner: Element | null,
+    parentKey: number,
   ): void {
     for (const child of childrenOf(node as Element)) {
       if (isText(child)) {
@@ -432,7 +438,7 @@ class Builder {
         continue;
       }
       if (!isElement(child)) continue;
-      this._element(child, into, parentStyle, inFlex);
+      this._element(child, into, parentStyle, inFlex, parentKey);
     }
   }
 
@@ -441,11 +447,19 @@ class Builder {
     into: Box,
     parentStyle: ComputedStyle,
     inFlex: boolean,
+    parentKey: number,
   ): void {
     const tag = tagOf(el);
     if (NON_RENDERED.has(tag)) return;
 
-    const style = this._options.cascade.styleFor(el, parentStyle, inFlex);
+    // shared with every element that must compute the same style, which in
+    // a long document is most of them (`Cascade.sharedStyleFor`)
+    const { style, key } = this._options.cascade.sharedStyleFor(
+      el,
+      parentStyle,
+      parentKey,
+      inFlex,
+    );
     if (style.display === 'none') return;
 
     // `<br>` is a line break rather than a box, and it is the one element
@@ -486,7 +500,7 @@ class Builder {
     const childInFlex =
       style.display === 'flex' || style.display === 'inline-flex';
     this._depth += 1;
-    this._children(el, box, style, childInFlex, el);
+    this._children(el, box, style, childInFlex, el, key);
     this._depth -= 1;
 
     if (opensCounter) this._counters.pop();

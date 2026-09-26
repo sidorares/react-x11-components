@@ -553,38 +553,46 @@ function renderList(list: ListBlock, ctx: RenderCtx, key: number): ReactNode {
         ),
       );
     } else {
+      // the text itself, sized as the column the box around it used to be:
+      // a list is a few boxes per item, and at 600 KB there were 1,582 of
+      // these for yoga to lay out and absolutize on every width change
       marker = hx(
-        'box',
-        { selectable: false, style: markerStyle },
-        hx(
-          'text',
-          {
-            style: {
-              color: look.dim,
-              fontSize: look.inline.size,
-              fontFamily: look.inline.family,
-            },
+        'text',
+        {
+          selectable: false,
+          style: {
+            flexShrink: 0,
+            width: markerWidth,
+            color: look.dim,
+            fontSize: look.inline.size,
+            fontFamily: look.inline.family,
           },
-          list.ordered ? `${list.start + i}.` : '•',
-        ),
+        },
+        list.ordered ? `${list.start + i}.` : '•',
       );
     }
+    const only = item.children.length === 1 ? item.children[0] : undefined;
     return hx(
       'box',
       { key: i, style: STYLES.itemRow },
       marker,
-      hx(
-        'box',
-        {
-          style: {
-            ...STYLES.column,
-            gap: Math.round(look.blockGap * 0.4),
-            flexGrow: 1,
-            flexShrink: 1,
-          },
-        },
-        ...renderBlocks(item.children, ctx),
-      ),
+      // An item that is one paragraph — nearly every item — is the
+      // paragraph, taking the rest of the row; the column is for an item of
+      // several blocks, which needs the gap between them.
+      only?.type === 'paragraph'
+        ? richtext(0, runsOf(only.children, look.inline), STYLES.itemText)
+        : hx(
+            'box',
+            {
+              style: {
+                ...STYLES.column,
+                gap: Math.round(look.blockGap * 0.4),
+                flexGrow: 1,
+                flexShrink: 1,
+              },
+            },
+            ...renderBlocks(item.children, ctx),
+          ),
     );
   });
   return hx('box', { key, style: { ...STYLES.column, gap } }, ...items);
@@ -598,6 +606,7 @@ function renderTable(
   const look = ctx.look;
   const size = look.inline.size;
   const padX = Math.round(size * 0.6);
+  const padY = Math.round(size * 0.35);
   const cols = table.align.length;
 
   // Column widths: max-content per column, measured through the app's font
@@ -645,24 +654,19 @@ function renderTable(
           borderTopColor: divided ? look.border : undefined,
         },
       },
+      // A cell is its text. The padding it needs is a margin: the cell has
+      // no background or border of its own — the row paints both — so the
+      // space around the text looks the same either way, and there is no
+      // box per cell for yoga to lay out.
       ...cells.map((cell, c) =>
-        h(
-          'box',
-          {
-            key: c,
-            style: {
-              width: widths[c],
-              paddingLeft: padX,
-              paddingRight: padX,
-              paddingTop: Math.round(size * 0.35),
-              paddingBottom: Math.round(size * 0.35),
-            },
-          },
-          richtext('c', runsOf(cell, s), {
-            textAlign: table.align[c] ?? undefined,
-            flexGrow: 1,
-          }),
-        ),
+        richtext(c, runsOf(cell, s), {
+          textAlign: table.align[c] ?? undefined,
+          width: widths[c] - padX * 2,
+          marginLeft: padX,
+          marginRight: padX,
+          marginTop: padY,
+          marginBottom: padY,
+        }),
       ),
     );
 
@@ -696,6 +700,7 @@ function renderTable(
 const STYLES = {
   column: { flexDirection: 'column' },
   itemRow: { flexDirection: 'row' },
+  itemText: { flexGrow: 1, flexShrink: 1 },
   markerBox: { flexDirection: 'row', flexShrink: 0 },
 } as const satisfies Record<string, Style>;
 
