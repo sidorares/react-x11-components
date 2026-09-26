@@ -236,6 +236,9 @@ export function specificityOf(selector: string): number {
         i = skipIdent(selector, i + 1);
         if (selector[i] === '(') i = skipBalanced(selector, i, '(', ')');
       }
+    } else if (c === '*' || c === '|') {
+      // the universal selector, and a namespace's bar, count nothing
+      i += 1;
     } else if (isIdentStart(c)) {
       types += 1;
       i = skipIdent(selector, i);
@@ -274,13 +277,22 @@ function isSpace(c: string): boolean {
   return c === ' ' || c === '\t' || c === '\n' || c === '\r' || c === '\f';
 }
 
+/**
+ * Whether an identifier starts here. Every character this accepts,
+ * `skipIdent` must step over: a scan that counts an identifier and then
+ * skips none of it never moves again. This once accepted `*` and `|`,
+ * which `skipIdent` does not, and a stylesheet with a universal selector in
+ * it — `* { margin: 0 }` — hung the parser and the app with it.
+ */
 function isIdentStart(c: string): boolean {
-  return /[a-zA-Z_\-*|\\]/.test(c);
+  return /[a-zA-Z_\-\\\u0080-\uffff]/.test(c);
 }
 
 function skipIdent(text: string, from: number): number {
   let i = from;
-  while (i < text.length && /[a-zA-Z0-9_\-\\]/.test(text[i])) i += 1;
+  while (i < text.length && /[a-zA-Z0-9_\-\\\u0080-\uffff]/.test(text[i])) {
+    i += 1;
+  }
   return i;
 }
 

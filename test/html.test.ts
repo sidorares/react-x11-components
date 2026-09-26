@@ -120,6 +120,19 @@ test('specificity counts ids, classes and types', () => {
   assert.strictEqual(specificityOf('a[href]'), specificityOf('a.x'));
 });
 
+test('a universal selector counts nothing, and does not stop the scan', () => {
+  // The scan took `*` and `|` for the start of a name and then skipped
+  // none of it, so it stood still on them for ever: `* { margin: 0 }` —
+  // the commonest reset there is — hung the parser and the app with it.
+  assert.strictEqual(specificityOf('*'), 0);
+  assert.strictEqual(specificityOf('.tests *'), specificityOf('.tests'));
+  assert.strictEqual(specificityOf('div > * + p'), specificityOf('div p'));
+  assert.strictEqual(specificityOf('*|p'), specificityOf('p'));
+  assert.strictEqual(specificityOf('.café'), specificityOf('.cafe'));
+  const sheet = parseStylesheet('* { margin: 0 } .tests * { color: red }');
+  assert.strictEqual(sheet.rules.length, 2);
+});
+
 test('@media width queries become conditions, and their breakpoints are collected', () => {
   const sheet = parseStylesheet(
     '@media (min-width: 600px) { p { color: red } }',
