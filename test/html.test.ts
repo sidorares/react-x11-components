@@ -2758,6 +2758,33 @@ metric(
 );
 
 metric(
+  'a negative z-index is painted under the flow of its stacking context',
+  async () => {
+    // CSS 2.1 Appendix E: over the context's background, under all else in
+    // it; a parent that is no stacking context does not hold it
+    const { node } = await render(
+      '<div style="background:#0000ff;height:20px">' +
+        '<div style="position:absolute;z-index:-1;width:10px;height:10px;' +
+        'background:#ff0000"></div></div>' +
+        '<div style="position:relative;z-index:0;background:#00ffff">' +
+        '<div style="position:absolute;z-index:-1;width:10px;height:10px;' +
+        'background:#ff00ff"></div><div style="height:20px;' +
+        'background:#00ff00"></div></div>',
+    );
+    const order = (await fillsOf(view(node))).map((f) => f.style);
+    const at = (color: string) => order.indexOf(parseColor(color));
+    assert.ok(
+      at('#ff0000') < at('#0000ff'),
+      'under a parent that is no context',
+    );
+    assert.ok(
+      at('#00ffff') < at('#ff00ff') && at('#ff00ff') < at('#00ff00'),
+      "over its context's background, under its flow",
+    );
+  },
+);
+
+metric(
   'an absolute box with auto offsets is where the flow put it',
   async () => {
     // CSS 2.1 10.3.7 and 10.6.4: with neither `left` nor `right`, and neither

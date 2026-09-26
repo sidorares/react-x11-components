@@ -446,6 +446,9 @@ export interface BoxTree {
   /** Whether any box is relatively positioned: where none is, layout skips
    *  the walk that moves them. */
   relative: boolean;
+  /** Whether any positioned box has a negative `z-index`: where none has,
+   *  paint has no layer below the flow to find. */
+  negative: boolean;
 }
 
 export interface BuildOptions {
@@ -504,6 +507,7 @@ class Builder {
   private _links: Box[] = [];
   private _backgrounds: Box[] = [];
   private _relative = false;
+  private _negative = false;
   /** Counter stack for `<ol>` numbering, one entry per open list. */
   private _counters: number[] = [];
   /** The CSS counters in scope, for `counter()` in generated content. */
@@ -547,6 +551,7 @@ class Builder {
       links: this._links,
       backgrounds: this._backgrounds,
       relative: this._relative || isRelative(rootStyle),
+      negative: this._negative,
     };
   }
 
@@ -594,6 +599,7 @@ class Builder {
     if (style.display === 'none') return;
     if (onlyColumns && style.display !== 'table-column') return;
     if (isRelative(style)) this._relative = true;
+    if (isNegative(style)) this._negative = true;
     // before anything else of the element's, including its `::before`,
     // and for the element whatever box it makes (CSS 2.1 12.4)
     if (style.counterReset || style.counterIncrement) {
@@ -757,6 +763,7 @@ class Builder {
     const style = this._options.cascade.pseudoStyleFor(el, which, elementStyle);
     if (!style || style.display === 'none') return;
     if (isRelative(style)) this._relative = true;
+    if (isNegative(style)) this._negative = true;
     // a column renders no content, and generated content is all it would
     // hold; in a column group it is not a column either (CSS 2.1 17.2.1)
     if (
@@ -1607,6 +1614,14 @@ const COLLAPSIBLE = /[\t\n\r\f]| {2}/;
 
 function isRelative(style: ComputedStyle): boolean {
   return style.position === 'relative' || style.position === 'sticky';
+}
+
+function isNegative(style: ComputedStyle): boolean {
+  return (
+    style.position !== 'static' &&
+    typeof style.zIndex === 'number' &&
+    style.zIndex < 0
+  );
 }
 
 /** A box that belongs inside a table: a row group, a row, a cell, a
