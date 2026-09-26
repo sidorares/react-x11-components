@@ -317,13 +317,19 @@ export class Cascade {
    *  pixels — the unit the author wrote them in. */
   readonly breakpoints: number[];
 
+  /** A font's x-height at a size, for `ex`, where the fonts can say. */
+  private _xHeightOf: ((family: string, size: number) => number | null) | null;
+  private _xHeights = new Map<string, number>();
+
   constructor(
     sheets: Stylesheet[],
     look: RootLook,
     viewportWidth: number,
     viewportHeight: number,
     scale = 1,
+    xHeight: ((family: string, size: number) => number | null) | null = null,
   ) {
+    this._xHeightOf = xHeight;
     this.look = look;
     this.initial = initialStyle(look, scale);
     this.viewportWidth = viewportWidth;
@@ -579,6 +585,19 @@ export class Cascade {
     return style;
   }
 
+  /** The x-height of a style's font: the font's own, asked once per face
+   *  and size, or half an em. */
+  private _exOf(style: ComputedStyle): number {
+    const key = `${style.fontFamily}\u0001${style.fontSize}`;
+    let ex = this._xHeights.get(key);
+    if (ex === undefined) {
+      ex = this._xHeightOf?.(style.fontFamily, style.fontSize) ?? NaN;
+      if (!(ex > 0)) ex = style.fontSize * 0.5;
+      this._xHeights.set(key, ex);
+    }
+    return ex;
+  }
+
   /** `styleFor`, from the rules and hints already gathered for `el`. */
   private _computeStyle(
     el: Element,
@@ -598,15 +617,25 @@ export class Cascade {
       vw: this.viewportWidth,
       vh: this.viewportHeight,
       scale: this.scale,
+      ex: () => this._exOf(parentStyle),
     };
+    // the family goes with the size, so an `ex` after it is its font's
     for (const c of candidates) {
       for (const d of pick(c)) {
-        if (d.prop === 'font-size' || d.prop === 'font') {
+        if (
+          d.prop === 'font-size' ||
+          d.prop === 'font' ||
+          d.prop === 'font-family'
+        ) {
           applyDeclaration(style, parentStyle, d.prop, d.value, ctxParent);
         }
       }
     }
-    const ctx: UnitContext = { ...ctxParent, em: style.fontSize };
+    const ctx: UnitContext = {
+      ...ctxParent,
+      em: style.fontSize,
+      ex: () => this._exOf(style),
+    };
     for (const c of candidates) {
       for (const d of pick(c)) {
         if (d.prop === 'font-size') continue;

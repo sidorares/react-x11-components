@@ -357,12 +357,14 @@ export class HtmlViewNode extends Node {
       order += sheet.rules.length + 1;
       sheets.push(sheet);
     }
+    const fonts = this._fonts();
     this._cascade = new Cascade(
       sheets,
       look,
       width,
       this._viewportHeight(),
       this._scale,
+      fonts ? (family, size) => xHeightOf(fonts, family, size) : null,
     );
     this._cascade.setPointer({
       hovered: new Set(this._hovered),
@@ -1168,3 +1170,20 @@ function ownerOf(boxes: readonly Box[], index: number): Element | null {
 }
 
 export type { ControlRect, ReplacedKind, ResourceRequest, ResourceResult };
+
+/** A font's x-height at a size, as the engine reports it: null where the
+ *  face states none, or the engine does not say. */
+function xHeightOf(
+  fonts: FontsLike,
+  family: string,
+  size: number,
+): number | null {
+  try {
+    const metrics = fonts.match(family, { size }).metrics(size) as {
+      xHeight?: number | null;
+    };
+    return typeof metrics.xHeight === 'number' ? metrics.xHeight : null;
+  } catch {
+    return null;
+  }
+}
