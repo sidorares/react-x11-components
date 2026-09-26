@@ -58,55 +58,56 @@ separately, and there are six.
 
 ## Results
 
-|                       | before, X11 | round 1, X11 | round 1, Cocoa | round 2, X11 | round 2, Cocoa | round 3, X11 | round 3, Cocoa |
-| --------------------- | ----------- | ------------ | -------------- | ------------ | -------------- | ------------ | -------------- |
-| reftests run          | 5,895       | 5,895        | 5,895          | 5,895        | 5,895          | 5,894        | 5,894          |
-| pass                  | 1,831 (31%) | 2,417 (41%)  | 2,212 (38%)    | 2,822 (48%)  | 2,557 (43%)    | 3,180 (54%)  | 2,831 (48%)    |
-| **hung the renderer** | **91**      | 0            | 0              | 0            | 0              | 0            | 0              |
-| threw from paint      | 1           | 0            | 0              | 0            | 0              | 0            | 0              |
+| round  | what it was                                        | X11         | Cocoa       |
+| ------ | -------------------------------------------------- | ----------- | ----------- |
+| before | `<Html>` as it shipped                             | 1,831 (31%) |             |
+| 1      | the first nine fixes below                         | 2,417 (41%) | 2,212 (38%) |
+| 2      | generated content, and what it brought to light    | 2,822 (48%) | 2,557 (43%) |
+| 3      | the inline box model, and what it brought to light | 3,180 (54%) | 2,831 (48%) |
+| 4      | anonymous boxes, table columns, percentage heights | 3,323 (56%) | 2,959 (50%) |
 
-"Before" is `<Html>` as it shipped. Round 1 is the first nine fixes below;
-round 2 is generated content and the four layout fixes it brought to light;
-round 3 is the inline box model and what it brought to light. The 91 hangs
-were the renderer looping for ever inside a render, which freezes an
-application whole; they are the first finding, and the most important one.
-Round 3's Cocoa number is on react-x11 2.22.8 and @windowkit/appkit 0.15.0,
-where master itself passes 2,454, not round 2's 2,557 — see round 3's third
-item for the hundred tests between them.
+Of 5,895 reftests run through round 2 and 5,894 since, where a test that
+depends on an `onload` handler is counted a script. As it shipped, `<Html>`
+hung on 91 of them and threw from paint on one; no round since has done
+either. The hangs were the renderer looping for ever inside a render, which
+freezes an application whole; they are the first finding, and the most
+important one. Round 3's Cocoa number and round 4's are on react-x11 2.22.8
+and @windowkit/appkit 0.15.0, where master itself passed 2,454, not round
+2's 2,557 — see round 3's third item for the hundred tests between them.
 
 By area, sorted by the number of tests:
 
-| area                 | before, X11   | round 2, X11  | round 2, Cocoa | round 3, X11  | round 3, Cocoa |
+| area                 | before, X11   | round 3, X11  | round 3, Cocoa | round 4, X11  | round 4, Cocoa |
 | -------------------- | ------------- | ------------- | -------------- | ------------- | -------------- |
-| normal-flow          | 217/694 (31%) | 370/694 (53%) | 436/694 (63%)  | 483/694 (70%) | 461/694 (66%)  |
-| margin-padding-clear | 369/682 (54%) | 448/682 (66%) | 424/682 (62%)  | 459/682 (67%) | 436/682 (64%)  |
-| positioning          | 129/513 (25%) | 239/513 (47%) | 192/513 (37%)  | 293/513 (57%) | 282/513 (55%)  |
-| borders              | 255/504 (51%) | 269/504 (53%) | 268/504 (53%)  | 324/504 (64%) | 322/504 (64%)  |
-| selectors            | 62/468 (13%)  | 73/468 (16%)  | 73/468 (16%)   | 73/468 (16%)  | 73/468 (16%)   |
-| text                 | 186/381 (49%) | 214/381 (56%) | 191/381 (50%)  | 251/380 (66%) | 224/380 (59%)  |
-| backgrounds          | 114/336 (34%) | 179/336 (53%) | 117/336 (35%)  | 194/336 (58%) | 128/336 (38%)  |
-| syntax               | 147/275 (53%) | 168/275 (61%) | 170/275 (62%)  | 170/275 (62%) | 170/275 (62%)  |
-| tables               | 12/250 (5%)   | 18/250 (7%)   | 18/250 (7%)    | 18/250 (7%)   | 18/250 (7%)    |
-| floats-clear         | 13/211 (6%)   | 86/211 (41%)  | 57/211 (27%)   | 109/211 (52%) | 87/211 (41%)   |
-| generated-content    | 17/205 (8%)   | 130/205 (63%) | 130/205 (63%)  | 130/205 (63%) | 133/205 (65%)  |
-| linebox              | 41/191 (21%)  | 111/191 (58%) | 20/191 (10%)   | 112/191 (59%) | 22/191 (12%)   |
-| css1                 | 18/164 (11%)  | 70/164 (43%)  | 37/164 (23%)   | 91/164 (55%)  | 50/164 (30%)   |
-| fonts                | 45/159 (28%)  | 86/159 (54%)  | 81/159 (51%)   | 88/159 (55%)  | 84/159 (53%)   |
-| lists                | 12/155 (8%)   | 75/155 (48%)  | 75/155 (48%)   | 75/155 (48%)  | 75/155 (48%)   |
-| bidi-text            | 4/105 (4%)    | 24/105 (23%)  | 19/105 (18%)   | 43/105 (41%)  | 14/105 (13%)   |
-| floats               | 17/100 (17%)  | 27/100 (27%)  | 29/100 (29%)   | 28/100 (28%)  | 28/100 (28%)   |
-| box-display          | 17/86 (20%)   | 34/86 (40%)   | 24/86 (28%)    | 35/86 (41%)   | 27/86 (31%)    |
-| ui                   | 39/52 (75%)   | 39/52 (75%)   | 39/52 (75%)    | 39/52 (75%)   | 39/52 (75%)    |
+| normal-flow          | 217/694 (31%) | 483/694 (70%) | 461/694 (66%)  | 515/694 (74%) | 489/694 (70%)  |
+| margin-padding-clear | 369/682 (54%) | 459/682 (67%) | 436/682 (64%)  | 470/682 (69%) | 444/682 (65%)  |
+| positioning          | 129/513 (25%) | 293/513 (57%) | 282/513 (55%)  | 297/513 (58%) | 286/513 (56%)  |
+| borders              | 255/504 (51%) | 324/504 (64%) | 322/504 (64%)  | 344/504 (68%) | 342/504 (68%)  |
+| selectors            | 62/468 (13%)  | 73/468 (16%)  | 73/468 (16%)   | 74/468 (16%)  | 74/468 (16%)   |
+| text                 | 186/381 (49%) | 251/380 (66%) | 224/380 (59%)  | 253/380 (67%) | 225/380 (59%)  |
+| backgrounds          | 114/336 (34%) | 194/336 (58%) | 128/336 (38%)  | 198/336 (59%) | 132/336 (39%)  |
+| syntax               | 147/275 (53%) | 170/275 (62%) | 170/275 (62%)  | 170/275 (62%) | 170/275 (62%)  |
+| tables               | 12/250 (5%)   | 18/250 (7%)   | 18/250 (7%)    | 22/250 (9%)   | 22/250 (9%)    |
+| floats-clear         | 13/211 (6%)   | 109/211 (52%) | 87/211 (41%)   | 120/211 (57%) | 98/211 (46%)   |
+| generated-content    | 17/205 (8%)   | 130/205 (63%) | 133/205 (65%)  | 155/205 (76%) | 156/205 (76%)  |
+| linebox              | 41/191 (21%)  | 112/191 (59%) | 22/191 (12%)   | 113/191 (59%) | 22/191 (12%)   |
+| css1                 | 18/164 (11%)  | 91/164 (55%)  | 50/164 (30%)   | 95/164 (58%)  | 51/164 (31%)   |
+| fonts                | 45/159 (28%)  | 88/159 (55%)  | 84/159 (53%)   | 96/159 (60%)  | 92/159 (58%)   |
+| lists                | 12/155 (8%)   | 75/155 (48%)  | 75/155 (48%)   | 77/155 (50%)  | 77/155 (50%)   |
+| bidi-text            | 4/105 (4%)    | 43/105 (41%)  | 14/105 (13%)   | 44/105 (42%)  | 14/105 (13%)   |
+| floats               | 17/100 (17%)  | 28/100 (28%)  | 28/100 (28%)   | 30/100 (30%)  | 30/100 (30%)   |
+| box-display          | 17/86 (20%)   | 35/86 (41%)   | 27/86 (31%)    | 41/86 (48%)   | 33/86 (38%)    |
+| ui                   | 39/52 (75%)   | 39/52 (75%)   | 39/52 (75%)    | 37/52 (71%)   | 37/52 (71%)    |
 | visufx               | 3/49 (6%)     | 3/49 (6%)     | 3/49 (6%)      | 3/49 (6%)     | 3/49 (6%)      |
 | pagination           | 38/43 (88%)   | 41/43 (95%)   | 41/43 (95%)    | 41/43 (95%)   | 41/43 (95%)    |
-| visudet              | 6/37 (16%)    | 12/37 (32%)   | 13/37 (35%)    | 13/37 (35%)   | 14/37 (38%)    |
-| cascade              | 12/32 (38%)   | 21/32 (66%)   | 20/32 (63%)    | 21/32 (66%)   | 21/32 (66%)    |
-| zindex               | 13/29 (45%)   | 13/29 (45%)   | 13/29 (45%)    | 14/29 (48%)   | 14/29 (48%)    |
-| visuren              | 4/26 (15%)    | 6/26 (23%)    | 6/26 (23%)     | 9/26 (35%)    | 6/26 (23%)     |
-| abspos               | 3/25 (12%)    | 7/25 (28%)    | 7/25 (28%)     | 8/25 (32%)    | 8/25 (32%)     |
+| visudet              | 6/37 (16%)    | 13/37 (35%)   | 14/37 (38%)    | 13/37 (35%)   | 14/37 (38%)    |
+| cascade              | 12/32 (38%)   | 21/32 (66%)   | 21/32 (66%)    | 22/32 (69%)   | 22/32 (69%)    |
+| zindex               | 13/29 (45%)   | 14/29 (48%)   | 14/29 (48%)    | 14/29 (48%)   | 14/29 (48%)    |
+| visuren              | 4/26 (15%)    | 9/26 (35%)    | 6/26 (23%)     | 9/26 (35%)    | 6/26 (23%)     |
+| abspos               | 3/25 (12%)    | 8/25 (32%)    | 8/25 (32%)     | 12/25 (48%)   | 12/25 (48%)    |
 | values               | 8/25 (32%)    | 11/25 (44%)   | 7/25 (28%)     | 11/25 (44%)   | 7/25 (28%)     |
 | sec5                 | 11/23 (48%)   | 21/23 (91%)   | 21/23 (91%)    | 21/23 (91%)   | 21/23 (91%)    |
-| colors               | 2/19 (11%)    | 5/19 (26%)    | 4/19 (21%)     | 5/19 (26%)    | 4/19 (21%)     |
+| colors               | 2/19 (11%)    | 5/19 (26%)    | 4/19 (21%)     | 6/19 (32%)    | 5/19 (26%)     |
 | media                | 10/17 (59%)   | 10/17 (59%)   | 10/17 (59%)    | 10/17 (59%)   | 10/17 (59%)    |
 
 Paged media passes because neither a test nor its reference paginates here;
@@ -281,6 +282,39 @@ rather than hidden:
   padding measures its stop from where the text resumes rather than from the
   line's start.
 
+### Round 4
+
+Three things the fix-up and the height rules got wrong, found reading round
+3's losses:
+
+24. **An anonymous box took its parent's whole style.** The block the
+    fix-up wraps text in beside a block — `<div>text<p>…</p></div>` — and
+    the anonymous table parts it completes a table with shared their
+    parent's style object, so they took its height, padding, borders,
+    background, relative offset and opacity a second time. In a padded div
+    the text sat twice the padding in, and the block after it the div's
+    height further down. An anonymous box inherits what inherits and starts
+    everything else from its initial value, as CSS 2.1 9.2.1.1 and 17.2.1
+    have it. 127 tests pass for it on X11.
+25. **A table column was taken for a stray child**, wrapped in a row and a
+    cell of its own, and drawn as one: a table of one row had two. A
+    column stays beside the rows now, laying out and painting nothing.
+26. **A percentage height resolved only on an absolutely positioned box.**
+    It resolves in any box whose height is set, a length or a percentage
+    that itself resolved, through inline and anonymous boxes (10.5, #150).
+    The document's root has no height to give — the element sizes to its
+    content — so `html, body { height: 100% }`, which mail sets as often as
+    not, stays as tall as what it holds rather than being cut to a window.
+
+Sixteen tests that passed in round 3 fail now, the same on both backends:
+twelve give a column or a column group a border, and two an outline, in a
+table, and passed because the invented row drew the column's style as a
+cell's. A column's borders count only where borders collapse (17.6.2),
+which `<Html>` draws as separate borders with no spacing. The other two
+cover an inline `<svg>` it does not draw with a box moved up over it, and
+passed because the anonymous block around the `<svg>` took its parent's
+300px height.
+
 ## What `<Html>` supports
 
 From the pass rates of the tests that use each feature, at the fixes above,
@@ -396,8 +430,8 @@ directories and caniemail's feature list:
    `rgb()`; Tailwind's output is written in them — and `@font-face` through
    `onResource`.
 6. **Stacking and clipping**: stacking contexts across `z-index`, `clip`,
-   the static position of an absolute box, and a percentage height against
-   a containing block whose height is set.
+   the static position of an absolute box. Percentage heights were done in
+   round 4.
 7. **`::first-letter` and `::first-line`**: drop caps and small-cap lead-ins;
    about 400 tests, most of them Unicode punctuation classes.
 8. **Bidi overrides**: `unicode-bidi: embed | bidi-override | isolate`, and

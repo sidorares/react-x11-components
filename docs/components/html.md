@@ -177,8 +177,12 @@ animations and transitions, multi-column, shadows, gradients,
 layer (the first is drawn), `position: sticky` (treated as `relative`),
 `::first-letter` and `::first-line`, and an image in `content` (the rest of
 the value is drawn). `border-collapse: collapse` is drawn as the separate
-model with zero spacing. A percentage `height` is `auto` except on an
-absolutely positioned box, whose containing block's height is known first.
+model with zero spacing, and `<col>` and `<colgroup>` take no part in
+layout: neither their widths nor their borders are read. A percentage
+`height` resolves where the containing block's height is set, and on an
+absolutely positioned box; the document's root has no height to give, since
+the element sizes to its content, so `html, body { height: 100% }` is as
+tall as what it holds.
 Explicit bidi embeddings and overrides (U+202A–U+202E) that open on one side
 of an inline element with padding, border or margin and close on the other
 are resolved on each side of it separately: the text engine is handed the
