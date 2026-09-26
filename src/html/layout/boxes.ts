@@ -28,6 +28,7 @@ import {
   tagOf,
 } from '../dom.js';
 import type { Cascade, FirstLetterRules } from '../css/cascade.js';
+import type { CollapsedTable } from './collapse.js';
 import { counterText, quoteAt } from '../css/content.js';
 import type { ContentItem } from '../css/content.js';
 import { inherit } from '../css/style.js';
@@ -316,6 +317,18 @@ export class Box {
   outOfFlow = false;
   /** Set on a float, for the same reason. */
   isFloat = false;
+
+  /** A table's captions, above and below it: they are in the box's height,
+   *  and outside the table's own border and background (CSS 2.1 17.4). */
+  captionTop = 0;
+  captionBottom = 0;
+  /** A table whose borders collapse: the border each segment of its grid
+   *  carries, resolved once per build (`collapseTable`). */
+  collapsed: CollapsedTable | null = null;
+  /** Set on a table whose borders collapse, and on its cells: their border
+   *  widths are the halves the collapsing model leaves them, and the table
+   *  paints the borders rather than the boxes. */
+  bordersCollapsed = false;
 
   constructor(kind: BoxKind, el: Element | null, style: ComputedStyle) {
     this.kind = kind;
@@ -1364,6 +1377,9 @@ function fixUp(box: Box, anonymous: AnonymousStyle): void {
     wrapOrphans(box, 'table-cell', (k) => k === 'table-cell', anonymous);
     return;
   }
+  // a column group holds its columns, which are where they belong, and the
+  // builder kept nothing else in it
+  if (box.style.display === 'table-column-group') return;
 
   if (!box.children.length) return;
   wrapTableParts(box, anonymous);

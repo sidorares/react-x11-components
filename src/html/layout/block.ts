@@ -18,7 +18,8 @@ import { FloatContext } from './floats.js';
 import { layoutInline } from './inline.js';
 import type { FontsLike } from './inline.js';
 import { layoutFlex } from './flex.js';
-import { layoutTable } from './table.js';
+import { finishCaptions, layoutTable } from './table.js';
+import { collapseEdges } from './collapse.js';
 import { computePaintBounds } from '../paint.js';
 
 export interface LayoutContext {
@@ -375,6 +376,24 @@ function layoutBlockLevel(
 }
 
 /**
+ * Lay a block-level box out as a block in a containing block of a width,
+ * at its own `width` or at the room its margins leave, with the offset its
+ * margins give it; the caller moves it into place. What a table's caption
+ * is, in the box around the table.
+ */
+export function layoutBlockIn(
+  box: Box,
+  ctx: LayoutContext,
+  containingWidth: number,
+): void {
+  resolveEdges(box, containingWidth);
+  const width = blockWidth(box, containingWidth);
+  box.width = width;
+  placeBlock(box, 0, 0, containingWidth);
+  layoutInternals(box, ctx, width, box.x, 0);
+}
+
+/**
  * Lay a box out at a width and report the widest thing it drew.
  *
  * This is what a table column asks twice — once unbounded for max-content,
@@ -443,6 +462,7 @@ function layoutInternals(
   if (box.kind === 'table') {
     const height = layoutTable(box, ctx, contentWidth);
     finishHeight(box, height);
+    finishCaptions(box);
     return;
   }
 
@@ -863,6 +883,13 @@ export function moveTo(box: Box, x: number, y: number): void {
   translate(box, x - box.x, y - box.y);
 }
 
+/** Move what a box holds down, and not the box: a table cell's content
+ *  sits where its `vertical-align` puts it, in a box that fills the row. */
+export function moveContent(box: Box, dy: number): void {
+  translate(box, 0, dy);
+  box.y -= dy;
+}
+
 function translate(box: Box, dx: number, dy: number): void {
   if (!dx && !dy) return;
   box.x += dx;
@@ -914,6 +941,7 @@ export function resolveEdges(box: Box, containingWidth: number): void {
   box.marginRight = edge(style.marginRight, containingWidth);
   box.marginBottom = edge(style.marginBottom, containingWidth);
   box.marginLeft = edge(style.marginLeft, containingWidth);
+  if (box.kind === 'table' || box.kind === 'table-cell') collapseEdges(box);
 }
 
 function edge(len: Len, containingWidth: number): number {

@@ -115,6 +115,15 @@ and `rowspan`, and the anonymous table CSS builds around table parts that
 have none), `position: relative | absolute | fixed`, and `display: flex`. An
 inline-block sits on its last line's baseline and an inline-table on its
 first row's.
+A table's borders collapse where it asks: one border along each edge of its
+grid, centred on it, chosen from the cells, rows, row groups, columns,
+column groups and the table that meet there as CSS 2.1 17.6.2.1 chooses —
+`hidden` first, then the widest, then the style, then the box. A caption is
+outside the table's border, above it or below it by `caption-side`, and an
+auto table is at least as wide as its caption's longest word. A header
+group's rows are drawn first and a footer group's last, wherever they stand
+in the markup, and a cell's background fills its row whatever
+`vertical-align` does with its content.
 A line with an inline-block or a padded element on it is put in visual order
 a piece at a time — the text engine orders the text inside each piece, and
 the line orders the pieces (UAX #9's L2) — so a right-to-left paragraph with
@@ -192,9 +201,8 @@ animations and transitions, multi-column, shadows, gradients,
 `background-size`, `background-attachment: fixed`, more than one background
 layer (the first is drawn), `position: sticky` (treated as `relative`),
 `::first-line`, and an image in `content` (the rest of the value is
-drawn). `border-collapse: collapse` is drawn as the separate model with zero
-spacing, and `<col>` and `<colgroup>` take no part in
-layout: neither their widths nor their borders are read. A percentage
+drawn). A `<col>` or a `<colgroup>` takes no part in layout: its width is
+not read, and its borders only where the table's collapse. A percentage
 `height` resolves where the containing block's height is set, and on an
 absolutely positioned box; the document's root has no height to give, since
 the element sizes to its content, so `html, body { height: 100% }` is as

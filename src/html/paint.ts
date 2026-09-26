@@ -32,6 +32,8 @@ import type { ComputedStyle } from './css/style.js';
 import { Box } from './layout/boxes.js';
 import type { BoxTree, LineBox } from './layout/boxes.js';
 import { depthOf, layoutOffsets } from './layout/inline.js';
+import { halves } from './layout/collapse.js';
+import type { CollapsedBorder } from './layout/collapse.js';
 
 export interface Rect {
   x: number;
@@ -281,10 +283,37 @@ function paintCanvas(
 function paddingBox(box: Box, options: PaintOptions): Rect {
   return {
     x: box.x + box.borderLeft + options.originX,
-    y: box.y + box.borderTop + options.originY,
+    y: frameY(box) + box.borderTop + options.originY,
     width: box.width - box.borderLeft - box.borderRight,
-    height: box.height - box.borderTop - box.borderBottom,
+    height: frameHeight(box) - box.borderTop - box.borderBottom,
   };
+}
+
+/** What the background and border painters read of a box — which an
+ *  inline box's fragment on a line is as well. */
+type Frame = Pick<
+  Box,
+  | 'x'
+  | 'y'
+  | 'width'
+  | 'height'
+  | 'captionTop'
+  | 'captionBottom'
+  | 'borderTop'
+  | 'borderRight'
+  | 'borderBottom'
+  | 'borderLeft'
+  | 'style'
+>;
+
+/** Where a box's background and border go: its border box, which for a
+ *  table leaves out the captions around it (CSS 2.1 17.4). */
+function frameY(box: Frame): number {
+  return box.y + box.captionTop;
+}
+
+function frameHeight(box: Frame): number {
+  return box.height - box.captionTop - box.captionBottom;
 }
 
 function paintBox(ctx: PaintContext, box: Box, options: PaintOptions): void {
@@ -299,9 +328,9 @@ function paintBox(ctx: PaintContext, box: Box, options: PaintOptions): void {
         const area = clampRect(
           options,
           Math.round(box.x + options.originX),
-          Math.round(box.y + options.originY),
+          Math.round(frameY(box) + options.originY),
           Math.ceil(box.width),
-          Math.ceil(box.height),
+          Math.ceil(frameHeight(box)),
         );
         if (area) {
           paintBackgroundImage(
@@ -314,7 +343,7 @@ function paintBox(ctx: PaintContext, box: Box, options: PaintOptions): void {
         }
       }
     }
-    paintBorders(ctx, box, options);
+    if (!box.bordersCollapsed) paintBorders(ctx, box, options);
     if (box.markerText) paintMarker(ctx, box, options);
     if (box.replaced === 'image') paintImage(ctx, box, options);
   }
@@ -341,6 +370,7 @@ function paintBox(ctx: PaintContext, box: Box, options: PaintOptions): void {
   }
 
   if (box.lines && visible) paintLines(ctx, box, options);
+  if (box.collapsed && visible) paintCollapsedBorders(ctx, box, options);
 
   if (box.positionedPaint) {
     for (const child of box.positionedPaint) paintBox(ctx, child, options);
@@ -417,7 +447,7 @@ function clampRect(
 
 function paintBackground(
   ctx: PaintContext,
-  box: Box,
+  box: Frame,
   options: PaintOptions,
 ): void {
   const color = box.style.backgroundColor;
@@ -425,9 +455,9 @@ function paintBackground(
   const rect = clampRect(
     options,
     Math.round(box.x + options.originX),
-    Math.round(box.y + options.originY),
+    Math.round(frameY(box) + options.originY),
     Math.ceil(box.width),
-    Math.ceil(box.height),
+    Math.ceil(frameHeight(box)),
   );
   if (!rect) return;
   ctx.fillStyle = inkColor(color as string, box.style.color);
@@ -520,14 +550,14 @@ function paintBackgroundImage(
  */
 function paintBorders(
   ctx: PaintContext,
-  box: Box,
+  box: Frame,
   options: PaintOptions,
 ): void {
   const s = box.style;
   const x = Math.round(box.x + options.originX);
-  const y = Math.round(box.y + options.originY);
+  const y = Math.round(frameY(box) + options.originY);
   const w = Math.ceil(box.width);
-  const h = Math.ceil(box.height);
+  const h = Math.ceil(frameHeight(box));
   if (w <= 0 || h <= 0) return;
 
   const edge = (
@@ -581,6 +611,79 @@ function paintBorders(
       s.borderRightColor,
       false,
     );
+  }
+}
+
+/**
+ * A table's collapsed borders: one per segment of its grid, centred on the
+ * line, reaching across the borders it meets at either end. The winners
+ * are painted last, so where two cross, the corner is the one that won
+ * (CSS 2.1 17.6.2.1). Painted over the cells, as the table's borders are.
+ */
+function paintCollapsedBorders(
+  ctx: PaintContext,
+  table: Box,
+  options: PaintOptions,
+): void {
+  const grid = table.collapsed!;
+  const { rows: R, columns: C, lineX, lineY, horizontal, vertical } = grid;
+  if (lineX.length !== C + 1 || lineY.length !== R + 1) return;
+  const ox = Math.round(table.x + options.originX);
+  const oy = Math.round(table.y + options.originY);
+  const widthOf = (b: CollapsedBorder | null): number => (b ? b.width : 0);
+  const h = (line: number, c: number): number =>
+    c < 0 || c >= C ? 0 : widthOf(horizontal[line * C + c]);
+  const v = (r: number, line: number): number =>
+    r < 0 || r >= R ? 0 : widthOf(vertical[r * (C + 1) + line]);
+  const segments: {
+    border: CollapsedBorder;
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+    horizontal: boolean;
+  }[] = [];
+  for (let line = 0; line <= R; line += 1) {
+    for (let c = 0; c < C; c += 1) {
+      const border = horizontal[line * C + c];
+      if (!border) continue;
+      const start = halves(Math.max(v(line - 1, c), v(line, c)))[0];
+      const end = halves(Math.max(v(line - 1, c + 1), v(line, c + 1)))[1];
+      const x = ox + Math.round(lineX[c]) - start;
+      segments.push({
+        border,
+        x,
+        y: oy + Math.round(lineY[line]) - halves(border.width)[0],
+        w: ox + Math.round(lineX[c + 1]) + end - x,
+        h: border.width,
+        horizontal: true,
+      });
+    }
+  }
+  for (let r = 0; r < R; r += 1) {
+    for (let line = 0; line <= C; line += 1) {
+      const border = vertical[r * (C + 1) + line];
+      if (!border) continue;
+      const start = halves(Math.max(h(r, line - 1), h(r, line)))[0];
+      const end = halves(Math.max(h(r + 1, line - 1), h(r + 1, line)))[1];
+      const y = oy + Math.round(lineY[r]) - start;
+      segments.push({
+        border,
+        x: ox + Math.round(lineX[line]) - halves(border.width)[0],
+        y,
+        w: border.width,
+        h: oy + Math.round(lineY[r + 1]) + end - y,
+        horizontal: false,
+      });
+    }
+  }
+  segments.sort((a, b) => a.border.rank - b.border.rank);
+  for (const s of segments) {
+    if (isTransparent(s.border.color)) continue;
+    const rect = clampRect(options, s.x, s.y, s.w, s.h);
+    if (!rect) continue;
+    ctx.fillStyle = s.border.color;
+    fillEdge(ctx, rect, s.horizontal ? s.x : s.y, s.border.style, s.horizontal);
   }
 }
 
@@ -851,11 +954,13 @@ function paintInlineBoxes(
     const leftEnds = rtl ? f.end : f.start;
     const rightEnds = rtl ? f.start : f.end;
     const [tl, tr, br, bl] = box.style.borderRadius;
-    const fragment = {
+    const fragment: Frame = {
       x: f.left,
       y: top,
       width: f.right - f.left,
       height: bottom - top,
+      captionTop: 0,
+      captionBottom: 0,
       borderTop: box.borderTop,
       borderBottom: box.borderBottom,
       borderLeft: leftEnds ? box.borderLeft : 0,
@@ -869,7 +974,7 @@ function paintInlineBoxes(
           leftEnds ? bl : 0,
         ],
       },
-    } as unknown as Box;
+    };
     if (fragment.width <= 0) continue;
     paintBackground(ctx, fragment, options);
     paintBorders(ctx, fragment, options);

@@ -2249,6 +2249,133 @@ metric(
   },
 );
 
+metric(
+  'collapsed borders are one border an edge, the widest winning',
+  async () => {
+    // CSS 2.1 17.6.2: cells share the border between them, drawn once and
+    // centred on the edge they meet at, where each used to draw its own and
+    // the rule between two cells was two borders wide
+    const { node } = await render(
+      '<table style="border-collapse:collapse;border:1px solid #0000ff">' +
+        '<tr><td id="a" style="border:4px solid #ff0000">a</td>' +
+        '<td id="b" style="border:2px solid #00ff00">b</td></tr></table>',
+    );
+    const el = view(node);
+    const [a, b] = ['a', 'b'].map((id) => boxOf(el, id));
+    const edges = (box: LaidBox) =>
+      box as unknown as { borderLeft: number; borderRight: number };
+    assert.strictEqual(b.x, a.x + a.width, 'the cells meet');
+    assert.deepStrictEqual(
+      [edges(a).borderRight, edges(b).borderLeft, edges(b).borderRight],
+      [2, 2, 1],
+      'each holds half of the border along its edge',
+    );
+    const fills = await fillsOf(el);
+    const of = (color: string) =>
+      fills.filter((f) => f.style === parseColor(color));
+    assert.deepStrictEqual(of('#0000ff'), [], "the table's border lost");
+    const red = of('#ff0000').filter((f) => f.w === 4);
+    assert.strictEqual(red.length, 2, "a's left edge, and the one between");
+    assert.ok(
+      red.some((f) => f.x === Math.round(b.x) - 2),
+      'centred on the edge the cells share',
+    );
+    assert.strictEqual(of('#00ff00').filter((f) => f.w === 2).length, 1);
+  },
+);
+
+metric(
+  'a hidden border hides an edge, and a style outranks another',
+  async () => {
+    const { node } = await render(
+      '<table style="border-collapse:collapse"><tr>' +
+        '<td id="a" style="border:3px solid #ff0000;border-right-style:hidden">' +
+        'a</td><td id="b" style="border:5px double #00ff00">b</td>' +
+        '<td id="c" style="border:2px dotted #0000ff">c</td>' +
+        '<td id="d" style="border:2px dashed #ff00ff">d</td></tr></table>',
+    );
+    const el = view(node);
+    const left = (id: string) =>
+      (boxOf(el, id) as unknown as { borderLeft: number }).borderLeft;
+    assert.strictEqual(left('b'), 0, '`hidden` beats a wider double border');
+    const fills = await fillsOf(el);
+    const d = boxOf(el, 'd');
+    // between c and d the widths are equal, and dashed outranks dotted
+    assert.ok(
+      fills.some(
+        (f) => f.style === parseColor('#ff00ff') && f.x === Math.round(d.x) - 1,
+      ),
+    );
+  },
+);
+
+metric('a column group draws its borders where they collapse', async () => {
+  const { node } = await render(
+    '<table style="border-collapse:collapse"><colgroup ' +
+      'style="border-top:3px solid #ff0000"><col><col></colgroup>' +
+      '<tr><td>a</td><td>b</td></tr></table>',
+  );
+  const fills = await fillsOf(view(node));
+  assert.strictEqual(
+    fills.filter((f) => f.style === parseColor('#ff0000') && f.h === 3).length,
+    2,
+    'along both of its columns',
+  );
+});
+
+metric(
+  "a cell's box fills its row, and its content is aligned in it",
+  async () => {
+    // `vertical-align: middle` moved the whole cell down, so the row showed
+    // the table's background above every cell shorter than the row
+    const { node } = await render(
+      '<table style="border-spacing:0"><tr><td id="s">a</td>' +
+        '<td id="t" style="height:100px">b</td></tr></table>',
+    );
+    const el = view(node);
+    const [s, t] = [boxOf(el, 's'), boxOf(el, 't')];
+    assert.deepStrictEqual([s.y, s.height], [t.y, t.height]);
+    const [line] = linesOf(el, 's');
+    assert.ok(line.y > s.y + 30, 'the text is in the middle of the box');
+  },
+);
+
+metric("a caption is outside the table's border, above or below", async () => {
+  const { node } = await render(
+    '<table id="t" style="border:5px solid #0000ff"><caption id="c">' +
+      'Title</caption><tr><td>x</td></tr></table>' +
+      '<table id="u" style="border:5px solid #00ff00"><caption id="d" ' +
+      'style="caption-side:bottom">Note</caption><tr><td>y</td></tr></table>',
+  );
+  const el = view(node);
+  const [t, c, u, d] = ['t', 'c', 'u', 'd'].map((id) => boxOf(el, id));
+  const fills = await fillsOf(el);
+  const blue = fills.filter((f) => f.style === parseColor('#0000ff'));
+  const green = fills.filter((f) => f.style === parseColor('#00ff00'));
+  const top = Math.min(...blue.map((f) => f.y));
+  assert.ok(
+    top >= Math.round(c.y + c.height),
+    'the border is below the caption',
+  );
+  // (a border box is painted from a rounded top at a rounded-up height)
+  const bottom = Math.max(...green.map((f) => f.y + f.h));
+  assert.ok(bottom <= Math.round(d.y) + 1, 'and above a caption at the bottom');
+  // an auto table is at least as wide as its caption's longest word
+  assert.strictEqual(c.width, t.width);
+  assert.ok(d.y + d.height <= u.y + u.height, 'the box holds its caption');
+});
+
+metric("a footer group's rows come last wherever it stands", async () => {
+  const { node } = await render(
+    '<table><thead><tr><td id="h">h</td></tr></thead>' +
+      '<tfoot><tr><td id="f">f</td></tr></tfoot>' +
+      '<tbody><tr><td id="b">b</td></tr></tbody></table>',
+  );
+  const el = view(node);
+  const [h, f, b] = ['h', 'f', 'b'].map((id) => boxOf(el, id).y);
+  assert.ok(h < b && b < f, 'header, body, footer');
+});
+
 metric("an inline-block's text sits on the line's baseline", async () => {
   // CSS 2.1 10.8.1: an inline-block's baseline is its last line box's. Set
   // bottom-on-baseline, a button's label sat its descent above the text
