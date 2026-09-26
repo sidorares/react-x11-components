@@ -600,7 +600,7 @@ test(
 );
 
 test(
-  "a paragraph whose runs came back without their spans (react-x11's Cocoa engine) still answers hrefAtPoint, and selects",
+  'a paragraph whose runs came back without their spans still answers hrefAtPoint, and selects',
   { skip: !FONTS },
   async () => {
     // ntk hands every laid-out run back with the span it came from; the
