@@ -33,6 +33,7 @@ import { Box } from './layout/boxes.js';
 import type { BoxTree, LineBox, Marker } from './layout/boxes.js';
 import { depthOf, layoutOffsetOf, layoutOffsets } from './layout/inline.js';
 import { halves } from './layout/collapse.js';
+import { tableGrid } from './layout/grid.js';
 import type { CollapsedBorder } from './layout/collapse.js';
 
 export interface Rect {
@@ -384,6 +385,7 @@ function paintContent(
       }
     }
     if (!box.bordersCollapsed) paintBorders(ctx, box, options);
+    if (box.kind === 'table') paintColumnBackgrounds(ctx, box, options);
     if (box.marker) paintMarker(ctx, box.marker, options);
     if (box.replaced === 'image') paintImage(ctx, box, options);
   }
@@ -709,6 +711,53 @@ function paintBackground(
     return;
   }
   ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
+}
+
+/**
+ * The backgrounds of a table's column groups and columns (CSS 2.1 17.5.1):
+ * over the table's own and under its rows' and its cells', in the area of
+ * each cell that starts in the column, since a column box is laid out
+ * nowhere. The colour; an image there is not drawn.
+ */
+function paintColumnBackgrounds(
+  ctx: PaintContext,
+  table: Box,
+  options: PaintOptions,
+): void {
+  const { cells, columnBoxes, columnGroups } = tableGrid(table);
+  for (const layer of [columnGroups, columnBoxes]) {
+    if (!layer.some(paintsBackground)) continue;
+    for (const cell of cells) {
+      const column = layer[cell.column];
+      if (!column || !paintsBackground(column)) continue;
+      const box = cell.box;
+      paintBackground(
+        ctx,
+        {
+          x: box.x,
+          y: box.y,
+          width: box.width,
+          height: box.height,
+          captionTop: 0,
+          captionBottom: 0,
+          borderTop: 0,
+          borderRight: 0,
+          borderBottom: 0,
+          borderLeft: 0,
+          style: column.style,
+        },
+        options,
+      );
+    }
+  }
+}
+
+function paintsBackground(box: Box | null): boolean {
+  return (
+    box !== null &&
+    box.style.visibility === 'visible' &&
+    !isTransparent(box.style.backgroundColor)
+  );
 }
 
 /** How many tiles a repeating background may draw one by one, where the

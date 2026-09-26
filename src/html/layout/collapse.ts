@@ -15,7 +15,7 @@
 // (`paintCollapsedBorders`) and nothing paints the boxes' own.
 import type { BorderStyle, ComputedStyle } from '../css/style.js';
 import type { Box } from './boxes.js';
-import { spanAttr, tableGrid } from './grid.js';
+import { tableGrid } from './grid.js';
 import type { Cell } from './grid.js';
 
 /** The border drawn along one segment of the grid. */
@@ -179,39 +179,16 @@ function resolve(candidates: Candidate[]): CollapsedBorder | null {
   };
 }
 
-/** Which column box and column group each column of the grid is in. */
-function columnsOf(
-  table: Box,
-  count: number,
-): { column: (Box | null)[]; group: (Box | null)[] } {
-  const column: (Box | null)[] = new Array<Box | null>(count).fill(null);
-  const group: (Box | null)[] = new Array<Box | null>(count).fill(null);
-  let at = 0;
-  const place = (box: Box | null, owner: Box | null, span: number): void => {
-    for (let i = 0; i < span && at < count; i += 1, at += 1) {
-      column[at] = box;
-      group[at] = owner;
-    }
-  };
-  for (const child of table.children) {
-    if (at >= count) break;
-    const display = child.style.display;
-    if (display === 'table-column') {
-      place(child, null, spanAttr(child, 'span'));
-    } else if (display === 'table-column-group') {
-      const columns = child.children.filter(
-        (c) => c.style.display === 'table-column',
-      );
-      if (!columns.length) place(null, child, spanAttr(child, 'span'));
-      for (const c of columns) place(c, child, spanAttr(c, 'span'));
-    }
-  }
-  return { column, group };
-}
-
 /** Resolve every segment of a table's grid. */
 export function collapseTable(table: Box): CollapsedTable {
-  const { rows, groups, cells, columnCount } = tableGrid(table);
+  const {
+    rows,
+    groups,
+    cells,
+    columnCount,
+    columnBoxes: column,
+    columnGroups: group,
+  } = tableGrid(table);
   const R = rows.length;
   const C = columnCount;
   const owner: (Cell | null)[] = new Array<Cell | null>(R * C).fill(null);
@@ -224,7 +201,6 @@ export function collapseTable(table: Box): CollapsedTable {
   }
   const at = (r: number, c: number): Cell | null =>
     r < 0 || r >= R || c < 0 || c >= C ? null : owner[r * C + c];
-  const { column, group } = columnsOf(table, C);
 
   const candidates: Candidate[] = [];
   const offer = (box: Box | null, side: Side, origin: Origin): void => {

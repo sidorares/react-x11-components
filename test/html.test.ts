@@ -2563,6 +2563,99 @@ metric("a table's width includes its borders", async () => {
   assert.strictEqual(t.width, 200);
 });
 
+metric(
+  'a fixed table takes its columns from its <col>s and its first row',
+  async () => {
+    // CSS 2.1 17.5.2.1: a column's width sets it; else a first-row cell's
+    // border box does; the rest share what is left
+    const { node } = await render(
+      '<table style="table-layout:fixed;width:400px;border-spacing:0">' +
+        '<col style="width:100px"><col><col>' +
+        '<tr><td id="a">a</td><td id="b" style="width:80px;padding:0 10px">' +
+        'b</td><td id="c">c</td></tr>' +
+        '<tr><td>a</td><td style="width:300px">wide, but not the first row' +
+        '</td><td>c</td></tr></table>',
+    );
+    const el = view(node);
+    const [a, b, c] = ['a', 'b', 'c'].map((id) => boxOf(el, id));
+    assert.strictEqual(a.width, 100, 'the column sets the first');
+    assert.strictEqual(b.width, 100, "the cell's border box the second");
+    assert.strictEqual(c.width, 200, 'and the third takes the rest');
+  },
+);
+
+metric(
+  "a fixed table of `width: auto` is laid out by its content, and a table's min-width widens its columns",
+  async () => {
+    const { node } = await render(
+      '<table id="t" style="table-layout:fixed;border-spacing:0">' +
+        '<tr><td id="a" style="padding:0">word</td></tr></table>' +
+        '<table style="min-width:300px;border-spacing:0">' +
+        '<tr><td id="b" style="padding:0"></td></tr></table>',
+    );
+    const el = view(node);
+    const [t, a, b] = ['t', 'a', 'b'].map((id) => boxOf(el, id));
+    assert.ok(t.width < 100, `as wide as its word: ${t.width}`);
+    assert.strictEqual(a.width, t.width);
+    assert.strictEqual(b.width, 300, 'an empty cell as wide as the table');
+  },
+);
+
+metric(
+  'border-spacing takes a length for the columns and one for the rows',
+  async () => {
+    const { node } = await render(
+      '<table id="t" style="border-spacing:2px 10px;border:none">' +
+        '<tr><td id="a" style="padding:0">a</td><td id="b" style="padding:0">' +
+        'b</td></tr><tr><td id="c" style="padding:0">c</td></tr></table>',
+    );
+    const el = view(node);
+    const [t, a, b, c] = ['t', 'a', 'b', 'c'].map((id) => boxOf(el, id));
+    assert.strictEqual(a.x - t.x, 2, 'the columns 2 apart');
+    assert.strictEqual(b.x - (a.x + a.width), 2);
+    assert.strictEqual(a.y - t.y, 10, 'the rows 10');
+    assert.strictEqual(c.y - (a.y + a.height), 10);
+  },
+);
+
+metric("a column's background is painted under its cells", async () => {
+  // CSS 2.1 17.5.1: a column box is laid out nowhere, and its background
+  // covers the cells that start in it, over the table's and under theirs
+  const { node } = await render(
+    '<table style="border-spacing:0;background:#0000ff">' +
+      '<col><col style="background:#ff0000">' +
+      '<tr><td>a</td><td id="b">b</td></tr>' +
+      '<tr><td>a</td><td id="c" style="background:#00ff00">c</td></tr>' +
+      '</table>',
+  );
+  const el = view(node);
+  const fills = await fillsOf(el);
+  const red = fills.filter((f) => f.style === parseColor('#ff0000'));
+  const b = boxOf(el, 'b');
+  const c = boxOf(el, 'c');
+  assert.deepStrictEqual(
+    red.map((f) => [f.x, f.y, f.w, f.h]),
+    [
+      [b.x, b.y, b.width, b.height],
+      [c.x, c.y, c.width, c.height],
+    ].map(([x, y, w, h]) => [
+      Math.round(x),
+      Math.round(y),
+      Math.ceil(w),
+      Math.ceil(h),
+    ]),
+    "one fill a cell, the cells' own",
+  );
+  const order = fills.map((f) => f.style);
+  assert.ok(
+    order.indexOf(parseColor('#0000ff')) <
+      order.indexOf(parseColor('#ff0000')) &&
+      order.indexOf(parseColor('#ff0000')) <
+        order.indexOf(parseColor('#00ff00')),
+    "over the table's, under a cell's own",
+  );
+});
+
 metric("a table's height is shared among its rows", async () => {
   // CSS 2.1 17.5.3: the height is a least height, and what the rows come
   // short of it goes to them; `max-height` holds it back

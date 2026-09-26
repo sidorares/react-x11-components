@@ -66,6 +66,10 @@ export function rowsOf(table: Box): TableRows {
 export interface TableGrid extends TableRows {
   cells: Cell[];
   columnCount: number;
+  /** Per column, the column box it is in, or null. */
+  columnBoxes: (Box | null)[];
+  /** Per column, the column group it is in, or null. */
+  columnGroups: (Box | null)[];
 }
 
 const GRIDS = new WeakMap<Box, TableGrid>();
@@ -80,7 +84,14 @@ export function tableGrid(table: Box): TableGrid {
   let grid = GRIDS.get(table);
   if (!grid) {
     const rows = rowsOf(table);
-    grid = { ...rows, ...gridOf(rows.rows) };
+    const cells = gridOf(rows.rows);
+    const { column, group } = columnsOf(table, cells.columnCount);
+    grid = {
+      ...rows,
+      ...cells,
+      columnBoxes: column,
+      columnGroups: group,
+    };
     GRIDS.set(table, grid);
   }
   return grid;
@@ -125,4 +136,34 @@ export function spanAttr(box: Box, name: string): number {
   if (!raw) return 1;
   const n = parseInt(raw, 10);
   return Number.isFinite(n) && n > 0 ? Math.min(n, 1000) : 1;
+}
+
+/** Which column box and column group each column of the grid is in. */
+function columnsOf(
+  table: Box,
+  count: number,
+): { column: (Box | null)[]; group: (Box | null)[] } {
+  const column: (Box | null)[] = new Array<Box | null>(count).fill(null);
+  const group: (Box | null)[] = new Array<Box | null>(count).fill(null);
+  let at = 0;
+  const place = (box: Box | null, owner: Box | null, span: number): void => {
+    for (let i = 0; i < span && at < count; i += 1, at += 1) {
+      column[at] = box;
+      group[at] = owner;
+    }
+  };
+  for (const child of table.children) {
+    if (at >= count) break;
+    const display = child.style.display;
+    if (display === 'table-column') {
+      place(child, null, spanAttr(child, 'span'));
+    } else if (display === 'table-column-group') {
+      const columns = child.children.filter(
+        (c) => c.style.display === 'table-column',
+      );
+      if (!columns.length) place(null, child, spanAttr(child, 'span'));
+      for (const c of columns) place(c, child, spanAttr(c, 'span'));
+    }
+  }
+  return { column, group };
 }
