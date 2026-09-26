@@ -1696,6 +1696,31 @@ function extentOf(text: PlacedText): [number, number] {
   return [text.drawX + natural.x, text.drawX + natural.x + natural.width];
 }
 
+/** Where each run of a line's document text lies, left to right: a line
+ *  laid out in one piece has its inline boxes' edges in it as spacers,
+ *  which are no text of the document's and are left out. */
+function textRunsOf(line: PlacedLine): [number, number][] {
+  const out: [number, number][] = [];
+  for (const text of line.texts) {
+    const t = text as PlacedText & {
+      layout: {
+        lines: { runs?: { x: number; width: number; start: number }[] }[];
+      };
+      spans: { boxAt?(offset: number): unknown };
+    };
+    const natural = t.layout.lines[t.layoutLine] as {
+      x: number;
+      runs?: { x: number; width: number; start: number }[];
+    };
+    for (const run of natural.runs ?? []) {
+      if (t.spans.boxAt && !t.spans.boxAt(run.start)) continue;
+      const x = t.drawX + natural.x + run.x;
+      out.push([x, x + run.width]);
+    }
+  }
+  return out.sort((a, b) => a[0] - b[0]);
+}
+
 interface Fill {
   style: unknown;
   x: number;
@@ -1796,8 +1821,9 @@ metric(
         'border-left:3px solid;margin-right:5px">cd</span>ef</p>',
     );
     const [line] = linesOf(view(node), 'p');
-    assert.strictEqual(line.texts.length, 3, 'before, inside and after it');
-    const [ab, cd, ef] = line.texts.map(extentOf);
+    const runs = textRunsOf(line);
+    assert.strictEqual(runs.length, 3, 'before, inside and after it');
+    const [ab, cd, ef] = runs;
     assert.ok(
       Math.abs(cd[0] - ab[1] - 13) < 0.5,
       `its left border and padding: ${cd[0] - ab[1]}`,
@@ -1805,6 +1831,42 @@ metric(
     assert.ok(
       Math.abs(ef[0] - cd[1] - 15) < 0.5,
       `its right padding and margin: ${ef[0] - cd[1]}`,
+    );
+  },
+);
+
+metric(
+  "an inline element's edges are no text: a caret, a point and a selection land on its letters",
+  async () => {
+    const { node } = await render(
+      '<p id="p" style="margin:0">ab <code style="padding:0 10px">cd</code> ef</p>',
+    );
+    const el = view(node);
+    const [line] = linesOf(el, 'p');
+    assert.strictEqual(line.texts.length, 1, 'one layout, the edges in it');
+    assert.strictEqual(el.textContent(), 'ab cd ef');
+    const [ab, cd, ef] = textRunsOf(line);
+    // the accessors answer in the window, the runs in the document
+    const dx = el.textCaretRect(0)!.x - ab[0];
+    const caret = el.textCaretRect(3)!;
+    assert.ok(
+      Math.abs(caret.x - dx - cd[0]) < 0.5,
+      `before its first letter, past its padding: ${caret.x - dx} vs ${cd[0]}`,
+    );
+    assert.ok(
+      Math.abs(el.textCaretRect(5)!.x - dx - ef[0]) < 0.5,
+      'after it, past the padding at its end',
+    );
+    assert.strictEqual(
+      el.textIndexAt(caret.x + 1, caret.y + caret.height / 2),
+      3,
+      'a point on its first letter is that letter',
+    );
+    const [band] = el.textRangeRects(3, 5);
+    assert.ok(
+      Math.abs(band.x - dx - cd[0]) < 0.5 &&
+        Math.abs(band.width - (cd[1] - cd[0])) < 0.5,
+      `a selection of its letters leaves the padding out: ${band.x - dx} +${band.width}`,
     );
   },
 );
@@ -1843,7 +1905,7 @@ metric(
     assert.ok(!lines[0].edges?.length, 'nothing is left at the first line end');
     const [edge] = lines[1].edges ?? [];
     assert.ok(edge?.side === 'start', 'the edge opens the second line');
-    const [word] = lines[1].texts.map(extentOf);
+    const [word] = textRunsOf(lines[1]);
     assert.ok(Math.abs(word[0] - edge.x - 30) < 0.5, 'and the word follows it');
   },
 );
@@ -1858,7 +1920,7 @@ metric(
     );
     const [line] = linesOf(view(node), 'p');
     const [text] = line.texts;
-    const [left, right] = extentOf(text);
+    const [[left, right]] = textRunsOf(line);
     const baseline = text.drawY + text.layout.lines[text.layoutLine].baseline;
     const red = async (x: number, y: number): Promise<boolean> => {
       const [r, g, b] = await pixelAt(result.ctx, Math.round(x), Math.round(y));

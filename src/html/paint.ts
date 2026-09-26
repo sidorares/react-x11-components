@@ -31,7 +31,7 @@ import type { Len } from './css/values.js';
 import type { ComputedStyle } from './css/style.js';
 import { Box } from './layout/boxes.js';
 import type { BoxTree, LineBox } from './layout/boxes.js';
-import { depthOf, layoutOffsets } from './layout/inline.js';
+import { depthOf, layoutOffsetOf, layoutOffsets } from './layout/inline.js';
 import { halves } from './layout/collapse.js';
 import type { CollapsedBorder } from './layout/collapse.js';
 
@@ -1221,8 +1221,8 @@ function paintSelection(
     const to = Math.min(range.end, text.textEnd);
     if (to <= from) continue;
     const offsets = layoutOffsets(text.layout);
-    const layoutFrom = text.layoutStart + (from - text.textStart);
-    const layoutTo = text.layoutStart + (to - text.textStart);
+    const layoutFrom = layoutOffsetOf(text, from);
+    const layoutTo = layoutOffsetOf(text, to, true);
     for (const band of lineBands(
       text.layout,
       natural,

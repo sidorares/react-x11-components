@@ -62,7 +62,11 @@ import { TextLayoutCache } from './layout/cache.js';
 import type { FontsLike } from './layout/inline.js';
 // Through the inline module rather than a second cache: the offsets table for
 // a layout is built once, on the first selection that needs it.
-import { layoutOffsets as layoutOffsetsOf } from './layout/inline.js';
+import {
+  documentOffsetOf,
+  layoutOffsetOf,
+  layoutOffsets as layoutOffsetsOf,
+} from './layout/inline.js';
 import { lineBands as bandsFor } from '../richtext/runs.js';
 import { paintDocument, queryChildIndex } from './paint.js';
 import type { PaintContext } from './paint.js';
@@ -886,7 +890,7 @@ function nearestText(box: Box, x: number, y: number): number | null {
       const units = offsets.length
         ? offsets[Math.max(0, Math.min(local, offsets.length - 1))]
         : local;
-      best = text.textStart + Math.max(0, units - text.layoutStart);
+      best = Math.max(text.textStart, documentOffsetOf(text, units));
     }
   };
 
@@ -997,7 +1001,7 @@ function caretAt(
         for (const text of line.texts) {
           if (units < text.textStart || units > text.textEnd) continue;
           const offsets = layoutOffsetsOf(text.layout);
-          const layoutUnits = text.layoutStart + (units - text.textStart);
+          const layoutUnits = layoutOffsetOf(text, units);
           const caret = text.layout.caretPosition(
             codePointAtOffset(offsets, layoutUnits),
           );
@@ -1055,8 +1059,8 @@ function collectBands(
             text.layout,
             natural,
             offsets,
-            text.layoutStart + (a - text.textStart),
-            text.layoutStart + (b - text.textStart),
+            layoutOffsetOf(text, a),
+            layoutOffsetOf(text, b, true),
           )) {
             out.push({
               x: dx + band.x + text.drawX,
