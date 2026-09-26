@@ -131,8 +131,13 @@ an image in it reads right to left, and it is aligned whole: a centred line
 is centred with its images, not text first and the image after it.
 
 **Boxes:** `width`/`height` with `min-`/`max-`, `margin`, `padding`,
-`border` (width, style, colour, radius), `box-sizing`, `overflow`,
-`opacity`, `visibility`, `z-index`. Inline elements have all of it but the
+`border` (width, style, colour, radius), `box-sizing`, `overflow`, `clip`,
+`opacity`, `visibility`, `z-index`. A box whose `overflow` is not `visible`
+clips what it holds to its padding box, rounded where the box is — all of
+it but a positioned box whose containing block is outside — and `scroll`
+and `auto` clip the same, with no scroll bars: the element around the
+document is what scrolls. `clip` shows the part of an absolutely positioned
+box it names. Inline elements have all of it but the
 sizes: an inline box's padding, border and margin take room on its line —
 the start side before its first fragment, the end side after its last, on
 the sides its `direction` says (CSS 2.1 8.6) — and its background and border

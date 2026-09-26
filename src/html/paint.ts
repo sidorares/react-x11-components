@@ -80,6 +80,8 @@ export interface PaintOptions {
   canvas?: Rect;
   /** @internal The box whose background went to the canvas instead. */
   canvasSource?: Box | null;
+  /** @internal The boxes clipping what is being painted, outermost first. */
+  clips?: ClipLevel[];
 }
 
 /**
@@ -318,6 +320,25 @@ function frameHeight(box: Frame): number {
 
 function paintBox(ctx: PaintContext, box: Box, options: PaintOptions): void {
   if (!intersects(box, options)) return;
+  // `clip` shows the part of an absolutely positioned box it names, its own
+  // background and borders among it (CSS 2.1 11.1.2)
+  const clip = box.outOfFlow && box.style.clip ? clipOf(box, options) : null;
+  if (clip) {
+    if (clip.w <= 0 || clip.h <= 0) return;
+    if (!pushClip(ctx, clip, null)) {
+      paintContent(ctx, box, options);
+      return;
+    }
+  }
+  paintContent(ctx, box, options);
+  if (clip) ctx.restore();
+}
+
+function paintContent(
+  ctx: PaintContext,
+  box: Box,
+  options: PaintOptions,
+): void {
   const style = box.style;
   const visible = style.visibility === 'visible';
 
@@ -348,6 +369,28 @@ function paintBox(ctx: PaintContext, box: Box, options: PaintOptions): void {
     if (box.replaced === 'image') paintImage(ctx, box, options);
   }
 
+  // A box that does not let its content overflow clips it to its padding
+  // box, rounded where the box is (CSS 2.1 11.1.1). Everything inside is
+  // clipped but a positioned box whose containing block is outside: that
+  // is painted once this clip is gone (`paintPositioned`).
+  let level: ClipLevel | null = null;
+  if (clipsOverflow(box)) {
+    // out to whole pixels, so that ink at a fractional edge is not cut
+    const inner = paddingBox(box, options);
+    const x = Math.floor(inner.x);
+    const y = Math.floor(inner.y);
+    const rect = {
+      x,
+      y,
+      w: Math.ceil(inner.x + inner.width) - x,
+      h: Math.ceil(inner.y + inner.height) - y,
+    };
+    if (pushClip(ctx, rect, innerRadii(box))) {
+      level = { box, deferred: [] };
+      (options.clips ??= []).push(level);
+    }
+  }
+
   // In-flow and floated descendants first, then the inline content, then the
   // positioned ones — a flattening of CSS's painting order that is right for
   // everything short of a document that puts a negative z-index under its own
@@ -373,8 +416,146 @@ function paintBox(ctx: PaintContext, box: Box, options: PaintOptions): void {
   if (box.collapsed && visible) paintCollapsedBorders(ctx, box, options);
 
   if (box.positionedPaint) {
-    for (const child of box.positionedPaint) paintBox(ctx, child, options);
+    for (const child of box.positionedPaint) {
+      paintPositioned(ctx, child, options);
+    }
   }
+  if (level) {
+    ctx.restore();
+    options.clips!.pop();
+    for (const child of level.deferred) paintPositioned(ctx, child, options);
+  }
+}
+
+/** A box clipping what it holds, and the positioned boxes inside it that
+ *  escape the clip, waiting for it to end. */
+interface ClipLevel {
+  box: Box;
+  deferred: Box[];
+}
+
+/**
+ * A positioned box, painted under the clips of the boxes its containing
+ * block is inside and no others (CSS 2.1 11.1.1): a clip it escapes puts
+ * it off until that clip ends. A fixed box escapes them all.
+ */
+function paintPositioned(
+  ctx: PaintContext,
+  box: Box,
+  options: PaintOptions,
+): void {
+  const clips = options.clips;
+  if (clips?.length) {
+    let escaped = clips.length;
+    if (box.style.position !== 'fixed') {
+      let containing = box.parent;
+      while (containing?.parent && containing.style.position === 'static') {
+        containing = containing.parent;
+      }
+      escaped = 0;
+      for (let i = clips.length - 1; i >= 0; i -= 1) {
+        if (holds(clips[i].box, containing)) break;
+        escaped += 1;
+      }
+    }
+    if (escaped > 0) {
+      clips[clips.length - escaped].deferred.push(box);
+      return;
+    }
+  }
+  paintBox(ctx, box, options);
+}
+
+/** Whether `inner` is `outer` or inside it. */
+function holds(outer: Box, inner: Box | null): boolean {
+  for (let at = inner; at; at = at.parent) if (at === outer) return true;
+  return false;
+}
+
+/**
+ * Whether a box clips its content: `overflow` other than `visible`, on a
+ * block container (CSS 2.1 11.1.1) — not a table, a row or a row group.
+ * The root element's `overflow` is the viewport's, and so is the
+ * `<body>`'s where the root's is `visible`, an `<html>` the markup left out
+ * among them; the viewport here is the element, which clips anyway.
+ */
+function clipsOverflow(box: Box): boolean {
+  const style = box.style;
+  if (style.overflowX === 'visible' && style.overflowY === 'visible') {
+    return false;
+  }
+  const parent = box.parent;
+  if (!parent) return false;
+  switch (box.kind) {
+    case 'block':
+    case 'table-cell':
+    case 'table-caption':
+    case 'flex':
+      break;
+    default:
+      return false;
+  }
+  const name = box.el?.name;
+  if (name === 'html') return false;
+  if (name === 'body') {
+    if (parent.el?.name !== 'html') return !!parent.parent;
+    return (
+      parent.style.overflowX !== 'visible' ||
+      parent.style.overflowY !== 'visible'
+    );
+  }
+  return true;
+}
+
+/** A box's `clip` region, in window coordinates. */
+function clipOf(
+  box: Box,
+  options: PaintOptions,
+): { x: number; y: number; w: number; h: number } {
+  const clip = box.style.clip!;
+  const left = clip.left ?? 0;
+  const top = clip.top ?? 0;
+  const right = clip.right ?? box.width;
+  const bottom = clip.bottom ?? box.height;
+  const x = Math.round(box.x + options.originX + left);
+  const y = Math.round(box.y + options.originY + top);
+  return {
+    x,
+    y,
+    w: Math.round(box.x + options.originX + right) - x,
+    h: Math.round(box.y + options.originY + bottom) - y,
+  };
+}
+
+/** The radii of a box's padding edge: its border radii less the borders. */
+function innerRadii(box: Box): number[] | null {
+  const radii = box.style.borderRadius;
+  if (!radii.some((r) => r > 0)) return null;
+  const [tl, tr, br, bl] = radii;
+  return [
+    Math.max(0, tl - Math.max(box.borderTop, box.borderLeft)),
+    Math.max(0, tr - Math.max(box.borderTop, box.borderRight)),
+    Math.max(0, br - Math.max(box.borderBottom, box.borderRight)),
+    Math.max(0, bl - Math.max(box.borderBottom, box.borderLeft)),
+  ];
+}
+
+/** Clip what follows to a rectangle, rounded where `radii` are: false
+ *  where the context cannot clip, and nothing was pushed. */
+function pushClip(
+  ctx: PaintContext,
+  rect: { x: number; y: number; w: number; h: number },
+  radii: number[] | null,
+): boolean {
+  if (!ctx.beginPath || !ctx.rect || !ctx.clip) return false;
+  ctx.save();
+  ctx.beginPath();
+  const w = Math.max(0, rect.w);
+  const h = Math.max(0, rect.h);
+  if (radii && ctx.roundRect) ctx.roundRect(rect.x, rect.y, w, h, radii);
+  else ctx.rect(rect.x, rect.y, w, h);
+  ctx.clip();
+  return true;
 }
 
 /**
