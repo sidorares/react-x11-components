@@ -44,12 +44,15 @@ comparable with these; the method is.
 | components | #136 rich text editor: a mark over the document keeps its blocks' keys            | merged              |
 | components | #137 code editor: a keystroke repaints its rows; revealing the caret is a blit    | merged              |
 | components | #138 code editor: a line far past the frontier is answered from a guess           | merged              |
-| react-x11  | #706 a scroll blit's band is copied once, as its frame takes its buffer           | open                |
-| react-x11  | #707 a paragraph laid out at another width reuses its typesetter                  | open                |
+| react-x11  | #706 a scroll blit's band is copied once, as its frame takes its buffer           | released, 2.22.7    |
+| react-x11  | #707 a paragraph laid out at another width reuses its typesetter                  | released, 2.22.7    |
 | appkit     | #75 a paragraph's typesetter, kept; packed layout geometry                        | released, 0.14.0    |
 | ntk        | #385 a shaped glyph carries the characters it was shaped from                     | released, 8.12.6    |
 | components | #139 code editor: squiggles follow edits; what it paints stays true through them  | merged              |
-| components | #140 `<Html>`: a resize lays the document out once a frame                        | open                |
+| components | #140 `<Html>`: a resize lays the document out once a frame                        | merged              |
+| appkit     | #77 a window shown taller than the screen says it is shown                        | open                |
+| components | #141 `<Html>`: a style is computed once per kind of element                       | open                |
+| components | #142 `<Html>`: a kept layout is found by comparing; a line height is kept         | open                |
 
 ## Method
 
@@ -948,6 +951,127 @@ read the wrong way, the editor's scroll, at 3.47 → 4.29 ms a frame in one
 run each. Four interleaved runs of that cell alone read 3.90 → 3.76, with
 the change ahead in all four pairs.
 
+## Round 10: a window that never drew, the handle, `<Html>`'s passes
+
+This round ran on a different display arrangement from the ones before it
+(the last section says how), so its Cocoa numbers are compared with each
+other and not with the final sweep's.
+
+### A window taller than the screen drew nothing (appkit #77)
+
+The worst cell of the regression check: `<Flow>`'s GL renderer drew 0 fps
+in the stress example's 1686×1180 view on Cocoa, where the final sweep had 120. With a worker thread, react-x11 reads a window's visibility from the
+copy the UI thread published last, and defers the frames of a window it
+cannot see until an event says the window is back. The event that usually
+says so is AppKit's own: the move that follows ordering the window in. A
+window taller than the main display, now the built-in 1728×1117-point panel,
+is constrained while it is ordered in, so its resize and move both fire
+before it is visible, and nothing fires after. The published copy turned
+visible with no event, and the frame queue waited indefinitely. 2D content
+survived, because it paints on input; a `<glarea>`'s frames only run from
+the queue.
+
+`showWindow` now sends `window-shown` once it has published. react-x11
+needed no change: it ignores event types it does not know, and every batch
+it receives ends with a frame tick and a present. A bare `<glarea>` in a
+constrained window: 0 → 351 frames in 3 s.
+
+### `<Flow>`: a programmatic pan's bodies (components #128)
+
+The check's other Cocoa regression, the widgets scene panned at zoom 1:
+93–95 fps under the September 25 core, 81–83 under 2.22.7. Toggling each
+change of the release put it on react-x11 #706, 91 against 82 fps, and yet
+#706 had made every blit frame cheaper. A decline counter in
+`_applyScrollBlits` explained it: with #706, 22% of the pan's frames
+declined the blit, up from 12%, and every extra one was `layoutMoved`.
+
+The probe pans the way an animation does, `setViewport` a step a frame. The
+pane moved at once; the box the mounted bodies ride in moved through React,
+on React's schedule, and caught up in jumps of several steps. A rider that
+moves by more than the blit shifts is a layout move, and core repaints the
+pane whole for it. #706 had only made the frames come sooner, which left
+React further behind. A gesture's emissions already committed inline;
+calls through the handle now do too, and from inside a commit, a pan from a
+layout effect, the reconciler defers that flush to the commit's end by
+itself.
+
+| widgets pan, zoom 1       | before      | after           |
+| ------------------------- | ----------- | --------------- |
+| Cocoa                     | 81–86 fps   | 110.5–110.9 fps |
+| Cocoa, p95 frame interval | 26 ms       | 10 ms           |
+| Cocoa, `layoutMoved`      | 57–71 a run | none            |
+| XQuartz                   | 65–66 fps   | 65–66 fps       |
+
+XQuartz never declined: its frame clock left React time to commit.
+
+### `<Html>`: a style per kind of element (components #141)
+
+With #140 in, a third of an edit to the 600 KB report was the cascade: a
+style computed for each of 9,039 elements, in a document with 110 kinds of
+element. `Cascade.sharedStyleFor` hands one
+computed style to every element in a build that must compute the same one.
+A style depends on the parent's style, the rules that match, the
+presentational attributes, the inline style and whether the parent is a
+flex container, and unless a rule reads siblings, position or contents,
+what matches depends only on the element's tag and attributes and its
+ancestors'. So the key is the parent's key, the flex flag, the tag, every
+attribute and, where a rule reads it, the pointer state; an element whose
+key was seen earlier in the build takes that style and matches nothing.
+
+The rules that do read siblings, position or contents opt their elements
+out of that, and the first version gave each such element a key of its
+own. That lost the subtree as well as the element, since children share
+under their parent's key: the test document, whose sheet has seven such
+rules, computed 473 styles for 497 elements. Now such an element is matched
+and then shared by what it matched, so a striped table's cells come in two
+kinds and what is inside them keeps sharing. The report computes 110
+styles, and 112 with its tables striped, where the builds before computed
+9,039.
+
+The test is an oracle: the same document built twice, once shared and once
+with every style computed alone, and every box's style compared. Four
+mutations each fail it: dropping css-select's aliases for positional
+pseudo-classes from the opt-out pattern, sharing everything, leaving the
+pointer state out of the key, and leaving the parent's key out.
+
+### `<Html>`: finding a kept layout, and a line height (components #142)
+
+With #141 in, a Cocoa profile of an edit was led by the text layout cache's
+own bookkeeping. A pass asks the cache for 8,828 layouts of 15,410 runs,
+and each key spelled out every field of every run, the block style and the
+options: 2.95 M characters a pass, built, hashed and compared in two maps,
+for a pass that misses about once. A layout is now filed under its width and
+its text, 0.64 M characters a pass, and found by comparing the rest field
+by field against a copy kept with it. The natural line height a
+`line-height: 1.5` is converted against is kept per style too: every
+paragraph asked for it, and on CoreText every answer was a call to the
+native side.
+
+| 600 KB `<Html>`, flush p50 | master     | #141     | #142     | both     |
+| -------------------------- | ---------- | -------- | -------- | -------- |
+| edit, Cocoa                | 111–114 ms | 76 ms    | 85–87 ms | 50–51 ms |
+| append, Cocoa              | 118–119 ms | 82–86 ms | 92–93 ms | 55–56 ms |
+| edit, XQuartz              | 79–82 ms   | 52–55 ms | 69–73 ms | 43 ms    |
+| append, XQuartz            | 87–90 ms   | 58–60 ms | 76–78 ms | 48 ms    |
+| reflow, Cocoa              | 195–196 ms | —        | 175 ms   | —        |
+| reflow, XQuartz            | 116–123 ms | —        | 104 ms   | —        |
+
+Each column is its own interleaved A/B against master, three runs a state.
+These trees ran react-x11 2.22.6, so the Cocoa reflow is without 2.22.7's
+kept typesetters. With both, an append on XQuartz paints 15 frames a second
+of the probe's 20 appends, where it painted 9.
+
+### The machine, rearranged
+
+The Mac's main display changed between round 9 and this one: the built-in
+1728×1117-point panel, with two 2560×1440 monitors beside it. That did more
+than constrain one window. `<Table>`'s fling frame reads 7.0 ms
+under today's core and 7.0–7.2 under the September 25 one, against 4.9 ms
+in the final sweep, so the difference is the machine and not the code.
+Before believing a regression, rerun the old tree on the machine as it is
+now; a Cocoa window's backing scale, and which display it opens on, are
+part of what a probe measures.
+
 ## Lessons
 
 1. **Look for caches that never hit.** Identity-keyed caches handed a new
@@ -1013,10 +1137,29 @@ the change ahead in all four pairs.
     targeted test does not**, and its own measurement needs the same care:
     a pixel rect that rounds differently on another platform's metrics
     reads a neighbour's ink.
+18. **Rerun the old tree on today's machine before calling a regression.**
+    A display arrangement moved the table's fling frame from 4.9 to 7.0 ms
+    under the old core as well as the new; only running both said so.
+19. **A faster frame can expose a race it did not cause.** #706 made the
+    Flow pan's frames cheaper and the pan slower, because React's commits
+    of the bodies fell further behind them. Count what each frame declined
+    before blaming what it does.
+20. **A state change that arrives with no event is lost on a thread that
+    waits for events.** A window made visible by AppKit's constraint, with
+    its only notifications already sent, left a worker's frames waiting
+    forever. Announce what was published.
+21. **Work repeated per element often depends only on the kind of element.**
+    A 600 KB report is 9,039 elements and 110 kinds; the cascade computed
+    all 9,039. Find what an answer really depends on, and key it on that,
+    with an oracle that compares against the unshared answer.
+22. **A cache key costs what it spells out.** Finding a kept layout built
+    3 MB of key strings a pass, a tenth of an edit, to answer "the same as
+    last time" about once a paragraph. File under the cheap part and
+    compare the rest.
 
 ## Still open
 
-Ordered by practical impact, after round 9.
+Ordered by practical impact, after round 10.
 
 - **Markdown reflow's second layout pass** (38 ms of a 224 ms X11 frame at
   600 KB): the floors emulating `min-height: auto` come from the previous
@@ -1030,8 +1173,10 @@ Ordered by practical impact, after round 9.
   cost is validating the spans against in-place mutation.
 - **`<Markdown>` first paint** (1.17 s Cocoa with the kept typesetters,
   1.0 s X11): the height floors, React's development render and the layout.
-- **`<Html>` edit and append**: unchanged — the re-parse, the cascade and
-  the box tree run whole.
+- **`<Html>` edit and append** (50 ms on Cocoa and 43 on XQuartz at 600 KB
+  with #141 and #142): the parse, the box build, the inline layout and the
+  paint bounds still run over the whole document. A parse that kept the
+  identity of what it did not change would let each of them skip it.
 - **Cocoa scroll**: what is left is the band copy itself, about 1.4 ms a
   frame at 2x, memory-bound; see "The Cocoa scroll's double copy".
 - **`<RichTextEditor>`**: large pastes, mostly React's development render.
