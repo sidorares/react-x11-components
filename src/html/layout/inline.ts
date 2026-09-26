@@ -680,6 +680,8 @@ interface OpenLine {
   /** The advance of the spaces the line ends with, kept in `x` for what
    *  may follow them on it and no part of the line if nothing does. */
   hang: number;
+  /** The first line's `text-indent`, which `x` starts at. */
+  indent: number;
 }
 
 type Placed =
@@ -700,6 +702,7 @@ function openLine(indent: number): OpenLine {
     edges: [],
     order: [],
     hang: 0,
+    indent,
   };
 }
 
@@ -749,10 +752,14 @@ function finishLine(
 
   // Placed beside the floats at the text's height; a float the whole line
   // reaches moves it, and the alignment divides the room that is left.
+  // The indent is at the line's start, which is its right in a
+  // right-to-left paragraph: the content moves back over it there, and
+  // the room it takes is at the other end (CSS 2.1 16.1).
   const band = bandFor(height);
-  const used = open.x - open.hang;
-  const free = band.right - band.left - used;
-  let dx = band.left - open.left;
+  const indent = rtl ? open.indent : 0;
+  const used = open.x - open.hang - indent;
+  const free = band.right - indent - band.left - used;
+  let dx = band.left - open.left - indent;
   if (shift > 0 && Number.isFinite(free) && free > 0) dx += free * shift;
   if (dx) {
     for (const text of open.texts) text.drawX += dx;
@@ -768,7 +775,7 @@ function finishLine(
     textEnd = Math.max(textEnd, text.textEnd);
   }
   const line: LineBox = {
-    x: open.left,
+    x: open.left + indent,
     y,
     width: used,
     height,

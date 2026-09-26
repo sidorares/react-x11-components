@@ -322,6 +322,7 @@ export class Box {
    *  from the box that flow is in, which may yet move. */
   staticFrom: Box | null = null;
   staticX = 0;
+  staticRight = 0;
   staticY = 0;
 
   /** A table's captions, above and below it: they are in the box's height,

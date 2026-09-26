@@ -220,7 +220,7 @@ function layoutChildren(
   for (const child of box.children) {
     if (child.kind === 'text' && !child.text.trim()) continue;
     if (child.outOfFlow) {
-      placeStatic(child, box, contentLeft, y + pendingMargin);
+      placeStatic(child, box, contentLeft, contentWidth, y + pendingMargin);
       ctx.positioned.push({
         box: child,
         containing: containingBlockFor(child) ?? box,
@@ -324,7 +324,7 @@ function layoutInlineContent(
   // so the lines already know to avoid them.
   for (const child of box.children) {
     if (child.outOfFlow) {
-      placeStatic(child, box, contentLeft, contentTop);
+      placeStatic(child, box, contentLeft, contentWidth, contentTop);
       ctx.positioned.push({
         box: child,
         containing: containingBlockFor(child) ?? box,
@@ -661,10 +661,18 @@ function placeBlock(
   const leftAuto = style.marginLeft === AUTO;
   const rightAuto = style.marginRight === AUTO;
   const slack = containingWidth - box.width - box.marginLeft - box.marginRight;
+  // what the width and the margins do not add up to goes to the margin at
+  // the end: the right one, or in a right-to-left containing block the
+  // left one, and a box too wide overflows there (CSS 2.1 10.3.3)
+  const rtl = box.parent?.style.direction === 'rtl';
   let left = contentLeft + box.marginLeft;
   if (slack > 0) {
     if (leftAuto && rightAuto) left = contentLeft + slack / 2 + box.marginLeft;
-    else if (leftAuto) left = contentLeft + slack + box.marginLeft;
+    else if (leftAuto || (rtl && !rightAuto)) {
+      left = contentLeft + slack + box.marginLeft;
+    }
+  } else if (rtl) {
+    left = contentLeft + slack + box.marginLeft;
   }
   box.x = left;
   box.y = y;
@@ -862,10 +870,23 @@ function layoutFloat(
  * is how a badge, a tooltip and an overlay are all written.
  */
 function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
-  const cbWidth = containing.contentWidth;
-  const cbHeight = containing.contentHeight;
-  const cbX = containing.contentX;
-  const cbY = containing.contentY;
+  // the containing block is the positioned box's padding box (CSS 2.1
+  // 10.1), not its content box: `left: 0` in a padded box is at its
+  // padding edge, and at the viewport's edge where nothing is positioned
+  const cbX = containing.x + containing.borderLeft;
+  const cbY = containing.y + containing.captionTop + containing.borderTop;
+  const cbWidth = Math.max(
+    0,
+    containing.width - containing.borderLeft - containing.borderRight,
+  );
+  const cbHeight = Math.max(
+    0,
+    containing.height -
+      containing.captionTop -
+      containing.captionBottom -
+      containing.borderTop -
+      containing.borderBottom,
+  );
   resolveEdges(box, cbWidth);
   box.percentHeightBase = cbHeight;
 
@@ -891,14 +912,20 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
   else layoutInternals(box, ctx, width, 0, 0);
 
   // with neither offset on an axis, the box is where the flow would have
-  // put it (CSS 2.1 10.3.7, 10.6.4)
+  // put it (CSS 2.1 10.3.7, 10.6.4): against its start edge, which is the
+  // right one in a right-to-left flow
   const from = box.staticFrom;
+  const rtl = (from ?? containing).style.direction === 'rtl';
   const x =
     left !== null
       ? cbX + left + box.marginLeft
       : right !== null
         ? cbX + cbWidth - right - box.width - box.marginRight
-        : (from ? from.x + box.staticX : cbX) + box.marginLeft;
+        : rtl
+          ? (from ? from.x + box.staticRight : cbX + cbWidth) -
+            box.width -
+            box.marginRight
+          : (from ? from.x + box.staticX : cbX) + box.marginLeft;
   const y =
     top !== null
       ? cbY + top + box.marginTop
@@ -909,10 +936,18 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
 }
 
 /** Where an out-of-flow box would have gone in its parent's flow: its
- *  margin edge's, kept from the parent's corner, which may yet move. */
-function placeStatic(box: Box, parent: Box, x: number, y: number): void {
+ *  margin edge's, at either side, kept from the parent's corner, which may
+ *  yet move. */
+function placeStatic(
+  box: Box,
+  parent: Box,
+  x: number,
+  width: number,
+  y: number,
+): void {
   box.staticFrom = parent;
   box.staticX = x - parent.x;
+  box.staticRight = x + width - parent.x;
   box.staticY = y - parent.y;
 }
 
@@ -921,6 +956,12 @@ function placeStatic(box: Box, parent: Box, x: number, y: number): void {
  *  between is transparent — which is what the spec means by "the nearest
  *  positioned ancestor". */
 function containingBlockFor(box: Box): Box | null {
+  // a fixed box's is the viewport, whatever is positioned around it
+  if (box.style.position === 'fixed') {
+    let root = box;
+    while (root.parent) root = root.parent;
+    return root;
+  }
   let node = box.parent;
   while (node) {
     if (node.style.position !== 'static' || node.parent === null) return node;

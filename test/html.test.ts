@@ -1669,6 +1669,7 @@ interface PlacedText {
 }
 
 interface PlacedLine {
+  x: number;
   y: number;
   width: number;
   height: number;
@@ -2510,6 +2511,31 @@ metric(
     assert.ok(t.y >= g.y + g.height, `the table goes below both: ${t.y}`);
   },
 );
+
+metric('a right-to-left block starts at the right', async () => {
+  // CSS 2.1 10.3.3: the margin that takes the slack is the one at the end,
+  // the left one in a right-to-left containing block; 16.1: the indent is
+  // at the start of the line; 10.3.7: so is an absolute box's static place
+  const { node } = await render(
+    '<div id="c" style="direction:rtl;width:300px;position:relative">' +
+      '<div id="b" style="width:100px;height:10px"></div>' +
+      '<p id="p" style="margin:0;text-indent:20px">word</p>' +
+      '<div id="a" style="position:absolute;width:50px;height:5px"></div>' +
+      '</div>' +
+      '<div style="position:relative;margin-left:100px"><div id="f" ' +
+      'style="position:fixed;left:0;top:0;width:10px;height:10px"></div></div>',
+  );
+  const el = view(node);
+  const [c, b, p, a, f] = ['c', 'b', 'p', 'a', 'f'].map((id) => boxOf(el, id));
+  assert.strictEqual(b.x, c.x + 200, 'a block of a set width');
+  const [line] = linesOf(el, 'p');
+  assert.ok(
+    Math.abs(line.x + line.width - (p.x + p.width - 20)) < 0.5,
+    `a line indented from the right: ${line.x + line.width}`,
+  );
+  assert.strictEqual(a.x, c.x + 250, 'an absolute box with auto offsets');
+  assert.strictEqual(f.x, 0, "and a fixed box's containing block is the view");
+});
 
 metric('an image set display: block is a block', async () => {
   // mail writes `img { display: block }` to lose the gap under its images;
