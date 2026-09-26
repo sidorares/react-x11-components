@@ -73,6 +73,7 @@ const IMPORTANT_RE = /!\s*important\s*$/i;
  * the whole document rather than restarting per `<style>`.
  */
 export function parseStylesheet(text: string, startOrder = 0): Stylesheet {
+  text = withoutComments(text);
   const sheet: Stylesheet = { rules: [], imports: [], breakpoints: [] };
   let order = startOrder;
   const breakpoints = new Set<number>();
@@ -136,6 +137,41 @@ export function parseStylesheet(text: string, startOrder = 0): Stylesheet {
   walk(text, null);
   sheet.breakpoints = [...breakpoints].sort((a, b) => a - b);
   return sheet;
+}
+
+/**
+ * A style sheet with its comments taken out, strings left alone. CSS drops a
+ * comment wherever it stands (CSS 2.1 4.1.9) — between rules, which the
+ * scanner already skipped, but also inside a selector: `div /* note *\/ {`
+ * kept the note in the selector, the matcher refused it, and the rule was
+ * dropped whole. A comment is replaced by nothing, not a space, as the
+ * tokenizer does: `.a/**\/.b` is one compound selector.
+ */
+function withoutComments(text: string): string {
+  if (!text.includes('/*')) return text;
+  let out = '';
+  let from = 0;
+  let quote = '';
+  for (let i = 0; i < text.length; i += 1) {
+    const c = text[i];
+    if (quote) {
+      if (c === '\\') i += 1;
+      else if (c === quote) quote = '';
+      continue;
+    }
+    if (c === '\\') {
+      // an escape: `\/*` is a slash and an asterisk, not a comment
+      i += 1;
+    } else if (c === '"' || c === "'") {
+      quote = c;
+    } else if (c === '/' && text[i + 1] === '*') {
+      const close = text.indexOf('*/', i + 2);
+      out += text.slice(from, i);
+      i = close < 0 ? text.length : close + 1;
+      from = i + 1;
+    }
+  }
+  return out + text.slice(from);
 }
 
 /**
@@ -236,6 +272,9 @@ export function specificityOf(selector: string): number {
         i = skipIdent(selector, i + 1);
         if (selector[i] === '(') i = skipBalanced(selector, i, '(', ')');
       }
+    } else if (c === '*' || c === '|') {
+      // the universal selector, and a namespace's bar, count nothing
+      i += 1;
     } else if (isIdentStart(c)) {
       types += 1;
       i = skipIdent(selector, i);
@@ -274,13 +313,22 @@ function isSpace(c: string): boolean {
   return c === ' ' || c === '\t' || c === '\n' || c === '\r' || c === '\f';
 }
 
+/**
+ * Whether an identifier starts here. Every character this accepts,
+ * `skipIdent` must step over: a scan that counts an identifier and then
+ * skips none of it never moves again. This once accepted `*` and `|`,
+ * which `skipIdent` does not, and a stylesheet with a universal selector in
+ * it — `* { margin: 0 }` — hung the parser and the app with it.
+ */
 function isIdentStart(c: string): boolean {
-  return /[a-zA-Z_\-*|\\]/.test(c);
+  return /[a-zA-Z_\-\\\u0080-\uffff]/.test(c);
 }
 
 function skipIdent(text: string, from: number): number {
   let i = from;
-  while (i < text.length && /[a-zA-Z0-9_\-\\]/.test(text[i])) i += 1;
+  while (i < text.length && /[a-zA-Z0-9_\-\\\u0080-\uffff]/.test(text[i])) {
+    i += 1;
+  }
   return i;
 }
 
@@ -305,7 +353,9 @@ function skipBalanced(
       if (depth === 0) return i + 1;
     }
   }
-  return text.length;
+  // not closed: one past the end, so a caller can tell a construct the end
+  // of the text cut off from one closed by its last character
+  return text.length + 1;
 }
 
 /** The next `{` that is not inside a string, comment or bracket. */
@@ -345,7 +395,8 @@ function findChar(
       if (c === quote && text[i - 1] !== '\\') quote = '';
       continue;
     }
-    if (c === '"' || c === "'") quote = c;
+    if (c === '\\') i += 1;
+    else if (c === '"' || c === "'") quote = c;
     else if (c === '/' && text[i + 1] === '*') {
       const close = text.indexOf('*/', i + 2);
       i = close < 0 ? text.length : close + 1;
@@ -361,11 +412,21 @@ function findChar(
   return -1;
 }
 
+/**
+ * A `{…}` block: its body, and where the text goes on after it. The end of
+ * a style sheet closes a block still open (CSS 2.1 4.2), so a block the end
+ * cut off is everything after its brace. Cutting its last character as if
+ * it were the `}` made `color: blue` `color: blu` — and left an unclosed
+ * `rgb(` to reach paint whole or not, by where the sheet's whitespace fell.
+ */
 function readBlock(
   text: string,
   braceAt: number,
 ): { body: string; end: number } {
   const end = skipBalanced(text, braceAt, '{', '}');
+  if (end > text.length) {
+    return { body: text.slice(braceAt + 1), end: text.length };
+  }
   return { body: text.slice(braceAt + 1, Math.max(braceAt + 1, end - 1)), end };
 }
 
