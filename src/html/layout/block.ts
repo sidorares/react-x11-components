@@ -317,6 +317,7 @@ function layoutInlineContent(
       text.drawX += contentLeft;
       text.drawY += contentTop;
     }
+    for (const edge of line.edges ?? []) edge.x += contentLeft;
   }
   box.lines = result.lines;
   return result.height;
@@ -525,7 +526,7 @@ function layoutMarker(box: Box, ctx: LayoutContext): void {
 }
 
 function finishHeight(box: Box, contentHeight: number): void {
-  const specified = resolveOrNull(box.style.height, NaN);
+  const specified = resolveOrNull(box.style.height, box.percentHeightBase);
   const height = specified ?? contentHeight;
   const borderBox =
     box.style.boxSizing === 'border-box' && specified !== null
@@ -536,11 +537,12 @@ function finishHeight(box: Box, contentHeight: number): void {
 
 function clampHeight(box: Box, height: number): number {
   let out = height;
-  const min = resolveOrNull(box.style.minHeight, NaN);
+  const base = box.percentHeightBase;
+  const min = resolveOrNull(box.style.minHeight, base);
   const max =
     box.style.maxHeight === 'none'
       ? null
-      : resolveOrNull(box.style.maxHeight, NaN);
+      : resolveOrNull(box.style.maxHeight, base);
   if (max !== null)
     out = Math.min(
       out,
@@ -675,7 +677,7 @@ function sizeReplaced(box: Box, containingWidth: number): void {
   const ratio = intrinsicW > 0 && intrinsicH > 0 ? intrinsicH / intrinsicW : 0;
 
   let width = resolveOrNull(style.width, containingWidth);
-  let height = resolveOrNull(style.height, NaN);
+  let height = resolveOrNull(style.height, box.percentHeightBase);
   if (width === null && height === null) {
     width = intrinsicW;
     height = intrinsicH;
@@ -771,6 +773,7 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
   const cbX = containing.contentX;
   const cbY = containing.contentY;
   resolveEdges(box, cbWidth);
+  box.percentHeightBase = cbHeight;
 
   const style = box.style;
   const left = resolveOrNull(style.left, cbWidth);
@@ -842,6 +845,7 @@ function translate(box: Box, dx: number, dy: number): void {
         placed.x += dx;
         placed.y += dy;
       }
+      for (const edge of line.edges ?? []) edge.x += dx;
     }
   }
   for (const child of box.children) translate(child, dx, dy);

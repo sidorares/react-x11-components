@@ -317,7 +317,7 @@ export class Cascade {
     scale = 1,
   ) {
     this.look = look;
-    this.initial = initialStyle(look);
+    this.initial = initialStyle(look, scale);
     this.viewportWidth = viewportWidth;
     this.viewportHeight = viewportHeight;
     this.scale = scale;

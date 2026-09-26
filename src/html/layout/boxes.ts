@@ -53,6 +53,8 @@ export interface LineBox {
   y: number;
   width: number;
   height: number;
+  /** From the line's top — where a text engine's own lines carry theirs
+   *  from the top of the layout. */
   baseline: number;
   /**
    * The text on this line, as one or more fragments.
@@ -67,6 +69,9 @@ export interface LineBox {
   textEnd: number;
   /** Atomic items sitting on this line — images, inline-blocks, controls. */
   atomics: AtomicPlacement[];
+  /** The inline boxes that open or close on this line, where their own
+   *  margin, border and padding sit. */
+  edges?: EdgePlacement[];
 }
 
 /**
@@ -99,13 +104,30 @@ export interface LineText {
    *  under the pointer finds the element whose text it is. Per pass: the
    *  layout may be one an earlier pass made (`TextLayoutCache`), and the
    *  document index is this parse's. */
-  spans: { documentAt(offset: number): number };
+  spans: {
+    documentAt(offset: number): number;
+    /** The text box an offset's text is, where the layout knows. */
+    boxAt?(offset: number): Box | null;
+  };
 }
 
 export interface AtomicPlacement {
   box: Box;
   x: number;
   y: number;
+}
+
+/**
+ * Where an inline box's own margin, border and padding on one side sit on a
+ * line: CSS 2.1 puts the start side's before the box's first fragment and the
+ * end side's after its last, taking room on those lines (10.3.1). `x` is the
+ * edge's outer side, margin included, and `width` all three.
+ */
+export interface EdgePlacement {
+  box: Box;
+  side: 'start' | 'end';
+  x: number;
+  width: number;
 }
 
 /** The slice of ntk's `TextLayout` this renderer reads. Structural for the
@@ -187,6 +209,17 @@ export class Box {
   marginRight = 0;
   marginBottom = 0;
   marginLeft = 0;
+  /** An inline box with a background or a border to paint behind its
+   *  fragments, and the ascent and descent of its own face — the height CSS
+   *  paints them over (10.6.1). Set by the inline layout. */
+  decorated = false;
+  contentAscent = 0;
+  contentDescent = 0;
+  /** What a percentage `height` resolves against: an absolutely positioned
+   *  box's containing block's height, which is known before the box is laid
+   *  out (CSS 2.1 10.5). NaN everywhere else, where that height depends on
+   *  the content and a percentage is `auto`. */
+  percentHeightBase = NaN;
   /** Whether this box's top margin collapsed through its parent's top edge
    *  and was spent placing the parent (CSS 2.1 8.3.1): its own layout puts
    *  it at the parent's content top, and applies no margin again. Set by
@@ -340,7 +373,10 @@ export type ReplacedKind =
   | 'button'
   | 'checkbox'
   | 'radio'
-  | 'hr';
+  | 'hr'
+  /** An `<iframe>`, `<video>` or `<embed>`: what it would show is never
+   *  loaded, so it is a box of its size with nothing in it. */
+  | 'frame';
 
 /** What the builder produced, plus the document-wide text it indexed. */
 export interface BoxTree {
@@ -601,6 +637,14 @@ class Builder {
     }
 
     if (replaced === 'hr') return;
+    if (replaced === 'frame') {
+      // HTML's default object size, in CSS pixels; `width` and `height`
+      // attributes reach the style as presentational hints and win
+      const scale = this._options.scale ?? 1;
+      box.intrinsicWidth = 300 * scale;
+      box.intrinsicHeight = 150 * scale;
+      return;
+    }
 
     const size = this._options.controlSize(el, replaced, style);
     box.intrinsicWidth = size.width;
@@ -981,6 +1025,10 @@ function replacedKind(el: Element, tag: string): ReplacedKind {
       return 'image';
     case 'hr':
       return 'hr';
+    case 'iframe':
+    case 'video':
+    case 'embed':
+      return 'frame';
     case 'textarea':
       return 'textarea';
     case 'select':
