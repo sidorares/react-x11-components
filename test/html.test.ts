@@ -1926,6 +1926,43 @@ metric(
   },
 );
 
+test('a percentage height resolves in a box whose height is set', async () => {
+  const { node } = await render(
+    '<div style="height:200px;padding:5px"><div id="half" style="height:50%">' +
+      '</div>x <span><span id="quarter" style="display:inline-block;' +
+      'width:10px;height:25%"></span></span></div>' +
+      '<div><div id="auto" style="height:50%"></div></div>',
+  );
+  const el = view(node);
+  assert.strictEqual(boxOf(el, 'half').height, 100, 'half of the content box');
+  assert.strictEqual(
+    boxOf(el, 'quarter').height,
+    50,
+    'through the anonymous block and the span around it',
+  );
+  assert.strictEqual(
+    boxOf(el, 'auto').height,
+    0,
+    'and auto under one that grew',
+  );
+});
+
+test('html and body at 100% stay as tall as what they hold', async () => {
+  // The element sizes to its content, so the initial containing block has
+  // no height to give: a message with the usual reset is not cut off at a
+  // window's height.
+  const { node } = await render(
+    '<html style="height:100%"><body style="height:100%;margin:0">' +
+      '<div id="tall" style="height:900px"></div></body></html>',
+  );
+  assert.ok(
+    boxOf(view(node), 'tall').height === 900 &&
+      (view(node) as unknown as { _tree: { root: LaidBox } })._tree.root
+        .height >= 900,
+    'the document holds all 900px',
+  );
+});
+
 metric("a table column is the table's, not a row of its own", async () => {
   // A <colgroup> was taken for a stray child, wrapped in a row and a cell of
   // its own, and drawn as one — a table of one row had two.

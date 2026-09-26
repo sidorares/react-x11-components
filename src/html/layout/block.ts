@@ -433,6 +433,7 @@ function layoutInternals(
   box.y = y;
   box.width = borderBoxWidth;
   const contentWidth = box.contentWidth;
+  givePercentBase(box, percentBaseInside(box));
 
   if (box.kind === 'flex') {
     const height = layoutFlex(box, ctx, contentWidth);
@@ -523,6 +524,39 @@ function layoutMarker(box: Box, ctx: LayoutContext): void {
     style.listStylePosition === 'inside'
       ? box.contentX
       : box.contentX - gap - layout.width;
+}
+
+/**
+ * The height a percentage `height` inside a box resolves against: its own
+ * content height, where that is set rather than grown from its content —
+ * a length, or a percentage that itself resolved (CSS 2.1 10.5). NaN, and
+ * so `auto`, where it is not. An anonymous box is no containing block for
+ * this (9.2.1.1) and hands on its parent's.
+ *
+ * The document's own root has none: this element sizes to its content, so
+ * `html, body { height: 100% }` — which mail sets as often as not — takes
+ * the height of what it holds rather than a window's, which would cut off
+ * a message taller than one.
+ */
+function percentBaseInside(box: Box): number {
+  if (!box.el && !box.pseudo) return box.percentHeightBase;
+  const set = resolveOrNull(box.style.height, box.percentHeightBase);
+  if (set === null) return NaN;
+  const borderBox =
+    box.style.boxSizing === 'border-box'
+      ? Math.max(set, box.verticalExtra)
+      : set + box.verticalExtra;
+  return Math.max(0, clampHeight(box, borderBox) - box.verticalExtra);
+}
+
+/** Hand a box's children the height their percentages resolve against —
+ *  through inline boxes, which are no containing block, to the inline-block
+ *  or image in them. */
+function givePercentBase(box: Box, base: number): void {
+  for (const child of box.children) {
+    child.percentHeightBase = base;
+    if (child.kind === 'inline') givePercentBase(child, base);
+  }
 }
 
 function finishHeight(box: Box, contentHeight: number): void {
