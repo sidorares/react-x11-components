@@ -993,22 +993,84 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
   // right one in a right-to-left flow
   const at = box.staticPosition;
   const rtl = (at?.from ?? containing).style.direction === 'rtl';
-  const x =
-    left !== null
-      ? cbX + left + box.marginLeft
-      : right !== null
+  let x: number;
+  if (
+    left !== null &&
+    right !== null &&
+    (style.width !== AUTO || box.kind === 'replaced')
+  ) {
+    // Both offsets and a width: what is left over goes to the margins that
+    // are `auto`, shared where both are, and where none is, the end offset
+    // gives way (10.3.7, 10.3.8).
+    const rest = cbWidth - left - right - box.width;
+    const autoLeft = style.marginLeft === AUTO;
+    const autoRight = style.marginRight === AUTO;
+    const endRtl = containing.style.direction === 'rtl';
+    if (autoLeft && autoRight) {
+      if (rest >= 0) {
+        box.marginLeft = rest / 2;
+        box.marginRight = rest / 2;
+      } else if (endRtl) {
+        box.marginRight = 0;
+        box.marginLeft = rest;
+      } else {
+        box.marginLeft = 0;
+        box.marginRight = rest;
+      }
+    } else if (autoLeft) {
+      box.marginLeft = rest - box.marginRight;
+    } else if (autoRight) {
+      box.marginRight = rest - box.marginLeft;
+    }
+    x =
+      endRtl && !autoLeft && !autoRight
         ? cbX + cbWidth - right - box.width - box.marginRight
-        : rtl
-          ? (at ? at.from.x + at.right : cbX + cbWidth) -
-            box.width -
-            box.marginRight
-          : (at ? at.from.x + at.x : cbX) + box.marginLeft;
-  const y =
-    top !== null
-      ? cbY + top + box.marginTop
-      : bottom !== null
-        ? cbY + cbHeight - bottom - box.height - box.marginBottom
-        : (at ? at.from.y + at.y : cbY) + box.marginTop;
+        : cbX + left + box.marginLeft;
+  } else {
+    x =
+      left !== null
+        ? cbX + left + box.marginLeft
+        : right !== null
+          ? cbX + cbWidth - right - box.width - box.marginRight
+          : rtl
+            ? (at ? at.from.x + at.right : cbX + cbWidth) -
+              box.width -
+              box.marginRight
+            : (at ? at.from.x + at.x : cbX) + box.marginLeft;
+  }
+  let y: number;
+  if (top !== null && bottom !== null) {
+    if (style.height === AUTO && box.kind !== 'replaced') {
+      // both offsets and no height: the box fills what they leave, its
+      // `auto` margins nothing (10.6.4, rule 5)
+      box.height = clampHeight(
+        box,
+        Math.max(0, cbHeight - top - bottom - box.marginTop - box.marginBottom),
+      );
+    } else {
+      // and a height: the `auto` margins share the rest, and where none
+      // is `auto`, `bottom` gives way (10.6.4, 10.6.5)
+      const rest = cbHeight - top - bottom - box.height;
+      const autoTop = style.marginTop === AUTO;
+      const autoBottom = style.marginBottom === AUTO;
+      if (autoTop && autoBottom) {
+        box.marginTop = rest / 2;
+        box.marginBottom = rest / 2;
+      } else if (autoTop) {
+        box.marginTop = rest - box.marginBottom;
+      } else if (autoBottom) {
+        box.marginBottom = rest - box.marginTop;
+      }
+    }
+    y = cbY + top + box.marginTop;
+  } else {
+    y =
+      top !== null
+        ? cbY + top + box.marginTop
+        : bottom !== null
+          ? cbY + cbHeight - bottom - box.height - box.marginBottom
+          : (at ? at.from.y + at.y : cbY) + box.marginTop;
+  }
   moveTo(box, x, y);
 }
 

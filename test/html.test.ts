@@ -2821,6 +2821,27 @@ metric(
 );
 
 metric(
+  'an absolute box between two offsets shares what is left with its auto margins, or fills it',
+  async () => {
+    // CSS 2.1 10.3.7 and 10.6.4
+    const { node } = await render(
+      '<div id="c" style="position:relative;width:300px;height:100px">' +
+        '<div id="a" style="position:absolute;left:0;right:0;width:100px;' +
+        'height:10px;margin:0 auto"></div>' +
+        '<div id="b" style="position:absolute;top:10px;bottom:20px;' +
+        'left:0;width:10px"></div>' +
+        '<div id="m" style="position:absolute;top:0;bottom:0;height:20px;' +
+        'left:0;width:10px;margin:auto 0"></div></div>',
+    );
+    const el = view(node);
+    const [c, a, b, m] = ['c', 'a', 'b', 'm'].map((id) => boxOf(el, id));
+    assert.strictEqual(a.x - c.x, 100, 'centred between left and right');
+    assert.strictEqual(b.height, 70, 'as tall as top and bottom leave it');
+    assert.strictEqual(m.y - c.y, 40, 'centred between top and bottom');
+  },
+);
+
+metric(
   'an absolute box with auto offsets is where the flow put it',
   async () => {
     // CSS 2.1 10.3.7 and 10.6.4: with neither `left` nor `right`, and neither
