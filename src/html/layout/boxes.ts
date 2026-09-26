@@ -1352,9 +1352,16 @@ function isDroppableWhitespace(box: Box): boolean {
 function fixUpTable(table: Box, anonymous: AnonymousStyle): void {
   const groups: Box[] = [];
   const captions: Box[] = [];
+  const columns: Box[] = [];
   let looseRows: Box[] | null = null;
   for (const child of table.children) {
-    if (child.kind === 'table-row-group') {
+    const display = child.style.display;
+    if (display === 'table-column' || display === 'table-column-group') {
+      // A column is the table's, beside its rows: it lays out nothing and
+      // paints nothing (17.2.1). Taken for a stray child, it was wrapped in
+      // a row of its own and drawn as a cell.
+      columns.push(child);
+    } else if (child.kind === 'table-row-group') {
       if (looseRows) {
         groups.push(
           anonymousOf(table, 'table-row-group', looseRows, anonymous),
@@ -1386,6 +1393,6 @@ function fixUpTable(table: Box, anonymous: AnonymousStyle): void {
       wrapOrphans(row, 'table-cell', (k) => k === 'table-cell', anonymous);
     }
   }
-  table.children = [...captions, ...groups];
+  table.children = [...captions, ...columns, ...groups];
   for (const child of table.children) child.parent = table;
 }

@@ -1926,6 +1926,26 @@ metric(
   },
 );
 
+metric("a table column is the table's, not a row of its own", async () => {
+  // A <colgroup> was taken for a stray child, wrapped in a row and a cell of
+  // its own, and drawn as one — a table of one row had two.
+  const { node } = await render(
+    '<table id="t" style="border-spacing:0"><colgroup style="border-top:3px ' +
+      'solid #00ff00"><col><col></colgroup><tr><td>a</td><td>b</td></tr></table>',
+  );
+  const el = view(node);
+  type T = LaidBox & { kind: string };
+  const rows: T[] = [];
+  const walk = (b: T): void => {
+    if (b.kind === 'table-row') rows.push(b);
+    (b.children as T[]).forEach(walk);
+  };
+  walk(boxOf(el, 't') as T);
+  assert.strictEqual(rows.length, 1, 'one row');
+  const fills = await fillsOf(el);
+  assert.ok(!fills.some((f) => f.style === '#00ff00'), 'and no column drawn');
+});
+
 metric('form controls carry default margins from the UA sheet', async () => {
   const { node } = await render('<p>a <input size="4"> b</p>');
   const tree = (
