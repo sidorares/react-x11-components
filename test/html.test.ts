@@ -2511,6 +2511,22 @@ metric(
   },
 );
 
+metric("a list item's marker goes where its item is moved", async () => {
+  // a table cell is laid out at the origin and then placed; the marker was
+  // left behind, a bullet at the document's corner
+  const { node } = await render(
+    '<table style="margin-left:60px"><tr><td>' +
+      '<ul style="margin:0"><li id="li">item</li></ul></td></tr></table>',
+  );
+  const el = view(node);
+  const li = boxOf(el, 'li') as LaidBox & { markerX: number; markerY: number };
+  assert.ok(
+    li.markerX < li.x + 40 && li.markerX > li.x - 40,
+    `beside its item: ${li.markerX} by ${li.x}`,
+  );
+  assert.ok(li.markerY >= li.y - 2 && li.markerY < li.y + li.height);
+});
+
 metric('clip shows the part of an absolute box it names', async () => {
   const { node } = await render(
     '<div id="a" style="position:absolute;top:0;left:0;width:40px;' +
