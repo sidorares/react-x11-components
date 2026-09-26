@@ -27,6 +27,7 @@ import { ThemeProvider } from 'react-x11';
 import { Html } from '../src/index.js';
 import { HtmlViewNode } from '../src/html/index.js';
 import type { FontsLike } from '../src/html/layout/inline.js';
+import { hungSpaces } from '../src/html/layout/inline.js';
 import { cocoaShapedLayout } from './cocoa-shaped.js';
 import type { ShapedLayout } from './cocoa-shaped.js';
 import {
@@ -1862,6 +1863,33 @@ test('an iframe is a box of its size with nothing in it', async () => {
   );
   const c = boxOf(el, 'c');
   assert.strictEqual(c.height, 100, 'half its containing block');
+});
+
+test('a no-break space before an image is added back only where the engine strips it', () => {
+  // ntk to 8.12.9 and CoreText through appkit 0.15.0 strip a trailing
+  // U+00A0, which CSS measures; the line adds back what the engine took, so
+  // after an engine that keeps it, it would count twice.
+  const engine = (stripsNoBreak: boolean): FontsLike =>
+    ({
+      layout: (runs: { text: string }[]) => {
+        const text = runs.map((r) => r.text).join('');
+        const kept = text.replace(
+          stripsNoBreak ? /[ \t\u00A0]+$/ : /[ \t]+$/,
+          '',
+        );
+        return { lines: [{ width: kept.length * 10 }] };
+      },
+    }) as unknown as FontsLike;
+  const run = { text: 'a\u00A0', family: 'sans-serif', size: 16 };
+  assert.ok(
+    hungSpaces(engine(true), run).test('a\u00A0'),
+    'stripped: added back',
+  );
+  assert.ok(
+    !hungSpaces(engine(false), run).test('a\u00A0'),
+    'kept: left alone',
+  );
+  assert.ok(hungSpaces(engine(false), run).test('a '), 'a space always is');
 });
 
 metric('form controls carry default margins from the UA sheet', async () => {

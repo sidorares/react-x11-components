@@ -465,17 +465,18 @@ export function layoutInline(block: Box, options: InlineOptions): InlineResult {
     if (!wrapped) {
       // It fitted: the cursor stays on this line for whatever comes next.
       //
-      // With one correction first. ntk strips a line's trailing whitespace —
-      // right at a real line end, wrong here, where the "line" is only a
-      // fragment and an atomic follows on the same one: `Name <input>` laid
-      // the space out to width zero and the control sat flush against the
-      // label (nbsp included; ntk's whitespace set has U+00A0 in it). The
-      // stripped advance is measured back and added to the cursor.
+      // With one correction first. A text engine strips a line's trailing
+      // whitespace — right at a real line end, wrong here, where the "line"
+      // is only a fragment and an atomic follows on the same one: `Name
+      // <input>` laid the space out to width zero and the control sat flush
+      // against the label. The stripped advance is measured back and added
+      // to the cursor: what the engine strips, and no more (`hungSpaces`).
       if (segment.nextIndex < items.length) {
+        const hung = hungSpaces(fonts, segment.runs[segment.runs.length - 1]);
         let trailing = '';
         for (let i = segment.runs.length - 1; i >= 0; i -= 1) {
           const text = segment.runs[i].text;
-          const m = /[ \t\u00A0]+$/.exec(text);
+          const m = hung.exec(text);
           if (!m) break;
           trailing = m[0] + trailing;
           if (m[0].length < text.length) break;
@@ -1342,6 +1343,29 @@ function breakBefore(runs: TextRun[], offset: number): boolean {
     at = next;
   }
   return false;
+}
+
+/**
+ * The white space a text engine strips from a line's end, as a pattern for
+ * the end of a run: spaces and tabs, and the no-break space too where the
+ * engine strips that — ntk to 8.12.9 and CoreText through @windowkit/appkit
+ * 0.15.0 do, where CSS measures it (sidorares/ntk#395, windowkit/appkit#83).
+ * Asked of the engine once per font manager, because what the line adds back
+ * has to be what the engine took: added back after an engine that kept it, a
+ * no-break space before an image counted twice.
+ */
+const HUNG = new WeakMap<FontsLike, RegExp>();
+
+export function hungSpaces(fonts: FontsLike, run: TextRun): RegExp {
+  let hung = HUNG.get(fonts);
+  if (!hung) {
+    const style = { family: run.family, size: run.size };
+    const width = (text: string): number =>
+      fonts.layout([{ ...style, text }], style, {}).lines[0]?.width ?? 0;
+    hung = width('x\u00A0') > width('x') ? /[ \t]+$/ : /[ \t\u00A0]+$/;
+    HUNG.set(fonts, hung);
+  }
+  return hung;
 }
 
 /** Whether anything but whitespace lies past a code-unit offset into the
