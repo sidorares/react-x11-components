@@ -641,3 +641,127 @@ test(
     );
   },
 );
+
+// --- what a list and a table are made of -------------------------------------
+//
+// A long document is mostly lists and tables, and every box in one is laid out
+// and absolutized again on each width change. So an item that is one
+// paragraph is that paragraph beside its marker, the marker is its own text,
+// and a cell is its text — with the same pixels as the boxes they replaced,
+// which were checked against each other case by case when they went.
+
+type Shaped = DrawnNode & {
+  kind: string;
+  children: Shaped[];
+  props: Record<string, unknown>;
+};
+
+const kindsOf = (node: Shaped): string =>
+  node.children.map((c) => c.kind).join(' ');
+
+test('a list item of one paragraph is its marker and the paragraph', async () => {
+  await renderX11(
+    h(Markdown, {
+      source: '- one\n- two\n\n7. seven\n\n   and a second paragraph\n8. eight',
+      partial: false,
+    }),
+  );
+  const rows = screen
+    .all((n) => {
+      const kids = (n as Shaped).children ?? [];
+      return (n as Shaped).kind === 'box' && kids[0]?.kind === 'text';
+    })
+    .map((n) => n as Shaped);
+  assert.deepStrictEqual(rows.map(kindsOf), [
+    'text richtext',
+    'text richtext',
+    'text box', // two paragraphs: the column keeps the gap between them
+    'text richtext',
+  ]);
+  for (const row of rows) {
+    assert.strictEqual(
+      row.children[0].props.selectable,
+      false,
+      'a marker is not text a reader selects',
+    );
+  }
+});
+
+test('a table cell is its text, inset in its row as the padding was', async () => {
+  for (const scale of [1, 2]) {
+    await renderX11(
+      h(Markdown, {
+        source: '| a | b |\n| - | - |\n| left | right |',
+        partial: false,
+      }),
+      { scale, ...(FONTS ? { fonts: FONTS } : null) },
+    );
+    const rows = screen
+      .all((n) => {
+        const kids = (n as Shaped).children ?? [];
+        return (
+          (n as Shaped).kind === 'box' &&
+          kids.length === 2 &&
+          kids.every((c) => c.kind === 'richtext')
+        );
+      })
+      .map((n) => n as Shaped);
+    assert.strictEqual(rows.length, 2, `the header and one row, at ${scale}x`);
+    for (const row of rows) {
+      const [first, second] = row.children.map((c) => c.abs);
+      const left = first.x - row.abs.x;
+      const between = second.x - (first.x + first.width);
+      assert.ok(left > 0, `a cell is inset from its row's edge, at ${scale}x`);
+      assert.strictEqual(
+        between,
+        left * 2,
+        `two cells' texts are a padding apart from each side, at ${scale}x`,
+      );
+      // below the rule a divided row draws along its top
+      const rule =
+        (((row.props.style as Record<string, unknown>).borderTopWidth as
+          number | undefined) ?? 0) * scale;
+      assert.strictEqual(
+        first.y - row.abs.y - rule,
+        row.abs.y + row.abs.height - (first.y + first.height),
+        `as far from the row's top as from its bottom, at ${scale}x`,
+      );
+    }
+    await cleanup();
+  }
+});
+
+test(
+  'a copy of lists and a table leaves the markers out, and tabs the cells',
+  { skip: !FONTS },
+  async () => {
+    const r = await renderX11(
+      h(
+        'box',
+        { style: { flexGrow: 1, padding: 10 } },
+        h(Markdown, {
+          source:
+            'Intro.\n\n- one\n- two, **bold**\n  - nested\n\n7. seven\n8. eight\n\n' +
+            '| a | right |\n| - | -: |\n| c | 1 |\n| a wrapped cell | 22 |',
+          partial: false,
+        }),
+      ),
+      { fonts: FONTS!, width: 300, height: 400 },
+    );
+    const [intro] = mdNodes();
+    await act(async () => {
+      fireEvent.mouseDown(drawn(intro), {});
+      fireEvent.mouseUp(drawn(intro), {});
+    });
+    await act(async () => {
+      fireEvent.key(0x61 /* a */, { modifiers: ['Control'] });
+    });
+    await act(async () => {
+      fireEvent.key(0x63 /* c */, { modifiers: ['Control'] });
+    });
+    assert.equal(
+      await clipboardOf(r).read({ selection: 'CLIPBOARD' }),
+      'Intro.\none\ntwo, bold\nnested\nseven\neight\na\tright\nc\t1\na wrapped cell\t22',
+    );
+  },
+);

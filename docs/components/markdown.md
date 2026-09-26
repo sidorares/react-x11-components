@@ -135,6 +135,21 @@ arrive". While it is true the live tail is rendered friendly, and constructs
 that cannot yet be read are held rather than shown half-formed. It defaults
 to true, so the streaming case is the one you get without saying anything.
 
+## A long document
+
+Every box in a document is laid out, measured for its floors and
+absolutized again whenever the width changes, so the renderer makes as few
+as the document allows. An item that is one paragraph is that paragraph,
+laid out in the row beside its marker; the marker is a `<text>` of its own;
+and a table cell is its text, with the padding as margins, since the row
+paints the background and a cell has nothing else to draw. A multi-block
+item keeps its column, for the gap between its blocks. The pixels are the
+same as the boxes' were.
+
+A 600 KB report is 10,188 nodes where it was 14,717. A step of a window
+resize went from 332 to 275 ms on macOS and from 256 to 205 ms on XQuartz,
+and the first paint from 1,230 to 1,050 ms and from 990 to 820 ms.
+
 ## The parser is exported
 
 ```ts
