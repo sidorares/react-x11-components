@@ -26,7 +26,8 @@ import {
   paintRunRules,
 } from '../richtext/runs.js';
 import type { FillContext } from '../richtext/runs.js';
-import { inkColor, isTransparent } from './css/values.js';
+import { inkColor, isPct, isTransparent } from './css/values.js';
+import type { Len } from './css/values.js';
 import type { ComputedStyle } from './css/style.js';
 import { Box } from './layout/boxes.js';
 import type { BoxTree, LineBox } from './layout/boxes.js';
@@ -48,6 +49,9 @@ export interface PaintContext extends FillContext {
   fill?(): void;
   clip?(): void;
   drawImage?(image: unknown, ...args: number[]): void;
+  /** ntk's X11 context has patterns; the Cocoa one does not, and tiles. */
+  createPattern?(image: unknown, repetition: string): unknown;
+  translate?(x: number, y: number): void;
 }
 
 export interface PaintOptions {
@@ -64,6 +68,16 @@ export interface PaintOptions {
   selectionColor: string | null;
   /** A decoded image for an element, when the host has one. */
   imageFor(box: Box): unknown | null;
+  /** A decoded `background-image`, with its size in CSS pixels, once it has
+   *  arrived. */
+  backgroundImageFor?(
+    url: string,
+  ): { image: unknown; width: number; height: number } | null;
+  /** The whole element in window coordinates: the canvas the root's
+   *  background covers (CSS 2.1 14.2). Absent, the root box is it. */
+  canvas?: Rect;
+  /** @internal The box whose background went to the canvas instead. */
+  canvasSource?: Box | null;
 }
 
 /**
@@ -200,8 +214,77 @@ export function paintDocument(
 ): void {
   if (!canFill(ctx)) return;
   ctx.save();
-  paintBox(ctx, tree.root, options);
+  const canvas = canvasBackground(tree.root);
+  if (canvas) paintCanvas(ctx, canvas, tree.root, options);
+  paintBox(ctx, tree.root, { ...options, canvasSource: canvas?.source });
   ctx.restore();
+}
+
+/**
+ * Whose background covers the canvas (CSS 2.1 14.2): the root element's,
+ * or — where `<html>` has neither a colour nor an image — the first
+ * `<body>`'s, which then paints no background of its own. A fragment's
+ * implied body is the root box itself. `anchor` is the box the image is
+ * positioned against: the root element's, whichever box it came from.
+ */
+function canvasBackground(root: Box): { source: Box; anchor: Box } | null {
+  const has = (b: Box) =>
+    !isTransparent(b.style.backgroundColor) || !!b.style.backgroundImage;
+  const html = root.children.find((c) => c.el?.name === 'html');
+  if (!html) return has(root) ? { source: root, anchor: root } : null;
+  if (has(html)) return { source: html, anchor: html };
+  const body = html.children.find((c) => c.el?.name === 'body');
+  return body && has(body) ? { source: body, anchor: html } : null;
+}
+
+function paintCanvas(
+  ctx: PaintContext,
+  { source, anchor }: { source: Box; anchor: Box },
+  root: Box,
+  options: PaintOptions,
+): void {
+  const whole = options.canvas ?? {
+    x: root.x + options.originX,
+    y: root.y + options.originY,
+    width: root.width,
+    height: root.height,
+  };
+  const area = clampRect(
+    options,
+    Math.round(whole.x),
+    Math.round(whole.y),
+    Math.ceil(whole.width),
+    Math.ceil(whole.height),
+  );
+  if (!area) return;
+  const style = source.style;
+  if (
+    !isTransparent(style.backgroundColor) &&
+    source.style.visibility !== 'hidden'
+  ) {
+    ctx.fillStyle = inkColor(style.backgroundColor as string, style.color);
+    ctx.fillRect(area.x, area.y, area.w, area.h);
+  }
+  if (style.backgroundImage) {
+    paintBackgroundImage(
+      ctx,
+      style,
+      area,
+      paddingBox(anchor, options),
+      options,
+    );
+  }
+}
+
+/** A box's padding box in window coordinates: where a background image is
+ *  positioned. */
+function paddingBox(box: Box, options: PaintOptions): Rect {
+  return {
+    x: box.x + box.borderLeft + options.originX,
+    y: box.y + box.borderTop + options.originY,
+    width: box.width - box.borderLeft - box.borderRight,
+    height: box.height - box.borderTop - box.borderBottom,
+  };
 }
 
 function paintBox(ctx: PaintContext, box: Box, options: PaintOptions): void {
@@ -210,7 +293,27 @@ function paintBox(ctx: PaintContext, box: Box, options: PaintOptions): void {
   const visible = style.visibility === 'visible';
 
   if (visible) {
-    paintBackground(ctx, box, options);
+    if (box !== options.canvasSource) {
+      paintBackground(ctx, box, options);
+      if (style.backgroundImage) {
+        const area = clampRect(
+          options,
+          Math.round(box.x + options.originX),
+          Math.round(box.y + options.originY),
+          Math.ceil(box.width),
+          Math.ceil(box.height),
+        );
+        if (area) {
+          paintBackgroundImage(
+            ctx,
+            style,
+            area,
+            paddingBox(box, options),
+            options,
+          );
+        }
+      }
+    }
     paintBorders(ctx, box, options);
     if (box.markerText) paintMarker(ctx, box, options);
     if (box.replaced === 'image') paintImage(ctx, box, options);
@@ -324,6 +427,70 @@ function paintBackground(
     return;
   }
   ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
+}
+
+/** How many tiles a repeating background may draw one by one, where the
+ *  context has no pattern to fill with. Past it, the image draws once. */
+const MAX_TILES = 4096;
+
+/**
+ * A `background-image` (CSS 2.1 14.2.1): positioned in `at`, the padding
+ * box, repeated across `area`, the border box within the damage, over the
+ * colour and under the borders. Filled with a pattern where the context has
+ * one, drawn a tile at a time where it does not.
+ */
+function paintBackgroundImage(
+  ctx: PaintContext,
+  style: ComputedStyle,
+  area: { x: number; y: number; w: number; h: number },
+  at: Rect,
+  options: PaintOptions,
+): void {
+  const url = style.backgroundImage;
+  const loaded = url ? options.backgroundImageFor?.(url) : null;
+  if (!loaded || !ctx.drawImage) return;
+  // an image pixel is a CSS pixel, and the box is device
+  const scale = options.scale ?? 1;
+  const iw = loaded.width * scale;
+  const ih = loaded.height * scale;
+  if (!(iw > 0 && ih > 0)) return;
+  const offset = (len: Len, extent: number, size: number): number =>
+    isPct(len) ? (len.pct / 100) * (extent - size) : (len as number);
+  const x0 = Math.round(at.x + offset(style.backgroundPositionX, at.width, iw));
+  const y0 = Math.round(
+    at.y + offset(style.backgroundPositionY, at.height, ih),
+  );
+  const repeat = style.backgroundRepeat;
+  const acrossX = repeat === 'repeat' || repeat === 'repeat-x';
+  const acrossY = repeat === 'repeat' || repeat === 'repeat-y';
+  // the tiles that reach the area: from the first at or before its edge
+  const fromX = acrossX ? x0 - Math.ceil((x0 - area.x) / iw) * iw : x0;
+  const fromY = acrossY ? y0 - Math.ceil((y0 - area.y) / ih) * ih : y0;
+  const toX = acrossX ? area.x + area.w : x0 + iw;
+  const toY = acrossY ? area.y + area.h : y0 + ih;
+
+  ctx.save();
+  if (ctx.beginPath && ctx.rect && ctx.clip) {
+    ctx.beginPath();
+    ctx.rect(area.x, area.y, area.w, area.h);
+    ctx.clip();
+  }
+  const tiles = Math.ceil((toX - fromX) / iw) * Math.ceil((toY - fromY) / ih);
+  if (tiles > 1 && scale === 1 && ctx.createPattern && ctx.translate) {
+    // a pattern tiles from the origin of the space it is filled in
+    ctx.fillStyle = ctx.createPattern(loaded.image, 'repeat');
+    ctx.translate(x0, y0);
+    ctx.fillRect(fromX - x0, fromY - y0, toX - fromX, toY - fromY);
+  } else if (tiles <= MAX_TILES) {
+    for (let y = fromY; y < toY; y += ih) {
+      for (let x = fromX; x < toX; x += iw) {
+        ctx.drawImage(loaded.image, x, y, iw, ih);
+      }
+    }
+  } else {
+    ctx.drawImage(loaded.image, x0, y0, iw, ih);
+  }
+  ctx.restore();
 }
 
 /**

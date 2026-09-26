@@ -115,6 +115,15 @@ and `rowspan`), `position: relative | absolute | fixed`, and `display: flex`.
 `border` (width, style, colour, radius), `box-sizing`, `overflow`,
 `opacity`, `visibility`, `z-index`.
 
+**Backgrounds:** `background-color`, and `background-image` — through
+`onResource`, like an `<img>` — with `background-repeat` and
+`background-position`, positioned in the padding box and repeated across the
+border box. The root's background covers the whole canvas, as CSS 2.1 has
+it: `<html>`'s, or `<body>`'s where `<html>` has none, over the body's margin
+and down the whole element when an application grows it past the document —
+so an email's `<body bgcolor>` colours the message rather than a box inside
+it.
+
 **Text:** `font` and its longhands, `line-height`, `text-align`,
 `text-indent`, `text-transform`, `letter-spacing`, `white-space` (including
 `pre` and `pre-wrap`), `direction`, `vertical-align`, `text-decoration` in
@@ -129,8 +138,9 @@ answers it and a desktop that switches schemes re-cascades the document.
 `@import` goes through the resource seam.
 
 **Not implemented:** CSS grid (degrades to block stacking), transforms,
-animations and transitions, multi-column, shadows, gradients, and
-`position: sticky` (treated as `relative`). `border-collapse: collapse` is
+animations and transitions, multi-column, shadows, gradients,
+`background-size`, `background-attachment: fixed`, more than one background
+layer (the first is drawn), and `position: sticky` (treated as `relative`). `border-collapse: collapse` is
 drawn as the separate model with zero spacing.
 
 ## The decisions

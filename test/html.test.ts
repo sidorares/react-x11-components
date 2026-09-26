@@ -1264,6 +1264,75 @@ test('an image handed over as bytes is decoded and drawn', async (t) => {
   });
 });
 
+// a 10x10 PNG, solid #ff0000
+const RED_PNG = new Uint8Array(
+  Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAIAAAACUFjqAAAAIUlEQVR4AX3BAQEAAAiDMKR/' +
+      '59uA7UaRJEmSJEmSJEmS9EEsAROhAw00AAAAAElFTkSuQmCC',
+    'base64',
+  ),
+);
+
+async function renderWithImages(source: string, width = 200) {
+  const result = await renderX11(
+    h(
+      'box',
+      { style: { width, height: 120, flexDirection: 'column' } },
+      h(Html, {
+        source,
+        partial: false,
+        style: { flexGrow: 1 },
+        onResource: (r: { kind: string }) =>
+          r.kind === 'image'
+            ? { kind: 'image' as const, bytes: RED_PNG }
+            : null,
+      }),
+    ),
+    { width: width + 40, height: 160, fonts: FONTS! },
+  );
+  return result.ctx;
+}
+
+metric(
+  'a background image is placed, repeated and clipped as CSS says',
+  async () => {
+    // Parsed and never drawn: background-image had no request and no paint.
+    const ctx = await renderWithImages(
+      '<style>body{margin:0}div{width:60px;height:30px;' +
+        'background:#00ff00 url(red.png) no-repeat 20px 10px}' +
+        '.x{background-repeat:repeat-x;background-position:0 0}</style>' +
+        '<div></div><div class="x"></div>',
+    );
+    await expectPixel(ctx, 25, 15, '#ff0000', {
+      message: 'the tile, at 20,10',
+    });
+    await expectPixel(ctx, 5, 5, '#00ff00', {
+      message: 'the colour around it',
+    });
+    await expectPixel(ctx, 45, 15, '#00ff00', {
+      message: 'no-repeat: one tile',
+    });
+    // repeat-x: a row of tiles across the second box, and nothing under them
+    await expectPixel(ctx, 55, 35, '#ff0000', { message: 'repeated across' });
+    await expectPixel(ctx, 55, 50, '#00ff00', { message: 'one row only' });
+  },
+);
+
+metric("the root's background covers the whole canvas", async () => {
+  // CSS 2.1 14.2: <body>'s background, where <html> has none, is the
+  // canvas's — the margin round the body included — as an email's
+  // <body bgcolor> is meant to be.
+  const ctx = await renderWithImages(
+    '<html><body style="background:#00ff00;margin:20px"><p>x</p></body></html>',
+  );
+  await expectPixel(ctx, 4, 4, '#00ff00', {
+    message: 'inside the body margin',
+  });
+  await expectPixel(ctx, 100, 110, '#00ff00', {
+    message: 'below the document, where the element has grown',
+  });
+});
+
 test('a document with no seams renders anyway', async () => {
   const { node } = await render(
     '<img src="nope.png" alt="x"><p>still here</p>',
