@@ -105,7 +105,8 @@ export function parseLength(
   if (!m) return null;
   const n = Number(m[1]);
   const unit = m[2];
-  if (!unit) return bareIsPx ? n * ctx.scale : null;
+  // a zero needs no unit however it is written — `-0`, `+0`, `0.0`
+  if (!unit) return n === 0 ? 0 : bareIsPx ? n * ctx.scale : null;
   if (unit === '%') return { pct: n };
   return n * unitScale(unit, ctx);
 }

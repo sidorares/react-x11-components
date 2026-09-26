@@ -31,7 +31,7 @@ import type { Len } from './css/values.js';
 import type { ComputedStyle } from './css/style.js';
 import { Box } from './layout/boxes.js';
 import type { BoxTree, LineBox } from './layout/boxes.js';
-import { layoutOffsets } from './layout/inline.js';
+import { depthOf, layoutOffsets } from './layout/inline.js';
 
 export interface Rect {
   x: number;
@@ -693,6 +693,7 @@ function paintLines(ctx: PaintContext, box: Box, options: PaintOptions): void {
   if (!visible.length) return;
 
   for (const line of visible) {
+    paintInlineBoxes(ctx, line, options);
     for (const text of line.texts) {
       const natural = text.layout.lines[text.layoutLine];
       if (natural)
@@ -742,6 +743,145 @@ function paintLines(ctx: PaintContext, box: Box, options: PaintOptions): void {
     }
     for (const placed of line.atomics) paintBox(ctx, placed.box, options);
   }
+}
+
+/**
+ * The backgrounds and borders of the inline boxes on one line — a `<mark>`, a
+ * padded `<span>`, a link set as a button — under the text, a fragment each:
+ * from the ascent to the descent of the box's own face, with its vertical
+ * padding and border beyond (CSS 2.1 10.6.1, 10.8.1, which is also why they
+ * do not make the line taller), and across the box's text and atomics on
+ * this line out to its padding and border where it starts or ends. Outer
+ * boxes first, so a highlight shows behind a nested element's text too. A
+ * run finds its element from its place in the document, as a click does.
+ */
+function paintInlineBoxes(
+  ctx: PaintContext,
+  line: LineBox,
+  options: PaintOptions,
+): void {
+  let fragments: Map<Box, InlineFragment> | null = null;
+  const widen = (box: Box, left: number, right: number): void => {
+    fragments ??= new Map();
+    const f = fragments.get(box);
+    if (f) {
+      f.left = Math.min(f.left, left);
+      f.right = Math.max(f.right, right);
+    } else {
+      fragments.set(box, { left, right, start: false, end: false });
+    }
+  };
+  // Every text on a line is drawn on one baseline (`finishLine`), and an
+  // engine's is from the top of its layout rather than of the line.
+  let baseline = line.y + line.baseline;
+  for (const text of line.texts) {
+    const natural = text.layout.lines[text.layoutLine];
+    const boxAt = text.spans.boxAt;
+    if (!natural || !boxAt) continue;
+    baseline = text.drawY + natural.baseline;
+    const x = text.drawX + natural.x;
+    for (const run of natural.runs) {
+      const owner = boxAt.call(text.spans, run.start);
+      if (!owner) continue;
+      // Within the line: a space a line ends on hangs past it, and CoreText
+      // keeps it in the run it ends even where the line's width does not.
+      const left = Math.max(x, x + run.x);
+      const right = Math.min(x + natural.width, x + run.x + run.width);
+      if (right <= left) continue;
+      for (const box of decoratedAncestors(owner)) widen(box, left, right);
+    }
+  }
+  for (const placed of line.atomics) {
+    const atomic = placed.box;
+    for (const box of decoratedAncestors(atomic)) {
+      widen(
+        box,
+        placed.x - atomic.marginLeft,
+        placed.x + atomic.width + atomic.marginRight,
+      );
+    }
+  }
+  for (const edge of line.edges ?? []) {
+    const box = edge.box;
+    if (!box.decorated) continue;
+    // The element's `direction` says which side its start is on, whatever
+    // its text reads as (CSS 2.1 8.6); the edge's margin is outside the box,
+    // its border and padding inside.
+    const onLeft = (edge.side === 'start') !== (box.style.direction === 'rtl');
+    if (onLeft) {
+      const left = edge.x + box.marginLeft;
+      widen(box, left, left);
+    } else {
+      const right = edge.x + edge.width - box.marginRight;
+      widen(box, right, right);
+    }
+    const f = fragments!.get(box)!;
+    if (edge.side === 'start') f.start = true;
+    else f.end = true;
+  }
+  if (!fragments) return;
+  const boxes = [...(fragments as Map<Box, InlineFragment>).keys()].sort(
+    (a, b) => depthOf(a) - depthOf(b),
+  );
+  for (const box of boxes) {
+    if (box.style.visibility !== 'visible') continue;
+    const f = (fragments as Map<Box, InlineFragment>).get(box)!;
+    const top = baseline - box.contentAscent - box.padTop - box.borderTop;
+    const bottom =
+      baseline + box.contentDescent + box.padBottom + box.borderBottom;
+    // Sliced where the box goes on to another line: no border and no
+    // rounded corner on a side it does not end on (`box-decoration-break:
+    // slice`, CSS's default). Left and right swap for right-to-left text.
+    const rtl = box.style.direction === 'rtl';
+    const leftEnds = rtl ? f.end : f.start;
+    const rightEnds = rtl ? f.start : f.end;
+    const [tl, tr, br, bl] = box.style.borderRadius;
+    const fragment = {
+      x: f.left,
+      y: top,
+      width: f.right - f.left,
+      height: bottom - top,
+      borderTop: box.borderTop,
+      borderBottom: box.borderBottom,
+      borderLeft: leftEnds ? box.borderLeft : 0,
+      borderRight: rightEnds ? box.borderRight : 0,
+      style: {
+        ...box.style,
+        borderRadius: [
+          leftEnds ? tl : 0,
+          rightEnds ? tr : 0,
+          rightEnds ? br : 0,
+          leftEnds ? bl : 0,
+        ],
+      },
+    } as unknown as Box;
+    if (fragment.width <= 0) continue;
+    paintBackground(ctx, fragment, options);
+    paintBorders(ctx, fragment, options);
+  }
+}
+
+interface InlineFragment {
+  left: number;
+  right: number;
+  /** Whether the box opens or closes on this line. */
+  start: boolean;
+  end: boolean;
+}
+
+/** The inline boxes around a box, within its line's block, that paint a
+ *  background or a border — outermost last. */
+const DECORATED = new WeakMap<Box, Box[]>();
+
+function decoratedAncestors(box: Box): Box[] {
+  let found = DECORATED.get(box);
+  if (found) return found;
+  found = [];
+  for (let at = box.parent; at && at.kind === 'inline'; at = at.parent) {
+    if (at.decorated) found.push(at);
+  }
+  DECORATED.set(box, found);
+  return found;
 }
 
 /**

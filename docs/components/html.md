@@ -112,10 +112,27 @@ test suite on both backends, is in
 bidi and full shaping, `inline-block`, floats and `clear`, lists with their
 markers, tables (the auto algorithm and `table-layout: fixed`, with `colspan`
 and `rowspan`), `position: relative | absolute | fixed`, and `display: flex`.
+A line with an inline-block or a padded element on it is put in visual order
+a piece at a time — the text engine orders the text inside each piece, and
+the line orders the pieces (UAX #9's L2) — so a right-to-left paragraph with
+an image in it reads right to left, and it is aligned whole: a centred line
+is centred with its images, not text first and the image after it.
 
 **Boxes:** `width`/`height` with `min-`/`max-`, `margin`, `padding`,
 `border` (width, style, colour, radius), `box-sizing`, `overflow`,
-`opacity`, `visibility`, `z-index`.
+`opacity`, `visibility`, `z-index`. Inline elements have all of it but the
+sizes: an inline box's padding, border and margin take room on its line —
+the start side before its first fragment, the end side after its last, on
+the sides its `direction` says (CSS 2.1 8.6) — and its background and border
+are painted a fragment a line, over its face's height plus its vertical
+padding, which is why they do not make the line taller. Where it wraps it is
+sliced: no border and no rounded corner on a side it goes on from. A padded
+`<a>` set as an email's button, a pill badge and a `<kbd>` keycap render as
+a browser renders them.
+
+**Embedded content:** `<iframe>`, `<video>` and `<embed>` are boxes of their
+`width` and `height` — 300×150 without them, as HTML sizes them — with
+nothing in them, because nothing is loaded.
 
 **Backgrounds:** `background-color`, and `background-image` — through
 `onResource`, like an `<img>` — with `background-repeat` and
@@ -127,7 +144,10 @@ so an email's `<body bgcolor>` colours the message rather than a box inside
 it.
 
 **Text:** `font` and its longhands, `line-height`, `text-align`,
-`text-indent`, `text-transform`, `letter-spacing`, `white-space` (including
+`text-indent`, `text-transform`, `letter-spacing` and `word-spacing` (the
+first is the text engine's; the second is spacing added to each space and
+no-break space, so only text that asks for it is split into more runs),
+`white-space` (including
 `pre` and `pre-wrap`), `direction`, `vertical-align`, `text-decoration` in
 all five rule styles. White space collapses across element boundaries as CSS
 2.1 16.6.1 has it — none at the start or the end of a line, one between two
@@ -157,7 +177,12 @@ animations and transitions, multi-column, shadows, gradients,
 layer (the first is drawn), `position: sticky` (treated as `relative`),
 `::first-letter` and `::first-line`, and an image in `content` (the rest of
 the value is drawn). `border-collapse: collapse` is drawn as the separate
-model with zero spacing.
+model with zero spacing. A percentage `height` is `auto` except on an
+absolutely positioned box, whose containing block's height is known first.
+Explicit bidi embeddings and overrides (U+202A–U+202E) that open on one side
+of an inline element with padding, border or margin and close on the other
+are resolved on each side of it separately: the text engine is handed the
+text a piece at a time there.
 
 ## The decisions
 
@@ -173,14 +198,14 @@ an inline formatting context and table column sizing are not expressible in
 it. Composing would mean approximating the layout model.
 
 What it reuses from `<richtext>` is everything that was not about the
-element: the `TextRun` vocabulary ntk's text layout takes, the per-run
-decoration painter, and the bidi-correct selection bands. See
-[richtext](richtext.md) — including its caveat about react-x11's Cocoa text
-engine, which hands runs back without their spans: there, inline
-`background` and `text-decoration` draw nothing. Hit testing does not need
-the span: a point inside a paragraph finds the `<a>` or `<span>` under it
-from where its text sits in the document, on every engine, so
-`hrefAtPoint` answers there too. The document lays out, draws and selects.
+element: the `TextRun` vocabulary ntk's text layout takes, the per-run rule
+painter for `text-decoration`, and the bidi-correct selection bands. See
+[richtext](richtext.md) — including its caveat about react-x11's Windows
+text engine, which hands runs back without their spans: there,
+`text-decoration` draws nothing. An inline element's background and border
+do not need the span, and neither does hit testing: a run finds the `<a>` or
+`<span>` it belongs to from where its text sits in the document, on every
+engine, so those are painted and `hrefAtPoint` answers there too.
 
 **Form controls are real widgets, not pictures of them.** A `<select>` in a
 document drops the same menu as a `<Select>` in the window around it, because

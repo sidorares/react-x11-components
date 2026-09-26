@@ -246,7 +246,9 @@ export interface RootLook {
   controlRadius: number;
 }
 
-export function initialStyle(look: RootLook): ComputedStyle {
+export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
+  // `medium`, in device pixels
+  const medium = BORDER_WIDTH_KEYWORDS.medium * scale;
   return {
     color: look.color,
     fontFamily: look.fontFamily,
@@ -298,10 +300,13 @@ export function initialStyle(look: RootLook): ComputedStyle {
     paddingBottom: 0,
     paddingLeft: 0,
 
-    borderTopWidth: 0,
-    borderRightWidth: 0,
-    borderBottomWidth: 0,
-    borderLeftWidth: 0,
+    // `medium`, and drawn as nothing while the style is `none`: a width
+    // computes to zero there (CSS 2.1 8.5.1), which is the layout's to
+    // apply, so that `border-style: solid` alone brings a border back
+    borderTopWidth: medium,
+    borderRightWidth: medium,
+    borderBottomWidth: medium,
+    borderLeftWidth: medium,
     borderTopStyle: 'none',
     borderRightStyle: 'none',
     borderBottomStyle: 'none',
@@ -1117,7 +1122,9 @@ function borderWidth(value: string, ctx: UnitContext): number | null {
   // they take the display scale here.
   if (kw !== undefined) return kw * ctx.scale;
   const len = parseLength(value, ctx);
-  return typeof len === 'number' ? Math.max(0, len) : null;
+  // a negative width is not a width: the declaration is dropped, and the
+  // one before it stands (CSS 2.1 8.5.1)
+  return typeof len === 'number' && len >= 0 ? len : null;
 }
 
 function backgroundPosition(
@@ -1148,7 +1155,7 @@ function applyBorderShorthand(
   // `border: none` and `border: 0` both mean "no border", and neither names
   // all three components — so the shorthand resets all three first, which is
   // what the spec says and what an author relies on to undo a UA border.
-  let width: number | null = 3;
+  let width = BORDER_WIDTH_KEYWORDS.medium * ctx.scale;
   let borderStyle: BorderStyle = 'none';
   let color: string | null = 'currentColor';
   for (const part of splitValue(value)) {
@@ -1163,15 +1170,18 @@ function applyBorderShorthand(
       continue;
     }
     const c = parseColor(part);
-    if (c !== null) color = c;
+    if (c !== null) {
+      color = c;
+      continue;
+    }
+    // a negative width makes the whole shorthand invalid
+    const len = parseLength(part, ctx);
+    if (typeof len === 'number' && len < 0) return;
   }
-  // A shorthand with a style but no width takes the initial `medium`; one
-  // with neither paints nothing, so the width is irrelevant.
-  const effective =
-    borderStyle === 'none' || borderStyle === 'hidden' ? 0 : (width ?? 3);
+  // A width with no style is kept rather than zeroed — the layout draws
+  // nothing for `none` — so a later `border-style` alone finds it.
   for (const side of sides) {
-    (style as unknown as Record<string, unknown>)[`border${side}Width`] =
-      effective;
+    (style as unknown as Record<string, unknown>)[`border${side}Width`] = width;
     (style as unknown as Record<string, unknown>)[`border${side}Style`] =
       borderStyle;
     if (color !== null)
@@ -1373,10 +1383,18 @@ function inheritOne(
 ): void {
   const keys = INHERIT_TARGETS[name];
   if (!keys) return;
+  // A border colour left to `currentColor` inherits as the keyword and
+  // takes the child's own colour (CSS Color 4) — not the parent's colour,
+  // which is what CSS 2.1 computed it to.
   for (const key of keys) {
     (style as unknown as Record<string, unknown>)[key] = parent[key];
   }
 }
+
+const SIDES = ['Top', 'Right', 'Bottom', 'Left'] as const;
+const sides = (
+  make: (side: (typeof SIDES)[number]) => keyof ComputedStyle,
+): (keyof ComputedStyle)[] => SIDES.map(make);
 
 const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   color: ['color'],
@@ -1416,7 +1434,78 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   display: ['display'],
   width: ['width'],
   height: ['height'],
+  'min-width': ['minWidth'],
+  'max-width': ['maxWidth'],
+  'min-height': ['minHeight'],
+  'max-height': ['maxHeight'],
+  'box-sizing': ['boxSizing'],
+  margin: sides((s) => `margin${s}`),
+  'margin-top': ['marginTop'],
+  'margin-right': ['marginRight'],
+  'margin-bottom': ['marginBottom'],
+  'margin-left': ['marginLeft'],
+  padding: sides((s) => `padding${s}`),
+  'padding-top': ['paddingTop'],
+  'padding-right': ['paddingRight'],
+  'padding-bottom': ['paddingBottom'],
+  'padding-left': ['paddingLeft'],
+  border: [
+    ...sides((s) => `border${s}Width`),
+    ...sides((s) => `border${s}Style`),
+    ...sides((s) => `border${s}Color`),
+  ],
+  'border-width': sides((s) => `border${s}Width`),
+  'border-style': sides((s) => `border${s}Style`),
+  'border-color': sides((s) => `border${s}Color`),
+  ...Object.fromEntries(
+    SIDES.flatMap((s) => {
+      const side = s.toLowerCase();
+      return [
+        [
+          `border-${side}`,
+          [`border${s}Width`, `border${s}Style`, `border${s}Color`],
+        ],
+        [`border-${side}-width`, [`border${s}Width`]],
+        [`border-${side}-style`, [`border${s}Style`]],
+        [`border-${side}-color`, [`border${s}Color`]],
+      ];
+    }),
+  ),
+  'border-radius': ['borderRadius'],
+  background: [
+    'backgroundColor',
+    'backgroundImage',
+    'backgroundRepeat',
+    'backgroundSize',
+    'backgroundPositionX',
+    'backgroundPositionY',
+  ],
   'background-color': ['backgroundColor'],
+  'background-image': ['backgroundImage'],
+  'background-repeat': ['backgroundRepeat'],
+  'background-size': ['backgroundSize'],
+  'background-position': ['backgroundPositionX', 'backgroundPositionY'],
+  position: ['position'],
+  top: ['top'],
+  right: ['right'],
+  bottom: ['bottom'],
+  left: ['left'],
+  float: ['float'],
+  clear: ['clear'],
+  overflow: ['overflowX', 'overflowY'],
+  'overflow-x': ['overflowX'],
+  'overflow-y': ['overflowY'],
+  opacity: ['opacity'],
+  'z-index': ['zIndex'],
+  'vertical-align': ['verticalAlign'],
+  'text-decoration': [
+    'textDecorationLine',
+    'textDecorationColor',
+    'textDecorationStyle',
+  ],
+  'text-decoration-line': ['textDecorationLine'],
+  'text-decoration-style': ['textDecorationStyle'],
+  'table-layout': ['tableLayout'],
 };
 
 /**

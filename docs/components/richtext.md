@@ -47,6 +47,7 @@ interface TextRun {
   weight?: number | 'normal' | 'bold';
   style?: 'normal' | 'italic';
   color?: string;
+  letterSpacing?: number; // px after every glyph — CSS's letter-spacing
   bg?: string; // fill painted behind the run — the inline-code chip
   bgFill?: 'chip' | 'line'; // how `bg` is painted; default 'chip'
   underline?: string; // rule under the baseline, in this colour — links
@@ -56,10 +57,11 @@ interface TextRun {
 }
 ```
 
-`text`, `family`, `size`, `weight`, `style` and `color` are ntk-span
-vocabulary and pass straight through to `fonts.layout`. The rest — `bg`,
-`bgFill`, `underline`, `underlineStyle`, `strike`, `href` — are this
-element's, painted by it.
+`text`, `family`, `size`, `weight`, `style`, `color` and `letterSpacing`
+are the text engine's span vocabulary and pass straight through to
+`fonts.layout` — ntk and react-x11's Cocoa engine both take all of them. The
+rest — `bg`, `bgFill`, `underline`, `underlineStyle`, `strike`, `href` — are
+this element's, painted by it.
 
 `href: null` is deliberate and is what makes a streamed `[text](partial-url`
 render as link-styled text that is not yet clickable.
