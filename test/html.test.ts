@@ -1066,6 +1066,103 @@ test('quotes open and close by depth, and none writes nothing', async () => {
   );
 });
 
+/** The first letters a document has: the text in each, its colour, and
+ *  whether it floats. */
+async function firstLetters(
+  source: string,
+): Promise<{ text: string; color: string; float: boolean }[]> {
+  const { node } = await render(source, 300);
+  type B = {
+    pseudo: string | null;
+    text: string;
+    isFloat: boolean;
+    style: { color: string };
+    children: B[];
+  };
+  const root = (view(node) as unknown as { _tree: { root: B } })._tree.root;
+  const out: { text: string; color: string; float: boolean }[] = [];
+  const walk = (b: B): void => {
+    if (b.pseudo === 'first-letter') {
+      out.push({
+        text: b.children.map((c) => c.text).join(''),
+        color: b.style.color,
+        float: b.isFloat,
+      });
+    }
+    b.children.forEach(walk);
+  };
+  walk(root);
+  return out;
+}
+
+test('::first-letter takes the letter and the punctuation around it', async () => {
+  const green = parseColor('green');
+  assert.deepStrictEqual(
+    await firstLetters(
+      '<style>p::first-letter{color:green}</style><p>\u201cT\u201d est</p>',
+    ),
+    [{ text: '\u201cT\u201d', color: green, float: false }],
+  );
+  // CSS 2's single colon, down into the first block, inside a span, and a
+  // float for a drop cap; the text is the document's all the same
+  assert.deepStrictEqual(
+    await firstLetters(
+      '<style>div:first-letter{color:green;float:left}</style>' +
+        '<div><p><b>(Q)uick</b></p><p>Later</p></div>',
+    ),
+    [{ text: '(Q)', color: green, float: true }],
+  );
+  assert.strictEqual(
+    await documentText(
+      '<style>p::first-letter{color:green}</style><p>(Q)uick</p>',
+    ),
+    '(Q)uick',
+  );
+});
+
+test('::first-letter is not found past a break or an inline-block', async () => {
+  const css = '<style>p::first-letter{color:green}</style>';
+  assert.deepStrictEqual(await firstLetters(css + '<p><br>Two</p>'), []);
+  assert.deepStrictEqual(
+    await firstLetters(
+      css + '<p><span style="display:inline-block">x</span> y</p>',
+    ),
+    [],
+  );
+  // a float is no part of the line, and an empty element is nothing on it
+  assert.deepStrictEqual(
+    (
+      await firstLetters(
+        css + '<p><span style="float:left">f</span><i></i> Yes</p>',
+      )
+    ).map((l) => l.text),
+    ['Y'],
+  );
+  // `<q>`'s open quote is in a text of its own, and goes with the letter;
+  // a quote that no letter follows on its line gives the style back
+  const q = '<style>q::before{content:open-quote}</style>';
+  assert.deepStrictEqual(
+    (await firstLetters(css + q + '<p><q>Hi</q> there</p>')).map((l) => l.text),
+    ['\u201c', 'H'],
+  );
+  assert.deepStrictEqual(
+    await firstLetters(css + '<p><i>\u201c</i><br>Hi</p>'),
+    [],
+  );
+});
+
+test('an inline-block on a line is painted once', async () => {
+  // the line paints what is placed on it, and the paragraph's own walk
+  // over its children must not paint it again: a translucent fill drawn
+  // twice is twice as opaque, and text twice as heavy
+  const { node } = await render(
+    '<p>a <span style="display:inline-block;width:13px;height:11px;' +
+      'background:rgba(0,0,255,0.5)"></span> <img width="7" height="5"> b</p>',
+  );
+  const fills = await fillsOf(view(node));
+  assert.strictEqual(fills.filter((f) => f.w === 13 && f.h === 11).length, 1);
+});
+
 test('an anchor with no href is drawn as the text around it', async () => {
   const { node } = await render(
     '<p style="color:#123456"><a id="n">name</a> <a id="l" href="#">link</a></p>',
@@ -1080,18 +1177,6 @@ test('an anchor with no href is drawn as the text around it', async () => {
   assert.strictEqual(styleOf('n').color, parseColor('#123456'));
   assert.strictEqual(styleOf('n').textDecorationLine, 'none');
   assert.notStrictEqual(styleOf('l').color, parseColor('#123456'));
-});
-
-test('an inline-block on a line is painted once', async () => {
-  // the line paints what is placed on it, and the paragraph's own walk
-  // over its children must not paint it again: a translucent fill drawn
-  // twice is twice as opaque, and text twice as heavy
-  const { node } = await render(
-    '<p>a <span style="display:inline-block;width:13px;height:11px;' +
-      'background:rgba(0,0,255,0.5)"></span> <img width="7" height="5"> b</p>',
-  );
-  const fills = await fillsOf(view(node));
-  assert.strictEqual(fills.filter((f) => f.w === 13 && f.h === 11).length, 1);
 });
 
 test('a pseudo-element is a box of its own display', async () => {

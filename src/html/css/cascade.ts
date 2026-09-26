@@ -146,20 +146,23 @@ class RuleIndex {
   }
 }
 
-/** A selector's trailing `::before` or `::after`, or CSS 2's single-colon
- *  spelling of either. */
-const PSEUDO_ELEMENT = /::?(before|after)$/i;
+/** The pseudo-elements a rule can style here. */
+type PseudoElement = 'before' | 'after' | 'first-letter';
+
+/** A selector's trailing `::before`, `::after` or `::first-letter`, or CSS
+ *  2's single-colon spelling of any of them. */
+const PSEUDO_ELEMENT = /::?(before|after|first-letter)$/i;
 
 /**
- * A rule for a `::before` or `::after`, as the pseudo-element it styles and
- * a rule for the element it hangs off, which is what gets matched. The
- * specificity is the whole selector's, the pseudo-element counted in.
- * `p::before` matches `p`; `p ::before` and `p > ::before` have nothing left
- * of their last compound and match any child, `p *` and `p > *`.
+ * A rule for a pseudo-element, as the pseudo-element it styles and a rule
+ * for the element it hangs off, which is what gets matched. The specificity
+ * is the whole selector's, the pseudo-element counted in. `p::before`
+ * matches `p`; `p ::before` and `p > ::before` have nothing left of their
+ * last compound and match any child, `p *` and `p > *`.
  */
 function splitPseudoElement(
   rule: StyleRule,
-): { which: 'before' | 'after'; rule: StyleRule } | null {
+): { which: PseudoElement; rule: StyleRule } | null {
   const m = PSEUDO_ELEMENT.exec(rule.selector);
   if (!m) return null;
   const head = rule.selector.slice(0, m.index);
@@ -170,7 +173,7 @@ function splitPseudoElement(
       ? `${trimmed} *`
       : trimmed;
   return {
-    which: m[1].toLowerCase() as 'before' | 'after',
+    which: m[1].toLowerCase() as PseudoElement,
     rule: { ...rule, selector },
   };
 }
@@ -271,6 +274,12 @@ function balancedEnd(
   return text.length;
 }
 
+/** What `Cascade.firstLetterRules` found for an element. */
+export interface FirstLetterRules {
+  readonly el: Element;
+  readonly candidates: readonly unknown[];
+}
+
 /** What the pointer is over, for `:hover`. A chain rather than one element,
  *  because `li:hover a` has to light up while the pointer is on the `li`. */
 export interface PointerState {
@@ -286,9 +295,13 @@ const NO_POINTER: PointerState = { hovered: new Set(), active: new Set() };
  */
 export class Cascade {
   private _index = new RuleIndex();
-  /** The rules for `::before` and `::after`, kept apart: they never style
-   *  the element itself, and a document with none of them asks nothing. */
-  private _pseudo = { before: new RuleIndex(), after: new RuleIndex() };
+  /** The rules for pseudo-elements, kept apart: they never style the
+   *  element itself, and a document with none of them asks nothing. */
+  private _pseudo: Record<PseudoElement, RuleIndex> = {
+    before: new RuleIndex(),
+    after: new RuleIndex(),
+    'first-letter': new RuleIndex(),
+  };
   private _adapter: CssSelectAdapter;
   private _pointer: PointerState = NO_POINTER;
   readonly initial: ComputedStyle;
@@ -347,7 +360,8 @@ export class Cascade {
     return (
       this._index.hoverSensitive ||
       this._pseudo.before.hoverSensitive ||
-      this._pseudo.after.hoverSensitive
+      this._pseudo.after.hoverSensitive ||
+      this._pseudo['first-letter'].hoverSensitive
     );
   }
 
@@ -526,6 +540,43 @@ export class Cascade {
     return style.content === 'normal' || style.content === 'none'
       ? null
       : style;
+  }
+
+  /**
+   * The rules for an element's `::first-letter`, or null when none reaches
+   * it. They are matched against the element here, and its style computed
+   * later by `firstLetterStyle`, because the pseudo-element inherits from
+   * the box its letter turns out to be in — a `<span>` the block opens with,
+   * a `::before` — which the builder has not reached yet.
+   */
+  firstLetterRules(el: Element): FirstLetterRules | null {
+    const index = this._pseudo['first-letter'];
+    if (!index.size) return null;
+    const candidates: Candidate[] = [];
+    this._matchInto(index, el, candidates);
+    if (!candidates.length) return null;
+    candidates.sort(byCascade);
+    return { el, candidates };
+  }
+
+  /**
+   * The style of a `::first-letter` inside a box of `parentStyle`. It is an
+   * inline box, or a float where it floats, whatever the rules say of its
+   * `display` or its `position` (CSS 2.1 5.12.2).
+   */
+  firstLetterStyle(
+    rules: FirstLetterRules,
+    parentStyle: ComputedStyle,
+  ): ComputedStyle {
+    const style = this._computeStyle(
+      rules.el,
+      parentStyle,
+      false,
+      rules.candidates as Candidate[],
+    );
+    style.display = style.float === 'none' ? 'inline' : 'block';
+    style.position = 'static';
+    return style;
   }
 
   /** `styleFor`, from the rules and hints already gathered for `el`. */

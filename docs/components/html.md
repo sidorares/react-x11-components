@@ -166,6 +166,16 @@ them, so numbered headings and nested outline numbers come out as they do in
 a browser. The generated text is part of the document's text, so a selection
 over it copies it.
 
+**First letters:** `::first-letter` (and `:first-letter`) styles the first
+letter of a block's first line, with the punctuation before and after it, as
+an inline box of its own — or a float, for a drop cap. It is found down
+through the block's inline content and its first child blocks, generated
+content included, and there is none when something other than a letter
+starts the line: a `<br>`, an image, an inline-block. The box sits inside
+whatever the letter is in, so `<p><b>T</b>his` has a bold first letter. An
+opening quote in a text of its own before the letter — `<q>`'s — takes the
+letter's style too.
+
 **Selectors:** everything [css-select] supports — combinators, attribute
 operators, `:nth-child(an+b)`, `:not()` — plus `:hover`, which is answered
 from this renderer's own pointer state. Escapes are read wherever they stand,
@@ -181,9 +191,9 @@ answers it and a desktop that switches schemes re-cascades the document.
 animations and transitions, multi-column, shadows, gradients,
 `background-size`, `background-attachment: fixed`, more than one background
 layer (the first is drawn), `position: sticky` (treated as `relative`),
-`::first-letter` and `::first-line`, and an image in `content` (the rest of
-the value is drawn). `border-collapse: collapse` is drawn as the separate
-model with zero spacing, and `<col>` and `<colgroup>` take no part in
+`::first-line`, and an image in `content` (the rest of the value is
+drawn). `border-collapse: collapse` is drawn as the separate model with zero
+spacing, and `<col>` and `<colgroup>` take no part in
 layout: neither their widths nor their borders are read. A percentage
 `height` resolves where the containing block's height is set, and on an
 absolutely positioned box; the document's root has no height to give, since
