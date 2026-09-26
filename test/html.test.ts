@@ -2486,6 +2486,31 @@ metric('a relative box after an absolute one is painted over it', async () => {
   assert.ok(order('#ff0000') < order('#00ff00'), 'then in document order');
 });
 
+metric(
+  'a block with a formatting context of its own sits beside a float',
+  async () => {
+    // CSS 2.1 9.5: an `overflow: hidden` block beside a floated image is a
+    // rectangle in the room the float leaves, where it ran under the image;
+    // a table too wide for the room goes below the floats
+    const { node } = await render(
+      '<div id="c" style="width:400px">' +
+        '<div id="f" style="float:left;width:100px;height:50px"></div>' +
+        '<div id="b" style="overflow:hidden;height:20px">beside</div>' +
+        '<div id="g" style="float:left;width:300px;height:40px"></div>' +
+        '<table id="t" style="width:200px;border-spacing:0"><tr><td>x</td>' +
+        '</tr></table></div>',
+      500,
+    );
+    const el = view(node);
+    const [c, f, b, g, t] = ['c', 'f', 'b', 'g', 't'].map((id) =>
+      boxOf(el, id),
+    );
+    assert.deepStrictEqual([b.x, b.width], [f.x + f.width, c.width - 100]);
+    assert.strictEqual(g.x, f.x + f.width, 'the second float fits beside');
+    assert.ok(t.y >= g.y + g.height, `the table goes below both: ${t.y}`);
+  },
+);
+
 metric('clip shows the part of an absolute box it names', async () => {
   const { node } = await render(
     '<div id="a" style="position:absolute;top:0;left:0;width:40px;' +
