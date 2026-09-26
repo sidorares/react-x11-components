@@ -53,9 +53,11 @@ comparable with these; the method is.
 | appkit     | #77 a window shown taller than the screen says it is shown                        | released, 0.14.1    |
 | components | #141 `<Html>`: a style is computed once per kind of element                       | merged              |
 | components | #142 `<Html>`: a kept layout is found by comparing; a line height is kept         | merged              |
-| components | #143 `<Markdown>`: a list item, its marker and a table cell without a box         | open                |
-| ntk        | #387 a paragraph laid out at another width keeps its tokens                       | open                |
+| components | #143 `<Markdown>`: a list item, its marker and a table cell without a box         | merged              |
+| ntk        | #387 a paragraph laid out at another width keeps its tokens                       | released, 8.12.7    |
 | appkit     | #79 the ungranted calendar reads are settled as they are asked for                | merged              |
+| ntk        | #389 text under 64 characters does not go through the paragraph cache             | released, 8.12.8    |
+| ntk        | #390 fc-match spawned by its path; a fallback asks for its face's pattern         | released, 8.12.8    |
 
 ## Method
 
@@ -68,16 +70,16 @@ live in `scripts/bench/sweep/`, with `run.sh` to run all of them on both
 backends, `tabulate.ts` to print a run as tables or mark what moved against
 an older one, and the final sweep's results (see the README there):
 
-| Probe             | Component              | Actions (`ACTION=`)                                                                                                                          | Knobs                                                          |
-| ----------------- | ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
-| `matrix.tsx`      | `<Flow>`               | `pan`, `zoom`, `wheel`, `drag` over five scenes                                                                                              | `SCENE`, `GL`, `ZOOM`, `MAP`, `W`/`H`/`VX`/`VY`, `DIAG`        |
-| `mapsweep.tsx`    | `<Map>`                | `pan`, `drag`, `wheel`, `fly` over London z15                                                                                                | `RENDERER` (`retained`/`gl`), `DIAG`; tiles from `BENCH_TILES` |
-| `chartsweep.tsx`  | charts                 | `stream`, `pan1m`, `zoom1m`, `multiples`, `scatter`, `scroll`                                                                                |                                                                |
-| `tablesweep.tsx`  | `<Table>`              | `wheel`, `fling`, `thumb`, `jump` over 100k rows                                                                                             | `DIAG`, `PREFETCH`                                             |
-| `docsweep.tsx`    | `<Markdown>`, `<Html>` | `mount`, `edit`, `append`, `scroll`, `reflow`                                                                                                | `COMP`, `SIZE` (sections), `PHASES`, `NO_FLOORS`               |
-| `editorsweep.tsx` | `<CodeEditor>`         | `mount`, `scroll`, `type-end`, `type-mid`, `type-start`, `undo`, `replace`, `long-mount`, `long-type`, `caret-down`, `enter-end`, `jump-end` | `COMP=code`, `LINES`, `LONG`, `PLAIN`                          |
-| `editorsweep.tsx` | `<RichTextEditor>`     | `mount`, `scroll`, `type-mid`, `type-hidden`, `type-long`, `bold-all`, `paste`                                                               | `COMP=rte`, `SIZE`                                             |
-| `docgen.ts`       | —                      | generates the test documents                                                                                                                 | deterministic by seed                                          |
+| Probe             | Component              | Actions (`ACTION=`)                                                                                                                          | Knobs                                                            |
+| ----------------- | ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| `matrix.tsx`      | `<Flow>`               | `pan`, `zoom`, `wheel`, `drag` over five scenes                                                                                              | `SCENE`, `NODES`, `GL`, `ZOOM`, `MAP`, `W`/`H`/`VX`/`VY`, `DIAG` |
+| `mapsweep.tsx`    | `<Map>`                | `pan`, `drag`, `wheel`, `fly` over London z15                                                                                                | `RENDERER` (`retained`/`gl`), `DIAG`; tiles from `BENCH_TILES`   |
+| `chartsweep.tsx`  | charts                 | `stream`, `pan1m`, `zoom1m`, `multiples`, `scatter`, `scroll`                                                                                |                                                                  |
+| `tablesweep.tsx`  | `<Table>`              | `wheel`, `fling`, `thumb`, `jump` over 100k rows                                                                                             | `DIAG`, `PREFETCH`                                               |
+| `docsweep.tsx`    | `<Markdown>`, `<Html>` | `mount`, `edit`, `append`, `scroll`, `reflow`                                                                                                | `COMP`, `SIZE` (sections), `PHASES`, `NO_FLOORS`                 |
+| `editorsweep.tsx` | `<CodeEditor>`         | `mount`, `scroll`, `type-end`, `type-mid`, `type-start`, `undo`, `replace`, `long-mount`, `long-type`, `caret-down`, `enter-end`, `jump-end` | `COMP=code`, `LINES`, `LONG`, `PLAIN`                            |
+| `editorsweep.tsx` | `<RichTextEditor>`     | `mount`, `scroll`, `type-mid`, `type-hidden`, `type-long`, `bold-all`, `paste`                                                               | `COMP=rte`, `SIZE`                                               |
+| `docgen.ts`       | —                      | generates the test documents                                                                                                                 | deterministic by seed                                            |
 
 The diagnostic modes — `DIAG`, `DAMAGE`, `TIMELINE`, `CLAIMS`, `STACKS`,
 `PHASES` — are in that README, with what each found.
@@ -1137,6 +1139,214 @@ and ended the process; it settles each answer as it asks now (appkit #79).
 after it was asked for: a `cancelPanel` that reaches the UI thread before
 the panel's modal session has begun stops nothing. That one is open.
 
+## Round 12: small cases first
+
+The rule this round was set by: **an optimization found through a stress
+case must cost next to nothing at small scale, or stay off until the scale
+that needs it is there.** The stress probes exist to make everyday use
+smooth, not to make the stress cases a little faster. So every change below
+was measured at an everyday size as well — short labels, a 20 KB page, a
+500-line file, a 30-node graph — and the round's sweep ran both scales:
+`matrix.tsx` takes `NODES` for the lattice's size, and the everyday cells
+are `SIZE=10` documents, `LINES=500` and `NODES=30`.
+
+### `<Flow>`: an animated zoom holds its bodies (components #128)
+
+A zoom stepped by an app's animation — `setViewport` a frame at a time —
+ran at a fifth to a third of a wheel zoom over the same graph. The pane
+already treats zoom steps under 120 ms apart as a stream for its picture
+and its scaled labels, whatever sent them; only `_holdBodies` still asked
+whether the step was a gesture, so every mounted body was re-scaled at every
+frame of an animation. A stream now holds them as a gesture does. A single
+jump still applies at once, and bodies that fit the frame's budget still
+zoom live, so a graph with a few of them is exactly as it was. Round 1
+listed it as by design; nothing else in the pane told an animation from a
+gesture.
+
+| animated zoom, stress scenes | before  | after     |
+| ---------------------------- | ------- | --------- |
+| XQuartz, widgets             | 26 fps  | 40 fps    |
+| XQuartz, charts              | 12 fps  | 43 fps    |
+| Cocoa 2D, widgets / charts   | 16 / 11 | 41 / 42   |
+| Cocoa GL, widgets / charts   | 31 / 26 | 117 / 114 |
+
+### `<Flow>`: a zoom's picture only for a graph that needs one (components #128)
+
+The zoom picture (round 1) paints the graph once onto an offscreen surface
+and composites it scaled at every step. It was measured on the 200-node
+lattice and the stress example, and it was on for every graph. On a 30-node
+graph it was the slowest thing in the zoom: at 2x on macOS the composite is
+~20 ms a step whatever the graph, where the graph paints live in 5–9; on
+XQuartz each picture painted again was a stall, and the zoom's
+95th-percentile frame was 58–59 ms. And it held a surface the size of the pane, 15 MB for a
+1200×800 pane at 2x, for every zoom.
+
+Where the line falls was measured rather than chosen: the same zoom with
+the picture forced off and forced on, by the lattice's size.
+
+| lattice, live / picture | XQuartz                           | macOS                                |
+| ----------------------- | --------------------------------- | ------------------------------------ |
+| 30 nodes                | 56 / 64 fps, p95 22 / 58 ms       | 88 / 45 fps, p95 15 / 35 ms          |
+| 100                     | 28–29 / 38 fps, p95 43 / 105 ms   | 38–43 / 43–44 fps, p95 27–34 / 37 ms |
+| 200                     | 22–23 / 32–33 fps, p95 54 / 96 ms | 31–32 / 41 fps, p95 35 / 40 ms       |
+| 400                     | 18 / 32 fps, p95 71 / 136 ms      | 26 / 39 fps, p95 45 / 46 ms          |
+
+On macOS the two meet where painting live costs what the composite does,
+about 20 ms. On XQuartz the picture always draws more frames and always
+stalls longer, so there it is a trade at every size. A frame at 60 Hz as
+the line keeps live every graph that paints within a frame, and gives the
+picture, as before, to every graph that does not.
+
+A zoom now composites a picture only once painting the graph whole has cost
+more than 16 ms, and paints live again under 12. It judges on the median of
+the last five whole paints: the steps of a zoom painted live, and the
+pictures' own paints less their ground. The first cut read a running mean
+of a zoom's paints and went wrong three ways. A zoom's first step sets every
+label at its new size, which the steps after it do not, and one slow first
+step sent a thirty-node graph on macOS to the picture for a whole
+animation. On XQuartz the live steps of the same graph run 8–18 ms, and a
+run of slow ones crossed the line on one run in three. And a picture's own
+paint draws its ground as runs where the window has a tile, half as dear
+again as a step on X11, so a picture made by mistake measured itself as
+worth keeping. The first step is left out now, the median takes five, and
+a picture's paint is timed without its ground.
+
+| 2D zoom, lattice            | before               | after                   |
+| --------------------------- | -------------------- | ----------------------- |
+| 30 nodes, macOS, animated   | 46 fps, p95 34–35 ms | 92–94 fps, p95 13–14    |
+| 30 nodes, macOS, wheel      | 59–61, p95 32–34     | 100–101, p95 13         |
+| 30 nodes, XQuartz, animated | 63–65, p95 57–60     | 55–56, p95 22           |
+| 30 nodes, XQuartz, wheel    | 77–78, p95 29–32     | 61–62, p95 22           |
+| 100, 200 and 2,000, both    | a picture            | a picture, within noise |
+
+The thirty-node graph on XQuartz draws fewer frames live, each a 9 ms paint
+where a composite was 1, and none of the 60 ms stalls a picture's repaint
+was. A picture is also 15 MB of surface for a 1200×800 pane at 2x that a
+small graph no longer holds.
+
+### ntk: short text does not go through the paragraph cache (ntk #389)
+
+Round 11's kept paragraphs (ntk #387) halved a large document's resize, and
+cost every short text layout about a microsecond — a lookup, a copy of its
+spans and an entry — on text a UI lays out once. Measured on a warm font
+manager: 2,000 labels mounting went from 7.7–8.3 to 9.7–10.3 ms, a ticking
+counter 20–30% slower, two-span labels likewise. Text under 64 characters
+now skips the cache entirely and takes the path it took before; documents
+keep their resize (Markdown 101–105 ms against 103–107, `<Html>` 38 against
+34–38) and their first paint.
+
+What the kept paragraphs cost in memory is now said where they are
+described: about 60 bytes a character of kept text, 36 MB for a 600 KB
+document with its layouts held, a few megabytes for a page, and nothing for
+a UI's labels.
+
+The same check on the other kept things this sweep added:
+
+- **Core's kept CoreText typesetters (react-x11 #707)** cost small cases
+  nothing: 2,000 labels mount in 24.5–25.3 ms against 25.2 before, and the
+  packed geometry makes two-span labels faster (37 against 40 ms).
+- **`<Html>`'s style sharing and compared layouts (#141, #142)** make a
+  five-section document faster, not slower: an edit 12.0–12.5 → 10.1–10.4 ms
+  and first paint 81–86 → 73–77 ms on macOS, an edit 8.1–8.4 → 7.2–7.3 ms on
+  XQuartz.
+- **The code editor's pieces and the virtual windows** are gated by size
+  already: a line is cut into pieces past 2,048 characters, and `<Tree>`,
+  `<Table>` and `<RichTextEditor>` draw a window past 200 rows or blocks.
+
+### ntk: `fc-match` by its path, and a fallback's pattern (ntk #390)
+
+A 20 KB HTML page took 384–416 ms to its first paint on XQuartz, against 88
+on macOS. Half of it was two synchronous `fc-match` runs inside the first
+text layout, 92 and 93 ms each.
+
+The first was a fallback asking for a pattern nobody had fetched.
+`fallbackFor` passed the span's raw weight and style — undefined for
+regular text — where `match` and the prewarm normalised both, so the first
+character a face lacked spawned `fc-match` for a pattern that fontconfig
+answers with the list already in hand. Both build the pattern in one place
+now.
+
+The second was the spawn itself. By its bare name, `fc-match` is found by
+`posix_spawnp`, which on macOS tries each `PATH` directory ahead of the
+one that holds it; seventh on this machine's `PATH`, a spawn took 45–65 ms
+where the same spawn by its path takes 12–16. The open-file limit had
+nothing to do with it. ntk looks the path up once per `PATH` value, and a
+missing fontconfig reports as it did.
+
+| XQuartz first paint, median of five | before | after  |
+| ----------------------------------- | ------ | ------ |
+| a 20 KB HTML page                   | 416 ms | 232 ms |
+| the same content as Markdown        | 183 ms | 184 ms |
+| a 500-line code editor              | 175 ms | 177 ms |
+| a small rich text editor            | 220 ms | 220 ms |
+
+The last three make no synchronous spawn at their first paint, so #390
+leaves them where they were; the code editor waits on a prewarm instead,
+which the spawn log #390 was measured with did not see (see "The everyday
+sweep"). The page's other `fc-match`, for the weight 600 its table headers
+use, is outside the four prewarmed faces and still spawns — in 24 ms rather
+than 93.
+
+### The everyday sweep
+
+The small cells of the round's sweep, before the two changes above:
+
+| everyday cell                       | XQuartz                | macOS                  |
+| ----------------------------------- | ---------------------- | ---------------------- |
+| 20 KB `<Markdown>`, first paint     | 177 ms                 | 116 ms                 |
+| …an edit / a reflow, a frame        | 2.4 / 3.7 ms           | 3.1 / 7.5 ms           |
+| 20 KB `<Html>`, first paint         | 384 ms (232, #390)     | 88 ms                  |
+| …an edit / a reflow, a frame        | 8.1 / 3.3 ms           | 10.9 / 4.9 ms          |
+| 500-line code editor, first paint   | 165 ms                 | 65 ms                  |
+| …a keystroke, input to screen       | 3.4–3.8 ms             | 4.7–6.5 ms             |
+| 20 KB rich text editor, first paint | 217 ms                 | 180 ms                 |
+| …a keystroke, input to screen       | 3.8 ms                 | 4.6 ms                 |
+| …select all and bold, a frame       | 28 ms, 61 ms to screen | 40 ms, 81 ms to screen |
+| 30-node `<Flow>`, pan               | 83 fps                 | 120 fps                |
+| a city `<Map>`, pan (GL)            | 86 fps                 | 117 fps                |
+
+Everything a keystroke or a scroll does is a few milliseconds at this size.
+Two things are not, and both were taken apart and left open:
+
+- **First paints on XQuartz.** A 500-line code editor's first frame is
+  143–158 ms against 30–32 on macOS, and 104–110 ms of it is one wait: the
+  first layout of monospace text asks fontconfig for the family, and ntk
+  starts `fc-match` for its four faces and waits on the one asked for — the
+  code's highlighting asks for bold as well. Launched at that moment, from
+  the app, `fc-match` takes 80–150 ms; launched from a small process it takes
+  20, and launched from a worker thread every 70 ms through the same mount
+  it stayed near 10. It spends that time waiting — its CPU time and its
+  instructions are a fast launch's, with no page faults — and neither its
+  priority nor an idle gap accounts for it. Sans-serif hides the same cost
+  because ntk starts it while the X connection is set up; warming monospace
+  there too took 7–10 ms off, since the bold face was still asked for, and
+  warming all four would cost every app four processes it may never need.
+- **Bold over a whole small document** in `<RichTextEditor>`: 55–57 ms to
+  the screen on XQuartz and 71–72 on macOS in React's production build,
+  66–88 in development, where React's component tracks — a
+  `performance.measure` per component — are part of the difference. Per
+  toggle on macOS: 22 ms of React, 21 of layout — every paragraph set again
+  in bold, the ones off screen included, below the 200 blocks at which the
+  editor draws a window — 13 of paint, mostly the selection's band over
+  every line, and 2.5 of ProseMirror. Every block really changed; none of it
+  is waste.
+
+A small Markdown page's scroll reported a 95th-percentile latency of 110 and
+260 ms. That is the probe: a page that short reaches its end inside the
+probe's 90 notches, and a notch at the end paints nothing, so its latency
+runs to the frame after the scroll turns round.
+
+### Parked: Markdown's second layout pass
+
+Every react-x11 node may shrink, and core emulates CSS's `min-height: auto`
+with measured floors; a width change re-wraps paragraphs, so the floors are
+measured again and the tree laid out a second time. Skipping it safely needs
+core to prove a subtree cannot be squeezed — an auto-height column under a
+scroll port — which is new analysis inside the floors system, not a
+workaround, and the other route is yoga itself. The one cheap lever, core's
+floors deferred through a live resize, has no signal to key on under X11.
+Parked, as asked, in favour of the rest.
+
 ## Lessons
 
 1. **Look for caches that never hit.** Identity-keyed caches handed a new
@@ -1229,17 +1439,43 @@ the panel's modal session has begun stops nothing. That one is open.
     most of the kept paragraphs' hits were list markers, and a key built by
     concatenation cost more than they saved. Count hits by what they would
     have cost, and keep the key a string the caller already has.
+25. **A stress fix is off until its scale is there.** The paragraph cache
+    cost every short label a microsecond, 20–30%, and the zoom picture held
+    a 30-node graph to half its frame rate on macOS; both were measured
+    only on the scenes they were for. Measure each change at an everyday
+    size too, and gate it by size or by the cost it exists to avoid.
+26. **Find a gate's line by forcing both sides.** The zoom picture's
+    threshold came from the same zoom with the picture forced off and on at
+    four graph sizes. On macOS the two cross where a live paint costs what
+    the composite does; on XQuartz they never cross, and the picture is a
+    trade of frames for stalls at every size.
+27. **Decide on the steady state, by a median.** The zoom picture's first
+    gate read a running mean of every paint: one slow step, a zoom's first
+    step shaping every label, or a picture's own paint of its ground, and a
+    small graph was on the picture for a whole zoom, on one run in three.
+    Leave out what the steady state does not repeat, and take a median.
+28. **A spawn by name searches `PATH` at spawn time.** On macOS
+    `posix_spawnp` spawns in each directory ahead of the binary's, 30–50 ms
+    of a synchronous `fc-match`. Find the path once.
 
 ## Still open
 
-Ordered by practical impact, after round 11.
+Ordered by practical impact, after round 12.
 
+- **XQuartz first paints**: the first layout of a family ntk has not warmed
+  waits on `fc-match`, which takes 80–150 ms launched from inside a
+  mounting app against 20 from a small process — 104–110 ms of a 500-line
+  code editor's 143–158 ms first frame. Sans-serif is warmed while the
+  connection is set up; any other family pays it. An app naming its
+  families early, or answers kept across runs, would hide it; neither is
+  small.
 - **Markdown reflow's second layout pass**: the floors emulating
   `min-height: auto` come from the previous layout, so a width change lays
   the document out twice — 10,188 nodes at 600 KB with #143, in a frame of
   103 ms on XQuartz with ntk #387 as well. A live resize on Cocoa defers
   them; a split-pane drag does not. The fix is content-based minimum sizes
-  in yoga.
+  in yoga; parked in round 12, with no workaround here or in core short of
+  that.
 - **`<Markdown>` first paint** (0.77–0.78 s on XQuartz with #143 and ntk
   #387; 1.04–1.08 s on Cocoa with #143, measured on a core without the
   kept typesetters): the height floors, React's development render and the
@@ -1251,3 +1487,10 @@ Ordered by practical impact, after round 11.
 - **Cocoa scroll**: what is left is the band copy itself, about 1.4 ms a
   frame at 2x, memory-bound; see "The Cocoa scroll's double copy".
 - **`<RichTextEditor>`**: large pastes, mostly React's development render.
+- **A 2D zoom on XQuartz**: live, a step shapes every label at its size,
+  since X11 draws glyphs at the size they were shaped at — 9 ms a step at 30
+  nodes, 22 at 100. The picture it takes past 16 ms stalls 60–140 ms each
+  time it is painted again.
+- **Bold over a whole small document** in `<RichTextEditor>`: 55–72 ms to
+  the screen in production, proportional to the document below the 200
+  blocks at which the editor draws a window; see round 12.
