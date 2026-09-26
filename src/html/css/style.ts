@@ -89,6 +89,7 @@ export interface ComputedStyle {
   cursor: string | null;
   borderCollapse: 'separate' | 'collapse';
   borderSpacing: number;
+  captionSide: 'top' | 'bottom';
   /** Inherited so a `<td>` picks up the table's, which is how authors expect
    *  `text-align` on a `<table>` to behave. */
   tableTextAlignSet: boolean;
@@ -214,6 +215,7 @@ const INHERITED = [
   'cursor',
   'borderCollapse',
   'borderSpacing',
+  'captionSide',
   'tableTextAlignSet',
   'quotes',
 ] as const satisfies readonly (keyof ComputedStyle)[];
@@ -272,6 +274,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     // CSS's initial value; a `<table>` gets its 2px from the UA sheet, and
     // an anonymous table, which no sheet names, has none
     borderSpacing: 0,
+    captionSide: 'top',
     tableTextAlignSet: false,
     quotes: DEFAULT_QUOTES,
 
@@ -1039,6 +1042,11 @@ export function applyDeclaration(
       if (v === 'collapse' || v === 'separate') style.borderCollapse = v;
       return;
     }
+    case 'caption-side': {
+      const v = value.toLowerCase();
+      if (v === 'top' || v === 'bottom') style.captionSide = v;
+      return;
+    }
     case 'border-spacing': {
       const len = parseLength(splitValue(value)[0] ?? '', ctx);
       if (typeof len === 'number') style.borderSpacing = len;
@@ -1428,6 +1436,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'list-style-position': ['listStylePosition'],
   cursor: ['cursor'],
   'border-collapse': ['borderCollapse'],
+  'caption-side': ['captionSide'],
   quotes: ['quotes'],
   content: ['content'],
   'counter-reset': ['counterReset'],
