@@ -942,6 +942,9 @@ function translate(box: Box, dx: number, dy: number): void {
   if (!dx && !dy) return;
   box.x += dx;
   box.y += dy;
+  // a list item's marker is placed in the same coordinates as its lines
+  box.markerX += dx;
+  box.markerY += dy;
   if (box.lines) {
     for (const line of box.lines) {
       line.x += dx;
