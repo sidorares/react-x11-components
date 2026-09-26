@@ -2459,6 +2459,26 @@ metric("a caption is outside the table's border, above or below", async () => {
   assert.ok(d.y + d.height <= u.y + u.height, 'the box holds its caption');
 });
 
+test('a background-position keyword says which axis it is on', async () => {
+  const { node } = await render(
+    '<div id="a" style="background-position:bottom"></div>' +
+      '<div id="b" style="background-position:top right"></div>' +
+      '<div id="c" style="background:url(x.png) repeat-x left 10px"></div>',
+  );
+  const el = view(node);
+  const at = (id: string) => {
+    const s = (
+      boxOf(el, id) as unknown as {
+        style: { backgroundPositionX: unknown; backgroundPositionY: unknown };
+      }
+    ).style;
+    return [s.backgroundPositionX, s.backgroundPositionY];
+  };
+  assert.deepStrictEqual(at('a'), [{ pct: 50 }, { pct: 100 }], 'alone');
+  assert.deepStrictEqual(at('b'), [{ pct: 100 }, 0], 'either order');
+  assert.deepStrictEqual(at('c'), [0, 10], 'in the shorthand');
+});
+
 metric("a footer group's rows come last wherever it stands", async () => {
   const { node } = await render(
     '<table><thead><tr><td id="h">h</td></tr></thead>' +
