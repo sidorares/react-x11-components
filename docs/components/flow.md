@@ -255,7 +255,10 @@ the focus, not the node. Three things follow, and all three are the point:
   a body that wants to show less of itself when it is small. Below `zoom`
   0.6 it is not mounted at all — nobody could read it, and one real subtree
   per card is the cost a zoomed-out overview cannot pay, so the pane draws
-  the card instead.
+  the card instead. Through a zoom — a gesture, or an animation stepping
+  the viewport a frame at a time — bodies that would cost more than a
+  frame's budget to re-scale sit it out, mounted but hidden, and come back
+  once it rests; a single jump applies at once, and a few bodies zoom live.
 - **`headerHeight` is what keeps the node draggable.** The body starts below
   the strip, so there is always somewhere to grab that is not a text field.
   `0` hands the whole box over, and then only the keyboard can move the node.

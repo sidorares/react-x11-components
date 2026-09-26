@@ -4282,17 +4282,26 @@ export class FlowGraphNode extends Node implements FlowInstance {
    * gesture stays held until it rests: bodies blinking in and out as the
    * count crosses the line would be worse than either.
    *
-   * Only gestures count — the wheel, a pinch, the keys: the `_gestureSync`
-   * ones, which arrive as a stream. A programmatic jump — `fitView`,
-   * `setViewport`, a control's button — applies at once, so an app that
-   * sets the viewport and reads the result sees it; the pane never animates
-   * a viewport of its own.
+   * Only a stream counts: a gesture's steps — the wheel, a pinch, the keys
+   * (`_gestureSync`) — or an animation's, `setViewport` a frame at a time,
+   * each zoom under `GL_ZOOM_REST_MS` after the one before (`_zoomStream`,
+   * the rule the zoom's picture and its scaled labels already follow). A
+   * single programmatic jump — `fitView`, `setViewport`, a control's button
+   * — applies at once, so an app that sets the viewport and reads the result
+   * sees it; the pane never animates a viewport of its own. An animation
+   * that stepped every body at every frame held a zoom over the stress
+   * example's charts to 10 frames a second.
    */
   private _holdBodies(zoom: number): boolean {
     if (zoom !== this._seenZoom) {
       const first = Number.isNaN(this._seenZoom);
       this._seenZoom = zoom;
-      if (first || (!this._gestureSync && !this._bodiesHeld)) return false;
+      if (
+        first ||
+        (!this._gestureSync && !this._zoomStream && !this._bodiesHeld)
+      ) {
+        return false;
+      }
       const bodies = this._bodies.length;
       if (!this._bodiesHeld && bodies * this._bodyStepMs <= this._budgetMs()) {
         this._zoomStep = { live: true, bodies };

@@ -2722,6 +2722,63 @@ test('a programmatic zoom applies to bodies at once', async () => {
   assert.strictEqual(retained(bodyBox().children[0]).props.scale, 2);
 });
 
+test("an animation's zoom holds bodies over the budget, as the wheel does", async () => {
+  // An app animating the viewport steps `setViewport` a frame at a time,
+  // which is a gesture in all but its source: every body re-scaled at every
+  // step held a zoom over the stress example's charts to 10 frames a second.
+  // A stream of zooms (`_zoomStream`) holds them as a wheel's does, and a
+  // single jump still applies at once.
+  let renders = 0;
+  const counted: FlowNodeType = {
+    size: { width: 200, height: 120 },
+    headerHeight: 20,
+    render: () => {
+      renders++;
+      return h('text', null, 'body');
+    },
+  };
+  const { flow } = await mount({
+    nodes: Array.from({ length: 10 }, (_, i) => ({
+      id: `n${i}`,
+      type: 'counted',
+      position: { x: 20 + (i % 5) * 140, y: 60 + Math.floor(i / 5) * 150 },
+      width: 120,
+      height: 100,
+    })),
+    edges: [],
+    nodeTypes: { counted },
+  });
+  await act();
+  assert.strictEqual(bodyLayer().children.length, 10, 'precondition');
+
+  // one jump, well after anything the mount did to the view: at once
+  await act(() => new Promise((resolve) => setTimeout(resolve, 200)));
+  await act(() => flow.current!.setViewport({ x: 0, y: 0, zoom: 0.9 }));
+  assert.ok(!bodiesAway(), 'a single jump is not held');
+  assert.strictEqual(retained(bodyBox().children[0]).props.scale, 0.9);
+
+  await act(() => new Promise((resolve) => setTimeout(resolve, 200)));
+  const before = renders;
+  await heldClock(async () => {
+    // the first step of an animation is a jump as far as the pane can tell
+    flow.current!.setViewport({ x: 0, y: 0, zoom: 0.92 });
+    assert.ok(!bodiesAway(), 'the first step applies at once');
+    assert.strictEqual(renders, before + 10, 'every body, once');
+    for (let step = 2; step <= 4; step++) {
+      flow.current!.setViewport({ x: 0, y: 0, zoom: 0.9 + step * 0.02 });
+    }
+    assert.ok(bodiesAway(), 'from the second, hidden while it runs');
+    assert.strictEqual(renders, before + 10, 'and not rendered once a step');
+  });
+  await act(() => new Promise((resolve) => setTimeout(resolve, 250)));
+  assert.ok(!bodiesAway(), 'back once the zoom rests');
+  assert.ok(
+    Math.abs((retained(bodyBox().children[0]).props.scale as number) - 0.98) <
+      1e-9,
+    'at the zoom the animation left',
+  );
+});
+
 test('a wheel over a mounted body zooms the graph', async () => {
   // The bodies are the pane's siblings, so a wheel over one never reached
   // the pane: over a graph of cards with bodies, the zoom stalled wherever
