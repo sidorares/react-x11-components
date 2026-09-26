@@ -109,7 +109,7 @@ those tests measure nothing about `<Html>`, which has no pages.
 
 ## What the suite found, and what was fixed
 
-Eight defects, each fixed with a test that fails without the fix:
+Nine defects, each fixed with a test that fails without the fix:
 
 1. **A universal selector hung the application.** The specificity scan took
    `*` and `|` for the start of a name and then stepped over none of it, so
@@ -145,12 +145,27 @@ Eight defects, each fixed with a test that fails without the fix:
    now, and the root's background covers the canvas, so an email's
    `<body bgcolor>` colours the message rather than a box inside a white
    page. Backgrounds went from 96 to 180 of 336 on X11.
+9. **The `font` shorthand kept what it did not name.** CSS 2.1 15.8 resets
+   every part a shorthand leaves out, and only the named parts were applied:
+   `p { font: 12pt serif }` inside a document at `20px/1em` kept 20px lines,
+   and a bold parent's weight survived it. `font: inherit` also took the
+   line height without its unit. Found on Cocoa only, once the engine fix
+   below moved its baselines; see [Lessons](#lessons).
 
-And one in ntk, found the same way: **a scaled image faded out over its
-outer pixels**, because the server-side bilinear filter sampled past its
-edge as transparent. Fixed in ntk 8.12.9 (ntk #392) by clamping to the
-edge, as the canvas spec and browsers do; every reference built from image
-swatches differed from its test by their rims.
+And upstream, found the same way:
+
+- **A scaled image faded out over its outer pixels** in ntk, because the
+  server-side bilinear filter sampled past its edge as transparent. Fixed in
+  ntk 8.12.9 (ntk #392) by clamping to the edge, as the canvas spec and
+  browsers do; every reference built from image swatches differed from its
+  test by their rims.
+- **CoreText put all of a line's leading under its glyphs**, where ntk
+  splits it evenly above and below them, as CSS does, so on a line taller or
+  shorter than its glyphs `<Html>` drew them up to half a glyph from where
+  X11 did. Fixed in @windowkit/appkit 0.15.0 (windowkit/appkit#80), which
+  lands with react-x11#709: react-x11's `<text>` had been making up for the
+  old placement with a shift of its own, which on ntk moved its glyphs a
+  quarter of the leading too far down.
 
 ## What `<Html>` supports
 
@@ -192,9 +207,15 @@ only on X11; of those 307:
   lands, so a background drawn a tile at a time differs from the reference's
   `<img>` by at most 32 levels on a few hundred pixels. Nothing a reader
   sees, and a strict comparison counts it.
-- **89 are line boxes.** On Cocoa, a glyph taller than its line box is cut
-  off where X11 draws it whole and lets it overflow, as CSS does. The native
-  `drawLayout` does not clip, so the cut is made above it; not yet found.
+- **90 are line boxes**, and two things. CoreText put a line's leading
+  under its glyphs, so the squares the tests build out of Ahem sat as much
+  as half a glyph off; with the appkit fix above, 37 tests come out closer
+  to their references and the median line-box difference falls from 1,682
+  pixels to 122. What those still differ by is CoreText's font smoothing,
+  which rims each glyph with a device pixel of grey that the references'
+  boxes do not have: with smoothing off as well, Cocoa passes 104 of the 191
+  line-box tests, X11 106. Smoothing is how macOS draws text, so it stays,
+  and those tests fail there by design.
 - **The rest** — positioning, floats, normal flow — are under investigation;
   the 88 normal-flow tests that pass only on Cocoa point at a metric that
   differs between the two text engines.
@@ -262,3 +283,10 @@ directories and caniemail's feature list:
 3. **Count the backend difference, not the backend.** A test passing on one
    backend and failing on the other is a backend bug with its reproduction
    attached; that list is worth more than either pass rate.
+4. **One difference can be two bugs, and a fix can show the second.**
+   Moving macOS's baselines to where X11's are made two margin-collapse
+   tests worse there: the test's paragraph kept a 20px line height it
+   should have reset, which puts its baseline 0.8px from the reference's.
+   X11 rounds both to the same pixel and passed; at 2x they are two device
+   pixels apart. Rerun both backends after a fix to either, and read what
+   got worse.
