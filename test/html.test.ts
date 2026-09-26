@@ -1066,6 +1066,22 @@ test('quotes open and close by depth, and none writes nothing', async () => {
   );
 });
 
+test('an anchor with no href is drawn as the text around it', async () => {
+  const { node } = await render(
+    '<p style="color:#123456"><a id="n">name</a> <a id="l" href="#">link</a></p>',
+  );
+  const el = view(node);
+  const styleOf = (id: string) =>
+    (
+      boxOf(el, id) as unknown as {
+        style: { color: string; textDecorationLine: string };
+      }
+    ).style;
+  assert.strictEqual(styleOf('n').color, parseColor('#123456'));
+  assert.strictEqual(styleOf('n').textDecorationLine, 'none');
+  assert.notStrictEqual(styleOf('l').color, parseColor('#123456'));
+});
+
 test('an inline-block on a line is painted once', async () => {
   // the line paints what is placed on it, and the paragraph's own walk
   // over its children must not paint it again: a translucent fill drawn
