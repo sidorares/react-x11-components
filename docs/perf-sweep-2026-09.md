@@ -53,6 +53,9 @@ comparable with these; the method is.
 | appkit     | #77 a window shown taller than the screen says it is shown                        | released, 0.14.1    |
 | components | #141 `<Html>`: a style is computed once per kind of element                       | merged              |
 | components | #142 `<Html>`: a kept layout is found by comparing; a line height is kept         | merged              |
+| components | #143 `<Markdown>`: a list item, its marker and a table cell without a box         | open                |
+| ntk        | #387 a paragraph laid out at another width keeps its tokens                       | open                |
+| appkit     | #79 the ungranted calendar reads are settled as they are asked for                | merged              |
 
 ## Method
 
@@ -1073,6 +1076,67 @@ Before believing a regression, rerun the old tree on the machine as it is
 now; a Cocoa window's backing scale, and which display it opens on, are
 part of what a probe measures.
 
+## Round 11: fewer boxes, kept paragraphs
+
+### `<Markdown>`: a box less per list item, marker and cell (components #143)
+
+A Markdown reflow frame is mostly core's layout machinery: yoga's passes,
+the height floors measured after them and absolutize, each over every node.
+The 600 KB report was 14,717 nodes, and 4,808 of its 7,186 boxes held one
+child — a box around every list marker, a column around every list item's
+one paragraph, a padded box around every table cell's text. The marker is
+now its own `<text>`, an item of one paragraph is the paragraph, and a cell
+is its `<richtext>` with the padding as margins, since the row paints the
+background a cell box never did. 10,188 nodes, and 279 single-child boxes.
+
+Nine documents at three widths and both scales rendered byte-identically
+before and after, 54 frames, and a copy of lists and tables gave the same
+text. The two structure tests fail against master.
+
+| 600 KB `<Markdown>`  | before      | after       |
+| -------------------- | ----------- | ----------- |
+| reflow, Cocoa        | 331–333 ms  | 274–276 ms  |
+| reflow, XQuartz      | 256–281 ms  | 204–207 ms  |
+| first paint, Cocoa   | 1,225–1,234 | 1,042–1,080 |
+| first paint, XQuartz | 979–1,003   | 812–834     |
+| scroll frame, Cocoa  | 5.95 ms     | 4.93 ms     |
+
+These trees ran react-x11 2.22.6, so the Cocoa reflow is without the kept
+typesetters.
+
+### ntk: a paragraph laid out at another width keeps its tokens (ntk #387)
+
+Timed inside `TextLayout` over an XQuartz reflow: 62% of its time was the
+part no width decides — the spans normalised and their faces resolved, the
+bidi levels, the UAX#14 tokens shaped — done again for every width. The
+font manager now keeps a paragraph up to the line fill, found by its text
+and direction and by every field of its spans and base style, for two
+generations of 512K characters. It is appkit #75's kept typesetter, for
+the other text engine.
+
+The first cut cost `<Markdown>`'s first paint 40 ms. The mount made 13,574
+layouts and only 3,816 preparations, and the hits were list markers, whose
+preparation costs nothing; meanwhile every lookup built its key by
+concatenation, a new string to flatten and hash. Remembering the key per
+span list — the list a caller lays out at many widths is one object — put
+the first paint back where it was.
+
+| 600 KB, XQuartz          | before     | ntk #387   | with #143 too  |
+| ------------------------ | ---------- | ---------- | -------------- |
+| `<Html>` reflow          | 85–87 ms   | 42 ms      | —              |
+| `<Markdown>` reflow      | 222–225 ms | 161–170 ms | 102.5–103.3 ms |
+| `<Markdown>` first paint | 931–947 ms | 956–960 ms | 767–779 ms     |
+
+### appkit's CI on main
+
+Two different failures on the Node 26 leg of `main`, neither from the change
+merged before it. `test/calendars.js` started both ungranted reads and
+awaited them in turn, so a second rejection that came first had no handler
+and ended the process; it settles each answer as it asks now (appkit #79).
+`threaded-verbs` once waited 5 s for an app-modal panel cancelled 300 ms
+after it was asked for: a `cancelPanel` that reaches the UI thread before
+the panel's modal session has begun stops nothing. That one is open.
+
 ## Lessons
 
 1. **Look for caches that never hit.** Identity-keyed caches handed a new
@@ -1157,23 +1221,29 @@ part of what a probe measures.
     3 MB of key strings a pass, a tenth of an edit, to answer "the same as
     last time" about once a paragraph. File under the cheap part and
     compare the rest.
+23. **Count the boxes.** Layout, floors and absolutize all walk every node
+    on a width change, and a third of `<Markdown>`'s nodes were boxes with
+    one child. Fold a wrapper into its child only with the pixels compared
+    before and after.
+24. **A cache has to be cheap for the lookups that save nothing.** At mount
+    most of the kept paragraphs' hits were list markers, and a key built by
+    concatenation cost more than they saved. Count hits by what they would
+    have cost, and keep the key a string the caller already has.
 
 ## Still open
 
-Ordered by practical impact, after round 10.
+Ordered by practical impact, after round 11.
 
-- **Markdown reflow's second layout pass** (38 ms of a 224 ms X11 frame at
-  600 KB): the floors emulating `min-height: auto` come from the previous
-  layout, so a width change lays 13,000 nodes out twice. A live resize on
-  Cocoa defers them; a split-pane drag does not. The fix is content-based
-  minimum sizes in yoga.
-- **X11 reflow's text**: ntk's `TextLayout` spends about 64% of its time on
-  the width-independent part — spans, bidi levels, UAX #14 breaks, tokens —
-  roughly 25–30 ms of a 224 ms Markdown frame. ntk could keep a
-  paragraph's tokens across widths, as appkit #75 keeps the typesetter; the
-  cost is validating the spans against in-place mutation.
-- **`<Markdown>` first paint** (1.17 s Cocoa with the kept typesetters,
-  1.0 s X11): the height floors, React's development render and the layout.
+- **Markdown reflow's second layout pass**: the floors emulating
+  `min-height: auto` come from the previous layout, so a width change lays
+  the document out twice — 10,188 nodes at 600 KB with #143, in a frame of
+  103 ms on XQuartz with ntk #387 as well. A live resize on Cocoa defers
+  them; a split-pane drag does not. The fix is content-based minimum sizes
+  in yoga.
+- **`<Markdown>` first paint** (0.77–0.78 s on XQuartz with #143 and ntk
+  #387; 1.04–1.08 s on Cocoa with #143, measured on a core without the
+  kept typesetters): the height floors, React's development render and the
+  layout.
 - **`<Html>` edit and append** (50 ms on Cocoa and 43 on XQuartz at 600 KB
   with #141 and #142): the parse, the box build, the inline layout and the
   paint bounds still run over the whole document. A parse that kept the
