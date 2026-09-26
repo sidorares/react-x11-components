@@ -66,6 +66,7 @@ separately, and there are six.
 | 3      | the inline box model, and what it brought to light | 3,180 (54%) | 2,831 (48%) |
 | 4      | anonymous boxes and tables, CSS syntax, baselines  | 3,713 (63%) | 3,329 (56%) |
 | 5      | first letters, tables, clipping, positioning       | 4,733 (80%) | 4,321 (73%) |
+| perf   | a paragraph's inline boxes in its one layout       | 4,739 (80%) | 4,325 (73%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -439,6 +440,15 @@ and sits at the bottom of the viewport now. On macOS four more fail until
 windowkit/appkit#86: they measure a caption's narrowest width, and
 CoreText gave a line one letter where not even that fitted, so the widest
 letter was the answer. With it, macOS passes all four and two more.
+
+The performance work after round 5 (the `perf` row) sets a paragraph's
+padded inline boxes as spacers in its one layout, and lost two tests on
+macOS. `content-height-005` needs web fonts, which are never fetched, and
+passed by a difference that is gone. `rtl-span-only` is CoreText drawing
+letter-spaced text that opens a line after a hard break one device pixel
+left of where it reports it, which a `<span style="letter-spacing">` does
+too: the reference sets its spans with spacers, and the test, right to
+left, is set a piece at a time.
 
 What is left falls in two kinds. **Features not built**: `::first-line`,
 `table-layout: fixed` reading `<col>` widths, `background-attachment:
