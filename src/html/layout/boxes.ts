@@ -1480,6 +1480,14 @@ function isBlockLevel(box: Box): boolean {
       // An `inline-block` or `inline-flex` is a block *container* with an
       // inline-level outer role, so it belongs to the inline run around it.
       return !isInlineLevelDisplay(box.style.display);
+    case 'replaced':
+      // an image is inline unless it is told otherwise, and then it is a
+      // block: `img { display: block }`, which mail writes to lose the gap
+      // under its images, stacks them
+      return (
+        box.style.display !== 'inline' &&
+        !isInlineLevelDisplay(box.style.display)
+      );
     default:
       return false;
   }

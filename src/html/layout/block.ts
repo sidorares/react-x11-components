@@ -249,7 +249,10 @@ function layoutChildren(
     const clearance = floats.clearance(child.style.clear);
     if (clearance > -Infinity && clearance > childY) childY = clearance;
 
-    if (!floats.isEmpty && establishesBFC(child)) {
+    if (
+      !floats.isEmpty &&
+      (child.kind === 'replaced' || establishesBFC(child))
+    ) {
       layoutBesideFloats(child, ctx, floats, contentLeft, childY, contentWidth);
     } else {
       layoutBlockLevel(child, ctx, floats, contentLeft, childY, contentWidth);
@@ -280,11 +283,11 @@ function layoutChildren(
 
 /**
  * A block that makes its own formatting context — a table, a box that
- * clips its overflow — does not flow round the floats beside it: it is a
- * rectangle beside them (CSS 2.1 9.5), in the room they leave at its top,
- * or lower down where it does not fit there. An image floated left with an
- * `overflow: hidden` block of text beside it is the layout this is for; the
- * block ran under the image.
+ * clips its overflow — or a block-level image does not flow round the
+ * floats beside it: it is a rectangle beside them (CSS 2.1 9.5), in the
+ * room they leave at its top, or lower down where it does not fit there.
+ * An image floated left with an `overflow: hidden` block of text beside it
+ * is the layout this is for; the block ran under the image.
  */
 function layoutBesideFloats(
   box: Box,
@@ -1015,9 +1018,6 @@ function establishesInlineContext(box: Box): boolean {
       case 'text':
       case 'inline':
       case 'break':
-        sawInline = true;
-        break;
-      case 'replaced':
         sawInline = true;
         break;
       default:
