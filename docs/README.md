@@ -69,6 +69,10 @@ parts.
   `<Html>`, why the element draws a document rather than composing one, the
   resource and script seams, the isolated-process mode, and the audit of
   exposing the seams as a Chrome DevTools Protocol surface.
+- [`<Html>` against the CSS 2.1 test suite](html-conformance.md) — the
+  web-platform-tests reftests run through `<Html>` on X11 and Cocoa: what it
+  supports, the hangs and crashes the suite found, what was fixed, and what
+  a toolkit's static HTML widget should support next.
 - [MDX in `<Markdown>`](prd-mdx.md) — block position and expressions
   shipped: the two gates (`components` decides what a document may _reach_,
   `scope` whether it may _compute_), why neither evaluates anything a

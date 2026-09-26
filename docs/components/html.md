@@ -104,7 +104,9 @@ attributes and never invoked.
 
 The subset is aimed at documents an application is handed — mail, release
 notes, help pages, exported reports, generated summaries — rather than at the
-open web.
+open web. How much of CSS 2.1 that comes to, measured against the W3C's own
+test suite on both backends, is in
+[`<Html>` against the CSS 2.1 test suite](../html-conformance.md).
 
 **Layout:** block flow with margin collapsing, inline formatting with
 bidi and full shaping, `inline-block`, floats and `clear`, lists with their
