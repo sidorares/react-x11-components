@@ -58,6 +58,7 @@ comparable with these; the method is.
 | appkit     | #79 the ungranted calendar reads are settled as they are asked for                | merged              |
 | ntk        | #389 text under 64 characters does not go through the paragraph cache             | released, 8.12.8    |
 | ntk        | #390 fc-match spawned by its path; a fallback asks for its face's pattern         | released, 8.12.8    |
+| components | #153 `<Html>`: padded inline boxes as spacers; the walks the conformance added    | open                |
 
 ## Method
 
@@ -1347,6 +1348,111 @@ workaround, and the other route is yoga itself. The one cheap lever, core's
 floors deferred through a live resize, has no signal to key on under X11.
 Parked, as asked, in favour of the rest.
 
+## Round 13: what correctness cost
+
+Between rounds 12 and 13, `<Html>` went through five rounds of CSS 2.1
+conformance work: #144 to #148, merged, and #152 and #153, open. It passes
+4,739 of the suite's reftests on X11 where it passed 1,831
+(`docs/html-conformance.md`). This round measured what that cost the sweep's
+documents and won most of it back, in #153.
+
+**One core for both sides.** This branch's tree runs react-x11 2.22.7 and
+@windowkit/appkit 0.14.1, and the conformance branches run 2.22.8 and 0.15.1.
+The newer pair's half-leading, trailing-space widths and span-hung runs move
+macOS text numbers on their own. So every comparison here is between copies
+of one tree that share its `node_modules` and differ only in `src/html`, run
+interleaved. The first comparison, across the two trees, blamed the
+conformance work for a 28% slower macOS resize, part of which was the core's.
+
+| `<Html>`, same core     | before round 1       | round 5      | after #153       |
+| ----------------------- | -------------------- | ------------ | ---------------- |
+| 600 KB, a resize frame  | 47 / 82 ms           | 124 / 172 ms | 49 / 89 ms       |
+| 600 KB, an edit's frame | 45 / 51 ms           | 57 / 65 ms   | 44 / 51 ms       |
+| 600 KB, first paint     | 424–429 / 464–477 ms | 549 / 581 ms | 461–468 / 509 ms |
+| 20 KB, an edit's frame  | 7.9 / 11.4 ms        |              | 9.6 / 12.5 ms    |
+| 20 KB, first paint      | 224 / 89 ms          |              | 227 / 98 ms      |
+
+XQuartz first, then macOS. Round 5 is the conformance branch before #153's
+performance commits, measured against it in the same way.
+
+### A padded inline box leaves its paragraph one layout (components #153)
+
+Round 3 of the conformance work gave inline boxes their padding, borders
+and margins. Those take room on a line, which one layout of a paragraph's
+text cannot give them, so any edge sent its paragraph down the path that sets
+a line at a time: a layout per line and per box, five for a paragraph with
+one inline `<code>` in it. That was the whole of the resize regression. Where
+nothing on the lines has to be placed a piece at a time (no atomic, float,
+`text-indent` or right-to-left text), each edge now goes into the one layout
+as a no-break space in the paragraph's face, letter-spaced to the edge's
+width. The line records where its spacers are, and the caret, the hit test
+and the selection step over them.
+
+### The walks the conformance added (components #153)
+
+The rest was many small things, which no profile ranked on its own:
+
+- a box handing its children the height their percentages resolve against,
+  on every pass, for every block;
+- a table's grid, worked out on every pass and again for its collapsing
+  borders;
+- the document's height, a walk of its own after the bounds walk;
+- the relative-position walk, in documents with nothing relative in them;
+- `!text.trim()`, which copied every paragraph's text that ended in a space;
+- the kept layouts, filed under their whole text, which a pass built,
+  flattened and hashed for every layout.
+
+Each now runs only where it can change something, or is folded into a walk
+already being made. They took an edit at 600 KB from 48 to 44 ms on XQuartz,
+and a mount's CPU on macOS from 1,057 to 926 ms.
+
+Three things made them hard to find:
+
+- **tsx keeps function names.** The probes run `src` through tsx, which
+  wraps every named arrow function in `__name` as it is made. A closure in a
+  hot function showed up as `__name` time that the published build does not
+  have.
+- **The first reader of a box pays for it.** A walk that visits the children
+  before the layout does takes on the cache misses the layout used to take,
+  so profile deltas moved between functions without adding up. A
+  self-time diff between trees is a map of where the misses landed, not of
+  what got slower.
+- **The size of a box matters.** Fifteen fields added to the old `Box` and
+  never read made the first paint 6.6% slower on XQuartz. Moving eleven of
+  them to side objects that only list items, absolute boxes and decorated
+  inline boxes allocate was measurable only together with the walks.
+
+Two costs remain. On macOS the spacers are text, about 1,600 runs at
+600 KB, and CoreText's layout time grows with them by about 5%, 12 ms of a
+mount. At 20 KB an edit still costs 1.1–1.7 ms more than before round 1.
+That is chips, collapsed borders and clips the old renderer did not draw,
+spread thin, and the incremental rebuild under "Still open" is where it
+goes.
+
+### The sweep
+
+`run.sh` against round 10's full sweep, and the small cells against round
+12's. Everything `<Html>` does got faster from input to paint: an edit from
+95 to 65 ms on XQuartz and from 126 to 72 on macOS, an append from 97 to 61
+and from 127 to 69, a reflow from 95 to 53 on XQuartz. Rounds 11 and 12
+account for most of `<Markdown>`'s gain, a reflow from 235 to 110 ms on
+XQuartz. Every cell the tabulation flagged turned out to be something else
+when measured again:
+
+- `<Flow>`'s widgets and charts wheel zooms on macOS, 12% down against
+  round 12, run the same on core 2.22.7 and 2.22.8 when interleaved. The
+  sweep's difference was between runs.
+- `<Table>`'s fling on macOS, 101 → 78 fps against round 10, is bimodal on
+  both cores: a run lands at 98–99 fps or at 78–80, whichever tree it is.
+- The flow cells down against round 10 and not against round 12 (a fanout
+  wheel, a 2,000-node zoom, a charts drag on XQuartz) moved between those
+  two rounds, before any of this one's changes.
+
+One bug turned up that is not this package's: CoreText draws letter-spaced
+text that opens a line after a hard break one device pixel left of where it
+reports it. A `<span style="letter-spacing">` does the same. It costs
+`<Html>` one reftest on macOS, and an issue for windowkit/appkit is drafted.
+
 ## Lessons
 
 1. **Look for caches that never hit.** Identity-keyed caches handed a new
@@ -1480,10 +1586,12 @@ Ordered by practical impact, after round 12.
   #387; 1.04–1.08 s on Cocoa with #143, measured on a core without the
   kept typesetters): the height floors, React's development render and the
   layout.
-- **`<Html>` edit and append** (50 ms on Cocoa and 43 on XQuartz at 600 KB
-  with #141 and #142): the parse, the box build, the inline layout and the
-  paint bounds still run over the whole document. A parse that kept the
-  identity of what it did not change would let each of them skip it.
+- **`<Html>` edit and append** (51 ms on macOS and 44 on XQuartz at 600 KB
+  after #153, 12.5 and 9.6 ms at 20 KB): the parse, the box build, the
+  inline layout and the paint bounds still run over the whole document, at
+  about 9, 16, 30 and 3 ms of an XQuartz edit at 600 KB. A parse that kept
+  the identity of what it did not change would let each of them skip it. At
+  20 KB it is also where the conformance work's last millisecond goes.
 - **Cocoa scroll**: what is left is the band copy itself, about 1.4 ms a
   frame at 2x, memory-bound; see "The Cocoa scroll's double copy".
 - **`<RichTextEditor>`**: large pastes, mostly React's development render.
