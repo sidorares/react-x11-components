@@ -88,6 +88,13 @@ export function layoutDocument(
 
   const contentWidth = Math.max(0, viewportWidth - root.horizontalExtra);
   const floats = new FloatContext(root.contentX, root.contentX + contentWidth);
+  // the initial containing block is the viewport's size, which a percentage
+  // height on the root element resolves against (CSS 2.1 10.1, 10.5); a
+  // fragment has no root element, and the box standing in for its body has
+  // the body's `auto` height to give
+  for (const child of root.children) {
+    if (child.el?.name === 'html') child.percentHeightBase = viewportHeight;
+  }
   const flow = layoutChildren(
     root,
     ctx,
@@ -114,12 +121,42 @@ export function layoutDocument(
   applyRelativeOffsets(root);
   computePaintBounds(root);
 
-  let bottom = root.height;
+  // The document is as tall as what overflows the root, not the root: an
+  // `html, body { height: 100% }` a window tall holds a message longer than
+  // the window, and the element sizes to all of it.
+  let bottom = Math.max(root.height, overflowBottom(root));
   for (const { box } of ctx.positioned) {
     if (box.style.position !== 'fixed')
       bottom = Math.max(bottom, box.y + box.height);
   }
   return { width: viewportWidth, height: bottom };
+}
+
+/**
+ * How far down a box's content reaches: its border box, and every box and
+ * line under it, but not past a box that clips what it holds — which is
+ * where a document's scrollable overflow ends.
+ */
+function overflowBottom(box: Box): number {
+  let bottom = box.y + box.height;
+  const style = box.style;
+  if (
+    box.parent &&
+    (style.overflowX !== 'visible' || style.overflowY !== 'visible')
+  ) {
+    return bottom;
+  }
+  if (box.lines?.length) {
+    const last = box.lines[box.lines.length - 1];
+    bottom = Math.max(bottom, last.y + last.height);
+  }
+  for (const child of box.children) {
+    if (child.kind === 'text' || child.kind === 'break' || child.outOfFlow) {
+      continue;
+    }
+    bottom = Math.max(bottom, overflowBottom(child));
+  }
+  return bottom;
 }
 
 /**
@@ -623,10 +660,10 @@ function layoutMarker(box: Box, ctx: LayoutContext): void {
  * so `auto`, where it is not. An anonymous box is no containing block for
  * this (9.2.1.1) and hands on its parent's.
  *
- * The document's own root has none: this element sizes to its content, so
- * `html, body { height: 100% }` — which mail sets as often as not — takes
- * the height of what it holds rather than a window's, which would cut off
- * a message taller than one.
+ * The root element's is the viewport's height, so `html, body { height:
+ * 100% }` — which mail sets as often as not — is a window tall, as in a
+ * browser; the document is as tall as what overflows it, so a message
+ * longer than the window is not cut off (`layoutDocument`).
  */
 function percentBaseInside(box: Box): number {
   if (!box.el && !box.pseudo) return box.percentHeightBase;
@@ -909,14 +946,19 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
     0,
     containing.width - containing.borderLeft - containing.borderRight,
   );
-  const cbHeight = Math.max(
-    0,
-    containing.height -
-      containing.captionTop -
-      containing.captionBottom -
-      containing.borderTop -
-      containing.borderBottom,
-  );
+  // with nothing positioned around it the containing block is the initial
+  // one, as tall as the viewport rather than as the document (10.1), and a
+  // fixed box's is the viewport itself
+  const cbHeight = !containing.parent
+    ? ctx.viewportHeight
+    : Math.max(
+        0,
+        containing.height -
+          containing.captionTop -
+          containing.captionBottom -
+          containing.borderTop -
+          containing.borderBottom,
+      );
   resolveEdges(box, cbWidth);
   box.percentHeightBase = cbHeight;
 

@@ -2269,20 +2269,28 @@ test("an empty block's margins collapse through it", async () => {
   assert.strictEqual(f.y, p.y + 200, 'and stays inside its parent');
 });
 
-test('html and body at 100% stay as tall as what they hold', async () => {
-  // The element sizes to its content, so the initial containing block has
-  // no height to give: a message with the usual reset is not cut off at a
-  // window's height.
+test('html and body at 100% are a window tall, and hold what is longer', async () => {
+  // A percentage height on the root element resolves against the initial
+  // containing block, the viewport (CSS 2.1 10.1): the usual reset is a
+  // window tall, as in a browser. The document is as tall as what
+  // overflows it, so a message longer than the window is not cut off.
   const { node } = await render(
     '<html style="height:100%"><body style="height:100%;margin:0">' +
       '<div id="tall" style="height:900px"></div></body></html>',
   );
+  const el = view(node) as unknown as {
+    _tree: { root: LaidBox };
+    _documentHeight: number;
+  };
+  const html = el._tree.root.children.find(
+    (b) => (b as LaidBox & { el?: { name: string } }).el?.name === 'html',
+  )!;
   assert.ok(
-    boxOf(view(node), 'tall').height === 900 &&
-      (view(node) as unknown as { _tree: { root: LaidBox } })._tree.root
-        .height >= 900,
-    'the document holds all 900px',
+    html.height < 900,
+    `the root element is a window tall: ${html.height}`,
   );
+  assert.strictEqual(boxOf(view(node), 'tall').height, 900);
+  assert.ok(el._documentHeight >= 900, 'and the document holds all 900px');
 });
 
 metric("a table column is the table's, not a row of its own", async () => {
