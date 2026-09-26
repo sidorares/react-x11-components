@@ -2740,6 +2740,25 @@ metric('a right-to-left block starts at the right', async () => {
   assert.strictEqual(f.x, 0, "and a fixed box's containing block is the view");
 });
 
+metric(
+  'a relatively positioned ::before moves, in a document where nothing else does',
+  async () => {
+    // the pass that moves relative boxes runs only where the build found
+    // one, and generated content is built apart from its element
+    const { node } = await render(
+      '<style>#p::before { content: "x"; display: block; position: relative;' +
+        ' left: 20px }</style><p id="p" style="margin:0">text</p>',
+    );
+    const el = view(node);
+    const p = boxOf(el, 'p');
+    const before = p.children.find(
+      (b) => (b as unknown as { pseudo: string | null }).pseudo === 'before',
+    );
+    assert.ok(before, 'the ::before has a box');
+    assert.strictEqual(before.x, p.x + 20);
+  },
+);
+
 metric('an image set display: block is a block', async () => {
   // mail writes `img { display: block }` to lose the gap under its images;
   // they stacked on one line as inline images, and one beside a float
@@ -3451,6 +3470,44 @@ async function laidOutDuring(
   }
   return laid;
 }
+
+metric(
+  'paragraphs that start, end and run as long as each other keep their own layouts',
+  async () => {
+    // a kept layout is filed under a summary of its text, and found by all
+    // of it: two paragraphs the summary cannot tell apart are still two
+    const edge = 'the same twenty-four chars';
+    const one = `${edge} first ${edge}`;
+    const two = `${edge} other ${edge}`;
+    const doc = (paras: string[]) =>
+      h(
+        'box',
+        { style: { width: 400, flexDirection: 'column' } },
+        h(Html, {
+          source: paras.map((p) => `<p>${p}</p>`).join(''),
+          partial: false,
+          'data-testname': 'doc',
+        }),
+      );
+    const result = await renderX11(doc([one]), {
+      width: 440,
+      height: 600,
+      fonts: FONTS!,
+    });
+    const el = view(screen.getByTestName('doc') as DrawnNode);
+    await act();
+    const laid = await laidOutDuring(el, async () => {
+      await act(() => result.rerender(doc([one, two])));
+      await waitFor(() => assert.ok(el.textContent().includes('other')));
+      await act();
+    });
+    assert.ok(!laid.includes(one), `the first is kept: ${laid.join(' | ')}`);
+    assert.ok(
+      laid.includes(two),
+      `the second is laid out, not taken for it: ${laid.join(' | ')}`,
+    );
+  },
+);
 
 metric('an edit lays out again only the text it changed', async () => {
   const doc = (word: string) =>

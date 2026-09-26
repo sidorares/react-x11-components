@@ -443,6 +443,9 @@ export interface BoxTree {
    *  asked for: a document has a handful, and finding them was a walk over
    *  every box after every build. */
   backgrounds: Box[];
+  /** Whether any box is relatively positioned: where none is, layout skips
+   *  the walk that moves them. */
+  relative: boolean;
 }
 
 export interface BuildOptions {
@@ -500,6 +503,7 @@ class Builder {
   private _controls: Box[] = [];
   private _links: Box[] = [];
   private _backgrounds: Box[] = [];
+  private _relative = false;
   /** Counter stack for `<ol>` numbering, one entry per open list. */
   private _counters: number[] = [];
   /** The CSS counters in scope, for `counter()` in generated content. */
@@ -542,6 +546,7 @@ class Builder {
       controls: this._controls,
       links: this._links,
       backgrounds: this._backgrounds,
+      relative: this._relative || isRelative(rootStyle),
     };
   }
 
@@ -588,6 +593,7 @@ class Builder {
     );
     if (style.display === 'none') return;
     if (onlyColumns && style.display !== 'table-column') return;
+    if (isRelative(style)) this._relative = true;
     // before anything else of the element's, including its `::before`,
     // and for the element whatever box it makes (CSS 2.1 12.4)
     if (style.counterReset || style.counterIncrement) {
@@ -750,6 +756,7 @@ class Builder {
   ): void {
     const style = this._options.cascade.pseudoStyleFor(el, which, elementStyle);
     if (!style || style.display === 'none') return;
+    if (isRelative(style)) this._relative = true;
     // a column renders no content, and generated content is all it would
     // hold; in a column group it is not a column either (CSS 2.1 17.2.1)
     if (
@@ -863,7 +870,9 @@ class Builder {
       text =
         ws === 'pre-line'
           ? data.replace(/[ \t]+/g, ' ').replace(/ *\n */g, '\n')
-          : data.replace(/[\t\n\r\f ]+/g, ' ');
+          : COLLAPSIBLE.test(data)
+            ? data.replace(/[\t\n\r\f ]+/g, ' ')
+            : data;
       // A space at the start of a line goes, and so does one after another
       // space, across element boundaries (CSS 2.1 16.6.1): `<p>\n  Hi` has
       // no space before the H, and `Hi <b> there</b>` has one between.
@@ -1590,6 +1599,14 @@ function anonymousOf(
 
 function isDroppableWhitespace(box: Box): boolean {
   return box.kind === 'text' && !box.text.trim();
+}
+
+/** White space that collapsing would change: anything but a lone space.
+ *  Most of a document's text has none, and is its own collapsed form. */
+const COLLAPSIBLE = /[\t\n\r\f]| {2}/;
+
+function isRelative(style: ComputedStyle): boolean {
+  return style.position === 'relative' || style.position === 'sticky';
 }
 
 /** A box that belongs inside a table: a row group, a row, a cell, a

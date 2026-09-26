@@ -118,7 +118,7 @@ export function layoutDocument(
   // against where it *was* — which is the whole of what makes it relative —
   // and the ink bounds are computed after that, so culling sees where boxes
   // ended up rather than where they were laid out.
-  applyRelativeOffsets(root);
+  if (tree.relative) applyRelativeOffsets(root);
   const reach = computePaintBounds(root);
 
   // The document is as tall as what overflows the root, not the root: an
