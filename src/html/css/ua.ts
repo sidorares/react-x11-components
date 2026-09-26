@@ -113,8 +113,9 @@ nobr { white-space: nowrap; }
 /* Deliberately no 'a:hover' rule, though a browser's sheet has one: a
    document containing any ':hover' selector has to be restyled as the
    pointer moves, and a rule that changes nothing (the link is already
-   underlined) would make every plain document pay that. */
-a { color: ${look.linkColor}; text-decoration: underline; cursor: pointer; }
+   underlined) would make every plain document pay that. An 'a' with no
+   'href' is an anchor, not a link, and is drawn as the text around it. */
+a[href] { color: ${look.linkColor}; text-decoration: underline; cursor: pointer; }
 
 hr {
   margin: 0.5em 0;
