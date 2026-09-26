@@ -853,6 +853,12 @@ function indentOf(style: ComputedStyle, width: number): number {
  * rather than passing the CSS number through is the difference between
  * `line-height: 1.5` meaning 1.5 × 16px and it meaning 1.5 × 19px, which is
  * a visibly looser document than the author asked for.
+ *
+ * `line-height: 0` is legal and means what it says — lines of no height,
+ * the glyphs overflowing evenly — and ntk's half-leading does exactly that
+ * with a multiplier of 0. The floor is a hair above it rather than the 0.1
+ * it was, which set such lines a tenth of a line apart: the Cocoa engine
+ * takes a zero multiple for none at all.
  */
 function lineHeightMultiplier(fonts: FontsLike, style: ComputedStyle): number {
   if (style.lineHeight === 'normal') return 1;
@@ -861,7 +867,7 @@ function lineHeightMultiplier(fonts: FontsLike, style: ComputedStyle): number {
     : (style.lineHeight as number) * style.fontSize;
   const natural = naturalLineHeight(fonts, style);
   if (!natural) return 1;
-  return Math.max(0.1, target / natural);
+  return Math.max(1e-4, target / natural);
 }
 
 /**

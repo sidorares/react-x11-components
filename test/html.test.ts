@@ -507,6 +507,35 @@ function lineCount(node: DrawnNode): number {
 }
 
 metric(
+  "a float sits inside its own containing block, not at the formatting context's edge",
+  async () => {
+    // Placed in the band the whole formatting context allows, a float in a
+    // padded block sat at the root's edge — outside the padding, and outside
+    // the body's margin (CSS 2.1 9.5.1, rules 1 and 7).
+    const { node } = await render(
+      '<style>.wrap{padding:0 30px 0 50px}.l,.r{width:40px;height:20px}' +
+        '.l{float:left}.r{float:right}</style>' +
+        '<div class="wrap"><div class="l"></div><div class="r"></div></div>',
+      300,
+    );
+    type B = { x: number; width: number; contentX: number; children: B[] };
+    const tree = (view(node) as unknown as { _tree: { root: B } })._tree;
+    const wrap = tree.root.children[0];
+    const [left, right] = wrap.children;
+    assert.strictEqual(
+      left.x,
+      wrap.contentX,
+      'the left float at the content edge',
+    );
+    assert.strictEqual(
+      right.x + right.width,
+      wrap.x + wrap.width - 30,
+      'the right float against the right padding',
+    );
+  },
+);
+
+metric(
   'a float shortens the lines beside it and not the ones below',
   async () => {
     const { node } = await render(
@@ -624,6 +653,127 @@ metric(
 );
 
 metric(
+  "a fragment's first paragraph sits where it would inside <html><body>",
+  async () => {
+    // A body's top margin collapses with its first block's — <html> is the
+    // formatting context's root, <body> is not — so a 16px paragraph in a
+    // body with an 8px margin starts 16px down, not 24. The implied body of a
+    // fragment has to do the same, or the two spellings of one document
+    // disagree by the body margin.
+    type B = { y: number; children: B[] };
+    const firstParagraphY = async (source: string) => {
+      const { node } = await render(source, 300);
+      const tree = (view(node) as unknown as { _tree: { root: B } })._tree;
+      let box = tree.root;
+      while (box.children.length) box = box.children[0];
+      const y = (box as unknown as { parent: B }).parent.y;
+      await cleanup();
+      return y;
+    };
+    const p = '<style>p{margin:16px 0}</style>';
+    const fragment = await firstParagraphY(p + '<p>hi</p>');
+    const full = await firstParagraphY(
+      '<html><head>' + p + '</head><body><p>hi</p></body></html>',
+    );
+    assert.strictEqual(fragment, full, 'the same place either way');
+    assert.ok(Math.abs(full - 16) < 1, `one collapsed margin, at ${full}`);
+  },
+);
+
+metric(
+  "<html>'s own margin never collapses with what is inside it",
+  async () => {
+    // The root element establishes the document's formatting context, so its
+    // margin stays its own: a block 20px down in a body with no margin, in an
+    // <html> 20px down, is 40px down — not 20.
+    type B = { y: number; children: B[] };
+    const { node } = await render(
+      '<html style="margin-top:20px"><body style="margin:0">' +
+        '<div style="margin-top:20px;height:10px"></div></body></html>',
+      300,
+    );
+    const tree = (view(node) as unknown as { _tree: { root: B } })._tree;
+    let box = tree.root;
+    while (box.children.length) box = box.children[0];
+    assert.ok(Math.abs(box.y - 40) < 1, `at ${box.y}`);
+  },
+);
+
+metric('line-height: 0 lays lines on top of each other', async () => {
+  // Legal CSS, and what the suite's line-height tests are built on: each
+  // line box is 0 high, so two lines share a baseline. A 0.1 floor on the
+  // multiplier set them a tenth of a line apart.
+  const { node } = await render(
+    '<div style="font-size:20px;line-height:0;width:1em">X X</div>',
+    300,
+  );
+  type B = { lines: { y: number; baseline: number }[] | null; children: B[] };
+  const tree = (view(node) as unknown as { _tree: { root: B } })._tree;
+  const div = tree.root.children[0];
+  const lines = div.lines ?? [];
+  assert.strictEqual(lines.length, 2, 'the text wraps to two lines');
+  assert.ok(
+    Math.abs(lines[1].y - lines[0].y) < 0.01,
+    `both lines at one height: ${lines[0].y} and ${lines[1].y}`,
+  );
+});
+
+test('the font shorthand resets what it does not name', async () => {
+  // CSS 2.1 15.8: `font` sets the style, weight, size, line height and
+  // family, and whatever it leaves out goes back to its initial value rather
+  // than keeping the parent's. `p { font: 12pt serif }` in a document set at
+  // `20px/1em` has lines of normal height; the suite's margin-collapse tests
+  // are built on it, and 20px lines put their text a pixel low.
+  const { node } = await render(
+    '<div style="font: italic bold 20px/40px sans-serif">' +
+      '<p id="plain" style="font: 12px sans-serif">reset</p>' +
+      '<p id="named" style="font: oblique 600 14px / 2 sans-serif">named</p>' +
+      '<p id="sizeless" style="font: bold 14px">kept</p>' +
+      '<p id="inherits" style="font: 0 sans-serif; font: inherit">all</p></div>',
+    300,
+  );
+  type S = {
+    fontStyle: string;
+    fontWeight: number;
+    fontSize: number;
+    lineHeight: number | 'normal';
+    lineHeightIsLength: boolean;
+  };
+  const style = (id: string) => {
+    const { fontStyle, fontWeight, fontSize, lineHeight, lineHeightIsLength } =
+      (boxOf(view(node), id) as unknown as { style: S }).style;
+    return { fontStyle, fontWeight, fontSize, lineHeight, lineHeightIsLength };
+  };
+  assert.deepStrictEqual(style('plain'), {
+    fontStyle: 'normal',
+    fontWeight: 400,
+    fontSize: 12,
+    lineHeight: 'normal',
+    lineHeightIsLength: false,
+  });
+  assert.deepStrictEqual(style('named'), {
+    fontStyle: 'oblique',
+    fontWeight: 600,
+    fontSize: 14,
+    lineHeight: 2,
+    lineHeightIsLength: false,
+  });
+  // a size and no family is not a font: the declaration goes whole, and
+  // what the paragraph inherited stands
+  const inherited = {
+    fontStyle: 'italic',
+    fontWeight: 700,
+    fontSize: 20,
+    lineHeight: 40,
+    lineHeightIsLength: true,
+  };
+  assert.deepStrictEqual(style('sizeless'), inherited);
+  // and `font: inherit` takes all of it, the line height's unit included —
+  // 40 read as a multiple would be lines 800px tall
+  assert.deepStrictEqual(style('inherits'), inherited);
+});
+
+metric(
   'mixed-sign sibling margins collapse to the sum of the extremes',
   async () => {
     // CSS 8.3.1: largest positive plus most negative — 40 + (-10) = 30. The
@@ -658,6 +808,38 @@ metric(
     )._tree;
     const [d, after] = tree.root.children;
     assert.ok(Math.abs(after.y - (d.y + d.height) - 20) < 1);
+  },
+);
+
+metric(
+  "a paragraph's top margin escapes a plain div around it, and a padded one keeps it",
+  async () => {
+    // CSS 2.1 8.3.1: nothing parts a plain div's top edge from its first
+    // child's, so the paragraph's margin and the one before it are one
+    // margin. Applied inside the div as well, <div><p> stood a paragraph's
+    // margin lower than <p> — which is most of the CSS 2.1 selector tests.
+    const { node } = await render(
+      '<style>p{margin:20px 0}div{margin:0}.pad{padding-top:1px}</style>' +
+        '<p>before</p><div><p>in a div</p></div>' +
+        '<div class="pad"><p>padded</p></div>',
+    );
+    type B = { y: number; height: number; children: B[] };
+    const tree = (view(node) as unknown as { _tree: { root: B } })._tree;
+    const [before, plain, padded] = tree.root.children;
+    const inPlain = plain.children[0];
+    const inPadded = padded.children[0];
+    const gap = inPlain.y - (before.y + before.height);
+    assert.ok(Math.abs(gap - 20) < 1, `one margin between them, got ${gap}`);
+    assert.ok(
+      Math.abs(plain.y - inPlain.y) < 1,
+      'the div starts where its paragraph does',
+    );
+    // the padding parts the padded div from its paragraph: the margin is
+    // applied inside it, after the padding
+    assert.ok(
+      Math.abs(inPadded.y - (padded.y + 1 + 20)) < 1,
+      `the padded div keeps its paragraph's margin inside, got ${inPadded.y - padded.y}`,
+    );
   },
 );
 
@@ -1179,6 +1361,107 @@ test('a stylesheet handed back by the seam reaches the cascade', async () => {
   )._tree;
   assert.strictEqual(tree.root.children[0].style.color, '#ff0000');
   void result;
+});
+
+test('an image handed over as bytes is decoded and drawn', async (t) => {
+  // `decodeImage` is a named export of react-x11/ntk; read off the default
+  // one it was undefined, and every image a host returned as bytes drew as
+  // an empty frame. A red square, then: its middle is red or it is not.
+  if (!FONTS) return t.skip('no font files for the in-process server');
+  // a 10x10 PNG, solid #ff0000
+  const bytes = new Uint8Array(
+    Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAIAAAACUFjqAAAAIUlEQVR4AX3BAQEAAAiDMKR/' +
+        '59uA7UaRJEmSJEmSJEmS9EEsAROhAw00AAAAAElFTkSuQmCC',
+      'base64',
+    ),
+  );
+  const result = await renderX11(
+    h(
+      'box',
+      { style: { width: 200, flexDirection: 'column' } },
+      h(Html, {
+        source: '<img src="red.png" style="display: block">',
+        partial: false,
+        onResource: (r: { kind: string }) =>
+          r.kind === 'image' ? { kind: 'image' as const, bytes } : null,
+      }),
+    ),
+    { width: 240, height: 100, fonts: FONTS },
+  );
+  // the body's 8px margin, and the middle of the square
+  await expectPixel(result.ctx, 13, 13, '#ff0000', {
+    message: 'the decoded image is drawn',
+  });
+});
+
+// a 10x10 PNG, solid #ff0000
+const RED_PNG = new Uint8Array(
+  Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAIAAAACUFjqAAAAIUlEQVR4AX3BAQEAAAiDMKR/' +
+      '59uA7UaRJEmSJEmSJEmS9EEsAROhAw00AAAAAElFTkSuQmCC',
+    'base64',
+  ),
+);
+
+async function renderWithImages(source: string, width = 200) {
+  const result = await renderX11(
+    h(
+      'box',
+      { style: { width, height: 120, flexDirection: 'column' } },
+      h(Html, {
+        source,
+        partial: false,
+        style: { flexGrow: 1 },
+        onResource: (r: { kind: string }) =>
+          r.kind === 'image'
+            ? { kind: 'image' as const, bytes: RED_PNG }
+            : null,
+      }),
+    ),
+    { width: width + 40, height: 160, fonts: FONTS! },
+  );
+  return result.ctx;
+}
+
+metric(
+  'a background image is placed, repeated and clipped as CSS says',
+  async () => {
+    // Parsed and never drawn: background-image had no request and no paint.
+    const ctx = await renderWithImages(
+      '<style>body{margin:0}div{width:60px;height:30px;' +
+        'background:#00ff00 url(red.png) no-repeat 20px 10px}' +
+        '.x{background-repeat:repeat-x;background-position:0 0}</style>' +
+        '<div></div><div class="x"></div>',
+    );
+    await expectPixel(ctx, 25, 15, '#ff0000', {
+      message: 'the tile, at 20,10',
+    });
+    await expectPixel(ctx, 5, 5, '#00ff00', {
+      message: 'the colour around it',
+    });
+    await expectPixel(ctx, 45, 15, '#00ff00', {
+      message: 'no-repeat: one tile',
+    });
+    // repeat-x: a row of tiles across the second box, and nothing under them
+    await expectPixel(ctx, 55, 35, '#ff0000', { message: 'repeated across' });
+    await expectPixel(ctx, 55, 50, '#00ff00', { message: 'one row only' });
+  },
+);
+
+metric("the root's background covers the whole canvas", async () => {
+  // CSS 2.1 14.2: <body>'s background, where <html> has none, is the
+  // canvas's — the margin round the body included — as an email's
+  // <body bgcolor> is meant to be.
+  const ctx = await renderWithImages(
+    '<html><body style="background:#00ff00;margin:20px"><p>x</p></body></html>',
+  );
+  await expectPixel(ctx, 4, 4, '#00ff00', {
+    message: 'inside the body margin',
+  });
+  await expectPixel(ctx, 100, 110, '#00ff00', {
+    message: 'below the document, where the element has grown',
+  });
 });
 
 test('a document with no seams renders anyway', async () => {

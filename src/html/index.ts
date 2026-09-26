@@ -266,7 +266,9 @@ export function Html(props: HtmlProps): ReactElement {
     onControls: handleControls,
     domRevision,
     ref: props.ref as React.Ref<unknown>,
-    style: { alignSelf: 'stretch' },
+    // grown with the component, where an application grows it: the root's
+    // background covers the whole of it, as a page's covers the window
+    style: { alignSelf: 'stretch', flexGrow: 1 },
   };
 
   const children: ReactNode[] = [
