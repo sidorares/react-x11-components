@@ -316,12 +316,13 @@ export class HtmlViewNode extends Node {
    * cascade has run, where an `<img>` is known from the markup; the store
    * asks once a URL, so a tree built again asks nothing new.
    */
-  private _requestBackgrounds(box: Box): void {
-    const url = box.style.backgroundImage;
-    if (url && box.el) {
-      this._resources.request({ url, kind: 'image', element: box.el });
+  private _requestBackgrounds(tree: BoxTree): void {
+    for (const box of tree.backgrounds) {
+      const url = box.style.backgroundImage;
+      if (url && box.el) {
+        this._resources.request({ url, kind: 'image', element: box.el });
+      }
     }
-    for (const child of box.children) this._requestBackgrounds(child);
   }
 
   /** Rebuild the cascade — the document's sheets plus the host's. */
@@ -451,7 +452,7 @@ export class HtmlViewNode extends Node {
       this._textPoints = null;
       this._pointsAreUnits = null;
       this._laidOutWidth = -1;
-      this._requestBackgrounds(this._tree.root);
+      this._requestBackgrounds(this._tree);
     }
 
     if (

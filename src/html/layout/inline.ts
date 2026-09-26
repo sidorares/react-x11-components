@@ -38,6 +38,7 @@ import type {
   AtomicPlacement,
   Box,
   EdgePlacement,
+  InlineDecoration,
   LineBox,
   LineText,
   TextLayoutLike,
@@ -112,6 +113,10 @@ type Item =
   | { kind: 'atomic'; box: Box }
   | { kind: 'edge'; box: Box; side: 'start' | 'end'; width: number };
 
+function isText(item: Item): item is Extract<Item, { kind: 'text' }> {
+  return item.kind === 'text';
+}
+
 export interface InlineResult {
   lines: LineBox[];
   height: number;
@@ -152,8 +157,12 @@ export function layoutInline(block: Box, options: InlineOptions): InlineResult {
   const align = alignFor(style);
   const indent = indentOf(style, options.width);
 
-  const hasAtomics = items.some((i) => i.kind === 'atomic');
-  const hasEdges = items.some((i) => i.kind === 'edge');
+  let hasAtomics = false;
+  let hasEdges = false;
+  for (const item of items) {
+    if (item.kind === 'atomic') hasAtomics = true;
+    else if (item.kind === 'edge') hasEdges = true;
+  }
   const floated = options.floats?.intersects(options.startY, Infinity) ?? false;
   // An inline box's edges take room on their lines. Where nothing else on
   // the lines has to be placed a piece at a time, they go into the one
@@ -164,10 +173,10 @@ export function layoutInline(block: Box, options: InlineOptions): InlineResult {
   // The text-only, float-free, unindented case: one call, every line — or
   // one call per *chunk*, when the text is long and carries hard breaks.
   if (!hasAtomics && (!hasEdges || spaced) && !floated && !indent) {
-    const textItems = items.filter((i) => i.kind === 'text') as Extract<
-      Item,
-      { kind: 'text' }
-    >[];
+    // no atomics, so what is not an edge is text
+    const textItems = hasEdges
+      ? items.filter(isText)
+      : (items as Extract<Item, { kind: 'text' }>[]);
     let total = 0;
     let hasNewline = false;
     for (const item of textItems) {
@@ -1334,7 +1343,8 @@ function collect(
         const edged =
           start > 0 ||
           end > 0 ||
-          (child.decorated && child.style.borderRadius.some((r) => r > 0));
+          (child.decoration !== null &&
+            child.style.borderRadius.some((r) => r > 0));
         if (edged) {
           out.push({ kind: 'edge', box: child, side: 'start', width: start });
         }
@@ -1404,48 +1414,58 @@ function inlineEdges(
   fonts: FontsLike | null,
 ): [number, number] {
   const s = box.style;
-  const border = (w: number, style: ComputedStyle['borderTopStyle']) =>
-    style === 'none' || style === 'hidden' ? 0 : w;
-  box.borderTop = border(s.borderTopWidth, s.borderTopStyle);
-  box.borderRight = border(s.borderRightWidth, s.borderRightStyle);
-  box.borderBottom = border(s.borderBottomWidth, s.borderBottomStyle);
-  box.borderLeft = border(s.borderLeftWidth, s.borderLeftStyle);
+  box.borderTop = usedBorder(s.borderTopWidth, s.borderTopStyle);
+  box.borderRight = usedBorder(s.borderRightWidth, s.borderRightStyle);
+  box.borderBottom = usedBorder(s.borderBottomWidth, s.borderBottomStyle);
+  box.borderLeft = usedBorder(s.borderLeftWidth, s.borderLeftStyle);
   box.padTop = resolve(s.paddingTop, width);
   box.padRight = resolve(s.paddingRight, width);
   box.padBottom = resolve(s.paddingBottom, width);
   box.padLeft = resolve(s.paddingLeft, width);
   box.marginLeft = resolve(s.marginLeft, width);
   box.marginRight = resolve(s.marginRight, width);
-  box.decorated =
+  const decorated =
     !isTransparent(s.backgroundColor) ||
     box.borderTop + box.borderRight + box.borderBottom + box.borderLeft > 0;
-  if (box.decorated && fonts) {
-    const extent = faceExtent(fonts, s);
-    box.contentAscent = extent.ascent;
-    box.contentDescent = extent.descent;
-  }
+  box.decoration = !decorated ? null : fonts ? faceExtent(fonts, s) : NO_EXTENT;
   const left = box.marginLeft + box.borderLeft + box.padLeft;
   const right = box.padRight + box.borderRight + box.marginRight;
   return s.direction === 'rtl' ? [right, left] : [left, right];
 }
 
-/** A face's ascent and descent at a style's size, kept per font manager. */
+/** A border's width, or none where its style draws none. */
+function usedBorder(
+  width: number,
+  style: ComputedStyle['borderTopStyle'],
+): number {
+  return style === 'none' || style === 'hidden' ? 0 : width;
+}
+
+/** A face's ascent and descent at a style's size, kept per font manager
+ *  and shared by the boxes set in it: by the style, which the cascade
+ *  shares between every element of a kind, and by the face, which styles
+ *  that differ in anything else share. */
 const FACE_EXTENTS = new WeakMap<
   FontsLike,
-  Map<string, { ascent: number; descent: number }>
+  {
+    byStyle: WeakMap<ComputedStyle, InlineDecoration>;
+    byFace: Map<string, InlineDecoration>;
+  }
 >();
 
-function faceExtent(
-  fonts: FontsLike,
-  style: ComputedStyle,
-): { ascent: number; descent: number } {
+/** The extent of a decorated box where there are no fonts to ask. */
+const NO_EXTENT: InlineDecoration = { ascent: 0, descent: 0 };
+
+function faceExtent(fonts: FontsLike, style: ComputedStyle): InlineDecoration {
   let cache = FACE_EXTENTS.get(fonts);
   if (!cache) {
-    cache = new Map();
+    cache = { byStyle: new WeakMap(), byFace: new Map() };
     FACE_EXTENTS.set(fonts, cache);
   }
+  let extent = cache.byStyle.get(style);
+  if (extent) return extent;
   const key = `${style.fontFamily}|${style.fontSize}|${style.fontWeight}|${style.fontStyle}`;
-  let extent = cache.get(key);
+  extent = cache.byFace.get(key);
   if (!extent) {
     try {
       const m = fonts
@@ -1459,9 +1479,10 @@ function faceExtent(
     } catch {
       extent = { ascent: style.fontSize * 0.8, descent: style.fontSize * 0.2 };
     }
-    if (cache.size > 64) cache.clear();
-    cache.set(key, extent);
+    if (cache.byFace.size > 64) cache.byFace.clear();
+    cache.byFace.set(key, extent);
   }
+  cache.byStyle.set(style, extent);
   return extent;
 }
 

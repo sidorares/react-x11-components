@@ -15,7 +15,7 @@
 // (`paintCollapsedBorders`) and nothing paints the boxes' own.
 import type { BorderStyle, ComputedStyle } from '../css/style.js';
 import type { Box } from './boxes.js';
-import { gridOf, rowsOf, spanAttr } from './grid.js';
+import { spanAttr, tableGrid } from './grid.js';
 import type { Cell } from './grid.js';
 
 /** The border drawn along one segment of the grid. */
@@ -120,6 +120,15 @@ const STYLE_RANK: Record<BorderStyle, number> = {
 
 type Side = 'Top' | 'Right' | 'Bottom' | 'Left';
 
+/** Each side's three properties, named once rather than spelled out per
+ *  segment: a table is resolved on every build, a hundred segments each. */
+const KEYS = {
+  Top: ['borderTopStyle', 'borderTopWidth', 'borderTopColor'],
+  Right: ['borderRightStyle', 'borderRightWidth', 'borderRightColor'],
+  Bottom: ['borderBottomStyle', 'borderBottomWidth', 'borderBottomColor'],
+  Left: ['borderLeftStyle', 'borderLeftWidth', 'borderLeftColor'],
+} as const;
+
 /** A side of a box's style as a candidate for a segment. */
 interface Candidate {
   style: ComputedStyle;
@@ -140,10 +149,11 @@ function resolve(candidates: Candidate[]): CollapsedBorder | null {
   let bestWidth = 0;
   let bestStyle = 0;
   for (const c of candidates) {
-    const style = c.style[`border${c.side}Style`];
+    const [styleKey, widthKey] = KEYS[c.side];
+    const style = c.style[styleKey];
     if (style === 'hidden') return null;
     if (style === 'none') continue;
-    const width = c.style[`border${c.side}Width`];
+    const width = c.style[widthKey];
     const rank = STYLE_RANK[style];
     if (
       best &&
@@ -159,10 +169,11 @@ function resolve(candidates: Candidate[]): CollapsedBorder | null {
     bestStyle = rank;
   }
   if (!best || !(bestWidth > 0)) return null;
-  const color = best.style[`border${best.side}Color`];
+  const [styleKey, , colorKey] = KEYS[best.side];
+  const color = best.style[colorKey];
   return {
     width: bestWidth,
-    style: best.style[`border${best.side}Style`],
+    style: best.style[styleKey],
     color: color === 'currentColor' ? best.style.color : color,
     rank: (bestWidth * 16 + bestStyle) * 8 + best.origin,
   };
@@ -200,8 +211,7 @@ function columnsOf(
 
 /** Resolve every segment of a table's grid. */
 export function collapseTable(table: Box): CollapsedTable {
-  const { rows, groups } = rowsOf(table);
-  const { cells, columnCount } = gridOf(rows);
+  const { rows, groups, cells, columnCount } = tableGrid(table);
   const R = rows.length;
   const C = columnCount;
   const owner: (Cell | null)[] = new Array<Cell | null>(R * C).fill(null);

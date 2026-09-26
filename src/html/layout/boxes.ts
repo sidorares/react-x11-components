@@ -48,6 +48,35 @@ export type BoxKind =
   | 'marker'
   | 'break';
 
+// What only a few boxes carry lives beside the box rather than in it: a box
+// is made for every element and every run of text, and each field on it is
+// memory every walk over the tree goes through — fifteen fields more, never
+// read, made a document's first paint 6% slower.
+
+/** A list item's marker: its text, a bullet or the item's number, and
+ *  where it was laid out. */
+export interface Marker {
+  text: string;
+  layout: TextLayoutLike | null;
+  x: number;
+  y: number;
+}
+
+/** An out-of-flow box's static position, as an offset from the box whose
+ *  flow it was taken from, which may yet move. */
+export interface StaticPosition {
+  from: Box;
+  x: number;
+  right: number;
+  y: number;
+}
+
+/** The ascent and descent of a decorated inline box's own face. */
+export interface InlineDecoration {
+  ascent: number;
+  descent: number;
+}
+
 /** A laid-out line inside an inline formatting context. */
 export interface LineBox {
   /** Content-box relative, resolved to document coordinates at paint. */
@@ -216,16 +245,18 @@ export class Box {
   marginBottom = 0;
   marginLeft = 0;
   /** An inline box with a background or a border to paint behind its
-   *  fragments, and the ascent and descent of its own face — the height CSS
+   *  fragments: the ascent and descent of its own face, the height CSS
    *  paints them over (10.6.1). Set by the inline layout. */
-  decorated = false;
-  contentAscent = 0;
-  contentDescent = 0;
+  decoration: InlineDecoration | null = null;
   /** What a percentage `height` resolves against: an absolutely positioned
    *  box's containing block's height, which is known before the box is laid
    *  out (CSS 2.1 10.5). NaN everywhere else, where that height depends on
    *  the content and a percentage is `auto`. */
   percentHeightBase = NaN;
+  /** Whether this box last handed its children a percentage base that
+   *  was a number: until it does, they hold NaN already, and the next
+   *  pass need not visit them to say so again. */
+  gavePercentBase = false;
   /** Whether this box's top margin collapsed through its parent's top edge
    *  and was spent placing the parent (CSS 2.1 8.3.1): its own layout puts
    *  it at the parent's content top, and applies no margin again. Set by
@@ -260,19 +291,16 @@ export class Box {
    *  key on this rather than re-reading the tag. */
   replaced: ReplacedKind = 'none';
 
-  /** The marker text of a `list-item`, if it generated one, and where it
-   *  was laid out. The marker is not a box: it is not in the flow, nothing
-   *  can select it (CSS spells that `::marker`, and no author styles it
-   *  here), and giving it one would put a bullet in every copied list. */
-  markerText = '';
-  markerLayout: TextLayoutLike | null = null;
+  /** The marker of a `list-item`, if it generated one. The marker is not a
+   *  box: it is not in the flow, nothing can select it (CSS spells that
+   *  `::marker`, and no author styles it here), and giving it one would put
+   *  a bullet in every copied list. */
+  marker: Marker | null = null;
   /** Which of an element's pseudo-elements this box is. Its `el` is null —
    *  it is no element — and its text box's is the element it hangs off, so
    *  a click on a link's generated text or first letter is a click on the
    *  link. */
   pseudo: 'before' | 'after' | 'first-letter' | null = null;
-  markerX = 0;
-  markerY = 0;
 
   /**
    * The bounds of everything this box and its descendants draw, in document
@@ -322,12 +350,8 @@ export class Box {
   /** Set on a float, for the same reason. */
   isFloat = false;
   /** Where an out-of-flow box would have been in the flow it was taken
-   *  from — its static position (CSS 2.1 10.3.7, 10.6.4) — as an offset
-   *  from the box that flow is in, which may yet move. */
-  staticFrom: Box | null = null;
-  staticX = 0;
-  staticRight = 0;
-  staticY = 0;
+   *  from — its static position (CSS 2.1 10.3.7, 10.6.4). */
+  staticPosition: StaticPosition | null = null;
 
   /** A table's captions, above and below it: they are in the box's height,
    *  and outside the table's own border and background (CSS 2.1 17.4). */
@@ -415,6 +439,10 @@ export interface BoxTree {
   controls: Box[];
   /** Every box carrying an `href`, for click and hover. */
   links: Box[];
+  /** Every element's box with a `background-image`, for the host to be
+   *  asked for: a document has a handful, and finding them was a walk over
+   *  every box after every build. */
+  backgrounds: Box[];
 }
 
 export interface BuildOptions {
@@ -471,6 +499,7 @@ class Builder {
   private _textBoxes: Box[] = [];
   private _controls: Box[] = [];
   private _links: Box[] = [];
+  private _backgrounds: Box[] = [];
   /** Counter stack for `<ol>` numbering, one entry per open list. */
   private _counters: number[] = [];
   /** The CSS counters in scope, for `counter()` in generated content. */
@@ -512,6 +541,7 @@ class Builder {
       textBoxes: this._textBoxes,
       controls: this._controls,
       links: this._links,
+      backgrounds: this._backgrounds,
     };
   }
 
@@ -587,6 +617,7 @@ class Builder {
     const kind = boxKindFor(style.display);
     const box = new Box(kind, el, style);
     into.append(box);
+    if (style.backgroundImage) this._backgrounds.push(box);
     if (style.position === 'absolute' || style.position === 'fixed')
       box.outOfFlow = true;
     else if (style.float !== 'none') box.isFloat = true;
@@ -598,7 +629,8 @@ class Builder {
     if (style.display === 'table-column') return;
 
     if (style.display === 'list-item') {
-      box.markerText = markerFor(el, style, this._counters);
+      const text = markerFor(el, style, this._counters);
+      if (text) box.marker = { text, layout: null, x: 0, y: 0 };
     }
     const opensCounter = tag === 'ol' || tag === 'ul';
     if (opensCounter) {
@@ -654,6 +686,7 @@ class Builder {
     const box = new Box('replaced', el, style);
     box.replaced = replaced;
     into.append(box);
+    if (style.backgroundImage) this._backgrounds.push(box);
     if (style.position === 'absolute' || style.position === 'fixed')
       box.outOfFlow = true;
     else if (style.float !== 'none') box.isFloat = true;
@@ -1560,18 +1593,23 @@ function isDroppableWhitespace(box: Box): boolean {
 }
 
 /** A box that belongs inside a table: a row group, a row, a cell, a
- *  caption or a column. */
+ *  caption or a column. Asked of every child of every box in a build, so
+ *  a text or an inline box is answered from its kind, without its style. */
 function isTablePart(box: Box): boolean {
-  if (box.outOfFlow || box.isFloat) return false;
-  const display = box.style.display;
-  return (
-    box.kind === 'table-row-group' ||
-    box.kind === 'table-row' ||
-    box.kind === 'table-cell' ||
-    box.kind === 'table-caption' ||
-    display === 'table-column' ||
-    display === 'table-column-group'
-  );
+  switch (box.kind) {
+    case 'table-row-group':
+    case 'table-row':
+    case 'table-cell':
+    case 'table-caption':
+      return !box.outOfFlow && !box.isFloat;
+    case 'block': {
+      if (box.outOfFlow || box.isFloat) return false;
+      const display = box.style.display;
+      return display === 'table-column' || display === 'table-column-group';
+    }
+    default:
+      return false;
+  }
 }
 
 /**

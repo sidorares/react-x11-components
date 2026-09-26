@@ -2764,12 +2764,14 @@ metric("a list item's marker goes where its item is moved", async () => {
       '<ul style="margin:0"><li id="li">item</li></ul></td></tr></table>',
   );
   const el = view(node);
-  const li = boxOf(el, 'li') as LaidBox & { markerX: number; markerY: number };
+  const li = boxOf(el, 'li') as LaidBox & {
+    marker: { x: number; y: number } | null;
+  };
   assert.ok(
-    li.markerX < li.x + 40 && li.markerX > li.x - 40,
-    `beside its item: ${li.markerX} by ${li.x}`,
+    li.marker!.x < li.x + 40 && li.marker!.x > li.x - 40,
+    `beside its item: ${li.marker!.x} by ${li.x}`,
   );
-  assert.ok(li.markerY >= li.y - 2 && li.markerY < li.y + li.height);
+  assert.ok(li.marker!.y >= li.y - 2 && li.marker!.y < li.y + li.height);
 });
 
 metric('clip shows the part of an absolute box it names', async () => {

@@ -62,6 +62,30 @@ export function rowsOf(table: Box): TableRows {
   return { rows, groups, captions };
 }
 
+/** A table's rows, as `rowsOf` gives them, and its grid. */
+export interface TableGrid extends TableRows {
+  cells: Cell[];
+  columnCount: number;
+}
+
+const GRIDS = new WeakMap<Box, TableGrid>();
+
+/**
+ * A table's rows and grid, worked out once per box tree: they come from the
+ * markup alone — a restyle builds the boxes again — while the layout asks
+ * on every pass, at every width a resize goes through, and the collapsing
+ * border model asks too.
+ */
+export function tableGrid(table: Box): TableGrid {
+  let grid = GRIDS.get(table);
+  if (!grid) {
+    const rows = rowsOf(table);
+    grid = { ...rows, ...gridOf(rows.rows) };
+    GRIDS.set(table, grid);
+  }
+  return grid;
+}
+
 /**
  * Assign every cell a row and a column, honouring `colspan` and `rowspan`.
  * The occupancy grid is what makes a `rowspan` in an earlier row push a

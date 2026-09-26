@@ -23,7 +23,7 @@ import {
   resolveEdges,
 } from './block.js';
 import type { LayoutContext } from './block.js';
-import { gridOf, rowsOf } from './grid.js';
+import { tableGrid } from './grid.js';
 import type { Cell } from './grid.js';
 
 /** Lay out a table's insides. Returns the content height. */
@@ -32,9 +32,7 @@ export function layoutTable(
   ctx: LayoutContext,
   contentWidth: number,
 ): number {
-  const { rows, captions } = rowsOf(table);
-
-  const { cells, columnCount } = gridOf(rows);
+  const { rows, captions, cells, columnCount } = tableGrid(table);
   table.captionTop = 0;
   table.captionBottom = 0;
   if (!columnCount) {

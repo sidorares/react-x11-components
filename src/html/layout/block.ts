@@ -13,7 +13,7 @@
 import { AUTO, isPct, resolve, resolveOrNull } from '../css/values.js';
 import type { Len } from '../css/values.js';
 import { Box } from './boxes.js';
-import type { BoxTree, LineBox } from './boxes.js';
+import type { BoxTree, LineBox, Marker } from './boxes.js';
 import { FloatContext } from './floats.js';
 import { layoutInline } from './inline.js';
 import type { FontsLike } from './inline.js';
@@ -119,44 +119,17 @@ export function layoutDocument(
   // and the ink bounds are computed after that, so culling sees where boxes
   // ended up rather than where they were laid out.
   applyRelativeOffsets(root);
-  computePaintBounds(root);
+  const reach = computePaintBounds(root);
 
   // The document is as tall as what overflows the root, not the root: an
   // `html, body { height: 100% }` a window tall holds a message longer than
   // the window, and the element sizes to all of it.
-  let bottom = Math.max(root.height, overflowBottom(root));
+  let bottom = Math.max(root.height, reach);
   for (const { box } of ctx.positioned) {
     if (box.style.position !== 'fixed')
       bottom = Math.max(bottom, box.y + box.height);
   }
   return { width: viewportWidth, height: bottom };
-}
-
-/**
- * How far down a box's content reaches: its border box, and every box and
- * line under it, but not past a box that clips what it holds — which is
- * where a document's scrollable overflow ends.
- */
-function overflowBottom(box: Box): number {
-  let bottom = box.y + box.height;
-  const style = box.style;
-  if (
-    box.parent &&
-    (style.overflowX !== 'visible' || style.overflowY !== 'visible')
-  ) {
-    return bottom;
-  }
-  if (box.lines?.length) {
-    const last = box.lines[box.lines.length - 1];
-    bottom = Math.max(bottom, last.y + last.height);
-  }
-  for (const child of box.children) {
-    if (child.kind === 'text' || child.kind === 'break' || child.outOfFlow) {
-      continue;
-    }
-    bottom = Math.max(bottom, overflowBottom(child));
-  }
-  return bottom;
 }
 
 /**
@@ -217,23 +190,38 @@ function collapsesThrough(box: Box): boolean {
   if (min !== null && min > 0) return false;
   for (const child of box.children) {
     if (child.outOfFlow || child.isFloat) continue;
-    if (child.kind === 'text' && !child.text.trim()) continue;
+    if (child.kind === 'text' && isBlank(child.text)) continue;
     if (!collapsesThrough(child)) return false;
   }
   return true;
 }
 
 /** The first in-flow child of a block container that holds blocks, or null
- *  when it holds lines — whose first line box stops a margin — or nothing. */
+ *  when it holds lines — whose first line box stops a margin — or nothing.
+ *  A box holds lines where every child in flow is inline-level, so then its
+ *  first is, and that answers without an `establishesInlineContext` walk. */
 function firstInFlowBlock(box: Box): Box | null {
-  if (box.kind !== 'block' || establishesInlineContext(box)) return null;
+  if (box.kind !== 'block') return null;
   for (const child of box.children) {
-    if (child.kind === 'text' && !child.text.trim()) continue;
+    if (child.kind === 'text' && isBlank(child.text)) continue;
     if (child.outOfFlow || child.isFloat) continue;
-    return child.kind === 'text' || isInlineLevel(child) ? null : child;
+    return child.kind === 'text' ||
+      child.kind === 'inline' ||
+      child.kind === 'break' ||
+      isInlineLevel(child)
+      ? null
+      : child;
   }
   return null;
 }
+
+/** Whether a text is white space alone, as `!text.trim()` says, without
+ *  copying the text to find out — which `trim` does to a paragraph's text
+ *  that ends in a space, on every pass. */
+function isBlank(text: string): boolean {
+  return BLANK.test(text);
+}
+const BLANK = /^\s*$/;
 
 /** What a box's children came to: their height, and the margin still hanging
  *  past the last of them when the box's own bottom edge does not stop it. */
@@ -275,7 +263,7 @@ function layoutChildren(
   let first = true;
 
   for (const child of box.children) {
-    if (child.kind === 'text' && !child.text.trim()) continue;
+    if (child.kind === 'text' && isBlank(child.text)) continue;
     if (child.outOfFlow) {
       placeStatic(child, box, contentLeft, contentWidth, y + pendingMargin);
       ctx.positioned.push({
@@ -594,7 +582,7 @@ function layoutInternals(
   if (flow.hanging) {
     box.marginBottom = collapseMargins(box.marginBottom, flow.hanging);
   }
-  if (box.markerText) layoutMarker(box, ctx);
+  if (box.marker) layoutMarker(box, box.marker, ctx);
 }
 
 /** The first line box anywhere under a box, in layout order. */
@@ -620,14 +608,14 @@ function firstLineIn(box: Box): LineBox | null {
  * content: it must not join the selection, or copying a list would paste a
  * bullet before every line.
  */
-function layoutMarker(box: Box, ctx: LayoutContext): void {
+function layoutMarker(box: Box, marker: Marker, ctx: LayoutContext): void {
   const fonts = ctx.fonts;
   if (!fonts) return;
   const style = box.style;
   const layout = fonts.layout(
     [
       {
-        text: box.markerText,
+        text: marker.text,
         family: style.fontFamily,
         size: style.fontSize,
         color: style.color,
@@ -636,7 +624,7 @@ function layoutMarker(box: Box, ctx: LayoutContext): void {
     { family: style.fontFamily, size: style.fontSize, color: style.color },
     {},
   );
-  box.markerLayout = layout;
+  marker.layout = layout;
   const gap = Math.round(style.fontSize * 0.4);
   // The marker sits on the first line of the item's *content*, which is not
   // always the item's own: an `<li>` holding a paragraph, or one holding text
@@ -646,8 +634,8 @@ function layoutMarker(box: Box, ctx: LayoutContext): void {
   const first = firstLineIn(box);
   const baselineY = first ? first.y + first.baseline : box.contentY;
   const own = layout.lines[0];
-  box.markerY = baselineY - (own ? own.baseline : style.fontSize);
-  box.markerX =
+  marker.y = baselineY - (own ? own.baseline : style.fontSize);
+  marker.x =
     style.listStylePosition === 'inside'
       ? box.contentX
       : box.contentX - gap - layout.width;
@@ -676,13 +664,25 @@ function percentBaseInside(box: Box): number {
   return Math.max(0, clampHeight(box, borderBox) - box.verticalExtra);
 }
 
-/** Hand a box's children the height their percentages resolve against —
- *  through inline boxes, which are no containing block, to the inline-block
- *  or image in them. */
+/**
+ * Hand a box's children the height their percentages resolve against —
+ * through inline boxes, which are no containing block, to the inline-block
+ * or image in them. Nearly every box has none to give, and its children
+ * hold NaN until it has, so it visits them only when there is a height, or
+ * was one on the last pass: visiting every child of every block on every
+ * pass cost more than laying out a table.
+ */
 function givePercentBase(box: Box, base: number): void {
+  const given = !Number.isNaN(base);
+  if (!given && !box.gavePercentBase) return;
+  box.gavePercentBase = given;
+  handPercentBase(box, base);
+}
+
+function handPercentBase(box: Box, base: number): void {
   for (const child of box.children) {
     child.percentHeightBase = base;
-    if (child.kind === 'inline') givePercentBase(child, base);
+    if (child.kind === 'inline') handPercentBase(child, base);
   }
 }
 
@@ -986,24 +986,24 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
   // with neither offset on an axis, the box is where the flow would have
   // put it (CSS 2.1 10.3.7, 10.6.4): against its start edge, which is the
   // right one in a right-to-left flow
-  const from = box.staticFrom;
-  const rtl = (from ?? containing).style.direction === 'rtl';
+  const at = box.staticPosition;
+  const rtl = (at?.from ?? containing).style.direction === 'rtl';
   const x =
     left !== null
       ? cbX + left + box.marginLeft
       : right !== null
         ? cbX + cbWidth - right - box.width - box.marginRight
         : rtl
-          ? (from ? from.x + box.staticRight : cbX + cbWidth) -
+          ? (at ? at.from.x + at.right : cbX + cbWidth) -
             box.width -
             box.marginRight
-          : (from ? from.x + box.staticX : cbX) + box.marginLeft;
+          : (at ? at.from.x + at.x : cbX) + box.marginLeft;
   const y =
     top !== null
       ? cbY + top + box.marginTop
       : bottom !== null
         ? cbY + cbHeight - bottom - box.height - box.marginBottom
-        : (from ? from.y + box.staticY : cbY) + box.marginTop;
+        : (at ? at.from.y + at.y : cbY) + box.marginTop;
   moveTo(box, x, y);
 }
 
@@ -1017,10 +1017,12 @@ function placeStatic(
   width: number,
   y: number,
 ): void {
-  box.staticFrom = parent;
-  box.staticX = x - parent.x;
-  box.staticRight = x + width - parent.x;
-  box.staticY = y - parent.y;
+  box.staticPosition = {
+    from: parent,
+    x: x - parent.x,
+    right: x + width - parent.x,
+    y: y - parent.y,
+  };
 }
 
 /** The nearest positioned ancestor, or null for the initial containing
@@ -1059,8 +1061,10 @@ function translate(box: Box, dx: number, dy: number): void {
   box.x += dx;
   box.y += dy;
   // a list item's marker is placed in the same coordinates as its lines
-  box.markerX += dx;
-  box.markerY += dy;
+  if (box.marker) {
+    box.marker.x += dx;
+    box.marker.y += dy;
+  }
   if (box.lines) {
     for (const line of box.lines) {
       line.x += dx;
