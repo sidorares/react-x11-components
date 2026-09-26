@@ -317,7 +317,9 @@ function skipBalanced(
       if (depth === 0) return i + 1;
     }
   }
-  return text.length;
+  // not closed: one past the end, so a caller can tell a construct the end
+  // of the text cut off from one closed by its last character
+  return text.length + 1;
 }
 
 /** The next `{` that is not inside a string, comment or bracket. */
@@ -373,11 +375,21 @@ function findChar(
   return -1;
 }
 
+/**
+ * A `{…}` block: its body, and where the text goes on after it. The end of
+ * a style sheet closes a block still open (CSS 2.1 4.2), so a block the end
+ * cut off is everything after its brace. Cutting its last character as if
+ * it were the `}` made `color: blue` `color: blu` — and left an unclosed
+ * `rgb(` to reach paint whole or not, by where the sheet's whitespace fell.
+ */
 function readBlock(
   text: string,
   braceAt: number,
 ): { body: string; end: number } {
   const end = skipBalanced(text, braceAt, '{', '}');
+  if (end > text.length) {
+    return { body: text.slice(braceAt + 1), end: text.length };
+  }
   return { body: text.slice(braceAt + 1, Math.max(braceAt + 1, end - 1)), end };
 }
 

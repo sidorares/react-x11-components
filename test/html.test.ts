@@ -36,6 +36,7 @@ import {
   specificityOf,
 } from '../src/html/css/parse.js';
 import {
+  parseColor,
   parseLength,
   splitValue,
   isTransparent,
@@ -131,6 +132,26 @@ test('a universal selector counts nothing, and does not stop the scan', () => {
   assert.strictEqual(specificityOf('.café'), specificityOf('.cafe'));
   const sheet = parseStylesheet('* { margin: 0 } .tests * { color: red }');
   assert.strictEqual(sheet.rules.length, 2);
+});
+
+test('a block the end of the sheet cuts off keeps all of its body', () => {
+  // The end of a style sheet closes what is open (CSS 2.1 4.2). The block
+  // reader took the last character for the `}` it expected and cut it.
+  const sheet = parseStylesheet('p { color: red } div { color: blue');
+  assert.deepStrictEqual(
+    sheet.rules.map((r) => r.declarations.map((d) => d.value)),
+    [['red'], ['blue']],
+  );
+});
+
+test('a colour ntk cannot read is dropped, and one left open at the end is closed', () => {
+  // A functional colour was passed through unread, and ntk's X11 context
+  // throws on one it cannot parse — from inside paint, so `rgb(foo)` in a
+  // stylesheet took the application down. CSS ignores an invalid value.
+  assert.strictEqual(parseColor('rgb(foo)'), null);
+  assert.strictEqual(parseColor('rgb(0, 128, 0)'), 'rgb(0, 128, 0)');
+  // the end of a style sheet closes what is open (CSS 2.1 4.2)
+  assert.strictEqual(parseColor('rgb(0, 128, 0'), 'rgb(0, 128, 0)');
 });
 
 test('@media width queries become conditions, and their breakpoints are collected', () => {
@@ -387,6 +408,25 @@ metric('blocks stack, and the cascade decides their size', async () => {
     body.y >= heading.y + heading.height,
     'the paragraph starts below the heading',
   );
+});
+
+metric('a malformed colour does not reach paint', async () => {
+  const { result } = await render(
+    '<style>p{color:rgb(foo)} div{margin:0;color:rgb(0, 128, 0</style>' +
+      '<p>ignored</p><div>green</div>',
+  );
+  // drawn at all is most of the assertion: it threw from paint before
+  await waitFor(async () => {
+    const ctx = result.ctx;
+    let green = 0;
+    for (let x = 8; x < 60; x += 1) {
+      for (let y = 30; y < 90; y += 2) {
+        const [r, g, b] = await pixelAt(ctx, x, y);
+        if (g > 90 && r < 60 && b < 60) green += 1;
+      }
+    }
+    assert.ok(green > 0, 'the unclosed rgb( drew its text green');
+  });
 });
 
 metric('sibling margins collapse to the larger of the two', async () => {
