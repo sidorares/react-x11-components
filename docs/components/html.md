@@ -395,6 +395,20 @@ than needing a style each. The report computes 110 styles, and 112 with its tabl
 An edit went from 111 to 76 ms on macOS and from 80 to 54 ms on XQuartz, an
 append from 118 to 83 ms and from 88 to 59 ms.
 
+**A padded inline box leaves its paragraph one layout.** Its padding,
+border and margin take room on its line, and one layout of the
+paragraph's text has none to give them; set a line at a time instead, the
+paragraph cost a layout per line and per box, five for a paragraph with
+one inline `<code>` in it. Where nothing on its lines has to be placed a
+piece at a time, with no image or inline-block, no float beside it, no
+`text-indent` and nothing right to left, each edge goes into the one
+layout as a no-break space letter-spaced to the edge's width. It goes to
+the line its box's text goes to, and a caret, a point and a selection step
+over it, so a selection of a code span's text leaves its padding out. A
+frame of a resize at 600 KB went from 172 to 92 ms on macOS and from 124
+to 59 ms on XQuartz, and the first paint from 581 to 521 ms and from 549
+to 464 ms.
+
 ## Types
 
 `Document`, `Element`, `AnyNode`, `ChildNode` and `ParentNode` are
