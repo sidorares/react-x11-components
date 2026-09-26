@@ -1587,6 +1587,8 @@ export function blockify(style: ComputedStyle, inFlexContainer: boolean): void {
     case 'table-header-group':
     case 'table-footer-group':
     case 'table-caption':
+    case 'table-column':
+    case 'table-column-group':
       style.display = 'block';
       return;
     case 'inline-flex':

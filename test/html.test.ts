@@ -2447,6 +2447,27 @@ metric('overflow clips what a box holds to its padding box', async () => {
   );
 });
 
+metric(
+  'an absolute box with auto offsets is where the flow put it',
+  async () => {
+    // CSS 2.1 10.3.7 and 10.6.4: with neither `left` nor `right`, and neither
+    // `top` nor `bottom`, the box takes its static position — where it would
+    // have been in the flow — not its containing block's corner
+    const { node } = await render(
+      '<div id="c" style="padding:10px;margin:0 20px">' +
+        '<p id="p" style="margin:0;height:30px">x</p>' +
+        '<div id="a" style="position:absolute;width:5px;height:5px"></div>' +
+        '<div id="b" style="position:absolute;top:0;width:5px;height:5px">' +
+        '</div></div>',
+    );
+    const el = view(node);
+    const [c, p, a, b] = ['c', 'p', 'a', 'b'].map((id) => boxOf(el, id));
+    assert.deepStrictEqual([a.x, a.y], [c.x + 10, p.y + p.height]);
+    assert.strictEqual(b.x, c.x + 10, 'one axis at a time');
+    assert.strictEqual(b.y, 0);
+  },
+);
+
 metric('clip shows the part of an absolute box it names', async () => {
   const { node } = await render(
     '<div id="a" style="position:absolute;top:0;left:0;width:40px;' +

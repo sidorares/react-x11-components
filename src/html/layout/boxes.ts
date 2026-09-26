@@ -317,6 +317,12 @@ export class Box {
   outOfFlow = false;
   /** Set on a float, for the same reason. */
   isFloat = false;
+  /** Where an out-of-flow box would have been in the flow it was taken
+   *  from — its static position (CSS 2.1 10.3.7, 10.6.4) — as an offset
+   *  from the box that flow is in, which may yet move. */
+  staticFrom: Box | null = null;
+  staticX = 0;
+  staticY = 0;
 
   /** A table's captions, above and below it: they are in the box's height,
    *  and outside the table's own border and background (CSS 2.1 17.4). */
