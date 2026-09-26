@@ -58,52 +58,55 @@ separately, and there are six.
 
 ## Results
 
-|                       | before, X11 | round 1, X11 | round 1, Cocoa | round 2, X11 | round 2, Cocoa |
-| --------------------- | ----------- | ------------ | -------------- | ------------ | -------------- |
-| reftests run          | 5,895       | 5,895        | 5,895          | 5,895        | 5,895          |
-| pass                  | 1,831 (31%) | 2,417 (41%)  | 2,212 (38%)    | 2,822 (48%)  | 2,557 (43%)    |
-| **hung the renderer** | **91**      | 0            | 0              | 0            | 0              |
-| threw from paint      | 1           | 0            | 0              | 0            | 0              |
+|                       | before, X11 | round 1, X11 | round 1, Cocoa | round 2, X11 | round 2, Cocoa | round 3, X11 | round 3, Cocoa |
+| --------------------- | ----------- | ------------ | -------------- | ------------ | -------------- | ------------ | -------------- |
+| reftests run          | 5,895       | 5,895        | 5,895          | 5,895        | 5,895          | 5,894        | 5,894          |
+| pass                  | 1,831 (31%) | 2,417 (41%)  | 2,212 (38%)    | 2,822 (48%)  | 2,557 (43%)    | 3,180 (54%)  | 2,831 (48%)    |
+| **hung the renderer** | **91**      | 0            | 0              | 0            | 0              | 0            | 0              |
+| threw from paint      | 1           | 0            | 0              | 0            | 0              | 0            | 0              |
 
 "Before" is `<Html>` as it shipped. Round 1 is the first nine fixes below;
-round 2 is generated content and the four layout fixes it brought to light.
-The 91 hangs were the renderer looping for ever inside a render, which
-freezes an application whole; they are the first finding, and the most
-important one.
+round 2 is generated content and the four layout fixes it brought to light;
+round 3 is the inline box model and what it brought to light. The 91 hangs
+were the renderer looping for ever inside a render, which freezes an
+application whole; they are the first finding, and the most important one.
+Round 3's Cocoa number is on react-x11 2.22.8 and @windowkit/appkit 0.15.0,
+where master itself passes 2,454, not round 2's 2,557 — see round 3's third
+item for the hundred tests between them.
 
 By area, sorted by the number of tests:
 
-| area                 | before, X11   | round 1, X11  | round 1, Cocoa | round 2, X11  | round 2, Cocoa |
+| area                 | before, X11   | round 2, X11  | round 2, Cocoa | round 3, X11  | round 3, Cocoa |
 | -------------------- | ------------- | ------------- | -------------- | ------------- | -------------- |
-| normal-flow          | 217/694 (31%) | 357/694 (51%) | 423/694 (61%)  | 370/694 (53%) | 436/694 (63%)  |
-| margin-padding-clear | 369/682 (54%) | 448/682 (66%) | 424/682 (62%)  | 448/682 (66%) | 424/682 (62%)  |
-| positioning          | 129/513 (25%) | 217/513 (42%) | 184/513 (36%)  | 239/513 (47%) | 192/513 (37%)  |
-| borders              | 255/504 (51%) | 267/504 (53%) | 266/504 (53%)  | 269/504 (53%) | 268/504 (53%)  |
-| selectors            | 62/468 (13%)  | 70/468 (15%)  | 70/468 (15%)   | 73/468 (16%)  | 73/468 (16%)   |
-| text                 | 186/381 (49%) | 193/381 (51%) | 181/381 (48%)  | 214/381 (56%) | 191/381 (50%)  |
-| backgrounds          | 114/336 (34%) | 178/336 (53%) | 112/336 (33%)  | 179/336 (53%) | 117/336 (35%)  |
-| syntax               | 147/275 (53%) | 152/275 (55%) | 153/275 (56%)  | 168/275 (61%) | 170/275 (62%)  |
-| tables               | 12/250 (5%)   | 15/250 (6%)   | 15/250 (6%)    | 18/250 (7%)   | 18/250 (7%)    |
-| floats-clear         | 13/211 (6%)   | 80/211 (38%)  | 56/211 (27%)   | 86/211 (41%)  | 57/211 (27%)   |
-| generated-content    | 17/205 (8%)   | 17/205 (8%)   | 17/205 (8%)    | 130/205 (63%) | 130/205 (63%)  |
-| linebox              | 41/191 (21%)  | 106/191 (55%) | 16/191 (8%)    | 111/191 (58%) | 20/191 (10%)   |
-| css1                 | 18/164 (11%)  | 22/164 (13%)  | 11/164 (7%)    | 70/164 (43%)  | 37/164 (23%)   |
-| fonts                | 45/159 (28%)  | 46/159 (29%)  | 43/159 (27%)   | 86/159 (54%)  | 81/159 (51%)   |
-| lists                | 12/155 (8%)   | 12/155 (8%)   | 12/155 (8%)    | 75/155 (48%)  | 75/155 (48%)   |
-| bidi-text            | 4/105 (4%)    | 4/105 (4%)    | 5/105 (5%)     | 24/105 (23%)  | 19/105 (18%)   |
-| floats               | 17/100 (17%)  | 23/100 (23%)  | 25/100 (25%)   | 27/100 (27%)  | 29/100 (29%)   |
-| box-display          | 17/86 (20%)   | 20/86 (23%)   | 14/86 (16%)    | 34/86 (40%)   | 24/86 (28%)    |
+| normal-flow          | 217/694 (31%) | 370/694 (53%) | 436/694 (63%)  | 483/694 (70%) | 461/694 (66%)  |
+| margin-padding-clear | 369/682 (54%) | 448/682 (66%) | 424/682 (62%)  | 459/682 (67%) | 436/682 (64%)  |
+| positioning          | 129/513 (25%) | 239/513 (47%) | 192/513 (37%)  | 293/513 (57%) | 282/513 (55%)  |
+| borders              | 255/504 (51%) | 269/504 (53%) | 268/504 (53%)  | 324/504 (64%) | 322/504 (64%)  |
+| selectors            | 62/468 (13%)  | 73/468 (16%)  | 73/468 (16%)   | 73/468 (16%)  | 73/468 (16%)   |
+| text                 | 186/381 (49%) | 214/381 (56%) | 191/381 (50%)  | 251/380 (66%) | 224/380 (59%)  |
+| backgrounds          | 114/336 (34%) | 179/336 (53%) | 117/336 (35%)  | 194/336 (58%) | 128/336 (38%)  |
+| syntax               | 147/275 (53%) | 168/275 (61%) | 170/275 (62%)  | 170/275 (62%) | 170/275 (62%)  |
+| tables               | 12/250 (5%)   | 18/250 (7%)   | 18/250 (7%)    | 18/250 (7%)   | 18/250 (7%)    |
+| floats-clear         | 13/211 (6%)   | 86/211 (41%)  | 57/211 (27%)   | 109/211 (52%) | 87/211 (41%)   |
+| generated-content    | 17/205 (8%)   | 130/205 (63%) | 130/205 (63%)  | 130/205 (63%) | 133/205 (65%)  |
+| linebox              | 41/191 (21%)  | 111/191 (58%) | 20/191 (10%)   | 112/191 (59%) | 22/191 (12%)   |
+| css1                 | 18/164 (11%)  | 70/164 (43%)  | 37/164 (23%)   | 91/164 (55%)  | 50/164 (30%)   |
+| fonts                | 45/159 (28%)  | 86/159 (54%)  | 81/159 (51%)   | 88/159 (55%)  | 84/159 (53%)   |
+| lists                | 12/155 (8%)   | 75/155 (48%)  | 75/155 (48%)   | 75/155 (48%)  | 75/155 (48%)   |
+| bidi-text            | 4/105 (4%)    | 24/105 (23%)  | 19/105 (18%)   | 43/105 (41%)  | 14/105 (13%)   |
+| floats               | 17/100 (17%)  | 27/100 (27%)  | 29/100 (29%)   | 28/100 (28%)  | 28/100 (28%)   |
+| box-display          | 17/86 (20%)   | 34/86 (40%)   | 24/86 (28%)    | 35/86 (41%)   | 27/86 (31%)    |
 | ui                   | 39/52 (75%)   | 39/52 (75%)   | 39/52 (75%)    | 39/52 (75%)   | 39/52 (75%)    |
 | visufx               | 3/49 (6%)     | 3/49 (6%)     | 3/49 (6%)      | 3/49 (6%)     | 3/49 (6%)      |
 | pagination           | 38/43 (88%)   | 41/43 (95%)   | 41/43 (95%)    | 41/43 (95%)   | 41/43 (95%)    |
-| visudet              | 6/37 (16%)    | 10/37 (27%)   | 11/37 (30%)    | 12/37 (32%)   | 13/37 (35%)    |
-| cascade              | 12/32 (38%)   | 20/32 (62%)   | 19/32 (59%)    | 21/32 (66%)   | 20/32 (62%)    |
-| zindex               | 13/29 (45%)   | 13/29 (45%)   | 13/29 (45%)    | 13/29 (45%)   | 13/29 (45%)    |
-| visuren              | 4/26 (15%)    | 5/26 (19%)    | 5/26 (19%)     | 6/26 (23%)    | 6/26 (23%)     |
-| abspos               | 3/25 (12%)    | 7/25 (28%)    | 7/25 (28%)     | 7/25 (28%)    | 7/25 (28%)     |
+| visudet              | 6/37 (16%)    | 12/37 (32%)   | 13/37 (35%)    | 13/37 (35%)   | 14/37 (38%)    |
+| cascade              | 12/32 (38%)   | 21/32 (66%)   | 20/32 (63%)    | 21/32 (66%)   | 21/32 (66%)    |
+| zindex               | 13/29 (45%)   | 13/29 (45%)   | 13/29 (45%)    | 14/29 (48%)   | 14/29 (48%)    |
+| visuren              | 4/26 (15%)    | 6/26 (23%)    | 6/26 (23%)     | 9/26 (35%)    | 6/26 (23%)     |
+| abspos               | 3/25 (12%)    | 7/25 (28%)    | 7/25 (28%)     | 8/25 (32%)    | 8/25 (32%)     |
 | values               | 8/25 (32%)    | 11/25 (44%)   | 7/25 (28%)     | 11/25 (44%)   | 7/25 (28%)     |
 | sec5                 | 11/23 (48%)   | 21/23 (91%)   | 21/23 (91%)    | 21/23 (91%)   | 21/23 (91%)    |
-| colors               | 2/19 (11%)    | 3/19 (16%)    | 2/19 (11%)     | 5/19 (26%)    | 4/19 (21%)     |
+| colors               | 2/19 (11%)    | 5/19 (26%)    | 4/19 (21%)     | 5/19 (26%)    | 4/19 (21%)     |
 | media                | 10/17 (59%)   | 10/17 (59%)   | 10/17 (59%)    | 10/17 (59%)   | 10/17 (59%)    |
 
 Paged media passes because neither a test nor its reference paginates here;
@@ -204,6 +207,80 @@ so it passed only while generated content drew nothing; and
 `content-attr-case-002` is XHTML, whose attribute names are case-sensitive
 where the runner reads it as HTML.
 
+### Round 3
+
+The inline box model, and what it brought to light:
+
+15. **An inline element's padding, border and margin took no room**, and its
+    background was painted run by run over its text alone. Its edges are on
+    its line now — the start side before its first fragment, the end side
+    after its last, on the side its `direction` puts them (8.6) — and its
+    background and border are painted a fragment a line over its face's
+    height and its vertical padding (10.6.1), rounded and bordered only where
+    it starts and ends. That is the padded `<a>` HTML mail sets as a button,
+    and `inlines-016` passes again on X11 — round 2's stray space had been
+    standing in for exactly this padding.
+16. **A line with an atomic on it was aligned piece by piece**: each piece of
+    text was laid out with the paragraph's alignment, and whatever followed
+    it was placed as though it had not been, so a centred line with an image
+    in it came out with the text over the image. A right-to-left one was
+    placed in logical order, its first word leftmost. A line is aligned whole
+    now, in the room beside the floats over its full height, and put in
+    visual order: the engine orders the text inside a piece, and the line
+    orders the pieces (UAX #9's L2). `direction: rtl` tests went from 24% to
+    56%.
+17. **A block's background was painted again behind every run of its own
+    text**, where the run took the text's style and the text's style was the
+    block's: a block of zero height with a background showed it behind its
+    text. X11 has done it since `<Html>` shipped. Cocoa started to when
+    react-x11 2.22.8 gave CoreText's runs their spans, and that is the
+    hundred tests master lost there between round 2 and this round's
+    baseline — 96 of them come back with the inline painter, which paints an
+    element's inline ancestors and never the block.
+18. **Border widths**: the initial width was 0, where CSS has `medium`, which
+    computes to nothing only while the style is `none` — so `border-style:
+solid` alone drew no border; a negative width was clamped to 0, where CSS
+    drops the declaration and the one before it stands; `-0`, `+0` and `0.0`
+    were not read as zeros; and the `border` shorthand's `medium` was not
+    scaled at 2x.
+19. **`letter-spacing` and `word-spacing` were parsed and never drawn.** Both
+    engines space a run's letters; word spacing is that, on the space runs a
+    word-spaced text box is split into. Word spacing went from 51% to 87%.
+20. **`inherit` reached only the inherited properties**: `border: inherit`,
+    `margin: inherit` and `padding: inherit` did nothing.
+21. **A line that ended at a `<br>` did not end** when the next thing on it
+    was an element's edge or an atomic.
+22. **`<iframe>`, `<video>` and `<embed>` were empty inline boxes**; they are
+    boxes of their size now, 300×150 without attributes, with nothing in
+    them, and a percentage height on an absolutely positioned box resolves
+    against its containing block, which is known before the box is laid out.
+23. **The runner rendered a test whose picture depends on an `onload`
+    handler**; an event handler attribute is a script now, as `<script>` is.
+
+Round 2's passes that fail now, 15 on X11 and 12 on Cocoa, are each recorded
+rather than hidden:
+
+- **Eight bidi tests** open an override (U+202E) on one side of a bordered
+  or padded element and close it on the other. The engine is handed a line a
+  piece at a time where an element has edges, so an embedding that crosses
+  one is resolved on each side of it separately. They passed while neither
+  the test nor the reference drew the element's border.
+- **Three more, on X11 only**, space the letters of an overridden run: ntk
+  puts a right-to-left run's letter spacing on the wrong side of its glyphs,
+  or spaces the bidi controls themselves, and CoreText does neither.
+- **`inherit-computed-001` and `border-color-012` ask for opposite things.**
+  An element that inherits a border colour its parent left to `currentColor`
+  draws it in its own colour in CSS Color 4 and browsers, and in its
+  parent's in CSS 2.1. `<Html>` follows CSS Color 4.
+- **`inline-replaced-height-005`** is a percentage height in flow, which
+  `<Html>` takes as `auto`; it passed while the `<iframe>` was an empty
+  inline.
+- **`letter-spacing-080`** spaces its letters 6em and names
+  `letter-spacing-007`'s reference, which is 96px: no renderer can pass it.
+- **`word-spacing-characters-001`, on Cocoa**: a tab after an element with
+  padding measures its stop from where the text resumes rather than from the
+  line's start.
+
 ## What `<Html>` supports
 
 From the pass rates of the tests that use each feature, at the fixes above,
@@ -214,7 +291,7 @@ checked against the code.
 | feature                                            | tests | pass   | verdict                                                                                                                                                                                                                |
 | -------------------------------------------------- | ----- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | block flow, margin collapsing                      | 694   | 51%    | **supported**; empty blocks collapsing through, and clearance, remain                                                                                                                                                  |
-| margins, padding, borders                          | 682   | 66%    | **supported**; border-collapse and the `double`/`groove` families are approximations                                                                                                                                   |
+| margins, padding, borders                          | 682   | 67%    | **supported**, inline boxes included; border-collapse and the `double`/`groove` families are approximations                                                                                                            |
 | floats and `clear`                                 | 311   | 27–41% | **supported**, with gaps: a float inside a paragraph is placed at the paragraph's top, not its line's                                                                                                                  |
 | relative and absolute positioning                  | 513   | 42%    | **partial**: no static position for an absolute box with neither `top` nor `bottom`                                                                                                                                    |
 | backgrounds: colour, image, repeat, position       | 336   | 53%    | **supported**; `background-attachment: fixed` is not                                                                                                                                                                   |
@@ -227,7 +304,7 @@ checked against the code.
 | `::first-letter`, `::first-line`                   | 395   | 1–16%  | **missing**                                                                                                                                                                                                            |
 | `z-index` stacking                                 | 152   | 10%    | **partial**: z-order within one parent only                                                                                                                                                                            |
 | `clip`                                             | 44    | 0%     | **missing**                                                                                                                                                                                                            |
-| bidi: `direction`, `unicode-bidi`                  | 265   | 14%    | **partial**: shaping and the bidi algorithm are ntk's; `unicode-bidi` overrides are not applied                                                                                                                        |
+| bidi: `direction`, `unicode-bidi`                  | 265   | 52%    | **partial**: shaping and the bidi algorithm are the engine's, a line's pieces are ordered by UAX #9's L2; an override that crosses a padded element is resolved on each side of it                                     |
 | selectors                                          | 468   | 16%    | **supported** except `::first-letter` and `::first-line`, which are most of this area                                                                                                                                  |
 | cascade, `@import`, `@media`                       | 134   | 57–62% | **supported**                                                                                                                                                                                                          |
 
@@ -236,8 +313,12 @@ in [the plan](#a-static-html-widget-worth-having) below.
 
 ## Cocoa
 
-After round 2, Cocoa passes 265 fewer tests than X11. 111 tests pass only on
-Cocoa and 376 only on X11; of those 376:
+After round 3, Cocoa passes 349 fewer tests than X11: 14 pass only on Cocoa
+and 363 only on X11. After round 2 it was 111 and 376, and most of those 111
+were X11's bug rather than Cocoa's merit — the block background painted
+behind its own text (round 3, item 17), which Cocoa's runs had no spans to
+show. What the tests that pass only on X11 come to, as counted after round
+2:
 
 - **85 are sub-pixel resampling.** At 2x every image is scaled, and
   CoreGraphics' interpolation at a tile's edge depends on where the tile
@@ -258,9 +339,10 @@ Cocoa and 376 only on X11; of those 376:
   Round 2 removes a collapsible space at the end of a block, as CSS does,
   so a shrink-to-fit box no longer grows by one; a space at the end of a
   wrapped line inside a paragraph is the engine's, and windowkit/appkit#81
-  leaves it out of CoreText's widths. Both engines also hang a trailing
-  no-break space, which CSS measures, so three float tests fail on both;
-  that is the next fix, for both at once.
+  leaves it out of CoreText's widths. CoreText still keeps the space in the
+  run that ends the line, so the inline painter clamps a run to its line.
+  Both engines also hang a trailing no-break space, which CSS measures, so
+  three float tests fail on both; that is the next fix, for both at once.
 - **The rest** — positioning, floats, normal flow — are under investigation;
   the normal-flow tests that pass only on Cocoa point at a metric that
   differs between the two text engines.
@@ -303,21 +385,25 @@ directories and caniemail's feature list:
    border model, `table-layout: fixed`, row groups, captions. About 600
    tests, and the layout of most HTML mail.
 4. **The inline formatting model**: a line height per inline box, the
-   remaining `vertical-align` values, horizontal padding, borders and
-   margins on an inline box, `text-align: justify`, and a float placed where
-   its line has got to rather than before the line. White space and
-   `font-size: 0` were done in round 2, and the Cocoa line-box difference
-   turned out to be CoreText's placement and its font smoothing.
+   remaining `vertical-align` values, `text-align: justify`, and a float
+   placed where its line has got to rather than before the line. White space
+   and `font-size: 0` were done in round 2 and an inline box's padding,
+   borders and margins in round 3, and the Cocoa line-box difference turned
+   out to be CoreText's placement and its font smoothing.
 5. **The CSS3 that documents use**: `background-size`, `box-shadow`,
    gradients, `calc()`, custom properties (`var()`), CSS Color 4 — which
    needs ntk's colour parser to read `oklch()` and the space-separated
    `rgb()`; Tailwind's output is written in them — and `@font-face` through
    `onResource`.
 6. **Stacking and clipping**: stacking contexts across `z-index`, `clip`,
-   the static position of an absolute box.
+   the static position of an absolute box, and a percentage height against
+   a containing block whose height is set.
 7. **`::first-letter` and `::first-line`**: drop caps and small-cap lead-ins;
    about 400 tests, most of them Unicode punctuation classes.
-8. **Bidi overrides**: `unicode-bidi: embed | bidi-override | isolate`.
+8. **Bidi overrides**: `unicode-bidi: embed | bidi-override | isolate`, and
+   an embedding resolved across a line rather than a piece at a time — which
+   needs the text engine to take a line's pieces, an element's edges
+   included, in one call.
 
 ## Lessons
 
