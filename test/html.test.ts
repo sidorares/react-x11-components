@@ -206,6 +206,129 @@ test('a broken rule does not eat the rest of the sheet', () => {
   assert.strictEqual(h1.declarations[0].value, 'red');
 });
 
+test('escapes resolve in selectors, names and values', () => {
+  const sheet = parseStylesheet(
+    '\\64\\69\\76 { \\63\\6F\\6C\\6F\\72: \\67\\72\\65\\65\\6E }',
+  );
+  assert.deepStrictEqual(
+    sheet.rules.map((r) => [
+      r.selector,
+      r.declarations[0].prop,
+      r.declarations[0].value,
+    ]),
+    [['\\64\\69\\76', 'color', 'green']],
+  );
+});
+
+test('a rule runs to its block: a stray semicolon or a bare @ is part of it', () => {
+  // CSS Syntax: a style rule's selector is everything up to its block, so
+  // `@ import "x"; div {…}` is one rule whose selector is not one. A stray
+  // `;` used to end the sheet there, and `@ import` read as an at-rule let
+  // the rule after it through.
+  const sheet = parseStylesheet(
+    '@ import "red.css"; div { color: red }\n' +
+      'foo; span { color: red }\n' +
+      '@1import "red.css"; em { color: red }\n' +
+      'p { color: green }',
+  );
+  assert.deepStrictEqual(
+    sheet.rules.map((r) => r.selector),
+    ['p'],
+  );
+  assert.deepStrictEqual(sheet.imports, [], 'and nothing is imported');
+});
+
+test('one invalid selector drops its whole group', () => {
+  const sheet = parseStylesheet(
+    '[1digit="true"], div { color: red }\n' +
+      '.-1ident, .three { color: red }\n' +
+      '.-ident, #-ident, .-\\31ident, .x { color: green }\n' +
+      'a, , b { color: red }\n' +
+      'a > { color: red }',
+  );
+  assert.deepStrictEqual(
+    sheet.rules.map((r) => r.selector),
+    ['.-ident', '#-ident', '.-\\31ident', '.x'],
+  );
+});
+
+test('@import counts only first, and never inside @media', () => {
+  const first = parseStylesheet('@charset "utf-8"; @import "a.css"; p {}');
+  assert.deepStrictEqual(first.imports, ['a.css']);
+  const late = parseStylesheet('p { color: red } @import "b.css";');
+  assert.deepStrictEqual(late.imports, [], 'after a rule');
+  const nested = parseStylesheet('@media screen { @import "c.css"; }');
+  assert.deepStrictEqual(nested.imports, [], 'inside @media');
+});
+
+test('only a rule that is one closes the imports', () => {
+  // `@media;` and `@page;` want blocks, `@badat-rule` is no rule, `#` and
+  // `:unknownpseudo` are no selectors: each is dropped as though never
+  // written, and an `@import` after them still counts.
+  for (const sheet of [
+    '@media; @page; @charset; @import "a.css";',
+    '@badat-rule foo; @import "a.css";',
+    '# { color: red } :unknownpseudo { color: red } @import "a.css";',
+  ]) {
+    assert.deepStrictEqual(parseStylesheet(sheet).imports, ['a.css'], sheet);
+  }
+});
+
+test('an escape is read whole, and stays part of its identifier', () => {
+  // six hex digits take the white space after them — a newline included, so
+  // the string goes on — and an escape that names a tab is not a tab
+  const [content, color] = parseDeclarations(
+    'content: "Filler\\\nText\\00000a\n Filler"; color: red \\9',
+  );
+  assert.strictEqual(content.value, '"Filler\\\nText\\00000a\n Filler"');
+  assert.strictEqual(
+    color.value,
+    'red \\9',
+    'left for the value parser to refuse',
+  );
+});
+
+test('a declaration list reads at-rules and junk to where they end', () => {
+  const decls = (text: string) =>
+    parseDeclarations(text).map((d) => `${d.prop}:${d.value}`);
+  assert.deepStrictEqual(decls('color: red; @import "x.css"; color: green'), [
+    'color:red',
+    'color:green',
+  ]);
+  assert.deepStrictEqual(decls('@foo {color: red} color: green'), [
+    'color:green',
+  ]);
+  assert.deepStrictEqual(decls('12; color: green'), ['color:green']);
+  assert.deepStrictEqual(decls('color: green; 12 color: red'), ['color:green']);
+  assert.deepStrictEqual(
+    decls(
+      'background: red ! fail; color: red ! important fail; x: 1 !important',
+    ),
+    ['x:1'],
+    'a `!` that is not `!important` is not a value',
+  );
+  assert.deepStrictEqual(
+    decls('content: "a;b" ; background: url(a;b.png)'),
+    ['content:"a;b"', 'background:url(a;b.png)'],
+    'a semicolon in a string or a url ends nothing',
+  );
+});
+
+test('an escaped class selector matches its element', async () => {
+  // Tailwind writes its variants as escapes — `.md\\:flex`, `.w-1\\/2` —
+  // and a rule was filed under the name as written, cut at the escape, so it
+  // was never tried against the element it names.
+  const { node } = await render(
+    '<style>.md\\:green { color: #00ff00 } .w-1\\/2 { width: 50% }</style>' +
+      '<div id="d" class="md:green w-1/2">x</div>',
+  );
+  const d = boxOf(view(node), 'd') as LaidBox & {
+    style: { color: string; width: unknown };
+  };
+  assert.strictEqual(d.style.color, '#00ff00');
+  assert.deepStrictEqual(d.style.width, { pct: 50 });
+});
+
 // --- values -----------------------------------------------------------------
 
 test('lengths resolve the units a computed style can, and keep the ones it cannot', () => {
