@@ -209,9 +209,13 @@ layer (the first is drawn), `position: sticky` (treated as `relative`),
 drawn). A `<col>` or a `<colgroup>` takes no part in layout: its width is
 not read, and its borders only where the table's collapse. A percentage
 `height` resolves where the containing block's height is set, and on an
-absolutely positioned box; the document's root has no height to give, since
-the element sizes to its content, so `html, body { height: 100% }` is as
-tall as what it holds.
+absolutely positioned box. The initial containing block is the viewport —
+the window's height, since the element sizes to its content — so
+`html, body { height: 100% }` is a window tall and `bottom: 0` with nothing
+positioned around it is the window's bottom, as in a browser; the document
+is as tall as what overflows its root, so nothing longer than the window is
+cut off. A fragment has no root element, and its blocks have the body's
+`auto` height to resolve against.
 Explicit bidi embeddings and overrides (U+202A–U+202E) that open on one side
 of an inline element with padding, border or margin and close on the other
 are resolved on each side of it separately: the text engine is handed the
