@@ -151,7 +151,7 @@ function buildChildIndexes(box: Box): void {
   let paintable = 0;
   for (const child of box.children) {
     if (child.kind === 'text' || child.kind === 'break') continue;
-    if (child.outOfFlow) (positioned ??= []).push(child);
+    if (layered(box, child)) (positioned ??= []).push(child);
     else if (!onLine(box, child)) paintable += 1;
   }
   if (positioned) {
@@ -162,9 +162,8 @@ function buildChildIndexes(box: Box): void {
   if (paintable < PAINT_INDEX_MIN) return;
   const boxes: Box[] = [];
   for (const child of box.children) {
-    if (child.kind === 'text' || child.kind === 'break' || child.outOfFlow)
-      continue;
-    if (!onLine(box, child)) boxes.push(child);
+    if (child.kind === 'text' || child.kind === 'break') continue;
+    if (!layered(box, child) && !onLine(box, child)) boxes.push(child);
   }
   const order = boxes.map((_, i) => i);
   order.sort((a, b) => boxes[a].boundsY - boxes[b].boundsY);
@@ -407,7 +406,7 @@ function paintContent(
   } else {
     for (const child of box.children) {
       if (child.kind === 'text' || child.kind === 'break') continue;
-      if (child.outOfFlow || onLine(box, child)) continue;
+      if (layered(box, child) || onLine(box, child)) continue;
       paintBox(ctx, child, options);
     }
   }
@@ -445,7 +444,7 @@ function paintPositioned(
   options: PaintOptions,
 ): void {
   const clips = options.clips;
-  if (clips?.length) {
+  if (clips?.length && box.outOfFlow) {
     let escaped = clips.length;
     if (box.style.position !== 'fixed') {
       let containing = box.parent;
@@ -556,6 +555,20 @@ function pushClip(
   else ctx.rect(rect.x, rect.y, w, h);
   ctx.clip();
   return true;
+}
+
+/**
+ * Whether a child is painted with the positioned boxes, after the flow
+ * rather than in it: an absolutely positioned box, and a relatively
+ * positioned block, which CSS paints among them in document order (CSS 2.1
+ * Appendix E) — a relative box after an absolute one covers it. An inline
+ * or an inline-block is painted by its line.
+ */
+function layered(parent: Box, child: Box): boolean {
+  if (child.outOfFlow) return true;
+  const position = child.style.position;
+  if (position !== 'relative' && position !== 'sticky') return false;
+  return child.kind !== 'inline' && !onLine(parent, child);
 }
 
 /**

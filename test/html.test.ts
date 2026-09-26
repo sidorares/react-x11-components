@@ -2468,6 +2468,24 @@ metric(
   },
 );
 
+metric('a relative box after an absolute one is painted over it', async () => {
+  // both are positioned, and CSS paints positioned boxes in document order
+  // after the flow (CSS 2.1 Appendix E); the relative one was painted with
+  // the flow, under the absolute one
+  const { node } = await render(
+    '<div style="position:absolute;width:30px;height:30px;' +
+      'background:#ff0000"></div>' +
+      '<div style="position:relative;width:30px;height:30px;' +
+      'background:#00ff00"></div><div style="height:10px;' +
+      'background:#0000ff"></div>',
+  );
+  const fills = await fillsOf(view(node));
+  const order = (color: string) =>
+    fills.findIndex((f) => f.style === parseColor(color));
+  assert.ok(order('#0000ff') < order('#ff0000'), 'the flow first');
+  assert.ok(order('#ff0000') < order('#00ff00'), 'then in document order');
+});
+
 metric('clip shows the part of an absolute box it names', async () => {
   const { node } = await render(
     '<div id="a" style="position:absolute;top:0;left:0;width:40px;' +
