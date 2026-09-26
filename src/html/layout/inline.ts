@@ -319,8 +319,8 @@ export function layoutInline(block: Box, options: InlineOptions): InlineResult {
     // there (CSS 2.1 9.5). Only where a float took some of the line's width:
     // past the floats the line has the whole of it, and a word wider still
     // is the engine's to break. A line that ends on white space fitted its
-    // word: the space hangs, and CoreText counts it in the width where ntk
-    // does not.
+    // word: the space hangs, and CoreText counted it in the width until
+    // @windowkit/appkit 0.15.0.
     if (
       isEmpty(open) &&
       available < options.width &&

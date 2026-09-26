@@ -776,15 +776,29 @@ metric('font-size: 0 leaves no room between inline-blocks', async () => {
 metric('a word with no room beside a float goes below it, whole', async () => {
   // CSS 2.1 9.5: a line too short for any of its content moves down until
   // something fits. The word used to be cut to the room the float left.
+  // Sized from the word as this machine's face sets it — DejaVu on Linux is
+  // a fifth wider than Arial — so the room beside the float is always three
+  // quarters of the word and the room below it always half as much again.
+  type B = { lines: { y: number; width: number }[] | null; children: B[] };
+  const word = 'Antidisestablishment';
+  const probe = await render(
+    `<p id="w" style="margin:0;font-size:20px">${word}</p>`,
+    600,
+  );
+  const measured = boxOf(view(probe.node), 'w') as unknown as B;
+  const wordWidth = measured.lines?.[0]?.width ?? 0;
+  assert.ok(wordWidth > 0, 'the word is measured');
+  await probe.result.unmount();
+
+  const boxWidth = Math.ceil(wordWidth * 1.5);
   const { node } = await render(
-    '<div id="box" style="width:200px;font-size:20px">' +
-      '<div style="float:left;width:60px;height:30px"></div>' +
-      'Antidisestablishment</div>',
-    300,
+    `<div id="box" style="width:${boxWidth}px;font-size:20px">` +
+      `<div style="float:left;width:${Math.ceil(wordWidth * 0.75)}px;height:30px"></div>` +
+      `${word}</div>`,
+    boxWidth + 100,
   );
   // the text sits in an anonymous block beside the float, so its lines are
   // somewhere under the box rather than on it
-  type B = { lines: { y: number }[] | null; children: B[] };
   const lines: { y: number }[] = [];
   const walk = (b: B): void => {
     lines.push(...(b.lines ?? []));
