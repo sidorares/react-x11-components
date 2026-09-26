@@ -623,6 +623,25 @@ metric(
   },
 );
 
+metric('line-height: 0 lays lines on top of each other', async () => {
+  // Legal CSS, and what the suite's line-height tests are built on: each
+  // line box is 0 high, so two lines share a baseline. A 0.1 floor on the
+  // multiplier set them a tenth of a line apart.
+  const { node } = await render(
+    '<div style="font-size:20px;line-height:0;width:1em">X X</div>',
+    300,
+  );
+  type B = { lines: { y: number; baseline: number }[] | null; children: B[] };
+  const tree = (view(node) as unknown as { _tree: { root: B } })._tree;
+  const div = tree.root.children[0];
+  const lines = div.lines ?? [];
+  assert.strictEqual(lines.length, 2, 'the text wraps to two lines');
+  assert.ok(
+    Math.abs(lines[1].y - lines[0].y) < 0.01,
+    `both lines at one height: ${lines[0].y} and ${lines[1].y}`,
+  );
+});
+
 metric(
   'mixed-sign sibling margins collapse to the sum of the extremes',
   async () => {
