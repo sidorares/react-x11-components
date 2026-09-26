@@ -50,9 +50,9 @@ comparable with these; the method is.
 | ntk        | #385 a shaped glyph carries the characters it was shaped from                     | released, 8.12.6    |
 | components | #139 code editor: squiggles follow edits; what it paints stays true through them  | merged              |
 | components | #140 `<Html>`: a resize lays the document out once a frame                        | merged              |
-| appkit     | #77 a window shown taller than the screen says it is shown                        | open                |
-| components | #141 `<Html>`: a style is computed once per kind of element                       | open                |
-| components | #142 `<Html>`: a kept layout is found by comparing; a line height is kept         | open                |
+| appkit     | #77 a window shown taller than the screen says it is shown                        | released, 0.14.1    |
+| components | #141 `<Html>`: a style is computed once per kind of element                       | merged              |
+| components | #142 `<Html>`: a kept layout is found by comparing; a line height is kept         | merged              |
 
 ## Method
 
@@ -974,7 +974,8 @@ the queue.
 `showWindow` now sends `window-shown` once it has published. react-x11
 needed no change: it ignores event types it does not know, and every batch
 it receives ends with a frame tick and a present. A bare `<glarea>` in a
-constrained window: 0 → 351 frames in 3 s.
+constrained window: 0 → 351 frames in 3 s; with 0.14.1 in the lockfile, the
+stress view's two GL cells draw 119.7 and 120 fps again.
 
 ### `<Flow>`: a programmatic pan's bodies (components #128)
 
