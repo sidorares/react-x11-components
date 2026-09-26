@@ -1,4 +1,5 @@
-// A text layout as react-x11's Cocoa engine (2.3.x) reports one: the same
+// A text layout as an engine that reports geometry alone reports one —
+// react-x11's Windows engine, and its Cocoa engine before 2.22.8: the same
 // geometry, carets and drawing, but every run cut down to
 // `{ x, width, start, end }` and no `truncated`. Built from an ntk layout so
 // the suite can exercise that shape on the in-process X server, with no

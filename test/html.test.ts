@@ -1690,7 +1690,8 @@ metric(
 // --- the shape of a laid-out run is the engine's ----------------------------
 //
 // ntk hands every run back with the span it came from and the face it was
-// shaped with; react-x11's Cocoa engine (2.3.x) hands back geometry alone,
+// shaped with; an engine may hand back geometry alone, as react-x11's
+// Windows engine does and its Cocoa engine did before 2.22.8,
 // and a layout it cut at `maxLines` carries no `truncated`. Both are
 // reproduced here on ntk's own layouts, so the suite needs no macOS.
 
@@ -1722,7 +1723,7 @@ function cocoaShaped(el: HtmlViewNode): void {
 }
 
 metric(
-  "runs that come back without their spans (react-x11's Cocoa engine) paint, and hit-test through the document's text",
+  "runs that come back without their spans paint, and hit-test through the document's text",
   async () => {
     const { node } = await render(
       '<style>p{margin:0}.hl{background:#ffee55}</style>' +
