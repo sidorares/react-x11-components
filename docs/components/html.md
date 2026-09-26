@@ -111,7 +111,10 @@ test suite on both backends, is in
 **Layout:** block flow with margin collapsing, inline formatting with
 bidi and full shaping, `inline-block`, floats and `clear`, lists with their
 markers, tables (the auto algorithm and `table-layout: fixed`, with `colspan`
-and `rowspan`), `position: relative | absolute | fixed`, and `display: flex`.
+and `rowspan`, and the anonymous table CSS builds around table parts that
+have none), `position: relative | absolute | fixed`, and `display: flex`. An
+inline-block sits on its last line's baseline and an inline-table on its
+first row's.
 A line with an inline-block or a padded element on it is put in visual order
 a piece at a time — the text engine orders the text inside each piece, and
 the line orders the pieces (UAX #9's L2) — so a right-to-left paragraph with
@@ -165,7 +168,10 @@ over it copies it.
 
 **Selectors:** everything [css-select] supports — combinators, attribute
 operators, `:nth-child(an+b)`, `:not()` — plus `:hover`, which is answered
-from this renderer's own pointer state. `@media` width and
+from this renderer's own pointer state. Escapes are read wherever they stand,
+so a Tailwind class such as `md:flex`, written `.md\:flex`, matches. A group
+with a selector in it that is not one — an unknown pseudo-class, a name that
+starts with a digit — is dropped whole, as CSS 2.1 drops it. `@media` width and
 `prefers-color-scheme` queries are evaluated — the scheme is the react-x11
 palette's in force, so a `<ThemeProvider colorScheme>` above the element
 answers it and a desktop that switches schemes re-cascades the document.
@@ -177,8 +183,12 @@ animations and transitions, multi-column, shadows, gradients,
 layer (the first is drawn), `position: sticky` (treated as `relative`),
 `::first-letter` and `::first-line`, and an image in `content` (the rest of
 the value is drawn). `border-collapse: collapse` is drawn as the separate
-model with zero spacing. A percentage `height` is `auto` except on an
-absolutely positioned box, whose containing block's height is known first.
+model with zero spacing, and `<col>` and `<colgroup>` take no part in
+layout: neither their widths nor their borders are read. A percentage
+`height` resolves where the containing block's height is set, and on an
+absolutely positioned box; the document's root has no height to give, since
+the element sizes to its content, so `html, body { height: 100% }` is as
+tall as what it holds.
 Explicit bidi embeddings and overrides (U+202A–U+202E) that open on one side
 of an inline element with padding, border or margin and close on the other
 are resolved on each side of it separately: the text engine is handed the

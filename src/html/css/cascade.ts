@@ -21,7 +21,7 @@ import { Element as DomElement, isTag } from 'domhandler';
 import type { Element } from 'domhandler';
 
 import { attr, tagOf } from '../dom.js';
-import { mediaMatches } from './parse.js';
+import { mediaMatches, readIdent, startsIdent } from './parse.js';
 import type { Declaration, StyleRule, Stylesheet } from './parse.js';
 import { applyDeclaration, blockify, inherit, initialStyle } from './style.js';
 import type { ComputedStyle, RootLook } from './style.js';
@@ -208,7 +208,9 @@ function rightmostKey(selector: string): {
       if (c === quote && selector[i - 1] !== '\\') quote = '';
       continue;
     }
-    if (c === '"' || c === "'") quote = c;
+    // an escaped character is part of a name, whatever it is
+    if (c === '\\') i += 1;
+    else if (c === '"' || c === "'") quote = c;
     else if (c === '(' || c === '[') depth += 1;
     else if (c === ')' || c === ']') depth = Math.max(0, depth - 1);
     else if (
@@ -225,24 +227,23 @@ function rightmostKey(selector: string): {
   let i = 0;
   while (i < compound.length) {
     const c = compound[i];
-    if (c === '#') {
-      const end = identEnd(compound, i + 1);
-      if (!id) id = compound.slice(i + 1, end);
-      i = end;
-    } else if (c === '.') {
-      const end = identEnd(compound, i + 1);
-      if (!cls) cls = compound.slice(i + 1, end);
-      i = end;
+    // Names as the matcher reads them, escapes resolved: `.md\:flex` is
+    // the class `md:flex`, and filed under its first half it never matched.
+    if (c === '#' || c === '.') {
+      const name = readIdent(compound, i + 1);
+      if (c === '#' && !id) id = name.value;
+      if (c === '.' && !cls) cls = name.value;
+      i = Math.max(name.end, i + 1);
     } else if (c === '[') {
       i = balancedEnd(compound, i, '[', ']');
     } else if (c === ':') {
       const skip = compound[i + 1] === ':' ? 2 : 1;
-      const end = identEnd(compound, i + skip);
+      const end = Math.max(readIdent(compound, i + skip).end, i + skip);
       i = compound[end] === '(' ? balancedEnd(compound, end, '(', ')') : end;
-    } else if (/[a-zA-Z]/.test(c)) {
-      const end = identEnd(compound, i);
-      if (!tag) tag = compound.slice(i, end).toLowerCase();
-      i = end;
+    } else if (startsIdent(compound, i)) {
+      const name = readIdent(compound, i);
+      if (!tag) tag = name.value.toLowerCase();
+      i = name.end;
     } else {
       i += 1;
     }
@@ -251,12 +252,6 @@ function rightmostKey(selector: string): {
   if (cls) return { kind: 'class', name: cls };
   if (tag && tag !== '*') return { kind: 'tag', name: tag };
   return { kind: 'any', name: '' };
-}
-
-function identEnd(text: string, from: number): number {
-  let i = from;
-  while (i < text.length && /[a-zA-Z0-9_\-\\]/.test(text[i])) i += 1;
-  return i;
 }
 
 function balancedEnd(

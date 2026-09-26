@@ -731,12 +731,18 @@ function finishLine(
     height = Math.max(height, natural.height);
   }
   for (const placed of open.atomics) {
-    const h =
-      placed.box.height + placed.box.marginTop + placed.box.marginBottom;
-    const va = placed.box.style.verticalAlign;
-    if (va === 'top' || va === 'bottom' || va === 'middle')
+    const box = placed.box;
+    const h = box.height + box.marginTop + box.marginBottom;
+    const va = box.style.verticalAlign;
+    if (va === 'top' || va === 'bottom' || va === 'middle') {
       height = Math.max(height, h);
-    else ascent = Math.max(ascent, h);
+      continue;
+    }
+    // on the line's baseline by its own, and below it by the rest of it
+    const raise = typeof va === 'number' ? va : 0;
+    const b = atomicBaseline(box);
+    ascent = Math.max(ascent, b + raise);
+    descent = Math.max(descent, h - b - raise);
   }
   height = Math.max(height, ascent + descent);
   const baseline = Math.max(ascent, (height - ascent - descent) / 2 + ascent);
@@ -968,15 +974,87 @@ function alignAtomic(box: Box, line: LineBox): number {
     case 'middle':
       return (line.height - h) / 2;
     case 'sub':
-      return line.baseline - h + line.height * 0.1;
+      return line.baseline - atomicBaseline(box) + line.height * 0.1;
     case 'super':
-      return line.baseline - h - line.height * 0.25;
+      return line.baseline - atomicBaseline(box) - line.height * 0.25;
     default:
       if (typeof box.style.verticalAlign === 'number') {
-        return line.baseline - h - box.style.verticalAlign;
+        return line.baseline - atomicBaseline(box) - box.style.verticalAlign;
       }
-      return line.baseline - h;
+      return line.baseline - atomicBaseline(box);
   }
+}
+
+/**
+ * Where an atomic's baseline is, from the top of its margin box (CSS 2.1
+ * 10.8.1, 17.5.3): an inline-block's is its last line box's, an
+ * inline-table's its first row's — its first line box's — and the bottom of
+ * its margin box where it has none, is replaced, or clips what overflows
+ * it. Set bottom-on-baseline, an inline-block's text sat its descent above
+ * the text beside it, and a line holding one grew by as much.
+ *
+ * Read while the atomic is still where it was laid out, before the line
+ * moves it: its lines are then at the same offset from its top as they will
+ * be after.
+ */
+function atomicBaseline(box: Box): number {
+  const bottom = box.height + box.marginTop + box.marginBottom;
+  if (
+    box.kind === 'replaced' ||
+    box.style.overflowX !== 'visible' ||
+    box.style.overflowY !== 'visible'
+  ) {
+    return bottom;
+  }
+  const baseline =
+    box.kind === 'table' ? firstBaselineIn(box) : lastBaselineIn(box);
+  return baseline === null ? bottom : box.marginTop + (baseline - box.y);
+}
+
+/**
+ * The baseline a box's content gives it, in document coordinates: its last
+ * line box's, or its last in-flow child's with one — and a child that clips
+ * what overflows it gives its bottom margin edge and no deeper, whatever
+ * text it holds (CSS Box Alignment's synthesized baseline). Null where
+ * nothing in it has one.
+ */
+function lastBaselineIn(box: Box): number | null {
+  if (box.lines?.length) {
+    const line = box.lines[box.lines.length - 1];
+    return line.y + line.baseline;
+  }
+  for (let i = box.children.length - 1; i >= 0; i -= 1) {
+    const found = childBaseline(box.children[i], lastBaselineIn);
+    if (found !== null) return found;
+  }
+  return null;
+}
+
+/** The same, from the first line box or child: a table's baseline is its
+ *  first row's. */
+function firstBaselineIn(box: Box): number | null {
+  if (box.lines?.length) return box.lines[0].y + box.lines[0].baseline;
+  for (const child of box.children) {
+    const found = childBaseline(child, firstBaselineIn);
+    if (found !== null) return found;
+  }
+  return null;
+}
+
+function childBaseline(
+  child: Box,
+  inside: (box: Box) => number | null,
+): number | null {
+  if (child.outOfFlow || child.isFloat || child.kind === 'replaced') {
+    return null;
+  }
+  if (
+    child.style.overflowX !== 'visible' ||
+    child.style.overflowY !== 'visible'
+  ) {
+    return child.y + child.height + child.marginBottom;
+  }
+  return inside(child);
 }
 
 // --- gathering --------------------------------------------------------------

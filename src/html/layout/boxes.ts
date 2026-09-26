@@ -30,6 +30,7 @@ import {
 import type { Cascade } from '../css/cascade.js';
 import { counterText, quoteAt } from '../css/content.js';
 import type { ContentItem } from '../css/content.js';
+import { inherit } from '../css/style.js';
 import type { ComputedStyle } from '../css/style.js';
 
 export type BoxKind =
@@ -475,7 +476,7 @@ class Builder {
     // it carries no margins of its own and cannot collapse with anything.
     this._children(root, rootBox, rootStyle, false, null, ROOT_SHARE_KEY);
     this._endLine();
-    fixUp(rootBox);
+    fixUp(rootBox, anonymousStyles(cascade.initial));
     assignSubtreeRanges(rootBox);
     return {
       root: rootBox,
@@ -1175,23 +1176,24 @@ function assignSubtreeRanges(box: Box): { start: number; end: number } {
  *    straight to `<tr>`, and CSS says the missing row group is generated
  *    rather than the rows being dropped.
  */
-function fixUp(box: Box): void {
-  for (const child of box.children) fixUp(child);
+function fixUp(box: Box, anonymous: AnonymousStyle): void {
+  for (const child of box.children) fixUp(child, anonymous);
 
   if (box.kind === 'table') {
-    fixUpTable(box);
+    fixUpTable(box, anonymous);
     return;
   }
   if (box.kind === 'table-row-group') {
-    wrapOrphans(box, 'table-row', (k) => k === 'table-row');
+    wrapOrphans(box, 'table-row', (k) => k === 'table-row', anonymous);
     return;
   }
   if (box.kind === 'table-row') {
-    wrapOrphans(box, 'table-cell', (k) => k === 'table-cell');
+    wrapOrphans(box, 'table-cell', (k) => k === 'table-cell', anonymous);
     return;
   }
 
   if (!box.children.length) return;
+  wrapTableParts(box, anonymous);
   let hasBlockLevel = false;
   let hasInlineLevel = false;
   for (const child of box.children) {
@@ -1216,7 +1218,7 @@ function fixUp(box: Box): void {
     // finds itself; it does not force an anonymous block on its own.
     if (isBlockLevel(child) && !child.outOfFlow && !child.isFloat) {
       if (run) {
-        next.push(anonymousBlock(box, run));
+        next.push(anonymousOf(box, 'block', run, anonymous));
         run = null;
       }
       next.push(child);
@@ -1231,20 +1233,44 @@ function fixUp(box: Box): void {
     if (run.every((c) => c.kind === 'text' && !c.text.trim())) {
       // trailing whitespace after the last block: same rule
     } else {
-      next.push(anonymousBlock(box, run));
+      next.push(anonymousOf(box, 'block', run, anonymous));
     }
   }
   box.children = next;
 }
 
-function anonymousBlock(parent: Box, run: Box[]): Box {
-  const box = new Box('block', null, parent.style);
-  box.parent = parent;
-  for (const child of run) {
-    child.parent = box;
-    box.children.push(child);
-  }
-  return box;
+/**
+ * The style of an anonymous box inside a parent: what the parent passes on
+ * by inheritance, and every other property at its initial value, as CSS 2.1
+ * gives anonymous boxes theirs (9.2.1.1, 17.2.1). An anonymous box that took
+ * the parent's style itself took its height, its padding and borders, its
+ * background, its relative offset and its opacity a second time — the text
+ * in `<div style="padding: 20px">text<p>…</p></div>` sat 40px in, and the
+ * paragraph after it the height of the div further down. One per parent
+ * style, which the cascade already shares between elements.
+ */
+type AnonymousStyle = (
+  parent: Box,
+  display: ComputedStyle['display'],
+) => ComputedStyle;
+
+function anonymousStyles(initial: ComputedStyle): AnonymousStyle {
+  const made = new WeakMap<ComputedStyle, Map<string, ComputedStyle>>();
+  return (parent, display) => {
+    let byDisplay = made.get(parent.style);
+    if (!byDisplay) {
+      byDisplay = new Map();
+      made.set(parent.style, byDisplay);
+    }
+    let style = byDisplay.get(display);
+    if (!style) {
+      // `display` is the one property it does not start from: it is the
+      // box the fix-up made, and layout asks the style what a box is
+      style = { ...inherit(parent.style, initial), display };
+      byDisplay.set(display, style);
+    }
+    return style;
+  };
 }
 
 function isBlockLevel(box: Box): boolean {
@@ -1277,6 +1303,7 @@ function wrapOrphans(
   box: Box,
   kind: BoxKind,
   accept: (k: BoxKind) => boolean,
+  anonymous: AnonymousStyle,
 ): void {
   let needed = false;
   for (const child of box.children) {
@@ -1291,7 +1318,7 @@ function wrapOrphans(
   for (const child of box.children) {
     if (accept(child.kind)) {
       if (run) {
-        next.push(anonymousOf(box, kind, run));
+        next.push(anonymousOf(box, kind, run, anonymous));
         run = null;
       }
       next.push(child);
@@ -1300,12 +1327,18 @@ function wrapOrphans(
     if (isDroppableWhitespace(child)) continue;
     (run ??= []).push(child);
   }
-  if (run) next.push(anonymousOf(box, kind, run));
+  if (run) next.push(anonymousOf(box, kind, run, anonymous));
   box.children = next;
 }
 
-function anonymousOf(parent: Box, kind: BoxKind, run: Box[]): Box {
-  const box = new Box(kind, null, parent.style);
+function anonymousOf(
+  parent: Box,
+  kind: BoxKind,
+  run: Box[],
+  anonymous: AnonymousStyle,
+  display: ComputedStyle['display'] = kind as ComputedStyle['display'],
+): Box {
+  const box = new Box(kind, null, anonymous(parent, display));
   box.parent = parent;
   for (const child of run) {
     child.parent = box;
@@ -1318,14 +1351,90 @@ function isDroppableWhitespace(box: Box): boolean {
   return box.kind === 'text' && !box.text.trim();
 }
 
-function fixUpTable(table: Box): void {
+/** A box that belongs inside a table: a row group, a row, a cell, a
+ *  caption or a column. */
+function isTablePart(box: Box): boolean {
+  if (box.outOfFlow || box.isFloat) return false;
+  const display = box.style.display;
+  return (
+    box.kind === 'table-row-group' ||
+    box.kind === 'table-row' ||
+    box.kind === 'table-cell' ||
+    box.kind === 'table-caption' ||
+    display === 'table-column' ||
+    display === 'table-column-group'
+  );
+}
+
+/**
+ * Table parts outside a table get one around them (CSS 2.1 17.2.1, rule 3):
+ * each run of them — the white space between them no part of it — is
+ * wrapped in an anonymous table, an inline one where the parent is inline,
+ * and the table is then completed as any other. Laid out on their own, two
+ * cells side by side in a line were two inline-blocks with a space between
+ * them, and in a block two blocks, one above the other.
+ */
+function wrapTableParts(box: Box, anonymous: AnonymousStyle): void {
+  if (!box.children.some(isTablePart)) return;
+  const display = box.kind === 'inline' ? 'inline-table' : 'table';
+  const next: Box[] = [];
+  let run: Box[] | null = null;
+  let space: Box[] = [];
+  const flush = (): void => {
+    if (!run) return;
+    const table = anonymousOf(box, 'table', run, anonymous, display);
+    fixUpTable(table, anonymous);
+    next.push(table);
+    run = null;
+  };
+  for (const child of box.children) {
+    if (isTablePart(child)) {
+      run ??= [];
+      run.push(child);
+      space = [];
+      continue;
+    }
+    if (run && isDroppableWhitespace(child)) {
+      // held back: between two parts it goes, after the last it stays
+      space.push(child);
+      continue;
+    }
+    flush();
+    next.push(...space, child);
+    space = [];
+  }
+  flush();
+  next.push(...space);
+  box.children = next;
+  for (const child of next) child.parent = box;
+}
+
+function fixUpTable(table: Box, anonymous: AnonymousStyle): void {
   const groups: Box[] = [];
   const captions: Box[] = [];
+  const columns: Box[] = [];
   let looseRows: Box[] | null = null;
+  let looseCells: Box[] | null = null;
+  const flushCells = (): void => {
+    if (!looseCells) return;
+    (looseRows ??= []).push(
+      anonymousOf(table, 'table-row', looseCells, anonymous),
+    );
+    looseCells = null;
+  };
   for (const child of table.children) {
-    if (child.kind === 'table-row-group') {
+    const display = child.style.display;
+    if (display === 'table-column' || display === 'table-column-group') {
+      // A column is the table's, beside its rows: it lays out nothing and
+      // paints nothing (17.2.1). Taken for a stray child, it was wrapped in
+      // a row of its own and drawn as a cell.
+      columns.push(child);
+    } else if (child.kind === 'table-row-group') {
+      flushCells();
       if (looseRows) {
-        groups.push(anonymousOf(table, 'table-row-group', looseRows));
+        groups.push(
+          anonymousOf(table, 'table-row-group', looseRows, anonymous),
+        );
         looseRows = null;
       }
       groups.push(child);
@@ -1333,24 +1442,27 @@ function fixUpTable(table: Box): void {
       captions.push(child);
     } else if (isDroppableWhitespace(child)) {
       continue;
+    } else if (child.kind === 'table-row') {
+      flushCells();
+      (looseRows ??= []).push(child);
     } else {
-      // A `<tr>`, or anything else that ended up here: rows go into an
-      // anonymous group, and anything that is not a row becomes a cell in
-      // one, which is how a browser rescues `<table>text</table>`.
-      const row =
-        child.kind === 'table-row'
-          ? child
-          : anonymousOf(table, 'table-row', [child]);
-      (looseRows ??= []).push(row);
+      // Anything else that ended up here is a cell, or goes in one, and a
+      // run of them shares an anonymous row — which is how a browser
+      // rescues `<table>text</table>`, and how three cells in a table
+      // with no row are one row of three rather than three rows of one.
+      (looseCells ??= []).push(child);
     }
   }
-  if (looseRows) groups.push(anonymousOf(table, 'table-row-group', looseRows));
+  flushCells();
+  if (looseRows) {
+    groups.push(anonymousOf(table, 'table-row-group', looseRows, anonymous));
+  }
   for (const group of groups) {
-    wrapOrphans(group, 'table-row', (k) => k === 'table-row');
+    wrapOrphans(group, 'table-row', (k) => k === 'table-row', anonymous);
     for (const row of group.children) {
-      wrapOrphans(row, 'table-cell', (k) => k === 'table-cell');
+      wrapOrphans(row, 'table-cell', (k) => k === 'table-cell', anonymous);
     }
   }
-  table.children = [...captions, ...groups];
+  table.children = [...captions, ...columns, ...groups];
   for (const child of table.children) child.parent = table;
 }
