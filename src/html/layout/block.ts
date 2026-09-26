@@ -166,6 +166,26 @@ function collapsedTopMargin(box: Box, containingWidth: number): number {
   }
 }
 
+/**
+ * Whether a box's top and bottom margins collapse through it: a block with
+ * no height, no border or padding, no line in it and no formatting context
+ * of its own, whose blocks are all the same (CSS 2.1 8.3.1). An empty
+ * `<div>` between two paragraphs is the case: its margins and theirs are
+ * one margin, where they were stacked.
+ */
+function collapsesThrough(box: Box): boolean {
+  if (box.kind !== 'block' || box.height !== 0) return false;
+  if (box.lines?.length || establishesBFC(box)) return false;
+  const min = resolveOrNull(box.style.minHeight, box.percentHeightBase);
+  if (min !== null && min > 0) return false;
+  for (const child of box.children) {
+    if (child.outOfFlow || child.isFloat) continue;
+    if (child.kind === 'text' && !child.text.trim()) continue;
+    if (!collapsesThrough(child)) return false;
+  }
+  return true;
+}
+
 /** The first in-flow child of a block container that holds blocks, or null
  *  when it holds lines — whose first line box stops a margin — or nothing. */
 function firstInFlowBlock(box: Box): Box | null {
@@ -257,9 +277,15 @@ function layoutChildren(
     } else {
       layoutBlockLevel(child, ctx, floats, contentLeft, childY, contentWidth);
     }
+    first = false;
+    if (childY === y + collapsed && collapsesThrough(child)) {
+      // nothing in it parts its margins: they and the ones either side of
+      // it are one (CSS 2.1 8.3.1), still hanging for what comes next
+      pendingMargin = collapseMargins(collapsed, child.marginBottom);
+      continue;
+    }
     y = child.y + child.height;
     pendingMargin = child.marginBottom;
-    first = false;
   }
 
   // The last child's bottom margin collapses through the parent's bottom
@@ -274,6 +300,10 @@ function layoutChildren(
     !box.borderBottom &&
     !box.padBottom &&
     box.style.height === AUTO &&
+    !(
+      resolveOrNull(box.style.minHeight, box.percentHeightBase)! >
+      y - contentTop
+    ) &&
     !establishesBFC(box)
   ) {
     return { height: y - contentTop, hanging: pendingMargin };
@@ -1095,7 +1125,13 @@ export function establishesBFC(box: Box): boolean {
   ) {
     return true;
   }
-  if (box.kind === 'table-cell' || box.kind === 'table') return true;
+  if (
+    box.kind === 'table-cell' ||
+    box.kind === 'table-caption' ||
+    box.kind === 'table'
+  ) {
+    return true;
+  }
   // The root element establishes the document's formatting context. Here it
   // is a box below the synthetic initial containing block, so it is named:
   // without it, <html>'s own margin collapsed with <body>'s first block's.
