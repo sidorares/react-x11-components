@@ -23,7 +23,6 @@ import * as ntk from 'react-x11/ntk';
 import { Node } from 'react-x11/node';
 import type { A11ySceneAction, A11ySceneItem } from 'react-x11/node';
 import type { Context2D } from 'react-x11/node';
-import { tint } from 'react-x11/style';
 import type { KeyboardEvent, MouseEvent, WheelEvent } from 'react-x11';
 import {
   ctrlChordLetter,
@@ -44,13 +43,10 @@ import {
   boundsOf,
   canConnect,
   clamp,
-  DEFAULT_MARKER_SIZE,
   DEFAULT_MAX_ZOOM,
   DEFAULT_MIN_ZOOM,
   EDGE_SLOP,
-  EDGE_STEP_OFFSET,
   fitViewport,
-  handleAnchor,
   HANDLE_RADIUS,
   HANDLE_SLOP,
   gripPoint,
@@ -60,13 +56,8 @@ import {
   MIN_NODE_HEIGHT,
   MIN_NODE_WIDTH,
   NODE_BODY_INSET,
-  NODE_DESC_SIZE,
   NODE_HEADER,
-  NODE_LABEL_SIZE,
-  NODE_PAD_X,
-  NODE_PAD_Y,
   normalizeBackground,
-  normalizeMarker,
   orientConnection,
   rectContains,
   rectsOverlap,
@@ -81,15 +72,37 @@ import {
   unionRects,
   ZOOM_STEP,
 } from './model.js';
+import { distanceToPath, pathBounds } from './paths.js';
 import {
-  distanceToPath,
-  edgePath,
-  endAngle,
-  pathBounds,
-  pointAtFraction,
-  startAngle,
-  trimEnd,
-} from './paths.js';
+  paintFloat,
+  paintGraph,
+  paintGraphEdges,
+  paintGraphNodes,
+  paintGround,
+  paintNodeItem,
+  paintPanels,
+  paintScene,
+} from './paint.js';
+import {
+  anchorsOf,
+  buildNodeItems,
+  buildScene,
+  connectionPath,
+  SceneCache,
+  CULL_MARGIN,
+  edgeCoarseBox,
+  edgeRoute,
+  endpoint,
+  HANDLE_ZOOM,
+  screenRect,
+  screenViewport,
+} from './scene.js';
+import type {
+  FlowScene,
+  SceneGrid,
+  SceneInput,
+  SceneNodeSource,
+} from './scene.js';
 import type {
   BackgroundOptions,
   BackgroundVariant,
@@ -97,6 +110,8 @@ import type {
   EdgeChange,
   FitViewOptions,
   FlowEdge,
+  FlowBodyBudget,
+  FlowFrameStats,
   FlowNode,
   FlowNodeData,
   FlowNodeType,
@@ -109,8 +124,6 @@ import type {
   MiniMapOptions,
   NodeBodyRect,
   NodeChange,
-  ShapeOptions,
-  StrokeOptions,
   TextOptions,
   Viewport,
   XYPosition,
@@ -141,44 +154,117 @@ interface PatternLike {
   _picture?: { destroy?(): void };
 }
 
+/** The slice of ntk's Surface a 2D zoom gesture paints the graph onto. */
+interface ShotSurface {
+  getContext(name: '2d'): unknown;
+  destroy?(): void;
+}
+type ShotCtor = new (
+  app: unknown,
+  options: { width: number; height: number; format: string },
+) => ShotSurface;
+
+/** The graph as a 2D zoom gesture's first step drew it, and the viewport
+ *  it drew at. */
+interface ZoomShot {
+  surface: ShotSurface;
+  viewport: Viewport;
+  width: number;
+  height: number;
+}
+
+/**
+ * What a 2D drag copies from instead of repainting: the graph without the
+ * nodes it moves, in two pictures of the pane — the ground and the edges,
+ * and the cards on a clear ground over them — so the moved nodes' edges go
+ * between the two and the nodes over both, as the painter orders them.
+ * Good for the gesture it was made in, at the viewport and the version of
+ * the graph it was painted at.
+ */
+interface LiftShot {
+  under: ShotSurface;
+  over: ShotSurface;
+  /** Where the cards' picture has anything, in the pane's logical pixels:
+   *  each card and the reach of its handles. Blended in there and nowhere
+   *  else — a step's box between the cards has none to blend. */
+  cards: FlowRect[];
+  gesture: object;
+  version: number;
+  viewport: Viewport;
+  width: number;
+  height: number;
+}
+
+/** A canvas `<Flow>` paints a panel on: a core node, asked to repaint its
+ *  own box. */
+interface PanelCanvas {
+  invalidate(layout: boolean, damage: unknown, reason: string): void;
+  /** Where a claim of the canvas lands: its box and core's damage slop,
+   *  device pixels. */
+  paintBounds?(): FlowRect;
+  /** Its box, device pixels. */
+  readonly abs?: FlowRect;
+}
+
 /** Timers, through `globalThis`: `src/` compiles with `types: []` so a Node
  * global that wandered in would become an implicit `@types/node` dependency
  * a consumer has to satisfy. */
 const timers = globalThis as {
   setInterval?(fn: () => void, ms: number): unknown;
   clearInterval?(id: unknown): void;
+  setTimeout?(fn: () => void, ms: number): unknown;
+  clearTimeout?(id: unknown): void;
 };
 
+/** How long the zoom has to hold still before mounted bodies come back at
+ *  the new scale. Wheel notches in a flick land well inside it. */
+const BODY_ZOOM_REST_MS = 150;
+/** What re-scaling the mounted bodies may add to one step of a zoom
+ *  gesture before they sit the gesture out (`_holdBodies`). */
+const BODY_BUDGET_MS = 8;
+/** What one body costs a zoom step until the pane has measured it: 1.1–1.2
+ *  ms on an M-series Mac, the 400-widget scene on Cocoa (42 bodies added
+ *  49 ms to a 13 ms step, 9 added 10). Learned from then on. */
+const BODY_STEP_PRIOR_MS = 1.2;
+
+/** Under GL, how long a zoom holds still before the world is rebuilt at it
+ *  — until then each step draws the world already on the GPU, scaled
+ *  (`glFrame`) — and how far that scaling may go before a step rebuilds
+ *  anyway, so a long gesture never magnifies one build by more than this.
+ *  The 2D renderer's zoom picture keeps to both. */
+const GL_ZOOM_REST_MS = 120;
+const GL_ZOOM_SPAN = 2;
+/** How much of the pane a 2D zoom step may paint live, round the picture it
+ *  composites — the ring a zoom out uncovers — before it paints a new one. */
+const ZOOM_SHOT_LIVE = 0.5;
+
+/**
+ * What painting the graph whole has to cost, ms, before a zoom paints a
+ * picture of it and composites that (`_zoomShotFor`) — and what it has to
+ * fall under before a zoom paints it live again. A picture pays for a graph
+ * too big to paint at every step and costs one that is not: on macOS at 2x
+ * its composite is ~20 ms a step whatever the graph, on X11 each new
+ * picture was a 50–150 ms step, and either way it holds a surface the size
+ * of the pane. A thirty-node graph painted live in 7 ms a step on Cocoa and
+ * zoomed at 90 frames a second where its picture held it to 45. A frame at
+ * 60 Hz to start, and a margin under it to stop, so a graph near the line
+ * does not go back and forth; judged on the median of the last
+ * `GRAPH_PAINTS_KEPT` whole paints, so a slow paint or two — a collection,
+ * the server catching up — decide nothing.
+ */
+const ZOOM_SHOT_WORTH_MS = 16;
+const ZOOM_SHOT_DROP_MS = 12;
+const GRAPH_PAINTS_KEPT = 5;
+/** How far round a box selection's outline its step claims: the pen, the
+ *  corner's radius and a pixel of antialiasing, with room to spare. */
+const SELECT_BAND = 4;
 /** How often the dash on an animated edge moves. Slow enough that a graph
  * full of them is not a repaint storm, fast enough to read as motion. */
 const ANIMATION_MS = 60;
 const ANIMATION_SPEED = 1.4; // px of dash travel per tick, at zoom 1
-const DEFAULT_DASH = [7, 5];
-
-/** Below these zooms the pane stops drawing detail nobody could read — the
- * cheapest optimisation there is, and the one that keeps a zoomed-out
- * overview interactive. */
-const LABEL_ZOOM = 0.45;
-const HANDLE_ZOOM = 0.5;
-const DESC_ZOOM = 0.6;
 
 /** Screen pixels the pointer may travel before a press becomes a drag. */
 const DRAG_THRESHOLD = 3;
-/** The grid never draws denser than this on screen, whatever the zoom. */
-const MIN_GRID_PX = 16;
-
-/** See `StrokeBuckets.BATCH_MIN`. */
-const MARKER_BATCH_MIN = 24;
-
-/**
- * How far outside its own box a node's ink can land: handles (capped at
- * 6 × 1.4 plus their outline), resize grips, the selection border, a pixel
- * of antialiasing. Damage rects grow by this before they are invalidated,
- * and cull tests grow their target by the same amount — the two must agree,
- * or a moved node leaves crumbs of its old handles behind.
- */
-const CULL_MARGIN = 16;
-
 /**
  * The props whose change means different pixels. `applyProps` repaints when
  * one of these moves and stays quiet otherwise — the event handlers are
@@ -200,7 +286,12 @@ const VISUAL_PROPS = [
   'nodesConnectable',
   'nodesResizable',
   'disabled',
+  'renderer',
 ] as const;
+
+/** The clock, through `globalThis`: `src/` compiles with `types: []`. */
+const clock = globalThis as { performance?: { now(): number } };
+const now = (): number => clock.performance?.now() ?? Date.now();
 
 const CONTROL_SIZE = 26;
 const PANEL_MARGIN = 10;
@@ -327,6 +418,7 @@ export const SELF_DAMAGED_PROPS: readonly string[] = [
   'zoomOnDoubleClick',
   'selectionOnDrag',
   'deleteOnKey',
+  'adaptive',
   'snapToGrid',
   'snapGrid',
 ];
@@ -383,98 +475,6 @@ function unionMaybe(a: FlowRect | null, b: FlowRect | null): FlowRect | null {
   return unionRects(a, b);
 }
 
-/** An arrowhead pile: the filled heads and the open ones share a colour, so
- * they share a bucket and differ only in which list they land in. */
-interface MarkerBucket {
-  color: string;
-  lineWidth: number;
-  filled: XYPosition[][];
-  open: XYPosition[][];
-}
-
-/**
- * Edge strokes, grouped by the pen that will draw them.
- *
- * Everything a graph strokes is the same two or three pens — the default
- * edge, the selected one, the animated dash — so grouping collapses a
- * per-edge request into a per-pen one. The key has to carry the dash *and*
- * its offset: two edges marching out of phase cannot share a path, because
- * the offset is set on the context, not on the subpath.
- */
-class StrokeBuckets {
-  private readonly byPen = new Map<
-    string,
-    { options: StrokeOptions; runs: XYPosition[][] }
-  >();
-
-  bucket(
-    stroke: string,
-    lineWidth: number,
-    dash: readonly number[] | undefined,
-    phase: number,
-    zoom: number,
-  ): XYPosition[][] {
-    const scaled = dash?.map((d) => d * zoom);
-    const key = `${stroke}|${lineWidth}|${scaled?.join(',') ?? ''}|${phase}`;
-    let entry = this.byPen.get(key);
-    if (!entry) {
-      entry = {
-        options: {
-          stroke,
-          lineWidth,
-          dash: scaled,
-          dashOffset: phase ? -phase * zoom : 0,
-        },
-        runs: [],
-      };
-      this.byPen.set(key, entry);
-    }
-    return entry.runs;
-  }
-
-  /**
-   * Below this many edges in one pen, they are stroked one at a time.
-   *
-   * A path's mask is its bounding box, so batching scattered geometry trades
-   * many small masks for one the size of the pane — about three quarters of
-   * a megabyte at a normal window size. That is a large win at seven hundred
-   * edges (measured: 3.9 MB a frame down to 1.3) and a loss at twenty, where
-   * the individual masks never add up to a paneful. The threshold is where
-   * they start to.
-   */
-  private static readonly BATCH_MIN = 24;
-
-  paint(painter: FlowPainter): void {
-    for (const { options, runs } of this.byPen.values()) {
-      if (runs.length >= StrokeBuckets.BATCH_MIN) {
-        painter.strokeRuns(runs, options);
-      } else {
-        for (const run of runs) painter.polyline(run, options);
-      }
-    }
-  }
-}
-
-/**
- * Are these the same handle? Anchors are rebuilt from the node on every read
- * — a drag moves them between commits — so identity says nothing, and the
- * `id` alone says too little: the node every graph starts with has *two*
- * handles with no id at all. Node, id, type and side together are what
- * distinguish them.
- */
-function sameHandle(
-  a: HandleAnchor | null | undefined,
-  b: HandleAnchor,
-): boolean {
-  return (
-    a != null &&
-    a.nodeId === b.nodeId &&
-    (a.id ?? null) === (b.id ?? null) &&
-    a.type === b.type &&
-    a.position === b.position
-  );
-}
-
 export class FlowGraphNode extends Node implements FlowInstance {
   // --- viewport, owned here unless the `viewport` prop takes it over ------
   private _vp: Viewport = { x: 0, y: 0, zoom: 1 };
@@ -506,19 +506,141 @@ export class FlowGraphNode extends Node implements FlowInstance {
   private _dragTo: Map<string, XYPosition> | null = null;
   /** The box a resize is currently making, for the same reason. */
   private _resizeTo: { id: string; rect: FlowRect } | null = null;
-  /** What was last handed to `onNodeBodies`, so the React half is told only
-   * when something actually moved. */
-  private _bodiesKey = '';
+  /** The bodies last sent, re-sent as the same array when only the origin
+   *  moved, and that origin — and each one by id, reused as the same object
+   *  when nothing about it changed, so the React half re-renders the card
+   *  that moved and not the ones beside it. */
+  private _bodies: readonly NodeBodyRect[] = [];
+  private _bodiesById = new Map<string, NodeBodyRect>();
+  private _bodiesOrigin: XYPosition = { x: 0, y: 0 };
+  /** Bodies held back while the zoom moves (`_holdBodies`): whether they
+   *  are, the zoom last seen, the timer that brings them back and when the
+   *  last held step was. */
+  private _bodiesHeld = false;
+  private _seenZoom = NaN;
+  private _bodiesRest: unknown = null;
+  private _bodiesAt = 0;
+  /** Mounted cards `<Flow>` shows, painted in the bodies' layer — the
+   *  graph leaves them out (`setShownBodies`). */
+  private _shownBodies: ReadonlySet<string> = new Set();
+  /**
+   * Under GL, the shown cards the bodies' layer has painted since it was
+   * told they were shown (`paintCard`). The layer is 2D, over the surface:
+   * it reaches the screen with the window's paint, and a GL frame presents
+   * at once. Leaving a card to the layer from the commit that mounted its
+   * body, as the 2D renderer can, left edges with no cards under them for as
+   * long as that paint took — the whole of a scene of charts' first paint,
+   * and again after every zoom that held the bodies. So the world keeps a
+   * card until its canvas has painted.
+   */
+  private _paintedCards = new Set<string>();
+  /** The canvases `<Flow>` paints the minimap and controls on, over the
+   *  bodies — while there are any, the graph leaves the panels out. */
+  private _panelCanvases: readonly PanelCanvas[] = [];
+  private _panelsKey = '';
+  /** The budget's model (`_holdBodies`, `_frameTick`): what a body adds to a
+   *  zoom step, what a step costs with none re-scaled, the last frame's
+   *  time, and what the step awaiting its frame did. */
+  private _bodyStepMs = BODY_STEP_PRIOR_MS;
+  private _baseStepMs = NaN;
+  private _lastFrameAt = -Infinity;
+  private _zoomStep: { live: boolean; bodies: number } | null = null;
   private _dashPhase = 0;
+  /** The box the bodies are laid out in, which a 2D pan carries. */
+  private _bodiesLayer: Node | null = null;
+  /** When a pan last asked to blit — the dash timer waits for it. */
+  private _blittedPanAt = -Infinity;
+  /** When the view last moved, and when the dash timer last came round,
+   *  ticking or not: a 2D pan's dashes wait for a view that held still. */
+  private _viewMovedAt = -Infinity;
+  private _tickAt = -Infinity;
+  /** When the dash timer last marched, and what a 2D frame has cost lately
+   *  — the paint, and the server's answer to the frame before it; a running
+   *  mean, ms: what a tick waits on. */
+  private _marchedAt = -Infinity;
+  private _tickCost = 0;
   private _animTimer: unknown = null;
   /** Inside `paint`, where an invalidation would only schedule a redraw of
    * the frame being drawn. */
   private _painting = false;
+  /** Routes that survived the last frame — see {@link SceneCache}. */
+  private readonly _sceneCache = new SceneCache();
+  /** Asks the GL surface for a frame, while one is drawing this pane. */
+  private _glRequest: (() => void) | null = null;
+  /**
+   * Bumped by every repaint this element asks for that is *not* a pure pan
+   * — which is how the GL surface knows the graph it holds on the GPU is
+   * still the graph, and a frame is only a new offset. Errs one way on
+   * purpose: anything it cannot see is covered by the rest of the key
+   * (`glFrame`), and a rebuild too many costs a frame's packing, where one
+   * too few draws the wrong graph.
+   */
+  private _worldVersion = 0;
+  /**
+   * The same for the nodes a drag is moving under GL, which are lifted out
+   * of the world for as long as it moves them (`_lifted`): a step changes
+   * them and nothing else, so it moves this and the world stays on the GPU.
+   * Rebuilding the world was the whole of a drag step's cost — 5-7 ms of
+   * scene and packing a step at 2,000 nodes, for one card.
+   */
+  private _liftVersion = 0;
+  /** The lifted ids, for the drag gesture they were made for, and a count
+   *  of every change to them — the world's key, since the world is built
+   *  without them. */
+  private _liftSet: Set<string> | null = null;
+  private _liftFor: object | null = null;
+  private _liftGen = 0;
+  /** Whether a marching edge is in the world, or in the lifted layer. */
+  private _worldAnimated = false;
+  private _liftedAnimated = false;
+  /** The last nodes commit changed lifted nodes and nothing else. */
+  private _liftOnly = false;
+  /** The overscan the GL world was culled to, in its own pinned
+   *  coordinates, and the key it was built under. */
+  private _worldCull: FlowRect | null = null;
+  private _worldCullId = 0;
+  private _worldZoom = NaN;
+  /** When the zoom last moved, whether that move continued a stream of
+   *  them — a gesture, where one alone is a jump — and the timer that asks
+   *  for the frame that rebuilds the GL world once the stream stops. */
+  private _zoomAt = -Infinity;
+  private _zoomStream = false;
+  private _zoomRest: unknown = null;
+  /** A 2D paint drew labels scaled mid-zoom, and owes them at their own
+   *  sizes once it rests. */
+  private _textApproximated = false;
+  /**
+   * Mid-zoom on the 2D renderer: the graph and its ground as the gesture
+   * drew them once, on a surface of their own, composited scaled for every
+   * step after — the GL renderer's world drawn scaled, in a bitmap. A step
+   * used to stroke every edge, fill every card and lay the grid again, 20 ms
+   * of Direct2D a step over the stress lattice, for a picture the next step
+   * moved off. Dropped when the zoom rests, which paints it all again
+   * exactly, and whenever the graph itself changes.
+   */
+  private _zoomShot: ZoomShot | null = null;
+  /** What the last `GRAPH_PAINTS_KEPT` whole paints of the graph cost, ms,
+   *  newest last: the steps of a zoom painted live and the pictures painted
+   *  for zooms, the two passes that say what a step would cost live — and
+   *  not a zoom's first step, which sets every label at its size once and
+   *  says what the steps after it will not. Whether a zoom is worth a
+   *  picture (`ZOOM_SHOT_WORTH_MS`); empty until a zoom has painted, so the
+   *  first one starts live. */
+  private _graphPaints: number[] = [];
+  /** A 2D drag's pictures (`_liftShotFor`), and the gesture that is not to
+   *  have any: one whose view moved under it, where a picture a step would
+   *  cost two full paints a step. */
+  private _liftShot: LiftShot | null = null;
+  private _liftShotRefused: object | null = null;
   /** Inside a live input dispatch — what makes a body emission `sync`.
    * Motion and the wheel run at continuous priority, whose React updates
    * can trail the pane's own painting by frames; an emission made under
    * this flag asks the receiver to commit before the dispatch returns. */
   private _gestureSync = false;
+  /** Inside a call through `FlowInstance` (`fromHandle`) — an application's
+   * handler, timer or animation loop moving the viewport. Its emissions ask
+   * to commit inline too. */
+  private _handleSync = false;
   /** The scene has been offered to assistive tech at least once — items
    * only exist once layout has placed them, which no commit marks. */
   private _sceneAnnounced = false;
@@ -615,6 +737,15 @@ export class FlowGraphNode extends Node implements FlowInstance {
 
   private _measure = (text: string, options?: TextOptions): number =>
     measureText(this._textOptions(), text, options).width;
+
+  /** The same shaping, both dimensions: what a scene's label chips are
+   *  sized from. `_measure` answers a width because `measureNode` only ever
+   *  wanted one. */
+  private _measureBox = (
+    text: string,
+    options?: TextOptions,
+  ): { width: number; height: number } =>
+    measureText(this._textOptions(), text, options);
 
   private _palette(): FlowPalette {
     return resolvePalette(
@@ -722,9 +853,23 @@ export class FlowGraphNode extends Node implements FlowInstance {
    * Returns `'full'` after a rebuild, a damage rect after an in-place fold,
    * and `null` when nothing visual changed at all.
    */
-  private _applyNodes(nodes: readonly AnyNode[]): 'full' | FlowRect | null {
+  private _applyNodes(nodes: readonly AnyNode[]): 'full' | FlowRect[] {
+    const sameCardText = (a: AnyNode, b: AnyNode): boolean => {
+      const da = a.data as FlowNodeData | undefined;
+      const db = b.data as FlowNodeData | undefined;
+      return (
+        (da?.label ?? a.id) === (db?.label ?? b.id) &&
+        da?.description === db?.description
+      );
+    };
     const prev = this._entries;
     this._nodesSeen = this.props.nodes;
+    // Whether every node this commit changed is one a drag has lifted out
+    // of the GL world — the commit of the drag's own step, when the app
+    // stores it — so the world on the GPU is still the world.
+    const lift = this._lifted();
+    let onlyLifted = lift != null;
+    this._liftOnly = false;
     let structural = nodes.length !== prev.length;
     if (!structural) {
       for (let i = 0; i < nodes.length; i++) {
@@ -734,7 +879,6 @@ export class FlowGraphNode extends Node implements FlowInstance {
         if (
           n.id !== o.id ||
           n.type !== o.type ||
-          n.selected !== o.selected ||
           n.hidden !== o.hidden ||
           n.zIndex !== o.zIndex ||
           n.handles !== o.handles ||
@@ -752,12 +896,26 @@ export class FlowGraphNode extends Node implements FlowInstance {
       this._rebuildNodes();
       return 'full';
     }
-    let damage: FlowRect | null = null;
+    const damage: FlowRect[] = [];
+    // A node that is selected, or no longer is, is restyled and restacked —
+    // selection lifts it over its neighbours — and both happen inside its
+    // own box: edges are drawn under every node. Treated as structural, a
+    // selection change re-measured every node and repainted the pane, which
+    // a box selection does on every step that takes a node in.
+    let reordered = false;
+    // round the box: its handles, and the resize grips a selected node
+    // grows at its corners, which at a deep zoom reach past the cull margin
+    const margin = Math.max(
+      CULL_MARGIN,
+      RESIZE_GRIP * this._viewport().zoom + 2,
+    );
     for (let i = 0; i < nodes.length; i++) {
       const entry = prev[i];
       const next = nodes[i];
       const old = entry.node;
       if (next === old) continue;
+      if (!lift?.has(next.id)) onlyLifted = false;
+      if (next.selected !== old.selected) reordered = true;
       const moved =
         next.position.x !== old.position.x ||
         next.position.y !== old.position.y;
@@ -771,7 +929,8 @@ export class FlowGraphNode extends Node implements FlowInstance {
         next.data !== old.data ||
         next.width !== old.width ||
         next.height !== old.height;
-      const restyled = next.style !== old.style;
+      const restyled =
+        next.style !== old.style || next.selected !== old.selected;
       if (!moved && !reshaped && !restyled) {
         // a behavioural flag (draggable, deletable…) — nothing drawn reads it
         entry.node = next;
@@ -788,6 +947,20 @@ export class FlowGraphNode extends Node implements FlowInstance {
         entry.specs = resolveHandles(next, entry.type);
       }
       const grew = entry.width !== widthBefore || entry.height !== heightBefore;
+      // Nothing the pane draws changed, while the node holds its place and
+      // its size, when its card is the bodies' layer's — the layer repaints
+      // it, if anything it shows changed — or when what changed is data its
+      // card does not show: a card shows the label, the description and the
+      // style, and a type that paints its own may show anything. A board of
+      // live widgets, a tenth of them patching their data ten times a
+      // second, rebuilt the GL world on every patch, and on the 2D renderer
+      // repainted cards that showed none of it.
+      if (!moved && !grew) {
+        if (this._cardInLayer(next.id)) continue;
+        if (!restyled && !entry.type?.paint && sameCardText(old, next)) {
+          continue;
+        }
+      }
       // The edges ride along only when an endpoint actually moved — a
       // label edit that kept the box is the box's own business, and a
       // keystroke that unioned its node's edges swept half the layer's
@@ -796,9 +969,16 @@ export class FlowGraphNode extends Node implements FlowInstance {
         box,
         moved || grew ? this._nodeDamage(entry) : this._screenRect(entry),
       );
-      damage = damage ? unionRects(damage, box) : box;
+      damage.push(inflateRect(box, margin));
     }
-    return damage ? inflateRect(damage, CULL_MARGIN) : null;
+    if (reordered) {
+      this._sortOrder();
+      // the minimap marks what is selected, in its corner of the pane
+      const map = this._miniMapCorner();
+      if (map) damage.push(map);
+    }
+    this._liftOnly = onlyLifted;
+    return damage;
   }
 
   /**
@@ -847,7 +1027,13 @@ export class FlowGraphNode extends Node implements FlowInstance {
     }
     this._entries = entries;
     this._byId = byId;
-    this._order = entries
+    this._sortOrder();
+  }
+
+  /** The paint order: by `zIndex`, a selected node over the rest of its
+   *  layer, and declaration order breaking ties. */
+  private _sortOrder(): void {
+    this._order = this._entries
       .map((entry, index) => ({ entry, index }))
       .sort((a, b) => {
         const az = a.entry.node.zIndex ?? 0;
@@ -890,6 +1076,12 @@ export class FlowGraphNode extends Node implements FlowInstance {
 
   private _viewport(): Viewport {
     return this._prop<Viewport>('viewport') ?? this._vp;
+  }
+
+  /** The viewport with the pane's window origin folded in — what every
+   *  graph-to-window conversion shared with `./scene.ts` takes. */
+  private _screenViewport(): Viewport {
+    return screenViewport(this._viewport(), this._pane());
   }
 
   /**
@@ -1027,9 +1219,96 @@ export class FlowGraphNode extends Node implements FlowInstance {
     });
   }
 
+  /**
+   * One entry as `./scene.ts` takes it: the live gesture state resolved
+   * away, so everything past this point is pure. A drag's position and a
+   * resize's box are already in `rect`, and `grips` is already filtered by
+   * whatever the handles took.
+   *
+   * Built per call rather than cached: `rectOf` is what keeps a drag in step
+   * with the commit that has not landed yet, and a cache here is a cache of
+   * last frame's positions.
+   */
+  /** Whether a React body is mounted over this node — which is what makes
+   * its card draw a title bar rather than a centred label, and what
+   * `_emitBodies` reports a box for. */
+  private _mounted(entry: NodeEntry): boolean {
+    return entry.type?.render != null && this._viewport().zoom >= RENDER_ZOOM;
+  }
+
+  /**
+   * The frame being painted: each node's scene source, and the two lists a
+   * 2D pass builds its scene from. A frame paints its damage as several
+   * passes — a pan's strips, its pinned furniture, the corners of a rounded
+   * pane — and the scene cache culls the graph to the screen once for all
+   * of them (`SceneCache.edgesOnScreen`), keyed on these very lists, so
+   * every pass has to be handed the same ones. The passes run one after
+   * another in a single task, so a microtask queued by the first forgets
+   * the frame after the last — the same reasoning as `_reportFrame`.
+   */
+  private _frame: {
+    sources: Map<NodeEntry, SceneNodeSource>;
+    lists: { all: SceneNodeSource[]; nodes: SceneNodeSource[] } | null;
+  } | null = null;
+
+  private _paintedFrame(): NonNullable<FlowGraphNode['_frame']> {
+    let frame = this._frame;
+    if (!frame) {
+      frame = this._frame = { sources: new Map(), lists: null };
+      void Promise.resolve().then(() => {
+        this._frame = null;
+      });
+    }
+    return frame;
+  }
+
+  private _sourceOf(entry: NodeEntry): SceneNodeSource {
+    if (!this._painting) return this._source(entry);
+    const { sources } = this._paintedFrame();
+    let source = sources.get(entry);
+    if (!source) {
+      source = this._source(entry);
+      sources.set(entry, source);
+    }
+    return source;
+  }
+
+  /** A 2D pass's node lists, the same arrays for every pass of a frame. */
+  private _frameLists(order: readonly NodeEntry[]): {
+    all: SceneNodeSource[];
+    nodes: SceneNodeSource[];
+  } {
+    const frame = this._paintedFrame();
+    frame.lists ??= {
+      all: this._entries.map((entry) => this._sourceOf(entry)),
+      nodes: order
+        .filter((entry) => !this._cardInLayer(entry.node.id))
+        .map((entry) => this._sourceOf(entry)),
+    };
+    return frame.lists;
+  }
+
+  private _source(entry: NodeEntry): SceneNodeSource {
+    return {
+      node: entry.node,
+      rect: this.rectOf(entry),
+      specs: entry.specs,
+      type: entry.type,
+      header: this._headerHeight(entry),
+      mounted: this._mounted(entry),
+      connectable: this._connectable(entry),
+      grips: this._grips(entry),
+    };
+  }
+
+  /** Not through `_source`: a source carries its grips, and `_grips` asks
+   *  where the handles are — the pair would recur. */
   private _handlesOf(entry: NodeEntry): HandleAnchor[] {
-    const rect = this.rectOf(entry);
-    return entry.specs.map((spec) => handleAnchor(entry.node.id, rect, spec));
+    return anchorsOf({
+      node: entry.node,
+      rect: this.rectOf(entry),
+      specs: entry.specs,
+    });
   }
 
   /**
@@ -1047,22 +1326,14 @@ export class FlowGraphNode extends Node implements FlowInstance {
    * testing reads the same rect, so what is drawn and what is clicked still
    * agree to the pixel.
    */
-  private _screenRect(entry: NodeEntry): FlowRect {
-    const v = this._viewport();
-    const rect = this.rectOf(entry);
-    const p = this._toScreen(rect);
-    const s = this._scale;
-    const grid = (value: number): number => Math.round(value * s) / s;
-    const x = grid(p.x);
-    const y = grid(p.y);
-    return {
-      x,
-      y,
-      // rounded as edges rather than as a size, so two nodes that share a
-      // column still share it after rounding
-      width: grid(p.x + rect.width * v.zoom) - x,
-      height: grid(p.y + rect.height * v.zoom) - y,
-    };
+  private _screenRect(
+    entry: NodeEntry,
+    // A loop over the nodes passes it in: the viewport reads the pane's
+    // content box off layout, and asked once per node it was most of what a
+    // hit test cost on a large graph — every pointer move, 400 times.
+    sv: Viewport = this._screenViewport(),
+  ): FlowRect {
+    return screenRect(sv, this.rectOf(entry), this._scale);
   }
 
   private _visible(): boolean {
@@ -1082,12 +1353,35 @@ export class FlowGraphNode extends Node implements FlowInstance {
     const v = { x: next.x, y: next.y, zoom };
     const controlled = this.props.viewport !== undefined;
     if (!controlled) this._vp = v;
+    if (previous.x !== v.x || previous.y !== v.y || previous.zoom !== v.zoom) {
+      this._viewMovedAt = now();
+    }
+    if (previous.zoom !== v.zoom) {
+      const t = now();
+      this._zoomStream = t - this._zoomAt < GL_ZOOM_REST_MS;
+      this._zoomAt = t;
+    }
+    // Each claims its own box: a claim with no region is the whole window,
+    // which made every pan step and dash tick a full frame. The minimap's
+    // alone: its view box moves, and the controls show nothing of the
+    // viewport.
+    for (const canvas of this._miniMapCanvases())
+      canvas.invalidate(false, canvas, 'props');
     this._prop<(vp: Viewport) => void>('onViewportChange')?.(v);
     // The `fitView` that runs at the top of a paint has already changed what
     // this frame will draw, so asking for another one would only draw the
     // same picture twice.
     if (!controlled && !this._painting) {
-      if (!this._blitPan(previous, v)) this._repaint('scroll');
+      if (this._gl) {
+        // Under GL a pan is the surface's offset uniform and nothing else,
+        // and a zoom is the frame's to decide — the world scaled while the
+        // gesture moves, rebuilt once it rests (`glFrame`). Neither is a
+        // change to the world, and the 2D pane under the surface shows none
+        // of the graph: claiming its box every step repainted it for
+        // nothing (~4 ms a frame) — and, with bodies mounted, reached
+        // core's overlay too.
+        this._glRequest?.();
+      } else if (!this._blitPan(previous, v)) this._repaint('scroll');
       // same-frame compositing for mounted bodies — see `_dragStep`
       this._emitBodies();
     }
@@ -1101,26 +1395,33 @@ export class FlowGraphNode extends Node implements FlowInstance {
    * the shift exposed — which `paintDamage()` then hands to `paint`, so the
    * existing culling draws the sliver and nothing else.
    *
-   * The furniture — minimap, zoom controls — is pinned to the pane while
-   * its pixels would ride the blit, so its bands are carved out of the
-   * region that shifts and claimed as ordinary damage. The blit gate tests
-   * foreign claims against the *rect* (react-x11#309/#310), so a claim
-   * sitting edge to edge with it leaves the frame a blit: the middle of
-   * the pane is copied, the strips repaint with the new viewport, and the
-   * panels repaint in place.
+   * The furniture — minimap, zoom controls — stays put while the graph
+   * moves, so it is handed over as `pinned` (react-x11#682, 2.22): the
+   * whole pane is copied, and core repaints each panel and the image of
+   * it the copy dragged along, with the strips the shift exposed.
+   *
+   * Mounted node bodies ride it. They are laid out in one box beside the
+   * pane, which a pan moves by exactly the pan, so their pixels move with
+   * the pane's: the box goes to `scrollContents` as a rider
+   * (react-x11#671), its commit claims nothing, and what it leaves or
+   * reaches outside the rect is all it costs. `<Flow>` clips it to the pane for that. A body entering or
+   * leaving the pane, or changing as it goes, claims inside the rect and
+   * declines that frame's blit; the next one blits again.
    *
    * Still a full repaint when:
    *  - the zoom moved (scaling is not a blit) or the shift is fractional on
    *    the device grid — every real pan gesture is whole device pixels;
-   *  - mounted node bodies exist: they are core-owned siblings whose
-   *    gesture-time commits claim *inside* the rect every step, which
-   *    declines the blit anyway — bailing early skips the churn;
-   *  - the furniture bands would eat the pane (a tiny pane, or panels on
-   *    both the top and the bottom of a short one).
+   *  - bodies are mounted and `<Flow>` has not handed their box over;
+   *  - the pane is too small to be worth it; and core falls back itself
+   *    when the repairs would repaint most of it.
    */
   private _blitPan(previous: Viewport, next: Viewport): boolean {
+    // There is no backing store to scroll under GL: the surface redraws the
+    // whole scene every frame, and a pan is its cheapest frame of all.
+    if (this._gl) return false;
     if (next.zoom !== previous.zoom) return false;
-    if (this._bodiesKey !== '') return false;
+    const riders = this._bodies.length > 0 ? this._bodiesLayer : null;
+    if (this._bodies.length > 0 && !riders) return false;
     // Device pixels: the blit copies the backing store, and its grid is the
     // panel's. A pointer step lands on it whatever the scale — it came off
     // the wire as whole device pixels — so every real pan gesture blits.
@@ -1131,77 +1432,68 @@ export class FlowGraphNode extends Node implements FlowInstance {
     const dy = Math.round(shiftY);
     if (dx === 0 && dy === 0) return true; // sub-pixel: nothing to show yet
     if (shiftX !== dx || shiftY !== dy) return false;
-    const pane = this._pane();
-
-    // The horizontal bands the furniture lives in. Full-width, because the
-    // graph beside a panel must repaint too — it does not ride the blit.
-    let topBand = 0;
-    let bottomBand = 0;
-    const claim = (panel: FlowRect, position: string | undefined): void => {
-      if ((position ?? 'bottom-right').startsWith('top')) {
-        topBand = Math.max(topBand, panel.y + panel.height - pane.y);
-      } else {
-        bottomBand = Math.max(bottomBand, pane.y + pane.height - panel.y);
+    // The furniture — minimap, zoom controls — stays put while the graph
+    // moves under it: pinned inside the region, which core repaints after
+    // the copy, with the stale image the copy dragged along (react-x11
+    // #682, 2.22). It used to be carved out of the region, and a region is
+    // one rectangle, so controls in one bottom corner and the minimap in the
+    // other carved a band the pane's full width — every card, label and edge
+    // in it repainted on every pan frame: 47 fps over the stress example's
+    // widgets on XQuartz, where a pane with no furniture pans at 80.
+    //
+    // Device pixels, rounded out, and a pixel over: a panel's own claims —
+    // the minimap's view box moves with every pan — must land inside its
+    // pinned rect, or they decline the blit.
+    const box = this.contentBox();
+    if (box.width < 64 * s || box.height < 64 * s) return false;
+    if (Math.abs(dx) >= box.width || Math.abs(dy) >= box.height) return false;
+    const pinned: FlowRect[] = [];
+    const pin = (rect: FlowRect): void => {
+      const x0 = Math.max(box.x, Math.floor(rect.x) - 1);
+      const y0 = Math.max(box.y, Math.floor(rect.y) - 1);
+      const x1 = Math.min(
+        box.x + box.width,
+        Math.ceil(rect.x + rect.width) + 1,
+      );
+      const y1 = Math.min(
+        box.y + box.height,
+        Math.ceil(rect.y + rect.height) + 1,
+      );
+      if (x1 > x0 && y1 > y0) {
+        pinned.push({ x: x0, y: y0, width: x1 - x0, height: y1 - y0 });
       }
     };
-    const map = this._miniMapOptions();
-    if (map) {
-      claim(
-        this._corner(
-          map.position,
-          map.width ?? MINIMAP_W,
-          map.height ?? MINIMAP_H,
-          'bottom-right',
-        ),
-        map.position,
-      );
+    if (this._panelCanvases.length > 0) {
+      // Painted on canvases of their own, over mounted bodies: a node laid
+      // over the region is pinned by its paint bounds, which carry core's
+      // slop round its box.
+      for (const canvas of this._panelCanvases) {
+        const reach = canvas.paintBounds?.();
+        if (reach) pin(reach);
+      }
+    } else {
+      const map = this._miniMapOptions();
+      if (map) {
+        pin(
+          this._device(
+            this._corner(
+              map.position,
+              map.width ?? MINIMAP_W,
+              map.height ?? MINIMAP_H,
+              'bottom-right',
+            ),
+          ),
+        );
+      }
+      const buttons = this._controlButtons();
+      if (buttons.length > 0) {
+        const first = buttons[0].rect;
+        const last = buttons[buttons.length - 1].rect;
+        pin(this._device(unionRects(first, last)));
+      }
     }
-    const buttons = this._controlButtons();
-    if (buttons.length > 0) {
-      const first = buttons[0].rect;
-      const last = buttons[buttons.length - 1].rect;
-      claim(
-        unionRects(first, last),
-        this._controlsOptions()?.position ?? 'bottom-left',
-      );
-    }
-    // From here on, device pixels: `scrollContents` and the claims speak
-    // core's units. The bands round *up* and the blit is what is left, so
-    // the three sit edge to edge on whole pixels — a claim overlapping the
-    // blit rect by a pixel is a foreign claim, and declines the blit.
-    const box = this.contentBox();
-    const top = Math.ceil(toDevice(topBand, s));
-    const bottom = Math.ceil(toDevice(bottomBand, s));
-    const blit: FlowRect = {
-      x: box.x,
-      y: box.y + top,
-      width: box.width,
-      height: box.height - top - bottom,
-    };
-    if (blit.width < 64 * s || blit.height < 64 * s) return false;
-    if (Math.abs(dx) >= blit.width || Math.abs(dy) >= blit.height) {
-      return false;
-    }
-    this.scrollContents(blit, dx, dy);
-    if (top > 0) {
-      this.invalidate(
-        false,
-        { x: box.x, y: box.y, width: box.width, height: top },
-        'scroll',
-      );
-    }
-    if (bottom > 0) {
-      this.invalidate(
-        false,
-        {
-          x: box.x,
-          y: blit.y + blit.height,
-          width: box.width,
-          height: bottom,
-        },
-        'scroll',
-      );
-    }
+    this.scrollContents(box, dx, dy, riders ? [riders] : null, pinned);
+    this._blittedPanAt = now();
     return true;
   }
 
@@ -1244,6 +1536,27 @@ export class FlowGraphNode extends Node implements FlowInstance {
   }
 
   // --- the imperative surface (`FlowInstance`) -----------------------------
+
+  /**
+   * `fn`, as a call through the handle. A programmatic pan — an animation
+   * loop stepping `setViewport` — moves the pane at once and the bodies'
+   * box through React, and on React's schedule the box caught up with the
+   * pane in jumps: several steps' worth in one commit, landing in a frame
+   * whose blit shifted by one. A rider that moves by more than the blit is
+   * a layout move, so that frame repainted the pane whole — a fifth of the
+   * frames of a pan over mounted bodies (`_blitPan`). Marked like a
+   * gesture's, the emission commits before the call returns, and the box
+   * moves by exactly the pan in the frame that blits it.
+   */
+  fromHandle<T>(fn: () => T): T {
+    const was = this._handleSync;
+    this._handleSync = true;
+    try {
+      return fn();
+    } finally {
+      this._handleSync = was;
+    }
+  }
 
   getViewport(): Viewport {
     return { ...this._viewport() };
@@ -1386,10 +1699,11 @@ export class FlowGraphNode extends Node implements FlowInstance {
   /** The topmost node under a window point, or null. Walks paint order
    * backwards, which is what "topmost" means. */
   private _nodeAt(x: number, y: number): NodeEntry | null {
+    const sv = this._screenViewport();
     for (let i = this._order.length - 1; i >= 0; i--) {
       const entry = this._order[i];
       if (entry.node.hidden) continue;
-      if (rectContains(this._screenRect(entry), { x, y })) return entry;
+      if (rectContains(this._screenRect(entry, sv), { x, y })) return entry;
     }
     return null;
   }
@@ -1401,13 +1715,14 @@ export class FlowGraphNode extends Node implements FlowInstance {
   ): HandleAnchor | null {
     const zoom = this._viewport().zoom;
     const reach = Math.max(7, (HANDLE_RADIUS + HANDLE_SLOP) * zoom);
+    const sv = this._screenViewport();
     for (let i = this._order.length - 1; i >= 0; i--) {
       const entry = this._order[i];
       if (entry.node.hidden) continue;
       if (!this._connectable(entry)) continue;
       // cheap reject: the handles are on the node's border, so nothing more
       // than `reach` outside its box can be one
-      const rect = this._screenRect(entry);
+      const rect = this._screenRect(entry, sv);
       if (
         x < rect.x - reach ||
         x > rect.x + rect.width + reach ||
@@ -1437,12 +1752,13 @@ export class FlowGraphNode extends Node implements FlowInstance {
   ): { entry: NodeEntry; dir: XYPosition } | null {
     const zoom = this._viewport().zoom;
     const reach = Math.max(6, (RESIZE_GRIP + RESIZE_SLOP) * zoom);
+    const sv = this._screenViewport();
     for (let i = this._order.length - 1; i >= 0; i--) {
       const entry = this._order[i];
       if (entry.node.hidden) continue;
       const grips = this._grips(entry);
       if (grips.length === 0) continue;
-      const rect = this._screenRect(entry);
+      const rect = this._screenRect(entry, sv);
       if (
         x < rect.x - reach ||
         x > rect.x + rect.width + reach ||
@@ -1492,33 +1808,17 @@ export class FlowGraphNode extends Node implements FlowInstance {
     const target = this._byId.get(edge.target);
     if (!source || !target) return null;
     if (source.node.hidden || target.node.hidden) return null;
-    const zoom = this._viewport().zoom;
-    const a = this._screenRect(source);
-    const b = this._screenRect(target);
-    const span = Math.hypot(
-      a.x + a.width / 2 - (b.x + b.width / 2),
-      a.y + a.height / 2 - (b.y + b.height / 2),
+    return edgeCoarseBox(
+      this._screenViewport(),
+      this._source(source),
+      this._source(target),
+      this._scale,
     );
-    const slack =
-      Math.max(5, EDGE_SLOP * zoom) +
-      Math.max(EDGE_STEP_OFFSET * 3 * zoom, 8 * Math.sqrt(zoom * span));
-    const x = Math.min(a.x, b.x) - slack;
-    const y = Math.min(a.y, b.y) - slack;
-    return {
-      x,
-      y,
-      width: Math.max(a.x + a.width, b.x + b.width) + slack - x,
-      height: Math.max(a.y + a.height, b.y + b.height) + slack - y,
-    };
   }
 
   /** The drawn handle, in screen pixels. Capped as well as floored: a dot
    * that scaled all the way up would be a saucer at 2.5×, and the thing it
    * marks — a point on the border — does not get bigger. */
-  private _handleRadius(): number {
-    return clamp(HANDLE_RADIUS * this._viewport().zoom, 2.5, 6);
-  }
-
   private _connectable(entry: NodeEntry): boolean {
     return (
       (entry.node.connectable ?? this._bool('nodesConnectable', true)) !== false
@@ -1541,25 +1841,12 @@ export class FlowGraphNode extends Node implements FlowInstance {
     type: 'source' | 'target',
     towards: XYPosition | null,
   ): HandleAnchor | null {
-    const anchors = this._handlesOf(entry);
-    if (handleId != null) {
-      const named = anchors.find((a) => a.id === handleId);
-      if (named) return named;
-    }
-    const typed = anchors.filter((a) => a.type === type);
-    const candidates = typed.length > 0 ? typed : anchors;
-    if (candidates.length === 0) return null;
-    if (candidates.length === 1 || !towards) return candidates[0];
-    let best = candidates[0];
-    let bestDistance = Infinity;
-    for (const anchor of candidates) {
-      const d = Math.hypot(anchor.x - towards.x, anchor.y - towards.y);
-      if (d < bestDistance) {
-        bestDistance = d;
-        best = anchor;
-      }
-    }
-    return best;
+    return endpoint(
+      { node: entry.node, rect: this.rectOf(entry), specs: entry.specs },
+      handleId,
+      type,
+      towards,
+    );
   }
 
   /** An edge's polyline, in **screen** pixels, plus the two ends it joins.
@@ -1568,46 +1855,16 @@ export class FlowGraphNode extends Node implements FlowInstance {
   private _edgeGeometry(
     edge: AnyEdge,
   ): { points: XYPosition[]; from: HandleAnchor; to: HandleAnchor } | null {
-    const sourceEntry = this._byId.get(edge.source);
-    const targetEntry = this._byId.get(edge.target);
-    if (!sourceEntry || !targetEntry) return null;
-    if (sourceEntry.node.hidden || targetEntry.node.hidden) return null;
-    const sourceCentre = this._centre(sourceEntry);
-    const targetCentre = this._centre(targetEntry);
-    const from = this._endpoint(
-      sourceEntry,
-      edge.sourceHandle,
-      'source',
-      targetCentre,
+    const source = this._byId.get(edge.source);
+    const target = this._byId.get(edge.target);
+    if (!source || !target) return null;
+    if (source.node.hidden || target.node.hidden) return null;
+    return edgeRoute(
+      this._screenViewport(),
+      edge,
+      this._source(source),
+      this._source(target),
     );
-    const to = this._endpoint(
-      targetEntry,
-      edge.targetHandle,
-      'target',
-      sourceCentre,
-    );
-    if (!from || !to) return null;
-
-    const zoom = this._viewport().zoom;
-    const s = this._toScreen(from);
-    const t = this._toScreen(to);
-    const points = edgePath(
-      edge.type,
-      { x: s.x, y: s.y, position: from.position },
-      { x: t.x, y: t.y, position: to.position },
-      {
-        stepOffset: EDGE_STEP_OFFSET * zoom,
-        radius: 8 * zoom,
-        scale: zoom,
-        loop: edge.source === edge.target,
-      },
-    );
-    return { points, from, to };
-  }
-
-  private _centre(entry: NodeEntry): XYPosition {
-    const r = this.rectOf(entry);
-    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
   }
 
   // --- pane furniture geometry --------------------------------------------
@@ -1734,20 +1991,6 @@ export class FlowGraphNode extends Node implements FlowInstance {
     return {
       x: (x - ox) / map.scale + map.bounds.x,
       y: (y - oy) / map.scale + map.bounds.y,
-    };
-  }
-
-  private _miniToScreen(
-    map: { panel: FlowRect; bounds: FlowRect; scale: number },
-    p: XYPosition,
-  ): XYPosition {
-    const ox =
-      map.panel.x + (map.panel.width - map.bounds.width * map.scale) / 2;
-    const oy =
-      map.panel.y + (map.panel.height - map.bounds.height * map.scale) / 2;
-    return {
-      x: ox + (p.x - map.bounds.x) * map.scale,
-      y: oy + (p.y - map.bounds.y) * map.scale,
     };
   }
 
@@ -1950,13 +2193,10 @@ export class FlowGraphNode extends Node implements FlowInstance {
         gesture.x = ev.x;
         gesture.y = ev.y;
         this._selectBox(gesture);
-        // The box outline is all that moves this step; a node crossing the
-        // boundary changes `selected`, and that repaints through the
-        // controlled round trip like any other selection change.
-        this._claim(
-          inflateRect(unionRects(oldBox, selectBoxRect(gesture)), CULL_MARGIN),
-          'style-state',
-        );
+        // The box is all that moves this step; a node crossing the boundary
+        // changes `selected`, and that repaints through the controlled round
+        // trip like any other selection change.
+        this._claimSelectStep(oldBox, selectBoxRect(gesture));
         return;
       }
       case 'minimap': {
@@ -2104,6 +2344,33 @@ export class FlowGraphNode extends Node implements FlowInstance {
     );
   }
 
+  /**
+   * The nodes a drag is moving, once it has moved them: lifted out of the
+   * rest of the graph for the rest of the gesture. Under GL the world is
+   * built without them and they are a layer of their own (`glFrame`), so
+   * each step packs them and their edges and leaves the world on the GPU;
+   * in 2D the rest is two pictures a step copies from (`_liftShotFor`).
+   * Null otherwise — and under GL the change back is a change of the
+   * world's key, which rebuilds it with them in.
+   */
+  private _lifted(): ReadonlySet<string> | null {
+    const g = this._gesture;
+    if (g?.kind !== 'drag' || !g.moved || g.ids.length === 0) {
+      if (this._liftSet) {
+        this._liftSet = null;
+        this._liftFor = null;
+        this._liftGen++;
+      }
+      return null;
+    }
+    if (this._liftFor !== g) {
+      this._liftSet = new Set(g.ids);
+      this._liftFor = g;
+      this._liftGen++;
+    }
+    return this._liftSet;
+  }
+
   private _dragStep(
     gesture: Extract<Gesture, { kind: 'drag' }>,
     ev: MouseEvent,
@@ -2151,22 +2418,32 @@ export class FlowGraphNode extends Node implements FlowInstance {
     }
     // Old places first, new places second: the union is everything this
     // step uncovers plus everything it covers, and nothing else — with the
-    // edges that follow the moved nodes, coarse, on both sides.
+    // edges that follow the moved nodes, coarse, on both sides. Under GL
+    // there is nothing to size: the step is a frame of the surface's, and
+    // routing each moved node's edges for a rect nobody reads was a third
+    // of a millisecond a step.
+    const sized = !this._gl;
     let damage: FlowRect | null = null;
-    for (const id of gesture.ids) {
-      const entry = this._byId.get(id);
-      if (entry) damage = unionMaybe(damage, this._nodeDamage(entry));
+    if (sized) {
+      for (const id of gesture.ids) {
+        const entry = this._byId.get(id);
+        if (entry) damage = unionMaybe(damage, this._nodeDamage(entry));
+      }
     }
     this._dragTo = to;
-    for (const id of gesture.ids) {
-      const entry = this._byId.get(id);
-      if (entry) damage = unionMaybe(damage, this._nodeDamage(entry));
+    if (sized) {
+      for (const id of gesture.ids) {
+        const entry = this._byId.get(id);
+        if (entry) damage = unionMaybe(damage, this._nodeDamage(entry));
+      }
     }
     this._emitNodes(changes);
+    const reason = this._lifted() ? 'lift' : 'content';
     if (damage) {
-      this._claim(inflateRect(damage, CULL_MARGIN), 'content');
+      this._claim(inflateRect(damage, CULL_MARGIN), reason);
     } else {
-      this._repaint();
+      // under GL: a frame, and — while the nodes are lifted — of them alone
+      this._repaint(reason);
     }
     // Inside the gesture dispatch, deliberately: the body-rect setState this
     // triggers is a discrete-priority update, so React commits the moved
@@ -2295,29 +2572,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
   private _connectionPath(
     gesture: Extract<Gesture, { kind: 'connect' }>,
   ): XYPosition[] {
-    const v = this._viewport();
-    const from = this._toScreen(gesture.from);
-    const target = gesture.to ?? gesture.pointer;
-    const to = this._toScreen(target);
-    const toPosition =
-      gesture.to?.position ??
-      (gesture.from.position === 'left'
-        ? 'right'
-        : gesture.from.position === 'right'
-          ? 'left'
-          : gesture.from.position === 'top'
-            ? 'bottom'
-            : 'top');
-    return edgePath(
-      'bezier',
-      { x: from.x, y: from.y, position: gesture.from.position },
-      { x: to.x, y: to.y, position: toPosition },
-      {
-        stepOffset: EDGE_STEP_OFFSET * v.zoom,
-        radius: 8 * v.zoom,
-        scale: v.zoom,
-      },
-    );
+    return connectionPath(this._screenViewport(), gesture);
   }
 
   private _validConnection(connection: {
@@ -2328,6 +2583,76 @@ export class FlowGraphNode extends Node implements FlowInstance {
   }): boolean {
     const check = this._prop<(c: unknown) => boolean>('isValidConnection');
     return check ? check(connection) !== false : true;
+  }
+
+  /**
+   * What one step of a box selection changes on screen: a band round each
+   * side of the box that moved, across the whole of both boxes. That covers
+   * the outline where it was and where it is, and the tint where one box
+   * lies over the graph and the other does not; a side that held still —
+   * the two the gesture is anchored by — changed only where a moving side
+   * shortened or lengthened it, which that side's band covers. Claiming the
+   * box round both repainted everything under the selection, every node and
+   * edge in it, on every step: 21 ms of a step on the stress example's
+   * fan-out, which is what made a sweep lag the pointer.
+   *
+   * The bands are cut on the device grid so that none of them overlaps
+   * another: core merges overlapping damage into the box round it, which is
+   * the whole selection again — and a pass over a translucent tint must not
+   * paint it twice. Claimed past this element's own `invalidate`, whose one
+   * job here would be to repaint the minimap and the controls on their
+   * canvases, and a box selection moves nothing on either.
+   *
+   * Under GL the box is the overlay's, drawn every frame: a step is a frame
+   * and not a change to the world, which a claim would have rebuilt.
+   */
+  private _claimSelectStep(from: FlowRect, to: FlowRect): void {
+    if (this._gl) {
+      this._glRequest!();
+      return;
+    }
+    const s = this._scale;
+    const lo = (v: number): number => Math.floor(toDevice(v - SELECT_BAND, s));
+    const hi = (v: number): number => Math.ceil(toDevice(v + SELECT_BAND, s));
+    /** The bands round the sides that moved along one axis, merged where
+     *  they meet, in device pixels. */
+    const bands = (
+      a0: number,
+      a1: number,
+      b0: number,
+      b1: number,
+    ): [number, number][] => {
+      const out: [number, number][] = [];
+      if (a0 !== b0) out.push([lo(Math.min(a0, b0)), hi(Math.max(a0, b0))]);
+      if (a1 !== b1) out.push([lo(Math.min(a1, b1)), hi(Math.max(a1, b1))]);
+      out.sort((m, n) => m[0] - n[0]);
+      if (out.length === 2 && out[1][0] <= out[0][1]) {
+        return [[out[0][0], Math.max(out[0][1], out[1][1])]];
+      }
+      return out;
+    };
+    const outer = unionRects(from, to);
+    const x0 = lo(outer.x);
+    const x1 = hi(outer.x + outer.width);
+    const y0 = lo(outer.y);
+    const y1 = hi(outer.y + outer.height);
+    const columns = bands(from.x, from.x + from.width, to.x, to.x + to.width);
+    const rows = bands(from.y, from.y + from.height, to.y, to.y + to.height);
+    const claim = (x: number, y: number, width: number, height: number) => {
+      if (width > 0 && height > 0) {
+        super.invalidate(false, { x, y, width, height }, 'style-state');
+      }
+    };
+    for (const [c0, c1] of columns) claim(c0, y0, c1 - c0, y1 - y0);
+    for (const [r0, r1] of rows) {
+      // across both boxes, less the columns already claimed
+      let x = x0;
+      for (const [c0, c1] of columns) {
+        claim(x, r0, c0 - x, r1 - r0);
+        x = Math.max(x, c1);
+      }
+      claim(x, r0, x1 - x, r1 - r0);
+    }
   }
 
   private _selectBox(gesture: Extract<Gesture, { kind: 'select' }>): void {
@@ -2463,10 +2788,11 @@ export class FlowGraphNode extends Node implements FlowInstance {
   override a11yScene(): A11ySceneItem[] {
     this._sync();
     const pane = this._pane();
+    const sv = screenViewport(this._viewport(), pane);
     const items: A11ySceneItem[] = [];
     for (const entry of this._order) {
       if (entry.node.hidden) continue;
-      const rect = this._screenRect(entry);
+      const rect = this._screenRect(entry, sv);
       if (!rectsOverlap(rect, pane)) continue;
       const data = entry.node.data as FlowNodeData | undefined;
       const out = this._edgesByNode.get(entry.node.id) ?? [];
@@ -2646,7 +2972,12 @@ export class FlowGraphNode extends Node implements FlowInstance {
     // changed — a moved node repaints the box it moved through, an edit to
     // anything else on the visual list repaints in full, and handler churn
     // repaints nothing.
-    let damage: 'full' | FlowRect | null = null;
+    // Boxes rather than the box around them: the nodes a box selection
+    // takes in one step lie along both of its moving edges, and the box
+    // round an L of nodes is the whole selection again.
+    let damage: 'full' | FlowRect[] = [];
+    let edgesRedrawn = false;
+    this._liftOnly = false;
     if (
       !shallowEqual(nextProps.nodeTypes, before.nodeTypes) ||
       !shallowEqual(nextProps.defaultEdgeOptions, before.defaultEdgeOptions)
@@ -2655,16 +2986,17 @@ export class FlowGraphNode extends Node implements FlowInstance {
       damage = 'full';
     } else {
       if (nextProps.edges !== before.edges) {
-        damage = this._applyEdges(this._rawEdges());
+        const edgeDamage = this._applyEdges(this._rawEdges());
+        if (edgeDamage === 'full') damage = 'full';
+        else if (edgeDamage) {
+          damage.push(edgeDamage);
+          edgesRedrawn = true;
+        }
       }
       if (damage !== 'full' && nextProps.nodes !== before.nodes) {
         const nodeDamage = this._applyNodes(this._nodes());
-        damage =
-          nodeDamage === 'full' || damage === null
-            ? nodeDamage
-            : nodeDamage === null
-              ? damage
-              : unionRects(damage, nodeDamage);
+        if (nodeDamage === 'full') damage = 'full';
+        else damage.push(...nodeDamage);
       }
     }
     // `fitView` is a one-shot: turning it on later refits, and it stays off
@@ -2681,17 +3013,34 @@ export class FlowGraphNode extends Node implements FlowInstance {
         }
       }
     }
+    // What moved, restyled or reshaped is the graph's own content: under GL
+    // it is a frame of the surface's, where a claim billed as `props` went
+    // on to a window pass over the 2D pane under it — every step of a drag
+    // an app stores, 1.2 ms of each, for pixels the surface covers.
     if (damage === 'full') this._repaint('props');
-    else if (damage) this._claim(damage, 'props');
+    else {
+      // a commit of lifted nodes alone is a frame of the lifted layer
+      const reason = this._liftOnly && !edgesRedrawn ? 'lift' : 'content';
+      for (const box of damage) this._claim(box, reason);
+    }
+    this._liftOnly = false;
     // Core re-reads the scene for aria-prop commits; a `nodes`/`edges`
     // change is invisible to it, so the re-read is asked for by name.
     // Free when no assistive technology is listening.
-    if (damage) this.notifyA11ySceneChanged();
+    if (damage === 'full' || damage.length > 0) this.notifyA11ySceneChanged();
   }
 
   override destroySubtree(): void {
+    this._dropZoomShot();
+    this._dropLiftShot();
+    this._glRequest = null;
+    if (this._bodiesRest != null) timers.clearTimeout?.(this._bodiesRest);
+    this._bodiesRest = null;
+    if (this._zoomRest != null) timers.clearTimeout?.(this._zoomRest);
+    this._zoomRest = null;
     this._stopAnimation();
     this._dropGridTile();
+    this._sceneCache.clear();
     super.destroySubtree();
   }
 
@@ -2699,14 +3048,59 @@ export class FlowGraphNode extends Node implements FlowInstance {
     if (this._animTimer != null) return;
     this._animTimer =
       timers.setInterval?.(() => {
-        this._dashPhase += ANIMATION_SPEED;
+        // A pan that blits copies the pane's pixels, dashes and all, and a
+        // tick claims the dashes inside the band it copies — which declines
+        // the copy: every frame a tick landed in repainted the whole pane,
+        // a sixth of a pan's frames and all of its stutter. So the dashes
+        // sit the pan out, phase and all, and what the pan copies and what
+        // it draws agree; they march again once it has held still.
+        //
+        // And the view moving at all is what they wait out, not a blit that
+        // happened: a tick declines the blit it lands beside, so a pan
+        // whose frames ran past the wait had its ticks back, each one
+        // cancelling the next blit and repainting the pane — over the
+        // stress example's widgets in a large window, 2 frames a second,
+        // ticks and pan steps taking turns. A step since the last tick, or
+        // one within two ticks, holds the dashes still whatever a frame
+        // costs. Under GL a tick is a uniform and blits nothing, and they
+        // march through a pan as before.
+        //
+        // A 2D tick is a repaint of the box the dashes are in, which over a
+        // dense graph in a large window is most of the pane: 75 ms a tick on
+        // XQuartz, against a timer of 60. So the wait scales with what
+        // frames cost: the view held still for two frames' worth, and one
+        // tick every two frames at most — the dashes slow down before the
+        // thread is theirs, and a pan whose frames come slowly still sees
+        // them hold still.
+        const t = now();
+        const lastTick = this._tickAt;
+        this._tickAt = t;
+        if (t - this._blittedPanAt < ANIMATION_MS * 2) return;
+        let steps = 1;
+        if (!this._gl) {
+          const cost = this._tickCost * 2;
+          const still = Math.max(ANIMATION_MS * 2, cost);
+          if (this._viewMovedAt > lastTick || t - this._viewMovedAt < still) {
+            return;
+          }
+          // a tick under ANIMATION_MS apart, less a millisecond of timer
+          // slop; further while ticks are dear — and then the dashes cover
+          // the ground the skipped ticks would have, so they slow down in
+          // steps and not in speed
+          const since = t - this._marchedAt;
+          if (since < Math.max(ANIMATION_MS, cost) - 1) return;
+          steps = Math.min(4, Math.max(1, Math.round(since / ANIMATION_MS)));
+        }
+        this._marchedAt = t;
+        this._dashPhase += ANIMATION_SPEED * steps;
         // the box the last paint saw animated edges in, not the pane: a
-        // marching dash should not cost a full grid repaint per tick
-        this.invalidate(
-          false,
-          this._animBox ? this._device(this._animBox) : this.abs,
-          'animation',
-        );
+        // marching dash should not cost a full grid repaint per tick. And
+        // only the part of it the pane shows — an edge on its way out of
+        // the pane takes the box past it, and claimed whole, a tick
+        // repainted everything the window has beside the graph.
+        const box = this._animBox ? this._device(this._animBox) : this.abs;
+        const shown = intersectRects(box, this.contentBox());
+        if (shown) this.invalidate(false, shown, 'animation');
       }, ANIMATION_MS) ?? null;
   }
 
@@ -2719,6 +3113,9 @@ export class FlowGraphNode extends Node implements FlowInstance {
   // --- painting ------------------------------------------------------------
 
   override paint(ctx: Context2D): void {
+    this._frameTick();
+    const paintStart = now();
+
     // What this pass is repainting. The renderer paints each damage rect as
     // its own clipped pass; content outside it survives on the window, so
     // everything we skip here is content the last frame already drew — the
@@ -2745,8 +3142,35 @@ export class FlowGraphNode extends Node implements FlowInstance {
     if (!insideInner) super.paint(ctx);
 
     if (!this._visible()) return;
-    const painter = createPainter(ctx, this._textOptions());
+    if (this._gl) {
+      // The surface over this box draws the graph. What the 2D pass still
+      // owes is the part of a paint that is not drawing — the derived graph
+      // brought up to date, the bodies placed — and then the frame itself,
+      // asked of the surface. Every claim this element makes arrives here,
+      // so every change the 2D renderer would repaint is one GL frame.
+      this._sync();
+      this._emitBodies();
+      this._emitPanels();
+      this._glRequest?.();
+      return;
+    }
+    // Mid-gesture, labels come from the layouts they already have, scaled:
+    // shaping every one again at each step of a zoom was half of what a 2D
+    // step cost, at sizes the next step moves off. Only where the context
+    // scales text with its transform — X11's draws glyphs at the size they
+    // were shaped at — and set exactly once the zoom rests (`_restZoom`).
+    const approximateText =
+      this._zoomMoving() &&
+      (ctx as { scalesText?: boolean }).scalesText === true;
+    const painter = createPainter(ctx, {
+      ...this._textOptions(),
+      approximateText,
+    });
     if (!painter) return; // a backend with no path API: geometry only
+    if (approximateText) {
+      this._textApproximated = true;
+      this._restZoom();
+    }
 
     this._sync();
     this._painting = true;
@@ -2808,34 +3232,107 @@ export class FlowGraphNode extends Node implements FlowInstance {
           ),
         ));
     painter.clipRect(x, y, width, height, nearCorner ? radius : 0);
-    // The fill and the grid draw only the region this pass repaints — on a
-    // full pass that is the pane, and on a drag it is the sliver that moved.
-    const region = this._frameClip
-      ? intersectRects({ x, y, width, height }, this._frameClip)
-      : { x, y, width, height };
-    if (region) {
-      // The style's own colour if it set one — `super.paint` already filled
-      // it, and repeating it costs one rectangle and keeps the two agreeing.
-      painter.rect(region.x, region.y, region.width, region.height, 0, {
-        fill:
-          (this.style.backgroundColor as string | undefined) ??
-          palette.background,
-      });
-      this._paintGrid(painter, palette, region);
+    const started = now();
+    // Not under a drag or a connection: the picture would hold the moving
+    // node, or the line, where they were
+    // …and only for a graph that costs more than a frame to paint live
+    // (`ZOOM_SHOT_WORTH_MS`, `ZOOM_SHOT_DROP_MS`)
+    const zooming = this._zoomMoving() && !this._gesture;
+    const paintMs = zooming ? this._graphPaintMs() : 0;
+    if (zooming && this._zoomShot !== null && paintMs < ZOOM_SHOT_DROP_MS) {
+      this._dropZoomShot();
     }
-
-    const animated = this._paintEdges(painter, palette);
-    this._paintNodes(painter, palette);
-    this._paintConnection(painter, palette);
-    this._paintSelectionBox(painter, palette);
-    this._paintMiniMap(painter, palette);
-    this._paintControls(painter, palette);
+    const shot =
+      zooming && (this._zoomShot !== null || paintMs > ZOOM_SHOT_WORTH_MS)
+        ? this._zoomShotFor(palette, approximateText)
+        : null;
+    // A drag's nodes over pictures of the rest (`_liftShotFor`), in 2D and
+    // not mid-zoom.
+    const lift = shot || approximateText ? null : this._lifted();
+    const liftShot = lift ? this._liftShotFor(palette, lift) : null;
+    if (!lift && this._liftShot) this._dropLiftShot();
+    let scene: FlowScene;
+    if (liftShot && lift) {
+      // the pictures, with the moved nodes' edges between them and the
+      // nodes over both; the pane's furniture over it all
+      const lifted = buildScene(
+        this._sceneInput(palette, { lift: { ids: lift, only: true } }),
+      );
+      scene = buildScene(this._sceneInput(palette, 'overlay'));
+      const built = now();
+      this._compositeLift(ctx, liftShot, liftShot.under, null);
+      paintGraphEdges(painter, lifted);
+      this._compositeLift(ctx, liftShot, liftShot.over, liftShot.cards);
+      paintGraphNodes(painter, lifted);
+      paintFloat(painter, scene);
+      this._reportFrame(built - started, now() - built);
+    } else if (shot) {
+      // the graph and the ground under it as the gesture drew them, scaled;
+      // both live wherever the picture does not reach; and the pane's
+      // furniture over them at the zoom of the moment
+      scene = buildScene(this._sceneInput(palette, 'overlay'));
+      const bands = this._uncovered(shot);
+      const input = bands.length > 0 ? this._sceneInput(palette) : null;
+      const live = input
+        ? bands.map((band) => ({
+            band,
+            scene: buildScene({ ...input, clip: band }),
+          }))
+        : [];
+      const built = now();
+      this._compositeShot(ctx, shot);
+      for (const { band, scene: part } of live) {
+        painter.save();
+        painter.clipRect(band.x, band.y, band.width, band.height, 0);
+        paintGround(painter, part, this._grid);
+        paintGraph(painter, part);
+        painter.restore();
+      }
+      paintFloat(painter, scene);
+      this._textApproximated = true;
+      this._restZoom();
+      this._reportFrame(built - started, now() - built);
+    } else {
+      scene = buildScene(this._sceneInput(palette));
+      const built = now();
+      paintScene(painter, scene, this._grid);
+      const done = now();
+      this._reportFrame(built - started, done - built);
+      // a zoom's step, whole and live: what the next one would cost
+      if (this._zoomMoving() && this._wholePane(clip)) {
+        this._noteGraphPaint(done - started);
+      }
+    }
+    // The box the dash ticks invalidate comes off the *drawn* geometry; a
+    // pass that culled every animated edge keeps the one before it, because
+    // the endpoints did not move, or that move's own damage would have
+    // redrawn them here.
+    if (scene.animBox) this._animBox = scene.animBox;
     painter.restore();
     this._painting = false;
     this._frameClip = null;
+    {
+      // What a frame costs, for the dash timer (`_startAnimation`): this
+      // paint, and how long the server took to answer the frame before it
+      // — on XQuartz most of it.
+      const latency = (
+        this.root as { window?: { frameLatency?: number } } | null
+      )?.window?.frameLatency;
+      // A reply can take seconds on a server that is waiting for a
+      // display — a Mac's asleep — and that is when ticks most need to
+      // hold; clamped rather than dropped, so one outlier does not stand
+      // for long in the mean.
+      const cost =
+        now() -
+        paintStart +
+        (typeof latency === 'number' && latency > 0
+          ? Math.min(latency, 2000)
+          : 0);
+      this._tickCost = this._tickCost * 0.7 + cost * 0.3;
+    }
 
     // The timer exists only while something on screen needs it.
-    if (animated) this._startAnimation();
+    if (scene.animated) this._startAnimation();
     else this._stopAnimation();
 
     if (!this._sceneAnnounced) {
@@ -2849,163 +3346,1333 @@ export class FlowGraphNode extends Node implements FlowInstance {
     // to put the node bodies it mounts, and it is answered from the geometry
     // this frame just used — the same numbers, never a second derivation.
     this._emitBodies();
+    this._emitPanels();
   }
 
   /**
-   * Where every mounted node body belongs, relative to the pane's own
-   * top-left. Sent only when the list changed, so a repaint that moved
-   * nothing does not re-render React — but a pan does, once per frame,
-   * which is the cost `render` is documented to carry.
+   * Everything `buildScene` reads, gathered from the element once.
+   *
+   * The two node lists differ on purpose: `nodes` is the paint order with a
+   * dragged node lifted to the top, and `all` is every node, because the
+   * minimap summarises the graph rather than the pass.
+   */
+  override invalidate(
+    layout?: boolean,
+    damage?: Parameters<Node['invalidate']>[1],
+    reason?: string,
+  ): void {
+    // Whatever changed the graph may have changed the minimap, which
+    // `<Flow>` may be painting on a canvas of its own; a change to this
+    // element's props may have changed the controls too. The controls draw
+    // nothing of the graph, and repainting them with every step of a drag
+    // repainted the minimap with them — each canvas builds the panels its
+    // box reaches, and theirs reached both. Each claims its own box: a
+    // claim with no region is the whole window, which made every pan step
+    // and dash tick a full frame. A dash tick changes neither — the minimap
+    // draws no dashes — and repainting both canvases on every one kept an
+    // idle pane painting them 17 times a second, and put a claim in the
+    // middle of any pan frame it landed in.
+    if (reason !== 'animation') {
+      const canvases =
+        reason === 'props' ? this._panelCanvases : this._miniMapCanvases();
+      for (const canvas of canvases) canvas.invalidate(false, canvas, 'props');
+    }
+    // A dash tick moves the phase, a uniform on the GPU, so it is no change
+    // to the world. A pan or a zoom never gets here under GL.
+    if (reason === 'lift') this._liftVersion++;
+    else if (reason !== 'animation') this._worldVersion++;
+    // …and what a 2D zoom gesture composites is the graph as it was: a
+    // change to it is a picture that no longer is
+    if (reason !== 'animation' && reason !== 'scroll') this._dropZoomShot();
+    // Under GL the surface over this box draws the graph and the 2D pane
+    // under it shows nothing: a claim of its pixels was a window pass over
+    // them, unseen, whose one job was to reach `paint` and ask the surface
+    // for a frame — a BeginDraw, a walk and a commit on every step of a
+    // drag, 2.6 ms of each. The graph's own claims ask for the frame
+    // directly; the frame does what `paint` did (`glFrame`). A layout change
+    // and a change of props — which may move the panels — still go through.
+    if (
+      !layout &&
+      damage != null &&
+      (reason === 'content' ||
+        reason === 'style-state' ||
+        reason === 'animation' ||
+        reason === 'lift') &&
+      this._gl
+    ) {
+      this._glRequest!();
+      return;
+    }
+    // a lift is this element's own bookkeeping; core knows it as content
+    super.invalidate(layout, damage, reason === 'lift' ? 'content' : reason);
+  }
+
+  /** A 2D frame's cost so far, while its flush is still painting passes. */
+  private _frameCost: { sceneMs: number; drawMs: number } | null = null;
+
+  /**
+   * One `onFrame` per window flush, however many damage passes it painted.
+   * The window paints its passes one after another in a single task, so a
+   * microtask queued by the first runs after the last — and reports the
+   * frame whole, which is what a frame rate counts.
+   */
+  private _reportFrame(sceneMs: number, drawMs: number): void {
+    if (!this.props.onFrame) return;
+    if (this._frameCost) {
+      this._frameCost.sceneMs += sceneMs;
+      this._frameCost.drawMs += drawMs;
+      return;
+    }
+    this._frameCost = { sceneMs, drawMs };
+    void Promise.resolve().then(() => {
+      const cost = this._frameCost;
+      this._frameCost = null;
+      if (!cost || this.destroyed) return;
+      this._prop<(stats: FlowFrameStats) => void>('onFrame')?.({
+        renderer: 'retained',
+        sceneMs: cost.sceneMs,
+        packMs: 0,
+        drawMs: cost.drawMs,
+        drawCalls: 0,
+        lines: 0,
+        boxes: 0,
+        triangles: 0,
+        uploadBytes: 0,
+        worldRebuilt: false,
+        gaps: { text: 0, custom: 0 },
+        bodies: this.bodyBudget(),
+      });
+    });
+  }
+
+  private get _gl(): boolean {
+    return this.props.renderer === 'gl' && this._glRequest != null;
+  }
+
+  /** What the GL renderer's label atlas sets strings with: this pane's app,
+   *  for its staging surface, and the options its 2D painter measures with
+   *  — so a label is cut and placed the same on both renderers. Null where
+   *  there is no text engine to ask. */
+  glText(): { app: unknown; options: PainterOptions } | null {
+    const options = this._textOptions();
+    return options.fonts ? { app: this.app, options } : null;
+  }
+
+  /**
+   * The GL surface's hook: how it asks for frames. Set while a surface draws
+   * this pane, cleared when it goes — and until it is set the pane draws
+   * itself, so a surface that is still loading shows the 2D graph rather
+   * than an empty box.
+   */
+  setGlRequest(request: (() => void) | null): void {
+    if (this._glRequest === request) return;
+    this._glRequest = request;
+    // whichever renderer now draws, it draws the whole pane
+    this._repaint('props');
+  }
+
+  /**
+   * One GL frame's worth of scene, in the two layers the renderer keeps
+   * apart (`./gl/renderer.ts`): the **world**, rebuilt only when it changed
+   * since the key the surface last drew, and the **overlay**, every frame.
+   *
+   * The world is built at a pinned origin and culled to an *overscan* — the
+   * view grown by a pane in every direction — so a pan inside it changes
+   * nothing but `offset`. When the view leaves the overscan, or the zoom
+   * moves, the overscan is re-centred and the world rebuilt; at every other
+   * frame of a pan the world comes back `null` and the renderer draws the
+   * buffers already on the GPU.
+   *
+   * A zoom *gesture* is drawn the same way: while the zoom keeps moving,
+   * each step draws the world on the GPU magnified by `zoom` — the view's
+   * zoom over the one it was built at — and the world is rebuilt at the
+   * zoom the gesture stopped at, `GL_ZOOM_REST_MS` after its last step.
+   * Rebuilding every step was the whole of a zoom's cost: a scene built,
+   * packed and uploaded per step, 19 ms of it on a 300-node graph, where a
+   * pan step is a uniform. What a magnified world gets wrong until then is
+   * what a zoom does not scale linearly — a label's raster, the hairlines
+   * with a floor of a pixel, the detail that appears past a zoom — which is
+   * what every map does during a pinch. A single jump — a control's button,
+   * `fitView`, `setViewport` — is not a stream and rebuilds at once, and so
+   * does a step that would magnify one build by more than `GL_ZOOM_SPAN`
+   * or show more of the graph than the overscan holds.
+   *
+   * The key is everything the world is a function of that this element can
+   * name: its version (every repaint but a view change moves it), the
+   * overscan, the zoom it was built at, and the palette and face — the two
+   * a theme change moves, which core announces to the window rather than
+   * to this element.
+   *
+   * Everything a 2D paint does around its drawing happens here too: the
+   * pending fit, the dash timer, the first scene announcement, the bodies.
+   */
+  glFrame(
+    lastKey: string | null,
+    lastLifted: string | null = null,
+  ): {
+    world: FlowScene | null;
+    key: string;
+    lifted: FlowScene | null | undefined;
+    liftedKey: string | null;
+    offset: XYPosition;
+    zoom: number;
+    overlay: FlowScene;
+    phase: number;
+    moving: boolean;
+  } | null {
+    if (!this._visible()) return null;
+    this._frameTick();
+    this._sync();
+    this._painting = true;
+    this._frameClip = null;
+    if (this._fitPending) {
+      this._fitPending = false;
+      this._fit(this._prop<FitViewOptions>('fitViewOptions'));
+    }
+    const v = this._viewport();
+    const pane = this._pane();
+    const palette = this._palette();
+
+    const lift = this._lifted();
+    const keyOf = (): string =>
+      `${this._worldVersion}|${this._worldCullId}|${this._worldZoom}|` +
+      `${this._fontSeen}|${JSON.stringify(palette)}|${this._liftGen}`;
+    let key = keyOf();
+    // The view in the world's own coordinates — graph × the zoom it was
+    // built at, the pan left out: `offset` puts the pan back, and `zoom`
+    // the rest of the zoom.
+    const zoom = v.zoom / this._worldZoom;
+    const view = {
+      x: -v.x / zoom,
+      y: -v.y / zoom,
+      width: pane.width / zoom,
+      height: pane.height / zoom,
+    };
+    const cull = this._worldCull;
+    const inside =
+      cull != null &&
+      view.x >= cull.x &&
+      view.y >= cull.y &&
+      view.x + view.width <= cull.x + cull.width &&
+      view.y + view.height <= cull.y + cull.height;
+    const scaled =
+      inside &&
+      zoom !== 1 &&
+      key === lastKey &&
+      this._zoomStream &&
+      now() - this._zoomAt < GL_ZOOM_REST_MS &&
+      zoom <= GL_ZOOM_SPAN &&
+      zoom >= 1 / GL_ZOOM_SPAN;
+    if (scaled) {
+      this._restZoom();
+    } else if (!inside || zoom !== 1) {
+      this._worldCull = {
+        x: -v.x - pane.width,
+        y: -v.y - pane.height,
+        width: pane.width * 3,
+        height: pane.height * 3,
+      };
+      this._worldZoom = v.zoom;
+      this._worldCullId++;
+      key = keyOf();
+    }
+
+    let world: FlowScene | null = null;
+    if (key !== lastKey) {
+      world = buildScene(
+        this._sceneInput(palette, {
+          world: this._worldCull!,
+          lift: lift ? { ids: lift, only: false } : undefined,
+        }),
+      );
+      this._worldAnimated = world.animated;
+    }
+    // The nodes a drag moves, and their edges, on their own: a step
+    // rebuilds them and not the world (`_liftVersion`).
+    let lifted: FlowScene | null | undefined;
+    const liftedKey = lift ? `${this._liftVersion}|${key}` : null;
+    if (lift && liftedKey !== lastLifted) {
+      lifted = buildScene(
+        this._sceneInput(palette, {
+          world: this._worldCull!,
+          lift: { ids: lift, only: true },
+        }),
+      );
+      this._liftedAnimated = lifted.animated;
+    } else if (!lift && lastLifted != null) {
+      lifted = null;
+      this._liftedAnimated = false;
+    }
+    if (world || lifted !== undefined) {
+      // The dash timer lives as long as an animated edge is drawn; its
+      // ticks move the phase, a uniform.
+      if (this._worldAnimated || this._liftedAnimated) this._startAnimation();
+      else this._stopAnimation();
+    }
+    const overlay = buildScene(this._sceneInput(palette, 'overlay'));
+    this._painting = false;
+
+    if (!this._sceneAnnounced) {
+      this._sceneAnnounced = true;
+      this.notifyA11ySceneChanged();
+    }
+    this._emitBodies();
+    return {
+      world,
+      key,
+      lifted,
+      liftedKey,
+      offset: { x: pane.x + v.x, y: pane.y + v.y },
+      zoom: scaled ? zoom : 1,
+      overlay,
+      // the scene bakes `-phase * zoom` into a marching edge; the GPU is
+      // handed the same number as a uniform
+      phase: -this._dashPhase * v.zoom,
+      moving: this._zoomMoving(),
+    };
+  }
+
+  /** The frame that rebuilds the GL world once a zoom gesture stops — asked
+   *  for `GL_ZOOM_REST_MS` after its last step, however many steps the
+   *  timer outlived. */
+  private _restZoom(): void {
+    if (this._zoomRest != null) return;
+    const wait = this._zoomAt + GL_ZOOM_REST_MS - now();
+    this._zoomRest = timers.setTimeout?.(
+      () => {
+        this._zoomRest = null;
+        if (now() - this._zoomAt < GL_ZOOM_REST_MS) this._restZoom();
+        else if (this._gl) this._glRequest?.();
+        else if (this._textApproximated) {
+          this._dropZoomShot();
+          // …and in 2D, the labels the gesture drew scaled, set at their
+          // own sizes
+          this._textApproximated = false;
+          this._repaint('content');
+        }
+      },
+      Math.max(0, wait) + 1,
+    );
+  }
+
+  /** A whole paint of the graph took `ms` (`_graphPaints`). */
+  private _noteGraphPaint(ms: number): void {
+    this._graphPaints.push(ms);
+    if (this._graphPaints.length > GRAPH_PAINTS_KEPT) this._graphPaints.shift();
+  }
+
+  /** The median of the graph's last whole paints — the lower of the two
+   *  middle ones for an even count — or zero before the first. */
+  private _graphPaintMs(): number {
+    const paints = this._graphPaints;
+    if (paints.length === 0) return 0;
+    const sorted = [...paints].sort((a, b) => a - b);
+    return sorted[(sorted.length - 1) >> 1];
+  }
+
+  /** Whether a pass over `clip` painted the whole pane — what a zoom step
+   *  paints, and the only pass whose cost says what one would. */
+  private _wholePane(clip: FlowRect | null): boolean {
+    if (clip === null) return true;
+    const pane = this._pane();
+    const s = this._scale;
+    return clip.width * clip.height >= 0.9 * pane.width * s * pane.height * s;
+  }
+
+  /**
+   * The graph painted once onto a surface of its own for the zoom gesture
+   * under way — made at the gesture's first step that finds none — or null
+   * where there is no surface to paint on.
+   */
+  private _zoomShotFor(
+    palette: FlowPalette,
+    approximateText: boolean,
+  ): ZoomShot | null {
+    const held = this._zoomShot;
+    if (held) {
+      // Kept while it is sharp enough and covers enough: magnified past
+      // `GL_ZOOM_SPAN` it is soft, and a zoom out uncovers a ring the step
+      // paints live, which past `ZOOM_SHOT_LIVE` of the pane costs what a
+      // new picture does.
+      const k = this._viewport().zoom / held.viewport.zoom;
+      const pane = this._pane();
+      const live =
+        this._uncovered(held).reduce((sum, r) => sum + r.width * r.height, 0) /
+        Math.max(1, pane.width * pane.height);
+      if (k <= GL_ZOOM_SPAN && live <= ZOOM_SHOT_LIVE) return held;
+      this._dropZoomShot();
+    }
+    const ctor = (ntk as unknown as { Surface?: ShotCtor }).Surface;
+    if (typeof ctor !== 'function') return null;
+    const pane = this._pane();
+    const scale = this._scale;
+    const width = Math.max(1, Math.ceil(pane.width * scale));
+    const height = Math.max(1, Math.ceil(pane.height * scale));
+    let surface: ShotSurface;
+    try {
+      surface = new ctor(this.app, { width, height, format: 'argb32' });
+    } catch {
+      return null;
+    }
+    const sctx = surface.getContext('2d') as {
+      translate?(x: number, y: number): void;
+    } | null;
+    // its labels drawn as a step inside the gesture draws them — from the
+    // sizes they have, where the window's context scales text — so the one
+    // paint of the gesture shapes nothing the gesture would not
+    const painter = sctx
+      ? createPainter(sctx, { ...this._textOptions(), approximateText })
+      : null;
+    if (!sctx || !painter || typeof sctx.translate !== 'function') {
+      surface.destroy?.();
+      return null;
+    }
+    // The surface's corner is the pane's, and the whole of the pane is in
+    // it whatever this pass's damage, since every step after composites it.
+    // The ground too: a grid at the fractional pitch a zoom passes through
+    // is thousands of runs, 7 ms of Direct2D a step over the stress
+    // lattice's pane once the graph was a picture. Drawn as runs here —
+    // the tile is a pattern on the window's context, phased in its pixels,
+    // and a zoom's pitch is a fraction of a pixel almost always.
+    sctx.translate(-pane.x * scale, -pane.y * scale);
+    const building = now();
+    const whole = buildScene({ ...this._sceneInput(palette), clip: null });
+    const built = now();
+    paintGround(painter, whole);
+    const grounded = now();
+    paintGraph(painter, whole);
+    // What a step would cost live: the scene and the graph. Not the ground,
+    // which is runs here and a tile on the window — on X11 it made a
+    // picture's paint half as dear again as a step, and kept the picture of
+    // a graph that did not need one.
+    this._noteGraphPaint(built - building + (now() - grounded));
+    this._zoomShot = { surface, viewport: this._viewport(), width, height };
+    return this._zoomShot;
+  }
+
+  /** Where the gesture's picture lands at the viewport of the moment, in
+   *  the pane's logical pixels: a world point drawn at `w·z₀ + v₀` is at
+   *  `w·z + v`, so the picture is scaled by `z / z₀` about the pane's corner
+   *  and moved by `v − v₀·z/z₀`. */
+  private _shotRect(shot: ZoomShot): FlowRect {
+    const v = this._viewport();
+    const v0 = shot.viewport;
+    const k = v.zoom / v0.zoom;
+    const pane = this._pane();
+    const s = this._scale;
+    return {
+      x: pane.x + v.x - v0.x * k,
+      y: pane.y + v.y - v0.y * k,
+      width: (shot.width / s) * k,
+      height: (shot.height / s) * k,
+    };
+  }
+
+  private _compositeShot(ctx: Context2D, shot: ZoomShot): void {
+    const draw = (
+      ctx as unknown as {
+        drawImage?(image: unknown, ...args: number[]): void;
+      }
+    ).drawImage;
+    if (typeof draw !== 'function') return;
+    const to = this._shotRect(shot);
+    const s = this._scale;
+    draw.call(
+      ctx,
+      shot.surface,
+      0,
+      0,
+      shot.width,
+      shot.height,
+      to.x * s,
+      to.y * s,
+      to.width * s,
+      to.height * s,
+    );
+  }
+
+  /**
+   * The pane this pass reaches that the gesture's picture does not: nothing
+   * while zooming in about a point in the pane, a ring round it zooming out,
+   * a side after a pan. Up to four bands — above, below, and either side
+   * between them — each reaching a pixel under the picture's edge, which
+   * its filtering leaves half there.
+   */
+  private _uncovered(shot: ZoomShot): FlowRect[] {
+    const pane = this._frameClip
+      ? intersectRects(this._pane(), this._frameClip)
+      : this._pane();
+    if (!pane) return [];
+    const inner = inflateRect(this._shotRect(shot), -1);
+    const x0 = Math.max(pane.x, inner.x);
+    const y0 = Math.max(pane.y, inner.y);
+    const x1 = Math.min(pane.x + pane.width, inner.x + inner.width);
+    const y1 = Math.min(pane.y + pane.height, inner.y + inner.height);
+    if (x1 <= x0 || y1 <= y0) return [pane];
+    const right = pane.x + pane.width;
+    const bottom = pane.y + pane.height;
+    const bands: FlowRect[] = [];
+    if (y0 > pane.y) {
+      bands.push({
+        x: pane.x,
+        y: pane.y,
+        width: pane.width,
+        height: y0 - pane.y,
+      });
+    }
+    if (bottom > y1) {
+      bands.push({ x: pane.x, y: y1, width: pane.width, height: bottom - y1 });
+    }
+    if (x0 > pane.x) {
+      bands.push({ x: pane.x, y: y0, width: x0 - pane.x, height: y1 - y0 });
+    }
+    if (right > x1) {
+      bands.push({ x: x1, y: y0, width: right - x1, height: y1 - y0 });
+    }
+    return bands;
+  }
+
+  private _dropZoomShot(): void {
+    this._zoomShot?.surface.destroy?.();
+    this._zoomShot = null;
+  }
+
+  /**
+   * The pictures a 2D drag copies from — made on the first pass of the
+   * gesture that has its nodes lifted, and kept while the graph under them
+   * and the view hold still. A drag step repainted the box round the moved
+   * node and every edge on it, and an edge is as long as it is: the stress
+   * lattice sends its last rows' edges back to its first nodes, so dragging
+   * one repainted the window a step, every card and edge in it, at 46-57
+   * fps on Cocoa. Cutting the damage finer did not help — core merges a
+   * frame's rects down to four, and a long diagonal's pieces merge back to
+   * most of the pane. Copying what did not move is what does.
+   *
+   * Null where there is no offscreen surface, and for a gesture whose view
+   * moved while it held pictures: it paints live from then on, rather than
+   * paint the graph twice a step.
+   */
+  private _liftShotFor(
+    palette: FlowPalette,
+    lift: ReadonlySet<string>,
+  ): LiftShot | null {
+    const gesture = this._liftFor;
+    if (!gesture || this._liftShotRefused === gesture) return null;
+    const v = this._viewport();
+    const pane = this._pane();
+    const scale = this._scale;
+    const width = Math.max(1, Math.ceil(pane.width * scale));
+    const height = Math.max(1, Math.ceil(pane.height * scale));
+    const held = this._liftShot;
+    if (held) {
+      const still =
+        held.viewport.x === v.x &&
+        held.viewport.y === v.y &&
+        held.viewport.zoom === v.zoom;
+      if (
+        held.gesture === gesture &&
+        still &&
+        held.version === this._worldVersion &&
+        held.width === width &&
+        held.height === height
+      ) {
+        return held;
+      }
+      this._dropLiftShot();
+      if (held.gesture === gesture && !still) {
+        this._liftShotRefused = gesture;
+        return null;
+      }
+    }
+    const ctor = (ntk as unknown as { Surface?: ShotCtor }).Surface;
+    if (typeof ctor !== 'function') return null;
+    const make = (): {
+      surface: ShotSurface;
+      painter: FlowPainter;
+    } | null => {
+      let surface: ShotSurface;
+      try {
+        surface = new ctor(this.app, { width, height, format: 'argb32' });
+      } catch {
+        return null;
+      }
+      const sctx = surface.getContext('2d') as {
+        translate?(x: number, y: number): void;
+        clearRect?(x: number, y: number, w: number, h: number): void;
+      } | null;
+      const painter = sctx ? createPainter(sctx, this._textOptions()) : null;
+      if (!sctx || !painter || typeof sctx.translate !== 'function') {
+        surface.destroy?.();
+        return null;
+      }
+      // a clear ground: the cards' picture goes over the edges
+      sctx.clearRect?.(0, 0, width, height);
+      sctx.translate(-pane.x * scale, -pane.y * scale);
+      return { surface, painter };
+    };
+    const under = make();
+    const over = under ? make() : null;
+    if (!under || !over) {
+      under?.surface.destroy?.();
+      return null;
+    }
+    const rest = buildScene({
+      ...this._sceneInput(palette, { lift: { ids: lift, only: false } }),
+      clip: null,
+    });
+    paintGround(under.painter, rest);
+    paintGraphEdges(under.painter, rest);
+    paintGraphNodes(over.painter, rest);
+    this._liftShot = {
+      under: under.surface,
+      over: over.surface,
+      cards: rest.nodes.map((item) => inflateRect(item.rect, CULL_MARGIN)),
+      gesture,
+      version: this._worldVersion,
+      viewport: { ...v },
+      width,
+      height,
+    };
+    return this._liftShot;
+  }
+
+  /**
+   * One of a drag's pictures, copied into this pass's rect of the pane —
+   * the whole pane on a full pass. The ground's picture is opaque and is
+   * *copied*, which the server does as a copy rather than a blend (`copy`
+   * is XRender's `Src`, and a memcpy on Cocoa); the cards' picture is
+   * blended in only where a card is (`only`). On XQuartz the two blends of
+   * the step's box — as big as the moved node's longest edge — were most
+   * of what a drag cost the server.
+   */
+  private _compositeLift(
+    ctx: Context2D,
+    shot: LiftShot,
+    surface: ShotSurface,
+    only: FlowRect[] | null,
+  ): void {
+    const c = ctx as unknown as {
+      drawImage?(image: unknown, ...args: number[]): void;
+      globalCompositeOperation?: string;
+    };
+    if (typeof c.drawImage !== 'function') return;
+    const pane = this._pane();
+    const rect = this._frameClip ? intersectRects(pane, this._frameClip) : pane;
+    if (!rect) return;
+    if (only) {
+      for (const card of only) {
+        const part = intersectRects(rect, card);
+        if (part) this._copyShotRect(c, shot, surface, part);
+      }
+      return;
+    }
+    const before = c.globalCompositeOperation;
+    c.globalCompositeOperation = 'copy';
+    try {
+      this._copyShotRect(c, shot, surface, rect);
+    } finally {
+      c.globalCompositeOperation = before ?? 'source-over';
+    }
+  }
+
+  /** A rect of the pane, logical pixels, drawn from the same rect of a
+   *  picture of it — on whole device pixels, so nothing is resampled. */
+  private _copyShotRect(
+    ctx: { drawImage?(image: unknown, ...args: number[]): void },
+    shot: LiftShot,
+    surface: ShotSurface,
+    rect: FlowRect,
+  ): void {
+    const pane = this._pane();
+    const s = this._scale;
+    const ox = pane.x * s;
+    const oy = pane.y * s;
+    const x0 = Math.max(0, Math.floor(rect.x * s - ox));
+    const y0 = Math.max(0, Math.floor(rect.y * s - oy));
+    const x1 = Math.min(shot.width, Math.ceil((rect.x + rect.width) * s - ox));
+    const y1 = Math.min(
+      shot.height,
+      Math.ceil((rect.y + rect.height) * s - oy),
+    );
+    if (x1 <= x0 || y1 <= y0) return;
+    const w = x1 - x0;
+    const h = y1 - y0;
+    ctx.drawImage!(surface, x0, y0, w, h, ox + x0, oy + y0, w, h);
+  }
+
+  private _dropLiftShot(): void {
+    this._liftShot?.under.destroy?.();
+    this._liftShot?.over.destroy?.();
+    this._liftShot = null;
+  }
+
+  /** Whether a zoom gesture is moving: a stream of zoom steps, the last of
+   *  them under `GL_ZOOM_REST_MS` ago. A single step — a button, `fitView`,
+   *  an app's `setViewport` — is not one. */
+  private _zoomMoving(): boolean {
+    return this._zoomStream && now() - this._zoomAt < GL_ZOOM_REST_MS;
+  }
+
+  /** Whether this pass's damage reaches the minimap's corner at all —
+   *  answered from the panel's box alone, without resolving the map. */
+  private _miniMapReached(): boolean {
+    const corner = this._miniMapCorner();
+    if (!corner) return false;
+    const clip = this._frameClip;
+    return !clip || rectsOverlap(corner, clip);
+  }
+
+  /** The minimap's panel, in logical window pixels, or null without one. */
+  private _miniMapCorner(): FlowRect | null {
+    const options = this._miniMapOptions();
+    if (!options) return null;
+    return this._corner(
+      options.position,
+      options.width ?? MINIMAP_W,
+      options.height ?? MINIMAP_H,
+      'bottom-right',
+    );
+  }
+
+  /**
+   * Everything `buildScene` reads, for one of three uses:
+   *
+   * - `'all'` — the 2D renderer's pass: the pane as it is, culled to this
+   *   pass's damage.
+   * - `{ world }` — the GL graph: built at a **pinned origin** (the viewport's
+   *   translation and the pane's origin both left out, so a pan does not
+   *   change a vertex) and culled to the overscan `world` rather than the
+   *   pane, with none of the pane's furniture.
+   * - `'overlay'` — the GL furniture: the pane's background, grid, selection,
+   *   minimap and controls, and no graph at all.
+   */
+  /**
+   * The order nodes are drawn in, bottom to top: `zIndex`, then selection,
+   * then declaration (`_order`), with a node being dragged lifted over all
+   * of them. The one order both halves of a node follow — its card in the
+   * scene, its mounted body in `_emitBodies` — so a body is stacked over
+   * the bodies of the cards under its own, and under the ones above.
+   */
+  private _paintOrder(): NodeEntry[] {
+    const dragging = this._dragTo;
+    if (!dragging || dragging.size === 0) return this._order;
+    const order: NodeEntry[] = [];
+    const lifted: NodeEntry[] = [];
+    for (const entry of this._order) {
+      if (dragging.has(entry.node.id)) lifted.push(entry);
+      else order.push(entry);
+    }
+    return order.concat(lifted);
+  }
+
+  private _sceneInput(
+    palette: FlowPalette,
+    layer:
+      | 'all'
+      | 'overlay'
+      | 'card'
+      | {
+          /** The GL world's overscan; left out, the pane as a 2D pass sees
+           *  it. */
+          world?: FlowRect;
+          /** Without the lifted nodes and their edges, or those alone
+           *  (`only`). */
+          lift?: { ids: ReadonlySet<string>; only: boolean };
+        } = 'all',
+    /** The panels even while `<Flow>` paints them itself — for that paint. */
+    panels = false,
+  ): SceneInput {
+    // One card, for `paintCard`, which hands in the node itself: nothing
+    // about the rest of the graph is read, where the whole input — every
+    // node's source twice over, the minimap's walk for its bounds — was most
+    // of what a card cost to paint, and a zoom repaints every one of them.
+    if (layer === 'card') {
+      const gesture = this._gesture;
+      return {
+        viewport: this._viewport(),
+        pane: this._pane(),
+        clip: null,
+        palette,
+        background: normalizeBackground(undefined),
+        nodes: [],
+        all: [],
+        edges: [],
+        dashPhase: this._dashPhase,
+        hover: this._hover,
+        connection: gesture?.kind === 'connect' ? gesture : null,
+        selection: null,
+        miniMap: null,
+        controls: [],
+        scale: this._scale,
+        measure: this._measureBox,
+        cache: this._sceneCache,
+      };
+    }
+    const order = this._paintOrder();
+    const gesture = this._gesture;
+    // The panel cull comes before `_miniMap()`, which walks every node to
+    // find the graph's bounds — during a drag that walk per pass would cost
+    // more than the panel it skips. The dot for a mid-drag node goes stale
+    // until the release repaints in full; that is the trade, and it is
+    // deliberate.
+    const world = typeof layer === 'object' ? (layer.world ?? null) : null;
+    const lift = typeof layer === 'object' ? layer.lift : undefined;
+    const overlay = layer === 'overlay';
+    // the furniture is the overlay's: a lifted layer or the graph under it
+    // has none of its own
+    const map =
+      !world && !lift && this._miniMapReached() ? this._miniMap() : null;
+    const viewport = this._viewport();
+    const pane = this._pane();
+    // An edge is the lifted layer's when either end is lifted.
+    const edges = lift
+      ? this._edges.filter(
+          (e) =>
+            (lift.ids.has(e.source) || lift.ids.has(e.target)) === lift.only,
+        )
+      : this._edges;
+    let all: SceneNodeSource[];
+    if (lift?.only) {
+      // the lifted nodes and the far ends of their edges: all the lifted
+      // layer routes to, where every node's source was most of a step
+      const ids = new Set(lift.ids);
+      for (const e of edges) {
+        ids.add(e.source);
+        ids.add(e.target);
+      }
+      all = [];
+      for (const id of ids) {
+        const entry = this._byId.get(id);
+        if (entry) all.push(this._sourceOf(entry));
+      }
+    } else if (overlay && !map) {
+      all = [];
+    } else if (layer === 'all' && this._painting) {
+      all = this._frameLists(order).all;
+    } else {
+      all = this._entries.map((entry) => this._sourceOf(entry));
+    }
+    return {
+      viewport: world ? { x: 0, y: 0, zoom: viewport.zoom } : viewport,
+      pane: world
+        ? { x: 0, y: 0, width: pane.width, height: pane.height }
+        : pane,
+      clip: world || overlay ? null : this._frameClip,
+      cull: world,
+      palette,
+      paneBackground: this.style.backgroundColor as string | undefined,
+      background: normalizeBackground(
+        this.props.background as
+          BackgroundOptions | string | boolean | undefined,
+      ),
+      // a card `<Flow>` paints in the bodies' layer is not painted twice
+      nodes: overlay
+        ? []
+        : layer === 'all' && this._painting
+          ? this._frameLists(order).nodes
+          : order
+              .filter(
+                (entry) =>
+                  !this._cardInLayer(entry.node.id) &&
+                  (!lift || lift.ids.has(entry.node.id) === lift.only),
+              )
+              .map((entry) => this._sourceOf(entry)),
+      all,
+      edges: overlay ? [] : edges,
+      dashPhase: this._dashPhase,
+      hover: this._hover,
+      connection: !overlay && gesture?.kind === 'connect' ? gesture : null,
+      selection:
+        !world && gesture?.kind === 'select' ? selectBoxRect(gesture) : null,
+      miniMap:
+        map && (panels || this._panelCanvases.length === 0)
+          ? {
+              panel: map.panel,
+              bounds: map.bounds,
+              scale: map.scale,
+              nodeColor: map.options.nodeColor,
+              maskColor: map.options.maskColor,
+            }
+          : null,
+      controls:
+        world || lift || (!panels && this._panelCanvases.length > 0)
+          ? []
+          : this._controlButtons(),
+      scale: this._scale,
+      measure: this._measureBox,
+      cache: this._sceneCache,
+    };
+  }
+
+  /**
+   * Where every mounted node body belongs, and where the graph's origin is.
+   *
+   * The two are sent apart because they change apart. A body's rect is
+   * relative to the **graph's origin on screen** — its position times the
+   * zoom — which a pan does not move; the origin is the viewport's
+   * translation, which is all a pan moves. So a pan re-sends the *same*
+   * bodies array with a new origin, `<Flow>` moves the one box they are
+   * laid out in, and React re-renders none of them: the per-step commit of
+   * every mounted body's position is what held a pan over 48 of them to 57
+   * frames a second. A drag, a zoom, a selection or a body entering the pane
+   * sends a new array, as before.
    */
   private _emitBodies(): void {
     const notify =
-      this._prop<(bodies: readonly NodeBodyRect[], sync: boolean) => void>(
-        'onNodeBodies',
-      );
+      this._prop<
+        (
+          bodies: readonly NodeBodyRect[],
+          sync: boolean,
+          origin: XYPosition,
+          held: boolean,
+        ) => void
+      >('onNodeBodies');
     if (!notify) return;
     const v = this._viewport();
+    if (this._holdBodies(v.zoom)) {
+      if (!this._bodiesHeld) {
+        this._bodiesHeld = true;
+        // The cards are the graph's again from this frame, not from the
+        // commit that hides the bodies: GL frames do not wait for React's,
+        // and one that landed between the two drew neither — edges with no
+        // nodes under them, for a frame at the start of a zoom. What the
+        // layer painted is forgotten too, so the cards stay the graph's
+        // until the bodies are back and their canvases have painted again.
+        this._paintedCards.clear();
+        this._worldVersion++;
+        this._glRequest?.();
+        notify(
+          this._bodies,
+          this._gestureSync || this._handleSync,
+          this._bodiesOrigin,
+          true,
+        );
+      }
+      return;
+    }
     const pane = this._pane();
+    // Exact, and every rect below relative to it and free of the pan: a
+    // card's offset from the graph's origin is its graph position times the
+    // zoom, so a pan re-sends the same array and moves only the origin.
+    // Nothing here is rounded — `<Flow>` puts the boxes on the device-pixel
+    // grid, once. Rounded here as well, to logical pixels against a rounded
+    // origin, a card's offset flipped by a pixel as the pan's fraction
+    // cycled against the device grid `_screenRect` snaps to: the array was
+    // new on most steps of a pan, and at 1.25× the layer changed size with
+    // it — every body repainted, where core would have moved them.
+    const origin = { x: v.x, y: v.y };
+    const sv = screenViewport(v, pane);
+    const was = this._bodies;
     const bodies: NodeBodyRect[] = [];
-    for (const entry of this._order) {
+    let changed = false;
+    for (const entry of this._paintOrder()) {
       if (entry.node.hidden || !this._mounted(entry)) continue;
-      const rect = this._screenRect(entry);
-      if (!rectsOverlap(rect, pane)) continue;
+      if (!rectsOverlap(this._screenRect(entry, sv), pane)) continue;
+      const graph = this.rectOf(entry);
+      const x = graph.x * v.zoom;
+      const y = graph.y * v.zoom;
+      const cardWidth = graph.width * v.zoom;
+      const cardHeight = graph.height * v.zoom;
       const header = this._headerHeight(entry) * v.zoom;
       const inset = NODE_BODY_INSET * v.zoom;
-      const width = rect.width - inset * 2;
-      const height = rect.height - header - inset;
+      const width = cardWidth - inset * 2;
+      const height = cardHeight - header - inset;
       if (width <= 1 || height <= 1) continue;
-      bodies.push({
-        id: entry.node.id,
-        // pane-relative and logical, because that is what an absolutely
-        // positioned box beside the pane is laid out against, and in
-        x: Math.round(rect.x + inset - pane.x),
-        y: Math.round(rect.y + header - pane.y),
-        width: Math.round(width),
-        height: Math.round(height),
-        zoom: v.zoom,
-        selected: entry.node.selected ?? false,
-      });
+      const id = entry.node.id;
+      const hovered = this._hover.nodeId === id;
+      const selected = entry.node.selected ?? false;
+      // The zoom counts as well as the rect it produced: it is the body's
+      // subtree scale, and two zooms a hair apart can leave a box where it
+      // was while the text inside it should have moved.
+      const old = this._bodiesById.get(id);
+      const body =
+        old &&
+        old.zoom === v.zoom &&
+        old.selected === selected &&
+        old.hovered === hovered &&
+        old.card.x === x &&
+        old.card.y === y &&
+        old.card.width === cardWidth &&
+        old.card.height === cardHeight &&
+        old.height === height
+          ? old
+          : {
+              id,
+              card: { x, y, width: cardWidth, height: cardHeight },
+              hovered,
+              // logical, and relative to the graph's origin on screen — the
+              // box they are laid out in sits at `origin` in the pane
+              x: x + inset,
+              y: y + header,
+              width,
+              height,
+              zoom: v.zoom,
+              selected,
+            };
+      if (body !== was[bodies.length]) changed = true;
+      bodies.push(body);
     }
-    // The zoom is in the key as well as the rect it produced: it is the
-    // body's subtree scale now, and two zooms a rounding apart can leave a
-    // box on the same integers while the text inside it should have moved.
-    const key = bodies
-      .map(
-        (b) =>
-          `${b.id}:${b.x},${b.y},${b.width},${b.height},${b.zoom},${b.selected}`,
-      )
-      .join('|');
-    if (key === this._bodiesKey) return;
-    this._bodiesKey = key;
-    notify(bodies, this._gestureSync);
+    if (bodies.length !== was.length) changed = true;
+    // An origin with no bodies laid out at it is nobody's news: a pan over a
+    // graph whose node types mount bodies, with none on screen, sent one per
+    // step, and `<Flow>` re-rendered for it — its panels' canvases with it.
+    // The origin is still kept, and goes out with the first body to arrive.
+    const moved =
+      was.length > 0 &&
+      (origin.x !== this._bodiesOrigin.x || origin.y !== this._bodiesOrigin.y);
+    const released = this._bodiesHeld;
+    if (!changed && !moved && !released) return;
+    if (changed) {
+      this._bodies = bodies;
+      this._bodiesById = new Map(bodies.map((body) => [body.id, body]));
+    }
+    this._bodiesOrigin = origin;
+    this._bodiesHeld = false;
+    notify(this._bodies, this._gestureSync || this._handleSync, origin, false);
   }
 
-  /** The grid, drawn only inside `region` — the pass's damage on a partial
-   * repaint, the pane on a full one. Alignment stays anchored to the
-   * viewport origin, so the region never changes where a dot falls. */
-  private _paintGrid(
-    painter: FlowPainter,
-    palette: FlowPalette,
-    region: FlowRect,
-  ): void {
-    const options = normalizeBackground(
-      this.props.background as BackgroundOptions | string | boolean | undefined,
+  /**
+   * Whether mounted bodies sit this zoom out.
+   *
+   * A zoom changes every body's scale, and a scale is not a transform: each
+   * body is styled, laid out, its text shaped and its pixels painted again,
+   * at the new size, per step. That is about a millisecond a body on this
+   * class of machine — 42 bodies held a zoom to 15 frames a second where
+   * the graph alone costs 13 ms a step. So each step of a zoom *gesture*
+   * predicts what re-scaling the bodies on screen would add, and when that
+   * is over `BODY_BUDGET_MS` they sit the gesture out: still mounted — no
+   * state is lost — but hidden (`display: 'none'`) and untouched, while the
+   * cards, their labels and the edges carry it. Once the zoom has held still
+   * for
+   * `BODY_ZOOM_REST_MS` they come back, laid out once at the new scale. A
+   * handful of bodies fits the budget and zooms live.
+   *
+   * The prediction is bodies × what one costs, measured from the pane's own
+   * frames (`_frameTick`) — so a slower machine holds sooner. Once held, a
+   * gesture stays held until it rests: bodies blinking in and out as the
+   * count crosses the line would be worse than either.
+   *
+   * Only a stream counts: a gesture's steps — the wheel, a pinch, the keys
+   * (`_gestureSync`) — or an animation's, `setViewport` a frame at a time,
+   * each zoom under `GL_ZOOM_REST_MS` after the one before (`_zoomStream`,
+   * the rule the zoom's picture and its scaled labels already follow). A
+   * single programmatic jump — `fitView`, `setViewport`, a control's button
+   * — applies at once, so an app that sets the viewport and reads the result
+   * sees it; the pane never animates a viewport of its own. An animation
+   * that stepped every body at every frame held a zoom over the stress
+   * example's charts to 10 frames a second.
+   */
+  private _holdBodies(zoom: number): boolean {
+    if (zoom !== this._seenZoom) {
+      const first = Number.isNaN(this._seenZoom);
+      this._seenZoom = zoom;
+      if (
+        first ||
+        (!this._gestureSync && !this._zoomStream && !this._bodiesHeld)
+      ) {
+        return false;
+      }
+      const bodies = this._bodies.length;
+      if (!this._bodiesHeld && bodies * this._bodyStepMs <= this._budgetMs()) {
+        this._zoomStep = { live: true, bodies };
+        return false;
+      }
+      this._zoomStep = { live: false, bodies: 0 };
+      this._bodiesAt = now();
+      this._restBodies();
+      return true;
+    }
+    return this._bodiesHeld && this._bodiesRest != null;
+  }
+
+  /** Bring the held bodies back once the zoom has held still for
+   *  `BODY_ZOOM_REST_MS` — judged on the pane's clock, like the zoom's own
+   *  rest (`_restZoom`): a timer that comes due while steps are still
+   *  arriving waits out what is left of the rest instead. */
+  private _restBodies(): void {
+    if (this._bodiesRest != null) return;
+    const wait = this._bodiesAt + BODY_ZOOM_REST_MS - now();
+    this._bodiesRest = timers.setTimeout?.(
+      () => {
+        this._bodiesRest = null;
+        if (now() - this._bodiesAt < BODY_ZOOM_REST_MS) this._restBodies();
+        else this._emitBodies();
+      },
+      Math.max(0, wait) + 1,
     );
-    if (options.variant === 'none') return;
-    const v = this._viewport();
-    let step = options.gap * v.zoom;
-    if (!(step > 0)) return;
-    // Doubling rather than clamping keeps the grid *aligned* to the graph
-    // while zooming out: every visible line is still a real one.
-    while (step < MIN_GRID_PX) step *= 2;
-    const color = options.color ?? palette.grid;
+  }
+
+  /**
+   * Paint one mounted node's card — fill, border, header, handles, grips —
+   * into `ctx`, a `<canvas>` in the bodies' layer (`<Flow>`), exactly as the
+   * scene paints it. `ctx` is at the canvas's origin, `abs` its place in
+   * the window in device pixels.
+   *
+   * Why the card is painted twice: the bodies share one layer over every
+   * card — over the GL surface, or beside the 2D pane — so a body could not
+   * go under a card that was over its own. It painted over that card's
+   * header, border and handles: a selected node's outline hidden behind the
+   * body of the node under it. A card painted in the bodies' layer, just
+   * under its own body, is stacked with it in the cards' paint order, and
+   * covers the card the graph drew for it.
+   */
+  paintCard(id: string, ctx: unknown, abs: XYPosition): void {
+    const entry = this._byId.get(id);
+    if (!entry) return;
+    const painter = createPainter(ctx, this._textOptions());
+    if (!painter) return;
+    const palette = this._palette();
+    const input = this._sceneInput(palette, 'card');
+    const [item] = buildNodeItems({
+      ...input,
+      nodes: [this._source(entry)],
+      clip: null,
+      cull: undefined,
+    });
+    if (!item) return;
+    const c = ctx as {
+      save(): void;
+      restore(): void;
+      translate(x: number, y: number): void;
+    };
+    c.save();
+    try {
+      c.translate(-abs.x, -abs.y);
+      paintNodeItem(painter, item, { viewport: input.viewport, palette });
+    } finally {
+      c.restore();
+    }
+    if (this._gl && this._shownBodies.has(id) && !this._paintedCards.has(id)) {
+      // The layer has it now: the world stops drawing it, in a frame after
+      // the one this paint is part of. The world's version and a frame, and
+      // not `_repaint` — nothing of the 2D pane or its panels moved.
+      this._paintedCards.add(id);
+      this._worldVersion++;
+      this._glRequest?.();
+    }
+  }
+
+  /** Whether a card is the bodies' layer's to draw rather than the
+   *  graph's: shown there — and under GL, painted there already — and the
+   *  bodies not held out of a zoom. */
+  private _cardInLayer(id: string): boolean {
+    // held: hidden, or on the way to it, whatever `<Flow>` last reported
+    if (this._bodiesHeld || !this._shownBodies.has(id)) return false;
+    return !this._gl || this._paintedCards.has(id);
+  }
+
+  /**
+   * The cards `<Flow>` has on screen in the bodies' layer (`paintCard`),
+   * which the graph then leaves out — on the GL renderer that is the whole
+   * of what drawing them cost, twice. Told after the commit that shows
+   * them, so no 2D frame lacks both; told the empty set while bodies are
+   * held out of a zoom, when their cards are the graph's again. Under GL a
+   * card is left out only once its canvas has painted (`_paintedCards`).
+   */
+  setShownBodies(ids: ReadonlySet<string>): void {
+    const was = this._shownBodies;
+    if (was.size === ids.size && [...ids].every((id) => was.has(id))) return;
+    this._shownBodies = ids;
+    // a card that left the layer is painted there again before the world
+    // leaves it out again
+    for (const id of this._paintedCards) {
+      if (!ids.has(id)) this._paintedCards.delete(id);
+    }
+    // the pane, not the window — and under GL, a frame
+    this._repaint('content');
+  }
+
+  /**
+   * The canvases `<Flow>` paints the minimap and controls on, over its
+   * bodies (`paintPanels`): the bodies' layer is over the graph, so panels
+   * the graph drew went under any card that reached them. While there are
+   * any the graph leaves the panels out, and every change to the pane asks
+   * them to repaint. Presses still land on the pane: the canvases take
+   * none.
+   */
+  /** The panel canvases the minimap is painted on — the ones whose box
+   *  reaches its corner. */
+  private _miniMapCanvases(): readonly PanelCanvas[] {
+    const canvases = this._panelCanvases;
+    if (canvases.length === 0) return canvases;
+    const corner = this._miniMapCorner();
+    if (!corner) return [];
+    const box = this._device(corner);
+    return canvases.filter((c) => !c.abs || rectsOverlap(c.abs, box));
+  }
+
+  /**
+   * The box `<Flow>` lays the node bodies out in, beside this pane, under
+   * the 2D renderer — null under GL, and with no bodies to lay out. A pan
+   * hands it to `scrollContents` as a rider: its pixels move with the
+   * pane's.
+   */
+  setBodiesLayer(layer: unknown): void {
+    this._bodiesLayer = (layer as Node | null) ?? null;
+  }
+
+  setPanelCanvases(canvases: readonly PanelCanvas[]): void {
+    const had = this._panelCanvases.length > 0;
+    this._panelCanvases = canvases;
+    if (had !== canvases.length > 0) this._repaint('props');
+  }
+
+  /** Where the minimap and the controls are, relative to the pane's
+   *  top-left, logical — with a pixel round for their borders. */
+  panelRects(): FlowRect[] {
     const pane = this._pane();
-    const { x, y, width, height } = region;
-    const originX = pane.x + v.x;
-    const originY = pane.y + v.y;
-    if (this._paintGridPattern(painter, options, step, color, region)) return;
-    const firstX = originX + Math.ceil((x - originX) / step) * step;
-    const firstY = originY + Math.ceil((y - originY) / step) * step;
-
-    if (options.variant === 'lines') {
-      const runs: XYPosition[][] = [];
-      for (let gx = firstX; gx <= x + width; gx += step) {
-        runs.push([
-          { x: gx, y },
-          { x: gx, y: y + height },
-        ]);
-      }
-      for (let gy = firstY; gy <= y + height; gy += step) {
-        runs.push([
-          { x, y: gy },
-          { x: x + width, y: gy },
-        ]);
-      }
-      painter.strokeRuns(runs, { stroke: color, lineWidth: 1 });
-      return;
+    const rects: FlowRect[] = [];
+    const map = this._miniMapOptions();
+    if (map) {
+      const panel = this._corner(
+        map.position,
+        map.width ?? MINIMAP_W,
+        map.height ?? MINIMAP_H,
+        'bottom-right',
+      );
+      if (pane.width >= panel.width * 1.6 && pane.height >= panel.height * 1.6)
+        rects.push(panel);
     }
-
-    if (options.variant === 'cross') {
-      const arm = Math.max(2, options.size * 3 * v.zoom);
-      const runs: XYPosition[][] = [];
-      for (let gx = firstX; gx <= x + width; gx += step) {
-        for (let gy = firstY; gy <= y + height; gy += step) {
-          runs.push([
-            { x: gx - arm, y: gy },
-            { x: gx + arm, y: gy },
-          ]);
-          runs.push([
-            { x: gx, y: gy - arm },
-            { x: gx, y: gy + arm },
-          ]);
-        }
-      }
-      painter.strokeRuns(runs, { stroke: color, lineWidth: 1 });
-      return;
+    const buttons = this._controlButtons();
+    if (buttons.length > 0) {
+      rects.push(unionRects(buttons[0].rect, buttons[buttons.length - 1].rect));
     }
+    return rects.map((r) => ({
+      x: Math.floor(r.x - pane.x) - 1,
+      y: Math.floor(r.y - pane.y) - 1,
+      width: Math.ceil(r.width) + 2,
+      height: Math.ceil(r.height) + 2,
+    }));
+  }
 
-    const centres: XYPosition[] = [];
-    for (let gx = firstX; gx <= x + width; gx += step) {
-      for (let gy = firstY; gy <= y + height; gy += step) {
-        centres.push({ x: gx, y: gy });
-      }
+  /** Paint the minimap and the controls into `ctx`, a canvas whose place in
+   *  the window, in device pixels, is `abs` — as the scene paints them. */
+  paintPanels(ctx: unknown, abs: FlowRect): void {
+    const painter = createPainter(ctx, this._textOptions());
+    if (!painter) return;
+    // Only the panels this canvas's box reaches: the minimap's canvas and
+    // the controls' each built and painted both, which for the controls
+    // was every node in the graph, clipped away. The frame clip is set to
+    // the box too, for the minimap's own reach test — a canvas paints
+    // outside this element's paint, where the clip is the last pass's.
+    const bounds = abs.width > 0 && abs.height > 0 ? this._logical(abs) : null;
+    const clip = this._frameClip;
+    this._frameClip = bounds;
+    let scene: FlowScene;
+    try {
+      scene = buildScene({
+        ...this._sceneInput(this._palette(), 'overlay', true),
+        clip: bounds,
+      });
+    } finally {
+      this._frameClip = clip;
     }
-    painter.dots(
-      centres,
-      Math.max(1, Math.round(options.size * 2 * v.zoom)),
-      color,
-    );
+    const c = ctx as {
+      save(): void;
+      restore(): void;
+      translate(x: number, y: number): void;
+    };
+    c.save();
+    try {
+      c.translate(-abs.x, -abs.y);
+      paintPanels(painter, scene);
+    } finally {
+      c.restore();
+    }
+  }
+
+  /** Tell `<Flow>` where the panels are when that changed (`onPanels`). */
+  private _emitPanels(): void {
+    const notify = this._prop<(rects: readonly FlowRect[]) => void>('onPanels');
+    if (!notify) return;
+    const rects = this.panelRects();
+    const key = rects
+      .map((r) => `${r.x},${r.y},${r.width},${r.height}`)
+      .join('|');
+    if (key === this._panelsKey) return;
+    this._panelsKey = key;
+    notify(rects);
+  }
+
+  /** `adaptive` as a number of milliseconds: `Infinity` never holds. */
+  private _budgetMs(): number {
+    const adaptive = this._prop<boolean | { budgetMs?: number }>('adaptive');
+    if (adaptive === false) return Infinity;
+    if (typeof adaptive === 'object' && adaptive?.budgetMs != null) {
+      return Math.max(0, adaptive.budgetMs);
+    }
+    return BODY_BUDGET_MS;
+  }
+
+  /** Where the mounted bodies stand against the budget — reported with
+   *  every frame (`FlowFrameStats.bodies`). */
+  bodyBudget(): FlowBodyBudget {
+    const count = this._bodies.length;
+    return {
+      count,
+      held: this._bodiesHeld,
+      perBodyMs: this._bodyStepMs,
+      predictedMs: count * this._bodyStepMs,
+      budgetMs: this._budgetMs(),
+    };
+  }
+
+  /**
+   * A frame was drawn: time the zoom step it carried, into the model
+   * `_holdBodies` predicts from. A step with no body re-scaled is the
+   * baseline; one that re-scaled some says what each cost over it. Passes
+   * a millisecond or two apart are one frame (the 2D renderer paints a
+   * frame's damage as several), and a gap long enough to be the user
+   * pausing is not a step at all.
+   */
+  private _frameTick(): void {
+    const t = now();
+    const dt = t - this._lastFrameAt;
+    if (dt < 2) return;
+    this._lastFrameAt = t;
+    const step = this._zoomStep;
+    this._zoomStep = null;
+    if (!step || dt > 250) return;
+    if (!step.live || step.bodies === 0) {
+      this._baseStepMs = Number.isNaN(this._baseStepMs)
+        ? dt
+        : this._baseStepMs * 0.7 + dt * 0.3;
+    } else if (!Number.isNaN(this._baseStepMs)) {
+      const each = Math.max(0, dt - this._baseStepMs) / step.bodies;
+      this._bodyStepMs = this._bodyStepMs * 0.7 + each * 0.3;
+    }
   }
 
   /**
    * The grid as one repeating fill (ntk#263): a step-sized tile drawn once,
    * a `createPattern('repeat')` over it, and one composite for the whole
-   * region — where the runs path pays a region-sized coverage mask.
+   * region — where the runs path in `./paint.ts` pays a region-sized
+   * coverage mask.
    *
-   * Two decisions with reasons:
+   * Handed to `paintScene` as its grid painter, and answering **false** when
+   * it does not apply, so the universal path takes over. Two decisions with
+   * reasons:
    *
    * - **Integral device steps only.** The tile is a pixmap, so its size is
-   *   whole pixels; at a fractional step the pattern would drift against
-   *   the graph's own coordinates — against `snapToGrid`, against node
-   *   positions — by a fraction per tile, and a grid that slides under the
-   *   content it grids is worse than a slower exact one.
+   *   whole pixels; at a fractional step the pattern would drift against the
+   *   graph's own coordinates — against `snapToGrid`, against node positions
+   *   — by a fraction per tile, and a grid that slides under the content it
+   *   grids is worse than a slower exact one.
    * - **The phase lives in the tile, not in a picture transform.** An
    *   untransformed repeat is anchored to the window origin, so the grid's
    *   alignment is baked in by drawing the mark at `origin mod tile` — and
    *   re-baking when the origin moves. A `setTransform` translate says the
    *   same thing in one request, but a *transformed* repeat forfeits the
-   *   server's untransformed fast path — on the in-process test server
-   *   that was ~180 ms a frame of per-pixel arithmetic, and re-rendering a
-   *   24px tile is a handful of requests on any server.
+   *   server's untransformed fast path — on the in-process test server that
+   *   was ~180 ms a frame of per-pixel arithmetic, and re-rendering a 24px
+   *   tile is a handful of requests on any server.
+   *
+   * An arrow property rather than a method: it is passed as a value, and a
+   * method would arrive with no `this`.
    */
-  private _paintGridPattern(
-    painter: FlowPainter,
-    options: { variant: BackgroundVariant; size: number },
-    step: number,
-    color: string,
-    region: FlowRect,
-  ): boolean {
+  private _grid = (painter: FlowPainter, grid: SceneGrid): boolean => {
+    const options = { variant: grid.variant, size: grid.size };
+    const { step, color, region } = grid;
     // The tile is a pixmap on the panel's grid, so the pitch has to be a
     // whole number of *device* pixels, and the phase is where the viewport
     // origin lands on that grid.
@@ -3050,7 +4717,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
     const fill = this._device(region);
     raw.fillRect?.(fill.x, fill.y, fill.width, fill.height);
     return true;
-  }
+  };
 
   private _makeGridSurface(tileSize: number): SurfaceLike | null {
     const ctor = (ntk as unknown as { Surface?: SurfaceCtor }).Surface;
@@ -3107,697 +4774,5 @@ export class FlowGraphNode extends Node implements FlowInstance {
     tile.pattern._picture?.destroy?.();
     tile.surface.destroy?.();
     this._gridTile = null;
-  }
-
-  /** Draws every visible edge; answers whether any of them is animated, so
-   * the caller knows whether to keep a timer alive. */
-  private _paintEdges(painter: FlowPainter, palette: FlowPalette): boolean {
-    const v = this._viewport();
-    const pane = this._pane();
-    const labels = v.zoom >= LABEL_ZOOM;
-    let animated = false;
-    // Collect, then draw. A stroke has no fast path in ntk — every one is a
-    // mask rasterized in JS, uploaded with `PutImage` and composited — so a
-    // graph of seven hundred edges was seven hundred round trips and about
-    // four megabytes a frame. Bucketed by the style they will be stroked
-    // with, the same graph is one path per distinct pen, which for almost
-    // every graph is one.
-    const strokes = new StrokeBuckets();
-    const markers = new Map<string, MarkerBucket>();
-    const labelChips: { rect: FlowRect; radius: number; fill: string }[] = [];
-    const pendingLabels: {
-      text: string;
-      x: number;
-      y: number;
-      size: number;
-      color: string;
-    }[] = [];
-
-    const clip = this._frameClip;
-    let animBox: FlowRect | null = null;
-    for (const edge of this._edges) {
-      if (edge.hidden) continue;
-      // two rejects: one from the nodes alone, one from the route it took
-      const coarse = this._edgeCoarseBox(edge);
-      if (!coarse || !rectsOverlap(coarse, pane)) continue;
-      // Tracked before the damage skip, deliberately: whether the dash
-      // timer runs is a question about the viewport, not about what this
-      // particular pass repaints — deciding it after the skip is how a drag
-      // in one corner would stop the dash marching in the other. The box
-      // the ticks invalidate is collected below from the *drawn* geometry:
-      // the coarse box carries the bezier slack, and a tick that repaints
-      // slack repaints a card-sized halo of neighbours sixteen times a
-      // second.
-      if (edge.animated) animated = true;
-      if (clip && !rectsOverlap(coarse, clip)) continue;
-      const geometry = this._edgeGeometry(edge);
-      if (!geometry) continue;
-      if (!rectsOverlap(pathBounds(geometry.points), pane)) continue;
-
-      const selected = edge.selected ?? false;
-      const hovered = this._hover.edgeId === edge.id;
-      const stroke =
-        edge.style?.stroke ??
-        (selected
-          ? palette.edgeSelected
-          : hovered
-            ? palette.text
-            : palette.edge);
-      const lineWidth = Math.max(
-        1,
-        (edge.style?.strokeWidth ?? (selected ? 2 : 1.5)) * v.zoom,
-      );
-      // `markerEnd` left out means an arrow: a directed graph whose edges do
-      // not say which way they point is a set of lines. `null` opts out.
-      const markerEnd = normalizeMarker(
-        edge.markerEnd === undefined ? 'arrowclosed' : edge.markerEnd,
-      );
-      const markerStart = normalizeMarker(edge.markerStart);
-
-      // The tip stops short of the handle rather than at it: the handle dot
-      // is drawn *over* the edges, with the nodes, so an arrow aimed at the
-      // handle's centre is an arrow mostly hidden under a white circle.
-      const inset = v.zoom >= HANDLE_ZOOM ? this._handleRadius() + 1 : 1;
-      const last = geometry.points[geometry.points.length - 1];
-      const outAngle = endAngle(geometry.points);
-      const endTip = {
-        x: last.x - Math.cos(outAngle) * inset,
-        y: last.y - Math.sin(outAngle) * inset,
-      };
-      let points = geometry.points;
-      if (markerEnd) {
-        // and the stroke stops behind the head, so a filled triangle is a
-        // triangle rather than a triangle with a line through it
-        points = trimEnd(
-          points,
-          (markerEnd.size ?? DEFAULT_MARKER_SIZE) * v.zoom * 0.8 + inset,
-        );
-      }
-      const dash =
-        edge.style?.dash ?? (edge.animated ? DEFAULT_DASH : undefined);
-      if (edge.animated) {
-        const tight = inflateRect(pathBounds(geometry.points), CULL_MARGIN);
-        animBox = animBox ? unionRects(animBox, tight) : tight;
-      }
-      strokes
-        .bucket(
-          stroke,
-          lineWidth,
-          dash,
-          edge.animated ? this._dashPhase : 0,
-          v.zoom,
-        )
-        .push(points);
-
-      if (markerEnd) {
-        this._collectMarker(
-          markers,
-          endTip,
-          outAngle,
-          markerEnd.type,
-          markerEnd.color ?? stroke,
-          (markerEnd.size ?? DEFAULT_MARKER_SIZE) * v.zoom,
-          lineWidth,
-        );
-      }
-      if (markerStart) {
-        const inAngle = startAngle(geometry.points);
-        this._collectMarker(
-          markers,
-          {
-            x: geometry.points[0].x - Math.cos(inAngle) * inset,
-            y: geometry.points[0].y - Math.sin(inAngle) * inset,
-          },
-          inAngle,
-          markerStart.type,
-          markerStart.color ?? stroke,
-          (markerStart.size ?? DEFAULT_MARKER_SIZE) * v.zoom,
-          lineWidth,
-        );
-      }
-
-      if (labels && edge.label) {
-        const at = pointAtFraction(geometry.points, 0.5);
-        const size = Math.max(8, 11 * v.zoom);
-        const metrics = painter.measureText(edge.label, { size });
-        const padX = 5 * v.zoom;
-        const padY = 2 * v.zoom;
-        // The chip is collected with the rest; the text is not, because a
-        // glyph run is already one request and nothing is gained by holding
-        // it. Both still land above every edge, which is the point of the
-        // chip.
-        labelChips.push({
-          rect: {
-            x: Math.round(at.x - metrics.width / 2 - padX),
-            y: Math.round(at.y - metrics.height / 2 - padY),
-            width: Math.round(metrics.width + padX * 2),
-            height: Math.round(metrics.height + padY * 2),
-          },
-          radius: Math.max(2, Math.round(3 * v.zoom)),
-          fill: edge.style?.labelBackground ?? tint(palette.background, 0.92),
-        });
-        pendingLabels.push({
-          text: edge.label,
-          x: at.x,
-          y: at.y,
-          size,
-          color: edge.style?.labelColor ?? palette.text,
-        });
-      }
-    }
-
-    strokes.paint(painter);
-    for (const bucket of markers.values()) {
-      // the same threshold, for the same reason: a handful of arrowheads
-      // scattered over the pane is cheaper drawn as a handful
-      if (bucket.filled.length >= MARKER_BATCH_MIN) {
-        painter.polygons(bucket.filled, { fill: bucket.color });
-      } else {
-        for (const head of bucket.filled) {
-          painter.polygon(head, { fill: bucket.color });
-        }
-      }
-      if (bucket.open.length >= MARKER_BATCH_MIN) {
-        painter.strokeRuns(bucket.open, {
-          stroke: bucket.color,
-          lineWidth: bucket.lineWidth,
-        });
-      } else {
-        for (const head of bucket.open) {
-          painter.strokeRuns([head], {
-            stroke: bucket.color,
-            lineWidth: bucket.lineWidth,
-          });
-        }
-      }
-    }
-    for (const chip of labelChips) {
-      painter.rect(
-        chip.rect.x,
-        chip.rect.y,
-        chip.rect.width,
-        chip.rect.height,
-        chip.radius,
-        { fill: chip.fill },
-      );
-    }
-    for (const l of pendingLabels) {
-      painter.text(l.text, l.x, l.y, {
-        size: l.size,
-        color: l.color,
-        align: 'center',
-        baseline: 'middle',
-      });
-    }
-    // A pass that drew an animated edge knows exactly where its dash is; a
-    // pass that culled them all keeps the previous box — the endpoints did
-    // not move, or the move's own damage would have redrawn them here.
-    if (animBox) this._animBox = animBox;
-    return animated;
-  }
-
-  /** An arrowhead's three or four points, added to the pile for its colour
-   * rather than drawn — see {@link StrokeBuckets} for why. */
-  private _collectMarker(
-    markers: Map<string, MarkerBucket>,
-    at: XYPosition,
-    angle: number,
-    type: 'arrow' | 'arrowclosed',
-    color: string,
-    size: number,
-    lineWidth: number,
-  ): void {
-    const spread = 0.42; // radians off the shaft — a ~24° half-angle
-    const back = {
-      x: at.x - Math.cos(angle) * size,
-      y: at.y - Math.sin(angle) * size,
-    };
-    const left = {
-      x: at.x - Math.cos(angle - spread) * size,
-      y: at.y - Math.sin(angle - spread) * size,
-    };
-    const right = {
-      x: at.x - Math.cos(angle + spread) * size,
-      y: at.y - Math.sin(angle + spread) * size,
-    };
-    const key = `${color}|${lineWidth}`;
-    let bucket = markers.get(key);
-    if (!bucket) {
-      bucket = { color, lineWidth, filled: [], open: [] };
-      markers.set(key, bucket);
-    }
-    if (type === 'arrowclosed') bucket.filled.push([at, left, back, right]);
-    else bucket.open.push([left, at, right]);
-  }
-
-  private _paintNodes(painter: FlowPainter, palette: FlowPalette): void {
-    const dragging = this._dragTo;
-    const order: NodeEntry[] = [];
-    const deferred: NodeEntry[] = [];
-    for (const entry of this._order) {
-      // a dragged node comes to the top
-      if (dragging?.has(entry.node.id)) deferred.push(entry);
-      else order.push(entry);
-    }
-    order.push(...deferred);
-
-    // Nodes are drawn one at a time, in z-order, and both halves of that
-    // were measured rather than assumed — see `_paintHandles` for why
-    // batching a card or a handle costs more than it saves.
-    for (const entry of order) this._paintGraphNode(painter, palette, entry);
-  }
-
-  /**
-   * One node's box, label and ports.
-   *
-   * Not `_paintNode`: that name belongs to the react-x11 node this extends —
-   * its `paint()` calls `this._paintNode(ctx)` — and defining one here
-   * replaced the base implementation with a method of a different shape.
-   * `super.paint(ctx)` then arrived here with a drawing context where an
-   * entry was expected, which is a crash rather than a wrong picture only
-   * because the first thing it reads is a property.
-   */
-  private _paintGraphNode(
-    painter: FlowPainter,
-    palette: FlowPalette,
-    entry: NodeEntry,
-  ): void {
-    if (entry.node.hidden) return;
-    const rect = this._screenRect(entry);
-    if (!rectsOverlap(rect, this._pane())) return;
-    // inflated by the margin its handles and grips can ink outside the box —
-    // the same margin every invalidate grew by, so the two agree
-    const clip = this._frameClip;
-    if (clip && !rectsOverlap(inflateRect(rect, CULL_MARGIN), clip)) return;
-    const v = this._viewport();
-    const selected = entry.node.selected ?? false;
-    const hovered = this._hover.nodeId === entry.node.id;
-    const handles = this._handlesOf(entry).map((anchor) => {
-      const s = this._toScreen(anchor);
-      return { ...anchor, x: s.x, y: s.y };
-    });
-
-    if (entry.type?.paint) {
-      // Never batched: a type that draws its own body is drawing whatever it
-      // likes, in an order only it knows.
-      entry.type.paint({
-        node: entry.node,
-        rect,
-        zoom: v.zoom,
-        selected,
-        hovered,
-        palette,
-        painter,
-        handles,
-      });
-    } else {
-      this._paintCardShape(painter, palette, entry, rect, selected, hovered);
-      this._paintCardInk(painter, palette, entry, rect);
-    }
-
-    if (this._connectable(entry) && (v.zoom >= HANDLE_ZOOM || hovered)) {
-      this._paintHandles(painter, palette, handles);
-    }
-    this._paintGrips(painter, palette, entry, rect);
-  }
-
-  private _mounted(entry: NodeEntry): boolean {
-    return entry.type?.render != null && this._viewport().zoom >= RENDER_ZOOM;
-  }
-
-  private _paintGrips(
-    painter: FlowPainter,
-    palette: FlowPalette,
-    entry: NodeEntry,
-    rect: FlowRect,
-  ): void {
-    const grips = this._grips(entry);
-    if (grips.length === 0) return;
-    const size = Math.max(4, RESIZE_GRIP * 2 * this._viewport().zoom);
-    for (const dir of grips) {
-      const at = gripPoint(rect, dir);
-      painter.rect(at.x - size / 2, at.y - size / 2, size, size, 1, {
-        fill: palette.nodeBackground,
-        stroke: palette.accent,
-        lineWidth: 1.5,
-      });
-    }
-  }
-
-  /** The built-in node: a card with a label, an optional second line and an
-   * optional accent stripe down its leading edge. */
-  /** The card itself: one rounded box, and the accent stripe if it has one.
-   * With a `batch` the box joins the pile for its appearance instead of
-   * being drawn on its own. */
-  private _paintCardShape(
-    painter: FlowPainter,
-    palette: FlowPalette,
-    entry: NodeEntry,
-    rect: FlowRect,
-    selected: boolean,
-    hovered: boolean,
-  ): void {
-    const v = this._viewport();
-    const style = entry.node.style;
-    const radius = Math.round((style?.borderRadius ?? 6) * v.zoom);
-    const border = selected
-      ? palette.accent
-      : hovered
-        ? tint(palette.accent, 0.55)
-        : (style?.borderColor ?? palette.nodeBorder);
-    const options: ShapeOptions = {
-      fill: style?.background ?? palette.nodeBackground,
-      stroke: border,
-      lineWidth: Math.max(
-        1,
-        Math.round((style?.borderWidth ?? (selected ? 2 : 1)) * v.zoom),
-      ),
-    };
-    painter.rect(rect.x, rect.y, rect.width, rect.height, radius, options);
-
-    if (style?.accent) {
-      // Inset past the rounded corners instead of clipped to them: a
-      // non-rectangular clip forfeits ntk's rounded-box fast path for every
-      // fill under it — measured as a pixmap create/free and a trapezoid
-      // pass per card per repaint.
-      painter.rect(
-        rect.x + Math.max(1, v.zoom),
-        rect.y + radius,
-        Math.max(2, 3 * v.zoom),
-        rect.height - radius * 2,
-        0,
-        { fill: style.accent },
-      );
-    }
-  }
-
-  /** The label and its second line — the half of a card that has to come
-   * after every card when they are batched. */
-  private _paintCardInk(
-    painter: FlowPainter,
-    palette: FlowPalette,
-    entry: NodeEntry,
-    rect: FlowRect,
-  ): void {
-    const v = this._viewport();
-    if (v.zoom < LABEL_ZOOM) return;
-    const style = entry.node.style;
-    const header = this._mounted(entry) ? this._headerHeight(entry) : 0;
-    const data = entry.node.data as FlowNodeData | undefined;
-    const label = data?.label ?? entry.node.id;
-    const description = data?.description;
-    const color = style?.color ?? palette.text;
-    const padX = NODE_PAD_X * v.zoom;
-    const centre = rect.x + rect.width / 2;
-    const maxWidth = Math.max(8, rect.width - padX * 2);
-    const showDescription = Boolean(description) && v.zoom >= DESC_ZOOM;
-
-    if (header > 0) {
-      // The title bar of a node whose body is somebody else's: left-aligned,
-      // with a hairline under it so the strip reads as the thing to grab.
-      const band = header * v.zoom;
-      painter.text(label, rect.x + padX, rect.y + band / 2, {
-        size: NODE_LABEL_SIZE * v.zoom,
-        weight: 'bold',
-        color,
-        baseline: 'middle',
-        maxWidth,
-      });
-      painter.strokeRuns(
-        [
-          [
-            { x: rect.x + 1, y: rect.y + band },
-            { x: rect.x + rect.width - 1, y: rect.y + band },
-          ],
-        ],
-        { stroke: palette.nodeBorder, lineWidth: 1 },
-      );
-      return;
-    }
-
-    if (!showDescription) {
-      painter.text(label, centre, rect.y + rect.height / 2, {
-        size: NODE_LABEL_SIZE * v.zoom,
-        weight: 'bold',
-        color,
-        align: 'center',
-        baseline: 'middle',
-        maxWidth,
-      });
-      return;
-    }
-    const top = rect.y + NODE_PAD_Y * v.zoom;
-    painter.text(label, centre, top, {
-      size: NODE_LABEL_SIZE * v.zoom,
-      weight: 'bold',
-      color,
-      align: 'center',
-      maxWidth,
-    });
-    painter.text(description!, centre, top + NODE_LABEL_SIZE * 1.35 * v.zoom, {
-      size: NODE_DESC_SIZE * v.zoom,
-      color: palette.dim,
-      align: 'center',
-      maxWidth,
-    });
-  }
-
-  /**
-   * Handles are drawn one disc at a time, and that is the measured answer
-   * rather than the obvious one.
-   *
-   * Batching them into a single path halved the requests and made the frame
-   * *slower*: a path's mask is its bounding box, so forty dots scattered
-   * across the pane rasterize to a paneful of mask — three quarters of a
-   * megabyte — where forty small ones cost a kilobyte each. Batching pays
-   * for the edges because an edge already spans that box; it does not pay
-   * for anything small and scattered.
-   */
-  private _paintHandles(
-    painter: FlowPainter,
-    palette: FlowPalette,
-    handles: readonly HandleAnchor[],
-  ): void {
-    const v = this._viewport();
-    const radius = this._handleRadius();
-    const gesture = this._gesture;
-    const connecting = gesture?.kind === 'connect' ? gesture : null;
-    const lineWidth = Math.max(1, 1.5 * v.zoom);
-    for (const anchor of handles) {
-      const active =
-        sameHandle(this._hover.handle, anchor) ||
-        sameHandle(connecting?.to ?? null, anchor) ||
-        sameHandle(connecting?.from ?? null, anchor);
-      const options: ShapeOptions = {
-        fill: active ? palette.accent : palette.nodeBackground,
-        stroke: active ? palette.accent : palette.handle,
-        lineWidth,
-      };
-      painter.circle(
-        anchor.x,
-        anchor.y,
-        active ? radius * 1.4 : radius,
-        options,
-      );
-      if (anchor.label && v.zoom >= DESC_ZOOM) {
-        const outside = anchor.position === 'left' || anchor.position === 'top';
-        painter.text(
-          anchor.label,
-          anchor.x +
-            (anchor.position === 'left'
-              ? -radius - 4 * v.zoom
-              : radius + 4 * v.zoom),
-          anchor.y,
-          {
-            size: 10 * v.zoom,
-            color: palette.dim,
-            align: outside ? 'right' : 'left',
-            baseline: 'middle',
-          },
-        );
-      }
-    }
-  }
-
-  private _paintConnection(painter: FlowPainter, palette: FlowPalette): void {
-    const gesture = this._gesture;
-    if (gesture?.kind !== 'connect') return;
-    const v = this._viewport();
-    const target = gesture.to ?? gesture.pointer;
-    const to = this._toScreen(target);
-    const points = this._connectionPath(gesture);
-    const invalid = gesture.to != null && !gesture.valid;
-    painter.polyline(points, {
-      stroke: invalid ? palette.dim : palette.accent,
-      lineWidth: Math.max(1.5, 2 * v.zoom),
-      dash: gesture.to && gesture.valid ? undefined : [5 * v.zoom, 4 * v.zoom],
-    });
-    painter.circle(to.x, to.y, this._handleRadius(), {
-      fill: invalid ? palette.dim : palette.accent,
-    });
-  }
-
-  private _paintSelectionBox(painter: FlowPainter, palette: FlowPalette): void {
-    const gesture = this._gesture;
-    if (gesture?.kind !== 'select') return;
-    const x = Math.min(gesture.startX, gesture.x);
-    const y = Math.min(gesture.startY, gesture.y);
-    painter.rect(
-      x,
-      y,
-      Math.abs(gesture.x - gesture.startX),
-      Math.abs(gesture.y - gesture.startY),
-      2,
-      { fill: palette.selection, stroke: palette.accent, lineWidth: 1 },
-    );
-  }
-
-  private _paintMiniMap(painter: FlowPainter, palette: FlowPalette): void {
-    const opts = this._miniMapOptions();
-    if (!opts) return;
-    // The panel cull comes before `_miniMap()`, which walks every node to
-    // find the graph's bounds — during a drag that walk per pass would cost
-    // more than the panel it skips. The dot for a mid-drag node goes stale
-    // until the release repaints in full; that is the trade, and it is
-    // deliberate.
-    const clip = this._frameClip;
-    if (clip) {
-      const quick = this._corner(
-        opts.position,
-        opts.width ?? MINIMAP_W,
-        opts.height ?? MINIMAP_H,
-        'bottom-right',
-      );
-      if (!rectsOverlap(quick, clip)) return;
-    }
-    const map = this._miniMap();
-    if (!map) return;
-    const { panel, options } = map;
-    painter.rect(panel.x, panel.y, panel.width, panel.height, 4, {
-      fill: tint(palette.surface, 0.92),
-      stroke: palette.surfaceBorder,
-      lineWidth: 1,
-    });
-    painter.save();
-    painter.clipRect(panel.x, panel.y, panel.width, panel.height, 4);
-
-    const nodeColor = options.nodeColor;
-    for (const entry of this._entries) {
-      if (entry.node.hidden) continue;
-      const rect = this.rectOf(entry);
-      const at = this._miniToScreen(map, rect);
-      const fill =
-        typeof nodeColor === 'function'
-          ? nodeColor(entry.node as FlowNode<never>)
-          : (nodeColor ??
-            (entry.node.selected ? palette.accent : palette.nodeBorder));
-      painter.rect(
-        at.x,
-        at.y,
-        Math.max(1, rect.width * map.scale),
-        Math.max(1, rect.height * map.scale),
-        0,
-        { fill },
-      );
-    }
-
-    // The viewport, as an outline over a wash on everything outside it —
-    // cheaper than four mask rectangles and reads the same.
-    const v = this._viewport();
-    const paneRect = this._pane();
-    const view = this._miniToScreen(map, {
-      x: -v.x / v.zoom,
-      y: -v.y / v.zoom,
-    });
-    painter.rect(
-      view.x,
-      view.y,
-      (paneRect.width / v.zoom) * map.scale,
-      (paneRect.height / v.zoom) * map.scale,
-      2,
-      {
-        fill: options.maskColor ?? tint(palette.accent, 0.1),
-        stroke: palette.accent,
-        lineWidth: 1,
-      },
-    );
-    painter.restore();
-  }
-
-  private _paintControls(painter: FlowPainter, palette: FlowPalette): void {
-    const buttons = this._controlButtons();
-    if (buttons.length === 0) return;
-    const clip = this._frameClip;
-    if (clip && !buttons.some((b) => rectsOverlap(b.rect, clip))) return;
-    const first = buttons[0].rect;
-    const last = buttons[buttons.length - 1].rect;
-    painter.rect(
-      first.x,
-      first.y,
-      first.width,
-      last.y + last.height - first.y,
-      4,
-      {
-        fill: tint(palette.surface, 0.94),
-        stroke: palette.surfaceBorder,
-        lineWidth: 1,
-      },
-    );
-    for (let i = 0; i < buttons.length; i++) {
-      const { rect, action } = buttons[i];
-      if (i > 0) {
-        painter.strokeRuns(
-          [
-            [
-              { x: rect.x + 4, y: rect.y },
-              { x: rect.x + rect.width - 4, y: rect.y },
-            ],
-          ],
-          { stroke: palette.surfaceBorder, lineWidth: 1 },
-        );
-      }
-      const cx = rect.x + rect.width / 2;
-      const cy = rect.y + rect.height / 2;
-      const arm = 5;
-      const runs: XYPosition[][] = [];
-      if (action === 'in' || action === 'out') {
-        runs.push([
-          { x: cx - arm, y: cy },
-          { x: cx + arm, y: cy },
-        ]);
-        if (action === 'in') {
-          runs.push([
-            { x: cx, y: cy - arm },
-            { x: cx, y: cy + arm },
-          ]);
-        }
-      } else {
-        // a frame with its sides opened out: "fit what is there into this"
-        const a = 5;
-        runs.push(
-          [
-            { x: cx - a, y: cy - a + 3 },
-            { x: cx - a, y: cy - a },
-            { x: cx - a + 3, y: cy - a },
-          ],
-          [
-            { x: cx + a - 3, y: cy - a },
-            { x: cx + a, y: cy - a },
-            { x: cx + a, y: cy - a + 3 },
-          ],
-          [
-            { x: cx + a, y: cy + a - 3 },
-            { x: cx + a, y: cy + a },
-            { x: cx + a - 3, y: cy + a },
-          ],
-          [
-            { x: cx - a + 3, y: cy + a },
-            { x: cx - a, y: cy + a },
-            { x: cx - a, y: cy + a - 3 },
-          ],
-        );
-      }
-      painter.strokeRuns(runs, { stroke: palette.text, lineWidth: 1.5 });
-    }
   }
 }

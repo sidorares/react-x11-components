@@ -16,8 +16,8 @@ import { useState } from 'react';
 import type { ReactElement } from 'react';
 import { createRoot } from 'react-x11';
 
-import { TerminalOutput } from '../src/index.js';
-import type { AnsiDocument } from '../src/index.js';
+import { TerminalOutput } from '../src/terminal-output/index.js';
+import type { AnsiDocument } from '../src/ansi/index.js';
 
 const ESC = '\u001b';
 

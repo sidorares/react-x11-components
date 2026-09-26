@@ -38,6 +38,8 @@ interface CanvasLike {
   lineDashOffset?: number;
   save(): void;
   restore(): void;
+  translate(x: number, y: number): void;
+  scale(x: number, y: number): void;
   beginPath(): void;
   closePath(): void;
   moveTo(x: number, y: number): void;
@@ -56,6 +58,17 @@ interface LayoutLike {
   width: number;
   height: number;
   draw(ctx: unknown, x: number, y: number): void;
+  /** The engine's own coverage of the layout, one byte a device pixel, with
+   *  `pad` round its box — where the engine answers it (react-x11#673). */
+  coverage?(options?: { pad?: number }): TextCoverage | null;
+}
+
+/** A layout's coverage: `width` × `height` bytes, the layout's origin at
+ *  (pad, pad). */
+export interface TextCoverage {
+  width: number;
+  height: number;
+  data: Uint8Array;
 }
 
 /** One shaped string, kept between frames. `width` and `height` are
@@ -99,6 +112,14 @@ export interface PainterOptions {
    * no amount of batching on the wire would have fixed.
    */
   cache: Map<string, CachedText>;
+  /**
+   * While a zoom gesture moves: a label may be drawn from a layout shaped
+   * at another size, scaled to the one asked for, rather than shaped again
+   * at every step. The pane sets it only where the context scales text
+   * with its transform (`scalesText`), and paints the exact sizes once the
+   * gesture rests.
+   */
+  approximateText?: boolean;
 }
 
 function isCanvas(ctx: unknown): ctx is CanvasLike {
@@ -110,6 +131,13 @@ function isCanvas(ctx: unknown): ctx is CanvasLike {
 
 /** Bound, so a pathological graph cannot turn the width cache into a leak. */
 const CACHE_LIMIT = 4000;
+
+/** The sizes each string has been shaped at, per cache — what a label drawn
+ *  mid-zoom looks for instead of shaping itself again (`approximateText`). */
+const shapedSizes = new WeakMap<
+  Map<string, CachedText>,
+  Map<string, number[]>
+>();
 
 /**
  * A logical value on the device grid.
@@ -146,8 +174,11 @@ function fontStyle(
  * repaint — a node with no explicit size is measured when the graph changes,
  * which is also when a hit test has to know how big it is — so measuring
  * cannot live behind the painter the way drawing does.
+ *
+ * Exported for the GL renderer's label atlas (`./gl/text.ts`), which draws
+ * the layout it measured onto a staging surface of its own.
  */
-function shape(
+export function shape(
   opts: PainterOptions,
   text: string,
   options: TextOptions | undefined,
@@ -159,11 +190,16 @@ function shape(
   // The colour is part of the key: it is baked into the layout, so two
   // labels that differ only in ink are two shaped runs. The scale is not:
   // it is constant for the life of the pane that owns the cache.
-  const key = `${family}|${size}|${options?.weight ?? 400}|${options?.color ?? opts.color}|${text}`;
+  const base = `${family}|${options?.weight ?? 400}|${options?.color ?? opts.color}|${text}`;
+  const key = `${size}|${base}`;
   const hit = cache.get(key);
   if (hit) return hit;
   const layout = fonts.layout(text, fontStyle(opts, options));
-  if (cache.size >= CACHE_LIMIT) cache.clear();
+  let sizes = shapedSizes.get(cache);
+  if (cache.size >= CACHE_LIMIT) {
+    cache.clear();
+    sizes?.clear();
+  }
   const s = opts.scale;
   const entry = {
     width: layout.width / s,
@@ -171,7 +207,46 @@ function shape(
     layout,
   };
   cache.set(key, entry);
+  if (!sizes) shapedSizes.set(cache, (sizes = new Map()));
+  const shaped = sizes.get(base);
+  if (shaped) shaped.push(size);
+  else sizes.set(base, [size]);
   return entry;
+}
+
+/**
+ * The layout a label is drawn from, and the scale it is drawn at: its own
+ * size where it has one, and mid-zoom (`approximateText`) the size nearest
+ * it that was shaped already — the one the gesture started from, for every
+ * label on screen. Shaping is most of what a zoom step costs in text, and
+ * a step that re-shapes every label at a size the next step moves off was
+ * paying it for nothing.
+ */
+function shapeNear(
+  opts: PainterOptions,
+  text: string,
+  options: TextOptions | undefined,
+): { entry: CachedText; scale: number } | null {
+  if (opts.approximateText) {
+    const size = options?.size ?? 13;
+    const family = options?.family ?? opts.family;
+    const base = `${family}|${options?.weight ?? 400}|${options?.color ?? opts.color}|${text}`;
+    const exact = opts.cache.get(`${size}|${base}`);
+    if (exact) return { entry: exact, scale: 1 };
+    const shaped = shapedSizes.get(opts.cache)?.get(base);
+    if (shaped && shaped.length > 0) {
+      let best = shaped[0];
+      for (const at of shaped) {
+        if (Math.abs(Math.log(at / size)) < Math.abs(Math.log(best / size))) {
+          best = at;
+        }
+      }
+      const entry = opts.cache.get(`${best}|${base}`);
+      if (entry) return { entry, scale: size / best };
+    }
+  }
+  const entry = shape(opts, text, options);
+  return entry ? { entry, scale: 1 } : null;
 }
 
 export function measureText(
@@ -180,13 +255,38 @@ export function measureText(
   options?: TextOptions,
 ): { width: number; height: number } {
   const size = options?.size ?? 13;
-  const entry = shape(opts, text, options);
-  if (!entry) {
+  const near = shapeNear(opts, text, options);
+  if (!near) {
     // No font stack to ask. An estimate keeps layout plausible rather than
     // collapsing every node to its own padding.
     return { width: text.length * size * 0.55, height: size * 1.3 };
   }
-  return { width: entry.width, height: entry.height };
+  const { entry, scale } = near;
+  return { width: entry.width * scale, height: entry.height * scale };
+}
+
+/**
+ * Cut a string to fit `max` logical pixels, with an ellipsis. Linear from
+ * the end rather than a binary search: labels that need it are short, and
+ * the widths it walks through are the ones the cache already holds.
+ *
+ * Both renderers call this, so a label cut on one is cut the same on the
+ * other — the GL one sets whatever this returns as a raster.
+ */
+export function fitText(
+  opts: PainterOptions,
+  text: string,
+  options: TextOptions | undefined,
+  max: number,
+): string {
+  if (measureText(opts, text, options).width <= max) return text;
+  let cut = text.length;
+  while (cut > 1) {
+    cut--;
+    const candidate = `${text.slice(0, cut).trimEnd()}…`;
+    if (measureText(opts, candidate, options).width <= max) return candidate;
+  }
+  return '…';
 }
 
 class Painter implements FlowPainter {
@@ -367,6 +467,15 @@ class Painter implements FlowPainter {
     }
     if (!any) return;
     this.applyStroke(options);
+    // Set, not inherited: this was whatever the last `polyline` left, so a
+    // pass that stroked an edge alone before the zoom controls drew their
+    // glyphs with round ends, and one that reached only the controls drew
+    // them square — a panel repainted by itself, as a pan repaints its
+    // pinned furniture every frame, came out lighter than the panel it
+    // replaced. The same for batched edges, whose joins changed with what
+    // the pass had drawn first.
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
     ctx.stroke();
     this.clearDash();
   }
@@ -431,46 +540,37 @@ class Painter implements FlowPainter {
     return measureText(this.opts, text, options);
   }
 
-  /** Cut a string to fit, with an ellipsis. Linear from the end rather than
-   * a binary search: labels that need it are short, and the widths it walks
-   * through are the ones the cache already holds. */
-  private fit(
-    text: string,
-    options: TextOptions | undefined,
-    max: number,
-  ): string {
-    if (this.measureText(text, options).width <= max) return text;
-    let cut = text.length;
-    while (cut > 1) {
-      cut--;
-      const candidate = `${text.slice(0, cut).trimEnd()}…`;
-      if (this.measureText(candidate, options).width <= max) return candidate;
-    }
-    return '…';
-  }
-
   text(text: string, x: number, y: number, options?: TextOptions): void {
     if (!text) return;
     const shown = options?.maxWidth
-      ? this.fit(text, options, options.maxWidth)
+      ? fitText(this.opts, text, options, options.maxWidth)
       : text;
-    const entry = shape(this.opts, shown, options);
-    if (!entry) return;
-    const layout = entry;
+    const near = shapeNear(this.opts, shown, options);
+    if (!near) return;
+    const { entry, scale } = near;
+    const width = entry.width * scale;
+    const height = entry.height * scale;
     const align = options?.align ?? 'left';
-    const dx =
-      align === 'center'
-        ? -layout.width / 2
-        : align === 'right'
-          ? -layout.width
-          : 0;
-    const dy = options?.baseline === 'middle' ? -layout.height / 2 : 0;
-    // Rounded on the device grid, where the glyphs land.
-    entry.layout.draw(
-      this.raw,
-      Math.round(this.d(x + dx)),
-      Math.round(this.d(y + dy)),
-    );
+    const dx = align === 'center' ? -width / 2 : align === 'right' ? -width : 0;
+    const dy = options?.baseline === 'middle' ? -height / 2 : 0;
+    if (scale === 1) {
+      // Rounded on the device grid, where the glyphs land.
+      entry.layout.draw(
+        this.raw,
+        Math.round(this.d(x + dx)),
+        Math.round(this.d(y + dy)),
+      );
+      return;
+    }
+    // Mid-zoom, a layout shaped at another size, scaled through the context
+    // — which draws it as outlines, glyphs and all (`scalesText`). Not on
+    // the grid: the whole label is moving, and it is set exactly at rest.
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.translate(this.d(x + dx), this.d(y + dy));
+    ctx.scale(scale, scale);
+    entry.layout.draw(this.raw, 0, 0);
+    ctx.restore();
   }
 }
 

@@ -136,9 +136,10 @@ finds out from a blank window has been failed by the page.
   scroll-reveal under `<Tree>`, `<Table>` and a long `<RichTextEditor>`,
   the typed `hx()` every composed widget writes its
   elements
-  with, and the change event and dismiss-on-blur subscription under
-  `<Calendar>`/`<DatePicker>` and `<ColorPicker>`/`<ColorField>` — that no
-  app needs yet. Deliberately without an `index.ts`,
+  with, the change event and dismiss-on-blur subscription under
+  `<Calendar>`/`<DatePicker>` and `<ColorPicker>`/`<ColorField>`, and the
+  signed distance field `<Map>`'s and `<Flow>`'s GL labels are drawn from
+  (`sdf.ts`) — that no app needs yet. Deliberately without an `index.ts`,
   so it has no subpath and no docs page; `test/docs.test.ts` and
   `scripts/check-package.ts` both key on `src/<name>/index.ts`, and that
   is the seam this uses. Giving it an `index.ts` and the full
@@ -443,11 +444,52 @@ it up. **The floor is a running one and moves often** — every move since
   by hand). Each failed by drawing nothing rather than by throwing, so the
   terminal came up empty under `REACT_X11_BACKEND=wayland` while the rest
   of the UI was fine (#17).
-- `^2.22.0` — `scrollContents`'s `pinned` rects (react-x11#682): a scroll
-  that reveals `<CodeEditor>`'s caret a line or a character away is a blit
-  of the view, with the rows that changed pinned and repainted where they
-  land. Before it, a claim inside a blitted region refused the blit, so the
-  scroll repainted the editor whole.
+- `^2.18.4` — `useSupports('glOverlay')`, false from the first render on
+  XQuartz, where the macOS window server composites every GL surface above
+  the window's X content (react-x11#653, fixed by #654): `<Flow>` draws a
+  graph whose node types mount bodies with the 2D renderer there, rather
+  than mounting bodies nobody can see.
+- `^2.18.6` — `<Flow>`'s Windows round. The layers a `<glarea>`'s children
+  are drawn on (2.18.5, react-x11#656, over windowkit/win32#2) need the
+  bridge that has them, and core's range reaches `@windowkit/win32` 0.0.2
+  only from 2.18.6 (#660 — a caret on 0.0.x is exact). The same two releases
+  hold pointer motion for the next frame (#657), claim a move inside a
+  surface on its panes alone (#659), and give the Windows and macOS context
+  the `lineDashOffset` an animated edge marches with (#664).
+- `^2.19.0` — `scalesText` on the context (react-x11#666), which
+  `<Flow>`'s 2D zoom asks before drawing labels from the sizes it has; the
+  content floors measured inside the card that changed (#668), half of a
+  frame that ticks forty widget bodies; and the paint cache drawing through
+  the translation an overlay pane paints with (#667), without which every
+  card over a GL surface was painted live on Windows.
+- `^2.20.0` — `scrollContents`'s riders (react-x11#671): the box `<Flow>`
+  lays node bodies out in moves with a 2D pan, and now rides its blit
+  instead of declining it. The same release claims a moved subtree once,
+  clipped to what clips it, and moves the nodes Yoga did not lay out again
+  instead of reading them back (#670) — a pan over bodies stopped
+  repainting the whole window.
+- `^2.21.1` — a text layout's own coverage, `layout.coverage({ pad })`
+  (react-x11#673, #674, in 2.21.0): the GL label atlases of `<Flow>` and
+  `<Map>` set a string's distance field from it rather than drawing the
+  string onto a staging surface and reading it back. ntk's layouts answer
+  it (8.11.0, X11, Wayland and the mock), CoreText's through
+  `@windowkit/appkit` 0.13 and DirectWrite's through `@windowkit/win32`
+  0.0.4 — which core's range reaches only from 2.21.1 (#676; a caret on
+  0.0.x is exact, the `^2.18.6` story again), so 2.21.0 still answered
+  null on Windows. The atlases still feature-detect it and keep the
+  readback, for an engine that answers null.
+- `^2.22.0` — `scrollContents`'s `pinned` rects (react-x11#682): `<Flow>`'s
+  2D pan copies the whole pane and has core repaint the minimap and the
+  controls in place, where it had to carve a band the pane's full width
+  out of the copy. A scroll that reveals `<CodeEditor>`'s caret a line or a
+  character away is a blit of the view the same way, with the rows that
+  changed pinned and repainted where they land (#137); before it, a claim
+  inside the blitted region refused the blit, and the scroll repainted the
+  editor whole. The same release copies an opaque subtree that only
+  moved rather than repainting it (#681) and stops a rounded box masking
+  every fill inside it to round its corners (#685). Neither needed a
+  change here; the stress example's widgets are what they were measured
+  on.
 
 Do not reach back for a `github:` spec to get at unreleased core — cut a core
 release instead.

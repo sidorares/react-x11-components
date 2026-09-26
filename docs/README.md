@@ -111,6 +111,16 @@ parts.
   systems, why the model is ProseMirror's and the view is this package's, the
   ladder of props from `defaultValue` to an app-owned `EditorState`, and the
   ledger of which parts of `EditorView` a plugin can count on.
+- [Flow on the GPU](prd-flow-gl.md) — `renderer="gl"`: what a graph frame
+  costs on the GPU against the 2D pane, measured rather than assumed, the
+  ceiling that was the real bug (react-x11#631), and the two places where a
+  graph is _not_ a map — a node body that is somebody else's React subtree,
+  and labels whose size follows the zoom continuously.
+- [The September 2026 performance sweep](perf-sweep-2026-09.md) — one long
+  round across this package, react-x11, ntk and node-x11: the probes in
+  `scripts/bench/sweep/`, the ways a benchmark lies, every fix with its
+  before and after, what was tried and did not work, and what is still open.
+  Start the next round from here.
 
 ## Conventions these pages follow
 

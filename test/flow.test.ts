@@ -28,6 +28,7 @@ import { drawnKinds, knownElements } from 'react-x11/host';
 import { isStyleProp } from 'react-x11/style';
 import { keysymOf, XK_DELETE, XK_ESCAPE, XK_RIGHT } from 'react-x11/keysyms';
 import type { Node as RetainedNode } from 'react-x11/node';
+import { Renderer } from 'react-x11';
 import type { DrawnNode } from 'react-x11';
 
 import {
@@ -43,6 +44,8 @@ import type {
   Connection,
   EdgeChange,
   FlowEdge,
+  FlowFrameStats,
+  FlowRect,
   FlowInstance,
   FlowNode,
   FlowNodeData,
@@ -51,6 +54,8 @@ import type {
   NodeBodyRect,
   NodeChange,
   NodeRenderContext,
+  Viewport,
+  XYPosition,
 } from '../src/index.js';
 import {
   boundsOf,
@@ -63,6 +68,7 @@ import {
   unionRects,
 } from '../src/flow/model.js';
 import {
+  bezierControls,
   distanceToPath,
   edgePath,
   pointAtFraction,
@@ -85,6 +91,48 @@ function pane(): RetainedNode {
   const [node] = screen.all((n) => retained(n).kind === FLOW_ELEMENT);
   assert.ok(node, 'the pane is in the retained tree');
   return retained(node);
+}
+
+/** The one box `<Flow>` lays mounted bodies out in, at the graph's origin
+ *  in the pane — a pan moves it and nothing inside it. */
+function bodyLayer(): RetainedNode {
+  // inside the box that clips it to the pane
+  const clip = pane().parent!.children.find((c) => c.kind === 'box');
+  const layer = clip?.children.find((c) => c.kind === 'box');
+  assert.ok(layer, 'the bodies’ box is mounted');
+  return retained(layer);
+}
+
+/** A mounted node's box in {@link bodyLayer}: its card's canvas, then its
+ *  body over it. */
+function cardBox(index = 0): RetainedNode {
+  const box = bodyLayer().children[index];
+  assert.ok(box, 'the node’s box is mounted');
+  return retained(box);
+}
+
+/** A mounted body's own box, positioned inside its {@link cardBox}. */
+function bodyBox(index = 0): RetainedNode {
+  const box = cardBox(index).children[1];
+  assert.ok(box, 'the body box is mounted');
+  return retained(box);
+}
+
+/** The bodies are held through a zoom gesture (`_holdBodies`). */
+function bodiesAway(): boolean {
+  return (bodyLayer().props.style as { display?: string }).display === 'none';
+}
+
+/** Where a mounted body's box sits in the pane: the bodies' one box's
+ *  place plus the body's own inside it. */
+function bodyPlace(index = 0): { left: number; top: number } {
+  const layer = bodyLayer().props.style as { left: number; top: number };
+  const card = cardBox(index).props.style as { left: number; top: number };
+  const own = bodyBox(index).props.style as { left: number; top: number };
+  return {
+    left: layer.left + card.left + own.left,
+    top: layer.top + card.top + own.top,
+  };
 }
 
 /** A window coordinate as the offset from the pane's centre that
@@ -780,6 +828,357 @@ test('the wheel zooms about the pointer, and the point under it stays put', asyn
   assert.ok(Math.abs(after.y - before.y) < 0.001);
 });
 
+test('a 2D zoom gesture draws the labels it has, and sets them at rest', async () => {
+  // Shaping every label again at every step of a zoom was half of what a
+  // 2D step cost. Where the context scales text with its transform — the
+  // Windows and macOS one says so; X11's does not, so this test says it for
+  // the headless server's — a step inside a gesture draws each label from
+  // the size it already has, and the pane sets them exactly once it rests.
+  await mount();
+  const root = pane().root as unknown as { _ctx: object };
+  Object.defineProperty(root._ctx, 'scalesText', {
+    value: true,
+    configurable: true,
+  });
+  const fonts = (
+    pane() as unknown as {
+      app: {
+        fonts: { layout(text: string, style: { size: number }): unknown };
+      };
+    }
+  ).app.fonts;
+  const own = fonts.layout;
+  const shaped: number[] = [];
+  fonts.layout = function (text, style) {
+    shaped.push(style.size);
+    return own.call(this, text, style);
+  };
+  // A step is part of a gesture when it lands within 120 ms of the last,
+  // which a loaded CI runner missed between two awaited wheels — and then
+  // shaped the labels the test says a gesture does not. The pane's clock
+  // (`performance.now`) runs at the test's pace while the steps go in: a
+  // wheel's worth of time between them, however long each one took.
+  const perf = globalThis.performance;
+  let at16 = perf.now();
+  Object.defineProperty(perf, 'now', {
+    value: () => at16,
+    configurable: true,
+  });
+  try {
+    const node = pane() as unknown as DrawnNode;
+    await userEvent.wheel(node, { ...at(200, 200), deltaY: -48 });
+    const first = shaped.length;
+    assert.ok(first > 0, 'the first step is not a gesture yet: set exactly');
+    for (let i = 0; i < 4; i++) {
+      at16 += 16;
+      await userEvent.wheel(node, { ...at(200, 200), deltaY: -48 });
+    }
+    assert.strictEqual(shaped.length, first, 'nothing shaped mid-gesture');
+    // the real clock again, which is long past the last step
+    delete (perf as { now?: unknown }).now;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    await act();
+    assert.ok(shaped.length > first, 'and set at their own sizes at rest');
+  } finally {
+    delete (perf as { now?: unknown }).now;
+    fonts.layout = own;
+    delete (root._ctx as { scalesText?: boolean }).scalesText;
+  }
+});
+
+/** A red card, at graph (40, 40) and 80×40 unless told otherwise, in a
+ *  400×300 pane; the flow instance to read the viewport off. */
+async function redCard(
+  position: XYPosition = { x: 40, y: 40 },
+  width = 80,
+  height = 40,
+  options = { width: 400, height: 300 } as RenderX11Options,
+  props: Partial<FlowProps<FlowNodeData, unknown>> = {},
+): Promise<{
+  ctx: Parameters<typeof pixelAt>[0];
+  flow: { current: FlowInstance | null };
+}> {
+  const flow: { current: FlowInstance | null } = { current: null };
+  const { ctx } = await renderX11(
+    h(TypedFlow, {
+      ref: flow,
+      nodes: [
+        {
+          id: 'r',
+          position,
+          width,
+          height,
+          data: { label: ' ' },
+          style: {
+            background: '#ff0000',
+            borderColor: '#ff0000',
+            borderRadius: 0,
+          },
+        },
+      ],
+      edges: [],
+      style: { width: 400, height: 300 },
+      ...props,
+    }),
+    options,
+  );
+  await act();
+  return { ctx, flow };
+}
+
+/** The viewport the 2D zoom gesture's picture was drawn at, if it has one. */
+function shotViewport(): Viewport | null {
+  return (
+    (pane() as unknown as { _zoomShot: { viewport: Viewport } | null })
+      ._zoomShot?.viewport ?? null
+  );
+}
+
+/**
+ * The pane measured as costly to paint live, which is what a zoom's picture
+ * is for (`ZOOM_SHOT_WORTH_MS`): the graphs here paint in a millisecond, and
+ * a zoom over one paints live.
+ */
+function paintsSlowly(): void {
+  const node = pane() as unknown as {
+    _graphPaints: number[];
+    _noteGraphPaint(ms: number): void;
+  };
+  node._graphPaints = [1000, 1000, 1000, 1000, 1000];
+  // …and stays so: under the clock the zoom helpers hold still, every paint
+  // would measure nothing
+  node._noteGraphPaint = () => {};
+}
+
+/**
+ * Runs `fn` with the pane's clock (`performance.now`) held still. Whether a
+ * zoom is still moving, and when held bodies come back, are judged on that
+ * clock; on a loaded runner a wheel's notches and the assertion after them
+ * could take longer than the rest they are meant to happen inside of, and
+ * the bodies were back before the test looked.
+ */
+async function heldClock<T>(fn: () => Promise<T>): Promise<T> {
+  const perf = globalThis.performance;
+  const at = perf.now();
+  Object.defineProperty(perf, 'now', { value: () => at, configurable: true });
+  try {
+    return await fn();
+  } finally {
+    delete (perf as { now?: unknown }).now;
+  }
+}
+
+/** Wheel steps a gesture's pace apart, on a clock pinned to the test. */
+async function zoomSteps(
+  x: number,
+  y: number,
+  steps: number,
+  deltaY: number,
+  between?: () => void,
+  point: (x: number, y: number) => { dx: number; dy: number } = at,
+): Promise<void> {
+  const perf = globalThis.performance;
+  let clock = perf.now();
+  Object.defineProperty(perf, 'now', {
+    value: () => clock,
+    configurable: true,
+  });
+  try {
+    const node = pane() as unknown as DrawnNode;
+    for (let i = 0; i < steps; i++) {
+      clock += 16;
+      await userEvent.wheel(node, { ...point(x, y), deltaY });
+      between?.();
+    }
+    await act();
+  } finally {
+    delete (perf as { now?: unknown }).now;
+  }
+}
+
+test('a 2D zoom gesture composites the graph it drew once, where the zoom of the moment puts it', async () => {
+  // A step inside a gesture used to stroke every edge and fill every card
+  // again; now the gesture paints the graph once, onto a surface of its
+  // own, and composites that scaled. Sampled where the card is at the last
+  // step's zoom and was not at the zoom the picture was drawn at: an
+  // unscaled composite, or one moved wrong, leaves the pane's ground there.
+  const { ctx, flow } = await redCard();
+  paintsSlowly();
+  const { abs } = pane();
+  let drawnAt: Viewport | null = null;
+  // about the card's corner, which stays put as the card grows from it
+  await zoomSteps(abs.x + 40, abs.y + 40, 4, -1, () => {
+    drawnAt ??= shotViewport();
+  });
+  const last = flow.current!.getViewport();
+  assert.ok(drawnAt, 'precondition: the gesture drew a picture');
+  const shot: Viewport = drawnAt;
+  assert.ok(last.zoom > shot.zoom * 1.05, 'precondition: zoomed past it');
+  // the card's right edge where the picture has it and where this zoom does,
+  // and a point between them, halfway down
+  const right = (v: Viewport) => abs.x + v.x + 120 * v.zoom;
+  const px = Math.round((right(shot) + right(last)) / 2);
+  const py = Math.round(abs.y + last.y + 60 * last.zoom);
+  assert.ok(
+    px > right(shot) + 1 && px < right(last) - 1,
+    'precondition: a point the picture has outside the card',
+  );
+  await expectPixel(ctx, px, py, '#ff0000', {
+    message: 'the card is where this zoom puts it',
+  });
+});
+
+test('a graph that paints quickly zooms live, with no picture', async () => {
+  // A picture is for a graph too big to paint at every step, and costs one
+  // that is not: on macOS at 2x its composite is ~20 ms a step whatever the
+  // graph, where thirty nodes paint live in 7. This card paints in a
+  // millisecond, so every step of the zoom paints it where the step puts it.
+  const { ctx, flow } = await redCard();
+  const { abs } = pane();
+  let pictured = false;
+  await zoomSteps(abs.x + 40, abs.y + 40, 4, -1, () => {
+    pictured ||= shotViewport() !== null;
+  });
+  assert.ok(!pictured, 'no picture');
+  const last = flow.current!.getViewport();
+  assert.ok(last.zoom > 1.05, 'precondition: zoomed');
+  const px = Math.round(abs.x + last.x + 120 * last.zoom) - 3;
+  const py = Math.round(abs.y + last.y + 60 * last.zoom);
+  await expectPixel(ctx, px, py, '#ff0000', {
+    message: 'the card is where this zoom puts it',
+  });
+});
+
+test('two slow paints do not make a zoom a picture, and three do', async () => {
+  // A collection, or the server catching up, makes a paint slow on a graph
+  // that paints in a millisecond; the median of the last five is what a
+  // zoom decides on, so that graph stays live. A graph that has grown pays
+  // three slow steps before its zooms are pictures.
+  await redCard();
+  const kept = pane() as unknown as { _graphPaints: number[] };
+  const { abs } = pane();
+  kept._graphPaints = [1, 1, 1, 1000, 1000];
+  let pictured = false;
+  await zoomSteps(abs.x + 40, abs.y + 40, 3, -1, () => {
+    pictured ||= shotViewport() !== null;
+  });
+  assert.ok(!pictured, 'two slow paints: live');
+  await new Promise((r) => setTimeout(r, 200));
+  kept._graphPaints = [1, 1, 1000, 1000, 1000];
+  await zoomSteps(abs.x + 40, abs.y + 40, 3, 1, () => {
+    pictured ||= shotViewport() !== null;
+  });
+  assert.ok(pictured, 'three: a picture');
+});
+
+test("a zoom's first step is not what its steps cost", async () => {
+  // A single step sets every label at its size, where the steps of a stream
+  // draw the ones they have: one slow first step told a thirty-node graph
+  // on macOS that it was worth a picture, and every zoom was one.
+  await redCard();
+  const kept = pane() as unknown as { _graphPaints: number[] };
+  const { abs } = pane();
+  await zoomSteps(abs.x + 40, abs.y + 40, 1, -1);
+  assert.equal(kept._graphPaints.length, 0, 'a single step: nothing');
+  await new Promise((r) => setTimeout(r, 200));
+  await zoomSteps(abs.x + 40, abs.y + 40, 3, -1);
+  assert.equal(
+    kept._graphPaints.length,
+    2,
+    'a stream: its steps after the first',
+  );
+});
+
+test('a picture gives way when the graph paints quickly again', async () => {
+  // Measured slow, a zoom composites a picture; measured quick in the middle
+  // of that zoom — the pictures painted for it say what a step costs — its
+  // next step paints live.
+  const { ctx, flow } = await redCard();
+  const kept = pane() as unknown as { _graphPaints: number[] };
+  const { abs } = pane();
+  kept._graphPaints = [1000, 1000, 1000, 1000, 1000];
+  let pictured = false;
+  let dropped = false;
+  let step = 0;
+  await zoomSteps(abs.x + 40, abs.y + 40, 5, -1, () => {
+    if (++step === 3) {
+      pictured = shotViewport() !== null;
+      kept._graphPaints = [1, 1, 1, 1, 1];
+    }
+    if (step === 5) dropped = shotViewport() === null;
+  });
+  assert.ok(pictured, 'precondition: measured slow, a picture');
+  assert.ok(dropped, 'measured quick, no picture');
+  const last = flow.current!.getViewport();
+  const px = Math.round(abs.x + last.x + 120 * last.zoom) - 3;
+  const py = Math.round(abs.y + last.y + 60 * last.zoom);
+  await expectPixel(ctx, px, py, '#ff0000', {
+    message: 'the card is where this zoom puts it',
+  });
+});
+
+test('a 2D zoom out paints the ring its picture no longer covers', async () => {
+  // Zoomed out, the picture is smaller than the pane, and the graph round it
+  // was never in it. The card starts right of the pane, and zooming out
+  // about the pane's centre brings its far end into that ring.
+  // a ground of its own, so the ring's shows: core clears what it repaints
+  // to the window's, not to the pane's
+  const { ctx, flow } = await redCard({ x: 410, y: 130 }, 60, 40, undefined, {
+    palette: { background: '#00ff00' },
+    background: false,
+  });
+  paintsSlowly();
+  const { abs } = pane();
+  let drawnAt: Viewport | null = null;
+  await zoomSteps(abs.x + 200, abs.y + 150, 4, 1, () => {
+    drawnAt ??= shotViewport();
+  });
+  const last = flow.current!.getViewport();
+  assert.ok(drawnAt, 'precondition: the gesture drew a picture');
+  const shot: Viewport = drawnAt;
+  const k = last.zoom / shot.zoom;
+  assert.ok(k < 0.95, 'precondition: zoomed out past it');
+  // the picture's right edge, and the card's far end, at this zoom
+  const pictureRight = abs.x + last.x - shot.x * k + 400 * k;
+  const cardRight = abs.x + last.x + 470 * last.zoom;
+  const px = Math.round((pictureRight + cardRight) / 2);
+  const py = Math.round(abs.y + last.y + 150 * last.zoom);
+  assert.ok(
+    px > pictureRight + 1 && px < cardRight - 1 && px < abs.x + 400,
+    'precondition: a point of the card in the ring',
+  );
+  await expectPixel(ctx, px, py, '#ff0000', {
+    message: 'the card is drawn in the ring',
+  });
+  // and just past its end, the pane's ground
+  await expectPixel(ctx, Math.round(cardRight) + 6, py, '#00ff00', {
+    message: 'the ground is drawn in the ring',
+  });
+  // …as it is inside the picture, which carries its own
+  await expectPixel(ctx, abs.x + 200, abs.y + 150, '#00ff00', {
+    message: 'and in the picture',
+  });
+});
+
+test('a 2D zoom gesture draws a new picture once it has magnified the old one far enough', async () => {
+  const { flow } = await redCard();
+  paintsSlowly();
+  const { abs } = pane();
+  const drawn = new Set<number>();
+  const magnified: number[] = [];
+  await zoomSteps(abs.x + 200, abs.y + 150, 10, -1, () => {
+    const at = shotViewport();
+    if (!at) return;
+    drawn.add(at.zoom);
+    magnified.push(flow.current!.getViewport().zoom / at.zoom);
+  });
+  assert.ok(drawn.size >= 2, `a second picture: ${[...drawn]}`);
+  assert.ok(
+    magnified.every((k) => k <= 2 + 1e-9),
+    `no step magnified its picture past 2: ${magnified}`,
+  );
+});
+
 test('zoom is clamped to the range it was given', async () => {
   const { flow } = await mount({ minZoom: 0.5, maxZoom: 1.5 });
   await act(() => {
@@ -1068,11 +1467,7 @@ test('a zoom too small to move the box still reaches the body', async () => {
     edges: [],
     nodeTypes: { form: sizedType },
   });
-  const bodyScale = (): unknown => {
-    const overlay = pane().parent!.children.find((c) => c.kind === 'box');
-    assert.ok(overlay, 'the overlay box is mounted');
-    return retained(retained(overlay).children[0]).props.scale;
-  };
+  const bodyScale = (): unknown => retained(bodyBox().children[0]).props.scale;
   assert.strictEqual(bodyScale(), 1);
 
   // The pane snaps the box it emits to whole pixels, and this zoom is
@@ -1176,6 +1571,213 @@ test('a moved node keeps its measured size; a relabelled one is re-measured', as
     wide.width > before.width,
     `the new label re-measured (${wide.width} vs ${before.width})`,
   );
+});
+
+/** A drag's motion reaches the pane with ntk's next frame, which is paced
+ *  on a timer of its own: `act` alone can resolve before it lands. A press
+ *  or a release flushes it too, but a release ends the gesture. */
+async function motionLands(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  await act();
+}
+
+/** Every rect claimed of the window from here on — `null` for a claim of
+ *  all of it. A node's claim of its own box is its box; core's "nothing I
+ *  draw changed" is no claim at all. */
+function claimsOf(node: RetainedNode): (FlowRect | null)[] {
+  const root = node.root as unknown as {
+    invalidate(layout: boolean, damage: unknown, ...rest: unknown[]): void;
+  };
+  const claims: (FlowRect | null)[] = [];
+  const own = root.invalidate.bind(root);
+  root.invalidate = (layout, damage, ...rest) => {
+    if (damage == null) claims.push(null);
+    else if (typeof damage === 'object' && 'width' in damage) {
+      claims.push(damage as FlowRect);
+    } else if (typeof damage === 'object' && 'abs' in damage) {
+      claims.push((damage as { abs: FlowRect }).abs);
+    }
+    own(layout, damage, ...rest);
+  };
+  return claims;
+}
+
+const inside = (r: FlowRect | null, x: number, y: number): boolean =>
+  r === null ||
+  (x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height);
+
+test('a box selection step claims the bands its moving sides swept, not the box', async () => {
+  // Claiming the box round the old and new selection repainted everything
+  // under it, every node and edge, on every step — 21 ms a step on the
+  // stress example's 300-node fan-out, and the pointer left behind.
+  await mount({ selectionOnDrag: true });
+  const node = pane() as unknown as DrawnNode;
+  await act(() => {
+    fireEvent.mouseDown(node, at(20, 20));
+    fireEvent.mouseMove(node, at(300, 250));
+  });
+  const claims = claimsOf(pane());
+  // clear of both nodes, so no selection changes on the way
+  await act(() => fireEvent.mouseMove(node, at(310, 256)));
+  await motionLands();
+  assert.ok(claims.length > 0, 'the step claimed something');
+  assert.ok(
+    claims.some((c) => inside(c, 305, 130)),
+    'the band the right side swept',
+  );
+  assert.ok(
+    claims.some((c) => inside(c, 150, 253)),
+    'and the one the bottom swept',
+  );
+  assert.ok(
+    !claims.some((c) => inside(c, 150, 130)),
+    `but not the middle, where both boxes lay the same tint: ${JSON.stringify(claims)}`,
+  );
+  assert.ok(
+    !claims.some((c) => inside(c, 20, 130) || inside(c, 150, 20)),
+    'nor the two sides the box is anchored by',
+  );
+  await act(() => fireEvent.mouseUp(node, at(310, 256)));
+});
+
+test('a selection change repaints the node, not the pane', async () => {
+  // Selection lifts a node over its neighbours, which read as structural:
+  // every node re-measured and the whole pane repainted — on every step of
+  // a box selection that took a node in.
+  const flow: { current: FlowInstance | null } = { current: null };
+  const base = nodes();
+  const { rerender } = await renderX11(
+    h(TypedFlow, { ref: flow, nodes: base, edges: edges() }),
+  );
+  await act();
+  const claims = claimsOf(pane());
+  const picked = base.map((n) => (n.id === 'a' ? { ...n, selected: true } : n));
+  await act(() =>
+    rerender(h(TypedFlow, { ref: flow, nodes: picked, edges: edges() })),
+  );
+  assert.ok(claims.length > 0, 'the change claimed something');
+  assert.ok(!claims.includes(null), 'none of it the whole window');
+  assert.ok(
+    claims.some((c) => inside(c, 160, 120)),
+    'the selected node repaints',
+  );
+  assert.ok(
+    !claims.some((c) => inside(c, 160, 320)),
+    'the one beside it does not',
+  );
+});
+
+test('a selected node is painted over the one it overlaps, without a rebuild', async () => {
+  const flow: { current: FlowInstance | null } = { current: null };
+  const overlapping: FlowNode[] = [
+    {
+      id: 'top',
+      position: { x: 100, y: 100 },
+      width: 120,
+      height: 40,
+      data: { label: 'T' },
+    },
+    {
+      id: 'under',
+      position: { x: 60, y: 90 },
+      width: 120,
+      height: 40,
+      data: { label: 'U' },
+    },
+  ];
+  const { rerender } = await renderX11(
+    h(TypedFlow, { ref: flow, nodes: overlapping, edges: [] }),
+  );
+  await act();
+  // declaration order: `under` is drawn last, over `top`
+  const order = () =>
+    (pane() as unknown as { _paintOrder(): { node: FlowNode }[] })
+      ._paintOrder()
+      .map((e) => e.node.id);
+  assert.deepStrictEqual(order(), ['top', 'under']);
+  const picked = overlapping.map((n) =>
+    n.id === 'top' ? { ...n, selected: true } : n,
+  );
+  await act(() =>
+    rerender(h(TypedFlow, { ref: flow, nodes: picked, edges: [] })),
+  );
+  assert.deepStrictEqual(order(), ['under', 'top'], 'selection lifts it');
+});
+
+test('under GL a box selection step is a frame, not a new world', async () => {
+  const { node, asked } = await glPane({ selectionOnDrag: true });
+  let frame = node.glFrame(null)!;
+  const target = pane() as unknown as DrawnNode;
+  await act(() => {
+    fireEvent.mouseDown(target, at(20, 20));
+    fireEvent.mouseMove(target, at(60, 60));
+  });
+  await motionLands();
+  frame = node.glFrame(frame.key)!;
+  const before = asked();
+  await act(() => fireEvent.mouseMove(target, at(70, 66)));
+  await motionLands();
+  assert.ok(asked() > before, 'the step asks for a frame');
+  frame = node.glFrame(frame.key)!;
+  assert.strictEqual(frame.world, null, 'and the world on the GPU stands');
+  await act(() => fireEvent.mouseUp(target, at(70, 66)));
+});
+
+test('under GL a drag step routes no edges for a rect nobody reads', async () => {
+  const { node } = await glPane();
+  const pane2 = node as unknown as {
+    _nodeDamage(e: unknown): unknown;
+    _gesture: unknown;
+  };
+  let routed = 0;
+  const own = pane2._nodeDamage.bind(pane2);
+  pane2._nodeDamage = (e) => {
+    routed++;
+    return own(e);
+  };
+  const target = pane() as unknown as DrawnNode;
+  await act(() => {
+    fireEvent.mouseDown(target, at(115, 110));
+    fireEvent.mouseMove(target, at(135, 125));
+    fireEvent.mouseMove(target, at(155, 140));
+    fireEvent.mouseUp(target, at(155, 140));
+  });
+  assert.strictEqual(routed, 0);
+});
+
+test('under GL a commit that moved a node claims nothing of the window', async () => {
+  // The 2D pane under the surface shows nothing; a claim billed as `props`
+  // was a window pass over it on every step of a drag an app stores.
+  // the pane itself, as `<Flow>` renders it over a surface that drew
+  const element = (list: FlowNode[]) =>
+    h(FLOW_ELEMENT, {
+      nodes: list,
+      edges: edges(),
+      renderer: 'gl',
+      style: { flexGrow: 1 },
+    });
+  const base = nodes();
+  const { rerender } = await renderX11(element(base));
+  const node = pane() as unknown as { setGlRequest(fn: () => void): void };
+  let asked = 0;
+  node.setGlRequest(() => void asked++);
+  await act();
+  const claims: unknown[] = [];
+  const root = pane().root as unknown as {
+    invalidate(l: boolean, d: unknown, r: unknown, s: unknown): void;
+  };
+  const own = root.invalidate.bind(root);
+  root.invalidate = (l, d, r, s) => {
+    if (s === pane()) claims.push(d);
+    own(l, d, r, s);
+  };
+  const before = asked;
+  const moved = base.map((n) =>
+    n.id === 'a' ? { ...n, position: { x: 140, y: 120 } } : n,
+  );
+  await act(() => rerender(element(moved)));
+  assert.ok(asked > before, 'a GL frame is asked for');
+  assert.deepStrictEqual(claims, [], 'and the window is claimed for nothing');
 });
 
 test('screenToFlowPosition and back is a round trip at any viewport', async () => {
@@ -1493,14 +2095,6 @@ test('the body commit is synchronous inside the gesture dispatch', async () => {
   // the dispatch returns: the overlay box's committed style already carries
   // the step's position when `defaultMouseDrag` comes back, with no flush,
   // no settle, no frame in between.
-  const overlay = (): { style?: { left?: number; top?: number } } => {
-    const wrapper = pane().parent!;
-    const box = wrapper.children.find((c) => c.kind === 'box');
-    assert.ok(box, 'the overlay box is mounted');
-    return retained(box).props as {
-      style?: { left?: number; top?: number };
-    };
-  };
   await renderX11(
     h(TypedFlow, {
       nodes: [
@@ -1538,11 +2132,92 @@ test('the body commit is synchronous inside the gesture dispatch', async () => {
 
   // No act, no await: the dispatch itself must leave the box committed.
   seam.defaultMouseDrag(synth(paneAbs.x + 250, paneAbs.y + 140));
-  const style = overlay().style;
-  assert.strictEqual(style?.left, 155, 'left committed inside the dispatch');
-  assert.strictEqual(style?.top, 150, 'top committed inside the dispatch');
+  const place = bodyPlace();
+  assert.strictEqual(place.left, 155, 'left committed inside the dispatch');
+  assert.strictEqual(place.top, 150, 'top committed inside the dispatch');
 
   await act(() => seam.defaultMouseUp(synth(paneAbs.x + 250, paneAbs.y + 140)));
+});
+
+test('a pan through the handle commits the bodies’ box before the call returns', async () => {
+  // A programmatic pan — an animation loop stepping `setViewport` — moved
+  // the pane at once and the box the bodies ride in on React's schedule, so
+  // the box caught up in jumps: several steps in one commit, in a frame whose
+  // blit shifted by one. A rider that moves by more than the blit is a layout
+  // move, and that frame repainted the pane whole. The handle's emission
+  // commits inline now, as a gesture's does.
+  const { flow } = await mount({
+    nodes: [
+      {
+        id: 'form',
+        type: 'form',
+        position: { x: 100, y: 100 },
+        width: 200,
+        height: 120,
+      },
+    ],
+    edges: [],
+    nodeTypes: { form: mountedType },
+  });
+  await act();
+  const start = bodyPlace();
+  for (let step = 1; step <= 4; step++) {
+    // no act, no await: the call itself must leave the box committed
+    flow.current!.setViewport({ x: step * 6, y: 0 });
+    assert.deepStrictEqual(
+      bodyPlace(),
+      { left: start.left + step * 6, top: start.top },
+      `step ${step}: the box moved with the pane in the call`,
+    );
+  }
+});
+
+test('a pan through the handle from a layout effect lands with that commit, and says nothing', async () => {
+  // The other place a handle is called from: an effect following state with
+  // the view. React is committing there, and the reconciler does not flush
+  // inside a commit — the emission's update waits for the commit to end, at
+  // sync priority, and lands before the flush that caused it returns. Nor
+  // does it warn, which react-dom's `flushSync` does from a lifecycle.
+  let pan: (x: number) => void = () => {};
+  function Following(): React.ReactElement {
+    const ref = React.useRef<FlowInstance | null>(null);
+    const [x, setX] = React.useState(0);
+    pan = setX;
+    React.useLayoutEffect(() => {
+      if (x) ref.current?.setViewport({ x, y: 0 });
+    }, [x]);
+    return h(TypedFlow, {
+      ref,
+      nodes: [
+        {
+          id: 'form',
+          type: 'form',
+          position: { x: 100, y: 100 },
+          width: 200,
+          height: 120,
+        },
+      ],
+      edges: [],
+      nodeTypes: { form: mountedType },
+    });
+  }
+  await renderX11(h(Following));
+  await act();
+  const start = bodyPlace();
+  const errors: unknown[][] = [];
+  const origError = console.error;
+  console.error = (...args: unknown[]) => void errors.push(args);
+  try {
+    // no act: the flush itself must leave the box where the view put it
+    Renderer.flushSyncFromReconciler(() => pan(24));
+    assert.deepStrictEqual(bodyPlace(), {
+      left: start.left + 24,
+      top: start.top,
+    });
+  } finally {
+    console.error = origError;
+  }
+  assert.deepStrictEqual(errors, []);
 });
 
 test('a value-identical inline graph repaints nothing it can name', async () => {
@@ -1764,6 +2439,40 @@ test('the display scale is the floor the body zoom multiplies', async () => {
   assert.deepStrictEqual({ width, height }, { width: 120, height: 60 });
 });
 
+test('at a display scale of 2 a 2D zoom gesture composites its picture on device pixels', async () => {
+  // The picture is device-sized and the viewport logical; mixing the two
+  // puts the card at half or twice where the zoom has it.
+  const { ctx, flow } = await redCard({ x: 40, y: 40 }, 80, 40, AT_2X);
+  paintsSlowly();
+  const origin = { x: pane().abs.x / 2, y: pane().abs.y / 2 };
+  let drawnAt: Viewport | null = null;
+  await zoomSteps(
+    origin.x + 40,
+    origin.y + 40,
+    4,
+    -1,
+    () => {
+      drawnAt ??= shotViewport();
+    },
+    at2x,
+  );
+  const last = flow.current!.getViewport();
+  assert.ok(drawnAt, 'precondition: the gesture drew a picture');
+  const shot: Viewport = drawnAt;
+  assert.ok(last.zoom > shot.zoom * 1.05, 'precondition: zoomed past it');
+  // logical, like the viewport; sampled in device pixels
+  const right = (v: Viewport) => origin.x + v.x + 120 * v.zoom;
+  const px = Math.round((right(shot) + right(last)) / 2) * 2;
+  const py = Math.round(origin.y + last.y + 60 * last.zoom) * 2;
+  await expectPixel(ctx, px, py, '#ff0000', {
+    message: 'the card is where this zoom puts it, in device pixels',
+  });
+  assert.ok(
+    !isNear(await pixelAt(ctx, Math.round(right(last) * 2) + 8, py), '#ff0000'),
+    'and nothing of it past its right edge',
+  );
+});
+
 test('at a display scale of 2 the card lands on device pixels and its body on logical ones', async () => {
   const { ctx } = await renderX11(
     h(TypedFlow, {
@@ -1812,22 +2521,2129 @@ test('at a display scale of 2 the card lands on device pixels and its body on lo
   // x = 100 + inset(5), y = 200 + header(20); 200 − 2×5 wide, 120 − 20 − 5
   // tall. Doubled numbers here were the body sitting a node's width away
   // from its card.
-  const wrapper = pane().parent!;
-  const box = wrapper.children.find((c) => c.kind === 'box');
-  assert.ok(box, 'the overlay box is mounted');
-  const style = retained(box).props.style as {
-    left?: number;
-    top?: number;
+  const style = bodyBox().props.style as {
     width?: number;
     height?: number;
   };
   assert.deepStrictEqual(
     {
-      left: style.left,
-      top: style.top,
+      ...bodyPlace(),
       width: style.width,
       height: style.height,
     },
     { left: 105, top: 220, width: 190, height: 95 },
   );
+});
+
+// --- off the window's origin -------------------------------------------------
+//
+// Every test above mounts the pane at the window's top-left, where "window
+// coordinates" and "pane coordinates" are the same numbers — which is how a
+// pane offset can be dropped and nothing notices. It was dropped once, by the
+// scene extraction (`src/flow/scene.ts`): the scene's `toScreen` left out the
+// pane's origin that the element's own had added, and because hit testing now
+// shares the scene's helpers, the drawing and the pointer moved together and
+// agreed with each other while both disagreeing with the window. `<Map>` fell
+// into the same hole once (maps#95). These two put the pane 60 × 40 pixels in.
+
+const OFFSET = { x: 60, y: 40 };
+
+async function mountOffset(
+  props: Partial<FlowProps> = {},
+): Promise<{ recorded: Recorded; ctx: unknown }> {
+  const recorded: Recorded = {
+    nodeChanges: [],
+    edgeChanges: [],
+    connections: [],
+  };
+  const { ctx } = await renderX11(
+    h(
+      'box',
+      {
+        style: {
+          flexGrow: 1,
+          paddingLeft: OFFSET.x,
+          paddingTop: OFFSET.y,
+        },
+      },
+      h(TypedFlow, {
+        nodes: nodes(),
+        edges: edges(),
+        onNodesChange: (c) => void recorded.nodeChanges.push(c),
+        ...props,
+      }),
+    ),
+  );
+  await act();
+  return { recorded, ctx };
+}
+
+test('off the window origin, a press lands on the node drawn under it', async () => {
+  const { recorded } = await mountOffset();
+  const { abs } = pane();
+  assert.deepStrictEqual(
+    { x: abs.x, y: abs.y },
+    OFFSET,
+    'precondition: the pane really is off the origin',
+  );
+  // node `a` is graph (100,100)–(220,140); the pane's origin moves it on the
+  // window by the offset, and a press there is a press on it
+  await userEvent.click(
+    pane() as unknown as DrawnNode,
+    at(160 + OFFSET.x, 120 + OFFSET.y),
+  );
+  assert.deepStrictEqual(
+    ofType(recorded.nodeChanges, 'select').map((c) => c.id),
+    ['a'],
+  );
+});
+
+test('off the window origin, a card is drawn where the pane puts it', async () => {
+  const { ctx } = await mountOffset({
+    nodes: nodes().map((n) =>
+      n.id === 'a'
+        ? { ...n, style: { background: '#ff0000', borderColor: '#ff0000' } }
+        : n,
+    ),
+  });
+  await expectPixel(ctx, 115 + OFFSET.x, 115 + OFFSET.y, '#ff0000', {
+    message: 'the card is drawn offset by the pane origin',
+  });
+  assert.ok(
+    !isNear(await pixelAt(ctx, 105, 105), '#ff0000'),
+    'and not at the graph numbers read as window ones',
+  );
+});
+
+// --- onFrame -------------------------------------------------------------------
+
+test('onFrame reports each 2D frame once, whatever it painted', async () => {
+  // `<Map onFrame>`'s contract: a frame, not a paint. The 2D renderer can
+  // paint several damage rects in one flush, and an FPS read off this must
+  // count the flush once.
+  const frames: FlowFrameStats[] = [];
+  const { flow } = await mount({
+    onFrame: (stats: FlowFrameStats) => void frames.push(stats),
+  });
+  await act();
+  frames.length = 0;
+  flow.current?.setViewport({ x: 30 });
+  await act();
+  assert.strictEqual(frames.length, 1, 'one viewport change, one frame');
+  assert.strictEqual(frames[0].renderer, 'retained');
+  assert.ok(frames[0].sceneMs >= 0 && frames[0].drawMs >= 0);
+  assert.strictEqual(frames[0].drawCalls, 0, 'draw calls are the GL one’s');
+});
+
+test('a mounted body is not re-rendered for a move, only for what it shows', async () => {
+  // A drag, and every commit of a controlled graph, hands the pane a new
+  // node object with only its position changed. The body's `render` must
+  // not run for that — its box moves and its subtree rides along — and must
+  // run for anything else: new `data` here.
+  let renders = 0;
+  const counted: FlowNodeType = {
+    size: { width: 200, height: 120 },
+    render: ({ node }) => {
+      renders++;
+      return h('text', null, String((node.data as FlowNodeData).label));
+    },
+  };
+  const flow: { current: FlowInstance | null } = { current: null };
+  const base: FlowNode[] = [
+    {
+      id: 'a',
+      type: 'counted',
+      position: { x: 0, y: 0 },
+      data: { label: 'one' },
+    },
+  ];
+  const props = { ref: flow, edges: [], nodeTypes: { counted } };
+  const { rerender } = await renderX11(h(TypedFlow, { ...props, nodes: base }));
+  await act();
+  assert.ok(renders > 0, 'precondition: the body is mounted');
+  const before = renders;
+
+  let current = base;
+  for (let step = 1; step <= 5; step++) {
+    current = current.map((n) => ({ ...n, position: { x: step * 10, y: 0 } }));
+    await act(() => rerender(h(TypedFlow, { ...props, nodes: current })));
+  }
+  assert.strictEqual(renders, before, 'five moves, no render');
+
+  current = current.map((n) => ({ ...n, data: { label: 'two' } }));
+  await act(() => rerender(h(TypedFlow, { ...props, nodes: current })));
+  assert.strictEqual(renders, before + 1, 'new data, one render');
+});
+
+test('a pan moves the bodies’ one box, and re-renders no body', async () => {
+  // A pan changes the viewport's translation and nothing else, so it moves
+  // the box the bodies are laid out in — one style change — and hands every
+  // body the same props as before. Committing each body's new position on
+  // every pan step was what held a pan over 48 of them to 57 frames/s.
+  let renders = 0;
+  const counted: FlowNodeType = {
+    size: { width: 200, height: 120 },
+    headerHeight: 20,
+    render: () => {
+      renders++;
+      return h('text', null, 'body');
+    },
+  };
+  const { flow } = await mount({
+    nodes: [
+      { id: 'a', type: 'counted', position: { x: 100, y: 100 } },
+      { id: 'b', type: 'counted', position: { x: 400, y: 100 } },
+    ],
+    edges: [],
+    nodeTypes: { counted },
+  });
+  await act();
+  const before = renders;
+  const bodyLeft = bodyBox().props.style as { left: number };
+  const start = {
+    ...(bodyLayer().props.style as { left: number; top: number }),
+  };
+  for (let step = 1; step <= 5; step++) {
+    await act(() => flow.current!.setViewport({ x: step * 7, y: step * 3 }));
+  }
+  assert.strictEqual(renders, before, 'five pan steps, no body render');
+  const layer = bodyLayer().props.style as { left: number; top: number };
+  assert.deepStrictEqual(
+    { left: layer.left - start.left, top: layer.top - start.top },
+    { left: 35, top: 15 },
+    'the box moved by the pan',
+  );
+  assert.strictEqual(
+    (bodyBox().props.style as { left: number }).left,
+    bodyLeft.left,
+    'and the body inside it did not',
+  );
+});
+
+test('bodies are painted with the graph’s origin panned off the pane', async () => {
+  // The bodies' one box sat at the graph's origin, 0×0 — and core culls a
+  // child whose *own* box is off screen before it looks at what the child
+  // holds. So a graph panned or zoomed past the pane's top-left, which is
+  // every real view of a large graph, painted no body at all: the cards
+  // drew, and the checkboxes and buttons inside them did not.
+  const filled: FlowNodeType = {
+    size: { width: 200, height: 120 },
+    headerHeight: 20,
+    render: () =>
+      h('box', { style: { flexGrow: 1, backgroundColor: '#ff00ff' } }),
+  };
+  const flow: { current: FlowInstance | null } = { current: null };
+  const { ctx } = await renderX11(
+    h(TypedFlow, {
+      ref: flow,
+      nodes: [{ id: 'far', type: 'filled', position: { x: 600, y: 400 } }],
+      edges: [],
+      nodeTypes: { filled },
+    }),
+  );
+  await act();
+  // the origin 500 px left of the pane and 300 above; the card at (100,100)
+  await act(() => flow.current!.setViewport({ x: -500, y: -300 }));
+  await act();
+  const layer = bodyLayer();
+  assert.ok(
+    layer.abs.x + layer.abs.width > 0 && layer.abs.y + layer.abs.height > 0,
+    `the bodies' box reaches the pane (${JSON.stringify(layer.abs)})`,
+  );
+  await expectPixel(ctx, 200, 180, '#ff00ff', {
+    message: 'the body is painted on its card',
+  });
+});
+
+test('bodies over the budget sit a wheel zoom out, mounted and hidden, and come back at the new scale', async () => {
+  // Re-scaling a body is a restyle, a layout and a repaint of its whole
+  // subtree, about a millisecond each per zoom step; over 42 bodies that
+  // held a zoom to 15 frames a second. Ten are predicted over the budget,
+  // so a gesture zoom hides them and leaves them alone, and they return
+  // once it rests.
+  let renders = 0;
+  let unmounts = 0;
+  const counted: FlowNodeType = {
+    size: { width: 200, height: 120 },
+    headerHeight: 20,
+    render: () => {
+      renders++;
+      React.useEffect(() => () => void unmounts++, []);
+      return h('text', null, 'body');
+    },
+  };
+  await mount({
+    // ten cards in two rows, all on screen
+    nodes: Array.from({ length: 10 }, (_, i) => ({
+      id: `n${i}`,
+      type: 'counted',
+      position: { x: 20 + (i % 5) * 140, y: 60 + Math.floor(i / 5) * 150 },
+      width: 120,
+      height: 100,
+    })),
+    edges: [],
+    nodeTypes: { counted },
+  });
+  await act();
+  assert.strictEqual(bodyLayer().children.length, 10, 'precondition');
+  const before = renders;
+  const node = pane();
+  await heldClock(async () => {
+    for (let notch = 0; notch < 4; notch++) {
+      await userEvent.wheel(node, { ...at(40, 40), deltaY: -24 });
+    }
+    assert.ok(bodiesAway(), 'hidden while the wheel turns');
+    assert.strictEqual(renders, before, 'and not rendered once per notch');
+  });
+
+  await act(() => new Promise((resolve) => setTimeout(resolve, 250)));
+  assert.ok(!bodiesAway(), 'back once the zoom rests');
+  // the zoom pushed some cards off the pane, and theirs leave; the rest
+  // were mounted throughout — their state survives — and render once each
+  const still = bodyLayer().children.length;
+  assert.ok(still > 0 && still < 10, `precondition: some left (${still})`);
+  assert.strictEqual(renders, before + still, 'once each, at the new scale');
+  assert.strictEqual(unmounts, 10 - still, 'no body still on screen remounted');
+  const scale = retained(bodyBox().children[0]).props.scale as number;
+  assert.ok(scale > 1, `at the zoom the wheel left (${scale})`);
+});
+
+test('a body that fits the budget zooms live with the wheel', async () => {
+  await mount({ nodes: bodyNode(), edges: [], nodeTypes: { form: sizedType } });
+  await userEvent.wheel(pane() as unknown as DrawnNode, {
+    ...at(40, 40),
+    deltaY: -48,
+  });
+  assert.ok(!bodiesAway(), 'one body is not held');
+  const scale = retained(bodyBox().children[0]).props.scale as number;
+  assert.ok(scale > 1, `and it is at the new zoom (${scale})`);
+});
+
+test('a programmatic zoom applies to bodies at once', async () => {
+  const { flow } = await mount({
+    nodes: bodyNode(),
+    edges: [],
+    nodeTypes: { form: sizedType },
+  });
+  await act(() => flow.current!.setViewport({ zoom: 1.5 }));
+  await act(() => flow.current!.setViewport({ zoom: 2 }));
+  assert.ok(!bodiesAway());
+  assert.strictEqual(retained(bodyBox().children[0]).props.scale, 2);
+});
+
+test("an animation's zoom holds bodies over the budget, as the wheel does", async () => {
+  // An app animating the viewport steps `setViewport` a frame at a time,
+  // which is a gesture in all but its source: every body re-scaled at every
+  // step held a zoom over the stress example's charts to 10 frames a second.
+  // A stream of zooms (`_zoomStream`) holds them as a wheel's does, and a
+  // single jump still applies at once.
+  let renders = 0;
+  const counted: FlowNodeType = {
+    size: { width: 200, height: 120 },
+    headerHeight: 20,
+    render: () => {
+      renders++;
+      return h('text', null, 'body');
+    },
+  };
+  const { flow } = await mount({
+    nodes: Array.from({ length: 10 }, (_, i) => ({
+      id: `n${i}`,
+      type: 'counted',
+      position: { x: 20 + (i % 5) * 140, y: 60 + Math.floor(i / 5) * 150 },
+      width: 120,
+      height: 100,
+    })),
+    edges: [],
+    nodeTypes: { counted },
+  });
+  await act();
+  assert.strictEqual(bodyLayer().children.length, 10, 'precondition');
+
+  // one jump, well after anything the mount did to the view: at once
+  await act(() => new Promise((resolve) => setTimeout(resolve, 200)));
+  await act(() => flow.current!.setViewport({ x: 0, y: 0, zoom: 0.9 }));
+  assert.ok(!bodiesAway(), 'a single jump is not held');
+  assert.strictEqual(retained(bodyBox().children[0]).props.scale, 0.9);
+
+  await act(() => new Promise((resolve) => setTimeout(resolve, 200)));
+  const before = renders;
+  await heldClock(async () => {
+    // the first step of an animation is a jump as far as the pane can tell
+    flow.current!.setViewport({ x: 0, y: 0, zoom: 0.92 });
+    assert.ok(!bodiesAway(), 'the first step applies at once');
+    assert.strictEqual(renders, before + 10, 'every body, once');
+    for (let step = 2; step <= 4; step++) {
+      flow.current!.setViewport({ x: 0, y: 0, zoom: 0.9 + step * 0.02 });
+    }
+    assert.ok(bodiesAway(), 'from the second, hidden while it runs');
+    assert.strictEqual(renders, before + 10, 'and not rendered once a step');
+  });
+  await act(() => new Promise((resolve) => setTimeout(resolve, 250)));
+  assert.ok(!bodiesAway(), 'back once the zoom rests');
+  assert.ok(
+    Math.abs((retained(bodyBox().children[0]).props.scale as number) - 0.98) <
+      1e-9,
+    'at the zoom the animation left',
+  );
+});
+
+test('a wheel over a mounted body zooms the graph', async () => {
+  // The bodies are the pane's siblings, so a wheel over one never reached
+  // the pane: over a graph of cards with bodies, the zoom stalled wherever
+  // the pointer rested.
+  const { flow } = await mount({
+    nodes: bodyNode(),
+    edges: [],
+    nodeTypes: { form: sizedType },
+  });
+  // at 2×, so the body's own unit is not the pane's
+  await act(() => flow.current!.setViewport({ x: 0, y: 0, zoom: 2 }));
+  const mark = retained(screen.getByText('mark'));
+  const point = {
+    x: mark.abs.x + mark.abs.width / 2,
+    y: mark.abs.y + mark.abs.height / 2,
+  };
+  const under = flow.current!.screenToFlowPosition(point);
+  await userEvent.wheel(mark as unknown as DrawnNode, { deltaY: -48 });
+  assert.ok(flow.current!.getViewport().zoom > 2, 'the wheel zoomed');
+  const after = flow.current!.screenToFlowPosition(point);
+  assert.ok(
+    Math.abs(after.x - under.x) < 0.5 && Math.abs(after.y - under.y) < 0.5,
+    `about the pointer: ${JSON.stringify(under)} -> ${JSON.stringify(after)}`,
+  );
+});
+
+test('a curve is drawn within a fifth of a pixel of itself at any zoom', () => {
+  // A backwards S-bend — the edge doubling back past its own cards — zoomed
+  // in threefold, in screen space as the pane routes it. The count was
+  // clamp(length / 6, 8, 48) and uniform: chords of tens of pixels across a
+  // tight bend, the facets visible in a zoomed-in graph.
+  const zoom = 3;
+  const source = { x: 900, y: 200, position: 'right' as const };
+  const target = { x: 100, y: 700, position: 'left' as const };
+  const route = { ...ROUTE, stepOffset: 20 * zoom, scale: zoom };
+  const drawn = edgePath('bezier', source, target, route);
+  // the curve itself, from its own control points
+  const [c0, c1] = bezierControls(source, target, zoom);
+  let worst = 0;
+  for (let i = 0; i <= 2000; i++) {
+    const t = i / 2000;
+    const u = 1 - t;
+    const p = {
+      x:
+        u * u * u * source.x +
+        3 * u * u * t * c0.x +
+        3 * u * t * t * c1.x +
+        t * t * t * target.x,
+      y:
+        u * u * u * source.y +
+        3 * u * u * t * c0.y +
+        3 * u * t * t * c1.y +
+        t * t * t * target.y,
+    };
+    worst = Math.max(worst, distanceToPath(drawn, p));
+  }
+  assert.ok(worst <= 0.2 + 1e-6, `strays ${worst.toFixed(3)} px`);
+  // and a gentle curve at the fitted zoom is not paying for it
+  const gentle = edgePath(
+    'bezier',
+    { x: 0, y: 0, position: 'right' },
+    { x: 60, y: 10, position: 'left' },
+    ROUTE,
+  );
+  assert.ok(gentle.length <= 12, `${gentle.length} vertices`);
+});
+
+test('`adaptive` sets the body budget, and every frame reports it', async () => {
+  // ten bodies, predicted at 12 ms: held under the default 8, live under 20
+  // or with `adaptive={false}`, held through any gesture under 0
+  const cards = Array.from({ length: 10 }, (_, i) => ({
+    id: `n${i}`,
+    type: 'form',
+    position: { x: 20 + (i % 5) * 140, y: 60 + Math.floor(i / 5) * 150 },
+    width: 120,
+    height: 100,
+  }));
+  for (const [adaptive, held] of [
+    [undefined, true],
+    [{ budgetMs: 20 }, false],
+    [false, false],
+    [{ budgetMs: 0 }, true],
+  ] as const) {
+    const frames: FlowFrameStats[] = [];
+    await mount({
+      nodes: cards,
+      edges: [],
+      nodeTypes: { form: sizedType },
+      adaptive,
+      onFrame: (f) => void frames.push(f),
+    });
+    await heldClock(async () => {
+      await userEvent.wheel(pane() as unknown as DrawnNode, {
+        ...at(10, 10),
+        deltaY: -24,
+      });
+      assert.strictEqual(
+        bodiesAway(),
+        held,
+        `adaptive ${JSON.stringify(adaptive)}`,
+      );
+      await act();
+      const last = frames[frames.length - 1];
+      assert.ok(last, 'a frame was reported');
+      assert.strictEqual(last.bodies.held, held);
+      assert.ok(last.bodies.count > 0 && last.bodies.count <= 10);
+      assert.strictEqual(
+        last.bodies.budgetMs,
+        adaptive === false ? Infinity : (adaptive?.budgetMs ?? 8),
+      );
+    });
+    cleanup();
+  }
+});
+
+test('the pane between mounted bodies takes the pointer, and so does a card’s header', async () => {
+  // The bodies' one box spans every body, gaps and headers included. Taking
+  // the pointer itself, it ate every press between the cards — no pan, no
+  // pane click — and every header inside its span — no selecting the node.
+  const nodeClicks: string[] = [];
+  let paneClicks = 0;
+  await mount({
+    nodes: [
+      {
+        id: 'a',
+        type: 'form',
+        position: { x: 60, y: 60 },
+        width: 200,
+        height: 120,
+      },
+      {
+        id: 'b',
+        type: 'form',
+        position: { x: 460, y: 260 },
+        width: 200,
+        height: 120,
+      },
+    ],
+    edges: [],
+    nodeTypes: { form: sizedType },
+    onPaneClick: () => void paneClicks++,
+    onNodeClick: (_ev: unknown, node: FlowNode) =>
+      void nodeClicks.push(node.id),
+  });
+  await act();
+  const node = pane() as unknown as DrawnNode;
+  // bare pane, inside the span of the bodies' box
+  await userEvent.click(node, at(360, 220));
+  assert.strictEqual(
+    paneClicks,
+    1,
+    'the press between the cards reached the pane',
+  );
+  // b's header: inside the span, above b's body
+  await userEvent.click(node, at(560, 270));
+  assert.deepStrictEqual(nodeClicks, ['b'], 'the header selects its node');
+});
+
+test('a press on a body’s plain part selects and drags its node; its controls keep theirs', async () => {
+  // Core runs a press's defaults on the node that took it, so a body took
+  // the card's select and drag with it — a card mostly body could barely be
+  // grabbed. Its controls still get theirs.
+  let pressed = 0;
+  const withButton: FlowNodeType = {
+    size: { width: 200, height: 120 },
+    headerHeight: 20,
+    render: () =>
+      h(
+        'box',
+        { style: { flexGrow: 1, padding: 10 } },
+        h('box', {
+          style: { width: 40, height: 20, backgroundColor: '#888' },
+          onClick: () => void pressed++,
+        }),
+      ),
+  };
+  const { recorded } = await mount({
+    nodes: [
+      {
+        id: 'a',
+        type: 'form',
+        position: { x: 100, y: 100 },
+        width: 200,
+        height: 120,
+      },
+    ],
+    edges: [],
+    nodeTypes: { form: withButton },
+  });
+  await act();
+  const node = pane() as unknown as DrawnNode;
+  // the control: 10 px into the body (x 105 + 10, y 120 + 10)
+  await userEvent.click(node, at(125, 135));
+  assert.strictEqual(pressed, 1, 'the control inside the body took its click');
+  assert.strictEqual(ofType(recorded.nodeChanges, 'position').length, 0);
+
+  // the body's plain part, well clear of the control: drag it 30 px
+  await act(() => {
+    fireEvent.mouseDown(node, at(250, 190));
+    fireEvent.mouseMove(node, at(265, 200));
+    fireEvent.mouseMove(node, at(280, 210));
+    fireEvent.mouseUp(node, at(280, 210));
+  });
+  const moved = ofType(recorded.nodeChanges, 'position');
+  const last = moved[moved.length - 1];
+  assert.ok(last?.type === 'position', 'the drag moved the node');
+  assert.deepStrictEqual(last.position, { x: 130, y: 120 });
+  const selected = ofType(recorded.nodeChanges, 'select');
+  assert.ok(
+    selected.some((c) => c.type === 'select' && c.id === 'a' && c.selected),
+    'and selected it',
+  );
+  assert.strictEqual(pressed, 1, 'the control saw none of it');
+});
+
+test('an opaque body over a lower card’s body hides it, in the cards’ paint order', async () => {
+  // Every body is over every card — they share one layer above the graph —
+  // so a transparent body showed whatever body lay under it: two cards'
+  // controls mixed in one box. The lower card's body here is solid red to
+  // its edges; the upper card, selected (so painted later), has an empty
+  // body over the overlap.
+  const redType: FlowNodeType = {
+    size: { width: 200, height: 120 },
+    headerHeight: 20,
+    render: () =>
+      h('box', { style: { flexGrow: 1, backgroundColor: '#ff0000' } }),
+  };
+  const emptyType: FlowNodeType = {
+    size: { width: 200, height: 120 },
+    headerHeight: 20,
+    render: () => h('box', { style: { flexGrow: 1 } }),
+  };
+  const { ctx } = await renderX11(
+    h(TypedFlow, {
+      nodes: [
+        { id: 'under', type: 'red', position: { x: 100, y: 100 } },
+        {
+          id: 'over',
+          type: 'empty',
+          position: { x: 160, y: 140 },
+          selected: true,
+        },
+      ],
+      edges: [],
+      nodeTypes: { red: redType, empty: emptyType },
+    }),
+  );
+  await act();
+  assert.strictEqual(bodyLayer().children.length, 2, 'precondition');
+  // inside the overlap, well inside the upper card's body: x 160+5..,
+  // y 140+20..; and inside the lower card's red body (100+5..295, 120..215)
+  assert.ok(
+    !isNear(await pixelAt(ctx, 220, 190), '#ff0000'),
+    'the upper body hides the red body under it',
+  );
+  await expectPixel(ctx, 130, 150, '#ff0000', {
+    message: 'and the red body shows where nothing is over it',
+  });
+});
+
+test('a dragged node’s body is lifted over the others, as its card is', async () => {
+  await mount({
+    nodes: [
+      {
+        id: 'a',
+        type: 'form',
+        position: { x: 100, y: 100 },
+        width: 200,
+        height: 120,
+      },
+      {
+        id: 'b',
+        type: 'form',
+        position: { x: 400, y: 100 },
+        width: 200,
+        height: 120,
+      },
+    ],
+    edges: [],
+    nodeTypes: { form: sizedType },
+  });
+  await act();
+  const firstBody = () => retained(bodyLayer().children[0]).abs.x;
+  const node = pane() as unknown as DrawnNode;
+  // drag `a` (declared first, so painted first) by its header
+  await act(() => {
+    fireEvent.mouseDown(node, at(150, 108));
+    fireEvent.mouseMove(node, at(170, 118));
+    fireEvent.mouseMove(node, at(190, 128));
+  });
+  const last = bodyLayer().children[bodyLayer().children.length - 1];
+  assert.ok(
+    retained(last).abs.x < retained(bodyLayer().children[0]).abs.x,
+    'mid-drag, `a`’s body (the left one) is the last child — on top',
+  );
+  await act(() => fireEvent.mouseUp(node, at(190, 128)));
+  assert.ok(firstBody() < 400, 'after the drop, back in declaration order');
+});
+
+test('a card over another card’s body is painted over it, border and header', async () => {
+  // Every body shares one layer over every card, so the lower card's body
+  // covered whatever of the upper card was not body — its header, border,
+  // handles: a selected node's outline behind the node under it. Each
+  // mounted card is now painted in the bodies' layer, just under its body.
+  const redType: FlowNodeType = {
+    size: { width: 200, height: 120 },
+    headerHeight: 20,
+    render: () =>
+      h('box', { style: { flexGrow: 1, backgroundColor: '#ff0000' } }),
+  };
+  const { ctx } = await renderX11(
+    h(TypedFlow, {
+      nodes: [
+        { id: 'under', type: 'red', position: { x: 100, y: 100 } },
+        // selected, so painted over `under`, and bordered in the accent;
+        // its header and left border cross `under`'s red body
+        {
+          id: 'over',
+          type: 'red',
+          position: { x: 180, y: 160 },
+          selected: true,
+          style: { borderColor: '#00ff00' },
+        },
+      ],
+      edges: [],
+      nodeTypes: { red: redType },
+      palette: { accent: '#00ff00' },
+    }),
+  );
+  await act();
+  // `over`'s left border, 2 px wide at x 180..182, at y 170: inside
+  // `under`'s red body (x 105..295, y 120..215)
+  await expectPixel(ctx, 180, 190, '#00ff00', {
+    message: 'the upper card’s border is over the lower card’s body',
+  });
+  // `over`'s header band (y 160..180), right of the border
+  assert.ok(
+    !isNear(await pixelAt(ctx, 240, 170), '#ff0000'),
+    'and so is its header',
+  );
+  await expectPixel(ctx, 130, 150, '#ff0000', {
+    message: 'the lower body still shows where nothing is over it',
+  });
+});
+
+test('the minimap and the controls stay over mounted bodies', async () => {
+  // The bodies' layer is over the graph, and the panels were the graph's:
+  // a card that reached a corner covered them. With bodies mounted they are
+  // painted on canvases over the bodies' layer.
+  const redType: FlowNodeType = {
+    size: { width: 400, height: 300 },
+    headerHeight: 20,
+    render: () =>
+      h('box', { style: { flexGrow: 1, backgroundColor: '#ff0000' } }),
+  };
+  const { ctx } = await renderX11(
+    h(TypedFlow, {
+      // one big card under both corners the panels sit in
+      nodes: [{ id: 'big', type: 'red', position: { x: -20, y: 40 } }],
+      edges: [],
+      nodeTypes: { red: redType },
+      minimap: true,
+      controls: true,
+      palette: { surface: '#00ff00', surfaceBorder: '#00ff00' },
+      style: { width: 380, height: 360 },
+    }),
+    { width: 380, height: 360 },
+  );
+  await act();
+  const node = pane() as unknown as { panelRects(): FlowRect[] };
+  const [map, controls] = node.panelRects();
+  assert.ok(map && controls, 'precondition: both panels are shown');
+  // each panel's centre, over the card's red body (x −15..375, y 60..335)
+  const inside = (r: FlowRect) => ({
+    x: Math.round(r.x + r.width / 2),
+    y: Math.round(r.y + r.height / 2),
+  });
+  for (const [name, r] of [
+    ['minimap', map],
+    ['controls', controls],
+  ] as const) {
+    const p = inside(r);
+    assert.ok(
+      !isNear(await pixelAt(ctx, p.x, p.y), '#ff0000'),
+      `the ${name} is over the red body at (${p.x}, ${p.y})`,
+    );
+  }
+});
+
+test('the graph leaves out the cards the bodies’ layer shows, and takes them back while bodies are held', async () => {
+  await mount({
+    nodes: Array.from({ length: 10 }, (_, i) => ({
+      id: `n${i}`,
+      type: 'form',
+      position: { x: 20 + (i % 5) * 140, y: 60 + Math.floor(i / 5) * 150 },
+      width: 120,
+      height: 100,
+    })),
+    edges: [],
+    nodeTypes: { form: sizedType },
+  });
+  await act();
+  const shown = () =>
+    (pane() as unknown as { _shownBodies: ReadonlySet<string> })._shownBodies;
+  assert.strictEqual(shown().size, 10, 'every mounted card is the layer’s');
+  // a wheel zoom over the budget holds the bodies: their cards come back
+  await heldClock(async () => {
+    await userEvent.wheel(pane() as unknown as DrawnNode, {
+      ...at(10, 10),
+      deltaY: -24,
+    });
+    assert.ok(bodiesAway(), 'precondition: held');
+    assert.strictEqual(shown().size, 0, 'held bodies hand their cards back');
+  });
+});
+
+test('a card is painted again for what it shows, not for its body’s own data', async () => {
+  // A live body patches its data a few times a second — a queue length, a
+  // chart's points. Keyed on the node object, its card repainted on every
+  // patch, the title shaped and drawn again for nothing.
+  const at = (data: Record<string, unknown>) =>
+    [
+      {
+        id: 'a',
+        type: 'form',
+        position: { x: 100, y: 100 },
+        data,
+      },
+    ] as FlowNode[];
+  // held, as an app holds its node types: what paints cards is keyed on it
+  const nodeTypes = { form: sizedType };
+  const element = (list: FlowNode[]) =>
+    h(TypedFlow, { nodes: list, edges: [], nodeTypes });
+  const { rerender } = await renderX11(element(at({ label: 'a', queue: 1 })));
+  await act();
+  const key = () =>
+    (cardBox().children[0].props as { cacheKey: string }).cacheKey;
+  const first = key();
+  await act(() => rerender(element(at({ label: 'a', queue: 2 }))));
+  assert.strictEqual(key(), first, 'a body’s own data paints nothing of it');
+  await act(() => rerender(element(at({ label: 'renamed', queue: 2 }))));
+  assert.notStrictEqual(key(), first, 'its label does');
+});
+
+test('a data change to a node whose card the layer draws claims nothing, and rebuilds no GL world', async () => {
+  // Nothing of it is the pane's, or the world's: the layer repaints the
+  // card, if anything it shows changed.
+  const element = (list: FlowNode[]) =>
+    h(FLOW_ELEMENT, {
+      nodes: list,
+      edges: edges(),
+      renderer: 'gl',
+      style: { flexGrow: 1 },
+    });
+  const base = nodes();
+  const { rerender, ctx } = await renderX11(element(base));
+  const node = pane() as unknown as GlPane & {
+    setShownBodies(ids: ReadonlySet<string>): void;
+    paintCard(id: string, ctx: unknown, abs: XYPosition): void;
+    invalidate(...a: unknown[]): void;
+  };
+  node.setGlRequest(() => {});
+  await act();
+  node.setShownBodies(new Set(['a']));
+  node.paintCard('a', ctx, { x: 0, y: 0 });
+  const world = node.glFrame(null)!;
+  const claims: unknown[][] = [];
+  const own = node.invalidate.bind(node);
+  node.invalidate = (...a: unknown[]) => {
+    claims.push(a);
+    own(...a);
+  };
+  const patched = base.map((n) =>
+    n.id === 'a' ? { ...n, data: { ...(n.data ?? {}), queue: 7 } } : n,
+  );
+  await act(() => rerender(element(patched)));
+  assert.deepStrictEqual(claims, [], 'nothing of the pane is claimed');
+  assert.strictEqual(
+    node.glFrame(world.key)!.world,
+    null,
+    'and the GL world on the GPU is still the graph',
+  );
+});
+
+test('a data change a card does not show claims nothing, and one it shows claims its card', async () => {
+  const element = (list: FlowNode[]) =>
+    h(FLOW_ELEMENT, { nodes: list, edges: edges(), style: { flexGrow: 1 } });
+  const base = nodes();
+  const { rerender } = await renderX11(element(base));
+  await act();
+  const node = pane() as unknown as { invalidate(...a: unknown[]): void };
+  const claims: unknown[][] = [];
+  const own = node.invalidate.bind(node);
+  node.invalidate = (...a: unknown[]) => {
+    claims.push(a);
+    own(...a);
+  };
+  const patch = (data: Record<string, unknown>) =>
+    base.map((n) =>
+      n.id === 'a' ? { ...n, data: { ...(n.data ?? {}), ...data } } : n,
+    );
+  await act(() => rerender(element(patch({ queue: 7 }))));
+  assert.deepStrictEqual(claims, [], 'a field the card does not draw');
+  await act(() => rerender(element(patch({ queue: 7, label: 'renamed' }))));
+  assert.ok(claims.length > 0, 'its label, which it does');
+});
+
+test('under GL a shown card stays in the world until the bodies’ layer has painted it', async () => {
+  // The layer is 2D, over the surface: it reaches the screen with the
+  // window's paint, and a GL frame presents at once. Leaving the card out
+  // of the world from the commit that mounted its body showed edges with no
+  // cards under them for as long as that paint took — the whole first paint
+  // of a scene of charts, and again after every zoom that held the bodies.
+  const { ctx } = await renderX11(
+    h(FLOW_ELEMENT, {
+      nodes: bodyNode(),
+      edges: [],
+      renderer: 'gl',
+      style: { flexGrow: 1 },
+    }),
+  );
+  const node = pane() as unknown as GlPane & {
+    setShownBodies(ids: ReadonlySet<string>): void;
+    paintCard(id: string, ctx: unknown, abs: XYPosition): void;
+  };
+  let asked = 0;
+  node.setGlRequest(() => void asked++);
+  await act();
+  const cards = () =>
+    (node.glFrame(null)!.world as { nodes: { id: string }[] }).nodes.map(
+      (n) => n.id,
+    );
+  assert.deepStrictEqual(cards(), ['a'], 'precondition: the world draws it');
+  // the commit that mounts its body
+  node.setShownBodies(new Set(['a']));
+  assert.deepStrictEqual(cards(), ['a'], 'shown and not yet painted: kept');
+  // the layer's paint
+  const before = asked;
+  node.paintCard('a', ctx, { x: 0, y: 0 });
+  assert.ok(asked > before, 'a frame is asked for once the layer has it');
+  assert.deepStrictEqual(cards(), [], 'and the world leaves it out');
+  // held out of a zoom, then shown again: kept until it is painted again
+  node.setShownBodies(new Set());
+  node.setShownBodies(new Set(['a']));
+  assert.deepStrictEqual(cards(), ['a'], 'a card shown again is kept again');
+});
+
+test('under GL a zoom that holds the bodies draws their cards from its first frame', async () => {
+  // The bodies are hidden by <Flow>'s commit, and the graph used to take
+  // their cards back only when that commit reported it (`setShownBodies`).
+  // A GL frame does not wait for React's: one that landed between the two
+  // drew neither — edges and no nodes, for a frame at the start of a zoom.
+  // The raw pane, with nothing to report back, is that frame.
+  const held: boolean[] = [];
+  const { ctx } = await renderX11(
+    h(FLOW_ELEMENT, {
+      nodes: bodyNode(),
+      edges: [],
+      nodeTypes: { form: sizedType },
+      renderer: 'gl',
+      // every gesture zoom holds the bodies
+      adaptive: { budgetMs: 0 },
+      onNodeBodies: (_b: unknown, _s: boolean, _o: unknown, h: boolean) =>
+        void held.push(h),
+      style: { flexGrow: 1 },
+    }),
+  );
+  const node = pane() as unknown as GlPane & {
+    setShownBodies(ids: ReadonlySet<string>): void;
+    paintCard(id: string, ctx: unknown, abs: XYPosition): void;
+  };
+  node.setGlRequest(() => {});
+  await act();
+  const cards = () =>
+    (node.glFrame(null)!.world as { nodes: { id: string }[] }).nodes.map(
+      (n) => n.id,
+    );
+  // shown in the layer and painted there: the graph leaves it out
+  node.setShownBodies(new Set(['a']));
+  node.paintCard('a', ctx, { x: 0, y: 0 });
+  assert.deepStrictEqual(cards(), [], 'precondition: the layer draws it');
+  await heldClock(async () => {
+    await userEvent.wheel(pane() as unknown as DrawnNode, {
+      ...at(150, 150),
+      deltaY: -24,
+    });
+  });
+  assert.ok(held.includes(true), 'precondition: the zoom held the bodies');
+  assert.deepStrictEqual(
+    cards(),
+    ['a'],
+    'the graph draws the card before anything reports the body hidden',
+  );
+  // …and keeps it once the report comes and goes, until painted again
+  node.setShownBodies(new Set());
+  node.setShownBodies(new Set(['a']));
+  assert.deepStrictEqual(cards(), ['a']);
+});
+
+test('under GL a pan asks for a GL frame and claims nothing of the 2D pane', async () => {
+  // The pan is the surface's offset uniform. Claiming the pane's box every
+  // step repainted it under the surface for nothing, and with bodies
+  // mounted the claim reached core's overlay too (react-x11#644).
+  await renderX11(
+    h(FLOW_ELEMENT, {
+      nodes: bodyNode(),
+      edges: [],
+      renderer: 'gl',
+      style: { flexGrow: 1 },
+    }),
+  );
+  const node = pane() as unknown as {
+    setGlRequest(fn: () => void): void;
+    setViewport(v: object): void;
+    invalidate(...a: unknown[]): void;
+  };
+  let asked = 0;
+  node.setGlRequest(() => void asked++);
+  await act();
+  const claims: unknown[][] = [];
+  const own = node.invalidate.bind(node);
+  node.invalidate = (...a: unknown[]) => {
+    claims.push(a);
+    own(...a);
+  };
+  const before = asked;
+  node.setViewport({ x: 30, y: 10, zoom: 1 });
+  assert.ok(asked > before, 'a GL frame was asked for');
+  assert.strictEqual(claims.length, 0, 'and nothing of the pane was claimed');
+  // nor does a zoom: the frame decides what it rebuilds
+  const zoomed = asked;
+  node.setViewport({ x: 30, y: 10, zoom: 1.5 });
+  assert.ok(asked > zoomed, 'a zoom asks for a GL frame');
+  assert.strictEqual(claims.length, 0, 'and claims nothing either');
+});
+
+/** The GL frame `<Flow>`'s surface asks the pane for, and how it asks. */
+interface GlPane {
+  setGlRequest(fn: () => void): void;
+  setViewport(v: object): void;
+  glFrame(
+    lastKey: string | null,
+    lastLifted?: string | null,
+  ): {
+    world: unknown;
+    key: string;
+    zoom: number;
+    lifted?: unknown;
+    liftedKey?: string | null;
+  } | null;
+}
+
+async function glPane(
+  props: Record<string, unknown> = {},
+): Promise<{ node: GlPane; asked: () => number }> {
+  await renderX11(
+    h(FLOW_ELEMENT, {
+      nodes: nodes(),
+      edges: edges(),
+      renderer: 'gl',
+      style: { flexGrow: 1 },
+      ...props,
+    }),
+  );
+  const node = pane() as unknown as GlPane;
+  let asked = 0;
+  node.setGlRequest(() => void asked++);
+  await act();
+  return { node, asked: () => asked };
+}
+
+test('under GL a zoom gesture draws the world it has, scaled, and rebuilds it once the zoom rests', async () => {
+  // Every step of a zoom built, packed and uploaded the whole world again
+  // — 19 ms a step on a 300-node graph, where a step of a pan is a uniform.
+  const { node, asked } = await glPane();
+  let frame = node.glFrame(null)!;
+  assert.ok(frame.world, 'the first frame builds the world');
+  // a zoom alone is a jump — a control's button, fitView — drawn exactly
+  node.setViewport({ x: 0, y: 0, zoom: 1.2 });
+  frame = node.glFrame(frame.key)!;
+  assert.ok(frame.world, 'a jump rebuilds at once');
+  assert.strictEqual(frame.zoom, 1);
+  const key = frame.key;
+  // the steps that follow it are a gesture
+  node.setViewport({ x: 0, y: 0, zoom: 1.5 });
+  frame = node.glFrame(key)!;
+  assert.strictEqual(frame.world, null, 'a step of a gesture rebuilds nothing');
+  assert.strictEqual(frame.key, key, 'the world on the GPU is still the one');
+  assert.ok(
+    Math.abs(frame.zoom - 1.5 / 1.2) < 1e-9,
+    `and is drawn magnified from the zoom it was built at: ${frame.zoom}`,
+  );
+  node.setViewport({ x: 0, y: 0, zoom: 1.4 });
+  frame = node.glFrame(key)!;
+  assert.strictEqual(frame.world, null, 'out as well as in');
+  // once it holds still, the pane asks for the frame that rebuilds it
+  const before = asked();
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.ok(asked() > before, 'the rest asks for a frame by itself');
+  frame = node.glFrame(key)!;
+  assert.ok(frame.world, 'which rebuilds the world at the zoom it rested at');
+  assert.strictEqual(frame.zoom, 1);
+});
+
+test('under GL a zoom gesture never magnifies one build past the span', async () => {
+  const { node } = await glPane();
+  let frame = node.glFrame(null)!;
+  node.setViewport({ x: 0, y: 0, zoom: 1.1 });
+  frame = node.glFrame(frame.key)!;
+  node.setViewport({ x: 0, y: 0, zoom: 1.6 });
+  frame = node.glFrame(frame.key)!;
+  assert.strictEqual(frame.world, null, 'precondition: a scaled step');
+  // 2.4 is more than twice the 1.1 the world was built at
+  node.setViewport({ x: 0, y: 0, zoom: 2.4 });
+  frame = node.glFrame(frame.key)!;
+  assert.ok(frame.world, 'a step past the span rebuilds, mid-gesture');
+  assert.strictEqual(frame.zoom, 1);
+  node.setViewport({ x: 0, y: 0, zoom: 2.5 });
+  frame = node.glFrame(frame.key)!;
+  assert.strictEqual(frame.world, null, 'and the gesture scales from there');
+  assert.ok(Math.abs(frame.zoom - 2.5 / 2.4) < 1e-9);
+});
+
+test('under GL a change to the graph mid-zoom rebuilds at the zoom of the moment', async () => {
+  const { node } = await glPane();
+  let frame = node.glFrame(null)!;
+  node.setViewport({ x: 0, y: 0, zoom: 1.1 });
+  frame = node.glFrame(frame.key)!;
+  node.setViewport({ x: 0, y: 0, zoom: 1.3 });
+  // the world the surface holds is not the one the pane last built — an
+  // atlas reset, or anything that moved the version
+  frame = node.glFrame(null)!;
+  assert.ok(frame.world, 'rebuilt');
+  assert.strictEqual(frame.zoom, 1, 'at the zoom it is drawn at, unscaled');
+});
+
+test('a panel canvas is asked to repaint its own box, not the window', async () => {
+  // A claim with no region is the whole window: every pan step and every
+  // dash tick became a full frame.
+  await mount({
+    nodes: bodyNode(),
+    edges: [],
+    nodeTypes: { form: sizedType },
+    minimap: true,
+    controls: true,
+  });
+  await act();
+  const calls: unknown[][] = [];
+  const canvas = {
+    invalidate: (...a: unknown[]) => void calls.push(a),
+  };
+  const node = pane() as unknown as {
+    setPanelCanvases(c: unknown[]): void;
+    setViewport(v: object): void;
+  };
+  node.setPanelCanvases([canvas]);
+  calls.length = 0;
+  node.setViewport({ x: 12, y: 0, zoom: 1 });
+  assert.ok(calls.length > 0, 'the canvas is asked to repaint');
+  for (const [layout, damage, reason] of calls) {
+    assert.strictEqual(layout, false);
+    assert.strictEqual(damage, canvas, 'its own box');
+    assert.strictEqual(reason, 'props');
+  }
+});
+
+/** The pane's two panel canvases, each told apart by its box, as `<Flow>`
+ *  mounts them where node types mount bodies. */
+function panelCanvases(): { map: RetainedNode; controls: RetainedNode } {
+  const canvases = (pane() as unknown as { _panelCanvases: RetainedNode[] })
+    ._panelCanvases;
+  assert.strictEqual(canvases.length, 2, 'the minimap’s and the controls’');
+  // the minimap sits bottom-right, the controls bottom-left
+  const [a, b] = canvases;
+  return a.abs.x > b.abs.x ? { map: a, controls: b } : { map: b, controls: a };
+}
+
+test('a change to the graph repaints the minimap’s canvas, and not the controls’', async () => {
+  // The controls draw nothing of the graph. Repainting their canvas with
+  // every step of a drag repainted the minimap with it, since each canvas
+  // built the panels its box reached — and theirs reached both.
+  await mount({
+    nodes: bodyNode(),
+    edges: [],
+    nodeTypes: { form: sizedType },
+    minimap: true,
+    controls: true,
+  });
+  await act();
+  const { map, controls } = panelCanvases();
+  const asked = new Map<RetainedNode, number>();
+  for (const canvas of [map, controls]) {
+    const own = canvas.invalidate.bind(canvas);
+    canvas.invalidate = ((...a: Parameters<typeof own>) => {
+      asked.set(canvas, (asked.get(canvas) ?? 0) + 1);
+      own(...a);
+    }) as typeof canvas.invalidate;
+  }
+  const node = pane() as unknown as DrawnNode;
+  await act(() => {
+    fireEvent.mouseDown(node, at(115, 110));
+    fireEvent.mouseMove(node, at(135, 125));
+    fireEvent.mouseUp(node, at(135, 125));
+  });
+  assert.ok((asked.get(map) ?? 0) > 0, 'the minimap follows the node');
+  assert.strictEqual(asked.get(controls) ?? 0, 0, 'the controls do not');
+  // …and a pan is the minimap's alone too: its view box moves
+  asked.clear();
+  (pane() as unknown as { setViewport(v: object): void }).setViewport({
+    x: 20,
+    y: 0,
+    zoom: 1,
+  });
+  assert.ok((asked.get(map) ?? 0) > 0);
+  assert.strictEqual(asked.get(controls) ?? 0, 0);
+});
+
+test('the controls’ canvas paints the controls without walking the graph', async () => {
+  await mount({
+    nodes: bodyNode(),
+    edges: [],
+    nodeTypes: { form: sizedType },
+    minimap: true,
+    controls: true,
+  });
+  await act();
+  const { map, controls } = panelCanvases();
+  const node = pane() as unknown as { _miniMap(): unknown };
+  let walks = 0;
+  const own = node._miniMap.bind(node);
+  node._miniMap = () => {
+    walks++;
+    return own();
+  };
+  await act(() => controls.invalidate(false, controls, 'props'));
+  await act();
+  assert.strictEqual(walks, 0, 'the minimap is not the controls’ to build');
+  await act(() => map.invalidate(false, map, 'props'));
+  await act();
+  assert.ok(walks > 0, 'the minimap’s canvas builds it');
+});
+
+// --- the device-pixel grid at a fractional scale ------------------------------
+//
+// Windows runs most laptops at 125%, where one logical pixel is 1.25 device
+// ones and layout rounds a box's two edges to the device grid separately.
+// These pin what that broke.
+
+const AT_125 = {
+  scale: 1.25,
+  width: 480,
+  height: 320,
+  screen: { width: 1000, height: 800 },
+} as unknown as RenderX11Options;
+
+/** Three mounted cards side by side. */
+function threeBodies(): FlowNode[] {
+  return ['a', 'b', 'c'].map((id, i) => ({
+    id,
+    type: 'form',
+    position: { x: 20 + i * 150, y: 60 },
+    width: 130,
+    height: 100,
+  }));
+}
+
+test('at 1.25x a pan moves the bodies’ box by whole pixels, the same size, and re-renders no card', async () => {
+  // The pane rounded a card's offset from the graph's origin to logical
+  // pixels, against an origin rounded separately — so as a pan's fraction
+  // cycled against the device grid, a card's offset flipped by a pixel,
+  // the bodies were handed out anew, and the box around them changed size
+  // with them. Core moves a `<glarea>` child's pixels only when it moved
+  // and nothing else (react-x11#644): every step of a GL pan over bodies
+  // repainted all of them. 20 frames a second on the widgets scene; 50
+  // with the box on the grid.
+  const flow: { current: FlowInstance | null } = { current: null };
+  await renderX11(
+    h(TypedFlow, {
+      ref: flow,
+      nodes: threeBodies(),
+      edges: [],
+      nodeTypes: { form: sizedType },
+    }),
+    AT_125,
+  );
+  await act();
+  const layer0 = bodyLayer().abs;
+  const offsets = (): string =>
+    bodyLayer()
+      .children.map((c) => {
+        const r = retained(c).abs;
+        return `${r.x - bodyLayer().abs.x},${r.y - bodyLayer().abs.y},${r.width}x${r.height}`;
+      })
+      .join('|');
+  const inside = offsets();
+  const cardProps = bodyLayer().children.map((c) => retained(c).props);
+  for (const [x, y] of [
+    [1.7, 0.3],
+    [4.1, 2.9],
+    [7.35, 3.3],
+    [9.8, 5.05],
+    [12.6, 7.4],
+  ]) {
+    await act(() => flow.current!.setViewport({ x, y }));
+    const layer = bodyLayer().abs;
+    assert.deepStrictEqual(
+      [layer.width, layer.height],
+      [layer0.width, layer0.height],
+      `the box kept its size at (${x}, ${y})`,
+    );
+    assert.ok(
+      Number.isInteger(layer.x) && Number.isInteger(layer.y),
+      'and sits on whole device pixels',
+    );
+    assert.strictEqual(offsets(), inside, 'every card rode along unchanged');
+  }
+  bodyLayer().children.forEach((c, i) =>
+    assert.ok(retained(c).props === cardProps[i], `card ${i} not re-rendered`),
+  );
+});
+
+test('at 1.25x a dragged card’s box moves and keeps its size', async () => {
+  // The box a card is laid out in was the gap between two edges, each put
+  // on the device grid: dragged a fraction of a pixel, the edges rounded
+  // apart and the box grew or shrank by one. A box that changed size is not
+  // a box that only moved, so every step of a drag measured the content
+  // floors and repainted the card where core would have moved it.
+  const flow: { current: FlowInstance | null } = { current: null };
+  const graph = (x: number): FlowNode[] => [
+    { ...threeBodies()[0], position: { x, y: 100 } },
+  ];
+  const { rerender } = await renderX11(
+    h(TypedFlow, {
+      ref: flow,
+      nodes: graph(100),
+      edges: [],
+      nodeTypes: { form: sizedType },
+    }),
+    AT_125,
+  );
+  await act();
+  const card = (): { width: number; height: number } =>
+    retained(bodyLayer().children[0]).abs;
+  const size = card();
+  for (const x of [100.3, 100.9, 101.45, 102.2, 103.7]) {
+    await act(() =>
+      rerender(
+        h(TypedFlow, {
+          ref: flow,
+          nodes: graph(x),
+          edges: [],
+          nodeTypes: { form: sizedType },
+        }),
+      ),
+    );
+    assert.deepStrictEqual(
+      [card().width, card().height],
+      [size.width, size.height],
+      `the card at x=${x} kept its size`,
+    );
+  }
+});
+
+test('a drag step re-renders the card that moved and no other', async () => {
+  // Every card element was made anew whenever any body moved, and each card
+  // canvas got a new `onDraw` with it — which core reads as new content and
+  // repaints (src/nodes/canvas.js). A drag over 36 bodies claimed 36 canvases
+  // a step, past the frame's rect cap: one claim the size of the pane, every
+  // card and every widget painted again, to move one of them.
+  await mount({
+    nodes: threeBodies(),
+    edges: [],
+    nodeTypes: { form: sizedType },
+  });
+  await act();
+  const cards = () => bodyLayer().children.map((c) => retained(c));
+  const [, b0, c0] = cards();
+  const before = {
+    b: b0.props,
+    c: c0.props,
+    bDraw: retained(b0.children[0]).props.onDraw,
+  };
+  const seam = pane() as unknown as {
+    defaultMouseDown(ev: unknown): void;
+    defaultMouseDrag(ev: unknown): void;
+    defaultMouseUp(ev: unknown): void;
+  };
+  const synth = (x: number, y: number) => ({
+    x,
+    y,
+    button: 1,
+    shiftKey: false,
+    ctrlKey: false,
+    detail: 1,
+    preventDefault() {},
+    capturePointer() {},
+  });
+  const abs = pane().abs;
+  // card `a` by its header strip
+  await act(() => seam.defaultMouseDown(synth(abs.x + 80, abs.y + 70)));
+  for (let step = 1; step <= 4; step++) {
+    await act(() =>
+      seam.defaultMouseDrag(
+        synth(abs.x + 80 + step * 7, abs.y + 70 + step * 3),
+      ),
+    );
+  }
+  await act(() => seam.defaultMouseUp(synth(abs.x + 108, abs.y + 82)));
+  const after = cards();
+  const b1 = after.find((c) => c.props === before.b);
+  const c1 = after.find((c) => c.props === before.c);
+  assert.ok(b1, 'card b was not re-rendered');
+  assert.ok(c1, 'card c was not re-rendered');
+  assert.strictEqual(
+    retained(b1.children[0]).props.onDraw,
+    before.bDraw,
+    'and its canvas kept its `onDraw`',
+  );
+});
+
+/**
+ * Real time until `ready()` holds, or `ms` has gone by. A dash tick waits
+ * out twice what the pane's frames have been costing (`_tickCost`), so a
+ * slow machine — a CI runner painting through the in-process server — ticks
+ * later than a fast one, and a fixed wait for "two ticks" is a flake there:
+ * it failed on Node 20 and 24 runners that passed on Node 22.
+ */
+async function until(ready: () => boolean, ms = 3000): Promise<void> {
+  const end = Date.now() + ms;
+  while (!ready() && Date.now() < end) {
+    await new Promise((r) => setTimeout(r, 20));
+  }
+}
+
+test('a dash tick repaints neither the minimap nor the controls', async () => {
+  // The panels draw no dashes. Asked to repaint on every change to the
+  // pane, dash ticks included, an idle pane with one animated edge kept
+  // painting both canvases 17 times a second — and a tick landing in a pan
+  // frame put a claim inside the band the pan was about to move.
+  await mount({
+    nodes: [...threeBodies().slice(0, 2)],
+    edges: [{ id: 'a-b', source: 'a', target: 'b', animated: true }],
+    nodeTypes: { form: sizedType },
+    minimap: true,
+    controls: true,
+  });
+  await act();
+  const reasons: string[] = [];
+  const canvas = {
+    invalidate: (_layout: boolean, _damage: unknown, reason: string) =>
+      void reasons.push(reason),
+  };
+  const node = pane() as unknown as {
+    setPanelCanvases(c: unknown[]): void;
+    invalidate(...a: unknown[]): void;
+  };
+  node.setPanelCanvases([canvas]);
+  const ticks: unknown[] = [];
+  const own = node.invalidate.bind(node);
+  node.invalidate = (...a: unknown[]) => {
+    if (a[2] === 'animation') ticks.push(a);
+    own(...a);
+  };
+  reasons.length = 0;
+  await until(() => ticks.length >= 2);
+  assert.ok(ticks.length >= 2, 'the dash moved');
+  assert.deepStrictEqual(reasons, [], 'and the panels were left alone');
+});
+
+test('a dash tick claims only what the pane shows of its edges', async () => {
+  // The box a tick repaints is the drawn edges', and an animated edge on
+  // its way out of the pane takes that box past the pane's sides — here
+  // two thousand pixels past. Claimed whole, a tick repainted everything
+  // the window has beside the graph, sixteen times a second.
+  await mount({
+    nodes: [
+      { id: 'a', position: { x: 100, y: 100 }, data: { label: 'a' } },
+      { id: 'b', position: { x: 2600, y: 900 }, data: { label: 'b' } },
+    ],
+    edges: [{ id: 'a-b', source: 'a', target: 'b', animated: true }],
+  });
+  await act();
+  const node = pane() as unknown as {
+    contentBox(): { x: number; y: number; width: number; height: number };
+    invalidate(...a: unknown[]): void;
+  };
+  const claims: { x: number; y: number; width: number; height: number }[] = [];
+  const own = node.invalidate.bind(node);
+  node.invalidate = (...a: unknown[]) => {
+    if (a[2] === 'animation') claims.push(a[1] as (typeof claims)[number]);
+    own(...a);
+  };
+  await until(() => claims.length >= 2);
+  assert.ok(claims.length >= 2, 'the dash moved');
+  const box = node.contentBox();
+  for (const claim of claims) {
+    assert.ok(
+      claim.x >= box.x &&
+        claim.y >= box.y &&
+        claim.x + claim.width <= box.x + box.width &&
+        claim.y + claim.height <= box.y + box.height,
+      `a tick claimed ${JSON.stringify(claim)}, past ${JSON.stringify(box)}`,
+    );
+  }
+});
+
+test('a 2D pan over mounted bodies moves their pixels with the graph’s', async () => {
+  // The bodies are laid out in one box a pan moves by exactly the pan, and
+  // that box sat over the region the pane blits: every step declined the
+  // copy and repainted the pane and every body on it. The pane hands the
+  // box over as a rider (react-x11#671), and `<Flow>` clips it to the pane.
+  await mount({
+    nodes: threeBodies(),
+    edges: [],
+    nodeTypes: { form: sizedType },
+    minimap: true,
+    controls: true,
+  });
+  await act();
+  assert.ok(bodyLayer().children.length > 0, 'the bodies are mounted');
+  const wnd = (pane().root as unknown as { window: unknown }).window as {
+    scrollRegion(rect: unknown, dx: number, dy: number): boolean;
+  };
+  const moved: number[] = [];
+  const own = wnd.scrollRegion.bind(wnd);
+  wnd.scrollRegion = (rect, dx, dy) => {
+    moved.push(dx);
+    return own(rect, dx, dy);
+  };
+  const flow = pane() as unknown as { setViewport(v: object): void };
+  const layerX = bodyLayer().abs.x;
+  for (let step = 1; step <= 3; step++) {
+    await act(() => flow.setViewport({ x: step * 4, y: 0, zoom: 1 }));
+  }
+  assert.deepStrictEqual(moved, [4, 4, 4], 'every step moved the pixels');
+  assert.strictEqual(bodyLayer().abs.x, layerX + 12, 'and the bodies went too');
+});
+
+test('a pan past panel canvases still moves the pane’s pixels', async () => {
+  // Where node types mount bodies the minimap and controls are canvases of
+  // `<Flow>`'s own, over the pane, and each asks to repaint on every change
+  // to it — a claim of its paint bounds, core's damage slop included. The
+  // bands a pan carves out for its furniture stopped at the panel's box, so
+  // that pixel of slop landed inside the band the pan moves, and core, which
+  // will not move pixels something else just claimed, repainted the whole
+  // pane on every step instead.
+  await mount({
+    // mounting types, and nodes that use none of them: the stress
+    // example's lattice
+    nodes: nodes(),
+    edges: edges(),
+    nodeTypes: { form: sizedType },
+    minimap: true,
+    controls: true,
+  });
+  await act();
+  const wnd = (pane().root as unknown as { window: unknown }).window as {
+    scrollRegion(rect: unknown, dx: number, dy: number): boolean;
+  };
+  const moved: number[] = [];
+  const own = wnd.scrollRegion.bind(wnd);
+  wnd.scrollRegion = (rect, dx, dy) => {
+    moved.push(dx);
+    return own(rect, dx, dy);
+  };
+  const flow = pane() as unknown as { setViewport(v: object): void };
+  for (let step = 1; step <= 3; step++) {
+    await act(() => flow.setViewport({ x: step * 4, y: 0, zoom: 1 }));
+  }
+  assert.deepStrictEqual(moved, [4, 4, 4], 'every step moved the pixels');
+});
+
+test('the dashes sit a pan out, and every step of it moves the pixels', async () => {
+  // A tick claims the dashes inside the band a pan copies, which declines
+  // the copy: every frame a tick landed in repainted the pane whole.
+  await mount({
+    nodes: [
+      { id: 'a', position: { x: 100, y: 100 }, data: { label: 'a' } },
+      { id: 'b', position: { x: 400, y: 300 }, data: { label: 'b' } },
+    ],
+    edges: [{ id: 'a-b', source: 'a', target: 'b', animated: true }],
+  });
+  await act();
+  const wnd = (pane().root as unknown as { window: unknown }).window as {
+    scrollRegion(rect: unknown, dx: number, dy: number): boolean;
+  };
+  let moved = 0;
+  const own = wnd.scrollRegion.bind(wnd);
+  wnd.scrollRegion = (rect, dx, dy) => {
+    moved++;
+    return own(rect, dx, dy);
+  };
+  const node = pane() as unknown as {
+    setViewport(v: object): void;
+    invalidate(...a: unknown[]): void;
+  };
+  let ticks = 0;
+  const invalidate = node.invalidate.bind(node);
+  node.invalidate = (...a: unknown[]) => {
+    if (a[2] === 'animation') ticks++;
+    invalidate(...a);
+  };
+  const steps = 16;
+  for (let step = 1; step <= steps; step++) {
+    await act(() => node.setViewport({ x: step * 4, y: 0, zoom: 1 }));
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  await act();
+  assert.strictEqual(ticks, 0, 'no tick in the middle of the pan');
+  assert.strictEqual(moved, steps, 'and every step was a copy');
+  await until(() => ticks >= 2);
+  assert.ok(ticks >= 2, `the dashes march again once it stops (${ticks})`);
+});
+
+test('a pan with no body on screen commits nothing', async () => {
+  // The pane sent the bodies' origin on every step of a pan whether or not
+  // any body was laid out at it, and `<Flow>` re-rendered for each — the
+  // panels' canvases with it, whose new `onDraw` repainted the controls on
+  // every frame of a pan over a graph of plain cards. One node has a body,
+  // far off screen: a graph with none mounts no panels at all.
+  await mount({
+    nodes: [
+      ...nodes(),
+      { id: 'far', type: 'form', position: { x: 5000, y: 5000 } },
+    ],
+    edges: edges(),
+    nodeTypes: { form: sizedType },
+    minimap: true,
+    controls: true,
+  });
+  await act();
+  const { map, controls } = panelCanvases();
+  const before = [map.props, controls.props];
+  const flow = pane() as unknown as { setViewport(v: object): void };
+  for (let step = 1; step <= 3; step++) {
+    await act(() => flow.setViewport({ x: step * 4, y: 0, zoom: 1 }));
+  }
+  assert.ok(
+    map.props === before[0] && controls.props === before[1],
+    'neither canvas was committed to',
+  );
+});
+
+test('under GL a drag step asks for a GL frame and claims nothing of the window', async () => {
+  // The 2D pane under the surface shows nothing, and every claim of it was
+  // a window pass over it — a BeginDraw, a walk and a commit a drag step —
+  // whose one job was to reach `paint` and ask the surface for a frame.
+  await renderX11(
+    h(FLOW_ELEMENT, {
+      nodes: nodes(),
+      edges: edges(),
+      renderer: 'gl',
+      style: { flexGrow: 1 },
+    }),
+  );
+  const node = pane() as unknown as {
+    setGlRequest(fn: () => void): void;
+    defaultMouseDown(ev: unknown): void;
+    defaultMouseDrag(ev: unknown): void;
+    defaultMouseUp(ev: unknown): void;
+  };
+  let asked = 0;
+  node.setGlRequest(() => void asked++);
+  await act();
+  const root = pane().root as unknown as {
+    invalidate(...a: unknown[]): void;
+  };
+  const claims: unknown[][] = [];
+  const own = root.invalidate.bind(root);
+  root.invalidate = (...a: unknown[]) => {
+    claims.push(a);
+    own(...a);
+  };
+  const synth = (x: number, y: number) => ({
+    x,
+    y,
+    button: 1,
+    shiftKey: false,
+    ctrlKey: false,
+    detail: 1,
+    preventDefault() {},
+    capturePointer() {},
+  });
+  const abs = pane().abs;
+  // node `a` (100,100 120×40) by its middle
+  node.defaultMouseDown(synth(abs.x + 160, abs.y + 120));
+  const before = asked;
+  for (let step = 1; step <= 3; step++) {
+    node.defaultMouseDrag(synth(abs.x + 160 + step * 10, abs.y + 120));
+  }
+  node.defaultMouseUp(synth(abs.x + 190, abs.y + 120));
+  assert.ok(asked > before, 'the drag asked for GL frames');
+  assert.deepStrictEqual(
+    claims.filter(([, , reason]) => reason === 'content'),
+    [],
+    'and claimed none of the window for them',
+  );
+});
+
+test('under GL a drag lifts its nodes out of the world, and a step packs them alone', async () => {
+  // A drag step rebuilt the whole world for one card: 5-7 ms of scene and
+  // packing a step at 2,000 nodes, a node dragged at 63 fps on X11 where
+  // it drags at 92 now.
+  const { node } = await glPane({
+    nodes: [
+      ...nodes(),
+      {
+        id: 'c',
+        position: { x: 400, y: 100 },
+        width: 120,
+        height: 40,
+        data: { label: 'C' },
+      },
+    ],
+  });
+  type Scene = {
+    nodes: { id: string; rect?: { x: number } }[];
+    edges: { id: string }[];
+  };
+  const ids = (scene: unknown) => ({
+    nodes: (scene as Scene).nodes.map((n) => n.id).sort(),
+    edges: (scene as Scene).edges.map((e) => e.id).sort(),
+  });
+  let frame = node.glFrame(null, null)!;
+  assert.deepStrictEqual(ids(frame.world), {
+    nodes: ['a', 'b', 'c'],
+    edges: ['a-b'],
+  });
+  assert.strictEqual(frame.lifted, undefined, 'nothing lifted');
+
+  const target = pane() as unknown as DrawnNode;
+  await act(() => {
+    fireEvent.mouseDown(target, at(160, 120));
+    fireEvent.mouseMove(target, at(180, 120));
+  });
+  await motionLands();
+  // The first frame of the drag builds the world without `a` and its edge,
+  // and `a` and its edge on their own.
+  frame = node.glFrame(frame.key, frame.liftedKey)!;
+  assert.deepStrictEqual(ids(frame.world), { nodes: ['b', 'c'], edges: [] });
+  assert.deepStrictEqual(ids(frame.lifted), { nodes: ['a'], edges: ['a-b'] });
+
+  // A step after it: the world on the GPU stands, and `a` is packed again.
+  await act(() => fireEvent.mouseMove(target, at(200, 120)));
+  await motionLands();
+  frame = node.glFrame(frame.key, frame.liftedKey)!;
+  assert.strictEqual(frame.world, null, 'the world stands');
+  assert.deepStrictEqual(ids(frame.lifted), { nodes: ['a'], edges: ['a-b'] });
+  // nothing moved: the lifted layer stands too
+  const still = node.glFrame(frame.key, frame.liftedKey)!;
+  assert.strictEqual(still.world, null);
+  assert.strictEqual(still.lifted, undefined, 'and so does the lifted layer');
+
+  // The release puts `a` back in the world, and the layer goes.
+  await act(() => fireEvent.mouseUp(target, at(200, 120)));
+  await motionLands();
+  frame = node.glFrame(frame.key, frame.liftedKey)!;
+  assert.deepStrictEqual(ids(frame.world), {
+    nodes: ['a', 'b', 'c'],
+    edges: ['a-b'],
+  });
+  assert.strictEqual(frame.lifted, null, 'the lifted layer is gone');
+});
+
+test('under GL a drag the app stores keeps the world on the GPU', async () => {
+  // A controlled graph commits every step back: the moved node's new
+  // position, as a new `nodes` array. A commit that changed lifted nodes
+  // and nothing else is a frame of the lifted layer, not a new world.
+  let graph = nodes();
+  const stored: NodeChange[][] = [];
+  const render = () =>
+    h(FLOW_ELEMENT, {
+      nodes: graph,
+      edges: edges(),
+      renderer: 'gl',
+      onNodesChange: (c: NodeChange[]) => void stored.push(c),
+      style: { flexGrow: 1 },
+    });
+  const { rerender } = await renderX11(render());
+  const node = pane() as unknown as GlPane;
+  node.setGlRequest(() => {});
+  await act();
+  let frame = node.glFrame(null, null)!;
+  const target = pane() as unknown as DrawnNode;
+  await act(() => {
+    fireEvent.mouseDown(target, at(160, 120));
+    fireEvent.mouseMove(target, at(180, 120));
+  });
+  await motionLands();
+  frame = node.glFrame(frame.key, frame.liftedKey)!;
+  assert.ok(frame.world && frame.lifted, 'precondition: lifted');
+  for (let step = 1; step <= 3; step++) {
+    await act(() => fireEvent.mouseMove(target, at(180 + step * 10, 120)));
+    await motionLands();
+    // the app stores what it was sent
+    const moved = stored
+      .flat()
+      .filter((c) => c.type === 'position' && c.id === 'a')
+      .at(-1) as { position: { x: number; y: number } } | undefined;
+    assert.ok(moved, 'precondition: a position change');
+    graph = graph.map((n) =>
+      n.id === 'a' ? { ...n, position: moved.position, dragging: true } : n,
+    );
+    await act(() => rerender(render()));
+    frame = node.glFrame(frame.key, frame.liftedKey)!;
+    assert.strictEqual(frame.world, null, `step ${step}: the world stands`);
+    assert.ok(frame.lifted, `step ${step}: the lifted layer is packed`);
+  }
+  await act(() => fireEvent.mouseUp(target, at(210, 120)));
+});
+
+test('a 2D drag copies the rest of the graph from pictures, and draws what a live paint draws', async () => {
+  // A drag step repainted the box round the moved node and all its edges,
+  // which with one long edge is the whole pane: every card and edge in it
+  // stroked again, 46-57 fps on Cocoa. The rest of the graph is two
+  // pictures now — the ground and the edges, the cards over them — and the
+  // moved node's edges go between the two: under `c`, which the edge from
+  // `a` passes beneath, as a live paint draws it.
+  const graph: FlowNode[] = [
+    ...nodes(),
+    {
+      id: 'c',
+      position: { x: 80, y: 190 },
+      width: 200,
+      height: 40,
+      data: { label: 'C' },
+    },
+  ];
+  const result = await renderX11(
+    h(FLOW_ELEMENT, {
+      nodes: graph,
+      edges: [{ id: 'a-b', source: 'a', target: 'b', label: 'ab' }],
+      style: { flexGrow: 1 },
+    }),
+    { backend: 'xserver', width: 420, height: 380 },
+  );
+  await act();
+  const target = pane() as unknown as DrawnNode;
+  const node = pane() as unknown as {
+    _liftShot: unknown;
+    _liftFor: unknown;
+    _liftShotRefused: unknown;
+    _dropLiftShot(): void;
+    invalidate(layout: boolean, rect: unknown, reason: string): void;
+  };
+  await act(() => {
+    fireEvent.mouseDown(target, at(160, 120));
+    fireEvent.mouseMove(target, at(175, 120));
+  });
+  await motionLands();
+  await act(() => fireEvent.mouseMove(target, at(190, 124)));
+  await motionLands();
+  assert.ok(node._liftShot, 'the step was painted over the pictures');
+
+  const { width, height } = pane().abs;
+  const read = async (): Promise<Uint8ClampedArray> =>
+    (
+      await (
+        result.ctx as unknown as {
+          getImageData(
+            x: number,
+            y: number,
+            w: number,
+            h: number,
+          ): Promise<{ data: Uint8ClampedArray }>;
+        }
+      ).getImageData(0, 0, width, height)
+    ).data;
+  const lifted = await read();
+
+  // The same frame painted live: no pictures for this gesture.
+  node._liftShotRefused = node._liftFor;
+  node._dropLiftShot();
+  await act(() => node.invalidate(false, null, 'content'));
+  await motionLands();
+  assert.ok(!node._liftShot, 'precondition: painted live');
+  const live = await read();
+
+  // The same pixels, but for rounding where the moved edge meets a card's
+  // antialiased border: a card blended onto a clear picture and then onto
+  // the edge rounds a few levels away from one blended onto the edge.
+  let differ = 0;
+  let worst = 0;
+  for (let i = 0; i < live.length; i += 4) {
+    const d = Math.max(
+      Math.abs(live[i] - lifted[i]),
+      Math.abs(live[i + 1] - lifted[i + 1]),
+      Math.abs(live[i + 2] - lifted[i + 2]),
+    );
+    if (d > 2) differ++;
+    worst = Math.max(worst, d);
+  }
+  assert.ok(worst <= 16, `a pixel ${worst} levels off a live paint`);
+  assert.ok(differ < 32, `${differ} pixels differ from a live paint`);
+  await act(() => fireEvent.mouseUp(target, at(190, 124)));
+});
+
+test('a 2D drag drops its pictures on release, and paints live once the view moves under it', async () => {
+  const drag = async (moveView: boolean): Promise<boolean[]> => {
+    cleanup();
+    await renderX11(
+      h(FLOW_ELEMENT, {
+        nodes: nodes(),
+        edges: edges(),
+        style: { flexGrow: 1 },
+      }),
+      { backend: 'xserver', width: 420, height: 380 },
+    );
+    await act();
+    const target = pane() as unknown as DrawnNode;
+    const node = pane() as unknown as {
+      _liftShot: unknown;
+      setViewport(v: object): void;
+    };
+    const seen: boolean[] = [];
+    await act(() => {
+      fireEvent.mouseDown(target, at(160, 120));
+      fireEvent.mouseMove(target, at(175, 120));
+    });
+    await motionLands();
+    seen.push(!!node._liftShot);
+    if (moveView) {
+      // the view moves under the gesture: a picture a step would be two
+      // full paints a step
+      await act(() => node.setViewport({ x: 12, y: 0, zoom: 1 }));
+      await motionLands();
+    }
+    await act(() => fireEvent.mouseMove(target, at(190, 120)));
+    await motionLands();
+    seen.push(!!node._liftShot);
+    await act(() => fireEvent.mouseUp(target, at(190, 120)));
+    await motionLands();
+    seen.push(!!node._liftShot);
+    return seen;
+  };
+  assert.deepStrictEqual(
+    await drag(false),
+    [true, true, false],
+    'pictures while the drag moves, none after',
+  );
+  assert.deepStrictEqual(
+    await drag(true),
+    [true, false, false],
+    'none again once the view moved',
+  );
+});
+
+test('a pass over part of a dashed edge draws its dashes where the whole edge has them', async () => {
+  // A dashed edge was stroked end to end by every pass that reached any
+  // of it — on X11 a coverage mask the size of its box for a pan's strip
+  // two pixels wide. It is cut to the runs the pass reaches now, each
+  // picking the pattern up where it starts along the edge; a run that
+  // started it again would put its dashes somewhere else.
+  const result = await renderX11(
+    h(FLOW_ELEMENT, {
+      nodes: [
+        {
+          id: 'a',
+          position: { x: 20, y: 20 },
+          width: 60,
+          height: 30,
+          data: { label: '' },
+        },
+        {
+          id: 'b',
+          position: { x: 330, y: 300 },
+          width: 60,
+          height: 30,
+          data: { label: '' },
+        },
+      ],
+      // dashed and still: a marching one moves between two paints
+      edges: [{ id: 'a-b', source: 'a', target: 'b', style: { dash: [7, 5] } }],
+      // the edge alone in the strip: the grid's tile is its own question
+      background: false,
+      style: { flexGrow: 1 },
+    }),
+    { backend: 'xserver', width: 420, height: 380 },
+  );
+  await act();
+  const node = pane() as unknown as {
+    invalidate(layout: boolean, rect: unknown, reason: string): void;
+  };
+  const strip = { x: 203, y: 0, width: 9, height: 380 };
+  const read = async (): Promise<Uint8ClampedArray> =>
+    (
+      await (
+        result.ctx as unknown as {
+          getImageData(
+            x: number,
+            y: number,
+            w: number,
+            h: number,
+          ): Promise<{ data: Uint8ClampedArray }>;
+        }
+      ).getImageData(strip.x, strip.y, strip.width, strip.height)
+    ).data;
+  await act(() => node.invalidate(false, null, 'content'));
+  await motionLands();
+  const whole = await read();
+  // the strip alone, painted again
+  await act(() => node.invalidate(false, strip, 'content'));
+  await motionLands();
+  const part = await read();
+  let inked = 0;
+  let differ = 0;
+  for (let i = 0; i < whole.length; i += 4) {
+    const d = Math.max(
+      Math.abs(whole[i] - part[i]),
+      Math.abs(whole[i + 1] - part[i + 1]),
+      Math.abs(whole[i + 2] - part[i + 2]),
+    );
+    if (d > 2) differ++;
+    if (whole[i] !== whole[0] || whole[i + 1] !== whole[1]) inked++;
+  }
+  assert.ok(inked > 0, 'precondition: the edge crosses the strip');
+  assert.strictEqual(differ, 0, `${differ} pixels of the strip moved`);
+});
+
+test('2D dashes hold still through a pan whose frames come slowly, and keep their speed when ticks are cheap', async () => {
+  // A tick repaints the box the dashes are in. Over a dense graph in a
+  // large window that was 75 ms on XQuartz against a 60 ms timer, and the
+  // pan's steps — each asked for by the frame before — came slower than
+  // the 120 ms the dashes waited: ticks and pan steps took turns, 2 frames
+  // a second. The wait follows what frames cost now.
+  await renderX11(
+    h(FLOW_ELEMENT, {
+      nodes: nodes(),
+      edges: [{ id: 'a-b', source: 'a', target: 'b', animated: true }],
+      style: { flexGrow: 1 },
+    }),
+  );
+  await act();
+  const node = pane() as unknown as {
+    _dashPhase: number;
+    _tickCost: number;
+    setViewport(v: object): void;
+  };
+  const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  await wait(200);
+  // frames that cost 150 ms, and a pan stepping at that pace
+  node._tickCost = 150;
+  let phase = node._dashPhase;
+  for (let step = 1; step <= 6; step++) {
+    await act(() => node.setViewport({ x: step * 4, y: 0, zoom: 1 }));
+    node._tickCost = 150;
+    await wait(150);
+  }
+  assert.strictEqual(node._dashPhase, phase, 'still while the view moves');
+  // held still, they march again
+  await wait(700);
+  assert.ok(node._dashPhase > phase, 'and march once it rests');
+  // cheap frames: a tick every 60 ms, at the speed they always had
+  node._tickCost = 0;
+  phase = node._dashPhase;
+  const started = Date.now();
+  await wait(600);
+  node._tickCost = 0;
+  const ticks = (node._dashPhase - phase) / 1.4;
+  const expected = (Date.now() - started) / 60;
+  assert.ok(
+    ticks >= expected * 0.6,
+    `${ticks.toFixed(1)} ticks' worth in ${expected.toFixed(1)} tick times`,
+  );
+});
+
+test('a 2D pan blits the whole pane and pins the furniture, and draws what a repaint draws', async () => {
+  // The minimap and the controls were carved out of the region a pan
+  // blits, and a region is one rectangle, so the two bottom corners cost a
+  // band the pane's full width — repainted every frame: 47 fps over the
+  // stress example's widgets on XQuartz where a bare pane pans at 80. They
+  // are pinned inside it now (react-x11#682), and core repaints them and
+  // the image the copy dragged along.
+  const result = await renderX11(
+    h(FLOW_ELEMENT, {
+      nodes: nodes(),
+      edges: edges(),
+      minimap: true,
+      controls: true,
+      style: { flexGrow: 1 },
+    }),
+    { backend: 'xserver', width: 420, height: 380 },
+  );
+  await act();
+  const node = pane() as unknown as {
+    scrollContents(...a: unknown[]): boolean;
+    invalidate(layout: boolean, rect: unknown, reason: string): void;
+    setViewport(v: object): void;
+    contentBox(): { x: number; y: number; width: number; height: number };
+  };
+  const calls: unknown[][] = [];
+  const scroll = node.scrollContents.bind(node);
+  node.scrollContents = (...a: unknown[]) => {
+    calls.push(a);
+    return scroll(...a);
+  };
+  const claims: string[] = [];
+  const own = node.invalidate.bind(node);
+  node.invalidate = (layout, rect, reason) => {
+    claims.push(reason);
+    own(layout, rect, reason);
+  };
+  for (let step = 1; step <= 3; step++) {
+    await act(() => node.setViewport({ x: step * 3, y: step * 2, zoom: 1 }));
+    await motionLands();
+  }
+  const box = node.contentBox();
+  assert.strictEqual(calls.length, 3, 'every step is a blit');
+  const [rect, , , , pinned] = calls[0] as [
+    { width: number; height: number },
+    number,
+    number,
+    unknown,
+    { width: number; height: number }[],
+  ];
+  assert.deepStrictEqual(
+    { width: rect.width, height: rect.height },
+    { width: box.width, height: box.height },
+    'the whole pane shifts',
+  );
+  assert.strictEqual(pinned.length, 2, 'the minimap and the controls pinned');
+  const area = pinned.reduce((sum, r) => sum + r.width * r.height, 0);
+  assert.ok(
+    area < box.width * box.height * 0.3,
+    `the furniture is a corner each, not a band: ${area} of ${box.width * box.height}`,
+  );
+  assert.ok(!claims.includes('scroll'), 'no band claimed beside the blit');
+
+  // What the copy and its repairs left is what a full repaint draws.
+  const read = async (): Promise<Uint8ClampedArray> =>
+    (
+      await (
+        result.ctx as unknown as {
+          getImageData(
+            x: number,
+            y: number,
+            w: number,
+            h: number,
+          ): Promise<{ data: Uint8ClampedArray }>;
+        }
+      ).getImageData(box.x, box.y, box.width, box.height)
+    ).data;
+  const panned = await read();
+  await act(() => own(false, null, 'content'));
+  await motionLands();
+  const whole = await read();
+  let differ = 0;
+  for (let i = 0; i < whole.length; i += 4) {
+    const d = Math.max(
+      Math.abs(whole[i] - panned[i]),
+      Math.abs(whole[i + 1] - panned[i + 1]),
+      Math.abs(whole[i + 2] - panned[i + 2]),
+    );
+    // four pixels at the corners of the minimap's rounded view box round
+    // three levels apart, drawn under the pinned rect's clip or the pane's
+    if (d > 4) differ++;
+  }
+  assert.strictEqual(differ, 0, `${differ} pixels differ from a repaint`);
 });

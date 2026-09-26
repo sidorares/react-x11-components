@@ -36,8 +36,8 @@ import { useRef, useState } from 'react';
 import type { ReactElement } from 'react';
 import { createRoot } from 'react-x11';
 
-import { Terminal } from '../src/index.js';
-import type { TerminalHandle } from '../src/index.js';
+import { Terminal } from '../src/terminal/index.js';
+import type { TerminalHandle } from '../src/terminal/index.js';
 import type { ExitInfo } from '../src/embed/index.js';
 import type {
   PtyHost,

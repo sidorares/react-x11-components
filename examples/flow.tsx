@@ -22,14 +22,19 @@ import { useCallback, useMemo, useRef, useState } from 'react';
 import type { ReactElement } from 'react';
 import { Button, Checkbox, createRoot } from 'react-x11';
 
-import { addEdge, Flow, useEdgesState, useNodesState } from '../src/index.js';
+import {
+  addEdge,
+  Flow,
+  useEdgesState,
+  useNodesState,
+} from '../src/flow/index.js';
 import type {
   Connection,
   FlowInstance,
   FlowNode,
   FlowNodeType,
   NodeChange,
-} from '../src/index.js';
+} from '../src/flow/index.js';
 
 /** One data type for every node here; each node type reads its own half. */
 interface TaskData {

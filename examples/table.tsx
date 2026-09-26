@@ -23,8 +23,12 @@ import { execFileSync } from 'node:child_process';
 import { totalmem } from 'node:os';
 import { Button, Icon, SplitPane, createRoot, useTheme } from 'react-x11';
 
-import { Table } from '../src/index.js';
-import type { TableColumn, TableHandle, TableRowId } from '../src/index.js';
+import { Table } from '../src/table/index.js';
+import type {
+  TableColumn,
+  TableHandle,
+  TableRowId,
+} from '../src/table/index.js';
 
 // --- rung one: the app's data, two columns, nothing else -------------------
 

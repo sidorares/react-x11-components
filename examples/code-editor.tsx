@@ -20,8 +20,8 @@ import {
   sql,
   sqlCompletionSource,
   wordCompletionSource,
-} from '../src/index.js';
-import type { Diagnostic } from '../src/index.js';
+} from '../src/code-editor/index.js';
+import type { Diagnostic } from '../src/code-editor/index.js';
 
 const SCHEMA = {
   users: ['id', 'name', 'email', 'created_at'],

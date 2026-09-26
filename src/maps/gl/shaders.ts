@@ -22,6 +22,8 @@
 // A segment that touches a sentinel collapses to a point outside the clip
 // volume — see `buckets.ts` for why sentinels beat an index buffer.
 
+import { SDF_EDGE, SDF_INK_BIAS_PX } from '../../internal/sdf.js';
+
 /** Where each attribute lives, shared by every program. Locations 5-9 are
  *  the label program's, one label per instance (see {@link LABEL_VERTEX}). */
 export const ATTRIBUTES = {
@@ -206,27 +208,28 @@ void main() {
 `;
 
 /**
- * A label: its raster from the atlas as one quad, centred on the anchor and
- * turned to the baseline — which is all a label needs, because placement
- * only ever sets a line label on a straight stretch.
+ * A label: its distance field from the atlas as one quad, centred on the
+ * anchor, turned to the baseline — which is all a label needs, because
+ * placement only ever sets a line label on a straight stretch — and scaled
+ * from the field's base size to the size it is drawn at (`a_params.z`,
+ * device pixels per texel). One field serves every size.
  *
- * A level label is set on **whole pixels**, texel for pixel, so the text is
- * exactly as crisp as the text engine made it; a slanted one is sampled
- * bilinearly, as rotated type always is. The quad is the raster less an
- * inset (`u_inset`): the raster's clear margin is wide enough for a halo to
- * grow into, and the inset is what keeps the halo's samples from reaching
- * past the margin into a neighbouring label.
+ * A level label's quad starts on a **whole pixel**, so type that is not
+ * moving sits on the pixel grid the same way every frame. The quad is the
+ * field less an inset (`u_inset`) texel each side, which keeps the
+ * bilinear samples at its edge inside the field's own margin.
  */
 export const LABEL_VERTEX = `precision highp float;
 attribute vec2 a_corner;
 // centre (device pixels), then cos and sin of the baseline
 attribute vec4 a_anchor;
-// the raster in the atlas: x, y, width, height in texels, margin included
+// the field in the atlas: x, y, width, height in texels, margin included
 attribute vec4 a_rect;
 attribute vec4 a_ink;
 attribute vec4 a_halo;
-// halo radius in pixels, and 1 to set the label on whole pixels
-attribute vec2 a_params;
+// halo radius in device pixels, 1 to set the label on whole pixels, and
+// device pixels per field texel
+attribute vec3 a_params;
 uniform vec2 u_viewport;
 uniform vec2 u_atlas;
 uniform float u_inset;
@@ -234,9 +237,11 @@ varying vec2 v_uv;
 varying vec4 v_ink;
 varying vec4 v_halo;
 varying float v_radius;
+varying float v_scale;
 void main() {
   vec2 corner = vec2(a_corner.x, a_corner.y * 0.5 + 0.5);
-  vec2 size = a_rect.zw - 2.0 * u_inset;
+  vec2 texels = a_rect.zw - 2.0 * u_inset;
+  vec2 size = texels * a_params.z;
   vec2 p;
   if (a_params.y > 0.5) {
     p = floor(a_anchor.xy - size * 0.5 + 0.5) + corner * size;
@@ -246,41 +251,39 @@ void main() {
     p = a_anchor.xy + vec2(local.x * axis.x - local.y * axis.y,
                            local.x * axis.y + local.y * axis.x);
   }
-  v_uv = (a_rect.xy + u_inset + corner * size) / u_atlas;
+  v_uv = (a_rect.xy + u_inset + corner * texels) / u_atlas;
   v_ink = a_ink;
   v_halo = a_halo;
   v_radius = a_params.x;
+  v_scale = a_params.z;
   gl_Position = vec4(p.x / u_viewport.x * 2.0 - 1.0, 1.0 - p.y / u_viewport.y * 2.0, 0.0, 1.0);
 }
 `;
 
 /**
- * Coverage in, colour out: the ink where the glyphs are, and under it a
- * halo — the coverage *dilated* by the halo's radius, as the greatest
- * coverage on two rings of samples around the pixel. Dilating here rather
- * than when rasterizing is what lets one raster serve every halo width and
- * colour a style asks for; the samples cost nothing next to the few
- * thousand pixels a frame's labels cover.
+ * Distance in, colour out. The field says how far this pixel is from the
+ * glyphs' edge — in texels, `u_spread` of them across the byte range, and
+ * so in device pixels once scaled — and ink is the pixel of that distance
+ * nearest the edge, antialiased across one device pixel whatever size the
+ * label is drawn at. The halo is the same edge pushed out by its radius:
+ * one texture read, where a halo dilated from coverage took thirty-three,
+ * and exactly as wide as the style asks up to the field's reach.
  */
 export const LABEL_FRAGMENT = `precision highp float;
 uniform sampler2D u_image;
-uniform vec2 u_atlas;
+uniform float u_spread;
 varying vec2 v_uv;
 varying vec4 v_ink;
 varying vec4 v_halo;
 varying float v_radius;
+varying float v_scale;
 void main() {
-  float ink = texture2D(u_image, v_uv).a;
-  float halo = ink;
-  if (v_radius > 0.0) {
-    vec2 reach = vec2(v_radius) / u_atlas;
-    for (int i = 0; i < 16; i++) {
-      float a = float(i) * 0.3926991;
-      vec2 d = vec2(cos(a), sin(a)) * reach;
-      halo = max(halo, texture2D(u_image, v_uv + d).a);
-      halo = max(halo, texture2D(u_image, v_uv + d * 0.5).a);
-    }
-  }
+  float field = texture2D(u_image, v_uv).a;
+  // Device pixels past the glyphs' edge: positive outside, negative in.
+  float d = (${SDF_EDGE.toFixed(4)} - field) * u_spread * v_scale;
+  // The ink's edge a little outside the outline (SDF_INK_BIAS_PX).
+  float ink = clamp(0.5 + ${SDF_INK_BIAS_PX.toFixed(2)} - d, 0.0, 1.0);
+  float halo = v_radius > 0.0 ? clamp(0.5 + v_radius - d, 0.0, 1.0) : 0.0;
   vec4 color = v_ink * ink + v_halo * (halo * (1.0 - ink));
   if (color.a <= 0.0) discard;
   gl_FragColor = color;

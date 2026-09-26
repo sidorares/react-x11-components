@@ -71,8 +71,8 @@ import { Icon, createRoot, useTheme } from 'react-x11';
 import type { DrawnNode, FrameRate, KeyboardEvent } from 'react-x11';
 import { XK_DOWN, XK_ESCAPE, XK_RETURN, XK_UP } from 'react-x11/keysyms';
 
-import { Terminal } from '../src/index.js';
-import type { TerminalHandle } from '../src/index.js';
+import { Terminal } from '../src/terminal/index.js';
+import type { TerminalHandle } from '../src/terminal/index.js';
 
 /**
  * The policies the menu offers, from "paint everything" to "the output is

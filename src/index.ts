@@ -231,6 +231,8 @@ export type {
   EdgeType,
   FitViewOptions,
   FlowEdge,
+  FlowBodyBudget,
+  FlowFrameStats,
   FlowInstance,
   FlowNode,
   FlowNodeData,

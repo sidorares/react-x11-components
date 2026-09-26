@@ -166,8 +166,20 @@ The three guarantees, and where they come from
    are 1–2 `fillRects` batches (~8 bytes × width); sparse ones a stroked
    path of at most 2×width points; bars one batch per colour; scatter an
    occupancy grid in ≤8 alpha-bucketed batches, flipping to one
-   client-built density image only when the grid would out-weigh it
-   (`occupied > plotW·plotH/2` — computed, not guessed).
+   client-built density image when the grid would out-weigh it
+   (`occupied > plotW·plotH/2` — computed, not guessed) — and on any paint
+   that repeats the one before it: a pan or a drag carrying a still plot,
+   a crosshair over it. The image is kept, so a repeat is one composite
+   where the rects would go out in full again; it is drawn at the buckets'
+   opacities, so which path drew a frame never shows. It is there on every
+   backend — an X server's pixmap, or the surface the Cocoa, Windows and
+   Wayland backends make — and a board of scatter plots on Windows sent
+   30,000 rects a frame, one primitive each, while it was X's alone.
+4. **A pass draws what it reaches.** A frame that repaints part of a chart
+   — the strip a scroll or a pan exposed along its edge — sends the marks
+   inside that damage and none of the rest, which the pass would have
+   clipped away. A scatter plot in a panned `<Flow>` body drew every cell
+   of its grid on each step before this.
 
 `onFrameStats` reports what a frame actually cost — per-series mode
 (`'polyline' | 'minmax' | 'bars' | 'scatter' | 'density'`), drawing

@@ -8,7 +8,7 @@
 import type { ReactElement } from 'react';
 import { createRoot } from 'react-x11';
 
-import { Formula } from '../src/index.js';
+import { Formula } from '../src/formula/index.js';
 
 const SAMPLES: Array<{ label: string; tex: string; display?: boolean }> = [
   {

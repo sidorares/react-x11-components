@@ -22,8 +22,8 @@ import {
   TimelineItem,
   TimelineSeparator,
   TimelineTitle,
-} from '../src/index.js';
-import type { TimelineSize, TimelineVariant } from '../src/index.js';
+} from '../src/timeline/index.js';
+import type { TimelineSize, TimelineVariant } from '../src/timeline/index.js';
 
 // The command each stage runs, so the detail line says the same thing
 // whether the stage is queued, running or finished — the status is the
