@@ -526,17 +526,40 @@ function clipOf(
   };
 }
 
-/** The radii of a box's padding edge: its border radii less the borders. */
+/**
+ * The radii of a box's padding edge — its border radii less the borders —
+ * for a clip, or null where a rectangle clips the same: padding at least a
+ * corner's radius on both of its sides keeps the content box clear of the
+ * corner, so only content overflowing it both ways at once could tell them
+ * apart. A rounded clip is a mask the size of the window on X11, and a code
+ * block — rounded, padded, `overflow: hidden` — had one made for every
+ * paint.
+ */
 function innerRadii(box: Box): number[] | null {
   const radii = box.style.borderRadius;
   if (!radii.some((r) => r > 0)) return null;
   const [tl, tr, br, bl] = radii;
-  return [
+  const inner = [
     Math.max(0, tl - Math.max(box.borderTop, box.borderLeft)),
     Math.max(0, tr - Math.max(box.borderTop, box.borderRight)),
     Math.max(0, br - Math.max(box.borderBottom, box.borderRight)),
     Math.max(0, bl - Math.max(box.borderBottom, box.borderLeft)),
   ];
+  if (
+    clearOf(inner[0], box.padLeft, box.padTop) &&
+    clearOf(inner[1], box.padRight, box.padTop) &&
+    clearOf(inner[2], box.padRight, box.padBottom) &&
+    clearOf(inner[3], box.padLeft, box.padBottom)
+  ) {
+    return null;
+  }
+  return inner;
+}
+
+/** Whether padding of `x` and `y` beside a corner of radius `r` keeps the
+ *  content box out of it. */
+function clearOf(r: number, x: number, y: number): boolean {
+  return x >= r && y >= r;
 }
 
 /** Clip what follows to a rectangle, rounded where `radii` are: false

@@ -1734,7 +1734,14 @@ interface Fill {
 /** What a paint did, in order: a fill, or a clip pushed or popped. */
 type PaintOp =
   | ({ op: 'fill' } & Fill)
-  | { op: 'clip'; x: number; y: number; w: number; h: number }
+  | {
+      op: 'clip';
+      x: number;
+      y: number;
+      w: number;
+      h: number;
+      radii: number[] | null;
+    }
   | { op: 'save' }
   | { op: 'restore' };
 
@@ -1790,8 +1797,10 @@ async function fillsOf(el: HtmlViewNode, ops?: PaintOp[]): Promise<Fill[]> {
       path = null;
     },
     clip() {
-      if (path)
-        ops?.push({ op: 'clip', x: path.x, y: path.y, w: path.w, h: path.h });
+      if (path) {
+        const { x, y, w, h, radii } = path;
+        ops?.push({ op: 'clip', x, y, w, h, radii });
+      }
       path = null;
     },
   };
@@ -2615,6 +2624,32 @@ metric('overflow clips what a box holds to its padding box', async () => {
     'nor a positioned box whose containing block is outside it',
   );
 });
+
+metric(
+  'a rounded box clips rounded only where its padding leaves a corner to cut',
+  async () => {
+    const { node } = await render(
+      '<div style="overflow:hidden;border-radius:6px;padding:8px">' +
+        '<div style="height:10px;background:#ff0000"></div></div>' +
+        '<div style="overflow:hidden;border-radius:6px;padding:8px 4px">' +
+        '<div style="height:10px;background:#0000ff"></div></div>',
+    );
+    const ops: PaintOp[] = [];
+    await fillsOf(view(node), ops);
+    const [[red]] = clipsAround(ops, '#ff0000');
+    assert.strictEqual(
+      red.op === 'clip' && red.radii,
+      null,
+      'padding past every corner both ways: a rectangle clips the same',
+    );
+    const [[blue]] = clipsAround(ops, '#0000ff');
+    assert.deepStrictEqual(
+      blue.op === 'clip' && blue.radii,
+      [6, 6, 6, 6],
+      'a side thinner than its corner: rounded',
+    );
+  },
+);
 
 metric(
   'an absolute box with auto offsets is where the flow put it',
