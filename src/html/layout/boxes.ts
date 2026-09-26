@@ -185,6 +185,11 @@ export class Box {
   marginRight = 0;
   marginBottom = 0;
   marginLeft = 0;
+  /** Whether this box's top margin collapsed through its parent's top edge
+   *  and was spent placing the parent (CSS 2.1 8.3.1): its own layout puts
+   *  it at the parent's content top, and applies no margin again. Set by
+   *  the parent's flow each pass. */
+  topAbsorbed = false;
 
   /** Text, for a `text` box: already whitespace-processed and transformed. */
   text = '';

@@ -68,11 +68,15 @@ export function layoutDocument(
   root.width = viewportWidth;
   // The root box stands in for `<body>` when the document has none (see
   // `Cascade.rootStyle`), so it may carry a margin — and a margin on the
-  // initial containing block has nothing to collapse against and nothing to
-  // sit inside. Folding it into the padding is what a browser's body margin
-  // amounts to, and it keeps `contentX` the one thing layout reads.
+  // initial containing block has nothing to sit inside. Folded into the
+  // padding at the sides and the bottom, which keeps `contentX` the one
+  // thing layout reads. Not at the top: a body's top margin collapses with
+  // its first block's, `<html>` being the formatting context's root and
+  // `<body>` not, so it is handed to the flow as the margin already pending
+  // there — or `<p>hi</p>` would stand 8px lower than the same paragraph in
+  // `<body>`.
   resolveEdges(root, viewportWidth);
-  root.padTop += root.marginTop;
+  const leading = root.marginTop;
   root.padRight += root.marginRight;
   root.padBottom += root.marginBottom;
   root.padLeft += root.marginLeft;
@@ -83,7 +87,14 @@ export function layoutDocument(
 
   const contentWidth = Math.max(0, viewportWidth - root.horizontalExtra);
   const floats = new FloatContext(root.contentX, root.contentX + contentWidth);
-  const flow = layoutChildren(root, ctx, floats, root.contentY, contentWidth);
+  const flow = layoutChildren(
+    root,
+    ctx,
+    floats,
+    root.contentY,
+    contentWidth,
+    leading,
+  );
   const floatBottom =
     floats.bottom === -Infinity ? 0 : floats.bottom - root.contentY;
   root.height = Math.max(flow.height, floatBottom) + root.verticalExtra;
@@ -120,6 +131,52 @@ function collapseMargins(a: number, b: number): number {
   return Math.max(0, Math.max(a, b)) + Math.min(0, Math.min(a, b));
 }
 
+/**
+ * A block's top margin as its placement uses it: its own, collapsed with
+ * its first in-flow child's while nothing parts them — no top border, no
+ * top padding, no formatting context of its own, no line of text first —
+ * and with that child's first child's, down the chain (CSS 2.1 8.3.1). The
+ * children the chain went through are marked, so their own layout does not
+ * apply the margin a second time. Without it `<div><p>` stood a paragraph's
+ * margin lower than `<p>`, and every section of a document a margin apart.
+ */
+function collapsedTopMargin(box: Box, containingWidth: number): number {
+  let margin = box.marginTop;
+  let at = box;
+  let width = containingWidth;
+  for (;;) {
+    const first = firstInFlowBlock(at);
+    if (!first) return margin;
+    const through =
+      at.borderTop === 0 &&
+      at.padTop === 0 &&
+      at.kind === 'block' &&
+      !establishesBFC(at) &&
+      first.style.clear === 'none';
+    if (!through) {
+      first.topAbsorbed = false;
+      return margin;
+    }
+    width = Math.max(0, blockWidth(at, width) - at.horizontalExtra);
+    resolveEdges(first, width);
+    margin = collapseMargins(margin, first.marginTop);
+    first.topAbsorbed = true;
+    at = first;
+  }
+}
+
+/** The first in-flow child of a block container that holds blocks, or null
+ *  when it holds lines — whose first line box stops a margin — or nothing. */
+function firstInFlowBlock(box: Box): Box | null {
+  if (box.kind !== 'block' || establishesInlineContext(box)) return null;
+  for (const child of box.children) {
+    if (child.kind === 'text' && !child.text.trim()) continue;
+    if (child.outOfFlow || child.isFloat) continue;
+    return child.kind === 'text' || isInlineLevel(child) ? null : child;
+  }
+  return null;
+}
+
 /** What a box's children came to: their height, and the margin still hanging
  *  past the last of them when the box's own bottom edge does not stop it. */
 interface FlowResult {
@@ -137,23 +194,26 @@ function layoutChildren(
   floats: FloatContext,
   contentTop: number,
   contentWidth: number,
+  leading = 0,
 ): FlowResult {
   const contentLeft = box.contentX;
   if (establishesInlineContext(box)) {
+    // a line box stops a margin: the leading one is spent above the lines
     const height = layoutInlineContent(
       box,
       ctx,
       floats,
-      contentTop,
+      contentTop + leading,
       contentWidth,
       contentLeft,
     );
-    return { height, hanging: 0 };
+    return { height: height + leading, hanging: 0 };
   }
 
   let y = contentTop;
-  /** The margin left hanging by the previous sibling, for collapsing. */
-  let pendingMargin = 0;
+  /** The margin left hanging by the previous sibling — or, before the first
+   *  child, the one `leading` hands down — for collapsing. */
+  let pendingMargin = leading;
   let first = true;
 
   for (const child of box.children) {
@@ -178,8 +238,11 @@ function layoutChildren(
     }
 
     resolveEdges(child, contentWidth);
-    const top = child.marginTop;
-    const collapsed = first ? top : collapseMargins(pendingMargin, top);
+    // A child whose margin this box already spent — collapsed through its
+    // top edge — sits at the content top; any other brings its own margin,
+    // collapsed with its first descendants' where nothing parts them.
+    const top = child.topAbsorbed ? 0 : collapsedTopMargin(child, contentWidth);
+    const collapsed = collapseMargins(pendingMargin, top);
     let childY = y + collapsed;
     const clearance = floats.clearance(child.style.clear);
     if (clearance > -Infinity && clearance > childY) childY = clearance;
@@ -875,6 +938,10 @@ export function establishesBFC(box: Box): boolean {
     return true;
   }
   if (box.kind === 'table-cell' || box.kind === 'table') return true;
+  // The root element establishes the document's formatting context. Here it
+  // is a box below the synthetic initial containing block, so it is named:
+  // without it, <html>'s own margin collapsed with <body>'s first block's.
+  if (box.el?.name === 'html') return true;
   return box.parent === null;
 }
 

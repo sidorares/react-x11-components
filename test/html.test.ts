@@ -577,6 +577,53 @@ metric(
 );
 
 metric(
+  "a fragment's first paragraph sits where it would inside <html><body>",
+  async () => {
+    // A body's top margin collapses with its first block's — <html> is the
+    // formatting context's root, <body> is not — so a 16px paragraph in a
+    // body with an 8px margin starts 16px down, not 24. The implied body of a
+    // fragment has to do the same, or the two spellings of one document
+    // disagree by the body margin.
+    type B = { y: number; children: B[] };
+    const firstParagraphY = async (source: string) => {
+      const { node } = await render(source, 300);
+      const tree = (view(node) as unknown as { _tree: { root: B } })._tree;
+      let box = tree.root;
+      while (box.children.length) box = box.children[0];
+      const y = (box as unknown as { parent: B }).parent.y;
+      await cleanup();
+      return y;
+    };
+    const p = '<style>p{margin:16px 0}</style>';
+    const fragment = await firstParagraphY(p + '<p>hi</p>');
+    const full = await firstParagraphY(
+      '<html><head>' + p + '</head><body><p>hi</p></body></html>',
+    );
+    assert.strictEqual(fragment, full, 'the same place either way');
+    assert.ok(Math.abs(full - 16) < 1, `one collapsed margin, at ${full}`);
+  },
+);
+
+metric(
+  "<html>'s own margin never collapses with what is inside it",
+  async () => {
+    // The root element establishes the document's formatting context, so its
+    // margin stays its own: a block 20px down in a body with no margin, in an
+    // <html> 20px down, is 40px down — not 20.
+    type B = { y: number; children: B[] };
+    const { node } = await render(
+      '<html style="margin-top:20px"><body style="margin:0">' +
+        '<div style="margin-top:20px;height:10px"></div></body></html>',
+      300,
+    );
+    const tree = (view(node) as unknown as { _tree: { root: B } })._tree;
+    let box = tree.root;
+    while (box.children.length) box = box.children[0];
+    assert.ok(Math.abs(box.y - 40) < 1, `at ${box.y}`);
+  },
+);
+
+metric(
   'mixed-sign sibling margins collapse to the sum of the extremes',
   async () => {
     // CSS 8.3.1: largest positive plus most negative — 40 + (-10) = 30. The
@@ -611,6 +658,38 @@ metric(
     )._tree;
     const [d, after] = tree.root.children;
     assert.ok(Math.abs(after.y - (d.y + d.height) - 20) < 1);
+  },
+);
+
+metric(
+  "a paragraph's top margin escapes a plain div around it, and a padded one keeps it",
+  async () => {
+    // CSS 2.1 8.3.1: nothing parts a plain div's top edge from its first
+    // child's, so the paragraph's margin and the one before it are one
+    // margin. Applied inside the div as well, <div><p> stood a paragraph's
+    // margin lower than <p> — which is most of the CSS 2.1 selector tests.
+    const { node } = await render(
+      '<style>p{margin:20px 0}div{margin:0}.pad{padding-top:1px}</style>' +
+        '<p>before</p><div><p>in a div</p></div>' +
+        '<div class="pad"><p>padded</p></div>',
+    );
+    type B = { y: number; height: number; children: B[] };
+    const tree = (view(node) as unknown as { _tree: { root: B } })._tree;
+    const [before, plain, padded] = tree.root.children;
+    const inPlain = plain.children[0];
+    const inPadded = padded.children[0];
+    const gap = inPlain.y - (before.y + before.height);
+    assert.ok(Math.abs(gap - 20) < 1, `one margin between them, got ${gap}`);
+    assert.ok(
+      Math.abs(plain.y - inPlain.y) < 1,
+      'the div starts where its paragraph does',
+    );
+    // the padding parts the padded div from its paragraph: the margin is
+    // applied inside it, after the padding
+    assert.ok(
+      Math.abs(inPadded.y - (padded.y + 1 + 20)) < 1,
+      `the padded div keeps its paragraph's margin inside, got ${inPadded.y - padded.y}`,
+    );
   },
 );
 
