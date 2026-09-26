@@ -2479,6 +2479,25 @@ test('a background-position keyword says which axis it is on', async () => {
   assert.deepStrictEqual(at('c'), [0, 10], 'in the shorthand');
 });
 
+metric("a table's height is shared among its rows", async () => {
+  // CSS 2.1 17.5.3: the height is a least height, and what the rows come
+  // short of it goes to them; `max-height` holds it back
+  const { node } = await render(
+    '<table style="height:200px;border-spacing:0"><tr><td id="a">x</td></tr>' +
+      '<tr><td id="b">y</td></tr></table>' +
+      '<table style="height:300px;max-height:100px;border-spacing:0">' +
+      '<tr><td id="c">z</td></tr></table>',
+  );
+  const el = view(node);
+  const [a, b, c] = ['a', 'b', 'c'].map((id) => boxOf(el, id));
+  assert.ok(
+    Math.abs(a.height + b.height - 200) < 0.01,
+    `${a.height} ${b.height}`,
+  );
+  assert.ok(Math.abs(a.height - b.height) < 0.01, 'in proportion');
+  assert.ok(Math.abs(c.height - 100) < 0.01, `clamped: ${c.height}`);
+});
+
 metric("a footer group's rows come last wherever it stands", async () => {
   const { node } = await render(
     '<table><thead><tr><td id="h">h</td></tr></thead>' +
