@@ -2511,6 +2511,22 @@ metric(
   },
 );
 
+metric('an image set display: block is a block', async () => {
+  // mail writes `img { display: block }` to lose the gap under its images;
+  // they stacked on one line as inline images, and one beside a float
+  // went under it
+  const { node } = await render(
+    '<div style="width:300px"><div id="f" style="float:left;width:40px;' +
+      'height:100px"></div><img id="a" width="20" height="20" ' +
+      'style="display:block"><img id="b" width="20" height="20" ' +
+      'style="display:block"></div>',
+  );
+  const el = view(node);
+  const [f, a, b] = ['f', 'a', 'b'].map((id) => boxOf(el, id));
+  assert.strictEqual(b.y, a.y + a.height, 'one below the other');
+  assert.strictEqual(a.x, f.x + f.width, 'beside the float, not under it');
+});
+
 metric("a list item's marker goes where its item is moved", async () => {
   // a table cell is laid out at the origin and then placed; the marker was
   // left behind, a bullet at the document's corner
