@@ -111,7 +111,10 @@ test suite on both backends, is in
 **Layout:** block flow with margin collapsing, inline formatting with
 bidi and full shaping, `inline-block`, floats and `clear`, lists with their
 markers, tables (the auto algorithm and `table-layout: fixed`, with `colspan`
-and `rowspan`), `position: relative | absolute | fixed`, and `display: flex`.
+and `rowspan`, and the anonymous table CSS builds around table parts that
+have none), `position: relative | absolute | fixed`, and `display: flex`. An
+inline-block sits on its last line's baseline and an inline-table on its
+first row's.
 A line with an inline-block or a padded element on it is put in visual order
 a piece at a time — the text engine orders the text inside each piece, and
 the line orders the pieces (UAX #9's L2) — so a right-to-left paragraph with
@@ -165,7 +168,10 @@ over it copies it.
 
 **Selectors:** everything [css-select] supports — combinators, attribute
 operators, `:nth-child(an+b)`, `:not()` — plus `:hover`, which is answered
-from this renderer's own pointer state. `@media` width and
+from this renderer's own pointer state. Escapes are read wherever they stand,
+so a Tailwind class such as `md:flex`, written `.md\:flex`, matches. A group
+with a selector in it that is not one — an unknown pseudo-class, a name that
+starts with a digit — is dropped whole, as CSS 2.1 drops it. `@media` width and
 `prefers-color-scheme` queries are evaluated — the scheme is the react-x11
 palette's in force, so a `<ThemeProvider colorScheme>` above the element
 answers it and a desktop that switches schemes re-cascades the document.
