@@ -15,6 +15,7 @@ import { AUTO, isPct, resolveOrNull } from '../css/values.js';
 import type { Len } from '../css/values.js';
 import { Box } from './boxes.js';
 import {
+  clampHeight,
   layoutBlockIn,
   measureIntrinsicWidth,
   moveContent,
@@ -124,6 +125,30 @@ export function layoutTable(
     covered += spacing * (last - cell.row);
     const missing = cell.box.height - covered;
     if (missing > 0) rowHeight[last] += missing;
+  }
+
+  // A table's own height, within its least and greatest, is a least
+  // height: what its rows come short of it goes to them, in proportion to
+  // what they have (CSS 2.1 17.5.3)
+  const wanted = resolveOrNull(style.height, table.percentHeightBase);
+  if (rows.length) {
+    const extraBox = table.verticalExtra;
+    const set =
+      wanted === null
+        ? 0
+        : style.boxSizing === 'border-box'
+          ? wanted
+          : wanted + extraBox;
+    const inner = clampHeight(table, set) - extraBox;
+    let total = 0;
+    for (const h of rowHeight) total += h;
+    const extra = inner - total - spacing * (rows.length + 1);
+    if (extra > 0) {
+      for (let r = 0; r < rows.length; r += 1) {
+        rowHeight[r] +=
+          total > 0 ? (extra * rowHeight[r]) / total : extra / rows.length;
+      }
+    }
   }
 
   for (let r = 0; r < rows.length; r += 1) {

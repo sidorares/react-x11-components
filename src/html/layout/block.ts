@@ -696,7 +696,7 @@ function finishHeight(box: Box, contentHeight: number): void {
   box.height = clampHeight(box, borderBox);
 }
 
-function clampHeight(box: Box, height: number): number {
+export function clampHeight(box: Box, height: number): number {
   let out = height;
   const base = box.percentHeightBase;
   const min = resolveOrNull(box.style.minHeight, base);
