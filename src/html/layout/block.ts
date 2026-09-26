@@ -249,7 +249,11 @@ function layoutChildren(
     const clearance = floats.clearance(child.style.clear);
     if (clearance > -Infinity && clearance > childY) childY = clearance;
 
-    layoutBlockLevel(child, ctx, floats, contentLeft, childY, contentWidth);
+    if (!floats.isEmpty && establishesBFC(child)) {
+      layoutBesideFloats(child, ctx, floats, contentLeft, childY, contentWidth);
+    } else {
+      layoutBlockLevel(child, ctx, floats, contentLeft, childY, contentWidth);
+    }
     y = child.y + child.height;
     pendingMargin = child.marginBottom;
     first = false;
@@ -272,6 +276,37 @@ function layoutChildren(
     return { height: y - contentTop, hanging: pendingMargin };
   }
   return { height: y + pendingMargin - contentTop, hanging: 0 };
+}
+
+/**
+ * A block that makes its own formatting context — a table, a box that
+ * clips its overflow — does not flow round the floats beside it: it is a
+ * rectangle beside them (CSS 2.1 9.5), in the room they leave at its top,
+ * or lower down where it does not fit there. An image floated left with an
+ * `overflow: hidden` block of text beside it is the layout this is for; the
+ * block ran under the image.
+ */
+function layoutBesideFloats(
+  box: Box,
+  ctx: LayoutContext,
+  floats: FloatContext,
+  contentLeft: number,
+  y: number,
+  contentWidth: number,
+): void {
+  const right = contentLeft + contentWidth;
+  let at = y;
+  for (let tries = 0; tries < 64; tries += 1) {
+    const band = floats.bandAt(at, 1, contentLeft, right);
+    const room = band.right - band.left;
+    if (room >= contentWidth) break;
+    layoutBlockLevel(box, ctx, floats, band.left, at, room);
+    if (box.marginLeft + box.width + box.marginRight <= room + 0.5) return;
+    const below = floats.nextEdgeBelow(at, 1);
+    if (below === null || below <= at) break;
+    at = below;
+  }
+  layoutBlockLevel(box, ctx, floats, contentLeft, at, contentWidth);
 }
 
 function layoutInlineContent(
