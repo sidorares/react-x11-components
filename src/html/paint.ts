@@ -148,7 +148,7 @@ function buildChildIndexes(box: Box): void {
   for (const child of box.children) {
     if (child.kind === 'text' || child.kind === 'break') continue;
     if (child.outOfFlow) (positioned ??= []).push(child);
-    else paintable += 1;
+    else if (!onLine(box, child)) paintable += 1;
   }
   if (positioned) {
     // Pre-sorted once per layout instead of filtered and sorted per paint.
@@ -160,7 +160,7 @@ function buildChildIndexes(box: Box): void {
   for (const child of box.children) {
     if (child.kind === 'text' || child.kind === 'break' || child.outOfFlow)
       continue;
-    boxes.push(child);
+    if (!onLine(box, child)) boxes.push(child);
   }
   const order = boxes.map((_, i) => i);
   order.sort((a, b) => boxes[a].boundsY - boxes[b].boundsY);
@@ -335,7 +335,7 @@ function paintBox(ctx: PaintContext, box: Box, options: PaintOptions): void {
   } else {
     for (const child of box.children) {
       if (child.kind === 'text' || child.kind === 'break') continue;
-      if (child.outOfFlow) continue;
+      if (child.outOfFlow || onLine(box, child)) continue;
       paintBox(ctx, child, options);
     }
   }
@@ -345,6 +345,21 @@ function paintBox(ctx: PaintContext, box: Box, options: PaintOptions): void {
   if (box.positionedPaint) {
     for (const child of box.positionedPaint) paintBox(ctx, child, options);
   }
+}
+
+/**
+ * Whether a child is painted by its parent's lines rather than as a child:
+ * an inline-block or an image in a line of text is placed on the line, and
+ * `paintLines` paints it there. Painted as a child as well, its text was
+ * drawn twice — darker at every antialiased edge — and a translucent
+ * background had its alpha doubled.
+ */
+function onLine(parent: Box, child: Box): boolean {
+  if (parent.lines === null && parent.kind !== 'inline') return false;
+  if (child.isFloat || child.outOfFlow) return false;
+  return (
+    child.kind !== 'inline' && child.kind !== 'text' && child.kind !== 'break'
+  );
 }
 
 function byZIndex(a: Box, b: Box): number {
