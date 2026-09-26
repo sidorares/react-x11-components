@@ -59,6 +59,13 @@ type CssSelectAdapter = typeof DomUtils & {
   isVisited(el: Element): boolean;
 };
 
+/** A style handed to every element with the same sharing key, and the key
+ *  that element's children share under (`Cascade.sharedStyleFor`). */
+export interface SharedStyle {
+  style: ComputedStyle;
+  key: number;
+}
+
 /** A compiled matcher, kept beside the rule it came from. */
 interface IndexedRule {
   rule: StyleRule;
@@ -66,7 +73,25 @@ interface IndexedRule {
   /** Set once compilation has been attempted, so a selector `css-select`
    *  refuses is not recompiled once per element for the rest of the pass. */
   compiled: boolean;
+  /** Which rule this is, in a sharing key (`Cascade.sharedStyleFor`). */
+  id: number;
 }
+
+/**
+ * What makes a selector's match depend on more than the element's own tag and
+ * attributes and its ancestors' — its siblings, where it sits among them,
+ * what it contains, or where the document is scrolled to. Two elements that
+ * look alike from the root down can still differ under a rule with one of
+ * these, so an element such a rule could reach does not share its style
+ * (`Cascade.sharedStyleFor`). css-select spells some of them under other
+ * names, and those count too: `:checked` and `:selected` read which option
+ * comes first, `:disabled` and `:enabled` which legend does, and `:parent`
+ * and `:contains()` the element's contents. Over-broad on purpose: a `+` or
+ * `~` inside an attribute value, or the `~=` operator, costs sharing and
+ * nothing else.
+ */
+const UNSHAREABLE =
+  /[+~]|:(?:first|last|only)-(?:child|of-type)|:nth-|:empty|:blank|:has\(|:focus-within|:target|:scope|:(?:checked|selected|disabled|enabled|parent)\b|:i?contains\(/;
 
 /**
  * Rules bucketed by the key of their rightmost compound selector. An element
@@ -80,13 +105,32 @@ class RuleIndex {
   /** Whether any rule in here is pointer-sensitive, so the renderer knows
    *  whether a pointer move can change the cascade at all. */
   hoverSensitive = false;
+  /** The buckets holding a rule an element cannot share its style under
+   *  (`UNSHAREABLE`): the ids, classes and tags whose elements compute
+   *  their own, and whether the universal bucket makes every element do so. */
+  readonly ownStyleIds = new Set<string>();
+  readonly ownStyleClasses = new Set<string>();
+  readonly ownStyleTags = new Set<string>();
+  ownStyleEverywhere = false;
+  private _nextId = 0;
 
   add(rule: StyleRule): void {
-    const indexed: IndexedRule = { rule, match: null, compiled: false };
+    const indexed: IndexedRule = {
+      rule,
+      match: null,
+      compiled: false,
+      id: this._nextId++,
+    };
     if (rule.selector.includes(':hover') || rule.selector.includes(':active')) {
       this.hoverSensitive = true;
     }
     const key = rightmostKey(rule.selector);
+    if (UNSHAREABLE.test(rule.selector)) {
+      if (key.kind === 'id') this.ownStyleIds.add(key.name);
+      else if (key.kind === 'class') this.ownStyleClasses.add(key.name);
+      else if (key.kind === 'tag') this.ownStyleTags.add(key.name);
+      else this.ownStyleEverywhere = true;
+    }
     const bucket =
       key.kind === 'id'
         ? mapBucket(this.byId, key.name)
@@ -286,18 +330,143 @@ export class Cascade {
     return band;
   }
 
+  /** Computed styles by sharing key, for one build (`sharedStyleFor`): one
+   *  map for the elements shared without matching, one for the elements
+   *  shared by what they matched. */
+  private _shared = new Map<string, SharedStyle>();
+  private _sharedByMatch = new Map<string, SharedStyle>();
+  private _nextShareKey = 1;
+
+  /** A box tree is about to be built: the styles shared in the last build
+   *  were computed against a pointer and a viewport that may have moved. */
+  beginSharing(): void {
+    this._shared.clear();
+    this._sharedByMatch.clear();
+  }
+
   /**
-   * The computed style for one element, given its parent's. Called once per
-   * element per style pass, in document order — the box builder drives it,
-   * so there is no second traversal and no map of styles to allocate.
+   * `styleFor`, shared between the elements that must compute the same
+   * style, with the key this element's children share under.
+   *
+   * A style is a function of the parent's style, the rules that match, the
+   * presentational attributes, the inline style and whether the parent is a
+   * flex container. Outside the rules `UNSHAREABLE` names, what matches
+   * depends only on the element's tag and attributes and its ancestors', and
+   * the hints read nothing else either. So the key is the parent's key, the
+   * flex flag, the tag and every attribute — plus the pointer state where a
+   * rule asks for it — and an element whose key has been computed in this
+   * build takes that style object, matching nothing. A long document is a
+   * few kinds of element many times over: the benchmark's 600 KB report is
+   * 9,039 elements and 110 keys, and computing every style again was a third
+   * of an edit.
+   *
+   * An element a rule `UNSHAREABLE` could reach is matched, since where it
+   * sits decides what matches — and then shared by what matched: the same
+   * parent, attributes and rules make the same style. That is what keeps a
+   * striped table from being a style per row, and it keeps the key its
+   * children share under, which an element-per-key would have taken from the
+   * whole subtree.
+   *
+   * The style is handed out shared, so nothing may write to it — nothing
+   * does after the cascade, and `rootStyle` does not go through here.
+   */
+  sharedStyleFor(
+    el: Element,
+    parentStyle: ComputedStyle,
+    parentKey: number,
+    inFlexContainer: boolean,
+  ): SharedStyle {
+    let key = `${parentKey}\u0001${inFlexContainer ? 1 : 0}`;
+    const tag = tagOf(el);
+    key += `\u0001${tag.length}:${tag}`;
+    if (this._index.hoverSensitive) {
+      if (this._pointer.hovered.has(el)) key += '\u0001:hover';
+      if (this._pointer.active.has(el)) key += '\u0001:active';
+    }
+    const attribs = el.attribs;
+    for (const name in attribs) {
+      const value = attribs[name];
+      key += `\u0001${name.length}:${name}=${value.length}:${value}`;
+    }
+    if (!this._shareable(el)) {
+      const matched: number[] = [];
+      const candidates = this._candidates(el, matched);
+      key += `\u0001${matched.join(',')}`;
+      let shared = this._sharedByMatch.get(key);
+      if (shared === undefined) {
+        shared = {
+          style: this._computeStyle(
+            el,
+            parentStyle,
+            inFlexContainer,
+            candidates,
+          ),
+          key: this._nextShareKey++,
+        };
+        this._sharedByMatch.set(key, shared);
+      }
+      return shared;
+    }
+    let shared = this._shared.get(key);
+    if (shared === undefined) {
+      shared = {
+        style: this.styleFor(el, parentStyle, inFlexContainer),
+        key: this._nextShareKey++,
+      };
+      this._shared.set(key, shared);
+    }
+    return shared;
+  }
+
+  /** Whether no rule `UNSHAREABLE` names could reach this element: the same
+   *  buckets `_candidates` looks in. */
+  private _shareable(el: Element): boolean {
+    const index = this._index;
+    if (index.ownStyleEverywhere) return false;
+    if (index.ownStyleTags.size && index.ownStyleTags.has(tagOf(el))) {
+      return false;
+    }
+    if (index.ownStyleIds.size) {
+      const id = attr(el, 'id');
+      if (id && index.ownStyleIds.has(id)) return false;
+    }
+    if (index.ownStyleClasses.size) {
+      const className = attr(el, 'class');
+      if (className) {
+        for (const name of className.split(/\s+/)) {
+          if (name && index.ownStyleClasses.has(name)) return false;
+        }
+      }
+    }
+    return true;
+  }
+
+  /**
+   * The computed style for one element, given its parent's. The box builder
+   * asks for every element in document order, through `sharedStyleFor`, so
+   * a style is computed only for the elements with none to share.
    */
   styleFor(
     el: Element,
     parentStyle: ComputedStyle,
     inFlexContainer: boolean,
   ): ComputedStyle {
+    return this._computeStyle(
+      el,
+      parentStyle,
+      inFlexContainer,
+      this._candidates(el),
+    );
+  }
+
+  /** `styleFor`, from the rules and hints already gathered for `el`. */
+  private _computeStyle(
+    el: Element,
+    parentStyle: ComputedStyle,
+    inFlexContainer: boolean,
+    candidates: Candidate[],
+  ): ComputedStyle {
     const style = inherit(parentStyle, this.initial);
-    const candidates = this._candidates(el);
 
     // The unit context has to be built twice: once with the parent's font
     // size, so a `font-size: 1.2em` in the cascade resolves against the
@@ -353,7 +522,10 @@ export class Cascade {
     return bodyStyle;
   }
 
-  private _candidates(el: Element): Candidate[] {
+  /** Every rule and hint that applies to `el`, in cascade order — and, into
+   *  `matched` when it is passed, the ids of the rules, in the order they
+   *  were tried. */
+  private _candidates(el: Element, matched?: number[]): Candidate[] {
     const out: Candidate[] = [];
     // A media query's width is CSS pixels; the viewport is kept in device.
     const width = this.viewportWidth / this.scale;
@@ -380,6 +552,7 @@ export class Cascade {
           }
         }
         if (!indexed.match || !indexed.match(el)) continue;
+        matched?.push(indexed.id);
         const origin = rule.order < 0 ? Origin.UserAgent : Origin.Author;
         pushRule(out, rule, origin);
       }
