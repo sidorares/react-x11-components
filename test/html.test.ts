@@ -1066,6 +1066,18 @@ test('quotes open and close by depth, and none writes nothing', async () => {
   );
 });
 
+test('an inline-block on a line is painted once', async () => {
+  // the line paints what is placed on it, and the paragraph's own walk
+  // over its children must not paint it again: a translucent fill drawn
+  // twice is twice as opaque, and text twice as heavy
+  const { node } = await render(
+    '<p>a <span style="display:inline-block;width:13px;height:11px;' +
+      'background:rgba(0,0,255,0.5)"></span> <img width="7" height="5"> b</p>',
+  );
+  const fills = await fillsOf(view(node));
+  assert.strictEqual(fills.filter((f) => f.w === 13 && f.h === 11).length, 1);
+});
+
 test('a pseudo-element is a box of its own display', async () => {
   const { node } = await render(
     '<style>.cf:after{content:"";display:block;height:10px}' +
