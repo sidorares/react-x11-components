@@ -2692,6 +2692,25 @@ metric(
   },
 );
 
+metric(
+  "an empty list item's marker stands where its first line would",
+  async () => {
+    const { node } = await render(
+      '<ul style="margin:0"><li id="a"></li></ul>' +
+        '<ul style="margin:0"><li id="b">&nbsp;</li></ul>',
+    );
+    const el = view(node);
+    type Marked = LaidBox & { marker: { y: number } | null };
+    const a = boxOf(el, 'a') as Marked;
+    const b = boxOf(el, 'b') as Marked;
+    assert.ok(a.marker && b.marker, 'both have markers');
+    assert.ok(
+      Math.abs(a.marker.y - a.y - (b.marker.y - b.y)) < 0.5,
+      `the same distance below its item's top: ${a.marker.y - a.y} and ${b.marker.y - b.y}`,
+    );
+  },
+);
+
 metric("a footer group's rows come last wherever it stands", async () => {
   const { node } = await render(
     '<table><thead><tr><td id="h">h</td></tr></thead>' +

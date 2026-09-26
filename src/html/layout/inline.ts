@@ -1752,7 +1752,10 @@ function indentOf(style: ComputedStyle, width: number): number {
  * it was, which set such lines a tenth of a line apart: the Cocoa engine
  * takes a zero multiple for none at all.
  */
-function lineHeightMultiplier(fonts: FontsLike, style: ComputedStyle): number {
+export function lineHeightMultiplier(
+  fonts: FontsLike,
+  style: ComputedStyle,
+): number {
   if (style.lineHeight === 'normal') return 1;
   const target = style.lineHeightIsLength
     ? (style.lineHeight as number)

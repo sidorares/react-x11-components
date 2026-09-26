@@ -15,7 +15,7 @@ import type { Len } from '../css/values.js';
 import { Box } from './boxes.js';
 import type { BoxTree, LineBox, Marker } from './boxes.js';
 import { FloatContext } from './floats.js';
-import { layoutInline } from './inline.js';
+import { layoutInline, lineHeightMultiplier } from './inline.js';
 import type { FontsLike } from './inline.js';
 import { layoutFlex } from './flex.js';
 import { finishCaptions, layoutTable } from './table.js';
@@ -613,6 +613,8 @@ function layoutMarker(box: Box, marker: Marker, ctx: LayoutContext): void {
   const fonts = ctx.fonts;
   if (!fonts) return;
   const style = box.style;
+  // set in a line of the item's own height, so that where the item has no
+  // line of its own the marker stands where its first would have been
   const layout = fonts.layout(
     [
       {
@@ -623,7 +625,7 @@ function layoutMarker(box: Box, marker: Marker, ctx: LayoutContext): void {
       },
     ],
     { family: style.fontFamily, size: style.fontSize, color: style.color },
-    {},
+    { lineHeight: lineHeightMultiplier(fonts, style) },
   );
   marker.layout = layout;
   const gap = Math.round(style.fontSize * 0.4);
@@ -631,11 +633,13 @@ function layoutMarker(box: Box, marker: Marker, ctx: LayoutContext): void {
   // always the item's own: an `<li>` holding a paragraph, or one holding text
   // and a nested list, has its inline content in an anonymous block. Looking
   // only at `box.lines` puts the marker of every such item at the content
-  // top, which reads as a missing bullet rather than a misplaced one.
+  // top, which reads as a missing bullet rather than a misplaced one. An
+  // empty item is still a list item, and its marker a line at its top.
   const first = firstLineIn(box);
-  const baselineY = first ? first.y + first.baseline : box.contentY;
   const own = layout.lines[0];
-  marker.y = baselineY - (own ? own.baseline : style.fontSize);
+  marker.y = first
+    ? first.y + first.baseline - (own ? own.baseline : style.fontSize)
+    : box.contentY;
   marker.x =
     style.listStylePosition === 'inside'
       ? box.contentX
