@@ -19,7 +19,8 @@
 // - **The palette is a browser's**: black text on white, links #0000ee, a
 //   16px serif. The rest of the user-agent sheet is <Html>'s own — themed
 //   rules for `blockquote` and `pre` included — and costs what it costs.
-// - **Nothing runs.** A test with a script is recorded as `script` and not
+// - **Nothing runs.** A test with a script — a `<script>`, or a handler
+//   such as `onload` on an element — is recorded as `script` and not
 //   rendered: the component never executes one, by design.
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -199,6 +200,12 @@ function sourceOf(path: string): string {
   return /\.xht(ml)?$/i.test(path)
     ? text.replace(/<!\[CDATA\[/g, '').replace(/\]\]>/g, '')
     : text;
+}
+
+/** Whether a page's rendering depends on code: a script element, or an
+ *  event handler attribute that would have run one. */
+function scripted(source: string): boolean {
+  return /<script\b/i.test(source) || /<[a-z][^>]*\son[a-z]+\s*=/i.test(source);
 }
 
 let serial = 0;
@@ -453,7 +460,7 @@ async function run(test: string): Promise<Outcome> {
     return { test, ref, kind, result: 'error', error: 'reference missing' };
   }
   const refSource = sourceOf(refPath);
-  if (/<script\b/i.test(source) || /<script\b/i.test(refSource)) {
+  if (scripted(source) || scripted(refSource)) {
     return { test, ref, kind, result: 'script' };
   }
   const started = performance.now();
