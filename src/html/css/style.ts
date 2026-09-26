@@ -26,6 +26,13 @@ import {
   splitValue,
 } from './values.js';
 import type { Len, UnitContext } from './values.js';
+import {
+  DEFAULT_QUOTES,
+  parseContent,
+  parseCounterList,
+  parseQuotes,
+} from './content.js';
+import type { ContentItem, CounterChange } from './content.js';
 
 export type Display =
   | 'none'
@@ -85,6 +92,8 @@ export interface ComputedStyle {
   /** Inherited so a `<td>` picks up the table's, which is how authors expect
    *  `text-align` on a `<table>` to behave. */
   tableTextAlignSet: boolean;
+  /** The marks `open-quote` and `close-quote` write, pairs outermost first. */
+  quotes: readonly string[] | 'none';
 
   // --- not inherited --------------------------------------------------------
   display: Display;
@@ -174,6 +183,12 @@ export interface ComputedStyle {
   columnGap: number;
 
   tableLayout: 'auto' | 'fixed';
+
+  // generated content (CSS 2.1 12)
+  /** What a `::before` or `::after` holds; `normal` and `none` make none. */
+  content: ContentItem[] | 'normal' | 'none';
+  counterReset: CounterChange[] | null;
+  counterIncrement: CounterChange[] | null;
 }
 
 /** The properties that inherit. Named once, so `inherit()` and the `inherit`
@@ -200,6 +215,7 @@ const INHERITED = [
   'borderCollapse',
   'borderSpacing',
   'tableTextAlignSet',
+  'quotes',
 ] as const satisfies readonly (keyof ComputedStyle)[];
 
 /** What the document's root inherits from — the host's own text look, so an
@@ -253,6 +269,7 @@ export function initialStyle(look: RootLook): ComputedStyle {
     borderCollapse: 'separate',
     borderSpacing: 2,
     tableTextAlignSet: false,
+    quotes: DEFAULT_QUOTES,
 
     display: 'inline',
     position: 'static',
@@ -327,6 +344,10 @@ export function initialStyle(look: RootLook): ComputedStyle {
     columnGap: 0,
 
     tableLayout: 'auto',
+
+    content: 'normal',
+    counterReset: null,
+    counterIncrement: null,
   };
 }
 
@@ -710,6 +731,28 @@ export function applyDeclaration(
       return;
     }
 
+    // --- generated content --------------------------------------------------
+    case 'content': {
+      const parsed = parseContent(value);
+      if (parsed !== null) style.content = parsed;
+      return;
+    }
+    case 'counter-reset':
+    case 'counter-increment': {
+      const reset = name === 'counter-reset';
+      const parsed = parseCounterList(value, reset ? 0 : 1);
+      if (parsed === null) return;
+      const list = parsed === 'none' ? null : parsed;
+      if (reset) style.counterReset = list;
+      else style.counterIncrement = list;
+      return;
+    }
+    case 'quotes': {
+      const parsed = parseQuotes(value);
+      if (parsed !== null) style.quotes = parsed;
+      return;
+    }
+
     // --- text ---------------------------------------------------------------
     case 'font': {
       applyFontShorthand(style, parent, value, ctx);
@@ -732,10 +775,14 @@ export function applyDeclaration(
       }
       // `em` in a `font-size` is relative to the *parent's* size, not this
       // element's — the one place the unit context has to be overridden.
+      // 0 is a size — the text takes no room, which is what a container of
+      // inline-blocks sets to lose the spaces between them — and a negative
+      // one is no size at all, so the declaration goes
       const len = parseLength(value, { ...ctx, em: parent.fontSize });
-      if (typeof len === 'number') style.fontSize = Math.max(1, len);
-      else if (len && typeof len === 'object') {
-        style.fontSize = Math.max(1, (len.pct / 100) * parent.fontSize);
+      if (typeof len === 'number') {
+        if (len >= 0) style.fontSize = len;
+      } else if (len && typeof len === 'object' && len.pct >= 0) {
+        style.fontSize = (len.pct / 100) * parent.fontSize;
       }
       return;
     }
@@ -1310,6 +1357,7 @@ const INHERITED_NAMES = new Set<string>([
   'cursor',
   'border-collapse',
   'border-spacing',
+  'quotes',
 ]);
 
 function isInherited(name: string): boolean {
@@ -1360,6 +1408,10 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'list-style-position': ['listStylePosition'],
   cursor: ['cursor'],
   'border-collapse': ['borderCollapse'],
+  quotes: ['quotes'],
+  content: ['content'],
+  'counter-reset': ['counterReset'],
+  'counter-increment': ['counterIncrement'],
   'border-spacing': ['borderSpacing'],
   display: ['display'],
   width: ['width'],

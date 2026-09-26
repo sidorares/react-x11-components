@@ -215,6 +215,15 @@ export function layoutInline(block: Box, options: InlineOptions): InlineResult {
         close();
         continue;
       }
+      // an inline-block wider than the room a float left goes below it,
+      // as a word does (below)
+      if (isEmpty(open) && outer > available && available < options.width) {
+        const below = belowFloats(options, y, style.fontSize * 1.4);
+        if (below !== null) {
+          y = below;
+          continue;
+        }
+      }
       open.atomics.push({ box, x: band.left + open.x + box.marginLeft, y: 0 });
       open.x += outer;
       index += 1;
@@ -303,6 +312,25 @@ export function layoutInline(block: Box, options: InlineOptions): InlineResult {
       index = segment.nextIndex;
       offset = 0;
       continue;
+    }
+    // Nothing fits beside the floats — the first word is wider than the
+    // room they leave, and was either run past it or cut inside itself to
+    // fit — so the line moves down to where a float ends, and tries again
+    // there (CSS 2.1 9.5). Only where a float took some of the line's width:
+    // past the floats the line has the whole of it, and a word wider still
+    // is the engine's to break. A line that ends on white space fitted its
+    // word: the space hangs, and CoreText counted it in the width until
+    // @windowkit/appkit 0.15.0.
+    if (
+      isEmpty(open) &&
+      available < options.width &&
+      tooNarrow(segment.runs, first.end, first.width, room)
+    ) {
+      const below = belowFloats(options, y, style.fontSize * 1.4);
+      if (below !== null) {
+        y = below;
+        continue;
+      }
     }
     open.texts.push({
       layout: fragment,
@@ -903,13 +931,66 @@ function naturalLineHeight(fonts: FontsLike, style: ComputedStyle): number {
   return height;
 }
 
+/** Whether a line has nothing on it yet. */
+function isEmpty(open: { x: number; texts: unknown[]; atomics: unknown[] }) {
+  return open.x === 0 && !open.texts.length && !open.atomics.length;
+}
+
+/** Where a line at `y` next has more room, in the block's own space: the
+ *  nearest bottom edge of a float beside it, or null when none is. */
+function belowFloats(
+  options: InlineOptions,
+  y: number,
+  height: number,
+): number | null {
+  const edge = options.floats?.nextEdgeBelow(options.startY + y, height);
+  return edge == null ? null : Math.max(y + 1, edge - options.startY);
+}
+
+/**
+ * Whether a line's first word did not fit its room: the line runs past the
+ * room on a word rather than on hanging white space, or it ends inside a
+ * word — between two letters or digits, where no break is allowed, so only
+ * a line too narrow for the word put one there. Ideographs and kana break
+ * between any two, and are not counted as a word's letters.
+ */
+function tooNarrow(
+  runs: TextRun[],
+  end: number,
+  width: number,
+  room: number,
+): boolean {
+  let at = 0;
+  let before = '';
+  let after = '';
+  for (const run of runs) {
+    const text = run.text;
+    if (end > at && end <= at + text.length) before = text[end - at - 1];
+    if (end >= at && end < at + text.length) after = text[end - at];
+    at += text.length;
+  }
+  if (WORD_CHAR.test(before) && WORD_CHAR.test(after)) return true;
+  return width > room + 0.5 && before !== '' && !/\s/.test(before);
+}
+
+const WORD_CHAR =
+  /^(?![\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}])[\p{L}\p{N}\p{M}]$/u;
+
 function bandAt(
   options: InlineOptions,
   y: number,
   height: number,
 ): { left: number; right: number } {
   if (!options.floats) return { left: 0, right: options.width };
-  const band = options.floats.bandAt(options.startY + y, height);
+  // Floats narrow the block's own line, where they reach into it; the
+  // formatting context's edges are not this block's, and a block wider than
+  // its context — a fixed width in a narrow body — keeps its lines whole.
+  const band = options.floats.bandAt(
+    options.startY + y,
+    height,
+    options.originX,
+    options.originX + options.width,
+  );
   return {
     left: Math.max(0, band.left - options.originX),
     right: Math.min(options.width, band.right - options.originX),

@@ -129,7 +129,19 @@ it.
 **Text:** `font` and its longhands, `line-height`, `text-align`,
 `text-indent`, `text-transform`, `letter-spacing`, `white-space` (including
 `pre` and `pre-wrap`), `direction`, `vertical-align`, `text-decoration` in
-all five rule styles.
+all five rule styles. White space collapses across element boundaries as CSS
+2.1 16.6.1 has it — none at the start or the end of a line, one between two
+words whatever elements they are in — and text at `font-size: 0` takes no
+room, which is how a row of inline-blocks is set without gaps.
+
+**Generated content:** `::before` and `::after`, and CSS 2's `:before` and
+`:after`, as boxes of their own `display` holding what `content` comes to:
+strings with their escapes, `attr()`, `counter()` and `counters()` in every
+CSS 2.1 list style, and `open-quote`/`close-quote` over `quotes`.
+`counter-reset` and `counter-increment` are scoped as CSS 2.1 12.4.1 scopes
+them, so numbered headings and nested outline numbers come out as they do in
+a browser. The generated text is part of the document's text, so a selection
+over it copies it.
 
 **Selectors:** everything [css-select] supports — combinators, attribute
 operators, `:nth-child(an+b)`, `:not()` — plus `:hover`, which is answered
@@ -142,8 +154,10 @@ answers it and a desktop that switches schemes re-cascades the document.
 **Not implemented:** CSS grid (degrades to block stacking), transforms,
 animations and transitions, multi-column, shadows, gradients,
 `background-size`, `background-attachment: fixed`, more than one background
-layer (the first is drawn), and `position: sticky` (treated as `relative`). `border-collapse: collapse` is
-drawn as the separate model with zero spacing.
+layer (the first is drawn), `position: sticky` (treated as `relative`),
+`::first-letter` and `::first-line`, and an image in `content` (the rest of
+the value is drawn). `border-collapse: collapse` is drawn as the separate
+model with zero spacing.
 
 ## The decisions
 

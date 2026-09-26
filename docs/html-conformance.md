@@ -58,51 +58,53 @@ separately, and there are six.
 
 ## Results
 
-|                       | master, X11 | now, X11    | now, Cocoa  |
-| --------------------- | ----------- | ----------- | ----------- |
-| reftests run          | 5,895       | 5,895       | 5,895       |
-| pass                  | 1,831 (31%) | 2,417 (41%) | 2,212 (38%) |
-| **hung the renderer** | **91**      | 0           | 0           |
-| threw from paint      | 1           | 0           | 0           |
+|                       | before, X11 | round 1, X11 | round 1, Cocoa | round 2, X11 | round 2, Cocoa |
+| --------------------- | ----------- | ------------ | -------------- | ------------ | -------------- |
+| reftests run          | 5,895       | 5,895        | 5,895          | 5,895        | 5,895          |
+| pass                  | 1,831 (31%) | 2,417 (41%)  | 2,212 (38%)    | 2,822 (48%)  | 2,557 (43%)    |
+| **hung the renderer** | **91**      | 0            | 0              | 0            | 0              |
+| threw from paint      | 1           | 0            | 0              | 0            | 0              |
 
-"Now" is master with the fixes below. The 91 hangs were the renderer looping
-for ever inside a render, which freezes an application whole; they are the
-first finding, and the most important one.
+"Before" is `<Html>` as it shipped. Round 1 is the first nine fixes below;
+round 2 is generated content and the four layout fixes it brought to light.
+The 91 hangs were the renderer looping for ever inside a render, which
+freezes an application whole; they are the first finding, and the most
+important one.
 
 By area, sorted by the number of tests:
 
-| area                 | master, X11   | now, X11      | now, Cocoa    |
-| -------------------- | ------------- | ------------- | ------------- |
-| normal-flow          | 217/694 (31%) | 357/694 (51%) | 423/694 (61%) |
-| margin-padding-clear | 369/682 (54%) | 448/682 (66%) | 424/682 (62%) |
-| positioning          | 129/513 (25%) | 217/513 (42%) | 184/513 (36%) |
-| borders              | 255/504 (51%) | 267/504 (53%) | 266/504 (53%) |
-| selectors            | 62/468 (13%)  | 70/468 (15%)  | 70/468 (15%)  |
-| text                 | 186/381 (49%) | 193/381 (51%) | 181/381 (48%) |
-| backgrounds          | 114/336 (34%) | 178/336 (53%) | 112/336 (33%) |
-| syntax               | 147/275 (53%) | 152/275 (55%) | 153/275 (56%) |
-| tables               | 12/250 (5%)   | 15/250 (6%)   | 15/250 (6%)   |
-| floats-clear         | 13/211 (6%)   | 80/211 (38%)  | 56/211 (27%)  |
-| generated-content    | 17/205 (8%)   | 17/205 (8%)   | 17/205 (8%)   |
-| linebox              | 41/191 (21%)  | 106/191 (55%) | 16/191 (8%)   |
-| css1                 | 18/164 (11%)  | 22/164 (13%)  | 11/164 (7%)   |
-| fonts                | 45/159 (28%)  | 46/159 (29%)  | 43/159 (27%)  |
-| lists                | 12/155 (8%)   | 12/155 (8%)   | 12/155 (8%)   |
-| bidi-text            | 4/105 (4%)    | 4/105 (4%)    | 5/105 (5%)    |
-| floats               | 17/100 (17%)  | 23/100 (23%)  | 25/100 (25%)  |
-| box-display          | 17/86 (20%)   | 20/86 (23%)   | 14/86 (16%)   |
-| ui                   | 39/52 (75%)   | 39/52 (75%)   | 39/52 (75%)   |
-| visufx               | 3/49 (6%)     | 3/49 (6%)     | 3/49 (6%)     |
-| pagination           | 38/43 (88%)   | 41/43 (95%)   | 41/43 (95%)   |
-| visudet              | 6/37 (16%)    | 10/37 (27%)   | 11/37 (30%)   |
-| cascade              | 12/32 (38%)   | 20/32 (62%)   | 19/32 (59%)   |
-| zindex               | 13/29 (45%)   | 13/29 (45%)   | 13/29 (45%)   |
-| visuren              | 4/26 (15%)    | 5/26 (19%)    | 5/26 (19%)    |
-| abspos               | 3/25 (12%)    | 7/25 (28%)    | 7/25 (28%)    |
-| values               | 8/25 (32%)    | 11/25 (44%)   | 7/25 (28%)    |
-| sec5                 | 11/23 (48%)   | 21/23 (91%)   | 21/23 (91%)   |
-| colors               | 2/19 (11%)    | 3/19 (16%)    | 2/19 (11%)    |
-| media                | 10/17 (59%)   | 10/17 (59%)   | 10/17 (59%)   |
+| area                 | before, X11   | round 1, X11  | round 1, Cocoa | round 2, X11  | round 2, Cocoa |
+| -------------------- | ------------- | ------------- | -------------- | ------------- | -------------- |
+| normal-flow          | 217/694 (31%) | 357/694 (51%) | 423/694 (61%)  | 370/694 (53%) | 436/694 (63%)  |
+| margin-padding-clear | 369/682 (54%) | 448/682 (66%) | 424/682 (62%)  | 448/682 (66%) | 424/682 (62%)  |
+| positioning          | 129/513 (25%) | 217/513 (42%) | 184/513 (36%)  | 239/513 (47%) | 192/513 (37%)  |
+| borders              | 255/504 (51%) | 267/504 (53%) | 266/504 (53%)  | 269/504 (53%) | 268/504 (53%)  |
+| selectors            | 62/468 (13%)  | 70/468 (15%)  | 70/468 (15%)   | 73/468 (16%)  | 73/468 (16%)   |
+| text                 | 186/381 (49%) | 193/381 (51%) | 181/381 (48%)  | 214/381 (56%) | 191/381 (50%)  |
+| backgrounds          | 114/336 (34%) | 178/336 (53%) | 112/336 (33%)  | 179/336 (53%) | 117/336 (35%)  |
+| syntax               | 147/275 (53%) | 152/275 (55%) | 153/275 (56%)  | 168/275 (61%) | 170/275 (62%)  |
+| tables               | 12/250 (5%)   | 15/250 (6%)   | 15/250 (6%)    | 18/250 (7%)   | 18/250 (7%)    |
+| floats-clear         | 13/211 (6%)   | 80/211 (38%)  | 56/211 (27%)   | 86/211 (41%)  | 57/211 (27%)   |
+| generated-content    | 17/205 (8%)   | 17/205 (8%)   | 17/205 (8%)    | 130/205 (63%) | 130/205 (63%)  |
+| linebox              | 41/191 (21%)  | 106/191 (55%) | 16/191 (8%)    | 111/191 (58%) | 20/191 (10%)   |
+| css1                 | 18/164 (11%)  | 22/164 (13%)  | 11/164 (7%)    | 70/164 (43%)  | 37/164 (23%)   |
+| fonts                | 45/159 (28%)  | 46/159 (29%)  | 43/159 (27%)   | 86/159 (54%)  | 81/159 (51%)   |
+| lists                | 12/155 (8%)   | 12/155 (8%)   | 12/155 (8%)    | 75/155 (48%)  | 75/155 (48%)   |
+| bidi-text            | 4/105 (4%)    | 4/105 (4%)    | 5/105 (5%)     | 24/105 (23%)  | 19/105 (18%)   |
+| floats               | 17/100 (17%)  | 23/100 (23%)  | 25/100 (25%)   | 27/100 (27%)  | 29/100 (29%)   |
+| box-display          | 17/86 (20%)   | 20/86 (23%)   | 14/86 (16%)    | 34/86 (40%)   | 24/86 (28%)    |
+| ui                   | 39/52 (75%)   | 39/52 (75%)   | 39/52 (75%)    | 39/52 (75%)   | 39/52 (75%)    |
+| visufx               | 3/49 (6%)     | 3/49 (6%)     | 3/49 (6%)      | 3/49 (6%)     | 3/49 (6%)      |
+| pagination           | 38/43 (88%)   | 41/43 (95%)   | 41/43 (95%)    | 41/43 (95%)   | 41/43 (95%)    |
+| visudet              | 6/37 (16%)    | 10/37 (27%)   | 11/37 (30%)    | 12/37 (32%)   | 13/37 (35%)    |
+| cascade              | 12/32 (38%)   | 20/32 (62%)   | 19/32 (59%)    | 21/32 (66%)   | 20/32 (62%)    |
+| zindex               | 13/29 (45%)   | 13/29 (45%)   | 13/29 (45%)    | 13/29 (45%)   | 13/29 (45%)    |
+| visuren              | 4/26 (15%)    | 5/26 (19%)    | 5/26 (19%)     | 6/26 (23%)    | 6/26 (23%)     |
+| abspos               | 3/25 (12%)    | 7/25 (28%)    | 7/25 (28%)     | 7/25 (28%)    | 7/25 (28%)     |
+| values               | 8/25 (32%)    | 11/25 (44%)   | 7/25 (28%)     | 11/25 (44%)   | 7/25 (28%)     |
+| sec5                 | 11/23 (48%)   | 21/23 (91%)   | 21/23 (91%)    | 21/23 (91%)   | 21/23 (91%)    |
+| colors               | 2/19 (11%)    | 3/19 (16%)    | 2/19 (11%)     | 5/19 (26%)    | 4/19 (21%)     |
+| media                | 10/17 (59%)   | 10/17 (59%)   | 10/17 (59%)    | 10/17 (59%)   | 10/17 (59%)    |
 
 Paged media passes because neither a test nor its reference paginates here;
 those tests measure nothing about `<Html>`, which has no pages.
@@ -167,6 +169,41 @@ And upstream, found the same way:
   old placement with a shift of its own, which on ntk moved its glyphs a
   quarter of the leading too far down.
 
+### Round 2
+
+Generated content, and what building it brought to light:
+
+10. **`::before` and `::after` generated nothing**: a rule for one failed to
+    compile and dropped out of the cascade. They are boxes of their own
+    `display` now, holding strings, `attr()`, counters and quotes, with
+    `counter-reset` and `counter-increment` scoped as CSS 2.1 12.4.1 has it,
+    and CSS 2's single-colon `:before` counted as the type it is rather than
+    a class. Generated content went from 17 to 130 of 205, lists from 12 to
+    75 of 155 — the suite numbers its list tests with counters — and a
+    column's content is not rendered, as 17.2.1 says.
+11. **White space collapsed text node by text node**, where CSS collapses it
+    across the line (16.6.1): every `<p>` followed by a newline began with a
+    space, `Hi<b> </b>there` lost its space, `Hi <b> there</b>` kept two, and
+    a line after a `<br>` began with one. Text across the suite moved by
+    that space; css1 went from 22 to 70 of 164.
+12. **`font-size: 0` was 1px**, so the spaces between inline-blocks in a
+    row set at no size took a pixel each — the usual way to set columns
+    inline — and a 100% row wrapped. Fonts went from 46 to 86 of 159.
+13. **A line took its edges from the formatting context**, not its block:
+    a block wider than the body it sits in had its lines cut to the body.
+14. **A word with no room beside a float was cut to the room**, where CSS
+    moves the line below the float (9.5); an inline-block the same.
+
+Four tests that passed in round 1 fail now, each for a reason recorded here
+rather than hidden: `inlines-016` passed because a stray space stood in for
+an inline box's horizontal padding, which `<Html>` does not draw;
+`floats-placement-vertical-004` has a float after text on its line, and
+`<Html>` places a formatting context's floats before its lines, as though
+the float came first; `content-counter-001`'s reference is `about:blank`,
+so it passed only while generated content drew nothing; and
+`content-attr-case-002` is XHTML, whose attribute names are case-sensitive
+where the runner reads it as HTML.
+
 ## What `<Html>` supports
 
 From the pass rates of the tests that use each feature, at the fixes above,
@@ -178,20 +215,20 @@ checked against the code.
 | -------------------------------------------------- | ----- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | block flow, margin collapsing                      | 694   | 51%    | **supported**; empty blocks collapsing through, and clearance, remain                                                                                                                                                  |
 | margins, padding, borders                          | 682   | 66%    | **supported**; border-collapse and the `double`/`groove` families are approximations                                                                                                                                   |
-| floats and `clear`                                 | 311   | 23–38% | **supported**, with gaps: a float inside a paragraph is placed at the paragraph's top, not its line's                                                                                                                  |
+| floats and `clear`                                 | 311   | 27–41% | **supported**, with gaps: a float inside a paragraph is placed at the paragraph's top, not its line's                                                                                                                  |
 | relative and absolute positioning                  | 513   | 42%    | **partial**: no static position for an absolute box with neither `top` nor `bottom`                                                                                                                                    |
 | backgrounds: colour, image, repeat, position       | 336   | 53%    | **supported**; `background-attachment: fixed` is not                                                                                                                                                                   |
-| fonts: family, style, weight, size                 | 159   | 29%    | **partial**; the `font-size` failures are not yet taken apart                                                                                                                                                          |
+| fonts: family, style, weight, size                 | 159   | 54%    | **supported**; `font-variant: small-caps` is not                                                                                                                                                                       |
 | line height, `vertical-align`                      | 191   | 55%    | **partial**: one line height per paragraph, where CSS gives each inline box its own                                                                                                                                    |
-| `white-space`                                      | 217   | 18%    | **partial**                                                                                                                                                                                                            |
-| lists and markers                                  | 155   | 8%     | **partial**: markers draw; counters and `list-style-image` do not                                                                                                                                                      |
+| `white-space`                                      | 217   | 39%    | **supported**; collapsing is CSS 2.1's across elements                                                                                                                                                                 |
+| lists and markers                                  | 155   | 48%    | **supported**; `list-style-image` is not                                                                                                                                                                               |
 | CSS tables (`display: table-*`), `table-layout`    | 250   | 6%     | **partial**: HTML tables lay out, and a table's missing row groups, rows and cells are generated; a table part outside a table gets no table around it, and `border-collapse: collapse` is drawn as the separate model |
-| `::before`, `::after`, `content`, counters, quotes | 332   | 6%     | **missing**                                                                                                                                                                                                            |
+| `::before`, `::after`, `content`, counters, quotes | 332   | 64%    | **supported**; an image in `content` is not                                                                                                                                                                            |
 | `::first-letter`, `::first-line`                   | 395   | 1–16%  | **missing**                                                                                                                                                                                                            |
 | `z-index` stacking                                 | 152   | 10%    | **partial**: z-order within one parent only                                                                                                                                                                            |
 | `clip`                                             | 44    | 0%     | **missing**                                                                                                                                                                                                            |
 | bidi: `direction`, `unicode-bidi`                  | 265   | 14%    | **partial**: shaping and the bidi algorithm are ntk's; `unicode-bidi` overrides are not applied                                                                                                                        |
-| selectors                                          | 468   | 15%    | **supported** except the pseudo-elements above, which are most of this area                                                                                                                                            |
+| selectors                                          | 468   | 16%    | **supported** except `::first-letter` and `::first-line`, which are most of this area                                                                                                                                  |
 | cascade, `@import`, `@media`                       | 134   | 57–62% | **supported**                                                                                                                                                                                                          |
 
 The CSS3 subset documents actually use sits outside this suite and is listed
@@ -199,15 +236,15 @@ in [the plan](#a-static-html-widget-worth-having) below.
 
 ## Cocoa
 
-Cocoa passes 205 fewer tests than X11. 102 tests pass only on Cocoa and 307
-only on X11; of those 307:
+After round 2, Cocoa passes 265 fewer tests than X11. 111 tests pass only on
+Cocoa and 376 only on X11; of those 376:
 
-- **83 are sub-pixel resampling.** At 2x every image is scaled, and
+- **85 are sub-pixel resampling.** At 2x every image is scaled, and
   CoreGraphics' interpolation at a tile's edge depends on where the tile
   lands, so a background drawn a tile at a time differs from the reference's
   `<img>` by at most 32 levels on a few hundred pixels. Nothing a reader
   sees, and a strict comparison counts it.
-- **90 are line boxes**, and two things. CoreText put a line's leading
+- **91 are line boxes**, and two things. CoreText put a line's leading
   under its glyphs, so the squares the tests build out of Ahem sat as much
   as half a glyph off; with the appkit fix above, 37 tests come out closer
   to their references and the median line-box difference falls from 1,682
@@ -216,8 +253,16 @@ only on X11; of those 307:
   boxes do not have: with smoothing off as well, Cocoa passes 104 of the 191
   line-box tests, X11 106. Smoothing is how macOS draws text, so it stays,
   and those tests fail there by design.
+- **CoreText counts a line's trailing white space in its width**, and ntk
+  does not: a line that ends in a space measures a space wider on macOS.
+  Round 2 removes a collapsible space at the end of a block, as CSS does,
+  so a shrink-to-fit box no longer grows by one; a space at the end of a
+  wrapped line inside a paragraph is the engine's, and windowkit/appkit#81
+  leaves it out of CoreText's widths. Both engines also hang a trailing
+  no-break space, which CSS measures, so three float tests fail on both;
+  that is the next fix, for both at once.
 - **The rest** — positioning, floats, normal flow — are under investigation;
-  the 88 normal-flow tests that pass only on Cocoa point at a metric that
+  the normal-flow tests that pass only on Cocoa point at a metric that
   differs between the two text engines.
 
 ## A static HTML widget worth having
@@ -252,13 +297,17 @@ directories and caniemail's feature list:
    than one that renders badly.
 2. **Generated content**: `::before`, `::after`, `content` with strings,
    `attr()`, counters and quotes. About 330 tests, and used everywhere —
-   clearfixes, icons, quotation marks, numbered headings.
+   clearfixes, icons, quotation marks, numbered headings. Done in round 2;
+   an image in `content` remains.
 3. **Tables as mail uses them**: anonymous table boxes, the collapsing
    border model, `table-layout: fixed`, row groups, captions. About 600
    tests, and the layout of most HTML mail.
 4. **The inline formatting model**: a line height per inline box, the
-   remaining `vertical-align` values, `white-space`, `font-size` keywords,
-   `text-align: justify`, and the Cocoa line-box clip.
+   remaining `vertical-align` values, horizontal padding, borders and
+   margins on an inline box, `text-align: justify`, and a float placed where
+   its line has got to rather than before the line. White space and
+   `font-size: 0` were done in round 2, and the Cocoa line-box difference
+   turned out to be CoreText's placement and its font smoothing.
 5. **The CSS3 that documents use**: `background-size`, `box-shadow`,
    gradients, `calc()`, custom properties (`var()`), CSS Color 4 — which
    needs ntk's colour parser to read `oklch()` and the space-separated
@@ -279,7 +328,11 @@ directories and caniemail's feature list:
 2. **Reftests pass by accident.** A feature neither the test nor its
    reference exercises passes on a renderer that lacks it; fixing one half
    turns such passes into failures. Diff every run against the last, test by
-   test, and read the regressions before trusting a rate.
+   test, and read the regressions before trusting a rate. Round 2's white
+   space fix did it twice over: a space the renderer should never have
+   drawn stood in for an inline box's missing padding in one test, and in
+   another gave a word the break it needed to move below a float, which
+   hid that a word with no room was being cut instead.
 3. **Count the backend difference, not the backend.** A test passing on one
    backend and failing on the other is a backend bug with its reproduction
    attached; that list is worth more than either pass rate.
