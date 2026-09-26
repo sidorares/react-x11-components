@@ -220,6 +220,7 @@ function layoutChildren(
   for (const child of box.children) {
     if (child.kind === 'text' && !child.text.trim()) continue;
     if (child.outOfFlow) {
+      placeStatic(child, box, contentLeft, y + pendingMargin);
       ctx.positioned.push({
         box: child,
         containing: containingBlockFor(child) ?? box,
@@ -285,6 +286,7 @@ function layoutInlineContent(
   // so the lines already know to avoid them.
   for (const child of box.children) {
     if (child.outOfFlow) {
+      placeStatic(child, box, contentLeft, contentTop);
       ctx.positioned.push({
         box: child,
         containing: containingBlockFor(child) ?? box,
@@ -850,19 +852,30 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
   if (box.kind === 'replaced') sizeReplaced(box, cbWidth);
   else layoutInternals(box, ctx, width, 0, 0);
 
+  // with neither offset on an axis, the box is where the flow would have
+  // put it (CSS 2.1 10.3.7, 10.6.4)
+  const from = box.staticFrom;
   const x =
     left !== null
       ? cbX + left + box.marginLeft
       : right !== null
         ? cbX + cbWidth - right - box.width - box.marginRight
-        : cbX;
+        : (from ? from.x + box.staticX : cbX) + box.marginLeft;
   const y =
     top !== null
       ? cbY + top + box.marginTop
       : bottom !== null
         ? cbY + cbHeight - bottom - box.height - box.marginBottom
-        : cbY;
+        : (from ? from.y + box.staticY : cbY) + box.marginTop;
   moveTo(box, x, y);
+}
+
+/** Where an out-of-flow box would have gone in its parent's flow: its
+ *  margin edge's, kept from the parent's corner, which may yet move. */
+function placeStatic(box: Box, parent: Box, x: number, y: number): void {
+  box.staticFrom = parent;
+  box.staticX = x - parent.x;
+  box.staticY = y - parent.y;
 }
 
 /** The nearest positioned ancestor, or null for the initial containing
