@@ -1705,9 +1705,17 @@ interface Fill {
   radii: number[] | null;
 }
 
+/** What a paint did, in order: a fill, or a clip pushed or popped. */
+type PaintOp =
+  | ({ op: 'fill' } & Fill)
+  | { op: 'clip'; x: number; y: number; w: number; h: number }
+  | { op: 'save' }
+  | { op: 'restore' };
+
 /** What painting the document fills, in order. The glyphs are left out:
- *  the recorder has nowhere to draw them. */
-async function fillsOf(el: HtmlViewNode): Promise<Fill[]> {
+ *  the recorder has nowhere to draw them. `ops`, when given, gets the fills
+ *  and the clips around them. */
+async function fillsOf(el: HtmlViewNode, ops?: PaintOp[]): Promise<Fill[]> {
   const { paintDocument } = await import('../src/html/paint.js');
   type T = { lines: { texts: { layout: object }[] }[] | null; children: T[] };
   const tree = (el as unknown as { _tree: { root: T } })._tree;
@@ -1729,17 +1737,35 @@ async function fillsOf(el: HtmlViewNode): Promise<Fill[]> {
     set fillStyle(v: unknown) {
       fillStyle = v;
     },
-    save() {},
-    restore() {},
+    save() {
+      ops?.push({ op: 'save' });
+    },
+    restore() {
+      ops?.push({ op: 'restore' });
+    },
     fillRect(x: number, y: number, w: number, h: number) {
-      fills.push({ style: fillStyle, x, y, w, h, radii: null });
+      const fill = { style: fillStyle, x, y, w, h, radii: null };
+      fills.push(fill);
+      ops?.push({ op: 'fill', ...fill });
     },
     beginPath() {},
+    rect(x: number, y: number, w: number, h: number) {
+      path = { x, y, w, h, radii: null };
+    },
     roundRect(x: number, y: number, w: number, h: number, radii: number[]) {
       path = { x, y, w, h, radii };
     },
     fill() {
-      if (path) fills.push({ style: fillStyle, ...path });
+      if (path) {
+        const fill = { style: fillStyle, ...path };
+        fills.push(fill);
+        ops?.push({ op: 'fill', ...fill });
+      }
+      path = null;
+    },
+    clip() {
+      if (path)
+        ops?.push({ op: 'clip', x: path.x, y: path.y, w: path.w, h: path.h });
       path = null;
     },
   };
@@ -2374,6 +2400,74 @@ metric("a footer group's rows come last wherever it stands", async () => {
   const el = view(node);
   const [h, f, b] = ['h', 'f', 'b'].map((id) => boxOf(el, id).y);
   assert.ok(h < b && b < f, 'header, body, footer');
+});
+
+/** The clips standing when a fill of this colour was made, innermost last. */
+function clipsAround(ops: PaintOp[], color: string): PaintOp[][] {
+  const stack: (PaintOp | null)[] = [];
+  const out: PaintOp[][] = [];
+  for (const op of ops) {
+    if (op.op === 'save') stack.push(null);
+    else if (op.op === 'restore') stack.pop();
+    else if (op.op === 'clip') stack[stack.length - 1] = op;
+    else if (op.style === parseColor(color)) {
+      out.push(stack.filter((c): c is PaintOp => c !== null));
+    }
+  }
+  return out;
+}
+
+metric('overflow clips what a box holds to its padding box', async () => {
+  // HTML mail hides its preheader with `max-height: 0; overflow: hidden`,
+  // and a box that did not clip drew it over the message
+  const { node } = await render(
+    '<div id="o" style="overflow:hidden;width:50px;height:20px;' +
+      'padding:2px;border:3px solid #0000ff">' +
+      '<div style="width:200px;height:200px;background:#ff0000"></div>' +
+      '<div style="position:absolute;width:5px;height:5px;' +
+      'background:#00ff00"></div></div>',
+  );
+  const el = view(node);
+  const o = boxOf(el, 'o');
+  const ops: PaintOp[] = [];
+  await fillsOf(el, ops);
+  const [red] = clipsAround(ops, '#ff0000');
+  assert.deepStrictEqual(
+    red.map((c) => c.op === 'clip' && [c.x, c.y, c.w, c.h]),
+    [[Math.floor(o.x) + 3, Math.floor(o.y) + 3, 54, 24]],
+    'the content, clipped to the padding box',
+  );
+  const [blue] = clipsAround(ops, '#0000ff');
+  assert.deepStrictEqual(blue, [], 'and the box itself, not');
+  const [green] = clipsAround(ops, '#00ff00');
+  assert.deepStrictEqual(
+    green,
+    [],
+    'nor a positioned box whose containing block is outside it',
+  );
+});
+
+metric('clip shows the part of an absolute box it names', async () => {
+  const { node } = await render(
+    '<div id="a" style="position:absolute;top:0;left:0;width:40px;' +
+      'height:40px;background:#ff0000;clip:rect(5px, 25px, auto, 5px)"></div>' +
+      '<div style="position:absolute;width:40px;height:40px;' +
+      'background:#00ff00;clip:rect(0, 0, 0, 0)"></div>',
+  );
+  const el = view(node);
+  const a = boxOf(el, 'a');
+  const ops: PaintOp[] = [];
+  const fills = await fillsOf(el, ops);
+  const [red] = clipsAround(ops, '#ff0000');
+  assert.deepStrictEqual(
+    red.map((c) => c.op === 'clip' && [c.x, c.y, c.w, c.h]),
+    [[a.x + 5, a.y + 5, 20, 35]],
+    "its background too, and `auto` is the border box's edge",
+  );
+  assert.ok(
+    !fills.some((f) => f.style === parseColor('#00ff00')),
+    'an empty clip shows nothing',
+  );
 });
 
 metric("an inline-block's text sits on the line's baseline", async () => {

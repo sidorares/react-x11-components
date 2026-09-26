@@ -53,6 +53,40 @@ export type Display =
   | 'table-column'
   | 'table-column-group';
 
+export interface ClipRect {
+  top: number | null;
+  right: number | null;
+  bottom: number | null;
+  left: number | null;
+}
+
+/** `auto`, or `rect()` of four lengths or `auto`s, commas between them or
+ *  not; undefined for anything else, which leaves the value as it was. */
+function parseClip(
+  value: string,
+  ctx: UnitContext,
+): ClipRect | null | undefined {
+  const v = value.trim();
+  if (/^auto$/i.test(v)) return null;
+  const m = /^rect\(([^)]*)\)$/i.exec(v);
+  if (!m) return undefined;
+  const parts = m[1].includes(',')
+    ? m[1].split(',').map((p) => p.trim())
+    : m[1].trim().split(/\s+/);
+  if (parts.length !== 4) return undefined;
+  const edges: (number | null)[] = [];
+  for (const part of parts) {
+    if (/^auto$/i.test(part)) {
+      edges.push(null);
+      continue;
+    }
+    const len = parseLength(part, ctx);
+    if (typeof len !== 'number') return undefined;
+    edges.push(len);
+  }
+  return { top: edges[0], right: edges[1], bottom: edges[2], left: edges[3] };
+}
+
 export type BorderStyle =
   | 'none'
   | 'hidden'
@@ -104,6 +138,10 @@ export interface ComputedStyle {
   boxSizing: 'content-box' | 'border-box';
   overflowX: 'visible' | 'hidden' | 'scroll' | 'auto';
   overflowY: 'visible' | 'hidden' | 'scroll' | 'auto';
+  /** `clip: rect(…)`: the part of an absolutely positioned box that shows,
+   *  its edges measured from the border box's top left, a null edge the
+   *  border box's own (CSS 2.1 11.1.2). Null for `auto`. */
+  clip: ClipRect | null;
   opacity: number;
   zIndex: number | 'auto';
   verticalAlign:
@@ -285,6 +323,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     boxSizing: 'content-box',
     overflowX: 'visible',
     overflowY: 'visible',
+    clip: null,
     opacity: 1,
     zIndex: AUTO,
     verticalAlign: 'baseline',
@@ -532,6 +571,11 @@ export function applyDeclaration(
       const y = overflowKeyword(parts[1] ?? parts[0]);
       if (name !== 'overflow-y' && x) style.overflowX = x;
       if (name !== 'overflow-x' && y) style.overflowY = y;
+      return;
+    }
+    case 'clip': {
+      const clip = parseClip(value, ctx);
+      if (clip !== undefined) style.clip = clip;
       return;
     }
     case 'opacity': {
@@ -1504,6 +1548,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   float: ['float'],
   clear: ['clear'],
   overflow: ['overflowX', 'overflowY'],
+  clip: ['clip'],
   'overflow-x': ['overflowX'],
   'overflow-y': ['overflowY'],
   opacity: ['opacity'],
