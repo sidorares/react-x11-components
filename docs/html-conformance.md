@@ -67,7 +67,7 @@ separately, and there are six.
 | 4      | anonymous boxes and tables, CSS syntax, baselines  | 3,713 (63%) | 3,329 (56%) |
 | 5      | first letters, tables, clipping, positioning       | 4,733 (80%) | 4,321 (73%) |
 | perf   | a paragraph's inline boxes in its one layout       | 4,739 (80%) | 4,325 (73%) |
-| 6      | fixed tables, negative z-index, absolute margins   | 4,940 (84%) | 4,513 (77%) |
+| 6      | fixed tables, negative z-index, absolute margins   | 4,960 (84%) | 4,526 (77%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -498,6 +498,13 @@ The largest clusters of what was left, each traced to one rule:
     10.3.8); with `top` and `bottom` and no height, the box fills what they
     leave, and with a height its `auto` margins share the rest (10.6.4,
     10.6.5). 20 tests on X11, 16 on macOS.
+50. **A line of images alone was as tall as the images.** Every line box
+    starts with its block's strut, its face at its `line-height`
+    (10.8.1), and the lines set a piece at a time left it out. With it, a
+    list item with a marker and no line holds its marker's, as an empty
+    `<li>` does in a browser, and an inline table of empty rows stands on
+    its first. 22 tests on X11 and 16 on macOS, nine of them
+    `background-position` on a table part.
 
 Four tests that passed by accident fail on both backends now.
 `margin-collapse-004` compares a bar in flow with one set at `z-index:
@@ -507,7 +514,14 @@ painter draws a block's text before the next block's background, where CSS
 paints every block background of a stacking context first.
 `background-intrinsic-001`, 002 and 004 cover an absolute box between four
 offsets with an SVG background, which is not drawn; the box had no height,
-and fills its offsets now.
+and fills its offsets now. The strut costs two more:
+`list-style-position-applies-to-008` matched a fallback reference with a
+list item that is laid out, inside an inline box, as an inline block of
+no width, where a browser gives it the line; and `floats-placement-006`
+places a cleared float that follows an inline-block under that line, now
+3px taller for the strut, which then avoids it, since the floats in a
+line's content are placed before its lines rather than where the line has
+got to.
 
 ## What `<Html>` supports
 
