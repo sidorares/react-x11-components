@@ -123,7 +123,15 @@ outside the table's border, above it or below it by `caption-side`, and an
 auto table is at least as wide as its caption's longest word. A header
 group's rows are drawn first and a footer group's last, wherever they stand
 in the markup, and a cell's background fills its row whatever
-`vertical-align` does with its content.
+`vertical-align` does with its content. A fixed table takes its columns'
+widths from its `<col>`s, then from its first row's cells, border box and
+all, and shares what is left among the rest (CSS 2.1 17.5.2.1); with
+`width: auto` it is laid out by its content, as the section says. A column's
+or a column group's background is painted under the cells that start in it,
+`border-spacing` takes a length for the rows as well as the columns, and a
+table's `width` includes its borders, as HTML's rendering rules give every
+table `box-sizing: border-box`. Table cells in an inline box are an inline
+table, with the spaces either side of them kept.
 A line with an inline-block or a padded element on it is put in visual order
 a piece at a time — the text engine orders the text inside each piece, and
 the line orders the pieces (UAX #9's L2) — so a right-to-left paragraph with
@@ -132,7 +140,12 @@ is centred with its images, not text first and the image after it.
 
 **Boxes:** `width`/`height` with `min-`/`max-`, `margin`, `padding`,
 `border` (width, style, colour, radius), `box-sizing`, `overflow`, `clip`,
-`opacity`, `visibility`, `z-index`. A box whose `overflow` is not `visible`
+`opacity`, `visibility`, `z-index`: a positioned box with a negative
+`z-index` is painted under the flow of its stacking context, the root
+element or a positioned box with a `z-index` of its own, and over that
+context's background (CSS 2.1 Appendix E). An absolute box with both
+offsets on an axis fills what they leave, or, with a width, shares it
+between its `auto` margins, which is how `margin: auto` centres one. A box whose `overflow` is not `visible`
 clips what it holds to its padding box, rounded where the box is — all of
 it but a positioned box whose containing block is outside — and `scroll`
 and `auto` clip the same, with no scroll bars: the element around the
