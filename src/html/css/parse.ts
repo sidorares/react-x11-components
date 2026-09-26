@@ -73,6 +73,7 @@ const IMPORTANT_RE = /!\s*important\s*$/i;
  * the whole document rather than restarting per `<style>`.
  */
 export function parseStylesheet(text: string, startOrder = 0): Stylesheet {
+  text = withoutComments(text);
   const sheet: Stylesheet = { rules: [], imports: [], breakpoints: [] };
   let order = startOrder;
   const breakpoints = new Set<number>();
@@ -136,6 +137,41 @@ export function parseStylesheet(text: string, startOrder = 0): Stylesheet {
   walk(text, null);
   sheet.breakpoints = [...breakpoints].sort((a, b) => a - b);
   return sheet;
+}
+
+/**
+ * A style sheet with its comments taken out, strings left alone. CSS drops a
+ * comment wherever it stands (CSS 2.1 4.1.9) — between rules, which the
+ * scanner already skipped, but also inside a selector: `div /* note *\/ {`
+ * kept the note in the selector, the matcher refused it, and the rule was
+ * dropped whole. A comment is replaced by nothing, not a space, as the
+ * tokenizer does: `.a/**\/.b` is one compound selector.
+ */
+function withoutComments(text: string): string {
+  if (!text.includes('/*')) return text;
+  let out = '';
+  let from = 0;
+  let quote = '';
+  for (let i = 0; i < text.length; i += 1) {
+    const c = text[i];
+    if (quote) {
+      if (c === '\\') i += 1;
+      else if (c === quote) quote = '';
+      continue;
+    }
+    if (c === '\\') {
+      // an escape: `\/*` is a slash and an asterisk, not a comment
+      i += 1;
+    } else if (c === '"' || c === "'") {
+      quote = c;
+    } else if (c === '/' && text[i + 1] === '*') {
+      const close = text.indexOf('*/', i + 2);
+      out += text.slice(from, i);
+      i = close < 0 ? text.length : close + 1;
+      from = i + 1;
+    }
+  }
+  return out + text.slice(from);
 }
 
 /**
@@ -359,7 +395,8 @@ function findChar(
       if (c === quote && text[i - 1] !== '\\') quote = '';
       continue;
     }
-    if (c === '"' || c === "'") quote = c;
+    if (c === '\\') i += 1;
+    else if (c === '"' || c === "'") quote = c;
     else if (c === '/' && text[i + 1] === '*') {
       const close = text.indexOf('*/', i + 2);
       i = close < 0 ? text.length : close + 1;

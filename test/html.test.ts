@@ -134,6 +134,29 @@ test('a universal selector counts nothing, and does not stop the scan', () => {
   assert.strictEqual(sheet.rules.length, 2);
 });
 
+test('a comment inside a selector leaves the rule standing', () => {
+  // CSS drops a comment wherever it stands. One between a selector and its
+  // brace stayed in the selector, the matcher refused it, and the rule went.
+  const sheet = parseStylesheet(
+    '[id=a] /* 0,0,1,0 */ { color: green }\n' +
+      'div /* 0,0,0,1 */ { color: red }\n' +
+      '.a/**/.b { color: blue }\n' +
+      'p { content: "/* kept */" }\n' +
+      // an escaped slash starts no comment: the declaration after it stands
+      'q { \\/*; color: green; */ }',
+  );
+  assert.deepStrictEqual(
+    sheet.rules.map((r) => [r.selector, r.declarations[0].value]),
+    [
+      ['[id=a]', 'green'],
+      ['div', 'red'],
+      ['.a.b', 'blue'],
+      ['p', '"/* kept */"'],
+      ['q', 'green'],
+    ],
+  );
+});
+
 test('a block the end of the sheet cuts off keeps all of its body', () => {
   // The end of a style sheet closes what is open (CSS 2.1 4.2). The block
   // reader took the last character for the `}` it expected and cut it.
