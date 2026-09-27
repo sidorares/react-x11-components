@@ -6684,6 +6684,132 @@ metric(
   },
 );
 
+metric('a kept tab goes to its stop', async () => {
+  // a tab was a space wide in ntk and at CoreText's own stops, 28 points
+  // apart: code indented with tabs, and columns a tab apart, did not line
+  // up. A stop is every `tab-size` spaces from the line's start, and one
+  // less than half a `ch` on is passed over (CSS Text 3, 4.2)
+  const { node } = await render(
+    '<style>body{margin:0}pre,div{margin:0;font:10px monospace}</style>' +
+      '<pre id="a">\tA\n\t\tB\nab\tC\nabcdefghij\tD</pre>' +
+      '<pre style="tab-size:4">four\n\tE\nab\tF</pre>' +
+      '<pre style="-moz-tab-size:20px">px\nxxx\tG</pre>' +
+      '<div style="white-space:pre-wrap">wrap\nab\tH</div>',
+  );
+  const el = view(node);
+  const text = el.textContent();
+  assert.ok(text.includes('\t\tB'), 'the document keeps its tabs');
+  // from the start of the letter's own line, which is given
+  const x = (letter: string, line: string) =>
+    el.textCaretRect(text.indexOf(letter))!.x -
+    el.textCaretRect(text.indexOf(line))!.x;
+  const ch = x('D', 'abcdefghij') / 16;
+  const at = (letter: string, line: string, chars: number) =>
+    assert.ok(
+      Math.abs(x(letter, line) - chars * ch) < 0.5,
+      `${letter} at ${x(letter, line) / ch} characters, not ${chars}`,
+    );
+  at('A', '\tA', 8);
+  at('B', '\t\tB', 16);
+  at('C', 'ab\tC', 8);
+  at('E', '\tE', 4);
+  at('F', 'ab\tF', 4);
+  at('H', 'ab\tH', 8);
+  // three letters are less than half a character short of 20px, so the
+  // tab goes on to 40
+  assert.ok(20 - 3 * ch < ch / 2, `the case the rule is for, at ${ch}px`);
+  const g = x('G', 'xxx');
+  assert.ok(Math.abs(g - 40) < 0.5, `G at ${g}px`);
+});
+
+metric('a tab is set from where the room before it ends', async () => {
+  // the edges of an inline box and the spacing of a word before a tab
+  // move it: its stop is counted from where it is drawn, with them
+  const { node, result } = await render(
+    '<style>body{margin:0}pre{margin:0;padding:0;font:10px monospace}' +
+      '.w{word-spacing:13px}</style>' +
+      '<pre id="p">one\na<span style="padding-left:13px">b</span>\tX\n' +
+      'a<span class="w"> </span>b\tY\nabcdefghij</pre>',
+  );
+  const el = view(node);
+  const text = el.textContent();
+  const x = (index: number) => el.textCaretRect(index)!.x;
+  const left = x(text.indexOf('abcdefghij'));
+  const ch = (x(text.indexOf('abcdefghij') + 10) - left) / 10;
+  const stop = (from: number) => {
+    let at = (Math.floor(from / (8 * ch)) + 1) * 8 * ch;
+    if (at - from < ch / 2) at += 8 * ch;
+    return at;
+  };
+  const expect = (letter: string, from: number) => {
+    const got = x(text.indexOf(letter)) - left;
+    assert.ok(
+      Math.abs(got - stop(from)) < 0.5,
+      `${letter} at ${got}, not ${stop(from)}`,
+    );
+  };
+  expect('X', 2 * ch + 13);
+  expect('Y', 3 * ch + 13);
+  // and from the runs the engine drew, not from its carets: CoreText sets
+  // a caret after a spaced glyph part of the way into its spacing. An
+  // engine whose carets are all astray draws the same runs
+  type Runs = { lines: { x: number; runs: { x: number; start: number }[] }[] };
+  const drawn = () =>
+    linesOf(el, 'p').flatMap((line) =>
+      line.texts.flatMap((placed) => {
+        const natural = (placed.layout as unknown as Runs).lines[
+          placed.layoutLine
+        ];
+        return natural.runs.map(
+          (run) =>
+            `${run.start}@${(placed.drawX + natural.x + run.x).toFixed(2)}`,
+        );
+      }),
+    );
+  const before = drawn();
+  const fonts = (result.app as unknown as { fonts: FontsLike }).fonts;
+  const astray: FontsLike = {
+    layout: (...args) => {
+      const layout = fonts.layout(...args);
+      const caretPosition = layout.caretPosition.bind(layout);
+      layout.caretPosition = (index: number) => ({
+        ...caretPosition(index),
+        x: caretPosition(index).x + 1000,
+      });
+      return layout;
+    },
+    match: (...args) => fonts.match(...args),
+  };
+  const { layoutDocument } = await import('../src/html/layout/block.js');
+  const tree = (el as unknown as { _tree: unknown })._tree;
+  layoutDocument(tree as never, astray, 400, 600);
+  assert.deepStrictEqual(drawn(), before);
+});
+
+test('tab-size is a number of spaces, or a length', async () => {
+  const { node } = await render(
+    '<pre id="a" style="tab-size:4">a</pre>' +
+      '<pre id="b" style="tab-size:2em;font-size:10px">b</pre>' +
+      '<pre id="c" style="-moz-tab-size:3">c</pre>' +
+      '<pre id="d" style="tab-size:-1">d</pre>' +
+      '<div style="tab-size:5"><pre id="e">e</pre></div>',
+  );
+  const el = view(node);
+  const tab = (id: string) => {
+    const { tabSize, tabSizeIsLength } = (
+      boxOf(el, id) as unknown as {
+        style: { tabSize: number; tabSizeIsLength: boolean };
+      }
+    ).style;
+    return [tabSize, tabSizeIsLength];
+  };
+  assert.deepStrictEqual(tab('a'), [4, false]);
+  assert.deepStrictEqual(tab('b'), [20, true]);
+  assert.deepStrictEqual(tab('c'), [3, false]);
+  assert.deepStrictEqual(tab('d'), [8, false], 'none below nought');
+  assert.deepStrictEqual(tab('e'), [5, false], 'inherited');
+});
+
 metric("pre's trailing spaces take room, where a line's hang", async () => {
   const widthOf = async (text: string) => {
     const { node } = await render(

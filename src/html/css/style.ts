@@ -177,6 +177,10 @@ export interface ComputedStyle {
   textTransform: 'none' | 'uppercase' | 'lowercase' | 'capitalize';
   letterSpacing: number;
   wordSpacing: number;
+  /** Where a kept tab's stops are (CSS Text 3, 4.2): every so many spaces,
+   *  or every so many pixels where `tabSizeIsLength`. */
+  tabSize: number;
+  tabSizeIsLength: boolean;
   whiteSpace: 'normal' | 'nowrap' | 'pre' | 'pre-wrap' | 'pre-line';
   direction: 'ltr' | 'rtl';
   /** How an element's text takes part in the bidi algorithm: not
@@ -384,6 +388,8 @@ export const INHERITED = [
   'textTransform',
   'letterSpacing',
   'wordSpacing',
+  'tabSize',
+  'tabSizeIsLength',
   'whiteSpace',
   'direction',
   'visibility',
@@ -444,6 +450,8 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     textTransform: 'none',
     letterSpacing: 0,
     wordSpacing: 0,
+    tabSize: 8,
+    tabSizeIsLength: false,
     whiteSpace: 'normal',
     direction: 'ltr',
     unicodeBidi: 'normal',
@@ -595,6 +603,8 @@ export function inherit(
   out.textTransform = parent.textTransform;
   out.letterSpacing = parent.letterSpacing;
   out.wordSpacing = parent.wordSpacing;
+  out.tabSize = parent.tabSize;
+  out.tabSizeIsLength = parent.tabSizeIsLength;
   out.whiteSpace = parent.whiteSpace;
   out.direction = parent.direction;
   out.visibility = parent.visibility;
@@ -1240,6 +1250,22 @@ export function applyDeclaration(
       if (typeof len === 'number') {
         if (name === 'letter-spacing') style.letterSpacing = len;
         else style.wordSpacing = len;
+      }
+      return;
+    }
+    case 'tab-size':
+    case '-moz-tab-size': {
+      // a number of spaces, or a length; neither below nought
+      const v = value.trim();
+      if (/^[+]?(\d+\.?\d*|\.\d+)$/.test(v)) {
+        style.tabSize = Number(v);
+        style.tabSizeIsLength = false;
+        return;
+      }
+      const len = parseLength(v, ctx);
+      if (typeof len === 'number' && len >= 0) {
+        style.tabSize = len;
+        style.tabSizeIsLength = true;
       }
       return;
     }
@@ -2614,6 +2640,8 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'text-transform': ['textTransform'],
   'letter-spacing': ['letterSpacing'],
   'word-spacing': ['wordSpacing'],
+  'tab-size': ['tabSize', 'tabSizeIsLength'],
+  '-moz-tab-size': ['tabSize', 'tabSizeIsLength'],
   'white-space': ['whiteSpace'],
   direction: ['direction'],
   'unicode-bidi': ['unicodeBidi'],

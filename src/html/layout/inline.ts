@@ -201,6 +201,9 @@ function layoutLines(block: Box, options: InlineOptions): InlineResult {
   collect(block, items, options.width, fonts, block.style);
   if (!items.length || !fonts) return EMPTY;
   if (wraps(block.style)) holdNoWrap(items);
+  if (items.some(isTab)) {
+    setTabs(items, fonts, block.style, indentOf(block.style, options.width));
+  }
   // an override on the block is one on all of its inline content (CSS 2.1
   // 9.10); its embedding or isolation is the paragraph's own direction
   const own =
@@ -1924,6 +1927,207 @@ function firstLineColour(
  * pass makes no new string, and the kept layouts find their text by
  * identity before they compare it.
  */
+/** A text item with a tab in it: one a `white-space` kept, since the others
+ *  are spaces by now. */
+function isTab(item: Item): boolean {
+  return item.kind === 'text' && !item.control && item.run.text.includes('\t');
+}
+
+/**
+ * Tabs a `white-space` keeps, set at their stops (CSS Text 3, 4.2): a stop
+ * every `tab-size` spaces of the block's font from the line's start, and a
+ * tab that would reach one less than half a `ch` on goes to the next.
+ * Neither engine has them — ntk draws a tab a space wide, and CoreText
+ * sets it at stops of its own every 28 points — so a tab is laid out as a
+ * space spaced out to its stop: text as the engine sees it and not as the
+ * document holds it, the way `heldText` holds a `pre`'s spaces. Where each
+ * tab starts is read off one layout of the paragraph with its tabs as
+ * spaces, and its inline boxes' edges and its atomics as the room they
+ * take, unwrapped: a line `pre-wrap` wraps sets the tabs after the wrap as
+ * though it had not, and a right-to-left one sets them a space wide.
+ *
+ * Read off each tab's run, which the tab is given of its own, and not off
+ * a caret: CoreText puts a caret after a spaced glyph part of the way
+ * into its spacing, so a tab after `word-spacing` was set from a place
+ * half the spacing short of where it is drawn.
+ */
+function setTabs(
+  items: Item[],
+  fonts: FontsLike,
+  block: ComputedStyle,
+  indent: number,
+): void {
+  // the paragraph as it will be laid out, an inline box's edges and an
+  // atomic as the room they take, each tab a run of its own, and where
+  // each text item starts in it
+  const runs: TextRun[] = [];
+  const starts = new Map<Item, number>();
+  const tabs = new Set<number>();
+  let units = 0;
+  for (const item of items) {
+    if (item.kind !== 'text') {
+      const box = item.box;
+      runs.push(
+        spacerRun(
+          fonts,
+          block,
+          item.kind === 'edge'
+            ? item.width
+            : box.width + box.marginLeft + box.marginRight,
+        ),
+      );
+      units += 1;
+      continue;
+    }
+    starts.set(item, units);
+    const text = item.run.text;
+    if (item.control || !text.includes('\t')) {
+      runs.push(item.run);
+      units += text.length;
+      continue;
+    }
+    let done = 0;
+    for (let p = text.indexOf('\t'); p >= 0; p = text.indexOf('\t', p + 1)) {
+      if (p > done) runs.push({ ...item.run, text: text.slice(done, p) });
+      // spaced a hair apart from its neighbours, which an engine that
+      // merges runs alike (CoreText) would otherwise take it into
+      tabs.add(units + p);
+      runs.push({
+        ...item.run,
+        text: spaceIn(item.box),
+        letterSpacing: (item.run.letterSpacing ?? 0) + tabs.size * HAIR,
+      });
+      done = p + 1;
+    }
+    if (done < text.length) runs.push({ ...item.run, text: text.slice(done) });
+    units += text.length;
+  }
+  const natural = fonts.layout(runs, fontOf(block), {
+    direction: block.direction,
+  });
+  /** Where each tab starts, by its place in the layout's text. */
+  const found = new Map<number, { x: number; line: number }>();
+  natural.lines.forEach((line, i) => {
+    for (const run of line.runs ?? []) {
+      if (tabs.has(run.start))
+        found.set(run.start, { x: line.x + run.x, line: i });
+    }
+  });
+  let offsets: number[] | null | undefined;
+  const space =
+    advanceOf(fonts, fontOf(block), ' ') +
+    block.letterSpacing +
+    block.wordSpacing;
+  const every = block.tabSizeIsLength ? block.tabSize : block.tabSize * space;
+  const half = advanceOf(fonts, fontOf(block), '0') / 2;
+  const rtl = block.direction === 'rtl';
+  /** The room tabs have added to each line so far. */
+  const added = new Map<number, number>();
+  const next: Item[] = [];
+  for (const item of items) {
+    if (item.kind !== 'text' || item.control || !item.run.text.includes('\t')) {
+      next.push(item);
+      continue;
+    }
+    const text = item.run.text;
+    const at = starts.get(item)!;
+    // what the space a tab is laid out as takes before it is spaced out
+    const own =
+      advanceOf(fonts, item.run, spaceIn(item.box)) +
+      (item.run.letterSpacing ?? 0);
+    const piece = (start: number, end: number, run: TextRun): void => {
+      next.push({
+        ...item,
+        run,
+        length: end - start,
+        start: item.start + start,
+      });
+    };
+    let done = 0;
+    for (let p = text.indexOf('\t'); p >= 0; p = text.indexOf('\t', p + 1)) {
+      if (p > done) piece(done, p, { ...item.run, text: text.slice(done, p) });
+      let advance = own;
+      if (!rtl) {
+        const unit = at + p;
+        let caret = found.get(unit);
+        if (!caret) {
+          // an engine that says nothing of its runs has a caret to go by
+          if (offsets === undefined) {
+            const joined = runs.map((run) => run.text).join('');
+            offsets = /[\uD800-\uDFFF]/.test(joined)
+              ? codeUnitOffsets(joined)
+              : null;
+          }
+          caret = natural.caretPosition(
+            offsets ? codePointAt(offsets, unit) : unit,
+          );
+        }
+        const before = added.get(caret.line) ?? 0;
+        const x = caret.x + before + (caret.line === 0 ? indent : 0);
+        if (every > 0) {
+          let stop = (Math.floor(x / every) + 1) * every;
+          if (stop - x < half) stop += every;
+          advance = stop - x;
+        } else advance = 0;
+        added.set(caret.line, before + advance - own);
+      }
+      piece(p, p + 1, {
+        ...item.run,
+        text: spaceIn(item.box),
+        letterSpacing: (item.run.letterSpacing ?? 0) + advance - own,
+      });
+      done = p + 1;
+    }
+    if (done < text.length) {
+      piece(done, text.length, { ...item.run, text: text.slice(done) });
+    }
+  }
+  items.splice(0, items.length, ...next);
+}
+
+/** The space a tab in a box is laid out as: a `pre`'s spaces are held
+ *  together (`heldText`), and so are its tabs. */
+function spaceIn(box: Box): string {
+  return box.style.whiteSpace === 'pre' ? '\u00a0' : ' ';
+}
+
+/** A text's font, the part of a run a character's advance depends on. */
+type Face = Pick<TextRun, 'family' | 'size' | 'weight' | 'style'>;
+
+/** A block's font, as its runs name it (`runFor`). */
+function fontOf(style: ComputedStyle): Face {
+  return {
+    family: style.fontFamily,
+    size: style.fontSize,
+    weight: style.fontWeight,
+    style: style.fontStyle === 'normal' ? 'normal' : 'italic',
+  };
+}
+
+/** One character's advance in a font, kept per font manager. */
+function advanceOf(fonts: FontsLike, font: Face, char: string): number {
+  let kept = ADVANCES.get(fonts);
+  if (!kept) ADVANCES.set(fonts, (kept = new Map()));
+  const key = `${font.family}|${font.size}|${font.weight}|${font.style}|${char}`;
+  let advance = kept.get(key);
+  if (advance === undefined) {
+    const face: Face = {
+      family: font.family,
+      size: font.size,
+      weight: font.weight,
+      style: font.style,
+    };
+    // between two letters, so that no engine drops it as a line's end
+    advance =
+      fonts.layout([{ ...face, text: `x${char}x` }], face, {}).width -
+      fonts.layout([{ ...face, text: 'xx' }], face, {}).width;
+    kept.set(key, advance);
+  }
+  return advance;
+}
+
+const ADVANCES = new WeakMap<FontsLike, Map<string, number>>();
+
 function heldText(box: Box): string {
   if (box.style.whiteSpace !== 'pre' || !box.text.includes(' ')) {
     return box.text;

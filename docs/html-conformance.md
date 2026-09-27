@@ -117,6 +117,7 @@ separately, and there are six.
 | 47     | details, and markers inside                        | 5,466 (93%) | 4,978 (84%) |
 | 48     | justify, and text that does not wrap aligned       | 5,470 (93%) | 4,978 (84%) |
 | 49     | an ellipsis on every line                          | 5,470 (93%) | 4,978 (84%) |
+| 50     | tab stops                                          | 5,471 (93%) | 4,979 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -1579,6 +1580,30 @@ minmax(16rem, 1fr))` are the layouts of half the pages written this
      already laid out in chunks. A clamp is the paragraph's, and stays one
      layout. Found reading the cut for round 48; the CSS 2.1 suite has no
      `text-overflow`.
+
+### Round 50
+
+141. **A kept tab was a space wide.** Neither engine has CSS's tab stops:
+     ntk draws a tab a space wide, and CoreText sets it at its own stops,
+     every 28 points. So Go indented with tabs came out indented by one or
+     two characters a level, and columns a tab apart did not line up, in
+     every `<pre>` of code or of tab-separated text. A tab `white-space`
+     keeps is set at its stop now: one every `tab-size` spaces of the
+     block's font from the line's start — `tab-size` and `-moz-tab-size`,
+     as a number of spaces or a length, are read — and one that would
+     land less than half a `ch` short of a stop goes on to the next (CSS
+     Text 3, 4.2). A tab is laid out as a space spaced out to its stop,
+     which the document still holds as a tab, as a copy takes it; where
+     each starts — past any padding or word spacing before it — is read
+     off one more layout of its paragraph, made only where there is a
+     tab, and off the tab's own run there rather than a caret, which
+     CoreText sets part of the way into a spaced glyph's spacing. A line
+     `pre-wrap` wraps sets the tabs after the wrap as though it had not,
+     and a right-to-left line sets them a space wide. A `<pre>` of 2,000
+     tab-separated lines lays out in 6 ms where the same with spaces takes
+     0.5, and a document with no tab pays nothing. 1 test on each
+     backend, `content-white-space-002`, whose generated content keeps a
+     tab. Found rendering a README beside a browser.
 
 ## What `<Html>` supports
 
