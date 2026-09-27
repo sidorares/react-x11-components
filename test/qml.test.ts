@@ -35,6 +35,7 @@ import {
   registerControls,
   registerReactComponent,
   createFileResolver,
+  hostNode,
   Qt,
   type QmlFacade,
   type QmlResolver,
@@ -804,6 +805,88 @@ describe('QML rendered through react-x11', () => {
       );
     },
   );
+
+  test('MouseArea wheel is in Qt units: 120 a notch, positive up and left', async () => {
+    const { ref } = await mountQml(`
+      import QtQuick 2.15
+      Rectangle {
+        id: root
+        width: 200; height: 120; color: "#101010"
+        property real steps: 0
+        MouseArea {
+          id: area
+          x: 20; y: 20; width: 120; height: 60
+          onWheel: (wheel) => { root.steps += wheel.angleDelta.y / 120 }
+        }
+      }
+    `);
+    type Wheel = {
+      angleDelta: { x: number; y: number };
+      pixelDelta: { x: number; y: number };
+    };
+    const area = ref.current!.instance.context.ids.get('area')!;
+    const seen: Wheel[] = [];
+    area.onSignal('wheel', (w) => seen.push(w as Wheel));
+    const node = hostNode(area)!;
+    const spin = async (options: Parameters<typeof fireEvent.wheel>[1]) => {
+      const before = seen.length;
+      await act(async () => {
+        fireEvent.wheel(node, options);
+      });
+      await waitFor(() => assert.equal(seen.length, before + 1));
+      return seen[before]!;
+    };
+
+    // A notch reaches the handler from react-x11 as 48 logical pixels,
+    // positive down: the press of button 5, through the server.
+    const down = await spin({ deltaY: 1 });
+    assert.deepEqual(down.angleDelta, { x: 0, y: -120 }, 'a notch down');
+    assert.deepEqual(
+      down.pixelDelta,
+      { x: 0, y: 0 },
+      'a notched wheel measures no pixels, and Qt leaves (0, 0)',
+    );
+    assert.equal(
+      ref.current!.root.steps,
+      -1,
+      'angleDelta.y / 120, the way Qt code is written, is one whole step down',
+    );
+
+    const right = await spin({ deltaX: 1 });
+    assert.deepEqual(
+      right.angleDelta,
+      { x: -120, y: 0 },
+      "a notch right is negative: Qt's x is positive to the left",
+    );
+
+    // A touchpad measures: a quarter of a notch is 12 logical pixels.
+    const swipe = await spin({ deltaX: -0.5, deltaY: 0.25, smooth: true });
+    assert.deepEqual(
+      swipe.angleDelta,
+      { x: 60, y: -30 },
+      'eighths of a degree',
+    );
+    assert.deepEqual(
+      swipe.pixelDelta,
+      { x: 24, y: -12 },
+      'a measuring device reports its pixels too, flipped the same way',
+    );
+    assert.equal(ref.current!.root.steps, -1.25);
+
+    // The page says a Shift-wheel arrives sideways, which is react-x11's
+    // doing rather than this file's: pinned so the page cannot outlive it.
+    const shifted = await spin({
+      deltaX: 0,
+      deltaY: 1,
+      smooth: true,
+      modifiers: ['Shift'],
+    });
+    assert.deepEqual(
+      shifted.angleDelta,
+      { x: -120, y: 0 },
+      'Shift and a notch down arrives as a notch right',
+    );
+  });
 
   test(
     'Repeater + Row: model drives instances; updates rebuild and reflow',
