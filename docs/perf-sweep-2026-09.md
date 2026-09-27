@@ -1752,6 +1752,37 @@ every box after a layout, and taking the lines' extent as they are placed
 instead measured the same, 0.8 ms either way, because at 600 KB the walk
 is twenty thousand boxes and seven thousand lines.
 
+### The whole sweep, again
+
+Every probe on both backends, on master with #215 — react-x11 2.22.8 —
+against the final sweep of September 25 (`scripts/bench/sweep/run.sh`,
+then `tabulate.ts`). Nothing went backwards. The documents and the editors
+moved the most, by the work of rounds 10 to 17:
+
+|                                    | September 25   | now           |
+| ---------------------------------- | -------------- | ------------- |
+| `<Html>` 600 KB, edit to paint     | 204 / 350 ms   | 56 / 61 ms    |
+| `<Html>` 600 KB, reflow to paint   | 346 / 612 ms   | 49 / 87 ms    |
+| `<Html>` 600 KB, append to paint   | 203 / 356 ms   | 51 / 55 ms    |
+| `<Html>` 600 KB, first paint       | 1019 / 504 ms  | 496 / 504 ms  |
+| `<Markdown>` 600 KB, reflow        | 284 / 340 ms   | 114 / 184 ms  |
+| `<Markdown>` 600 KB, first paint   | 2090 / 1832 ms | 798 / 1023 ms |
+| `<CodeEditor>`, a keystroke at end | 3.8 / 6.6 ms   | 1.3 / 4.5 ms  |
+| `<CodeEditor>`, an undo            | 7.9 / 10.3 ms  | 2.8 / 3.5 ms  |
+| `<RichTextEditor>`, bold over all  | 95 / 141 ms    | 74 / 121 ms   |
+
+XQuartz first, then macOS; input to paint at the median. Three cells
+were flagged and each was run three times more before it was believed:
+
+- **`<Table>`'s fling on macOS**, a frame of 7.1 ms against 4.9 — the
+  display arrangement of lesson 18, which moved it under the old core as
+  well as the new.
+- **`<Flow>`'s fanout wheel on XQuartz**, 57 fps against 61.6, the median
+  of the reruns; the variance round 13 found in that cell, with no change
+  to `<Flow>` since.
+- **`<Flow>`'s 2,000-node zoom on GL, XQuartz**, which printed nothing once
+  and ran at 84 fps each of three times after.
+
 ## Lessons
 
 1. **Look for caches that never hit.** Identity-keyed caches handed a new
