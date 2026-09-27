@@ -616,17 +616,7 @@ function layoutInlineContent(
 ): number {
   // Floats inside an inline context are placed before the lines are built,
   // so the lines already know to avoid them.
-  for (const child of box.children) {
-    if (child.outOfFlow) {
-      placeStatic(child, box, contentLeft, contentWidth, contentTop);
-      ctx.positioned.push({
-        box: child,
-        containing: containingBlockFor(child) ?? box,
-      });
-    } else if (child.isFloat) {
-      layoutFloat(child, ctx, floats, contentTop, contentLeft, contentWidth);
-    }
-  }
+  placeOutOfLine(box, box, ctx, floats, contentTop, contentWidth, contentLeft);
   // Atomics have to be sized before the line breaker can place them.
   sizeAtomics(box, ctx, contentWidth);
 
@@ -1341,6 +1331,46 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
           : (at ? at.from.y + at.y : cbY) + box.marginTop;
   }
   moveTo(box, x, y);
+}
+
+/**
+ * Lay out the floats in a block's inline content and give its positioned
+ * boxes their static positions — at any depth of inline box, which lays
+ * nothing out of its own: a float or an absolute box inside a `<span>` is
+ * the paragraph's as much as one beside it. Met only among the block's own
+ * children, one in an inline box was never laid out at all, and stood at
+ * the page's corner with no size.
+ */
+function placeOutOfLine(
+  parent: Box,
+  block: Box,
+  ctx: LayoutContext,
+  floats: FloatContext,
+  contentTop: number,
+  contentWidth: number,
+  contentLeft: number,
+): void {
+  for (const child of parent.children) {
+    if (child.outOfFlow) {
+      placeStatic(child, block, contentLeft, contentWidth, contentTop);
+      ctx.positioned.push({
+        box: child,
+        containing: containingBlockFor(child) ?? block,
+      });
+    } else if (child.isFloat) {
+      layoutFloat(child, ctx, floats, contentTop, contentLeft, contentWidth);
+    } else if (child.kind === 'inline') {
+      placeOutOfLine(
+        child,
+        block,
+        ctx,
+        floats,
+        contentTop,
+        contentWidth,
+        contentLeft,
+      );
+    }
+  }
 }
 
 /** Where an out-of-flow box would have gone in its parent's flow: its

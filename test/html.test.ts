@@ -3507,6 +3507,23 @@ test("a table gives up its cells' set widths before its words", async () => {
   assert.deepStrictEqual([u.y - v.y, u.width], [100, 250], 'below it');
 });
 
+test('a float or an absolute box inside an inline box is laid out', async () => {
+  // An inline box lays out nothing of its own, and the block's walk met
+  // only its own children: a float in a padded <span>, or a badge set
+  // absolute inside a link, stood at the page's corner with no size.
+  const { node } = await render(
+    '<p id="p">text <span style="padding:30px;margin:40px">' +
+      '<span id="f" style="float:left;width:40px;height:40px"></span>' +
+      '<b id="a" style="position:absolute;width:20px;height:20px"></b>' +
+      '</span></p>',
+  );
+  const el = view(node);
+  const [p, f, a] = ['p', 'f', 'a'].map((id) => boxOf(el, id));
+  assert.deepStrictEqual([f.x, f.y, f.width, f.height], [p.x, p.y, 40, 40]);
+  assert.deepStrictEqual([a.width, a.height], [20, 20]);
+  assert.strictEqual(a.y, p.y, 'at its static position');
+});
+
 test('nothing loads without onResource, and every reference is offered to it', async () => {
   const asked: string[] = [];
   await renderX11(
