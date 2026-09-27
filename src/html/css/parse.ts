@@ -15,12 +15,17 @@
 // stylesheet is easy; matching `li:nth-child(2n+1) > a[href^="/"]` correctly
 // and quickly is not, and that is the part worth importing.
 import { parseLength } from './values.js';
+import { hasVar, unbalanced, validVars } from './vars.js';
 
 /** One `prop: value` pair, with `!important` already taken off the value. */
 export interface Declaration {
   prop: string;
   value: string;
   important: boolean;
+  /** A custom property, `--name`, whose name keeps its case. */
+  custom?: true;
+  /** The value has a `var()` to replace before it is read. */
+  vars?: true;
 }
 
 export interface StyleRule {
@@ -299,15 +304,37 @@ export function parseDeclarations(text: string): Declaration[] {
       let colon = name.end;
       while (colon < end && isSpace(text[colon])) colon += 1;
       if (text[colon] === ':') {
-        let value = text.slice(colon + 1, end).trim();
+        const raw = text.slice(colon + 1, end);
+        let value = raw.trim();
         const important = IMPORTANT_RE.test(value);
         if (important) value = value.replace(IMPORTANT_RE, '').trim();
-        if (value && !hasBang(value)) {
-          out.push({
-            prop: name.value.toLowerCase(),
+        const custom = name.value.startsWith('--');
+        // `--` alone is no custom property's name, and a bracket closed
+        // that nothing opened makes a value none
+        if (
+          (value || custom) &&
+          !hasBang(value) &&
+          name.value !== '--' &&
+          !(custom && unbalanced(value))
+        ) {
+          const declaration: Declaration = {
+            // a custom property's name is case-sensitive
+            prop: custom ? name.value : name.value.toLowerCase(),
             value: unescapeValue(value),
             important,
-          });
+          };
+          if (custom) declaration.custom = true;
+          if (hasVar(value)) {
+            // a `var()` that is none is a declaration that is none — read
+            // untrimmed, since a newline in a string the end left open
+            // makes a bad string, where the end alone closes it
+            if (!validVars(raw)) {
+              i = end + 1;
+              continue;
+            }
+            declaration.vars = true;
+          }
+          out.push(declaration);
         }
       }
     }
@@ -975,7 +1002,13 @@ function scanTo(text: string, at: number, target: string): number {
 
 /** Whether a `!` stands in a value outside its strings and brackets. */
 function hasBang(value: string): boolean {
-  return value.includes('!') && scanTo(value, 0, '!') < value.length;
+  if (!value.includes('!')) return false;
+  for (let at = scanTo(value, 0, '!'); at < value.length;) {
+    // `<!--` is a token of its own, which a custom property may hold
+    if (value[at - 1] !== '<' || !value.startsWith('--', at + 1)) return true;
+    at = scanTo(value, at + 1, '!');
+  }
+  return false;
 }
 
 /**

@@ -88,6 +88,7 @@ separately, and there are six.
 | 18     | `::first-line`, a pseudo-element's place           | 5,343 (91%) | 4,895 (83%) |
 | 19     | CSS Color 4, CSS syntax, the body's inheritance    | 5,366 (91%) | 4,918 (83%) |
 | 20     | `calc()`, `min()`, `max()`, `clamp()`              | 5,370 (91%) | 4,922 (84%) |
+| 21     | custom properties, `var()`                         | 5,370 (91%) | 4,922 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -959,6 +960,32 @@ and 78 after it.
 Round 20 lost none, here or in `css-values`. `calc-rounding-001` still fails
 on its reference, which sizes the test's boxes with `var()`.
 
+### Round 21
+
+This round ran WPT's `css/css-variables` reftests: 75 of their 182 passed
+before it on both backends, many of them by accident, and 170 after it.
+Two more of `css-values` pass, whose references use `var()`.
+
+97. **Custom properties and `var()` were not read**, so every colour,
+    spacing and font Tailwind or a design system writes through them was
+    dropped. A `--name` is kept as written, case and all, per element, and
+    inherited as one map; a `var()` is replaced before the declaration it
+    is in is read, so it works in a shorthand, in `calc()` and in a colour
+    function (CSS Custom Properties 1). One with no value and no fallback,
+    or whose value does not parse once it is in, leaves its property
+    `unset`; a property in a cycle has no value, whatever its fallback; a
+    `var()` that is none as written, an unclosed string cut by a newline
+    or a `;` in its fallback, is no declaration, and the end of a style
+    sheet closes one it leaves open. A document with neither pays nothing:
+    each declaration says whether it sets or reads one.
+98. **`:root` matched every element at the top of a fragment.** With no
+    `<html>` in the markup, css-select took each top-level element for the
+    root, so `:root { color: red }` outranked their own rules. It is the
+    `<html>` element now, or the one a fragment's root style is taken from,
+    so a fragment's `:root { --brand: … }` reaches all of it.
+
+Round 21 lost none, here or in the other directories.
+
 ## What `<Html>` supports
 
 From the pass rates of the tests that use each feature, at the fixes above,
@@ -1077,7 +1104,7 @@ directories and caniemail's feature list:
    `onResource`. CSS Color 4's functions were done in round 19, read in
    this package rather than by ntk's colour parser; `color-mix()` and
    relative colours remain. `calc()`, `min()`, `max()` and `clamp()` were
-   done in round 20.
+   done in round 20, and custom properties in round 21.
 6. **Stacking and clipping**: stacking contexts across `z-index`, `clip`,
    the static position of an absolute box. Percentage heights were done in
    round 4; overflow clipping, `clip` and the static position in a block in

@@ -29,11 +29,14 @@ import {
   blockify,
   decorate,
   inherit,
+  initialOne,
   initialStyle,
+  isInherited,
 } from './style.js';
 import type { ComputedStyle, RootLook } from './style.js';
 import { parseDeclarations } from './parse.js';
 import type { UnitContext } from './values.js';
+import { customProperties, substitute } from './vars.js';
 
 /** Where a declaration came from. Higher wins before specificity is asked. */
 const enum Origin {
@@ -337,6 +340,9 @@ export class Cascade {
   /** A font's x-height at a size, for `ex`, where the fonts can say. */
   private _xHeightOf: ((family: string, size: number) => number | null) | null;
   private _xHeights = new Map<string, number>();
+  /** Whether any declaration sets a custom property or reads one: without
+   *  one, no element's style asks about them. */
+  private _vars = false;
 
   constructor(
     sheets: Stylesheet[],
@@ -355,6 +361,7 @@ export class Cascade {
     const breakpoints = new Set<number>();
     for (const sheet of sheets) {
       for (const rule of sheet.rules) {
+        if (!this._vars && usesVars(rule.declarations)) this._vars = true;
         const pseudo = splitPseudoElement(rule);
         if (pseudo) this._pseudo[pseudo.which].add(pseudo.rule);
         else this._index.add(rule);
@@ -649,6 +656,17 @@ export class Cascade {
     candidates: Candidate[],
   ): ComputedStyle {
     const style = inherit(parentStyle, this.initial);
+    // custom properties first, in cascade order, so every `var()` in the
+    // declarations below finds the one that wins
+    if (this._vars) {
+      let own: Map<string, string> | null = null;
+      for (const c of candidates) {
+        for (const d of pick(c)) {
+          if (d.custom) (own ??= new Map()).set(d.prop, d.value);
+        }
+      }
+      if (own) style.custom = customProperties(own, parentStyle.custom);
+    }
 
     // The unit context has to be built twice: once with the parent's font
     // size, so a `font-size: 1.2em` in the cascade resolves against the
@@ -670,7 +688,7 @@ export class Cascade {
           d.prop === 'font' ||
           d.prop === 'font-family'
         ) {
-          applyDeclaration(style, parentStyle, d.prop, d.value, ctxParent);
+          this._apply(style, parentStyle, d, ctxParent);
         }
       }
     }
@@ -681,14 +699,40 @@ export class Cascade {
     };
     for (const c of candidates) {
       for (const d of pick(c)) {
-        if (d.prop === 'font-size') continue;
-        applyDeclaration(style, parentStyle, d.prop, d.value, ctx);
+        if (d.prop === 'font-size' || d.custom) continue;
+        this._apply(style, parentStyle, d, ctx);
       }
     }
 
     blockify(style, inFlexContainer);
     decorate(style);
     return style;
+  }
+
+  /** One declaration, its `var()`s replaced first. One that names a
+   *  custom property with no value, and has no fallback, is invalid at
+   *  computed-value time, and the property is as though `unset`. */
+  private _apply(
+    style: ComputedStyle,
+    parentStyle: ComputedStyle,
+    d: Declaration,
+    ctx: UnitContext,
+  ): void {
+    if (!d.vars) {
+      applyDeclaration(style, parentStyle, d.prop, d.value, ctx);
+      return;
+    }
+    // unset first: a value that does not parse once it is substituted is
+    // invalid at computed-value time, and does not leave the property what
+    // an earlier declaration gave it
+    if (isInherited(d.prop)) {
+      applyDeclaration(style, parentStyle, d.prop, 'inherit', ctx);
+    } else {
+      initialOne(style, this.initial, d.prop);
+    }
+    const value = substitute(d.value, style.custom);
+    if (value !== null)
+      applyDeclaration(style, parentStyle, d.prop, value, ctx);
   }
 
   /**
@@ -745,6 +789,7 @@ export class Cascade {
             indexed.match = compile(rule.selector, {
               adapter: this._adapter,
               xmlMode: false,
+              pseudos: PSEUDOS,
             } as unknown as Parameters<typeof compile>[1]) as unknown as (
               node: Element,
             ) => boolean;
@@ -795,6 +840,7 @@ export class Cascade {
     const inline = attr(el, 'style');
     if (inline) {
       const declarations = parseDeclarations(inline);
+      if (!this._vars && usesVars(declarations)) this._vars = true;
       const normal = declarations.filter((d) => !d.important);
       const important = declarations.filter((d) => d.important);
       if (normal.length) {
@@ -820,6 +866,20 @@ export class Cascade {
     out.sort(byCascade);
     return out;
   }
+}
+
+/** `:root` is the `<html>` element: the one a browser implies around a
+ *  fragment, whose style the root box takes (`rootStyle`), and never a
+ *  fragment's top-level elements, which css-select would take for it. */
+const PSEUDOS = {
+  root: (el: Element) =>
+    el.name === 'html' && !(el.parent && isTag(el.parent as Element)),
+};
+
+/** Whether any of these declarations sets a custom property or reads one. */
+function usesVars(declarations: readonly Declaration[]): boolean {
+  for (const d of declarations) if (d.custom || d.vars) return true;
+  return false;
 }
 
 function pick(c: Candidate): Declaration[] {
