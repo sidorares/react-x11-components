@@ -105,6 +105,7 @@ separately, and there are six.
 | 35     | nested rules, media ranges                         | 5,461 (93%) | 4,973 (84%) |
 | 36     | flex items' sizes and auto margins                 | 5,461 (93%) | 4,973 (84%) |
 | 37     | grid                                               | 5,461 (93%) | 4,973 (84%) |
+| 38     | rounded borders                                    | 5,461 (93%) | 4,973 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -1332,6 +1333,19 @@ minmax(16rem, 1fr))` are the layouts of half the pages written this
      same blockified items, and its own algorithm to the engine, since
      Yoga has none. Named lines and areas, `dense` and column-first
      placement, and subgrids are not read. The CSS 2.1 suite has no grids.
+
+### Round 38
+
+123. **A rounded box's border was drawn square.** Its background followed
+     `border-radius` and its border was four straight rectangles over it,
+     so a card's or a button's corners had square borders on round
+     backgrounds, and an accent down one side did not curve. Where every
+     side that has a border has it in one colour and a solid rule, the
+     border is the ring between two rounded rectangles now, the inside
+     rounded by the radius less the border (CSS Backgrounds 3, 5.2),
+     filled by the even-odd rule both backends' contexts take. Sides of
+     different colours on a rounded box are still drawn straight. The CSS
+     2.1 suite has no radii.
 
 ## What `<Html>` supports
 

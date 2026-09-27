@@ -1829,6 +1829,15 @@ interface Fill {
   h: number;
   /** A rounded fill's corners; null for a plain rectangle. */
   radii: number[] | null;
+  /** A second subpath and the rule it was filled by: a ring's inside. */
+  inner?: {
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+    radii: number[] | null;
+  };
+  rule?: string;
 }
 
 /** What a paint did, in order: a fill, or a clip pushed or popped. */
@@ -1863,6 +1872,7 @@ async function fillsOf(el: HtmlViewNode, ops?: PaintOp[]): Promise<Fill[]> {
   const fills: Fill[] = [];
   let fillStyle: unknown = null;
   let path: Omit<Fill, 'style'> | null = null;
+  let inner: Fill['inner'] | null = null;
   const ctx = {
     get fillStyle() {
       return fillStyle;
@@ -1881,20 +1891,26 @@ async function fillsOf(el: HtmlViewNode, ops?: PaintOp[]): Promise<Fill[]> {
       fills.push(fill);
       ops?.push({ op: 'fill', ...fill });
     },
-    beginPath() {},
+    beginPath() {
+      path = null;
+      inner = null;
+    },
     rect(x: number, y: number, w: number, h: number) {
       path = { x, y, w, h, radii: null };
     },
     roundRect(x: number, y: number, w: number, h: number, radii: number[]) {
-      path = { x, y, w, h, radii };
+      if (path) inner = { x, y, w, h, radii };
+      else path = { x, y, w, h, radii };
     },
-    fill() {
+    fill(rule?: string) {
       if (path) {
-        const fill = { style: fillStyle, ...path };
+        const fill: Fill = { style: fillStyle, ...path };
+        if (inner) Object.assign(fill, { inner, rule });
         fills.push(fill);
         ops?.push({ op: 'fill', ...fill });
       }
       path = null;
+      inner = null;
     },
     clip() {
       if (path) {
@@ -6956,4 +6972,44 @@ metric('a grid places its items in its column tracks', async () => {
   assert.strictEqual(boxOf(el, 's').height, 40);
   const c = boxOf(el, 'c');
   assert.ok(c.width < 20 && c.x > 40, `${c.x} ${c.width}`);
+});
+
+// --- rounded borders -------------------------------------------------------------
+
+test("a rounded box's border is a ring that follows its corners", async () => {
+  // drawn a side at a time, its corners were square over the background's
+  // rounded ones; the inside of the ring is rounded by the radius less the
+  // border
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="width:100px;height:40px;border:2px solid #ff0000;' +
+      'border-radius:8px"></div>' +
+      '<div style="width:100px;height:40px;border-left:6px solid #0000ff;' +
+      'border-radius:10px"></div>' +
+      '<div style="width:100px;height:40px;border:2px solid #00ff00;' +
+      'border-top-color:#ff00ff;border-radius:8px"></div>',
+  );
+  const fills = await fillsOf(view(node));
+  const red = fills.find((f) => f.style === parseColor('#ff0000'));
+  assert.ok(red, 'a fill in the border colour');
+  assert.deepStrictEqual(
+    [red.x, red.y, red.w, red.h, red.radii, red.rule],
+    [0, 0, 104, 44, [8, 8, 8, 8], 'evenodd'],
+  );
+  assert.deepStrictEqual(red.inner, {
+    x: 2,
+    y: 2,
+    w: 100,
+    h: 40,
+    radii: [6, 6, 6, 6],
+  });
+  // a border down one side curves into the corners it meets
+  const blue = fills.find((f) => f.style === parseColor('#0000ff'));
+  assert.deepStrictEqual(blue?.inner?.radii, [4, 10, 10, 4]);
+  // and sides of two colours are drawn a side at a time, as before
+  const green = fills.filter((f) => f.style === parseColor('#00ff00'));
+  assert.ok(
+    green.length >= 3 && green.every((f) => !f.inner),
+    'straight sides',
+  );
 });
