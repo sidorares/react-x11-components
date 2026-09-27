@@ -123,6 +123,7 @@ separately, and there are six.
 | 53     | a raised box's own line height                     | 5,471 (93%) | 4,979 (84%) |
 | 54     | `::marker`                                         | 5,471 (93%) | 4,979 (84%) |
 | 55     | an underline's offset and thickness                | 5,471 (93%) | 4,979 (84%) |
+| 56     | `background-size`                                  | 5,471 (93%) | 4,979 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -1697,6 +1698,27 @@ minmax(16rem, 1fr))` are the layouts of half the pages written this
      properties real stylesheets write that were dropped; CSS 2.1 has
      neither, and neither suite moved.
 
+### Round 56
+
+147. **Every background was drawn at its own size.** `background-size`
+     parsed its three keywords and nothing else — its lengths, in the
+     longhand and after the `/` in `background`, were read as `auto` —
+     and the painter never asked it: a hero's `cover` photograph was tiled
+     at the size it was saved at, an icon set as `16px` was as large as
+     its file, and Tailwind's `bg-cover` and `bg-[length:…]` did nothing.
+     A tile is sized now as CSS Backgrounds 3 has it, over CSS Images'
+     sizing of an object: `cover` and `contain` scale the image to fill
+     its positioning area or to fit it, keeping its ratio; a width or a
+     height alone takes the other from the ratio, or else from the
+     image's own size, or else from the area; percentages are of the
+     area. A gradient, which has no size or ratio of its own, is tiled at
+     the size given and placed by `background-position`, as an image is,
+     and cut to a rounded box's corners rather than drawn as one fill of
+     its shape. A tile at the image's own size is still one pattern fill;
+     any other is drawn a tile at a time. Found in a survey of the properties real
+     stylesheets write that were dropped; CSS 2.1 has no
+     `background-size`, and neither suite moved.
+
 ## What `<Html>` supports
 
 From the pass rates of the tests that use each feature, at the fixes above,
@@ -1710,7 +1732,7 @@ checked against the code.
 | margins, padding, borders                          | 682   | 95%     | **supported**, inline boxes and collapsed table borders included; the `double`/`groove` families are approximations                                                                                                           |
 | floats and `clear`                                 | 311   | 46–67%  | **supported**, with gaps: a float inside a paragraph is placed at the paragraph's top, not its line's                                                                                                                         |
 | relative and absolute positioning                  | 513   | 84%     | **supported**; an absolute box inside a line takes the line's start for its static position                                                                                                                                   |
-| backgrounds: colour, image, repeat, position       | 336   | 85%     | **supported**, `background-attachment: fixed` and SVG images included                                                                                                                                                         |
+| backgrounds: colour, image, repeat, position       | 336   | 85%     | **supported**, `background-attachment: fixed`, `background-size` and SVG images included                                                                                                                                      |
 | fonts: family, style, weight, size                 | 159   | 81%     | **supported**; `font-variant` is the font's own OpenType features, so small capitals are drawn where the font has them and not synthesized                                                                                    |
 | line height, `vertical-align`                      | 191   | 87%     | **supported**: every inline box's own line height, and `vertical-align` on text as well as on images and inline blocks; text in a font with taller natural lines than its paragraph's takes a bit more room than CSS gives it |
 | `white-space`                                      | 217   | 46%     | **supported**; collapsing is CSS 2.1's across elements                                                                                                                                                                        |
@@ -1819,8 +1841,9 @@ directories and caniemail's feature list:
    round 22; relative colours remain. `calc()`, `min()`, `max()` and
    `clamp()` were done in round 20, custom properties in round 21, and the
    logical properties Tailwind 4 writes its spacing in, with `inset`, in
-   round 33. Linear gradients were done in round 39 and `box-shadow` in
-   round 41; `background-size` and the other gradients remain.
+   round 33. Linear gradients were done in round 39, `box-shadow` in
+   round 41 and `background-size` in round 56; the other gradients
+   remain.
 6. **Stacking and clipping**: stacking contexts across `z-index`, `clip`,
    the static position of an absolute box. Percentage heights were done in
    round 4; overflow clipping, `clip` and the static position in a block in
