@@ -274,7 +274,9 @@ export function parseColor(value: string): string | null {
   if (lower === 'transparent') return 'transparent';
   if (lower === 'inherit' || lower === 'initial' || lower === 'unset')
     return null;
-  if (v.startsWith('#')) return /^#[0-9a-f]{3,8}$/i.test(v) ? v : null;
+  // three, four, six or eight digits: ntk's context throws from paint on
+  // five or seven, and a typo'd `#ff000` took the application down
+  if (v.startsWith('#')) return HEX_COLOR.test(v) ? v : null;
   if (/^(?:rgb|rgba|hsl|hsla|color|lab|lch|oklab|oklch)\(/i.test(v)) {
     // The end of a style sheet closes whatever is still open (CSS 2.1 4.2):
     // `rgb(0, 128, 0` as a sheet's last words is green.
@@ -283,6 +285,8 @@ export function parseColor(value: string): string | null {
   }
   return NAMED_COLORS.has(lower) ? lower : null;
 }
+
+const HEX_COLOR = /^#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
 
 const cssColorStraight = (
   ntk as unknown as { cssColorStraight?: (value: string) => unknown }
