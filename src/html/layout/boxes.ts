@@ -486,6 +486,10 @@ export interface BoxTree {
   /** Whether any block has a `::first-line` style (`FIRST_LINE`): where
    *  none has, layout looks for none. */
   firstLine: boolean;
+  /** Whether a float or an out-of-flow box sits in an inline box: where
+   *  none does, layout looks for them among a block's own children and
+   *  goes through no inline box to find them. */
+  nestedOutOfLine: boolean;
 }
 
 export interface BuildOptions {
@@ -546,6 +550,7 @@ class Builder {
   private _relative = false;
   private _negative = false;
   private _firstLine = false;
+  private _nestedOutOfLine = false;
   /** Counter stack for `<ol>` numbering, one entry per open list. */
   private _counters: number[] = [];
   /** The CSS counters in scope, for `counter()` in generated content. */
@@ -591,6 +596,7 @@ class Builder {
       relative: this._relative || isRelative(rootStyle),
       negative: this._negative,
       firstLine: this._firstLine,
+      nestedOutOfLine: this._nestedOutOfLine,
     };
   }
 
@@ -697,6 +703,8 @@ class Builder {
     if (style.position === 'absolute' || style.position === 'fixed')
       box.outOfFlow = true;
     else if (style.float !== 'none') box.isFloat = true;
+    if (into.kind === 'inline' && (box.outOfFlow || box.isFloat))
+      this._nestedOutOfLine = true;
 
     if (attr(el, 'href') && (tag === 'a' || tag === 'area'))
       this._links.push(box);
@@ -766,6 +774,8 @@ class Builder {
     if (style.position === 'absolute' || style.position === 'fixed')
       box.outOfFlow = true;
     else if (style.float !== 'none') box.isFloat = true;
+    if (into.kind === 'inline' && (box.outOfFlow || box.isFloat))
+      this._nestedOutOfLine = true;
     const flow = flowOf(style, box);
     if (flow === 'block') this._endLine();
     this._ws = after(flow, this._ws, this._ws);
@@ -865,6 +875,8 @@ class Builder {
     if (style.position === 'absolute' || style.position === 'fixed')
       box.outOfFlow = true;
     else if (style.float !== 'none') box.isFloat = true;
+    if (into.kind === 'inline' && (box.outOfFlow || box.isFloat))
+      this._nestedOutOfLine = true;
     const text = this._generated(style.content as ContentItem[], style, el);
     const flow = flowOf(style, box);
     const around = this._ws;
@@ -1017,7 +1029,10 @@ class Builder {
     const letterStyle = cascade.firstLetterStyle(search.rules, style);
     const box = new Box(boxKindFor(letterStyle.display), null, letterStyle);
     box.pseudo = 'first-letter';
-    if (letterStyle.float !== 'none') box.isFloat = true;
+    if (letterStyle.float !== 'none') {
+      box.isFloat = true;
+      if (into.kind === 'inline') this._nestedOutOfLine = true;
+    }
     into.append(box);
     if (letterStyle.textTransform !== style.textTransform) {
       text = transformText(text, letterStyle.textTransform);

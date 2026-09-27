@@ -32,6 +32,9 @@ export interface LayoutContext {
   fonts: FontsLike | null;
   /** Whether any block has a `::first-line` (`BoxTree.firstLine`). */
   firstLine?: boolean;
+  /** Whether a float or an out-of-flow box is in an inline box
+   *  (`BoxTree.nestedOutOfLine`). */
+  nestedOutOfLine?: boolean;
   viewportWidth: number;
   viewportHeight: number;
   /** Out-of-flow boxes, collected in flow order and laid out afterwards —
@@ -71,6 +74,7 @@ export function layoutDocument(
     positioned: [],
     layoutSubtree: (box, width) => layoutSubtree(box, ctx, width),
     firstLine: tree.firstLine,
+    nestedOutOfLine: tree.nestedOutOfLine,
   };
   const root = tree.root;
   root.x = 0;
@@ -1556,7 +1560,7 @@ function placeOutOfLine(
       });
     } else if (child.isFloat) {
       layoutFloat(child, ctx, floats, contentTop, contentLeft, contentWidth);
-    } else if (child.kind === 'inline') {
+    } else if (child.kind === 'inline' && ctx.nestedOutOfLine) {
       placeOutOfLine(
         child,
         block,

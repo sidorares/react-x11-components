@@ -3601,6 +3601,58 @@ test('a float or an absolute box inside an inline box is laid out', async () => 
   assert.strictEqual(a.y, p.y, 'at its static position');
 });
 
+test('a floated image, ::before or first letter in an inline box is laid out', async () => {
+  // Found by the same walk into inline boxes, which a document with no
+  // float or positioned box in one does not take — so each is alone in its
+  // document here
+  const image = view(
+    (
+      await render(
+        '<p id="p">text <span>' +
+          '<img id="i" style="float:left;width:40px;height:40px"></span></p>',
+      )
+    ).node,
+  );
+  const [p, i] = ['p', 'i'].map((id) => boxOf(image, id));
+  assert.deepStrictEqual([i.x, i.y, i.width, i.height], [p.x, p.y, 40, 40]);
+  cleanup();
+
+  const pseudo = view(
+    (
+      await render(
+        '<style>#g::before{content:"";float:left;width:30px;height:30px}' +
+          '</style><p id="p">text <span id="g">g</span></p>',
+      )
+    ).node,
+  );
+  const [p2, g] = ['p', 'g'].map((id) => boxOf(pseudo, id));
+  const before = g.children.find(
+    (c) => (c as unknown as { pseudo?: string }).pseudo === 'before',
+  );
+  assert.ok(before, 'the ::before has a box');
+  assert.deepStrictEqual(
+    [before.x, before.y, before.width, before.height],
+    [p2.x, p2.y, 30, 30],
+  );
+  cleanup();
+
+  const letters = view(
+    (
+      await render(
+        '<style>#q::first-letter{float:left;font-size:40px}</style>' +
+          '<p id="q"><span>Letter</span></p>',
+      )
+    ).node,
+  );
+  const q = boxOf(letters, 'q');
+  const letter = q.children[0].children.find(
+    (c) => (c as unknown as { pseudo?: string }).pseudo === 'first-letter',
+  );
+  assert.ok(letter, 'the first letter has a box');
+  assert.deepStrictEqual([letter.x, letter.y], [q.x, q.y]);
+  assert.ok(letter.width > 0, 'and a size');
+});
+
 test('background-attachment is read, in its longhand and the shorthand', async () => {
   // `fixed` positions the image against the viewport, the element, rather
   // than the box (CSS 2.1 14.2.1); the shorthand sets it back to `scroll`
@@ -5627,5 +5679,89 @@ metric(
     await waitFor(async () => assert.ok(await purple(5, 5), 'the background'));
     const table = boxOf(el, 't');
     assert.ok(await purple(3, Math.round(table.y) + 3), 'the collapsed border');
+  },
+);
+
+metric(
+  'custom properties set at every level of a deep tree read the nearest',
+  async () => {
+    // twenty levels, each setting one: the chain an element reads through is
+    // folded once it is long, and has to answer as it did before
+    let open = '';
+    let close = '';
+    for (let i = 0; i < 20; i += 1) {
+      const set =
+        i === 12
+          ? '--gone: initial'
+          : i === 3
+            ? '--gone: 30px'
+            : `--d${i}: ${i}px`;
+      open += `<div style="${set}">`;
+      close += '</div>';
+    }
+    const { el } = await renderWithBytes(
+      '<html><head><style>:root { --top: #00ff00; --d5: 99px }</style></head><body>' +
+        open +
+        '<p id="p" style="color: var(--top); margin-left: var(--d5); ' +
+        'margin-right: var(--d18); padding-left: var(--gone, 4px)">x</p>' +
+        close +
+        '</body></html>',
+      {},
+    );
+    const style = (
+      boxOf(el, 'p') as unknown as { style: Record<string, unknown> }
+    ).style;
+    assert.strictEqual(style.color, '#00ff00');
+    // the nearer one wins over the root's
+    assert.strictEqual(style.marginLeft, 5);
+    assert.strictEqual(style.marginRight, 18);
+    // and `initial` twelve levels down is none, over the one set at three
+    assert.strictEqual(style.paddingLeft, 4);
+  },
+);
+
+// --- what a paint goes through -------------------------------------------------
+
+metric(
+  'a block with a link or a column in it is found where it is, not from the top',
+  async () => {
+    // An inline box is drawn on its block's lines and a column in its
+    // cells, and neither has a rectangle of its own. Taken for one at
+    // (0, 0), each stretched the paint bounds of the block it was in up to
+    // the top of the document, and a paint low in a long document went
+    // through every block above the viewport.
+    const paras = Array.from(
+      { length: 80 },
+      (_, i) =>
+        `<p id="p${i}">paragraph ${i} with <a href="#">a <b>link</b></a></p>`,
+    ).join('');
+    const { node } = await render(
+      `<style>p{margin:0 0 20px}</style>${paras}` +
+        '<table id="t"><colgroup><col><col></colgroup>' +
+        '<tr><td>a</td><td>b</td></tr></table>',
+    );
+    const el = view(node);
+    type Bounded = LaidBox & { boundsY: number; boundsHeight: number };
+    for (const id of ['p40', 'p79', 't']) {
+      const box = boxOf(el, id) as Bounded;
+      assert.ok(
+        box.boundsY >= box.y - 1 && box.boundsHeight < box.height + 20,
+        `#${id}'s ink is where it is: ${box.boundsY}+${box.boundsHeight} ` +
+          `for a box at ${box.y}+${box.height}`,
+      );
+    }
+    const { queryChildIndex } = await import('../src/html/paint.js');
+    const root = (
+      el as unknown as {
+        _tree: { root: { paintIndex: Parameters<typeof queryChildIndex>[0] } };
+      }
+    )._tree.root;
+    assert.ok(root.paintIndex, 'eighty paragraphs are indexed');
+    const at = boxOf(el, 'p60');
+    const hits = queryChildIndex(root.paintIndex, at.y, at.y + at.height);
+    assert.ok(
+      hits.length <= 2,
+      `a strip one paragraph tall meets ${hits.length} of them`,
+    );
   },
 );

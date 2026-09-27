@@ -36,7 +36,7 @@ import {
 import type { ComputedStyle, RootLook } from './style.js';
 import { parseDeclarations } from './parse.js';
 import type { UnitContext } from './values.js';
-import { customProperties, substitute } from './vars.js';
+import { customProperties, substituteIn } from './vars.js';
 
 /** Where a declaration came from. Higher wins before specificity is asked. */
 const enum Origin {
@@ -730,7 +730,7 @@ export class Cascade {
     } else {
       initialOne(style, this.initial, d.prop);
     }
-    const value = substitute(d.value, style.custom);
+    const value = substituteIn(d.value, style.custom);
     if (value !== null)
       applyDeclaration(style, parentStyle, d.prop, value, ctx);
   }

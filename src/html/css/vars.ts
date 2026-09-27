@@ -6,9 +6,50 @@
 // A document with none of either pays nothing: the cascade asks only when
 // some declaration has one (`Declaration.custom`, `Declaration.vars`).
 
-/** An element's custom properties: its own over those it inherits, with
- *  every `var()` in them already replaced. */
-export type CustomProps = ReadonlyMap<string, string>;
+/**
+ * An element's custom properties: its own over those it inherits, with
+ * every `var()` in them already replaced. A chain rather than a copy: an
+ * element that sets two properties over a theme of three hundred holds
+ * two, where a copy made every such element pay for the theme.
+ */
+export class CustomProps {
+  /** Its own, where `null` is none over an inherited one (`initial`). */
+  readonly own: Map<string, string | null>;
+  readonly parent: CustomProps | null;
+  private readonly depth: number;
+
+  constructor(parent: CustomProps | null) {
+    // a lookup walks the chain, so a long one is folded into one map
+    if (parent && parent.depth >= FOLD_DEPTH) parent = parent.folded();
+    this.own = new Map();
+    this.parent = parent;
+    this.depth = parent ? parent.depth + 1 : 0;
+  }
+
+  get(name: string): string | undefined {
+    for (let at: CustomProps | null = this; at; at = at.parent) {
+      const value = at.own.get(name);
+      if (value !== undefined) return value ?? undefined;
+    }
+    return undefined;
+  }
+
+  /** The whole chain as one link, with the same answers. */
+  private folded(): CustomProps {
+    const out = new CustomProps(null);
+    const links: CustomProps[] = [];
+    for (let at: CustomProps | null = this; at; at = at.parent) links.push(at);
+    for (let i = links.length - 1; i >= 0; i -= 1) {
+      for (const [name, value] of links[i].own) {
+        if (value === null) out.own.delete(name);
+        else out.own.set(name, value);
+      }
+    }
+    return out;
+  }
+}
+
+const FOLD_DEPTH = 16;
 
 /**
  * The custom properties an element has: `own`, its declarations in cascade
@@ -20,11 +61,11 @@ export function customProperties(
   own: ReadonlyMap<string, string>,
   parent: CustomProps | null,
 ): CustomProps {
-  const out = new Map(parent ?? undefined);
+  const out = new CustomProps(parent);
   for (const [name, value] of own) {
     const keyword = value.trim().toLowerCase();
     if (keyword === 'initial') {
-      out.delete(name);
+      out.own.set(name, null);
     } else if (
       keyword === 'inherit' ||
       keyword === 'unset' ||
@@ -32,11 +73,9 @@ export function customProperties(
       keyword === 'revert-layer'
     ) {
       // a custom property inherits, so each of these is its parent's
-      const inherited = parent?.get(name);
-      if (inherited === undefined) out.delete(name);
-      else out.set(name, inherited);
+      out.own.set(name, parent?.get(name) ?? null);
     } else {
-      out.set(name, value);
+      out.own.set(name, value);
     }
   }
   const state = new Map<string, boolean>();
@@ -44,7 +83,7 @@ export function customProperties(
   const cyclic = new Set<string>();
   const visit = (name: string): string | undefined => {
     // an inherited one was resolved where it was declared
-    if (!own.has(name)) return out.get(name);
+    if (!own.has(name)) return parent?.get(name);
     const done = state.get(name);
     if (done === false) {
       // on the stack: a cycle, and nothing in it has a value, whatever
@@ -54,22 +93,47 @@ export function customProperties(
       }
       return undefined;
     }
-    if (done === true) return out.get(name);
+    if (done === true) return out.own.get(name) ?? undefined;
     state.set(name, false);
     stack.push(name);
-    const raw = out.get(name);
-    if (raw !== undefined && hasVar(raw)) {
+    const raw = out.own.get(name);
+    if (raw && hasVar(raw)) {
       const value = substitute(raw, visit);
-      if (value === null || cyclic.has(name)) out.delete(name);
-      else out.set(name, value);
+      out.own.set(name, value === null || cyclic.has(name) ? null : value);
     }
     stack.pop();
     state.set(name, true);
-    return out.get(name);
+    return out.own.get(name) ?? undefined;
   };
   for (const name of own.keys()) visit(name);
   return out;
 }
+
+/**
+ * `substitute`, remembered for the properties it was asked against: the
+ * elements under one that sets custom properties share its `CustomProps`,
+ * so a `var()` a utility class writes is replaced once for all of them.
+ * What is remembered goes with the properties. With none, there is nothing
+ * to key it on that would go, and only fallbacks to read.
+ */
+export function substituteIn(
+  value: string,
+  props: CustomProps | null,
+): string | null {
+  if (!props) return substitute(value, null);
+  let memo = SUBSTITUTED.get(props);
+  if (!memo) {
+    memo = new Map();
+    SUBSTITUTED.set(props, memo);
+  }
+  const hit = memo.get(value);
+  if (hit !== undefined) return hit;
+  const out = substitute(value, props);
+  memo.set(value, out);
+  return out;
+}
+
+const SUBSTITUTED = new WeakMap<CustomProps, Map<string, string | null>>();
 
 /** Whether a value has a `var()` in it. */
 export function hasVar(value: string): boolean {
