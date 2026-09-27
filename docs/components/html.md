@@ -246,7 +246,9 @@ once it has shrunk to its columns, so a mail's button, a one-cell
 first is the text engine's; the second is spacing added to each space and
 no-break space, so only text that asks for it is split into more runs),
 `white-space` (including
-`pre` and `pre-wrap`), `direction`, `unicode-bidi`, `vertical-align`,
+`pre` and `pre-wrap`, on an element as well as on its block: a `nowrap`
+element's words stay together, and `pre`'s spaces take their room at a
+line's end, where other spaces hang), `direction`, `unicode-bidi`, `vertical-align`,
 `text-decoration` in all five rule styles. `unicode-bidi` is carried out as
 the bidi controls it stands for, laid out around the element's text and no
 part of the document's: a copy, a caret and a selection skip them. HTML's

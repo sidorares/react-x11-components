@@ -6269,3 +6269,50 @@ test('HTML isolates what has a dir of its own, and a <bdo> overrides', async () 
     'isolate-override',
   ]);
 });
+
+// --- white-space on an element, where its block wraps ----------------------------
+
+/** The document text of each line a paragraph was laid out in. */
+function lineTextsOf(el: HtmlViewNode, id: string): string[] {
+  const text = el.textContent();
+  return linesOf(el, id).map((line) =>
+    line.texts.map((t) => text.slice(t.textStart, t.textEnd)).join(''),
+  );
+}
+
+metric(
+  "a nowrap element's words stay together, and it may break after its end",
+  async () => {
+    const { node } = await render(
+      '<style>p{margin:0;font:10px monospace}</style>' +
+        '<p id="a" style="width:50px">xx <span style="white-space:nowrap">aaa bbb</span> ccc</p>' +
+        '<p id="b" style="width:0"><span style="white-space:nowrap">AA </span> BB</p>',
+    );
+    const el = view(node);
+    const a = lineTextsOf(el, 'a');
+    assert.ok(
+      a.some((line) => line.includes('aaa bbb')),
+      `aaa and bbb on one line: ${JSON.stringify(a)}`,
+    );
+    // the space the element ends on is its block's to break after
+    assert.deepStrictEqual(
+      lineTextsOf(el, 'b').map((line) => line.trim()),
+      ['AA', 'BB'],
+    );
+  },
+);
+
+metric("pre's trailing spaces take room, where a line's hang", async () => {
+  const widthOf = async (text: string) => {
+    const { node } = await render(
+      '<style>div{display:inline-block;font:10px monospace}</style>' +
+        `<div id="d"><span style="white-space:pre">${text}</span></div>`,
+    );
+    const width = boxOf(view(node), 'd').width;
+    cleanup();
+    return width;
+  };
+  const bare = await widthOf('ab');
+  const spaced = await widthOf('ab  ');
+  assert.ok(spaced > bare * 1.8, `${spaced} against ${bare}`);
+});

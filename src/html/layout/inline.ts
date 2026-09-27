@@ -152,6 +152,7 @@ export function layoutInline(block: Box, options: InlineOptions): InlineResult {
   const items: Item[] = [];
   collect(block, items, options.width, fonts);
   if (!items.length || !fonts) return EMPTY;
+  if (wraps(block.style)) holdNoWrap(items);
   // an override on the block is one on all of its inline content (CSS 2.1
   // 9.10); its embedding or isolation is the paragraph's own direction
   const own =
@@ -1437,7 +1438,7 @@ function collect(
     switch (child.kind) {
       case 'text':
         if (child.text) {
-          const run = runFor(child.text, child.style);
+          const run = runFor(heldText(child), child.style);
           if (child.style.wordSpacing) {
             wordSpaced(out, child, run, child.style.wordSpacing);
           } else {
@@ -1518,6 +1519,32 @@ function collect(
         out.push({ kind: 'atomic', box: child });
         break;
     }
+  }
+}
+
+/**
+ * Keep the words of a `nowrap` element together where its block wraps
+ * (CSS 2.1 16.6): laid out, a space it may not break after is a no-break
+ * space, as wide and as many, so every offset holds. Whether a line breaks
+ * after a space is the call of the nearest element holding the space and
+ * what follows it (CSS Text 3, 5.1), so the space such an element ends on
+ * stays one where the text after it wraps.
+ */
+function holdNoWrap(items: Item[]): void {
+  let next: Extract<Item, { kind: 'text' }> | null = null;
+  for (let i = items.length - 1; i >= 0; i -= 1) {
+    const item = items[i];
+    if (item.kind !== 'text') continue;
+    const text = item.run.text;
+    // `pre`'s are no-break spaces already (`runFor`)
+    if (item.box.style.whiteSpace === 'nowrap' && text.includes(' ')) {
+      let held = text.replace(/ /g, '\u00a0');
+      if (text.endsWith(' ') && (!next || wraps(next.box.style))) {
+        held = held.slice(0, -1) + ' ';
+      }
+      item.run = { ...item.run, text: held };
+    }
+    next = item;
   }
 }
 
@@ -1761,6 +1788,28 @@ function firstLineColour(
 /** The `TextRun` one styled piece of text becomes: its text, and what paint
  *  needs of its style — nothing that names a box or an element, so that a
  *  layout made from it can be kept for the next parse (`TextLayoutCache`). */
+/**
+ * A text box's text as it is laid out. `pre` keeps its spaces whole: none
+ * is broken after, and none hangs at a line's end, where a trailing space
+ * counts in the line's width. Laid out, they are no-break spaces, as wide
+ * and as many, so every offset holds (CSS Text 3, 4.1.3). Kept per box: a
+ * pass makes no new string, and the kept layouts find their text by
+ * identity before they compare it.
+ */
+function heldText(box: Box): string {
+  if (box.style.whiteSpace !== 'pre' || !box.text.includes(' ')) {
+    return box.text;
+  }
+  let held = HELD.get(box);
+  if (held === undefined) {
+    held = box.text.replace(/ /g, '\u00a0');
+    HELD.set(box, held);
+  }
+  return held;
+}
+
+const HELD = new WeakMap<Box, string>();
+
 function runFor(text: string, style: ComputedStyle): TextRun {
   const run: TextRun = {
     text,
