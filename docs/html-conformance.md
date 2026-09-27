@@ -96,6 +96,7 @@ separately, and there are six.
 | 26     | images in generated content                        | 5,419 (92%) | 4,942 (84%) |
 | 27     | `unicode-bidi`                                     | 5,432 (92%) | 4,956 (84%) |
 | 28     | `white-space` on an element                        | 5,436 (92%) | 4,959 (84%) |
+| 29     | an inline box's line height, cleared empty blocks  | 5,443 (92%) | 4,962 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -1144,6 +1145,35 @@ Round 27 lost none, on either backend.
 
 Round 28 lost none, on either backend.
 
+### Round 29
+
+110. **Text on the baseline took its paragraph's line height.** CSS gives
+     every inline box its own, and the line box holds them all (10.8.1): a
+     span of 60px lines in a paragraph of 20px ones makes a 60px line, with
+     its text in the middle. A paragraph is laid out in one piece, which
+     sets every run at the paragraph's line height as a multiple of its
+     font's natural one, so the span's text was set 20px apart like the
+     rest. An inline box whose own line height is more than that is laid
+     out apart now, as a raised box is, and the line takes room for it and
+     for every inline box around its text, each about its own baseline. One
+     whose own is less is left in the one layout: a `<code>` in a font with
+     taller natural lines than its paragraph's has one of those, and the
+     line at a time it would take instead is what a long document pays for.
+     Whether a box has its own is asked of every inline box in every
+     paragraph, so a box with its paragraph's line height, family and size
+     is past at once and any other answer is kept on its style. 5 tests on
+     X11, 1 on macOS.
+111. **A cleared empty block's margins were lost.** Clearance puts the
+     block's top border edge below the float, and its margins still
+     collapse together, with those of the empty blocks after it (8.3.1).
+     The edge is its top margin's depth inside the margin they make, so its
+     parent ends where that margin does: past the edge by what the margin
+     has more than the top one (10.6.3). Round 11 (item 69) took the
+     block's own margins for spent in its clearance, and its parent ended
+     at the edge. 2 tests.
+
+Round 29 lost none, on either backend.
+
 ## What `<Html>` supports
 
 From the pass rates of the tests that use each feature, at the fixes above,
@@ -1159,7 +1189,7 @@ checked against the code.
 | relative and absolute positioning                  | 513   | 84%     | **supported**; an absolute box inside a line takes the line's start for its static position                                                                                                                                   |
 | backgrounds: colour, image, repeat, position       | 336   | 85%     | **supported**, `background-attachment: fixed` and SVG images included                                                                                                                                                         |
 | fonts: family, style, weight, size                 | 159   | 81%     | **supported**; `font-variant: small-caps` is not                                                                                                                                                                              |
-| line height, `vertical-align`                      | 191   | 72%     | **partial**: text on the baseline takes its paragraph's line height, where CSS gives each inline box its own; `vertical-align` moves text, laid out apart with its box's own line height, as well as images and inline blocks |
+| line height, `vertical-align`                      | 191   | 87%     | **supported**: every inline box's own line height, and `vertical-align` on text as well as on images and inline blocks; text in a font with taller natural lines than its paragraph's takes a bit more room than CSS gives it |
 | `white-space`                                      | 217   | 46%     | **supported**; collapsing is CSS 2.1's across elements                                                                                                                                                                        |
 | lists and markers                                  | 155   | 94%     | **supported**; `list-style-image` is not                                                                                                                                                                                      |
 | CSS tables (`display: table-*`), `table-layout`    | 250   | 81%     | **supported**: HTML tables and anonymous ones, both border models, captions, `<col>` widths in both layouts, and column backgrounds with their images; `visibility: collapse` and baseline alignment are not                  |
@@ -1255,7 +1285,9 @@ directories and caniemail's feature list:
    placed where its line has got to rather than before the line. White space
    and `font-size: 0` were done in round 2 and an inline box's padding,
    borders and margins in round 3, and the Cocoa line-box difference turned
-   out to be CoreText's placement and its font smoothing.
+   out to be CoreText's placement and its font smoothing. `vertical-align`
+   on text was done in round 24 and a line height per inline box in round
+   29; `justify` and the float remain.
 5. **The CSS3 that documents use**: `background-size`, `box-shadow`,
    gradients, `calc()`, custom properties (`var()`), CSS Color 4 —
    Tailwind's output is written in them — and `@font-face` through

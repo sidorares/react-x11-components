@@ -6034,10 +6034,11 @@ metric(
       cleanup();
       return lines[0].height;
     };
-    const flat = await heightWith('vertical-align:baseline');
-    assert.ok((await heightWith('')) > flat, 'the raised figure takes room');
+    // the paragraph's own line height, 20px, is the line's with nothing
+    // in it taller
+    assert.ok((await heightWith('')) > 20, 'the raised figure takes room');
     // Tailwind's preflight and normalize.css give it none
-    assert.strictEqual(await heightWith('line-height:0'), flat);
+    assert.strictEqual(await heightWith('line-height:0'), 20);
   },
 );
 
@@ -6338,4 +6339,49 @@ test('an empty cleared block ends its parent where its collapsed margin ends', a
   assert.strictEqual(boxOf(el, 'p').height, 201, 'the border and 200px');
   // and one that following empty blocks' margins collapse with
   assert.strictEqual(boxOf(el, 'q').height, 201);
+});
+
+// --- an inline box's own line height -------------------------------------------------
+
+metric("an inline box's own line height makes its line taller", async () => {
+  // CSS gives every inline box its own line height, and the line box holds
+  // them all (CSS 2.1 10.8.1): a span of 60px lines in a paragraph of 20px
+  // ones makes the line a paragraph of 60px lines has
+  const lineWith = async (p: string, markup: string) => {
+    const { node } = await render(
+      `<style>p{margin:0;font-size:16px;${p}}</style><p id="p">${markup}</p>`,
+    );
+    const el = view(node);
+    const [line] = linesOf(el, 'p');
+    const texts = baselinesOf(el, 'p');
+    cleanup();
+    return {
+      height: line.height,
+      baseline: texts[0].line - line.y,
+      apart: texts.filter((t) => Math.abs(t.at - t.line) > 0.01).length,
+    };
+  };
+  const near = (a: number, b: number) => Math.abs(a - b) < 0.01;
+  const tall = await lineWith('line-height:60px', 'a b c');
+  const held = await lineWith(
+    'line-height:20px',
+    'a <span style="line-height:60px">b</span> c',
+  );
+  assert.ok(near(held.height, 60), `${held.height}`);
+  assert.ok(near(held.baseline, tall.baseline), 'the text in its middle');
+  assert.strictEqual(held.apart, 0, 'every text on the one baseline');
+  // the box is on the line whatever is in it: text in a box of 20px lines
+  // inside it is set in its 60px
+  const nested = await lineWith(
+    'line-height:20px',
+    'a <span style="line-height:60px"><em style="line-height:20px">b</em></span> c',
+  );
+  assert.ok(near(nested.height, 60), `${nested.height}`);
+  assert.ok(near(nested.baseline, tall.baseline));
+  // and one with less than its paragraph's is inside the paragraph's
+  const less = await lineWith(
+    'line-height:20px',
+    'a <span style="line-height:10px">b</span> c',
+  );
+  assert.ok(near(less.height, 20), `${less.height}`);
 });
