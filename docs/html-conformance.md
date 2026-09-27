@@ -68,6 +68,7 @@ separately, and there are six.
 | 5      | first letters, tables, clipping, positioning       | 4,733 (80%) | 4,321 (73%) |
 | perf   | a paragraph's inline boxes in its one layout       | 4,739 (80%) | 4,325 (73%) |
 | 6      | fixed tables, negative z-index, absolute margins   | 4,960 (84%) | 4,526 (77%) |
+| 7      | margins through empty blocks, and their floats     | 4,982 (85%) | 4,545 (77%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -523,6 +524,35 @@ places a cleared float that follows an inline-block under that line, now
 line's content are placed before its lines rather than where the line has
 got to.
 
+### Round 7
+
+51. **A margin stopped at an empty block.** An empty block's own two
+    margins collapsed, and the margins either side of it with them, but the
+    walk that collapses a block's top margin with its first child's stopped
+    there. A `<div>` holding only an absolute image, before a paragraph,
+    left the paragraph a body's margin lower than a browser does, since
+    through the empty block the body's margin and the paragraph's are one
+    (8.3.1). The walk goes on past an empty child now, to its bottom margin
+    and the next child's top. It runs before anything is laid out, so it
+    decides "empty" from styles and children, and says no wherever layout
+    might say otherwise: an inline box with an edge, a percentage, text
+    that is kept. An empty inline box makes no line (9.4.2), so a block
+    holding one is as empty. 18 tests on X11 and 15 on macOS, the
+    `clear-applies-to` group's reference among them.
+52. **A new formatting context after such a block pushed its float down.**
+    A float in an empty block is placed where the margin collapsing through
+    the block ends, so the margin carries it; a box with a formatting
+    context of its own after it must not overlap it (9.5). Where the box
+    fits beside the float, both move with the margin; where it does not,
+    the box separates from the float as clearance would, and sits under it.
+    The walk tells the two apart from the widths the styles state, and
+    takes a box of `width: auto` to fit, since there it shrinks to the room
+    it has. 4 tests on X11 and 3 on macOS, the `new-fc-*` ones.
+
+Neither round-7 fix lost a test. The walk's answer was checked against
+layout's over both suites, with a throw wherever layout found a block the
+walk had called empty holding something; none did.
+
 ## What `<Html>` supports
 
 From the pass rates of the tests that use each feature, at the fixes above,
@@ -532,7 +562,7 @@ checked against the code.
 
 | feature                                            | tests | pass    | verdict                                                                                                                                                                                     |
 | -------------------------------------------------- | ----- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| block flow, margin collapsing                      | 694   | 83%     | **supported**, empty blocks collapsing through included; clearance remains                                                                                                                  |
+| block flow, margin collapsing                      | 694   | 83%     | **supported**, through empty blocks and into a parent's; a set of margins of both signs collapses two at a time                                                                             |
 | margins, padding, borders                          | 682   | 95%     | **supported**, inline boxes and collapsed table borders included; the `double`/`groove` families are approximations                                                                         |
 | floats and `clear`                                 | 311   | 46–67%  | **supported**, with gaps: a float inside a paragraph is placed at the paragraph's top, not its line's                                                                                       |
 | relative and absolute positioning                  | 513   | 84%     | **supported**; an absolute box inside a line takes the line's start for its static position                                                                                                 |
@@ -680,3 +710,9 @@ directories and caniemail's feature list:
    X11 rounds both to the same pixel and passed; at 2x they are two device
    pixels apart. Rerun both backends after a fix to either, and read what
    got worse.
+6. **Check a prediction against what it predicts.** Placing a block before
+   its children are laid out means guessing whether an empty child is
+   empty, and a wrong yes moves everything after it. A throw where layout
+   disagrees with the guess, run over both suites before the throw was
+   taken out, found the one case the guess got wrong: an empty `<span>`,
+   which the guess called no line and layout's own check called content.
