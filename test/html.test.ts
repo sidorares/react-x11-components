@@ -4537,3 +4537,66 @@ test('the palette in force answers prefers-color-scheme, and a switch re-cascade
     assert.strictEqual(colorOf(), '#00ff00', 'the dark branch under dark'),
   );
 });
+
+// --- What a replaced box has of a size -------------------------------------
+
+/** Render with each image URL answered from `images`, as bytes. */
+async function renderWithBytes(
+  source: string,
+  images: Record<string, Uint8Array>,
+  width = 400,
+) {
+  const result = await renderX11(
+    h(
+      'box',
+      { style: { width, flexDirection: 'column' } },
+      h(Html, {
+        source,
+        partial: false,
+        'data-testname': 'doc',
+        onResource: (r: { url: string; kind: string }) =>
+          r.kind === 'image' && images[r.url]
+            ? { kind: 'image' as const, bytes: images[r.url] }
+            : null,
+      }),
+    ),
+    FONTS
+      ? { width: width + 40, height: 400, fonts: FONTS }
+      : { backend: 'mock' as const },
+  );
+  return { result, el: view(screen.getByTestName('doc') as DrawnNode) };
+}
+
+test('a limit on one axis of an image carries to the other through its ratio (CSS 2.1 10.4)', async () => {
+  // the 10 by 10 red square, in a column 5px wide
+  const { el } = await renderWithBytes(
+    '<style>body{margin:0}img{display:block}</style>' +
+      '<div style="width:5px">' +
+      '<img id="a" src="r.png" style="max-width:100%">' +
+      // a width set, as a mail template sets it, and a limit under it
+      '<img id="b" src="r.png" width="10" style="max-width:100%">' +
+      '</div>' +
+      '<img id="c" src="r.png" style="min-width:20px">' +
+      '<img id="d" src="r.png" style="height:30px;max-width:15px">',
+    { 'r.png': RED_PNG },
+  );
+  const size = (id: string): [number, number] => {
+    const box = boxOf(el, id);
+    return [box.width, box.height];
+  };
+  assert.deepStrictEqual(size('a'), [5, 5], 'max-width: 100%, both auto');
+  assert.deepStrictEqual(size('b'), [5, 5], 'width set, height from it');
+  assert.deepStrictEqual(size('c'), [20, 20], 'min-width, both auto');
+  // a height set is kept: only the width follows the limit
+  assert.deepStrictEqual(size('d'), [15, 30], 'height set');
+});
+
+test('an hr with no width set is as wide as its line', async () => {
+  const { node } = await render(
+    '<style>body{margin:0}</style><hr id="a"><hr id="b" style="width:50%">',
+    400,
+  );
+  const el = view(node);
+  assert.strictEqual(boxOf(el, 'a').width, 400);
+  assert.strictEqual(boxOf(el, 'b').width, 200);
+});

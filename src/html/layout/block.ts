@@ -14,7 +14,7 @@ import { AUTO, isPct, resolve, resolveOrNull } from '../css/values.js';
 import type { Len } from '../css/values.js';
 import type { BorderStyle } from '../css/style.js';
 import { Box } from './boxes.js';
-import type { BoxTree, LineBox, Marker } from './boxes.js';
+import type { BoxTree, Intrinsic, LineBox, Marker } from './boxes.js';
 import { FloatContext } from './floats.js';
 import { layoutInline, lineHeightMultiplier, strutOf } from './inline.js';
 import type { FontsLike } from './inline.js';
@@ -1094,49 +1094,138 @@ function intrinsicWidth(box: Box): number {
   return widest;
 }
 
-/** A replaced box's size: the style wins, then the attributes, then the
- *  intrinsic size, and an image keeps its aspect ratio when only one axis is
- *  given. Nothing else has one (CSS 2.1 10.3.2): a frame's 300 by 150 and a
- *  control's size are defaults, not proportions, so the axis the style does
- *  not set keeps its own — a text field `width: 100%` stretched to twice its
- *  height, and a button with a width set a square taller than its text. */
+/**
+ * A replaced box's size, from its style and what it has of an intrinsic
+ * width, height and ratio (CSS 2.1 10.3.2 and 10.6.2), within its minimum
+ * and maximum (10.4, 10.7).
+ *
+ * An image has all three, a frame and a control their default size and no
+ * ratio — so the axis the style does not set keeps its own, and a text field
+ * `width: 100%` is not stretched to twice its height. An SVG may have any of
+ * them: a height and nothing else is 300 pixels wide, a ratio and nothing
+ * else fills its containing block, and nothing at all is 300 by 150 — the
+ * default object size, which the builder leaves in `Intrinsic` for an axis
+ * its `missing` names.
+ *
+ * A limit applied to one axis carries to the other through the ratio: an
+ * image `max-width: 100%` narrower than itself keeps its proportions, where
+ * clamping each axis alone squashed it — the `<img width="600">` of every
+ * mail template, in a narrow column.
+ */
 function sizeReplaced(box: Box, containingWidth: number): void {
   const style = box.style;
-  const intrinsicW = box.intrinsicWidth || 0;
-  const intrinsicH = box.intrinsicHeight || 0;
-  const ratio =
-    box.replaced === 'image' && intrinsicW > 0 && intrinsicH > 0
-      ? intrinsicH / intrinsicW
-      : 0;
+  const base = box.percentHeightBase;
+  // everything below is the content box's; a `border-box` length is not
+  const hx = style.boxSizing === 'border-box' ? box.horizontalExtra : 0;
+  const vx = style.boxSizing === 'border-box' ? box.verticalExtra : 0;
+  const across = (len: Len): number | null => {
+    const v = resolveOrNull(len, containingWidth);
+    return v === null ? null : Math.max(0, v - hx);
+  };
+  const down = (len: Len): number | null => {
+    const v = resolveOrNull(len, base);
+    return v === null ? null : Math.max(0, v - vx);
+  };
+  const width = across(style.width);
+  const height = down(style.height);
+  const minW = across(style.minWidth) ?? 0;
+  const minH = down(style.minHeight) ?? 0;
+  // a maximum below the minimum is the minimum (10.4)
+  const maxW = Math.max(
+    minW,
+    style.maxWidth === 'none' ? Infinity : (across(style.maxWidth) ?? Infinity),
+  );
+  const maxH = Math.max(
+    minH,
+    style.maxHeight === 'none' ? Infinity : (down(style.maxHeight) ?? Infinity),
+  );
+  const own = box.intrinsic ?? NO_INTRINSIC;
+  const iw = own.missing & 1 ? null : own.width;
+  const ih = own.missing & 2 ? null : own.height;
+  const ratio = own.ratio;
+  // the width a block would have here: what a ratio with no size fills, and
+  // an `hr`, whose whole appearance is its border across the line
+  const room = (): number => {
+    const w =
+      containingWidth - box.marginLeft - box.marginRight - box.horizontalExtra;
+    return Number.isFinite(w) ? Math.max(0, w) : 0;
+  };
 
-  let width = resolveOrNull(style.width, containingWidth);
-  let height = resolveOrNull(style.height, box.percentHeightBase);
-  if (width === null && height === null) {
-    width = intrinsicW;
-    height = intrinsicH;
-  } else if (width === null) {
-    width = ratio ? (height as number) / ratio : intrinsicW;
-  } else if (height === null) {
-    height = ratio ? width * ratio : intrinsicH;
+  let w: number;
+  let h: number;
+  if (width === null && height === null && ratio > 0) {
+    // both auto, with a ratio: the size it asks for, then the table in 10.4,
+    // which moves both axes together
+    if (iw !== null) {
+      w = iw;
+      h = ih ?? iw / ratio;
+    } else if (ih !== null) {
+      h = ih;
+      w = ih * ratio;
+    } else {
+      // a ratio and no size: CSS 2.1 leaves it undefined and suggests the
+      // width a block would have, which is what browsers do — or, where the
+      // containing block waits on this box, the default object size
+      w = Number.isFinite(containingWidth) ? room() : own.width;
+      h = w / ratio;
+    }
+    [w, h] = constrained(w, h, minW, maxW, minH, maxH);
+  } else {
+    // one axis set, or no ratio: the width, clamped, and then the height
+    // from the width that was used (10.3.2's "the rules above are applied
+    // again" for a limit)
+    const usedHeight = height === null ? null : clamp(height, minH, maxH);
+    if (width !== null) w = width;
+    else if (usedHeight !== null && ratio > 0) w = usedHeight * ratio;
+    else if (box.replaced === 'hr') w = room();
+    else w = own.width;
+    w = clamp(w, minW, maxW);
+    if (usedHeight !== null) h = usedHeight;
+    else if (ratio > 0) h = clamp(w / ratio, minH, maxH);
+    else h = clamp(own.height, minH, maxH);
   }
+  box.width = w + box.horizontalExtra;
+  box.height = h + box.verticalExtra;
+}
 
-  const contentW = Math.max(0, width ?? 0);
-  const contentH = Math.max(0, height ?? 0);
-  const borderBoxW =
-    style.boxSizing === 'border-box'
-      ? Math.max(contentW, box.horizontalExtra)
-      : contentW + box.horizontalExtra;
-  const borderBoxH =
-    style.boxSizing === 'border-box'
-      ? Math.max(contentH, box.verticalExtra)
-      : contentH + box.verticalExtra;
-  box.width = clampWidth(box, borderBoxW, containingWidth);
-  box.height = clampHeight(box, borderBoxH);
-  // `hr` has no intrinsic size and its whole appearance is its border, so a
-  // zero content height is the right answer rather than a missing one.
-  if (box.replaced === 'hr' && box.style.height === AUTO) {
-    box.height = box.verticalExtra;
+/** What a replaced box with nothing to say about its size has: `hr`. */
+const NO_INTRINSIC: Intrinsic = { width: 0, height: 0, missing: 0, ratio: 0 };
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(value, max));
+}
+
+/**
+ * CSS 2.1 10.4's table, for a replaced box sized by its ratio alone: a
+ * limit on either axis is met by scaling both, and where the two axes' limits
+ * disagree, the one that asks for more change wins.
+ */
+function constrained(
+  w: number,
+  h: number,
+  minW: number,
+  maxW: number,
+  minH: number,
+  maxH: number,
+): [number, number] {
+  if (!(w > 0 && h > 0)) return [clamp(w, minW, maxW), clamp(h, minH, maxH)];
+  if (w > maxW && h > maxH) {
+    return maxW / w <= maxH / h
+      ? [maxW, Math.max(minH, (maxW * h) / w)]
+      : [Math.max(minW, (maxH * w) / h), maxH];
   }
+  if (w < minW && h < minH) {
+    return minW / w <= minH / h
+      ? [Math.min(maxW, (minH * w) / h), minH]
+      : [minW, Math.min(maxH, (minW * h) / w)];
+  }
+  if (w < minW && h > maxH) return [minW, maxH];
+  if (w > maxW && h < minH) return [maxW, minH];
+  if (w > maxW) return [maxW, Math.max((maxW * h) / w, minH)];
+  if (w < minW) return [minW, Math.min((minW * h) / w, maxH)];
+  if (h > maxH) return [Math.max((maxH * w) / h, minW), maxH];
+  if (h < minH) return [Math.min((minH * w) / h, maxW), minH];
+  return [w, h];
 }
 
 /**
