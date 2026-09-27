@@ -13,14 +13,13 @@
 // layout can resolve them against a new containing block on its own.
 //
 // Colours are the other half of that decision, from the other side: they are
-// kept as **strings**, never parsed into components — a functional one is
-// only checked to be readable (`readsAsColor`). ntk's context takes a CSS
-// colour for `fillStyle` and parses it behind its own cache, so parsing here
-// would be work done twice — and the only questions this renderer actually
-// asks about a colour are "is it `transparent`" and "is it `currentColor`",
-// both of which are string comparisons.
+// kept as **strings**, never parsed into components, since the only
+// questions this renderer asks about a colour are "is it `transparent`" and
+// "is it `currentColor`", both string comparisons. A named or hex colour
+// goes to the context as written. A functional one is read once, in
+// `color.ts`, and written back in the form every context reads the same.
 
-import * as ntk from 'react-x11/ntk';
+import { functionalColor } from './color.js';
 
 /** A length that layout may still have to resolve. */
 export type Len = number | Pct | 'auto';
@@ -28,6 +27,9 @@ export type Len = number | Pct | 'auto';
 /** A percentage of something layout knows and computed style does not. */
 export interface Pct {
   pct: number;
+  /** A length added to it: only a background position written from its
+   *  far edge, `right 10px`, has one, and only its placement reads it. */
+  px?: number;
 }
 
 export const AUTO = 'auto';
@@ -84,8 +86,16 @@ export interface UnitContext {
   ex?: () => number;
 }
 
-const LENGTH_RE =
-  /^([+-]?(?:\d+\.?\d*|\.\d+))(px|em|rem|pt|pc|in|cm|mm|ex|ch|vw|vh|vmin|vmax|q|%)?$/;
+/** A CSS number (CSS Syntax 3 4.3.12): a sign, digits with at most one
+ *  point and a digit after it, and an exponent — `1e1px` is ten pixels, and
+ *  `1.px` is no length. */
+const NUMBER_SRC = '[+-]?(?:\\d*\\.\\d+|\\d+)(?:e[+-]?\\d+)?';
+
+const LENGTH_RE = new RegExp(
+  `^(${NUMBER_SRC})(px|em|rem|pt|pc|in|cm|mm|ex|ch|vw|vh|vmin|vmax|q|%)?$`,
+);
+
+const NUMBER_RE = new RegExp(`^${NUMBER_SRC}$`, 'i');
 
 /**
  * Parse a length. Returns `null` for anything that is not one, which is how
@@ -160,19 +170,20 @@ function unitScale(unit: string, ctx: UnitContext): number {
 
 /** A plain number — `flex-grow`, `opacity`, `z-index`, `line-height`. */
 export function parseNumber(value: string): number | null {
-  const n = Number(value.trim());
+  // `Number()` alone reads `0x10`, `1.` and white space as numbers
+  const v = value.trim();
+  if (!NUMBER_RE.test(v)) return null;
+  const n = Number(v);
   return Number.isFinite(n) ? n : null;
 }
 
 /** `opacity: 50%` is as legal as `opacity: .5`. */
 export function parseAlpha(value: string): number | null {
   const v = value.trim();
-  if (v.endsWith('%')) {
-    const n = Number(v.slice(0, -1));
-    return Number.isFinite(n) ? Math.max(0, Math.min(1, n / 100)) : null;
-  }
-  const n = Number(v);
-  return Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : null;
+  const pct = v.endsWith('%');
+  const n = parseNumber(pct ? v.slice(0, -1) : v);
+  if (n === null) return null;
+  return Math.max(0, Math.min(1, pct ? n / 100 : n));
 }
 
 /**
@@ -277,33 +288,13 @@ export function parseColor(value: string): string | null {
   // three, four, six or eight digits: ntk's context throws from paint on
   // five or seven, and a typo'd `#ff000` took the application down
   if (v.startsWith('#')) return HEX_COLOR.test(v) ? v : null;
-  if (/^(?:rgb|rgba|hsl|hsla|color|lab|lch|oklab|oklch)\(/i.test(v)) {
-    // The end of a style sheet closes whatever is still open (CSS 2.1 4.2):
-    // `rgb(0, 128, 0` as a sheet's last words is green.
-    const closed = v.endsWith(')') ? v : `${v})`;
-    return readsAsColor(closed) ? closed : null;
+  if (/^(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\(/i.test(v)) {
+    return functionalColor(v);
   }
   return NAMED_COLORS.has(lower) ? lower : null;
 }
 
 const HEX_COLOR = /^#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
-
-const cssColorStraight = (
-  ntk as unknown as { cssColorStraight?: (value: string) => unknown }
-).cssColorStraight;
-
-/**
- * Whether ntk can draw a functional colour. Checked here, once per rule,
- * because ntk's X11 context throws on a colour it cannot read — from inside
- * paint, so a malformed `rgb()` in a stylesheet took the application down —
- * and an invalid value is a declaration CSS ignores anyway. The Cocoa
- * context draws black for one instead. `cssColorStraight` is on ntk's entry
- * point but not in react-x11/ntk's declarations, so it is probed; a
- * version without it keeps the old trust.
- */
-function readsAsColor(value: string): boolean {
-  return cssColorStraight ? cssColorStraight(value) != null : true;
-}
 
 /**
  * The CSS named colours. The list is here rather than reached through ntk's

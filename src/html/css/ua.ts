@@ -55,7 +55,9 @@ summary, dir, menu, center, marquee {
 head, link, meta, style, script, title, base, template, noscript, param,
 source, track, col, colgroup, datalist, area, map, rp { display: none; }
 
-body { margin: 8px; color: ${look.color}; font-family: ${look.fontFamily}; }
+/* the theme's colour and font are the root's (\`initialStyle\`), and the
+   body inherits them, from an author's \`html\` rule too */
+body { margin: 8px; }
 html { color: ${look.color}; }
 
 p { margin: 1em 0; }

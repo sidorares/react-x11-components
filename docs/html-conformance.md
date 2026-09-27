@@ -86,6 +86,7 @@ separately, and there are six.
 | 16     | url(), font-family, tables that clip               | 5,317 (90%) | 4,869 (83%) |
 | 17     | HTML's alignment and body attributes               | 5,322 (90%) | 4,874 (83%) |
 | 18     | `::first-line`, a pseudo-element's place           | 5,343 (91%) | 4,895 (83%) |
+| 19     | CSS Color 4, CSS syntax, the body's inheritance    | 5,366 (91%) | 4,918 (83%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -861,6 +862,66 @@ Round 17 lost none.
 
 Round 18 lost none.
 
+### Round 19
+
+This round also ran WPT's `css/css-color` reftests, the first directory
+outside CSS 2.1 this runner has measured, since CSS Color 4 is the CSS3
+documents are written in: 79 of its 308 passed on X11 before the round and
+223 after it (220 on macOS, from 74).
+
+88. **A hex colour of five or seven digits threw from paint.** ntk's X11
+    context throws on one, from inside paint, so a mistyped `#ff000` took
+    the application down; the Cocoa context drew black. It is no colour
+    now, and was shipped alone as the crash it was (#175).
+89. **ntk read less of CSS's colour than pages write.** A functional colour
+    went to the context as written, and ntk reads the comma forms of
+    `rgb()` and `hsl()` and nothing else — reading `rgb()`'s percentages as
+    numbers to 255, so `rgb(0%, 50%, 0%)` was nearly black. Tailwind 3
+    writes the space form, `rgb(59 130 246 / 1)`, and Tailwind 4's palette
+    is `oklch()`. CSS Color 4's functions are read in this package now,
+    with its conversions, and handed on as `#rrggbb` or `rgba()`. 3 tests
+    here, and most of those `css-color` gained.
+90. **A comment joined the tokens either side of it** in a declaration:
+    `1/**/0px` was ten pixels, `-/**/10px` a negative margin. It is a space
+    there and in an at-rule's prelude, and still nothing in a selector,
+    where `.a/**/.b` is one compound. And a number was JavaScript's:
+    `1e1px` was no length and `1.px` one. 4 tests.
+91. **An invalid `background` reset the background.** The shorthand
+    skipped what it did not know, so `background: "red"` cleared the
+    colour it should have left alone. An unknown token drops the
+    declaration now, and what CSS3 adds to the shorthand is read so that a
+    declaration a browser keeps is kept: `/ cover`, `space` and `round`, a
+    gradient (drawn as nothing, over the colour), and `right 10px center`,
+    measured in from the far edge. 3 tests.
+92. **Selector escapes and white space.** `.c\6c ass` is the class
+    `class`, a hex escape taking the space after it; the rule index read
+    that space as a combinator, and so does css-what 8 when the digits are
+    upper case, so escapes reach it in lower case. The index also took only
+    a space for the descendant combinator, not a tab, newline or form feed;
+    and a string's escaped newline continues its line. 4 tests.
+93. **The body's colour and font were the theme's, whatever `html` said.**
+    The user-agent sheet set them on `body` as well as on the root, so
+    `html { color: green }` stopped there, and the suite colours a good
+    many of its tests that way. A fragment's body inherits from an implied
+    `<html>` that author rules reach. And a `<body>` with no `<html>` around
+    it, which is how a lot of mail starts, did not hand its background to
+    the canvas. 9 tests.
+
+Round 19 lost none of CSS 2.1's. `css-color` lost two tests that had
+passed by accident: each reference is now drawn right, and each test uses
+what is not built, `color-mix()` and a container query.
+
+Three of the syntax tests still failing test CSS 2.1's error recovery where
+CSS Syntax 3, which browsers follow, has changed it: `uri-013`,
+`declarations-009` and `malformed-decl-block-001`. And one more for the
+upstream list:
+
+- **ntk draws a glyph a pixel apart at the start of a run.** Its glyph
+  cache is at whole pixels, and a run's origin is where the fraction is
+  kept, so a cell starting at a fractional x draws its first glyph
+  differently from the same glyph mid-line. 9 `color-applies-to` tests on
+  X11, which CoreText, placing glyphs exactly, passes.
+
 ## What `<Html>` supports
 
 From the pass rates of the tests that use each feature, at the fixes above,
@@ -974,10 +1035,11 @@ directories and caniemail's feature list:
    borders and margins in round 3, and the Cocoa line-box difference turned
    out to be CoreText's placement and its font smoothing.
 5. **The CSS3 that documents use**: `background-size`, `box-shadow`,
-   gradients, `calc()`, custom properties (`var()`), CSS Color 4 — which
-   needs ntk's colour parser to read `oklch()` and the space-separated
-   `rgb()`; Tailwind's output is written in them — and `@font-face` through
-   `onResource`.
+   gradients, `calc()`, custom properties (`var()`), CSS Color 4 —
+   Tailwind's output is written in them — and `@font-face` through
+   `onResource`. CSS Color 4's functions were done in round 19, read in
+   this package rather than by ntk's colour parser; `color-mix()` and
+   relative colours remain.
 6. **Stacking and clipping**: stacking contexts across `z-index`, `clip`,
    the static position of an absolute box. Percentage heights were done in
    round 4; overflow clipping, `clip` and the static position in a block in

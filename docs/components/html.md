@@ -266,6 +266,15 @@ down to it. An element on the line with a colour of its own, a link, keeps
 it. The line's font properties, spacing and `vertical-align` are not
 applied: each would change where the line ends.
 
+**Colours:** the named colours, hex with three, four, six or eight
+digits, and CSS Color 4's functions: `rgb()` and `hsl()` in either the comma
+or the space form, `hwb()`, `lab()`, `lch()`, `oklab()`, `oklch()`, and
+`color()` in its predefined spaces. They are read here and handed to the
+drawing context as `#rrggbb` or `rgba()`, which both backends read alike,
+and one outside sRGB is clipped into it. `color-mix()`, relative colours,
+`light-dark()` and the system colours are not read, and a declaration
+using one is dropped, as a browser that did not know them would drop it.
+
 **Selectors:** everything [css-select] supports — combinators, attribute
 operators, `:nth-child(an+b)`, `:not()` — plus `:hover`, which is answered
 from this renderer's own pointer state. Escapes are read wherever they stand,
@@ -344,9 +353,12 @@ the ability to show them.
 
 **A fragment gets an implied body.** `<p>hi</p>` has no `<body>` element, so
 the root box takes the style a `<body>` would have had: the user-agent
-margin, the font, and any author `body { … }` rule. Without it the same
+margin, the font, and any author `body { … }` rule, inheriting from an
+implied `<html>` that author `html { … }` rules reach. Without it the same
 markup renders differently inside and outside `<html><body>`, which reads as
-a bug rather than as a missing element.
+a bug rather than as a missing element. A `<body>` with no `<html>` around
+it, which is how a lot of mail starts, is still the body: its background
+covers the whole canvas.
 
 **The user-agent stylesheet is themed.** `color`, the link colour and every
 rule and border in it come from the react-x11 palette, so an unstyled

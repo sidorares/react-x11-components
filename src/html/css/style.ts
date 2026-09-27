@@ -800,15 +800,9 @@ export function applyDeclaration(
       return;
     }
     case 'background-repeat': {
-      const v = value.toLowerCase().trim();
-      if (
-        v === 'repeat' ||
-        v === 'repeat-x' ||
-        v === 'repeat-y' ||
-        v === 'no-repeat'
-      ) {
-        style.backgroundRepeat = v;
-      }
+      const words = splitValue(value.toLowerCase());
+      const repeat = words.length <= 2 ? readRepeat(words) : null;
+      if (repeat) style.backgroundRepeat = repeat;
       return;
     }
     case 'background-attachment': {
@@ -1260,18 +1254,20 @@ const VERTICAL: Record<string, number> = { top: 0, center: 50, bottom: 100 };
  * says which axis it is on, so one value alone is centred on the other —
  * `bottom` is the bottom, midway across — and two keywords come in either
  * order; with a length or a percentage among two, the first is across and
- * the second down (CSS 2.1 14.2.1).
+ * the second down (CSS 2.1 14.2.1). Three or four are CSS3's edge form:
+ * `right 10px center` is ten pixels in from the right, midway down.
  */
 function positionPair(parts: string[], ctx: UnitContext): [Len, Len] | null {
-  if (parts.length === 0 || parts.length > 2) return null;
+  if (parts.length === 0 || parts.length > 4) return null;
   const words = parts.map((p) => p.toLowerCase());
+  if (parts.length > 2) return edgePosition(words, ctx);
   const keyword = (w: string) => w in HORIZONTAL || w in VERTICAL;
   const pct = (n: number): Len => (n === 0 ? 0 : { pct: n });
   if (parts.length === 1) {
     const [w] = words;
     if (w in VERTICAL && !(w in HORIZONTAL)) return [pct(50), pct(VERTICAL[w])];
     if (keyword(w)) return [pct(HORIZONTAL[w]), pct(50)];
-    const x = backgroundPosition(parts[0], ctx);
+    const x = positionLength(w, ctx);
     return x === null ? null : [x, pct(50)];
   }
   const [a, b] = words;
@@ -1285,23 +1281,76 @@ function positionPair(parts: string[], ctx: UnitContext): [Len, Len] | null {
   }
   if (a in VERTICAL && !(a in HORIZONTAL)) return null;
   if (b in HORIZONTAL && !(b in VERTICAL)) return null;
-  const x = backgroundPosition(parts[0], ctx);
-  const y = backgroundPosition(parts[1], ctx);
+  const x = keyword(a) ? pct(HORIZONTAL[a]) : positionLength(a, ctx);
+  const y = keyword(b) ? pct(VERTICAL[b]) : positionLength(b, ctx);
   return x === null || y === null ? null : [x, y];
 }
 
-function backgroundPosition(
-  value: string | undefined,
-  ctx: UnitContext,
-): Len | null {
-  const v = (value ?? '').trim().toLowerCase();
-  if (!v) return null;
-  if (v === 'left' || v === 'top') return 0;
-  if (v === 'center') return { pct: 50 };
-  if (v === 'right' || v === 'bottom') return { pct: 100 };
-  const len = parseLength(v, ctx);
-  return len === AUTO ? 0 : len;
+/** A position's length or percentage — `auto` is none. */
+function positionLength(word: string, ctx: UnitContext): Len | null {
+  const len = parseLength(word, ctx);
+  return len === AUTO ? null : len;
 }
+
+/** The edge form: a keyword for each axis, each but `center` with an
+ *  offset in from its edge or not. */
+function edgePosition(words: string[], ctx: UnitContext): [Len, Len] | null {
+  const keyword = (w: string | undefined) =>
+    w !== undefined && (w in HORIZONTAL || w in VERTICAL);
+  const groups: { word: string; offset: Len | null }[] = [];
+  for (let i = 0; i < words.length; i += 1) {
+    const word = words[i];
+    if (!keyword(word)) return null;
+    let offset: Len | null = null;
+    if (i + 1 < words.length && !keyword(words[i + 1])) {
+      if (word === 'center') return null;
+      offset = positionLength(words[i + 1], ctx);
+      if (offset === null) return null;
+      i += 1;
+    }
+    groups.push({ word, offset });
+  }
+  if (groups.length !== 2) return null;
+  let [h, v] = groups;
+  if (
+    (h.word in VERTICAL && !(h.word in HORIZONTAL)) ||
+    (v.word in HORIZONTAL && !(v.word in VERTICAL))
+  ) {
+    [h, v] = [v, h];
+  }
+  if (!(h.word in HORIZONTAL) || !(v.word in VERTICAL)) return null;
+  return [
+    fromEdge(HORIZONTAL[h.word], h.offset),
+    fromEdge(VERTICAL[v.word], v.offset),
+  ];
+}
+
+function fromEdge(at: number, offset: Len | null): Len {
+  if (offset === null) return at === 0 ? 0 : { pct: at };
+  if (at === 0) return offset;
+  // in from the right or the bottom
+  return typeof offset === 'number'
+    ? { pct: 100, px: -offset }
+    : { pct: 100 - (offset as { pct: number }).pct };
+}
+
+/** `background-repeat`: one keyword, or one for each axis (CSS3). `space`
+ *  and `round` tile as `repeat` does. */
+function readRepeat(words: string[]): ComputedStyle['backgroundRepeat'] | null {
+  if (words.length === 1) {
+    const [w] = words;
+    if (w === 'repeat-x' || w === 'repeat-y') return w;
+    if (!REPEATS.has(w)) return null;
+    return w === 'no-repeat' ? 'no-repeat' : 'repeat';
+  }
+  if (words.length !== 2 || !REPEATS.has(words[0]) || !REPEATS.has(words[1]))
+    return null;
+  const x = words[0] !== 'no-repeat';
+  const y = words[1] !== 'no-repeat';
+  return x && y ? 'repeat' : x ? 'repeat-x' : y ? 'repeat-y' : 'no-repeat';
+}
+
+const REPEATS = new Set(['repeat', 'space', 'round', 'no-repeat']);
 
 function applyBorderShorthand(
   style: ComputedStyle,
@@ -1372,61 +1421,152 @@ function applyBackgroundShorthand(
   ctx: UnitContext,
 ): void {
   // Only the last layer paints against the box, so a multi-layer background
-  // reduces to its last comma group rather than being dropped.
-  const layer = splitCommas(value).pop() ?? '';
-  // read whole before anything is set: a bad url makes the declaration
-  // invalid, and it is dropped rather than half applied
-  let color: string | null = null;
-  let image: string | null = null;
-  let repeat: ComputedStyle['backgroundRepeat'] = 'repeat';
-  let size: ComputedStyle['backgroundSize'] = 'auto';
-  let attachment: ComputedStyle['backgroundAttachment'] = 'scroll';
-  const positions: string[] = [];
-  for (const part of splitValue(layer)) {
+  // reduces to its last comma group — but each has to be a layer, and only
+  // the last may have a colour, or the declaration is none
+  const layers = splitCommas(value);
+  let layer: BackgroundLayer | null = null;
+  for (let k = 0; k < layers.length; k += 1) {
+    layer = readBackgroundLayer(layers[k], ctx, k === layers.length - 1);
+    if (!layer) return;
+  }
+  if (!layer) return;
+  style.backgroundColor = layer.color;
+  style.backgroundImage = layer.image;
+  style.backgroundRepeat = layer.repeat;
+  style.backgroundSize = layer.size;
+  style.backgroundAttachment = layer.attachment;
+  const [x, y] = layer.position ?? [0, 0];
+  style.backgroundPositionX = x;
+  style.backgroundPositionY = y;
+}
+
+interface BackgroundLayer {
+  color: string | null;
+  image: string | null;
+  repeat: ComputedStyle['backgroundRepeat'];
+  size: ComputedStyle['backgroundSize'];
+  attachment: ComputedStyle['backgroundAttachment'];
+  position: [Len, Len] | null;
+}
+
+/**
+ * One layer of the `background` shorthand, read whole before anything is
+ * set: each part at most once, and a token that is none of them — a
+ * string, `red\;`, a second colour — makes the declaration invalid, and it
+ * is dropped rather than resetting the background it meant to replace
+ * (CSS 2.1 4.2). What CSS3 adds is read too, so that a declaration a
+ * browser keeps is kept: `/ cover` after the position, `space` and `round`,
+ * a gradient — drawn as nothing, over the layer's colour.
+ */
+function readBackgroundLayer(
+  text: string,
+  ctx: UnitContext,
+  last: boolean,
+): BackgroundLayer | null {
+  const parts = splitValue(text).flatMap(splitSlash);
+  const layer: BackgroundLayer = {
+    color: null,
+    image: null,
+    repeat: 'repeat',
+    size: 'auto',
+    attachment: 'scroll',
+    position: null,
+  };
+  let seen = 0;
+  const once = (bit: number): boolean => {
+    if (seen & bit) return false;
+    seen |= bit;
+    return true;
+  };
+  let boxes = 0;
+  for (let i = 0; i < parts.length;) {
+    const part = parts[i];
     const v = part.toLowerCase();
-    if (v.startsWith('url(')) {
-      const url = parseUrl(part);
-      if (url === undefined) return;
-      image = url;
-      continue;
-    }
-    if (
-      v === 'repeat' ||
-      v === 'repeat-x' ||
-      v === 'repeat-y' ||
-      v === 'no-repeat'
+    if (v === 'none' || v.startsWith('url(') || IMAGE_FUNCTION.test(v)) {
+      if (!once(1)) return null;
+      if (v.startsWith('url(')) {
+        const url = parseUrl(part);
+        if (url === undefined) return null;
+        layer.image = url;
+      }
+      i += 1;
+    } else if (v === 'repeat-x' || v === 'repeat-y' || REPEATS.has(v)) {
+      if (!once(2)) return null;
+      const pair = REPEATS.has(v) && REPEATS.has(parts[i + 1]?.toLowerCase());
+      const repeat = readRepeat(pair ? [v, parts[i + 1].toLowerCase()] : [v]);
+      if (!repeat) return null;
+      layer.repeat = repeat;
+      i += pair ? 2 : 1;
+    } else if (v === 'scroll' || v === 'fixed' || v === 'local') {
+      if (!once(4)) return null;
+      layer.attachment = v;
+      i += 1;
+    } else if (
+      v === 'border-box' ||
+      v === 'padding-box' ||
+      v === 'content-box'
     ) {
-      repeat = v;
-      continue;
+      if ((boxes += 1) > 2) return null;
+      i += 1;
+    } else if (isPositionPart(v, ctx)) {
+      if (!once(8)) return null;
+      let end = i;
+      while (
+        end < parts.length &&
+        isPositionPart(parts[end].toLowerCase(), ctx)
+      ) {
+        end += 1;
+      }
+      layer.position = positionPair(parts.slice(i, end), ctx);
+      if (!layer.position) return null;
+      i = end;
+      if (parts[i] !== '/') continue;
+      // `/ <size>`: `cover`, `contain`, or one or two lengths, which have
+      // nothing to be stored as and are read as `auto`
+      const first = parts[i + 1]?.toLowerCase();
+      if (first === 'cover' || first === 'contain') {
+        layer.size = first;
+        i += 2;
+      } else if (first !== undefined && isSizePart(first, ctx)) {
+        i += 2;
+        if (i < parts.length && isSizePart(parts[i].toLowerCase(), ctx)) {
+          i += 1;
+        }
+      } else {
+        return null;
+      }
+    } else {
+      const color = parseColor(part);
+      if (color === null || !last || !once(16)) return null;
+      layer.color = color;
+      i += 1;
     }
-    if (v === 'cover' || v === 'contain') {
-      size = v;
-      continue;
-    }
-    if (v === 'fixed' || v === 'scroll' || v === 'local') {
-      attachment = v;
-      continue;
-    }
-    if (v === 'border-box' || v === 'padding-box' || v === 'content-box') {
-      continue;
-    }
-    const c = parseColor(part);
-    if (c !== null) {
-      color = c;
-      continue;
-    }
-    if (backgroundPosition(part, ctx) !== null) positions.push(part);
   }
-  style.backgroundColor = color;
-  style.backgroundImage = image;
-  style.backgroundRepeat = repeat;
-  style.backgroundSize = size;
-  style.backgroundAttachment = attachment;
-  const pair = positions.length ? positionPair(positions, ctx) : null;
-  if (pair) {
-    style.backgroundPositionX = pair[0];
-    style.backgroundPositionY = pair[1];
-  }
+  return layer;
+}
+
+/** The images CSS3 has beyond `url()`, which a layer may name and this
+ *  draws as nothing. */
+const IMAGE_FUNCTION =
+  /^(?:-(?:webkit|moz|o|ms)-)?(?:(?:repeating-)?(?:linear|radial|conic)-gradient|gradient|image-set|cross-fade|element|paint)\(/;
+
+function isPositionPart(word: string, ctx: UnitContext): boolean {
+  return (
+    word in HORIZONTAL || word in VERTICAL || positionLength(word, ctx) !== null
+  );
+}
+
+function isSizePart(word: string, ctx: UnitContext): boolean {
+  if (word === 'auto') return true;
+  const len = positionLength(word, ctx);
+  if (len === null || len === AUTO) return false;
+  return typeof len === 'number' ? len >= 0 : len.pct >= 0;
+}
+
+/** `center/cover` is three tokens, as `center / cover` is. */
+function splitSlash(part: string): string[] {
+  if (!part.includes('/') || part.includes('(')) return [part];
+  return part.split(/(\/)/).filter(Boolean);
 }
 
 function applyFontShorthand(

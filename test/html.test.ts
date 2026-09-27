@@ -39,6 +39,7 @@ import {
 import {
   parseColor,
   parseLength,
+  parseNumber,
   splitValue,
   isTransparent,
 } from '../src/html/css/values.js';
@@ -180,9 +181,63 @@ test('a colour ntk cannot read is dropped, and one left open at the end is close
   // throws on one it cannot parse — from inside paint, so `rgb(foo)` in a
   // stylesheet took the application down. CSS ignores an invalid value.
   assert.strictEqual(parseColor('rgb(foo)'), null);
-  assert.strictEqual(parseColor('rgb(0, 128, 0)'), 'rgb(0, 128, 0)');
+  assert.strictEqual(parseColor('rgb(0, 128, 0)'), '#008000');
   // the end of a style sheet closes what is open (CSS 2.1 4.2)
-  assert.strictEqual(parseColor('rgb(0, 128, 0'), 'rgb(0, 128, 0)');
+  assert.strictEqual(parseColor('rgb(0, 128, 0'), '#008000');
+});
+
+test('a functional colour is read as CSS Color 4 reads it, and handed on as ntk reads it', () => {
+  const cases: [string, string | null][] = [
+    // percentages are of 255: ntk read them as numbers, nearly black
+    ['rgb(0%, 50%, 0%)', '#008000'],
+    // the space-separated form, Tailwind 3's
+    ['rgb(59 130 246 / 0.5)', 'rgba(59, 130, 246, 0.5)'],
+    ['RGB(0 128 0 / 100%)', '#008000'],
+    ['rgba(0,128,0,.5)', 'rgba(0, 128, 0, 0.5)'],
+    // the legacy form takes one kind of channel and three or four of them
+    ['rgb(100%, 0, 0)', null],
+    ['rgb(255, 0)', null],
+    ['rgb(0, 0 0)', null],
+    ['rgb(1e2 0 0)', '#640000'],
+    ['hsl(120, 100%, 25%)', '#008000'],
+    ['hsl(120deg 100 25)', '#008000'],
+    ['hsl(120, 100, 25)', null],
+    ['hsl(0.5turn 100% 50%)', '#00ffff'],
+    ['hwb(120 0% 49.8039%)', '#008000'],
+    // Tailwind 4's palette, and the rest of Lab's family
+    ['oklch(51.975% 0.17686 142.495)', '#008000'],
+    ['oklab(51.975% -0.1403 0.10768)', '#008000'],
+    ['lab(46.2775% -47.5621 48.5837)', '#008000'],
+    ['lch(46.2775% 67.9892 134.3912)', '#008000'],
+    // a lightness at either end is white or black, whatever its chroma
+    ['lch(100% 110 60)', '#ffffff'],
+    ['oklch(0% 1.1 60 / 0.5)', 'rgba(0, 0, 0, 0.5)'],
+    ['oklch(100% 0.3 60)', '#ffffff'],
+    ['color(srgb 0 0.6 0)', '#009900'],
+    ['color(display-p3 0.6 0.6 0.6)', '#999999'],
+    ['color(nope 1 1 1)', null],
+    // `calc()` and `var()` are not read here, and the declaration is dropped
+    ['rgb(calc(1) 0 0)', null],
+  ];
+  for (const [value, want] of cases) {
+    assert.strictEqual(parseColor(value), want, value);
+  }
+  // each space's matrix takes its white to white
+  for (const space of [
+    'display-p3',
+    'display-p3-linear',
+    'a98-rgb',
+    'prophoto-rgb',
+    'rec2020',
+    'srgb-linear',
+  ]) {
+    assert.strictEqual(parseColor(`color(${space} 1 1 1)`), '#ffffff', space);
+  }
+  assert.strictEqual(
+    parseColor('color(xyz-d50 0.9642957 1 0.8251046)'),
+    '#ffffff',
+  );
+  assert.strictEqual(parseColor('color(xyz 0.9504559 1 1.0890578)'), '#ffffff');
 });
 
 test('@media width queries become conditions, and their breakpoints are collected', () => {
@@ -5119,5 +5174,147 @@ metric(
     assert.strictEqual(second.blue, 0);
     assert.ok(third.red > 0 && third.green === 0, 'nor the next paragraph');
     assert.strictEqual(third.blue, 0);
+  },
+);
+
+// --- CSS syntax: comments, numbers, escapes, white space --------------------
+
+test('a comment ends the token before it in a declaration, and not in a selector', () => {
+  // two values and no length, no negative length, and three channels
+  assert.deepStrictEqual(
+    parseDeclarations(
+      'height: 1/**/0px; margin: -/**/10px; color: rgb(0/**/128/**/0)',
+    ).map((d) => d.value),
+    ['1 0px', '- 10px', 'rgb(0 128 0)'],
+  );
+  const sheet = parseStylesheet(
+    '.a/**/.b { color: red } @media/**/all { p { margin: 1/**/0px } }',
+  );
+  assert.deepStrictEqual(
+    sheet.rules.map((r) => [r.selector, r.declarations[0].value]),
+    [
+      ['.a.b', 'red'],
+      ['p', '1 0px'],
+    ],
+  );
+});
+
+test("a number is CSS's: an exponent, a sign, and a digit after any point", () => {
+  const ctx = { em: 20, rem: 16, vw: 1000, vh: 500, scale: 1 };
+  assert.strictEqual(parseLength('1e1px', ctx), 10);
+  assert.strictEqual(parseLength('0.1e1em', ctx), 20);
+  assert.strictEqual(parseLength('+20px', ctx), 20);
+  assert.strictEqual(parseLength('1em', ctx), 20);
+  assert.strictEqual(parseLength('1.px', ctx), null);
+  assert.strictEqual(parseNumber('1e3'), 1000);
+  assert.strictEqual(parseNumber('0x10'), null);
+  assert.strictEqual(parseNumber('1.'), null);
+});
+
+metric(
+  'a hex escape takes the space after it, and a string its escaped newline',
+  async () => {
+    const { el } = await renderWithBytes(
+      '<style>p.c\\06C ass { color: #00ff00 }' +
+        '[title="a\\\n b"] { background: #0000ff }' +
+        // CSS's other white space is a descendant combinator too
+        'div\fp { font-weight: bold }</style>' +
+        '<div><p id="p" class="class" title="a b">x</p></div>',
+      {},
+    );
+    const style = (
+      boxOf(el, 'p') as unknown as { style: Record<string, unknown> }
+    ).style;
+    assert.strictEqual(style.color, '#00ff00');
+    assert.strictEqual(style.backgroundColor, '#0000ff');
+    assert.strictEqual(style.fontWeight, 700);
+  },
+);
+
+metric(
+  "an invalid background is dropped whole, and CSS3's forms are kept",
+  async () => {
+    const { el } = await renderWithBytes(
+      '<style>p { background: #00ff00 }' +
+        '#a { background: "red" } #b { background: red\\; }' +
+        '#c { background: red green } #d { background: red, url(b.png) }' +
+        '#e { background: url(a.png) no-repeat right 10px center / cover #fff }' +
+        '#f { background: #333 linear-gradient(to right, #fff, #000) }' +
+        '#g { background-position: 5px 5px; background: #fff }</style>' +
+        '<p id="a">a</p><p id="b">b</p><p id="c">c</p><p id="d">d</p>' +
+        '<p id="e">e</p><p id="f">f</p><p id="g">g</p>',
+      {},
+    );
+    const style = (id: string) =>
+      (boxOf(el, id) as unknown as { style: Record<string, unknown> }).style;
+    // each of these was a background reset to nothing
+    for (const id of ['a', 'b', 'c', 'd']) {
+      assert.strictEqual(style(id).backgroundColor, '#00ff00', id);
+    }
+    const e = style('e');
+    assert.strictEqual(e.backgroundColor, '#fff');
+    assert.strictEqual(e.backgroundImage, 'a.png');
+    assert.strictEqual(e.backgroundRepeat, 'no-repeat');
+    assert.strictEqual(e.backgroundSize, 'cover');
+    assert.deepStrictEqual(e.backgroundPositionX, { pct: 100, px: -10 });
+    assert.deepStrictEqual(e.backgroundPositionY, { pct: 50 });
+    // a gradient is drawn as nothing, over the colour beside it
+    assert.strictEqual(style('f').backgroundColor, '#333');
+    // and the shorthand resets what it does not name
+    assert.strictEqual(style('g').backgroundPositionX, 0);
+  },
+);
+
+metric(
+  'the body inherits its colour and font from the root, an html rule too',
+  async () => {
+    const doc = await renderWithBytes(
+      '<html><style>html { color: #00ff00; font-family: serif }</style>' +
+        '<body><p id="p">x</p></body></html>',
+      {},
+    );
+    const style = (el: HtmlViewNode) =>
+      (boxOf(el, 'p') as unknown as { style: Record<string, unknown> }).style;
+    assert.strictEqual(style(doc.el).color, '#00ff00');
+    assert.strictEqual(style(doc.el).fontFamily, 'serif');
+    cleanup();
+    // a fragment's body inherits from the html a browser would imply
+    const fragment = await renderWithBytes(
+      '<style>html { color: #00ff00 }</style><p id="p">x</p>',
+      {},
+    );
+    assert.strictEqual(style(fragment.el).color, '#00ff00');
+  },
+);
+
+metric('a body with no html tag paints the canvas', async () => {
+  const { result } = await renderWithBytes(
+    '<body style="background: #00ff00; margin: 20px"><p>x</p></body>',
+    {},
+  );
+  // outside the body's margin, where only the canvas is
+  const [r, g, b] = await pixelAt(result.ctx, 4, 4);
+  assert.ok(g > 200 && r < 60 && b < 60, `the canvas is green: ${r},${g},${b}`);
+});
+
+metric(
+  'a background position from the far edge is that far in from it',
+  async () => {
+    const { result } = await renderWithBytes(
+      '<style>body { margin: 0 }</style>' +
+        '<div style="width: 100px; height: 40px; ' +
+        'background: url(r.png) no-repeat right 20px top 5px"></div>',
+      { 'r.png': RED_PNG },
+    );
+    // the 10px image's right edge twenty pixels in from the box's
+    const red = async (x: number, y: number) => {
+      const [r, g, b] = await pixelAt(result.ctx, x, y);
+      return r > 200 && g < 60 && b < 60;
+    };
+    await waitFor(async () =>
+      assert.ok(await red(75, 10), 'in from the right'),
+    );
+    assert.ok(!(await red(95, 10)), 'not against the right edge');
+    assert.ok(!(await red(75, 2)), 'and five down');
   },
 );

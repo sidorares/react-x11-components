@@ -22,7 +22,7 @@ import type { Element } from 'domhandler';
 
 import { attr, tagOf } from '../dom.js';
 import { svgSizeHint } from '../svg.js';
-import { mediaMatches, readIdent, startsIdent } from './parse.js';
+import { escapeEnd, mediaMatches, readIdent, startsIdent } from './parse.js';
 import type { Declaration, StyleRule, Stylesheet } from './parse.js';
 import {
   applyDeclaration,
@@ -218,14 +218,23 @@ function rightmostKey(selector: string): {
       if (c === quote && selector[i - 1] !== '\\') quote = '';
       continue;
     }
-    // an escaped character is part of a name, whatever it is
-    if (c === '\\') i += 1;
+    // an escaped character is part of a name, whatever it is — and a hex
+    // escape takes the space after it: `.c\6c ass` is the class `class`
+    if (c === '\\') i = escapeEnd(selector, i) - 1;
     else if (c === '"' || c === "'") quote = c;
     else if (c === '(' || c === '[') depth += 1;
     else if (c === ')' || c === ']') depth = Math.max(0, depth - 1);
     else if (
       depth === 0 &&
-      (c === ' ' || c === '>' || c === '+' || c === '~')
+      (c === ' ' ||
+        c === '>' ||
+        c === '+' ||
+        c === '~' ||
+        // CSS's other white space: `div\fp` is a descendant too
+        c === '\t' ||
+        c === '\n' ||
+        c === '\r' ||
+        c === '\f')
     ) {
       start = i + 1;
     }
@@ -690,14 +699,22 @@ export class Cascade {
    * a `<body>` would have had: the UA sheet's margin and font, and any
    * author `body { … }` rule. Without it a fragment renders hard against the
    * left edge while the same markup inside `<html><body>` does not, which
-   * reads as a bug in the renderer rather than as a missing element.
+   * reads as a bug in the renderer rather than as a missing element. With
+   * no `<html>` either, the body inherits from an `<html>` that author
+   * `html { … }` rules have styled, as the one a browser implies would be.
    */
-  rootStyle(hasBody: boolean): ComputedStyle {
+  rootStyle(hasBody: boolean, hasHtml = true): ComputedStyle {
     const style = { ...this.initial };
     style.display = 'block';
     if (hasBody) return style;
     const synthetic = new DomElement('body', {}, []);
-    const bodyStyle = this.styleFor(synthetic, style, false);
+    let parent = style;
+    if (!hasHtml) {
+      const html = new DomElement('html', {}, [synthetic]);
+      synthetic.parent = html;
+      parent = this.styleFor(html, style, false);
+    }
+    const bodyStyle = this.styleFor(synthetic, parent, false);
     // Only the box the body would have drawn is taken, not its layout role:
     // the root is still the initial containing block.
     bodyStyle.display = 'block';
