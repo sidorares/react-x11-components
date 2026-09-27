@@ -25,6 +25,7 @@ import {
 } from './view-utils.js';
 import { delegateExtras, resolveModel } from './models.js';
 import { warn } from './globals.js';
+import { scaleOf } from '../internal/units.js';
 
 // --- positioners -----------------------------------------------------------
 
@@ -126,7 +127,11 @@ function FlickableView({ inst }: { inst: QmlInstance }): ReactElement {
   useEffect(() => {
     const node = hostNode(inst) as ScrollableNode | null;
     if (!node || typeof node.scrollTo !== 'function') return;
-    if (node.scrollX !== cx || node.scrollY !== cy)
+    // The node's offsets are device pixels; `contentX`/`contentY`,
+    // `scrollTo` and `onScroll`'s payload are logical. Compared raw, every
+    // scroll the pane made came back to it as a `scrollTo` to where it was.
+    const s = scaleOf(node);
+    if (node.scrollX / s !== cx || node.scrollY / s !== cy)
       node.scrollTo({ x: cx, y: cy });
   }, [inst, cx, cy]);
   return (

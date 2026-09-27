@@ -213,6 +213,12 @@ messages are pinned by tests.
 - **Layouts are the flex engine, with geometry reflected back.** The
   section above; the read-back is what keeps `item.x` an ordinary
   property other bindings consume, Qt's contract.
+- **Every length a document reads is a logical pixel**, at any display
+  scale — Qt's device-independent pixel. `mouse.x`, a layout's reflected
+  geometry, the implicit size of a `Text`, a `TextInput` or the root, and
+  `contentX`/`contentY` are the numbers the document would have written:
+  an item given `width: 70` reads 70 on a retina panel, where it covers
+  140 device pixels.
 - **A state is an override layer, not a mutation.** `PropertyChanges`
   pushes live bindings above the document's own; leaving the state pops
   them and the originals — still tracked underneath — are current

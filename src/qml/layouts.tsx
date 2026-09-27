@@ -35,23 +35,38 @@ import {
   cancelAfterLayout,
   type LayoutTick,
 } from '../internal/timers.js';
+import { scaleOf } from '../internal/units.js';
 
 function isRow(inst: QmlInstance): boolean {
   return inst.typeInfo.name === 'RowLayout';
 }
 
-/** Reflect yoga's answers into the managed children's geometry slots. */
+/**
+ * Reflect yoga's answers into the managed children's geometry slots.
+ *
+ * `abs` is device pixels and the slots are the logical ones the document is
+ * written in (react-x11's docs/scale.md), and this is not only read-back:
+ * an author `width:` is the item's size hint and the slot this writes, so a
+ * device number here came back as a hint twice the size and the row drew
+ * it that way. Divided once, after the subtraction: `(a - b) / s` rounds
+ * once where `a / s - b / s` rounds three times, and at a scale of 1.25
+ * half the positions would read like 78.39999999999999 rather than 78.4.
+ * And from `abs` rather than `getClientRects()`, which answers nothing for
+ * a box with no area: a 0×0 item in a row still has an `x`.
+ */
 function feedbackLayout(inst: QmlInstance): void {
   if (inst.destroyed) return;
-  const containerAbs = hostNode(inst)?.abs;
+  const container = hostNode(inst);
+  const containerAbs = container?.abs;
   if (!containerAbs) return;
+  const s = scaleOf(container);
   for (const child of inst.visualChildren()) {
     const abs = hostNode(child)?.abs;
     if (!abs) continue; // a custom view without captureNode: skip quietly
-    child.slots.get('x')?.reflect(abs.x - containerAbs.x);
-    child.slots.get('y')?.reflect(abs.y - containerAbs.y);
-    child.slots.get('width')?.reflect(abs.width);
-    child.slots.get('height')?.reflect(abs.height);
+    child.slots.get('x')?.reflect((abs.x - containerAbs.x) / s);
+    child.slots.get('y')?.reflect((abs.y - containerAbs.y) / s);
+    child.slots.get('width')?.reflect(abs.width / s);
+    child.slots.get('height')?.reflect(abs.height / s);
   }
 }
 

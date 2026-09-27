@@ -40,6 +40,7 @@ import { layoutTypes } from './layouts.js';
 import { modelTypes } from './models.js';
 import { stateTypes } from './states.js';
 import { cancel, schedule, warn } from './globals.js';
+import { scaleOf } from '../internal/units.js';
 
 // Qt namespace constants used from expressions (`Qt.LeftButton`,
 // `mouse.modifiers & Qt.ShiftModifier`, `Qt.AlignHCenter`).
@@ -120,8 +121,14 @@ function TextView({ inst }: { inst: QmlInstance }): ReactElement {
     if (!node?.app?.fonts || !node.resolvedTextStyle) return;
     try {
       const layout = node.app.fonts.layout(text, node.resolvedTextStyle());
-      inst.slots.get('implicitWidth')?.assign(Math.ceil(layout.width));
-      inst.slots.get('implicitHeight')?.assign(Math.ceil(layout.height));
+      // The resolved size is the device one — the cascade resolves a
+      // theme's size once, at the root, in device pixels — so at scale 2 a
+      // `font.pixelSize: 20` is laid out at 40 and measured in device
+      // pixels. Divided back into the logical ones an implicit size is read
+      // in, or every binding on it reads double.
+      const s = scaleOf(node);
+      inst.slots.get('implicitWidth')?.assign(Math.ceil(layout.width / s));
+      inst.slots.get('implicitHeight')?.assign(Math.ceil(layout.height / s));
     } catch {
       // No fonts loaded (headless without the fonts option): leave 0.
     }
