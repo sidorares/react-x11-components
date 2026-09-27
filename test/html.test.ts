@@ -4261,6 +4261,21 @@ test('prefers-color-scheme is a live condition, alone and beside a width', () =>
   assert.ok(mediaMatches([[{ scheme: 'light' }]], 400));
 });
 
+test('a medium other than the screen matches nothing, an @import included', () => {
+  // `print` and `speech`, and the media CSS 2.1 named that Media Queries
+  // retired: `braille`, `embossed`, `handheld`, `projection`, `tty`, `tv`.
+  // A term that is no name, `(color)`, is left as it was.
+  const sheet = parseStylesheet(
+    '@import url(a.css) tv; @import "b.css" screen, print; @import "c.css";' +
+      '@media braille { p { color: red } } @media (color) { p { color: blue } }',
+  );
+  assert.deepStrictEqual(sheet.imports, ['b.css', 'c.css']);
+  assert.deepStrictEqual(
+    sheet.rules.map((r) => r.media),
+    [[[{ staticPass: false }]], [[{ staticPass: true }]]],
+  );
+});
+
 test('the palette in force answers prefers-color-scheme, and a switch re-cascades', async () => {
   const source =
     '<style>p{margin:0;color:#ff0000}' +

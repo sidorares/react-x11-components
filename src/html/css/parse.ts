@@ -119,7 +119,7 @@ export function parseStylesheet(text: string, startOrder = 0): Stylesheet {
         if (name === 'import') {
           if (importsAllowed && media === null) {
             const url = importUrl(at.prelude);
-            if (url) sheet.imports.push(url);
+            if (url && importApplies(at.prelude)) sheet.imports.push(url);
           }
           continue;
         }
@@ -865,6 +865,20 @@ function importUrl(prelude: string): string | null {
   return m ? m[1] : null;
 }
 
+/** Whether an `@import`'s media list, the rest of its prelude after the
+ *  URL, lets it apply here: a list that only names other media, `print` or
+ *  `braille`, leaves the sheet out (CSS 2.1 6.3). A list that depends on the
+ *  width is taken to apply; an import is fetched once, not per width. */
+function importApplies(prelude: string): boolean {
+  const m =
+    /^\s*(?:url\(\s*(?:"[^"]*"|'[^']*'|[^)]*)\s*\)|"[^"]*"|'[^']*')(.*)$/s.exec(
+      prelude,
+    );
+  const list = m?.[1].trim();
+  if (!list) return true;
+  return parseMediaQuery(list).some((c) => c.staticPass !== false);
+}
+
 /**
  * A `@media` prelude, reduced to the width and colour-scheme tests this can
  * honour. Each comma group is one condition and they are OR-ed; within a
@@ -919,7 +933,11 @@ export function parseMediaQuery(prelude: string): MediaCondition[] {
       }
       const type = term.toLowerCase();
       if (type === 'screen' || type === 'all') continue;
-      if (type === 'print' || type === 'speech') pass = false;
+      // any other medium is not this one: `print`, `speech`, and the ones
+      // CSS 2.1 named that Media Queries retired, `braille`, `embossed`,
+      // `handheld`, `projection`, `tty`, `tv`. A term that is no name is
+      // left as it was.
+      if (/^[a-z-]+$/.test(type)) pass = false;
     }
     if (negated) {
       // `not` over a scheme is the other scheme. `not` over a width range
