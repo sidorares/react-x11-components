@@ -165,14 +165,24 @@ function layoutItemAt(
   moveTo(box, x, y);
 }
 
+// What a new Yoga node already is is not said again. A call into the
+// engine costs more than the arithmetic it asks for, and a Tailwind page is
+// a flex box in every list item: saying every default made the calls into
+// Yoga two fifths of laying one out. A node's defaults are column, no wrap,
+// start, stretch, start (for its lines), no growing, no shrinking, `auto`
+// basis and size, and nothing on any edge.
+
 function applyContainer(node: YogaNode, style: ComputedStyle): void {
-  node.setFlexDirection(
-    FLEX_DIRECTION[style.flexDirection] ?? Y.FLEX_DIRECTION_ROW,
-  );
-  node.setFlexWrap(WRAP[style.flexWrap] ?? Y.WRAP_NO_WRAP);
-  node.setJustifyContent(JUSTIFY[style.justifyContent] ?? Y.JUSTIFY_FLEX_START);
-  node.setAlignItems(ALIGN[style.alignItems] ?? Y.ALIGN_STRETCH);
-  node.setAlignContent(ALIGN[style.alignContent] ?? Y.ALIGN_STRETCH);
+  const direction = FLEX_DIRECTION[style.flexDirection] ?? Y.FLEX_DIRECTION_ROW;
+  if (direction !== Y.FLEX_DIRECTION_COLUMN) node.setFlexDirection(direction);
+  const wrap = WRAP[style.flexWrap] ?? Y.WRAP_NO_WRAP;
+  if (wrap !== Y.WRAP_NO_WRAP) node.setFlexWrap(wrap);
+  const justify = JUSTIFY[style.justifyContent] ?? Y.JUSTIFY_FLEX_START;
+  if (justify !== Y.JUSTIFY_FLEX_START) node.setJustifyContent(justify);
+  const items = ALIGN[style.alignItems] ?? Y.ALIGN_STRETCH;
+  if (items !== Y.ALIGN_STRETCH) node.setAlignItems(items);
+  const lines = ALIGN[style.alignContent] ?? Y.ALIGN_STRETCH;
+  if (lines !== Y.ALIGN_FLEX_START) node.setAlignContent(lines);
   if (style.rowGap) node.setGap(Y.GUTTER_ROW, style.rowGap);
   if (style.columnGap) node.setGap(Y.GUTTER_COLUMN, style.columnGap);
 }
@@ -189,14 +199,14 @@ function applyItem(
   // 8.1); Yoga does that itself
   const margin = (edge: number, len: unknown, px: number) => {
     if (len === AUTO) node.setMarginAuto(edge);
-    else node.setMargin(edge, px);
+    else if (px) node.setMargin(edge, px);
   };
   margin(Y.EDGE_TOP, style.marginTop, box.marginTop);
   margin(Y.EDGE_RIGHT, style.marginRight, box.marginRight);
   margin(Y.EDGE_BOTTOM, style.marginBottom, box.marginBottom);
   margin(Y.EDGE_LEFT, style.marginLeft, box.marginLeft);
-  node.setFlexGrow(style.flexGrow);
-  node.setFlexShrink(style.flexShrink);
+  if (style.flexGrow) node.setFlexGrow(style.flexGrow);
+  if (style.flexShrink) node.setFlexShrink(style.flexShrink);
   if (style.alignSelf !== AUTO)
     node.setAlignSelf(ALIGN[style.alignSelf] ?? Y.ALIGN_AUTO);
 
@@ -205,22 +215,10 @@ function applyItem(
   // border go on top of it
   const across = style.boxSizing === 'border-box' ? 0 : box.horizontalExtra;
   const down = style.boxSizing === 'border-box' ? 0 : box.verticalExtra;
-  setLength(
-    style.width,
-    containingWidth,
-    across,
-    node.setWidth.bind(node),
-    node.setWidthPercent.bind(node),
-    node.setWidthAuto.bind(node),
-  );
-  setLength(
-    style.height,
-    NaN,
-    down,
-    node.setHeight.bind(node),
-    node.setHeightPercent.bind(node),
-    node.setHeightAuto.bind(node),
-  );
+  if (style.width !== AUTO) {
+    setLength(node, true, style.width, containingWidth, across);
+  }
+  if (style.height !== AUTO) setLength(node, false, style.height, NaN, down);
   const minWidth = resolveOrNull(style.minWidth, containingWidth);
   if (minWidth !== null) node.setMinWidth(minWidth + across);
   if (style.maxWidth !== 'none') {
@@ -234,9 +232,9 @@ function applyItem(
     if (maxHeight !== null) node.setMaxHeight(maxHeight + down);
   }
 
-  if (style.flexBasis === 'content') node.setFlexBasisAuto();
-  else if (style.flexBasis === AUTO) node.setFlexBasisAuto();
-  else if (isPct(style.flexBasis)) {
+  if (style.flexBasis === 'content' || style.flexBasis === AUTO) {
+    // Yoga's own
+  } else if (isPct(style.flexBasis)) {
     // a percentage of the main size, which is known across a row
     const basis = style.flexBasis;
     const row = box.parent?.style.flexDirection.startsWith('row') ?? true;
@@ -249,14 +247,14 @@ function applyItem(
 
   // The item's padding and border belong to Yoga so it can size the item,
   // and to this engine so it can paint it. Both read the same numbers.
-  node.setPadding(Y.EDGE_TOP, box.padTop);
-  node.setPadding(Y.EDGE_RIGHT, box.padRight);
-  node.setPadding(Y.EDGE_BOTTOM, box.padBottom);
-  node.setPadding(Y.EDGE_LEFT, box.padLeft);
-  node.setBorder(Y.EDGE_TOP, box.borderTop);
-  node.setBorder(Y.EDGE_RIGHT, box.borderRight);
-  node.setBorder(Y.EDGE_BOTTOM, box.borderBottom);
-  node.setBorder(Y.EDGE_LEFT, box.borderLeft);
+  if (box.padTop) node.setPadding(Y.EDGE_TOP, box.padTop);
+  if (box.padRight) node.setPadding(Y.EDGE_RIGHT, box.padRight);
+  if (box.padBottom) node.setPadding(Y.EDGE_BOTTOM, box.padBottom);
+  if (box.padLeft) node.setPadding(Y.EDGE_LEFT, box.padLeft);
+  if (box.borderTop) node.setBorder(Y.EDGE_TOP, box.borderTop);
+  if (box.borderRight) node.setBorder(Y.EDGE_RIGHT, box.borderRight);
+  if (box.borderBottom) node.setBorder(Y.EDGE_BOTTOM, box.borderBottom);
+  if (box.borderLeft) node.setBorder(Y.EDGE_LEFT, box.borderLeft);
 
   // Yoga asks; this engine answers. That is the whole of the bridge, and it
   // is what lets a paragraph be a flex item without flex knowing what a
@@ -277,29 +275,28 @@ function applyItem(
 }
 
 function setLength(
+  node: YogaNode,
+  across: boolean,
   len: ComputedStyle['width'],
   base: number,
   /** Padding and border a `content-box` length goes without. */
   extra: number,
-  setPx: (v: number) => void,
-  setPercent: (v: number) => void,
-  setAuto: () => void,
 ): void {
-  if (len === AUTO) {
-    setAuto();
-    return;
-  }
+  const px = (v: number) => (across ? node.setWidth(v) : node.setHeight(v));
+  const percent = (v: number) =>
+    across ? node.setWidthPercent(v) : node.setHeightPercent(v);
+  if (len === AUTO) return;
   if (isPct(len)) {
     // Yoga takes a percentage or points, not both: `calc(100% - 20px)`
     // resolves here where its base is known, and so does a percentage with
     // padding to add, and a percentage is kept alone where it is not
-    if (!len.px && !len.of && !extra) setPercent(len.pct);
-    else if (Number.isFinite(base)) setPx(resolve(len, base) + extra);
-    else if (len.of) setAuto();
-    else setPercent(len.pct);
+    if (!len.px && !len.of && !extra) percent(len.pct);
+    else if (Number.isFinite(base)) px(resolve(len, base) + extra);
+    else if (len.of) return;
+    else percent(len.pct);
     return;
   }
-  setPx(len + extra);
+  px(len + extra);
 }
 
 /**
