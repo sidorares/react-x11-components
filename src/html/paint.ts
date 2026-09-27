@@ -1209,6 +1209,10 @@ function paintLines(ctx: PaintContext, box: Box, options: PaintOptions): void {
     paintSelection(ctx, line, options);
   }
 
+  // an underline goes under the glyphs, a line through over them (CSS 2.1
+  // Appendix E): a descender crosses its own underline
+  paintRules(ctx, visible, dx, dy, options.scale ?? 1, 'under');
+
   // One `draw` per layout: a paragraph is a single glyph composite, and
   // drawing it once per line would be one X request per line for the same
   // batch.
@@ -1230,19 +1234,35 @@ function paintLines(ctx: PaintContext, box: Box, options: PaintOptions): void {
     }
   }
 
+  paintRules(ctx, visible, dx, dy, options.scale ?? 1, 'over');
   for (const line of visible) {
+    for (const placed of line.atomics) paintBox(ctx, placed.box, options);
+  }
+}
+
+/** One pass of the lines' run rules, `under` or `over` their glyphs. */
+function paintRules(
+  ctx: PaintContext,
+  lines: LineBox[],
+  dx: number,
+  dy: number,
+  scale: number,
+  rules: 'under' | 'over',
+): void {
+  for (const line of lines) {
     for (const text of line.texts) {
       const natural = text.layout.lines[text.layoutLine];
-      if (natural)
+      if (natural) {
         paintRunRules(
           ctx,
           natural,
           text.drawX + dx,
           text.drawY + dy,
-          options.scale ?? 1,
+          scale,
+          rules,
         );
+      }
     }
-    for (const placed of line.atomics) paintBox(ctx, placed.box, options);
   }
 }
 

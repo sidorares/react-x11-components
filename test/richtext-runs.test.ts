@@ -116,6 +116,25 @@ test('a run with its span but not its face takes its extent from the line', () =
   assert.deepStrictEqual(box.fills[0], ['#eee', 2, 0, 44, 16]);
 });
 
+test('an underline and a line through can be drawn in two passes', () => {
+  // CSS 2.1 Appendix E: an underline under the glyphs, a line through over
+  // them. `<Html>` draws the rules in two passes around its text; one pass
+  // draws both, as `<RichText>` does.
+  const span = { text: 'ab', underline: '#00f', strike: '#f00' };
+  const both = line([{ x: 0, width: 20, start: 0, end: 2, span }], {
+    ascent: 10,
+    descent: 3,
+  });
+  const colours = (rules?: 'under' | 'over') => {
+    const { ctx, fills } = recorder();
+    paintRunRules(ctx, both, 0, 0, 1, rules);
+    return [...new Set(fills.map((f) => f[0]))];
+  };
+  assert.deepStrictEqual(colours('under'), ['#00f']);
+  assert.deepStrictEqual(colours('over'), ['#f00']);
+  assert.deepStrictEqual(colours(), ['#00f', '#f00']);
+});
+
 test("a selection band needs only a run's geometry", () => {
   const cocoa = line([
     { x: 0, width: 30, start: 0, end: 5 },

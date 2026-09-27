@@ -176,21 +176,26 @@ export function paintRunBackgrounds(
   }
 }
 
-/** The rules that sit **over** the glyphs: link underlines, strikethrough.
- *  A rule is one logical pixel thick — `scale` device pixels, so a link on a
- *  2x panel is underlined as heavily as on a 1x one, not with a hairline. */
+/** The rules drawn with a run: its underline and its strikethrough. A rule
+ *  is one logical pixel thick — `scale` device pixels, so a link on a 2x
+ *  panel is underlined as heavily as on a 1x one, not with a hairline.
+ *  `rules` picks a pass: CSS draws an underline under the glyphs and a
+ *  line through over them (CSS 2.1 Appendix E), which is two passes around
+ *  the glyphs'; drawn in one, both go over. */
 export function paintRunRules(
   ctx: FillContext,
   line: LaidLine,
   dx: number,
   dy: number,
   scale = 1,
+  rules: 'under' | 'over' | 'all' = 'all',
 ): void {
   const t = ruleThickness(scale);
   for (const r of line.runs) {
     const span = r.span;
     if (!span) continue;
-    const { underline, strike } = span;
+    const underline = rules !== 'over' ? span.underline : undefined;
+    const strike = rules !== 'under' ? span.strike : undefined;
     if (underline) {
       ctx.fillStyle = underline;
       underlineRule(
