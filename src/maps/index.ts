@@ -171,6 +171,7 @@ const NOT_FOR_THE_ELEMENT: readonly string[] = [
   'buildWorkers',
   'antialias',
   'fillRule',
+  'labelsWhileMoving',
   'onAfterDraw',
 ];
 

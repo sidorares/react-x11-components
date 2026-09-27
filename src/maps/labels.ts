@@ -129,7 +129,9 @@ export interface LabelIcon {
 }
 
 /** A candidate that won its place, with the box it occupies in world
- *  pixels at the zoom it was placed for — its turned text's bounding box. */
+ *  pixels at the zoom it was placed for — its turned text's bounding box.
+ *  Not shaped: the placement covers every tile loaded, most of it outside
+ *  the pane, and a label is shaped when it is first drawn. */
 export interface PlacedLabel extends LabelCandidate {
   /** World pixels: `mercator × worldSize`. */
   wx: number;
@@ -139,7 +141,6 @@ export interface PlacedLabel extends LabelCandidate {
   /** How far right of the anchor the box's centre is, in world pixels: half
    *  the icon and the gap, for a name set beside an icon; 0 otherwise. */
   ox?: number;
-  shaped: ShapedLabel;
 }
 
 function num<T extends number>(
@@ -282,9 +283,79 @@ export function collectLabels(
   return out;
 }
 
-/** Cache of shaped strings, owned by the element. */
+/** What a string measures, in logical pixels — all placement needs of it. */
+interface LabelMetrics {
+  width: number;
+  height: number;
+}
+
+/**
+ * A cache bounded in **two generations** rather than by clearing: what was
+ * stored since the last turn is the young one, a lookup that finds an entry
+ * in the old one brings it back, and a full young generation becomes the
+ * old one as the old one is dropped. So what is in use survives the turn,
+ * and the bound is twice a generation.
+ */
+class Generations<V> {
+  private _young = new Map<string, V>();
+  private _old = new Map<string, V>();
+  constructor(private readonly _size: number) {}
+
+  get(key: string): V | undefined {
+    const hit = this._young.get(key);
+    if (hit !== undefined) return hit;
+    const kept = this._old.get(key);
+    if (kept !== undefined) this.set(key, kept);
+    return kept;
+  }
+
+  set(key: string, value: V): void {
+    if (this._young.size >= this._size) {
+      this._old = this._young;
+      this._young = new Map();
+    }
+    this._young.set(key, value);
+  }
+
+  clear(): void {
+    this._young = new Map();
+    this._old = new Map();
+  }
+}
+
+/** Shaped strings a generation holds. Each is a layout the text engine
+ *  keeps — a native one under CoreText — so this is the bound that
+ *  matters, and it is the one the cache always had. */
+const SHAPED_GENERATION = 2000;
+/** Measurements a generation holds: two numbers each, so many more of
+ *  them, enough for every label of a zoom across the levels. */
+const MEASURED_GENERATION = 8000;
+
+/**
+ * Cache of shaped strings, owned by the element — and of what they
+ * measure, which is kept apart and far longer.
+ *
+ * Placement asks the size of every candidate on the map, most of which
+ * are never drawn, and it asks again at every step of a zoom; drawing
+ * needs the layouts of the few hundred that won their place. With one
+ * cache for both, bounded by clearing it, a wheel zoom through six levels —
+ * some 8,000 strings, every label of every level at its own size and in
+ * its halo's colour — crossed the bound every few hundred milliseconds and
+ * threw away what the next placement needed: 43,000 strings shaped in four
+ * seconds, the worst frames of the zoom spent on text it had shaped
+ * already. Measurements now outlive the layouts they were read from, and
+ * both caches turn over in generations (`Generations`).
+ */
 export class LabelShaper {
-  private readonly _cache = new Map<string, ShapedLabel>();
+  private readonly _shaped = new Generations<ShapedLabel>(SHAPED_GENERATION);
+  private readonly _measured = new Generations<LabelMetrics>(
+    MEASURED_GENERATION,
+  );
+  /** What each placed label was drawn with, text and halo: kept with the
+   *  placement, so a pan's frames, which draw one placement over and over,
+   *  look nothing up. */
+  private _drawn = new WeakMap<PlacedLabel, ShapedLabel>();
+  private _haloed = new WeakMap<PlacedLabel, ShapedLabel>();
   private _fonts: FontsLike | null;
   private _family: string;
   /** Device pixels per logical pixel. Text is shaped at the device size the
@@ -311,7 +382,41 @@ export class LabelShaper {
     this._fonts = fonts;
     this._family = family;
     this._scale = scale;
-    this._cache.clear();
+    this._shaped.clear();
+    this._measured.clear();
+    this._drawn = new WeakMap();
+    this._haloed = new WeakMap();
+  }
+
+  /** The layout a placed label's text is drawn with — or, with `halo`, its
+   *  halo's — or null on a backend with no font manager. */
+  drawn(label: PlacedLabel, halo = false): ShapedLabel | null {
+    const kept = halo ? this._haloed : this._drawn;
+    const hit = kept.get(label);
+    if (hit) return hit;
+    const color = halo ? label.halo : label.color;
+    if (color === undefined) return null;
+    const shaped = this.shape(label.text, label.size, color);
+    if (shaped) kept.set(label, shaped);
+    return shaped;
+  }
+
+  /** What one label measures, logical pixels, or null on a backend with no
+   *  font manager — shaped only when it has never been measured. A string
+   *  measures the same in any colour, so a name and its halo share it.
+   *
+   *  The layout it was measured from is not kept: most candidates never
+   *  win a place, and theirs would push the layouts of the ones that did
+   *  out of the cache drawing reads from. */
+  measure(text: string, size: number, color: string): LabelMetrics | null {
+    const key = `${this._family}|${size}|${text}`;
+    const hit = this._measured.get(key);
+    if (hit) return hit;
+    const shaped = this._shapeNow(text, size, color);
+    if (!shaped) return null;
+    const metrics = { width: shaped.width, height: shaped.height };
+    this._measured.set(key, metrics);
+    return metrics;
   }
 
   /** Shape one label, or null on a backend with no font manager. Widths
@@ -320,13 +425,20 @@ export class LabelShaper {
     const fonts = this._fonts;
     if (!fonts) return null;
     const key = `${this._family}|${size}|${color}|${text}`;
-    const hit = this._cache.get(key);
+    const hit = this._shaped.get(key);
     if (hit) return hit;
-    // Bounded, so a map panned across a continent cannot turn the cache
-    // into a leak. Cleared wholesale rather than evicted one at a time: the
-    // labels on screen are re-shaped on the next frame and the cost of that
-    // is a few hundred strings once.
-    if (this._cache.size > 4000) this._cache.clear();
+    const shaped = this._shapeNow(text, size, color);
+    if (shaped) this._shaped.set(key, shaped);
+    return shaped;
+  }
+
+  private _shapeNow(
+    text: string,
+    size: number,
+    color: string,
+  ): ShapedLabel | null {
+    const fonts = this._fonts;
+    if (!fonts) return null;
     const layout = fonts.layout(text, {
       family: this._family,
       size: size * this._scale,
@@ -334,13 +446,11 @@ export class LabelShaper {
       style: 'normal',
       color,
     });
-    const shaped: ShapedLabel = {
+    return {
       width: layout.width / this._scale,
       height: layout.height / this._scale,
       layout,
     };
-    this._cache.set(key, shaped);
-    return shaped;
   }
 }
 
@@ -400,22 +510,14 @@ export function placeLabels(
     if (candidate.dev * worldSize > candidate.size * STRAIGHT_FRACTION) {
       continue;
     }
-    const shaped = shaper.shape(
-      candidate.text,
-      candidate.size,
-      candidate.color,
-    );
-    if (!shaped) return placed; // no font manager: nothing can be measured
-    // Longer than the straight stretch it would sit on, with a margin past
-    // each end: it would hang off the street, over whatever the street
-    // turns into.
-    const need = shaped.width / 2 + shaped.height * LINE_MARGIN;
-    if (candidate.avail * worldSize < need) continue;
     const wx = candidate.mx * worldSize;
     const wy = candidate.my * worldSize;
-    // The repeat test before the overlap test, because it is the cheaper
-    // one and because it is what rejects most of a street layer: a long
-    // street offers its name every block, none of them overlapping.
+    // The repeat test first, because it is the cheapest one and because it
+    // is what rejects most of a street layer: a long street offers its name
+    // every block, none of them overlapping. Ahead of the shaping, which it
+    // does not need — a street's every block shaped its name, and a wheel
+    // zoom re-places at every step, so that was thousands of strings a
+    // frame asked of the cache.
     if (candidate.repeat > 0) {
       const already = byText.get(candidate.key);
       if (already) {
@@ -432,20 +534,31 @@ export function placeLabels(
         if (tooClose) continue;
       }
     }
+    const measured = shaper.measure(
+      candidate.text,
+      candidate.size,
+      candidate.color,
+    );
+    if (!measured) return placed; // no font manager: nothing can be measured
+    // Longer than the straight stretch it would sit on, with a margin past
+    // each end: it would hang off the street, over whatever the street
+    // turns into.
+    const need = measured.width / 2 + measured.height * LINE_MARGIN;
+    if (candidate.avail * worldSize < need) continue;
     // The turned text's bounding box: what it covers, as far as another
     // label can tell. With an icon, the box around the icon on the point
     // and the text beside it — the two give way as one, or a stop's name
     // would be set with nothing to say it is a stop.
     const angle = levelled(candidate.angle);
     const icon = candidate.icon ?? null;
-    let w = shaped.width + padding * 2;
-    let h = shaped.height + padding * 2;
+    let w = measured.width + padding * 2;
+    let h = measured.height + padding * 2;
     let ox = 0;
     if (icon) {
-      const full = icon.size + ICON_GAP + shaped.width;
+      const full = icon.size + ICON_GAP + measured.width;
       ox = (full - icon.size) / 2;
       w = full + padding * 2;
-      h = Math.max(icon.size, shaped.height) + padding * 2;
+      h = Math.max(icon.size, measured.height) + padding * 2;
     }
     const cos = Math.abs(Math.cos(angle));
     const sin = Math.abs(Math.sin(angle));
@@ -486,7 +599,6 @@ export function placeLabels(
       ox,
       width,
       height,
-      shaped,
     };
     placed.push(entry);
     if (candidate.repeat > 0) {
@@ -558,7 +670,11 @@ export function drawLabels(
     ) {
       continue;
     }
-    const { width, height } = label.shaped;
+    // Shaped here, for the labels in the pane: the few hundred a frame
+    // draws, where the placement holds every name on the tiles loaded.
+    const shaped = shaper.drawn(label);
+    if (!shaped) continue;
+    const { width, height } = shaped;
     const icon = label.icon ?? null;
     const turned = !icon && label.angle !== 0 && turns;
     const haloed = label.halo !== undefined && label.haloWidth > 0;
@@ -588,7 +704,7 @@ export function drawLabels(
       dy = Math.round((cy - height / 2) * scale);
     }
     if (label.halo !== undefined && label.haloWidth > 0) {
-      const halo = shaper.shape(label.text, label.size, label.halo);
+      const halo = shaper.drawn(label, true);
       if (halo) {
         const offset = Math.max(1, Math.round(label.haloWidth * scale));
         halo.layout.draw(ctx, dx - offset, dy);
@@ -597,7 +713,7 @@ export function drawLabels(
         halo.layout.draw(ctx, dx, dy + offset);
       }
     }
-    label.shaped.layout.draw(ctx, dx, dy);
+    shaped.layout.draw(ctx, dx, dy);
     if (turned) ctx.restore();
     drawn++;
   }

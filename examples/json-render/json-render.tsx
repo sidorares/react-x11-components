@@ -36,7 +36,12 @@
 import type { ReactElement } from 'react';
 import { createRoot } from 'react-x11';
 
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../src/index.js';
+import {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from '../../src/tabs/index.js';
 
 import { CompositionTab } from './composition.js';
 import { FlightsTab } from './flights.js';

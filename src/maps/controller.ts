@@ -554,6 +554,17 @@ export class MapController {
       this._maxZoom(),
     );
     if (zoom === camera.zoom) return;
+    this.apply(this._zoomedAbout(camera, zoom, x, y), false);
+  }
+
+  /** `camera` at `zoom`, with the point at pane-local `x`, `y` where it
+   *  was: what {@link zoomAbout} moves to, and what a glide arrives at. */
+  private _zoomedAbout(
+    camera: MapCamera,
+    zoom: number,
+    x: number,
+    y: number,
+  ): MapCamera {
     const before = this.transform(camera);
     const anchor = unprojectPoint(before, x, y);
     const after = this.transform({ center: camera.center, zoom });
@@ -562,21 +573,42 @@ export class MapController {
     const moved = projectLngLat(after, anchor);
     const dx = (moved.x - x) / after.world;
     const dy = (moved.y - y) / after.world;
-    this.apply(
-      {
-        zoom,
-        center: unprojectPoint(
-          {
-            ...after,
-            centerX: after.centerX + dx,
-            centerY: after.centerY + dy,
-          },
-          after.paneX,
-          after.paneY,
-        ),
-      },
-      false,
+    return {
+      zoom,
+      center: unprojectPoint(
+        {
+          ...after,
+          centerX: after.centerX + dx,
+          centerY: after.centerY + dy,
+        },
+        after.paneX,
+        after.paneY,
+      ),
+    };
+  }
+
+  /**
+   * Where the camera is going, when that is known before it gets there: the
+   * end of a wheel's glide. Null while nothing is gliding — a touchpad's
+   * stream, a drag or an application's own animation go wherever the next
+   * event says, and the view has only the camera to go on.
+   *
+   * What a renderer does with it is get there first: the tiles and label
+   * rasters of the view the glide stops at are asked for while the frames
+   * of the glide are still being drawn, so the settle has them in hand.
+   */
+  destination(): MapCamera | null {
+    const glide = this._glide;
+    if (!glide || !glide.easing) return null;
+    const camera = this.camera();
+    if (glide.applied !== camera.zoom) return null;
+    const zoom = clamp(
+      quantizeZoom(glide.target),
+      this._minZoom(),
+      this._maxZoom(),
     );
+    if (zoom === camera.zoom) return null;
+    return this._zoomedAbout(camera, zoom, glide.x, glide.y);
   }
 
   /**

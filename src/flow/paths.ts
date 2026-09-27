@@ -5,8 +5,11 @@
 //     representation means one implementation of each rather than four;
 //   - ntk's `bezierCurveTo` flattens to segments anyway, so sampling costs
 //     nothing a curve was not already paying;
-//   - the sample count comes off the on-screen length, so a curve is as
-//     smooth as the zoom can show and no smoother.
+//   - the sample count comes off the curve's on-screen **shape** (Wang's
+//     formula, `segmentsFor`): enough that no chord strays more than
+//     `tolerance` screen pixels from the true curve, so a curve is as smooth
+//     as the zoom can show and no smoother — a gentle one gets a few
+//     segments, a tight bend zoomed in gets hundreds.
 //
 // Everything here works in whatever space its inputs are in. The pane builds
 // paths in **screen** space, so the pixel-shaped constants it passes in
@@ -31,6 +34,35 @@ export interface PathOptions {
   /** Both ends are on the same node: route a loop rather than a line back
    * on itself. */
   loop?: boolean;
+  /** How far, in the endpoints' units, a chord may stray from the curve it
+   *  stands for. {@link CURVE_TOLERANCE} when left out. */
+  tolerance?: number;
+}
+
+/**
+ * A fifth of a screen pixel: under a device pixel at a display scale of 2,
+ * so a curve's chords are invisible at any zoom. The count was a fixed
+ * `clamp(length / 6, 8, 48)` before — 48 chords of 10–20 px each for a
+ * curve across a zoomed-in pane, and no more samples in a tight bend than
+ * along a straight run, which is what a faceted S-bend looked like.
+ */
+export const CURVE_TOLERANCE = 0.2;
+
+/** Segments past this many are not worth their vertices whatever the
+ *  formula says — a curve thousands of pixels long, most of it off screen. */
+const MAX_SEGMENTS = 512;
+
+/**
+ * Wang's formula: the fewest uniform-t segments that keep a degree-`degree`
+ * Bézier within `tolerance` of its chords. `m` is the largest second
+ * difference of the control points — how hard the curve bends, in the
+ * curve's own units — so it answers for shape and for zoom at once.
+ */
+function segmentsFor(m: number, degree: number, tolerance: number): number {
+  const n = Math.ceil(
+    Math.sqrt((degree * (degree - 1) * m) / (8 * Math.max(tolerance, 1e-3))),
+  );
+  return Math.max(1, Math.min(MAX_SEGMENTS, n));
 }
 
 const BEZIER_CURVATURE = 0.25;
@@ -94,6 +126,16 @@ function shoulder(distance: number, scale: number): number {
   return BEZIER_CURVATURE * 25 * Math.sqrt(scale * -distance);
 }
 
+/** A `'bezier'` edge's two control points — the curve `edgePath` samples,
+ *  exported so a test can hold the samples to the curve itself. */
+export function bezierControls(
+  source: PathEnd,
+  target: PathEnd,
+  scale: number,
+): [XYPosition, XYPosition] {
+  return [control(source, target, scale), control(target, source, scale)];
+}
+
 function control(end: PathEnd, other: XYPosition, scale: number): XYPosition {
   switch (end.position) {
     case 'left':
@@ -112,14 +154,13 @@ function sampleCubic(
   c0: XYPosition,
   c1: XYPosition,
   p1: XYPosition,
+  tolerance: number,
 ): XYPosition[] {
-  // The control polygon bounds the curve's length, so it is a cheap and
-  // always-sufficient basis for how finely to sample it.
-  const rough =
-    Math.hypot(c0.x - p0.x, c0.y - p0.y) +
-    Math.hypot(c1.x - c0.x, c1.y - c0.y) +
-    Math.hypot(p1.x - c1.x, p1.y - c1.y);
-  const steps = Math.max(8, Math.min(48, Math.round(rough / 6)));
+  const m = Math.max(
+    Math.hypot(p0.x - 2 * c0.x + c1.x, p0.y - 2 * c0.y + c1.y),
+    Math.hypot(c0.x - 2 * c1.x + p1.x, c0.y - 2 * c1.y + p1.y),
+  );
+  const steps = segmentsFor(m, 3, tolerance);
   const points: XYPosition[] = [];
   for (let i = 0; i <= steps; i++) {
     const t = i / steps;
@@ -189,6 +230,7 @@ function stepPoints(
 function roundCorners(
   points: readonly XYPosition[],
   radius: number,
+  tolerance: number,
 ): XYPosition[] {
   if (points.length < 3 || radius <= 0) return points as XYPosition[];
   const out: XYPosition[] = [points[0]];
@@ -213,7 +255,14 @@ function roundCorners(
       x: corner.x + ((next.x - corner.x) / outLen) * r,
       y: corner.y + ((next.y - corner.y) / outLen) * r,
     };
-    out.push(start, ...sampleQuadratic(start, corner, end, 5));
+    const m = Math.hypot(
+      start.x - 2 * corner.x + end.x,
+      start.y - 2 * corner.y + end.y,
+    );
+    out.push(
+      start,
+      ...sampleQuadratic(start, corner, end, segmentsFor(m, 2, tolerance)),
+    );
   }
   out.push(points[points.length - 1]);
   return dedupe(out);
@@ -226,6 +275,7 @@ function loopPoints(
   source: PathEnd,
   target: PathEnd,
   offset: number,
+  tolerance: number,
 ): XYPosition[] {
   const sd = handleDirection(source.position);
   const td = handleDirection(target.position);
@@ -238,7 +288,7 @@ function loopPoints(
     x: target.x + td.x * reach + td.y * reach * 0.7,
     y: target.y + td.y * reach - td.x * reach * 0.7,
   };
-  return dedupe(sampleCubic(source, c0, c1, target));
+  return dedupe(sampleCubic(source, c0, c1, target, tolerance));
 }
 
 /** The polyline for one edge. */
@@ -248,7 +298,14 @@ export function edgePath(
   target: PathEnd,
   options: PathOptions,
 ): XYPosition[] {
-  if (options.loop) return loopPoints(source, target, options.stepOffset);
+  if (options.loop) {
+    return loopPoints(
+      source,
+      target,
+      options.stepOffset,
+      options.tolerance ?? CURVE_TOLERANCE,
+    );
+  }
   switch (type) {
     case 'straight':
       return dedupe([
@@ -261,11 +318,19 @@ export function edgePath(
       return roundCorners(
         stepPoints(source, target, options.stepOffset),
         options.radius,
+        options.tolerance ?? CURVE_TOLERANCE,
       );
     default: {
-      const c0 = control(source, target, options.scale);
-      const c1 = control(target, source, options.scale);
-      return dedupe(sampleCubic(source, c0, c1, target));
+      const [c0, c1] = bezierControls(source, target, options.scale);
+      return dedupe(
+        sampleCubic(
+          source,
+          c0,
+          c1,
+          target,
+          options.tolerance ?? CURVE_TOLERANCE,
+        ),
+      );
     }
   }
 }

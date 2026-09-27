@@ -74,6 +74,7 @@ import type {
 } from '../src/charts/render.js';
 import type { SeriesSpec } from '../src/charts/spec.js';
 import type { ChartPlotNode } from '../src/charts/node.js';
+import { composites } from '../src/charts/node.js';
 
 const h = React.createElement;
 
@@ -277,6 +278,8 @@ test('ChartData appends notify, backfill, and shift the window in batches', () =
 
 interface FakeCtx extends PlotContext {
   batches: number[];
+  /** the opacity each batch went out at */
+  batchAlphas: number[];
   rects: number[][];
   strokes: number;
   fills: number;
@@ -287,6 +290,7 @@ interface FakeCtx extends PlotContext {
 function fakeCtx(): FakeCtx {
   const ctx: FakeCtx = {
     batches: [],
+    batchAlphas: [],
     rects: [],
     strokes: 0,
     fills: 0,
@@ -305,6 +309,7 @@ function fakeCtx(): FakeCtx {
     },
     fillRects(flat) {
       ctx.batches.push(flat.length / 4);
+      ctx.batchAlphas.push(ctx.globalAlpha ?? 1);
       for (let i = 0; i + 3 < flat.length; i += 4) {
         ctx.rects.push([flat[i], flat[i + 1], flat[i + 2], flat[i + 3]]);
       }
@@ -557,6 +562,54 @@ test('dense scatter reduces to alpha-bucketed cells, bounded by the grid', () =>
   assert.strictEqual(env.stats.series[0].mode, 'columns');
 });
 
+test('a pass that reaches a strip of the plot draws the marks in it, and no others', () => {
+  // A strip a pan exposed along a chart's edge: the pass clips everything
+  // else away, and drawing it all anyway was most of each step of a panned
+  // graph of scatter plots.
+  const n = 50_000;
+  const xs = new Float64Array(n);
+  const ys = new Float64Array(n);
+  let seed = 11;
+  const rand = () =>
+    (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+  for (let i = 0; i < n; i++) {
+    xs[i] = rand() * 100;
+    ys[i] = rand() * 100;
+  }
+  const geometry = (): SeriesGeometry => {
+    const xCol = column(xs);
+    return {
+      spec: seriesSpec({ type: 'scatter', size: 3 }),
+      y: column(ys),
+      base: 0,
+      x: xCol,
+      xIdx: xIndexFor(xCol),
+      group: { index: 0, count: 1 },
+      color: '#123456',
+    };
+  };
+  const whole = fakeCtx();
+  const all = makeEnv(whole, 120, 90, [0, 100], [0, 100]);
+  renderScatter(all, geometry());
+
+  const strip = { x: 116, y: 0, width: 4, height: 90 };
+  const ctx = fakeCtx();
+  const env = { ...makeEnv(ctx, 120, 90, [0, 100], [0, 100]), clip: strip };
+  renderScatter(env, geometry());
+  assert.ok(ctx.rects.length > 0, 'the strip’s own marks are drawn');
+  assert.ok(
+    ctx.rects.length * 10 < whole.rects.length,
+    `${ctx.rects.length} of ${whole.rects.length} rects`,
+  );
+  for (const [x, , w] of ctx.rects) {
+    assert.ok(x < strip.x + strip.width && x + w > strip.x, 'each reaches it');
+  }
+  assert.ok(
+    env.stats.estimatedWireBytes < all.stats.estimatedWireBytes / 10,
+    'and the wire estimate counts what went out',
+  );
+});
+
 test('a saturated 1px scatter flips to the density image when the host can', () => {
   const w = 60;
   const hgt = 40;
@@ -570,7 +623,7 @@ test('a saturated 1px scatter flips to the density image when the host can', () 
   const ctx = fakeCtx();
   const env = makeEnv(ctx, w, hgt, [0, w - 1], [0, hgt - 1]);
   let blits = 0;
-  env.host.blitImage = (_x, _y, _w, _h, fill) => {
+  env.host.blitImage = (_id, _x, _y, _w, _h, fill) => {
     blits++;
     fill(new Uint8ClampedArray(_w * _h * 4));
     return true;
@@ -588,6 +641,168 @@ test('a saturated 1px scatter flips to the density image when the host can', () 
   assert.strictEqual(blits, 1, 'the image path was taken');
   assert.strictEqual(ctx.batches.length, 0, 'and no rect batches were sent');
   assert.strictEqual(env.stats.series[0].mode, 'image');
+});
+
+/** A cloud that fills a fraction of its plot: under the byte crossover, so
+ *  a first paint of it goes out as rects. */
+function sparseCloud(w: number, hgt: number): SeriesGeometry {
+  const xs: number[] = [];
+  const ys: number[] = [];
+  for (let y = 0; y < hgt; y += 3) {
+    for (let x = 0; x < w; x += 2) {
+      // piles of one to four points, so more than one alpha level is used
+      for (let k = 0; k <= (x + y) % 4; k++) {
+        xs.push(x);
+        ys.push(y);
+      }
+    }
+  }
+  const xCol = column(Float64Array.from(xs));
+  return {
+    spec: seriesSpec({ id: 'cloud', type: 'scatter', size: 1 }),
+    y: column(Float64Array.from(ys)),
+    base: 0,
+    x: xCol,
+    xIdx: xIndexFor(xCol),
+    group: { index: 0, count: 1 },
+    color: '#33669980',
+  };
+}
+
+test('a scatter painted again unchanged is one composite of the image it kept', () => {
+  const w = 80;
+  const hgt = 60;
+  const ctx = fakeCtx();
+  const env = makeEnv(ctx, w, hgt, [0, w - 1], [0, hgt - 1]);
+  const blits: { id: string; key: string | undefined }[] = [];
+  let fills = 0;
+  env.host.blitImage = (id, _x, _y, bw, bh, fill, key) => {
+    blits.push({ id, key });
+    if (blits.length === 1 || key !== blits[blits.length - 2].key) {
+      fills++;
+      fill(new Uint8ClampedArray(bw * bh * 4));
+    }
+    return true;
+  };
+  const cloud = sparseCloud(w, hgt);
+
+  renderScatter(env, cloud);
+  assert.strictEqual(blits.length, 0, 'a first paint keeps the crossover');
+  assert.ok(ctx.batches.length > 1, 'and sends its alpha buckets as rects');
+  const firstBytes = env.stats.estimatedWireBytes;
+
+  ctx.batches.length = 0;
+  renderScatter(env, cloud);
+  renderScatter(env, cloud);
+  assert.strictEqual(ctx.batches.length, 0, 'no rects on a repeat');
+  assert.deepStrictEqual(
+    blits.map((b) => b.id),
+    ['cloud', 'cloud'],
+    'the image is asked for by series, once a paint',
+  );
+  assert.strictEqual(blits[0].key, blits[1].key, 'for the same content');
+  assert.strictEqual(fills, 1, 'filled once, then kept');
+  assert.strictEqual(env.stats.series[2].mode, 'image');
+  assert.strictEqual(
+    env.stats.estimatedWireBytes,
+    firstBytes + w * hgt * 4,
+    'the upload counted once, the composite after it nothing',
+  );
+});
+
+test('a scatter whose data moved paints its first frame by the crossover again', () => {
+  const w = 80;
+  const hgt = 60;
+  const ctx = fakeCtx();
+  const env = makeEnv(ctx, w, hgt, [0, w - 1], [0, hgt - 1]);
+  let blits = 0;
+  env.host.blitImage = () => {
+    blits++;
+    return true;
+  };
+  const cloud = sparseCloud(w, hgt);
+  renderScatter(env, cloud);
+  renderScatter(env, cloud);
+  assert.strictEqual(blits, 1);
+
+  // one more point: new content, so this paint is its first
+  const xs = Float64Array.from([...(cloud.x!.values as Float64Array), 1]);
+  const ys = Float64Array.from([...(cloud.y.values as Float64Array), 1]);
+  const xCol = column(xs);
+  const grown = { ...cloud, x: xCol, xIdx: xIndexFor(xCol), y: column(ys) };
+  ctx.batches.length = 0;
+  renderScatter(env, grown);
+  assert.strictEqual(blits, 1, 'no image for a first paint');
+  assert.ok(ctx.batches.length > 0, 'rects instead');
+});
+
+test('the density image draws the opacities the rects do', () => {
+  const w = 80;
+  const hgt = 60;
+  const cloud = sparseCloud(w, hgt);
+
+  const rectCtx = fakeCtx();
+  renderScatter(makeEnv(rectCtx, w, hgt, [0, w - 1], [0, hgt - 1]), cloud);
+  // each rect's opacity, colour alpha (0x80) included, by pixel
+  const viaRects = new Map<string, number>();
+  let at = 0;
+  rectCtx.batches.forEach((count, b) => {
+    const alpha = Math.round(rectCtx.batchAlphas[b] * 0x80);
+    for (const [x, y] of rectCtx.rects.slice(at, at + count)) {
+      viaRects.set(`${x},${y}`, alpha);
+    }
+    at += count;
+  });
+
+  const ctx = fakeCtx();
+  const env = makeEnv(ctx, w, hgt, [0, w - 1], [0, hgt - 1]);
+  let image: Uint8ClampedArray | null = null;
+  let imageW = 0;
+  env.host.blitImage = (_id, _x, _y, bw, bh, fill) => {
+    image = new Uint8ClampedArray(bw * bh * 4);
+    imageW = bw;
+    fill(image);
+    return true;
+  };
+  renderScatter(env, cloud);
+  renderScatter(env, cloud);
+  assert.ok(image, 'the repeat drew the image');
+  const pixels = image as Uint8ClampedArray;
+  let inked = 0;
+  for (let i = 0; i < pixels.length; i += 4) {
+    const x = (i / 4) % imageW;
+    const y = Math.floor(i / 4 / imageW);
+    const want = viaRects.get(`${x},${y}`) ?? 0;
+    assert.strictEqual(pixels[i + 3], want, `alpha at ${x},${y}`);
+    if (want > 0) {
+      inked++;
+      assert.deepStrictEqual(
+        [pixels[i], pixels[i + 1], pixels[i + 2]],
+        [0x33, 0x66, 0x99],
+      );
+    }
+  }
+  assert.strictEqual(inked, viaRects.size, 'every rect is a pixel of it');
+  assert.ok(
+    new Set(viaRects.values()).size > 1,
+    'across more than one alpha level',
+  );
+});
+
+test('an image needs a surface the app can composite, not an X server', () => {
+  assert.strictEqual(
+    composites({ createSurface() {} }),
+    true,
+    'Cocoa, Windows',
+  );
+  assert.strictEqual(
+    composites({ display: { Render: {} } }),
+    true,
+    'X + RENDER',
+  );
+  assert.strictEqual(composites({ display: {} }), false, 'X without RENDER');
+  assert.strictEqual(composites({}), false, 'the mock');
+  assert.strictEqual(composites(null), false);
 });
 
 // --- the element, headlessly ----------------------------------------------

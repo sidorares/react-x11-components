@@ -17,7 +17,7 @@
 //    fits its street at this zoom, it would be cut by the edge, or something
 //    that outranks it arrives.
 //  - **Labels fade**, in and out, over {@link FADE_MS}. A label never pops;
-//    one whose raster is still being set waits, invisibly, and fades in
+//    one whose field is still being set waits, invisibly, and fades in
 //    when it lands.
 //  - **Labels do not slide.** Anchors are fixed ground, so a label moves
 //    exactly with the map; when a street's label leaves the view another
@@ -42,7 +42,7 @@ import {
   estimateWidth,
 } from '../anchors.js';
 import type { GlLabelData } from '../anchors.js';
-import { haloReach } from './text.js';
+import { fieldReach } from './text.js';
 import type { AtlasEntry, LabelAtlas } from './text.js';
 import {
   DEFAULT_ICON_COLOR,
@@ -93,21 +93,20 @@ export interface PlacementFrame {
    *  must, and what the zoom uncovers is named once it stops — not labels
    *  arriving and leaving at every step of it. `true` by default. */
   admit?: boolean;
-  /** The camera is moving: a label keeps the raster it has, rather than
-   *  asking for one at each size its zoom ramp passes through. */
-  moving?: boolean;
 }
 
 /** Floats per label instance; the layout `renderer.ts` binds. */
-export const LABEL_INSTANCE = 18;
+export const LABEL_INSTANCE = 19;
 
 /** The frame's labels, ready to draw. */
 export interface LabelBatch {
   atlas: LabelAtlas;
   /** {@link LABEL_INSTANCE} floats per label: centre x, y (device
-   *  pixels); cos, sin of the baseline; the atlas rect x, y, w, h; ink
-   *  and halo colour, premultiplied and faded; halo radius; `1` to set
-   *  the label on whole pixels. */
+   *  pixels); cos, sin of the baseline; the field's rect in the atlas x,
+   *  y, w, h (texels); ink and halo colour, premultiplied and faded; halo
+   *  radius (device pixels); `1` to set the label on whole pixels; and
+   *  device pixels per field texel — the drawn size over the atlas's
+   *  base. */
   instances: Float32Array;
   count: number;
   /** Labels drawn: fewer than `count` where an icon is two instances of
@@ -141,7 +140,7 @@ const CELL = 64;
 interface LayerLabels {
   id: string;
   rank: number;
-  /** Device pixels, whole — the raster's size. */
+  /** Device pixels — not rounded: one field draws any size. */
   size: number;
   repeat: number;
   ink: Rgba;
@@ -150,8 +149,8 @@ interface LayerLabels {
   icon: LayerIcon | null;
 }
 
-/** A layer's icon at a zoom: device pixels across (whole — a raster's
- *  size), the gap to the name, and its two colours. */
+/** A layer's icon at a zoom: device pixels across, the gap to the name,
+ *  and its two colours. */
 interface LayerIcon {
   name: MapIcon;
   size: number;
@@ -180,8 +179,6 @@ interface Shown {
   priority: number;
   opacity: number;
   placed: boolean;
-  /** The size it has a raster at — drawn until the current size's lands. */
-  drawn: number;
 }
 
 interface Candidate {
@@ -251,7 +248,7 @@ export class LabelPlacer {
 
   /**
    * Choose the frame's labels. Asks `atlas` for each contender's box, as
-   * the frame's budget allows, and for each winner's raster.
+   * the frame's budget allows, and for each winner's field.
    */
   place(frame: PlacementFrame, atlas: LabelAtlas): void {
     const started = now();
@@ -460,7 +457,6 @@ export class LabelPlacer {
               size: c.size,
               opacity: 0,
               placed: false,
-              drawn: 0,
             } as Shown);
           fresh.mx = c.mx;
           fresh.my = c.my;
@@ -477,12 +473,11 @@ export class LabelPlacer {
       }
       shown.placed = true;
       shown.size = c.size;
-      if (!frame.moving || shown.drawn === 0)
-        atlas.entry(shown.text, shown.size);
+      atlas.entry(shown.text);
       const icon = this._icon(layers[shown.layer], shown.point, atlas);
       if (icon) {
-        atlas.icon(icon.name, 'plate', icon.size);
-        atlas.icon(icon.name, 'glyph', icon.size);
+        atlas.icon(icon.name, 'plate');
+        atlas.icon(icon.name, 'glyph');
       }
     }
 
@@ -504,28 +499,23 @@ export class LabelPlacer {
     this._last = frame.now;
     const step = dt / FADE_MS;
     const layers = this._layersAt(frame.style, frame.zoom, frame.scale);
-    const reach = haloReach(atlas.pad);
+    // How far past its glyphs a field sees, in its own texels: the widest
+    // halo it can draw, times the label's scale.
+    const reach = fieldReach(atlas.pad);
     const halfW = frame.width / 2;
     const halfH = frame.height / 2;
     let count = 0;
     let labels = 0;
     for (const shown of [...this._shown]) {
       const layer = layers[shown.layer];
-      let entry: AtlasEntry | null;
-      if (frame.moving && shown.drawn > 0 && shown.drawn !== shown.size) {
-        // Its zoom ramp has moved on; the size it has serves until the
-        // view is still.
-        entry = atlas.entry(shown.text, shown.drawn);
-      } else {
-        entry = atlas.entry(shown.text, shown.size);
-        if (entry) shown.drawn = shown.size;
-        else if (shown.drawn > 0) entry = atlas.entry(shown.text, shown.drawn);
-      }
+      // One field for every size: a zoom ramp that grows the type draws the
+      // same raster larger, the frame it changes.
+      const entry = atlas.entry(shown.text);
       // A name set beside an icon waits for the icon as well: the name
       // alone is what the icon is there to explain.
       const icon = this._icon(layer, shown.point, atlas);
-      const plate = icon ? atlas.icon(icon.name, 'plate', icon.size) : null;
-      const glyph = icon ? atlas.icon(icon.name, 'glyph', icon.size) : null;
+      const plate = icon ? atlas.icon(icon.name, 'plate') : null;
+      const glyph = icon ? atlas.icon(icon.name, 'glyph') : null;
       const ready =
         entry !== null && (!icon || (plate !== null && glyph !== null));
       // Nothing to show yet: wait at zero rather than fade in unseen.
@@ -548,11 +538,14 @@ export class LabelPlacer {
       const eased = shown.opacity * shown.opacity * (3 - 2 * shown.opacity);
       const ink = premultiplied(layer.ink, eased);
       const halo = layer.halo ? premultiplied(layer.halo, eased) : ZERO;
-      const haloPx = layer.halo ? Math.min(layer.haloPx, reach) : 0;
+      const k = shown.size / atlas.base;
+      const haloPx = layer.halo ? Math.min(layer.haloPx, reach * k) : 0;
       if (icon && plate && glyph) {
         // The plate under its halo, the glyph on it, and the name level
-        // beside it: the string is its raster less the margin, and its
+        // beside it: the string is its field less the margin, and its
         // left edge goes the gap past the plate's right.
+        const ki = icon.size / atlas.base;
+        const plateHalo = layer.halo ? Math.min(layer.haloPx, reach * ki) : 0;
         count = this._put(
           count,
           sx,
@@ -561,7 +554,8 @@ export class LabelPlacer {
           plate,
           premultiplied(icon.plate, eased),
           halo,
-          haloPx,
+          plateHalo,
+          ki,
         );
         count = this._put(
           count,
@@ -572,12 +566,26 @@ export class LabelPlacer {
           premultiplied(icon.glyph, eased),
           ZERO,
           0,
+          ki,
         );
         const tx =
-          sx + icon.size / 2 + icon.gap + (entry.width - 2 * atlas.pad) / 2;
-        count = this._put(count, tx, sy, 0, entry, ink, halo, haloPx);
+          sx +
+          icon.size / 2 +
+          icon.gap +
+          ((entry.width - 2 * atlas.pad) * k) / 2;
+        count = this._put(count, tx, sy, 0, entry, ink, halo, haloPx, k);
       } else {
-        count = this._put(count, sx, sy, shown.angle, entry, ink, halo, haloPx);
+        count = this._put(
+          count,
+          sx,
+          sy,
+          shown.angle,
+          entry,
+          ink,
+          halo,
+          haloPx,
+          k,
+        );
       }
       labels++;
     }
@@ -597,6 +605,7 @@ export class LabelPlacer {
     ink: Rgba,
     halo: Rgba,
     haloPx: number,
+    scale: number,
   ): number {
     if (this._instances.length < (count + 1) * LABEL_INSTANCE) {
       const grown = new Float32Array(this._instances.length * 2);
@@ -624,6 +633,7 @@ export class LabelPlacer {
     d[at + 15] = halo[3];
     d[at + 16] = haloPx;
     d[at + 17] = level ? 1 : 0;
+    d[at + 18] = scale;
     return count + 1;
   }
 
@@ -712,7 +722,7 @@ export class LabelPlacer {
     atlas: LabelAtlas,
   ): LayerIcon | null {
     const icon = point ? (layer?.icon ?? null) : null;
-    return icon && !atlas.iconFailed(icon.name, icon.size) ? icon : null;
+    return icon && !atlas.iconFailed(icon.name) ? icon : null;
   }
 
   /** Each symbol layer's labelling at this zoom, by layer index — null
@@ -738,13 +748,13 @@ export class LabelPlacer {
         symbol.textHaloWidth === undefined
           ? 1
           : resolveZoomed(symbol.textHaloWidth, zoom);
+      // Not rounded: a field draws any size, so a ramp grows the type
+      // continuously rather than a whole pixel at a time.
       const size = Math.max(
         1,
-        Math.round(
-          (symbol.textSize === undefined
-            ? 12
-            : resolveZoomed(symbol.textSize, zoom)) * scale,
-        ),
+        (symbol.textSize === undefined
+          ? 12
+          : resolveZoomed(symbol.textSize, zoom)) * scale,
       );
       return {
         id: layer.id,

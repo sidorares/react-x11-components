@@ -72,7 +72,7 @@ import type {
   RenderTile,
 } from './renderer.js';
 import { GlTileStore } from './store.js';
-import { LabelAtlas, SurfaceTextEngine } from './text.js';
+import { LabelAtlas, SurfaceTextEngine, fieldBase } from './text.js';
 
 const h = React.createElement;
 
@@ -193,6 +193,12 @@ const BUILD_BUDGET_MS = 6;
  *  — the one label cost that can be large (the first strings on X11 load
  *  fonts and rasterize glyphs in JS). Placement's remainder waits a frame. */
 const TEXT_BUDGET_MOVING_MS = 1;
+/** Milliseconds a frame may spend making label fields (`text.ts`), about
+ *  0.2 ms each, when there are any to make. */
+const FIELD_BUDGET_MS = 4;
+/** With `labelsWhileMoving`: milliseconds a frame may spend setting the
+ *  text of names it has just placed, so they draw in it. */
+const LIVE_TEXT_BUDGET_MS = 8;
 const TEXT_BUDGET_SETTLED_MS = 4;
 /**
  * How often a moving view is placed again, in milliseconds — every other
@@ -459,6 +465,15 @@ export class GlMapDriver implements MapView {
   private readonly _fader = new LevelFader();
   private readonly _gates = new GateFader();
   private readonly _placer = new LabelPlacer();
+  /** Places the labels of the view a glide stops at, and shows nothing:
+   *  what it asks the atlas for is measured and set while the glide is
+   *  still being drawn. */
+  private readonly _scout = new LabelPlacer();
+  /** The destination the scout last placed, and whether that placement
+   *  measured everything it offered — a frame's text budget can run out
+   *  first, and then the next frame places it again. */
+  private _scoutedFor = '';
+  private _scoutDone = false;
   private readonly _markers = new MarkerBatcher();
   /** The overlays' bucket, and what it was built from. */
   private _overlay: {
@@ -474,7 +489,7 @@ export class GlMapDriver implements MapView {
   /** The attribution's one instance. */
   private readonly _attributionText = new Float32Array(LABEL_INSTANCE);
   /** An attribution a frame could not draw yet — its string not measured,
-   *  or its raster not in the texture — and the size it is set at. */
+   *  or its field not in the texture — and the size it is drawn at. */
   private _attributionWanted: { text: string; size: number } | null = null;
   /** When labels were last placed. */
   private _placedAt = -Infinity;
@@ -831,6 +846,24 @@ export class GlMapDriver implements MapView {
       return { source, store, pyramid, target };
     });
 
+    // Where a wheel's glide stops, while one is running: its tiles are
+    // asked for after the view's own, so the view the glide lands on is
+    // loaded — and its labels set, below — by the time it gets there.
+    const destination = moving ? controller.destination() : null;
+    const ahead = destination
+      ? covers.map((c) => {
+          const cover = renderCover(
+            destination,
+            pane,
+            scale,
+            c.pyramid,
+            c.store,
+          );
+          c.store.want(cover.missing);
+          return cover;
+        })
+      : null;
+
     // The level fade and adaptive quality are the first source's — the
     // basemap's; a pyramid over it is drawn at its own level throughout.
     const primary = covers[0] ?? null;
@@ -885,13 +918,28 @@ export class GlMapDriver implements MapView {
     };
     let rung = 0;
     let predictedMs = 0;
+    // An overview of the view: its ancestors every other level up to the
+    // pyramid's root, asked for after the view's own tiles and looked up
+    // every frame, so they stay loaded. A view is a speck at those levels,
+    // so this is a tile or two a level. It is what a fast zoom out lands
+    // on: a trackpad's momentum can cross fifteen levels in a quarter of a
+    // second, and every level it passes that has no tile draws the style's
+    // background alone — a frame of one flat colour, labels gone with the
+    // tiles, where a coarser tile would have drawn the place, blurred. With
+    // one level of it in reach two levels up, a hole is always filled from
+    // above (`renderCover`'s ancestors reach eight). The level just above
+    // the view comes first: it is also what the ladder's last rungs draw.
+    if (primary) {
+      const top = primary.pyramid.minZoom;
+      for (
+        let level = primary.target.level - 1;
+        level >= top;
+        level = level - 2 < top && level > top ? top : level - 2
+      ) {
+        primary.store.want(coverAt(level).missing);
+      }
+    }
     if (budget !== null && moving && primary) {
-      // The coarser level is what the ladder's last rungs draw, so ask for
-      // it too — after the view's own tiles, which come first.
-      primary.store.want(
-        coverAt(Math.max(primary.pyramid.minZoom, primary.target.level - 1))
-          .missing,
-      );
       const predict = (r: number): number => {
         const built = build(r);
         const work =
@@ -932,14 +980,31 @@ export class GlMapDriver implements MapView {
       try {
         const atlas = this._atlasFor(info.node, style, scale);
         if (atlas) {
-          atlas.beginFrame(
-            now() + (moving ? TEXT_BUDGET_MOVING_MS : TEXT_BUDGET_SETTLED_MS),
-          );
+          // Live labels measure at the settled budget while moving too:
+          // what they admit mid-zoom has to be measured mid-zoom.
+          const live = map.labelsWhileMoving === true;
+          const textDeadline =
+            now() +
+            (moving && !live ? TEXT_BUDGET_MOVING_MS : TEXT_BUDGET_SETTLED_MS);
+          atlas.beginFrame(textDeadline);
           // The attribution before the names: it is one string, measured
           // once, and a frame whose budget went on names would leave it
           // for a later one — for as long as names keep arriving.
           attribution = this._attributionFor(atlas, frame);
           labels = this._labelsFor(atlas, frame, fade, at, moving);
+          if (destination && ahead) {
+            this._scoutFor(atlas, frame, destination, ahead, at);
+          } else if (this._scoutedFor !== '') {
+            this._scout.reset();
+            this._scoutedFor = '';
+          }
+          // The fields of strings already read back, on a budget of their
+          // own: the text budget moving is 1 ms, five fields, and a jump
+          // somewhere new reads back sixty names at once — they came in
+          // over two hundred milliseconds that way, against none for the
+          // coverage rasters fields replaced. This frame's draw uploads
+          // what it makes.
+          atlas.makeFields(Math.max(textDeadline, now() + FIELD_BUDGET_MS));
           this._pumpSoon();
         }
       } catch (error) {
@@ -1074,20 +1139,21 @@ export class GlMapDriver implements MapView {
         textPending: this._atlas?.pending ?? false,
       },
     };
-    // A label still fading, strings this frame had no budget to measure, or
-    // rasters still to go into the texture want the next frame; a raster
-    // in flight asks for one itself when it lands.
+    // A label still fading, strings this frame had no budget to measure,
+    // fields still to be made, or fields still to go into the texture want
+    // the next frame; a batch in flight asks for one itself when it lands.
     const labelling =
       labels !== null &&
       (this._placer.animating ||
         this._atlas?.starved === true ||
+        this._atlas?.fielding === true ||
         this._atlas?.uploading === true);
     // An attribution this frame could not draw may have gone into the
     // texture during it — the upload happens as the labels draw, after the
     // frame chose what to draw — and then it is the next frame's.
     const wanted = this._attributionWanted;
     const attributing =
-      wanted !== null && this._atlas?.entry(wanted.text, wanted.size) != null;
+      wanted !== null && this._atlas?.entry(wanted.text) != null;
     if (
       more ||
       this._fader.fading ||
@@ -1176,9 +1242,9 @@ export class GlMapDriver implements MapView {
       this._noText = true;
       return null;
     }
-    // Margin for a halo of two logical pixels, and the texel either side
-    // that keeps its samples inside it (see `quadInset`).
-    this._atlas = new LabelAtlas(engine, { pad: 2 * Math.ceil(2 * scale) + 2 });
+    // Fields set at a base size that follows the display's scale, so a
+    // label on a 2x panel is sampled from a field twice as fine.
+    this._atlas = new LabelAtlas(engine, { base: fieldBase(scale) });
     this._atlas.onChange = this.request;
     this._atlasKey = key;
     this._placer.reset();
@@ -1197,6 +1263,7 @@ export class GlMapDriver implements MapView {
     at: number,
     moving: boolean,
   ): LabelBatch {
+    const live = this.props.map.labelsWhileMoving === true;
     const from = fade && fade.alpha >= 0.5 ? fade.frame : frame;
     const centre = project(this._controller.camera().center);
     const placement: PlacementFrame = {
@@ -1211,21 +1278,76 @@ export class GlMapDriver implements MapView {
       // The projection's world, which the cover lays every source out on.
       world: worldSize(frame.zoom, DEFAULT_TILE_SIZE) * frame.scale,
       now: at,
-      admit: at - this._zoomedAt >= ZOOM_QUIET_MS,
-      moving,
+      // Live: every name the view offers, at every step of a zoom.
+      admit: live || at - this._zoomedAt >= ZOOM_QUIET_MS,
     };
-    if (!moving || at - this._placedAt >= PLACE_INTERVAL_MS) {
+    if (live || !moving || at - this._placedAt >= PLACE_INTERVAL_MS) {
       this._placer.place(placement, atlas);
       this._placedAt = at;
     }
+    // Live: what placement asked for is set now, before the batch, so a
+    // name placed in this frame is drawn in it — its field goes into the
+    // texture ahead of the cap, before this frame's labels draw.
+    if (live) atlas.setNow(now() + LIVE_TEXT_BUDGET_MS);
     return this._placer.batch(placement, atlas);
+  }
+
+  /**
+   * Render ahead: place the labels of the view a glide stops at, so that
+   * every string it will show is measured and asked of the atlas while the
+   * glide's own frames are drawn. Nothing it places is drawn — the frame's
+   * placer places the destination again when it gets there, and finds every
+   * box measured and every field in the texture, so the labels fade in
+   * when the view settles rather than a readback and an upload after.
+   *
+   * A fresh placement each time (the scout keeps no labels between runs;
+   * holding a place is for what is on screen), and not every frame: when
+   * the destination moves — another notch — or more of its tiles land, or
+   * the last placement ran out of the frame's text budget before it had
+   * measured everything. It measures out of that budget, after the frame's
+   * own labels.
+   */
+  private _scoutFor(
+    atlas: LabelAtlas,
+    frame: RenderFrame,
+    destination: MapCamera,
+    covers: readonly CoverResult[],
+    at: number,
+  ): void {
+    // The destination is recomputed from each frame's camera, so its last
+    // digits wander; to a millionth of a degree it is the same place. And
+    // it is a different question once more of its tiles are in hand.
+    let held = 0;
+    for (const c of covers) held += c.own;
+    const key = `${destination.zoom}|${destination.center.lon.toFixed(6)}|${destination.center.lat.toFixed(6)}|${held}`;
+    if (key === this._scoutedFor && this._scoutDone) return;
+    this._scoutedFor = key;
+    const centre = project(destination.center);
+    this._scout.reset();
+    this._scout.place(
+      {
+        width: frame.width,
+        height: frame.height,
+        scale: frame.scale,
+        zoom: destination.zoom,
+        style: frame.style,
+        tiles: covers.flatMap((c) => c.tiles),
+        centerX: centre.x,
+        centerY: centre.y,
+        world: worldSize(destination.zoom, DEFAULT_TILE_SIZE) * frame.scale,
+        now: at,
+        admit: true,
+      },
+      atlas,
+    );
+    this._scoutDone = !atlas.starved;
   }
 
   /**
    * The attribution, as the retained renderer draws it: the same box on the
    * same pixels (`attributionLayout`), the text in the labels' face, from
    * the labels' atlas. Null while there is none to draw — `attribution=""`,
-   * or no source that names one — and until its raster is in the texture,
+   * or no source that names one — and until its field is in the texture,
    * so the box and its text arrive together.
    */
   private _attributionFor(
@@ -1239,7 +1361,7 @@ export class GlMapDriver implements MapView {
     const s = frame.scale;
     const size = ATTRIBUTION_SIZE * s;
     const box = atlas.measure(text, size);
-    const entry = box ? atlas.entry(text, size) : null;
+    const entry = box ? atlas.entry(text) : null;
     if (!box || !entry) {
       this._attributionWanted = { text, size };
       return null;
@@ -1250,12 +1372,13 @@ export class GlMapDriver implements MapView {
       s,
     );
     const palette = overlayPalette(this.theme);
-    // The string sits `pad` inside its raster, and a level label's quad is
-    // centred on its anchor and set on whole pixels: this anchor puts the
-    // string's corner on the layout's.
+    // The string sits `pad` texels inside its field, the field is drawn
+    // `k` device pixels a texel, and a level label's quad is centred on its
+    // anchor: this anchor puts the string's corner on the layout's.
+    const k = size / atlas.base;
     const d = this._attributionText;
-    d[0] = at.x - atlas.pad + entry.width / 2;
-    d[1] = at.y - atlas.pad + entry.height / 2;
+    d[0] = at.x + (entry.width / 2 - atlas.pad) * k;
+    d[1] = at.y + (entry.height / 2 - atlas.pad) * k;
     d[2] = 1;
     d[3] = 0;
     d[4] = entry.x;
@@ -1265,6 +1388,7 @@ export class GlMapDriver implements MapView {
     d.set(premultiplied(parseColor(palette.text) ?? BLACK), 8);
     d.fill(0, 12, 17); // no halo: the box is what it reads against
     d[17] = 1;
+    d[18] = k;
     return {
       box: at.box,
       boxColor: premultiplied(

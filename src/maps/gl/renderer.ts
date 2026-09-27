@@ -55,7 +55,7 @@ import {
   linkProgram,
 } from './shaders.js';
 import type { GL, Program } from './shaders.js';
-import { quadInset } from './text.js';
+import { QUAD_INSET } from './text.js';
 import type { LabelAtlas } from './text.js';
 
 /** A rectangle in device pixels, top-left origin. */
@@ -346,7 +346,7 @@ export function gatesAt(
   );
 }
 
-/** Label rasters taken into the atlas texture per frame at most. */
+/** Label fields taken into the atlas texture per frame at most. */
 const ATLAS_UPLOADS_PER_FRAME = 24;
 
 /** GL's own name for "which VAO is bound", which the table may not carry. */
@@ -382,6 +382,9 @@ export class GlMapRenderer {
   private _circle: Program | null = null;
   private _raster: Program | null = null;
   private _atlasTexture: unknown = null;
+  /** RGBA a field is widened into for its upload, reused. Its colour
+   *  channels are white and never written again; only alpha changes. */
+  private _fieldScratch = new Uint8Array(0);
   private _atlasOwner: LabelAtlas | null = null;
   private _stats: GlRenderStats = GlMapRenderer._emptyStats();
   /** Bytes of tile geometry resident on the GPU. */
@@ -548,7 +551,7 @@ export class GlMapRenderer {
       stats.fade = Math.min(1, fade.alpha);
     }
 
-    // Even with nothing to draw: the batch's atlas may have rasters waiting
+    // Even with nothing to draw: the batch's atlas may have fields waiting
     // for the texture, and until they are in it nothing of theirs can be.
     if (labels) {
       this._labels(labels, width, height);
@@ -1204,7 +1207,7 @@ export class GlMapRenderer {
       gl,
       LABEL_VERTEX,
       LABEL_FRAGMENT,
-      ['u_viewport', 'u_atlas', 'u_inset', 'u_image'],
+      ['u_viewport', 'u_atlas', 'u_inset', 'u_spread', 'u_image'],
     ));
     gl.activeTexture(gl.TEXTURE0);
     this._uploadAtlas(atlas);
@@ -1225,7 +1228,7 @@ export class GlMapRenderer {
         [ATTRIBUTES.a_rect, 4, 16],
         [ATTRIBUTES.a_ink, 4, 32],
         [ATTRIBUTES.a_halo, 4, 48],
-        [ATTRIBUTES.a_params, 2, 64],
+        [ATTRIBUTES.a_params, 3, 64],
       ];
       for (const [location, size, offset] of fields) {
         gl.enableVertexAttribArray(location);
@@ -1250,7 +1253,8 @@ export class GlMapRenderer {
     const u = program.uniforms;
     gl.uniform2f(u.u_viewport, width, height);
     gl.uniform2f(u.u_atlas, atlas.size, atlas.size);
-    gl.uniform1f(u.u_inset, quadInset(atlas.pad));
+    gl.uniform1f(u.u_inset, QUAD_INSET);
+    gl.uniform1f(u.u_spread, atlas.pad);
     gl.uniform1i(u.u_image, 0);
     gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, batch.count);
     this._stats.drawCalls++;
@@ -1315,14 +1319,14 @@ export class GlMapRenderer {
   }
 
   /**
-   * Take what the atlas has waiting into the texture — a few dozen rasters
+   * Take what the atlas has waiting into the texture — a few dozen fields
    * a frame at most, so a batch landing is spread over frames rather than
    * paid in one. A texture that is new, or another atlas's, starts over:
    * the atlas queues everything again. Leaves the texture bound.
    *
-   * The rasters go up as the text engine read them back — straight RGBA,
-   * white where the glyphs are — because the shader reads only alpha:
-   * premultiplying them first was a pass over every pixel for nothing.
+   * Each field goes up in the alpha channel, the only one the shader
+   * reads; the texture stays RGBA because the one-channel formats are not
+   * in the core profile Apple's GL is.
    */
   private _uploadAtlas(atlas: LabelAtlas): void {
     const gl = this._gl;
@@ -1353,6 +1357,16 @@ export class GlMapRenderer {
       gl.bindTexture(gl.TEXTURE_2D, this._atlasTexture);
     }
     for (const entry of atlas.takeUploads(ATLAS_UPLOADS_PER_FRAME)) {
+      // A field is one byte a texel; the texture is RGBA, because the
+      // one-channel formats are not in a core profile, so it goes up in
+      // alpha — the one channel the shader reads.
+      const texels = entry.width * entry.height;
+      if (this._fieldScratch.length < texels * 4) {
+        this._fieldScratch = new Uint8Array(texels * 4).fill(255);
+      }
+      const rgba = this._fieldScratch.subarray(0, texels * 4);
+      const field = entry.pixels;
+      for (let i = 0; i < texels; i++) rgba[i * 4 + 3] = field[i];
       gl.texSubImage2D(
         gl.TEXTURE_2D,
         0,
@@ -1362,10 +1376,10 @@ export class GlMapRenderer {
         entry.height,
         gl.RGBA,
         gl.UNSIGNED_BYTE,
-        entry.pixels,
+        rgba,
       );
       entry.ready = true;
-      this._stats.uploadBytes += entry.pixels.length;
+      this._stats.uploadBytes += rgba.length;
     }
   }
 

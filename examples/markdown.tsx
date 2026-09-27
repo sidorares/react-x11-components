@@ -10,8 +10,9 @@ import { useEffect, useState } from 'react';
 import type { ReactElement } from 'react';
 import { createRoot } from 'react-x11';
 
-import { Formula, Markdown } from '../src/index.js';
-import type { FenceInfo } from '../src/index.js';
+import { Formula } from '../src/formula/index.js';
+import { Markdown } from '../src/markdown/index.js';
+import type { FenceInfo } from '../src/markdown/index.js';
 
 const DOCUMENT = `# Streaming markdown
 

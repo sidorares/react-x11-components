@@ -126,6 +126,7 @@ interface FontsLike {
 }
 
 interface SurfaceLike {
+  clear?(): void;
   getContext(name: string): {
     createImageData(
       w: number,
@@ -148,6 +149,35 @@ type SurfaceCtor = new (
 
 // `react-x11/ntk` types loosely on purpose; older ntk has no Surface at all
 const SurfaceClass = (Surface ?? null) as unknown as SurfaceCtor | null;
+
+/** What a series' density image is kept in, between the paints that show
+ *  it. */
+interface ScatterImage {
+  w: number;
+  h: number;
+  surface: SurfaceLike;
+  sctx: ReturnType<SurfaceLike['getContext']>;
+  data: { width: number; height: number; data: Uint8ClampedArray };
+  /** what the surface currently holds — a repaint with the same content
+   * (a crosshair moving over a dense scatter) is one composite, no
+   * refill and no re-upload */
+  contentKey: string;
+}
+
+/**
+ * Whether a surface made for this app can be composited into its windows:
+ * an X connection's pixmap through RENDER, and on a backend that makes its
+ * own surfaces (`app.createSurface` — Cocoa, Windows, Wayland) always.
+ * Asking only the first question kept every other backend on the rect
+ * path, where each rect is a primitive of its own.
+ */
+export function composites(app: unknown): boolean {
+  const a = app as {
+    createSurface?: unknown;
+    display?: { Render?: unknown };
+  } | null;
+  return typeof a?.createSurface === 'function' || !!a?.display?.Render;
+}
 
 const MIN_PAINT_PX = 8;
 const PAD_TOP = 6;
@@ -201,17 +231,8 @@ export class ChartPlotNode extends Node {
   private _scatterGrids = new Map<string, ScatterGrid>();
   private _stacks = new Map<string, StackEntry>();
   private _unsubscribe: (() => void) | null = null;
-  private _image: {
-    w: number;
-    h: number;
-    surface: SurfaceLike;
-    sctx: ReturnType<SurfaceLike['getContext']>;
-    data: { width: number; height: number; data: Uint8ClampedArray };
-    /** what the surface currently holds — a repaint with the same content
-     * (a crosshair moving over a dense scatter) is one composite, no
-     * refill and no re-upload */
-    contentKey: string;
-  } | null = null;
+  /** A retained density image per scatter series, by series id. */
+  private _images = new Map<string, ScatterImage>();
 
   constructor(props: Record<string, unknown>, app: NtkApp) {
     super(ELEMENT, props, app);
@@ -270,10 +291,16 @@ export class ChartPlotNode extends Node {
   override destroySubtree(): void {
     this._unsubscribe?.();
     this._unsubscribe = null;
-    this._image?.sctx.destroy?.();
-    this._image?.surface.destroy();
-    this._image = null;
+    for (const id of [...this._images.keys()]) this._dropImage(id);
     super.destroySubtree();
+  }
+
+  private _dropImage(id: string): void {
+    const image = this._images.get(id);
+    if (!image) return;
+    this._images.delete(id);
+    image.sctx.destroy?.();
+    image.surface.destroy();
   }
 
   /** A chart with no styled size still shows up usefully — the HTML canvas
@@ -672,23 +699,20 @@ export class ChartPlotNode extends Node {
         }
         return grid;
       },
-      blitImage: (x, y, w, h, fill, contentKey) => {
-        const app = this.app as {
-          display?: { Render?: unknown };
-        } | null;
-        if (!SurfaceClass || !app?.display?.Render) return false;
+      blitImage: (id, x, y, w, h, fill, contentKey) => {
+        if (!SurfaceClass || !composites(this.app)) return false;
         const ctx = this._paintCtx;
         if (!ctx || typeof ctx.drawImage !== 'function') return false;
         try {
-          if (this._image && (this._image.w !== w || this._image.h !== h)) {
-            this._image.sctx.destroy?.();
-            this._image.surface.destroy();
-            this._image = null;
+          let img = this._images.get(id);
+          if (img && (img.w !== w || img.h !== h)) {
+            this._dropImage(id);
+            img = undefined;
           }
-          if (!this._image) {
+          if (!img) {
             const surface = new SurfaceClass(this.app, { width: w, height: h });
             const sctx = surface.getContext('2d');
-            this._image = {
+            img = {
               w,
               h,
               surface,
@@ -696,14 +720,18 @@ export class ChartPlotNode extends Node {
               data: sctx.createImageData(w, h),
               contentKey: '',
             };
+            this._images.set(id, img);
           }
-          const img = this._image;
           // an unchanged content key means the retained surface already
           // holds these pixels: a repaint (a crosshair crossing the plot)
           // is one composite, not a megabyte re-upload
           if (!contentKey || img.contentKey !== contentKey) {
             img.data.data.fill(0);
             fill(img.data.data);
+            // Cleared first: putImageData replaces pixels by the canvas
+            // contract, and the Windows bridge's composites them instead,
+            // which would lay each refill over the one before.
+            img.surface.clear?.();
             img.sctx.putImageData(img.data, 0, 0);
             img.contentKey = contentKey ?? '';
           }
@@ -761,10 +789,18 @@ export class ChartPlotNode extends Node {
       stats,
       host: this._renderHost(),
       scale: this._scale,
+      // the pass's damage: a chart it merely touches draws what it reaches
+      clip: this.paintDamage(),
     };
     for (const geom of layout.geoms) renderSeries(env, geom);
     if (clipped) c.restore();
     this._paintCtx = null;
+    // a series gone from the spec takes its image with it
+    for (const id of [...this._images.keys()]) {
+      if (!layout.geoms.some((geom) => geom.spec.id === id)) {
+        this._dropImage(id);
+      }
+    }
 
     const onFrameStats = spec ? this._props().onFrameStats : undefined;
     if (onFrameStats) {

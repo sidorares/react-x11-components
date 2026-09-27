@@ -19,8 +19,8 @@ import { useMemo, useRef, useState } from 'react';
 import type { ReactElement } from 'react';
 import { Switch, createRoot, useSupports } from 'react-x11';
 
-import { Canvas, useFrame } from '../src/index.js';
-import type { Group, InstanceSpec, RootState } from '../src/index.js';
+import { Canvas, useFrame } from '../src/three/index.js';
+import type { Group, InstanceSpec, RootState } from '../src/three/index.js';
 
 /** Full-screen pass over the composed image: rolling CRT-ish scanlines.
  * `tDiffuse` and `vUv` are declared by the pass author, three.js-style;

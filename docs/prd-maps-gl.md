@@ -394,14 +394,28 @@ two rings of 16 samples) — which lets one raster serve every halo width too.
 A level label is set on whole pixels, texel for pixel, as crisp as the text
 engine made it.
 
+_Superseded by distance fields._ Each string is now set once, at a base size
+(16 device pixels, 32 at 2x), and kept as a signed distance field
+(`sdf.ts`: the exact Euclidean transform, started at the edge the
+antialiased coverage gives); the shader turns distance into ink with a one
+pixel ramp at any scale, and the halo is the same edge pushed out — one
+texture read where the dilation took thirty-three. A zoom ramp scales the
+type without a new raster, so the per-size rasters, and the wait for them
+after a settle, are gone. The cost is the engine's hinting (a name is its
+outline scaled, and the ink is biased 0.15 px outward to keep its weight)
+and about 0.2 ms of transform per string, made in the frame out of what the
+text budget has left rather than beside the frames, where a batch of them
+measured as event-loop stalls on a jump to a view whose every name was new.
+
 Each cost is metered, because on X11 text is not cheap: setting 64 strings
 for the first time costs 146 ms of shaping there against 10 ms on Cocoa (ntk
 loads fonts and rasterizes glyphs in JS). A frame measures new strings for
 1 ms while the camera moves and 4 ms at rest, and always at least one; a
 batch of rasters — 32 strings at most — is drawn between frames, not in one,
 for at most 1.5 ms, and read back only as far as it was drawn; the renderer
-takes at most 24 rasters a frame into the texture, as read back (the shader
-reads alpha, so there is nothing to convert); a label is drawn only once its
+takes at most 24 fields a frame into the texture, each widened into the
+alpha channel of an RGBA upload (the one-channel formats are not in Apple's
+core profile); a label is drawn only once its
 raster is there; and a moving view is placed again every 25 ms or so rather
 than every frame, the labels shown following the map every frame regardless.
 Each of those was bought by a late frame: a labelled pan's late frames came

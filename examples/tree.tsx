@@ -37,8 +37,8 @@ import path from 'node:path';
 import { SplitPane, createRoot } from 'react-x11';
 import type { DrawInfo } from 'react-x11';
 
-import { Tree } from '../src/index.js';
-import type { TreeGuideState, TreeRowState } from '../src/index.js';
+import { Tree } from '../src/tree/index.js';
+import type { TreeGuideState, TreeRowState } from '../src/tree/index.js';
 
 // --- the app's own data ----------------------------------------------------
 

@@ -263,41 +263,42 @@ looking for the missing prop:
 
 ## Props
 
-| prop               |                                                                                                                                                                                                                                                                                           |
-| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `sources`          | Where tiles come from, drawn in order. Empty draws the style's background, which is what a map with only markers on it wants.                                                                                                                                                             |
-| `mapStyle`         | How to draw them. `shortbreadStyle()` in the theme's light or dark palette by default. Named `mapStyle` so that `style` stays react-x11's.                                                                                                                                                |
-| `renderer`         | `'auto'` (the default): GL where this connection has direct GL, the retained renderer everywhere else. `'gl'` or `'retained'` pins one. See "Renderers".                                                                                                                                  |
-| `onRendererChange` | `(renderer, reason)`: the map landed on a renderer it did not ask for, or changed renderer. `reason` is `'no-direct-gl'`, `'gl-failed'` or `'forced'`.                                                                                                                                    |
-| `onError`          | GL failed on a map that asked for `renderer="gl"`, which never falls back.                                                                                                                                                                                                                |
-| `camera`           | `{ center: { lon, lat }, zoom }`, controlled. Leave it out and the **element** owns it — see "The camera" below.                                                                                                                                                                          |
-| `defaultCamera`    | Where an element-owned camera starts. Read once.                                                                                                                                                                                                                                          |
-| `onCameraChange`   | Every camera move, gesture steps included.                                                                                                                                                                                                                                                |
-| `onMoveEnd`        | Once, after a gesture settles — the moment to fetch what is now on screen.                                                                                                                                                                                                                |
-| `minZoom`          | 0 by default.                                                                                                                                                                                                                                                                             |
-| `maxZoom`          | 22 by default.                                                                                                                                                                                                                                                                            |
-| `markers`          | Points the user can click. See below.                                                                                                                                                                                                                                                     |
-| `overlays`         | Lines, areas and circles: a route, a traffic segment, a transit shape, a GeoJSON layer.                                                                                                                                                                                                   |
-| `onMapClick`       | A click anywhere, with the position in every space that could be wanted.                                                                                                                                                                                                                  |
-| `onMarkerClick`    | …and the marker, when there was one under it.                                                                                                                                                                                                                                             |
-| `onMarkerHover`    | The marker under the pointer, or `null`. The event is `null` for the leave that comes from the pointer leaving the map.                                                                                                                                                                   |
-| `interactive`      | `false` freezes the camera — no drag, no wheel, no keys. The map still draws and still reports clicks.                                                                                                                                                                                    |
-| `progressive`      | Retained renderer. Show a tile as it is drawn rather than when it is finished, and a style change as it is redrawn rather than swapped in whole. `false` by default, which is what every other map client does.                                                                           |
-| `rasterBudgetMs`   | Retained renderer. Milliseconds a frame may spend rasterizing tiles. 8 by default; `0` suspends it. See "Why a map fills in".                                                                                                                                                             |
-| `rasterScale`      | Retained renderer. Device pixels per logical pixel for the tile surfaces. The display's by default; 1 on a retina panel is ~1.6× quicker and correspondingly softer.                                                                                                                      |
-| `surfaceBudget`    | Retained renderer. Bytes of rendered tile surfaces to keep. 128 MB by default.                                                                                                                                                                                                            |
-| `batchVertices`    | Retained renderer. The rasterizer's path-flush size, 12,000. A real trade on X11; set it only with a profile in hand.                                                                                                                                                                     |
-| `levelFade`        | GL renderer. Milliseconds to cross-fade from one pyramid level to the next as the zoom crosses it; `0` (the default) cuts.                                                                                                                                                                |
-| `adaptive`         | GL renderer. `true` or `{ budgetMs }` (12 by default): draw moving frames with less detail when the full one would not fit the budget — the fill edge pass first, then the style's newest detail layers, then a coarser level.                                                            |
-| `buildWorkers`     | GL renderer. Worker threads that build tiles' geometry. `0` (the default) builds on this thread, a few milliseconds of each frame.                                                                                                                                                        |
-| `antialias`        | GL renderer. The half-pixel edge pass that antialiases fills; `true` by default.                                                                                                                                                                                                          |
-| `fillRule`         | GL renderer. `'nonzero'` (the default — the retained renderer's rule) or `'evenodd'`, a stencil pass cheaper on a table without `stencilOpSeparate`, and wrong wherever two features of a layer overlap.                                                                                  |
-| `onAfterDraw`      | GL renderer. `(gl, { width, height })` at the end of each frame, inside it: a readback, or drawing of your own over the map.                                                                                                                                                              |
-| `attribution`      | Overrides what the sources say. `''` removes it.                                                                                                                                                                                                                                          |
-| `onFrame`          | Called once per painted frame with `MapFrameStats` — what it cost, how many tiles are still sharpening, how many failed, and whether a style change is still being drawn behind the old one. `renderer` says which renderer drew it, and a GL frame carries its GPU-side figures in `gl`. |
-| `onTileError`      | Called per failed tile load, with whatever the source threw. Worth wiring up first: a map whose tiles fail looks identical to one still loading.                                                                                                                                          |
-| `style`            | react-x11's, on the box around the pane. Fills its parent unless you give it a height or a `flexGrow`.                                                                                                                                                                                    |
-| `children`         | Anything absolutely positioned over the map — a legend, a control panel. Over a GL map, drawn above the surface; see "Renderers".                                                                                                                                                         |
+| prop                |                                                                                                                                                                                                                                                                                           |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `sources`           | Where tiles come from, drawn in order. Empty draws the style's background, which is what a map with only markers on it wants.                                                                                                                                                             |
+| `mapStyle`          | How to draw them. `shortbreadStyle()` in the theme's light or dark palette by default. Named `mapStyle` so that `style` stays react-x11's.                                                                                                                                                |
+| `renderer`          | `'auto'` (the default): GL where this connection has direct GL, the retained renderer everywhere else. `'gl'` or `'retained'` pins one. See "Renderers".                                                                                                                                  |
+| `onRendererChange`  | `(renderer, reason)`: the map landed on a renderer it did not ask for, or changed renderer. `reason` is `'no-direct-gl'`, `'gl-failed'` or `'forced'`.                                                                                                                                    |
+| `onError`           | GL failed on a map that asked for `renderer="gl"`, which never falls back.                                                                                                                                                                                                                |
+| `camera`            | `{ center: { lon, lat }, zoom }`, controlled. Leave it out and the **element** owns it — see "The camera" below.                                                                                                                                                                          |
+| `defaultCamera`     | Where an element-owned camera starts. Read once.                                                                                                                                                                                                                                          |
+| `onCameraChange`    | Every camera move, gesture steps included.                                                                                                                                                                                                                                                |
+| `onMoveEnd`         | Once, after a gesture settles — the moment to fetch what is now on screen.                                                                                                                                                                                                                |
+| `minZoom`           | 0 by default.                                                                                                                                                                                                                                                                             |
+| `maxZoom`           | 22 by default.                                                                                                                                                                                                                                                                            |
+| `markers`           | Points the user can click. See below.                                                                                                                                                                                                                                                     |
+| `overlays`          | Lines, areas and circles: a route, a traffic segment, a transit shape, a GeoJSON layer.                                                                                                                                                                                                   |
+| `onMapClick`        | A click anywhere, with the position in every space that could be wanted.                                                                                                                                                                                                                  |
+| `onMarkerClick`     | …and the marker, when there was one under it.                                                                                                                                                                                                                                             |
+| `onMarkerHover`     | The marker under the pointer, or `null`. The event is `null` for the leave that comes from the pointer leaving the map.                                                                                                                                                                   |
+| `interactive`       | `false` freezes the camera — no drag, no wheel, no keys. The map still draws and still reports clicks.                                                                                                                                                                                    |
+| `progressive`       | Retained renderer. Show a tile as it is drawn rather than when it is finished, and a style change as it is redrawn rather than swapped in whole. `false` by default, which is what every other map client does.                                                                           |
+| `rasterBudgetMs`    | Retained renderer. Milliseconds a frame may spend rasterizing tiles. 8 by default; `0` suspends it. See "Why a map fills in".                                                                                                                                                             |
+| `rasterScale`       | Retained renderer. Device pixels per logical pixel for the tile surfaces. The display's by default; 1 on a retina panel is ~1.6× quicker and correspondingly softer.                                                                                                                      |
+| `surfaceBudget`     | Retained renderer. Bytes of rendered tile surfaces to keep. 128 MB by default.                                                                                                                                                                                                            |
+| `batchVertices`     | Retained renderer. The rasterizer's path-flush size, 12,000. A real trade on X11; set it only with a profile in hand.                                                                                                                                                                     |
+| `levelFade`         | GL renderer. Milliseconds to cross-fade from one pyramid level to the next as the zoom crosses it; `0` (the default) cuts.                                                                                                                                                                |
+| `adaptive`          | GL renderer. `true` or `{ budgetMs }` (12 by default): draw moving frames with less detail when the full one would not fit the budget — the fill edge pass first, then the style's newest detail layers, then a coarser level.                                                            |
+| `buildWorkers`      | GL renderer. Worker threads that build tiles' geometry. `0` (the default) builds on this thread, a few milliseconds of each frame.                                                                                                                                                        |
+| `antialias`         | GL renderer. The half-pixel edge pass that antialiases fills; `true` by default.                                                                                                                                                                                                          |
+| `fillRule`          | GL renderer. `'nonzero'` (the default — the retained renderer's rule) or `'evenodd'`, a stencil pass cheaper on a table without `stencilOpSeparate`, and wrong wherever two features of a layer overlap.                                                                                  |
+| `labelsWhileMoving` | GL renderer. Place labels in every frame while the camera moves and set a new name's text in the frame that places it, so names match the zoom at every step. Off by default: new names wait until the zoom has been still for 120 ms.                                                    |
+| `onAfterDraw`       | GL renderer. `(gl, { width, height })` at the end of each frame, inside it: a readback, or drawing of your own over the map.                                                                                                                                                              |
+| `attribution`       | Overrides what the sources say. `''` removes it.                                                                                                                                                                                                                                          |
+| `onFrame`           | Called once per painted frame with `MapFrameStats` — what it cost, how many tiles are still sharpening, how many failed, and whether a style change is still being drawn behind the old one. `renderer` says which renderer drew it, and a GL frame carries its GPU-side figures in `gl`. |
+| `onTileError`       | Called per failed tile load, with whatever the source threw. Worth wiring up first: a map whose tiles fail looks identical to one still loading.                                                                                                                                          |
+| `style`             | react-x11's, on the box around the pane. Fills its parent unless you give it a height or a `flexGrow`.                                                                                                                                                                                    |
+| `children`          | Anything absolutely positioned over the map — a legend, a control panel. Over a GL map, drawn above the surface; see "Renderers".                                                                                                                                                         |
 
 ## Markers
 
@@ -488,14 +489,14 @@ gestures, the handle and the events, the marker hit test, the label anchors,
 the order things are drawn in, the attribution's place — so a map looks and
 behaves the same on both, with these exceptions:
 
-|                                 | retained                                                                         | GL                                                                              |
-| ------------------------------- | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| a line layer's `cap` and `join` | as the style says                                                                | round caps and round joins, always                                              |
-| `dash`                          | any pattern                                                                      | four dashes at most; a longer pattern is cut                                    |
-| label placement                 | in world pixels: a pan never moves a label                                       | in screen space: names fade in and out as the view changes                      |
-| a translucent stroke            | composited as one path                                                           | each pixel once, under the stencil                                              |
-| window capture                  | sees the map                                                                     | sees nothing where the surface is                                               |
-| props read                      | `progressive`, `rasterBudgetMs`, `rasterScale`, `surfaceBudget`, `batchVertices` | `levelFade`, `adaptive`, `buildWorkers`, `antialias`, `fillRule`, `onAfterDraw` |
+|                                 | retained                                                                         | GL                                                                                                   |
+| ------------------------------- | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| a line layer's `cap` and `join` | as the style says                                                                | round caps and round joins, always                                                                   |
+| `dash`                          | any pattern                                                                      | four dashes at most; a longer pattern is cut                                                         |
+| label placement                 | in world pixels: a pan never moves a label                                       | in screen space: names fade in and out as the view changes                                           |
+| a translucent stroke            | composited as one path                                                           | each pixel once, under the stencil                                                                   |
+| window capture                  | sees the map                                                                     | sees nothing where the surface is                                                                    |
+| props read                      | `progressive`, `rasterBudgetMs`, `rasterScale`, `surfaceBudget`, `batchVertices` | `levelFade`, `adaptive`, `buildWorkers`, `antialias`, `fillRule`, `labelsWhileMoving`, `onAfterDraw` |
 
 A prop only one renderer reads is accepted by both and ignored by the other,
 so switching renderers is never a type error and never a rewrite.
@@ -614,6 +615,17 @@ they do not, because a complete blurry picture beats a sharp one with holes
 in it. A cold map with neither shows its background. `MapFrameStats` counts
 both as `fromAncestor` and `fromDescendant`.
 
+**The GL renderer keeps an overview, so a zoom out always has an ancestor.**
+Descendants only reach four levels, and a trackpad's momentum can zoom out
+fifteen in a quarter of a second — past everything cached, onto levels
+nothing has loaded, where each frame drew the background alone: the whole
+map one flat colour, every label gone with its tiles, then back. So the view's
+ancestors every other level up to the root are asked for after its own
+tiles and kept, a tile or two a level (a view is a speck at those zooms),
+and any level a zoom out lands on has one within two levels above it:
+blurred, never blank. Measured over hard trackpad flicks, frames with
+nothing to draw went from 28 to 1.
+
 **A frame that only continues a redraw claims one pixel.** There is no "call
 me next frame" on the element seam — damage is what schedules a paint — so a
 rasterization in progress asks for its next frame with a single-pixel claim.
@@ -650,6 +662,64 @@ labels would be clipped at its edge — which is where half of them sit.
 Placing in world rather than screen pixels is what lets a pan translate an
 existing placement rather than recompute it, which is what keeps the pan a
 blit.
+
+**On the retained renderer, a name is measured where it is placed and
+shaped where it is drawn.** A zoom places again at every sixteenth of a
+level, over every name on the tiles loaded — thousands, most of them never
+on screen — so placement reads sizes from a cache of measurements, and only
+the names a frame draws are shaped. Both caches turn over in two
+generations rather than being cleared, so what is in use survives the
+bound. A wheel zoom through six levels shaped 43,000 strings in four
+seconds when placement shaped everything it measured; it shapes under 8,000
+now, and its slowest frames on a Mac went from 50 ms to 29.
+
+**On the GL renderer, a name is set once and drawn at every size.** Labels
+there are placed per frame in screen space, and the text comes from the
+app's own text engine — CoreText on a Mac, the X11 backend's shaper — set
+once per string at a base size (16 pixels, 32 on a 2x panel), read back,
+and kept as a **signed distance field** in an atlas the GPU draws from. A
+name drawn at 11 pixels and the same name at 20 are one field scaled, so a
+zoom ramp grows the type continuously and asks for nothing new, and a halo
+of any width is a threshold on the same distances. What it gives up is the
+engine's hinting: a name is its outline scaled, a hair narrower than the
+engine sets it at small sizes, and the ink is biased outward 0.15 pixels
+so it keeps the engine's weight. A slanted street name comes out sharper
+than a resampled bitmap did.
+
+Where the text engine answers a layout's own coverage
+(sidorares/react-x11#673 — every engine core has, ntk's, DirectWrite's and
+CoreText's, from react-x11 2.21.1), a name is set from that instead of drawn onto an offscreen
+surface and read back: no staging surface, no readback, and the outlines'
+own coverage rather than the ink the screen gets. Icons, which are paths,
+still go through the surface, and so does everything on an engine that
+cannot answer. Measured on Windows, a cold map's settle frames spent 5.9 ms
+on labels where they spent 6.4, and had 10-20% more names up by the end
+of it.
+
+While the camera moves no new name is admitted (names already shown ride
+along), so the view that lands is named once rather than at every step on
+the way; a name then fades in over 220 ms. `labelsWhileMoving` is the other
+policy: placement in every frame, a new name admitted at any step of a zoom
+and its text set in the frame that places it, so it is drawn in that frame.
+The names then always match the zoom on screen — and a zoom crosses several
+label sets, so they arrive and leave all the way through it. Measured on a
+Cocoa panel it doubles a moving frame's CPU (about 0.6 → 1.3 ms at p50),
+costs 15-20% of the frame rate under a trackpad or wheel, and gets a jump's
+first sixty names on screen in 53 ms instead of 120. Around both:
+
+- **A wheel's glide sets its destination's labels on the way.** The glide
+  knows where it stops, so while its frames are drawn the view it will
+  land on is placed out of sight and every name it will show is measured
+  and set — its tiles asked for, behind the current view's. A drag, a
+  touchpad and an application's own animation have no destination to ask
+  about, and are named when they stop.
+- **A field is made in the frame, out of the text budget.** A field is
+  about 0.2 ms of work, so a batch of them at once was several
+  milliseconds beside the frames; each frame makes what placement left of
+  its budget time for (at least one), and its own draw uploads them.
+- **A full atlas never takes a name off screen.** Room is made in place
+  from the row of fields drawn longest ago; the repack that remains as a
+  last resort uploads what it moved before the frame that draws it.
 
 **A street's name follows its street — straight.** Both renderers take
 their anchors from `src/maps/anchors.ts`: a street's pieces are merged into

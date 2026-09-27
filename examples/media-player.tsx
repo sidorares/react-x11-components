@@ -9,8 +9,8 @@ import { useRef, useState } from 'react';
 import type { ReactElement } from 'react';
 import { createRoot } from 'react-x11';
 
-import { MediaPlayer } from '../src/index.js';
-import type { MediaPlayerHandle } from '../src/index.js';
+import { MediaPlayer } from '../src/media-player/index.js';
+import type { MediaPlayerHandle } from '../src/media-player/index.js';
 
 const src = process.argv[2];
 

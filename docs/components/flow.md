@@ -240,7 +240,12 @@ the focus, not the node. Three things follow, and all three are the point:
   same frame; the body component stays memoized on the node, its
   selection, the zoom and its size, so the per-step cost is one style-only
   commit on one box. `render` is re-invoked only when what it shows could
-  have changed.
+  have changed. A call through the handle — `setViewport`, `zoomTo`,
+  `fitView` and the rest — commits the same way, so an animation loop that
+  steps the viewport moves the bodies in the frame that pans the pane. On
+  React's own schedule their box caught up in jumps, and a jump is a layout
+  move under the pan's blit: on macOS a fifth of a pan's frames repainted
+  the whole pane for it.
 - **It zooms with the pane.** The subtree is mounted in a box carrying
   core's `scale` prop (react-x11 2.6), which multiplies every length under it
   — CSS `zoom` semantics rather than a transform, so text is _shaped_ at the
@@ -250,7 +255,10 @@ the focus, not the node. Three things follow, and all three are the point:
   a body that wants to show less of itself when it is small. Below `zoom`
   0.6 it is not mounted at all — nobody could read it, and one real subtree
   per card is the cost a zoomed-out overview cannot pay, so the pane draws
-  the card instead.
+  the card instead. Through a zoom — a gesture, or an animation stepping
+  the viewport a frame at a time — bodies that would cost more than a
+  frame's budget to re-scale sit it out, mounted but hidden, and come back
+  once it rests; a single jump applies at once, and a few bodies zoom live.
 - **`headerHeight` is what keeps the node draggable.** The body starts below
   the strip, so there is always somewhere to grab that is not a text field.
   `0` hands the whole box over, and then only the keyboard can move the node.
@@ -365,8 +373,10 @@ minimap and controls outside it are skipped, and their pixels survive on the
 window from the previous frame. The window's backing is the composition
 cache; the damage rect is the dirty state. Resize, the connection line,
 hover and the selection box all claim the same way, and an animated edge's
-dash timer invalidates the box the animated edges were last drawn in rather
-than the pane.
+dash timer invalidates the box the animated edges on screen are drawn in
+rather than the pane — all of them, whatever the last pass reached: a box
+taken from the edges one pass drew left a node dragged beside one animated
+edge the only dash still marching.
 
 The other half is the commit. The app applies each step's `position` change,
 so the pane's props get a new `nodes` array per step — and a new identity for
@@ -382,22 +392,139 @@ Measured on the 300-node scene, one drag step went from a full repaint
 step from ~380 ms (its animated edge was invalidating the pane per tick) to
 ~70 ms.
 
+**What did not move is copied, not painted.** The rect a step claims is only
+as small as the moved node's edges are short. A long edge's bounds are most
+of the pane, and the stress lattice sends its last rows' edges back to its
+first nodes, so dragging one of those repainted the window every step. Every
+card and edge in it was drawn again, at 46-57 fps on Cocoa. So a drag's
+first paint draws the rest of the graph into two pictures of the pane: the
+ground and the edges, then the cards on a clear ground. Each step copies
+the claimed rect from the first, draws the moved nodes' edges, copies from
+the second, and draws the moved nodes. That is the painter's order, with
+every edge under every card and the dragged node over all of them. The same
+drag runs at 112-114 fps. The pictures go on release, or when anything else
+about the graph changes. If the view moves under the gesture, that gesture
+paints live from then on, since remaking both pictures every step would
+cost two full paints a step. Marching dashes stand still while the pictures
+are up. Cutting the damage finer was tried first and did not help: core
+paints at most four rects a frame and merges the rest, and the pieces of a
+long diagonal merge back into most of the pane.
+
+Under GL the same idea is a layer. The world is built once without the
+moved nodes and their edges, and a step packs just those, drawn in two
+halves around the world's cards. At 2,000 nodes a step went from 5-7 ms of
+scene and packing to about 1 ms.
+
 The seams this stands on are public API: `paintDamage()` and the
 `selfDamagedProps` registration (react-x11#301), and `defaultWheel`/
 `defaultMouseMove` (react-x11#302) — a bare `<flowgraph>` zooms and hovers
 on its own.
 
 **Panning blits.** A pan frame is `scrollContents` (react-x11#303) on the
-pane with the furniture bands carved out, plus ordinary claims for the
-strips — the blit gate tests foreign claims against the _rect_
-(react-x11#309, landed as #310), so the strips sit edge to edge with the
-copy and the frame stays a blit. Measured on the 300-node scene: **19
-requests and 1.6 KB a frame** bare, **~550 requests and ~170 KB** with the
-minimap and controls up (the strip repaints; it holds the minimap's three
-hundred dots), from ~2,465 requests and ~1.8 MB when every pan frame
-repainted the world. Mounted bodies still force the repaint path: their
-gesture-time commits claim inside the rect, which declines a blit by
-design.
+whole pane, with the minimap and the controls handed over as _pinned_
+(react-x11#682, 2.22): the copy moves everything, and core repaints each
+panel and the stale image of it the copy dragged along, as well as the
+strips the shift exposed. They used to be carved out of the region
+instead, and a region is one rectangle, so controls in one bottom corner
+and the minimap in the other cost a band the pane's full width, every
+card, label and edge in it repainted on every pan frame. Over the stress
+example's widgets on XQuartz that was 47 frames a second, where a pane
+with no furniture pans at 80. Before any of this, on the 300-node scene,
+every pan frame repainted the world: ~2,465 requests and ~1.8 MB. A panel
+repainted by itself is drawn exactly as the whole pane draws it, which a
+pinned panel is every pan frame. Until that held, the controls' glyphs
+took their line caps from whatever the pass had stroked before them. Mounted bodies ride it: they are laid out in one box a
+pan moves by exactly the pan, which the pane hands to `scrollContents` as a
+rider (react-x11#671), so their pixels are copied with the graph's and the
+box's commit claims nothing. `<Flow>` puts that box inside one that clips it
+to the pane, so it leaves nothing outside the copy. A body entering or leaving the pane, or changing as it
+goes, claims inside the rect and makes that one step a repaint. On the
+stress example's widgets board, 56 bodies mounted, a 2D pan went from 44 to
+84 frames a second, 20.6 ms a flush to 8.4. With none on screen a pan
+commits nothing: node types that _can_
+mount bodies used to cost `<Flow>` a render per step for the origin of a
+layer that was not there. And animated edges hold their dashes while a pan
+blits — a tick claims the dashes inside the band the pan copies, which
+declines the copy, and a sixth of a pan's frames repainted the pane whole:
+120 frames a second against 175 on the stress example's lattice, and every
+stutter in it. They march again once the pan has held still for two ticks.
+Under GL a dash is a uniform and never waits. A tick claims the box of the
+animated edges it drew, and only as much of it as the pane shows: an edge
+on its way out of the pane takes that box past the pane's sides, and
+claimed whole, every tick repainted whatever the window has beside the
+graph.
+
+**A pass draws what it reaches.** Each damage rect is its own pass, and each
+builds the scene for its rect: an edge is kept by the curve it takes, not
+just by the box around its two nodes, and of an edge that is kept only the
+runs of segments that come near the rect are stroked — a label plate or an
+arrowhead beside it is left to the pass that holds it. The strip a pan
+exposes down the pane's edge is crossed by every long edge in the graph, and
+its pass traced every point of every one of them; the band beside the
+minimap drew a hundred edges whose boxes reached it and whose curves did
+not. A dashed edge is drawn whole, because a run would start its pattern
+again. On the stress example's lattice at 1.25× the 2D pan went from 74
+frames a second (7.1 ms a flush) to 127 (4.1 ms) with this and the
+paragraph above.
+
+**Labels ride a 2D zoom.** A zoom step repaints the pane, and it shaped
+every label on screen again at a size the next step moved off — half of
+what the step cost. Inside a gesture each label is drawn from the size it
+already has, scaled through the context, and set at its own size once the
+zoom has rested for `GL_ZOOM_REST_MS` (120 ms), the same rest the GL
+renderer rebuilds its world after; a single step — a button, `fitView`, an
+app's `setViewport` — is set exactly at once. Only where the context says
+it scales text with its transform (`scalesText`, the Windows and macOS
+contexts): on X11 ntk draws glyphs at the size they were shaped at, so the
+labels a zoom step draws there are shaped at their size — which, with the
+picture below, is the ones in the ring a zoom out uncovers. On the stress
+lattice at 1.25× on Windows a zoom went from 34 to 39 frames a second.
+
+**A 2D zoom gesture composites a picture**, where the graph costs more
+than a frame to paint. From a gesture's second step the pane paints the
+graph and its ground — the background and the grid — once, onto an
+offscreen `Surface`, and every step after composites that picture scaled:
+the GL renderer's world drawn scaled, as a bitmap. What the picture does
+not reach is painted live, culled to up to four bands round it
+— the ring a zoom out uncovers, a side a pan exposes — and so are the
+selection box and the panels, at the zoom of the moment. Once that ring is
+half the pane, or the picture has been magnified past 2× (the span GL
+keeps to), a step paints a new one. A drag or a connection under way gets
+no picture, since it would hold the moving node or the line where they
+were; any change to the graph drops it; and the rest repaints everything
+exactly. The grid is in the picture because a zoom passes through
+fractional pitches, where the grid is thousands of runs rather than one
+tile: with the graph composited and the grid still live, the grid was 7 of
+the 9 ms left in a step. On the stress example on Windows, in a 2014×993
+pane on a 180 Hz display, a wheel zoom went from 39–40 frames a second to
+150–178 on the lattice, from 31 to about 150 on the fan-out, and from 43
+to 142–148 with 80 widget bodies mounted.
+
+A picture costs a graph that paints quickly: its composite is ~20 ms a step
+at 2x on macOS whatever the graph, a new one was a 50–150 ms step on X11,
+and it holds a surface the size of the pane — 15 MB for a 1200×800 pane at
+2x. So a zoom composites one only once painting the graph whole has cost
+more than 16 ms, and paints live again under 12, judged on the median of
+the last five whole paints: the steps of a zoom painted live, and the
+pictures painted for zooms, less their ground. A zoom's first step is not
+one of them — it sets every label at its new size, which the steps after it
+do not — and a slow paint or two decide nothing. A thirty-node graph zooms
+live: on macOS at 92–94 frames a second, where its picture held it to 46,
+and on XQuartz with its slowest frames at 22 ms rather than 57–60.
+
+**Under GL a label is a distance field.** Each string is set once, at 16
+device pixels (32 at 2x), and kept as the distance of every texel to its
+glyphs' edge; the shader draws it sharp at any size, every frame of a zoom
+included, so a zoom sets no labels at all. The first cut set a raster per
+size and re-set every label after every zoom — 70 ms of label work and a
+second world rebuild after an eight-notch wheel zoom over the stress
+lattice. What fields cost is a string's first appearance, and the engine's
+hinting at the drawn size. A label waiting for its field is packed as a box
+drawn as nothing, and written in when the field lands, so the labels of a
+view arrive over a few frames, nearest its middle first — the stress
+lattice's first at 56 ms on Windows and the last at 111. The field is
+`<Map>`'s own (`src/internal/sdf.ts`); `docs/prd-flow-gl.md` has the
+numbers.
 
 **The grid tiles.** At an integral device pitch the background is one
 `createPattern('repeat')` composite (ntk#263) — the phase baked into the
@@ -419,8 +546,9 @@ side by side — drawn `task` cards and a mounted, resizable `options` node made
 of real checkboxes, buttons and a textarea.
 
 `npm run examples:flow-stress` is the one to reach for when changing how the
-pane draws: two scene buttons (20 nodes on a spiral, 300 nodes and 745 edges
-in a fan), a **pan** button that drives the viewport continuously, and a live
+pane draws: scene buttons (lattices of 200 and 2,000 nodes, 300 nodes and 745
+edges in a fan, and 400 and 200 nodes with mounted widget and chart bodies),
+a **pan** button that drives the viewport continuously, and a live
 readout from the trace — per pan frame while the loop runs, per drag step
 while you drag a node. Pan measures the full-frame path; dragging measures
 the damage-scoped one.

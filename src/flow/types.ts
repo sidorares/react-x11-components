@@ -509,6 +509,12 @@ export interface NodeBodyRect extends FlowRect {
    * units. */
   zoom: number;
   selected: boolean;
+  /** The whole card the body sits in, in the same frame as the body's rect:
+   *  `<Flow>` paints it (`paintCard`) under the body, so card and body are
+   *  stacked together. */
+  card: FlowRect;
+  /** The pointer is over the node — its card paints its hover border. */
+  hovered: boolean;
 }
 
 // --- the imperative surface ------------------------------------------------
@@ -649,11 +655,117 @@ export interface FlowProps<N = FlowNodeData, E = unknown> {
    * between the drawn half and the mounted one, and the raw `<flowgraph>`
    * element is the only reason it is a prop rather than a private method.
    *
+   * Each rect is relative to `origin`: where the graph's own origin sits in
+   * the pane, which is the viewport's translation. A pan moves the origin
+   * and nothing else, and re-sends the same `bodies` array — so the bodies
+   * can be laid out in one box at `origin` that a pan moves, rather than
+   * each moved by a render of its own.
+   *
    * `sync` is true when the change came out of a live gesture — a drag
    * step, a wheel tick, an arrow key. Motion dispatches at continuous
    * priority, which React may hold across several frames while the pane
    * paints each step immediately; a gesture-time receiver must commit
    * synchronously or the mounted bodies visibly trail the drawn cards.
+   *
+   * `held` is true while a zoom is moving: the bodies are to stay mounted
+   * and be hidden, and `bodies`/`origin` are the last ones sent, unchanged.
+   * The next call, once the zoom has rested, has `held` false and the
+   * bodies at the new scale.
    */
-  onNodeBodies?: (bodies: readonly NodeBodyRect[], sync: boolean) => void;
+  /**
+   * Where the minimap and the controls are, relative to the pane's top-left
+   * — sent when that changes. `<Flow>` paints them on canvases of its own
+   * over the node bodies (`setPanelCanvases`).
+   * @internal
+   */
+  onPanels?: (rects: readonly FlowRect[]) => void;
+  onNodeBodies?: (
+    bodies: readonly NodeBodyRect[],
+    sync: boolean,
+    origin: XYPosition,
+    held: boolean,
+  ) => void;
+  /**
+   * Which renderer draws the graph. `'retained'` (the default) draws through
+   * the 2D context, everywhere a window can. `'gl'` draws through a
+   * `<glarea>`, every frame from the whole scene, and needs direct GL —
+   * `useSupports('shaders')`; where it has none, or its surface fails, the
+   * pane falls back to `'retained'` and says so through `onError`.
+   *
+   * **Not yet a replacement.** The GL renderer draws the graph — cards,
+   * edges, arrowheads, handles, labels, the grid, the minimap — but not yet
+   * a node type's own `paint`, nor a mounted body over the surface. Labels
+   * are drawn from distance fields, sharp at every zoom, and a string drawn
+   * for the first time arrives a frame or two after the frame that asked
+   * for it; `onFrame`'s `gaps` counts what a frame left out.
+   * `docs/prd-flow-gl.md` has the plan and the numbers.
+   */
+  renderer?: 'retained' | 'gl';
+  /**
+   * Every frame the pane drew, on either renderer, with what it cost this
+   * thread — `<Map onFrame>`'s shape, for the same reason: one callback an
+   * application can read an FPS off without caring which renderer drew.
+   *
+   * A frame, not a paint: the 2D renderer may paint several damage rects in
+   * one window flush, and those are reported once, summed. Both renderers
+   * draw on change and not otherwise, so an idle pane reports nothing.
+   */
+  onFrame?: (stats: FlowFrameStats) => void;
+  /**
+   * How mounted node bodies ride a zoom gesture. Re-scaling a body is a
+   * restyle, a layout and a repaint of its whole subtree on every step —
+   * about a millisecond each — so each step predicts what the bodies on
+   * screen would add, and over the budget they sit the gesture out: mounted,
+   * state intact, off screen, back at the new scale once the zoom rests.
+   *
+   * `true` (the default) budgets 8 ms a step; `{ budgetMs }` picks another,
+   * `0` holding them through every gesture zoom; `false` never holds them —
+   * every body zooms live, whatever it costs. A pan or a programmatic
+   * viewport change never holds them.
+   */
+  adaptive?: boolean | { budgetMs?: number };
+  /** The GL renderer could not draw, and the pane went back to the 2D one. */
+  onError?: (error: Error) => void;
+}
+
+/** One frame — see {@link FlowProps.onFrame}. The draw-call and buffer
+ *  counts are the GL renderer's, and always `0` on the retained one. */
+export interface FlowFrameStats {
+  /** Which renderer drew the frame. */
+  renderer: 'retained' | 'gl';
+  /** Milliseconds building the scene: routing, culling, colours. */
+  sceneMs: number;
+  /** Milliseconds packing it into instance streams — `0` on the retained
+   *  renderer, which packs nothing. */
+  packMs: number;
+  /** Milliseconds issuing it: the 2D calls, or the uploads and draws. */
+  drawMs: number;
+  drawCalls: number;
+  lines: number;
+  boxes: number;
+  triangles: number;
+  /** Bytes handed to the GPU this frame. */
+  uploadBytes: number;
+  /** Whether the graph was rebuilt and re-uploaded this frame, rather than
+   *  drawn from the GPU where a pan moved it. False on a pan. */
+  worldRebuilt: boolean;
+  /** What the frame could not draw yet: strings, and nodes whose type
+   *  paints itself. */
+  gaps: { text: number; custom: number };
+  /** The mounted bodies' budget (`adaptive`) as the frame found it. */
+  bodies: FlowBodyBudget;
+}
+
+/** Where mounted node bodies stand against `adaptive`'s budget. */
+export interface FlowBodyBudget {
+  /** Bodies on screen. */
+  count: number;
+  /** Sitting the current zoom gesture out. */
+  held: boolean;
+  /** What re-scaling one body adds to a zoom step, learned from frames. */
+  perBodyMs: number;
+  /** `count × perBodyMs`: what a zoom step would pay to re-scale them. */
+  predictedMs: number;
+  /** The budget that is held against — `Infinity` when `adaptive` is off. */
+  budgetMs: number;
 }

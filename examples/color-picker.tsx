@@ -11,7 +11,11 @@ import { useState } from 'react';
 import type { ReactElement } from 'react';
 import { createRoot, useTheme } from 'react-x11';
 
-import { ColorPicker, ColorField, contrastRatio } from '../src/index.js';
+import {
+  ColorPicker,
+  ColorField,
+  contrastRatio,
+} from '../src/color-picker/index.js';
 
 const BRAND = [
   '#2980b9',

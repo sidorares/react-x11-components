@@ -322,6 +322,33 @@ function staticClosure(
   return out;
 }
 
+/**
+ * `<Flow>` must not cost its GL renderer — the same arrangement as `<Map>`'s,
+ * for the same reason: the shaders, the packer and the surface arrive by
+ * dynamic `import()` when a pane asks for `renderer="gl"`
+ * (`src/flow/index.ts`). The markers are a word only a shader writes and a
+ * message only the GL module's linker throws.
+ */
+test('the GL flow renderer is a lazy chunk, not part of <Flow>', async () => {
+  const chunks = await bundleChunks(
+    "import { Flow } from './dist/flow/index.js';\n" +
+      'globalThis.__keep = Flow;\n',
+  );
+  const eager = staticClosure(chunks);
+  for (const marker of ['gl_FragColor', 'flow/gl: shader failed']) {
+    const holder = eager.find((chunk) => chunk.text.includes(marker));
+    assert.ok(
+      !holder,
+      `loading <Flow> should not load the GL renderer (${marker} is in ` +
+        `${holder?.path.split('/').pop()}, which the entry imports statically)`,
+    );
+  }
+  assert.ok(
+    chunks.some((chunk) => chunk.text.includes('gl_FragColor')),
+    'and the GL renderer should still be reachable, in a chunk of its own',
+  );
+});
+
 test('each component is also importable on its own', async () => {
   for (const { exportName, dir } of COMPONENTS) {
     const subpath = `./dist/${dir}/index.js`;

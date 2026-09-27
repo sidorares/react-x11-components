@@ -13,7 +13,7 @@ import { useEffect, useState } from 'react';
 import type { ReactElement, ReactNode } from 'react';
 import { createRoot } from 'react-x11';
 
-import { Markdown } from '../src/index.js';
+import { Markdown } from '../src/markdown/index.js';
 
 const DOCUMENT = `# Components in the prose
 

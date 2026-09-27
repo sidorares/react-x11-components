@@ -15,8 +15,8 @@ import { useState } from 'react';
 import type { ReactElement } from 'react';
 import { createRoot, useDesktopCalendarEvents } from 'react-x11';
 
-import { Calendar, DatePicker, monthOf, today } from '../src/index.js';
-import type { CalendarDay } from '../src/index.js';
+import { Calendar, DatePicker, monthOf, today } from '../src/calendar/index.js';
+import type { CalendarDay } from '../src/calendar/index.js';
 
 /** The first and last instant of the month being shown. */
 function monthWindow(month: string): { from: Date; to: Date } {

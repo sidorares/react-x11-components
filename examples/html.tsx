@@ -26,12 +26,12 @@ import { dirname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRoot } from 'react-x11';
 
-import { Html, useHtmlHandle } from '../src/index.js';
+import { Html, useHtmlHandle } from '../src/html/index.js';
 import type {
-  HtmlResourceRequest,
-  HtmlResourceResult,
-  HtmlScriptRequest,
-} from '../src/index.js';
+  ResourceRequest as HtmlResourceRequest,
+  ResourceResult as HtmlResourceResult,
+  ScriptRequest as HtmlScriptRequest,
+} from '../src/html/index.js';
 
 // The one directory resources may come from. Everything else is declined,
 // which is what makes this a policy rather than a suggestion.

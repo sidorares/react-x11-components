@@ -7,6 +7,7 @@
 //   npm run examples:maps-gl -- --online         # OpenStreetMap's servers only
 //   npm run examples:maps-gl -- --zoom=16.5      # start closer (street names are 14+)
 //   npm run examples:maps-gl -- --no-labels      # start with labels off
+//   npm run examples:maps-gl -- --live-labels    # names placed mid-zoom too
 //   npm run examples:maps-gl -- --source=openfreemap   # start on another provider
 //   npm run examples:maps-gl -- --snap-numbers   # house numbers inside their buildings
 //
@@ -243,6 +244,7 @@ function App(): React.ReactElement {
   const [fade, setFade] = useState(0);
   const [budget, setBudget] = useState<(typeof BUDGETS)[number]>(12);
   const [labels, setLabels] = useState(!args.includes('--no-labels'));
+  const [liveLabels, setLiveLabels] = useState(args.includes('--live-labels'));
   const [snap, setSnap] = useState(args.includes('--snap-numbers'));
   const [providerId, setProviderId] = useState(
     GL_PROVIDERS.some((p) => p.id === sourceArg) ? sourceArg! : 'osm',
@@ -326,12 +328,6 @@ function App(): React.ReactElement {
                 label: p.label,
               }))}
               onChange={(event) => setProviderId(event.value)}
-              // Drawn, not AppKit's popup, until sidorares/react-x11#552: a
-              // native menu opened from a trigger this near the window's top,
-              // with anything but the first option chosen, closes on the next
-              // layout pass — which the status line below brings twice a
-              // second.
-              native={false}
               style={{ width: 240 }}
             />
             <Button onClick={() => start('pan')}>Pan</Button>
@@ -346,6 +342,9 @@ function App(): React.ReactElement {
             </Button>
             <Button onClick={() => setLabels(!labels)}>
               {labels ? 'Labels on' : 'Labels off'}
+            </Button>
+            <Button onClick={() => setLiveLabels(!liveLabels)}>
+              {liveLabels ? 'Labels live' : 'Labels at rest'}
             </Button>
             <Button onClick={() => setSnap(!snap)}>
               {snap ? 'Numbers in buildings' : 'Numbers as mapped'}
@@ -369,6 +368,7 @@ function App(): React.ReactElement {
           defaultCamera={defaultCamera}
           antialias={antialias}
           levelFade={fade}
+          labelsWhileMoving={liveLabels}
           adaptive={budget ? { budgetMs: budget } : false}
           buildWorkers={2}
           onFrame={onFrame}

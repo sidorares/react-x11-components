@@ -40,12 +40,12 @@ import {
   useReorderItem,
   type ReorderDragStart,
   type ReorderStyles,
-} from '../src/index.js';
+} from '../src/reorder/index.js';
 import type {
   ReorderDragUpdate,
   ReorderId,
   ReorderInsert,
-} from '../src/index.js';
+} from '../src/reorder/index.js';
 
 function Caption({ children }: { children: ReactNode }): ReactElement {
   return (
