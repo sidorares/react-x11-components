@@ -8227,6 +8227,78 @@ metric(
 );
 
 metric(
+  "a table cell's min-content is its widest word, read or probed",
+  async () => {
+    // squeezed to nothing, each column is its min-content wide: read from
+    // the words where they break only at spaces, and probed where they may
+    // break elsewhere — a hyphen here
+    const { node } = await render(
+      '<style>body{margin:0}td{padding:0 3px}.f{float:left;clear:left;' +
+        'padding:0 3px}</style>' +
+        '<table style="width:1px;border-spacing:0"><tr>' +
+        '<td id="a">alpha betalong gamma</td>' +
+        '<td id="b">foo<b>barbaz</b> qux</td>' +
+        '<td id="c"><div style="padding:0 7px">word longerword</div></td>' +
+        '<td id="d">well-known</td>' +
+        '<td id="e">café crème brûlée</td>' +
+        '</tr></table>' +
+        '<div style="width:1000px"><div class="f" id="ra">betalong</div>' +
+        '<div class="f" id="rb">foo<b>barbaz</b></div>' +
+        '<div class="f" id="rc" style="padding:0 10px">longerword</div>' +
+        '<div class="f" id="rd1">well-</div><div class="f" id="rd2">known</div>' +
+        '<div class="f" id="re">crème brûlée</div></div>',
+    );
+    const el = view(node);
+    const width = (id: string) => boxOf(el, id).width;
+    assert.strictEqual(width('a'), width('ra'));
+    assert.strictEqual(width('b'), width('rb'), 'a word across two runs');
+    assert.strictEqual(width('c'), width('rc'), "a block's padding counted");
+    assert.strictEqual(
+      width('d'),
+      Math.max(width('rd1'), width('rd2')),
+      'the hyphen is a break, which the probe finds',
+    );
+    assert.strictEqual(width('e'), width('re'), 'a no-break space joins');
+  },
+);
+
+metric('a table of plain text is laid out at no pixel width', async () => {
+  // its cells' min-content widths are read from their words: the probe a
+  // pixel wide was four fifths of a table's first layout on X11
+  const words = 'Some words in a cell that wraps. ';
+  const { node } = await render(
+    `<table style="width:300px"><tr><td>${words}</td><td>${words.repeat(2)}` +
+      '</td><td>42.00</td></tr></table>',
+  );
+  const el = view(node) as unknown as {
+    app: { fonts: FontsLike };
+    _source: { document: unknown };
+    _cascade: unknown;
+  };
+  const engine = el.app.fonts;
+  const widths: number[] = [];
+  const spy: FontsLike = {
+    layout: (content, style, options) => {
+      if (options?.maxWidth !== undefined) widths.push(options.maxWidth);
+      return engine.layout(content, style, options);
+    },
+    match: (family, style) => engine.match(family, style),
+  };
+  const { buildBoxes } = await import('../src/html/layout/boxes.js');
+  const { layoutDocument } = await import('../src/html/layout/block.js');
+  const tree = buildBoxes(el._source.document as never, {
+    cascade: el._cascade as never,
+    scale: 1,
+    imageSize: () => null,
+    urlSize: () => null,
+    controlSize: () => ({ width: 0, height: 0 }) as never,
+  });
+  layoutDocument(tree, spy, 400, 600);
+  assert.ok(widths.length > 0);
+  assert.ok(!widths.some((w) => w <= 1), `widths: ${widths.join(', ')}`);
+});
+
+metric(
   'a shrink-to-fit box of short words is laid out at no pixel width',
   async () => {
     // its floor is measured only where a word may be wider than the room: a

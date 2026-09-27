@@ -19,7 +19,13 @@
 import { AUTO, isPct, resolve } from '../css/values.js';
 import type { GridLine, GridTrack } from '../css/style.js';
 import { Box } from './boxes.js';
-import { measureIntrinsicWidth, moveTo, resolveEdges } from './block.js';
+import {
+  MIN_CONTENT_PROBE,
+  exactMinContent,
+  measureIntrinsicWidth,
+  moveTo,
+  resolveEdges,
+} from './block.js';
 import type { LayoutContext } from './block.js';
 
 interface Item {
@@ -69,7 +75,11 @@ export function layoutGrid(
     if (item.max >= 0) return;
     const margins = item.box.marginLeft + item.box.marginRight;
     item.max = measureIntrinsicWidth(item.box, ctx, Infinity) + margins;
-    item.min = measureIntrinsicWidth(item.box, ctx, 1) + margins;
+    // where its words say it exactly, read from the layout just made
+    const exact = ctx.fonts && exactMinContent(item.box, ctx.fonts);
+    item.min =
+      (exact ?? measureIntrinsicWidth(item.box, ctx, MIN_CONTENT_PROBE)) +
+      margins;
   };
   const widths = sizeColumns(cols, items, contentWidth, colGap, measure);
   const lefts: number[] = [];
