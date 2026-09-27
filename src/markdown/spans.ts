@@ -88,6 +88,11 @@ function pushRun(
   out: TextRun[],
 ): void {
   if (text.length === 0) return;
+  // A tab in running text reads as a space, as HTML sets it, and each text
+  // engine draws U+0009 as whatever its font has for it: a box in ntk's
+  // fonts, CoreText's own stops 28 points apart. It is laid out as the
+  // space it reads as, the same length, so every offset holds.
+  if (text.includes('\t')) text = text.replace(/\t/g, ' ');
   const inLink = st.href !== undefined;
   const color = st.code ? s.codeColor : inLink ? s.linkColor : s.color;
   const run: TextRun = {

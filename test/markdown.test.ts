@@ -356,6 +356,19 @@ test(
   },
 );
 
+test('a tab in running text is laid out as a space', async () => {
+  // each engine drew U+0009 as its font has it — a box in ntk's, CoreText's
+  // own stops 28 points apart — where HTML reads it as a space; the same
+  // length, so offsets hold
+  await renderX11(
+    h(Markdown, { source: 'name\tstatus `a\tb`\n\n| x\ty |\n| - |\n| 1 |' }),
+    { backend: 'mock' },
+  );
+  const [para, cell] = mdNodes();
+  assert.equal(para.textContent(), 'name status a b');
+  assert.equal(cell.textContent(), 'x y');
+});
+
 test(
   'drag selects across blocks and mouse-up takes PRIMARY',
   {
