@@ -99,6 +99,7 @@ separately, and there are six.
 | 29     | an inline box's line height, cleared empty blocks  | 5,443 (92%) | 4,962 (84%) |
 | 30     | margins beside floats, `flow-root`, `min-height`   | 5,450 (92%) | 4,969 (84%) |
 | 31     | a box's edges on the pixel grid                    | 5,460 (93%) | 4,971 (84%) |
+| 32     | the newline after `<pre>`, pseudo-class arguments  | 5,460 (93%) | 4,972 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -1227,6 +1228,24 @@ Round 31 lost 2 tests on macOS, both boxes whose height comes from
 CoreText's fractional line heights, where the old rounding happened to
 land on the reference's pixel; browsers round a font's metrics to whole
 pixels before they lay a line out.
+
+### Round 32
+
+116. **A line break straight after `<pre>`'s start tag was text.** HTML's
+     parser drops it as an authoring convenience (13.2.6.4.7), and
+     htmlparser2 leaves that rule to its caller, so every code block
+     written `<pre>` and a line break began with an empty line. The handler
+     that builds the tree drops it now, after `<pre>`, `<listing>` and
+     `<textarea>`, whose value loses it too, and in a stream whose chunk
+     ends between the tag and the line break.
+117. **`:lang()` with nothing in it was a selector.** A functional
+     pseudo-class given no argument, and one given an argument it does not
+     take, make their selector invalid, and with it the group, as an
+     unknown name does. `:is()` and `:where()` forgive an empty list. 1
+     test.
+
+Round 32 lost 1 test on X11, an XHTML one whose `<pre>` begins with a line
+break: an XML parser keeps it, and `<Html>` parses HTML.
 
 ## What `<Html>` supports
 

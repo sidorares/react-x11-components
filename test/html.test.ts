@@ -310,6 +310,24 @@ test('one invalid selector drops its whole group', () => {
   );
 });
 
+test('a pseudo-class takes an argument where it takes one, and only there', () => {
+  // `:lang()` names no language, `:not()` negates nothing and `:hover(x)`
+  // is no pseudo-class: each makes its group invalid, as an unknown name
+  // does (the WPT suite's lang-selector-002). `:is()` forgives an empty
+  // list, and `:host` is a pseudo-class with an argument or without
+  const sheet = parseStylesheet(
+    ':lang(), div { color: red }\n' +
+      ':not( ), a { color: red }\n' +
+      ':hover(x), b { color: red }\n' +
+      'p:nth-child { color: red }\n' +
+      ':is(), :lang(fr), :nth-child(2n), :host, :host(.x) { color: green }',
+  );
+  assert.deepStrictEqual(
+    sheet.rules.map((r) => r.selector),
+    [':is()', ':lang(fr)', ':nth-child(2n)', ':host', ':host(.x)'],
+  );
+});
+
 test('@import counts only first, and never inside @media', () => {
   const first = parseStylesheet('@charset "utf-8"; @import "a.css"; p {}');
   assert.deepStrictEqual(first.imports, ['a.css']);
