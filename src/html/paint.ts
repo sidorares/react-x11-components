@@ -385,7 +385,15 @@ function paintContent(
   // clipped but a positioned box whose containing block is outside: that
   // is painted once this clip is gone (`paintPositioned`).
   let level: ClipLevel | null = null;
-  if (clipsOverflow(box)) {
+  const clips = clipsOverflow(box);
+  // a table's captions are outside the table box that clips, and painted
+  // before it does
+  if (clips && box.kind === 'table') {
+    for (const child of box.children) {
+      if (child.kind === 'table-caption') paintBox(ctx, child, options);
+    }
+  }
+  if (clips) {
     // on the pixels the box's own background covers, inside its borders:
     // rounded out to whole pixels instead, a box at a fractional position
     // showed a row of what it clips beyond its background's edge
@@ -545,6 +553,8 @@ function paintFlowLines(
     if (child.kind === 'text' || child.kind === 'break') continue;
     if (layered(box, child) || onLine(box, child) || child.isFloat) continue;
     if (!inFlow(box, child, options)) {
+      // a clipping table's captions were painted before its clip
+      if (child.kind === 'table-caption' && clipsOverflow(box)) continue;
       paintBox(ctx, child, options);
       continue;
     }
@@ -621,6 +631,8 @@ function clipsOverflow(box: Box): boolean {
     case 'table-cell':
     case 'table-caption':
     case 'flex':
+    // the table box, its captions outside it (the CSS 2.1 errata, 11.1.1)
+    case 'table':
       break;
     default:
       return false;

@@ -4866,3 +4866,77 @@ test('right to left, a relative box set on both sides moves by its right, and a 
   const b = boxOf(el, 'b');
   assert.strictEqual(a.x, b.x + b.width, 'the first cell at the right');
 });
+
+// --- url(), font-family, and a table that clips --------------------------------
+
+test('a url() is read as CSS Syntax reads it, and a bad one drops its declaration', async () => {
+  const { node } = await render(
+    '<style>' +
+      // `/*` in an unquoted url is no comment: taken for one, it ran on
+      // through the rest of the sheet, and #a lost its colour
+      '#a { background-image: url(a/*b) } #a { color: #00ff00 }' +
+      "#b { background-image: url(a\\ b\\'c) }" +
+      // a bad url, and anything after one, drop the declaration whole
+      '#c { background: #0000ff } #c { background: #ff0000 url(a b) }' +
+      '#d { background-image: url(x.png) } #d { background-image: url(y.png) repeat }' +
+      // the end of the sheet closes a url
+      '#e { background-image: url("e.png' +
+      '</style>' +
+      '<div id="a"></div><div id="b"></div><div id="c"></div>' +
+      '<div id="d"></div><div id="e"></div>',
+  );
+  const el = view(node);
+  const style = (id: string) =>
+    (
+      boxOf(el, id) as unknown as {
+        style: {
+          backgroundImage: string | null;
+          backgroundColor: string | null;
+          color: string;
+        };
+      }
+    ).style;
+  assert.strictEqual(style('a').backgroundImage, 'a/*b');
+  assert.strictEqual(style('a').color, '#00ff00');
+  assert.strictEqual(style('b').backgroundImage, "a b'c");
+  assert.strictEqual(style('c').backgroundColor, '#0000ff');
+  assert.strictEqual(style('d').backgroundImage, 'x.png');
+  assert.strictEqual(style('e').backgroundImage, 'e.png');
+});
+
+test('a font-family with a name that is none is dropped (CSS 2.1 15.3)', async () => {
+  const { node } = await render(
+    '<div id="p" style="font-family: serif">' +
+      '<div id="a" style="font-family: test!foo, monospace"></div>' +
+      '<div id="b" style="font-family: 1996, monospace"></div>' +
+      '<div id="c" style="font-family: Arial Black, \'Segoe UI\', -apple-system, monospace"></div>' +
+      '</div>',
+  );
+  const el = view(node);
+  const family = (id: string) =>
+    (boxOf(el, id) as unknown as { style: { fontFamily: string } }).style
+      .fontFamily;
+  assert.strictEqual(family('a'), family('p'), 'inherited, not set');
+  assert.strictEqual(family('b'), family('p'));
+  assert.strictEqual(
+    family('c'),
+    'Arial Black, Segoe UI, -apple-system, monospace',
+  );
+});
+
+metric(
+  'a table that does not let its content overflow clips it to the table box, its caption outside',
+  async () => {
+    const { result } = await renderWithBytes(
+      '<style>body{margin:0}table{overflow:hidden;border-spacing:0}' +
+        'caption{height:20px;background:#0000ff}td{padding:0}' +
+        'div{width:20px;height:20px;margin-top:-10px;background:#ff0000}</style>' +
+        '<table><caption></caption><tr><td><div></div></td></tr></table>',
+      {},
+    );
+    const ctx = result.ctx;
+    // the caption is drawn, and the cell's block does not reach up over it
+    await expectPixel(ctx, 10, 15, '#0000ff', { message: 'the caption' });
+    await expectPixel(ctx, 10, 25, '#ff0000', { message: 'in the table box' });
+  },
+);

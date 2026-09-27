@@ -83,6 +83,7 @@ separately, and there are six.
 | 13     | SVG, replaced sizes, objects                       | 5,219 (89%) | 4,779 (81%) |
 | 14     | columns' widths and images                         | 5,241 (89%) | 4,800 (81%) |
 | 15     | a block in an inline box, right to left            | 5,299 (90%) | 4,854 (82%) |
+| 16     | url(), font-family, tables that clip               | 5,317 (90%) | 4,869 (83%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -790,6 +791,24 @@ Round 14 lost none.
     first column at the left (17.2); and a relative box with both `left`
     and `right` set moved by its `left`, where right to left it is its
     `right` that wins (9.4.3). 6 tests on X11 and 4 on macOS.
+
+### Round 16
+
+80. **`url()` was read by a pattern, not as a token** (CSS Syntax 3
+    4.3.6). `url(a/*b)` started a comment that ran on through the rest of
+    the sheet, `url(a\ b)` kept its backslash, a url the end of the sheet
+    cut off was no url, and a bad one — white space or a quote inside it,
+    or anything after it — was used where it makes its declaration
+    invalid. The `background` shorthand is read whole before it sets
+    anything, so an invalid one no longer half applies. 4 tests.
+81. **A `font-family` with a name that is none was kept.** A name is a
+    string or identifiers (15.3): `test!foo, Ahem` set Ahem, where the
+    declaration is dropped. 8 tests on X11 and 6 on macOS.
+82. **A table did not clip.** `overflow` applies to the table box, not to
+    the wrapper with its captions (the errata to 11.1.1). 6 tests on X11
+    and 5 on macOS.
+
+Round 16 lost none.
 
 ## What `<Html>` supports
 

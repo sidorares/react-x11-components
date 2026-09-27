@@ -204,6 +204,15 @@ function withoutComments(text: string): string {
       i += 1;
     } else if (c === '"' || c === "'") {
       quote = c;
+    } else if (
+      (c === 'u' || c === 'U') &&
+      text[i + 3] === '(' &&
+      text.slice(i, i + 3).toLowerCase() === 'url' &&
+      !isNameChar(text[i - 1])
+    ) {
+      // an unquoted url is one token, `/*` and all: `url(a/*b)` is no
+      // comment, and taken for one it ran on through the rest of the sheet
+      i = urlEnd(text, i + 3) - 1;
     } else if (c === '/' && text[i + 1] === '*') {
       const close = text.indexOf('*/', i + 2);
       out += text.slice(from, i);
@@ -771,6 +780,82 @@ function urlEnd(text: string, paren: number): number {
     i += c === '\\' ? 2 : 1;
   }
   return text.length;
+}
+
+/**
+ * A `url(…)` as CSS Syntax 3 reads it (4.3.6): quoted, a string, which the
+ * end of the sheet may close as it closes the parenthesis; or unquoted, to
+ * its `)`, with white space only around it and its escapes resolved. `null`
+ * for `none`, or a url of nothing. `undefined` for a bad url — a quote, a
+ * parenthesis or white space inside an unquoted one, or anything after a
+ * quoted one's string — which makes the declaration it is in invalid.
+ */
+export function parseUrl(value: string): string | null | undefined {
+  const v = value.trim();
+  if (!v || v.toLowerCase() === 'none') return null;
+  if (!/^url\(/i.test(v)) return unquote(v) || null;
+  let i = 4;
+  while (i < v.length && isSpace(v[i])) i += 1;
+  let out = '';
+  const quote = v[i];
+  if (quote === '"' || quote === "'") {
+    i += 1;
+    while (i < v.length && v[i] !== quote) {
+      if (v[i] === '\\') {
+        if (v[i + 1] === '\n') {
+          i += 2;
+          continue;
+        }
+        const escape = readEscape(v, i);
+        out += escape.char;
+        i = escape.end;
+      } else {
+        out += v[i];
+        i += 1;
+      }
+    }
+    i += 1;
+    while (i < v.length && isSpace(v[i])) i += 1;
+    if (i < v.length && v[i] !== ')') return undefined;
+    return rest(v, i) ? undefined : out || null;
+  }
+  while (i < v.length && v[i] !== ')') {
+    const c = v[i];
+    if (isSpace(c)) {
+      while (i < v.length && isSpace(v[i])) i += 1;
+      if (i < v.length && v[i] !== ')') return undefined;
+      break;
+    }
+    if (c === '"' || c === "'" || c === '(') return undefined;
+    if (c === '\\') {
+      if (!isEscape(v, i)) return undefined;
+      const escape = readEscape(v, i);
+      out += escape.char;
+      i = escape.end;
+      continue;
+    }
+    out += c;
+    i += 1;
+  }
+  return rest(v, i) ? undefined : out || null;
+}
+
+/** Whether anything follows a url's `)` at `at`: `url(a) repeat` is no
+ *  image, and the declaration it is in is invalid. */
+function rest(v: string, at: number): boolean {
+  return at + 1 < v.length && v.slice(at + 1).trim() !== '';
+}
+
+function unquote(value: string): string {
+  const v = value.trim();
+  if (
+    v.length >= 2 &&
+    (v[0] === '"' || v[0] === "'") &&
+    v[v.length - 1] === v[0]
+  ) {
+    return v.slice(1, -1);
+  }
+  return v;
 }
 
 /** The first `target` from `at` that no string, escape or bracket holds, or
