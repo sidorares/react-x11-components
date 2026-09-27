@@ -7645,3 +7645,126 @@ test('the shadow cache keeps a surface per key, the oldest given up first', asyn
   cache.destroy();
   void result;
 });
+
+// --- aspect-ratio and object-fit ------------------------------------------------
+
+test('aspect-ratio: a ratio, auto, or both', async () => {
+  const { node } = await render(
+    '<div id="a" style="aspect-ratio:16 / 9"></div>' +
+      '<div id="b" style="aspect-ratio:auto 4/3"></div>' +
+      '<div id="c" style="aspect-ratio:1;aspect-ratio:auto"></div>' +
+      '<div id="d" style="aspect-ratio:2;aspect-ratio:0 / 1"></div>' +
+      '<div id="e" style="aspect-ratio:3;aspect-ratio:wide"></div>',
+  );
+  const el = view(node);
+  const ratioOf = (id: string) =>
+    (boxOf(el, id) as unknown as { style: { aspectRatio: unknown } }).style
+      .aspectRatio;
+  assert.deepStrictEqual(ratioOf('a'), { ratio: 16 / 9, auto: false });
+  assert.deepStrictEqual(ratioOf('b'), { ratio: 4 / 3, auto: true });
+  assert.strictEqual(ratioOf('c'), null);
+  // a ratio with a nought in it is none, and a word that is no ratio is
+  // dropped, leaving the one before
+  assert.strictEqual(ratioOf('d'), null);
+  assert.deepStrictEqual(ratioOf('e'), { ratio: 3, auto: false });
+});
+
+test('aspect-ratio makes an auto height of the width, grown to what it holds', async () => {
+  // Tailwind's aspect-video and aspect-square, whose boxes were as tall as
+  // their content, and so nothing at all when empty
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div id="a" style="width:320px;aspect-ratio:16/9"></div>' +
+      // of the border box where box-sizing says so, and of the content box
+      '<div id="b" style="width:100px;padding:10px;box-sizing:border-box;' +
+      'aspect-ratio:1"></div>' +
+      '<div id="c" style="width:100px;padding:10px;aspect-ratio:1"></div>' +
+      // grown to its content, unless it clips
+      '<div id="d" style="width:100px;aspect-ratio:4"><div style="height:60px">' +
+      '</div></div>' +
+      '<div id="e" style="width:100px;aspect-ratio:4;overflow:hidden">' +
+      '<div style="height:60px"></div></div>' +
+      // and a height it gives is one a percentage resolves against
+      '<div style="width:200px;aspect-ratio:2"><div id="f" style="height:50%">' +
+      '</div></div>' +
+      '<iframe id="g" style="width:320px;aspect-ratio:16/9;border:0"></iframe>',
+  );
+  const el = view(node);
+  const heightOf = (id: string) => boxOf(el, id).height;
+  assert.strictEqual(heightOf('a'), 180);
+  assert.strictEqual(heightOf('b'), 100);
+  assert.strictEqual(heightOf('c'), 120);
+  assert.strictEqual(heightOf('d'), 60);
+  assert.strictEqual(heightOf('e'), 25);
+  assert.strictEqual(heightOf('f'), 50);
+  // a frame has no ratio of its own, and takes the one it is given
+  assert.strictEqual(heightOf('g'), 180);
+});
+
+test('a flex container lays its items out in its content box', async () => {
+  // a border-box height holds the padding: `h-16 py-2 items-center` put
+  // its items eight pixels low, centred in 64px from the top of 48
+  const { node } = await render(
+    '<style>body{margin:0} *{box-sizing:border-box}</style>' +
+      '<div style="display:flex;align-items:center;height:64px;padding:8px 0">' +
+      '<div id="a" style="height:20px;width:50px"></div></div>' +
+      // and a column with a minimum height gives its flex-1 the rest
+      '<div style="display:flex;flex-direction:column;min-height:300px">' +
+      '<div style="height:30px"></div><div id="b" style="flex:1"></div>' +
+      '<div id="c" style="height:30px"></div></div>' +
+      // an aspect-ratio box centres in the height its ratio gives it
+      '<div style="width:320px;aspect-ratio:16/9;display:flex;' +
+      'align-items:center;justify-content:center">' +
+      '<div id="d" style="width:40px;height:40px"></div></div>',
+  );
+  const el = view(node);
+  assert.strictEqual(boxOf(el, 'a').y, 22);
+  assert.strictEqual(boxOf(el, 'b').height, 240);
+  assert.strictEqual(boxOf(el, 'c').y, 334);
+  const d = boxOf(el, 'd');
+  assert.deepStrictEqual([d.x, d.y - 364], [140, 70]);
+});
+
+test('object-fit places an image in its box, and object-position in it', async () => {
+  const fits = ['fill', 'cover', 'contain', 'none', 'scale-down'];
+  const { node } = await render(
+    '<style>body{margin:0} img{display:block;width:90px;height:90px}</style>' +
+      fits
+        .map(
+          (fit, i) => `<img id="i${i}" src="a.png" style="object-fit:${fit}">`,
+        )
+        .join('') +
+      '<img id="i5" src="a.png" style="object-fit:cover;object-position:left">' +
+      '<img id="i6" src="a.png" style="object-fit:scale-down;width:400px;height:200px">',
+  );
+  const el = view(node);
+  // an image twice as wide as it is tall: 240 by 120
+  for (let i = 0; i < 7; i += 1) {
+    (boxOf(el, `i${i}`) as unknown as { intrinsic: unknown }).intrinsic = {
+      width: 240,
+      height: 120,
+      missing: 0,
+      ratio: 2,
+    };
+  }
+  const ops: PaintOp[] = [];
+  await fillsOf(view(node), ops, { imageFor: () => ({}) });
+  const drawn = ops.filter((op) => op.op === 'image');
+  const at = (i: number) => {
+    const op = drawn[i];
+    return op.op === 'image' ? [op.x, op.y - i * 90, op.w, op.h] : [];
+  };
+  assert.deepStrictEqual(at(0), [0, 0, 90, 90], 'fill: stretched');
+  assert.deepStrictEqual(at(1), [-45, 0, 180, 90], 'cover: the middle');
+  assert.deepStrictEqual(at(2), [0, 22.5, 90, 45], 'contain: all of it');
+  assert.deepStrictEqual(at(3), [-75, -15, 240, 120], 'none: its own size');
+  assert.deepStrictEqual(at(4), [0, 22.5, 90, 45], 'scale-down, when smaller');
+  assert.deepStrictEqual(at(5), [0, 0, 180, 90], 'cover, from the left');
+  // scale-down in a box larger than the image: its own size, in the middle
+  const big = drawn[6];
+  assert.ok(big.op === 'image');
+  assert.deepStrictEqual([big.x, big.w, big.h], [80, 240, 120]);
+  // what falls past its box is clipped to it, and nothing else is
+  const clips = ops.filter((op) => op.op === 'clip').length;
+  assert.strictEqual(clips, 3, 'cover twice and none');
+});

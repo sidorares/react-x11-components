@@ -109,6 +109,7 @@ separately, and there are six.
 | 39     | linear gradients; WPT's fuzzy rule                 | 5,460 (93%) | 4,972 (84%) |
 | 40     | percentage and elliptical radii                    | 5,460 (93%) | 4,972 (84%) |
 | 41     | box shadows                                        | 5,460 (93%) | 4,972 (84%) |
+| 42     | aspect-ratio, object-fit, a flex box's height      | 5,460 (93%) | 4,972 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -1423,6 +1424,30 @@ minmax(16rem, 1fr))` are the layouts of half the pages written this
      own, with the cut made there rather than as a clip the size of the
      window, and composited after: 23ms for the same thirty, and 10ms
      without shadows. The CSS 2.1 suite has none.
+
+### Round 42
+
+128. **`aspect-ratio` was not read.** Tailwind's `aspect-video` and
+     `aspect-square` boxes were as tall as their content, and nothing at
+     all when empty. A ratio makes an `auto` height of the width now (CSS
+     Sizing 4, 5.1), of the box `box-sizing` names, and a height it gives
+     is one a percentage inside resolves against; the box grows past it to
+     hold its content unless it clips (5.2), and a replaced element takes
+     it over its own ratio, or, written `auto 16 / 9`, only where it has
+     none.
+129. **`object-fit` was not read.** An image was stretched to its box
+     whatever it said, so an avatar written `object-cover` was squashed.
+     It is fitted now (CSS Images 3, 5.5) — within its box, over the whole
+     of it, at its own size or the smaller of those two — and placed by
+     `object-position`, with what falls past the box cut by a rectangle.
+130. **A flex container laid its items out in its border box.** It handed
+     Yoga its `height` as the height of its content, so a `border-box`
+     height held its padding twice and `h-16 py-2 items-center` centred its
+     items eight pixels low; it ignored a percentage height and the ratio
+     too. It hands on the content box's height where that is definite now,
+     and its `min-height` and `max-height` where it is not, so a column
+     `min-h-screen` gives its `flex-1` the rest of the window. The CSS 2.1
+     suite has none of the three.
 
 ## What `<Html>` supports
 

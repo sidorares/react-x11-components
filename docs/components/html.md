@@ -139,7 +139,11 @@ padding and border counted once, and a width, height or basis of its own is
 its content box's unless `box-sizing` says otherwise. An `auto` margin takes
 the free space on its side, so `margin-left: auto` puts an item at the end
 of its row. A row of flex items inside another item is as wide as its items
-side by side. Items meet where
+side by side. The items are laid out in the container's content box, its
+height less the padding and borders a `border-box` height holds, and a
+container with no height of its own gives its `flex: 1` items what its
+`min-height` leaves them, so a page `min-h-screen flex flex-col` puts its
+footer at the bottom of the window. Items meet where
 they meet, fractions of a pixel included, and the paint snaps their edges.
 A grid (CSS Grid 1) takes its column tracks from `grid-template-columns` —
 lengths, percentages, `fr`s, `auto`, `minmax()`, and `repeat()` by a count
@@ -239,11 +243,22 @@ head a browser implies, and stays hidden.
 an intrinsic width, height and ratio (CSS 2.1 10.3.2, 10.6.2), and a
 `min-`/`max-` limit on one axis carries to the other through its ratio — an
 `<img width="600" style="max-width: 100%">` in a narrow column is scaled,
-not squashed (10.4). An `<object>` whose `data` is an image shows it, and
+not squashed (10.4). `object-fit` fits the image to its box — stretched,
+the default, or at its own ratio, within it, over the whole of it
+(`object-cover`, an avatar's), at its own size, or the smaller of those —
+and `object-position` places it, in the middle unless it says otherwise;
+what falls past the box is cut. An `<object>` whose `data` is an image shows it, and
 its fallback content until then or when it is not one. `<iframe>`,
 `<video>` and `<embed>` are boxes of their `width` and `height` — 300×150
 without them, as HTML sizes them — with nothing in them, because nothing is
 loaded.
+
+**Ratios:** `aspect-ratio` makes an `auto` height of the width, of the box
+`box-sizing` names — Tailwind's `aspect-video` and `aspect-square` — and
+that height is one a percentage inside resolves against. A box grows past
+it to hold its content, as CSS Sizing 4 has it, unless it clips; a
+replaced element takes it over its own ratio, or, written `auto 16 / 9`,
+only where it has none.
 
 **SVG:** an inline `<svg>`, an SVG image and an SVG background are drawn by
 ntk's `SvgView`, which core's own `<svg>` element draws with, so they draw

@@ -28,7 +28,13 @@ import type { Config as YogaConfig, Node as YogaNode } from 'react-x11/yoga';
 import { AUTO, isPct, resolve, resolveOrNull } from '../css/values.js';
 import type { ComputedStyle } from '../css/style.js';
 import { Box } from './boxes.js';
-import { measureIntrinsicWidth, moveTo, resolveEdges } from './block.js';
+import {
+  clampHeight,
+  measureIntrinsicWidth,
+  moveTo,
+  percentBaseInside,
+  resolveEdges,
+} from './block.js';
 import { layoutGrid } from './css-grid.js';
 import type { LayoutContext } from './block.js';
 
@@ -78,9 +84,22 @@ export function layoutFlex(
   const root = Y.Node.create(flexConfig());
   applyContainer(root, box.style);
   root.setWidth(contentWidth);
-  const height = resolveOrNull(box.style.height, NaN);
+  // The content box's height, where it is definite: a length or a
+  // percentage that resolves, or what `aspect-ratio` makes of the width —
+  // less the padding and borders a `border-box` height holds, which put
+  // `h-16 py-2 items-center` eight pixels low. Where it is not, the limits
+  // on it, so a column `min-h-screen` gives its `flex-1` the rest.
+  const definite = percentBaseInside(box);
+  const height = Number.isFinite(definite) ? definite : null;
   if (height !== null) root.setHeight(height);
-  else root.setHeightAuto();
+  else {
+    root.setHeightAuto();
+    const extra = box.verticalExtra;
+    const min = clampHeight(box, extra) - extra;
+    if (min > 0) root.setMinHeight(min);
+    const max = clampHeight(box, Infinity) - extra;
+    if (Number.isFinite(max)) root.setMaxHeight(Math.max(0, max));
+  }
 
   const items: { box: Box; node: YogaNode }[] = [];
   for (const child of box.children) {

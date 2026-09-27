@@ -2350,14 +2350,19 @@ function paintImage(ctx: PaintContext, box: Box, options: PaintOptions): void {
   const h = Math.round(top + box.contentHeight) - y;
   if (w <= 0 || h <= 0) return;
   if (image instanceof SvgDrawing || (image && ctx.drawImage)) {
+    const at = fitted(box, x, y, w, h);
     // trimmed to the curve of its content edge (CSS Backgrounds 3, 5.3):
     // an avatar is a round photograph. A rounded clip is a mask the size
-    // of the window on X11, so only a box that has corners pays for one.
+    // of the window on X11, so only a box that has corners pays for one;
+    // an image `object-fit` puts past its box is cut by a rectangle
     const corners = contentCorners(box);
-    const clipped = !!corners && pushClip(ctx, { x, y, w, h }, corners);
+    const past =
+      at.x < x || at.y < y || at.x + at.w > x + w || at.y + at.h > y + h;
+    const clipped =
+      (!!corners || past) && pushClip(ctx, { x, y, w, h }, corners);
     if (image instanceof SvgDrawing) {
-      image.draw(ctx, x, y, w, h, options.scale ?? 1);
-    } else ctx.drawImage!(image, x, y, w, h);
+      image.draw(ctx, at.x, at.y, at.w, at.h, options.scale ?? 1);
+    } else ctx.drawImage!(image, at.x, at.y, at.w, at.h);
     if (clipped) ctx.restore();
     return;
   }
@@ -2372,6 +2377,50 @@ function paintImage(ctx: PaintContext, box: Box, options: PaintOptions): void {
     ctx.fillRect(x, y, t, h);
     ctx.fillRect(x + w - t, y, t, h);
   }
+}
+
+/**
+ * Where an image is drawn in its content box (CSS Images 3, 5.5):
+ * stretched to it, the `fill` everything is by default, or at its own
+ * ratio — within it (`contain`), over the whole of it (`cover`, which
+ * Tailwind's `object-cover` avatars and card images are), at its own size
+ * (`none`), or the smaller of those two (`scale-down`) — and placed by
+ * `object-position`, the middle unless it says otherwise.
+ */
+function fitted(
+  box: Box,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+): { x: number; y: number; w: number; h: number } {
+  const fit = box.style.objectFit;
+  const own = box.intrinsic;
+  if (
+    fit === 'fill' ||
+    !own ||
+    own.missing ||
+    !(own.width > 0 && own.height > 0)
+  ) {
+    return { x, y, w, h };
+  }
+  const contain = Math.min(w / own.width, h / own.height);
+  const scale =
+    fit === 'contain'
+      ? contain
+      : fit === 'cover'
+        ? Math.max(w / own.width, h / own.height)
+        : fit === 'none'
+          ? 1
+          : Math.min(1, contain);
+  const dw = own.width * scale;
+  const dh = own.height * scale;
+  return {
+    x: x + resolve(box.style.objectPositionX, w - dw),
+    y: y + resolve(box.style.objectPositionY, h - dh),
+    w: dw,
+    h: dh,
+  };
 }
 
 /** An inline `<svg>`, drawn in its content box. Its `currentColor` is the
