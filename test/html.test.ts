@@ -8201,6 +8201,101 @@ test('a gradient given only a width is as tall as its box', async () => {
   );
 });
 
+test('text-wrap and white-space-collapse change their halves of white-space', async () => {
+  const { node } = await render(
+    '<div id="a" style="text-wrap:nowrap"></div>' +
+      '<div id="b" style="white-space:pre;text-wrap:wrap"></div>' +
+      '<div id="c" style="white-space:nowrap;text-wrap:balance"></div>' +
+      '<div id="d" style="white-space:nowrap;text-wrap-style:balance"></div>' +
+      '<div id="e" style="white-space:pre-wrap;text-wrap-mode:nowrap"></div>' +
+      '<div id="f" style="white-space-collapse:preserve"></div>' +
+      '<div id="g" style="white-space:pre;white-space-collapse:collapse"></div>' +
+      '<div id="h" style="white-space:break-spaces"></div>' +
+      '<div id="i" style="text-wrap:nowrap;text-wrap:nowrap wrap"></div>' +
+      '<div style="text-wrap:balance"><p id="j"></p></div>',
+  );
+  const el = view(node);
+  const style = (id: string) =>
+    (
+      boxOf(el, id) as unknown as {
+        style: { whiteSpace: string; textWrapStyle: string };
+      }
+    ).style;
+  const seen = (id: string) => [style(id).whiteSpace, style(id).textWrapStyle];
+  assert.deepStrictEqual(
+    seen('a'),
+    ['nowrap', 'auto'],
+    "Tailwind 4's text-nowrap",
+  );
+  assert.deepStrictEqual(seen('b'), ['pre-wrap', 'auto']);
+  assert.deepStrictEqual(
+    seen('c'),
+    ['normal', 'balance'],
+    'the shorthand wraps',
+  );
+  assert.deepStrictEqual(
+    seen('d'),
+    ['nowrap', 'balance'],
+    'the longhand does not',
+  );
+  assert.deepStrictEqual(seen('e'), ['pre', 'auto']);
+  assert.deepStrictEqual(seen('f'), ['pre-wrap', 'auto']);
+  assert.deepStrictEqual(seen('g'), ['nowrap', 'auto']);
+  assert.deepStrictEqual(seen('h'), ['pre-wrap', 'auto']);
+  assert.deepStrictEqual(seen('i'), ['nowrap', 'auto'], 'two modes is none');
+  assert.deepStrictEqual(seen('j'), ['normal', 'balance'], 'inherited');
+});
+
+metric(
+  'text-wrap: balance evens a heading out and sets it in the whole width',
+  async () => {
+    // dropped, and a heading ended on a word of its own
+    const heading =
+      'Build desktop interfaces in React and ship them to every platform today';
+    const { node } = await render(
+      '<style>body{margin:0}h2{width:360px;font-size:24px;margin:0}</style>' +
+        `<h2 id="ragged">${heading}</h2>` +
+        `<h2 id="even" style="text-wrap:balance">${heading}</h2>` +
+        `<h2 id="centred" style="text-wrap:balance;text-align:center">${heading}</h2>`,
+    );
+    const el = view(node);
+    const lines = (id: string) =>
+      (boxOf(el, id) as unknown as { lines: { x: number; width: number }[] })
+        .lines;
+    const ragged = lines('ragged');
+    const even = lines('even');
+    assert.strictEqual(even.length, ragged.length, 'as many lines');
+    const spread = (ls: { width: number }[]) =>
+      Math.max(...ls.map((l) => l.width)) - Math.min(...ls.map((l) => l.width));
+    assert.ok(
+      spread(even) < spread(ragged) / 2,
+      `${spread(even)} against ${spread(ragged)}`,
+    );
+    assert.ok(Math.max(...even.map((l) => l.width)) < 360);
+    for (const line of lines('centred')) {
+      assert.ok(
+        Math.abs(line.x - (360 - line.width) / 2) < 1,
+        `centred in the whole width: ${line.x}, ${line.width}`,
+      );
+    }
+  },
+);
+
+metric('a paragraph of more than six lines is not balanced', async () => {
+  const text = 'Some words of a paragraph that runs on. '.repeat(8);
+  const { node } = await render(
+    '<style>body{margin:0}p{width:200px;margin:0}</style>' +
+      `<p id="a">${text}</p><p id="b" style="text-wrap:balance">${text}</p>`,
+  );
+  const el = view(node);
+  const widths = (id: string) =>
+    (boxOf(el, id) as unknown as { lines: { width: number }[] }).lines.map(
+      (l) => l.width,
+    );
+  assert.ok(widths('a').length > 6);
+  assert.deepStrictEqual(widths('b'), widths('a'));
+});
+
 test('an intrinsic size is read beside an auto length', async () => {
   const { node } = await render(
     '<style>.full{width:100%;height:60px}.fit{width:fit-content;' +

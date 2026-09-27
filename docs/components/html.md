@@ -354,7 +354,11 @@ no-break space, so only text that asks for it is split into more runs),
 element's words stay together, and `pre`'s spaces take their room at a
 line's end, where other spaces hang, and its tabs go to their stops, every
 `tab-size` spaces; a line break straight after `<pre>`'s
-start tag is dropped, as HTML's parser drops it), `line-clamp` and
+start tag is dropped, as HTML's parser drops it) and CSS Text 4's halves
+of it, `white-space-collapse` and `text-wrap-mode`, `text-wrap` (Tailwind
+4's `text-nowrap`, and `text-balance`: a heading of up to six lines broken
+at the narrowest width that keeps as many of them, and set in its whole
+width, as Chrome does it; `pretty` wraps as `auto` does), `line-clamp` and
 `-webkit-line-clamp` (a block shows its first lines and is as tall as they
 are, the last cut with an ellipsis — Tailwind's `line-clamp-2`; a block
 laid out a line at a time, around an image or a float, is cut with none),

@@ -201,6 +201,9 @@ export interface ComputedStyle {
   tabSize: number;
   tabSizeIsLength: boolean;
   whiteSpace: 'normal' | 'nowrap' | 'pre' | 'pre-wrap' | 'pre-line';
+  /** `text-wrap-style` (CSS Text 4, 6.2): `balance` evens a short
+   *  paragraph's lines out; `pretty` and `stable` wrap as `auto` does. */
+  textWrapStyle: 'auto' | 'balance';
   direction: 'ltr' | 'rtl';
   /** How an element's text takes part in the bidi algorithm: not
    *  inherited, and carried out as the control characters it stands for
@@ -447,6 +450,7 @@ export const INHERITED = [
   'tabSize',
   'tabSizeIsLength',
   'whiteSpace',
+  'textWrapStyle',
   'direction',
   'visibility',
   'listStyleType',
@@ -516,6 +520,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     tabSize: 8,
     tabSizeIsLength: false,
     whiteSpace: 'normal',
+    textWrapStyle: 'auto',
     direction: 'ltr',
     unicodeBidi: 'normal',
     visibility: 'visible',
@@ -688,6 +693,7 @@ export function inherit(
   out.tabSize = parent.tabSize;
   out.tabSizeIsLength = parent.tabSizeIsLength;
   out.whiteSpace = parent.whiteSpace;
+  out.textWrapStyle = parent.textWrapStyle;
   out.direction = parent.direction;
   out.visibility = parent.visibility;
   out.listStyleType = parent.listStyleType;
@@ -1411,7 +1417,7 @@ export function applyDeclaration(
       return;
     }
     case 'white-space': {
-      const v = value.toLowerCase();
+      const v = value.trim().toLowerCase();
       if (
         v === 'normal' ||
         v === 'nowrap' ||
@@ -1420,7 +1426,59 @@ export function applyDeclaration(
         v === 'pre-line'
       ) {
         style.whiteSpace = v;
+      } else if (v === 'break-spaces') {
+        // `pre-wrap` whose spaces take room at a line's end rather than
+        // hanging past it, which is as near as the engines come
+        style.whiteSpace = 'pre-wrap';
       }
+      return;
+    }
+    // CSS Text 4 splits `white-space` into what it keeps of the white space
+    // and whether its lines wrap; each longhand changes its half of it
+    case 'white-space-collapse': {
+      const v = value.trim().toLowerCase();
+      const collapse =
+        v === 'collapse'
+          ? 'collapse'
+          : v === 'preserve' || v === 'break-spaces' || v === 'preserve-spaces'
+            ? 'preserve'
+            : v === 'preserve-breaks'
+              ? 'preserve-breaks'
+              : null;
+      if (collapse) {
+        style.whiteSpace = whiteSpaceOf(collapse, wrapsIn(style.whiteSpace));
+      }
+      return;
+    }
+    case 'text-wrap':
+    case 'text-wrap-mode':
+    case 'text-wrap-style': {
+      // `text-wrap` is both, and resets the one it leaves out: Tailwind 4
+      // writes `text-nowrap` and `text-balance` in it
+      let wrap: boolean | null = null;
+      let balance: boolean | null = null;
+      for (const word of splitValue(value.toLowerCase())) {
+        const mode = word === 'wrap' || word === 'nowrap';
+        const kind =
+          word === 'auto' ||
+          word === 'balance' ||
+          word === 'pretty' ||
+          word === 'stable';
+        if (mode && wrap === null && name !== 'text-wrap-style') {
+          wrap = word === 'wrap';
+        } else if (kind && balance === null && name !== 'text-wrap-mode') {
+          balance = word === 'balance';
+        } else return;
+      }
+      if (wrap === null && balance === null) return;
+      if (name === 'text-wrap') {
+        wrap ??= true;
+        balance ??= false;
+      }
+      if (wrap !== null) {
+        style.whiteSpace = whiteSpaceOf(COLLAPSE_OF[style.whiteSpace], wrap);
+      }
+      if (balance !== null) style.textWrapStyle = balance ? 'balance' : 'auto';
       return;
     }
     case 'direction': {
@@ -2241,6 +2299,30 @@ function isSizePart(word: string, ctx: UnitContext): boolean {
   return typeof len === 'number' ? len >= 0 : len.pct >= 0;
 }
 
+type WhiteSpace = ComputedStyle['whiteSpace'];
+type Collapse = 'collapse' | 'preserve' | 'preserve-breaks';
+
+/** What each `white-space` keeps of the white space (CSS Text 4, 3.1). */
+const COLLAPSE_OF: Record<WhiteSpace, Collapse> = {
+  normal: 'collapse',
+  nowrap: 'collapse',
+  pre: 'preserve',
+  'pre-wrap': 'preserve',
+  'pre-line': 'preserve-breaks',
+};
+
+function wrapsIn(whiteSpace: WhiteSpace): boolean {
+  return whiteSpace !== 'nowrap' && whiteSpace !== 'pre';
+}
+
+/** The `white-space` of a collapse and a wrap. Kept breaks and no wrapping
+ *  have no keyword of their own, and keep their breaks, as `pre-line`. */
+function whiteSpaceOf(collapse: Collapse, wrap: boolean): WhiteSpace {
+  if (collapse === 'collapse') return wrap ? 'normal' : 'nowrap';
+  if (collapse === 'preserve') return wrap ? 'pre-wrap' : 'pre';
+  return 'pre-line';
+}
+
 /** An intrinsic size keyword, with the prefixes browsers still read;
  *  null for anything else. */
 function contentSizeOf(value: string): ContentSize | null {
@@ -2908,6 +2990,10 @@ const INHERITED_NAMES = new Set<string>([
   'letter-spacing',
   'word-spacing',
   'white-space',
+  'white-space-collapse',
+  'text-wrap',
+  'text-wrap-mode',
+  'text-wrap-style',
   'direction',
   'visibility',
   'list-style',
@@ -3001,6 +3087,10 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'tab-size': ['tabSize', 'tabSizeIsLength'],
   '-moz-tab-size': ['tabSize', 'tabSizeIsLength'],
   'white-space': ['whiteSpace'],
+  'white-space-collapse': ['whiteSpace'],
+  'text-wrap': ['whiteSpace', 'textWrapStyle'],
+  'text-wrap-mode': ['whiteSpace'],
+  'text-wrap-style': ['textWrapStyle'],
   direction: ['direction'],
   'unicode-bidi': ['unicodeBidi'],
   visibility: ['visibility'],

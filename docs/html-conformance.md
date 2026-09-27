@@ -126,6 +126,7 @@ separately, and there are six.
 | 56     | `background-size`                                  | 5,471 (93%) | 4,979 (84%) |
 | 57     | background layers                                  | 5,472 (93%) | 4,979 (84%) |
 | 58     | intrinsic sizes                                    | 5,472 (93%) | 4,979 (84%) |
+| 59     | `text-wrap`                                        | 5,472 (93%) | 4,979 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -1759,6 +1760,24 @@ rgba(0,0,0,.5)), url(hero.jpg) center / cover` — was the photograph
      of one is its content's, which `auto` already is. Found in a survey
      of the properties real stylesheets write that were dropped; CSS 2.1
      has none of them, and neither suite moved.
+
+### Round 59
+
+150. **`text-wrap` was dropped.** Tailwind 4 writes `text-nowrap` as
+     `text-wrap: nowrap`, not as `white-space`, so its labels wrapped; and
+     `text-balance`, which headings are written with to keep a word from
+     ending one alone, did nothing. CSS Text 4 makes `white-space` a
+     shorthand of `white-space-collapse` and `text-wrap-mode`, and each of
+     those, and `text-wrap`, now changes its half of the one value the
+     engine keeps — `pre` then `text-wrap: wrap` is `pre-wrap` — with
+     `break-spaces` read as `pre-wrap`. `text-wrap: balance` is inherited
+     and, on a paragraph of two to six lines laid out in one piece,
+     breaks it at the narrowest width that keeps as many lines, found by
+     halving the width with the engine breaking the lines, and sets them
+     in the whole width: the probe heading breaks where Chrome breaks it.
+     `pretty` and `stable` wrap as `auto` does. Found in a survey of the
+     properties real stylesheets write that were dropped; CSS 2.1 has
+     none of them, and neither suite moved.
 
 ## What `<Html>` supports
 
