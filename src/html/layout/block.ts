@@ -1653,7 +1653,10 @@ export function applyRelativeOffsets(box: Box): void {
   const right = resolveOrNull(style.right, parentWidth);
   const top = resolveOrNull(style.top, parentHeight);
   const bottom = resolveOrNull(style.bottom, parentHeight);
-  const dx = left ?? (right !== null ? -right : 0);
+  // both set is over-constrained, and the containing block's direction
+  // says which wins: `left` left to right, `right` right to left (9.4.3)
+  const rtl = box.parent?.style.direction === 'rtl';
+  const dx = right !== null && (left === null || rtl) ? -right : (left ?? 0);
   const dy = top ?? (bottom !== null ? -bottom : 0);
   translate(box, dx, dy);
 }

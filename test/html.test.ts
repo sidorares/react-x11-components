@@ -4848,3 +4848,21 @@ test('an inline box is broken around a block in it, and its pieces lose their ed
     ],
   );
 });
+
+test('right to left, a relative box set on both sides moves by its right, and a table starts at the right', async () => {
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div dir="rtl" style="width:200px">' +
+      '<div id="r" style="position:relative;left:50px;right:50px;width:50px;height:10px"></div></div>' +
+      '<table dir="rtl" style="border-spacing:0"><tr>' +
+      '<td id="a" style="width:50px;padding:0"></td><td id="b" style="width:30px;padding:0"></td>' +
+      '</tr></table>',
+    400,
+  );
+  const el = view(node);
+  // at the right of its 200px block, then 50px back to the left
+  assert.strictEqual(boxOf(el, 'r').x, 100);
+  const a = boxOf(el, 'a');
+  const b = boxOf(el, 'b');
+  assert.strictEqual(a.x, b.x + b.width, 'the first cell at the right');
+});
