@@ -846,8 +846,39 @@ function presentationHints(el: Element): Declaration[] {
   const align = attr(el, 'align');
   if (align) {
     const v = align.toLowerCase();
-    if (tag === 'img' && (v === 'left' || v === 'right')) push('float', v);
-    else if (v === 'center' || v === 'middle') push('text-align', 'center');
+    const side = v === 'middle' ? 'center' : v;
+    if ((tag === 'img' || tag === 'table') && (v === 'left' || v === 'right')) {
+      push('float', v);
+    } else if (tag === 'img') {
+      // an image's other alignments are its line's
+      const va = IMAGE_ALIGN[v];
+      if (va) push('vertical-align', va);
+    } else if (tag === 'hr') {
+      // a rule narrower than its line stands where it is aligned
+      if (v === 'left') {
+        push('margin-left', '0');
+        push('margin-right', 'auto');
+      } else if (v === 'right') {
+        push('margin-left', 'auto');
+        push('margin-right', '0');
+      }
+    } else if (tag === 'table') {
+      // a table's `align` places the table and leaves its text alone: set
+      // as its text's, `<table align="center">` — the frame of nearly
+      // every mail — stood at the left with its cells' text centred
+      if (side === 'center') {
+        push('margin-left', 'auto');
+        push('margin-right', 'auto');
+      }
+    } else if (
+      ALIGNS_BLOCKS.has(tag) &&
+      (side === 'center' || side === 'left' || side === 'right')
+    ) {
+      // these align the blocks in them as well as their text (HTML's
+      // rendering, "align descendants"): the table a `<td align="center">`
+      // or a `<div align="center">` holds is centred in it
+      push('text-align', `-webkit-${side}`);
+    } else if (side === 'center') push('text-align', 'center');
     else if (v === 'left' || v === 'right' || v === 'justify')
       push('text-align', v);
   }
@@ -860,6 +891,21 @@ function presentationHints(el: Element): Declaration[] {
 
   const bgcolor = attr(el, 'bgcolor');
   if (bgcolor) push('background-color', bgcolor);
+  if (BACKGROUNDS.has(tag)) {
+    const background = attr(el, 'background')?.trim();
+    if (background) {
+      push('background-image', `url("${background.replace(/["\\\n]/g, '')}")`);
+    }
+  }
+  if (tag === 'body') {
+    // the text's colour, and the links'
+    const text = attr(el, 'text');
+    if (text) push('color', text);
+  } else if (tag === 'a' && attr(el, 'href') !== undefined) {
+    const body = closestBody(el);
+    const link = body ? attr(body, 'link') : undefined;
+    if (link) push('color', link);
+  }
   const color = attr(el, 'color');
   if (color && (tag === 'font' || tag === 'basefont')) push('color', color);
   const face = attr(el, 'face');
@@ -908,6 +954,20 @@ function presentationHints(el: Element): Declaration[] {
   if (tag === 'hr') {
     const noshade = attr(el, 'noshade');
     if (noshade !== undefined) push('border-top-width', '2px');
+    // the rule's colour and its thickness
+    const color = attr(el, 'color');
+    if (color) push('border-top-color', color);
+    const size = attr(el, 'size');
+    if (size && Number(size) > 0) push('border-top-width', `${Number(size)}px`);
+  }
+  if ((tag === 'td' || tag === 'th') && attr(el, 'nowrap') !== undefined) {
+    push('white-space', 'nowrap');
+  }
+  if (tag === 'br') {
+    // below the floats: `<br clear="all">` after a floated image
+    const clear = attr(el, 'clear')?.toLowerCase();
+    if (clear === 'all' || clear === 'both') push('clear', 'both');
+    else if (clear === 'left' || clear === 'right') push('clear', clear);
   }
   if (tag === 'ol') {
     const type = attr(el, 'type');
@@ -929,6 +989,53 @@ function presentationHints(el: Element): Declaration[] {
     }
   }
   return out;
+}
+
+/** An image's `align` other than a side, as its `vertical-align`. */
+const IMAGE_ALIGN: Record<string, string> = {
+  top: 'top',
+  texttop: 'text-top',
+  middle: 'middle',
+  absmiddle: 'middle',
+  center: 'middle',
+  bottom: 'baseline',
+  baseline: 'baseline',
+  absbottom: 'bottom',
+};
+
+/** The elements whose `align` aligns the blocks in them too. */
+const ALIGNS_BLOCKS = new Set([
+  'div',
+  'caption',
+  'thead',
+  'tbody',
+  'tfoot',
+  'tr',
+  'td',
+  'th',
+]);
+
+/** The elements a `background` attribute gives a background image. */
+const BACKGROUNDS = new Set([
+  'body',
+  'table',
+  'thead',
+  'tbody',
+  'tfoot',
+  'tr',
+  'td',
+  'th',
+]);
+
+function closestBody(el: Element): Element | null {
+  let node = el.parent;
+  while (node) {
+    if (node.type === 'tag' && (node as Element).name === 'body') {
+      return node as Element;
+    }
+    node = node.parent;
+  }
+  return null;
 }
 
 const SIZED = new Set([

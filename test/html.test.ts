@@ -4940,3 +4940,87 @@ metric(
     await expectPixel(ctx, 10, 25, '#ff0000', { message: 'in the table box' });
   },
 );
+
+// --- HTML's alignment, as mail uses it -------------------------------------------
+
+test('align places a table, and <center> or an aligned cell centres the blocks in it', async () => {
+  const { node } = await render(
+    '<style>body{margin:0}table{border-spacing:0}td{padding:0}</style>' +
+      // the frame of nearly every mail: centred, its text left alone
+      '<table id="t1" align="center" width="200"><tr><td id="c1">x</td></tr></table>' +
+      '<center><table id="t2" width="100"><tr><td>x</td></tr></table></center>' +
+      '<div align="center"><table id="t3" width="100"><tr><td>x</td></tr></table></div>' +
+      // a button: no width, so centred once it has shrunk to its cell
+      '<table id="t4" align="center"><tr><td>Button</td></tr></table>' +
+      '<table id="t5" align="right" width="100"><tr><td>x</td></tr></table>' +
+      '<table width="400" style="clear:both"><tr><td align="center">' +
+      '<table id="t6" width="50"><tr><td>x</td></tr></table></td></tr></table>' +
+      // what mail's own CSS writes for it
+      '<div style="text-align:-webkit-center"><div id="d" style="width:100px">x</div></div>',
+    400,
+  );
+  const el = view(node);
+  const x = (id: string) => boxOf(el, id).x;
+  assert.strictEqual(x('t1'), 100);
+  assert.strictEqual(x('t2'), 150);
+  assert.strictEqual(x('t3'), 150);
+  const t4 = boxOf(el, 't4');
+  assert.ok(Math.abs(t4.x - (400 - t4.width) / 2) < 0.01, 'centred shrunk');
+  assert.strictEqual(x('t5'), 300, 'floated right');
+  assert.strictEqual(x('t6'), 175);
+  assert.strictEqual(x('d'), 150);
+  const align = (boxOf(el, 'c1') as unknown as { style: { textAlign: string } })
+    .style.textAlign;
+  assert.notStrictEqual(align, 'center', "the table's text is its own");
+});
+
+test("a body's text and link colours, and a background attribute", async () => {
+  const { node } = await render(
+    '<body text="#123456" link="#00ff00">' +
+      '<p id="p">x</p><a id="a" href="#">l</a>' +
+      '<table id="t" background="bg.png"><tr><td>x</td></tr></table></body>',
+  );
+  const el = view(node);
+  const style = (id: string) =>
+    (
+      boxOf(el, id) as unknown as {
+        style: { color: string; backgroundImage: string | null };
+      }
+    ).style;
+  assert.strictEqual(style('p').color, '#123456');
+  assert.strictEqual(style('a').color, '#00ff00');
+  assert.strictEqual(style('t').backgroundImage, 'bg.png');
+});
+
+test("nowrap, a clearing br, an image aligned in its line, and a rule's own attributes", async () => {
+  const { node } = await render(
+    '<style>body{margin:0}table{border-spacing:0}td{padding:0}p{margin:0}</style>' +
+      '<div style="width:60px"><table><tr>' +
+      '<td id="n" nowrap>one two three</td></tr></table></div>' +
+      '<img id="f" src="a.png" width="30" height="30" style="float:left">x' +
+      '<br clear="all"><p id="after">after</p>' +
+      '<p><img id="m" src="a.png" width="10" height="10" align="middle">x</p>' +
+      '<hr id="h" width="50%" size="3" color="#ff0000">' +
+      '<hr id="l" width="50%" align="left">',
+    400,
+  );
+  const el = view(node);
+  type Styled = LaidBox & {
+    lines: unknown[] | null;
+    style: {
+      verticalAlign: string;
+      borderTopWidth: number;
+      borderTopColor: string;
+    };
+  };
+  const box = (id: string) => boxOf(el, id) as Styled;
+  assert.strictEqual(box('n').lines?.length, 1, 'one line, and no wrap');
+  const f = box('f');
+  assert.ok(box('after').y >= f.y + f.height, 'below the float');
+  assert.strictEqual(box('m').style.verticalAlign, 'middle');
+  const h = box('h');
+  assert.strictEqual(h.x, 100, 'centred, as a browser centres a rule');
+  assert.strictEqual(h.style.borderTopWidth, 3);
+  assert.strictEqual(h.style.borderTopColor, '#ff0000');
+  assert.strictEqual(box('l').x, 0);
+});

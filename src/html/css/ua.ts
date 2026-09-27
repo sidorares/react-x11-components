@@ -107,7 +107,7 @@ sub { vertical-align: sub; font-size: 0.75em; }
 sup { vertical-align: super; font-size: 0.75em; }
 mark { background-color: #fff2a8; color: #1a1a1a; }
 abbr { text-decoration: none; }
-center { text-align: center; }
+center { text-align: -webkit-center; }
 nobr { white-space: nowrap; }
 
 /* Deliberately no 'a:hover' rule, though a browser's sheet has one: a
@@ -118,7 +118,7 @@ nobr { white-space: nowrap; }
 a[href] { color: ${look.linkColor}; text-decoration: underline; cursor: pointer; }
 
 hr {
-  margin: 0.5em 0;
+  margin: 0.5em auto;
   border: none;
   border-top: 1px solid ${look.borderColor};
   height: 0;

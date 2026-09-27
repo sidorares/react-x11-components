@@ -639,6 +639,15 @@ class Builder {
       this._endLine();
       // the first line ends with no letter on it (CSS 2.1 5.12.2)
       this._abandonLetter();
+      if (style.clear !== 'none') {
+        // a break that clears the floats — `<br clear="all">` after a
+        // floated image — puts what follows it below them: an empty block
+        // that clears them, which the inline content around it is broken
+        // for (`breakInlines`), where a line break went on beside them
+        into.append(new Box('block', el, { ...style, display: 'block' }));
+        this._ws = 'start';
+        return;
+      }
       const box = new Box('break', el, style);
       into.append(box);
       this._push('\n', box);
