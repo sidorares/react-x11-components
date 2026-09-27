@@ -133,7 +133,8 @@ they were, which is how Tailwind's preflight and normalize.css raise a
 `<sup>`; a paragraph with one is laid out a line at a time, as one with an
 inline-block is. A list's marker hangs outside its item, or with
 `list-style-position: inside` is the first thing on its first line and
-takes its room there. A `<details>` shows its first `<summary>` and nothing
+takes its room there; a `::marker` rule sets its colour and its font, and a
+`content` of strings sets it as those. A `<details>` shows its first `<summary>` and nothing
 more until it is `open`, the summary with the ▸ or ▾ HTML gives it — a
 system font's, where the document's has none.
 A flex container is laid out by Yoga, the engine react-x11 lays itself out

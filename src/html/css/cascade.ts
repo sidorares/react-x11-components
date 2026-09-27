@@ -160,11 +160,13 @@ class RuleIndex {
 }
 
 /** The pseudo-elements a rule can style here. */
-type PseudoElement = 'before' | 'after' | 'first-letter' | 'first-line';
+type PseudoElement =
+  'before' | 'after' | 'first-letter' | 'first-line' | 'marker';
 
-/** A selector's trailing `::before`, `::after` or `::first-letter`, or CSS
- *  2's single-colon spelling of any of them. */
-const PSEUDO_ELEMENT = /::?(before|after|first-letter|first-line)$/i;
+/** A selector's trailing `::before`, `::after`, `::first-letter`,
+ *  `::first-line` or `::marker`, or CSS 2's single-colon spelling of any of
+ *  its four. */
+const PSEUDO_ELEMENT = /::?(before|after|first-letter|first-line)$|::marker$/i;
 
 /**
  * A rule for a pseudo-element, as the pseudo-element it styles and a rule
@@ -186,7 +188,7 @@ function splitPseudoElement(
       ? `${trimmed} *`
       : trimmed;
   return {
-    which: m[1].toLowerCase() as PseudoElement,
+    which: (m[1] ?? 'marker').toLowerCase() as PseudoElement,
     rule: { ...rule, selector },
   };
 }
@@ -324,6 +326,7 @@ export class Cascade {
     after: new RuleIndex(),
     'first-letter': new RuleIndex(),
     'first-line': new RuleIndex(),
+    marker: new RuleIndex(),
   };
   private _adapter: CssSelectAdapter;
   private _pointer: PointerState = NO_POINTER;
@@ -400,7 +403,8 @@ export class Cascade {
       this._pseudo.before.hoverSensitive ||
       this._pseudo.after.hoverSensitive ||
       this._pseudo['first-letter'].hoverSensitive ||
-      this._pseudo['first-line'].hoverSensitive
+      this._pseudo['first-line'].hoverSensitive ||
+      this._pseudo.marker.hoverSensitive
     );
   }
 
@@ -664,6 +668,21 @@ export class Cascade {
    *  nothing more of its blocks. */
   get hasFirstLine(): boolean {
     return this._pseudo['first-line'].size > 0;
+  }
+
+  /**
+   * A list item's `::marker` style, inheriting from its own, or null when no
+   * rule reaches it (CSS Lists 3, 3.1): the colour and the font a bullet or
+   * a number is set in, and a `content` it is set as instead.
+   */
+  markerStyle(el: Element, style: ComputedStyle): ComputedStyle | null {
+    const index = this._pseudo.marker;
+    if (!index.size) return null;
+    const candidates: Candidate[] = [];
+    this._matchInto(index, el, candidates);
+    if (!candidates.length) return null;
+    candidates.sort(byCascade);
+    return this._computeStyle(el, style, false, candidates);
   }
 
   /**

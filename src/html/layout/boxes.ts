@@ -64,6 +64,9 @@ export interface Marker {
   layout: TextLayoutLike | null;
   x: number;
   y: number;
+  /** Its own style where a `::marker` rule gives it one; the item's where
+   *  none does. */
+  style: ComputedStyle | null;
 }
 
 /** An out-of-flow box's static position, as an offset from the box whose
@@ -785,10 +788,27 @@ class Builder {
     if (style.display === 'table-column') return;
 
     let insideMarker: string | null = null;
+    let markerStyle: ComputedStyle | null = null;
+    let ownMarker = false;
     if (style.display === 'list-item') {
-      const text = markerFor(el, style, this._counters);
+      // the item's number, which counts whatever it is set as
+      let text = markerFor(el, style, this._counters);
+      markerStyle = this._options.cascade.markerStyle(el, style);
+      // a `::marker` with a `content` of strings is set as those, as they
+      // are written, and one of `none` is no marker
+      const content = markerStyle?.content;
+      if (content === 'none') text = '';
+      else if (
+        Array.isArray(content) &&
+        content.every((c) => c.kind === 'string')
+      ) {
+        text = content.map((c) => (c.kind === 'string' ? c.text : '')).join('');
+        ownMarker = true;
+      }
       if (text && style.listStylePosition === 'inside') insideMarker = text;
-      else if (text) box.marker = { text, layout: null, x: 0, y: 0 };
+      else if (text) {
+        box.marker = { text, layout: null, x: 0, y: 0, style: markerStyle };
+      }
     }
     const opensCounter = tag === 'ol' || tag === 'ul';
     if (opensCounter) {
@@ -822,7 +842,14 @@ class Builder {
     // a counter reset in here reaches the element's later children and not
     // past its end; `::before` and `::after` are children like any other
     this._scopes.open();
-    if (insideMarker) this._insideMarker(insideMarker, style, box, el);
+    if (insideMarker) {
+      this._insideMarker(
+        ownMarker ? insideMarker : `${insideMarker} `,
+        markerStyle ?? style,
+        box,
+        el,
+      );
+    }
     this._pseudo(el, 'before', style, box);
     this._children(el, box, style, childInFlex, el, key);
     this._pseudo(el, 'after', style, box);
@@ -999,7 +1026,7 @@ class Builder {
     const box = new Box('inline', null, style);
     box.pseudo = 'before';
     into.append(box);
-    this._textNode(`${text} `, box, style, el);
+    this._textNode(text, box, style, el);
   }
 
   /** `counter-reset`, then `counter-increment`, as CSS 2.1 orders them. */

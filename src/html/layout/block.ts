@@ -1043,20 +1043,28 @@ function layoutMarker(box: Box, marker: Marker, ctx: LayoutContext): void {
   const fonts = ctx.fonts;
   if (!fonts) return;
   const style = box.style;
+  // in its own style where a `::marker` rule gives it one — the colour and
+  // the face a bullet or a number is set in — and the item's where not
+  const set = marker.style ?? style;
+  const face = {
+    family: set.fontFamily,
+    size: set.fontSize,
+    color: set.color,
+    ...(marker.style
+      ? {
+          weight: set.fontWeight,
+          style:
+            set.fontStyle === 'normal'
+              ? ('normal' as const)
+              : ('italic' as const),
+        }
+      : null),
+  };
   // set in a line of the item's own height, so that where the item has no
   // line of its own the marker stands where its first would have been
-  const layout = fonts.layout(
-    [
-      {
-        text: marker.text,
-        family: style.fontFamily,
-        size: style.fontSize,
-        color: style.color,
-      },
-    ],
-    { family: style.fontFamily, size: style.fontSize, color: style.color },
-    { lineHeight: lineHeightMultiplier(fonts, style) },
-  );
+  const layout = fonts.layout([{ text: marker.text, ...face }], face, {
+    lineHeight: lineHeightMultiplier(fonts, style),
+  });
   marker.layout = layout;
   const gap = Math.round(style.fontSize * 0.4);
   // The marker sits on the first line of the item's *content*, which is not
