@@ -130,6 +130,7 @@ separately, and there are six.
 | 60     | `translate`                                        | 5,472 (93%) | 4,979 (84%) |
 | 61     | the room a shrink-to-fit box has                   | 5,472 (93%) | 4,979 (84%) |
 | 62     | backgrounds painted through text                   | 5,472 (93%) | 4,979 (84%) |
+| 63     | `display: contents`                                | 5,472 (93%) | 4,984 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -1855,6 +1856,22 @@ from-… to-… bg-clip-text text-transparent`: the background clipped
      its ink. A document with none pays one flag. Found rendering a landing
      page beside a browser; CSS 2.1 has no `background-clip`, and neither
      suite moved.
+
+### Round 63
+
+154. **`display: contents` was dropped, and its element stayed a block.**
+     Tailwind's `contents` takes a wrapper out of a layout — a component's
+     root inside a flex row or a grid, whose children are meant to be the
+     row's items — and the element kept its box: the row had one item
+     where it should have had several, its children stacked inside it.
+     An element of `display: contents` makes no box now (CSS Display 3,
+     2.5): its `::before`, its children and its `::after` go into its
+     parent's box, in its style, so they inherit from it and are the flex
+     items or grid items their grandparent lays out; its counters are
+     changed and scoped as an element's are; and a replaced element set
+     so, which has no children to hand on, is not rendered. Found in a
+     survey of the display values stylesheets write; CSS 2.1 has no
+     `contents`, and neither suite moved.
 
 ## What `<Html>` supports
 

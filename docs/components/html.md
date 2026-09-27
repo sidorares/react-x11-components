@@ -125,7 +125,10 @@ bidi and full shaping, `inline-block`, floats and `clear`, lists with their
 markers, tables (the auto algorithm and `table-layout: fixed`, with `colspan`
 and `rowspan`, and the anonymous table CSS builds around table parts that
 have none), `position: relative | absolute | fixed`, `display: flex`, and
-`display: grid` as documents write it (below). An
+`display: grid` as documents write it (below), and `display: contents`,
+which makes no box and hands its children, its `::before` and its
+`::after` to its parent's, in its style — a replaced element set so is not
+rendered. An
 inline-block sits on its last line's baseline and an inline-table on its
 first row's. A float, an inline-block and an absolute box of `width: auto`
 shrink to fit the room their margins leave, and an absolute box the room
