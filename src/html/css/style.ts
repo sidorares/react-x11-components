@@ -56,6 +56,24 @@ export type Display =
   | 'table-column'
   | 'table-column-group';
 
+/** A grid track's sizing: its minimum and maximum sizing functions (CSS
+ *  Grid 1, 7.2.3). A plain length is both; `auto` is a minimum of the
+ *  items' min-content and a maximum of their max-content. */
+export interface GridTrack {
+  min: Len | 'min-content' | 'max-content';
+  max: Len | 'min-content' | 'max-content' | { fr: number };
+}
+
+/** `grid-template-columns` or `-rows`: its tracks, and a `repeat()` whose
+ *  count the width decides (`auto-fill`, `auto-fit`), and where it goes. */
+export interface GridTemplate {
+  tracks: GridTrack[];
+  repeat: { at: number; tracks: GridTrack[] } | null;
+}
+
+/** Where a grid item starts or ends: a line, a span, or auto. */
+export type GridLine = { line: number } | { span: number } | null;
+
 export interface ClipRect {
   top: number | null;
   right: number | null;
@@ -279,6 +297,19 @@ export interface ComputedStyle {
   rowGap: number;
   columnGap: number;
 
+  // grid (CSS Grid 1): a grid container is a flex box to the box tree, and
+  // laid out by `layout/css-grid.ts`
+  grid: boolean;
+  gridColumns: GridTemplate | null;
+  gridRows: GridTemplate | null;
+  gridAutoRows: GridTrack;
+  gridColumnStart: GridLine;
+  gridColumnEnd: GridLine;
+  gridRowStart: GridLine;
+  gridRowEnd: GridLine;
+  justifyItems: 'stretch' | 'flex-start' | 'flex-end' | 'center';
+  justifySelf: 'auto' | 'stretch' | 'flex-start' | 'flex-end' | 'center';
+
   tableLayout: 'auto' | 'fixed';
 
   // generated content (CSS 2.1 12)
@@ -461,6 +492,16 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     order: 0,
     rowGap: 0,
     columnGap: 0,
+    grid: false,
+    gridColumns: null,
+    gridRows: null,
+    gridAutoRows: AUTO_TRACK,
+    gridColumnStart: null,
+    gridColumnEnd: null,
+    gridRowStart: null,
+    gridRowEnd: null,
+    justifyItems: 'stretch',
+    justifySelf: 'auto',
 
     tableLayout: 'auto',
 
@@ -613,13 +654,16 @@ export function applyDeclaration(
     case 'display': {
       const v = value.toLowerCase();
       if (v === 'inline-block' || v === 'inline-flex') style.display = v;
-      else if (v === 'grid')
-        style.display = 'block'; // graceful, per the PRD
-      else if (v === 'inline-grid') style.display = 'inline-block';
+      // a grid container is a flex container to the box tree — its
+      // children are blockified items, and it holds its floats — and its
+      // own layout (`css-grid.ts`) to the engine
+      else if (v === 'grid') style.display = 'flex';
+      else if (v === 'inline-grid') style.display = 'inline-flex';
       else if (v === 'flow-root') style.display = 'block';
       else if (DISPLAYS.has(v)) style.display = v as Display;
       else return;
       style.flowRoot = v === 'flow-root';
+      style.grid = v === 'grid' || v === 'inline-grid';
       return;
     }
     case 'position': {
@@ -1238,6 +1282,85 @@ export function applyDeclaration(
       if (name !== 'row-gap') style.columnGap = col ?? row;
       return;
     }
+    case 'grid-template-columns':
+    case 'grid-template-rows': {
+      const template =
+        value.toLowerCase() === 'none' ? null : parseGridTemplate(value, ctx);
+      if (template === undefined) return;
+      if (name === 'grid-template-columns') style.gridColumns = template;
+      else style.gridRows = template;
+      return;
+    }
+    case 'grid-auto-rows': {
+      const track = parseGridTrack(splitValue(value)[0] ?? '', ctx);
+      if (track) style.gridAutoRows = track;
+      return;
+    }
+    case 'grid-column':
+    case 'grid-row': {
+      const parts = splitTopLevelSlash(value);
+      const start = parseGridLine(parts[0]);
+      const end = parts.length > 1 ? parseGridLine(parts[1]) : null;
+      if (start === undefined || end === undefined || parts.length > 2) return;
+      if (name === 'grid-column') {
+        style.gridColumnStart = start;
+        style.gridColumnEnd = end;
+      } else {
+        style.gridRowStart = start;
+        style.gridRowEnd = end;
+      }
+      return;
+    }
+    case 'grid-area': {
+      const parts = splitTopLevelSlash(value).map(parseGridLine);
+      if (parts.length > 4 || parts.some((p) => p === undefined)) return;
+      style.gridRowStart = parts[0] ?? null;
+      style.gridColumnStart = parts[1] ?? null;
+      style.gridRowEnd = parts[2] ?? null;
+      style.gridColumnEnd = parts[3] ?? null;
+      return;
+    }
+    case 'grid-column-start':
+    case 'grid-column-end':
+    case 'grid-row-start':
+    case 'grid-row-end': {
+      const line = parseGridLine(value);
+      if (line === undefined) return;
+      (style as unknown as Record<string, unknown>)[camel(name)] = line;
+      return;
+    }
+    case 'justify-items':
+    case 'justify-self': {
+      const v = value.trim().toLowerCase();
+      const keyword =
+        v === 'auto' && name === 'justify-self'
+          ? 'auto'
+          : v === 'normal' || v === 'stretch'
+            ? 'stretch'
+            : alignKeyword(v);
+      if (
+        keyword === 'auto' ||
+        keyword === 'stretch' ||
+        keyword === 'flex-start' ||
+        keyword === 'flex-end' ||
+        keyword === 'center'
+      ) {
+        if (name === 'justify-items' && keyword !== 'auto') {
+          style.justifyItems = keyword;
+        } else if (name === 'justify-self') style.justifySelf = keyword;
+      }
+      return;
+    }
+    case 'place-items':
+    case 'place-self': {
+      const parts = splitValue(value);
+      if (!parts.length || parts.length > 2) return;
+      const align = name === 'place-items' ? 'align-items' : 'align-self';
+      const justify = name === 'place-items' ? 'justify-items' : 'justify-self';
+      applyDeclaration(style, parent, align, parts[0], ctx);
+      applyDeclaration(style, parent, justify, parts[1] ?? parts[0], ctx);
+      return;
+    }
 
     // --- tables -------------------------------------------------------------
     case 'border-collapse': {
@@ -1764,6 +1887,116 @@ function applyFlexShorthand(
   // size to its content instead of sharing the line.
   style.flexShrink = numbers.length > 1 ? numbers[1] : 1;
   style.flexBasis = basis ?? (numbers.length ? 0 : AUTO);
+}
+
+// --- grid ------------------------------------------------------------------
+
+const AUTO_TRACK: GridTrack = { min: 'auto', max: 'auto' };
+
+/** One track's sizing, or null for what is not one. */
+function parseGridTrack(token: string, ctx: UnitContext): GridTrack | null {
+  const t = token.trim().toLowerCase();
+  if (!t) return null;
+  if (t === 'auto') return AUTO_TRACK;
+  if (t === 'min-content' || t === 'max-content') return { min: t, max: t };
+  const fr = /^(\d*\.?\d+)fr$/.exec(t);
+  if (fr) return { min: 'auto', max: { fr: Number(fr[1]) } };
+  const fn = /^(minmax|fit-content)\((.*)\)$/s.exec(t);
+  if (fn) {
+    if (fn[1] === 'fit-content') return { min: 'auto', max: 'max-content' };
+    const [a, b] = splitCommas(fn[2]).map((p) => p.trim());
+    if (a === undefined || b === undefined) return null;
+    const min = parseGridTrack(a, ctx);
+    const max = parseGridTrack(b, ctx);
+    // an `fr` is no minimum
+    if (
+      !min ||
+      !max ||
+      (typeof min.max === 'object' && min.max !== null && 'fr' in min.max)
+    )
+      return null;
+    return { min: min.min, max: max.max };
+  }
+  const len = parseLength(token.trim(), ctx);
+  if (len === null || len === AUTO) return null;
+  return { min: len, max: len };
+}
+
+/**
+ * A track list (CSS Grid 1, 7.2): lengths, `fr`s, `auto`, `minmax()`,
+ * `repeat()` with a count or with `auto-fill`/`auto-fit`, whose count the
+ * width decides; line names are passed over. Undefined for a list that is
+ * none.
+ */
+function parseGridTemplate(
+  value: string,
+  ctx: UnitContext,
+): GridTemplate | undefined {
+  const out: GridTemplate = { tracks: [], repeat: null };
+  const read = (parts: string[], into: GridTrack[]): boolean => {
+    for (const part of parts) {
+      if (part.startsWith('[')) continue;
+      const repeat = /^repeat\((.*)\)$/is.exec(part);
+      if (repeat) {
+        const [count, ...rest] = splitCommas(repeat[1]);
+        const inner: GridTrack[] = [];
+        if (!read(splitValue(rest.join(',')), inner) || !inner.length) {
+          return false;
+        }
+        const n = count.trim().toLowerCase();
+        if (n === 'auto-fill' || n === 'auto-fit') {
+          if (out.repeat || into !== out.tracks) return false;
+          out.repeat = { at: into.length, tracks: inner };
+          continue;
+        }
+        const times = Number(n);
+        if (!Number.isInteger(times) || times < 1 || times > 1000) return false;
+        for (let i = 0; i < times; i += 1) into.push(...inner);
+        continue;
+      }
+      const track = parseGridTrack(part, ctx);
+      if (!track) return false;
+      into.push(track);
+    }
+    return true;
+  };
+  if (!read(splitValue(value), out.tracks)) return undefined;
+  if (!out.tracks.length && !out.repeat) return undefined;
+  return out;
+}
+
+/** A grid line (CSS Grid 1, 8.3): a number, `span` and a number, or
+ *  `auto`; a name is not read, and is auto. Undefined for no value. */
+function parseGridLine(value: string | undefined): GridLine | undefined {
+  if (value === undefined) return null;
+  const words = value.trim().toLowerCase().split(/\s+/);
+  if (words.length === 1 && words[0] === 'auto') return null;
+  if (words[0] === 'span') {
+    const n = Number(words[1] ?? '1');
+    return Number.isInteger(n) && n > 0 ? { span: n } : null;
+  }
+  const n = Number(words[0]);
+  if (words.length === 1 && Number.isInteger(n) && n !== 0) return { line: n };
+  // a named line, which this does not place by
+  return words.length <= 2 && /^[a-z_-]/.test(words[0]) ? null : undefined;
+}
+
+/** A value's parts either side of a top-level `/`. */
+function splitTopLevelSlash(value: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < value.length; i += 1) {
+    const c = value[i];
+    if (c === '(') depth += 1;
+    else if (c === ')') depth -= 1;
+    else if (c === '/' && depth === 0) {
+      out.push(value.slice(start, i).trim());
+      start = i + 1;
+    }
+  }
+  out.push(value.slice(start).trim());
+  return out;
 }
 
 // --- logical properties ----------------------------------------------------

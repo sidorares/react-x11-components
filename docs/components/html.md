@@ -124,7 +124,8 @@ test suite on both backends, is in
 bidi and full shaping, `inline-block`, floats and `clear`, lists with their
 markers, tables (the auto algorithm and `table-layout: fixed`, with `colspan`
 and `rowspan`, and the anonymous table CSS builds around table parts that
-have none), `position: relative | absolute | fixed`, and `display: flex`. An
+have none), `position: relative | absolute | fixed`, `display: flex`, and
+`display: grid` as documents write it (below). An
 inline-block sits on its last line's baseline and an inline-table on its
 first row's. A relatively positioned inline box moves its text, its
 background and borders and any block inside it, and leaves its lines where
@@ -140,6 +141,14 @@ the free space on its side, so `margin-left: auto` puts an item at the end
 of its row. A row of flex items inside another item is as wide as its items
 side by side. Items meet where
 they meet, fractions of a pixel included, and the paint snaps their edges.
+A grid (CSS Grid 1) takes its column tracks from `grid-template-columns` —
+lengths, percentages, `fr`s, `auto`, `minmax()`, and `repeat()` by a count
+or by what fits, `auto-fill` and `auto-fit` alike — and places its items by
+line or span, or in order into the first cells free; a row is as tall as
+what is in it, or as the row the template names, and an item is stretched
+to its area or aligned in it by `justify-self` and `align-self`. Named
+lines and areas, `dense` and column-first placement, and subgrids are not
+read.
 A table's borders collapse where it asks: one border along each edge of its
 grid, centred on it, chosen from the cells, rows, row groups, columns,
 column groups and the table that meet there as CSS 2.1 17.6.2.1 chooses —
@@ -384,7 +393,7 @@ its sheets, and a rule in a later layer wins over one in an earlier layer
 whatever their specificity, a rule in no layer over both, and the other way
 round for `!important`. Tailwind 4 writes all of its CSS in four of them.
 
-**Not implemented:** CSS grid (degrades to block stacking), transforms,
+**Not implemented:** the parts of CSS grid above, transforms,
 animations and transitions, multi-column, shadows, gradients,
 `background-size`, more than one background
 layer (the first is drawn), `position: sticky` (treated as `relative`),

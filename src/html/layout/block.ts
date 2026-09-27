@@ -1276,6 +1276,19 @@ function shrinkToFitWidth(
  * `Infinity` for every box that contains a paragraph.
  */
 function intrinsicWidth(box: Box): number {
+  // a grid laid out at no width limit has its columns at their widest, and
+  // is as wide as where its items end
+  if (box.style.grid) {
+    let right = 0;
+    for (const child of box.children) {
+      if (child.outOfFlow || child.kind === 'text') continue;
+      right = Math.max(
+        right,
+        child.x - box.contentX + child.width + child.marginRight,
+      );
+    }
+    return right;
+  }
   let widest = 0;
   // A row of flex items is as wide as all of them side by side, and gaps
   // between them; any other box is as wide as the widest thing in it
