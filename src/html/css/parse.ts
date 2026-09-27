@@ -326,12 +326,17 @@ function isSelector(s: string): boolean {
   const n = s.length;
   let i = 0;
   let expectCompound = true;
+  // a pseudo-element ends its selector (CSS 2.1 5.10): `p:first-line p`
+  // is none, and neither is `p:first-line[id]` — but for the user action
+  // pseudo-classes Selectors 4 lets follow one, as in `a::before:hover`
+  let ended = false;
   while (i < n) {
     const c = s[i];
     if (isSpace(c)) {
       i += 1;
       continue;
     }
+    if (ended) return false;
     if (c === '>' || c === '+' || c === '~') {
       if (expectCompound) return false;
       expectCompound = true;
@@ -342,6 +347,16 @@ function isSelector(s: string): boolean {
     const from = i;
     while (i < n && !isSpace(s[i]) && !'>+~'.includes(s[i])) {
       const d = s[i];
+      if (
+        ended &&
+        !(
+          d === ':' &&
+          s[i + 1] !== ':' &&
+          USER_ACTIONS.test(readIdent(s, i + 1).value)
+        )
+      ) {
+        return false;
+      }
       if (d === '*' || d === '|') {
         i += 1;
       } else if (d === '.' || d === '#') {
@@ -361,7 +376,9 @@ function isSelector(s: string): boolean {
         const at = element ? i + 2 : i + 1;
         if (!startsIdent(s, at)) return false;
         const name = readIdent(s, at);
-        if (!knownPseudo(name.value.toLowerCase(), element)) return false;
+        const lower = name.value.toLowerCase();
+        if (!knownPseudo(lower, element)) return false;
+        if (element || LEGACY_PSEUDO_ELEMENTS.test(lower)) ended = true;
         i = name.end;
         if (s[i] === '(') {
           const end = componentEnd(s, i);
@@ -510,6 +527,9 @@ const PSEUDO_CLASSES = new Set([
  * writes `:is(#id)` and expects it to beat a class; nothing else.
  */
 const LEGACY_PSEUDO_ELEMENTS = /^(?:before|after|first-line|first-letter)$/i;
+
+/** The pseudo-classes that may follow a pseudo-element. */
+const USER_ACTIONS = /^(?:hover|active|focus|focus-visible|focus-within)$/i;
 
 export function specificityOf(selector: string): number {
   let ids = 0;

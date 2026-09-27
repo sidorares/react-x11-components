@@ -5024,3 +5024,16 @@ test("nowrap, a clearing br, an image aligned in its line, and a rule's own attr
   assert.strictEqual(h.style.borderTopColor, '#ff0000');
   assert.strictEqual(box('l').x, 0);
 });
+
+// --- a pseudo-element's place in a selector ---------------------------------------
+
+test('a pseudo-element ends its selector: a group with one inside is dropped', async () => {
+  const { selectorList } = await import('../src/html/css/parse.js');
+  assert.strictEqual(selectorList('p:first-line p, #p1'), null);
+  assert.strictEqual(selectorList('p::before.x'), null);
+  assert.deepStrictEqual(selectorList('div > p:first-line'), [
+    'div > p:first-line',
+  ]);
+  // the user action pseudo-classes may follow one (Selectors 4)
+  assert.deepStrictEqual(selectorList('a::before:hover'), ['a::before:hover']);
+});
