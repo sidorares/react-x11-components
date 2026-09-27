@@ -5266,6 +5266,38 @@ metric(
 );
 
 metric(
+  'the body inherits its colour and font from the root, an html rule too',
+  async () => {
+    const doc = await renderWithBytes(
+      '<html><style>html { color: #00ff00; font-family: serif }</style>' +
+        '<body><p id="p">x</p></body></html>',
+      {},
+    );
+    const style = (el: HtmlViewNode) =>
+      (boxOf(el, 'p') as unknown as { style: Record<string, unknown> }).style;
+    assert.strictEqual(style(doc.el).color, '#00ff00');
+    assert.strictEqual(style(doc.el).fontFamily, 'serif');
+    cleanup();
+    // a fragment's body inherits from the html a browser would imply
+    const fragment = await renderWithBytes(
+      '<style>html { color: #00ff00 }</style><p id="p">x</p>',
+      {},
+    );
+    assert.strictEqual(style(fragment.el).color, '#00ff00');
+  },
+);
+
+metric('a body with no html tag paints the canvas', async () => {
+  const { result } = await renderWithBytes(
+    '<body style="background: #00ff00; margin: 20px"><p>x</p></body>',
+    {},
+  );
+  // outside the body's margin, where only the canvas is
+  const [r, g, b] = await pixelAt(result.ctx, 4, 4);
+  assert.ok(g > 200 && r < 60 && b < 60, `the canvas is green: ${r},${g},${b}`);
+});
+
+metric(
   'a background position from the far edge is that far in from it',
   async () => {
     const { result } = await renderWithBytes(

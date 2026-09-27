@@ -699,14 +699,22 @@ export class Cascade {
    * a `<body>` would have had: the UA sheet's margin and font, and any
    * author `body { … }` rule. Without it a fragment renders hard against the
    * left edge while the same markup inside `<html><body>` does not, which
-   * reads as a bug in the renderer rather than as a missing element.
+   * reads as a bug in the renderer rather than as a missing element. With
+   * no `<html>` either, the body inherits from an `<html>` that author
+   * `html { … }` rules have styled, as the one a browser implies would be.
    */
-  rootStyle(hasBody: boolean): ComputedStyle {
+  rootStyle(hasBody: boolean, hasHtml = true): ComputedStyle {
     const style = { ...this.initial };
     style.display = 'block';
     if (hasBody) return style;
     const synthetic = new DomElement('body', {}, []);
-    const bodyStyle = this.styleFor(synthetic, style, false);
+    let parent = style;
+    if (!hasHtml) {
+      const html = new DomElement('html', {}, [synthetic]);
+      synthetic.parent = html;
+      parent = this.styleFor(html, style, false);
+    }
+    const bodyStyle = this.styleFor(synthetic, parent, false);
     // Only the box the body would have drawn is taken, not its layout role:
     // the root is still the initial containing block.
     bodyStyle.display = 'block';

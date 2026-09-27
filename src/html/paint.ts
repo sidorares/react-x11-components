@@ -254,18 +254,19 @@ export function paintDocument(
 /**
  * Whose background covers the canvas (CSS 2.1 14.2): the root element's,
  * or — where `<html>` has neither a colour nor an image — the first
- * `<body>`'s, which then paints no background of its own. A fragment's
- * implied body is the root box itself. `anchor` is the box the image is
- * positioned against: the root element's, whichever box it came from.
+ * `<body>`'s, which then paints no background of its own. A document with
+ * no `<html>` tag has the root box standing in for its root element, and a
+ * `<body>` in it is still the body: mail often starts at `<body style>`.
+ * `anchor` is the box the image is positioned against: the root element's,
+ * whichever box it came from.
  */
 function canvasBackground(root: Box): { source: Box; anchor: Box } | null {
   const has = (b: Box) =>
     !isTransparent(b.style.backgroundColor) || !!b.style.backgroundImage;
-  const html = root.children.find((c) => c.el?.name === 'html');
-  if (!html) return has(root) ? { source: root, anchor: root } : null;
-  if (has(html)) return { source: html, anchor: html };
-  const body = html.children.find((c) => c.el?.name === 'body');
-  return body && has(body) ? { source: body, anchor: html } : null;
+  const top = root.children.find((c) => c.el?.name === 'html') ?? root;
+  if (has(top)) return { source: top, anchor: top };
+  const body = top.children.find((c) => c.el?.name === 'body');
+  return body && has(body) ? { source: body, anchor: top } : null;
 }
 
 function paintCanvas(

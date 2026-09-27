@@ -568,7 +568,7 @@ class Builder {
   run(root: Element): BoxTree {
     const cascade = this._options.cascade;
     cascade.beginSharing();
-    const rootStyle = cascade.rootStyle(hasBody(root));
+    const rootStyle = cascade.rootStyle(hasBody(root), hasHtml(root));
     const rootBox = new Box('block', null, rootStyle);
     // a fragment's root stands in for a `<body>`, counters and all
     if (rootStyle.counterReset || rootStyle.counterIncrement) {
@@ -1180,6 +1180,13 @@ class CounterScopes {
 /** Whether the parsed document has a `<body>`. htmlparser2 does not
  *  synthesise one — it parses what it was given — so a fragment has none,
  *  and the root box stands in for it. */
+function hasHtml(root: Element | { children: unknown }): boolean {
+  for (const child of childrenOf(root as Element)) {
+    if (isElement(child) && tagOf(child) === 'html') return true;
+  }
+  return false;
+}
+
 function hasBody(root: Element | { children: unknown }): boolean {
   for (const child of childrenOf(root as Element)) {
     if (!isElement(child)) continue;
