@@ -360,7 +360,8 @@ function canvasBackground(root: Box): { source: Box; anchor: Box } | null {
   const has = (b: Box) =>
     !isTransparent(b.style.backgroundColor) ||
     !!b.style.backgroundImage ||
-    !!b.style.backgroundGradient;
+    !!b.style.backgroundGradient ||
+    !!b.style.backgroundImages;
   const top = root.children.find((c) => c.el?.name === 'html') ?? root;
   if (has(top)) return { source: top, anchor: top };
   const body = top.children.find((c) => c.el?.name === 'body');
@@ -387,42 +388,108 @@ function paintCanvas(
     Math.ceil(whole.height),
   );
   if (!area) return;
-  const style = source.style;
-  if (
-    !isTransparent(style.backgroundColor) &&
-    source.style.visibility !== 'hidden'
-  ) {
-    ctx.fillStyle = inkColor(style.backgroundColor as string, style.color);
-    ctx.fillRect(area.x, area.y, area.w, area.h);
+  const layers = layersOf(source.style) ?? [source.style];
+  const visible = source.style.visibility !== 'hidden';
+  for (let i = layers.length - 1; i >= 0; i -= 1) {
+    const style = layers[i];
+    if (!isTransparent(style.backgroundColor) && visible) {
+      ctx.fillStyle = inkColor(style.backgroundColor as string, style.color);
+      ctx.fillRect(area.x, area.y, area.w, area.h);
+    }
+    if (style.backgroundGradient && ctx.createLinearGradient && visible) {
+      // sized by the root element's box and repeated down the canvas, as a
+      // browser does — the stripes a short page with a gradient on its
+      // body shows — or by the viewport, where it is fixed
+      const box =
+        style.backgroundAttachment === 'fixed' && options.canvas
+          ? options.canvas
+          : paddingBox(anchor, options);
+      paintGradient(
+        ctx,
+        style,
+        style.backgroundGradient,
+        area,
+        snapped(box.x, box.y, box.width, box.height),
+      );
+    }
+    if (style.backgroundImage) {
+      paintBackgroundImage(
+        ctx,
+        style,
+        area,
+        paddingBox(anchor, options),
+        options,
+      );
+    }
   }
-  if (
-    style.backgroundGradient &&
-    ctx.createLinearGradient &&
-    source.style.visibility !== 'hidden'
-  ) {
-    // sized by the root element's box and repeated down the canvas, as a
-    // browser does — the stripes a short page with a gradient on its body
-    // shows — or by the viewport, where it is fixed
-    const box =
-      style.backgroundAttachment === 'fixed' && options.canvas
-        ? options.canvas
-        : paddingBox(anchor, options);
-    paintGradient(
-      ctx,
-      style,
-      style.backgroundGradient,
-      area,
-      snapped(box.x, box.y, box.width, box.height),
+}
+
+const LAYERS = new WeakMap<ComputedStyle, ComputedStyle[]>();
+
+/**
+ * A style for each of a background's layers, top first, where it has more
+ * than one (CSS Backgrounds 3, 2.1); null where it has one, which the style
+ * itself is. Each is the box's own style with the layer's image, repeat,
+ * size, attachment and position in place of the first's — a property with
+ * fewer values than there are images taking them over again — and the
+ * colour on the bottom layer alone, which is painted first, under the
+ * others. Made once a style, so a repaint makes none.
+ */
+function layersOf(style: ComputedStyle): ComputedStyle[] | null {
+  const images = style.backgroundImages;
+  if (!images) return null;
+  let layers = LAYERS.get(style);
+  if (layers) return layers;
+  const nth = <T>(list: T[] | null, first: T, i: number): T =>
+    list ? list[i % list.length] : first;
+  layers = images.map((image, i) => {
+    const layer = Object.create(style) as ComputedStyle;
+    layer.backgroundImages = null;
+    layer.backgroundImage = typeof image === 'string' ? image : null;
+    layer.backgroundGradient = typeof image === 'string' ? null : image;
+    layer.backgroundRepeat = nth(
+      style.backgroundRepeats,
+      style.backgroundRepeat,
+      i,
     );
+    layer.backgroundSize = nth(style.backgroundSizes, style.backgroundSize, i);
+    layer.backgroundAttachment = nth(
+      style.backgroundAttachments,
+      style.backgroundAttachment,
+      i,
+    );
+    [layer.backgroundPositionX, layer.backgroundPositionY] = nth(
+      style.backgroundPositions,
+      [style.backgroundPositionX, style.backgroundPositionY],
+      i,
+    );
+    if (i < images.length - 1) layer.backgroundColor = null;
+    return layer;
+  });
+  LAYERS.set(style, layers);
+  return layers;
+}
+
+/**
+ * A box's background: its colour and each of its layers, bottom first.
+ * `paintBackground` draws a colour and a gradient, and `image`, where a
+ * caller draws images, a layer that is one.
+ */
+function paintLayers(
+  ctx: PaintContext,
+  box: Frame,
+  options: PaintOptions,
+  image?: (layer: ComputedStyle) => void,
+): void {
+  const layers = layersOf(box.style);
+  if (!layers) {
+    paintBackground(ctx, box, options, box.style);
+    if (image && box.style.backgroundImage) image(box.style);
+    return;
   }
-  if (style.backgroundImage) {
-    paintBackgroundImage(
-      ctx,
-      style,
-      area,
-      paddingBox(anchor, options),
-      options,
-    );
+  for (let i = layers.length - 1; i >= 0; i -= 1) {
+    paintBackground(ctx, box, options, layers[i]);
+    if (image && layers[i].backgroundImage) image(layers[i]);
   }
 }
 
@@ -578,8 +645,7 @@ function paintOwnBackground(
   const style = box.style;
   if (style.boxShadow) paintShadows(ctx, box, options, false);
   if (box !== options.canvasSource) {
-    paintBackground(ctx, box, options);
-    if (style.backgroundImage) {
+    paintLayers(ctx, box, options, (layer) => {
       const left = box.x + options.originX;
       const top = frameY(box) + options.originY;
       const area = clampRect(
@@ -592,7 +658,7 @@ function paintOwnBackground(
       if (area) {
         paintBackgroundImage(
           ctx,
-          style,
+          layer,
           area,
           paddingBox(box, options),
           options,
@@ -603,7 +669,7 @@ function paintOwnBackground(
           ),
         );
       }
-    }
+    });
   }
   if (style.boxShadow) paintShadows(ctx, box, options, true);
   if (!box.bordersCollapsed) paintBorders(ctx, box, options);
@@ -1625,9 +1691,10 @@ function paintBackground(
   ctx: PaintContext,
   box: Frame,
   options: PaintOptions,
+  style: ComputedStyle,
 ): void {
-  const color = box.style.backgroundColor;
-  const gradient = box.style.backgroundGradient;
+  const color = style.backgroundColor;
+  const gradient = style.backgroundGradient;
   const solid = !isTransparent(color);
   if (!solid && !gradient) return;
   // each edge on the pixel it falls nearest, as browsers snap a box: boxes
@@ -1642,9 +1709,7 @@ function paintBackground(
   const rect = clampRect(options, x, y, w, h);
   if (!rect) return;
   const rounded =
-    ctx.roundRect && ctx.fill && ctx.beginPath
-      ? cornersOf(box.style, w, h)
-      : null;
+    ctx.roundRect && ctx.fill && ctx.beginPath ? cornersOf(style, w, h) : null;
   const fill = (): void => {
     if (rounded) {
       // The clamp can only have cut edges further than CLAMP_PAD outside
@@ -1656,7 +1721,7 @@ function paintBackground(
     } else ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
   };
   if (solid) {
-    ctx.fillStyle = inkColor(color as string, box.style.color);
+    ctx.fillStyle = inkColor(color as string, style.color);
     fill();
   }
   if (gradient && ctx.createLinearGradient) {
@@ -1664,7 +1729,7 @@ function paintBackground(
     // box, which is where it starts, and repeated under the borders — or
     // the viewport's, where it is fixed; its line runs across the whole of
     // it, not the part this paint reaches
-    const fixed = box.style.backgroundAttachment === 'fixed' && options.canvas;
+    const fixed = style.backgroundAttachment === 'fixed' && options.canvas;
     const at = fixed
       ? snapped(fixed.x, fixed.y, fixed.width, fixed.height)
       : snapped(
@@ -1673,13 +1738,13 @@ function paintBackground(
           box.width - box.borderLeft - box.borderRight,
           frameHeight(box) - box.borderTop - box.borderBottom,
         );
-    if (rounded && box.style.backgroundSize !== 'auto' && ctx.clip) {
+    if (rounded && style.backgroundSize !== 'auto' && ctx.clip) {
       // tiles of the size it was given, cut to the rounded shape
       ctx.save();
       ctx.beginPath!();
       roundedRect(ctx, rect.x, rect.y, rect.w, rect.h, rounded);
       ctx.clip();
-      paintGradient(ctx, box.style, gradient, rect, at);
+      paintGradient(ctx, style, gradient, rect, at);
       ctx.restore();
     } else if (rounded) {
       // one fill in the rounded shape; under the borders it carries on
@@ -1692,10 +1757,10 @@ function paintBackground(
         at.y,
         at.width,
         at.height,
-        box.style.color,
+        style.color,
       );
       fill();
-    } else paintGradient(ctx, box.style, gradient, rect, at);
+    } else paintGradient(ctx, style, gradient, rect, at);
   }
 }
 
@@ -1882,24 +1947,20 @@ function paintPartBackgrounds(
       const part = layer[indexOf(cell)];
       if (!part || !paintsPart(part)) continue;
       const box = cell.box;
-      paintBackground(
-        ctx,
-        {
-          x: box.x,
-          y: box.y,
-          width: box.width,
-          height: box.height,
-          captionTop: 0,
-          captionBottom: 0,
-          borderTop: 0,
-          borderRight: 0,
-          borderBottom: 0,
-          borderLeft: 0,
-          style: part.style,
-        },
-        options,
-      );
-      if (part.style.backgroundImage) {
+      const frame: Frame = {
+        x: box.x,
+        y: box.y,
+        width: box.width,
+        height: box.height,
+        captionTop: 0,
+        captionBottom: 0,
+        borderTop: 0,
+        borderRight: 0,
+        borderBottom: 0,
+        borderLeft: 0,
+        style: part.style,
+      };
+      paintLayers(ctx, frame, options, (style) => {
         const left = box.x + options.originX;
         const top = box.y + options.originY;
         const area = clampRect(
@@ -1921,9 +1982,9 @@ function paintPartBackgrounds(
             }
             areas.set(part, at);
           }
-          paintBackgroundImage(ctx, part.style, area, at, options);
+          paintBackgroundImage(ctx, style, area, at, options);
         }
-      }
+      });
     }
   }
 }
@@ -1934,7 +1995,9 @@ const columnOf = (cell: Cell): number => cell.column;
 function paintsPart(box: Box | null): boolean {
   if (box === null || box.style.visibility !== 'visible') return false;
   return (
-    !isTransparent(box.style.backgroundColor) || !!box.style.backgroundImage
+    !isTransparent(box.style.backgroundColor) ||
+    !!box.style.backgroundImage ||
+    !!box.style.backgroundImages
   );
 }
 
@@ -2952,7 +3015,7 @@ function paintLineBackground(
   }
   if (!(right > left)) return;
   const top = baseline - background.ascent;
-  paintBackground(
+  paintLayers(
     ctx,
     {
       x: left,
@@ -3086,7 +3149,7 @@ function paintInlineBoxes(
       },
     };
     if (fragment.width <= 0) continue;
-    paintBackground(ctx, fragment, options);
+    paintLayers(ctx, fragment, options);
     paintBorders(ctx, fragment, options);
   }
 }

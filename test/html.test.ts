@@ -8201,6 +8201,177 @@ test('a gradient given only a width is as tall as its box', async () => {
   );
 });
 
+test('background layers are read, top first, from the shorthand and the longhands', async () => {
+  const { node } = await render(
+    '<style>.d{background-image:url(a.png),url(b.png)}' +
+      '.d{background-image:url(c.png)}</style>' +
+      '<div id="r" style="background:#eeeeee"></div>' +
+      '<div id="a" style="background:linear-gradient(#000000,#ffffff),' +
+      'url(a.png) center / cover no-repeat #eeeeee"></div>' +
+      '<div id="b" style="background-image:url(a.png),url(b.png);' +
+      'background-position:left top,right bottom;' +
+      'background-repeat:no-repeat"></div>' +
+      '<div id="c" style="background:#eeeeee;' +
+      'background:#ff0000,url(a.png)"></div>' +
+      '<div id="d" class="d"></div>',
+  );
+  const el = view(node);
+  type Layered = {
+    backgroundColor: string | null;
+    backgroundImage: string | null;
+    backgroundGradient: object | null;
+    backgroundSize: unknown;
+    backgroundRepeat: string;
+    backgroundPositionX: unknown;
+    backgroundImages: unknown[] | null;
+    backgroundRepeats: string[] | null;
+    backgroundSizes: unknown[] | null;
+    backgroundPositions: unknown[] | null;
+  };
+  const style = (id: string) =>
+    (boxOf(el, id) as unknown as { style: Layered }).style;
+  const a = style('a');
+  assert.strictEqual(a.backgroundImages?.length, 2);
+  assert.strictEqual(a.backgroundGradient, a.backgroundImages![0]);
+  assert.strictEqual(a.backgroundImage, null, 'the first layer is the top');
+  assert.strictEqual(a.backgroundImages![1], 'a.png');
+  assert.deepStrictEqual(a.backgroundSizes, ['auto', 'cover']);
+  assert.deepStrictEqual(a.backgroundRepeats, ['repeat', 'no-repeat']);
+  assert.deepStrictEqual(a.backgroundPositions, [
+    [0, 0],
+    [{ pct: 50 }, { pct: 50 }],
+  ]);
+  assert.strictEqual(
+    a.backgroundColor,
+    style('r').backgroundColor,
+    'the last layer carries the colour',
+  );
+  const b = style('b');
+  assert.deepStrictEqual(b.backgroundImages, ['a.png', 'b.png']);
+  assert.deepStrictEqual(b.backgroundPositions, [
+    [0, 0],
+    [{ pct: 100 }, { pct: 100 }],
+  ]);
+  assert.strictEqual(b.backgroundRepeats, null, 'one value, for every layer');
+  assert.strictEqual(b.backgroundRepeat, 'no-repeat');
+  const c = style('c');
+  assert.strictEqual(
+    c.backgroundColor,
+    style('r').backgroundColor,
+    'a colour before the last layer makes the declaration invalid',
+  );
+  assert.strictEqual(c.backgroundImages, null);
+  const d = style('d');
+  assert.strictEqual(d.backgroundImages, null, 'one image is one layer');
+  assert.strictEqual(d.backgroundImage, 'c.png');
+});
+
+test('background layers are painted bottom first, over the colour', async () => {
+  // only the last layer of a shorthand was kept, and only the first of
+  // `background-image`: a gradient over a photograph drew one of them
+  const { node } = await render(
+    '<style>body{margin:0}div{width:100px;height:100px}</style>' +
+      '<div style="background:url(top.png) no-repeat,' +
+      'url(bottom.png) no-repeat 50px 50px,#eeeeee"></div>' +
+      '<div style="background:linear-gradient(rgba(0,0,0,.5),' +
+      'rgba(0,0,0,.5)),url(photo.png) center / cover"></div>',
+  );
+  const ops: PaintOp[] = [];
+  await fillsOf(view(node), ops, {
+    backgroundImageFor: (url) =>
+      url === 'top.png'
+        ? { image: {}, width: 10, height: 10, ratio: 1 }
+        : url === 'bottom.png'
+          ? { image: {}, width: 20, height: 20, ratio: 1 }
+          : { image: {}, width: 20, height: 10, ratio: 2 },
+  });
+  const drawn = ops.flatMap((op): object[] =>
+    op.op === 'image'
+      ? [{ at: [op.x, op.y], size: [op.w, op.h] }]
+      : op.op === 'fill' && op.y < 200
+        ? [{ fill: typeof op.style === 'object' ? 'gradient' : 'colour' }]
+        : [],
+  );
+  assert.deepStrictEqual(drawn, [
+    { fill: 'colour' },
+    { at: [50, 50], size: [20, 20] },
+    { at: [0, 0], size: [10, 10] },
+    // covering a square, centred
+    { at: [-50, 100], size: [200, 100] },
+    { fill: 'gradient' },
+  ]);
+});
+
+test('a property with fewer values than the images takes them over again', async () => {
+  const { node } = await render(
+    '<style>body{margin:0}</style><div style="width:100px;height:100px;' +
+      'background-image:url(a.png),url(b.png),url(c.png);' +
+      'background-size:10px 10px,20px 20px;background-repeat:no-repeat">' +
+      '</div>',
+  );
+  const ops: PaintOp[] = [];
+  await fillsOf(view(node), ops, {
+    backgroundImageFor: () => ({ image: {}, width: 5, height: 5, ratio: 1 }),
+  });
+  // c, b and a, bottom up: the first size, the second, and the first again
+  assert.deepStrictEqual(
+    ops.flatMap((op) => (op.op === 'image' ? [op.w] : [])),
+    [10, 20, 10],
+  );
+});
+
+test("the root's background layers cover the canvas", async () => {
+  const { node } = await render(
+    '<html style="background:url(a.png) no-repeat,' +
+      'url(b.png) no-repeat 30px 30px"><body></body></html>',
+  );
+  const ops: PaintOp[] = [];
+  await fillsOf(view(node), ops, {
+    backgroundImageFor: (url) =>
+      url === 'a.png'
+        ? { image: {}, width: 10, height: 10, ratio: 1 }
+        : { image: {}, width: 20, height: 20, ratio: 1 },
+  });
+  assert.deepStrictEqual(
+    ops.flatMap((op) => (op.op === 'image' ? [[op.x, op.y, op.w]] : [])),
+    [
+      [30, 30, 20],
+      [0, 0, 10],
+    ],
+  );
+});
+
+test("every layer's image is asked for", async () => {
+  const asked: string[] = [];
+  await renderX11(
+    h(Html, {
+      source:
+        '<div style="background:url(one.png),linear-gradient(red,blue),' +
+        'url(two.png)">x</div>',
+      partial: false,
+      onResource: (r: { url: string; kind: string }) => {
+        if (r.kind === 'image') asked.push(r.url);
+        return null;
+      },
+    }),
+    FONTS ? { width: 200, height: 100, fonts: FONTS } : { backend: 'mock' },
+  );
+  assert.deepStrictEqual(asked.sort(), ['one.png', 'two.png']);
+});
+
+metric('a layer is drawn over the one under it', async () => {
+  const ctx = await renderWithImages(
+    '<style>body{margin:0}div{width:60px;height:30px;' +
+      'background:linear-gradient(#0000ff,#0000ff) no-repeat 20px 10px / ' +
+      '5px 5px,url(red.png) no-repeat 20px 10px,#00ff00}</style><div></div>',
+  );
+  await expectPixel(ctx, 22, 12, '#0000ff', {
+    message: 'the top layer, over the image',
+  });
+  await expectPixel(ctx, 27, 17, '#ff0000', { message: 'the image' });
+  await expectPixel(ctx, 5, 5, '#00ff00', { message: 'the colour' });
+});
+
 test("an image is trimmed to its box's corners", async () => {
   // an avatar is a round photograph: a replaced image is clipped to the
   // curve of its content edge, and a background to its box's

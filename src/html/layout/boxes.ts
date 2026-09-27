@@ -774,7 +774,9 @@ class Builder {
         this._firstLine = true;
       }
     }
-    if (style.backgroundImage) this._backgrounds.push(box);
+    if (style.backgroundImage || style.backgroundImages) {
+      this._backgrounds.push(box);
+    }
     if (style.position === 'absolute' || style.position === 'fixed')
       box.outOfFlow = true;
     else if (style.float !== 'none') box.isFloat = true;
@@ -872,7 +874,9 @@ class Builder {
     const box = new Box('replaced', el, style);
     box.replaced = replaced;
     into.append(box);
-    if (style.backgroundImage) this._backgrounds.push(box);
+    if (style.backgroundImage || style.backgroundImages) {
+      this._backgrounds.push(box);
+    }
     if (style.position === 'absolute' || style.position === 'fixed')
       box.outOfFlow = true;
     else if (style.float !== 'none') box.isFloat = true;
