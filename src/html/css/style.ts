@@ -139,6 +139,16 @@ export interface ComputedStyle {
   wordSpacing: number;
   whiteSpace: 'normal' | 'nowrap' | 'pre' | 'pre-wrap' | 'pre-line';
   direction: 'ltr' | 'rtl';
+  /** How an element's text takes part in the bidi algorithm: not
+   *  inherited, and carried out as the control characters it stands for
+   *  (`bidiControls`). */
+  unicodeBidi:
+    | 'normal'
+    | 'embed'
+    | 'isolate'
+    | 'bidi-override'
+    | 'isolate-override'
+    | 'plaintext';
   visibility: 'visible' | 'hidden';
   listStyleType: string;
   listStylePosition: 'inside' | 'outside';
@@ -353,6 +363,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     wordSpacing: 0,
     whiteSpace: 'normal',
     direction: 'ltr',
+    unicodeBidi: 'normal',
     visibility: 'visible',
     listStyleType: 'disc',
     listStylePosition: 'outside',
@@ -1025,6 +1036,20 @@ export function applyDeclaration(
     case 'direction': {
       const v = value.toLowerCase();
       if (v === 'ltr' || v === 'rtl') style.direction = v;
+      return;
+    }
+    case 'unicode-bidi': {
+      const v = value.trim().toLowerCase();
+      if (
+        v === 'normal' ||
+        v === 'embed' ||
+        v === 'isolate' ||
+        v === 'bidi-override' ||
+        v === 'isolate-override' ||
+        v === 'plaintext'
+      ) {
+        style.unicodeBidi = v;
+      }
       return;
     }
     case 'text-decoration':
@@ -1790,6 +1815,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'word-spacing': ['wordSpacing'],
   'white-space': ['whiteSpace'],
   direction: ['direction'],
+  'unicode-bidi': ['unicodeBidi'],
   visibility: ['visibility'],
   'list-style': ['listStyleType', 'listStylePosition'],
   'list-style-type': ['listStyleType'],
