@@ -85,6 +85,7 @@ separately, and there are six.
 | 15     | a block in an inline box, right to left            | 5,299 (90%) | 4,854 (82%) |
 | 16     | url(), font-family, tables that clip               | 5,317 (90%) | 4,869 (83%) |
 | 17     | HTML's alignment and body attributes               | 5,322 (90%) | 4,874 (83%) |
+| 18     | `::first-line`, a pseudo-element's place           | 5,343 (91%) | 4,895 (83%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -837,6 +838,29 @@ against the suite.
 
 Round 17 lost none.
 
+### Round 18
+
+86. **A pseudo-element in the middle of a selector was accepted.** A
+    pseudo-element is the last thing in its selector (CSS 2.1 5.10), so
+    `p:first-line p`, `p:first-line[id]` and `p:first-line+p` are not
+    selectors, and a group holding one is dropped whole. Only the user
+    action pseudo-classes, `:hover` and its kind, may follow one
+    (Selectors 4). 4 tests.
+87. **`::first-line` was not built.** The first formatted line of a block,
+    a cell or a caption takes the pseudo-element's colour and background,
+    and where that line is a child's (a `<div>`'s first line is its first
+    paragraph's) the style is handed down to the child (5.12.1). The
+    paragraph is laid out as before and, only where the colour differs,
+    once more with its text cut where the first line ends: a colour moves
+    no glyph, so the lines break where they did. An element on the line
+    with a colour of its own, a link, keeps it. The line's font, spacing
+    and `vertical-align` are not applied, since each would move where it
+    ends; five of the seven `::first-line` tests still failing are
+    `vertical-align`, which CSS 2.1 allows there and does not require.
+    17 tests.
+
+Round 18 lost none.
+
 ## What `<Html>` supports
 
 From the pass rates of the tests that use each feature, at the fixes above,
@@ -857,12 +881,12 @@ checked against the code.
 | lists and markers                                  | 155   | 94%     | **supported**; `list-style-image` is not                                                                                                                                                                     |
 | CSS tables (`display: table-*`), `table-layout`    | 250   | 81%     | **supported**: HTML tables and anonymous ones, both border models, captions, `<col>` widths in both layouts, and column backgrounds with their images; `visibility: collapse` and baseline alignment are not |
 | `::before`, `::after`, `content`, counters, quotes | 332   | 86%     | **supported**; an image in `content` is not                                                                                                                                                                  |
-| `::first-letter`, `::first-line`                   | 395   | 19–100% | `::first-letter` **supported**; `::first-line` **missing**                                                                                                                                                   |
+| `::first-letter`, `::first-line`                   | 398   | 79–100% | `::first-letter` **supported**; `::first-line` **partial**: its colour and background, not its font, spacing or `vertical-align`                                                                             |
 | `z-index` stacking                                 | 152   | 73%     | **supported**: Appendix E's order — block backgrounds, floats, lines, positioned boxes by `z-index` — with a table, a flex box or a box that clips painted whole among the lines                             |
 | SVG: inline, as an image, as a background          | 52    | 98%     | **supported**, as ntk's `SvgView` draws it: shapes, paths, `<use>`, gradients and text; no stylesheet rules, filters, masks or clip paths                                                                    |
 | `clip`                                             | 44    | 100%    | **supported**                                                                                                                                                                                                |
 | bidi: `direction`, `unicode-bidi`                  | 265   | 68%     | **partial**: shaping and the bidi algorithm are the engine's, a line's pieces are ordered by UAX #9's L2; an override that crosses a padded element is resolved on each side of it                           |
-| selectors                                          | 468   | 94%     | **supported** except `::first-line`                                                                                                                                                                          |
+| selectors                                          | 468   | 94%     | **supported**                                                                                                                                                                                                |
 | cascade, `@import`, `@media`                       | 134   | 66–75%  | **supported**                                                                                                                                                                                                |
 
 The CSS3 subset documents actually use sits outside this suite and is listed
@@ -960,7 +984,8 @@ directories and caniemail's feature list:
    round 5. Stacking contexts remain.
 7. **`::first-letter` and `::first-line`**: drop caps and small-cap lead-ins;
    about 400 tests, most of them Unicode punctuation classes.
-   `::first-letter` was done in round 5.
+   `::first-letter` was done in round 5, and `::first-line`'s colour and
+   background in round 18.
 8. **Bidi overrides**: `unicode-bidi: embed | bidi-override | isolate`, and
    an embedding resolved across a line rather than a piece at a time — which
    needs the text engine to take a line's pieces, an element's edges

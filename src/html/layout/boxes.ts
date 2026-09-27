@@ -105,6 +105,9 @@ export interface LineBox {
   /** The inline boxes that open or close on this line, where their own
    *  margin, border and padding sit. */
   edges?: EdgePlacement[];
+  /** A `::first-line` style with a background, painted behind the line's
+   *  content over its face's height, as an inline box's is. */
+  background?: { style: ComputedStyle } & InlineDecoration;
 }
 
 /**
@@ -454,6 +457,10 @@ export interface Intrinsic {
   ratio: number;
 }
 
+/** The `::first-line` style of each block container a rule gives one to,
+ *  kept beside the boxes: few documents have any (`BoxTree.firstLine`). */
+export const FIRST_LINE = new WeakMap<Box, ComputedStyle>();
+
 /** What the builder produced, plus the document-wide text it indexed. */
 export interface BoxTree {
   root: Box;
@@ -476,6 +483,9 @@ export interface BoxTree {
   /** Whether any positioned box has a negative `z-index`: where none has,
    *  paint has no layer below the flow to find. */
   negative: boolean;
+  /** Whether any block has a `::first-line` style (`FIRST_LINE`): where
+   *  none has, layout looks for none. */
+  firstLine: boolean;
 }
 
 export interface BuildOptions {
@@ -535,6 +545,7 @@ class Builder {
   private _backgrounds: Box[] = [];
   private _relative = false;
   private _negative = false;
+  private _firstLine = false;
   /** Counter stack for `<ol>` numbering, one entry per open list. */
   private _counters: number[] = [];
   /** The CSS counters in scope, for `counter()` in generated content. */
@@ -579,6 +590,7 @@ class Builder {
       backgrounds: this._backgrounds,
       relative: this._relative || isRelative(rootStyle),
       negative: this._negative,
+      firstLine: this._firstLine,
     };
   }
 
@@ -671,6 +683,16 @@ class Builder {
     const kind = boxKindFor(style.display);
     const box = new Box(kind, el, style);
     into.append(box);
+    if (
+      (kind === 'block' || kind === 'table-cell' || kind === 'table-caption') &&
+      this._options.cascade.hasFirstLine
+    ) {
+      const firstLine = this._options.cascade.firstLineStyle(el, style);
+      if (firstLine) {
+        FIRST_LINE.set(box, firstLine);
+        this._firstLine = true;
+      }
+    }
     if (style.backgroundImage) this._backgrounds.push(box);
     if (style.position === 'absolute' || style.position === 'fixed')
       box.outOfFlow = true;

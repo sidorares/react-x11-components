@@ -259,6 +259,13 @@ whatever the letter is in, so `<p><b>T</b>his` has a bold first letter. An
 opening quote in a text of its own before the letter — `<q>`'s — takes the
 letter's style too.
 
+**First lines:** `::first-line` (and `:first-line`) gives the first
+formatted line of a block its colour and background. A block whose first
+line is a child's, as a `<div>`'s is its first paragraph's, hands the style
+down to it. An element on the line with a colour of its own, a link, keeps
+it. The line's font properties, spacing and `vertical-align` are not
+applied: each would change where the line ends.
+
 **Selectors:** everything [css-select] supports — combinators, attribute
 operators, `:nth-child(an+b)`, `:not()` — plus `:hover`, which is answered
 from this renderer's own pointer state. Escapes are read wherever they stand,
@@ -274,9 +281,9 @@ answers it and a desktop that switches schemes re-cascades the document.
 animations and transitions, multi-column, shadows, gradients,
 `background-size`, more than one background
 layer (the first is drawn), `position: sticky` (treated as `relative`),
-`::first-line`, and an image in `content` (the rest of the value is
-drawn). A `<col>`'s or a `<colgroup>`'s borders are drawn only where the
-table's collapse. A percentage
+an image in `content` (the rest of the value is drawn), and the font
+properties of `::first-line`. A `<col>`'s or a `<colgroup>`'s borders are
+drawn only where the table's collapse. A percentage
 `height` resolves where the containing block's height is set, and on an
 absolutely positioned box. The initial containing block is the viewport —
 the window's height, since the element sizes to its content — so

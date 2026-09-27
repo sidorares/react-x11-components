@@ -134,6 +134,9 @@ export interface InlineOptions {
   floats: FloatContext | null;
   /** The block's content-box left edge, in the float context's space. */
   originX: number;
+  /** A `::first-line` colour, for the text before `end` — the first line's
+   *  end, in the document index — whose colour is `from`, the block's. */
+  firstLine?: { color: string; from: string; end: number };
 }
 
 /**
@@ -145,6 +148,7 @@ export function layoutInline(block: Box, options: InlineOptions): InlineResult {
   const items: Item[] = [];
   collect(block, items, options.width, fonts);
   if (!items.length || !fonts) return EMPTY;
+  if (options.firstLine) firstLineColour(items, options.firstLine);
 
   const style = block.style;
   const base = {
@@ -1509,6 +1513,15 @@ const FACE_EXTENTS = new WeakMap<
 /** The extent of a decorated box where there are no fonts to ask. */
 const NO_EXTENT: InlineDecoration = { ascent: 0, descent: 0 };
 
+/** A style's face's ascent and descent, which an inline box's background
+ *  is painted over. */
+export function faceExtentOf(
+  fonts: FontsLike,
+  style: ComputedStyle,
+): InlineDecoration {
+  return faceExtent(fonts, style);
+}
+
 function faceExtent(fonts: FontsLike, style: ComputedStyle): InlineDecoration {
   let cache = FACE_EXTENTS.get(fonts);
   if (!cache) {
@@ -1537,6 +1550,47 @@ function faceExtent(fonts: FontsLike, style: ComputedStyle): InlineDecoration {
   }
   cache.byStyle.set(style, extent);
   return extent;
+}
+
+/**
+ * The first line's text in its `::first-line` colour: the runs before the
+ * line's end whose colour is the block's own, the one that ends past it cut
+ * there. A run in a colour of its own — a link's — keeps it, as an element
+ * inside the pseudo-element does. Colour moves no glyph, so the lines break
+ * where they did.
+ */
+function firstLineColour(
+  items: Item[],
+  firstLine: { color: string; from: string; end: number },
+): void {
+  for (let i = 0; i < items.length; i += 1) {
+    const item = items[i];
+    if (item.kind !== 'text') continue;
+    // past the line: a run in a colour of its own may have been the one
+    // across its end, so this is where the walk stops, not at the cut
+    if (item.start >= firstLine.end) break;
+    if (item.run.color !== firstLine.from) continue;
+    const cut = firstLine.end - item.start;
+    if (cut < item.length) {
+      items.splice(i + 1, 0, {
+        ...item,
+        run: { ...item.run, text: item.run.text.slice(cut) },
+        start: item.start + cut,
+        length: item.length - cut,
+      });
+      items[i] = {
+        ...item,
+        run: {
+          ...item.run,
+          text: item.run.text.slice(0, cut),
+          color: firstLine.color,
+        },
+        length: cut,
+      };
+      break;
+    }
+    items[i] = { ...item, run: { ...item.run, color: firstLine.color } };
+  }
 }
 
 /** The `TextRun` one styled piece of text becomes: its text, and what paint
