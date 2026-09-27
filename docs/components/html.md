@@ -201,12 +201,20 @@ offsets on an axis fills what they leave, or, with a width, shares it
 between its `auto` margins, which is how `margin: auto` centres one. A box
 is painted with each edge on the pixel it falls nearest, as browsers snap
 one, so a rule `1pt` wide is a pixel and boxes that meet at a fraction of a
-pixel share the column between them. A rounded box's border is a ring
-rounded on both its edges, the inside by the radius less the border, where
-every side that has one has it in one colour and a solid rule: a card's, a
-button's, and an accent down one side, which curves into the corners it
-meets; a rounded box with sides of different colours has them drawn
-straight. A box whose `overflow` is not `visible`
+pixel share the column between them. A corner's radius is a length or a
+percentage — of the box's width across and its height down, so `50%` is a
+circle on a square box and an ellipse on any other — and a `/` gives the
+corners vertical radii of their own; radii too large for their box are
+reduced together, so `calc(infinity * 1px)`, Tailwind 4's `rounded-full`,
+is a pill. A rounded box's border is a ring rounded on both its edges, the
+inside by each radius less the border across it, where every side that has
+one has it in one colour and a solid rule: a card's, a button's, and an
+accent down one side, which curves into the corners it meets; a rounded
+box with sides of different colours has them drawn straight. An image is
+trimmed to the corners too — an `<img>` to the curve of its content edge,
+so an avatar is a round photograph, and a background to its box's — at the
+cost on X11 of a clip the size of the window, which only a rounded box
+pays. A box whose `overflow` is not `visible`
 clips what it holds to its padding box, rounded where the box is — all of
 it but a positioned box whose containing block is outside — and `scroll`
 and `auto` clip the same, with no scroll bars: the element around the
@@ -346,7 +354,9 @@ layout resolves as it does any percentage; `min(100%, 600px)`, a
 comparison with a percentage in it, is resolved against each width it
 meets. A percentage that cannot resolve makes the whole value `auto` where
 a plain percentage would be, so `calc(40px + 10%)` against a height nothing
-sets is no height.
+sets is no height. The constants `pi`, `e`, `infinity` and `NaN` are read,
+and a calculation that comes to no finite number is what a browser makes
+of it: NaN is nought, and an infinity the largest length there is.
 
 **Logical properties:** `margin-inline`, `padding-block`, `inset-inline`,
 `border-inline-start`, `inline-size`, `border-start-end-radius` and the

@@ -1492,7 +1492,7 @@ function collect(
           start !== 0 ||
           end !== 0 ||
           (child.decoration !== null &&
-            child.style.borderRadius.some((r) => r > 0)) ||
+            child.style.borderRadius.some((r) => r !== 0)) ||
           isOffset(child.style) ||
           child.style.verticalAlign !== 'baseline' ||
           (fonts !== null && ownsLeading(fonts, block, child.style));

@@ -55,7 +55,7 @@ export function parseMath(
 export function parseMathNumber(value: string): number | null {
   const term = parseTerm(value, () => null);
   if (!term || term.kind !== 'linear' || term.length) return null;
-  return Number.isFinite(term.px) ? term.px : null;
+  return censor(term.px);
 }
 
 function parseTerm(
@@ -83,12 +83,36 @@ function toLen(term: Term): Len | null {
     }
     return { pct: 0, of: { max: term.max, args } };
   }
-  if (!Number.isFinite(term.px) || !Number.isFinite(term.pct)) return null;
-  if (!term.hasPct) return term.px;
-  return { pct: term.pct, px: term.px };
+  if (!term.hasPct) return censor(term.px);
+  return { pct: censor(term.pct), px: censor(term.px) };
 }
 
 const NUMBER = /^[+-]?(?:\d*\.\d+|\d+)(?:e[+-]?\d+)?/;
+
+const CONSTANT = /^(?:-?infinity|nan|pi|e)(?![a-z0-9_(-])/;
+
+const CONSTANTS: Record<string, number> = {
+  infinity: Infinity,
+  '-infinity': -Infinity,
+  nan: NaN,
+  pi: Math.PI,
+  e: Math.E,
+};
+
+/**
+ * What a calculation that is no finite number comes to (CSS Values 4,
+ * 10.9): NaN is 0, and an infinity the largest length there is — which,
+ * as in a browser, is still a length: a radius of it is a pill.
+ */
+function censor(n: number): number {
+  if (Number.isNaN(n)) return 0;
+  if (n === Infinity) return LARGEST;
+  if (n === -Infinity) return -LARGEST;
+  return n;
+}
+
+/** The largest length a browser holds, 2^25 pixels less a little. */
+const LARGEST = 33554428;
 
 function tokenize(text: string): Token[] | null {
   const out: Token[] = [];
@@ -132,6 +156,14 @@ function tokenize(text: string): Token[] | null {
     if (name) {
       out.push({ t: 'open', fn: name.slice(0, -1) });
       i += name.length;
+      continue;
+    }
+    // the numbers CSS Values 4 names (10.7.1): Tailwind 4 writes a pill's
+    // radius as `calc(infinity * 1px)`
+    const constant = CONSTANT.exec(text.slice(i))?.[0];
+    if (constant) {
+      out.push({ t: 'num', value: CONSTANTS[constant], unit: '' });
+      i += constant.length;
       continue;
     }
     if (c === '+' || c === '-') {
@@ -323,7 +355,14 @@ function scale(term: Term, k: number): Term {
       args: term.args.map((arg) => scale(arg, k)),
     };
   }
-  return linear(term.length, term.px * k, term.pct * k, term.hasPct);
+  // nought stays nought, so that an infinity scaling a length is not also
+  // a NaN of the percentage it has none of
+  return linear(
+    term.length,
+    term.px === 0 ? 0 : term.px * k,
+    term.pct === 0 ? 0 : term.pct * k,
+    term.hasPct,
+  );
 }
 
 /** `min()` or `max()` of terms of one type: a number where no percentage

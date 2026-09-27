@@ -1838,6 +1838,9 @@ interface Fill {
     radii: number[] | null;
   };
   rule?: string;
+  /** A path of curves: each curve's reach across and down, in the order
+   *  drawn — a quarter ellipse's radii. The bounds are the whole path's. */
+  corners?: [number, number][];
 }
 
 /** What a paint did, in order: a fill, or a clip pushed or popped. */
@@ -1852,7 +1855,8 @@ type PaintOp =
       radii: number[] | null;
     }
   | { op: 'save' }
-  | { op: 'restore' };
+  | { op: 'restore' }
+  | { op: 'image'; x: number; y: number; w: number; h: number };
 
 /** What painting the document fills, in order. The glyphs are left out:
  *  the recorder has nowhere to draw them. `ops`, when given, gets the fills
@@ -1862,6 +1866,13 @@ async function fillsOf(
   ops?: PaintOp[],
   options?: {
     canvas?: { x: number; y: number; width: number; height: number };
+    imageFor?: () => unknown;
+    backgroundImageFor?: (url: string) => {
+      image: unknown;
+      width: number | null;
+      height: number | null;
+      ratio: number;
+    } | null;
   },
 ): Promise<Fill[]> {
   const { paintDocument } = await import('../src/html/paint.js');
@@ -1879,6 +1890,19 @@ async function fillsOf(
   let fillStyle: unknown = null;
   let path: Omit<Fill, 'style'> | null = null;
   let inner: Fill['inner'] | null = null;
+  let curves: {
+    at: [number, number];
+    corners: [number, number][];
+    box: [number, number, number, number];
+  } | null = null;
+  const reach = (x: number, y: number): void => {
+    const b = curves!.box;
+    curves!.at = [x, y];
+    b[0] = Math.min(b[0], x);
+    b[1] = Math.min(b[1], y);
+    b[2] = Math.max(b[2], x);
+    b[3] = Math.max(b[3], y);
+  };
   const ctx = {
     get fillStyle() {
       return fillStyle;
@@ -1900,7 +1924,22 @@ async function fillsOf(
     beginPath() {
       path = null;
       inner = null;
+      curves = null;
     },
+    moveTo(x: number, y: number) {
+      curves ??= { at: [x, y], corners: [], box: [x, y, x, y] };
+      reach(x, y);
+    },
+    lineTo(x: number, y: number) {
+      reach(x, y);
+    },
+    bezierCurveTo(...args: number[]) {
+      const [x, y] = args.slice(4);
+      const [fromX, fromY] = curves!.at;
+      curves!.corners.push([Math.abs(x - fromX), Math.abs(y - fromY)]);
+      reach(x, y);
+    },
+    closePath() {},
     rect(x: number, y: number, w: number, h: number) {
       path = { x, y, w, h, radii: null };
     },
@@ -1909,6 +1948,25 @@ async function fillsOf(
       else path = { x, y, w, h, radii };
     },
     fill(rule?: string) {
+      if (curves) {
+        const [x0, y0, x1, y1] = curves.box;
+        const fill: Fill = {
+          style: fillStyle,
+          x: x0,
+          y: y0,
+          w: x1 - x0,
+          h: y1 - y0,
+          radii: null,
+          corners: curves.corners,
+          rule,
+        };
+        fills.push(fill);
+        ops?.push({ op: 'fill', ...fill });
+        curves = null;
+        path = null;
+        inner = null;
+        return;
+      }
       if (path) {
         const fill: Fill = { style: fillStyle, ...path };
         if (inner) Object.assign(fill, { inner, rule });
@@ -1919,11 +1977,26 @@ async function fillsOf(
       inner = null;
     },
     clip() {
+      if (curves) {
+        const [x0, y0, x1, y1] = curves.box;
+        ops?.push({
+          op: 'clip',
+          x: x0,
+          y: y0,
+          w: x1 - x0,
+          h: y1 - y0,
+          radii: null,
+        });
+        curves = null;
+      }
       if (path) {
         const { x, y, w, h, radii } = path;
         ops?.push({ op: 'clip', x, y, w, h, radii });
       }
       path = null;
+    },
+    drawImage(_image: unknown, x: number, y: number, w: number, h: number) {
+      ops?.push({ op: 'image', x, y, w, h });
     },
     createLinearGradient(x0: number, y0: number, x1: number, y1: number) {
       const stops: [number, string][] = [];
@@ -2945,7 +3018,7 @@ function clipsAround(ops: PaintOp[], color: string): PaintOp[][] {
     if (op.op === 'save') stack.push(null);
     else if (op.op === 'restore') stack.pop();
     else if (op.op === 'clip') stack[stack.length - 1] = op;
-    else if (op.style === parseColor(color)) {
+    else if (op.op === 'fill' && op.style === parseColor(color)) {
       out.push(stack.filter((c): c is PaintOp => c !== null));
     }
   }
@@ -7020,9 +7093,16 @@ test("a rounded box's border is a ring that follows its corners", async () => {
     h: 40,
     radii: [6, 6, 6, 6],
   });
-  // a border down one side curves into the corners it meets
+  // a border down one side curves into the corners it meets, the inside's
+  // corners there ellipses 4px across and 10px down, and its hole is run
+  // from the top left anticlockwise
   const blue = fills.find((f) => f.style === parseColor('#0000ff'));
-  assert.deepStrictEqual(blue?.inner?.radii, [4, 10, 10, 4]);
+  assert.deepStrictEqual(blue?.corners?.slice(4), [
+    [4, 10],
+    [4, 10],
+    [10, 10],
+    [10, 10],
+  ]);
   // and sides of two colours are drawn a side at a time, as before
   const green = fills.filter((f) => f.style === parseColor('#00ff00'));
   assert.ok(
@@ -7138,4 +7218,188 @@ test('a gradient on the root repeats down a canvas taller than the page', async 
       [200, 50, 200, 300],
     ],
   );
+});
+
+// --- radii ----------------------------------------------------------------------
+
+test("calc()'s constants: infinity, NaN, pi and e", () => {
+  // CSS Values 4 names them, and Tailwind 4 writes a pill's radius as
+  // `calc(infinity * 1px)`, which dropped the declaration: an infinity is
+  // the largest length there is, and a NaN nought
+  const ctx = { em: 20, rem: 16, vw: 1000, vh: 500, scale: 1 };
+  const len = (v: string) => parseLength(v, ctx);
+  assert.strictEqual(len('calc(infinity * 1px)'), 33554428);
+  assert.strictEqual(len('calc(-infinity * 1px)'), -33554428);
+  assert.strictEqual(len('calc(nan * 1px)'), 0);
+  assert.ok(Math.abs((len('calc(pi * 1px)') as number) - Math.PI) < 1e-12);
+  assert.ok(Math.abs((len('calc(e * 2px)') as number) - 2 * Math.E) < 1e-12);
+  // a word that only starts like one is none
+  assert.strictEqual(len('calc(ex * 1px)'), null);
+  assert.strictEqual(len('calc(infinityx * 1px)'), null);
+  assert.strictEqual(parseNumber('calc(infinity)'), 33554428);
+});
+
+/** The fills a document's boxes paint, of one colour. */
+async function fillsIn(source: string, color: string): Promise<Fill[]> {
+  const { node } = await render('<style>body{margin:0}</style>' + source);
+  const ink = parseColor(color);
+  return (await fillsOf(view(node))).filter((f) => f.style === ink);
+}
+
+test("a percentage radius is of the box's width across and its height down", async () => {
+  // `50%` was read as no radius, so an avatar was a square: a circle on a
+  // square box, and an ellipse on any other, drawn as four curves
+  const [circle] = await fillsIn(
+    '<div style="width:44px;height:44px;border-radius:50%;' +
+      'background:#fde68a"></div>',
+    '#fde68a',
+  );
+  assert.deepStrictEqual(circle.radii, [22, 22, 22, 22]);
+  const [ellipse] = await fillsIn(
+    '<div style="width:120px;height:56px;border-radius:50%;' +
+      'background:#bae6fd"></div>',
+    '#bae6fd',
+  );
+  assert.deepStrictEqual(
+    [ellipse.x, ellipse.y, ellipse.w, ellipse.h],
+    [0, 0, 120, 56],
+  );
+  assert.deepStrictEqual(ellipse.corners, [
+    [60, 28],
+    [60, 28],
+    [60, 28],
+    [60, 28],
+  ]);
+});
+
+test('a slash gives the corners their vertical radii', async () => {
+  const [both] = await fillsIn(
+    '<div style="width:120px;height:56px;border-radius:40px / 20px;' +
+      'background:#fecdd3"></div>',
+    '#fecdd3',
+  );
+  assert.deepStrictEqual(both.corners, [
+    [40, 20],
+    [40, 20],
+    [40, 20],
+    [40, 20],
+  ]);
+  // and a corner's own property takes the two
+  const [one] = await fillsIn(
+    '<div style="width:120px;height:56px;border-top-left-radius:30px 10px;' +
+      'background:#fecdd4"></div>',
+    '#fecdd4',
+  );
+  assert.deepStrictEqual(one.corners, [
+    [0, 0],
+    [0, 0],
+    [0, 0],
+    [30, 10],
+  ]);
+});
+
+test('radii too large for their box are reduced together', async () => {
+  // Tailwind 4's rounded-full: a pill, its ends half the height round
+  const [pill] = await fillsIn(
+    '<div style="width:100px;height:30px;border-radius:calc(infinity * 1px);' +
+      'background:#dcfce7"></div>',
+    '#dcfce7',
+  );
+  assert.deepStrictEqual(pill.radii, [15, 15, 15, 15]);
+  // two corners down a side 40px tall share it: 60px each is 40px, which
+  // the Cocoa context's roundRect would clamp to 20px, so it is drawn in
+  // curves
+  const [tab] = await fillsIn(
+    '<div style="width:100px;height:40px;border-radius:60px 60px 0 0;' +
+      'background:#e9d5ff"></div>',
+    '#e9d5ff',
+  );
+  assert.ok(tab.corners, 'drawn in curves');
+  const [tr, br, bl, tl] = tab.corners!;
+  assert.deepStrictEqual(
+    [tr, tl],
+    [
+      [40, 40],
+      [40, 40],
+    ],
+  );
+  assert.deepStrictEqual(
+    [br, bl],
+    [
+      [0, 0],
+      [0, 0],
+    ],
+  );
+});
+
+test('a border down one side of a rounded box curves its inside by the ellipse left', async () => {
+  // the inside's corner is the radius less the border across it: 14px less
+  // 6px across and 14px down, an ellipse, so the ring is drawn in curves,
+  // its hole run backwards under the non-zero rule (ntk leaves a hairline
+  // where two curves drawn the same way meet under the even-odd one)
+  const [ring] = await fillsIn(
+    '<div style="width:200px;height:40px;border-left:6px solid #0000fe;' +
+      'border-radius:14px"></div>',
+    '#0000fe',
+  );
+  assert.strictEqual(ring.rule, 'nonzero');
+  assert.deepStrictEqual(ring.corners!.slice(0, 4), [
+    [14, 14],
+    [14, 14],
+    [14, 14],
+    [14, 14],
+  ]);
+  // the hole, from its top left anticlockwise
+  assert.deepStrictEqual(ring.corners!.slice(4), [
+    [8, 14],
+    [8, 14],
+    [14, 14],
+    [14, 14],
+  ]);
+});
+
+test("an image is trimmed to its box's corners", async () => {
+  // an avatar is a round photograph: a replaced image is clipped to the
+  // curve of its content edge, and a background to its box's
+  const { node } = await render(
+    '<style>body{margin:0}</style><img src="a.png" style="display:block;' +
+      'width:40px;height:40px;border-radius:50%;border:2px solid #000">' +
+      '<div style="width:60px;height:30px;border-radius:50%;' +
+      'background-image:url(b.png)"></div><img src="c.png" ' +
+      'style="display:block;width:40px;height:40px">',
+  );
+  const ops: PaintOp[] = [];
+  await fillsOf(view(node), ops, {
+    imageFor: () => ({}),
+    backgroundImageFor: () => ({ image: {}, width: 60, height: 30, ratio: 2 }),
+  });
+  // each image, and the clip in force where it is drawn
+  const drawn = (x: number, y: number) => {
+    const i = ops.findIndex(
+      (op) => op.op === 'image' && op.x === x && op.y === y,
+    );
+    assert.ok(i >= 0, `an image drawn at ${x},${y}`);
+    let depth = 0;
+    for (let j = i - 1; j >= 0; j -= 1) {
+      const op = ops[j];
+      if (op.op === 'restore') depth += 1;
+      else if (op.op === 'save') depth = Math.max(0, depth - 1);
+      else if (op.op === 'clip' && depth === 0) return op;
+    }
+    return null;
+  };
+  // inside a 2px border: a circle 40px across, its radius 22px less 2px
+  const avatar = drawn(2, 2)!;
+  assert.deepStrictEqual(
+    [avatar.x, avatar.y, avatar.w, avatar.h, avatar.radii],
+    [2, 2, 40, 40, [20, 20, 20, 20]],
+  );
+  // the background's box is 60 by 30: an ellipse, clipped in curves
+  const background = drawn(0, 44)!;
+  assert.deepStrictEqual(
+    [background.x, background.y, background.w, background.h, background.radii],
+    [0, 44, 60, 30, null],
+  );
+  // and a square image is drawn with no clip of its own
+  assert.strictEqual(drawn(0, 74), null);
 });

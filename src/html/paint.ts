@@ -59,6 +59,17 @@ export interface PaintContext extends FillContext {
   beginPath?(): void;
   rect?(x: number, y: number, w: number, h: number): void;
   roundRect?(x: number, y: number, w: number, h: number, radii: number[]): void;
+  moveTo?(x: number, y: number): void;
+  lineTo?(x: number, y: number): void;
+  bezierCurveTo?(
+    x1: number,
+    y1: number,
+    x2: number,
+    y2: number,
+    x: number,
+    y: number,
+  ): void;
+  closePath?(): void;
   fill?(rule?: 'nonzero' | 'evenodd'): void;
   createLinearGradient?(
     x0: number,
@@ -555,6 +566,11 @@ function paintOwnBackground(
           area,
           paddingBox(box, options),
           options,
+          cornersOf(
+            style,
+            Math.round(left + box.width) - Math.round(left),
+            Math.round(top + frameHeight(box)) - Math.round(top),
+          ),
         );
       }
     }
@@ -767,31 +783,213 @@ function clipOf(
  * block — rounded, padded, `overflow: hidden` — had one made for every
  * paint.
  */
-function innerRadii(box: Box): number[] | null {
-  const radii = box.style.borderRadius;
-  if (!radii.some((r) => r > 0)) return null;
-  const [tl, tr, br, bl] = radii;
-  const inner = [
-    Math.max(0, tl - Math.max(box.borderTop, box.borderLeft)),
-    Math.max(0, tr - Math.max(box.borderTop, box.borderRight)),
-    Math.max(0, br - Math.max(box.borderBottom, box.borderRight)),
-    Math.max(0, bl - Math.max(box.borderBottom, box.borderLeft)),
-  ];
+function innerRadii(box: Box): Corners | null {
+  const corners = cornersOf(box.style, box.width, frameHeight(box));
+  if (!corners) return null;
+  const inner = insetCorners(
+    corners,
+    box.borderTop,
+    box.borderRight,
+    box.borderBottom,
+    box.borderLeft,
+  );
+  const { x, y } = inner;
   if (
-    clearOf(inner[0], box.padLeft, box.padTop) &&
-    clearOf(inner[1], box.padRight, box.padTop) &&
-    clearOf(inner[2], box.padRight, box.padBottom) &&
-    clearOf(inner[3], box.padLeft, box.padBottom)
+    box.padLeft >= x[0] &&
+    box.padTop >= y[0] &&
+    box.padRight >= x[1] &&
+    box.padTop >= y[1] &&
+    box.padRight >= x[2] &&
+    box.padBottom >= y[2] &&
+    box.padLeft >= x[3] &&
+    box.padBottom >= y[3]
   ) {
     return null;
   }
   return inner;
 }
 
-/** Whether padding of `x` and `y` beside a corner of radius `r` keeps the
- *  content box out of it. */
-function clearOf(r: number, x: number, y: number): boolean {
-  return x >= r && y >= r;
+/** The corners of a box's content edge, inside its borders and padding;
+ *  null where every one of them is square. */
+function contentCorners(box: Box): Corners | null {
+  const corners = cornersOf(box.style, box.width, frameHeight(box));
+  if (!corners) return null;
+  const inner = insetCorners(
+    corners,
+    box.borderTop + box.padTop,
+    box.borderRight + box.padRight,
+    box.borderBottom + box.padBottom,
+    box.borderLeft + box.padLeft,
+  );
+  for (let i = 0; i < 4; i += 1) {
+    if (inner.x[i] > 0 && inner.y[i] > 0) return inner;
+  }
+  return null;
+}
+
+/** A box's corners in pixels: each one's horizontal and vertical radius,
+ *  from the top left. */
+interface Corners {
+  x: [number, number, number, number];
+  y: [number, number, number, number];
+}
+
+/**
+ * The radii of a box's corners in pixels (CSS Backgrounds 3, 5.1): a
+ * percentage is of the box's width across and of its height down, a corner
+ * with either radius nought is square, and where the two on a side would
+ * overlap all eight are reduced together (5.5) — which is what makes `50%`
+ * an ellipse and `calc(infinity * 1px)` a pill. Null where every corner is
+ * square, which is almost every box and the first thing asked.
+ */
+function cornersOf(style: ComputedStyle, w: number, h: number): Corners | null {
+  const across = style.borderRadius;
+  const down = style.borderRadiusY;
+  if (
+    down === null &&
+    across[0] === 0 &&
+    across[1] === 0 &&
+    across[2] === 0 &&
+    across[3] === 0
+  ) {
+    return null;
+  }
+  const vertical = down ?? across;
+  const x: Corners['x'] = [0, 0, 0, 0];
+  const y: Corners['y'] = [0, 0, 0, 0];
+  let rounded = false;
+  for (let i = 0; i < 4; i += 1) {
+    const rx = resolve(across[i], w);
+    const ry = resolve(vertical[i], h);
+    if (!(rx > 0 && ry > 0)) continue;
+    x[i] = rx;
+    y[i] = ry;
+    rounded = true;
+  }
+  if (!rounded) return null;
+  let f = 1;
+  const fit = (side: number, sum: number): void => {
+    if (sum > side) f = Math.min(f, Math.max(0, side) / sum);
+  };
+  fit(w, x[0] + x[1]);
+  fit(h, y[1] + y[2]);
+  fit(w, x[2] + x[3]);
+  fit(h, y[3] + y[0]);
+  if (f < 1) {
+    for (let i = 0; i < 4; i += 1) {
+      x[i] *= f;
+      y[i] *= f;
+    }
+  }
+  return { x, y };
+}
+
+/** The corners of an edge inside a box's outer one — its padding edge,
+ *  inside its borders: each radius less the width of the border across it
+ *  (CSS Backgrounds 3, 5.2), and square where that leaves none. */
+function insetCorners(
+  c: Corners,
+  top: number,
+  right: number,
+  bottom: number,
+  left: number,
+): Corners {
+  const x: Corners['x'] = [
+    Math.max(0, c.x[0] - left),
+    Math.max(0, c.x[1] - right),
+    Math.max(0, c.x[2] - right),
+    Math.max(0, c.x[3] - left),
+  ];
+  const y: Corners['y'] = [
+    Math.max(0, c.y[0] - top),
+    Math.max(0, c.y[1] - top),
+    Math.max(0, c.y[2] - bottom),
+    Math.max(0, c.y[3] - bottom),
+  ];
+  return { x, y };
+}
+
+/** How far along a quarter ellipse's radius its Bézier handles reach. */
+const KAPPA = 0.5522847498307936;
+
+/**
+ * Whether `roundRect` draws these corners as CSS has them: every one a
+ * circle, and none more than half the shorter side — the Cocoa context's
+ * clamps each corner to that on its own, where CSS reduces them together.
+ */
+function circlesFit(c: Corners, w: number, h: number): boolean {
+  const [a, b, d, e] = c.x;
+  const [p, q, r, t] = c.y;
+  return (
+    a === p &&
+    b === q &&
+    d === r &&
+    e === t &&
+    Math.max(a, b, d, e) <= Math.min(w, h) / 2
+  );
+}
+
+/** Whether the context builds a path of curves, as both backends' do. */
+function canCurve(ctx: PaintContext): boolean {
+  return !!(ctx.moveTo && ctx.lineTo && ctx.bezierCurveTo && ctx.closePath);
+}
+
+/**
+ * A rectangle with rounded corners, added to the path being built as a
+ * subpath of its own: `roundRect` where its circles fit, which ntk fills
+ * quickest, and four curves where they do not — an ellipse, which the
+ * Cocoa context's `roundRect` cannot draw at all. `curves` asks for the
+ * curves regardless, and `reverse` has them run anticlockwise, which is
+ * how a hole is cut in the subpath around it.
+ */
+function roundedRect(
+  ctx: PaintContext,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  c: Corners,
+  curves = !circlesFit(c, w, h),
+  reverse = false,
+): void {
+  const [a, b, d, e] = c.x;
+  const [p, q, r, t] = c.y;
+  if (!curves || !canCurve(ctx)) {
+    ctx.roundRect!(x, y, w, h, [
+      Math.min(a, p),
+      Math.min(b, q),
+      Math.min(d, r),
+      Math.min(e, t),
+    ]);
+    return;
+  }
+  const k = 1 - KAPPA;
+  const right = x + w;
+  const bottom = y + h;
+  const moveTo = ctx.moveTo!.bind(ctx);
+  const lineTo = ctx.lineTo!.bind(ctx);
+  const curveTo = ctx.bezierCurveTo!.bind(ctx);
+  if (!reverse) {
+    moveTo(x + a, y);
+    lineTo(right - b, y);
+    curveTo(right - b * k, y, right, y + q * k, right, y + q);
+    lineTo(right, bottom - r);
+    curveTo(right, bottom - r * k, right - d * k, bottom, right - d, bottom);
+    lineTo(x + e, bottom);
+    curveTo(x + e * k, bottom, x, bottom - t * k, x, bottom - t);
+    lineTo(x, y + p);
+    curveTo(x, y + p * k, x + a * k, y, x + a, y);
+  } else {
+    moveTo(x + a, y);
+    curveTo(x + a * k, y, x, y + p * k, x, y + p);
+    lineTo(x, bottom - t);
+    curveTo(x, bottom - t * k, x + e * k, bottom, x + e, bottom);
+    lineTo(right - d, bottom);
+    curveTo(right - d * k, bottom, right, bottom - r * k, right, bottom - r);
+    lineTo(right, y + q);
+    curveTo(right, y + q * k, right - b * k, y, right - b, y);
+  }
+  ctx.closePath!();
 }
 
 /** Clip what follows to a rectangle, rounded where `radii` are: false
@@ -799,14 +997,14 @@ function clearOf(r: number, x: number, y: number): boolean {
 function pushClip(
   ctx: PaintContext,
   rect: { x: number; y: number; w: number; h: number },
-  radii: number[] | null,
+  radii: Corners | null,
 ): boolean {
   if (!ctx.beginPath || !ctx.rect || !ctx.clip) return false;
   ctx.save();
   ctx.beginPath();
   const w = Math.max(0, rect.w);
   const h = Math.max(0, rect.h);
-  if (radii && ctx.roundRect) ctx.roundRect(rect.x, rect.y, w, h, radii);
+  if (radii && ctx.roundRect) roundedRect(ctx, rect.x, rect.y, w, h, radii);
   else ctx.rect(rect.x, rect.y, w, h);
   ctx.clip();
   return true;
@@ -958,16 +1156,17 @@ function paintBackground(
   const h = Math.round(top + frameHeight(box)) - y;
   const rect = clampRect(options, x, y, w, h);
   if (!rect) return;
-  const radii = box.style.borderRadius;
   const rounded =
-    radii.some((r) => r > 0) && ctx.roundRect && ctx.fill && ctx.beginPath;
+    ctx.roundRect && ctx.fill && ctx.beginPath
+      ? cornersOf(box.style, w, h)
+      : null;
   const fill = (): void => {
     if (rounded) {
       // The clamp can only have cut edges further than CLAMP_PAD outside
       // the damage, and a sane radius is smaller than that — so a corner
       // that survives the cut is whole, and a cut edge is offscreen.
       ctx.beginPath!();
-      ctx.roundRect!(rect.x, rect.y, rect.w, rect.h, radii.slice());
+      roundedRect(ctx, rect.x, rect.y, rect.w, rect.h, rounded);
       ctx.fill!();
     } else ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
   };
@@ -1297,6 +1496,7 @@ function paintBackgroundImage(
   area: { x: number; y: number; w: number; h: number },
   at: Rect,
   options: PaintOptions,
+  corners: Corners | null = null,
 ): void {
   if (style.backgroundAttachment === 'fixed' && options.canvas) {
     at = options.canvas;
@@ -1328,7 +1528,10 @@ function paintBackgroundImage(
   ctx.save();
   if (ctx.beginPath && ctx.rect && ctx.clip) {
     ctx.beginPath();
-    ctx.rect(area.x, area.y, area.w, area.h);
+    // in the box's corners, as its colour is (CSS Backgrounds 3, 5.3)
+    if (corners && ctx.roundRect) {
+      roundedRect(ctx, area.x, area.y, area.w, area.h, corners);
+    } else ctx.rect(area.x, area.y, area.w, area.h);
     ctx.clip();
   }
   const tiles = Math.ceil((toX - fromX) / iw) * Math.ceil((toY - fromY) / ih);
@@ -1488,9 +1691,9 @@ function roundedRing(
   options: PaintOptions,
 ): boolean {
   const s = box.style;
-  const radii = s.borderRadius;
-  if (!(radii[0] || radii[1] || radii[2] || radii[3])) return false;
   if (!ctx.roundRect || !ctx.fill || !ctx.beginPath) return false;
+  const corners = cornersOf(s, w, h);
+  if (!corners) return false;
   const sides: [number, string, string][] = [
     [box.borderTop, s.borderTopColor, s.borderTopStyle],
     [box.borderRight, s.borderRightColor, s.borderRightStyle],
@@ -1511,23 +1714,22 @@ function roundedRing(
   const right = box.borderRight;
   const bottom = box.borderBottom;
   const left = box.borderLeft;
-  const inner = [
-    radii[0] - Math.max(top, left),
-    radii[1] - Math.max(top, right),
-    radii[2] - Math.max(bottom, right),
-    radii[3] - Math.max(bottom, left),
-  ].map((r) => Math.max(0, r));
+  const iw = Math.max(0, rect.w - left - right);
+  const ih = Math.max(0, rect.h - top - bottom);
+  const inner = insetCorners(corners, top, right, bottom, left);
+  // Where a side has no border its two edges meet, and they have to be
+  // drawn one way to cancel: two `roundRect`s under the even-odd rule, or
+  // two paths of curves, the inside run backwards under the non-zero rule
+  // — ntk leaves a hairline along a curve drawn twice the same way, and an
+  // arc beside a curve never quite meets it.
+  const curves =
+    canCurve(ctx) &&
+    (!circlesFit(corners, rect.w, rect.h) || !circlesFit(inner, iw, ih));
   ctx.fillStyle = inkColor(color, s.color);
   ctx.beginPath();
-  ctx.roundRect(rect.x, rect.y, rect.w, rect.h, radii.slice());
-  ctx.roundRect(
-    rect.x + left,
-    rect.y + top,
-    Math.max(0, rect.w - left - right),
-    Math.max(0, rect.h - top - bottom),
-    inner,
-  );
-  ctx.fill('evenodd');
+  roundedRect(ctx, rect.x, rect.y, rect.w, rect.h, corners, curves);
+  roundedRect(ctx, rect.x + left, rect.y + top, iw, ih, inner, curves, true);
+  ctx.fill(curves ? 'nonzero' : 'evenodd');
   return true;
 }
 
@@ -1667,12 +1869,16 @@ function paintImage(ctx: PaintContext, box: Box, options: PaintOptions): void {
   const w = Math.round(left + box.contentWidth) - x;
   const h = Math.round(top + box.contentHeight) - y;
   if (w <= 0 || h <= 0) return;
-  if (image instanceof SvgDrawing) {
-    image.draw(ctx, x, y, w, h, options.scale ?? 1);
-    return;
-  }
-  if (image && ctx.drawImage) {
-    ctx.drawImage(image, x, y, w, h);
+  if (image instanceof SvgDrawing || (image && ctx.drawImage)) {
+    // trimmed to the curve of its content edge (CSS Backgrounds 3, 5.3):
+    // an avatar is a round photograph. A rounded clip is a mask the size
+    // of the window on X11, so only a box that has corners pays for one.
+    const corners = contentCorners(box);
+    const clipped = !!corners && pushClip(ctx, { x, y, w, h }, corners);
+    if (image instanceof SvgDrawing) {
+      image.draw(ctx, x, y, w, h, options.scale ?? 1);
+    } else ctx.drawImage!(image, x, y, w, h);
+    if (clipped) ctx.restore();
     return;
   }
   // No image yet, or no image at all: a faint frame where it will be, so a
@@ -1999,7 +2205,13 @@ function paintInlineBoxes(
     const rtl = box.style.direction === 'rtl';
     const leftEnds = rtl ? f.end : f.start;
     const rightEnds = rtl ? f.start : f.end;
-    const [tl, tr, br, bl] = box.style.borderRadius;
+    const ends = (radii: ComputedStyle['borderRadius']) =>
+      [
+        leftEnds ? radii[0] : 0,
+        rightEnds ? radii[1] : 0,
+        rightEnds ? radii[2] : 0,
+        leftEnds ? radii[3] : 0,
+      ] as ComputedStyle['borderRadius'];
     const moved = shifted ? offsetOf(box) : null;
     const fragment: Frame = {
       x: f.left + (moved?.x ?? 0),
@@ -2014,12 +2226,10 @@ function paintInlineBoxes(
       borderRight: rightEnds ? box.borderRight : 0,
       style: {
         ...box.style,
-        borderRadius: [
-          leftEnds ? tl : 0,
-          rightEnds ? tr : 0,
-          rightEnds ? br : 0,
-          leftEnds ? bl : 0,
-        ],
+        borderRadius: ends(box.style.borderRadius),
+        borderRadiusY: box.style.borderRadiusY
+          ? ends(box.style.borderRadiusY)
+          : null,
       },
     };
     if (fragment.width <= 0) continue;
