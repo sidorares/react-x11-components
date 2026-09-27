@@ -6385,3 +6385,36 @@ metric("an inline box's own line height makes its line taller", async () => {
   );
   assert.ok(near(less.height, 20), `${less.height}`);
 });
+
+// --- a minimum height, and the margin below ----------------------------------------
+
+test("a height a minimum sets spends its last child's margin", async () => {
+  // the margin neither escapes the box nor makes it taller, as browsers
+  // have it: the next block starts where the box's height ends
+  const nextAfter = async (parent: string, child: string) => {
+    const { node } = await render(
+      '<style>body{margin:0}</style>' +
+        `<div id="p" style="${parent}"><div style="${child}"></div></div>` +
+        '<div id="n" style="height:10px"></div>',
+    );
+    const el = view(node);
+    const out = [boxOf(el, 'p').height, boxOf(el, 'n').y];
+    cleanup();
+    return out;
+  };
+  assert.deepStrictEqual(
+    await nextAfter('min-height:50px', 'height:49px;margin-bottom:10px'),
+    [50, 50],
+  );
+  // one that leaves the height as it was leaves the margin to collapse
+  // through the box's bottom, as it does through any
+  assert.deepStrictEqual(
+    await nextAfter('min-height:20px', 'height:49px;margin-bottom:10px'),
+    [49, 59],
+  );
+  // and so does a maximum, as CSS 2.1 8.3.1 has it
+  assert.deepStrictEqual(
+    await nextAfter('max-height:50px', 'height:51px;margin-bottom:10px'),
+    [50, 60],
+  );
+});

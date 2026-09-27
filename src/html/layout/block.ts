@@ -579,13 +579,19 @@ function layoutChildren(
     !box.borderBottom &&
     !box.padBottom &&
     box.style.height === AUTO &&
-    !(
-      resolveOrNull(box.style.minHeight, box.percentHeightBase)! >
-      y - contentTop
-    ) &&
     !establishesBFC(box)
   ) {
-    return { height: y - contentTop, hanging: pendingMargin };
+    const height = y - contentTop;
+    // A minimum height that makes the box taller parts the margin from its
+    // bottom, and spends it: the margin neither escapes nor makes the box
+    // taller still. 8.3.1 has it collapse only through a box of no
+    // `min-height`; browsers part it only where the minimum is what sets
+    // the height, and the suite has it so. A maximum leaves it to collapse
+    // through, as 8.3.1 has it, where the suite has a test either way
+    const parted =
+      box.style.minHeight !== AUTO &&
+      clampHeight(box, height + box.verticalExtra) > height + box.verticalExtra;
+    return { height, hanging: parted ? 0 : pendingMargin };
   }
   // The cleared block's top border edge is where it would be with a border
   // at its bottom, its top margin's depth inside the margin they all make:
