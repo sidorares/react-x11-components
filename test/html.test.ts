@@ -8201,6 +8201,96 @@ test('a gradient given only a width is as tall as its box', async () => {
   );
 });
 
+test('translate and the translation in a transform are read', async () => {
+  const { node } = await render(
+    '<div id="a" style="translate:10px 20%"></div>' +
+      '<div id="b" style="translate:5px"></div>' +
+      '<div id="c" style="translate:5px;translate:none"></div>' +
+      '<div id="d" style="translate:1px 2px 3px"></div>' +
+      '<div id="e" style="translate:4px;translate:1px 2px 3%"></div>' +
+      '<div id="f" style="transform:translate(-50%, -50%)"></div>' +
+      '<div id="g" style="transform:translateX(10px) translateY(5px) ' +
+      'rotate(45deg) translate(1px, 1px)"></div>' +
+      '<div id="h" style="transform:rotate(0) scale(1.5)"></div>' +
+      '<div id="i" style="transform:matrix(1, 0, 0, 1, 10, 20)"></div>' +
+      '<div id="j" style="transform:none"></div>' +
+      '<div id="k" style="transform:translateX(3px);transform:wobble(1px)"></div>' +
+      '<div id="l" style="--x:calc(calc(1/2 * 100%) * -1);' +
+      'translate:var(--x) 0"></div>',
+  );
+  const el = view(node);
+  const style = (id: string) =>
+    (
+      boxOf(el, id) as unknown as {
+        style: { translate: unknown; transformTranslate: unknown };
+      }
+    ).style;
+  assert.deepStrictEqual(style('a').translate, [10, { pct: 20 }]);
+  assert.deepStrictEqual(style('b').translate, [5, 0]);
+  assert.strictEqual(style('c').translate, null);
+  assert.deepStrictEqual(style('d').translate, [1, 2], 'a depth is dropped');
+  assert.deepStrictEqual(style('e').translate, [4, 0], 'a depth is a length');
+  assert.deepStrictEqual(style('f').transformTranslate, [
+    { pct: -50 },
+    { pct: -50 },
+  ]);
+  assert.deepStrictEqual(style('g').transformTranslate, [11, 6]);
+  assert.deepStrictEqual(
+    style('h').transformTranslate,
+    [0, 0],
+    'rotating and scaling are read and not drawn',
+  );
+  assert.deepStrictEqual(style('i').transformTranslate, [10, 20]);
+  assert.strictEqual(style('j').transformTranslate, null);
+  assert.deepStrictEqual(style('k').transformTranslate, [3, 0]);
+  assert.deepStrictEqual(style('l').translate, [{ pct: -50, px: 0 }, 0]);
+});
+
+test('a translated box is moved by a share of its own size', async () => {
+  // `absolute left-1/2 -translate-x-1/2` and `translate(-50%, -50%)` were
+  // dropped, and what they centre hung off to the right by half its width
+  const { node } = await render(
+    '<style>body{margin:0}.f{position:relative;width:300px;height:100px}' +
+      '.c{position:absolute;width:80px;height:20px}</style>' +
+      '<div class="f"><div id="a" class="c" style="top:50%;left:50%;' +
+      'transform:translate(-50%, -50%)"></div>' +
+      '<div id="b" class="c" style="top:0;left:50%;' +
+      'translate:calc(calc(1/2 * 100%) * -1) 0"></div></div>' +
+      '<div id="n" style="translate:10px 5px;height:10px"></div>',
+  );
+  const el = view(node);
+  const a = boxOf(el, 'a');
+  assert.deepStrictEqual([a.x, a.y], [110, 40], 'centred');
+  const b = boxOf(el, 'b');
+  assert.deepStrictEqual([b.x, b.y], [110, 0]);
+  const n = boxOf(el, 'n');
+  assert.deepStrictEqual([n.x, n.y], [10, 105], 'after where it was laid out');
+});
+
+test('a transformed box holds the absolute boxes inside it', async () => {
+  const { node } = await render(
+    '<style>body{margin:0}</style><div style="height:50px"></div>' +
+      '<div style="transform:translate(0, 0);height:40px">' +
+      '<div id="a" style="position:absolute;top:0;left:10px;width:5px;' +
+      'height:5px"></div></div>',
+  );
+  const a = boxOf(view(node), 'a');
+  assert.deepStrictEqual([a.x, a.y], [10, 50], 'against it, not the page');
+});
+
+test('a translated block is painted over the flow after it', async () => {
+  const { node } = await render(
+    '<style>body{margin:0}div{height:20px}</style>' +
+      '<div style="translate:0 10px;background:#ff0000"></div>' +
+      '<div style="background:#0000ff"></div>',
+  );
+  const fills = await fillsOf(view(node));
+  const order = fills
+    .map((f) => f.style)
+    .filter((c) => c === '#ff0000' || c === '#0000ff');
+  assert.deepStrictEqual(order, ['#0000ff', '#ff0000']);
+});
+
 test('text-wrap and white-space-collapse change their halves of white-space', async () => {
   const { node } = await render(
     '<div id="a" style="text-wrap:nowrap"></div>' +

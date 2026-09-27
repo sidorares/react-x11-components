@@ -1245,7 +1245,12 @@ function paintPositioned(
     let escaped = clips.length;
     if (box.style.position !== 'fixed') {
       let containing = box.parent;
-      while (containing?.parent && containing.style.position === 'static') {
+      while (
+        containing?.parent &&
+        containing.style.position === 'static' &&
+        !containing.style.translate &&
+        !containing.style.transformTranslate
+      ) {
         containing = containing.parent;
       }
       escaped = 0;
@@ -1570,8 +1575,15 @@ function pushClip(
  */
 function layered(parent: Box, child: Box): boolean {
   if (child.outOfFlow) return true;
-  const position = child.style.position;
-  if (position !== 'relative' && position !== 'sticky') return false;
+  const style = child.style;
+  if (
+    style.position !== 'relative' &&
+    style.position !== 'sticky' &&
+    !style.translate &&
+    !style.transformTranslate
+  ) {
+    return false;
+  }
   return child.kind !== 'inline' && !onLine(parent, child);
 }
 

@@ -271,6 +271,16 @@ longest line, or as its longest word, whatever the room; a flex item of one
 not stretched across a column, and a row item not shrunk below it. A
 height of one is its content's, which is `auto`.
 
+**Transforms:** `translate`, and the translation in a `transform` —
+`translate(-50%, -50%)`, Tailwind's `-translate-x-1/2` in either of the
+ways it is written — move a box after layout, as `position: relative`
+does, a percentage being of the box's own size, so the absolute box it
+centres is centred. A transformed box is a containing block for the
+absolute and fixed boxes inside it and is painted with the positioned
+boxes, as in a browser. Rotating, scaling and skewing are read and not
+drawn, and a transform on an inline box that is not an atomic one moves
+nothing, as CSS has it.
+
 **Ratios:** `aspect-ratio` makes an `auto` height of the width, of the box
 `box-sizing` names — Tailwind's `aspect-video` and `aspect-square` — and
 that height is one a percentage inside resolves against. A box grows past
@@ -484,22 +494,22 @@ its sheets, and a rule in a later layer wins over one in an earlier layer
 whatever their specificity, a rule in no layer over both, and the other way
 round for `!important`. Tailwind 4 writes all of its CSS in four of them.
 
-**Not implemented:** the parts of CSS grid above, transforms, animations and
-transitions, multi-column, gradients other than linear ones, `position:
-sticky` (treated as `relative`), and the font properties of `::first-line`.
-A `<col>`'s or a `<colgroup>`'s borders are drawn only where the table's
-collapse. A percentage `height` resolves where the containing block's height
-is set, and on an absolutely positioned box. The initial containing block is
-the viewport — the window's height, since the element sizes to its content —
-so `html, body { height: 100% }` is a window tall and `bottom: 0` with
-nothing positioned around it is the window's bottom, as in a browser; the
-document is as tall as what overflows its root, so nothing longer than the
-window is cut off. A fragment has no root element, and its blocks have the
-body's `auto` height to resolve against. Explicit bidi embeddings and
-overrides (U+202A–U+202E) that open on one side of an inline element with
-padding, border or margin and close on the other are resolved on each side
-of it separately: the text engine is handed the text a piece at a time
-there.
+**Not implemented:** the parts of CSS grid above, transforms but their
+translation, animations and transitions, multi-column, gradients other than
+linear ones, `position: sticky` (treated as `relative`), and the font
+properties of `::first-line`. A `<col>`'s or a `<colgroup>`'s borders are
+drawn only where the table's collapse. A percentage `height` resolves where
+the containing block's height is set, and on an absolutely positioned box.
+The initial containing block is the viewport — the window's height, since
+the element sizes to its content — so `html, body { height: 100% }` is a
+window tall and `bottom: 0` with nothing positioned around it is the
+window's bottom, as in a browser; the document is as tall as what overflows
+its root, so nothing longer than the window is cut off. A fragment has no
+root element, and its blocks have the body's `auto` height to resolve
+against. Explicit bidi embeddings and overrides (U+202A–U+202E) that open on
+one side of an inline element with padding, border or margin and close on
+the other are resolved on each side of it separately: the text engine is
+handed the text a piece at a time there.
 
 ## The decisions
 
