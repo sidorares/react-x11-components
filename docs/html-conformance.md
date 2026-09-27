@@ -120,6 +120,7 @@ separately, and there are six.
 | 50     | tab stops                                          | 5,471 (93%) | 4,979 (84%) |
 | 51     | OpenType features                                  | 5,471 (93%) | 4,979 (84%) |
 | 52     | text shadows                                       | 5,471 (93%) | 4,979 (84%) |
+| 53     | a raised box's own line height                     | 5,471 (93%) | 4,979 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -1643,6 +1644,26 @@ minmax(16rem, 1fr))` are the layouts of half the pages written this
      of the same runs may share while casting other shadows. A block with
      no shadowed text pays nothing. Found rendering a landing page beside
      a browser; CSS 2.1 has no `text-shadow`, and neither suite moved.
+
+### Round 53
+
+144. **A footnote mark made its line no taller.** An inline box is on its
+     line with its own line height, about its own baseline, whether or not
+     it holds text of its own (CSS 2.1 10.8). A raised box's was counted
+     only where it set a line height the engine would not have given its
+     text anyway, so a `<sup>` holding a smaller `<a>` — every footnote
+     mark in an article — counted the `<a>`'s line and not its own, and an
+     empty raised box counted nothing: the line was 3px short of a
+     browser's under a footnote mark in 16px text, and 6px under a raised
+     `<span>` around a smaller link. A raised box's own room counts now,
+     from its text and, where it has none on the line, from its edge,
+     which a raised box always has. Found rendering an article with
+     footnotes beside a browser; the CSS 2.1 suite's raised boxes all hold
+     their own text, and neither suite moved. An inline box on the
+     baseline whose text is all in smaller boxes inside it still counts
+     only theirs — `<span style="font-size:20px"><small>x</small></span>`
+     is 26px tall where a browser makes it 32 — since counting its own
+     would take every paragraph with such a box off the one-layout path.
 
 ## What `<Html>` supports
 

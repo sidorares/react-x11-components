@@ -1195,6 +1195,18 @@ function finishLine(
     descent = Math.max(descent, natural.height - own);
     height = Math.max(height, natural.height);
   }
+  // a raised inline box with no text on the line is on it all the same,
+  // as tall as its own face and line height make it (CSS 2.1 10.8): an
+  // empty one, or one whose text is on another line
+  if (lifts) {
+    for (const placed of open.edges) {
+      if (placed.side !== 'start' || placed.box.kind !== 'inline') continue;
+      const room = lifts.ofBox(placed.box);
+      if (!room) continue;
+      ascent = Math.max(ascent, room.ascent + room.raise);
+      descent = Math.max(descent, room.descent - room.raise);
+    }
+  }
   for (const placed of open.atomics) {
     const box = placed.box;
     const h = box.height + box.marginTop + box.marginBottom;
@@ -2737,8 +2749,11 @@ class Lifts {
     // ends inside a fragment, but one it holds may be set larger
     const own = { ...strutOf(this.fonts, owner.style) };
     // and of the inline boxes around it, each about its own baseline: each
-    // is on the line with its line height, which the text's may not reach
-    if (lead) {
+    // is on the line with its line height, which the text's may not reach.
+    // Not only where one sets a line height of its own: a raised `<sup>`
+    // holding a smaller `<a>` — every footnote mark — is as tall on the
+    // line as its own font and line height make it (CSS 2.1 10.8)
+    if (lead || raise) {
       for (let at: Box | null = parent; at?.kind === 'inline'; at = at.parent) {
         const box = this._box(at);
         const room = strutOf(this.fonts, at.style);
@@ -2768,6 +2783,16 @@ class Lifts {
       };
     }
     return { raise, ascent: own.ascent, descent: own.descent, edge: to };
+  }
+
+  /** Where an inline box's own room is about the line's baseline — its
+   *  face at its line height, raised as it is — or null for one on the
+   *  baseline, or one the line's edge sets. */
+  ofBox(box: Box): { raise: number; ascent: number; descent: number } | null {
+    const { raise, edge } = this._box(box);
+    if (!raise || edge) return null;
+    const room = strutOf(this.fonts, box.style);
+    return { raise, ascent: room.ascent, descent: room.descent };
   }
 
   private _box(box: Box): { raise: number; edge: Box | null; lead: boolean } {
