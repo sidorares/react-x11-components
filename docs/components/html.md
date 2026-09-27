@@ -171,7 +171,8 @@ between its `auto` margins, which is how `margin: auto` centres one. A box whose
 clips what it holds to its padding box, rounded where the box is — all of
 it but a positioned box whose containing block is outside — and `scroll`
 and `auto` clip the same, with no scroll bars: the element around the
-document is what scrolls. `clip` shows the part of an absolutely positioned
+document is what scrolls. A table clips to its table box, with its
+captions outside the clip. `clip` shows the part of an absolutely positioned
 box it names. Inline elements have all of it but the
 sizes: an inline box's padding, border and margin take room on its line —
 the start side before its first fragment, the end side after its last, on
