@@ -42,6 +42,9 @@ export interface LayoutContext {
   /** Whether a float or an out-of-flow box is in an inline box
    *  (`BoxTree.nestedOutOfLine`). */
   nestedOutOfLine?: boolean;
+  /** Whether any box paints its background through its text
+   *  (`BoxTree.clipText`). */
+  clipText?: boolean;
   viewportWidth: number;
   viewportHeight: number;
   /** Out-of-flow boxes, collected in flow order and laid out afterwards —
@@ -82,6 +85,7 @@ export function layoutDocument(
     layoutSubtree: (box, width) => layoutSubtree(box, ctx, width),
     firstLine: tree.firstLine,
     nestedOutOfLine: tree.nestedOutOfLine,
+    clipText: tree.clipText,
   };
   const root = tree.root;
   root.x = 0;
@@ -751,6 +755,7 @@ function layoutInlineContent(
     startY: contentTop,
     floats,
     originX: contentLeft,
+    clipText: ctx.clipText,
   };
   let result = layoutInline(box, options);
   const firstLine = ctx.firstLine ? firstLineOf(box) : null;

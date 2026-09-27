@@ -361,6 +361,13 @@ export interface ComputedStyle {
   backgroundSizes: ComputedStyle['backgroundSize'][] | null;
   backgroundAttachments: ComputedStyle['backgroundAttachment'][] | null;
   backgroundPositions: [Len, Len][] | null;
+  /** `background-clip: text` (CSS Backgrounds 4): the background is
+   *  painted through the element's text rather than behind its box. */
+  backgroundClipText: boolean;
+  /** `-webkit-text-fill-color`: what the glyphs are filled with where it
+   *  is not the text's `color` — Tailwind's `text-transparent` over a
+   *  `bg-clip-text` gradient; null for `color`, as `currentColor` is. */
+  textFillColor: string | null;
 
   textDecorationLine: 'none' | 'underline' | 'line-through' | 'overline';
   textDecorationColor: string | null;
@@ -436,6 +443,7 @@ export interface ComputedStyle {
  *  same list. */
 export const INHERITED = [
   'color',
+  'textFillColor',
   'fontFamily',
   'fontSize',
   'fontWeight',
@@ -625,6 +633,8 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     backgroundSizes: null,
     backgroundAttachments: null,
     backgroundPositions: null,
+    backgroundClipText: false,
+    textFillColor: null,
 
     textDecorationLine: 'none',
     textDecorationColor: null,
@@ -682,6 +692,7 @@ export function inherit(
   // quarters of the cost of every element's style, a store through a
   // computed name costing thirty times one through a written one
   out.color = parent.color;
+  out.textFillColor = parent.textFillColor;
   out.fontFamily = parent.fontFamily;
   out.fontSize = parent.fontSize;
   out.fontWeight = parent.fontWeight;
@@ -742,6 +753,7 @@ const COLOR_PROPS: Record<string, keyof ComputedStyle> = {
   'border-bottom-color': 'borderBottomColor',
   'border-left-color': 'borderLeftColor',
   'text-decoration-color': 'textDecorationColor',
+  '-webkit-text-fill-color': 'textFillColor',
 };
 
 const SIDE_PROPS: Record<
@@ -1213,6 +1225,20 @@ export function applyDeclaration(
       style.backgroundImage = typeof first === 'string' ? first : null;
       style.backgroundGradient = typeof first === 'string' ? null : first;
       style.backgroundImages = images.length > 1 ? images : null;
+      return;
+    }
+    case 'background-clip':
+    case '-webkit-background-clip': {
+      // the first layer's; the box keywords all clip where the box is
+      const v = (splitCommas(value)[0] ?? '').trim().toLowerCase();
+      if (v === 'text') style.backgroundClipText = true;
+      else if (
+        v === 'border-box' ||
+        v === 'padding-box' ||
+        v === 'content-box'
+      ) {
+        style.backgroundClipText = false;
+      }
       return;
     }
     case 'background-repeat': {
@@ -2081,6 +2107,7 @@ function applyBackgroundShorthand(
   }
   if (!layers.length) return;
   const [top] = layers;
+  style.backgroundClipText = false;
   style.backgroundColor = layers[layers.length - 1].color;
   style.backgroundImage = top.image;
   style.backgroundGradient = top.gradient;
@@ -3089,6 +3116,7 @@ function camel(name: string): string {
 
 const INHERITED_NAMES = new Set<string>([
   'color',
+  '-webkit-text-fill-color',
   'font',
   'font-family',
   'font-size',
@@ -3158,6 +3186,9 @@ const sides = (
 
 const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   color: ['color'],
+  '-webkit-text-fill-color': ['textFillColor'],
+  'background-clip': ['backgroundClipText'],
+  '-webkit-background-clip': ['backgroundClipText'],
   'font-family': ['fontFamily'],
   'font-size': ['fontSize'],
   'font-weight': ['fontWeight'],
@@ -3281,6 +3312,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
     'backgroundSizes',
     'backgroundAttachments',
     'backgroundPositions',
+    'backgroundClipText',
   ],
   'background-color': ['backgroundColor'],
   'background-image': [

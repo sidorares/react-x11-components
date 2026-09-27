@@ -8245,6 +8245,91 @@ metric(
   },
 );
 
+test('background-clip: text and -webkit-text-fill-color are read', async () => {
+  const { node } = await render(
+    '<style>.clip{-webkit-background-clip:text}</style>' +
+      '<div id="a" style="background-clip:text"></div>' +
+      '<div id="b" class="clip"></div>' +
+      '<div id="c" style="background-clip:text;background-clip:padding-box"></div>' +
+      '<div id="d" class="clip" style="background:#ff0000"></div>' +
+      '<div id="e" style="color:#00ff00;-webkit-text-fill-color:transparent">' +
+      '<span id="f"></span></div>',
+  );
+  const el = view(node);
+  const style = (id: string) =>
+    (
+      boxOf(el, id) as unknown as {
+        style: { backgroundClipText: boolean; textFillColor: string | null };
+      }
+    ).style;
+  assert.strictEqual(style('a').backgroundClipText, true);
+  assert.strictEqual(style('b').backgroundClipText, true, 'prefixed');
+  assert.strictEqual(style('c').backgroundClipText, false);
+  assert.strictEqual(
+    style('d').backgroundClipText,
+    false,
+    'the shorthand resets it',
+  );
+  assert.strictEqual(style('e').textFillColor, 'transparent');
+  assert.strictEqual(style('f').textFillColor, 'transparent', 'inherited');
+});
+
+metric(
+  'a background painted through its text fills the glyphs, and not its box',
+  async () => {
+    // `bg-clip-text text-transparent`: the box was painted with its gradient
+    // and the text drawn in no ink over it, a bar where the headline was
+    const { result } = await render(
+      '<style>body{margin:0}h1{margin:0;font:48px/1 sans-serif;width:360px;' +
+        'background:linear-gradient(90deg,#ff0000,#0000ff);' +
+        '-webkit-background-clip:text;background-clip:text;color:transparent}' +
+        '</style><h1>HHHHHHH</h1>',
+    );
+    const ink: [number, number, number][] = [];
+    let white = 0;
+    for (let x = 0; x < 360; x += 2) {
+      const [r, g, b] = await pixelAt(result.ctx, x, 24);
+      if (r > 240 && g > 240 && b > 240) white += 1;
+      else if (g < 60) ink.push([x, r, b]);
+    }
+    assert.ok(ink.length > 20, `${ink.length} pixels of ink`);
+    assert.ok(
+      white > 20,
+      'the box between and after the glyphs is not painted',
+    );
+    const [, r0, b0] = ink[0];
+    const [, r1, b1] = ink[ink.length - 1];
+    assert.ok(r0 > b0, `the first glyph is the gradient's start: ${r0}, ${b0}`);
+    assert.ok(b1 > r1, `and the last towards its end: ${r1}, ${b1}`);
+    // above the glyphs, inside the box
+    assert.ok(isNear(await pixelAt(result.ctx, 180, 2), '#ffffff'));
+  },
+);
+
+metric(
+  'text a span paints its background through keeps its neighbours ink',
+  async () => {
+    const { result } = await render(
+      '<style>body{margin:0}p{margin:0;font:48px/1 sans-serif}' +
+        'span{background:linear-gradient(#00ff00,#00ff00);' +
+        '-webkit-background-clip:text;-webkit-text-fill-color:transparent}' +
+        '</style><p style="color:#0000ff">HHH<span>HHH</span></p>',
+    );
+    let blue = 0;
+    let green = 0;
+    for (let x = 0; x < 240; x += 1) {
+      const [r, g, b] = await pixelAt(result.ctx, x, 24);
+      if (b > 200 && g < 80 && r < 80) blue += 1;
+      if (g > 200 && b < 80 && r < 80) green += 1;
+    }
+    assert.ok(blue > 10, `${blue} blue`);
+    assert.ok(
+      green > 10,
+      `${green} green: the span's glyphs, in its background`,
+    );
+  },
+);
+
 test('translate and the translation in a transform are read', async () => {
   const { node } = await render(
     '<div id="a" style="translate:10px 20%"></div>' +

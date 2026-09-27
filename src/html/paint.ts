@@ -40,7 +40,14 @@ import {
   TEXT_SHIFTS,
 } from './layout/boxes.js';
 import type { BoxTree, LineBox, LineText, Marker } from './layout/boxes.js';
-import { depthOf, layoutOffsetOf, layoutOffsets } from './layout/inline.js';
+import {
+  CLIPPED_TEXT,
+  clipBoxOf,
+  depthOf,
+  inklessLayout,
+  layoutOffsetOf,
+  layoutOffsets,
+} from './layout/inline.js';
 import { halves } from './layout/collapse.js';
 import { tableGrid } from './layout/grid.js';
 import type { Cell } from './layout/grid.js';
@@ -481,6 +488,9 @@ function paintLayers(
   options: PaintOptions,
   image?: (layer: ComputedStyle) => void,
 ): void {
+  // a background painted through the text is painted with it
+  // (`paintClippedText`), and not as a box
+  if (box.style.backgroundClipText) return;
   const layers = layersOf(box.style);
   if (!layers) {
     paintBackground(ctx, box, options, box.style);
@@ -2755,6 +2765,8 @@ function paintLines(ctx: PaintContext, box: Box, options: PaintOptions): void {
   // Appendix E): a descender crosses its own underline
   paintRules(ctx, visible, dx, dy, options.scale ?? 1, 'under');
 
+  if (CLIPPED_TEXT.has(box)) paintClippedText(ctx, box, visible, options);
+
   // One `draw` per layout: a paragraph is a single glyph composite, and
   // drawing it once per line would be one X request per line for the same
   // batch.
@@ -2779,6 +2791,133 @@ function paintLines(ctx: PaintContext, box: Box, options: PaintOptions): void {
   paintRules(ctx, visible, dx, dy, options.scale ?? 1, 'over');
   for (const line of visible) {
     for (const placed of line.atomics) paintBox(ctx, placed.box, options);
+  }
+}
+
+/**
+ * The backgrounds painted through text (`background-clip: text`, CSS
+ * Backgrounds 4): Tailwind's `bg-clip-text text-transparent` over a
+ * gradient, which is how a landing page colours its headline. The text is
+ * laid out again with no ink of its own (`inklessLayout`) and drawn with
+ * the box's background as the fill — a gradient, which both engines fill
+ * glyphs with, or its colour — clipped to the runs that are the box's, so
+ * the text around them keeps its own ink. The gradient spans the box's
+ * padding box, or an inline box's own runs and its padding.
+ */
+function paintClippedText(
+  ctx: PaintContext,
+  block: Box,
+  lines: LineBox[],
+  options: PaintOptions,
+): void {
+  if (!ctx.save || !ctx.restore || !ctx.beginPath || !ctx.rect || !ctx.clip)
+    return;
+  const dx = options.originX;
+  const dy = options.originY;
+  interface Part {
+    layout: LineText['layout'];
+    x: number;
+    y: number;
+    rects: Rect[];
+  }
+  // each box's runs, a layout at a time: one draw a layout, clipped to all
+  // of them
+  const parts = new Map<Box, Map<object, Part>>();
+  for (const line of lines) {
+    for (const text of line.texts) {
+      const natural = text.layout.lines[text.layoutLine];
+      if (!natural) continue;
+      const x = text.drawX + dx;
+      const y = text.drawY + dy;
+      // a glyph may reach past its line box, where its line is tight
+      const top =
+        y + Math.min(natural.y, natural.baseline - (natural.ascent ?? 0)) - 2;
+      const bottom =
+        y +
+        Math.max(
+          natural.y + natural.height,
+          natural.baseline + (natural.descent ?? 0),
+        ) +
+        2;
+      for (const run of natural.runs) {
+        const clip = clipBoxOf(text.spans.boxAt?.(run.start) ?? null, block);
+        if (!clip) continue;
+        let byLayout = parts.get(clip);
+        if (!byLayout) parts.set(clip, (byLayout = new Map()));
+        let part = byLayout.get(text.layout);
+        if (!part) {
+          part = { layout: text.layout, x, y, rects: [] };
+          byLayout.set(text.layout, part);
+        }
+        part.rects.push({
+          x: x + natural.x + run.x - 1,
+          y: top,
+          width: run.width + 2,
+          height: bottom - top,
+        });
+      }
+    }
+  }
+  for (const [clip, byLayout] of parts) {
+    const list = [...byLayout.values()];
+    const style = clip.style;
+    let area: Rect;
+    if (clip === block) area = paddingBox(block, options);
+    else {
+      // an inline box: its runs, and its padding round them
+      let x0 = Infinity;
+      let y0 = Infinity;
+      let x1 = -Infinity;
+      let y1 = -Infinity;
+      for (const part of list) {
+        for (const r of part.rects) {
+          x0 = Math.min(x0, r.x);
+          y0 = Math.min(y0, r.y);
+          x1 = Math.max(x1, r.x + r.width);
+          y1 = Math.max(y1, r.y + r.height);
+        }
+      }
+      area = {
+        x: x0 - clip.padLeft,
+        y: y0 - clip.padTop,
+        width: x1 - x0 + clip.padLeft + clip.padRight,
+        height: y1 - y0 + clip.padTop + clip.padBottom,
+      };
+    }
+    const gradient =
+      style.backgroundGradient ??
+      (style.backgroundImages?.find(
+        (image): image is LinearGradient =>
+          image !== null && typeof image !== 'string',
+      ) ||
+        null);
+    let fill: unknown = null;
+    if (gradient && ctx.createLinearGradient) {
+      if (!(area.width > 0 && area.height > 0)) continue;
+      fill = linearGradient(
+        ctx,
+        gradient,
+        area.x,
+        area.y,
+        area.width,
+        area.height,
+        style.color,
+      );
+    } else if (!isTransparent(style.backgroundColor)) {
+      fill = inkColor(style.backgroundColor as string, style.color);
+    }
+    if (fill === null) continue;
+    for (const part of list) {
+      const inkless = inklessLayout(part.layout);
+      if (!inkless) continue;
+      ctx.save();
+      ctx.beginPath();
+      for (const r of part.rects) ctx.rect(r.x, r.y, r.width, r.height);
+      ctx.clip();
+      ctx.fillStyle = fill;
+      inkless.draw(ctx, part.x, part.y);
+      ctx.restore();
+    }
   }
 }
 
