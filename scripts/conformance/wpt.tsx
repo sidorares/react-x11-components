@@ -413,11 +413,11 @@ function sameBytes(a: Uint8ClampedArray, b: Uint8ClampedArray): boolean {
   return true;
 }
 
-/** Pixels that differ, and the largest channel difference among them. */
+/** Pixels that differ at all, and the largest channel difference among
+ *  them: the two numbers a fuzzy annotation bounds. */
 function compare(
   a: Uint8ClampedArray,
   b: Uint8ClampedArray,
-  maxDifference: number,
 ): { diff: number; maxDiff: number } {
   let diff = 0;
   let maxDiff = 0;
@@ -428,7 +428,7 @@ function compare(
       Math.abs(a[i + 2] - b[i + 2]),
     );
     if (d > maxDiff) maxDiff = d;
-    if (d > maxDifference) diff++;
+    if (d > 0) diff++;
   }
   return { diff, maxDiff };
 }
@@ -542,8 +542,13 @@ async function against(
   }
   if (process.env.WPT_SHOTS) await saveShots(test, shot, refShot);
   const allowed = fuzzyOf(source, href);
-  const { diff, maxDiff } = compare(shot, refShot, allowed.maxDifference);
-  const same = diff <= allowed.totalPixels;
+  const { diff, maxDiff } = compare(shot, refShot);
+  // WPT's rule: every pixel within the difference, and no more pixels
+  // differing than the count — a pixel far out is a failure however few
+  // there are
+  const same =
+    diff === 0 ||
+    (maxDiff <= allowed.maxDifference && diff <= allowed.totalPixels);
   const passed = kind === 'match' ? same : !same;
   const bothBlank = blank(refShot) && blank(shot);
   return {
