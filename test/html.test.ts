@@ -3350,6 +3350,34 @@ test("a row's background is its cells', and a row group has no borders", async (
   assert.ok(!fills.some((f) => f.style === parseColor('#00ff00')), 'no border');
 });
 
+test('an underline reaches the text of what is inside, in its own colour', async () => {
+  // CSS 2.1 16.3.1: a decoration is propagated to an element's in-flow
+  // descendants, drawn in the colour of the element that set it, so an
+  // underlined link's <strong> is underlined; not to a float, an absolute
+  // box or the inside of an inline block; and `none` takes none away
+  const { node } = await render(
+    '<a href="#" style="color:#0000ff"><strong id="s">x</strong></a>' +
+      '<div style="text-decoration:underline;color:#ff0000">' +
+      '<p id="p" style="color:#0000ff">y<span id="f" style="float:left">z</span>' +
+      '<span id="i" style="display:inline-block">w</span>' +
+      '<span id="n" style="text-decoration:none">v</span></p></div>' +
+      '<u><s id="both">u</s></u>',
+  );
+  const el = view(node);
+  const style = (id: string) =>
+    (
+      boxOf(el, id) as unknown as {
+        style: { underline: string | null; lineThrough: string | null };
+      }
+    ).style;
+  assert.strictEqual(style('s').underline, '#0000ff', "the link's colour");
+  assert.strictEqual(style('p').underline, '#ff0000', "the div's colour");
+  assert.strictEqual(style('n').underline, '#ff0000', '`none` removes none');
+  assert.strictEqual(style('f').underline, null, 'not a float');
+  assert.strictEqual(style('i').underline, null, 'nor an inline block');
+  assert.ok(style('both').underline && style('both').lineThrough, 'both');
+});
+
 test('nothing loads without onResource, and every reference is offered to it', async () => {
   const asked: string[] = [];
   await renderX11(

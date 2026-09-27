@@ -15,6 +15,7 @@
 import {
   AUTO,
   fourSides,
+  inkColor,
   keywordFontSize,
   parseAlpha,
   parseColor,
@@ -206,6 +207,12 @@ export interface ComputedStyle {
   textDecorationLine: 'none' | 'underline' | 'line-through' | 'overline';
   textDecorationColor: string | null;
   textDecorationStyle: 'solid' | 'double' | 'dotted' | 'dashed' | 'wavy';
+  /** What this box's text is drawn with: its own `text-decoration` and the
+   *  ones its ancestors propagate to it, each in the colour of the box that
+   *  set it (`decorate`). No property: the cascade works them out. */
+  underline: string | null;
+  underlineStyle: 'solid' | 'double' | 'dotted' | 'dashed' | 'wavy';
+  lineThrough: string | null;
 
   // flex — handed to yoga rather than interpreted here
   flexDirection: 'row' | 'row-reverse' | 'column' | 'column-reverse';
@@ -393,6 +400,9 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     textDecorationLine: 'none',
     textDecorationColor: null,
     textDecorationStyle: 'solid',
+    underline: null,
+    underlineStyle: 'solid',
+    lineThrough: null,
 
     flexDirection: 'row',
     flexWrap: 'nowrap',
@@ -435,6 +445,10 @@ export function inherit(
   out.borderRightColor = 'currentColor';
   out.borderBottomColor = 'currentColor';
   out.borderLeftColor = 'currentColor';
+  // propagated, not inherited: `decorate` drops them where CSS stops them
+  out.underline = parent.underline;
+  out.underlineStyle = parent.underlineStyle;
+  out.lineThrough = parent.lineThrough;
   return out;
 }
 
@@ -1624,6 +1638,42 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'text-decoration-style': ['textDecorationStyle'],
   'table-layout': ['tableLayout'],
 };
+
+/**
+ * The decorations a box's text is drawn with (CSS 2.1 16.3.1): those its
+ * ancestors propagate to it, and its own, each in the colour of the box that
+ * set it, so an underlined link's `<strong>` is underlined in the link's
+ * colour. A float, an absolutely positioned box and an atomic inline box —
+ * an inline block, table or flex box — take none from above, and `none`
+ * takes none away. After `blockify`, whose `float` and `position` it reads.
+ */
+export function decorate(style: ComputedStyle): void {
+  const display = style.display;
+  if (
+    style.float !== 'none' ||
+    style.position === 'absolute' ||
+    style.position === 'fixed' ||
+    display === 'inline-block' ||
+    display === 'inline-table' ||
+    display === 'inline-flex'
+  ) {
+    style.underline = null;
+    style.lineThrough = null;
+  }
+  const own = style.textDecorationLine;
+  if (own === 'underline') {
+    style.underline = inkColor(
+      style.textDecorationColor ?? 'currentColor',
+      style.color,
+    );
+    style.underlineStyle = style.textDecorationStyle;
+  } else if (own === 'line-through') {
+    style.lineThrough = inkColor(
+      style.textDecorationColor ?? 'currentColor',
+      style.color,
+    );
+  }
+}
 
 /**
  * The blockification the box tree depends on: a floated or absolutely
