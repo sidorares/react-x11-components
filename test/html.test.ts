@@ -3485,6 +3485,28 @@ test('a margin after an empty block with clearance stays in the parent', async (
   assert.strictEqual(c.y, b.y + 60 + 40);
 });
 
+test("a table gives up its cells' set widths before its words", async () => {
+  // CSS 2.1 17.5.2.2: a table is never narrower than what its content asks,
+  // and a width a cell was set to gives way first. Clamped to the room, a
+  // table beside a float ran under it; held at its cells' widths, it went
+  // below floats it could have sat beside.
+  const { node } = await render(
+    '<div id="w" style="width:250px">' +
+      '<div style="float:right;width:200px;height:50px"></div>' +
+      '<table id="t" style="border-spacing:0"><tr>' +
+      '<td style="width:100px;height:30px;padding:0"></td></tr></table></div>' +
+      '<div id="v" style="width:300px;clear:both">' +
+      '<div style="float:left;width:100px;height:100px"></div>' +
+      '<table id="u" style="border-spacing:0"><tr><td style="padding:0">' +
+      '<span style="display:inline-block;width:250px;height:10px"></span>' +
+      '</td></tr></table></div>',
+  );
+  const el = view(node);
+  const [w, t, v, u] = ['w', 't', 'v', 'u'].map((id) => boxOf(el, id));
+  assert.deepStrictEqual([t.y - w.y, t.width], [0, 50], 'beside the float');
+  assert.deepStrictEqual([u.y - v.y, u.width], [100, 250], 'below it');
+});
+
 test('nothing loads without onResource, and every reference is offered to it', async () => {
   const asked: string[] = [];
   await renderX11(
