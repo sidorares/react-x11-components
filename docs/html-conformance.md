@@ -79,6 +79,7 @@ separately, and there are six.
 | 9      | table baselines and backgrounds, media, sizes      | 5,073 (86%) | 4,637 (79%) |
 | 10     | paint order, propagated decorations                | 5,100 (87%) | 4,660 (79%) |
 | 11     | floats beside tall boxes, table widths, clearance  | 5,125 (87%) | 4,685 (79%) |
+| 12     | fixed backgrounds, floats in inline boxes          | 5,145 (87%) | 4,705 (80%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -672,7 +673,7 @@ One more gap found, for the upstream list beside `vertical-align` on text:
 - **A word wider than its line is broken.** CSS lets an unbreakable word
   overflow its box (`overflow-wrap: normal`), and every text engine here
   breaks it at a grapheme instead — ntk's `_forceBreak`, CoreText's and
-  DirectWrite's line breakers alike. None takes an option not to. 11
+  DirectWrite's line breakers alike. None takes an option not to. 30
   tests, and a long URL in a narrow mail column.
 
 ### Round 11
@@ -698,6 +699,28 @@ One more gap found, for the upstream list beside `vertical-align` on text:
     rather than collapse through its bottom (8.3.1, 10.6.3). 3 tests.
 
 Round 11 lost none.
+
+### Round 12
+
+70. **`background-attachment` was dropped**, in its longhand and in the
+    `background` shorthand. A `fixed` image is positioned against the
+    viewport rather than its element, and painted only in its box
+    (14.2.1). 11 tests.
+71. **A float or an absolute box inside an inline box was never laid
+    out.** An inline box lays out nothing of its own, so what is out of
+    flow inside it is the paragraph's; the block's walk met only its own
+    children, and a float in a padded `<span>` or a badge set `absolute`
+    in a link stood at the page's corner with no size. 5 tests.
+72. **A table was clamped to its room, or held at its cells' set widths.**
+    A table of `width: auto` is never narrower than its content asks, and
+    a width a cell was set to gives way first (17.5.2.2). Clamped, a table
+    whose words did not fit beside a float ran under it; held at its cells'
+    widths, a table went below floats it could have sat beside. 4 tests.
+
+Round 12 lost none. Of what fails on both backends, 19 more tests are the
+engines breaking a word wider than its line (the upstream list, above):
+an inline-block of `12345678` capped at `max-width: 4em` is two lines
+where CSS has it one, overflowing.
 
 ## What `<Html>` supports
 

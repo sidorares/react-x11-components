@@ -100,16 +100,18 @@ export function layoutTable(
   // its container — it shrinks to fit, which is what makes a two-column table
   // in a wide document a small table rather than a pair of columns stranded
   // at the left of a full-width box. The columns were sized against the space
-  // on offer, so this only ever narrows.
+  // on offer, so this narrows it — but never past the least its columns can
+  // be (CSS 2.1 17.5.2.2): a table whose words do not fit is wider than the
+  // room, as a word is, and one beside a float goes below it.
   //
-  // A fixed table is as wide as its `width` or its columns, whichever is the
+  // A table set to a width is as wide as it or its columns, whichever is the
   // wider: columns set wider than the table widen it.
   const used = x - table.contentX;
   let tableContentWidth = contentWidth;
   if (style.width === AUTO) {
-    tableContentWidth = Math.min(used, contentWidth);
+    tableContentWidth = used;
     table.width = tableContentWidth + table.horizontalExtra;
-  } else if (fixed && used > contentWidth) {
+  } else if (used > contentWidth) {
     tableContentWidth = used;
     table.width = used + table.horizontalExtra;
   }
@@ -453,6 +455,10 @@ function autoColumns(
     }
   }
 
+  // what the columns' content alone asks, before their set widths: the
+  // least a column gives way to when the table has less room than its
+  // cells' widths want, as beside a float
+  const least = min.slice();
   for (let c = 0; c < columnCount; c += 1) {
     if (explicit[c] !== null) {
       max[c] = Math.max(max[c], explicit[c] as number);
@@ -485,7 +491,17 @@ function autoColumns(
     );
   }
   const totalMin = min.reduce((a, b) => a + b, 0);
-  if (totalMin >= available) return min;
+  if (totalMin >= available) {
+    // Less room than the cells' widths want: a width a cell was set to
+    // gives way first, down to what its content asks, and a table never
+    // goes narrower than its words (CSS 2.1 17.5.2.2), which it overflows.
+    const totalLeast = least.reduce((a, b) => a + b, 0);
+    if (totalLeast >= available) return least;
+    const give = totalMin - totalLeast;
+    return min.map(
+      (m, c) => m - ((m - least[c]) / give) * (totalMin - available),
+    );
+  }
   const slack = available - totalMin;
   const surplus = totalMax - totalMin;
   return max.map((m, c) => min[c] + ((m - min[c]) / surplus) * slack);

@@ -3485,6 +3485,60 @@ test('a margin after an empty block with clearance stays in the parent', async (
   assert.strictEqual(c.y, b.y + 60 + 40);
 });
 
+test("a table gives up its cells' set widths before its words", async () => {
+  // CSS 2.1 17.5.2.2: a table is never narrower than what its content asks,
+  // and a width a cell was set to gives way first. Clamped to the room, a
+  // table beside a float ran under it; held at its cells' widths, it went
+  // below floats it could have sat beside.
+  const { node } = await render(
+    '<div id="w" style="width:250px">' +
+      '<div style="float:right;width:200px;height:50px"></div>' +
+      '<table id="t" style="border-spacing:0"><tr>' +
+      '<td style="width:100px;height:30px;padding:0"></td></tr></table></div>' +
+      '<div id="v" style="width:300px;clear:both">' +
+      '<div style="float:left;width:100px;height:100px"></div>' +
+      '<table id="u" style="border-spacing:0"><tr><td style="padding:0">' +
+      '<span style="display:inline-block;width:250px;height:10px"></span>' +
+      '</td></tr></table></div>',
+  );
+  const el = view(node);
+  const [w, t, v, u] = ['w', 't', 'v', 'u'].map((id) => boxOf(el, id));
+  assert.deepStrictEqual([t.y - w.y, t.width], [0, 50], 'beside the float');
+  assert.deepStrictEqual([u.y - v.y, u.width], [100, 250], 'below it');
+});
+
+test('a float or an absolute box inside an inline box is laid out', async () => {
+  // An inline box lays out nothing of its own, and the block's walk met
+  // only its own children: a float in a padded <span>, or a badge set
+  // absolute inside a link, stood at the page's corner with no size.
+  const { node } = await render(
+    '<p id="p">text <span style="padding:30px;margin:40px">' +
+      '<span id="f" style="float:left;width:40px;height:40px"></span>' +
+      '<b id="a" style="position:absolute;width:20px;height:20px"></b>' +
+      '</span></p>',
+  );
+  const el = view(node);
+  const [p, f, a] = ['p', 'f', 'a'].map((id) => boxOf(el, id));
+  assert.deepStrictEqual([f.x, f.y, f.width, f.height], [p.x, p.y, 40, 40]);
+  assert.deepStrictEqual([a.width, a.height], [20, 20]);
+  assert.strictEqual(a.y, p.y, 'at its static position');
+});
+
+test('background-attachment is read, in its longhand and the shorthand', async () => {
+  // `fixed` positions the image against the viewport, the element, rather
+  // than the box (CSS 2.1 14.2.1); the shorthand sets it back to `scroll`
+  const { node } = await render(
+    '<div id="a" style="background-attachment:fixed"></div>' +
+      '<div id="b" style="background:url(x.png) fixed repeat-x"></div>' +
+      '<div id="c" style="background-attachment:fixed;background:red"></div>',
+  );
+  const el = view(node);
+  const of = (id: string) =>
+    (boxOf(el, id) as unknown as { style: { backgroundAttachment: string } })
+      .style.backgroundAttachment;
+  assert.deepStrictEqual(['a', 'b', 'c'].map(of), ['fixed', 'fixed', 'scroll']);
+});
+
 test('nothing loads without onResource, and every reference is offered to it', async () => {
   const asked: string[] = [];
   await renderX11(

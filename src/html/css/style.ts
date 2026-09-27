@@ -201,6 +201,7 @@ export interface ComputedStyle {
   backgroundImage: string | null;
   backgroundRepeat: 'repeat' | 'repeat-x' | 'repeat-y' | 'no-repeat';
   backgroundSize: 'auto' | 'cover' | 'contain';
+  backgroundAttachment: 'scroll' | 'fixed' | 'local';
   backgroundPositionX: Len;
   backgroundPositionY: Len;
 
@@ -394,6 +395,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     backgroundImage: null,
     backgroundRepeat: 'repeat',
     backgroundSize: 'auto',
+    backgroundAttachment: 'scroll',
     backgroundPositionX: 0,
     backgroundPositionY: 0,
 
@@ -797,6 +799,14 @@ export function applyDeclaration(
         v === 'no-repeat'
       ) {
         style.backgroundRepeat = v;
+      }
+      return;
+    }
+    case 'background-attachment': {
+      // the last layer's, as the shorthand takes it
+      const v = (splitCommas(value).pop() ?? '').toLowerCase().trim();
+      if (v === 'scroll' || v === 'fixed' || v === 'local') {
+        style.backgroundAttachment = v;
       }
       return;
     }
@@ -1331,6 +1341,7 @@ function applyBackgroundShorthand(
   style.backgroundImage = null;
   style.backgroundRepeat = 'repeat';
   style.backgroundSize = 'auto';
+  style.backgroundAttachment = 'scroll';
   const positions: string[] = [];
   for (const part of splitValue(layer)) {
     const v = part.toLowerCase();
@@ -1351,14 +1362,11 @@ function applyBackgroundShorthand(
       style.backgroundSize = v;
       continue;
     }
-    if (
-      v === 'border-box' ||
-      v === 'padding-box' ||
-      v === 'content-box' ||
-      v === 'fixed' ||
-      v === 'scroll' ||
-      v === 'local'
-    ) {
+    if (v === 'fixed' || v === 'scroll' || v === 'local') {
+      style.backgroundAttachment = v;
+      continue;
+    }
+    if (v === 'border-box' || v === 'padding-box' || v === 'content-box') {
       continue;
     }
     const c = parseColor(part);
@@ -1607,6 +1615,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
     'backgroundImage',
     'backgroundRepeat',
     'backgroundSize',
+    'backgroundAttachment',
     'backgroundPositionX',
     'backgroundPositionY',
   ],
@@ -1614,6 +1623,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'background-image': ['backgroundImage'],
   'background-repeat': ['backgroundRepeat'],
   'background-size': ['backgroundSize'],
+  'background-attachment': ['backgroundAttachment'],
   'background-position': ['backgroundPositionX', 'backgroundPositionY'],
   position: ['position'],
   top: ['top'],
