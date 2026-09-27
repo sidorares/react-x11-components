@@ -224,6 +224,10 @@ export function counterText(n: number, style: string): string {
       return '◦';
     case 'square':
       return '▪';
+    case 'disclosure-closed':
+      return '▸';
+    case 'disclosure-open':
+      return '▾';
     case 'decimal-leading-zero': {
       const digits = String(Math.abs(n));
       return `${n < 0 ? '-' : ''}${digits.length < 2 ? '0' : ''}${digits}`;

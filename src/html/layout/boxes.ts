@@ -658,7 +658,21 @@ class Builder {
     // CSS 2.1 17.2.1: a column group holds columns, and anything else in it
     // is not rendered
     const onlyColumns = parentStyle.display === 'table-column-group';
+    // A closed `<details>` shows its first `<summary>` and nothing else:
+    // HTML renders the rest into a slot that is out of the box tree until
+    // the element is `open`.
+    const closed =
+      owner !== null &&
+      tagOf(owner) === 'details' &&
+      owner.attribs.open === undefined;
+    let summarised = false;
     for (const child of childrenOf(node as Element)) {
+      if (closed) {
+        if (!isElement(child) || summarised || tagOf(child) !== 'summary') {
+          continue;
+        }
+        summarised = true;
+      }
       if (isText(child)) {
         if (!onlyColumns) this._textNode(child.data, into, parentStyle, owner);
         continue;
@@ -766,9 +780,11 @@ class Builder {
     // a column's content is not rendered at all (CSS 2.1 17.2.1)
     if (style.display === 'table-column') return;
 
+    let insideMarker: string | null = null;
     if (style.display === 'list-item') {
       const text = markerFor(el, style, this._counters);
-      if (text) box.marker = { text, layout: null, x: 0, y: 0 };
+      if (text && style.listStylePosition === 'inside') insideMarker = text;
+      else if (text) box.marker = { text, layout: null, x: 0, y: 0 };
     }
     const opensCounter = tag === 'ol' || tag === 'ul';
     if (opensCounter) {
@@ -802,6 +818,7 @@ class Builder {
     // a counter reset in here reaches the element's later children and not
     // past its end; `::before` and `::after` are children like any other
     this._scopes.open();
+    if (insideMarker) this._insideMarker(insideMarker, style, box, el);
     this._pseudo(el, 'before', style, box);
     this._children(el, box, style, childInFlex, el, key);
     this._pseudo(el, 'after', style, box);
@@ -957,6 +974,28 @@ class Builder {
     this._letterAfter(flow, skipped, outerLetter, null);
     if (flow !== 'inline') this._endLine();
     this._ws = after(flow, this._ws, around);
+  }
+
+  /**
+   * An `inside` list marker: an inline box at the start of the item, the
+   * marker and a space, which takes its room on the first line as a
+   * `::marker` does (CSS Lists 3, 3.1), where a marker set beside the line
+   * was drawn over its first letters — every `list-style-position: inside`
+   * list, and every `<summary>`. It inherits the item's text style and has
+   * none of its box.
+   */
+  private _insideMarker(
+    text: string,
+    itemStyle: ComputedStyle,
+    into: Box,
+    el: Element,
+  ): void {
+    const style = inherit(itemStyle, this._options.cascade.initial);
+    style.display = 'inline';
+    const box = new Box('inline', null, style);
+    box.pseudo = 'before';
+    into.append(box);
+    this._textNode(`${text} `, box, style, el);
   }
 
   /** `counter-reset`, then `counter-increment`, as CSS 2.1 orders them. */
@@ -1581,6 +1620,11 @@ function markerFor(
       return '◦';
     case 'square':
       return '▪';
+    // a `<summary>`'s: closed, and open
+    case 'disclosure-closed':
+      return '▸';
+    case 'disclosure-open':
+      return '▾';
     case 'disc':
     default:
       return '•';

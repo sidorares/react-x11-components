@@ -131,7 +131,11 @@ first row's. A relatively positioned inline box moves its text, its
 background and borders and any block inside it, and leaves its lines where
 they were, which is how Tailwind's preflight and normalize.css raise a
 `<sup>`; a paragraph with one is laid out a line at a time, as one with an
-inline-block is.
+inline-block is. A list's marker hangs outside its item, or with
+`list-style-position: inside` is the first thing on its first line and
+takes its room there. A `<details>` shows its first `<summary>` and nothing
+more until it is `open`, the summary with the ▸ or ▾ HTML gives it — a
+system font's, where the document's has none.
 A flex container is laid out by Yoga, the engine react-x11 lays itself out
 with, and each item by this one: an item of `width: auto` is as wide as its
 content, its max-content width, before the row grows or shrinks it, its
