@@ -1414,6 +1414,7 @@ function paintLines(ctx: PaintContext, box: Box, options: PaintOptions): void {
   if (!visible.length) return;
 
   for (const line of visible) {
+    if (line.background) paintLineBackground(ctx, line, options);
     paintInlineBoxes(ctx, line, options);
     for (const text of line.texts) {
       const natural = text.layout.lines[text.layoutLine];
@@ -1496,6 +1497,53 @@ function paintRules(
  * boxes first, so a highlight shows behind a nested element's text too. A
  * run finds its element from its place in the document, as a click does.
  */
+/** A `::first-line` background: behind all the line's content, across it,
+ *  over its face's height from the baseline, as an inline box around the
+ *  line's content would be painted. */
+function paintLineBackground(
+  ctx: PaintContext,
+  line: LineBox,
+  options: PaintOptions,
+): void {
+  const background = line.background!;
+  let left = Infinity;
+  let right = -Infinity;
+  let baseline = line.y + line.baseline;
+  for (const text of line.texts) {
+    const natural = text.layout.lines[text.layoutLine];
+    if (!natural) continue;
+    baseline = text.drawY + natural.baseline;
+    left = Math.min(left, text.drawX + natural.x);
+    right = Math.max(right, text.drawX + natural.x + natural.width);
+  }
+  for (const placed of line.atomics) {
+    left = Math.min(left, placed.x - placed.box.marginLeft);
+    right = Math.max(
+      right,
+      placed.x + placed.box.width + placed.box.marginRight,
+    );
+  }
+  if (!(right > left)) return;
+  const top = baseline - background.ascent;
+  paintBackground(
+    ctx,
+    {
+      x: left,
+      y: top,
+      width: right - left,
+      height: baseline + background.descent - top,
+      captionTop: 0,
+      captionBottom: 0,
+      borderTop: 0,
+      borderBottom: 0,
+      borderLeft: 0,
+      borderRight: 0,
+      style: background.style,
+    },
+    options,
+  );
+}
+
 function paintInlineBoxes(
   ctx: PaintContext,
   line: LineBox,

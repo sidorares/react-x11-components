@@ -5024,3 +5024,80 @@ test("nowrap, a clearing br, an image aligned in its line, and a rule's own attr
   assert.strictEqual(h.style.borderTopColor, '#ff0000');
   assert.strictEqual(box('l').x, 0);
 });
+
+// --- ::first-line, and a pseudo-element's place in a selector -------------------
+
+test('a pseudo-element ends its selector: a group with one inside is dropped', async () => {
+  const { selectorList } = await import('../src/html/css/parse.js');
+  assert.strictEqual(selectorList('p:first-line p, #p1'), null);
+  assert.strictEqual(selectorList('p::before.x'), null);
+  assert.deepStrictEqual(selectorList('div > p:first-line'), [
+    'div > p:first-line',
+  ]);
+  // the user action pseudo-classes may follow one (Selectors 4)
+  assert.deepStrictEqual(selectorList('a::before:hover'), ['a::before:hover']);
+});
+
+metric(
+  '::first-line colours the first line, and paints its background behind it',
+  async () => {
+    const { result, el } = await renderWithBytes(
+      '<style>body{margin:0}div{width:90px;color:#ff0000;' +
+        'font:bold 40px/50px sans-serif}p{margin:0}' +
+        'div::first-line{color:#00ff00;background:#0000ff}</style>' +
+        // the div's first line is its first paragraph's
+        '<div><p id="p">III <span style="color:#ff00ff">III III</span> III</p>' +
+        '<p>III</p></div>',
+      {},
+    );
+    const { lines } = boxOf(el, 'p') as unknown as {
+      lines: { textStart: number; textEnd: number }[];
+    };
+    assert.strictEqual(lines.length, 2, 'the words wrap');
+    // the span is across the first line's end, and the text after it is
+    // still all on the second
+    assert.deepStrictEqual(
+      lines.map((l) => [l.textStart, l.textEnd]),
+      [
+        [0, 8],
+        [8, 15],
+      ],
+    );
+    const count = async (y0: number, y1: number) => {
+      const w = 90;
+      const data: Uint8ClampedArray = await new Promise((ok, fail) =>
+        (
+          result.ctx as unknown as {
+            getImageData(
+              x: number,
+              y: number,
+              w: number,
+              h: number,
+              cb: (e: unknown, d: { data: Uint8ClampedArray }) => void,
+            ): void;
+          }
+        ).getImageData(0, y0, w, y1 - y0, (e, d) => (e ? fail(e) : ok(d.data))),
+      );
+      const seen = { green: 0, red: 0, blue: 0, magenta: 0 };
+      for (let i = 0; i < data.length; i += 4) {
+        const [r, g, b] = [data[i], data[i + 1], data[i + 2]];
+        if (g > 200 && r < 60 && b < 60) seen.green += 1;
+        if (r > 200 && g < 60 && b < 60) seen.red += 1;
+        if (b > 200 && r < 60 && g < 60) seen.blue += 1;
+        if (r > 200 && b > 200 && g < 60) seen.magenta += 1;
+      }
+      return seen;
+    };
+    const first = await count(0, 50);
+    const second = await count(50, 100);
+    const third = await count(100, 150);
+    assert.ok(first.green > 0 && first.red === 0, 'the first line is green');
+    assert.ok(first.magenta > 0, 'but for the span, in its own colour');
+    assert.ok(first.blue > 0, 'on its background');
+    assert.ok(second.red > 0 && second.green === 0, 'the second is not');
+    assert.ok(second.magenta > 0);
+    assert.strictEqual(second.blue, 0);
+    assert.ok(third.red > 0 && third.green === 0, 'nor the next paragraph');
+    assert.strictEqual(third.blue, 0);
+  },
+);

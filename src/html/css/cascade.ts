@@ -154,11 +154,11 @@ class RuleIndex {
 }
 
 /** The pseudo-elements a rule can style here. */
-type PseudoElement = 'before' | 'after' | 'first-letter';
+type PseudoElement = 'before' | 'after' | 'first-letter' | 'first-line';
 
 /** A selector's trailing `::before`, `::after` or `::first-letter`, or CSS
  *  2's single-colon spelling of any of them. */
-const PSEUDO_ELEMENT = /::?(before|after|first-letter)$/i;
+const PSEUDO_ELEMENT = /::?(before|after|first-letter|first-line)$/i;
 
 /**
  * A rule for a pseudo-element, as the pseudo-element it styles and a rule
@@ -308,6 +308,7 @@ export class Cascade {
     before: new RuleIndex(),
     after: new RuleIndex(),
     'first-letter': new RuleIndex(),
+    'first-line': new RuleIndex(),
   };
   private _adapter: CssSelectAdapter;
   private _pointer: PointerState = NO_POINTER;
@@ -379,7 +380,8 @@ export class Cascade {
       this._index.hoverSensitive ||
       this._pseudo.before.hoverSensitive ||
       this._pseudo.after.hoverSensitive ||
-      this._pseudo['first-letter'].hoverSensitive
+      this._pseudo['first-letter'].hoverSensitive ||
+      this._pseudo['first-line'].hoverSensitive
     );
   }
 
@@ -575,6 +577,26 @@ export class Cascade {
     if (!candidates.length) return null;
     candidates.sort(byCascade);
     return { el, candidates };
+  }
+
+  /** Whether any rule styles a `::first-line`: a document with none asks
+   *  nothing more of its blocks. */
+  get hasFirstLine(): boolean {
+    return this._pseudo['first-line'].size > 0;
+  }
+
+  /**
+   * An element's `::first-line` style, inheriting from its own, or null
+   * when no rule reaches it (CSS 2.1 5.12.1).
+   */
+  firstLineStyle(el: Element, style: ComputedStyle): ComputedStyle | null {
+    const index = this._pseudo['first-line'];
+    if (!index.size) return null;
+    const candidates: Candidate[] = [];
+    this._matchInto(index, el, candidates);
+    if (!candidates.length) return null;
+    candidates.sort(byCascade);
+    return this._computeStyle(el, style, false, candidates);
   }
 
   /**

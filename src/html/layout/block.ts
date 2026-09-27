@@ -10,13 +10,24 @@
 // Float coordinates are absolute for the same reason, which is what lets the
 // inline pass ask "how wide is the line at this y" without knowing whose
 // formatting context it is inside.
-import { AUTO, isPct, resolve, resolveOrNull } from '../css/values.js';
+import {
+  AUTO,
+  isPct,
+  isTransparent,
+  resolve,
+  resolveOrNull,
+} from '../css/values.js';
 import type { Len } from '../css/values.js';
-import type { BorderStyle } from '../css/style.js';
-import { Box } from './boxes.js';
+import type { BorderStyle, ComputedStyle } from '../css/style.js';
+import { Box, FIRST_LINE } from './boxes.js';
 import type { BoxTree, Intrinsic, LineBox, Marker } from './boxes.js';
 import { FloatContext } from './floats.js';
-import { layoutInline, lineHeightMultiplier, strutOf } from './inline.js';
+import {
+  faceExtentOf,
+  layoutInline,
+  lineHeightMultiplier,
+  strutOf,
+} from './inline.js';
 import type { FontsLike } from './inline.js';
 import { layoutFlex } from './flex.js';
 import { finishCaptions, layoutTable } from './table.js';
@@ -25,6 +36,8 @@ import { computePaintBounds, hoistNegative } from '../paint.js';
 
 export interface LayoutContext {
   fonts: FontsLike | null;
+  /** Whether any block has a `::first-line` (`BoxTree.firstLine`). */
+  firstLine?: boolean;
   viewportWidth: number;
   viewportHeight: number;
   /** Out-of-flow boxes, collected in flow order and laid out afterwards —
@@ -63,6 +76,7 @@ export function layoutDocument(
     viewportHeight,
     positioned: [],
     layoutSubtree: (box, width) => layoutSubtree(box, ctx, width),
+    firstLine: tree.firstLine,
   };
   const root = tree.root;
   root.x = 0;
@@ -464,9 +478,16 @@ function layoutChildren(
    *  bottom (CSS 2.1 8.3.1, 10.6.3). */
   let cleared = false;
   let afterClear = 0;
+  // this box's first formatted line is its first child's in flow (CSS 2.1
+  // 5.12.1), which its `::first-line` is handed to
+  let firstLine = ctx.firstLine ? firstLineOf(box) : null;
 
   for (const child of box.children) {
     if (child.kind === 'text' && isBlank(child.text)) continue;
+    if (firstLine && !child.outOfFlow && !child.isFloat) {
+      if (!FIRST_LINE.has(child)) HANDED.set(child, firstLine);
+      firstLine = null;
+    }
     if (child.outOfFlow) {
       placeStatic(child, box, contentLeft, contentWidth, y + pendingMargin);
       ctx.positioned.push({
@@ -620,13 +641,38 @@ function layoutInlineContent(
   // Atomics have to be sized before the line breaker can place them.
   sizeAtomics(box, ctx, contentWidth);
 
-  const result = layoutInline(box, {
+  const options = {
     fonts: ctx.fonts,
     width: contentWidth,
     startY: contentTop,
     floats,
     originX: contentLeft,
-  });
+  };
+  let result = layoutInline(box, options);
+  const firstLine = ctx.firstLine ? firstLineOf(box) : null;
+  if (firstLine && firstLine.color !== box.style.color && result.lines.length) {
+    // the first line's text in its `::first-line` colour, laid out again
+    // with its runs cut where the line ends (CSS 2.1 5.12.1)
+    result = layoutInline(box, {
+      ...options,
+      firstLine: {
+        color: firstLine.color,
+        from: box.style.color,
+        end: result.lines[0].textEnd,
+      },
+    });
+  }
+  if (
+    firstLine &&
+    ctx.fonts &&
+    result.lines.length &&
+    !isTransparent(firstLine.backgroundColor)
+  ) {
+    result.lines[0].background = {
+      style: firstLine,
+      ...faceExtentOf(ctx.fonts, firstLine),
+    };
+  }
   // The inline pass works in content-box coordinates; move the result into
   // document space now, so nothing below this line has to know the
   // difference.
@@ -646,6 +692,16 @@ function layoutInlineContent(
   }
   box.lines = result.lines;
   return result.height;
+}
+
+/** `::first-line` styles handed down to the first child in flow of a box
+ *  that has one, whose first line is the box's (`layoutChildren`). */
+const HANDED = new WeakMap<Box, ComputedStyle>();
+
+/** The `::first-line` style a box's first line takes: its own, or one an
+ *  ancestor handed it. */
+function firstLineOf(box: Box): ComputedStyle | null {
+  return FIRST_LINE.get(box) ?? HANDED.get(box) ?? null;
 }
 
 /** Size every atomic in an inline context. */
