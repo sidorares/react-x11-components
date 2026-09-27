@@ -216,14 +216,15 @@ export function computePaintBounds(box: Box, moved = false): number {
     }
   }
   const marker = box.marker;
-  if (marker?.layout) {
+  const drawn = marker?.image ?? marker?.layout;
+  if (marker && drawn) {
     // The marker hangs in the padding to the left of the content, so it is
     // outside the border box and has to widen the ink bounds or a repaint
     // clipped to a narrow strip drops it.
     x1 = Math.min(x1, marker.x);
     y1 = Math.min(y1, marker.y);
-    x2 = Math.max(x2, marker.x + marker.layout.width);
-    y2 = Math.max(y2, marker.y + marker.layout.height);
+    x2 = Math.max(x2, marker.x + drawn.width);
+    y2 = Math.max(y2, marker.y + drawn.height);
   }
   for (const child of box.children) {
     if (child.kind === 'text' || child.kind === 'break') continue;
@@ -2661,11 +2662,19 @@ function paintMarker(
   marker: Marker,
   options: PaintOptions,
 ): void {
-  marker.layout?.draw(
-    ctx,
-    marker.x + options.originX,
-    marker.y + options.originY,
-  );
+  const x = marker.x + options.originX;
+  const y = marker.y + options.originY;
+  if (marker.image) {
+    // `list-style-image`'s, at its own size
+    const { url, width, height } = marker.image;
+    const loaded = options.backgroundImageFor?.(url);
+    if (!loaded || !(width > 0 && height > 0)) return;
+    if (loaded.image instanceof SvgDrawing) {
+      loaded.image.draw(ctx, x, y, width, height, options.scale ?? 1);
+    } else ctx.drawImage?.(loaded.image, x, y, width, height);
+    return;
+  }
+  marker.layout?.draw(ctx, x, y);
 }
 
 function paintImage(ctx: PaintContext, box: Box, options: PaintOptions): void {

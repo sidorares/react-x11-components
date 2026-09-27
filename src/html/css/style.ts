@@ -219,6 +219,9 @@ export interface ComputedStyle {
   visibility: 'visible' | 'hidden';
   listStyleType: string;
   listStylePosition: 'inside' | 'outside';
+  /** `list-style-image`: an image a list item's marker is, where it loads,
+   *  in place of its `list-style-type`'s; null for `none`. */
+  listStyleImage: string | null;
   cursor: string | null;
   borderCollapse: 'separate' | 'collapse';
   /** `border-spacing`: between columns, and between rows. */
@@ -479,6 +482,7 @@ export const INHERITED = [
   'visibility',
   'listStyleType',
   'listStylePosition',
+  'listStyleImage',
   'cursor',
   'borderCollapse',
   'borderSpacing',
@@ -550,6 +554,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     visibility: 'visible',
     listStyleType: 'disc',
     listStylePosition: 'outside',
+    listStyleImage: null,
     cursor: null,
     borderCollapse: 'separate',
     // CSS's initial value; a `<table>` gets its 2px from the UA sheet, and
@@ -731,6 +736,7 @@ export function inherit(
   out.visibility = parent.visibility;
   out.listStyleType = parent.listStyleType;
   out.listStylePosition = parent.listStylePosition;
+  out.listStyleImage = parent.listStyleImage;
   out.cursor = parent.cursor;
   out.borderCollapse = parent.borderCollapse;
   out.borderSpacing = parent.borderSpacing;
@@ -1673,11 +1679,54 @@ export function applyDeclaration(
 
     // --- lists --------------------------------------------------------------
     case 'list-style': {
+      // a type, a position and an image, each at most once and in any
+      // order, and each left out reset (CSS 2.1 12.5.1); a `none` is
+      // whichever of the type and the image is not otherwise given, both
+      // where neither is, and a third thing where both are, which is
+      // nothing and makes the declaration invalid
+      let type: string | null = null;
+      let position: ComputedStyle['listStylePosition'] | null = null;
+      let image: string | null | undefined;
+      let nones = 0;
       for (const part of splitValue(value)) {
         const v = part.toLowerCase();
-        if (v === 'inside' || v === 'outside') style.listStylePosition = v;
-        else if (v !== 'none' || style.listStyleType === 'disc')
-          style.listStyleType = v;
+        if (v === 'inside' || v === 'outside') {
+          if (position) return;
+          position = v;
+        } else if (v === 'none') nones += 1;
+        else if (v.startsWith('url(') || IMAGE_FUNCTION.test(v)) {
+          if (image !== undefined) return;
+          image = v.startsWith('url(') ? (parseUrl(part) ?? null) : null;
+        } else {
+          if (type !== null) return;
+          type = v;
+        }
+      }
+      if (nones > 2) return;
+      if (nones === 2 && (type !== null || image !== undefined)) return;
+      if (nones === 1) {
+        if (type !== null && image !== undefined) return;
+        if (type === null) type = 'none';
+        else image = null;
+      }
+      if (nones === 2) {
+        type = 'none';
+        image = null;
+      }
+      style.listStyleType = type ?? 'disc';
+      style.listStylePosition = position ?? 'outside';
+      style.listStyleImage = image ?? null;
+      return;
+    }
+    case 'list-style-image': {
+      const v = value.trim();
+      if (v.toLowerCase() === 'none') style.listStyleImage = null;
+      else if (IMAGE_FUNCTION.test(v.toLowerCase())) {
+        // a gradient is an image this draws no marker as
+        style.listStyleImage = null;
+      } else if (/^url\(/i.test(v)) {
+        const url = parseUrl(v);
+        if (url !== undefined) style.listStyleImage = url;
       }
       return;
     }
@@ -3205,6 +3254,7 @@ const INHERITED_NAMES = new Set<string>([
   'list-style',
   'list-style-type',
   'list-style-position',
+  'list-style-image',
   'cursor',
   'border-collapse',
   'border-spacing',
@@ -3303,9 +3353,10 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   direction: ['direction'],
   'unicode-bidi': ['unicodeBidi'],
   visibility: ['visibility'],
-  'list-style': ['listStyleType', 'listStylePosition'],
+  'list-style': ['listStyleType', 'listStylePosition', 'listStyleImage'],
   'list-style-type': ['listStyleType'],
   'list-style-position': ['listStylePosition'],
+  'list-style-image': ['listStyleImage'],
   cursor: ['cursor'],
   'border-collapse': ['borderCollapse'],
   'caption-side': ['captionSide'],
