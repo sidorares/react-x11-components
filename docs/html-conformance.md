@@ -98,6 +98,7 @@ separately, and there are six.
 | 28     | `white-space` on an element                        | 5,436 (92%) | 4,959 (84%) |
 | 29     | an inline box's line height, cleared empty blocks  | 5,443 (92%) | 4,962 (84%) |
 | 30     | margins beside floats, `flow-root`, `min-height`   | 5,450 (92%) | 4,969 (84%) |
+| 31     | a box's edges on the pixel grid                    | 5,460 (93%) | 4,971 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -1211,6 +1212,21 @@ Round 29 lost none, on either backend.
      max-height-separates-margin). 2 tests.
 
 Round 30 lost none, on either backend.
+
+### Round 31
+
+115. **A box's edges were rounded out rather than snapped.** A background,
+     a border, a clip and an image were painted from the pixel their box
+     starts in, as wide as the box rounded up, so a rule `1pt` wide was
+     two pixels, and two boxes that met at a fraction of a pixel both
+     painted the column between them. Each edge is on the pixel it falls
+     nearest now, as browsers snap a box, so boxes that meet share the
+     column their edge is in. 10 tests on X11, 4 on macOS.
+
+Round 31 lost 2 tests on macOS, both boxes whose height comes from
+CoreText's fractional line heights, where the old rounding happened to
+land on the reference's pixel; browsers round a font's metrics to whole
+pixels before they lay a line out.
 
 ## What `<Html>` supports
 

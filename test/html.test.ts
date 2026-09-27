@@ -2778,8 +2778,8 @@ metric("a column's background is painted under its cells", async () => {
     ].map(([x, y, w, h]) => [
       Math.round(x),
       Math.round(y),
-      Math.ceil(w),
-      Math.ceil(h),
+      Math.round(x + w) - Math.round(x),
+      Math.round(y + h) - Math.round(y),
     ]),
     "one fill a cell, the cells' own",
   );
@@ -3422,8 +3422,8 @@ test("a row's background is its cells', and a row group has no borders", async (
     cells.map((c) => [
       Math.round(c.x),
       Math.round(c.y),
-      Math.ceil(c.width),
-      Math.ceil(c.height),
+      Math.round(c.x + c.width) - Math.round(c.x),
+      Math.round(c.y + c.height) - Math.round(c.y),
     ]),
     'one fill a cell, none across the spacing',
   );
@@ -6509,4 +6509,28 @@ test('display: flow-root makes a formatting context of its own', async () => {
       '</div>',
   );
   assert.strictEqual(boxOf(view(again), 'r').height, 0);
+});
+
+// --- a box on the pixel grid -------------------------------------------------------
+
+test('a box is painted with each edge on the pixel it falls nearest', async () => {
+  // as browsers snap a box: a rule 1pt wide is one pixel, not two, and two
+  // boxes that meet at a fraction of one share the column their edge is
+  // in, rather than both painting it
+  const { node } = await render(
+    '<style>body{margin:0}div{float:left;height:10px}</style>' +
+      '<div style="width:1pt;background:#ff0000"></div>' +
+      '<div style="width:10.4px;background:#00ff00"></div>' +
+      '<div style="width:10.4px;background:#0000ff"></div>',
+  );
+  const fills = await fillsOf(view(node));
+  const [red, green, blue] = ['#ff0000', '#00ff00', '#0000ff'].map((c) => {
+    const found = fills.find((f) => f.style === parseColor(c));
+    assert.ok(found, `a fill in ${c}`);
+    return found;
+  });
+  assert.deepStrictEqual(
+    [red.w, green.x - red.x, green.w, blue.x - green.x],
+    [1, 1, 11, 11],
+  );
 });
