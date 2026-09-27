@@ -216,6 +216,18 @@ and down the whole element when an application grows it past the document —
 so an email's `<body bgcolor>` colours the message rather than a box inside
 it.
 
+**HTML's own attributes:** the presentational ones mail and generated
+documents are written in are read as the styles they stand for, below
+every author rule — `bgcolor`, `background`, `width` and `height`,
+`cellpadding` and `cellspacing`, `border`, `valign`, `<font>`'s, `<body>`'s
+`text` and `link`, `dir`, and `align`. A table's `align` places the table
+(`center` gives it auto margins, `left` and `right` float it); `<center>`,
+and `align` on a div, a cell, a row or a row group, align the blocks in
+them as well as their text, as browsers do with `text-align:
+-webkit-center`, which is read too. A table with auto margins is centred
+once it has shrunk to its columns, so a mail's button, a one-cell
+`<table align="center">`, stands in the middle.
+
 **Text:** `font` and its longhands, `line-height`, `text-align`,
 `text-indent`, `text-transform`, `letter-spacing` and `word-spacing` (the
 first is the text engine's; the second is spacing added to each space and
