@@ -6789,3 +6789,62 @@ test('a nested rule and a media range reach the document', async () => {
   );
   assert.strictEqual(edgesOf(boxOf(el, 'c')).marginLeft, 5);
 });
+
+// --- flex items ------------------------------------------------------------------
+
+metric(
+  "a flex item takes its padding once, and its content's width",
+  async () => {
+    // Yoga holds an item's padding and adds it itself, so the measure answers
+    // inside it; an item of `width: auto` is as wide as its content (CSS
+    // Flexbox 9.2), not a share of the row
+    const place = async (items: string, width = 700) => {
+      const { node } = await render(
+        '<style>body{margin:0;font:14px/20px sans-serif}.r{display:flex;' +
+          'gap:12px}.r>div{padding:12px}</style>' +
+          `<div class="r">${items}</div>`,
+        width,
+      );
+      const el = view(node);
+      const out = ['a', 'b'].map((id) => {
+        const b = boxOf(el, id);
+        return { x: b.x, width: b.width, height: b.height };
+      });
+      cleanup();
+      return out;
+    };
+    const [a, b] = await place(
+      '<div id="a">Install</div><div id="b">Run</div>',
+    );
+    assert.strictEqual(a.height, 44, '12 + 20 + 12, not the padding twice');
+    assert.ok(a.width < 100, `as wide as its word and padding: ${a.width}`);
+    assert.ok(
+      Math.abs(b.x - (a.x + a.width + 12)) < 1e-6,
+      'and the next after it',
+    );
+    // `flex: 1` shares the row, padding and all
+    const [c, d] = await place(
+      '<div id="a" style="flex:1">Install</div><div id="b" style="flex:1">Run</div>',
+    );
+    assert.deepStrictEqual([c.width, d.width, c.height], [344, 344, 44]);
+    // a width of its own is its content box's, 100 + 24 + 4
+    const [e] = await place(
+      '<div id="a" style="width:100px;border:2px solid">W</div><div id="b"></div>',
+    );
+    assert.strictEqual(e.width, 128);
+    // and a row inside a row is as wide as its items side by side
+    const [f] = await place(
+      '<div id="a" style="display:flex;gap:4px;padding:0"><span>One</span>' +
+        '<span>Two</span></div><div id="b">x</div>',
+    );
+    const [one] = await place(
+      '<div id="a" style="padding:0">One</div><div id="b"></div>',
+    );
+    assert.ok(f.width > one.width * 2, `${f.width} holds both words`);
+    // and an auto margin takes the free space on its side
+    const [, end] = await place(
+      '<div id="a">A</div><div id="b" style="margin-left:auto">B</div>',
+    );
+    assert.ok(Math.abs(end.x + end.width - 700) < 1e-6, `${end.x + end.width}`);
+  },
+);

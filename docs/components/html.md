@@ -131,6 +131,15 @@ background and borders and any block inside it, and leaves its lines where
 they were, which is how Tailwind's preflight and normalize.css raise a
 `<sup>`; a paragraph with one is laid out a line at a time, as one with an
 inline-block is.
+A flex container is laid out by Yoga, the engine react-x11 lays itself out
+with, and each item by this one: an item of `width: auto` is as wide as its
+content, its max-content width, before the row grows or shrinks it, its
+padding and border counted once, and a width, height or basis of its own is
+its content box's unless `box-sizing` says otherwise. An `auto` margin takes
+the free space on its side, so `margin-left: auto` puts an item at the end
+of its row. A row of flex items inside another item is as wide as its items
+side by side. Items meet where
+they meet, fractions of a pixel included, and the paint snaps their edges.
 A table's borders collapse where it asks: one border along each edge of its
 grid, centred on it, chosen from the cells, rows, row groups, columns,
 column groups and the table that meet there as CSS 2.1 17.6.2.1 chooses —

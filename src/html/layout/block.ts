@@ -1277,6 +1277,14 @@ function shrinkToFitWidth(
  */
 function intrinsicWidth(box: Box): number {
   let widest = 0;
+  // A row of flex items is as wide as all of them side by side, and gaps
+  // between them; any other box is as wide as the widest thing in it
+  const display = box.style.display;
+  const row =
+    (display === 'flex' || display === 'inline-flex') &&
+    box.style.flexDirection.startsWith('row');
+  let total = 0;
+  let items = 0;
   const lines = box.lines;
   if (lines) {
     for (const line of lines) widest = Math.max(widest, line.width);
@@ -1296,19 +1304,27 @@ function intrinsicWidth(box: Box): number {
       style.minWidth === 0
         ? 0
         : resolve(style.minWidth, 0) + contentExtra(child);
+    let contribution: number;
     // A width of its own is what a child contributes, whatever its content
     // does past it (CSS Sizing 3 5.1); a percentage one is cyclic here and
     // counts as `auto`, so its content decides.
     if (typeof style.width === 'number') {
-      widest = Math.max(widest, own, min + margins);
-      continue;
+      contribution = Math.max(own, min + margins);
+    } else {
+      let inner = intrinsicWidth(child) + child.horizontalExtra;
+      if (typeof style.maxWidth === 'number') {
+        inner = Math.min(inner, style.maxWidth + contentExtra(child));
+      }
+      if (min > inner) inner = min;
+      contribution = Math.max(inner + margins, own);
     }
-    let inner = intrinsicWidth(child) + child.horizontalExtra;
-    if (typeof style.maxWidth === 'number') {
-      inner = Math.min(inner, style.maxWidth + contentExtra(child));
-    }
-    if (min > inner) inner = min;
-    widest = Math.max(widest, inner + margins, own);
+    if (row) {
+      total += contribution;
+      items += 1;
+    } else widest = Math.max(widest, contribution);
+  }
+  if (row && items) {
+    widest = Math.max(widest, total + box.style.columnGap * (items - 1));
   }
   return widest;
 }

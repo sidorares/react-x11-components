@@ -23,12 +23,12 @@
 // the leaf shape costs is stretch — a stretched item's box grows but its
 // contents are not re-laid at the stretched height.
 import { Yoga, layoutLoaded } from 'react-x11/yoga';
-import type { Node as YogaNode } from 'react-x11/yoga';
+import type { Config as YogaConfig, Node as YogaNode } from 'react-x11/yoga';
 
 import { AUTO, isPct, resolve, resolveOrNull } from '../css/values.js';
 import type { ComputedStyle } from '../css/style.js';
 import { Box } from './boxes.js';
-import { moveTo, resolveEdges } from './block.js';
+import { measureIntrinsicWidth, moveTo, resolveEdges } from './block.js';
 import type { LayoutContext } from './block.js';
 
 // `react-x11/yoga` re-exports yoga's own declarations, so the node shape and
@@ -36,6 +36,22 @@ import type { LayoutContext } from './block.js';
 // call, which is what this had to do while the engine was reached through
 // `react-x11/ntk` (a deliberately loose record).
 const Y = Yoga;
+
+/**
+ * The config this engine's flex trees are made in: off the pixel grid, as
+ * the rest of its layout is, since its paint snaps each box's edges. On
+ * the grid, Yoga rounds a measured item's size up and the next item's
+ * start to the nearest, and two items that met at a fraction overlapped
+ * by a pixel. Its own, not core's, whose grid its own layout keeps.
+ */
+let config: YogaConfig | null = null;
+function flexConfig(): YogaConfig {
+  if (config === null) {
+    config = Y.Config.create();
+    config.setPointScaleFactor(0);
+  }
+  return config;
+}
 
 /**
  * Lay out a flex container's children. Returns the content height.
@@ -56,7 +72,7 @@ export function layoutFlex(
 ): number {
   if (!layoutLoaded()) return layoutAsBlockFallback(box, ctx, contentWidth);
 
-  const root = Y.Node.create();
+  const root = Y.Node.create(flexConfig());
   applyContainer(root, box.style);
   root.setWidth(contentWidth);
   const height = resolveOrNull(box.style.height, NaN);
@@ -70,7 +86,7 @@ export function layoutFlex(
       ctx.positioned.push({ box: child, containing: box });
       continue;
     }
-    const node = Y.Node.create();
+    const node = Y.Node.create(flexConfig());
     resolveEdges(child, contentWidth);
     applyItem(node, child, ctx, contentWidth);
     root.insertChild(node, items.length);
@@ -146,18 +162,31 @@ function applyItem(
   containingWidth: number,
 ): void {
   const style = box.style;
-  node.setMargin(Y.EDGE_TOP, box.marginTop);
-  node.setMargin(Y.EDGE_RIGHT, box.marginRight);
-  node.setMargin(Y.EDGE_BOTTOM, box.marginBottom);
-  node.setMargin(Y.EDGE_LEFT, box.marginLeft);
+  // an `auto` margin takes the free space on its side, which is how
+  // `margin-left: auto` puts an item at the end of its row (CSS Flexbox
+  // 8.1); Yoga does that itself
+  const margin = (edge: number, len: unknown, px: number) => {
+    if (len === AUTO) node.setMarginAuto(edge);
+    else node.setMargin(edge, px);
+  };
+  margin(Y.EDGE_TOP, style.marginTop, box.marginTop);
+  margin(Y.EDGE_RIGHT, style.marginRight, box.marginRight);
+  margin(Y.EDGE_BOTTOM, style.marginBottom, box.marginBottom);
+  margin(Y.EDGE_LEFT, style.marginLeft, box.marginLeft);
   node.setFlexGrow(style.flexGrow);
   node.setFlexShrink(style.flexShrink);
   if (style.alignSelf !== AUTO)
     node.setAlignSelf(ALIGN[style.alignSelf] ?? Y.ALIGN_AUTO);
 
+  // Yoga's sizes are border boxes, as `box-sizing: border-box` has them;
+  // a `content-box` length is the content's, and the item's padding and
+  // border go on top of it
+  const across = style.boxSizing === 'border-box' ? 0 : box.horizontalExtra;
+  const down = style.boxSizing === 'border-box' ? 0 : box.verticalExtra;
   setLength(
     style.width,
     containingWidth,
+    across,
     node.setWidth.bind(node),
     node.setWidthPercent.bind(node),
     node.setWidthAuto.bind(node),
@@ -165,21 +194,22 @@ function applyItem(
   setLength(
     style.height,
     NaN,
+    down,
     node.setHeight.bind(node),
     node.setHeightPercent.bind(node),
     node.setHeightAuto.bind(node),
   );
   const minWidth = resolveOrNull(style.minWidth, containingWidth);
-  if (minWidth !== null) node.setMinWidth(minWidth);
+  if (minWidth !== null) node.setMinWidth(minWidth + across);
   if (style.maxWidth !== 'none') {
     const maxWidth = resolveOrNull(style.maxWidth, containingWidth);
-    if (maxWidth !== null) node.setMaxWidth(maxWidth);
+    if (maxWidth !== null) node.setMaxWidth(maxWidth + across);
   }
   const minHeight = resolveOrNull(style.minHeight, NaN);
-  if (minHeight !== null) node.setMinHeight(minHeight);
+  if (minHeight !== null) node.setMinHeight(minHeight + down);
   if (style.maxHeight !== 'none') {
     const maxHeight = resolveOrNull(style.maxHeight, NaN);
-    if (maxHeight !== null) node.setMaxHeight(maxHeight);
+    if (maxHeight !== null) node.setMaxHeight(maxHeight + down);
   }
 
   if (style.flexBasis === 'content') node.setFlexBasisAuto();
@@ -193,7 +223,7 @@ function applyItem(
       node.setFlexBasis(resolve(basis, containingWidth));
     } else if (basis.of) node.setFlexBasisAuto();
     else node.setFlexBasisPercent(basis.pct);
-  } else node.setFlexBasis(style.flexBasis);
+  } else node.setFlexBasis(style.flexBasis + across);
 
   // The item's padding and border belong to Yoga so it can size the item,
   // and to this engine so it can paint it. Both read the same numbers.
@@ -209,18 +239,26 @@ function applyItem(
   // Yoga asks; this engine answers. That is the whole of the bridge, and it
   // is what lets a paragraph be a flex item without flex knowing what a
   // paragraph is.
+  // its max-content width is the same at every width Yoga asks at, and
+  // taking it is a layout of the item at no width limit
+  let maxContent = -1;
+  const content = (): number =>
+    maxContent < 0
+      ? (maxContent =
+          measureIntrinsicWidth(box, ctx, Infinity) - box.horizontalExtra)
+      : maxContent;
   node.setMeasureFunc((w, wm, h, hm) => {
     void h;
     void hm;
-    const available =
-      wm === Y.MEASURE_MODE_UNDEFINED || !Number.isFinite(w) ? Infinity : w;
-    return measureBox(box, ctx, available);
+    return measureBox(box, ctx, w, wm, content);
   });
 }
 
 function setLength(
   len: ComputedStyle['width'],
   base: number,
+  /** Padding and border a `content-box` length goes without. */
+  extra: number,
   setPx: (v: number) => void,
   setPercent: (v: number) => void,
   setAuto: () => void,
@@ -231,30 +269,49 @@ function setLength(
   }
   if (isPct(len)) {
     // Yoga takes a percentage or points, not both: `calc(100% - 20px)`
-    // resolves here where its base is known, and keeps its percentage alone
-    // where it is not
-    if (!len.px && !len.of) setPercent(len.pct);
-    else if (Number.isFinite(base)) setPx(resolve(len, base));
+    // resolves here where its base is known, and so does a percentage with
+    // padding to add, and a percentage is kept alone where it is not
+    if (!len.px && !len.of && !extra) setPercent(len.pct);
+    else if (Number.isFinite(base)) setPx(resolve(len, base) + extra);
     else if (len.of) setAuto();
     else setPercent(len.pct);
     return;
   }
-  setPx(len);
+  setPx(len + extra);
 }
 
 /**
- * Lay a box out at a width and report the size it came to — the measure
- * function's body, and also how a settled item is finally laid out. The two
- * are the same call on purpose: an element that reports one size and then
- * draws another is the bug this shape makes impossible.
+ * The size of an item's content, the measure function's answer. Yoga holds
+ * the item's padding and border and adds them itself, so this answers
+ * inside them: a border box here was an item its padding's height taller
+ * than a browser draws it. Asked for a width it may take up to, or none,
+ * an item is as wide as its content, its max-content width (CSS Flexbox
+ * 9.2, `flex-basis: auto`), rather than as wide as the row; asked for one
+ * exactly, it is that wide. Its height is its content's at that width.
  */
 function measureBox(
   box: Box,
   ctx: LayoutContext,
-  available: number,
+  width: number,
+  mode: number,
+  maxContent: () => number,
 ): { width: number; height: number } {
-  ctx.layoutSubtree(box, available);
-  return { width: box.width, height: box.height };
+  const across = box.horizontalExtra;
+  let inner: number;
+  if (mode === Y.MEASURE_MODE_EXACTLY && Number.isFinite(width)) {
+    inner = Math.max(0, width);
+  } else {
+    const content = maxContent();
+    inner =
+      mode === Y.MEASURE_MODE_AT_MOST && Number.isFinite(width)
+        ? Math.min(content, Math.max(0, width))
+        : content;
+  }
+  ctx.layoutSubtree(box, inner + across);
+  return {
+    width: inner,
+    height: Math.max(0, box.height - box.verticalExtra),
+  };
 }
 
 /** No Yoga assembly: stack the items instead of dropping them. */
