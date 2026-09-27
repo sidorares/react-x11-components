@@ -1744,6 +1744,8 @@ interface PlacedText {
   drawY: number;
   layout: { lines: { x: number; width: number; baseline: number }[] };
   layoutLine: number;
+  textStart: number;
+  textEnd: number;
 }
 
 interface PlacedLine {
@@ -5763,5 +5765,227 @@ metric(
       hits.length <= 2,
       `a strip one paragraph tall meets ${hits.length} of them`,
     );
+  },
+);
+
+// --- a relatively positioned inline box -----------------------------------------
+
+/** The fragments of a paragraph's lines, each with the document text it
+ *  draws and where its layout's origin is. */
+function fragmentsOf(el: HtmlViewNode, id: string) {
+  const text = el.textContent();
+  return linesOf(el, id).flatMap((line) =>
+    line.texts.map((t) => ({
+      text: text.slice(t.textStart, t.textEnd),
+      x: t.drawX,
+      y: t.drawY,
+      line: [line.y, line.height],
+    })),
+  );
+}
+
+metric(
+  'a relatively positioned inline box moves its text, and nothing around it',
+  async () => {
+    // CSS 2.1 9.4.3: the box is moved after the line is laid out, so the
+    // line and the text either side of it stay where they were
+    const doc = (offset: string) =>
+      '<style>p{margin:0}</style><p id="p">one <span ' +
+      `style="position:relative;${offset}">two</span> three</p>`;
+    const still = fragmentsOf(
+      view((await render(doc('top:0;left:0'))).node),
+      'p',
+    );
+    cleanup();
+    const moved = fragmentsOf(
+      view((await render(doc('top:10px;left:5px'))).node),
+      'p',
+    );
+    assert.deepStrictEqual(
+      moved.map((f) => f.text),
+      still.map((f) => f.text),
+    );
+    const two = still.findIndex((f) => f.text.includes('two'));
+    assert.ok(two >= 0 && still[two].text.trim() === 'two', 'laid out apart');
+    for (let i = 0; i < still.length; i += 1) {
+      const [dx, dy] = i === two ? [5, 10] : [0, 0];
+      assert.deepStrictEqual(
+        [moved[i].x - still[i].x, moved[i].y - still[i].y, moved[i].line],
+        [dx, dy, still[i].line],
+        `"${still[i].text}"`,
+      );
+    }
+  },
+);
+
+metric(
+  "text moved off its line is inside its paragraph's paint bounds",
+  async () => {
+    // a repaint of where the text went has to find the paragraph there
+    const { node } = await render(
+      '<style>p{margin:0}</style><p id="p">one <span ' +
+        'style="position:relative;top:120px">two</span></p>',
+    );
+    const el = view(node);
+    const p = boxOf(el, 'p') as LaidBox & {
+      boundsY: number;
+      boundsHeight: number;
+    };
+    const two = fragmentsOf(el, 'p').find((f) => f.text === 'two')!;
+    assert.ok(two.y >= p.y + 100, 'moved down');
+    assert.ok(
+      p.boundsY + p.boundsHeight >= two.y + 10,
+      `bounds to ${p.boundsY + p.boundsHeight}, text at ${two.y}`,
+    );
+  },
+);
+
+metric(
+  "a relatively positioned inline box's background goes with it",
+  async () => {
+    const doc = (offset: string) =>
+      '<style>p{margin:0}</style><p id="p">one <span ' +
+      `style="position:relative;background:#00ff00;${offset}">two</span> ` +
+      '<b style="background:#0000ff">three</b></p>';
+    const fills = async (offset: string) =>
+      (await fillsOf(view((await render(doc(offset))).node))).filter(
+        (f) => f.style === '#00ff00' || f.style === '#0000ff',
+      );
+    const still = await fills('top:0;left:0');
+    cleanup();
+    const moved = await fills('top:-6px;left:4px');
+    assert.strictEqual(still.length, 2);
+    assert.deepStrictEqual(
+      moved.map((f) => [f.style, f.x, f.y, f.w, f.h]),
+      [
+        ['#00ff00', still[0].x + 4, still[0].y - 6, still[0].w, still[0].h],
+        ['#0000ff', still[1].x, still[1].y, still[1].w, still[1].h],
+      ],
+    );
+  },
+);
+
+metric(
+  'a superscript raised as Tailwind and normalize.css raise it',
+  async () => {
+    // `sup { position: relative; top: -0.5em; vertical-align: baseline }`:
+    // the line keeps its height, and the figure is half its own em higher
+    const doc = (raise: string) =>
+      '<style>p{margin:0;font-size:16px}' +
+      `sup{font-size:75%;line-height:0;vertical-align:baseline;${raise}}` +
+      '</style><p id="p">E = mc<sup>2</sup> and more</p>';
+    const still = fragmentsOf(
+      view((await render(doc('position:relative;top:0'))).node),
+      'p',
+    );
+    cleanup();
+    const raised = fragmentsOf(
+      view((await render(doc('position:relative;top:-0.5em'))).node),
+      'p',
+    );
+    const two = still.findIndex((f) => f.text === '2');
+    assert.ok(two >= 0, 'the figure is laid out apart');
+    assert.strictEqual(raised[two].y - still[two].y, -6);
+    assert.deepStrictEqual(
+      raised.map((f) => f.line),
+      still.map((f) => f.line),
+    );
+  },
+);
+
+metric(
+  'a block in a relatively positioned inline box moves with it',
+  async () => {
+    // it stands outside the pieces of the box it broke in two, and the
+    // box's offset moves it all the same (CSS 2.1 9.2.1.1)
+    const doc = (offset: string) =>
+      '<style>body{margin:0}</style><div><span ' +
+      `style="position:relative;${offset}">a<div id="b">block</div>c</span>` +
+      '</div>';
+    const at = async (offset: string) => {
+      const b = boxOf(view((await render(doc(offset))).node), 'b');
+      return [b.x, b.y, b.width];
+    };
+    const still = await at('top:0;left:0');
+    cleanup();
+    const moved = await at('top:5px;left:30px');
+    assert.deepStrictEqual(moved, [still[0] + 30, still[1] + 5, still[2]]);
+  },
+);
+
+// --- visibility on inline content ------------------------------------------------
+
+/** How many pixels of each of three colours a laid-out element covers. */
+async function inkIn(
+  result: { ctx: unknown },
+  el: HtmlViewNode,
+  id: string,
+): Promise<{ red: number; green: number; blue: number }> {
+  const box = boxOf(el, id);
+  const abs = (el as unknown as { abs: { x: number; y: number } }).abs;
+  const data: Uint8ClampedArray = await new Promise((ok, fail) =>
+    (
+      result.ctx as {
+        getImageData(
+          x: number,
+          y: number,
+          w: number,
+          h: number,
+          cb: (e: unknown, d: { data: Uint8ClampedArray }) => void,
+        ): void;
+      }
+    ).getImageData(
+      Math.round(abs.x + box.x),
+      Math.round(abs.y + box.y),
+      Math.ceil(box.width),
+      Math.ceil(box.height),
+      (e, d) => (e ? fail(e) : ok(d.data)),
+    ),
+  );
+  const seen = { red: 0, green: 0, blue: 0 };
+  for (let i = 0; i < data.length; i += 4) {
+    const [r, g, b] = [data[i], data[i + 1], data[i + 2]];
+    if (r > 200 && g < 60 && b < 60) seen.red += 1;
+    if (g > 200 && r < 60 && b < 60) seen.green += 1;
+    if (b > 200 && r < 60 && g < 60) seen.blue += 1;
+  }
+  return seen;
+}
+
+metric(
+  'hidden inline text is not drawn, and visible text inside it is',
+  async () => {
+    // `visibility: hidden` leaves the text its room and draws none of it,
+    // and a descendant can be visible again (CSS 2.1 11.2)
+    const style =
+      '<style>body{margin:0}p,div{margin:0 0 10px;font:bold 30px/40px ' +
+      'sans-serif;color:#ff0000}</style>';
+    const width = (el: HtmlViewNode, id: string) =>
+      linesOf(el, id).reduce((w, line) => Math.max(w, line.width), 0);
+    const bare = await renderWithBytes(style + '<p id="a">III</p>', {});
+    const alone = await inkIn(bare.result, bare.el, 'a');
+    const aloneWidth = width(bare.el, 'a');
+    cleanup();
+
+    const { result, el } = await renderWithBytes(
+      style +
+        '<p id="a">III<span style="visibility:hidden"> IIII</span></p>' +
+        '<p id="b"><span style="visibility:hidden">III <b ' +
+        'style="visibility:visible;color:#00ff00">III</b></span></p>' +
+        '<div id="c" style="visibility:hidden">III <span ' +
+        'style="visibility:visible;color:#0000ff">III</span></div>',
+      {},
+    );
+    const [a, b, c] = await Promise.all(
+      ['a', 'b', 'c'].map((id) => inkIn(result, el, id)),
+    );
+    assert.ok(a.red > 0, 'the visible text is drawn');
+    assert.ok(
+      width(el, 'a') > aloneWidth * 2,
+      'the hidden text keeps its room',
+    );
+    assert.strictEqual(a.red, alone.red, 'and none of the hidden text is');
+    assert.deepStrictEqual([b.red > 0, b.green > 0], [false, true]);
+    assert.deepStrictEqual([c.red > 0, c.blue > 0], [false, true]);
   },
 );

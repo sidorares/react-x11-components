@@ -89,6 +89,8 @@ separately, and there are six.
 | 19     | CSS Color 4, CSS syntax, the body's inheritance    | 5,366 (91%) | 4,918 (83%) |
 | 20     | `calc()`, `min()`, `max()`, `clamp()`              | 5,370 (91%) | 4,922 (84%) |
 | 21     | custom properties, `var()`                         | 5,370 (91%) | 4,922 (84%) |
+| perf   | a link or a column no longer stretches its bounds  | 5,372 (91%) | 4,924 (84%) |
+| 23     | relative inline boxes, hidden inline text          | 5,381 (91%) | 4,929 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -1001,6 +1003,39 @@ Round 21 lost none, here or in the other directories.
     backends.
 
 Round 22 lost none, in CSS 2.1 or in `css-color`.
+
+### Round 23
+
+The performance sweep's round 14 (#180) went first, and won two tests
+here: a `display: table-column` inside a row drew a background and a border
+of its own, which a column does not have, and its paint bounds say it draws
+nothing now.
+
+100. **An inline box that `position: relative` moved did not move its
+     text**, only its descendants' boxes, so a `<sup>` raised by
+     `top: -0.5em`, as Tailwind's preflight and normalize.css raise it,
+     sat on the baseline. The box's text is laid out apart from the text
+     around it, a fragment at a time, and moved where the box goes once
+     the paragraph is laid out, its background and borders with it; the
+     line, and the text either side of it, stay where they were (CSS 2.1
+     9.4.3). Its paint bounds take the moved text in. A paragraph with
+     such a box is laid out a line at a time, as one with an inline-block
+     is. 6 tests, 2 of them with the next.
+101. **A block inside a relatively positioned inline box stayed where it
+     was.** Breaking the inline box around the block (round 15) set the
+     block beside the box's pieces, outside their offset, and the offset
+     moves it too (9.2.1.1). 5 tests.
+102. **`visibility: hidden` on an inline element hid nothing**, and a
+     visible element inside a hidden block was not drawn: visibility was
+     asked of the block whose lines were being painted. A hidden element's
+     text is drawn in no ink now, so it keeps its room, and a visible
+     one's text inside it is drawn. Many references reserve room with a
+     hidden `<span>`. 2 tests.
+
+Round 23 lost none, in CSS 2.1, `css-color` or `css-variables`. On macOS
+four of the nine fail still, by a few hundred pixels each, all of them
+CoreText antialiasing the edges of an Ahem square that the reference draws
+as a box.
 
 ## What `<Html>` supports
 
