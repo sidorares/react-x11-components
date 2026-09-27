@@ -30,12 +30,14 @@ import { inkColor, isTransparent, resolve } from './css/values.js';
 import type { Len } from './css/values.js';
 import type { ComputedStyle } from './css/style.js';
 import {
+  BOX_RAISES,
   Box,
   INLINE_OFFSETS,
   SHIFTED_LINES,
+  TEXT_RAISES,
   TEXT_SHIFTS,
 } from './layout/boxes.js';
-import type { BoxTree, LineBox, Marker } from './layout/boxes.js';
+import type { BoxTree, LineBox, LineText, Marker } from './layout/boxes.js';
 import { depthOf, layoutOffsetOf, layoutOffsets } from './layout/inline.js';
 import { halves } from './layout/collapse.js';
 import { tableGrid } from './layout/grid.js';
@@ -1525,6 +1527,7 @@ function paintRules(
   rules: 'under' | 'over',
 ): void {
   for (const line of lines) {
+    const shifted = SHIFTED_LINES.has(line);
     for (const text of line.texts) {
       const natural = text.layout.lines[text.layoutLine];
       if (natural) {
@@ -1532,13 +1535,31 @@ function paintRules(
           ctx,
           natural,
           text.drawX + dx,
-          text.drawY + dy,
+          text.drawY + dy + (shifted ? ruleDrop(text) : 0),
           scale,
           rules,
         );
       }
     }
   }
+}
+
+/**
+ * How far below a raised text its rules go: to the baseline of the element
+ * that decorates it. `vertical-align` moves the text and not the lines an
+ * element outside it draws through it, which stay on that element's
+ * baseline (CSS Text Decoration 3, 2.1). `position: relative` moves both.
+ */
+function ruleDrop(text: LineText): number {
+  const raise = TEXT_RAISES.get(text);
+  if (!raise) return 0;
+  const owner = text.spans.boxAt?.(text.layoutStart);
+  for (let at = owner?.parent; at?.kind === 'inline'; at = at.parent) {
+    if (at.style.textDecorationLine !== 'none') {
+      return raise - (BOX_RAISES.get(at) ?? 0);
+    }
+  }
+  return raise;
 }
 
 /**
@@ -1567,10 +1588,12 @@ function paintLineBackground(
   for (const text of line.texts) {
     const natural = text.layout.lines[text.layoutLine];
     if (!natural) continue;
-    // where the line has it, not where `position: relative` moved it
+    // where the line has it, not where `position: relative` moved it or
+    // `vertical-align` raised it
     const shift = shifted ? TEXT_SHIFTS.get(text) : undefined;
+    const raise = shifted ? (TEXT_RAISES.get(text) ?? 0) : 0;
     const x = text.drawX - (shift?.x ?? 0) + natural.x;
-    baseline = text.drawY - (shift?.y ?? 0) + natural.baseline;
+    baseline = text.drawY - (shift?.y ?? 0) + raise + natural.baseline;
     left = Math.min(left, x);
     right = Math.max(right, x + natural.width);
   }
@@ -1629,7 +1652,8 @@ function paintInlineBoxes(
     const boxAt = text.spans.boxAt;
     if (!natural || !boxAt) continue;
     const shift = shifted ? TEXT_SHIFTS.get(text) : undefined;
-    baseline = text.drawY - (shift?.y ?? 0) + natural.baseline;
+    const raise = shifted ? (TEXT_RAISES.get(text) ?? 0) : 0;
+    baseline = text.drawY - (shift?.y ?? 0) + raise + natural.baseline;
     const x = text.drawX - (shift?.x ?? 0) + natural.x;
     for (const run of natural.runs) {
       const owner = boxAt.call(text.spans, run.start);
@@ -1678,8 +1702,10 @@ function paintInlineBoxes(
     if (box.style.visibility !== 'visible') continue;
     const f = (fragments as Map<Box, InlineFragment>).get(box)!;
     const face = box.decoration!;
-    const top = baseline - face.ascent - box.padTop - box.borderTop;
-    const bottom = baseline + face.descent + box.padBottom + box.borderBottom;
+    // on its own baseline, which `vertical-align` may raise off the line's
+    const own = shifted ? baseline - (BOX_RAISES.get(box) ?? 0) : baseline;
+    const top = own - face.ascent - box.padTop - box.borderTop;
+    const bottom = own + face.descent + box.padBottom + box.borderBottom;
     // Sliced where the box goes on to another line: no border and no
     // rounded corner on a side it does not end on (`box-decoration-break:
     // slice`, CSS's default). Left and right swap for right-to-left text.

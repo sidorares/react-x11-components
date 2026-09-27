@@ -26,7 +26,7 @@ import {
   splitCommas,
   splitValue,
 } from './values.js';
-import type { Len, UnitContext } from './values.js';
+import type { Len, Pct, UnitContext } from './values.js';
 import { parseUrl, readIdent, startsIdent } from './parse.js';
 import {
   DEFAULT_QUOTES,
@@ -171,8 +171,19 @@ export interface ComputedStyle {
   clip: ClipRect | null;
   opacity: number;
   zIndex: number | 'auto';
+  /** A keyword, a length to raise the box by, or a percentage of its own
+   *  line height. */
   verticalAlign:
-    'baseline' | 'top' | 'middle' | 'bottom' | 'sub' | 'super' | number;
+    | 'baseline'
+    | 'top'
+    | 'middle'
+    | 'bottom'
+    | 'sub'
+    | 'super'
+    | 'text-top'
+    | 'text-bottom'
+    | number
+    | Pct;
 
   width: Len;
   height: Len;
@@ -660,12 +671,16 @@ export function applyDeclaration(
         v === 'middle' ||
         v === 'bottom' ||
         v === 'sub' ||
-        v === 'super'
+        v === 'super' ||
+        v === 'text-top' ||
+        v === 'text-bottom'
       ) {
         style.verticalAlign = v;
       } else {
+        // a percentage is of the element's own line height, which layout
+        // knows
         const len = parseLength(value, ctx);
-        if (typeof len === 'number') style.verticalAlign = len;
+        if (len !== null && len !== AUTO) style.verticalAlign = len;
       }
       return;
     }

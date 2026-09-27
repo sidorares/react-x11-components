@@ -5989,3 +5989,155 @@ metric(
     assert.deepStrictEqual([c.red > 0, c.blue > 0], [false, true]);
   },
 );
+
+// --- vertical-align on text --------------------------------------------------------
+
+/** Each fragment's text and the baseline it is drawn on. */
+function baselinesOf(el: HtmlViewNode, id: string) {
+  const text = el.textContent();
+  return linesOf(el, id).flatMap((line) =>
+    line.texts.map((t) => ({
+      text: text.slice(t.textStart, t.textEnd),
+      at: t.drawY + t.layout.lines[t.layoutLine].baseline,
+      line: line.y + (line as unknown as { baseline: number }).baseline,
+    })),
+  );
+}
+
+metric('<sup> and <sub> are raised and lowered off the line', async () => {
+  // the UA sheet's `vertical-align: super` and `sub`: a third and a fifth
+  // of the parent's font size and a pixel, as browsers set them
+  const { node } = await render(
+    '<style>p{margin:0;font-size:16px}</style>' +
+      '<p id="p">E = mc<sup>2</sup> and H<sub>2</sub>O</p>',
+  );
+  const all = baselinesOf(view(node), 'p');
+  const two = all.filter((f) => f.text === '2');
+  assert.strictEqual(two.length, 2, 'both figures laid out apart');
+  const [sup, sub] = two;
+  const base = all.find((f) => f.text.startsWith('E'))!;
+  assert.strictEqual(base.at, base.line, 'the text around them is on it');
+  assert.ok(Math.abs(base.line - sup.at - (16 / 3 + 1)) < 0.01, 'super');
+  assert.ok(Math.abs(sub.at - base.line - (16 / 5 + 1)) < 0.01, 'sub');
+});
+
+metric(
+  'a raised box makes its line taller, unless its line height is none',
+  async () => {
+    const heightWith = async (sup: string) => {
+      const { node } = await render(
+        `<style>p{margin:0;font-size:16px;line-height:20px}sup{${sup}}</style>` +
+          '<p id="p">E = mc<sup>2</sup></p>',
+      );
+      const lines = linesOf(view(node), 'p');
+      cleanup();
+      return lines[0].height;
+    };
+    const flat = await heightWith('vertical-align:baseline');
+    assert.ok((await heightWith('')) > flat, 'the raised figure takes room');
+    // Tailwind's preflight and normalize.css give it none
+    assert.strictEqual(await heightWith('line-height:0'), flat);
+  },
+);
+
+metric(
+  'vertical-align takes a length, a percentage of the line height, and the edges of the font',
+  async () => {
+    const { node } = await render(
+      '<style>p{margin:0;font-size:16px;line-height:20px}' +
+        '#a{vertical-align:6px}#b{vertical-align:-50%}' +
+        '#c{vertical-align:text-top;font-size:8px;line-height:8px}' +
+        '#d{vertical-align:text-bottom;font-size:8px;line-height:8px}' +
+        '</style>' +
+        '<p id="p">x <span id="a">a</span> <span id="b">b</span> ' +
+        '<span id="c">c</span> <span id="d">d</span></p>',
+    );
+    const all = baselinesOf(view(node), 'p');
+    const at = (t: string) => all.find((f) => f.text === t)!;
+    const line = at('a').line;
+    assert.ok(Math.abs(line - at('a').at - 6) < 0.01, 'a length raises');
+    assert.ok(Math.abs(at('b').at - line - 10) < 0.01, 'half the line lowers');
+    // an eight-pixel box's top at the sixteen-pixel font's top, and its
+    // bottom at that font's bottom
+    assert.ok(at('c').at < line - 4, 'text-top is high');
+    assert.ok(at('d').at > line, 'text-bottom is low');
+  },
+);
+
+metric(
+  "a raised box's background is drawn around its raised text",
+  async () => {
+    const fills = async (align: string) => {
+      const { node } = await render(
+        '<style>p{margin:0;font-size:16px;line-height:30px}</style>' +
+          // no line height of its own, so that the line stays where it is
+          '<p id="p">x <span style="background:#00ff00;line-height:0;' +
+          `vertical-align:${align}">y</span></p>`,
+      );
+      const out = (await fillsOf(view(node))).filter(
+        (f) => f.style === '#00ff00',
+      );
+      cleanup();
+      return out;
+    };
+    const [flat] = await fills('baseline');
+    const [raised] = await fills('8px');
+    assert.deepStrictEqual(
+      [raised.x, raised.y, raised.w, raised.h],
+      [flat.x, flat.y - 8, flat.w, flat.h],
+    );
+  },
+);
+
+metric(
+  'a top-aligned box sits at the top of its line, as tall as all it holds',
+  async () => {
+    // its baseline is its tallest content's ascent below the line's top,
+    // the big letter in it included (CSS 2.1 10.8.1)
+    const { node } = await render(
+      '<style>p{margin:0;font-size:16px;line-height:40px}' +
+        '#t{vertical-align:top;font-size:10px;line-height:10px}' +
+        '#big{font-size:30px;line-height:30px}</style>' +
+        '<p id="p">x <span id="t">t<span id="big">B</span></span></p>',
+    );
+    const el = view(node);
+    const all = baselinesOf(el, 'p');
+    const [line] = linesOf(el, 'p');
+    // one fragment: nothing raised starts or ends between them
+    const t = all.find((f) => f.text === 'tB')!;
+    // the big letter's ascent, not the box's own small font's, from the top
+    assert.ok(t.at - line.y > 20, `${t.at - line.y} below the line's top`);
+    assert.ok(t.at < all.find((f) => f.text.startsWith('x'))!.at);
+  },
+);
+
+metric(
+  "a raised text's underline from outside it stays on the line's baseline",
+  async () => {
+    // `vertical-align` moves the text, not the lines an element outside it
+    // draws through it; an underline the raised box sets itself goes with
+    // it (CSS Text Decoration 3, 2.1)
+    const rules = async (inner: string) => {
+      const { node } = await render(
+        '<style>p{margin:0;font-size:16px;line-height:40px;' +
+          'text-decoration:underline;text-decoration-color:#ff00ff}' +
+          'span{text-decoration-color:#00ffff}</style>' +
+          `<p id="p">aaa <span style="vertical-align:10px;${inner}">bbb</span> ccc</p>`,
+      );
+      const fills = await fillsOf(view(node));
+      cleanup();
+      return fills;
+    };
+    const outside = (await rules('')).filter((f) => f.style === '#ff00ff');
+    assert.ok(outside.length >= 2, 'the underline is drawn');
+    assert.strictEqual(
+      new Set(outside.map((f) => f.y)).size,
+      1,
+      'all of it on one line',
+    );
+    const own = await rules('text-decoration:underline');
+    const a = own.find((f) => f.style === '#ff00ff')!;
+    const b = own.find((f) => f.style === '#00ffff')!;
+    assert.ok(Math.abs(a.y - b.y - 10) <= 1, 'the raised one goes with it');
+  },
+);

@@ -241,7 +241,13 @@ first is the text engine's; the second is spacing added to each space and
 no-break space, so only text that asks for it is split into more runs),
 `white-space` (including
 `pre` and `pre-wrap`), `direction`, `vertical-align`, `text-decoration` in
-all five rule styles. White space collapses across element boundaries as CSS
+all five rule styles. `vertical-align` raises and lowers text as well as
+images and inline blocks: the UA sheet's `<sup>` and `<sub>`, a length, a
+percentage of the line height, `text-top`, `text-bottom`, `middle`, and
+`top` and `bottom` against the line box, whose height each raised box adds
+its own line height to. A paragraph holding one is laid out a line at a
+time. Underlines an element outside a raised text draws through it stay on
+the line's baseline. White space collapses across element boundaries as CSS
 2.1 16.6.1 has it — none at the start or the end of a line, one between two
 words whatever elements they are in — and text at `font-size: 0` takes no
 room, which is how a row of inline-blocks is set without gaps.

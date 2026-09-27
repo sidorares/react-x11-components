@@ -472,6 +472,13 @@ export const INLINE_OFFSETS = new WeakMap<Box, { x: number; y: number }>();
 export const TEXT_SHIFTS = new WeakMap<LineText, { x: number; y: number }>();
 export const SHIFTED_LINES = new WeakSet<LineBox>();
 
+/** How far `vertical-align` raised a text above its line's baseline, and an
+ *  inline box's own baseline, where it did: beside the lines and the boxes
+ *  for the reason the offsets above are. A line holding a raised text is
+ *  among `SHIFTED_LINES` too, as its text is off the line's baseline. */
+export const TEXT_RAISES = new WeakMap<LineText, number>();
+export const BOX_RAISES = new WeakMap<Box, number>();
+
 /** The blocks that broke a relatively positioned inline box in pieces,
  *  under its first piece: its offset moves them too (CSS 2.1 9.2.1.1),
  *  though they stand outside it (`breakAround`). */
@@ -506,8 +513,9 @@ export interface BoxTree {
    *  none does, layout looks for them among a block's own children and
    *  goes through no inline box to find them. */
   nestedOutOfLine: boolean;
-  /** Whether `position: relative` moves an inline box: where none does,
-   *  no text is off its line, and the bounds walk looks for none. */
+  /** Whether `position: relative` moves an inline box or `vertical-align`
+   *  raises one: where none does, no text is off its line's baseline, and
+   *  the bounds walk looks for none. */
   movedInline: boolean;
 }
 
@@ -669,6 +677,9 @@ class Builder {
       if (style.display === 'inline' && isOffset(style)) {
         this._movedInline = true;
       }
+    }
+    if (style.verticalAlign !== 'baseline' && style.display === 'inline') {
+      this._movedInline = true;
     }
     if (isNegative(style)) this._negative = true;
     // before anything else of the element's, including its `::before`,
@@ -886,6 +897,9 @@ class Builder {
       if (style.display === 'inline' && isOffset(style)) {
         this._movedInline = true;
       }
+    }
+    if (style.verticalAlign !== 'baseline' && style.display === 'inline') {
+      this._movedInline = true;
     }
     if (isNegative(style)) this._negative = true;
     // a column renders no content, and generated content is all it would
