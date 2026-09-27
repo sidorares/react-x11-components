@@ -8227,6 +8227,48 @@ metric(
 );
 
 metric(
+  'a shrink-to-fit box of short words is laid out at no pixel width',
+  async () => {
+    // its floor is measured only where a word may be wider than the room: a
+    // layout a pixel wide costs ntk fifteen to thirty ordinary ones, and as
+    // first shipped every float, inline-block and absolute box whose text
+    // wrapped paid it
+    const words = 'Some words that run on long enough to wrap. '.repeat(4);
+    const { node } = await render(
+      '<div style="width:200px"><div style="float:left;margin:0 10px">' +
+        `${words}</div><span style="display:inline-block">${words}</span>` +
+        `<div style="position:absolute;left:50%">${words}</div></div>`,
+    );
+    const el = view(node) as unknown as {
+      app: { fonts: FontsLike };
+      _source: { document: unknown };
+      _cascade: unknown;
+    };
+    const engine = el.app.fonts;
+    const widths: number[] = [];
+    const spy: FontsLike = {
+      layout: (content, style, options) => {
+        if (options?.maxWidth !== undefined) widths.push(options.maxWidth);
+        return engine.layout(content, style, options);
+      },
+      match: (family, style) => engine.match(family, style),
+    };
+    const { buildBoxes } = await import('../src/html/layout/boxes.js');
+    const { layoutDocument } = await import('../src/html/layout/block.js');
+    const tree = buildBoxes(el._source.document as never, {
+      cascade: el._cascade as never,
+      scale: 1,
+      imageSize: () => null,
+      urlSize: () => null,
+      controlSize: () => ({ width: 0, height: 0 }) as never,
+    });
+    layoutDocument(tree, spy, 400, 600);
+    assert.ok(widths.length > 0);
+    assert.ok(!widths.some((w) => w <= 1), `widths: ${widths.join(', ')}`);
+  },
+);
+
+metric(
   'a shrink-to-fit box is never narrower than its longest word',
   async () => {
     // CSS 2.1 10.3.5: min(max(min-content, room), max-content) — a word
