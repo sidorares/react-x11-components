@@ -361,7 +361,10 @@ export interface ComputedStyle {
 
 /** The properties that inherit. Named once, so `inherit()` and the `inherit`
  *  keyword cannot disagree about the list. */
-const INHERITED = [
+/** The fields a style takes from its parent's (CSS 2.1's "Inherited:
+ *  yes"), which `inherit` copies one by one; the test holds the two to the
+ *  same list. */
+export const INHERITED = [
   'color',
   'fontFamily',
   'fontSize',
@@ -568,12 +571,35 @@ export function inherit(
   initial: ComputedStyle,
 ): ComputedStyle {
   const out: ComputedStyle = { ...initial };
-  for (const key of INHERITED) {
-    // The cast is the price of one loop instead of twenty-one assignments:
-    // both sides are the same key of the same interface, which the indexed
-    // write cannot see.
-    (out as unknown as Record<string, unknown>)[key] = parent[key];
-  }
+  // `INHERITED`, a field at a time: a loop over the names was three
+  // quarters of the cost of every element's style, a store through a
+  // computed name costing thirty times one through a written one
+  out.color = parent.color;
+  out.fontFamily = parent.fontFamily;
+  out.fontSize = parent.fontSize;
+  out.fontWeight = parent.fontWeight;
+  out.fontStyle = parent.fontStyle;
+  out.lineHeight = parent.lineHeight;
+  out.lineHeightIsLength = parent.lineHeightIsLength;
+  out.textAlign = parent.textAlign;
+  out.alignBlocks = parent.alignBlocks;
+  out.textIndent = parent.textIndent;
+  out.textTransform = parent.textTransform;
+  out.letterSpacing = parent.letterSpacing;
+  out.wordSpacing = parent.wordSpacing;
+  out.whiteSpace = parent.whiteSpace;
+  out.direction = parent.direction;
+  out.visibility = parent.visibility;
+  out.listStyleType = parent.listStyleType;
+  out.listStylePosition = parent.listStylePosition;
+  out.cursor = parent.cursor;
+  out.borderCollapse = parent.borderCollapse;
+  out.borderSpacing = parent.borderSpacing;
+  out.borderSpacingY = parent.borderSpacingY;
+  out.captionSide = parent.captionSide;
+  out.tableTextAlignSet = parent.tableTextAlignSet;
+  out.quotes = parent.quotes;
+  out.custom = parent.custom;
   out.borderTopColor = 'currentColor';
   out.borderRightColor = 'currentColor';
   out.borderBottomColor = 'currentColor';
@@ -1698,6 +1724,25 @@ function applyBorderShorthand(
   }
   // A width with no style is kept rather than zeroed — the layout draws
   // nothing for `none` — so a later `border-style` alone finds it.
+  if (name === 'border') {
+    // named, not built: preflight's `border: 0 solid` is on every element,
+    // and twelve stores through a computed name were most of its cost
+    style.borderTopWidth = width;
+    style.borderRightWidth = width;
+    style.borderBottomWidth = width;
+    style.borderLeftWidth = width;
+    style.borderTopStyle = borderStyle;
+    style.borderRightStyle = borderStyle;
+    style.borderBottomStyle = borderStyle;
+    style.borderLeftStyle = borderStyle;
+    if (color !== null) {
+      style.borderTopColor = color;
+      style.borderRightColor = color;
+      style.borderBottomColor = color;
+      style.borderLeftColor = color;
+    }
+    return;
+  }
   for (const side of sides) {
     (style as unknown as Record<string, unknown>)[`border${side}Width`] = width;
     (style as unknown as Record<string, unknown>)[`border${side}Style`] =

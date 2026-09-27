@@ -37,6 +37,7 @@ import type { ComputedStyle, RootLook } from './style.js';
 import { parseDeclarations } from './parse.js';
 import type { UnitContext } from './values.js';
 import { customProperties, substituteIn } from './vars.js';
+import type { CustomProps } from './vars.js';
 
 /** Where a declaration came from. Higher wins before specificity is asked. */
 const enum Origin {
@@ -426,12 +427,70 @@ export class Cascade {
   private _shared = new Map<string, SharedStyle>();
   private _sharedByMatch = new Map<string, SharedStyle>();
   private _nextShareKey = 1;
+  /** Custom property sets by what made them, for one build (`_customFor`). */
+  private _customs = new Map<string, CustomProps>();
+  private _ids = new WeakMap<object, number>();
+  private _nextId = 1;
 
   /** A box tree is about to be built: the styles shared in the last build
    *  were computed against a pointer and a viewport that may have moved. */
   beginSharing(): void {
     this._shared.clear();
     this._sharedByMatch.clear();
+    this._customs.clear();
+  }
+
+  /**
+   * An element's custom properties: its parent's, or its own over them —
+   * shared by every element whose parent has the same ones and whose own
+   * come from the same declarations. Tailwind 4 sets thirty-five of them on
+   * every element (`*, ::before, ::after { --tw-shadow: 0 0 #0000; … }`),
+   * and a set per element was a fifth of building the boxes; it also kept
+   * each element's `var()`s from being replaced once for its siblings,
+   * which `substituteIn` remembers by the set they were read against.
+   */
+  private _customFor(
+    parentStyle: ComputedStyle,
+    candidates: Candidate[],
+  ): CustomProps | null {
+    let key = '';
+    for (const c of candidates) {
+      if (!this._hasCustom(c)) continue;
+      key += `${this._idOf(c.declarations)}:${c.only},`;
+    }
+    const parent = parentStyle.custom;
+    if (!key) return parent;
+    key = `${parent ? this._idOf(parent) : 0}|${key}`;
+    const hit = this._customs.get(key);
+    if (hit) return hit;
+    const own = new Map<string, string>();
+    for (const c of candidates) {
+      for (const d of pick(c)) if (d.custom) own.set(d.prop, d.value);
+    }
+    const made = customProperties(own, parent);
+    this._customs.set(key, made);
+    return made;
+  }
+
+  /** Whether a candidate sets a custom property. */
+  private _hasCustom(c: Candidate): boolean {
+    if (c.only >= 0) return !!c.declarations[c.only].custom;
+    let has = CUSTOM_IN.get(c.declarations);
+    if (has === undefined) {
+      has = c.declarations.some((d) => !!d.custom);
+      CUSTOM_IN.set(c.declarations, has);
+    }
+    return has;
+  }
+
+  /** A number for an object, to key a string by. */
+  private _idOf(of: object): number {
+    let id = this._ids.get(of);
+    if (id === undefined) {
+      id = this._nextId++;
+      this._ids.set(of, id);
+    }
+    return id;
   }
 
   /**
@@ -568,6 +627,10 @@ export class Cascade {
     const candidates: Candidate[] = [];
     this._matchInto(index, el, candidates);
     if (!candidates.length) return null;
+    // One that no rule gives a `content` is none, whatever else reaches it —
+    // `content` is not inherited, and its initial `normal` is nothing here.
+    // Tailwind's `*, ::before, ::after` reaches both of every element's.
+    if (!candidates.some(setsContent)) return null;
     candidates.sort(byCascade);
     const style = this._computeStyle(
       el,
@@ -660,15 +723,7 @@ export class Cascade {
     const style = inherit(parentStyle, this.initial);
     // custom properties first, in cascade order, so every `var()` in the
     // declarations below finds the one that wins
-    if (this._vars) {
-      let own: Map<string, string> | null = null;
-      for (const c of candidates) {
-        for (const d of pick(c)) {
-          if (d.custom) (own ??= new Map()).set(d.prop, d.value);
-        }
-      }
-      if (own) style.custom = customProperties(own, parentStyle.custom);
-    }
+    if (this._vars) style.custom = this._customFor(parentStyle, candidates);
 
     // The unit context has to be built twice: once with the parent's font
     // size, so a `font-size: 1.2em` in the cascade resolves against the
@@ -886,6 +941,15 @@ function usesVars(declarations: readonly Declaration[]): boolean {
   for (const d of declarations) if (d.custom || d.vars) return true;
   return false;
 }
+
+/** Whether a candidate declares `content`. */
+function setsContent(c: Candidate): boolean {
+  for (const d of pick(c)) if (d.prop === 'content') return true;
+  return false;
+}
+
+/** Whether a rule's declarations set a custom property, by the array. */
+const CUSTOM_IN = new WeakMap<Declaration[], boolean>();
 
 function pick(c: Candidate): Declaration[] {
   return c.only < 0 ? c.declarations : [c.declarations[c.only]];

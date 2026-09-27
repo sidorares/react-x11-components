@@ -1620,6 +1620,68 @@ the style and the options were compared by name:
 Medians of three interleaved runs. A reflow's frame is mostly the engine
 laying out every paragraph at the new width, which no lookup changes.
 
+## Round 16: a framework's stylesheet
+
+Much of the HTML an application is handed is styled with Tailwind — a
+model's, a CMS's, a template's — and `<Html>` had only been measured under
+the report's forty rules. `DOC=tailwind` puts a Tailwind-4-shaped
+stylesheet under the report (`scripts/bench/sweep/docgen.ts`): a theme of
+220 colours in oklch, four layers, preflight, the `@supports` block that
+sets thirty-five `--tw-*` properties on every element, and a thousand
+utilities in `var()`, `calc()`, nesting and media ranges, about 90 KB. An
+append to a document under it took 83 ms a frame on macOS against 18 ms
+without it, and an edit 62 ms against 15. Four things, in the order the
+profile gave them:
+
+- **Every restyle parsed the stylesheets again.** A streamed append, an
+  edit and a width across a `@media` breakpoint each parsed every sheet and
+  indexed every rule again. The parsed sheets and the cascade built from
+  them are kept now, and taken again where every sheet reads as it did —
+  its text, its encoding and the texts of what it imports — under the same
+  look, scale and fonts: the restyle only re-runs the cascade, which is
+  what the cascade was built for.
+- **Every element had a set of custom properties of its own.** The `*`
+  rule sets thirty-five, so each element made a set and resolved every
+  value in it, and `substituteIn`, which remembers the `var()`s it replaced
+  by the set they were read against, never met the same set twice. A set
+  is shared now by the elements whose parent has the same one and whose
+  own come from the same declarations; a test holds a shared set to the
+  one the element makes alone.
+- **Every element had a `::before` and an `::after` computed**, since
+  `*, ::before, ::after` reaches them all, and both were thrown away for
+  having no `content`. A pseudo-element no rule gives a `content` to is
+  none now before its style is computed.
+- **Inheriting, and preflight's border, stored through computed names.**
+  `inherit` copied the twenty-six inherited fields in a loop over their
+  names, and `border: 0 solid`, on every element, wrote its twelve fields
+  through names it built; such a store cost thirty times a written one.
+  Both are written out, and a test holds `inherit` to its list.
+
+In process, on the built package, a Tailwind-shaped dashboard of 549
+boxes, medians of twelve:
+
+|                                     | before  | after   |
+| ----------------------------------- | ------- | ------- |
+| a restyle: sheets, boxes and layout | 25.0 ms | 14.5 ms |
+| the boxes and the layout            | 17.4 ms | 12.6 ms |
+| the layout                          | 8.8 ms  | 8.8 ms  |
+
+In a real window on macOS, `docsweep` with `DOC=tailwind` at 60 sections
+(218 KB), medians of two runs:
+
+|                     | before  | after   |
+| ------------------- | ------- | ------- |
+| an append's frame   | 83 ms   | 28.6 ms |
+| an append's latency | 86 ms   | 32 ms   |
+| an edit's frame     | 61.6 ms | 21.8 ms |
+| an edit's latency   | 66.7 ms | 27.9 ms |
+| an edit's CPU       | 88%     | 46%     |
+| a mount's CPU       | 737 ms  | 580 ms  |
+
+Without the framework nothing moved, small or large: an append's frame at
+10 sections 12.8 → 12.1 ms and at 60 17.6 → 16.6 ms, and an edit's
+12.3 → 11.6 ms and 15.0 → 14.6 ms.
+
 ## Lessons
 
 1. **Look for caches that never hit.** Identity-keyed caches handed a new
@@ -1735,6 +1797,11 @@ laying out every paragraph at the new width, which no lookup changes.
     and answered with every block above the viewport: a link's box, never
     laid out, stretched its paragraph's bounds to the top. A probe counting
     the boxes a frame visits said 1,115 where the window holds 80.
+30. **Measure under the stylesheets documents carry.** A report under
+    forty rules never paid for a thousand rules re-read on every restyle,
+    or for thirty-five custom properties on every element; none of the
+    four costs above showed until the document was styled the way real
+    ones are.
 
 ## Still open
 

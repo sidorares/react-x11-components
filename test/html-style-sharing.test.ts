@@ -297,3 +297,69 @@ test('a rule that reads siblings, position or contents keeps its elements to the
     JSON.stringify(styleOf(full).paddingLeft),
   );
 });
+
+// Custom properties are shared too (`Cascade._customFor`): the set an
+// element has is its parent's, or its own over them, and the same parent and
+// the same declarations make the same set. Tailwind 4 sets thirty-five on
+// every element, which is the case this is for.
+const CUSTOM_SHEET = `
+*, ::before, ::after { --tw-shadow: 0 0 #0000; --tw-ring: 0 0 #0000; --pad: 4px; }
+.shadow { --tw-shadow: 0 1px 2px red; box-shadow: var(--tw-ring), var(--tw-shadow); }
+.pad-2 { --pad: 8px; padding: var(--pad); }
+.inherit-pad { --pad: inherit; margin: var(--pad); }
+.theme { --brand: #123456; --w: calc(var(--pad) * 2); }
+.brand { color: var(--brand, black); width: var(--w); }
+.cycle { --a: var(--b); --b: var(--a); width: var(--a, 10px); }
+.tag::before { content: var(--label, 'x'); color: var(--brand, green); }
+`;
+
+function customHtml(): string {
+  const parts: string[] = [];
+  for (let i = 0; i < 10; i++) {
+    parts.push(
+      `<section class="${i % 2 ? 'theme' : ''}"><div class="shadow pad-2">` +
+        `<p class="brand">brand</p><p class="inherit-pad">inherit</p>` +
+        `<span class="tag" style="--label: '${i}'">tag</span></div>` +
+        `<ul><li class="brand">one</li><li class="cycle">two</li>` +
+        `<li style="--pad: ${i}px" class="pad-2">three</li></ul></section>`,
+    );
+  }
+  return `<html><head><style>${CUSTOM_SHEET}</style></head><body>${parts.join('')}</body></html>`;
+}
+
+test('a shared set of custom properties is the set the element computes alone', () => {
+  const doc = parse(customHtml());
+  const cascade = () =>
+    new Cascade(
+      [uaStylesheet(LOOK), parseStylesheet(CUSTOM_SHEET, 0)],
+      LOOK,
+      800,
+      600,
+      1,
+    );
+  const proto = Cascade.prototype as unknown as {
+    _customFor: (parent: ComputedStyle, candidates: unknown[]) => unknown;
+  };
+  const shared = build(doc, cascade());
+  const sharing = proto._customFor;
+  // every set made afresh: the parent's, or a new one over it
+  proto._customFor = function (this: Cascade, parent, candidates) {
+    const self = this as unknown as { _customs: Map<string, unknown> };
+    self._customs.clear();
+    return sharing.call(this, parent, candidates);
+  };
+  let alone: ReturnType<typeof build>;
+  try {
+    alone = build(doc, cascade());
+  } finally {
+    proto._customFor = sharing;
+  }
+  const count = assertSameStyles(shared, alone);
+  assert.ok(count > 100, `a document of ${count} boxes`);
+  // and siblings of one shape do share theirs
+  const paragraphs = [...boxes(shared.root)].filter(
+    (b) => b.el?.name === 'p' && b.el.attribs.class === 'brand',
+  );
+  const sets = new Set(paragraphs.map((p) => p.style.custom));
+  assert.ok(sets.size < paragraphs.length, 'fewer sets than elements');
+});

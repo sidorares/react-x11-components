@@ -60,6 +60,8 @@ import {
   parseQuotes,
 } from '../src/html/css/content.js';
 import { decodeStylesheet } from '../src/html/css/decode.js';
+import { INHERITED, inherit, initialStyle } from '../src/html/css/style.js';
+import type { ComputedStyle } from '../src/html/css/style.js';
 import { SurfaceCache } from '../src/html/surfaces.js';
 
 const h = React.createElement;
@@ -7767,4 +7769,121 @@ test('object-fit places an image in its box, and object-position in it', async (
   // what falls past its box is clipped to it, and nothing else is
   const clips = ops.filter((op) => op.op === 'clip').length;
   assert.strictEqual(clips, 3, 'cover twice and none');
+});
+
+// --- a restyle's cost --------------------------------------------------------------
+
+test('a style takes from its parent the fields INHERITED names, and no others', () => {
+  // `inherit` writes them out one by one, where a loop over the list was
+  // three quarters of each element's style: the list and the function
+  // have to stay the same set
+  const look = {
+    color: '#010101',
+    fontFamily: 'sans-serif',
+    fontSize: 14,
+    monoFamily: 'monospace',
+    linkColor: '#020202',
+    borderColor: '#030303',
+    mutedColor: '#040404',
+    background: '#050505',
+    colorScheme: 'light' as const,
+    surface: '#060606',
+    controlPadY: 4,
+    controlBorder: 1,
+    controlRadius: 4,
+  };
+  const initial = initialStyle(look, 1);
+  // a parent every field of which differs from the initial style's
+  const parent = { ...initial } as Record<string, unknown>;
+  for (const key of Object.keys(parent)) parent[key] = { marker: key };
+  const out = inherit(
+    parent as unknown as ComputedStyle,
+    initial,
+  ) as unknown as Record<string, unknown>;
+  const taken = Object.keys(out)
+    .filter((key) => out[key] === parent[key])
+    .sort();
+  const expected = [
+    ...INHERITED,
+    'underline',
+    'underlineStyle',
+    'lineThrough',
+  ].sort();
+  assert.deepStrictEqual(taken, expected);
+});
+
+test('an append to a streamed document keeps its stylesheet parsed', async () => {
+  // a framework's stylesheet was parsed and its rules indexed again on
+  // every append, and every width across a breakpoint
+  const doc = (source: string) =>
+    h(
+      'box',
+      { style: { width: 300 } },
+      h(Html, { source, 'data-testname': 'doc' }),
+    );
+  const head = '<style>p { color: #0b0b0b }</style><p>one</p>';
+  const result = await renderX11(doc(head), { backend: 'mock' });
+  const el = () => view(screen.getByTestName('doc') as DrawnNode);
+  const cascadeOf = () => (el() as unknown as { _cascade: unknown })._cascade;
+  el().textContent();
+  const before = cascadeOf();
+  assert.ok(before, 'a cascade');
+  await act(() => result.rerender(doc(head + '<p>two</p>')));
+  assert.strictEqual(el().textContent(), 'onetwo');
+  assert.strictEqual(cascadeOf(), before, 'the same cascade');
+  // and the paragraph that arrived is styled by it
+  const tree = (
+    el() as unknown as {
+      _tree: {
+        root: { children: { children: { style: { color: string } }[] }[] };
+      };
+    }
+  )._tree;
+  const colors: string[] = [];
+  const walk = (b: {
+    style?: { color: string };
+    children?: unknown[];
+  }): void => {
+    if (b.style && (b as { el?: { name: string } }).el?.name === 'p') {
+      colors.push(b.style.color);
+    }
+    for (const c of (b.children ?? []) as (typeof b)[]) walk(c);
+  };
+  walk(tree.root as never);
+  // each paragraph's box and its text's, the new one's among them
+  assert.deepStrictEqual(colors, ['#0b0b0b', '#0b0b0b', '#0b0b0b', '#0b0b0b']);
+  // a change to the sheet is a new cascade
+  await act(() =>
+    result.rerender(
+      doc('<style>p { color: #0c0c0c }</style><p>one</p><p>two</p>'),
+    ),
+  );
+  el().textContent();
+  assert.notStrictEqual(cascadeOf(), before);
+});
+
+test('a pseudo-element no rule gives a content to is none, whatever reaches it', async () => {
+  // Tailwind's `*, ::before, ::after` reaches both of every element's
+  const count = async (css: string) => {
+    const { node } = await render(
+      `<style>${css}</style><p>a</p><p class="x">b</p>`,
+    );
+    let n = 0;
+    const walk = (b: { children?: unknown[] }): void => {
+      n += 1;
+      for (const c of (b.children ?? []) as (typeof b)[]) walk(c);
+    };
+    walk((view(node) as unknown as { _tree: { root: object } })._tree.root);
+    return n;
+  };
+  const bare = await count('');
+  assert.strictEqual(
+    await count('*, ::before, ::after { box-sizing: border-box; --x: 1 }'),
+    bare,
+  );
+  assert.strictEqual(
+    await count('.x::before { content: var(--label, "*") }'),
+    bare + 2,
+    'a ::before box and its text',
+  );
 });
