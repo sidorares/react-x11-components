@@ -846,8 +846,26 @@ function presentationHints(el: Element): Declaration[] {
   const align = attr(el, 'align');
   if (align) {
     const v = align.toLowerCase();
-    if (tag === 'img' && (v === 'left' || v === 'right')) push('float', v);
-    else if (v === 'center' || v === 'middle') push('text-align', 'center');
+    const side = v === 'middle' ? 'center' : v;
+    if ((tag === 'img' || tag === 'table') && (v === 'left' || v === 'right')) {
+      push('float', v);
+    } else if (tag === 'table') {
+      // a table's `align` places the table and leaves its text alone: set
+      // as its text's, `<table align="center">` — the frame of nearly
+      // every mail — stood at the left with its cells' text centred
+      if (side === 'center') {
+        push('margin-left', 'auto');
+        push('margin-right', 'auto');
+      }
+    } else if (
+      ALIGNS_BLOCKS.has(tag) &&
+      (side === 'center' || side === 'left' || side === 'right')
+    ) {
+      // these align the blocks in them as well as their text (HTML's
+      // rendering, "align descendants"): the table a `<td align="center">`
+      // or a `<div align="center">` holds is centred in it
+      push('text-align', `-webkit-${side}`);
+    } else if (side === 'center') push('text-align', 'center');
     else if (v === 'left' || v === 'right' || v === 'justify')
       push('text-align', v);
   }
@@ -930,6 +948,18 @@ function presentationHints(el: Element): Declaration[] {
   }
   return out;
 }
+
+/** The elements whose `align` aligns the blocks in them too. */
+const ALIGNS_BLOCKS = new Set([
+  'div',
+  'caption',
+  'thead',
+  'tbody',
+  'tfoot',
+  'tr',
+  'td',
+  'th',
+]);
 
 const SIZED = new Set([
   'img',

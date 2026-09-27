@@ -123,6 +123,11 @@ export interface ComputedStyle {
   lineHeight: number | 'normal';
   lineHeightIsLength: boolean;
   textAlign: 'left' | 'right' | 'center' | 'justify' | 'start' | 'end';
+  /** Where an element aligns the blocks in it that fill no line of their
+   *  own and have no auto margin: HTML's `<center>` and `align`, and the
+   *  `-webkit-center` that browsers spell them as. Inherited with
+   *  `text-align`, which resets it. */
+  alignBlocks: 'left' | 'right' | 'center' | null;
   textIndent: Len;
   textTransform: 'none' | 'uppercase' | 'lowercase' | 'capitalize';
   letterSpacing: number;
@@ -262,6 +267,7 @@ const INHERITED = [
   'lineHeight',
   'lineHeightIsLength',
   'textAlign',
+  'alignBlocks',
   'textIndent',
   'textTransform',
   'letterSpacing',
@@ -320,6 +326,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     lineHeight: 'normal',
     lineHeightIsLength: false,
     textAlign: 'start',
+    alignBlocks: null,
     textIndent: 0,
     textTransform: 'none',
     letterSpacing: 0,
@@ -929,6 +936,17 @@ export function applyDeclaration(
         v === 'end'
       ) {
         style.textAlign = v;
+        style.alignBlocks = null;
+        style.tableTextAlignSet = true;
+        return;
+      }
+      // the value HTML's alignment is given as, the blocks inside aligned
+      // with the text — and which mail writes for itself
+      const aligned = /^-(?:webkit|moz|khtml)-(left|right|center)$/.exec(v);
+      if (aligned) {
+        const side = aligned[1] as 'left' | 'right' | 'center';
+        style.textAlign = side;
+        style.alignBlocks = side;
         style.tableTextAlignSet = true;
       }
       return;
@@ -1578,7 +1596,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
     'lineHeightIsLength',
   ],
   'line-height': ['lineHeight', 'lineHeightIsLength'],
-  'text-align': ['textAlign'],
+  'text-align': ['textAlign', 'alignBlocks'],
   'text-indent': ['textIndent'],
   'text-transform': ['textTransform'],
   'letter-spacing': ['letterSpacing'],

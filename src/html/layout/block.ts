@@ -697,6 +697,21 @@ function layoutBlockLevel(
   box.width = width;
   placeBlock(box, contentLeft, y, containingWidth);
   layoutInternals(box, ctx, width, box.x, box.y, outerFloats);
+  if (
+    box.kind === 'table' &&
+    box.width !== width &&
+    Number.isFinite(containingWidth)
+  ) {
+    // a table shrinks to its columns once it is laid out, where it was
+    // placed as wide as its room: placed again, its auto margins centre it
+    // — in a room that has a width, and not in the unbounded one a
+    // shrink-to-fit probe lays it out in
+    const x = box.x;
+    placeBlock(box, contentLeft, y, containingWidth);
+    const dx = box.x - x;
+    box.x = x;
+    translate(box, dx, 0);
+  }
 }
 
 /**
@@ -989,10 +1004,16 @@ function placeBlock(
   // the end: the right one, or in a right-to-left containing block the
   // left one, and a box too wide overflows there (CSS 2.1 10.3.3)
   const rtl = box.parent?.style.direction === 'rtl';
+  // an alignment around it places a box its margins do not (HTML's
+  // `<center>` and `align`)
+  const aligned = leftAuto || rightAuto ? null : box.parent?.style.alignBlocks;
   let left = contentLeft + box.marginLeft;
   if (slack > 0) {
     if (leftAuto && rightAuto) left = contentLeft + slack / 2 + box.marginLeft;
-    else if (leftAuto || (rtl && !rightAuto)) {
+    else if (aligned) {
+      if (aligned === 'center') left += slack / 2;
+      else if (aligned === 'right') left += slack;
+    } else if (leftAuto || (rtl && !rightAuto)) {
       left = contentLeft + slack + box.marginLeft;
     }
   } else if (rtl) {

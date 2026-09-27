@@ -4940,3 +4940,36 @@ metric(
     await expectPixel(ctx, 10, 25, '#ff0000', { message: 'in the table box' });
   },
 );
+
+// --- HTML's alignment, as mail uses it -------------------------------------------
+
+test('align places a table, and <center> or an aligned cell centres the blocks in it', async () => {
+  const { node } = await render(
+    '<style>body{margin:0}table{border-spacing:0}td{padding:0}</style>' +
+      // the frame of nearly every mail: centred, its text left alone
+      '<table id="t1" align="center" width="200"><tr><td id="c1">x</td></tr></table>' +
+      '<center><table id="t2" width="100"><tr><td>x</td></tr></table></center>' +
+      '<div align="center"><table id="t3" width="100"><tr><td>x</td></tr></table></div>' +
+      // a button: no width, so centred once it has shrunk to its cell
+      '<table id="t4" align="center"><tr><td>Button</td></tr></table>' +
+      '<table id="t5" align="right" width="100"><tr><td>x</td></tr></table>' +
+      '<table width="400" style="clear:both"><tr><td align="center">' +
+      '<table id="t6" width="50"><tr><td>x</td></tr></table></td></tr></table>' +
+      // what mail's own CSS writes for it
+      '<div style="text-align:-webkit-center"><div id="d" style="width:100px">x</div></div>',
+    400,
+  );
+  const el = view(node);
+  const x = (id: string) => boxOf(el, id).x;
+  assert.strictEqual(x('t1'), 100);
+  assert.strictEqual(x('t2'), 150);
+  assert.strictEqual(x('t3'), 150);
+  const t4 = boxOf(el, 't4');
+  assert.ok(Math.abs(t4.x - (400 - t4.width) / 2) < 0.01, 'centred shrunk');
+  assert.strictEqual(x('t5'), 300, 'floated right');
+  assert.strictEqual(x('t6'), 175);
+  assert.strictEqual(x('d'), 150);
+  const align = (boxOf(el, 'c1') as unknown as { style: { textAlign: string } })
+    .style.textAlign;
+  assert.notStrictEqual(align, 'center', "the table's text is its own");
+});
