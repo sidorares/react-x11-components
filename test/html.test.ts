@@ -7768,6 +7768,40 @@ test('a flex container lays its items out in its content box', async () => {
   assert.deepStrictEqual([d.x, d.y - 364], [140, 70]);
 });
 
+metric(
+  'a flex row measured for its content does not grow its flex: 1 items',
+  async () => {
+    // Tailwind UI's list item: a row of an avatar and a column that takes
+    // `flex-1`, beside a column of a role and a badge. Measuring the row's
+    // max-content laid it out at an infinite width, which Yoga took for a
+    // width and grew the column to fill; the row came back vast, and the
+    // role beside it was squeezed until "Designer" broke inside itself.
+    const { node } = await render(
+      '<style>body{margin:0} *{box-sizing:border-box;margin:0}</style>' +
+        '<div style="display:flex;align-items:center;' +
+        'justify-content:space-between;gap:24px;width:600px">' +
+        '<div id="left" style="display:flex;min-width:0;gap:16px">' +
+        '<div style="width:48px;height:48px"></div>' +
+        '<div id="col" style="min-width:0;flex:1"><p>Leslie Alexander</p>' +
+        '<p>leslie.alexander@example.com</p></div></div>' +
+        '<div id="right" style="display:flex;flex-direction:column;' +
+        'align-items:center"><p id="role">Co-Founder / CEO</p>' +
+        '<span>Active</span></div></div>',
+    );
+    const el = view(node);
+    const left = boxOf(el, 'left');
+    const col = boxOf(el, 'col');
+    // the left side is as wide as its content: the avatar, the gap, the text
+    assert.ok(
+      Math.abs(left.width - (48 + 16 + col.width)) < 0.5,
+      `${left.width} is the avatar, the gap and ${col.width}`,
+    );
+    assert.ok(left.width < 400, `the left side is ${left.width}, not the row`);
+    // and the role is on one line
+    assert.strictEqual(linesOf(el, 'role').length, 1);
+  },
+);
+
 test('object-fit places an image in its box, and object-position in it', async () => {
   const fits = ['fill', 'cover', 'contain', 'none', 'scale-down'];
   const { node } = await render(
