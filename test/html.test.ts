@@ -6864,12 +6864,14 @@ metric('a grid places its items in its column tracks', async () => {
     const g = boxOf(view(node), 'g');
     const out = g.children
       .filter((c) => (c as unknown as { kind: string }).kind !== 'text')
-      .map((c) => [c.x, c.y, c.width].map((v) => Math.round(v)));
+      .map((c) => [c.x, c.y, c.width]);
     cleanup();
     return out;
   };
+  const rounded = async (css: string, items: string) =>
+    (await grid(css, items)).map((cell) => cell.map((v) => Math.round(v)));
   assert.deepStrictEqual(
-    await grid(
+    await rounded(
       'grid-template-columns:repeat(3,minmax(0,1fr));gap:16px',
       '<div>A</div><div>B</div><div>C</div><div>D</div>',
     ),
@@ -6882,7 +6884,7 @@ metric('a grid places its items in its column tracks', async () => {
     'three equal columns, and a fourth item on the next row',
   );
   assert.deepStrictEqual(
-    await grid(
+    await rounded(
       'grid-template-columns:200px 1fr;gap:10px',
       '<div>Side</div><div>Main</div>',
     ),
@@ -6893,7 +6895,7 @@ metric('a grid places its items in its column tracks', async () => {
   );
   assert.deepStrictEqual(
     (
-      await grid(
+      await rounded(
         'grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px',
         '<div>1</div><div>2</div><div>3</div><div>4</div><div>5</div>',
       )
@@ -6908,7 +6910,7 @@ metric('a grid places its items in its column tracks', async () => {
     'as many columns as fit',
   );
   assert.deepStrictEqual(
-    await grid(
+    await rounded(
       'grid-template-columns:repeat(4,1fr);gap:4px',
       '<div style="grid-column:span 2">wide</div><div>x</div><div>y</div>' +
         '<div style="grid-column:1 / -1">full</div>',
@@ -6922,19 +6924,22 @@ metric('a grid places its items in its column tracks', async () => {
     'spans, and a line counted back from the end',
   );
   // content-sized columns at the sides, and the rest in the middle: each
-  // starts a gap after the one before, and the last ends at the edge
+  // starts a gap after the one before, and the last ends at the edge, what
+  // ever the font makes of the words
   const [first, middle, last] = await grid(
     'grid-template-columns:auto 1fr auto;gap:8px',
     '<div>Label</div><div>stretch</div><div>End</div>',
   );
-  assert.deepStrictEqual(
-    [
-      middle[0] - (first[0] + first[2]),
-      last[0] - (middle[0] + middle[2]),
-      last[0] + last[2],
-    ],
-    [8, 8, 700],
+  const near = (a: number, b: number) => Math.abs(a - b) < 1e-6;
+  assert.ok(
+    near(middle[0] - (first[0] + first[2]), 8),
+    'a gap after the first',
   );
+  assert.ok(
+    near(last[0] - (middle[0] + middle[2]), 8),
+    'a gap after the middle',
+  );
+  assert.ok(near(last[0] + last[2], 700), 'the last ends at the edge');
   assert.ok(
     first[2] < 60 && last[2] < 60 && middle[2] > 500,
     `${first[2]} ${middle[2]} ${last[2]}`,
