@@ -583,6 +583,26 @@ metric('a malformed colour does not reach paint', async () => {
   });
 });
 
+metric(
+  'a hex colour of five or seven digits is none, and does not throw from paint',
+  async () => {
+    const { el } = await renderWithBytes(
+      '<p id="p" style="color:#ff000">five</p>' +
+        '<div id="d" style="color:#00f;color:#ff00000;background:#ff00000">seven</div>' +
+        '<div id="e" style="color:#0f08;background:#00ff0080">four, eight</div>',
+      {},
+    );
+    // drawn at all is most of the assertion: both threw from paint before
+    const style = (id: string) =>
+      (boxOf(el, id) as unknown as { style: Record<string, unknown> }).style;
+    assert.notStrictEqual(style('p').color, '#ff000');
+    assert.strictEqual(style('d').color, '#00f');
+    assert.strictEqual(style('d').backgroundColor, null);
+    assert.strictEqual(style('e').color, '#0f08');
+    assert.strictEqual(style('e').backgroundColor, '#00ff0080');
+  },
+);
+
 metric('sibling margins collapse to the larger of the two', async () => {
   const { node } = await render(
     '<style>p{margin:0;font-size:16px}.a{margin-bottom:40px}.b{margin-top:10px}</style>' +
