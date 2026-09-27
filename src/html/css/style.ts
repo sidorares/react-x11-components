@@ -61,6 +61,11 @@ export interface ClipRect {
 }
 
 /** Whether a length is one `padding` takes: not `auto`, not negative. */
+function notNegative(len: Len): boolean {
+  if (len === AUTO) return true;
+  return typeof len === 'number' ? len >= 0 : len.pct >= 0;
+}
+
 function validPadding(len: Len | null): boolean {
   if (len === null || len === AUTO) return false;
   return typeof len === 'number' ? len >= 0 : len.pct >= 0;
@@ -630,8 +635,10 @@ export function applyDeclaration(
     case 'height':
     case 'min-width':
     case 'min-height': {
+      // a negative size is no value, and the declaration goes (CSS 2.1
+      // 10.2, 10.4, 10.5, 10.7)
       const len = parseLength(value, ctx);
-      if (len !== null)
+      if (len !== null && notNegative(len))
         (style as unknown as Record<string, unknown>)[camel(name)] = len;
       return;
     }
@@ -642,7 +649,7 @@ export function applyDeclaration(
         return;
       }
       const len = parseLength(value, ctx);
-      if (len !== null)
+      if (len !== null && notNegative(len))
         (style as unknown as Record<string, unknown>)[camel(name)] = len;
       return;
     }

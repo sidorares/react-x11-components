@@ -3311,6 +3311,18 @@ test("a table cell takes its row's vertical-align", async () => {
   assert.ok(m.y - r2.y > 15, `the next row is still middle: ${m.y - r2.y}`);
 });
 
+test('a negative size is no size, and the declaration goes', async () => {
+  // CSS 2.1 10.2, 10.4, 10.5, 10.7: -1px was taken as a maximum height
+  const { node } = await render(
+    '<div id="a" style="height:40px;max-height:-1px"></div>' +
+      '<div id="b" style="width:30px;width:-10px;min-height:-5px;height:20px"></div>',
+  );
+  const el = view(node);
+  assert.strictEqual(boxOf(el, 'a').height, 40);
+  const b = boxOf(el, 'b');
+  assert.deepStrictEqual([b.width, b.height], [30, 20]);
+});
+
 test('nothing loads without onResource, and every reference is offered to it', async () => {
   const asked: string[] = [];
   await renderX11(
