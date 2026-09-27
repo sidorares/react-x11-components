@@ -227,6 +227,7 @@ export const OPTION_FIELDS = [
   'align',
   'direction',
   'maxLines',
+  'overflow',
 ] as const satisfies readonly (keyof Options)[];
 
 /** An option missing from `OPTION_FIELDS` names itself here. */
@@ -243,6 +244,7 @@ function sameOptions(a: Options, b: Options): boolean {
     a.lineHeight === b.lineHeight &&
     a.align === b.align &&
     a.direction === b.direction &&
-    a.maxLines === b.maxLines
+    a.maxLines === b.maxLines &&
+    a.overflow === b.overflow
   );
 }

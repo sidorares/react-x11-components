@@ -169,6 +169,7 @@ test("every field of a block's style, and every option, is what a layout is foun
     align: 'end',
     direction: 'rtl',
     maxLines: 1,
+    overflow: 'ellipsis',
   };
   const engine = countingEngine();
   const cache = new TextLayoutCache(engine);

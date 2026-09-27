@@ -110,6 +110,7 @@ separately, and there are six.
 | 40     | percentage and elliptical radii                    | 5,460 (93%) | 4,972 (84%) |
 | 41     | box shadows                                        | 5,460 (93%) | 4,972 (84%) |
 | 42     | aspect-ratio, object-fit, a flex box's height      | 5,460 (93%) | 4,972 (84%) |
+| 43     | line-clamp, text-overflow                          | 5,460 (93%) | 4,972 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -1448,6 +1449,24 @@ minmax(16rem, 1fr))` are the layouts of half the pages written this
      and its `min-height` and `max-height` where it is not, so a column
      `min-h-screen` gives its `flex-1` the rest of the window. The CSS 2.1
      suite has none of the three.
+
+### Round 43
+
+131. **A clamped block showed all of its text.** `-webkit-line-clamp`,
+     which Tailwind's `line-clamp-2` writes with the `-webkit-box` a
+     browser asks for beside it, was not read, so a card's description ran
+     to its end and the cards in a row came out of every height. A block
+     shows its first lines now and is as tall as they are, the last cut
+     with an ellipsis: the text engine's own `maxLines` and `overflow`,
+     which ntk and CoreText both take. A block laid out a line at a time —
+     around an image on a line, or beside a float — is cut to its lines
+     with no ellipsis, since the engine never sees them together.
+132. **`truncate` was a line run past its box.** A `nowrap` block that
+     clips with `text-overflow: ellipsis` is one line cut at the box's
+     width with an ellipsis now. The engine makes room for it inside the
+     line's last word, where a browser fills the line with as much of the
+     text as fits, so a line of words shows a little less than it would.
+     The CSS 2.1 suite has neither.
 
 ## What `<Html>` supports
 

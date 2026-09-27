@@ -216,6 +216,12 @@ export interface ComputedStyle {
   float: 'none' | 'left' | 'right';
   clear: 'none' | 'left' | 'right' | 'both';
   boxSizing: 'content-box' | 'border-box';
+  /** `line-clamp` (or `-webkit-line-clamp`, as Tailwind writes it): how
+   *  many of its lines a block shows, the last cut with an ellipsis; null
+   *  for all of them. */
+  lineClamp: number | null;
+  /** How a line cut by `overflow` ends: `clip`, or with an ellipsis. */
+  textOverflow: 'clip' | 'ellipsis';
   /** `aspect-ratio`: a box's width over its height, where its height is
    *  `auto`; `auto` beside it, as `auto 16 / 9`, gives a replaced element
    *  its own where it has one. Null for `auto` alone. */
@@ -461,6 +467,8 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     float: 'none',
     clear: 'none',
     boxSizing: 'content-box',
+    lineClamp: null,
+    textOverflow: 'clip',
     aspectRatio: null,
     objectFit: 'fill',
     objectPositionX: { pct: 50 },
@@ -771,6 +779,26 @@ export function applyDeclaration(
         style.clear = style.direction === 'rtl' ? 'right' : 'left';
       else if (v === 'inline-end')
         style.clear = style.direction === 'rtl' ? 'left' : 'right';
+      return;
+    }
+    case 'line-clamp':
+    case '-webkit-line-clamp': {
+      // `none`, or how many lines; the ellipsis a `line-clamp` may name
+      // after it is the one this draws anyway
+      const first = splitValue(value)[0]?.toLowerCase() ?? '';
+      if (first === 'none') style.lineClamp = null;
+      else if (/^\d+$/.test(first) && Number(first) >= 1) {
+        style.lineClamp = Number(first);
+      }
+      return;
+    }
+    case 'text-overflow': {
+      // one value for the end a line is cut at, or two, start and end
+      const parts = splitValue(value).map((p) => p.toLowerCase());
+      const end = parts[parts.length - 1];
+      if (parts.length <= 2 && (end === 'clip' || end === 'ellipsis')) {
+        style.textOverflow = end;
+      }
       return;
     }
     case 'box-sizing': {
@@ -2642,6 +2670,9 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
     }),
   ),
   'box-shadow': ['boxShadow'],
+  'line-clamp': ['lineClamp'],
+  '-webkit-line-clamp': ['lineClamp'],
+  'text-overflow': ['textOverflow'],
   'border-radius': ['borderRadius', 'borderRadiusY'],
   'border-top-left-radius': ['borderRadius', 'borderRadiusY'],
   'border-top-right-radius': ['borderRadius', 'borderRadiusY'],
