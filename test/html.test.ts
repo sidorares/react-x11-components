@@ -6572,3 +6572,83 @@ metric(
     assert.ok(!el.textContent().startsWith('\n'), 'nor of the document');
   },
 );
+
+// --- logical properties ----------------------------------------------------------
+
+/** A laid box's resolved edges and style, which `LaidBox` leaves out. */
+function edgesOf(box: LaidBox) {
+  return box as unknown as {
+    padLeft: number;
+    padRight: number;
+    padTop: number;
+    padBottom: number;
+    borderLeft: number;
+    marginLeft: number;
+    marginRight: number;
+    style: { borderRadius: number[] };
+  };
+}
+
+test("logical properties are the physical ones of the element's direction", async () => {
+  // CSS Logical Properties 1 in the horizontal writing mode: Tailwind 4
+  // writes its spacing in them, `px-4` as `padding-inline` and `mx-auto`
+  // as `margin-inline: auto`
+  const { node } = await render(
+    '<style>body{margin:0}.px-4{padding-inline:calc(4px * 4)}' +
+      '.py-2{padding-block:8px}.mx-auto{margin-inline:auto}</style>' +
+      '<div style="width:400px"><div id="a" class="px-4 py-2 mx-auto" ' +
+      'style="inline-size:100px;border-inline-start:3px solid"></div>' +
+      '<div id="r" dir="rtl" style="margin-inline-start:10px;' +
+      'padding-inline:1px 2px;border-start-end-radius:6px"></div>' +
+      '<div id="o" style="padding-left:5px;padding-inline-start:7px;' +
+      'margin-inline-end:4px;margin-right:9px"></div>' +
+      '<div id="x" style="padding-inline:10px -5px;padding-block:1px 2px 3px">' +
+      '</div></div>',
+  );
+  const el = view(node);
+  const a = boxOf(el, 'a');
+  const ae = edgesOf(a);
+  assert.deepStrictEqual(
+    [ae.padLeft, ae.padRight, ae.padTop, ae.padBottom, ae.borderLeft, a.width],
+    [16, 16, 8, 8, 3, 135],
+  );
+  assert.strictEqual(a.x, (400 - 135) / 2, 'centred by its auto margins');
+  const r = edgesOf(boxOf(el, 'r'));
+  assert.deepStrictEqual(
+    [r.marginRight, r.marginLeft, r.padRight, r.padLeft],
+    [10, 0, 1, 2],
+    'the start is the right, right to left',
+  );
+  assert.deepStrictEqual(r.style.borderRadius, [6, 0, 0, 0], 'and the corner');
+  const o = edgesOf(boxOf(el, 'o'));
+  assert.deepStrictEqual(
+    [o.padLeft, o.marginRight],
+    [7, 9],
+    'whichever of the two comes later',
+  );
+  const x = edgesOf(boxOf(el, 'x'));
+  assert.deepStrictEqual(
+    [x.padLeft, x.padRight, x.padTop, x.padBottom],
+    [0, 0, 0, 0],
+    'a part that is no value takes the declaration with it',
+  );
+});
+
+test('inset sets all four offsets, and a corner its radius', async () => {
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="position:relative;width:200px;height:100px">' +
+      '<div id="f" style="position:absolute;inset:0"></div>' +
+      '<div id="g" style="position:absolute;inset:10px 20px"></div></div>' +
+      '<div id="c" style="border-top-left-radius:8px;' +
+      'border-bottom-right-radius:4px 2px"></div>',
+  );
+  const el = view(node);
+  const [f, g] = [boxOf(el, 'f'), boxOf(el, 'g')];
+  assert.deepStrictEqual([f.x, f.y, f.width, f.height], [0, 0, 200, 100]);
+  assert.deepStrictEqual([g.x, g.y, g.width, g.height], [20, 10, 160, 80]);
+  assert.deepStrictEqual(
+    edgesOf(boxOf(el, 'c')).style.borderRadius,
+    [8, 0, 4, 0],
+  );
+});

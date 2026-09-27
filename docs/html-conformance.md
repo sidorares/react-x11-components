@@ -100,6 +100,7 @@ separately, and there are six.
 | 30     | margins beside floats, `flow-root`, `min-height`   | 5,450 (92%) | 4,969 (84%) |
 | 31     | a box's edges on the pixel grid                    | 5,460 (93%) | 4,971 (84%) |
 | 32     | the newline after `<pre>`, pseudo-class arguments  | 5,460 (93%) | 4,972 (84%) |
+| 33     | logical properties, `inset`, a corner's radius     | 5,460 (93%) | 4,972 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -1247,6 +1248,19 @@ pixels before they lay a line out.
 Round 32 lost 1 test on X11, an XHTML one whose `<pre>` begins with a line
 break: an XML parser keeps it, and `<Html>` parses HTML.
 
+### Round 33
+
+118. **Logical properties were dropped**, and they are how Tailwind 4
+     writes its spacing: `px-4` is `padding-inline`, `py-2` is
+     `padding-block`, `mx-auto` is `margin-inline: auto`, and `inset-0` is
+     the `inset` shorthand, which was not read either. A card styled with
+     them had no padding, did not centre, and its overlays did not reach
+     their edges. CSS Logical Properties 1's margins, paddings, insets,
+     borders, sizes and corner radii are read now as the physical ones they
+     are in the horizontal writing mode, by the element's direction, and a
+     single corner's radius is read as well. The CSS 2.1 suite has none of
+     them, and did not move.
+
 ## What `<Html>` supports
 
 From the pass rates of the tests that use each feature, at the fixes above,
@@ -1367,7 +1381,9 @@ directories and caniemail's feature list:
    `onResource`. CSS Color 4's functions were done in round 19, read in
    this package rather than by ntk's colour parser, and `color-mix()` in
    round 22; relative colours remain. `calc()`, `min()`, `max()` and
-   `clamp()` were done in round 20, and custom properties in round 21.
+   `clamp()` were done in round 20, custom properties in round 21, and the
+   logical properties Tailwind 4 writes its spacing in, with `inset`, in
+   round 33.
 6. **Stacking and clipping**: stacking contexts across `z-index`, `clip`,
    the static position of an absolute box. Percentage heights were done in
    round 4; overflow clipping, `clip` and the static position in a block in

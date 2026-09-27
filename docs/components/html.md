@@ -318,6 +318,20 @@ meets. A percentage that cannot resolve makes the whole value `auto` where
 a plain percentage would be, so `calc(40px + 10%)` against a height nothing
 sets is no height.
 
+**Logical properties:** `margin-inline`, `padding-block`, `inset-inline`,
+`border-inline-start`, `inline-size`, `border-start-end-radius` and the
+rest of CSS Logical Properties 1's, as the physical properties they are in
+the horizontal writing mode `<Html>` lays out: the inline axis's start is
+the left of a left-to-right element and the right of a right-to-left one.
+Tailwind 4 writes its spacing in them — `px-4` is `padding-inline` and
+`mx-auto` is `margin-inline: auto` — and its `inset-0` in the `inset`
+shorthand, which is read too, as is a single corner's radius. A logical and
+a physical declaration for the same side are one property: whichever comes
+later in the cascade wins. The direction is the element's as the cascade
+has it when the declaration is read — its parent's, or its own from `dir`
+— so a `direction` declared later in cascade order than a logical property
+on the same element does not move it.
+
 **Custom properties:** `--name` declarations and `var()`, with fallbacks
 (CSS Custom Properties 1), which is how Tailwind and most design systems
 write their colours and spacing. A custom property is inherited, and a
