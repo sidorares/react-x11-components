@@ -28,7 +28,7 @@ import {
 import type { FillContext } from '../richtext/runs.js';
 import { inkColor, isTransparent, resolve } from './css/values.js';
 import type { Len } from './css/values.js';
-import type { ComputedStyle } from './css/style.js';
+import type { ComputedStyle, LinearGradient } from './css/style.js';
 import {
   BOX_RAISES,
   Box,
@@ -60,6 +60,12 @@ export interface PaintContext extends FillContext {
   rect?(x: number, y: number, w: number, h: number): void;
   roundRect?(x: number, y: number, w: number, h: number, radii: number[]): void;
   fill?(rule?: 'nonzero' | 'evenodd'): void;
+  createLinearGradient?(
+    x0: number,
+    y0: number,
+    x1: number,
+    y1: number,
+  ): { addColorStop(offset: number, color: string): void };
   clip?(): void;
   drawImage?(image: unknown, ...args: number[]): void;
   /** ntk's X11 context has patterns; the Cocoa one does not, and tiles. */
@@ -312,7 +318,9 @@ export function paintDocument(
  */
 function canvasBackground(root: Box): { source: Box; anchor: Box } | null {
   const has = (b: Box) =>
-    !isTransparent(b.style.backgroundColor) || !!b.style.backgroundImage;
+    !isTransparent(b.style.backgroundColor) ||
+    !!b.style.backgroundImage ||
+    !!b.style.backgroundGradient;
   const top = root.children.find((c) => c.el?.name === 'html') ?? root;
   if (has(top)) return { source: top, anchor: top };
   const body = top.children.find((c) => c.el?.name === 'body');
@@ -346,6 +354,26 @@ function paintCanvas(
   ) {
     ctx.fillStyle = inkColor(style.backgroundColor as string, style.color);
     ctx.fillRect(area.x, area.y, area.w, area.h);
+  }
+  if (
+    style.backgroundGradient &&
+    ctx.createLinearGradient &&
+    source.style.visibility !== 'hidden'
+  ) {
+    // sized by the root element's box and repeated down the canvas, as a
+    // browser does — the stripes a short page with a gradient on its body
+    // shows — or by the viewport, where it is fixed
+    const box =
+      style.backgroundAttachment === 'fixed' && options.canvas
+        ? options.canvas
+        : paddingBox(anchor, options);
+    paintGradient(
+      ctx,
+      style,
+      style.backgroundGradient,
+      area,
+      snapped(box.x, box.y, box.width, box.height),
+    );
   }
   if (style.backgroundImage) {
     paintBackgroundImage(
@@ -916,32 +944,208 @@ function paintBackground(
   options: PaintOptions,
 ): void {
   const color = box.style.backgroundColor;
-  if (isTransparent(color)) return;
+  const gradient = box.style.backgroundGradient;
+  const solid = !isTransparent(color);
+  if (!solid && !gradient) return;
   // each edge on the pixel it falls nearest, as browsers snap a box: boxes
   // that meet share the column their edge is in, and a rule 1.33px wide is
   // one pixel, not two
   const left = box.x + options.originX;
   const top = frameY(box) + options.originY;
-  const rect = clampRect(
-    options,
-    Math.round(left),
-    Math.round(top),
-    Math.round(left + box.width) - Math.round(left),
-    Math.round(top + frameHeight(box)) - Math.round(top),
-  );
+  const x = Math.round(left);
+  const y = Math.round(top);
+  const w = Math.round(left + box.width) - x;
+  const h = Math.round(top + frameHeight(box)) - y;
+  const rect = clampRect(options, x, y, w, h);
   if (!rect) return;
-  ctx.fillStyle = inkColor(color as string, box.style.color);
   const radii = box.style.borderRadius;
-  if (radii.some((r) => r > 0) && ctx.roundRect && ctx.fill && ctx.beginPath) {
-    // The clamp can only have cut edges further than CLAMP_PAD outside the
-    // damage, and a sane radius is smaller than that — so a corner that
-    // survives the cut is whole, and a cut edge is offscreen.
-    ctx.beginPath();
-    ctx.roundRect(rect.x, rect.y, rect.w, rect.h, radii.slice());
-    ctx.fill();
+  const rounded =
+    radii.some((r) => r > 0) && ctx.roundRect && ctx.fill && ctx.beginPath;
+  const fill = (): void => {
+    if (rounded) {
+      // The clamp can only have cut edges further than CLAMP_PAD outside
+      // the damage, and a sane radius is smaller than that — so a corner
+      // that survives the cut is whole, and a cut edge is offscreen.
+      ctx.beginPath!();
+      ctx.roundRect!(rect.x, rect.y, rect.w, rect.h, radii.slice());
+      ctx.fill!();
+    } else ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
+  };
+  if (solid) {
+    ctx.fillStyle = inkColor(color as string, box.style.color);
+    fill();
+  }
+  if (gradient && ctx.createLinearGradient) {
+    // over the colour, as the layer an image is: the size of the padding
+    // box, which is where it starts, and repeated under the borders — or
+    // the viewport's, where it is fixed; its line runs across the whole of
+    // it, not the part this paint reaches
+    const fixed = box.style.backgroundAttachment === 'fixed' && options.canvas;
+    const at = fixed
+      ? snapped(fixed.x, fixed.y, fixed.width, fixed.height)
+      : snapped(
+          left + box.borderLeft,
+          top + box.borderTop,
+          box.width - box.borderLeft - box.borderRight,
+          frameHeight(box) - box.borderTop - box.borderBottom,
+        );
+    if (rounded) {
+      // one fill in the rounded shape; under the borders it carries on
+      // with its end colours where a browser would show the next tile
+      if (!(at.width > 0 && at.height > 0)) return;
+      ctx.fillStyle = linearGradient(
+        ctx,
+        gradient,
+        at.x,
+        at.y,
+        at.width,
+        at.height,
+        box.style.color,
+      );
+      fill();
+    } else paintGradient(ctx, box.style, gradient, rect, at);
+  }
+}
+
+/** A rectangle with each edge on the pixel it falls nearest. */
+function snapped(x: number, y: number, w: number, h: number): Rect {
+  const left = Math.round(x);
+  const top = Math.round(y);
+  return {
+    x: left,
+    y: top,
+    width: Math.round(x + w) - left,
+    height: Math.round(y + h) - top,
+  };
+}
+
+/**
+ * A gradient layer across `area`: an image the size of `at`, where it
+ * starts, repeated as `background-repeat` says (CSS Backgrounds 3, 3.9 —
+ * an image with no size of its own is the size of its positioning area).
+ * Each tile is its own fill, so a tile's colours are the first's.
+ */
+function paintGradient(
+  ctx: PaintContext,
+  style: ComputedStyle,
+  gradient: LinearGradient,
+  area: { x: number; y: number; w: number; h: number },
+  at: Rect,
+): void {
+  const w = at.width;
+  const h = at.height;
+  if (!(w > 0 && h > 0)) return;
+  const repeat = style.backgroundRepeat;
+  const acrossX = repeat === 'repeat' || repeat === 'repeat-x';
+  const acrossY = repeat === 'repeat' || repeat === 'repeat-y';
+  const fromX = acrossX ? at.x - Math.ceil((at.x - area.x) / w) * w : at.x;
+  const fromY = acrossY ? at.y - Math.ceil((at.y - area.y) / h) * h : at.y;
+  const toX = acrossX ? area.x + area.w : at.x + w;
+  const toY = acrossY ? area.y + area.h : at.y + h;
+  if (Math.ceil((toX - fromX) / w) * Math.ceil((toY - fromY) / h) > MAX_TILES) {
+    // a sliver of a root repeated down a long canvas: the one tile, and
+    // its end colours on past it
+    ctx.fillStyle = linearGradient(
+      ctx,
+      gradient,
+      at.x,
+      at.y,
+      w,
+      h,
+      style.color,
+    );
+    ctx.fillRect(area.x, area.y, area.w, area.h);
     return;
   }
-  ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
+  for (let y = fromY; y < toY; y += h) {
+    const top = Math.max(y, area.y);
+    const bottom = Math.min(y + h, area.y + area.h);
+    if (bottom <= top) continue;
+    for (let x = fromX; x < toX; x += w) {
+      const left = Math.max(x, area.x);
+      const right = Math.min(x + w, area.x + area.w);
+      if (right <= left) continue;
+      ctx.fillStyle = linearGradient(ctx, gradient, x, y, w, h, style.color);
+      ctx.fillRect(left, top, right - left, bottom - top);
+    }
+  }
+}
+
+/**
+ * A `linear-gradient()` across a box (CSS Images 3, 3.1.1): its line
+ * through the box's centre at its angle, as long as the box is across at
+ * that angle, so its ends are the colours at the corners that line points
+ * to; a corner's angle is the one whose perpendicular runs through the
+ * other two corners. A stop without a position is spread evenly between
+ * its neighbours', and none is before the one before it. A stop off the
+ * line lengthens it, so the colours at its ends are the ones between.
+ */
+function linearGradient(
+  ctx: PaintContext,
+  gradient: LinearGradient,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  currentColor: string,
+): unknown {
+  let angle = gradient.angle;
+  if (gradient.corner) {
+    const turn = Math.atan2(h, w);
+    angle =
+      gradient.corner === 'top right'
+        ? turn
+        : gradient.corner === 'bottom right'
+          ? Math.PI - turn
+          : gradient.corner === 'bottom left'
+            ? Math.PI + turn
+            : 2 * Math.PI - turn;
+  }
+  const dx = Math.sin(angle);
+  const dy = -Math.cos(angle);
+  const length = Math.abs(w * dx) + Math.abs(h * dy);
+  const stops = gradient.stops;
+  const at: (number | null)[] = stops.map((stop) =>
+    stop.at === null
+      ? null
+      : length > 0
+        ? resolve(stop.at, length) / length
+        : 0,
+  );
+  if (at[0] === null) at[0] = 0;
+  if (at[at.length - 1] === null) at[at.length - 1] = 1;
+  for (let i = 1; i < at.length; i += 1) {
+    if (at[i] === null) {
+      // spread the ones without a position between the ones with
+      let j = i;
+      while (at[j] === null) j += 1;
+      const from = at[i - 1]!;
+      const to = at[j]!;
+      for (let k = i; k < j; k += 1) {
+        at[k] = from + ((to - from) * (k - i + 1)) / (j - i + 1);
+      }
+    }
+    at[i] = Math.max(at[i]!, at[i - 1]!);
+  }
+  // the context's offsets are 0 to 1, so a line that stops reach past runs
+  // from the first to the last, and the box sees the part of it between
+  const from = Math.min(0, at[0]!);
+  const to = Math.max(1, at[at.length - 1]!);
+  const startX = x + w / 2 - (dx * length) / 2;
+  const startY = y + h / 2 - (dy * length) / 2;
+  const g = ctx.createLinearGradient!(
+    startX + dx * length * from,
+    startY + dy * length * from,
+    startX + dx * length * to,
+    startY + dy * length * to,
+  );
+  for (let i = 0; i < stops.length; i += 1) {
+    g.addColorStop(
+      (at[i]! - from) / (to - from),
+      inkColor(stops[i].color, currentColor),
+    );
+  }
+  return g;
 }
 
 /**

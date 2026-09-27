@@ -106,6 +106,7 @@ separately, and there are six.
 | 36     | flex items' sizes and auto margins                 | 5,461 (93%) | 4,973 (84%) |
 | 37     | grid                                               | 5,461 (93%) | 4,973 (84%) |
 | 38     | rounded borders                                    | 5,461 (93%) | 4,973 (84%) |
+| 39     | linear gradients; WPT's fuzzy rule                 | 5,460 (93%) | 4,972 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -1347,6 +1348,35 @@ minmax(16rem, 1fr))` are the layouts of half the pages written this
      different colours on a rounded box are still drawn straight. The CSS
      2.1 suite has no radii.
 
+### Round 39
+
+124. **A gradient was drawn as nothing.** `linear-gradient()` was read so
+     that a declaration a browser keeps was kept, and painted as no image,
+     so a hero section or a button written with one showed its fallback
+     colour or none. It is drawn now (CSS Images 3, 3.1), over the colour
+     and as an image the size of the padding box, repeated as
+     `background-repeat` says — under the borders, and down the canvas
+     under a page shorter than the window, which is the stripes a browser
+     shows there. Its line runs through the image's centre at its angle,
+     as long as the image is across at that angle, with a corner turned
+     into the angle whose perpendicular joins the other two corners; its
+     stops are where they say, spread between their neighbours where they
+     do not, and one past an end lengthens the line rather than being
+     clamped to it. A colour interpolation method, `in oklab` as Tailwind 4
+     writes it, is read and not honoured: the stops are mixed in sRGB, as
+     both backends' gradients mix them. Radial, conic and repeating
+     gradients are still drawn as nothing. 1 test, whose hard-stopped
+     stripes are covered exactly by the floats and the cleared boxes it
+     places.
+125. **The runner was kinder than WPT.** It counted the pixels that
+     differed by more than a `fuzzy` annotation's `maxDifference` and
+     passed a test with no more of them than its `totalPixels`. WPT counts
+     every pixel that differs, and fails a test with any pixel beyond the
+     difference however few there are. Two tests annotated to allow any
+     difference in 150 and 200 pixels passed however much they differed;
+     they differ in 10,000 and 440 on X11, and 40,000 and 1,755 on Cocoa,
+     so every round above counts both backends two high.
+
 ## What `<Html>` supports
 
 From the pass rates of the tests that use each feature, at the fixes above,
@@ -1469,7 +1499,8 @@ directories and caniemail's feature list:
    round 22; relative colours remain. `calc()`, `min()`, `max()` and
    `clamp()` were done in round 20, custom properties in round 21, and the
    logical properties Tailwind 4 writes its spacing in, with `inset`, in
-   round 33.
+   round 33. Linear gradients were done in round 39; `background-size`,
+   `box-shadow` and the other gradients remain.
 6. **Stacking and clipping**: stacking contexts across `z-index`, `clip`,
    the static position of an absolute box. Percentage heights were done in
    round 4; overflow clipping, `clip` and the static position in a block in

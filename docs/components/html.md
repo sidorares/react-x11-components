@@ -254,11 +254,18 @@ namespace, is the same element.
 `background-position`, positioned in the padding box and repeated across the
 border box, or against the viewport with `background-attachment: fixed`. An
 image with no size of its own, an SVG's, is sized in that area as CSS
-Images says. The root's background covers the whole canvas, as CSS 2.1 has
-it: `<html>`'s, or `<body>`'s where `<html>` has none, over the body's margin
-and down the whole element when an application grows it past the document —
-so an email's `<body bgcolor>` colours the message rather than a box inside
-it.
+Images says. A `linear-gradient()` is drawn over the colour as an image the
+size of the padding box, repeated like one: by angle, side or corner, with
+its stops where they say or spread between their neighbours, and a colour
+interpolation method, `in oklab` as Tailwind 4 writes it, read and not
+honoured; the gradient is mixed in sRGB. Radial, conic and repeating
+gradients are drawn as nothing, over the colour. The root's background
+covers the whole canvas, as CSS 2.1 has it: `<html>`'s, or `<body>`'s where
+`<html>` has none, over the body's margin and down the whole element when an
+application grows it past the document — so an email's `<body bgcolor>`
+colours the message rather than a box inside it. Its image is sized by the
+root element and repeated over the rest, so a gradient on a page shorter
+than the window repeats below it, in the stripes a browser shows.
 
 **HTML's own attributes:** the presentational ones mail and generated
 documents are written in are read as the styles they stand for, below
@@ -399,7 +406,8 @@ whatever their specificity, a rule in no layer over both, and the other way
 round for `!important`. Tailwind 4 writes all of its CSS in four of them.
 
 **Not implemented:** the parts of CSS grid above, transforms,
-animations and transitions, multi-column, shadows, gradients,
+animations and transitions, multi-column, shadows, gradients other than
+linear ones,
 `background-size`, more than one background
 layer (the first is drawn), `position: sticky` (treated as `relative`),
 and the font properties of `::first-line`. A `<col>`'s or a `<colgroup>`'s borders are

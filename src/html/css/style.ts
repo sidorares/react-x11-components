@@ -71,6 +71,15 @@ export interface GridTemplate {
   repeat: { at: number; tracks: GridTrack[] } | null;
 }
 
+/** A `linear-gradient()` (CSS Images 3, 3.1): its direction, an angle
+ *  clockwise from up or a corner the box's shape turns into one, and its
+ *  colour stops, each at a position or where its neighbours put it. */
+export interface LinearGradient {
+  angle: number;
+  corner: 'top left' | 'top right' | 'bottom left' | 'bottom right' | null;
+  stops: { color: string; at: Len | null }[];
+}
+
 /** Where a grid item starts or ends: a line, a span, or auto. */
 export type GridLine = { line: number } | { span: number } | null;
 
@@ -254,6 +263,9 @@ export interface ComputedStyle {
 
   backgroundColor: string | null;
   backgroundImage: string | null;
+  /** A background drawn rather than fetched: the first layer's linear
+   *  gradient, where it is one. */
+  backgroundGradient: LinearGradient | null;
   backgroundRepeat: 'repeat' | 'repeat-x' | 'repeat-y' | 'no-repeat';
   backgroundSize: 'auto' | 'cover' | 'contain';
   backgroundAttachment: 'scroll' | 'fixed' | 'local';
@@ -467,6 +479,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
 
     backgroundColor: null,
     backgroundImage: null,
+    backgroundGradient: null,
     backgroundRepeat: 'repeat',
     backgroundSize: 'auto',
     backgroundAttachment: 'scroll',
@@ -925,9 +938,20 @@ export function applyDeclaration(
       return;
     }
     case 'background-image': {
+      const first = splitCommas(value)[0] ?? '';
+      if (IMAGE_FUNCTION.test(first.trim().toLowerCase())) {
+        // a gradient is an image drawn rather than fetched; one this does
+        // not draw is as though there were none
+        style.backgroundImage = null;
+        style.backgroundGradient = parseLinearGradient(first, ctx);
+        return;
+      }
       // a bad url makes the declaration invalid, and it is dropped
-      const url = parseUrl(splitCommas(value)[0]);
-      if (url !== undefined) style.backgroundImage = url;
+      const url = parseUrl(first);
+      if (url !== undefined) {
+        style.backgroundImage = url;
+        style.backgroundGradient = null;
+      }
       return;
     }
     case 'background-repeat': {
@@ -1657,6 +1681,7 @@ function applyBackgroundShorthand(
   if (!layer) return;
   style.backgroundColor = layer.color;
   style.backgroundImage = layer.image;
+  style.backgroundGradient = layer.gradient;
   style.backgroundRepeat = layer.repeat;
   style.backgroundSize = layer.size;
   style.backgroundAttachment = layer.attachment;
@@ -1668,6 +1693,7 @@ function applyBackgroundShorthand(
 interface BackgroundLayer {
   color: string | null;
   image: string | null;
+  gradient: LinearGradient | null;
   repeat: ComputedStyle['backgroundRepeat'];
   size: ComputedStyle['backgroundSize'];
   attachment: ComputedStyle['backgroundAttachment'];
@@ -1692,6 +1718,7 @@ function readBackgroundLayer(
   const layer: BackgroundLayer = {
     color: null,
     image: null,
+    gradient: null,
     repeat: 'repeat',
     size: 'auto',
     attachment: 'scroll',
@@ -1713,7 +1740,7 @@ function readBackgroundLayer(
         const url = parseUrl(part);
         if (url === undefined) return null;
         layer.image = url;
-      }
+      } else if (v !== 'none') layer.gradient = parseLinearGradient(part, ctx);
       i += 1;
     } else if (v === 'repeat-x' || v === 'repeat-y' || REPEATS.has(v)) {
       if (!once(2)) return null;
@@ -1770,8 +1797,82 @@ function readBackgroundLayer(
   return layer;
 }
 
-/** The images CSS3 has beyond `url()`, which a layer may name and this
- *  draws as nothing. */
+/**
+ * A `linear-gradient()`, or null for any other image function and for one
+ * that is no gradient: a direction by angle, by side or by corner, with a
+ * colour interpolation method (`in oklab`, which Tailwind 4 writes) read and
+ * not honoured, and at least two stops, each with no position, one, or two;
+ * a bare percentage between stops, a hint, is passed over.
+ */
+function parseLinearGradient(
+  text: string,
+  ctx: UnitContext,
+): LinearGradient | null {
+  const m = /^linear-gradient\((.*)\)$/is.exec(text.trim());
+  if (!m) return null;
+  const args = splitCommas(m[1]).map((a) => a.trim());
+  const out: LinearGradient = { angle: Math.PI, corner: null, stops: [] };
+  const first = (args[0] ?? '')
+    .toLowerCase()
+    .replace(
+      /\bin\s+[a-z-]+(?:\s+(?:shorter|longer|increasing|decreasing)\s+hue)?/,
+      '',
+    )
+    .trim();
+  let from = 0;
+  if (!first || first.startsWith('to ')) {
+    from = 1;
+    const sides = first.split(/\s+/).slice(1).sort();
+    const side = sides.join(' ');
+    const SIDES: Record<string, number> = {
+      top: 0,
+      right: Math.PI / 2,
+      bottom: Math.PI,
+      left: (3 * Math.PI) / 2,
+    };
+    if (sides.length === 1 && side in SIDES) out.angle = SIDES[side];
+    else if (sides.length === 2) {
+      const [a, b] = sides;
+      const vertical = a === 'bottom' || a === 'top' ? a : b;
+      const horizontal = a === 'left' || a === 'right' ? a : b;
+      if (vertical === horizontal) return null;
+      out.corner = `${vertical} ${horizontal}` as LinearGradient['corner'];
+    } else if (sides.length) return null;
+  } else {
+    const angle = /^(-?\d*\.?\d+)(deg|rad|grad|turn)?$/.exec(first);
+    if (angle) {
+      const n = Number(angle[1]);
+      const unit = angle[2] ?? (n === 0 ? 'deg' : '');
+      const turns: Record<string, number> = {
+        deg: 1 / 360,
+        rad: 1 / (2 * Math.PI),
+        grad: 1 / 400,
+        turn: 1,
+      };
+      if (!(unit in turns)) return null;
+      out.angle = n * turns[unit] * 2 * Math.PI;
+      from = 1;
+    }
+  }
+  for (const arg of args.slice(from)) {
+    const parts = splitValue(arg);
+    const color = parseColor(parts[0] ?? '');
+    if (color === null) {
+      // a hint, the midpoint of the transition, which this does not move
+      if (parts.length === 1 && parseLength(parts[0], ctx) !== null) continue;
+      return null;
+    }
+    if (parts.length > 3) return null;
+    const at = parts.slice(1).map((p) => parseLength(p, ctx));
+    if (at.some((p) => p === null || p === AUTO)) return null;
+    if (!at.length) out.stops.push({ color, at: null });
+    for (const p of at) out.stops.push({ color, at: p as Len });
+  }
+  return out.stops.length >= 2 ? out : null;
+}
+
+/** The images CSS3 has beyond `url()`, which a layer may name: a linear
+ *  gradient is drawn, and the rest draw as nothing. */
 const IMAGE_FUNCTION =
   /^(?:-(?:webkit|moz|o|ms)-)?(?:(?:repeating-)?(?:linear|radial|conic)-gradient|gradient|image-set|cross-fade|element|paint)\(/;
 
@@ -2348,6 +2449,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   background: [
     'backgroundColor',
     'backgroundImage',
+    'backgroundGradient',
     'backgroundRepeat',
     'backgroundSize',
     'backgroundAttachment',
@@ -2355,7 +2457,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
     'backgroundPositionY',
   ],
   'background-color': ['backgroundColor'],
-  'background-image': ['backgroundImage'],
+  'background-image': ['backgroundImage', 'backgroundGradient'],
   'background-repeat': ['backgroundRepeat'],
   'background-size': ['backgroundSize'],
   'background-attachment': ['backgroundAttachment'],

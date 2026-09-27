@@ -1857,7 +1857,13 @@ type PaintOp =
 /** What painting the document fills, in order. The glyphs are left out:
  *  the recorder has nowhere to draw them. `ops`, when given, gets the fills
  *  and the clips around them. */
-async function fillsOf(el: HtmlViewNode, ops?: PaintOp[]): Promise<Fill[]> {
+async function fillsOf(
+  el: HtmlViewNode,
+  ops?: PaintOp[],
+  options?: {
+    canvas?: { x: number; y: number; width: number; height: number };
+  },
+): Promise<Fill[]> {
   const { paintDocument } = await import('../src/html/paint.js');
   type T = { lines: { texts: { layout: object }[] }[] | null; children: T[] };
   const tree = (el as unknown as { _tree: { root: T } })._tree;
@@ -1919,6 +1925,16 @@ async function fillsOf(el: HtmlViewNode, ops?: PaintOp[]): Promise<Fill[]> {
       }
       path = null;
     },
+    createLinearGradient(x0: number, y0: number, x1: number, y1: number) {
+      const stops: [number, string][] = [];
+      return {
+        line: [x0, y0, x1, y1],
+        stops,
+        addColorStop(at: number, color: string) {
+          stops.push([at, color]);
+        },
+      };
+    },
   };
   for (const layout of layouts) {
     (layout as { draw: unknown }).draw = () => {};
@@ -1931,6 +1947,7 @@ async function fillsOf(el: HtmlViewNode, ops?: PaintOp[]): Promise<Fill[]> {
       selection: null,
       selectionColor: null,
       imageFor: () => null,
+      ...options,
     });
   } finally {
     for (const layout of layouts) delete (layout as { draw?: unknown }).draw;
@@ -7011,5 +7028,114 @@ test("a rounded box's border is a ring that follows its corners", async () => {
   assert.ok(
     green.length >= 3 && green.every((f) => !f.inner),
     'straight sides',
+  );
+});
+
+// --- linear gradients -------------------------------------------------------------
+
+test('a linear gradient is drawn over the colour, across the box', async () => {
+  // CSS Images 3: Tailwind 4's `bg-linear-to-r from-… to-…` is written
+  // `linear-gradient(to right in oklab, …)`, and a gradient was drawn as
+  // nothing
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="width:200px;height:100px;background:#ffffff ' +
+      'linear-gradient(to right in oklab, #ff0000, #00ff00 40%, #0000ff)">' +
+      '</div><div style="width:100px;height:100px;background-image:' +
+      'linear-gradient(to top right, #ff0000 20px, #0000ff)"></div>',
+  );
+  const fills = await fillsOf(view(node));
+  const gradients = fills
+    .map((f) => f.style as { line?: number[]; stops?: [number, string][] })
+    .filter((g) => g && g.line);
+  assert.strictEqual(gradients.length, 2);
+  const [across, corner] = gradients;
+  assert.deepStrictEqual(
+    across.line!.map((v) => Math.round(v)),
+    [0, 50, 200, 50],
+  );
+  assert.deepStrictEqual(
+    across.stops!.map(([at]) => at),
+    [0, 0.4, 1],
+  );
+  // a corner's line is the square's diagonal, its first stop 20px along it
+  const [x0, y0, x1, y1] = corner.line!;
+  assert.ok(Math.abs(x1 - x0 - 100) < 1e-6 && Math.abs(y0 - y1 - 100) < 1e-6);
+  assert.ok(Math.abs(corner.stops![0][0] - 20 / Math.hypot(100, 100)) < 1e-6);
+  // and the white is painted under the first one
+  assert.ok(fills.some((f) => f.style === parseColor('#ffffff')));
+});
+
+/** The gradients a paint filled with, and where. */
+function gradientFills(fills: Fill[]) {
+  return fills
+    .filter((f) => (f.style as { line?: number[] } | null)?.line)
+    .map((f) => {
+      const g = f.style as { line: number[]; stops: [number, string][] };
+      // to the thousandth, where a sine of pi is not quite nought
+      const line = g.line.map((v) => Math.round(v * 1000) / 1000 + 0);
+      return { x: f.x, y: f.y, w: f.w, h: f.h, line, stops: g.stops };
+    });
+}
+
+test('a gradient is the size of the padding box, and repeats under the borders', async () => {
+  // CSS Backgrounds 3: an image with no size of its own is the size of the
+  // background positioning area, the padding box, and tiles from there; a
+  // gradient measured on the border box put every stop a border's width
+  // early (WPT floats-clear/clear-on-replaced-element's red bands)
+  const { node } = await render(
+    '<style>body{margin:0}</style><div style="width:100px;height:40px;' +
+      'border:10px dashed transparent;background-image:' +
+      'linear-gradient(to right, #ff0000, #0000ff)"></div>',
+  );
+  const tiles = gradientFills(await fillsOf(view(node)));
+  assert.strictEqual(
+    tiles.length,
+    9,
+    'the padding box and the eight around it',
+  );
+  const middle = tiles.find((t) => t.x === 10 && t.y === 10)!;
+  assert.deepStrictEqual([middle.w, middle.h], [100, 40]);
+  assert.deepStrictEqual(middle.line, [10, 30, 110, 30]);
+  // the left border shows the end of the tile before, not the start colour
+  const left = tiles.find((t) => t.x === 0 && t.y === 10)!;
+  assert.deepStrictEqual([left.w, left.h], [10, 40]);
+  assert.deepStrictEqual(left.line, [-90, 30, 10, 30]);
+});
+
+test("a gradient's stops past its ends lengthen its line", async () => {
+  // the colours at the box's edges are the ones between, not the stops'
+  const { node } = await render(
+    '<style>body{margin:0}</style><div style="width:100px;height:20px;' +
+      'background-image:linear-gradient(90deg, #ff0000 -50%, #00ff00, ' +
+      '#0000ff 150%)"></div>',
+  );
+  const [only] = gradientFills(await fillsOf(view(node)));
+  assert.deepStrictEqual(only.line, [-50, 10, 150, 10]);
+  assert.deepStrictEqual(
+    only.stops.map(([at]) => at),
+    [0, 0.5, 1],
+  );
+});
+
+test('a gradient on the root repeats down a canvas taller than the page', async () => {
+  // the root's background is sized by the root element and tiled over the
+  // canvas: the stripes a browser shows under a short page
+  const { node } = await render(
+    '<style>body{margin:0;background:linear-gradient(#ff0000, #0000ff)}' +
+      '</style><div style="height:100px"></div>',
+  );
+  const tiles = gradientFills(
+    await fillsOf(view(node), undefined, {
+      canvas: { x: 0, y: 0, width: 400, height: 250 },
+    }),
+  );
+  assert.deepStrictEqual(
+    tiles.map((t) => [t.y, t.h, t.line[1], t.line[3]]),
+    [
+      [0, 100, 0, 100],
+      [100, 100, 100, 200],
+      [200, 50, 200, 300],
+    ],
   );
 });
