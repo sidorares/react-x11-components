@@ -217,6 +217,23 @@ messages are pinned by tests.
   pushes live bindings above the document's own; leaving the state pops
   them and the originals — still tracked underneath — are current
   immediately. The `Binding` element is the same mechanism with a `when`.
+- **The wheel is in Qt's units, and Qt's directions.** `wheel.angleDelta`
+  is eighths of a degree, 120 to a notch, positive when the wheel turns
+  away from the user — up, and on the horizontal axis _left_: Qt's X11
+  plugin maps button 6, a scroll left, to +120, and `QWheelEvent::inverted`
+  says the same. (Qt's QML `WheelEvent` page says "up/right"; the
+  platforms disagree with it.) react-x11 reports logical pixels, 48 to a
+  notch, positive down and right, so both axes are negated and scaled by
+  2.5, and `wheel.angleDelta.y / 120` is one step a notch, as ported code
+  expects. `wheel.pixelDelta` is the same scroll in logical pixels from a
+  device that measures one — a touchpad, a high-resolution wheel
+  (react-x11's `smooth`) — and `(0, 0)` from a notched wheel, as Qt's X11
+  and Windows plugins leave it, so a handler that prefers `pixelDelta` and
+  falls back to `angleDelta`, as Qt's docs ask, ports unchanged. One
+  written on a Mac that reads `pixelDelta` alone does not: Qt's macOS and
+  Wayland plugins estimate pixels for a notched wheel too. Under Shift a
+  plain wheel arrives in `angleDelta.x`: react-x11 turns it sideways
+  before any handler sees it, where Qt's X11 plugin transposes on Alt.
 - **Not there yet, on purpose:** `opacity`/`rotation`/`scale` (need
   offscreen composition / a transform path in core — declared, warned
   once, ignored), `Image.fillMode` beyond Stretch (needs a fit mode on

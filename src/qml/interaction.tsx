@@ -56,6 +56,7 @@ interface PointerEventLike {
 interface WheelEventLike extends PointerEventLike {
   deltaX?: number;
   deltaY?: number;
+  smooth?: boolean;
 }
 
 // Qt's modifier flags, so `mouse.modifiers & Qt.ShiftModifier` reads as
@@ -130,6 +131,20 @@ export function keyFocusProps(inst: QmlInstance): Record<string, unknown> {
 
 // --- MouseArea -------------------------------------------------------------
 
+// The wheel, from react-x11's units into Qt's. react-x11 hands a handler
+// logical pixels, 48 to a notch (its `WheelEvent` declaration), positive
+// where the content advances: down, and right. Qt's `angleDelta` is eighths
+// of a degree, 120 to a notch, positive where the wheel turns away from the
+// user: up, and *left* — xcb's plugin maps button 6 to +120, and
+// `QWheelEvent::inverted` and `QAbstractSlider` both say a scroll to the
+// right is negative. (The QML WheelEvent page says "up/right"; every
+// platform plugin disagrees.) So both axes flip, and a notch down is -120.
+const ANGLE_PER_PX = 120 / 48;
+
+/** One axis of Qt's wheel from react-x11's: flipped, times `per`. */
+const qtWheelAxis = (px: number | undefined, per = 1): number =>
+  px ? -px * per : 0; // an axis that did not move is 0, not -0
+
 function MouseAreaView({ inst }: { inst: QmlInstance }): ReactElement {
   const enabled = inst.slot('enabled').peek() !== false;
   const hoverEnabled = inst.slot('hoverEnabled').peek() === true;
@@ -170,7 +185,18 @@ function MouseAreaView({ inst }: { inst: QmlInstance }): ReactElement {
     handlers.onWheel = (e: WheelEventLike) => {
       inst.emit('wheel', {
         ...mouse(e),
-        angleDelta: { x: e.deltaX ?? 0, y: e.deltaY ?? 0 },
+        angleDelta: {
+          x: qtWheelAxis(e.deltaX, ANGLE_PER_PX),
+          y: qtWheelAxis(e.deltaY, ANGLE_PER_PX),
+        },
+        // Pixels only where a device measured them — a touchpad, a
+        // high-resolution wheel: react-x11's `smooth`. A notch's 48 are a
+        // toolkit's choice rather than a measurement, so a notched wheel
+        // leaves (0, 0), as Qt's X11 plugin does, and a handler falls back
+        // to angleDelta the way Qt's docs tell it to.
+        pixelDelta: e.smooth
+          ? { x: qtWheelAxis(e.deltaX), y: qtWheelAxis(e.deltaY) }
+          : { x: 0, y: 0 },
       });
     };
     if (hoverEnabled) {
