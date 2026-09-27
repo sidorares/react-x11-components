@@ -26,9 +26,9 @@ import {
   paintRunRules,
 } from '../richtext/runs.js';
 import type { FillContext } from '../richtext/runs.js';
-import { inkColor, isTransparent, resolve } from './css/values.js';
+import { alphaOf, inkColor, isTransparent, resolve } from './css/values.js';
 import type { Len } from './css/values.js';
-import type { ComputedStyle, LinearGradient } from './css/style.js';
+import type { BoxShadow, ComputedStyle, LinearGradient } from './css/style.js';
 import {
   BOX_RAISES,
   Box,
@@ -78,6 +78,11 @@ export interface PaintContext extends FillContext {
     y1: number,
   ): { addColorStop(offset: number, color: string): void };
   clip?(): void;
+  /** Canvas shadows: ntk bakes and caches the blur, CoreGraphics draws it. */
+  shadowColor?: string;
+  shadowBlur?: number;
+  shadowOffsetX?: number;
+  shadowOffsetY?: number;
   drawImage?(image: unknown, ...args: number[]): void;
   /** ntk's X11 context has patterns; the Cocoa one does not, and tiles. */
   createPattern?(image: unknown, repetition: string): unknown;
@@ -104,6 +109,15 @@ export interface PaintOptions {
   /** The whole element in window coordinates: the canvas the root's
    *  background covers (CSS 2.1 14.2). Absent, the root box is it. */
   canvas?: Rect;
+  /** A drawing made once for its key on a surface `width` by `height` and
+   *  kept, to be drawn with `drawImage`: a blurred shadow, whose blur is
+   *  the cost. Null where there is no surface to be had. */
+  cached?(
+    key: string,
+    width: number,
+    height: number,
+    draw: (ctx: PaintContext) => void,
+  ): unknown;
   /** @internal The box whose background went to the canvas instead. */
   canvasSource?: Box | null;
   /** @internal The boxes clipping what is being painted, outermost first. */
@@ -133,6 +147,19 @@ export function computePaintBounds(box: Box, moved = false): number {
   // clips what it holds — where the scrollable overflow ends. Out-of-flow
   // boxes are the layout's to count.
   let bottom = y2;
+  // A shadow is ink past the box, and no overflow: a repaint of the strip
+  // under a card has to reach the card, and the document is no taller.
+  const shadows = own ? box.style.boxShadow : null;
+  if (shadows) {
+    for (const shadow of shadows) {
+      if (shadow.inset) continue;
+      const reach = shadow.spread + shadowReach(shadow.blur);
+      x1 = Math.min(x1, box.x + shadow.x - reach);
+      y1 = Math.min(y1, box.y + shadow.y - reach);
+      x2 = Math.max(x2, box.x + box.width + shadow.x + reach);
+      y2 = Math.max(y2, box.y + box.height + shadow.y + reach);
+    }
+  }
   const lines = box.lines;
   if (lines) {
     let tallest = 0;
@@ -547,6 +574,7 @@ function paintOwnBackground(
   // and its borders are the collapsed grid's or none (CSS 2.1 17.6.1)
   if (box.kind === 'table-row' || box.kind === 'table-row-group') return;
   const style = box.style;
+  if (style.boxShadow) paintShadows(ctx, box, options, false);
   if (box !== options.canvasSource) {
     paintBackground(ctx, box, options);
     if (style.backgroundImage) {
@@ -575,8 +603,463 @@ function paintOwnBackground(
       }
     }
   }
+  if (style.boxShadow) paintShadows(ctx, box, options, true);
   if (!box.bordersCollapsed) paintBorders(ctx, box, options);
   if (box.kind === 'table') paintPartBackgrounds(ctx, box, options);
+}
+
+/** How far past its shape a shadow's blur shows: three standard deviations,
+ *  the blur being two (CSS Backgrounds 3, 7.1.1). */
+function shadowReach(blur: number): number {
+  return blur > 0 ? Math.ceil(blur * 1.5) : 0;
+}
+
+const SQUARE: Corners = { x: [0, 0, 0, 0], y: [0, 0, 0, 0] };
+
+/** Corners grown by `by` — a spread's, which rounds a shadow with its box —
+ *  or shrunk where it is negative; a square corner stays square. */
+function grownCorners(c: Corners, by: number): Corners {
+  const grow = (r: number) => (r > 0 ? Math.max(0, r + by) : 0);
+  return {
+    x: [grow(c.x[0]), grow(c.x[1]), grow(c.x[2]), grow(c.x[3])],
+    y: [grow(c.y[0]), grow(c.y[1]), grow(c.y[2]), grow(c.y[3])],
+  };
+}
+
+/**
+ * A box's shadows (CSS Backgrounds 3, 7.1), the outer ones under its
+ * background and the inset ones over it, back to front. A shadow with no
+ * blur is a shape of one colour, and one that only spreads, the ring
+ * Tailwind's `ring-*` draws a border with, is the band between two shapes.
+ * A blurred one is the context's shadow of a shape drawn clear of the
+ * window, so only the shadow lands: ntk bakes and caches the blur, and
+ * CoreGraphics draws it. An outer shadow is not drawn under its box, which
+ * the box's own opaque colour usually sees to; where it does not, the
+ * shadow is clipped out of the box, a clip the size of the window on X11.
+ * An inset one is clipped to the padding box.
+ */
+function paintShadows(
+  ctx: PaintContext,
+  box: Box,
+  options: PaintOptions,
+  inset: boolean,
+): void {
+  const shadows = box.style.boxShadow!;
+  if (!ctx.beginPath || !ctx.fill || !ctx.roundRect) return;
+  const style = box.style;
+  const left = box.x + options.originX;
+  const top = frameY(box) + options.originY;
+  const rect = snapped(left, top, box.width, frameHeight(box));
+  if (!(rect.width > 0 && rect.height > 0)) return;
+  const corners = cornersOf(style, rect.width, rect.height) ?? SQUARE;
+  const canShadow = 'shadowBlur' in ctx;
+  if (!inset) {
+    const bg = style.backgroundColor;
+    const covered =
+      !!bg && !isTransparent(bg) && alphaOf(inkColor(bg, style.color)) === 1;
+    for (let i = shadows.length - 1; i >= 0; i -= 1) {
+      const s = shadows[i];
+      if (s.inset || (s.blur > 0 && !canShadow)) continue;
+      const shape = {
+        x: rect.x + s.x - s.spread,
+        y: rect.y + s.y - s.spread,
+        width: rect.width + 2 * s.spread,
+        height: rect.height + 2 * s.spread,
+      };
+      if (!(shape.width > 0 && shape.height > 0)) continue;
+      const reach = shadowReach(s.blur);
+      if (
+        !clampRect(
+          options,
+          shape.x - reach,
+          shape.y - reach,
+          shape.width + 2 * reach,
+          shape.height + 2 * reach,
+        )
+      ) {
+        continue;
+      }
+      const around = grownCorners(corners, s.spread);
+      const color = inkColor(s.color, style.color);
+      if (!(s.blur > 0) && !s.x && !s.y && s.spread >= 0 && !covered) {
+        // a ring about the box: the band between it and the spread
+        ctx.fillStyle = color;
+        fillRing(ctx, shape, around, rect, corners);
+        continue;
+      }
+      if (!(s.blur > 0) && covered) {
+        // a hard shadow, under a box that hides what falls under it
+        fillShadow(
+          ctx,
+          s,
+          color,
+          (dx) => {
+            roundedRect(
+              ctx,
+              shape.x - dx,
+              shape.y,
+              shape.width,
+              shape.height,
+              around,
+            );
+          },
+          0,
+        );
+        continue;
+      }
+      if (
+        bakedOuter(
+          ctx,
+          options,
+          s,
+          color,
+          shape,
+          around,
+          covered ? null : { rect, corners },
+        )
+      ) {
+        continue;
+      }
+      // what of the shadow falls under the box is not drawn
+      const clipped = !covered && ctx.clip && ctx.rect && ctx.save;
+      if (clipped) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect!(
+          shape.x - reach - 1,
+          shape.y - reach - 1,
+          shape.width + 2 * reach + 2,
+          shape.height + 2 * reach + 2,
+        );
+        roundedRect(
+          ctx,
+          rect.x,
+          rect.y,
+          rect.width,
+          rect.height,
+          corners,
+          true,
+          true,
+        );
+        ctx.clip!();
+      }
+      fillShadow(
+        ctx,
+        s,
+        color,
+        (dx) => {
+          roundedRect(
+            ctx,
+            shape.x - dx,
+            shape.y,
+            shape.width,
+            shape.height,
+            around,
+          );
+        },
+        shape.x + shape.width + reach,
+      );
+      if (clipped) ctx.restore();
+    }
+    return;
+  }
+  // the padding box, which an inset shadow falls inside
+  const pad = {
+    x: rect.x + box.borderLeft,
+    y: rect.y + box.borderTop,
+    width: rect.width - box.borderLeft - box.borderRight,
+    height: rect.height - box.borderTop - box.borderBottom,
+  };
+  if (!(pad.width > 0 && pad.height > 0)) return;
+  if (!clampRect(options, pad.x, pad.y, pad.width, pad.height)) return;
+  const inner = insetCorners(
+    corners,
+    box.borderTop,
+    box.borderRight,
+    box.borderBottom,
+    box.borderLeft,
+  );
+  for (let i = shadows.length - 1; i >= 0; i -= 1) {
+    const s = shadows[i];
+    if (!s.inset || (s.blur > 0 && !canShadow)) continue;
+    const color = inkColor(s.color, style.color);
+    // the hole the shadow is cast around, moved and shrunk by the spread
+    const hole = {
+      x: pad.x + s.x + s.spread,
+      y: pad.y + s.y + s.spread,
+      width: Math.max(0, pad.width - 2 * s.spread),
+      height: Math.max(0, pad.height - 2 * s.spread),
+    };
+    const within = grownCorners(inner, -s.spread);
+    if (!(s.blur > 0) && !s.x && !s.y && s.spread >= 0) {
+      // Tailwind's `ring-inset`: a band inside the padding edge
+      ctx.fillStyle = color;
+      fillRing(ctx, pad, inner, hole, within);
+      continue;
+    }
+    if (bakedInset(ctx, options, s, color, pad, inner, hole, within)) continue;
+    if (!ctx.clip || !ctx.save || !ctx.rect) continue;
+    ctx.save();
+    ctx.beginPath();
+    roundedRect(ctx, pad.x, pad.y, pad.width, pad.height, inner);
+    ctx.clip();
+    // a frame around the hole, as wide as the blur and the offset reach
+    const reach = shadowReach(s.blur) + Math.abs(s.x) + Math.abs(s.y) + 1;
+    const frame = {
+      x: pad.x - reach,
+      y: pad.y - reach,
+      width: pad.width + 2 * reach,
+      height: pad.height + 2 * reach,
+    };
+    fillShadow(
+      ctx,
+      s,
+      color,
+      (dx) => {
+        ctx.rect!(frame.x - dx, frame.y, frame.width, frame.height);
+        if (hole.width > 0 && hole.height > 0) {
+          roundedRect(
+            ctx,
+            hole.x - dx,
+            hole.y,
+            hole.width,
+            hole.height,
+            within,
+            true,
+            true,
+          );
+        }
+      },
+      frame.x + frame.width + shadowReach(s.blur),
+    );
+    ctx.restore();
+  }
+}
+
+/** Corners as part of a key. */
+function cornerKey(c: Corners): string {
+  return `${c.x.join(',')}/${c.y.join(',')}`;
+}
+
+/**
+ * An outer shadow drawn once on a surface of its own and composited: the
+ * shape's shadow, and where `box` is given the box cut out of it — so a box
+ * that shows what is behind it shows no shadow there, with the clip on the
+ * small surface rather than the window. False where there is no surface.
+ */
+function bakedOuter(
+  ctx: PaintContext,
+  options: PaintOptions,
+  s: BoxShadow,
+  color: string,
+  shape: Rect,
+  around: Corners,
+  box: { rect: Rect; corners: Corners } | null,
+): boolean {
+  if (!options.cached || !ctx.drawImage) return false;
+  const reach = shadowReach(s.blur) + 1;
+  const x0 = Math.floor(shape.x) - reach;
+  const y0 = Math.floor(shape.y) - reach;
+  const w = Math.ceil(shape.x + shape.width) + reach - x0;
+  const h = Math.ceil(shape.y + shape.height) + reach - y0;
+  const sx = shape.x - x0;
+  const sy = shape.y - y0;
+  const cut = box && {
+    x: box.rect.x - x0,
+    y: box.rect.y - y0,
+    width: box.rect.width,
+    height: box.rect.height,
+  };
+  const key = [
+    'shadow',
+    w,
+    h,
+    sx,
+    sy,
+    shape.width,
+    shape.height,
+    cornerKey(around),
+    s.blur,
+    color,
+    cut
+      ? `${cut.x},${cut.y},${cut.width},${cut.height},${cornerKey(box.corners)}`
+      : '',
+  ].join('|');
+  const image = options.cached(key, w, h, (sctx) => {
+    if (cut) {
+      sctx.save();
+      sctx.beginPath!();
+      sctx.rect!(0, 0, w, h);
+      roundedRect(
+        sctx,
+        cut.x,
+        cut.y,
+        cut.width,
+        cut.height,
+        box.corners,
+        true,
+        true,
+      );
+      sctx.clip!();
+    }
+    fillShadow(
+      sctx,
+      s,
+      color,
+      (dx) => {
+        roundedRect(sctx, sx - dx, sy, shape.width, shape.height, around);
+      },
+      sx + shape.width + reach,
+    );
+    if (cut) sctx.restore();
+  });
+  if (!image) return false;
+  ctx.drawImage(image, x0, y0);
+  return true;
+}
+
+/**
+ * An inset shadow drawn once on a surface the size of the padding box and
+ * composited: a frame around the hole, whose shadow falls inside, clipped
+ * to the padding box's corners on the surface. False where there is none.
+ */
+function bakedInset(
+  ctx: PaintContext,
+  options: PaintOptions,
+  s: BoxShadow,
+  color: string,
+  pad: Rect,
+  inner: Corners,
+  hole: Rect,
+  within: Corners,
+): boolean {
+  if (!options.cached || !ctx.drawImage) return false;
+  const w = Math.round(pad.width);
+  const h = Math.round(pad.height);
+  const hx = hole.x - pad.x;
+  const hy = hole.y - pad.y;
+  const reach = shadowReach(s.blur) + Math.abs(s.x) + Math.abs(s.y) + 1;
+  const key = [
+    'inset',
+    w,
+    h,
+    cornerKey(inner),
+    hx,
+    hy,
+    hole.width,
+    hole.height,
+    cornerKey(within),
+    s.blur,
+    color,
+  ].join('|');
+  const image = options.cached(key, w, h, (sctx) => {
+    sctx.save();
+    sctx.beginPath!();
+    roundedRect(sctx, 0, 0, w, h, inner);
+    sctx.clip!();
+    fillShadow(
+      sctx,
+      s,
+      color,
+      (dx) => {
+        sctx.rect!(-reach - dx, -reach, w + 2 * reach, h + 2 * reach);
+        if (hole.width > 0 && hole.height > 0) {
+          roundedRect(
+            sctx,
+            hx - dx,
+            hy,
+            hole.width,
+            hole.height,
+            within,
+            true,
+            true,
+          );
+        }
+      },
+      w + reach + shadowReach(s.blur),
+    );
+    sctx.restore();
+  });
+  if (!image) return false;
+  ctx.drawImage(image, pad.x, pad.y);
+  return true;
+}
+
+/**
+ * Fill a shadow's shape: in its colour where it has no blur, and otherwise
+ * as the context's shadow of the shape drawn `dx` to the left — clear of
+ * the window, its right edge at `right` before the move — with the shadow
+ * offset back by as much, so that only the shadow lands.
+ */
+function fillShadow(
+  ctx: PaintContext,
+  s: BoxShadow,
+  color: string,
+  shape: (dx: number) => void,
+  right: number,
+): void {
+  if (!(s.blur > 0)) {
+    ctx.fillStyle = color;
+    ctx.beginPath!();
+    shape(0);
+    ctx.fill!();
+    return;
+  }
+  const dx = Math.ceil(right) + 1;
+  ctx.save();
+  ctx.shadowColor = color;
+  ctx.shadowBlur = s.blur;
+  ctx.shadowOffsetX = dx;
+  ctx.shadowOffsetY = 0;
+  ctx.fillStyle = '#000000';
+  ctx.beginPath!();
+  shape(dx);
+  ctx.fill!();
+  ctx.restore();
+}
+
+/**
+ * The band between two rounded rectangles, the inner inside the outer, in
+ * the colour already set. Where a side has no band the two edges meet, and
+ * they have to be drawn one way to cancel: two `roundRect`s under the
+ * even-odd rule, or two paths of curves, the inside run backwards under
+ * the non-zero rule — ntk leaves a hairline along a curve drawn twice the
+ * same way, and an arc beside a curve never quite meets it.
+ */
+function fillRing(
+  ctx: PaintContext,
+  outer: Rect,
+  outerCorners: Corners,
+  inner: Rect,
+  innerCorners: Corners,
+): void {
+  const curves =
+    canCurve(ctx) &&
+    (!circlesFit(outerCorners, outer.width, outer.height) ||
+      !circlesFit(innerCorners, inner.width, inner.height));
+  ctx.beginPath!();
+  roundedRect(
+    ctx,
+    outer.x,
+    outer.y,
+    outer.width,
+    outer.height,
+    outerCorners,
+    curves,
+  );
+  if (inner.width > 0 && inner.height > 0) {
+    roundedRect(
+      ctx,
+      inner.x,
+      inner.y,
+      inner.width,
+      inner.height,
+      innerCorners,
+      curves,
+      true,
+    );
+  }
+  ctx.fill!(curves ? 'nonzero' : 'evenodd');
 }
 
 /** The children of a box a paint may reach, in document order: where the
@@ -1714,22 +2197,19 @@ function roundedRing(
   const right = box.borderRight;
   const bottom = box.borderBottom;
   const left = box.borderLeft;
-  const iw = Math.max(0, rect.w - left - right);
-  const ih = Math.max(0, rect.h - top - bottom);
-  const inner = insetCorners(corners, top, right, bottom, left);
-  // Where a side has no border its two edges meet, and they have to be
-  // drawn one way to cancel: two `roundRect`s under the even-odd rule, or
-  // two paths of curves, the inside run backwards under the non-zero rule
-  // — ntk leaves a hairline along a curve drawn twice the same way, and an
-  // arc beside a curve never quite meets it.
-  const curves =
-    canCurve(ctx) &&
-    (!circlesFit(corners, rect.w, rect.h) || !circlesFit(inner, iw, ih));
   ctx.fillStyle = inkColor(color, s.color);
-  ctx.beginPath();
-  roundedRect(ctx, rect.x, rect.y, rect.w, rect.h, corners, curves);
-  roundedRect(ctx, rect.x + left, rect.y + top, iw, ih, inner, curves, true);
-  ctx.fill(curves ? 'nonzero' : 'evenodd');
+  fillRing(
+    ctx,
+    { x: rect.x, y: rect.y, width: rect.w, height: rect.h },
+    corners,
+    {
+      x: rect.x + left,
+      y: rect.y + top,
+      width: Math.max(0, rect.w - left - right),
+      height: Math.max(0, rect.h - top - bottom),
+    },
+    insetCorners(corners, top, right, bottom, left),
+  );
   return true;
 }
 

@@ -59,6 +59,7 @@ import { buildBoxes, CONTENT_IMAGES } from './layout/boxes.js';
 import type { Box, BoxTree, ReplacedKind } from './layout/boxes.js';
 import { layoutDocument } from './layout/block.js';
 import { TextLayoutCache } from './layout/cache.js';
+import { SurfaceCache } from './surfaces.js';
 import type { FontsLike } from './layout/inline.js';
 // Through the inline module rather than a second cache: the offsets table for
 // a layout is built once, on the first selection that needs it.
@@ -148,6 +149,8 @@ const enum Stale {
 export class HtmlViewNode extends Node {
   private _source = new HtmlSource();
   private _resources: ResourceStore;
+  /** Blurred shadows, drawn once each. */
+  private _shadowCache: SurfaceCache | null = null;
   private _cascade: Cascade | null = null;
   private _tree: BoxTree | null = null;
   private _stale: Stale = Stale.Everything;
@@ -613,6 +616,8 @@ export class HtmlViewNode extends Node {
   override destroySubtree(): void {
     this._resources.destroy();
     this._source.destroy();
+    this._shadowCache?.destroy();
+    this._shadowCache = null;
     this._tree = null;
     this._cascade = null;
     super.destroySubtree();
@@ -858,6 +863,13 @@ export class HtmlViewNode extends Node {
         const size = image ? this._resources.imageSize(url) : null;
         return image && size ? { image, ...size } : null;
       },
+      cached: (key, width, height, draw) =>
+        (this._shadowCache ??= new SurfaceCache(this.app)).get(
+          key,
+          width,
+          height,
+          draw as (ctx: unknown) => void,
+        ),
     });
   }
 }

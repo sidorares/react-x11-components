@@ -275,6 +275,17 @@ colours the message rather than a box inside it. Its image is sized by the
 root element and repeated over the rest, so a gradient on a page shorter
 than the window repeats below it, in the stripes a browser shows.
 
+**Shadows:** `box-shadow`, outer and inset, with offsets, blur, spread and
+any number of them, under the box's background and over it: a card's,
+Tailwind's `shadow-*`, and its `ring-*`, which is a shadow that only
+spreads and draws a border without taking room. An outer shadow is not
+drawn under its box, which a box's own opaque colour usually sees to and
+a cut sees to where it does not. A blurred shadow is drawn once for its
+size, corners, blur and colour on a surface of its own and composited
+after, so thirty cards with one shadow blur it once; it is ntk's canvas
+shadow on X11, which is a blur on every fill of a path otherwise, and
+CoreGraphics' on macOS.
+
 **HTML's own attributes:** the presentational ones mail and generated
 documents are written in are read as the styles they stand for, below
 every author rule — `bgcolor`, `background`, `width` and `height`,
@@ -416,8 +427,8 @@ whatever their specificity, a rule in no layer over both, and the other way
 round for `!important`. Tailwind 4 writes all of its CSS in four of them.
 
 **Not implemented:** the parts of CSS grid above, transforms,
-animations and transitions, multi-column, shadows, gradients other than
-linear ones,
+animations and transitions, multi-column, `text-shadow`, gradients other
+than linear ones,
 `background-size`, more than one background
 layer (the first is drawn), `position: sticky` (treated as `relative`),
 and the font properties of `::first-line`. A `<col>`'s or a `<colgroup>`'s borders are

@@ -304,6 +304,24 @@ export function isTransparent(color: string | null | undefined): boolean {
 }
 
 /**
+ * A colour's opacity, 0 to 1, as `parseColor` leaves it: a hex colour's
+ * fourth or eighth digits, an `rgba()`'s last number, and nothing for
+ * `transparent`; every other colour, `currentColor` among them, is taken
+ * for opaque.
+ */
+export function alphaOf(color: string): number {
+  if (color === 'transparent') return 0;
+  if (color.charCodeAt(0) === 35) {
+    // `#rgba` and `#rrggbbaa`
+    if (color.length === 5) return parseInt(color[4], 16) / 15;
+    if (color.length === 9) return parseInt(color.slice(7), 16) / 255;
+    return 1;
+  }
+  const m = /^rgba\([^)]*,\s*([\d.]+)\s*\)$/.exec(color);
+  return m ? Number(m[1]) : 1;
+}
+
+/**
  * A colour token. `null` means the value was not a colour, which is what a
  * shorthand parser branches on.
  *
