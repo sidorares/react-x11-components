@@ -27,6 +27,7 @@ import {
 } from '../richtext/runs.js';
 import type { FillContext } from '../richtext/runs.js';
 import { alphaOf, inkColor, isTransparent, resolve } from './css/values.js';
+import { borderShades } from './css/color.js';
 import type { Len } from './css/values.js';
 import type { BoxShadow, ComputedStyle, LinearGradient } from './css/style.js';
 import {
@@ -2099,6 +2100,7 @@ function paintBorders(
   const h = Math.round(top + frameHeight(box)) - y;
   if (w <= 0 || h <= 0) return;
   if (roundedRing(ctx, box, x, y, w, h, options)) return;
+  if (sculpted(s) && paintSculpted(ctx, box, x, y, w, h, options)) return;
 
   const edge = (
     ex: number,
@@ -2210,6 +2212,108 @@ function roundedRing(
     },
     insetCorners(corners, top, right, bottom, left),
   );
+  return true;
+}
+
+/** The border styles drawn in two shades, as though lit from the top left. */
+const SCULPTED = new Set(['groove', 'ridge', 'inset', 'outset']);
+
+function sculpted(s: ComputedStyle): boolean {
+  return (
+    SCULPTED.has(s.borderTopStyle) ||
+    SCULPTED.has(s.borderRightStyle) ||
+    SCULPTED.has(s.borderBottomStyle) ||
+    SCULPTED.has(s.borderLeftStyle)
+  );
+}
+
+/**
+ * A border with a 3D style in it, a side at a time as a trapezoid whose
+ * ends meet its neighbours' on the diagonal, so a corner is shared rather
+ * than stacked (CSS 2.1 8.5.3). `inset` shades its top and left in the
+ * colour's shadow and `outset` its bottom and right; `groove` is `inset`
+ * outside `outset`, a band each, and `ridge` the other way round
+ * (`borderShades`). A side of any other style takes its trapezoid in its
+ * colour. The trapezoids are clamped to the painted area, which leaves a
+ * cut end square and out of sight and keeps a long box's far corners out
+ * of X's coordinates. False where the context cannot draw a path, and the
+ * sides are drawn straight.
+ */
+function paintSculpted(
+  ctx: PaintContext,
+  box: Frame,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  options: PaintOptions,
+): boolean {
+  if (!ctx.beginPath || !ctx.moveTo || !ctx.lineTo || !ctx.fill) return false;
+  const area = clampRect(options, x, y, w, h);
+  if (!area) return true;
+  const s = box.style;
+  const t = box.borderTop;
+  const r = box.borderRight;
+  const b = box.borderBottom;
+  const l = box.borderLeft;
+  const cx = (v: number) =>
+    Math.max(area.x - 1, Math.min(v, area.x + area.w + 1));
+  const cy = (v: number) =>
+    Math.max(area.y - 1, Math.min(v, area.y + area.h + 1));
+  /** The band between the edge `outer` of the way in and `inner`, for one
+   *  side: 0 is the border box, 1 the padding box. */
+  const band = (side: number, outer: number, inner: number, color: string) => {
+    const at = (k: number) => ({
+      x0: x + l * k,
+      y0: y + t * k,
+      x1: x + w - r * k,
+      y1: y + h - b * k,
+    });
+    const o = at(outer);
+    const i = at(inner);
+    const points =
+      side === 0
+        ? [o.x0, o.y0, o.x1, o.y0, i.x1, i.y0, i.x0, i.y0]
+        : side === 1
+          ? [o.x1, o.y0, o.x1, o.y1, i.x1, i.y1, i.x1, i.y0]
+          : side === 2
+            ? [o.x1, o.y1, o.x0, o.y1, i.x0, i.y1, i.x1, i.y1]
+            : [o.x0, o.y1, o.x0, o.y0, i.x0, i.y0, i.x0, i.y1];
+    ctx.fillStyle = color;
+    ctx.beginPath!();
+    ctx.moveTo!(cx(points[0]), cy(points[1]));
+    for (let k = 2; k < 8; k += 2)
+      ctx.lineTo!(cx(points[k]), cy(points[k + 1]));
+    ctx.closePath?.();
+    ctx.fill!();
+  };
+  const sides: [number, string, string][] = [
+    [t, s.borderTopStyle, s.borderTopColor],
+    [r, s.borderRightStyle, s.borderRightColor],
+    [b, s.borderBottomStyle, s.borderBottomColor],
+    [l, s.borderLeftStyle, s.borderLeftColor],
+  ];
+  for (let side = 0; side < 4; side += 1) {
+    const [width, style, raw] = sides[side];
+    if (!(width > 0) || style === 'none' || style === 'hidden') continue;
+    if (isTransparent(raw)) continue;
+    const color = inkColor(raw, s.color);
+    if (!SCULPTED.has(style)) {
+      band(side, 0, 1, color);
+      continue;
+    }
+    const shades = borderShades(color) ?? { lit: color, shadowed: color };
+    // the top and the left face the light
+    const lit = side === 0 || side === 3;
+    const shade = (sunk: boolean) =>
+      sunk === lit ? shades.shadowed : shades.lit;
+    if (style === 'inset' || style === 'outset') {
+      band(side, 0, 1, shade(style === 'inset'));
+    } else {
+      band(side, 0, 0.5, shade(style === 'groove'));
+      band(side, 0.5, 1, shade(style !== 'groove'));
+    }
+  }
   return true;
 }
 

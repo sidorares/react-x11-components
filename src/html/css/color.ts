@@ -54,6 +54,37 @@ function readFunction(value: string): string | null {
   return colour ? serialize(colour.rgb, colour.a) : null;
 }
 
+/**
+ * The two shades a 3D border style paints in (`groove`, `ridge`, `inset`,
+ * `outset`), as Chromium shades them: the shadowed sides the colour
+ * darkened — its brightest channel down by a third — and the lit sides the
+ * colour itself; but where darkening leaves black, the colour is the
+ * shadow and the lit sides are lightened instead, so a black groove is
+ * black against #545454 rather than black against black. Null for a
+ * colour this cannot read, `currentColor` resolved first.
+ */
+export function borderShades(
+  color: string,
+): { lit: string; shadowed: string } | null {
+  const read = readRgba(color);
+  if (!read) return null;
+  const { rgb, a } = read;
+  const v = Math.max(rgb[0], rgb[1], rgb[2]);
+  const dark = v > 0.33 ? (v - 0.33) / v : 0;
+  const css = (c: Triple) =>
+    `rgba(${c.map((n) => Math.round(Math.min(1, Math.max(0, n)) * 255)).join(', ')}, ${a})`;
+  if (dark > 0) return { lit: css(rgb), shadowed: css(scaled(rgb, dark)) };
+  const light =
+    v === 0
+      ? ([0.33, 0.33, 0.33] as Triple)
+      : scaled(rgb, Math.min(1, v + 0.33) / v);
+  return { lit: css(light), shadowed: css(rgb) };
+}
+
+function scaled(c: Triple, k: number): Triple {
+  return [c[0] * k, c[1] * k, c[2] * k];
+}
+
 /** A colour as gamma-encoded sRGB, unclipped, and its alpha. */
 interface Rgba {
   rgb: Triple;

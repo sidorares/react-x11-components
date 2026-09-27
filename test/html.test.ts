@@ -7155,6 +7155,47 @@ test("a rounded box's border is a ring that follows its corners", async () => {
   );
 });
 
+test('a 3D border is shaded as Chromium shades one', async () => {
+  const { borderShades } = await import('../src/html/css/color.js');
+  // the shadow is the colour darkened; where that leaves black, the colour
+  // is the shadow and the light is lightened
+  assert.deepStrictEqual(borderShades('black'), {
+    lit: 'rgba(84, 84, 84, 1)',
+    shadowed: 'rgba(0, 0, 0, 1)',
+  });
+  assert.deepStrictEqual(borderShades('white'), {
+    lit: 'rgba(255, 255, 255, 1)',
+    shadowed: 'rgba(171, 171, 171, 1)',
+  });
+  assert.deepStrictEqual(borderShades('rgba(0, 0, 0, 0.5)'), {
+    lit: 'rgba(84, 84, 84, 0.5)',
+    shadowed: 'rgba(0, 0, 0, 0.5)',
+  });
+});
+
+test('groove and ridge are two bands, inset and outset one, lit from the top left', async () => {
+  // a groove in its default colour was drawn as a solid border (WPT
+  // borders/groove-default, ridge-default)
+  const { node } = await render(
+    '<style>body{margin:0} div{width:40px;height:20px;border:8px #ffffff}' +
+      '</style><div style="border-style:groove"></div>' +
+      '<div style="border-style:outset"></div>',
+  );
+  const fills = await fillsOf(view(node));
+  const lit = 'rgba(255, 255, 255, 1)';
+  const shadow = 'rgba(171, 171, 171, 1)';
+  const of = (y0: number, y1: number) =>
+    fills.filter((f) => f.y >= y0 && f.y < y1 && f.w > 0).map((f) => f.style);
+  // the groove: its top's outer band in shadow and its inner band lit, its
+  // bottom's the other way round — eight bands in all
+  const groove = of(0, 36);
+  assert.strictEqual(groove.length, 8);
+  assert.deepStrictEqual(groove.slice(0, 2), [shadow, lit]);
+  // the outset: a band a side, the top and the left lit
+  const outset = of(36, 72);
+  assert.deepStrictEqual(outset, [lit, shadow, shadow, lit]);
+});
+
 // --- linear gradients -------------------------------------------------------------
 
 test('a linear gradient is drawn over the colour, across the box', async () => {
