@@ -3465,6 +3465,26 @@ test('a line of an inline-block clears the floats beside all of its height', asy
   assert.deepStrictEqual([b.x - w.x, b.y - w.y], [0, 150], 'below both');
 });
 
+test('a margin after an empty block with clearance stays in the parent', async () => {
+  // CSS 2.1 8.3.1, 10.6.3: an empty block cleared past a float spends its
+  // own margins on its clearance, and the margins that collapse with it
+  // after it do not collapse through the parent's bottom
+  const { node } = await render(
+    '<div id="a"><div style="float:left;height:1px"></div>' +
+      '<div style="clear:left"></div><div style="margin-top:99px"></div></div>' +
+      '<div id="b" style="margin-bottom:40px">' +
+      '<div style="height:20px;margin-bottom:20px"></div>' +
+      '<div style="float:left;height:20px"></div>' +
+      '<div style="clear:both;margin:30px 0 20px"></div></div>' +
+      '<div id="c"></div>',
+  );
+  const el = view(node);
+  const [a, b, c] = ['a', 'b', 'c'].map((id) => boxOf(el, id));
+  assert.strictEqual(a.height, 100, 'the 99px after the cleared block');
+  assert.strictEqual(b.height, 60, 'but none of its own');
+  assert.strictEqual(c.y, b.y + 60 + 40);
+});
+
 test('nothing loads without onResource, and every reference is offered to it', async () => {
   const asked: string[] = [];
   await renderX11(
