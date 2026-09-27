@@ -1836,7 +1836,9 @@ function indentOf(style: ComputedStyle, width: number): number {
   const indent = style.textIndent;
   if (typeof indent === 'number') return indent;
   if (indent === 'auto') return 0;
-  return Number.isFinite(width) ? (indent.pct / 100) * width : 0;
+  // of zero where the width is not known yet, as when measuring the
+  // content's width: a `calc()` keeps its pixels (CSS Sizing 3 5.2.1)
+  return resolve(indent, Number.isFinite(width) ? width : 0);
 }
 
 /**

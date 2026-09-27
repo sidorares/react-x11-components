@@ -5387,6 +5387,29 @@ metric(
   },
 );
 
+metric(
+  "a child's width of its own is what it gives a float, and a minimum's percentage is of zero",
+  async () => {
+    const { el } = await renderWithBytes(
+      '<html><head><style>body { font-size: 10px } body > div { float: left; clear: left }' +
+        '.wide { width: 200px; height: 1px } i { display: inline-block; width: 10px }' +
+        '</style></head><body>' +
+        '<div id="a"><div style="width: 47px"><div class="wide"></div></div></div>' +
+        '<div id="b"><div style="width: 50%"><div class="wide"></div></div></div>' +
+        '<div id="c"><div style="width: 1px; min-width: calc(5em - 0%)"><div class="wide"></div></div></div>' +
+        '<div id="d" style="text-indent: calc(50% - 3px)"><i></i></div></body></html>',
+      {},
+    );
+    // its content runs past a width of its own, and counts for nothing
+    assert.strictEqual(boxOf(el, 'a').width, 47);
+    // a percentage is cyclic here, and the content decides
+    assert.strictEqual(boxOf(el, 'b').width, 200);
+    assert.strictEqual(boxOf(el, 'c').width, 50);
+    // the inline-block is where its line puts it, three pixels in the margin
+    assert.strictEqual(boxOf(el, 'd').width, 7);
+  },
+);
+
 metric('a cell whose width adds a percentage to a length is auto', async () => {
   const { el } = await renderWithBytes(
     '<html><head><style>table { table-layout: fixed; width: 500px; ' +
