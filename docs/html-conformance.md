@@ -51,6 +51,12 @@ What the run adapts, and why each is fair to a static renderer:
   included.
 - **Scripts do not run.** 317 tests need one, and are recorded and skipped:
   `<Html>` never executes a script, by design.
+- **Pages are decoded, and stylesheets handed over as bytes**, as WPT's
+  server and a browser do it. The runner finds a page's encoding from a
+  byte order mark, the charset its `.headers` file serves it with, or its
+  XML declaration or `<meta>`, and passes it on as the `charset` prop. It
+  hands each stylesheet over as bytes, with the charset from its own
+  `.headers`, and `<Html>` decodes it as CSS says.
 
 A test passes when the two pictures match. A renderer that draws neither the
 test nor the reference passes too; the runner records both-blank passes
@@ -69,6 +75,7 @@ separately, and there are six.
 | perf   | a paragraph's inline boxes in its one layout       | 4,739 (80%) | 4,325 (73%) |
 | 6      | fixed tables, negative z-index, absolute margins   | 4,960 (84%) | 4,526 (77%) |
 | 7      | margins through empty blocks, and their floats     | 4,982 (85%) | 4,545 (77%) |
+| 8      | stylesheet encodings, clips, replaced sizes        | 5,042 (86%) | 4,606 (78%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -552,6 +559,37 @@ got to.
 Neither round-7 fix lost a test. The walk's answer was checked against
 layout's over both suites, with a throw wherever layout found a block the
 walk had called empty holding something; none did.
+
+### Round 8
+
+53. **A stylesheet was text the host had to decode.** A host that fetches
+    a stylesheet has bytes and, often, the charset its protocol named, and
+    CSS says which encoding the bytes are in (CSS 2.1 4.4, CSS Syntax 3
+    3.2). `onResource` may hand the bytes over now, with that charset. A
+    byte order mark decides first, then the charset handed over, then an
+    `@charset` at the very start of the bytes, then the referrer: a
+    `<link charset>`, then the document's encoding, which is the new
+    `charset` prop, or, for an `@import`, the encoding of the sheet
+    importing it. Then UTF-8. 44 tests on both backends, the
+    `at-charset-*` and `character-encoding-*` ones.
+54. **An imported stylesheet's rules came after its importer's.** An
+    `@import` stands where it is written, so the sheet importing it wins a
+    tie (6.4.1). The import was numbered after its importer, and won. 2
+    tests.
+55. **An `overflow` clip showed a row more than its box's background.** A
+    background at a fractional position rounds to the nearest pixel, and
+    the clip was rounded out to whole pixels, so a row of what it clips
+    showed beyond the background's edge. The clip is the background's
+    pixels inside the borders now. A 2x display turns it up most: 5 tests
+    on X11 and 6 on macOS, among them the last `new-fc-*` one round 7 left
+    on macOS.
+56. **A form control or a frame took its image's ratio.** Only an image
+    has an intrinsic ratio (10.3.2); a control's size and a frame's 300 by
+    150 are defaults. Kept as ratios, a text field set to `width: 100%`
+    came out twice its height, a button with a width a square taller than
+    its text, and an `<iframe>` with only a height half its width. 9 tests.
+
+Round 8 lost none.
 
 ## What `<Html>` supports
 
