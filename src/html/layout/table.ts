@@ -32,7 +32,7 @@ export function layoutTable(
   ctx: LayoutContext,
   contentWidth: number,
 ): number {
-  const { rows, captions, cells, columnCount } = tableGrid(table);
+  const { rows, captions, cells, columnCount, columnBoxes } = tableGrid(table);
   table.captionTop = 0;
   table.captionBottom = 0;
   if (!columnCount) {
@@ -41,22 +41,36 @@ export function layoutTable(
   }
 
   const style = table.style;
-  const spacing = style.borderCollapse === 'collapse' ? 0 : style.borderSpacing;
+  // between the columns, and between the rows (CSS 2.1 17.6.1)
+  const apart = style.borderCollapse !== 'collapse';
+  const spacing = apart ? style.borderSpacing : 0;
+  const rowSpacing = apart ? style.borderSpacingY : 0;
   const gaps = spacing * (columnCount + 1);
   const available = Math.max(0, contentWidth - gaps);
 
   for (const cell of cells) resolveEdges(cell.box, contentWidth);
 
-  const widths =
-    style.tableLayout === 'fixed'
-      ? fixedColumns(table, cells, columnCount, available)
-      : autoColumns(cells, columnCount, available, ctx, contentWidth);
+  // a fixed layout needs a width to be fixed to; with `auto` a table is laid
+  // out by its contents after all (CSS 2.1 17.5.2.1)
+  const fixed = style.tableLayout === 'fixed' && style.width !== AUTO;
+  const widths = fixed
+    ? fixedColumns(cells, columnBoxes, columnCount, available, spacing)
+    : autoColumns(cells, columnCount, available, ctx, contentWidth);
 
   // --- place ---------------------------------------------------------------
-  // an auto table is at least as wide as its widest caption can be
-  // (CSS 2.1 17.5.2)
-  if (style.width === AUTO && captions.length) {
-    const room = captionMinimum(captions, ctx) - table.horizontalExtra - gaps;
+  // An auto table is at least as wide as its widest caption can be (CSS 2.1
+  // 17.5.2), and as its `min-width` asks; the columns share what that adds.
+  if (style.width === AUTO) {
+    let room = 0;
+    if (captions.length) {
+      room = captionMinimum(captions, ctx) - table.horizontalExtra - gaps;
+    }
+    const min = resolveOrNull(style.minWidth, contentWidth);
+    if (min !== null) {
+      const inner =
+        style.boxSizing === 'border-box' ? min - table.horizontalExtra : min;
+      room = Math.max(room, inner - gaps);
+    }
     const sum = widths.reduce((a, b) => a + b, 0);
     if (room > sum) {
       for (let c = 0; c < columnCount; c += 1) {
@@ -79,17 +93,25 @@ export function layoutTable(
   // in a wide document a small table rather than a pair of columns stranded
   // at the left of a full-width box. The columns were sized against the space
   // on offer, so this only ever narrows.
-  const used = Math.min(x - table.contentX, contentWidth);
-  const tableContentWidth = style.width === AUTO ? used : contentWidth;
-  if (style.width === AUTO)
+  //
+  // A fixed table is as wide as its `width` or its columns, whichever is the
+  // wider: columns set wider than the table widen it.
+  const used = x - table.contentX;
+  let tableContentWidth = contentWidth;
+  if (style.width === AUTO) {
+    tableContentWidth = Math.min(used, contentWidth);
     table.width = tableContentWidth + table.horizontalExtra;
+  } else if (fixed && used > contentWidth) {
+    tableContentWidth = used;
+    table.width = used + table.horizontalExtra;
+  }
   layoutCaptions(captions, ctx, table);
 
   const top = table.contentY + table.captionTop;
   let y = top;
   const rowTop: number[] = new Array<number>(rows.length);
   const rowHeight: number[] = new Array<number>(rows.length).fill(0);
-  y += spacing;
+  y += rowSpacing;
 
   // Size every cell at its column width first, so a row's height is the
   // tallest cell in it rather than the first one that was measured.
@@ -120,7 +142,7 @@ export function layoutTable(
     const last = Math.min(rows.length - 1, cell.row + cell.rowSpan - 1);
     let covered = 0;
     for (let r = cell.row; r <= last; r += 1) covered += rowHeight[r];
-    covered += spacing * (last - cell.row);
+    covered += rowSpacing * (last - cell.row);
     const missing = cell.box.height - covered;
     if (missing > 0) rowHeight[last] += missing;
   }
@@ -140,7 +162,7 @@ export function layoutTable(
     const inner = clampHeight(table, set) - extraBox;
     let total = 0;
     for (const h of rowHeight) total += h;
-    const extra = inner - total - spacing * (rows.length + 1);
+    const extra = inner - total - rowSpacing * (rows.length + 1);
     if (extra > 0) {
       for (let r = 0; r < rows.length; r += 1) {
         rowHeight[r] +=
@@ -151,14 +173,14 @@ export function layoutTable(
 
   for (let r = 0; r < rows.length; r += 1) {
     rowTop[r] = y;
-    y += rowHeight[r] + spacing;
+    y += rowHeight[r] + rowSpacing;
   }
 
   for (const cell of cells) {
     const last = Math.min(rows.length - 1, cell.row + cell.rowSpan - 1);
     let height = 0;
     for (let r = cell.row; r <= last; r += 1) height += rowHeight[r];
-    height += spacing * (last - cell.row);
+    height += rowSpacing * (last - cell.row);
     const width = spannedWidth(widths, cell, spacing);
     const inner = cell.box.height;
     // `vertical-align` inside a cell moves the *content*, not the box: the
@@ -263,44 +285,71 @@ function spannedWidth(widths: number[], cell: Cell, spacing: number): number {
   return width + spacing * (last - cell.column);
 }
 
-/** `table-layout: fixed` — the first row and any `width` decide, and the
- *  rest of the table is not measured at all. That is the whole point of it. */
+/**
+ * `table-layout: fixed`: the columns and the first row decide, and the rest
+ * of the table is not measured at all, which is the whole point of it (CSS
+ * 2.1 17.5.2.1). A column with a `width` sets its own; failing that, a cell
+ * of the first row with one sets the columns it spans, by its border box and
+ * less the spacing between them; the columns left share what remains, and
+ * where nothing remains, what is left of a table wider than its columns is
+ * shared among all of them.
+ */
 function fixedColumns(
-  table: Box,
   cells: Cell[],
+  columnBoxes: (Box | null)[],
   columnCount: number,
   available: number,
+  spacing: number,
 ): number[] {
   const widths: number[] = new Array<number>(columnCount).fill(0);
-  const fixed: boolean[] = new Array<boolean>(columnCount).fill(false);
+  const set: boolean[] = new Array<boolean>(columnCount).fill(false);
+  for (let c = 0; c < columnCount; c += 1) {
+    const column = columnBoxes[c];
+    const px = column ? lengthAgainst(column.style.width, available) : null;
+    if (px === null) continue;
+    widths[c] = Math.max(0, px);
+    set[c] = true;
+  }
   for (const cell of cells) {
     if (cell.row > 0) break;
-    const len = cell.box.style.width;
-    if (len === AUTO) continue;
-    const px = lengthAgainst(len, available);
+    const px = lengthAgainst(cell.box.style.width, available);
     if (px === null) continue;
-    const per = px / cell.colSpan;
-    for (
-      let c = cell.column;
-      c < cell.column + cell.colSpan && c < columnCount;
-      c += 1
-    ) {
-      widths[c] = per;
-      fixed[c] = true;
+    const box = cell.box;
+    const outer =
+      box.style.boxSizing === 'border-box'
+        ? Math.max(px, box.horizontalExtra)
+        : px + box.horizontalExtra;
+    const last = Math.min(columnCount, cell.column + cell.colSpan);
+    let taken = spacing * (last - cell.column - 1);
+    let open = 0;
+    for (let c = cell.column; c < last; c += 1) {
+      if (set[c]) taken += widths[c];
+      else open += 1;
+    }
+    if (!open) continue;
+    const each = Math.max(0, outer - taken) / open;
+    for (let c = cell.column; c < last; c += 1) {
+      if (set[c]) continue;
+      widths[c] = each;
+      set[c] = true;
     }
   }
-  const used = widths.reduce((a, b) => a + b, 0);
+  let used = 0;
+  let unset = 0;
+  for (let c = 0; c < columnCount; c += 1) {
+    if (set[c]) used += widths[c];
+    else unset += 1;
+  }
   const remaining = Math.max(0, available - used);
-  const autoCount = fixed.filter((f) => !f).length;
-  const each = autoCount ? remaining / autoCount : 0;
-  for (let c = 0; c < columnCount; c += 1) if (!fixed[c]) widths[c] = each;
-  // A table narrower than its container keeps the width it asked for; one
-  // wider than it is left wide and overflows, which is what a browser does
-  // and what makes an oversized table scrollable rather than crushed.
-  const total = widths.reduce((a, b) => a + b, 0);
-  if (total < available && table.style.width !== AUTO) {
-    const scale = available / (total || 1);
-    for (let c = 0; c < columnCount; c += 1) widths[c] *= scale;
+  if (unset) {
+    for (let c = 0; c < columnCount; c += 1) {
+      if (!set[c]) widths[c] = remaining / unset;
+    }
+  } else if (remaining > 0 && columnCount) {
+    for (let c = 0; c < columnCount; c += 1) {
+      widths[c] +=
+        used > 0 ? (widths[c] / used) * remaining : remaining / columnCount;
+    }
   }
   return widths;
 }

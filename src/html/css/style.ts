@@ -128,7 +128,9 @@ export interface ComputedStyle {
   listStylePosition: 'inside' | 'outside';
   cursor: string | null;
   borderCollapse: 'separate' | 'collapse';
+  /** `border-spacing`: between columns, and between rows. */
   borderSpacing: number;
+  borderSpacingY: number;
   captionSide: 'top' | 'bottom';
   /** Inherited so a `<td>` picks up the table's, which is how authors expect
    *  `text-align` on a `<table>` to behave. */
@@ -259,6 +261,7 @@ const INHERITED = [
   'cursor',
   'borderCollapse',
   'borderSpacing',
+  'borderSpacingY',
   'captionSide',
   'tableTextAlignSet',
   'quotes',
@@ -318,6 +321,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     // CSS's initial value; a `<table>` gets its 2px from the UA sheet, and
     // an anonymous table, which no sheet names, has none
     borderSpacing: 0,
+    borderSpacingY: 0,
     captionSide: 'top',
     tableTextAlignSet: false,
     quotes: DEFAULT_QUOTES,
@@ -1096,8 +1100,16 @@ export function applyDeclaration(
       return;
     }
     case 'border-spacing': {
-      const len = parseLength(splitValue(value)[0] ?? '', ctx);
-      if (typeof len === 'number') style.borderSpacing = len;
+      // one length for both, or the columns' and then the rows' (CSS 2.1
+      // 17.6.1), never negative
+      const parts = splitValue(value);
+      if (parts.length < 1 || parts.length > 2) return;
+      const x = parseLength(parts[0], ctx);
+      const y = parts.length > 1 ? parseLength(parts[1], ctx) : x;
+      if (typeof x !== 'number' || typeof y !== 'number' || x < 0 || y < 0)
+        return;
+      style.borderSpacing = x;
+      style.borderSpacingY = y;
       return;
     }
     case 'table-layout': {
@@ -1527,7 +1539,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   content: ['content'],
   'counter-reset': ['counterReset'],
   'counter-increment': ['counterIncrement'],
-  'border-spacing': ['borderSpacing'],
+  'border-spacing': ['borderSpacing', 'borderSpacingY'],
   display: ['display'],
   width: ['width'],
   height: ['height'],

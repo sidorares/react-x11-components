@@ -2552,6 +2552,110 @@ test('a background-position keyword says which axis it is on', async () => {
   assert.deepStrictEqual(at('c'), [0, 10], 'in the shorthand');
 });
 
+metric("a table's width includes its borders", async () => {
+  // HTML's rendering rules give tables `box-sizing: border-box`, so mail's
+  // `<table width="600" border="1">` is 600 pixels wide, borders and all
+  const { node } = await render(
+    '<table id="t" style="width:200px;border:10px solid;border-spacing:0">' +
+      '<tr><td>x</td></tr></table>',
+  );
+  const t = boxOf(view(node), 't');
+  assert.strictEqual(t.width, 200);
+});
+
+metric(
+  'a fixed table takes its columns from its <col>s and its first row',
+  async () => {
+    // CSS 2.1 17.5.2.1: a column's width sets it; else a first-row cell's
+    // border box does; the rest share what is left
+    const { node } = await render(
+      '<table style="table-layout:fixed;width:400px;border-spacing:0">' +
+        '<col style="width:100px"><col><col>' +
+        '<tr><td id="a">a</td><td id="b" style="width:80px;padding:0 10px">' +
+        'b</td><td id="c">c</td></tr>' +
+        '<tr><td>a</td><td style="width:300px">wide, but not the first row' +
+        '</td><td>c</td></tr></table>',
+    );
+    const el = view(node);
+    const [a, b, c] = ['a', 'b', 'c'].map((id) => boxOf(el, id));
+    assert.strictEqual(a.width, 100, 'the column sets the first');
+    assert.strictEqual(b.width, 100, "the cell's border box the second");
+    assert.strictEqual(c.width, 200, 'and the third takes the rest');
+  },
+);
+
+metric(
+  "a fixed table of `width: auto` is laid out by its content, and a table's min-width widens its columns",
+  async () => {
+    const { node } = await render(
+      '<table id="t" style="table-layout:fixed;border-spacing:0">' +
+        '<tr><td id="a" style="padding:0">word</td></tr></table>' +
+        '<table style="min-width:300px;border-spacing:0">' +
+        '<tr><td id="b" style="padding:0"></td></tr></table>',
+    );
+    const el = view(node);
+    const [t, a, b] = ['t', 'a', 'b'].map((id) => boxOf(el, id));
+    assert.ok(t.width < 100, `as wide as its word: ${t.width}`);
+    assert.strictEqual(a.width, t.width);
+    assert.strictEqual(b.width, 300, 'an empty cell as wide as the table');
+  },
+);
+
+metric(
+  'border-spacing takes a length for the columns and one for the rows',
+  async () => {
+    const { node } = await render(
+      '<table id="t" style="border-spacing:2px 10px;border:none">' +
+        '<tr><td id="a" style="padding:0">a</td><td id="b" style="padding:0">' +
+        'b</td></tr><tr><td id="c" style="padding:0">c</td></tr></table>',
+    );
+    const el = view(node);
+    const [t, a, b, c] = ['t', 'a', 'b', 'c'].map((id) => boxOf(el, id));
+    assert.strictEqual(a.x - t.x, 2, 'the columns 2 apart');
+    assert.strictEqual(b.x - (a.x + a.width), 2);
+    assert.strictEqual(a.y - t.y, 10, 'the rows 10');
+    assert.strictEqual(c.y - (a.y + a.height), 10);
+  },
+);
+
+metric("a column's background is painted under its cells", async () => {
+  // CSS 2.1 17.5.1: a column box is laid out nowhere, and its background
+  // covers the cells that start in it, over the table's and under theirs
+  const { node } = await render(
+    '<table style="border-spacing:0;background:#0000ff">' +
+      '<col><col style="background:#ff0000">' +
+      '<tr><td>a</td><td id="b">b</td></tr>' +
+      '<tr><td>a</td><td id="c" style="background:#00ff00">c</td></tr>' +
+      '</table>',
+  );
+  const el = view(node);
+  const fills = await fillsOf(el);
+  const red = fills.filter((f) => f.style === parseColor('#ff0000'));
+  const b = boxOf(el, 'b');
+  const c = boxOf(el, 'c');
+  assert.deepStrictEqual(
+    red.map((f) => [f.x, f.y, f.w, f.h]),
+    [
+      [b.x, b.y, b.width, b.height],
+      [c.x, c.y, c.width, c.height],
+    ].map(([x, y, w, h]) => [
+      Math.round(x),
+      Math.round(y),
+      Math.ceil(w),
+      Math.ceil(h),
+    ]),
+    "one fill a cell, the cells' own",
+  );
+  const order = fills.map((f) => f.style);
+  assert.ok(
+    order.indexOf(parseColor('#0000ff')) <
+      order.indexOf(parseColor('#ff0000')) &&
+      order.indexOf(parseColor('#ff0000')) <
+        order.indexOf(parseColor('#00ff00')),
+    "over the table's, under a cell's own",
+  );
+});
+
 metric("a table's height is shared among its rows", async () => {
   // CSS 2.1 17.5.3: the height is a least height, and what the rows come
   // short of it goes to them; `max-height` holds it back
@@ -2570,6 +2674,68 @@ metric("a table's height is shared among its rows", async () => {
   assert.ok(Math.abs(a.height - b.height) < 0.01, 'in proportion');
   assert.ok(Math.abs(c.height - 100) < 0.01, `clamped: ${c.height}`);
 });
+
+metric(
+  'table cells in an inline box are an inline table, with the spaces either side of it',
+  async () => {
+    // CSS 2.1 17.2.1: the anonymous table around them is inline-level,
+    // and sits in the line as an inline-block would, the white space
+    // around it kept
+    const { node } = await render(
+      '<p id="p" style="margin:0"><span>a<span id="c" style="display:table-cell">' +
+        'b</span> c</span></p>',
+    );
+    const el = view(node);
+    assert.strictEqual(el.textContent(), 'ab c', 'the space after it kept');
+    const [line] = linesOf(el, 'p');
+    assert.strictEqual(line.atomics.length, 1, 'the table is on the line');
+  },
+);
+
+metric(
+  "an empty list item's marker stands where its first line would",
+  async () => {
+    const { node } = await render(
+      '<ul style="margin:0"><li id="a"></li></ul>' +
+        '<ul style="margin:0"><li id="b">&nbsp;</li></ul>',
+    );
+    const el = view(node);
+    type Marked = LaidBox & { marker: { y: number } | null };
+    const a = boxOf(el, 'a') as Marked;
+    const b = boxOf(el, 'b') as Marked;
+    assert.ok(a.marker && b.marker, 'both have markers');
+    assert.ok(
+      Math.abs(a.marker.y - a.y - (b.marker.y - b.y)) < 0.5,
+      `the same distance below its item's top: ${a.marker.y - a.y} and ${b.marker.y - b.y}`,
+    );
+  },
+);
+
+metric(
+  "a line starts with its block's strut: an image alone is a line-height tall",
+  async () => {
+    // CSS 2.1 10.8.1; and a list item with no line holds its marker's, and
+    // an inline table of empty rows stands on its first
+    const { node } = await render(
+      '<div id="a" style="line-height:96px"><img width="15" height="15" ' +
+        'style="vertical-align:bottom" src="x.png"></div>' +
+        '<ul style="margin:0"><li id="b"></li></ul>' +
+        '<div id="c"><table style="display:inline-table;border-spacing:0">' +
+        '<tr><td style="height:20px;padding:0"></td></tr>' +
+        '<tr><td style="height:20px;padding:0"></td></tr></table></div>' +
+        '<div id="z" style="font-size:0"><img width="15" height="15" src="x.png"></div>',
+    );
+    const el = view(node);
+    const [a, b, c, z] = ['a', 'b', 'c', 'z'].map((id) => boxOf(el, id));
+    assert.strictEqual(a.height, 96, 'the image on a line of the height');
+    assert.ok(b.height > 10, `an empty item a line tall: ${b.height}`);
+    assert.ok(
+      c.height - 40 < 1,
+      `the table on its first row, its second hanging below: ${c.height}`,
+    );
+    assert.strictEqual(z.height, 15, 'no strut at no size');
+  },
+);
 
 metric("a footer group's rows come last wherever it stands", async () => {
   const { node } = await render(
@@ -2650,6 +2816,54 @@ metric(
       [6, 6, 6, 6],
       'a side thinner than its corner: rounded',
     );
+  },
+);
+
+metric(
+  'a negative z-index is painted under the flow of its stacking context',
+  async () => {
+    // CSS 2.1 Appendix E: over the context's background, under all else in
+    // it; a parent that is no stacking context does not hold it
+    const { node } = await render(
+      '<div style="background:#0000ff;height:20px">' +
+        '<div style="position:absolute;z-index:-1;width:10px;height:10px;' +
+        'background:#ff0000"></div></div>' +
+        '<div style="position:relative;z-index:0;background:#00ffff">' +
+        '<div style="position:absolute;z-index:-1;width:10px;height:10px;' +
+        'background:#ff00ff"></div><div style="height:20px;' +
+        'background:#00ff00"></div></div>',
+    );
+    const order = (await fillsOf(view(node))).map((f) => f.style);
+    const at = (color: string) => order.indexOf(parseColor(color));
+    assert.ok(
+      at('#ff0000') < at('#0000ff'),
+      'under a parent that is no context',
+    );
+    assert.ok(
+      at('#00ffff') < at('#ff00ff') && at('#ff00ff') < at('#00ff00'),
+      "over its context's background, under its flow",
+    );
+  },
+);
+
+metric(
+  'an absolute box between two offsets shares what is left with its auto margins, or fills it',
+  async () => {
+    // CSS 2.1 10.3.7 and 10.6.4
+    const { node } = await render(
+      '<div id="c" style="position:relative;width:300px;height:100px">' +
+        '<div id="a" style="position:absolute;left:0;right:0;width:100px;' +
+        'height:10px;margin:0 auto"></div>' +
+        '<div id="b" style="position:absolute;top:10px;bottom:20px;' +
+        'left:0;width:10px"></div>' +
+        '<div id="m" style="position:absolute;top:0;bottom:0;height:20px;' +
+        'left:0;width:10px;margin:auto 0"></div></div>',
+    );
+    const el = view(node);
+    const [c, a, b, m] = ['c', 'a', 'b', 'm'].map((id) => boxOf(el, id));
+    assert.strictEqual(a.x - c.x, 100, 'centred between left and right');
+    assert.strictEqual(b.height, 70, 'as tall as top and bottom leave it');
+    assert.strictEqual(m.y - c.y, 40, 'centred between top and bottom');
   },
 );
 

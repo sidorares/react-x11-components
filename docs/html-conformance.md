@@ -67,6 +67,7 @@ separately, and there are six.
 | 4      | anonymous boxes and tables, CSS syntax, baselines  | 3,713 (63%) | 3,329 (56%) |
 | 5      | first letters, tables, clipping, positioning       | 4,733 (80%) | 4,321 (73%) |
 | perf   | a paragraph's inline boxes in its one layout       | 4,739 (80%) | 4,325 (73%) |
+| 6      | fixed tables, negative z-index, absolute margins   | 4,960 (84%) | 4,526 (77%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -451,7 +452,7 @@ too: the reference sets its spans with spacers, and the test, right to
 left, is set a piece at a time.
 
 What is left falls in two kinds. **Features not built**: `::first-line`,
-`table-layout: fixed` reading `<col>` widths, `background-attachment:
+`table-layout: fixed` reading `<col>` widths (done in round 6), `background-attachment:
 fixed`, the static position of an absolute box inside a line, bidi
 embeddings across an element's edges (#149), `z-index` stacking beyond
 one parent. **Near misses**: 194 of X11's failures differ by 200 pixels
@@ -463,6 +464,65 @@ solid. Light vertical hinting in ntk — snapping a face's alignment zones
 to whole pixels, as FreeType's does — would answer them, and changes how
 every glyph on X11 is drawn, so it is left for a decision.
 
+### Round 6
+
+The largest clusters of what was left, each traced to one rule:
+
+45. **`table-layout: fixed` did not read `<col>`**, and took a first-row
+    cell's content width for its column. A column's width sets it now,
+    then a first-row cell's border box, shared over the columns it spans
+    less the spacing between them; the rest share what remains, and a
+    table narrower than its fixed columns widens to hold them
+    (17.5.2.1). A fixed table with `width: auto` is laid out by its
+    content, as the section says; an auto table's `min-width` widens its
+    columns. `<col>` and `<colgroup>` backgrounds are painted under the
+    cells that start in them (17.5.1), and `border-spacing` takes a
+    second length, for the rows (17.6.1). With HTML's
+    `table { box-sizing: border-box }`, a table's `width` includes its
+    borders. 94 tests, 75 of them tables.
+46. **A negative `z-index` was painted over the flow**, with the rest of
+    the positioned boxes. It goes over its stacking context's background
+    and under everything else in the context now (Appendix E), the root
+    element being the root context. 35 tests on X11, 34 on macOS.
+47. **Table cells in an inline box ran into the text after them.** The
+    builder treated each as a block for white space, and dropped the space
+    after the anonymous inline table they are wrapped in. 15 tests.
+48. **An empty list item hung its marker an ascent too high**, from the
+    top of its content, where a list item holding text sets it on its first
+    line. It stands where that line would have been now. 41 tests, the
+    `list-style-*-applies-to` ones, which put an empty list item in a
+    table.
+49. **An absolute box between two offsets kept `auto` margins of 0.** With
+    `left`, `width` and `right` all set, the `auto` margins share what the
+    three leave, and with none `auto` the end offset gives way (10.3.7,
+    10.3.8); with `top` and `bottom` and no height, the box fills what they
+    leave, and with a height its `auto` margins share the rest (10.6.4,
+    10.6.5). 20 tests on X11, 16 on macOS.
+50. **A line of images alone was as tall as the images.** Every line box
+    starts with its block's strut, its face at its `line-height`
+    (10.8.1), and the lines set a piece at a time left it out. With it, a
+    list item with a marker and no line holds its marker's, as an empty
+    `<li>` does in a browser, and an inline table of empty rows stands on
+    its first. 22 tests on X11 and 16 on macOS, nine of them
+    `background-position` on a table part.
+
+Four tests that passed by accident fail on both backends now.
+`margin-collapse-004` compares a bar in flow with one set at `z-index:
+-1`, which now goes under the paragraph above it, where a browser puts it;
+the one in flow is painted over that paragraph's text, because this
+painter draws a block's text before the next block's background, where CSS
+paints every block background of a stacking context first.
+`background-intrinsic-001`, 002 and 004 cover an absolute box between four
+offsets with an SVG background, which is not drawn; the box had no height,
+and fills its offsets now. The strut costs two more:
+`list-style-position-applies-to-008` matched a fallback reference with a
+list item that is laid out, inside an inline box, as an inline block of
+no width, where a browser gives it the line; and `floats-placement-006`
+places a cleared float that follows an inline-block under that line, now
+3px taller for the strut, which then avoids it, since the floats in a
+line's content are placed before its lines rather than where the line has
+got to.
+
 ## What `<Html>` supports
 
 From the pass rates of the tests that use each feature, at the fixes above,
@@ -470,25 +530,25 @@ on X11. A rate is confounded — a test that uses a supported feature may fail
 on another one beside it — so the column is a guide, and the verdict is
 checked against the code.
 
-| feature                                            | tests | pass    | verdict                                                                                                                                                                            |
-| -------------------------------------------------- | ----- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| block flow, margin collapsing                      | 694   | 83%     | **supported**, empty blocks collapsing through included; clearance remains                                                                                                         |
-| margins, padding, borders                          | 682   | 95%     | **supported**, inline boxes and collapsed table borders included; the `double`/`groove` families are approximations                                                                |
-| floats and `clear`                                 | 311   | 46–67%  | **supported**, with gaps: a float inside a paragraph is placed at the paragraph's top, not its line's                                                                              |
-| relative and absolute positioning                  | 513   | 84%     | **supported**; an absolute box inside a line takes the line's start for its static position                                                                                        |
-| backgrounds: colour, image, repeat, position       | 336   | 85%     | **supported**; `background-attachment: fixed` is not                                                                                                                               |
-| fonts: family, style, weight, size                 | 159   | 81%     | **supported**; `font-variant: small-caps` is not                                                                                                                                   |
-| line height, `vertical-align`                      | 191   | 72%     | **partial**: one line height per paragraph, where CSS gives each inline box its own                                                                                                |
-| `white-space`                                      | 217   | 46%     | **supported**; collapsing is CSS 2.1's across elements                                                                                                                             |
-| lists and markers                                  | 155   | 68%     | **supported**; `list-style-image` is not                                                                                                                                           |
-| CSS tables (`display: table-*`), `table-layout`    | 250   | 37%     | **partial**: HTML tables lay out, borders collapse, captions go outside the table and anonymous tables are built; `table-layout: fixed` reads no `<col>` width                     |
-| `::before`, `::after`, `content`, counters, quotes | 332   | 86%     | **supported**; an image in `content` is not                                                                                                                                        |
-| `::first-letter`, `::first-line`                   | 395   | 19–100% | `::first-letter` **supported**; `::first-line` **missing**                                                                                                                         |
-| `z-index` stacking                                 | 152   | 41%     | **partial**: z-order within one parent only                                                                                                                                        |
-| `clip`                                             | 44    | 100%    | **supported**                                                                                                                                                                      |
-| bidi: `direction`, `unicode-bidi`                  | 265   | 68%     | **partial**: shaping and the bidi algorithm are the engine's, a line's pieces are ordered by UAX #9's L2; an override that crosses a padded element is resolved on each side of it |
-| selectors                                          | 468   | 94%     | **supported** except `::first-line`                                                                                                                                                |
-| cascade, `@import`, `@media`                       | 134   | 66–75%  | **supported**                                                                                                                                                                      |
+| feature                                            | tests | pass    | verdict                                                                                                                                                                                     |
+| -------------------------------------------------- | ----- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| block flow, margin collapsing                      | 694   | 83%     | **supported**, empty blocks collapsing through included; clearance remains                                                                                                                  |
+| margins, padding, borders                          | 682   | 95%     | **supported**, inline boxes and collapsed table borders included; the `double`/`groove` families are approximations                                                                         |
+| floats and `clear`                                 | 311   | 46–67%  | **supported**, with gaps: a float inside a paragraph is placed at the paragraph's top, not its line's                                                                                       |
+| relative and absolute positioning                  | 513   | 84%     | **supported**; an absolute box inside a line takes the line's start for its static position                                                                                                 |
+| backgrounds: colour, image, repeat, position       | 336   | 85%     | **supported**; `background-attachment: fixed` is not                                                                                                                                        |
+| fonts: family, style, weight, size                 | 159   | 81%     | **supported**; `font-variant: small-caps` is not                                                                                                                                            |
+| line height, `vertical-align`                      | 191   | 72%     | **partial**: one line height per paragraph, where CSS gives each inline box its own                                                                                                         |
+| `white-space`                                      | 217   | 46%     | **supported**; collapsing is CSS 2.1's across elements                                                                                                                                      |
+| lists and markers                                  | 155   | 94%     | **supported**; `list-style-image` is not                                                                                                                                                    |
+| CSS tables (`display: table-*`), `table-layout`    | 250   | 81%     | **supported**: HTML tables and anonymous ones, both border models, captions, fixed layout with `<col>` widths and column backgrounds; `visibility: collapse` and baseline alignment are not |
+| `::before`, `::after`, `content`, counters, quotes | 332   | 86%     | **supported**; an image in `content` is not                                                                                                                                                 |
+| `::first-letter`, `::first-line`                   | 395   | 19–100% | `::first-letter` **supported**; `::first-line` **missing**                                                                                                                                  |
+| `z-index` stacking                                 | 152   | 73%     | **partial**: a negative `z-index` goes under its stacking context's flow; a context paints block by block, where CSS paints every block background before any text                          |
+| `clip`                                             | 44    | 100%    | **supported**                                                                                                                                                                               |
+| bidi: `direction`, `unicode-bidi`                  | 265   | 68%     | **partial**: shaping and the bidi algorithm are the engine's, a line's pieces are ordered by UAX #9's L2; an override that crosses a padded element is resolved on each side of it          |
+| selectors                                          | 468   | 94%     | **supported** except `::first-line`                                                                                                                                                         |
+| cascade, `@import`, `@media`                       | 134   | 66–75%  | **supported**                                                                                                                                                                               |
 
 The CSS3 subset documents actually use sits outside this suite and is listed
 in [the plan](#a-static-html-widget-worth-having) below.
@@ -567,7 +627,7 @@ directories and caniemail's feature list:
    border model, `table-layout: fixed`, row groups, captions. About 600
    tests, and the layout of most HTML mail. Anonymous tables were done in
    round 4, and collapsed borders, captions, footer groups and a table's
-   height in round 5; `table-layout: fixed` reading `<col>` widths remains.
+   height in round 5, and fixed layout with `<col>` widths in round 6.
 4. **The inline formatting model**: a line height per inline box, the
    remaining `vertical-align` values, `text-align: justify`, and a float
    placed where its line has got to rather than before the line. White space

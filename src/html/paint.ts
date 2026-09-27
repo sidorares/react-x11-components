@@ -33,6 +33,7 @@ import { Box } from './layout/boxes.js';
 import type { BoxTree, LineBox, Marker } from './layout/boxes.js';
 import { depthOf, layoutOffsetOf, layoutOffsets } from './layout/inline.js';
 import { halves } from './layout/collapse.js';
+import { tableGrid } from './layout/grid.js';
 import type { CollapsedBorder } from './layout/collapse.js';
 
 export interface Rect {
@@ -82,6 +83,8 @@ export interface PaintOptions {
   canvasSource?: Box | null;
   /** @internal The boxes clipping what is being painted, outermost first. */
   clips?: ClipLevel[];
+  /** @internal Whether the tree has a layer below the flow (`hoistNegative`). */
+  negative?: boolean;
 }
 
 /**
@@ -239,7 +242,11 @@ export function paintDocument(
   ctx.save();
   const canvas = canvasBackground(tree.root);
   if (canvas) paintCanvas(ctx, canvas, tree.root, options);
-  paintBox(ctx, tree.root, { ...options, canvasSource: canvas?.source });
+  paintBox(ctx, tree.root, {
+    ...options,
+    canvasSource: canvas?.source,
+    negative: tree.negative,
+  });
   ctx.restore();
 }
 
@@ -384,6 +391,15 @@ function paintContent(
       }
     }
     if (!box.bordersCollapsed) paintBorders(ctx, box, options);
+    if (box.kind === 'table') paintColumnBackgrounds(ctx, box, options);
+  }
+  // a stacking context's descendants with a negative `z-index`, over its
+  // background and under everything else in it (CSS 2.1 Appendix E)
+  const below = options.negative ? NEGATIVE.get(box) : undefined;
+  if (below) {
+    for (const child of below) paintPositioned(ctx, child, options);
+  }
+  if (visible) {
     if (box.marker) paintMarker(ctx, box.marker, options);
     if (box.replaced === 'image') paintImage(ctx, box, options);
   }
@@ -436,6 +452,7 @@ function paintContent(
 
   if (box.positionedPaint) {
     for (const child of box.positionedPaint) {
+      if (options.negative && HOISTED.has(child)) continue;
       paintPositioned(ctx, child, options);
     }
   }
@@ -629,6 +646,50 @@ function onLine(parent: Box, child: Box): boolean {
   );
 }
 
+/** Per stacking context, its descendants with a negative `z-index`, in
+ *  paint order; and every box so placed, which its parent's positioned
+ *  children then leave out. Kept beside the boxes: few documents have one. */
+const NEGATIVE = new WeakMap<Box, Box[]>();
+const HOISTED = new WeakSet<Box>();
+
+/**
+ * Give each stacking context — the root, and a positioned box with a
+ * `z-index` — the positioned descendants with a negative `z-index` it paints
+ * below its flow (CSS 2.1 9.9.1, Appendix E). They were painted with the
+ * rest of the positioned boxes, over the flow, so a box set behind the page
+ * with `z-index: -1` covered what it was meant to be under. Asked only of a
+ * tree that has one (`BoxTree.negative`).
+ */
+export function hoistNegative(root: Box): void {
+  hoistFrom(root, true);
+}
+
+function hoistFrom(box: Box, root: boolean): Box[] | null {
+  let pending: Box[] | null = null;
+  for (const child of box.children) {
+    if (child.kind === 'text' || child.kind === 'break') continue;
+    // the root element is the root stacking context, over its own borders
+    const up = hoistFrom(child, root && child.el?.name === 'html');
+    if (up) (pending ??= []).push(...up);
+    const z = child.style.zIndex;
+    if (child.style.position !== 'static' && typeof z === 'number' && z < 0) {
+      (pending ??= []).push(child);
+    }
+  }
+  const style = box.style;
+  if (!root && (style.position === 'static' || style.zIndex === 'auto')) {
+    return pending;
+  }
+  if (pending) {
+    pending.sort(byZIndex);
+    NEGATIVE.set(box, pending);
+    for (const b of pending) HOISTED.add(b);
+  } else {
+    NEGATIVE.delete(box);
+  }
+  return null;
+}
+
 function byZIndex(a: Box, b: Box): number {
   const az = a.style.zIndex === 'auto' ? 0 : a.style.zIndex;
   const bz = b.style.zIndex === 'auto' ? 0 : b.style.zIndex;
@@ -709,6 +770,53 @@ function paintBackground(
     return;
   }
   ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
+}
+
+/**
+ * The backgrounds of a table's column groups and columns (CSS 2.1 17.5.1):
+ * over the table's own and under its rows' and its cells', in the area of
+ * each cell that starts in the column, since a column box is laid out
+ * nowhere. The colour; an image there is not drawn.
+ */
+function paintColumnBackgrounds(
+  ctx: PaintContext,
+  table: Box,
+  options: PaintOptions,
+): void {
+  const { cells, columnBoxes, columnGroups } = tableGrid(table);
+  for (const layer of [columnGroups, columnBoxes]) {
+    if (!layer.some(paintsBackground)) continue;
+    for (const cell of cells) {
+      const column = layer[cell.column];
+      if (!column || !paintsBackground(column)) continue;
+      const box = cell.box;
+      paintBackground(
+        ctx,
+        {
+          x: box.x,
+          y: box.y,
+          width: box.width,
+          height: box.height,
+          captionTop: 0,
+          captionBottom: 0,
+          borderTop: 0,
+          borderRight: 0,
+          borderBottom: 0,
+          borderLeft: 0,
+          style: column.style,
+        },
+        options,
+      );
+    }
+  }
+}
+
+function paintsBackground(box: Box | null): boolean {
+  return (
+    box !== null &&
+    box.style.visibility === 'visible' &&
+    !isTransparent(box.style.backgroundColor)
+  );
 }
 
 /** How many tiles a repeating background may draw one by one, where the

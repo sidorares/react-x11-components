@@ -15,12 +15,12 @@ import type { Len } from '../css/values.js';
 import { Box } from './boxes.js';
 import type { BoxTree, LineBox, Marker } from './boxes.js';
 import { FloatContext } from './floats.js';
-import { layoutInline } from './inline.js';
+import { layoutInline, lineHeightMultiplier, strutOf } from './inline.js';
 import type { FontsLike } from './inline.js';
 import { layoutFlex } from './flex.js';
 import { finishCaptions, layoutTable } from './table.js';
 import { collapseEdges } from './collapse.js';
-import { computePaintBounds } from '../paint.js';
+import { computePaintBounds, hoistNegative } from '../paint.js';
 
 export interface LayoutContext {
   fonts: FontsLike | null;
@@ -120,6 +120,7 @@ export function layoutDocument(
   // ended up rather than where they were laid out.
   if (tree.relative) applyRelativeOffsets(root);
   const reach = computePaintBounds(root);
+  if (tree.negative) hoistNegative(root);
 
   // The document is as tall as what overflows the root, not the root: an
   // `html, body { height: 100% }` a window tall holds a message longer than
@@ -565,16 +566,40 @@ function layoutInternals(
   const floats = ownFloats
     ? new FloatContext(box.contentX, box.contentX + contentWidth)
     : outerFloats;
+  // the line a pass before gave a marker, which this one may not
+  if (box.marker) box.lines = null;
   const flow = layoutChildren(box, ctx, floats, box.contentY, contentWidth);
+  // A list item with a marker and no line holds one, the marker's, a line
+  // of its own face tall: an empty `<li>` is a line tall in a browser, and
+  // an inline-block around one sits on its marker's baseline.
+  let height = flow.height;
+  if (box.marker && ctx.fonts && !firstLineIn(box)) {
+    const strut = strutOf(ctx.fonts, box.style);
+    const line = strut.ascent + strut.descent;
+    box.lines = [
+      {
+        x: box.contentX,
+        y: box.contentY,
+        width: 0,
+        height: line,
+        baseline: strut.ascent,
+        texts: [],
+        textStart: box.subtreeTextStart,
+        textEnd: box.subtreeTextStart,
+        atomics: [],
+      },
+    ];
+    height = Math.max(height, line);
+  }
   // A box that establishes a formatting context contains its own floats, so
   // it has to be at least as tall as they are. One that does not, does not —
   // that is the classic "collapsed parent" every author has met.
   const withFloats = ownFloats
     ? Math.max(
-        flow.height,
+        height,
         floats.bottom === -Infinity ? 0 : floats.bottom - box.contentY,
       )
-    : flow.height;
+    : height;
   finishHeight(box, withFloats);
   // The margin that escaped through this box's bottom edge becomes part of
   // its own: the parent's flow loop reads `child.marginBottom` for the next
@@ -612,6 +637,8 @@ function layoutMarker(box: Box, marker: Marker, ctx: LayoutContext): void {
   const fonts = ctx.fonts;
   if (!fonts) return;
   const style = box.style;
+  // set in a line of the item's own height, so that where the item has no
+  // line of its own the marker stands where its first would have been
   const layout = fonts.layout(
     [
       {
@@ -622,7 +649,7 @@ function layoutMarker(box: Box, marker: Marker, ctx: LayoutContext): void {
       },
     ],
     { family: style.fontFamily, size: style.fontSize, color: style.color },
-    {},
+    { lineHeight: lineHeightMultiplier(fonts, style) },
   );
   marker.layout = layout;
   const gap = Math.round(style.fontSize * 0.4);
@@ -630,11 +657,13 @@ function layoutMarker(box: Box, marker: Marker, ctx: LayoutContext): void {
   // always the item's own: an `<li>` holding a paragraph, or one holding text
   // and a nested list, has its inline content in an anonymous block. Looking
   // only at `box.lines` puts the marker of every such item at the content
-  // top, which reads as a missing bullet rather than a misplaced one.
+  // top, which reads as a missing bullet rather than a misplaced one. An
+  // empty item is still a list item, and its marker a line at its top.
   const first = firstLineIn(box);
-  const baselineY = first ? first.y + first.baseline : box.contentY;
   const own = layout.lines[0];
-  marker.y = baselineY - (own ? own.baseline : style.fontSize);
+  marker.y = first
+    ? first.y + first.baseline - (own ? own.baseline : style.fontSize)
+    : box.contentY;
   marker.x =
     style.listStylePosition === 'inside'
       ? box.contentX
@@ -988,22 +1017,84 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
   // right one in a right-to-left flow
   const at = box.staticPosition;
   const rtl = (at?.from ?? containing).style.direction === 'rtl';
-  const x =
-    left !== null
-      ? cbX + left + box.marginLeft
-      : right !== null
+  let x: number;
+  if (
+    left !== null &&
+    right !== null &&
+    (style.width !== AUTO || box.kind === 'replaced')
+  ) {
+    // Both offsets and a width: what is left over goes to the margins that
+    // are `auto`, shared where both are, and where none is, the end offset
+    // gives way (10.3.7, 10.3.8).
+    const rest = cbWidth - left - right - box.width;
+    const autoLeft = style.marginLeft === AUTO;
+    const autoRight = style.marginRight === AUTO;
+    const endRtl = containing.style.direction === 'rtl';
+    if (autoLeft && autoRight) {
+      if (rest >= 0) {
+        box.marginLeft = rest / 2;
+        box.marginRight = rest / 2;
+      } else if (endRtl) {
+        box.marginRight = 0;
+        box.marginLeft = rest;
+      } else {
+        box.marginLeft = 0;
+        box.marginRight = rest;
+      }
+    } else if (autoLeft) {
+      box.marginLeft = rest - box.marginRight;
+    } else if (autoRight) {
+      box.marginRight = rest - box.marginLeft;
+    }
+    x =
+      endRtl && !autoLeft && !autoRight
         ? cbX + cbWidth - right - box.width - box.marginRight
-        : rtl
-          ? (at ? at.from.x + at.right : cbX + cbWidth) -
-            box.width -
-            box.marginRight
-          : (at ? at.from.x + at.x : cbX) + box.marginLeft;
-  const y =
-    top !== null
-      ? cbY + top + box.marginTop
-      : bottom !== null
-        ? cbY + cbHeight - bottom - box.height - box.marginBottom
-        : (at ? at.from.y + at.y : cbY) + box.marginTop;
+        : cbX + left + box.marginLeft;
+  } else {
+    x =
+      left !== null
+        ? cbX + left + box.marginLeft
+        : right !== null
+          ? cbX + cbWidth - right - box.width - box.marginRight
+          : rtl
+            ? (at ? at.from.x + at.right : cbX + cbWidth) -
+              box.width -
+              box.marginRight
+            : (at ? at.from.x + at.x : cbX) + box.marginLeft;
+  }
+  let y: number;
+  if (top !== null && bottom !== null) {
+    if (style.height === AUTO && box.kind !== 'replaced') {
+      // both offsets and no height: the box fills what they leave, its
+      // `auto` margins nothing (10.6.4, rule 5)
+      box.height = clampHeight(
+        box,
+        Math.max(0, cbHeight - top - bottom - box.marginTop - box.marginBottom),
+      );
+    } else {
+      // and a height: the `auto` margins share the rest, and where none
+      // is `auto`, `bottom` gives way (10.6.4, 10.6.5)
+      const rest = cbHeight - top - bottom - box.height;
+      const autoTop = style.marginTop === AUTO;
+      const autoBottom = style.marginBottom === AUTO;
+      if (autoTop && autoBottom) {
+        box.marginTop = rest / 2;
+        box.marginBottom = rest / 2;
+      } else if (autoTop) {
+        box.marginTop = rest - box.marginBottom;
+      } else if (autoBottom) {
+        box.marginBottom = rest - box.marginTop;
+      }
+    }
+    y = cbY + top + box.marginTop;
+  } else {
+    y =
+      top !== null
+        ? cbY + top + box.marginTop
+        : bottom !== null
+          ? cbY + cbHeight - bottom - box.height - box.marginBottom
+          : (at ? at.from.y + at.y : cbY) + box.marginTop;
+  }
   moveTo(box, x, y);
 }
 

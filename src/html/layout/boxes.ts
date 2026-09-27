@@ -446,6 +446,9 @@ export interface BoxTree {
   /** Whether any box is relatively positioned: where none is, layout skips
    *  the walk that moves them. */
   relative: boolean;
+  /** Whether any positioned box has a negative `z-index`: where none has,
+   *  paint has no layer below the flow to find. */
+  negative: boolean;
 }
 
 export interface BuildOptions {
@@ -504,6 +507,7 @@ class Builder {
   private _links: Box[] = [];
   private _backgrounds: Box[] = [];
   private _relative = false;
+  private _negative = false;
   /** Counter stack for `<ol>` numbering, one entry per open list. */
   private _counters: number[] = [];
   /** The CSS counters in scope, for `counter()` in generated content. */
@@ -547,6 +551,7 @@ class Builder {
       links: this._links,
       backgrounds: this._backgrounds,
       relative: this._relative || isRelative(rootStyle),
+      negative: this._negative,
     };
   }
 
@@ -594,6 +599,7 @@ class Builder {
     if (style.display === 'none') return;
     if (onlyColumns && style.display !== 'table-column') return;
     if (isRelative(style)) this._relative = true;
+    if (isNegative(style)) this._negative = true;
     // before anything else of the element's, including its `::before`,
     // and for the element whatever box it makes (CSS 2.1 12.4)
     if (style.counterReset || style.counterIncrement) {
@@ -757,6 +763,7 @@ class Builder {
     const style = this._options.cascade.pseudoStyleFor(el, which, elementStyle);
     if (!style || style.display === 'none') return;
     if (isRelative(style)) this._relative = true;
+    if (isNegative(style)) this._negative = true;
     // a column renders no content, and generated content is all it would
     // hold; in a column group it is not a column either (CSS 2.1 17.2.1)
     if (
@@ -1202,6 +1209,18 @@ function flowOf(
     case 'inline-table':
     case 'inline-flex':
       return 'atomic';
+    case 'table-row-group':
+    case 'table-header-group':
+    case 'table-footer-group':
+    case 'table-row':
+    case 'table-cell':
+    case 'table-caption':
+    case 'table-column':
+    case 'table-column-group':
+      // table parts in an inline box are given an inline table around them
+      // (CSS 2.1 17.2.1), which sits in the line as an inline-block does:
+      // the white space either side of it is the line's
+      return box.parent?.kind === 'inline' ? 'atomic' : 'block';
     default:
       return 'block';
   }
@@ -1598,8 +1617,14 @@ function anonymousOf(
 }
 
 function isDroppableWhitespace(box: Box): boolean {
-  return box.kind === 'text' && !box.text.trim();
+  if (box.kind !== 'text' || !BLANK.test(box.text)) return false;
+  // preserved white space is content, and goes in a cell like any other
+  // (CSS 2.1 17.2.1, rule 1)
+  const ws = box.style.whiteSpace;
+  return ws !== 'pre' && ws !== 'pre-wrap';
 }
+
+const BLANK = /^\s*$/;
 
 /** White space that collapsing would change: anything but a lone space.
  *  Most of a document's text has none, and is its own collapsed form. */
@@ -1607,6 +1632,14 @@ const COLLAPSIBLE = /[\t\n\r\f]| {2}/;
 
 function isRelative(style: ComputedStyle): boolean {
   return style.position === 'relative' || style.position === 'sticky';
+}
+
+function isNegative(style: ComputedStyle): boolean {
+  return (
+    style.position !== 'static' &&
+    typeof style.zIndex === 'number' &&
+    style.zIndex < 0
+  );
 }
 
 /** A box that belongs inside a table: a row group, a row, a cell, a
