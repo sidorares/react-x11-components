@@ -1071,12 +1071,19 @@ function intrinsicWidth(box: Box): number {
 }
 
 /** A replaced box's size: the style wins, then the attributes, then the
- *  intrinsic size, and an aspect ratio is kept when only one axis is given. */
+ *  intrinsic size, and an image keeps its aspect ratio when only one axis is
+ *  given. Nothing else has one (CSS 2.1 10.3.2): a frame's 300 by 150 and a
+ *  control's size are defaults, not proportions, so the axis the style does
+ *  not set keeps its own — a text field `width: 100%` stretched to twice its
+ *  height, and a button with a width set a square taller than its text. */
 function sizeReplaced(box: Box, containingWidth: number): void {
   const style = box.style;
   const intrinsicW = box.intrinsicWidth || 0;
   const intrinsicH = box.intrinsicHeight || 0;
-  const ratio = intrinsicW > 0 && intrinsicH > 0 ? intrinsicH / intrinsicW : 0;
+  const ratio =
+    box.replaced === 'image' && intrinsicW > 0 && intrinsicH > 0
+      ? intrinsicH / intrinsicW
+      : 0;
 
   let width = resolveOrNull(style.width, containingWidth);
   let height = resolveOrNull(style.height, box.percentHeightBase);

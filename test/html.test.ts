@@ -3323,6 +3323,24 @@ test('a stylesheet handed back by the seam reaches the cascade', async () => {
   void result;
 });
 
+test('a form control or a frame keeps its height when only its width is set', async () => {
+  // Only an image has an intrinsic ratio (CSS 2.1 10.3.2). A control's size
+  // and a frame's 300 by 150 are defaults, and a text field set to
+  // `width: 100%` came out twice its height.
+  const { node } = await render(
+    '<input id="a"><input id="b" style="width:300px">' +
+      '<button id="c">Go</button><button id="d" style="width:200px">Go</button>' +
+      '<iframe id="e"></iframe><iframe id="f" style="height:96px"></iframe>',
+  );
+  const el = view(node);
+  const [a, b, c, d, e, f] = ['a', 'b', 'c', 'd', 'e', 'f'].map((id) =>
+    boxOf(el, id),
+  );
+  assert.strictEqual(b.height, a.height, 'a text field');
+  assert.strictEqual(d.height, c.height, 'a button');
+  assert.strictEqual(f.width, e.width, 'a frame 96px tall is as wide');
+});
+
 test('a stylesheet handed over as bytes is decoded as CSS says', () => {
   // CSS 2.1 4.4 and CSS Syntax 3 3.2, in order: a byte order mark, the
   // protocol's charset, an `@charset` at the very start — UTF-16 named in
