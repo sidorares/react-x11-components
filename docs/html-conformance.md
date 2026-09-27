@@ -91,6 +91,7 @@ separately, and there are six.
 | 21     | custom properties, `var()`                         | 5,370 (91%) | 4,922 (84%) |
 | perf   | a link or a column no longer stretches its bounds  | 5,372 (91%) | 4,924 (84%) |
 | 23     | relative inline boxes, hidden inline text          | 5,381 (91%) | 4,929 (84%) |
+| 24     | `vertical-align` on text                           | 5,404 (92%) | 4,930 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -1037,6 +1038,36 @@ four of the nine fail still, by a few hundred pixels each, all of them
 CoreText antialiasing the edges of an Ahem square that the reference draws
 as a box.
 
+### Round 24
+
+103. **`vertical-align` moved images and inline blocks, never text**, so
+     the UA sheet's `sub` and `super` left every `<sub>` and `<sup>` on the
+     baseline: footnote markers, exponents and formulas. A raised box's
+     text is laid out apart from the text around it, as round 23 lays out
+     a moved box's, and drawn off the line's baseline (CSS 2.1 10.8.1).
+     `sub` and `super` go down a fifth and up a third of the parent's font
+     size and a pixel, as browsers set them; `text-top` and `text-bottom`
+     go to the edges of the parent's font; `middle` puts the box's middle
+     half the parent's x-height above its baseline; a length raises by
+     itself and a percentage by that much of the box's own line height.
+     Each raised box adds its own line height to the line box about where
+     it is raised to, so a `<sup>` makes its line taller and one with
+     `line-height: 0`, as Tailwind's preflight and normalize.css set it,
+     does not. A `top` or `bottom` box is aligned with the line box's edge
+     and is as tall as all it holds. A raised box's background and borders
+     go with it. 23 tests.
+104. **The underline an element draws through a raised text** stays on
+     that element's baseline, not the text's (CSS Text Decoration 3, 2.1),
+     so a line has one underline. An underline the raised box sets itself
+     goes with it.
+
+Round 24 lost none on X11. On macOS it won 2 and lost 1, and 20 of the 23
+X11 wins still fail there, by 240 pixels each where they missed by 1,880:
+CoreText's antialiased edges of the Ahem squares again. The one lost,
+`vertical-align-nested-top-001`, is a pixel off by 7 of 255: its two top
+boxes' letters are laid out apart and the reference's together, and
+CoreText places the second letter a fraction of a pixel differently.
+
 ## What `<Html>` supports
 
 From the pass rates of the tests that use each feature, at the fixes above,
@@ -1044,26 +1075,26 @@ on X11. A rate is confounded — a test that uses a supported feature may fail
 on another one beside it — so the column is a guide, and the verdict is
 checked against the code.
 
-| feature                                            | tests | pass    | verdict                                                                                                                                                                                                      |
-| -------------------------------------------------- | ----- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| block flow, margin collapsing                      | 694   | 83%     | **supported**, through empty blocks and into a parent's; a set of margins of both signs collapses two at a time                                                                                              |
-| margins, padding, borders                          | 682   | 95%     | **supported**, inline boxes and collapsed table borders included; the `double`/`groove` families are approximations                                                                                          |
-| floats and `clear`                                 | 311   | 46–67%  | **supported**, with gaps: a float inside a paragraph is placed at the paragraph's top, not its line's                                                                                                        |
-| relative and absolute positioning                  | 513   | 84%     | **supported**; an absolute box inside a line takes the line's start for its static position                                                                                                                  |
-| backgrounds: colour, image, repeat, position       | 336   | 85%     | **supported**, `background-attachment: fixed` and SVG images included                                                                                                                                        |
-| fonts: family, style, weight, size                 | 159   | 81%     | **supported**; `font-variant: small-caps` is not                                                                                                                                                             |
-| line height, `vertical-align`                      | 191   | 72%     | **partial**: one line height per paragraph, where CSS gives each inline box its own; `vertical-align` moves an image or an inline block, not text, which the text engines lay out on one baseline a line     |
-| `white-space`                                      | 217   | 46%     | **supported**; collapsing is CSS 2.1's across elements                                                                                                                                                       |
-| lists and markers                                  | 155   | 94%     | **supported**; `list-style-image` is not                                                                                                                                                                     |
-| CSS tables (`display: table-*`), `table-layout`    | 250   | 81%     | **supported**: HTML tables and anonymous ones, both border models, captions, `<col>` widths in both layouts, and column backgrounds with their images; `visibility: collapse` and baseline alignment are not |
-| `::before`, `::after`, `content`, counters, quotes | 332   | 86%     | **supported**; an image in `content` is not                                                                                                                                                                  |
-| `::first-letter`, `::first-line`                   | 398   | 79–100% | `::first-letter` **supported**; `::first-line` **partial**: its colour and background, not its font, spacing or `vertical-align`                                                                             |
-| `z-index` stacking                                 | 152   | 73%     | **supported**: Appendix E's order — block backgrounds, floats, lines, positioned boxes by `z-index` — with a table, a flex box or a box that clips painted whole among the lines                             |
-| SVG: inline, as an image, as a background          | 52    | 98%     | **supported**, as ntk's `SvgView` draws it: shapes, paths, `<use>`, gradients and text; no stylesheet rules, filters, masks or clip paths                                                                    |
-| `clip`                                             | 44    | 100%    | **supported**                                                                                                                                                                                                |
-| bidi: `direction`, `unicode-bidi`                  | 265   | 68%     | **partial**: shaping and the bidi algorithm are the engine's, a line's pieces are ordered by UAX #9's L2; an override that crosses a padded element is resolved on each side of it                           |
-| selectors                                          | 468   | 94%     | **supported**                                                                                                                                                                                                |
-| cascade, `@import`, `@media`                       | 134   | 66–75%  | **supported**                                                                                                                                                                                                |
+| feature                                            | tests | pass    | verdict                                                                                                                                                                                                                       |
+| -------------------------------------------------- | ----- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| block flow, margin collapsing                      | 694   | 83%     | **supported**, through empty blocks and into a parent's; a set of margins of both signs collapses two at a time                                                                                                               |
+| margins, padding, borders                          | 682   | 95%     | **supported**, inline boxes and collapsed table borders included; the `double`/`groove` families are approximations                                                                                                           |
+| floats and `clear`                                 | 311   | 46–67%  | **supported**, with gaps: a float inside a paragraph is placed at the paragraph's top, not its line's                                                                                                                         |
+| relative and absolute positioning                  | 513   | 84%     | **supported**; an absolute box inside a line takes the line's start for its static position                                                                                                                                   |
+| backgrounds: colour, image, repeat, position       | 336   | 85%     | **supported**, `background-attachment: fixed` and SVG images included                                                                                                                                                         |
+| fonts: family, style, weight, size                 | 159   | 81%     | **supported**; `font-variant: small-caps` is not                                                                                                                                                                              |
+| line height, `vertical-align`                      | 191   | 72%     | **partial**: text on the baseline takes its paragraph's line height, where CSS gives each inline box its own; `vertical-align` moves text, laid out apart with its box's own line height, as well as images and inline blocks |
+| `white-space`                                      | 217   | 46%     | **supported**; collapsing is CSS 2.1's across elements                                                                                                                                                                        |
+| lists and markers                                  | 155   | 94%     | **supported**; `list-style-image` is not                                                                                                                                                                                      |
+| CSS tables (`display: table-*`), `table-layout`    | 250   | 81%     | **supported**: HTML tables and anonymous ones, both border models, captions, `<col>` widths in both layouts, and column backgrounds with their images; `visibility: collapse` and baseline alignment are not                  |
+| `::before`, `::after`, `content`, counters, quotes | 332   | 86%     | **supported**; an image in `content` is not                                                                                                                                                                                   |
+| `::first-letter`, `::first-line`                   | 398   | 79–100% | `::first-letter` **supported**; `::first-line` **partial**: its colour and background, not its font, spacing or `vertical-align`                                                                                              |
+| `z-index` stacking                                 | 152   | 73%     | **supported**: Appendix E's order — block backgrounds, floats, lines, positioned boxes by `z-index` — with a table, a flex box or a box that clips painted whole among the lines                                              |
+| SVG: inline, as an image, as a background          | 52    | 98%     | **supported**, as ntk's `SvgView` draws it: shapes, paths, `<use>`, gradients and text; no stylesheet rules, filters, masks or clip paths                                                                                     |
+| `clip`                                             | 44    | 100%    | **supported**                                                                                                                                                                                                                 |
+| bidi: `direction`, `unicode-bidi`                  | 265   | 68%     | **partial**: shaping and the bidi algorithm are the engine's, a line's pieces are ordered by UAX #9's L2; an override that crosses a padded element is resolved on each side of it                                            |
+| selectors                                          | 468   | 94%     | **supported**                                                                                                                                                                                                                 |
+| cascade, `@import`, `@media`                       | 134   | 66–75%  | **supported**                                                                                                                                                                                                                 |
 
 The CSS3 subset documents actually use sits outside this suite and is listed
 in [the plan](#a-static-html-widget-worth-having) below.

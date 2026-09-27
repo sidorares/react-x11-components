@@ -34,7 +34,7 @@ import { codeUnitOffsets } from '../../internal/text.js';
 import type { TextRun } from '../../richtext/index.js';
 import type { ComputedStyle } from '../css/style.js';
 import { isTransparent, resolve } from '../css/values.js';
-import { isOffset } from './boxes.js';
+import { BOX_RAISES, isOffset, SHIFTED_LINES, TEXT_RAISES } from './boxes.js';
 import type {
   AtomicPlacement,
   Box,
@@ -166,11 +166,15 @@ export function layoutInline(block: Box, options: InlineOptions): InlineResult {
   let hasAtomics = false;
   let hasEdges = false;
   let hasOffset = false;
+  let raised = false;
   for (const item of items) {
     if (item.kind === 'atomic') hasAtomics = true;
     else if (item.kind === 'edge') {
       hasEdges = true;
-      if (!hasOffset && isOffset(item.box.style)) hasOffset = true;
+      if (item.box.style.verticalAlign !== 'baseline') {
+        hasOffset = true;
+        raised = true;
+      } else if (!hasOffset && isOffset(item.box.style)) hasOffset = true;
     }
   }
   const floated = options.floats?.intersects(options.startY, Infinity) ?? false;
@@ -266,6 +270,7 @@ export function layoutInline(block: Box, options: InlineOptions): InlineResult {
   };
 
   const strut = fonts ? strutOf(fonts, style) : null;
+  const lifts = raised && fonts ? new Lifts(fonts) : null;
   const close = (): void => {
     const line = finishLine(
       open,
@@ -276,6 +281,7 @@ export function layoutInline(block: Box, options: InlineOptions): InlineResult {
       lineShift(style),
       style.direction === 'rtl',
       strut,
+      lifts,
     );
     if (!line) {
       open = openLine(0);
@@ -960,6 +966,7 @@ function finishLine(
   shift: number,
   rtl: boolean,
   strut: InlineDecoration | null,
+  lifts: Lifts | null = null,
 ): LineBox | null {
   if (!open.texts.length && !open.atomics.length && !open.edges.length) {
     return null;
@@ -980,8 +987,30 @@ function finishLine(
   let ascent = held ? strut.ascent : 0;
   let descent = held ? strut.descent : 0;
   let height = ascent + descent;
-  for (const text of open.texts) {
-    const natural = text.layout.lines[text.layoutLine];
+  // A text `vertical-align` raises takes its own box's room about where it
+  // is raised to. A `top` or `bottom` box takes the room of all it holds
+  // on the line about its baseline, and the line is as tall as that.
+  const lifted = lifts ? open.texts.map((text) => lifts.of(text)) : null;
+  let edges: Map<Box, { ascent: number; descent: number }> | null = null;
+  for (let i = 0; i < open.texts.length; i += 1) {
+    const lift = lifted?.[i];
+    if (lift) {
+      if (lift.edge) {
+        edges ??= new Map();
+        let room = edges.get(lift.edge.box);
+        if (!room) {
+          room = { ascent: lift.edge.ascent, descent: lift.edge.descent };
+          edges.set(lift.edge.box, room);
+        }
+        room.ascent = Math.max(room.ascent, lift.ascent + lift.raise);
+        room.descent = Math.max(room.descent, lift.descent - lift.raise);
+      } else {
+        ascent = Math.max(ascent, lift.ascent + lift.raise);
+        descent = Math.max(descent, lift.descent - lift.raise);
+      }
+      continue;
+    }
+    const natural = open.texts[i].layout.lines[open.texts[i].layoutLine];
     const own = natural.baseline - natural.y;
     ascent = Math.max(ascent, own);
     descent = Math.max(descent, natural.height - own);
@@ -1000,6 +1029,11 @@ function finishLine(
     const b = atomicBaseline(box);
     ascent = Math.max(ascent, b + raise);
     descent = Math.max(descent, h - b - raise);
+  }
+  if (edges) {
+    for (const room of edges.values()) {
+      height = Math.max(height, room.ascent + room.descent);
+    }
   }
   height = Math.max(height, ascent + descent);
   const baseline = Math.max(ascent, (height - ascent - descent) / 2 + ascent);
@@ -1043,11 +1077,25 @@ function finishLine(
   for (const placed of open.atomics)
     placed.y = y + alignAtomic(placed.box, line);
   // Every fragment on this line shares the line's baseline, whatever its own
-  // layout thinks: that is what makes a small `<sup>` beside body text sit on
-  // the same baseline rather than on its own.
-  for (const text of open.texts) {
+  // layout thinks: that is what makes a small `<span>` beside body text sit
+  // on the same baseline rather than on its own. One that `vertical-align`
+  // raises is drawn that far above it.
+  for (let i = 0; i < open.texts.length; i += 1) {
+    const text = open.texts[i];
     const natural = text.layout.lines[text.layoutLine];
-    text.drawY = y + baseline - natural.baseline;
+    let at = y + baseline;
+    const lift = lifted?.[i];
+    if (lift) {
+      const room = lift.edge && edges!.get(lift.edge.box)!;
+      if (lift.edge?.to === 'top') at = y + room!.ascent - lift.raise;
+      else if (lift.edge) at = y + height - room!.descent - lift.raise;
+      else at -= lift.raise;
+      if (at !== y + baseline) {
+        TEXT_RAISES.set(text, y + baseline - at);
+        SHIFTED_LINES.add(line);
+      }
+    }
+    text.drawY = at - natural.baseline;
   }
   return line;
 }
@@ -1394,15 +1442,17 @@ function collect(
         // right-to-left line finds them (`reorderLine`), and how a rounded
         // background knows the fragments that open and close it, to round
         // only those corners — so it gets them even at width zero.
-        // And a box that `position: relative` moves has them, so that its
-        // text is laid out apart from the text around it, to be drawn
-        // where the box goes (`offsetInline`)
+        // And a box that `position: relative` moves or `vertical-align`
+        // raises has them, so that its text is laid out apart from the text
+        // around it, to be drawn where the box goes (`offsetInline`,
+        // `Lifts`)
         const edged =
           start > 0 ||
           end > 0 ||
           (child.decoration !== null &&
             child.style.borderRadius.some((r) => r > 0)) ||
-          isOffset(child.style);
+          isOffset(child.style) ||
+          child.style.verticalAlign !== 'baseline';
         if (edged) {
           out.push({ kind: 'edge', box: child, side: 'start', width: start });
         }
@@ -1941,6 +1991,157 @@ export function strutOf(
         : (style.lineHeight as number) * style.fontSize;
   const half = (target - face.ascent - face.descent) / 2;
   return { ascent: face.ascent + half, descent: face.descent + half };
+}
+
+/** Where a text `vertical-align` raised goes on its line. */
+interface Lift {
+  /** How far above the line's baseline its baseline is — above the top
+   *  or bottom box's, under one of those. */
+  raise: number;
+  /** The room its own inline box takes about its baseline. */
+  ascent: number;
+  descent: number;
+  /** A `top` or `bottom` box it is in, aligned with the line box's edge
+   *  rather than with anything's baseline, and the room that box's own
+   *  font takes: its content on the line adds to it (`finishLine`). */
+  edge: {
+    box: Box;
+    to: 'top' | 'bottom';
+    ascent: number;
+    descent: number;
+  } | null;
+}
+
+/**
+ * The raises `vertical-align` gives a paragraph's inline boxes (CSS 2.1
+ * 10.8.1): each from its parent's baseline, so a box inside a raised box is
+ * raised with it. `sub` and `super` by a fifth and a third of the parent's
+ * font size and a pixel, as browsers set them; `text-top` and `text-bottom`
+ * to the edges of the parent's font; `middle` by its middle to half the
+ * parent's x-height above its baseline; a length by itself and a
+ * percentage of the box's own line height. Worked out once a box a pass.
+ */
+class Lifts {
+  private _boxes = new Map<Box, { raise: number; edge: Box | null }>();
+
+  constructor(private readonly fonts: FontsLike) {}
+
+  /** Where a text goes, or null for one that is on the line's baseline. */
+  of(text: LineText): Lift | null {
+    const owner = text.spans.boxAt?.(text.layoutStart);
+    const parent = owner?.parent;
+    if (!owner || !parent || parent.kind !== 'inline') return null;
+    const { raise, edge } = this._box(parent);
+    if (!raise && !edge) return null;
+    // the room of every box whose text is in it: no raised box starts or
+    // ends inside a fragment, but one it holds may be set larger
+    const own = { ...strutOf(this.fonts, owner.style) };
+    const natural = text.layout.lines[text.layoutLine];
+    let seen = owner.style;
+    for (const run of natural?.runs ?? []) {
+      const style = text.spans.boxAt?.(run.start)?.style;
+      if (!style || style === seen) continue;
+      seen = style;
+      const room = strutOf(this.fonts, style);
+      own.ascent = Math.max(own.ascent, room.ascent);
+      own.descent = Math.max(own.descent, room.descent);
+    }
+    let to: Lift['edge'] = null;
+    if (edge) {
+      const room = strutOf(this.fonts, edge.style);
+      to = {
+        box: edge,
+        to: edge.style.verticalAlign === 'top' ? 'top' : 'bottom',
+        ascent: room.ascent,
+        descent: room.descent,
+      };
+    }
+    return { raise, ascent: own.ascent, descent: own.descent, edge: to };
+  }
+
+  private _box(box: Box): { raise: number; edge: Box | null } {
+    if (box.kind !== 'inline' || !box.parent) return NO_LIFT;
+    const known = this._boxes.get(box);
+    if (known) return known;
+    const va = box.style.verticalAlign;
+    let lift: { raise: number; edge: Box | null };
+    if (va === 'top' || va === 'bottom') {
+      // what is in it is raised from its baseline, which the line's edge
+      // sets, whatever is around it
+      lift = { raise: 0, edge: box };
+    } else {
+      const up = this._box(box.parent);
+      lift = { raise: up.raise + this._own(box, box.parent), edge: up.edge };
+      if (lift.raise && !lift.edge) BOX_RAISES.set(box, lift.raise);
+    }
+    this._boxes.set(box, lift);
+    return lift;
+  }
+
+  /** How far a box's own `vertical-align` raises it from its parent's
+   *  baseline. */
+  private _own(box: Box, parent: Box): number {
+    const va = box.style.verticalAlign;
+    const size = parent.style.fontSize;
+    switch (va) {
+      case 'baseline':
+      case 'top':
+      case 'bottom':
+        return 0;
+      case 'sub':
+        return -(size / 5 + size / 16);
+      case 'super':
+        return size / 3 + size / 16;
+      case 'text-top':
+        return (
+          faceExtent(this.fonts, parent.style).ascent -
+          strutOf(this.fonts, box.style).ascent
+        );
+      case 'text-bottom':
+        return (
+          strutOf(this.fonts, box.style).descent -
+          faceExtent(this.fonts, parent.style).descent
+        );
+      case 'middle': {
+        const own = strutOf(this.fonts, box.style);
+        return (
+          xHeightOf(this.fonts, parent.style) / 2 -
+          (own.ascent - own.descent) / 2
+        );
+      }
+      default:
+        return typeof va === 'number'
+          ? va
+          : resolve(va, lineHeightOf(this.fonts, box.style));
+    }
+  }
+}
+
+const NO_LIFT = { raise: 0, edge: null };
+
+/** A style's line height in pixels. */
+function lineHeightOf(fonts: FontsLike, style: ComputedStyle): number {
+  if (style.lineHeight === 'normal') return naturalLineHeight(fonts, style);
+  return style.lineHeightIsLength
+    ? (style.lineHeight as number)
+    : (style.lineHeight as number) * style.fontSize;
+}
+
+/** A style's x-height, where its font says, or half its size. */
+function xHeightOf(fonts: FontsLike, style: ComputedStyle): number {
+  try {
+    const metrics = fonts
+      .match(style.fontFamily, {
+        size: style.fontSize,
+        weight: style.fontWeight,
+        style: style.fontStyle,
+      })
+      .metrics(style.fontSize) as { xHeight?: number | null };
+    if (typeof metrics.xHeight === 'number') return metrics.xHeight;
+  } catch {
+    // no font to ask
+  }
+  return style.fontSize / 2;
 }
 
 /** Whether a line has nothing on it yet. */
