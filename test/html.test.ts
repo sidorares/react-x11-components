@@ -32,6 +32,7 @@ import { cocoaShapedLayout } from './cocoa-shaped.js';
 import type { ShapedLayout } from './cocoa-shaped.js';
 import {
   mediaMatches,
+  parseMediaQuery,
   parseStylesheet,
   parseDeclarations,
   specificityOf,
@@ -4615,8 +4616,9 @@ test('prefers-color-scheme is a live condition, alone and beside a width', () =>
       [[{ staticPass: false }]],
     ],
   );
-  // a scheme is not a width: the only breakpoint is the width test's
-  assert.deepStrictEqual(sheet.breakpoints, [521]);
+  // a scheme is not a width: the only breakpoint is the width test's, just
+  // past the widest width it holds at
+  assert.deepStrictEqual(sheet.breakpoints, [520 + 1 / 64]);
 
   assert.ok(mediaMatches([[{ scheme: 'dark' }]], 800, 'dark'));
   assert.ok(!mediaMatches([[{ scheme: 'dark' }]], 800, 'light'));
@@ -6714,4 +6716,76 @@ test('a later cascade layer wins over an earlier one, and no layer over any', as
     blue,
     'a layer with no name is one of its own',
   );
+});
+
+// --- nesting, and media ranges ----------------------------------------------------
+
+test('a nested rule is relative to its parent, and a nested @media holds for it', () => {
+  // CSS Nesting 1, as Tailwind 4 writes its variants: `md:flex` is a
+  // `@media` inside the rule, and `hover:` is `&:hover`
+  const sheet = parseStylesheet(
+    '.md\\:flex { @media (width >= 48rem) { display: flex } }\n' +
+      '.hover\\:x { &:hover { @media (hover: hover) { color: red } } }\n' +
+      '.space { :where(& > :not(:last-child)) { margin: 1px } }\n' +
+      '.card { color: blue; .title { color: red } > p { margin: 0 }' +
+      ' &.on, &:focus { color: green } }\n' +
+      '.a, .b { & + & { margin: 2px } }\n' +
+      '.x { --x: { a: b }; div& { color: red } &div { color: red } }',
+  );
+  assert.deepStrictEqual(
+    sheet.rules.map((r) => [r.selector, JSON.stringify(r.media)]),
+    [
+      ['.md\\:flex', '[[{"min":768}]]'],
+      ['.hover\\:x:hover', '[[{"staticPass":true}]]'],
+      [':where(:is(.space) > :not(:last-child))', 'null'],
+      ['.card', 'null'],
+      ['.card .title', 'null'],
+      ['.card > p', 'null'],
+      ['.card.on', 'null'],
+      ['.card:focus', 'null'],
+      [':is(.a) + :is(.a)', 'null'],
+      [':is(.b) + :is(.b)', 'null'],
+      ['.x', 'null'],
+      // `&div` has its type after the rest of its compound, which is no
+      // selector, and goes; `div&` is the way to write it
+      ['div:is(.x)', 'null'],
+    ],
+  );
+  // in the order they are written, after the parent's own declarations
+  const orders = sheet.rules.map((r) => r.order);
+  assert.deepStrictEqual(
+    orders,
+    [...orders].sort((a, b) => a - b),
+  );
+});
+
+test("a media range is a width's bounds", () => {
+  // Media Queries 4: Tailwind 4 writes its breakpoints so
+  assert.deepStrictEqual(parseMediaQuery('(width >= 48rem)'), [{ min: 768 }]);
+  assert.deepStrictEqual(parseMediaQuery('(40rem <= width < 60rem)'), [
+    { min: 640, max: 960 - 1 / 64 },
+  ]);
+  assert.deepStrictEqual(parseMediaQuery('(60rem > width)'), [
+    { max: 960 - 1 / 64 },
+  ]);
+  assert.deepStrictEqual(parseMediaQuery('screen and (width > 30em)'), [
+    { min: 480 + 1 / 64 },
+  ]);
+});
+
+test('a nested rule and a media range reach the document', async () => {
+  const { node } = await render(
+    '<style>body{margin:0}.p { padding-left: 1px; & { padding-top: 2px }' +
+      ' @media (width >= 300px) { padding-right: 3px }' +
+      ' @media (width < 300px) { padding-bottom: 4px }' +
+      ' .c { margin-left: 5px } }</style>' +
+      '<div id="p" class="p"><div id="c" class="c"></div></div>',
+  );
+  const el = view(node);
+  const p = edgesOf(boxOf(el, 'p'));
+  assert.deepStrictEqual(
+    [p.padLeft, p.padTop, p.padRight, p.padBottom],
+    [1, 2, 3, 0],
+  );
+  assert.strictEqual(edgesOf(boxOf(el, 'c')).marginLeft, 5);
 });

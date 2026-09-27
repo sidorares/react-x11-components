@@ -183,7 +183,7 @@ export function parseStylesheet(
           const conditions = parseMediaQuery(at.prelude);
           for (const c of conditions) {
             if (c.min !== undefined) breakpoints.add(c.min);
-            if (c.max !== undefined) breakpoints.add(c.max + 1);
+            if (c.max !== undefined) breakpoints.add(c.max + MAX_EDGE);
           }
           // A nested `@media` intersects with the one above it; pushing a
           // level rather than merging keeps "all of these blocks hold" exact
@@ -232,21 +232,88 @@ export function parseStylesheet(
       const prelude = source.slice(i, blockAt).trim();
       const block = readBlock(source, blockAt);
       i = block.end;
-      const selectors = selectorList(prelude);
+      const selectors = rawSelectors(prelude);
       if (!selectors) continue;
       importsAllowed = false;
-      const declarations = parseDeclarations(block.body);
-      if (!declarations.length) continue;
-      for (const selector of selectors) {
-        sheet.rules.push({
-          selector,
-          specificity: specificityOf(selector),
-          order: order++,
-          declarations,
-          media,
-          layer,
-        });
+      styleRule(selectors, block.body, media, layer, path, 0);
+    }
+  };
+
+  /**
+   * A style rule, and the rules nested in it (CSS Nesting 1): a rule inside
+   * a rule's block is relative to it, `&` standing for it and a selector
+   * without one a descendant of it, and an `@media`, `@supports` or
+   * `@layer` inside one holds declarations for the same selectors, under
+   * its condition. Tailwind 4 writes its variants so — `md:flex` is
+   * `.md\:flex { @media (width >= 48rem) { display: flex } }`, and
+   * `hover:` is `&:hover` — and they were dropped with the rule. Each
+   * nested rule comes after its parent's declarations in the cascade's
+   * order, as it comes after them in the sheet.
+   */
+  const styleRule = (
+    selectors: string[],
+    body: string,
+    media: MediaCondition[][] | null,
+    layer: readonly number[] | null,
+    path: string,
+    depth: number,
+  ): void => {
+    // the plain case, a block with nothing nested in it
+    if (!body.includes('{')) {
+      emit(selectors, parseDeclarations(body), media, layer);
+      return;
+    }
+    const { declarations, nested } = splitNested(body);
+    emit(selectors, parseDeclarations(declarations), media, layer);
+    if (depth >= MAX_NESTING) return;
+    for (const item of nested) {
+      if (item.kind === 'rule') {
+        const inner = nestedSelectors(item.prelude, selectors);
+        if (inner) styleRule(inner, item.body, media, layer, path, depth + 1);
+        continue;
       }
+      const name = item.name.toLowerCase();
+      if (item.block === null) continue;
+      if (name === 'media') {
+        const conditions = parseMediaQuery(item.prelude);
+        for (const c of conditions) {
+          if (c.min !== undefined) breakpoints.add(c.min);
+          if (c.max !== undefined) breakpoints.add(c.max + MAX_EDGE);
+        }
+        styleRule(
+          selectors,
+          item.block,
+          media ? [...media, conditions] : [conditions],
+          layer,
+          path,
+          depth + 1,
+        );
+      } else if (name === 'supports') {
+        styleRule(selectors, item.block, media, layer, path, depth + 1);
+      } else if (name === 'layer' && LAYER_NAME.test(item.prelude.trim())) {
+        const [ranks, full] = enter(item.prelude.trim(), layer, path);
+        styleRule(selectors, item.block, media, ranks, full, depth + 1);
+      }
+    }
+  };
+
+  const emit = (
+    selectors: string[],
+    declarations: Declaration[],
+    media: MediaCondition[][] | null,
+    layer: readonly number[] | null,
+  ): void => {
+    if (!declarations.length) return;
+    for (const raw of selectors) {
+      const selector = raw.includes('\\') ? forMatcher(raw) : raw;
+      sheet.rules.push({
+        selector,
+        specificity: specificityOf(selector),
+        order: order++,
+        declarations,
+        media,
+        layer,
+      });
     }
   };
 
@@ -438,6 +505,14 @@ export function splitSelectors(prelude: string): string[] {
  * combinator with nothing after it — and the rule is dropped whole.
  */
 export function selectorList(prelude: string): string[] | null {
+  const raw = rawSelectors(prelude);
+  return raw && raw.map((s) => (s.includes('\\') ? forMatcher(s) : s));
+}
+
+/** A rule's selectors as written, or null where any of them is not one:
+ *  what `selectorList` hands the matcher before its escapes are read, and
+ *  what a nested rule's `&` stands for. */
+function rawSelectors(prelude: string): string[] | null {
   if (!prelude) return null;
   const out: string[] = [];
   let start = 0;
@@ -445,7 +520,7 @@ export function selectorList(prelude: string): string[] | null {
   const push = (end: number): boolean => {
     const selector = prelude.slice(start, end).trim();
     if (!selector || !isSelector(selector)) return false;
-    out.push(selector.includes('\\') ? forMatcher(selector) : selector);
+    out.push(selector);
     return true;
   };
   while (i < prelude.length) {
@@ -1193,6 +1268,187 @@ function readAtRule(text: string, at: number): AtRule {
   };
 }
 
+/** Where a width past a maximum starts, for the widths a restyle is due
+ *  at: a sixty-fourth of a pixel past it, where the widths a display scale
+ *  divides a device width into (`640.5` at 2x) fall on the right side. */
+const MAX_EDGE = 1 / 64;
+
+/**
+ * A width range in Media Queries 4's syntax — `(width >= 48rem)`, `(60rem >
+ * width)`, `(40rem <= width < 60rem)` — as the widths it holds between, or
+ * null for a term that is not one. A strict bound is a sixty-fourth of a
+ * pixel inside the value, where a viewport's width never lands.
+ */
+function widthRange(term: string): { min?: number; max?: number } | null {
+  const inner = /^\(\s*(.*?)\s*\)$/.exec(term)?.[1];
+  if (!inner || !/[<>=]/.test(inner)) return null;
+  const parts = inner.split(/\s*(<=|>=|<|>|=)\s*/);
+  const isWidth = (part: string) => part.toLowerCase() === 'width';
+  const out: { min?: number; max?: number } = {};
+  // `width OP value`, with the operator read from the width's side
+  const bound = (op: string, value: string): boolean => {
+    const len = parseLength(value, ZERO_UNITS);
+    if (typeof len !== 'number') return false;
+    const edge = 1 / 64;
+    if (op === '>=' || op === '=') out.min = Math.max(out.min ?? 0, len);
+    if (op === '>') out.min = Math.max(out.min ?? 0, len + edge);
+    if (op === '<=' || op === '=') out.max = Math.min(out.max ?? Infinity, len);
+    if (op === '<') out.max = Math.min(out.max ?? Infinity, len - edge);
+    return true;
+  };
+  const flip: Record<string, string> = {
+    '<': '>',
+    '<=': '>=',
+    '>': '<',
+    '>=': '<=',
+    '=': '=',
+  };
+  if (parts.length === 3 && isWidth(parts[0])) {
+    return bound(parts[1], parts[2]) ? out : null;
+  }
+  if (parts.length === 3 && isWidth(parts[2])) {
+    return bound(flip[parts[1]], parts[0]) ? out : null;
+  }
+  if (parts.length === 5 && isWidth(parts[2])) {
+    return bound(flip[parts[1]], parts[0]) && bound(parts[3], parts[4])
+      ? out
+      : null;
+  }
+  return null;
+}
+
+/** How deep rules may nest before the ones further in are dropped: far
+ *  past anything written by hand or by a framework, and short of what a
+ *  generated sheet could make of the stack. */
+const MAX_NESTING = 16;
+
+type Nested =
+  | { kind: 'rule'; prelude: string; body: string }
+  | { kind: 'at'; name: string; prelude: string; block: string | null };
+
+/**
+ * A style rule's block, parted into its declarations and the rules nested
+ * in it. A declaration runs to its `;` and a nested rule to its block,
+ * whichever comes first — `color: red;` and `a:hover { … }` — and a custom
+ * property is a declaration whatever its value holds.
+ */
+function splitNested(body: string): {
+  declarations: string;
+  nested: Nested[];
+} {
+  let declarations = '';
+  const nested: Nested[] = [];
+  let i = 0;
+  while (i < body.length) {
+    i = skipTrivia(body, i);
+    if (i >= body.length) break;
+    if (body[i] === ';') {
+      i += 1;
+      continue;
+    }
+    if (body[i] === '@' && startsIdent(body, i + 1)) {
+      const at = readAtRule(body, i);
+      nested.push({
+        kind: 'at',
+        name: at.name,
+        prelude: at.prelude,
+        block: at.block,
+      });
+      i = at.end;
+      continue;
+    }
+    const semi = scanTo(body, i, ';');
+    const brace = scanTo(body, i, '{');
+    if (brace < semi && !CUSTOM_DECLARATION.test(body.slice(i, brace))) {
+      const block = readBlock(body, brace);
+      nested.push({
+        kind: 'rule',
+        prelude: body.slice(i, brace).trim(),
+        body: block.body,
+      });
+      i = block.end;
+      continue;
+    }
+    declarations += `${body.slice(i, semi)};`;
+    i = semi + 1;
+  }
+  return { declarations, nested };
+}
+
+const CUSTOM_DECLARATION = /^\s*--[\w-]*\s*:/;
+
+/**
+ * A nested rule's selectors against its parent's, as written (CSS Nesting
+ * 1, 3): a selector that starts with `&` is the parent's with the rest
+ * after it, `&:hover` the parent hovered; any other `&` is `:is()` of the
+ * parent; one with none is relative to the parent, a descendant unless it
+ * starts with a combinator. Null where one of them comes to no selector.
+ */
+function nestedSelectors(prelude: string, parents: string[]): string[] | null {
+  const out: string[] = [];
+  for (const part of splitTopLevel(prelude, ',')) {
+    const written = part.trim();
+    if (!written) return null;
+    const own = hasNesting(written) ? written : `& ${written}`;
+    for (const parent of parents) {
+      const resolved =
+        own[0] === '&' &&
+        !hasNesting(own.slice(1)) &&
+        !/^[\w-]/.test(own.slice(1))
+          ? parent + own.slice(1)
+          : replaceNesting(own, `:is(${parent})`);
+      if (!isSelector(resolved)) return null;
+      out.push(resolved);
+    }
+  }
+  return out;
+}
+
+/** Whether a selector has a `&` outside its strings and escapes. */
+function hasNesting(selector: string): boolean {
+  return replaceNesting(selector, '') !== selector;
+}
+
+/** A selector with every `&` outside its strings and escapes replaced. */
+function replaceNesting(selector: string, by: string): string {
+  if (!selector.includes('&')) return selector;
+  let out = '';
+  let quote = '';
+  for (let i = 0; i < selector.length; i += 1) {
+    const c = selector[i];
+    if (c === '\\') {
+      out += selector.slice(i, i + 2);
+      i += 1;
+    } else if (quote) {
+      if (c === quote) quote = '';
+      out += c;
+    } else if (c === '"' || c === "'") {
+      quote = c;
+      out += c;
+    } else out += c === '&' ? by : c;
+  }
+  return out;
+}
+
+/** A list's items at the top level: no string, escape or bracket parts
+ *  them. */
+function splitTopLevel(text: string, at: string): string[] {
+  const out: string[] = [];
+  let start = 0;
+  let i = 0;
+  while (i < text.length) {
+    if (text[i] === at) {
+      out.push(text.slice(start, i));
+      start = i + 1;
+      i += 1;
+    } else {
+      i = opens(text.charCodeAt(i)) ? componentEnd(text, i) : i + 1;
+    }
+  }
+  out.push(text.slice(start));
+  return out;
+}
+
 function importUrl(prelude: string): string | null {
   const m = /^\s*(?:url\(\s*)?["']?([^"')\s]+)["']?\s*\)?/.exec(prelude);
   return m ? m[1] : null;
@@ -1231,6 +1487,19 @@ export function parseMediaQuery(prelude: string): MediaCondition[] {
         .replace(/^not\s+/i, '')
         .replace(/^only\s+/i, '');
       if (!term) continue;
+      // Media Queries 4's ranges, which Tailwind 4 writes its breakpoints
+      // in: `(width >= 48rem)`, `(40rem <= width < 60rem)`
+      const range = widthRange(term);
+      if (range) {
+        if (range.min !== undefined) {
+          condition.min = Math.max(condition.min ?? 0, range.min);
+        }
+        if (range.max !== undefined) {
+          condition.max = Math.min(condition.max ?? Infinity, range.max);
+        }
+        sawWidth = true;
+        continue;
+      }
       const feature = /^\(\s*([a-z-]+)\s*:\s*([^)]+?)\s*\)$/i.exec(term);
       if (feature) {
         const key = feature[1].toLowerCase();
