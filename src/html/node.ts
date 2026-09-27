@@ -326,9 +326,14 @@ export class HtmlViewNode extends Node {
    */
   private _requestBackgrounds(tree: BoxTree): void {
     for (const box of tree.backgrounds) {
-      const url = box.style.backgroundImage;
-      if (url && box.el) {
-        this._resources.request({ url, kind: 'image', element: box.el });
+      if (!box.el) continue;
+      // each layer's, where there is more than one
+      for (const url of box.style.backgroundImages ?? [
+        box.style.backgroundImage,
+      ]) {
+        if (typeof url === 'string') {
+          this._resources.request({ url, kind: 'image', element: box.el });
+        }
       }
     }
     // and every image generated content names, which is only known there

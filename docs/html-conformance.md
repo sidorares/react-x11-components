@@ -124,6 +124,7 @@ separately, and there are six.
 | 54     | `::marker`                                         | 5,471 (93%) | 4,979 (84%) |
 | 55     | an underline's offset and thickness                | 5,471 (93%) | 4,979 (84%) |
 | 56     | `background-size`                                  | 5,471 (93%) | 4,979 (84%) |
+| 57     | background layers                                  | 5,472 (93%) | 4,979 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -1719,6 +1720,26 @@ minmax(16rem, 1fr))` are the layouts of half the pages written this
      stylesheets write that were dropped; CSS 2.1 has no
      `background-size`, and neither suite moved.
 
+### Round 57
+
+148. **A background drew one of its layers.** The `background` shorthand
+     kept its last comma group and `background-image` its first, so the
+     hero every landing page has — `linear-gradient(rgba(0,0,0,.5),
+rgba(0,0,0,.5)), url(hero.jpg) center / cover` — was the photograph
+     with no shade over it, or the shade over nothing, depending on how it
+     was written; and two icons placed by one `background-image` were one.
+     A background is every layer now (CSS Backgrounds 3, 2.1), painted
+     bottom first over the colour, which is the last layer's: the number
+     of images decides how many there are, and `background-repeat`,
+     `-size`, `-position` and `-attachment` each give a value a layer,
+     taking them over again where they have fewer. A single layer is what
+     it was, with no list and nothing more to paint — the lists exist only
+     where there is more than one. Every layer's image is asked for through
+     `onResource`. Found in a survey of the properties real stylesheets
+     write that were dropped. CSS 2.1 has one layer, but one test in the
+     suite draws its pass condition as a sized image over a second layer
+     of red (`visudet/line-height-201`), and it passes now on X11.
+
 ## What `<Html>` supports
 
 From the pass rates of the tests that use each feature, at the fixes above,
@@ -1732,7 +1753,7 @@ checked against the code.
 | margins, padding, borders                          | 682   | 95%     | **supported**, inline boxes and collapsed table borders included; the `double`/`groove` families are approximations                                                                                                           |
 | floats and `clear`                                 | 311   | 46–67%  | **supported**, with gaps: a float inside a paragraph is placed at the paragraph's top, not its line's                                                                                                                         |
 | relative and absolute positioning                  | 513   | 84%     | **supported**; an absolute box inside a line takes the line's start for its static position                                                                                                                                   |
-| backgrounds: colour, image, repeat, position       | 336   | 85%     | **supported**, `background-attachment: fixed`, `background-size` and SVG images included                                                                                                                                      |
+| backgrounds: colour, image, repeat, position       | 336   | 85%     | **supported**, `background-attachment: fixed`, `background-size`, any number of layers and SVG images included                                                                                                                |
 | fonts: family, style, weight, size                 | 159   | 81%     | **supported**; `font-variant` is the font's own OpenType features, so small capitals are drawn where the font has them and not synthesized                                                                                    |
 | line height, `vertical-align`                      | 191   | 87%     | **supported**: every inline box's own line height, and `vertical-align` on text as well as on images and inline blocks; text in a font with taller natural lines than its paragraph's takes a bit more room than CSS gives it |
 | `white-space`                                      | 217   | 46%     | **supported**; collapsing is CSS 2.1's across elements                                                                                                                                                                        |

@@ -156,6 +156,9 @@ export type BorderStyle =
   | 'inset'
   | 'outset';
 
+/** A background layer's image: a url, a gradient, or none. */
+export type BackgroundImage = string | LinearGradient | null;
+
 export interface ComputedStyle {
   // --- inherited ------------------------------------------------------------
   color: string;
@@ -324,6 +327,17 @@ export interface ComputedStyle {
   backgroundAttachment: 'scroll' | 'fixed' | 'local';
   backgroundPositionX: Len;
   backgroundPositionY: Len;
+  /** Where a background has more than one layer (CSS Backgrounds 3, 2.1),
+   *  each layer's image, top first; null where it has one, which the fields
+   *  above are. The four lists after it are the same for the others: all of
+   *  a property's values where it has more than one, which the layers take
+   *  in turn, and over again where there are fewer than the images. The
+   *  fields above are the first of each. */
+  backgroundImages: BackgroundImage[] | null;
+  backgroundRepeats: ComputedStyle['backgroundRepeat'][] | null;
+  backgroundSizes: ComputedStyle['backgroundSize'][] | null;
+  backgroundAttachments: ComputedStyle['backgroundAttachment'][] | null;
+  backgroundPositions: [Len, Len][] | null;
 
   textDecorationLine: 'none' | 'underline' | 'line-through' | 'overline';
   textDecorationColor: string | null;
@@ -576,6 +590,11 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     backgroundAttachment: 'scroll',
     backgroundPositionX: 0,
     backgroundPositionY: 0,
+    backgroundImages: null,
+    backgroundRepeats: null,
+    backgroundSizes: null,
+    backgroundAttachments: null,
+    backgroundPositions: null,
 
     textDecorationLine: 'none',
     textDecorationColor: null,
@@ -1116,50 +1135,57 @@ export function applyDeclaration(
       return;
     }
     case 'background-image': {
-      const first = splitCommas(value)[0] ?? '';
-      if (IMAGE_FUNCTION.test(first.trim().toLowerCase())) {
-        // a gradient is an image drawn rather than fetched; one this does
-        // not draw is as though there were none
-        style.backgroundImage = null;
-        style.backgroundGradient = parseLinearGradient(first, ctx);
-        return;
+      // one a layer; a bad url makes the declaration invalid, and it is
+      // dropped
+      const images: BackgroundImage[] = [];
+      for (const part of splitCommas(value)) {
+        const image = backgroundImageOf(part, ctx);
+        if (image === undefined) return;
+        images.push(image);
       }
-      // a bad url makes the declaration invalid, and it is dropped
-      const url = parseUrl(first);
-      if (url !== undefined) {
-        style.backgroundImage = url;
-        style.backgroundGradient = null;
-      }
+      if (!images.length) return;
+      const [first] = images;
+      style.backgroundImage = typeof first === 'string' ? first : null;
+      style.backgroundGradient = typeof first === 'string' ? null : first;
+      style.backgroundImages = images.length > 1 ? images : null;
       return;
     }
     case 'background-repeat': {
-      const words = splitValue(value.toLowerCase());
-      const repeat = words.length <= 2 ? readRepeat(words) : null;
-      if (repeat) style.backgroundRepeat = repeat;
+      const repeats = layerValues(value, (part) => {
+        const words = splitValue(part.toLowerCase());
+        return words.length <= 2 ? readRepeat(words) : null;
+      });
+      if (!repeats) return;
+      style.backgroundRepeat = repeats[0];
+      style.backgroundRepeats = repeats.length > 1 ? repeats : null;
       return;
     }
     case 'background-attachment': {
-      // the last layer's, as the shorthand takes it
-      const v = (splitCommas(value).pop() ?? '').toLowerCase().trim();
-      if (v === 'scroll' || v === 'fixed' || v === 'local') {
-        style.backgroundAttachment = v;
-      }
+      const attachments = layerValues(value, (part) => {
+        const v = part.toLowerCase();
+        return v === 'scroll' || v === 'fixed' || v === 'local' ? v : null;
+      });
+      if (!attachments) return;
+      style.backgroundAttachment = attachments[0];
+      style.backgroundAttachments = attachments.length > 1 ? attachments : null;
       return;
     }
     case 'background-size': {
-      // the first layer's, as the first layer is the one drawn
-      const size = backgroundSizeOf(
-        splitValue(splitCommas(value)[0] ?? ''),
-        ctx,
+      const sizes = layerValues(value, (part) =>
+        backgroundSizeOf(splitValue(part), ctx),
       );
-      if (size) style.backgroundSize = size;
+      if (!sizes) return;
+      style.backgroundSize = sizes[0];
+      style.backgroundSizes = sizes.length > 1 ? sizes : null;
       return;
     }
     case 'background-position': {
-      const pair = positionPair(splitValue(value), ctx);
-      if (!pair) return;
-      style.backgroundPositionX = pair[0];
-      style.backgroundPositionY = pair[1];
+      const pairs = layerValues(value, (part) =>
+        positionPair(splitValue(part), ctx),
+      );
+      if (!pairs) return;
+      [style.backgroundPositionX, style.backgroundPositionY] = pairs[0];
+      style.backgroundPositions = pairs.length > 1 ? pairs : null;
       return;
     }
 
@@ -1926,25 +1952,64 @@ function applyBackgroundShorthand(
   value: string,
   ctx: UnitContext,
 ): void {
-  // Only the last layer paints against the box, so a multi-layer background
-  // reduces to its last comma group — but each has to be a layer, and only
-  // the last may have a colour, or the declaration is none
-  const layers = splitCommas(value);
-  let layer: BackgroundLayer | null = null;
-  for (let k = 0; k < layers.length; k += 1) {
-    layer = readBackgroundLayer(layers[k], ctx, k === layers.length - 1);
+  // A layer a comma group, top first: each has to be a layer, and only the
+  // last, which is painted against the box, may have a colour, or the
+  // declaration is none
+  const texts = splitCommas(value);
+  const layers: BackgroundLayer[] = [];
+  for (let k = 0; k < texts.length; k += 1) {
+    const layer = readBackgroundLayer(texts[k], ctx, k === texts.length - 1);
     if (!layer) return;
+    layers.push(layer);
   }
-  if (!layer) return;
-  style.backgroundColor = layer.color;
-  style.backgroundImage = layer.image;
-  style.backgroundGradient = layer.gradient;
-  style.backgroundRepeat = layer.repeat;
-  style.backgroundSize = layer.size;
-  style.backgroundAttachment = layer.attachment;
-  const [x, y] = layer.position ?? [0, 0];
-  style.backgroundPositionX = x;
-  style.backgroundPositionY = y;
+  if (!layers.length) return;
+  const [top] = layers;
+  style.backgroundColor = layers[layers.length - 1].color;
+  style.backgroundImage = top.image;
+  style.backgroundGradient = top.gradient;
+  style.backgroundRepeat = top.repeat;
+  style.backgroundSize = top.size;
+  style.backgroundAttachment = top.attachment;
+  [style.backgroundPositionX, style.backgroundPositionY] = top.position ?? [
+    0, 0,
+  ];
+  const many = layers.length > 1;
+  style.backgroundImages = many
+    ? layers.map((l) => l.image ?? l.gradient)
+    : null;
+  style.backgroundRepeats = many ? layers.map((l) => l.repeat) : null;
+  style.backgroundSizes = many ? layers.map((l) => l.size) : null;
+  style.backgroundAttachments = many ? layers.map((l) => l.attachment) : null;
+  style.backgroundPositions = many
+    ? layers.map((l) => l.position ?? [0, 0])
+    : null;
+}
+
+/** One layer's `background-image`: a url, a gradient — none where it is
+ *  one this does not draw, as though there were none — or none; undefined
+ *  where it is not an image at all. */
+function backgroundImageOf(
+  text: string,
+  ctx: UnitContext,
+): BackgroundImage | undefined {
+  const v = text.trim();
+  if (IMAGE_FUNCTION.test(v.toLowerCase())) return parseLinearGradient(v, ctx);
+  return parseUrl(v);
+}
+
+/** A background property's values, one a comma-separated layer, each read
+ *  by `read`; null where one is not a value, which drops the declaration. */
+function layerValues<T>(
+  value: string,
+  read: (part: string) => T | null,
+): T[] | null {
+  const out: T[] = [];
+  for (const part of splitCommas(value)) {
+    const v = read(part.trim());
+    if (v === null) return null;
+    out.push(v);
+  }
+  return out.length ? out : null;
 }
 
 interface BackgroundLayer {
@@ -2969,13 +3034,26 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
     'backgroundAttachment',
     'backgroundPositionX',
     'backgroundPositionY',
+    'backgroundImages',
+    'backgroundRepeats',
+    'backgroundSizes',
+    'backgroundAttachments',
+    'backgroundPositions',
   ],
   'background-color': ['backgroundColor'],
-  'background-image': ['backgroundImage', 'backgroundGradient'],
-  'background-repeat': ['backgroundRepeat'],
-  'background-size': ['backgroundSize'],
-  'background-attachment': ['backgroundAttachment'],
-  'background-position': ['backgroundPositionX', 'backgroundPositionY'],
+  'background-image': [
+    'backgroundImage',
+    'backgroundGradient',
+    'backgroundImages',
+  ],
+  'background-repeat': ['backgroundRepeat', 'backgroundRepeats'],
+  'background-size': ['backgroundSize', 'backgroundSizes'],
+  'background-attachment': ['backgroundAttachment', 'backgroundAttachments'],
+  'background-position': [
+    'backgroundPositionX',
+    'backgroundPositionY',
+    'backgroundPositions',
+  ],
   'aspect-ratio': ['aspectRatio'],
   'object-fit': ['objectFit'],
   'object-position': ['objectPositionX', 'objectPositionY'],
