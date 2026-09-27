@@ -103,6 +103,7 @@ separately, and there are six.
 | 33     | logical properties, `inset`, a corner's radius     | 5,460 (93%) | 4,972 (84%) |
 | 34     | cascade layers                                     | 5,460 (93%) | 4,972 (84%) |
 | 35     | nested rules, media ranges                         | 5,461 (93%) | 4,973 (84%) |
+| 36     | flex items' sizes and auto margins                 | 5,461 (93%) | 4,973 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -1293,6 +1294,27 @@ break: an XML parser keeps it, and `<Html>` parses HTML.
      where a width at 2x, `640.5`, lands on the right side of it; it was a
      whole pixel. 1 test: a declaration block with a brace in it, which a
      browser reads the same way.
+
+### Round 36
+
+121. **A flex item was as wide as its row's share and its padding taller.**
+     `<Html>` lays a flex container out with Yoga and each item with its
+     own engine, through Yoga's measure function, which answered with the
+     item's border box: Yoga, which holds the item's padding and border,
+     added them a second time. It also answered as wide as the space
+     offered, so an item of `width: auto` took a share of the row rather
+     than its content's width, and a `content-box` width was read as the
+     border box's. The measure answers inside the padding now, as wide as
+     the content's max-content width where Yoga offers up to a width or
+     none (CSS Flexbox 9.2), and a width, height, minimum, maximum or basis
+     of an item's own is its content box's unless `box-sizing` says
+     otherwise. An `auto` margin takes the free space on its side, which
+     is how `margin-left: auto` puts a button at the end of a nav bar; it
+     was a margin of nothing. A row of flex items is as wide as its items
+     side by side where it is itself measured, and the flex trees are laid
+     out off the pixel grid, since the paint snaps edges: on it, Yoga
+     rounded a measured item up and the next one's start to the nearest,
+     and they overlapped by a pixel. The CSS 2.1 suite has no flex boxes.
 
 ## What `<Html>` supports
 
