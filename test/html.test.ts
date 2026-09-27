@@ -3378,6 +3378,19 @@ test('an underline reaches the text of what is inside, in its own colour', async
   assert.ok(style('both').underline && style('both').lineThrough, 'both');
 });
 
+test("white space between a table's parts is no cell, kept or not", async () => {
+  // CSS 2.1 17.2.1, rule 1: under `white-space: pre` the line breaks
+  // between a table's rows made a cell of their own before each
+  const { node } = await render(
+    '<div id="t" style="display:table;white-space:pre">\n  ' +
+      '<div style="display:table-row">\n    ' +
+      '<div id="c" style="display:table-cell">x</div>\n  </div>\n</div>',
+  );
+  const el = view(node);
+  const [t, c] = ['t', 'c'].map((id) => boxOf(el, id));
+  assert.deepStrictEqual([c.x, c.y], [t.x, t.y], 'the cell is the first');
+});
+
 test('nothing loads without onResource, and every reference is offered to it', async () => {
   const asked: string[] = [];
   await renderX11(
