@@ -5304,6 +5304,63 @@ test("a table in an aligned cell keeps its cells' text at their start", async ()
   assert.strictEqual(align('c3'), 'center', "the author's own centring");
 });
 
+test('a closed details shows its summary, and an open one all of it', async () => {
+  // a closed `<details>` showed everything in it: an FAQ of them was every
+  // answer at once
+  const { node } = await render(
+    '<details id="closed"><summary id="s1">Question</summary>' +
+      '<p id="hidden">Answer</p></details>' +
+      '<details id="open" open><summary id="s2">Question</summary>' +
+      '<p id="shown">Answer</p></details>' +
+      '<details id="two"><summary id="s3">First</summary>' +
+      '<summary id="s4">Second</summary></details>',
+  );
+  const el = view(node);
+  const has = (id: string) => {
+    try {
+      boxOf(el, id);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  assert.ok(has('s1'), 'the summary');
+  assert.ok(!has('hidden'), 'not the answer');
+  assert.ok(has('shown'), "an open one's answer");
+  assert.ok(has('s3') && !has('s4'), 'the first summary only');
+  // with the marker HTML gives a summary, turned down when open
+  const type = (id: string) =>
+    (boxOf(el, id) as unknown as { style: { listStyleType: string } }).style
+      .listStyleType;
+  assert.strictEqual(type('s1'), 'disclosure-closed');
+  assert.strictEqual(type('s2'), 'disclosure-open');
+});
+
+metric(
+  'an inside marker takes its room at the start of the first line',
+  async () => {
+    // it was drawn at the content edge, over the first letters of the item:
+    // every `list-style-position: inside` list, and every `<summary>`
+    const { node } = await render(
+      '<style>body{margin:0} ul{margin:0;padding:0}</style>' +
+        '<ul style="list-style-position:inside"><li id="in">Item</li></ul>' +
+        '<ul style="list-style:none"><li id="bare">Item</li></ul>',
+    );
+    const el = view(node);
+    const [inside] = linesOf(el, 'in');
+    const [bare] = linesOf(el, 'bare');
+    assert.ok(
+      inside.width > bare.width + 4,
+      `the bullet and its space: ${inside.width} beside ${bare.width}`,
+    );
+    // and it is no marker set beside the line any more
+    assert.strictEqual(
+      (boxOf(el, 'in') as unknown as { marker: unknown }).marker,
+      null,
+    );
+  },
+);
+
 test("a body's text and link colours, and a background attribute", async () => {
   const { node } = await render(
     '<body text="#123456" link="#00ff00">' +

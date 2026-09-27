@@ -180,7 +180,8 @@ legend { display: block; padding: 0 2px; }
 label { cursor: pointer; }
 
 details { margin: 0.5em 0; }
-summary { display: block; cursor: pointer; font-weight: bold; }
+summary { display: list-item; list-style: disclosure-closed inside; cursor: pointer; }
+details[open] > summary:first-of-type { list-style-type: disclosure-open; }
 
 /* 'hidden' is an attribute, not a style, and a document that uses it expects
    it to win over the display above. */

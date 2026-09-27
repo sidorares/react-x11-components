@@ -114,6 +114,7 @@ separately, and there are six.
 | 44     | 3D border styles                                   | 5,462 (93%) | 4,974 (84%) |
 | 45     | a flex row measured for its content                | 5,462 (93%) | 4,974 (84%) |
 | 46     | a table in an aligned cell                         | 5,462 (93%) | 4,974 (84%) |
+| 47     | details, and markers inside                        | 5,466 (93%) | 4,978 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -1511,6 +1512,26 @@ minmax(16rem, 1fr))` are the layouts of half the pages written this
      So does this now; an author's own `text-align: center` is inherited
      into a table as it always was. Found rendering a transactional mail
      beside a browser; the CSS 2.1 suite has no `align` attributes.
+
+### Round 47
+
+136. **A closed `<details>` showed everything in it.** An FAQ of them was
+     every answer at once. A closed one shows its first `<summary>` now and
+     nothing else, as HTML renders the rest into a slot that is out of the
+     box tree until the element is `open`. The summary is a list item with
+     HTML's marker, `disclosure-closed` and, in an open one,
+     `disclosure-open` — ▸ and ▾, as Blink draws them — and is no longer
+     bold, which no browser makes it.
+137. **An inside marker was drawn over its item's first letters.** A
+     `list-style-position: inside` marker was laid out apart and set at the
+     item's content edge, where its text also starts, so every inside list
+     — Tailwind's `list-inside` — read `•Item` with the two on top of each
+     other, and so would every summary. It is the first inline content of
+     the item now, the marker and a space, and takes its room on the first
+     line as `::marker` does. That is also what the CSS 2.1 suite asks of
+     one: an item that starts with a block has its marker on a line of its
+     own above the block, and an empty item beside a float is a line tall,
+     with its marker set past the float. 4 tests.
 
 ## What `<Html>` supports
 
