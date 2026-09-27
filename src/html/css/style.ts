@@ -56,7 +56,8 @@ export type Display =
   | 'table-cell'
   | 'table-caption'
   | 'table-column'
-  | 'table-column-group';
+  | 'table-column-group'
+  | 'contents';
 
 /** A grid track's sizing: its minimum and maximum sizing functions (CSS
  *  Grid 1, 7.2.3). A plain length is both; `auto` is a minimum of the
@@ -1845,6 +1846,7 @@ const DISPLAYS = new Set<string>([
   'table-caption',
   'table-column',
   'table-column-group',
+  'contents',
 ]);
 
 const DECORATION_STYLES = new Set([

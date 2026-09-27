@@ -8359,6 +8359,37 @@ metric(
   },
 );
 
+test("an element of display: contents has no box, and its children are its parent's", async () => {
+  // dropped, so the element stayed a block: a wrapper Tailwind's
+  // `contents` takes out of a flex row was one item, its children stacked
+  // in it
+  const { node } = await render(
+    '<style>body{margin:0}.i{width:40px;height:20px}' +
+      '.w::before{content:"";display:block;width:10px;height:20px}</style>' +
+      '<div id="row" style="display:flex;gap:5px">' +
+      '<div id="w" class="w" style="display:contents;color:#ff0000">' +
+      '<div id="a" class="i"></div><div id="b" class="i"></div></div>' +
+      '<div id="c" class="i"></div></div>' +
+      '<div style="display:contents;color:#00ff00"><p id="p">text</p></div>' +
+      '<img id="img" style="display:contents" width="30" height="30">' +
+      '<p id="ref" style="color:#00ff00">text</p>',
+  );
+  const el = view(node);
+  const row = boxOf(el, 'row') as unknown as { children: LaidBox[] };
+  // the `::before`, a, b and c are the row's four items
+  assert.strictEqual(row.children.filter((c) => c.width > 0).length, 4);
+  const x = (id: string) => boxOf(el, id).x;
+  assert.deepStrictEqual([x('a'), x('b'), x('c')], [15, 60, 105]);
+  const color = (id: string) =>
+    (boxOf(el, id) as unknown as { style: { color: string } }).style.color;
+  assert.strictEqual(color('p'), color('ref'), 'what is in it inherits');
+  const tree = (el as unknown as { _tree: { root: LaidBox } })._tree.root;
+  const find = (box: LaidBox, id: string): boolean =>
+    box.el?.attribs.id === id || box.children.some((c) => find(c, id));
+  assert.ok(!find(tree, 'w'), 'no box for the element');
+  assert.ok(!find(tree, 'img'), 'a replaced element is not rendered');
+});
+
 test('background-clip: text and -webkit-text-fill-color are read', async () => {
   const { node } = await render(
     '<style>.clip{-webkit-background-clip:text}</style>' +

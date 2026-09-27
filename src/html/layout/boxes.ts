@@ -716,6 +716,23 @@ class Builder {
     );
     if (style.display === 'none') return;
     if (onlyColumns && style.display !== 'table-column') return;
+    if (style.display === 'contents') {
+      // no box of its own (CSS Display 3, 2.5): its `::before`, its
+      // children and its `::after` are its parent's, in its style — the
+      // items of a flex row still, through a wrapper Tailwind's `contents`
+      // takes out — and a replaced element, which has nothing to hand on,
+      // is not rendered
+      if (tag === 'br' || replacedKind(el, tag) !== 'none') return;
+      if (style.counterReset || style.counterIncrement) {
+        this._counterChanges(style);
+      }
+      this._scopes.open();
+      this._pseudo(el, 'before', style, into);
+      this._children(el, into, style, inFlex, el, key);
+      this._pseudo(el, 'after', style, into);
+      this._scopes.close();
+      return;
+    }
     if (isRelative(style)) {
       this._relative = true;
       if (style.display === 'inline' && isOffset(style)) {
