@@ -24,6 +24,7 @@ import {
   childrenOf,
   isElement,
   isText,
+  inImpliedHead,
   NON_RENDERED,
   tagOf,
 } from '../dom.js';
@@ -660,7 +661,7 @@ class Builder {
     onlyColumns = false,
   ): void {
     const tag = tagOf(el);
-    if (NON_RENDERED.has(tag)) return;
+    if (NON_RENDERED.has(tag) || inImpliedHead(el, tag)) return;
 
     // shared with every element that must compute the same style, which in
     // a long document is most of them (`Cascade.sharedStyleFor`)

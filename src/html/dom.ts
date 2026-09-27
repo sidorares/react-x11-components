@@ -36,20 +36,35 @@ export { Element, Text, Comment } from 'domhandler';
  *  set is here because the box builder has to skip the same ones. */
 const RAW_TEXT = new Set(['script', 'style', 'textarea', 'title']);
 
-/** Never rendered, whatever the stylesheet says. `<script>` and `<style>`
- *  are consumed by the seams instead; the rest have no visual box in the
- *  subset this renders. */
-export const NON_RENDERED = new Set([
-  'script',
-  'style',
-  'head',
+/** Never rendered, whatever the stylesheet says: a `<template>`'s
+ *  content is inert. The rest of what has no box of its own — `<head>` and
+ *  what is in it, `<script>`, `<style>` — is `display: none` by the UA
+ *  sheet, and shown where an author's sheet says otherwise, as a browser
+ *  shows it: `head, meta { display: block }` makes a `<meta>`'s `::before`
+ *  a line of the page. */
+export const NON_RENDERED = new Set(['template']);
+
+/** What the HTML parser puts in `<head>`. Where the markup has no `<head>`
+ *  around it, at the top of the document, it is still the head's, which a
+ *  browser implies and the UA sheet hides: `* { display: block }` shows no
+ *  `<title>` or `<style>` there (`inImpliedHead`). */
+const HEAD_CONTENT = new Set([
+  'title',
   'meta',
   'link',
-  'title',
+  'style',
+  'script',
   'base',
-  'template',
   'noscript',
 ]);
+
+/** Whether an element is head content with no `<head>` around it: at the
+ *  top of the document or right under `<html>`. */
+export function inImpliedHead(el: Element, tag: string): boolean {
+  if (!HEAD_CONTENT.has(tag)) return false;
+  const parent = el.parent;
+  return !parent || !isElement(parent) || tagOf(parent) === 'html';
+}
 
 /** An element's tag name, lowercased — htmlparser2 already lowercases in
  *  HTML mode, so this is the assertion rather than the work. An SVG root

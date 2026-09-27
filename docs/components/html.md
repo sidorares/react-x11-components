@@ -164,7 +164,8 @@ the line orders the pieces (UAX #9's L2) — so a right-to-left paragraph with
 an image in it reads right to left, and it is aligned whole: a centred line
 is centred with its images, not text first and the image after it.
 
-**Boxes:** `width`/`height` with `min-`/`max-`, `margin`, `padding`,
+**Boxes:** `width`/`height` with `min-`/`max-`, `margin` (a negative one
+on an inline box takes its room back from the line), `padding`,
 `border` (width, style, colour, radius), `box-sizing`, `overflow`, `clip`,
 `opacity`, `visibility` — a hidden element keeps its room and draws
 nothing, its text included, and a visible element inside it is drawn —
@@ -188,6 +189,11 @@ padding, which is why they do not make the line taller. Where it wraps it is
 sliced: no border and no rounded corner on a side it goes on from. A padded
 `<a>` set as an email's button, a pill badge and a `<kbd>` keycap render as
 a browser renders them.
+
+As in a browser, `display: none` is all that hides `<head>`, `<title>`,
+`<style>` and `<script>`: a stylesheet that shows them shows them. What the
+markup leaves outside a `<head>`, at the top of the document, is in the
+head a browser implies, and stays hidden.
 
 **Replaced content:** an image is sized by its style and what it has of
 an intrinsic width, height and ratio (CSS 2.1 10.3.2, 10.6.2), and a

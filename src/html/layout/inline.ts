@@ -622,7 +622,13 @@ function spacersHold(style: ComputedStyle, items: Item[]): boolean {
   if (style.direction !== 'ltr') return false;
   for (const item of items) {
     if (item.kind === 'text' && REORDERS.test(item.run.text)) return false;
-    if (item.kind === 'edge' && item.box.style.direction !== 'ltr')
+    // A negative margin takes room back. As a spacer it is a space with
+    // negative letter spacing, which ntk's line fill counts and CoreText's
+    // typesetter breaks the line before: the line at a time does the sum.
+    if (
+      item.kind === 'edge' &&
+      (item.box.style.direction !== 'ltr' || item.width < 0)
+    )
       return false;
   }
   return true;
@@ -1447,8 +1453,8 @@ function collect(
         // around it, to be drawn where the box goes (`offsetInline`,
         // `Lifts`)
         const edged =
-          start > 0 ||
-          end > 0 ||
+          start !== 0 ||
+          end !== 0 ||
           (child.decoration !== null &&
             child.style.borderRadius.some((r) => r > 0)) ||
           isOffset(child.style) ||
