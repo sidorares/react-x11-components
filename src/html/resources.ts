@@ -14,6 +14,8 @@
 // for. The host already knows its proxy, its cache, its offline policy and
 // whether this document is trusted; this does not.
 import * as ntk from 'react-x11/ntk';
+import { decodeStylesheet } from './css/decode.js';
+import type { DecodedStylesheet } from './css/decode.js';
 import type { Element } from 'domhandler';
 
 /** What the host is asked for. */
@@ -27,18 +29,25 @@ export interface ResourceRequest {
 }
 
 /**
- * What the host hands back. A stylesheet is text; an image is bytes, which
- * this decodes, or an already-decoded ntk `Image` for a host with its own
- * cache.
+ * What the host hands back. A stylesheet is text, or bytes this decodes as
+ * CSS says to — with `charset`, the encoding the protocol named, if it named
+ * one (`css/decode.ts`); an image is bytes, which this decodes, or an
+ * already-decoded ntk `Image` for a host with its own cache.
  */
 export type ResourceResult =
   | { kind: 'stylesheet'; text: string }
+  | { kind: 'stylesheet'; bytes: Uint8Array; charset?: string }
   | { kind: 'image'; bytes: Uint8Array }
   | { kind: 'image'; image: unknown; width: number; height: number };
 
 interface Entry {
   state: 'pending' | 'ready' | 'failed';
   text?: string;
+  /** A stylesheet handed over as bytes, decoded when it is first read: what
+   *  it falls back to is the referrer's, known only then. */
+  bytes?: Uint8Array;
+  charset?: string;
+  decoded?: { fallbacks: string; sheet: DecodedStylesheet };
   image?: unknown;
   width?: number;
   height?: number;
@@ -115,7 +124,12 @@ export class ResourceStore {
       return;
     }
     if (result.kind === 'stylesheet') {
-      entry.text = result.text;
+      if ('bytes' in result) {
+        entry.bytes = result.bytes;
+        entry.charset = result.charset;
+      } else {
+        entry.text = result.text;
+      }
       entry.state = 'ready';
       if (!synchronous) this._changed();
       return;
@@ -156,10 +170,29 @@ export class ResourceStore {
     if (!synchronous) this._changed();
   }
 
-  /** A loaded stylesheet's text, or null while it has not arrived. */
-  stylesheetText(url: string): string | null {
+  /** A loaded stylesheet, as text, or null while it has not arrived.
+   *  `fallbacks` are the encodings the referrer says, most specific first,
+   *  for bytes that name none of their own. */
+  stylesheet(
+    url: string,
+    fallbacks: readonly (string | undefined)[] = [],
+  ): DecodedStylesheet | null {
     const entry = this._entries.get(url);
-    return entry?.state === 'ready' ? (entry.text ?? null) : null;
+    if (entry?.state !== 'ready') return null;
+    if (!entry.bytes) {
+      if (entry.text === undefined) return null;
+      // decoded by the host, from an encoding it did not say: what it
+      // imports falls back to the referrer's
+      return { text: entry.text, encoding: fallbacks.find(Boolean) ?? 'utf-8' };
+    }
+    const key = fallbacks.join('\u0001');
+    if (entry.decoded?.fallbacks !== key) {
+      entry.decoded = {
+        fallbacks: key,
+        sheet: decodeStylesheet(entry.bytes, entry.charset, fallbacks),
+      };
+    }
+    return entry.decoded.sheet;
   }
 
   /** A loaded image, for the paint pass. */

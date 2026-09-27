@@ -98,9 +98,17 @@ export interface HtmlProps {
   /** Extra author stylesheets, applied after the document's own. */
   stylesheet?: string | string[];
   /**
+   * The encoding the host decoded `source` from, as a label (`'shift_jis'`,
+   * `'windows-1251'`). A stylesheet `onResource` hands over as bytes, with no
+   * byte order mark, charset or `@charset` of its own, is decoded with it, as
+   * CSS says a sheet is in its document's encoding. Default UTF-8.
+   */
+  charset?: string;
+  /**
    * An external resource is wanted — an `<img src>`, a `<link rel=stylesheet>`
    * or an `@import`. Return the bytes or the text, or a promise of them, or
-   * `null` to decline.
+   * `null` to decline. A stylesheet's bytes are decoded as CSS says, from
+   * the `charset` the protocol named, if the host passes it on.
    *
    * **Absent, nothing loads.** This component has no network and no
    * filesystem of its own; images render as a frame and linked stylesheets
@@ -214,6 +222,7 @@ export function Html(props: HtmlProps): ReactElement {
     partial = true,
     selectable = true,
     stylesheet,
+    charset,
     onLink,
     onResource,
     onScript,
@@ -258,6 +267,7 @@ export function Html(props: HtmlProps): ReactElement {
     source,
     complete: !partial,
     stylesheet,
+    charset,
     look,
     selectionColor,
     onResource,

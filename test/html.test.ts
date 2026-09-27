@@ -55,6 +55,7 @@ import {
   parseCounterList,
   parseQuotes,
 } from '../src/html/css/content.js';
+import { decodeStylesheet } from '../src/html/css/decode.js';
 
 const h = React.createElement;
 
@@ -3298,6 +3299,98 @@ test('a stylesheet handed back by the seam reaches the cascade', async () => {
   )._tree;
   assert.strictEqual(tree.root.children[0].style.color, '#ff0000');
   void result;
+});
+
+test('a stylesheet handed over as bytes is decoded as CSS says', () => {
+  // CSS 2.1 4.4 and CSS Syntax 3 3.2, in order: a byte order mark, the
+  // protocol's charset, an `@charset` at the very start — UTF-16 named in
+  // ASCII meaning UTF-8 — the referrer's encodings, then UTF-8. An é is E9
+  // in windows-1252 and C3 A9 in UTF-8.
+  const bytes = (text: string, ...tail: number[]): Uint8Array =>
+    new Uint8Array([...text].map((c) => c.charCodeAt(0)).concat(tail));
+  const decode = (b: Uint8Array, charset?: string, ...fallbacks: string[]) =>
+    decodeStylesheet(b, charset, fallbacks);
+  assert.deepStrictEqual(
+    decode(bytes('', 0xef, 0xbb, 0xbf, 0xc3, 0xa9), 'windows-1252'),
+    { text: 'é', encoding: 'utf-8' },
+    'the byte order mark first, and it is not text',
+  );
+  assert.strictEqual(
+    decode(bytes('@charset "shift_jis";', 0xe9), 'windows-1252').text,
+    '@charset "shift_jis";é',
+    "then the protocol's",
+  );
+  assert.strictEqual(
+    decode(bytes('@charset "windows-1252";', 0xe9), undefined, 'shift_jis')
+      .encoding,
+    'windows-1252',
+    "then the rule, over the referrer's",
+  );
+  assert.strictEqual(
+    decode(bytes('@charset "utf-16le";', 0xc3, 0xa9)).encoding,
+    'utf-8',
+  );
+  assert.strictEqual(
+    decode(bytes(' @charset "windows-1252";', 0xc3, 0xa9)).encoding,
+    'utf-8',
+    'only at the very start',
+  );
+  assert.strictEqual(
+    decode(bytes('', 0xe9), undefined, 'no-such-encoding', 'windows-1252').text,
+    'é',
+    'a name that names no encoding is passed over',
+  );
+  assert.deepStrictEqual(decode(bytes('', 0xc3, 0xa9)), {
+    text: 'é',
+    encoding: 'utf-8',
+  });
+});
+
+test("a stylesheet in bytes falls back to its referrer's encoding", async () => {
+  // `.é { … }` in windows-1252: read as UTF-8, a selector nothing matches
+  const sheet = new Uint8Array([
+    0x2e,
+    0xe9,
+    ...[...' { color: #00ff00 }'].map((c) => c.charCodeAt(0)),
+  ]);
+  const colorOf = async (source: string, charset?: string) => {
+    await renderX11(
+      h(
+        'box',
+        { style: { width: 300, flexDirection: 'column' } },
+        h(Html, {
+          source: `${source}<p id="p" class="é">text</p>`,
+          charset,
+          partial: false,
+          onResource: (r: { kind: string }) =>
+            r.kind === 'stylesheet'
+              ? { kind: 'stylesheet' as const, bytes: sheet }
+              : null,
+          'data-testname': 'doc',
+        }),
+      ),
+      { backend: 'mock' },
+    );
+    const el = view(screen.getByTestName('doc') as DrawnNode);
+    const p = boxOf(el, 'p') as unknown as { style: { color: string } };
+    cleanup();
+    return p.style.color;
+  };
+  const link = '<link rel="stylesheet" href="a.css">';
+  assert.notStrictEqual(await colorOf(link), '#00ff00', 'UTF-8 by default');
+  assert.strictEqual(await colorOf(link, 'windows-1252'), '#00ff00');
+  assert.strictEqual(
+    await colorOf(
+      '<link rel="stylesheet" charset="windows-1252" href="a.css">',
+    ),
+    '#00ff00',
+    'a <link charset> goes before the document',
+  );
+  assert.strictEqual(
+    await colorOf('<style>@import "b.css";</style>', 'windows-1252'),
+    '#00ff00',
+    'an import is in the encoding of the sheet importing it',
+  );
 });
 
 test('an image handed over as bytes is decoded and drawn', async (t) => {

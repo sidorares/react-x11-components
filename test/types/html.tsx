@@ -89,3 +89,17 @@ void rect;
 
 const script: HtmlScriptRequest['type'] = 'text/javascript';
 void script;
+
+// A stylesheet may come back as bytes, with the charset the protocol named,
+// and the document's own encoding is a prop.
+export const withBytes = (
+  <Html
+    source="<link rel=stylesheet href=a.css><p>x</p>"
+    charset="windows-1252"
+    onResource={(request): HtmlResourceResult | null =>
+      request.kind === 'stylesheet'
+        ? { kind: 'stylesheet', bytes: new Uint8Array(0), charset: 'shift_jis' }
+        : null
+    }
+  />
+);
