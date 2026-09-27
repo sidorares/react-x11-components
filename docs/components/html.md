@@ -329,7 +329,7 @@ button, a one-cell `<table align="center">`, stands in the middle.
 **Text:** `font` and its longhands, the `font-variant` longhands,
 `font-kerning` and `font-feature-settings` (the font's own OpenType
 features: small capitals where the font has them, none synthesized),
-`line-height`, `text-align` (with
+`text-shadow` (any number, blurred or hard), `line-height`, `text-align` (with
 `justify`: a line but a paragraph's last, or one a forced break ends, is
 widened at its spaces to fill its box; a line that does not wrap is
 aligned in its box as well, and one too long for it overflows its end),
@@ -467,7 +467,7 @@ whatever their specificity, a rule in no layer over both, and the other way
 round for `!important`. Tailwind 4 writes all of its CSS in four of them.
 
 **Not implemented:** the parts of CSS grid above, transforms,
-animations and transitions, multi-column, `text-shadow`, gradients other
+animations and transitions, multi-column, gradients other
 than linear ones,
 `background-size`, more than one background
 layer (the first is drawn), `position: sticky` (treated as `relative`),

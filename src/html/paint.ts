@@ -34,6 +34,7 @@ import {
   BOX_RAISES,
   Box,
   INLINE_OFFSETS,
+  SHADOWED_TEXT,
   SHIFTED_LINES,
   TEXT_RAISES,
   TEXT_SHIFTS,
@@ -2612,6 +2613,8 @@ function paintLines(ctx: PaintContext, box: Box, options: PaintOptions): void {
     paintSelection(ctx, line, options);
   }
 
+  if (SHADOWED_TEXT.has(box)) paintTextShadows(ctx, visible, options);
+
   // an underline goes under the glyphs, a line through over them (CSS 2.1
   // Appendix E): a descender crosses its own underline
   paintRules(ctx, visible, dx, dy, options.scale ?? 1, 'under');
@@ -2640,6 +2643,162 @@ function paintLines(ctx: PaintContext, box: Box, options: PaintOptions): void {
   paintRules(ctx, visible, dx, dy, options.scale ?? 1, 'over');
   for (const line of visible) {
     for (const placed of line.atomics) paintBox(ctx, placed.box, options);
+  }
+}
+
+/** The shadows one stretch of a layout's text casts, and the colour its
+ *  `currentColor` is. */
+interface Cast {
+  shadows: BoxShadow[];
+  color: string;
+}
+
+/**
+ * The shadows text casts (CSS Text Decoration 3, 4), under it and its
+ * underline: a layout drawn again for each shadow, the last first, as
+ * `fillShadow` draws a box's — clear of the window to the left, the
+ * shadow offset back by as much — so that only the shadow lands. The
+ * engines draw a layout's glyphs in its runs' own colours, and a copy in a
+ * shadow's would be another layout. One whose runs do not all cast the
+ * same shadows draws each stretch's clipped to it, a line at a time.
+ */
+function paintTextShadows(
+  ctx: PaintContext,
+  lines: LineBox[],
+  options: PaintOptions,
+): void {
+  if (!('shadowBlur' in ctx) || !ctx.save || !ctx.restore) return;
+  const dx = options.originX;
+  const dy = options.originY;
+  const whole = new Set<unknown>();
+  for (const line of lines) {
+    for (const text of line.texts) {
+      const layout = text.layout;
+      const top = text.drawY + dy;
+      if (top < -COORD_LIMIT || top + layout.height > COORD_LIMIT) continue;
+      const cast = castOf(text);
+      if (cast === null) continue;
+      const left = text.drawX + dx;
+      if (cast !== MIXED) {
+        // every run casts the same: the layout's once for each shadow
+        if (whole.has(layout)) continue;
+        whole.add(layout);
+        castShadows(ctx, text, left, top, cast, null);
+        continue;
+      }
+      const natural = layout.lines[text.layoutLine];
+      if (!natural || !text.spans.boxAt) continue;
+      for (const [stretch, from, to] of stretchesOf(text, natural)) {
+        castShadows(ctx, text, left, top, stretch, {
+          x: left + natural.x + from,
+          y: text.drawY + dy + natural.y,
+          width: to - from,
+          height: natural.height,
+        });
+      }
+    }
+  }
+}
+
+/** A layout whose runs do not all cast the same shadows. */
+const MIXED: Cast = { shadows: [], color: '' };
+
+/** What a layout's runs cast: null for none, the one cast of all of them,
+ *  or `MIXED`. Kept by the map of its runs to their boxes, which is its
+ *  paragraph's own — not by the layout, which another paragraph of the same
+ *  runs may share, casting other shadows or none, since a shadow is no
+ *  field of a run. */
+const CASTS = new WeakMap<object, Cast | null>();
+
+function castOf(text: LineText): Cast | null {
+  const layout = text.layout;
+  if (CASTS.has(text.spans)) return CASTS.get(text.spans)!;
+  let cast: Cast | null | undefined;
+  const boxAt = text.spans.boxAt;
+  for (const natural of layout.lines) {
+    for (const run of natural.runs) {
+      // a spacer, or a bidi control, is no one's text and draws nothing
+      const style = boxAt?.call(text.spans, run.start)?.style;
+      if (!style) continue;
+      const shadows = style.textShadow;
+      const next = shadows ? { shadows, color: style.color } : null;
+      if (cast === undefined) cast = next;
+      else if (!sameCast(cast, next)) cast = MIXED;
+      if (cast === MIXED) break;
+    }
+    if (cast === MIXED) break;
+  }
+  CASTS.set(text.spans, cast ?? null);
+  return cast ?? null;
+}
+
+function sameCast(a: Cast | null, b: Cast | null): boolean {
+  return (
+    a === b || (!!a && !!b && a.shadows === b.shadows && a.color === b.color)
+  );
+}
+
+/** The stretches of one line of a layout that cast shadows: each cast, and
+ *  where along the line its runs start and end. */
+function stretchesOf(
+  text: LineText,
+  natural: LineText['layout']['lines'][number],
+): [Cast, number, number][] {
+  const out: [Cast, number, number][] = [];
+  for (const run of natural.runs) {
+    const style = text.spans.boxAt!.call(text.spans, run.start)?.style;
+    if (!style?.textShadow) continue;
+    const cast = { shadows: style.textShadow, color: style.color };
+    const last = out[out.length - 1];
+    if (last && sameCast(last[0], cast) && Math.abs(last[2] - run.x) < 0.5) {
+      last[2] = Math.max(last[2], run.x + run.width);
+    } else out.push([cast, run.x, run.x + run.width]);
+  }
+  return out;
+}
+
+/** A layout's shadows, drawn where `left` and `top` put it, each clipped to
+ *  `stretch` where the layout's runs do not all cast them. */
+function castShadows(
+  ctx: PaintContext,
+  text: LineText,
+  left: number,
+  top: number,
+  cast: Cast,
+  stretch: { x: number; y: number; width: number; height: number } | null,
+): void {
+  const layout = text.layout;
+  // clear of the window: the far end of its furthest line, which a line
+  // `text-align` moves in from the layout's left reaches past its width,
+  // at the window's left
+  let right = layout.width;
+  for (const natural of layout.lines) {
+    right = Math.max(right, natural.x + natural.width);
+  }
+  const shift = Math.ceil(left + right) + 1;
+  for (let i = cast.shadows.length - 1; i >= 0; i -= 1) {
+    const s = cast.shadows[i];
+    ctx.save!();
+    if (stretch && ctx.beginPath && ctx.rect && ctx.clip) {
+      // the stretch, as far as its shadow falls
+      const reach = shadowReach(s.blur);
+      ctx.beginPath();
+      ctx.rect(
+        stretch.x + Math.min(0, s.x) - reach,
+        stretch.y + Math.min(0, s.y) - reach,
+        stretch.width + Math.abs(s.x) + 2 * reach,
+        stretch.height + Math.abs(s.y) + 2 * reach,
+      );
+      ctx.clip();
+    }
+    ctx.shadowColor = inkColor(s.color, cast.color);
+    // CoreGraphics casts no shadow with no blur at all: a hard one is one
+    // blurred too little to see
+    ctx.shadowBlur = s.blur > 0 ? s.blur : 0.01;
+    ctx.shadowOffsetX = s.x + shift;
+    ctx.shadowOffsetY = s.y;
+    layout.draw(ctx, left - shift, top);
+    ctx.restore!();
   }
 }
 

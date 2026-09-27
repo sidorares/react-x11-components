@@ -482,6 +482,10 @@ export const SHIFTED_LINES = new WeakSet<LineBox>();
  *  for the reason the offsets above are. A line holding a raised text is
  *  among `SHIFTED_LINES` too, as its text is off the line's baseline. */
 export const TEXT_RAISES = new WeakMap<LineText, number>();
+
+/** The blocks some of whose text casts a shadow (`text-shadow`), which the
+ *  paint pass looks for in them and in no other. */
+export const SHADOWED_TEXT = new WeakSet<Box>();
 export const BOX_RAISES = new WeakMap<Box, number>();
 
 /** The blocks that broke a relatively positioned inline box in pieces,

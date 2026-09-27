@@ -1861,7 +1861,8 @@ type PaintOp =
     }
   | { op: 'save' }
   | { op: 'restore' }
-  | { op: 'image'; x: number; y: number; w: number; h: number };
+  | { op: 'image'; x: number; y: number; w: number; h: number }
+  | { op: 'text'; x: number; y: number; shadow?: Fill['shadow'] };
 
 /** What painting the document fills, in order. The glyphs are left out:
  *  the recorder has nowhere to draw them. `ops`, when given, gets the fills
@@ -2054,7 +2055,10 @@ async function fillsOf(
     },
   };
   for (const layout of layouts) {
-    (layout as { draw: unknown }).draw = () => {};
+    (layout as { draw: unknown }).draw = (_: unknown, x: number, y: number) => {
+      const shadow = shadowOf();
+      ops?.push({ op: 'text', x, y, ...(shadow ? { shadow } : null) });
+    };
   }
   try {
     paintDocument(ctx as never, tree as never, {
@@ -6864,6 +6868,89 @@ metric('text is shaped with the features its style asks for', async () => {
   };
   assert.deepStrictEqual(features('p'), { tnum: 1 });
   assert.strictEqual(features('q'), undefined);
+});
+
+test('text-shadow is read, inherited, and has no spread and no inset', async () => {
+  const { node } = await render(
+    '<div id="a" style="text-shadow:1px 2px 3px red, blue 4px 5px">' +
+      '<p id="b">b</p></div>' +
+      '<p id="c" style="text-shadow:1px 2px 3px 4px red">c</p>' +
+      '<p id="d" style="text-shadow:inset 1px 2px red">d</p>' +
+      '<p id="e" style="text-shadow:1px 1px red;text-shadow:none">e</p>',
+  );
+  const el = view(node);
+  const shadows = (id: string) =>
+    (boxOf(el, id) as unknown as { style: { textShadow: unknown } }).style
+      .textShadow;
+  const red = parseColor('red');
+  const blue = parseColor('blue');
+  assert.deepStrictEqual(shadows('a'), [
+    { x: 1, y: 2, blur: 3, spread: 0, color: red, inset: false },
+    { x: 4, y: 5, blur: 0, spread: 0, color: blue, inset: false },
+  ]);
+  assert.strictEqual(shadows('b'), shadows('a'), 'inherited');
+  assert.strictEqual(shadows('c'), null, 'a spread is no text shadow');
+  assert.strictEqual(shadows('d'), null, 'nor is inset');
+  assert.strictEqual(shadows('e'), null);
+});
+
+metric('text casts its shadows under it, the last first', async () => {
+  // it cast none. Each is the layout drawn clear of the window with its
+  // shadow offset back, so that only the shadow lands; a hard one is
+  // blurred too little to see, as CoreGraphics casts none without a blur
+  const { node } = await render(
+    '<style>body{margin:0}p{margin:0;font-size:20px}</style>' +
+      '<p id="h" style="text-shadow:1px 2px 3px #ff0000, 4px 5px 0 #0000ff">' +
+      'Title</p><p id="p">plain</p>' +
+      '<p style="text-shadow:0 1px #00ff00">Title</p>' +
+      '<p id="m">plain <span id="s" style="text-shadow:0 0 2px #ff0000">' +
+      'lit</span> plain</p>',
+  );
+  const el = view(node);
+  const ops: PaintOp[] = [];
+  await fillsOf(el, ops);
+  const texts = ops.filter(
+    (op): op is Extract<PaintOp, { op: 'text' }> => op.op === 'text',
+  );
+  const [line] = linesOf(el, 'h');
+  const at = line.texts[0].drawX;
+  const [blue, red, title] = texts;
+  assert.ok(blue.shadow && red.shadow && !title.shadow, 'two, then the text');
+  assert.strictEqual(title.x, at);
+  assert.deepStrictEqual(
+    [blue.shadow!.color, blue.x + blue.shadow!.x, blue.shadow!.y],
+    ['#0000ff', at + 4, 5],
+    'the last, and so the lowest, where it falls',
+  );
+  assert.ok(blue.shadow!.blur > 0 && blue.shadow!.blur < 0.1, 'hard');
+  assert.deepStrictEqual(
+    [red.shadow!.color, red.x + red.shadow!.x, red.shadow!.blur],
+    ['#ff0000', at + 1, 3],
+  );
+  assert.ok(red.x + line.width < 0, 'the glyphs clear of the window');
+  // a paragraph that casts none draws once, and one whose span casts a
+  // shadow draws it clipped to the span
+  const plain = texts.filter((op) => !op.shadow);
+  assert.strictEqual(plain.length, 4, 'each paragraph once');
+  // a paragraph of the same runs shares the first's layout, and casts its
+  // own shadow, not the first's
+  assert.ok(
+    texts.some((op) => op.shadow?.color === '#00ff00'),
+    "the second's own",
+  );
+  // the span's shadow, which alone has a blur of 2
+  const shadowed = ops.findIndex(
+    (op) => op.op === 'text' && op.shadow?.blur === 2,
+  );
+  const clip = ops[shadowed - 1];
+  assert.ok(clip?.op === 'clip', 'the span clipped');
+  const text = el.textContent();
+  const from = el.textCaretRect(text.indexOf('lit'))!.x;
+  const to = el.textCaretRect(text.indexOf('lit') + 3)!.x;
+  assert.ok(
+    clip.x <= from && clip.x + clip.w >= to && clip.w < to - from + 20,
+    `to the span and its blur: ${clip.x}..${clip.x + clip.w}, ${from}..${to}`,
+  );
 });
 
 test('tab-size is a number of spaces, or a length', async () => {
