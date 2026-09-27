@@ -336,7 +336,7 @@ function fixedColumns(
   }
   for (const cell of cells) {
     if (cell.row > 0) break;
-    const px = lengthAgainst(cell.box.style.width, available);
+    const px = tableWidth(cell.box.style.width, available);
     if (px === null) continue;
     const box = cell.box;
     const outer =
@@ -426,7 +426,7 @@ function autoColumns(
     const cellMin = cell.box.intrinsicMinContent;
 
     const len = cell.box.style.width;
-    const width = len === AUTO ? null : lengthAgainst(len, containingWidth);
+    const width = len === AUTO ? null : tableWidth(len, containingWidth);
     if (cell.colSpan === 1) {
       max[cell.column] = Math.max(max[cell.column], cellMax);
       min[cell.column] = Math.max(min[cell.column], cellMin);
@@ -562,7 +562,7 @@ function columnWidths(
  *  it sets none. */
 function partWidth(box: Box, base: number): number | null {
   const style = box.style;
-  const width = lengthAgainst(style.width, base);
+  const width = tableWidth(style.width, base);
   const min = lengthAgainst(style.minWidth, base) ?? 0;
   if (width === null && !(min > 0)) return null;
   const max =
@@ -572,10 +572,17 @@ function partWidth(box: Box, base: number): number | null {
   return Math.max(0, out, min);
 }
 
+/** A cell's or a column's width. One that adds a percentage to a length,
+ *  a `calc()`, is `auto` in a table, as browsers read it: a column cannot be
+ *  both a share of the table and a size of its own. */
+function tableWidth(len: Len, base: number): number | null {
+  if (isPct(len) && (len.px || len.of)) return null;
+  return lengthAgainst(len, base);
+}
+
 function lengthAgainst(len: Len, base: number): number | null {
   if (len === AUTO) return null;
-  if (isPct(len)) return Number.isFinite(base) ? (len.pct / 100) * base : null;
-  return len;
+  return resolveOrNull(len, base);
 }
 
 /**

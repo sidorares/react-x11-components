@@ -10,13 +10,7 @@
 // Float coordinates are absolute for the same reason, which is what lets the
 // inline pass ask "how wide is the line at this y" without knowing whose
 // formatting context it is inside.
-import {
-  AUTO,
-  isPct,
-  isTransparent,
-  resolve,
-  resolveOrNull,
-} from '../css/values.js';
+import { AUTO, isTransparent, resolve, resolveOrNull } from '../css/values.js';
 import type { Len } from '../css/values.js';
 import type { BorderStyle, ComputedStyle } from '../css/style.js';
 import { Box, FIRST_LINE } from './boxes.js';
@@ -983,8 +977,9 @@ function layoutMarker(box: Box, marker: Marker, ctx: LayoutContext): void {
  */
 function percentBaseInside(box: Box): number {
   if (!box.el && !box.pseudo) return box.percentHeightBase;
-  const set = resolveOrNull(box.style.height, box.percentHeightBase);
-  if (set === null) return NaN;
+  const resolved = resolveOrNull(box.style.height, box.percentHeightBase);
+  if (resolved === null) return NaN;
+  const set = Math.max(0, resolved);
   const borderBox =
     box.style.boxSizing === 'border-box'
       ? Math.max(set, box.verticalExtra)
@@ -1015,7 +1010,9 @@ function handPercentBase(box: Box, base: number): void {
 }
 
 function finishHeight(box: Box, contentHeight: number): void {
-  const specified = resolveOrNull(box.style.height, box.percentHeightBase);
+  const set = resolveOrNull(box.style.height, box.percentHeightBase);
+  // at least zero: a `calc()` may come to less
+  const specified = set === null ? null : Math.max(0, set);
   const height = specified ?? contentHeight;
   const borderBox =
     box.style.boxSizing === 'border-box' && specified !== null
@@ -1027,7 +1024,12 @@ function finishHeight(box: Box, contentHeight: number): void {
 export function clampHeight(box: Box, height: number): number {
   let out = height;
   const base = box.percentHeightBase;
-  const min = resolveOrNull(box.style.minHeight, base);
+  // a percentage of a height nothing sets is zero for a minimum (CSS 2.1
+  // 10.7), which leaves a `calc()` its pixels
+  const min =
+    box.style.minHeight === AUTO
+      ? null
+      : resolve(box.style.minHeight, Number.isFinite(base) ? base : 0);
   const max =
     box.style.maxHeight === 'none'
       ? null
@@ -1086,7 +1088,8 @@ function blockWidth(box: Box, containingWidth: number): number {
   if (style.width === AUTO) {
     return clampWidth(box, Math.max(0, available), containingWidth);
   }
-  const specified = resolve(style.width, containingWidth, 0);
+  // at least zero: a `calc()` may come to less
+  const specified = Math.max(0, resolve(style.width, containingWidth, 0));
   const borderBox =
     style.boxSizing === 'border-box'
       ? Math.max(specified, box.horizontalExtra)
@@ -1127,7 +1130,7 @@ function shrinkToFitWidth(
 ): number {
   const style = box.style;
   if (style.width !== AUTO) {
-    const specified = resolve(style.width, available, 0);
+    const specified = Math.max(0, resolve(style.width, available, 0));
     const borderBox =
       style.boxSizing === 'border-box'
         ? Math.max(specified, box.horizontalExtra)
@@ -1157,18 +1160,46 @@ function shrinkToFitWidth(
  */
 function intrinsicWidth(box: Box): number {
   let widest = 0;
-  if (box.lines) {
-    for (const line of box.lines) widest = Math.max(widest, line.width);
+  const lines = box.lines;
+  if (lines) {
+    for (const line of lines) widest = Math.max(widest, line.width);
   }
   for (const child of box.children) {
     if (child.kind === 'text' || child.kind === 'break') continue;
     if (child.outOfFlow) continue;
+    // what sits in the lines is measured with them, indent and all: an
+    // inline-block after a negative `text-indent` ends where its line does
+    if (lines && isInlineLevel(child)) continue;
     const margins = child.marginLeft + child.marginRight;
-    const inner = intrinsicWidth(child) + child.horizontalExtra + margins;
     const own = Number.isFinite(child.width) ? child.width + margins : 0;
-    widest = Math.max(widest, inner, own);
+    const style = child.style;
+    // a minimum's percentage is of zero here (CSS Sizing 3 5.2.1), which
+    // leaves a `calc()` its pixels
+    const min =
+      style.minWidth === 0
+        ? 0
+        : resolve(style.minWidth, 0) + contentExtra(child);
+    // A width of its own is what a child contributes, whatever its content
+    // does past it (CSS Sizing 3 5.1); a percentage one is cyclic here and
+    // counts as `auto`, so its content decides.
+    if (typeof style.width === 'number') {
+      widest = Math.max(widest, own, min + margins);
+      continue;
+    }
+    let inner = intrinsicWidth(child) + child.horizontalExtra;
+    if (typeof style.maxWidth === 'number') {
+      inner = Math.min(inner, style.maxWidth + contentExtra(child));
+    }
+    if (min > inner) inner = min;
+    widest = Math.max(widest, inner + margins, own);
   }
   return widest;
+}
+
+/** What a box's own width leaves out of its border box: its padding and
+ *  border, unless `box-sizing` puts them in. */
+function contentExtra(box: Box): number {
+  return box.style.boxSizing === 'border-box' ? 0 : box.horizontalExtra;
 }
 
 /**
@@ -1636,10 +1667,11 @@ export function resolveEdges(box: Box, containingWidth: number): void {
     style.borderLeftStyle === 'none' || style.borderLeftStyle === 'hidden'
       ? 0
       : style.borderLeftWidth;
-  box.padTop = edge(style.paddingTop, containingWidth);
-  box.padRight = edge(style.paddingRight, containingWidth);
-  box.padBottom = edge(style.paddingBottom, containingWidth);
-  box.padLeft = edge(style.paddingLeft, containingWidth);
+  // at least zero: a `calc()` may come to less
+  box.padTop = Math.max(0, edge(style.paddingTop, containingWidth));
+  box.padRight = Math.max(0, edge(style.paddingRight, containingWidth));
+  box.padBottom = Math.max(0, edge(style.paddingBottom, containingWidth));
+  box.padLeft = Math.max(0, edge(style.paddingLeft, containingWidth));
   box.marginTop = edge(style.marginTop, containingWidth);
   box.marginRight = edge(style.marginRight, containingWidth);
   box.marginBottom = edge(style.marginBottom, containingWidth);
@@ -1649,11 +1681,7 @@ export function resolveEdges(box: Box, containingWidth: number): void {
 
 function edge(len: Len, containingWidth: number): number {
   if (len === AUTO) return 0;
-  if (isPct(len))
-    return Number.isFinite(containingWidth)
-      ? (len.pct / 100) * containingWidth
-      : 0;
-  return len;
+  return resolve(len, containingWidth, 0);
 }
 
 /** Whether every in-flow child is inline-level, which is what makes this box
@@ -1725,11 +1753,12 @@ export function applyRelativeOffsets(box: Box): void {
   const style = box.style;
   if (style.position !== 'relative' && style.position !== 'sticky') return;
   const parentWidth = box.parent ? box.parent.contentWidth : 0;
-  const parentHeight = box.parent ? box.parent.contentHeight : 0;
   const left = resolveOrNull(style.left, parentWidth);
   const right = resolveOrNull(style.right, parentWidth);
-  const top = resolveOrNull(style.top, parentHeight);
-  const bottom = resolveOrNull(style.bottom, parentHeight);
+  // a percentage down is of a height the containing block sets, as a
+  // percentage height is, and `auto` where its content decides it
+  const top = resolveOrNull(style.top, box.percentHeightBase);
+  const bottom = resolveOrNull(style.bottom, box.percentHeightBase);
   // both set is over-constrained, and the containing block's direction
   // says which wins: `left` left to right, `right` right to left (9.4.3)
   const rtl = box.parent?.style.direction === 'rtl';

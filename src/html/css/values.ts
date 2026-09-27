@@ -20,6 +20,7 @@
 // `color.ts`, and written back in the form every context reads the same.
 
 import { functionalColor } from './color.js';
+import { parseMath, parseMathNumber } from './calc.js';
 
 /** A length that layout may still have to resolve. */
 export type Len = number | Pct | 'auto';
@@ -27,9 +28,12 @@ export type Len = number | Pct | 'auto';
 /** A percentage of something layout knows and computed style does not. */
 export interface Pct {
   pct: number;
-  /** A length added to it: only a background position written from its
-   *  far edge, `right 10px`, has one, and only its placement reads it. */
+  /** A length added to it: `calc(100% - 20px)`, or a background position
+   *  written from its far edge, `right 10px`. */
   px?: number;
+  /** In place of the two: `min()` or `max()` with a percentage among its
+   *  arguments, which is a different sum at every base (`calc.ts`). */
+  of?: { max: boolean; args: Len[] };
 }
 
 export const AUTO = 'auto';
@@ -46,8 +50,8 @@ export function isPct(len: Len): len is Pct {
  */
 export function resolve(len: Len, base: number, fallback = 0): number {
   if (typeof len === 'number') return len;
-  if (len === AUTO) return fallback;
-  return Number.isFinite(base) ? (len.pct / 100) * base : fallback;
+  if (len === AUTO || !Number.isFinite(base)) return fallback;
+  return len.of ? compared(len.of, base) : ofBase(len, base);
 }
 
 /** Resolve, but keep "indefinite" distinguishable from zero — what a height
@@ -55,8 +59,21 @@ export function resolve(len: Len, base: number, fallback = 0): number {
  *  "there is no height here". */
 export function resolveOrNull(len: Len, base: number): number | null {
   if (typeof len === 'number') return len;
-  if (len === AUTO) return null;
-  return Number.isFinite(base) ? (len.pct / 100) * base : null;
+  if (len === AUTO || !Number.isFinite(base)) return null;
+  return len.of ? compared(len.of, base) : ofBase(len, base);
+}
+
+function ofBase(len: Pct, base: number): number {
+  return (len.pct / 100) * base + (len.px ?? 0);
+}
+
+function compared(of: { max: boolean; args: Len[] }, base: number): number {
+  let out = of.max ? -Infinity : Infinity;
+  for (const arg of of.args) {
+    const v = resolve(arg, base);
+    out = of.max ? Math.max(out, v) : Math.min(out, v);
+  }
+  return out;
 }
 
 /**
@@ -97,6 +114,9 @@ const LENGTH_RE = new RegExp(
 
 const NUMBER_RE = new RegExp(`^${NUMBER_SRC}$`, 'i');
 
+/** A math function: `calc()`, `min()`, `max()` or `clamp()`. */
+const MATH = /^(?:-webkit-)?calc\(|^(?:min|max|clamp)\(/i;
+
 /**
  * Parse a length. Returns `null` for anything that is not one, which is how
  * every caller tells "the author wrote something else" from "the author wrote
@@ -115,7 +135,14 @@ export function parseLength(
   if (v === 'auto') return AUTO;
   if (v === '0') return 0;
   const m = LENGTH_RE.exec(v);
-  if (!m) return null;
+  if (!m) {
+    // `calc()` and its kin, down to pixels and a percentage (CSS Values 4 10)
+    if (!MATH.test(v)) return null;
+    return parseMath(v, (token) => {
+      const len = parseLength(token, ctx);
+      return typeof len === 'number' ? len : null;
+    });
+  }
   const n = Number(m[1]);
   const unit = m[2];
   // a zero needs no unit however it is written — `-0`, `+0`, `0.0`
@@ -172,7 +199,7 @@ function unitScale(unit: string, ctx: UnitContext): number {
 export function parseNumber(value: string): number | null {
   // `Number()` alone reads `0x10`, `1.` and white space as numbers
   const v = value.trim();
-  if (!NUMBER_RE.test(v)) return null;
+  if (!NUMBER_RE.test(v)) return MATH.test(v) ? parseMathNumber(v) : null;
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
 }

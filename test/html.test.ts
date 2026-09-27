@@ -40,6 +40,8 @@ import {
   parseColor,
   parseLength,
   parseNumber,
+  resolve,
+  resolveOrNull,
   splitValue,
   isTransparent,
 } from '../src/html/css/values.js';
@@ -5318,3 +5320,141 @@ metric(
     assert.ok(!(await red(75, 2)), 'and five down');
   },
 );
+
+// --- calc(), min(), max() and clamp() ---------------------------------------
+
+test('calc() and its kin come down to pixels and a percentage of what layout knows', () => {
+  const ctx = { em: 20, rem: 16, vw: 1000, vh: 500, scale: 1 };
+  const len = (v: string) => parseLength(v, ctx);
+  assert.deepStrictEqual(len('calc(100% - 20px)'), { pct: 100, px: -20 });
+  assert.deepStrictEqual(len('calc((100% - 20px) / 2)'), { pct: 50, px: -10 });
+  assert.deepStrictEqual(len('-webkit-calc(100% - 1px)'), { pct: 100, px: -1 });
+  assert.strictEqual(len('calc(2em + 4px)'), 44);
+  // `+` and `-` want white space on both sides
+  assert.strictEqual(len('calc(1px+2px)'), null);
+  assert.strictEqual(len('calc(100% -1px)'), null);
+  // a number is no length, and a division by zero no value
+  assert.strictEqual(len('calc(1 + 2)'), null);
+  assert.strictEqual(len('calc(10px / 0)'), null);
+  assert.strictEqual(parseNumber('calc(1 + 0.5)'), 1.5);
+  // with no percentage in them, the comparisons come to a length
+  assert.strictEqual(len('min(10px, 2em)'), 10);
+  assert.strictEqual(len('max(10px, 2em)'), 40);
+  assert.strictEqual(len('clamp(10px, 50px, 20px)'), 20);
+  // with one, to a sum for each width: a column 600px at most
+  const column = len('min(100%, 600px)')!;
+  assert.strictEqual(resolve(column, 400), 400);
+  assert.strictEqual(resolve(column, 1000), 600);
+  const inset = len('calc(min(100%, 600px) - 20px)')!;
+  assert.strictEqual(resolve(inset, 400), 380);
+  assert.strictEqual(resolve(inset, 1000), 580);
+  // taking a minimum away, or scaling it by less than nothing, turns it over
+  assert.strictEqual(resolve(len('calc(100px - min(10%, 50px))')!, 1000), 50);
+  assert.strictEqual(resolve(len('calc(-1 * min(100%, 50px))')!, 1000), -50);
+  assert.strictEqual(len('calc(1px -(2px))'), null);
+  // a percentage the sum cancels is still one against a height nothing sets
+  const cancelled = len('calc(40px + 10% - 20% / 2)')!;
+  assert.strictEqual(resolve(cancelled, 100), 40);
+  assert.strictEqual(resolveOrNull(cancelled, NaN), null);
+});
+
+metric(
+  'a calc() width, margin and padding are of the containing block',
+  async () => {
+    const { el } = await renderWithBytes(
+      '<html><head><style>body { margin: 0; width: 400px }' +
+        '#f { display: flex; width: 300px } #f > div { width: calc(50% - 10px) }' +
+        '</style></head><body>' +
+        '<div id="a" style="width: calc(100% - 40px); margin-left: calc(10px + 5%); ' +
+        'padding-top: calc(30px - 10%); padding-left: calc(30px - 1%)">a</div>' +
+        '<div id="f"><div id="f1">b</div><div>c</div></div></body></html>',
+      {},
+    );
+    const a = boxOf(el, 'a') as unknown as {
+      x: number;
+      width: number;
+      padTop: number;
+      padLeft: number;
+    };
+    // the content box, less the padding the calc() on the left comes to
+    assert.strictEqual(a.width, 360 + 26);
+    assert.strictEqual(a.x, 30);
+    // thirty pixels less forty is none: a padding is never negative
+    assert.strictEqual(a.padTop, 0);
+    // and one with a percentage has no sign until then
+    assert.strictEqual(a.padLeft, 26);
+    assert.strictEqual(boxOf(el, 'f1').width, 140);
+  },
+);
+
+metric(
+  "a child's width of its own is what it gives a float, and a minimum's percentage is of zero",
+  async () => {
+    const { el } = await renderWithBytes(
+      '<html><head><style>body { font-size: 10px } body > div { float: left; clear: left }' +
+        '.wide { width: 200px; height: 1px } i { display: inline-block; width: 10px }' +
+        '</style></head><body>' +
+        '<div id="a"><div style="width: 47px"><div class="wide"></div></div></div>' +
+        '<div id="b"><div style="width: 50%"><div class="wide"></div></div></div>' +
+        '<div id="c"><div style="width: 1px; min-width: calc(5em - 0%)"><div class="wide"></div></div></div>' +
+        '<div id="d" style="text-indent: calc(50% - 3px)"><i></i></div></body></html>',
+      {},
+    );
+    // its content runs past a width of its own, and counts for nothing
+    assert.strictEqual(boxOf(el, 'a').width, 47);
+    // a percentage is cyclic here, and the content decides
+    assert.strictEqual(boxOf(el, 'b').width, 200);
+    assert.strictEqual(boxOf(el, 'c').width, 50);
+    // the inline-block is where its line puts it, three pixels in the margin
+    assert.strictEqual(boxOf(el, 'd').width, 7);
+  },
+);
+
+metric(
+  'a percentage offset or minimum is of a height the containing block sets',
+  async () => {
+    const { el } = await renderWithBytes(
+      '<html><head><style>body { margin: 0 } .fixed { height: 100px }' +
+        '.inner { height: 10px }</style></head><body>' +
+        '<div class="fixed"><div id="r1" style="position: relative; top: 50%" class="inner"></div></div>' +
+        '<div><div id="r2" style="position: relative; top: calc(25px + 50%)" class="inner"></div></div>' +
+        '<div><div id="m" style="min-height: calc(25px + 50%)"><div class="inner"></div></div></div>' +
+        '</body></html>',
+      {},
+    );
+    const y = (id: string) => boxOf(el, id).y;
+    assert.strictEqual(y('r1'), 50);
+    // against a height its content decides, the offset is `auto`
+    assert.strictEqual(y('r2'), 100);
+    // and a minimum's percentage is none, which leaves the calc() its pixels
+    assert.strictEqual(boxOf(el, 'm').height, 25);
+  },
+);
+
+metric('a cell whose width adds a percentage to a length is auto', async () => {
+  const { el } = await renderWithBytes(
+    '<html><head><style>table { table-layout: fixed; width: 500px; ' +
+      'border-spacing: 0 } td { padding: 0 }</style></head><body><table><tr>' +
+      '<td id="a" style="width: calc(50% + 1px)">x</td>' +
+      '<td style="width: 100px">y</td></tr></table>' +
+      '<table><tr><td id="b" style="width: calc(50%)">x</td>' +
+      '<td>y</td></tr></table></body></html>',
+    {},
+  );
+  assert.strictEqual(boxOf(el, 'a').width, 400);
+  assert.strictEqual(boxOf(el, 'b').width, 250);
+});
+
+metric('z-index is an integer, and a calc() rounds to one', async () => {
+  const { el } = await renderWithBytes(
+    '<p id="a" style="z-index: 1.5">a</p>' +
+      '<p id="b" style="z-index: calc(3 / 2)">b</p>' +
+      '<p id="c" style="z-index: calc(-3 / 2)">c</p>',
+    {},
+  );
+  const z = (id: string) =>
+    (boxOf(el, id) as unknown as { style: { zIndex: unknown } }).style.zIndex;
+  assert.strictEqual(z('a'), 'auto');
+  assert.strictEqual(z('b'), 2);
+  assert.strictEqual(z('c'), -1);
+});
