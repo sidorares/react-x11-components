@@ -1292,8 +1292,8 @@ function lastBaselineIn(box: Box): number | null {
 }
 
 /** The same, from the first line box or child: a table's baseline is its
- *  first row's. */
-function firstBaselineIn(box: Box): number | null {
+ *  first row's, and so is a table cell's. */
+export function firstBaselineIn(box: Box): number | null {
   if (box.lines?.length) return box.lines[0].y + box.lines[0].baseline;
   for (const child of box.children) {
     const found = childBaseline(child, firstBaselineIn);

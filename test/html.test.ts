@@ -3279,6 +3279,23 @@ test('a script is handed over, unparsed and unevaluated', async () => {
   );
 });
 
+test("cells aligned on the baseline hang their first lines from the row's", async () => {
+  // CSS 2.1 17.5.3: a cell's baseline is its first line's, at any depth,
+  // and the row's is the lowest of its cells'. An empty cell has none to
+  // give, as in a browser, or a cell given a height would hang the rest
+  // from its bottom.
+  const { node } = await render(
+    '<div id="t" style="display:table">' +
+      '<div style="display:table-cell;padding-top:40px"><div id="a">a</div></div>' +
+      '<div style="display:table-cell"><div id="b">b</div></div>' +
+      '<div style="display:table-cell;height:200px"></div></div>',
+  );
+  const el = view(node);
+  const [t, a, b] = ['t', 'a', 'b'].map((id) => boxOf(el, id));
+  assert.strictEqual(a.y, t.y + 40, 'the padded cell sets the baseline');
+  assert.strictEqual(b.y, a.y, 'and the other hangs from it');
+});
+
 test('nothing loads without onResource, and every reference is offered to it', async () => {
   const asked: string[] = [];
   await renderX11(
