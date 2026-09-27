@@ -1453,6 +1453,126 @@ text that opens a line after a hard break one device pixel left of where it
 reports it. A `<span style="letter-spacing">` does the same. It costs
 `<Html>` one reftest on macOS, and an issue for windowkit/appkit is drafted.
 
+## Round 14: what correctness cost, again
+
+Between rounds 13 and 14, `<Html>` went through seventeen more rounds of
+conformance work, #154 to #179. It passes 5,370 of the CSS 2.1 suite's
+reftests on X11, where it passed 4,739 after #153, and it now reads custom
+properties, `calc()` and CSS Color 4's colours (`docs/html-conformance.md`).
+This round measured what that cost, the same way as round 13: copies of one
+tree that share its `node_modules`, differ only in `src/html`, and run
+interleaved.
+
+Little of it was measurable. An edit at 600 KB was 2.1 ms slower on XQuartz
+and 1.3 ms slower on macOS, and the profiles put most of that in the paint.
+Finding out why the paint had grown showed that it had always cost far more
+than it should.
+
+| `<Html>`, same core     | after #153     | before this round | after          |
+| ----------------------- | -------------- | ----------------- | -------------- |
+| 600 KB, an edit's frame | 44.6 / 51.5 ms | 46.7 / 52.8 ms    | 42.4 / 51.3 ms |
+| 600 KB, a scroll frame  | 3.2 / 4.3 ms   | 3.5 / 4.0 ms      | 1.2 / 2.9 ms   |
+| 600 KB, scrolling's CPU | 33 / 34%       | 34 / 33%          | 19 / 25%       |
+
+XQuartz first, then macOS. Medians of three interleaved runs.
+
+### A link stretched its paragraph to the top (components #180)
+
+The paint pass skips a subtree whose ink bounds miss the damage. A box with
+64 children or more also keeps them sorted by where their ink starts, so a
+viewport's worth of them is a binary search away. The hit test a selection
+drag runs, and the search for the element under the pointer, use the same
+bounds.
+
+`computePaintBounds` took every child's bounds into its parent's, an inline
+box's too. An inline box has no rectangle of its own: its text is drawn on
+its block's lines, which the block's bounds already hold, and its position
+and size are never laid out. They stayed at zero. So every block with a
+link, an `<em>` or a `<code>` in it had ink reaching up to the top of the
+document, and a `<col>` did the same to its table.
+
+The index then sorted every section of the sweep's report at zero, and a
+paint low in the document went through every block above the viewport.
+Averaged over a scroll, that was 1,115 blocks and 8,154 children a frame,
+where the viewport holds about 80 blocks. This was in the component's first
+version, so every round before this one measured with it.
+
+A box with no rectangle of its own now takes only the bounds of what it
+holds that is placed: an inline-block, an image or a float. It has none
+where it holds nothing. On the built package, over the 600 KB report:
+
+|                                      | before        | after          |
+| ------------------------------------ | ------------- | -------------- |
+| a viewport's paint, glyphs not drawn | 0.31–0.35 ms  | 0.047–0.054 ms |
+| the hit test of a selection drag     | 0.011–0.14 ms | 0.002–0.007 ms |
+
+Both the hit test's old cost and its new one depend on where in the
+document the pointer is.
+
+### The walk into inline boxes (components #180)
+
+The conformance work's round 12 (#164) laid out floats and absolute boxes
+inside inline boxes. It found them by walking into every inline box of
+every paragraph, before the line breaker walked them again. The box builder
+now notes whether any float or out-of-flow box sits in an inline box.
+Layout goes into inline boxes to find them only in a document where one
+does.
+
+### Custom properties as a chain (components #180)
+
+Round 21 (#178) gave each element that sets a custom property a copy of
+the map it inherits, with its own added. Under a design system's theme,
+three hundred properties on `:root` as Tailwind 4 writes one, each element
+whose utility class sets properties of its own paid for a copy of three
+hundred.
+
+An element's custom properties are now a link to its parent's, with its own
+on top. The chain is folded into one map every sixteen links, so a lookup
+stays short. A `var()` is also replaced once for each set of properties it
+is read against, not once per element: the elements under one that sets
+properties share its set.
+
+Restyle and box build of a page of 2,000 elements, on the built package:
+
+|                                                | before     | after      |
+| ---------------------------------------------- | ---------- | ---------- |
+| 50 classes, their colours from `:root`         | 1.8–2.0 ms | 1.8–2.0 ms |
+| a 300-property theme, each class setting two   | 3.1–3.3 ms | 2.2 ms     |
+| the same, each element setting one more inline | 50–52 ms   | 19 ms      |
+| the values written out, no custom properties   | 1.8 ms     | 1.7 ms     |
+
+### Measuring the built package
+
+The sweep's probes run `src` through tsx, and round 13's first trap was
+here again. `paintBorders` made a closure for every box it was asked about,
+bordered or not, and tsx's `__name` wrapped each one: 17% of a profile of
+the paint, which the published build does not pay. The closure is still
+there for a box with a border, but a box with none now returns before it is
+made. The paint, hit test and custom property figures above come from the
+probes pointed at `dist/` after `npm run build`. The sweep's own cells run
+`src`, which is why they are compared only with each other.
+
+### The sweep
+
+The changes are all in `<Html>`, so its cells were run against the tree
+before them, interleaved, rather than the whole sweep again. Everything
+moved the right way or stayed where it was:
+
+|                           | before         | after          |
+| ------------------------- | -------------- | -------------- |
+| 600 KB, a reflow frame    | 44.0 / 87.7 ms | 40.1 / 86.4 ms |
+| 600 KB, an append's frame | 48.0 / 57.3 ms | 46.9 / 55.4 ms |
+| 600 KB, first paint       | 472 / 534 ms   | 461 / 522 ms   |
+| 20 KB, an edit's frame    | 8.9 / 13.3 ms  | 8.8 / 12.6 ms  |
+| 20 KB, a scroll frame     | 1.3 / 2.9 ms   | 1.2 / 2.7 ms   |
+| 20 KB, a reflow frame     | 2.3 / 5.7 ms   | 2.2 / 5.6 ms   |
+| 20 KB, first paint        | 230 / 104 ms   | 231 / 99 ms    |
+
+A reflow repaints the top of the document after every step. With every
+block's bounds reaching the top, each of those paints went through the
+whole document. The macOS first paint at 600 KB is a median of eight runs,
+and the 20 KB edit of six; the rest are medians of three.
+
 ## Lessons
 
 1. **Look for caches that never hit.** Identity-keyed caches handed a new
@@ -1563,10 +1683,16 @@ reports it. A `<span style="letter-spacing">` does the same. It costs
 28. **A spawn by name searches `PATH` at spawn time.** On macOS
     `posix_spawnp` spawns in each directory ahead of the binary's, 30–50 ms
     of a synchronous `fc-match`. Find the path once.
+29. **Count what an index returns, not whether it is used.** `<Html>`'s
+    paint index was asked on every frame from the component's first version,
+    and answered with every block above the viewport: a link's box, never
+    laid out, stretched its paragraph's bounds to the top. A probe counting
+    the boxes a frame visits said 1,115 where the window holds 80.
 
 ## Still open
 
-Ordered by practical impact, after round 12.
+Ordered by practical impact, after round 12, and `<Html>`'s edit after
+round 14.
 
 - **XQuartz first paints**: the first layout of a family ntk has not warmed
   waits on `fc-match`, which takes 80–150 ms launched from inside a
@@ -1586,12 +1712,11 @@ Ordered by practical impact, after round 12.
   #387; 1.04–1.08 s on Cocoa with #143, measured on a core without the
   kept typesetters): the height floors, React's development render and the
   layout.
-- **`<Html>` edit and append** (51 ms on macOS and 44 on XQuartz at 600 KB
-  after #153, 12.5 and 9.6 ms at 20 KB): the parse, the box build, the
-  inline layout and the paint bounds still run over the whole document, at
-  about 9, 16, 30 and 3 ms of an XQuartz edit at 600 KB. A parse that kept
-  the identity of what it did not change would let each of them skip it. At
-  20 KB it is also where the conformance work's last millisecond goes.
+- **`<Html>` edit and append** (51 ms on macOS and 42 on XQuartz at 600 KB
+  after round 14, 12.6 and 8.8 ms at 20 KB): the parse, the box build and
+  the layout with its bounds still run over the whole document, at about 8,
+  11 and 30 ms of an edit at 600 KB in process. A parse that kept the
+  identity of what it did not change would let each of them skip it.
 - **Cocoa scroll**: what is left is the band copy itself, about 1.4 ms a
   frame at 2x, memory-bound; see "The Cocoa scroll's double copy".
 - **`<RichTextEditor>`**: large pastes, mostly React's development render.
