@@ -878,6 +878,21 @@ function presentationHints(el: Element): Declaration[] {
 
   const bgcolor = attr(el, 'bgcolor');
   if (bgcolor) push('background-color', bgcolor);
+  if (BACKGROUNDS.has(tag)) {
+    const background = attr(el, 'background')?.trim();
+    if (background) {
+      push('background-image', `url("${background.replace(/["\\\n]/g, '')}")`);
+    }
+  }
+  if (tag === 'body') {
+    // the text's colour, and the links'
+    const text = attr(el, 'text');
+    if (text) push('color', text);
+  } else if (tag === 'a' && attr(el, 'href') !== undefined) {
+    const body = closestBody(el);
+    const link = body ? attr(body, 'link') : undefined;
+    if (link) push('color', link);
+  }
   const color = attr(el, 'color');
   if (color && (tag === 'font' || tag === 'basefont')) push('color', color);
   const face = attr(el, 'face');
@@ -960,6 +975,29 @@ const ALIGNS_BLOCKS = new Set([
   'td',
   'th',
 ]);
+
+/** The elements a `background` attribute gives a background image. */
+const BACKGROUNDS = new Set([
+  'body',
+  'table',
+  'thead',
+  'tbody',
+  'tfoot',
+  'tr',
+  'td',
+  'th',
+]);
+
+function closestBody(el: Element): Element | null {
+  let node = el.parent;
+  while (node) {
+    if (node.type === 'tag' && (node as Element).name === 'body') {
+      return node as Element;
+    }
+    node = node.parent;
+  }
+  return null;
+}
 
 const SIZED = new Set([
   'img',

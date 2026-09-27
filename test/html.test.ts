@@ -4973,3 +4973,21 @@ test('align places a table, and <center> or an aligned cell centres the blocks i
     .style.textAlign;
   assert.notStrictEqual(align, 'center', "the table's text is its own");
 });
+
+test("a body's text and link colours, and a background attribute", async () => {
+  const { node } = await render(
+    '<body text="#123456" link="#00ff00">' +
+      '<p id="p">x</p><a id="a" href="#">l</a>' +
+      '<table id="t" background="bg.png"><tr><td>x</td></tr></table></body>',
+  );
+  const el = view(node);
+  const style = (id: string) =>
+    (
+      boxOf(el, id) as unknown as {
+        style: { color: string; backgroundImage: string | null };
+      }
+    ).style;
+  assert.strictEqual(style('p').color, '#123456');
+  assert.strictEqual(style('a').color, '#00ff00');
+  assert.strictEqual(style('t').backgroundImage, 'bg.png');
+});
