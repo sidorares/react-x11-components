@@ -7,7 +7,11 @@ import { test } from 'node:test';
 import assert from 'node:assert';
 
 import type { TextRun } from '../src/richtext/index.js';
-import { RUN_FIELDS, TextLayoutCache } from '../src/html/layout/cache.js';
+import {
+  OPTION_FIELDS,
+  RUN_FIELDS,
+  TextLayoutCache,
+} from '../src/html/layout/cache.js';
 import type { TextLayoutLike } from '../src/html/layout/boxes.js';
 import type { FontsLike } from '../src/html/layout/inline.js';
 
@@ -121,25 +125,26 @@ test('a field that differs anywhere is a different layout', () => {
   assert.strictEqual(engine.made, made, 'all of them kept');
 });
 
+/** A value other than `run()`'s for every run field: a field added to the
+ *  list without one here fails to compile. */
+const other: Record<(typeof RUN_FIELDS)[number], TextRun[keyof TextRun]> = {
+  text: 'Other text',
+  family: 'serif',
+  size: 15,
+  weight: 700,
+  style: 'italic',
+  color: '#000000',
+  letterSpacing: 1,
+  bg: '#eeeeee',
+  bgFill: 'line',
+  underline: '#ff0000',
+  underlineStyle: 'double',
+  strike: '#ff0000',
+  href: 'https://example.com/',
+};
+
 test('every field of a run is what it is found by', () => {
-  // each of `RUN_FIELDS` in turn, the only difference from the run before:
-  // the record names a value for every one of them, so a field added to the
-  // list without a way to tell it apart fails to compile here
-  const other: Record<(typeof RUN_FIELDS)[number], TextRun[keyof TextRun]> = {
-    text: 'Other text',
-    family: 'serif',
-    size: 15,
-    weight: 700,
-    style: 'italic',
-    color: '#000000',
-    letterSpacing: 1,
-    bg: '#eeeeee',
-    bgFill: 'line',
-    underline: '#ff0000',
-    underlineStyle: 'double',
-    strike: '#ff0000',
-    href: 'https://example.com/',
-  };
+  // each of `RUN_FIELDS` in turn, the only difference from the run before
   const engine = countingEngine();
   const cache = new TextLayoutCache(engine);
   cache.begin();
@@ -153,6 +158,39 @@ test('every field of a run is what it is found by', () => {
     assert.notStrictEqual(got, plain, `${field} found the plain run's layout`);
   }
   assert.strictEqual(engine.made, 1 + RUN_FIELDS.length);
+});
+
+test("every field of a block's style, and every option, is what a layout is found by", () => {
+  // the style is a run's fields without the text, and the options are
+  // `OPTION_FIELDS`, each of them a value the plain layout does not have
+  const otherOption: Record<(typeof OPTION_FIELDS)[number], unknown> = {
+    maxWidth: 401,
+    lineHeight: 1.5,
+    align: 'end',
+    direction: 'rtl',
+    maxLines: 1,
+  };
+  const engine = countingEngine();
+  const cache = new TextLayoutCache(engine);
+  cache.begin();
+  const plain = cache.fonts.layout([run('Some text')], base(), options());
+  const fields = RUN_FIELDS.filter((field) => field !== 'text');
+  for (const field of fields) {
+    const got = cache.fonts.layout(
+      [run('Some text')],
+      { ...base(), [field]: other[field] },
+      options(),
+    );
+    assert.notStrictEqual(got, plain, `the style's ${field}`);
+  }
+  for (const field of OPTION_FIELDS) {
+    const got = cache.fonts.layout([run('Some text')], base(), {
+      ...options(),
+      [field]: otherOption[field],
+    } as Options);
+    assert.notStrictEqual(got, plain, `the option ${field}`);
+  }
+  assert.strictEqual(engine.made, 1 + fields.length + OPTION_FIELDS.length);
 });
 
 test('a run field left undefined is one the run does not have', () => {

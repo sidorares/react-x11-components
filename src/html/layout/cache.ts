@@ -115,11 +115,13 @@ function keyOf(content: readonly TextRun[], maxWidth: unknown): number {
   return h & 0x3fffffff;
 }
 
+type Options = Parameters<FontsLike['layout']>[2];
+
 /** A layout, and a copy of everything it was made from. */
 interface Kept {
   content: TextRun[];
   style: Record<string, unknown>;
-  options: object;
+  options: Options;
   layout: TextLayoutLike;
 }
 
@@ -128,13 +130,13 @@ function find(
   kept: Kept[] | undefined,
   content: readonly TextRun[],
   style: Record<string, unknown>,
-  options: object,
+  options: Options,
 ): Kept | undefined {
   if (!kept) return undefined;
   outer: for (const candidate of kept) {
     if (candidate.content.length !== content.length) continue;
-    if (!sameFields(candidate.options, options)) continue;
-    if (!sameFields(candidate.style, style)) continue;
+    if (!sameOptions(candidate.options, options)) continue;
+    if (!sameStyle(candidate.style, style)) continue;
     for (let i = 0; i < content.length; i += 1) {
       if (!sameRun(candidate.content[i], content[i])) continue outer;
     }
@@ -195,20 +197,52 @@ function sameRun(a: TextRun, b: TextRun): boolean {
   );
 }
 
-/**
- * Whether two objects have the same fields with the same values. Every
- * field, so that one added to a run later cannot be left out of the
- * comparison by accident. The values are primitives throughout — a run is
- * text and the paint it asks for — so `Object.is` is equality.
- */
-function sameFields(a: object, b: object): boolean {
-  const x = a as Record<string, unknown>;
-  const y = b as Record<string, unknown>;
-  let fields = 0;
-  for (const name in x) {
-    if (!(name in y) || !Object.is(x[name], y[name])) return false;
-    fields += 1;
-  }
-  for (const _ in y) fields -= 1;
-  return fields === 0;
+/** Whether two blocks' styles are the same: a block's style is a run's
+ *  fields, which the engine reads as the paragraph's, without the text. */
+function sameStyle(
+  a: Record<string, unknown>,
+  b: Record<string, unknown>,
+): boolean {
+  return (
+    a.family === b.family &&
+    a.size === b.size &&
+    a.weight === b.weight &&
+    a.style === b.style &&
+    a.color === b.color &&
+    a.letterSpacing === b.letterSpacing &&
+    a.bg === b.bg &&
+    a.bgFill === b.bgFill &&
+    a.underline === b.underline &&
+    a.underlineStyle === b.underlineStyle &&
+    a.strike === b.strike &&
+    a.href === b.href
+  );
+}
+
+/** Every option a layout is made with, held to the engine's by the
+ *  compiler as `RUN_FIELDS` is to `TextRun`. */
+export const OPTION_FIELDS = [
+  'maxWidth',
+  'lineHeight',
+  'align',
+  'direction',
+  'maxLines',
+] as const satisfies readonly (keyof Options)[];
+
+/** An option missing from `OPTION_FIELDS` names itself here. */
+type UnlistedOption = Exclude<keyof Options, (typeof OPTION_FIELDS)[number]>;
+const everyOption: [UnlistedOption] extends [never] ? true : UnlistedOption =
+  true;
+void everyOption;
+
+/** Whether two layouts' options are the same: `OPTION_FIELDS`, spelled
+ *  out. */
+function sameOptions(a: Options, b: Options): boolean {
+  return (
+    a.maxWidth === b.maxWidth &&
+    a.lineHeight === b.lineHeight &&
+    a.align === b.align &&
+    a.direction === b.direction &&
+    a.maxLines === b.maxLines
+  );
 }

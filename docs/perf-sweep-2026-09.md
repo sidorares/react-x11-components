@@ -1592,7 +1592,9 @@ the layout: finding a pass's 8,800 layouts again cost 5 ms of its 32.
   compiler holds the list to `TextRun`, so a field added there names itself
   in an error until the list has it, and a test holds the comparison to the
   list. A field left `undefined` is now the same as one absent, which the
-  engine cannot tell apart either.
+  engine cannot tell apart either. The block's style is a run's fields
+  without the text, and the options a list of their own, and both are
+  compared the same way: they were two more walks a layout.
 - **The natural line height spelled its face into a key.** Every paragraph
   asks for it, and each question built a string of the family, size,
   weight and style. It is found by the style object first now, as the
@@ -1602,12 +1604,13 @@ In process, on the built package, medians of interleaved runs:
 
 |                           | before  | after   |
 | ------------------------- | ------- | ------- |
-| an edit's layout, 600 KB  | 32.1 ms | 27.0 ms |
-| an edit's layout, 68 KB   | 2.66 ms | 2.11 ms |
-| an edit's layout, 20 KB   | 1.05 ms | 0.92 ms |
-| a resize's layout, 600 KB | 18.6 ms | 15.8 ms |
+| an edit's layout, 600 KB  | 31.0 ms | 25.0 ms |
+| an edit's layout, 68 KB   | 2.97 ms | 2.18 ms |
+| an edit's layout, 20 KB   | 1.16 ms | 0.94 ms |
+| a resize's layout, 600 KB | 18.6 ms | 15.0 ms |
 
-And the frames, in real windows, XQuartz first and macOS second:
+And the frames, in real windows, XQuartz first and macOS second, before
+the style and the options were compared by name:
 
 |                         | before         | after          |
 | ----------------------- | -------------- | -------------- |
@@ -1759,7 +1762,7 @@ round 15.
 - **`<Html>` edit and append** (45.8 ms on macOS and 39.4 on XQuartz at 600 KB after round 15, 12.6
   and 8.8 ms at 20 KB after round 14): the parse, the box build and the
   layout with its bounds still run over the whole document, at about 8, 11
-  and 27 ms of an edit at 600 KB in process. A parse that kept the identity
+  and 25 ms of an edit at 600 KB in process. A parse that kept the identity
   of what it did not change would let each of them skip it.
 - **Cocoa scroll**: what is left is the band copy itself, about 1.4 ms a
   frame at 2x, memory-bound; see "The Cocoa scroll's double copy".
