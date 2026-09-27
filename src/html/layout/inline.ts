@@ -308,7 +308,15 @@ export function layoutInline(block: Box, options: InlineOptions): InlineResult {
     if (item.kind === 'atomic') {
       const box = item.box;
       const outer = box.width + box.marginLeft + box.marginRight;
-      if (open.x > 0 && open.x + pendingWidth + outer > available) {
+      // An inline-block makes its line as tall as itself, and the line box
+      // must not run into a float over that height either (CSS 2.1 9.5):
+      // the room is what the floats leave beside all of it.
+      const tall = box.marginTop + box.height + box.marginBottom;
+      const lineTall = Math.max(style.fontSize * 1.4, tall);
+      const room =
+        tall > style.fontSize * 1.4 ? bandAt(options, y, tall) : band;
+      const roomWidth = room.right - room.left;
+      if (open.x > 0 && open.x + pendingWidth + outer > roomWidth) {
         close();
         continue;
       }
@@ -316,26 +324,26 @@ export function layoutInline(block: Box, options: InlineOptions): InlineResult {
       // as a word does (below)
       if (
         isEmpty(open) &&
-        pendingWidth + outer > available &&
-        available < options.width
+        pendingWidth + outer > roomWidth &&
+        roomWidth < options.width
       ) {
-        const below = belowFloats(options, y, style.fontSize * 1.4);
+        const below = belowFloats(options, y, lineTall);
         if (below !== null) {
           y = below;
           continue;
         }
       }
-      placePending(band.left);
+      placePending(room.left);
       const placed: AtomicPlacement = {
         box,
-        x: band.left + open.x + box.marginLeft,
+        x: room.left + open.x + box.marginLeft,
         y: 0,
       };
       open.atomics.push(placed);
       open.order.push({ kind: 'atomic', at: open.x, item: placed });
       open.x += outer;
       open.hang = 0;
-      open.left = band.left;
+      open.left = room.left;
       index += 1;
       continue;
     }

@@ -78,6 +78,7 @@ separately, and there are six.
 | 8      | stylesheet encodings, clips, replaced sizes        | 5,042 (86%) | 4,606 (78%) |
 | 9      | table baselines and backgrounds, media, sizes      | 5,073 (86%) | 4,637 (79%) |
 | 10     | paint order, propagated decorations                | 5,100 (87%) | 4,660 (79%) |
+| 11     | floats beside tall boxes, table widths, clearance  | 5,125 (87%) | 4,685 (79%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -673,6 +674,30 @@ One more gap found, for the upstream list beside `vertical-align` on text:
   breaks it at a grapheme instead — ntk's `_forceBreak`, CoreText's and
   DirectWrite's line breakers alike. None takes an option not to. 11
   tests, and a long URL in a narrow mail column.
+
+### Round 11
+
+66. **A box with a formatting context of its own ran into a float lower
+    down.** A table, a block that clips or a block-level image must not
+    overlap any float in its formatting context (9.5), and the room beside
+    the floats was taken at its top edge alone. It is taken over the box's
+    whole height now, known once it is laid out, and a box that runs into
+    a float lower down is laid out again in what is left. 10 tests.
+67. **A table with a width of its own left most of it empty.** What a set
+    width has beyond the columns' content goes to the columns (17.5.2.2):
+    those not set to a width take it in proportion to their content, or
+    all of them where every one is set. The columns kept their content's
+    width, so a header or a row of buttons in a mail's 600-pixel table
+    stood narrow at its left. 8 tests.
+68. **An inline-block ran into a float beside its lower part.** A line
+    box must not run into a float, and an inline-block makes its line as
+    tall as itself; the room was taken for a line of text. 4 tests.
+69. **A margin after an empty block with clearance escaped its parent.**
+    The cleared block's own margins go into its clearance, and the margins
+    of the empty blocks after it that collapse with it stay in the parent
+    rather than collapse through its bottom (8.3.1, 10.6.3). 3 tests.
+
+Round 11 lost none.
 
 ## What `<Html>` supports
 

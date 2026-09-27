@@ -56,7 +56,14 @@ export function layoutTable(
   const fixed = style.tableLayout === 'fixed' && style.width !== AUTO;
   const widths = fixed
     ? fixedColumns(cells, columnBoxes, columnCount, available, spacing)
-    : autoColumns(cells, columnCount, available, ctx, contentWidth);
+    : autoColumns(
+        cells,
+        columnCount,
+        available,
+        ctx,
+        contentWidth,
+        style.width !== AUTO,
+      );
 
   // --- place ---------------------------------------------------------------
   // An auto table is at least as wide as its widest caption can be (CSS 2.1
@@ -382,6 +389,7 @@ function autoColumns(
   available: number,
   ctx: LayoutContext,
   containingWidth: number,
+  fill: boolean,
 ): number[] {
   const max: number[] = new Array<number>(columnCount).fill(0);
   const min: number[] = new Array<number>(columnCount).fill(0);
@@ -455,9 +463,26 @@ function autoColumns(
 
   const totalMax = max.reduce((a, b) => a + b, 0);
   if (totalMax <= available) {
-    // Everything fits. A table with an explicit width still fills it, by
-    // growing the columns in proportion to what they asked for.
-    return max;
+    // Everything fits. A table with a width of its own still fills it (CSS
+    // 2.1 17.5.2.2): the columns not set to a width take the rest in
+    // proportion to what they asked for, or every column does where all are
+    // set. Returned as asked, `<table width="600">` drew its cells at their
+    // content's width and left the rest of its 600 empty.
+    if (!fill || available <= totalMax) return max;
+    const set = explicit.every((w) => w !== null);
+    let weight = 0;
+    let count = 0;
+    for (let c = 0; c < columnCount; c += 1) {
+      if (!set && explicit[c] !== null) continue;
+      weight += max[c];
+      count += 1;
+    }
+    const extra = available - totalMax;
+    return max.map((m, c) =>
+      !set && explicit[c] !== null
+        ? m
+        : m + (weight > 0 ? (extra * m) / weight : extra / count),
+    );
   }
   const totalMin = min.reduce((a, b) => a + b, 0);
   if (totalMin >= available) return min;

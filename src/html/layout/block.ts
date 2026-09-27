@@ -457,6 +457,13 @@ function layoutChildren(
    *  through them, so past any other its mark is an earlier pass's. Asked
    *  of the box only once a child carries a mark, which few do. */
   let open: boolean | null = null;
+  /** Whether the margin still hanging collapsed with a top margin that has
+   *  clearance, an empty block cleared past a float's, and what the empty
+   *  blocks after it add to it. The cleared block's own margins went into
+   *  its clearance; the rest stays in this box rather than escape its
+   *  bottom (CSS 2.1 8.3.1, 10.6.3). */
+  let cleared = false;
+  let afterClear = 0;
 
   for (const child of box.children) {
     if (child.kind === 'text' && isBlank(child.text)) continue;
@@ -501,7 +508,8 @@ function layoutChildren(
       layoutBlockLevel(child, ctx, floats, contentLeft, childY, contentWidth);
     }
     first = false;
-    if (childY === y + collapsed && collapsesThrough(child)) {
+    const moved = childY !== y + collapsed;
+    if (!moved && collapsesThrough(child)) {
       // nothing in it parts its margins: they and the ones either side of
       // it are one (CSS 2.1 8.3.1), still hanging for what comes next —
       // or, where the walk took them all into this box's top margin, spent
@@ -511,11 +519,21 @@ function layoutChildren(
       }
       open = false;
       pendingMargin = collapseMargins(collapsed, child.marginBottom);
+      if (cleared) {
+        afterClear = collapseMargins(
+          collapseMargins(afterClear, top),
+          child.marginBottom,
+        );
+      }
       continue;
     }
     open = false;
     y = child.y + child.height;
     pendingMargin = child.marginBottom;
+    // cleared, and empty: what follows collapses with a top margin that has
+    // clearance
+    cleared = moved && collapsesThrough(child);
+    afterClear = 0;
   }
 
   // The last child's bottom margin collapses through the parent's bottom
@@ -527,6 +545,7 @@ function layoutChildren(
   // `<div><p>…</p></div><p>…</p>` set the two paragraphs solid.
   if (
     !first &&
+    !cleared &&
     !box.borderBottom &&
     !box.padBottom &&
     box.style.height === AUTO &&
@@ -538,6 +557,7 @@ function layoutChildren(
   ) {
     return { height: y - contentTop, hanging: pendingMargin };
   }
+  if (cleared) return { height: y + afterClear - contentTop, hanging: 0 };
   return { height: y + pendingMargin - contentTop, hanging: 0 };
 }
 
@@ -560,11 +580,25 @@ function layoutBesideFloats(
   const right = contentLeft + contentWidth;
   let at = y;
   for (let tries = 0; tries < 64; tries += 1) {
-    const band = floats.bandAt(at, 1, contentLeft, right);
-    const room = band.right - band.left;
-    if (room >= contentWidth) break;
-    layoutBlockLevel(box, ctx, floats, band.left, at, room);
-    if (box.marginLeft + box.width + box.marginRight <= room + 0.5) return;
+    let band = floats.bandAt(at, 1, contentLeft, right);
+    let fits = false;
+    // The room is what the floats leave over the box's whole height, not at
+    // its top: a float that starts lower down, beside the box, narrows it
+    // too (CSS 2.1 9.5). Known only once the box is laid out, so a box
+    // that runs into one is laid out again in what is left.
+    for (let settle = 0; settle < 8; settle += 1) {
+      const room = band.right - band.left;
+      layoutBlockLevel(box, ctx, floats, band.left, at, room);
+      const tall = box.marginTop + box.height + box.marginBottom;
+      const over = floats.bandAt(at, tall, contentLeft, right);
+      if (over.left > band.left + 0.5 || over.right < band.right - 0.5) {
+        band = over;
+        continue;
+      }
+      fits = box.marginLeft + box.width + box.marginRight <= room + 0.5;
+      break;
+    }
+    if (fits) return;
     const below = floats.nextEdgeBelow(at, 1);
     if (below === null || below <= at) break;
     at = below;

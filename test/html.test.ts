@@ -3408,6 +3408,83 @@ test('a float is painted over the backgrounds of the blocks after it', async () 
   assert.ok(at('#0000ff') > at('#00ff00'), 'and the floats keep their order');
 });
 
+test('a box with a formatting context of its own clears every float along its height', async () => {
+  // CSS 2.1 9.5: it must not overlap the margin box of any float beside it,
+  // which is every float over its height, not only the one at its top. A
+  // wider float starting halfway down it was run over.
+  const { node } = await render(
+    '<div id="f" style="float:left;clear:left;width:50px;height:75px"></div>' +
+      '<div style="float:left;clear:left;width:100px;height:75px"></div>' +
+      '<div id="a" style="overflow:hidden;width:200px;height:50px"></div>' +
+      '<div id="b" style="overflow:hidden;width:200px;height:50px"></div>',
+  );
+  const el = view(node);
+  const [f, a, b] = ['f', 'a', 'b'].map((id) => boxOf(el, id));
+  assert.strictEqual(a.x, f.x + 50, 'beside the first float');
+  assert.strictEqual(b.x, f.x + 100, 'and beside the second, lower down');
+  assert.strictEqual(b.y, a.y + 50);
+});
+
+test('a table with a width of its own fills it with its columns', async () => {
+  // CSS 2.1 17.5.2.2: the columns not set to a width take what the table
+  // has beyond their content, in proportion to it; <table width="600"> drew
+  // its cells at their content's width and left the rest empty
+  const { node } = await render(
+    '<table id="t" width="300" style="border-spacing:0">' +
+      '<tr><td id="a" style="padding:0">x</td></tr></table>' +
+      '<table width="300" style="border-spacing:0"><tr>' +
+      '<td id="b" style="padding:0;width:50px">x</td>' +
+      '<td id="c" style="padding:0">x</td></tr></table>' +
+      '<table id="u" style="border-spacing:0">' +
+      '<tr><td id="d" style="padding:0">x</td></tr></table>',
+  );
+  const el = view(node);
+  const [a, b, c, d, u] = ['a', 'b', 'c', 'd', 'u'].map((id) => boxOf(el, id));
+  assert.strictEqual(a.width, 300, 'one column takes it all');
+  assert.strictEqual(b.width, 50, 'a column set to a width keeps it');
+  assert.strictEqual(c.width, 250, 'and the other takes the rest');
+  assert.ok(d.width < 50 && u.width === d.width, 'a table of `auto` shrinks');
+});
+
+test('a line of an inline-block clears the floats beside all of its height', async () => {
+  // CSS 2.1 9.5: a line box must not run into a float, and an inline-block
+  // makes its line as tall as itself. The room was taken for a line of
+  // text, so the block ran into a float that started beside its lower part.
+  const { node } = await render(
+    '<div id="w" style="width:400px">' +
+      '<div style="float:left;width:150px;height:75px"></div>' +
+      '<div style="float:right;width:300px;height:75px"></div>' +
+      '<span id="a" style="display:inline-block;vertical-align:top;' +
+      'width:200px;height:50px"></span>' +
+      '<span id="b" style="display:inline-block;vertical-align:top;' +
+      'width:200px;height:50px"></span></div>',
+  );
+  const el = view(node);
+  const [w, a, b] = ['w', 'a', 'b'].map((id) => boxOf(el, id));
+  assert.deepStrictEqual([a.x - w.x, a.y - w.y], [150, 0]);
+  assert.deepStrictEqual([b.x - w.x, b.y - w.y], [0, 150], 'below both');
+});
+
+test('a margin after an empty block with clearance stays in the parent', async () => {
+  // CSS 2.1 8.3.1, 10.6.3: an empty block cleared past a float spends its
+  // own margins on its clearance, and the margins that collapse with it
+  // after it do not collapse through the parent's bottom
+  const { node } = await render(
+    '<div id="a"><div style="float:left;height:1px"></div>' +
+      '<div style="clear:left"></div><div style="margin-top:99px"></div></div>' +
+      '<div id="b" style="margin-bottom:40px">' +
+      '<div style="height:20px;margin-bottom:20px"></div>' +
+      '<div style="float:left;height:20px"></div>' +
+      '<div style="clear:both;margin:30px 0 20px"></div></div>' +
+      '<div id="c"></div>',
+  );
+  const el = view(node);
+  const [a, b, c] = ['a', 'b', 'c'].map((id) => boxOf(el, id));
+  assert.strictEqual(a.height, 100, 'the 99px after the cleared block');
+  assert.strictEqual(b.height, 60, 'but none of its own');
+  assert.strictEqual(c.y, b.y + 60 + 40);
+});
+
 test('nothing loads without onResource, and every reference is offered to it', async () => {
   const asked: string[] = [];
   await renderX11(
