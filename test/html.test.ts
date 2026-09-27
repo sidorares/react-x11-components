@@ -3601,6 +3601,58 @@ test('a float or an absolute box inside an inline box is laid out', async () => 
   assert.strictEqual(a.y, p.y, 'at its static position');
 });
 
+test('a floated image, ::before or first letter in an inline box is laid out', async () => {
+  // Found by the same walk into inline boxes, which a document with no
+  // float or positioned box in one does not take — so each is alone in its
+  // document here
+  const image = view(
+    (
+      await render(
+        '<p id="p">text <span>' +
+          '<img id="i" style="float:left;width:40px;height:40px"></span></p>',
+      )
+    ).node,
+  );
+  const [p, i] = ['p', 'i'].map((id) => boxOf(image, id));
+  assert.deepStrictEqual([i.x, i.y, i.width, i.height], [p.x, p.y, 40, 40]);
+  cleanup();
+
+  const pseudo = view(
+    (
+      await render(
+        '<style>#g::before{content:"";float:left;width:30px;height:30px}' +
+          '</style><p id="p">text <span id="g">g</span></p>',
+      )
+    ).node,
+  );
+  const [p2, g] = ['p', 'g'].map((id) => boxOf(pseudo, id));
+  const before = g.children.find(
+    (c) => (c as unknown as { pseudo?: string }).pseudo === 'before',
+  );
+  assert.ok(before, 'the ::before has a box');
+  assert.deepStrictEqual(
+    [before.x, before.y, before.width, before.height],
+    [p2.x, p2.y, 30, 30],
+  );
+  cleanup();
+
+  const letters = view(
+    (
+      await render(
+        '<style>#q::first-letter{float:left;font-size:40px}</style>' +
+          '<p id="q"><span>Letter</span></p>',
+      )
+    ).node,
+  );
+  const q = boxOf(letters, 'q');
+  const letter = q.children[0].children.find(
+    (c) => (c as unknown as { pseudo?: string }).pseudo === 'first-letter',
+  );
+  assert.ok(letter, 'the first letter has a box');
+  assert.deepStrictEqual([letter.x, letter.y], [q.x, q.y]);
+  assert.ok(letter.width > 0, 'and a size');
+});
+
 test('background-attachment is read, in its longhand and the shorthand', async () => {
   // `fixed` positions the image against the viewport, the element, rather
   // than the box (CSS 2.1 14.2.1); the shorthand sets it back to `scroll`
