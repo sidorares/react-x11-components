@@ -521,6 +521,7 @@ const SIDE_PROPS: Record<
 > = {
   margin: ['marginTop', 'marginRight', 'marginBottom', 'marginLeft'],
   padding: ['paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft'],
+  inset: ['top', 'right', 'bottom', 'left'],
 };
 
 const BORDER_STYLES = new Set<string>([
@@ -560,6 +561,19 @@ export function applyDeclaration(
   const name = prop.toLowerCase();
   let value = rawValue.trim();
   if (!value) return;
+  // a logical property is the physical one it stands for, the CSS-wide
+  // keywords and a stray `!important` included, so it is read first
+  const logical = LOGICAL[name];
+  if (logical) {
+    applyLogical(
+      style,
+      parent,
+      logical,
+      value.replace(/\s*!\s*important$/i, ''),
+      ctx,
+    );
+    return;
+  }
 
   // CSS-wide keywords, before anything else parses the value.
   const lower = value.toLowerCase();
@@ -636,6 +650,10 @@ export function applyDeclaration(
       const v = value.toLowerCase();
       if (v === 'left' || v === 'right' || v === 'both' || v === 'none')
         style.clear = v;
+      else if (v === 'inline-start')
+        style.clear = style.direction === 'rtl' ? 'right' : 'left';
+      else if (v === 'inline-end')
+        style.clear = style.direction === 'rtl' ? 'left' : 'right';
       return;
     }
     case 'box-sizing': {
@@ -735,6 +753,7 @@ export function applyDeclaration(
         (style as unknown as Record<string, unknown>)[name] = len;
       return;
     }
+    case 'inset':
     case 'margin':
     case 'padding': {
       const keys = SIDE_PROPS[name];
@@ -819,6 +838,24 @@ export function applyDeclaration(
       const v = value.toLowerCase();
       if (BORDER_STYLES.has(v))
         (style as unknown as Record<string, unknown>)[camel(name)] = v;
+      return;
+    }
+    case 'border-top-left-radius':
+    case 'border-top-right-radius':
+    case 'border-bottom-right-radius':
+    case 'border-bottom-left-radius': {
+      // the horizontal radius, as the shorthand takes it
+      const len = parseLength(splitValue(value)[0] ?? '', ctx);
+      const r =
+        typeof len === 'number'
+          ? len
+          : len && typeof len === 'object'
+            ? 0
+            : null;
+      if (r === null) return;
+      const radii = style.borderRadius.slice() as ComputedStyle['borderRadius'];
+      radii[CORNERS.indexOf(name)] = r;
+      style.borderRadius = radii;
       return;
     }
     case 'border-radius': {
@@ -1729,6 +1766,200 @@ function applyFlexShorthand(
   style.flexBasis = basis ?? (numbers.length ? 0 : AUTO);
 }
 
+// --- logical properties ----------------------------------------------------
+
+/** The four corners, in `border-radius`'s order. */
+const CORNERS = [
+  'border-top-left-radius',
+  'border-top-right-radius',
+  'border-bottom-right-radius',
+  'border-bottom-left-radius',
+];
+
+type Side = 'inline-start' | 'inline-end' | 'block-start' | 'block-end';
+
+/** What a logical property stands for: a physical one found by a side, the
+ *  two sides of an axis, or a corner. */
+type Logical =
+  | { kind: 'side'; side: Side; physical: (side: string) => string }
+  | {
+      kind: 'axis';
+      axis: 'inline' | 'block';
+      /** One value for both sides, as `border-inline` takes it, rather
+       *  than one each, as `margin-inline` does. */
+      same: boolean;
+      physical: (side: string) => string;
+      valid: (part: string, ctx: UnitContext) => boolean;
+    }
+  | { kind: 'size'; physical: string }
+  | { kind: 'corner'; block: 'start' | 'end'; inline: 'start' | 'end' };
+
+/**
+ * CSS Logical Properties 1, in the horizontal writing mode `<Html>` lays
+ * out: the inline axis is the line's, its start the left of a
+ * left-to-right element and the right of a right-to-left one, and the block
+ * axis runs down. Tailwind 4 writes its spacing in them — `px-4` is
+ * `padding-inline`, `mx-auto` is `margin-inline: auto` — and every modern
+ * reset writes some.
+ */
+const LOGICAL: Record<string, Logical> = (() => {
+  const out: Record<string, Logical> = {};
+  const length = (part: string, ctx: UnitContext) =>
+    parseLength(part, ctx) !== null;
+  const groups: [
+    string,
+    (side: string) => string,
+    (part: string, ctx: UnitContext) => boolean,
+  ][] = [
+    ['margin', (side) => `margin-${side}`, length],
+    [
+      'padding',
+      (side) => `padding-${side}`,
+      (part, ctx) => validPadding(parseLength(part, ctx)),
+    ],
+    ['inset', (side) => side, length],
+    [
+      'border-*-width',
+      (side) => `border-${side}-width`,
+      (part, ctx) => borderWidth(part, ctx) !== null,
+    ],
+    [
+      'border-*-style',
+      (side) => `border-${side}-style`,
+      (part) => BORDER_STYLES.has(part.toLowerCase()),
+    ],
+    [
+      'border-*-color',
+      (side) => `border-${side}-color`,
+      (part) => parseColor(part) !== null,
+    ],
+  ];
+  for (const [group, physical, valid] of groups) {
+    for (const axis of ['inline', 'block'] as const) {
+      const name = group.includes('*')
+        ? group.replace('*', axis)
+        : `${group}-${axis}`;
+      out[name] = { kind: 'axis', axis, same: false, physical, valid };
+      for (const end of ['start', 'end'] as const) {
+        const side = `${axis}-${end}` as Side;
+        const longhand = group.includes('*')
+          ? group.replace('*', side)
+          : `${group}-${side}`;
+        out[longhand] = { kind: 'side', side, physical };
+      }
+    }
+  }
+  for (const axis of ['inline', 'block'] as const) {
+    out[`border-${axis}`] = {
+      kind: 'axis',
+      axis,
+      same: true,
+      physical: (side) => `border-${side}`,
+      valid: () => true,
+    };
+    for (const end of ['start', 'end'] as const) {
+      out[`border-${axis}-${end}`] = {
+        kind: 'side',
+        side: `${axis}-${end}`,
+        physical: (side) => `border-${side}`,
+      };
+    }
+  }
+  const sizes: [string, string][] = [
+    ['inline-size', 'width'],
+    ['block-size', 'height'],
+    ['min-inline-size', 'min-width'],
+    ['min-block-size', 'min-height'],
+    ['max-inline-size', 'max-width'],
+    ['max-block-size', 'max-height'],
+  ];
+  for (const [name, physical] of sizes) out[name] = { kind: 'size', physical };
+  for (const block of ['start', 'end'] as const) {
+    for (const inline of ['start', 'end'] as const) {
+      out[`border-${block}-${inline}-radius`] = {
+        kind: 'corner',
+        block,
+        inline,
+      };
+    }
+  }
+  return out;
+})();
+
+/** The physical side a logical one is, by the element's direction. */
+function physicalSide(side: Side, rtl: boolean): string {
+  switch (side) {
+    case 'inline-start':
+      return rtl ? 'right' : 'left';
+    case 'inline-end':
+      return rtl ? 'left' : 'right';
+    case 'block-start':
+      return 'top';
+    default:
+      return 'bottom';
+  }
+}
+
+/**
+ * A logical declaration, as the physical ones it stands for. The direction
+ * is the element's as far as the cascade has got: its parent's, or one it
+ * set itself earlier in cascade order, which is where HTML's `dir` puts it.
+ * A two-value shorthand with a part that is no value for its property is
+ * none, and the declaration goes, as a physical shorthand's does.
+ */
+function applyLogical(
+  style: ComputedStyle,
+  parent: ComputedStyle,
+  logical: Logical,
+  value: string,
+  ctx: UnitContext,
+): void {
+  const rtl = style.direction === 'rtl';
+  switch (logical.kind) {
+    case 'side':
+      applyDeclaration(
+        style,
+        parent,
+        logical.physical(physicalSide(logical.side, rtl)),
+        value,
+        ctx,
+      );
+      return;
+    case 'size':
+      applyDeclaration(style, parent, logical.physical, value, ctx);
+      return;
+    case 'corner': {
+      const vertical = logical.block === 'start' ? 'top' : 'bottom';
+      const left = (logical.inline === 'start') !== rtl;
+      applyDeclaration(
+        style,
+        parent,
+        `border-${vertical}-${left ? 'left' : 'right'}-radius`,
+        value,
+        ctx,
+      );
+      return;
+    }
+    default: {
+      const start = physicalSide(`${logical.axis}-start`, rtl);
+      const end = physicalSide(`${logical.axis}-end`, rtl);
+      let parts: string[];
+      if (logical.same || CSS_WIDE.has(value.toLowerCase())) {
+        parts = [value, value];
+      } else {
+        parts = splitValue(value);
+        if (parts.length === 1) parts.push(parts[0]);
+        if (parts.length !== 2 || !parts.every((p) => logical.valid(p, ctx)))
+          return;
+      }
+      applyDeclaration(style, parent, logical.physical(start), parts[0], ctx);
+      applyDeclaration(style, parent, logical.physical(end), parts[1], ctx);
+    }
+  }
+}
+
+const CSS_WIDE = new Set(['inherit', 'initial', 'unset', 'revert']);
+
 function camel(name: string): string {
   return name.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase());
 }
@@ -1876,6 +2107,11 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
     }),
   ),
   'border-radius': ['borderRadius'],
+  'border-top-left-radius': ['borderRadius'],
+  'border-top-right-radius': ['borderRadius'],
+  'border-bottom-right-radius': ['borderRadius'],
+  'border-bottom-left-radius': ['borderRadius'],
+  inset: ['top', 'right', 'bottom', 'left'],
   background: [
     'backgroundColor',
     'backgroundImage',
