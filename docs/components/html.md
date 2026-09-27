@@ -336,7 +336,8 @@ no-break space, so only text that asks for it is split into more runs),
 `white-space` (including
 `pre` and `pre-wrap`, on an element as well as on its block: a `nowrap`
 element's words stay together, and `pre`'s spaces take their room at a
-line's end, where other spaces hang; a line break straight after `<pre>`'s
+line's end, where other spaces hang, and its tabs go to their stops, every
+`tab-size` spaces; a line break straight after `<pre>`'s
 start tag is dropped, as HTML's parser drops it), `line-clamp` and
 `-webkit-line-clamp` (a block shows its first lines and is as tall as they
 are, the last cut with an ellipsis — Tailwind's `line-clamp-2`; a block
