@@ -102,6 +102,7 @@ separately, and there are six.
 | 32     | the newline after `<pre>`, pseudo-class arguments  | 5,460 (93%) | 4,972 (84%) |
 | 33     | logical properties, `inset`, a corner's radius     | 5,460 (93%) | 4,972 (84%) |
 | 34     | cascade layers                                     | 5,460 (93%) | 4,972 (84%) |
+| 35     | nested rules, media ranges                         | 5,461 (93%) | 4,973 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -1273,6 +1274,25 @@ break: an XML parser keeps it, and `<Html>` parses HTML.
      in no layer wins over both, a layer's own rules win over the layers
      inside it, and `!important` turns all of that round. The CSS 2.1 suite
      has no layers either.
+
+### Round 35
+
+120. **A nested rule was dropped, and a media range taken for true.**
+     Tailwind 4 writes its variants in both: `md:flex` is `.md\:flex {
+@media (width >= 48rem) { display: flex } }`, and `hover:` is
+     `&:hover`. The rule nested in a block was read as a broken
+     declaration and dropped, and `(width >= 48rem)`, which is no
+     `min-width`, was a feature this did not know and so held at every
+     width. Rules nest now (CSS Nesting 1): a selector that starts with `&`
+     is its parent's with the rest after it, any other `&` is `:is()` of
+     the parent, and one with none is a descendant of it, or relative by
+     the combinator it starts with; an `@media`, `@supports` or `@layer`
+     inside a rule holds declarations for the same selectors. Width ranges
+     are read as the bounds they are, a strict one a sixty-fourth of a
+     pixel inside its value, and a maximum's breakpoint is as far past it,
+     where a width at 2x, `640.5`, lands on the right side of it; it was a
+     whole pixel. 1 test: a declaration block with a brace in it, which a
+     browser reads the same way.
 
 ## What `<Html>` supports
 
