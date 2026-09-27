@@ -48,7 +48,7 @@ import type { Style } from 'react-x11/style';
 import type { Element } from 'domhandler';
 
 import { codePointAtOffset, codeUnitOffsets } from '../internal/text.js';
-import { attr, HtmlSource, isElement, tagOf } from './dom.js';
+import { attr, HtmlSource, imageUrlOf, isElement, tagOf } from './dom.js';
 import type { Document } from './dom.js';
 import { Cascade } from './css/cascade.js';
 import { parseStylesheet } from './css/parse.js';
@@ -304,7 +304,7 @@ export class HtmlViewNode extends Node {
     }
     for (const el of facts.resources) {
       const tag = tagOf(el);
-      const url = tag === 'link' ? attr(el, 'href') : attr(el, 'src');
+      const url = tag === 'link' ? attr(el, 'href') : imageUrlOf(el);
       if (!url) continue;
       this._resources.request({
         url,
@@ -460,7 +460,7 @@ export class HtmlViewNode extends Node {
       this._tree = buildBoxes(this._source.document, {
         cascade,
         scale: this._scale,
-        imageSize: (el) => this._resources.imageSize(attr(el, 'src') ?? ''),
+        imageSize: (el) => this._resources.imageSize(imageUrlOf(el) ?? ''),
         controlSize: (el, kind, style) =>
           measureControl(el, kind, style, this._fonts(), look),
       });
@@ -826,7 +826,7 @@ export class HtmlViewNode extends Node {
         : null,
       selectionColor: this.selectionColor,
       imageFor: (box) =>
-        box.el ? this._resources.image(attr(box.el, 'src') ?? '') : null,
+        box.el ? this._resources.image(imageUrlOf(box.el) ?? '') : null,
       backgroundImageFor: (url) => {
         const image = this._resources.image(url);
         const size = image ? this._resources.imageSize(url) : null;

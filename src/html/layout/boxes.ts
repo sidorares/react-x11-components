@@ -32,6 +32,8 @@ import type { CollapsedTable } from './collapse.js';
 import { counterText, quoteAt } from '../css/content.js';
 import type { ContentItem } from '../css/content.js';
 import { inherit } from '../css/style.js';
+import { svgIntrinsics } from '../svg.js';
+import type { IntrinsicSize } from '../svg.js';
 import type { ComputedStyle } from '../css/style.js';
 
 export type BoxKind =
@@ -277,9 +279,9 @@ export class Box {
   /** Lines, for a box that established an inline formatting context. */
   lines: LineBox[] | null = null;
 
-  /** Intrinsic size, for a replaced box that knows one. */
-  intrinsicWidth = 0;
-  intrinsicHeight = 0;
+  /** A replaced box's intrinsic size and ratio; null on every other box,
+   *  which is nearly all of them, so it is one field rather than four. */
+  intrinsic: Intrinsic | null = null;
   /**
    * Cached min-/max-content widths, for a table cell. -1 until measured.
    *
@@ -430,7 +432,23 @@ export type ReplacedKind =
   | 'hr'
   /** An `<iframe>`, `<video>` or `<embed>`: what it would show is never
    *  loaded, so it is a box of its size with nothing in it. */
-  | 'frame';
+  | 'frame'
+  /** An inline `<svg>`: a drawing, sized by what it says of its size. */
+  | 'svg';
+
+/** A replaced box's intrinsic dimensions, in device pixels. */
+export interface Intrinsic {
+  /** Its size — or, on an axis `missing` names, the default object size of
+   *  300 by 150 CSS pixels that CSS falls back to there (CSS 2.1 10.3.2,
+   *  10.6.2). */
+  width: number;
+  height: number;
+  /** The dimensions it lacks: 1 its width, 2 its height. Only an SVG can. */
+  missing: number;
+  /** Its ratio, width over height, or 0 where it has none: an image's, or
+   *  an SVG's from its size or its `viewBox`. */
+  ratio: number;
+}
 
 /** What the builder produced, plus the document-wide text it indexed. */
 export interface BoxTree {
@@ -465,7 +483,7 @@ export interface BuildOptions {
   /** Intrinsic size for an image the host has already loaded, in the
    *  image's own pixels. `null` when it has not: the box takes the attribute
    *  size, or a placeholder. */
-  imageSize(el: Element): { width: number; height: number } | null;
+  imageSize(el: Element): IntrinsicSize | null;
   /** The size a real widget wants, so the box in the flow is the size the
    *  control will be drawn at. */
   controlSize(
@@ -624,7 +642,13 @@ class Builder {
       return;
     }
 
-    const replaced = replacedKind(el, tag);
+    // an `<object>` is its image once it has one, and its content until
+    const replaced =
+      tag === 'object'
+        ? this._options.imageSize(el)
+          ? 'image'
+          : 'none'
+        : replacedKind(el, tag);
     if (replaced !== 'none') {
       this._replaced(el, tag, replaced, style, into);
       return;
@@ -718,15 +742,20 @@ class Builder {
       const scale = this._options.scale ?? 1;
       const loaded = this._options.imageSize(el);
       if (loaded) {
-        box.intrinsicWidth = loaded.width * scale;
-        box.intrinsicHeight = loaded.height * scale;
+        setIntrinsics(box, loaded, scale);
       } else {
         // An image that has not arrived still needs a box, or the document
         // reflows under the reader when it does. The attributes are the
         // author telling us the size in advance; without them the box is a
         // small placeholder rather than nothing.
-        box.intrinsicWidth = (numberAttr(el, 'width') ?? 0) * scale;
-        box.intrinsicHeight = (numberAttr(el, 'height') ?? 0) * scale;
+        const width = numberAttr(el, 'width') ?? 0;
+        const height = numberAttr(el, 'height') ?? 0;
+        box.intrinsic = {
+          width: width * scale,
+          height: height * scale,
+          missing: 0,
+          ratio: width > 0 && height > 0 ? width / height : 0,
+        };
       }
       // The alt text joins the document text, so a document read with the
       // images blocked still copies as prose.
@@ -736,18 +765,32 @@ class Builder {
     }
 
     if (replaced === 'hr') return;
+    if (replaced === 'svg') {
+      // its `em` is its own font size, in CSS pixels like the rest of it
+      const scale = this._options.scale ?? 1;
+      setIntrinsics(box, svgIntrinsics(el, style.fontSize / scale), scale);
+      return;
+    }
     if (replaced === 'frame') {
       // HTML's default object size, in CSS pixels; `width` and `height`
       // attributes reach the style as presentational hints and win
       const scale = this._options.scale ?? 1;
-      box.intrinsicWidth = 300 * scale;
-      box.intrinsicHeight = 150 * scale;
+      box.intrinsic = {
+        width: 300 * scale,
+        height: 150 * scale,
+        missing: 0,
+        ratio: 0,
+      };
       return;
     }
 
     const size = this._options.controlSize(el, replaced, style);
-    box.intrinsicWidth = size.width;
-    box.intrinsicHeight = size.height;
+    box.intrinsic = {
+      width: size.width,
+      height: size.height,
+      missing: 0,
+      ratio: 0,
+    };
     this._controls.push(box);
     // A control's value is the widget's, not the document's: putting it in
     // the selection index would make Ctrl+A copy the contents of every text
@@ -1283,10 +1326,24 @@ function boxKindFor(display: ComputedStyle['display']): BoxKind {
   }
 }
 
+/** A replaced box's intrinsic size from what its content says, in CSS
+ *  pixels: an axis it does not give takes the default object size. */
+function setIntrinsics(box: Box, size: IntrinsicSize, scale: number): void {
+  box.intrinsic = {
+    width: (size.width ?? 300) * scale,
+    height: (size.height ?? 150) * scale,
+    missing: (size.width === null ? 1 : 0) | (size.height === null ? 2 : 0),
+    ratio: size.ratio,
+  };
+}
+
 function replacedKind(el: Element, tag: string): ReplacedKind {
   switch (tag) {
     case 'img':
       return 'image';
+    case 'svg':
+      // XHTML's `<svg:svg>` too, which `tagOf` names `svg`
+      return 'svg';
     case 'hr':
       return 'hr';
     case 'iframe':

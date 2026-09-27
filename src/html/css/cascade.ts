@@ -21,6 +21,7 @@ import { Element as DomElement, isTag } from 'domhandler';
 import type { Element } from 'domhandler';
 
 import { attr, tagOf } from '../dom.js';
+import { svgSizeHint } from '../svg.js';
 import { mediaMatches, readIdent, startsIdent } from './parse.js';
 import type { Declaration, StyleRule, Stylesheet } from './parse.js';
 import {
@@ -361,6 +362,11 @@ export class Cascade {
     this._adapter = {
       ...DomUtils,
       isTag,
+      // a type selector sees `tagOf`'s name — XHTML's `<svg:svg>` is an
+      // `svg` — asked only of a name that could be one: this runs for every
+      // type selector tried, and the parser has lowercased the rest
+      getName: (el: Element) =>
+        el.name.endsWith(':svg') ? tagOf(el) : el.name,
       isHovered: (el: Element) => this._pointer.hovered.has(el),
       isActive: (el: Element) => this._pointer.active.has(el),
       isVisited: () => false,
@@ -869,6 +875,14 @@ function presentationHints(el: Element): Declaration[] {
     if (width) push('width', lengthAttr(width));
     const height = attr(el, 'height');
     if (height) push('height', lengthAttr(height));
+  } else if (tag === 'svg') {
+    // an SVG's are CSS lengths of their own, units and all (SVG 2, 5.1.1)
+    const width = attr(el, 'width');
+    const w = width ? svgSizeHint(width) : null;
+    if (w) push('width', w);
+    const height = attr(el, 'height');
+    const h = height ? svgSizeHint(height) : null;
+    if (h) push('height', h);
   }
 
   if (tag === 'table') {

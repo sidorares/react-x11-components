@@ -86,10 +86,12 @@ onResource={async (request) => {
 }}
 ```
 
-Return `{ kind: 'image', image, width, height }` instead to hand over an
-image the host decoded itself. A declined or absent resource is an ordinary
-state: images draw as a frame at their attribute size, and linked stylesheets
-are skipped.
+Image bytes may be PNG, JPEG or SVG; nothing names the type, so an SVG is
+told apart by its markup. Return `{ kind: 'image', image, width, height }`
+instead to hand over an image the host decoded itself. A declined or absent
+resource is an ordinary state: images draw as a frame at their attribute
+size, an `<object>` shows its fallback content, and linked stylesheets are
+skipped.
 
 A stylesheet may be handed over as bytes instead, with the charset the
 protocol named if it named one: `{ kind: 'stylesheet', bytes, charset }`.
@@ -170,14 +172,34 @@ sliced: no border and no rounded corner on a side it goes on from. A padded
 `<a>` set as an email's button, a pill badge and a `<kbd>` keycap render as
 a browser renders them.
 
-**Embedded content:** `<iframe>`, `<video>` and `<embed>` are boxes of their
-`width` and `height` — 300×150 without them, as HTML sizes them — with
-nothing in them, because nothing is loaded.
+**Replaced content:** an image is sized by its style and what it has of
+an intrinsic width, height and ratio (CSS 2.1 10.3.2, 10.6.2), and a
+`min-`/`max-` limit on one axis carries to the other through its ratio — an
+`<img width="600" style="max-width: 100%">` in a narrow column is scaled,
+not squashed (10.4). An `<object>` whose `data` is an image shows it, and
+its fallback content until then or when it is not one. `<iframe>`,
+`<video>` and `<embed>` are boxes of their `width` and `height` — 300×150
+without them, as HTML sizes them — with nothing in them, because nothing is
+loaded.
+
+**SVG:** an inline `<svg>`, an SVG image and an SVG background are drawn by
+ntk's `SvgView`, which core's own `<svg>` element draws with, so they draw
+its subset: shapes and paths, groups, `<use>`, gradients and plain text,
+with presentation attributes and `style` attributes — not a stylesheet's
+rules, filters, masks or clip paths. An SVG root's `width` and `height` are
+CSS lengths, a percentage one too; its intrinsic size is what of them is
+absolute, and its ratio comes from them or from its `viewBox`, which is
+fitted to its box as `preserveAspectRatio` says. A percentage in its
+geometry is of its viewport, and `currentColor` is the `color` the element
+inherits. XHTML's `<svg:svg>`, under a prefix declared for the SVG
+namespace, is the same element.
 
 **Backgrounds:** `background-color`, and `background-image` — through
 `onResource`, like an `<img>` — with `background-repeat` and
 `background-position`, positioned in the padding box and repeated across the
-border box. The root's background covers the whole canvas, as CSS 2.1 has
+border box, or against the viewport with `background-attachment: fixed`. An
+image with no size of its own, an SVG's, is sized in that area as CSS
+Images says. The root's background covers the whole canvas, as CSS 2.1 has
 it: `<html>`'s, or `<body>`'s where `<html>` has none, over the body's margin
 and down the whole element when an application grows it past the document —
 so an email's `<body bgcolor>` colours the message rather than a box inside
@@ -226,7 +248,7 @@ answers it and a desktop that switches schemes re-cascades the document.
 
 **Not implemented:** CSS grid (degrades to block stacking), transforms,
 animations and transitions, multi-column, shadows, gradients,
-`background-size`, `background-attachment: fixed`, more than one background
+`background-size`, more than one background
 layer (the first is drawn), `position: sticky` (treated as `relative`),
 `::first-line`, and an image in `content` (the rest of the value is
 drawn). A `<col>` or a `<colgroup>` takes no part in layout: its width is

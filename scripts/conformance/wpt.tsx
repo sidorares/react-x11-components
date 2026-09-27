@@ -191,8 +191,7 @@ function resourcesFor(docPath: string) {
     }
     if (data instanceof Uint8Array) return { kind: 'image', bytes: data };
     const file = fileFor(request.url, docPath);
-    if (!file || /\.svg$/i.test(file)) return null;
-    return { kind: 'image', bytes: readFileSync(file) };
+    return file ? { kind: 'image', bytes: readFileSync(file) } : null;
   };
 }
 

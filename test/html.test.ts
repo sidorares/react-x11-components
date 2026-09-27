@@ -4537,3 +4537,214 @@ test('the palette in force answers prefers-color-scheme, and a switch re-cascade
     assert.strictEqual(colorOf(), '#00ff00', 'the dark branch under dark'),
   );
 });
+
+// --- SVG, and what a replaced box has of a size ------------------------------
+
+/** The box laid out for an element, with the replaced fields this reads. */
+type ReplacedBox = LaidBox & { kind: string; replaced: string };
+
+/** Render with each image URL answered from `images`, as bytes. */
+async function renderWithBytes(
+  source: string,
+  images: Record<string, Uint8Array>,
+  width = 400,
+) {
+  const result = await renderX11(
+    h(
+      'box',
+      { style: { width, flexDirection: 'column' } },
+      h(Html, {
+        source,
+        partial: false,
+        'data-testname': 'doc',
+        onResource: (r: { url: string; kind: string }) =>
+          r.kind === 'image' && images[r.url]
+            ? { kind: 'image' as const, bytes: images[r.url] }
+            : null,
+      }),
+    ),
+    FONTS
+      ? { width: width + 40, height: 400, fonts: FONTS }
+      : { backend: 'mock' as const },
+  );
+  return { result, el: view(screen.getByTestName('doc') as DrawnNode) };
+}
+
+const svgBytes = (text: string): Uint8Array =>
+  new Uint8Array(Buffer.from(text, 'utf8'));
+
+const SVG_NS = 'xmlns="http://www.w3.org/2000/svg"';
+
+test('an inline SVG is sized by the width, height and ratio it gives (CSS 2.1 10.3.2)', async () => {
+  const { node } = await render(
+    '<style>body{margin:0}svg{display:block}</style>' +
+      // a height and no ratio: the width is the default object size's
+      '<svg id="h" height="50"></svg>' +
+      // nothing at all: the default object size, 300 by 150
+      '<svg id="n"></svg>' +
+      // a ratio alone: as wide as a block, and as tall as the ratio says
+      '<svg id="r" viewBox="0 0 100 50"></svg>' +
+      '<svg id="w" width="40" height="20"></svg>' +
+      // the attributes are CSS lengths, a percentage too
+      '<svg id="p" viewBox="0 0 10 10" width="25%"></svg>' +
+      '<svg id="u" width="0.5in" height="1pc"></svg>',
+    400,
+  );
+  const el = view(node);
+  const size = (id: string): [number, number] => {
+    const box = boxOf(el, id);
+    return [box.width, box.height];
+  };
+  assert.deepStrictEqual(size('h'), [300, 50]);
+  assert.deepStrictEqual(size('n'), [300, 150]);
+  assert.deepStrictEqual(size('r'), [400, 200]);
+  assert.deepStrictEqual(size('w'), [40, 20]);
+  assert.deepStrictEqual(size('p'), [100, 100]);
+  assert.deepStrictEqual(size('u'), [48, 16]);
+  assert.strictEqual((boxOf(el, 'n') as ReplacedBox).replaced, 'svg');
+});
+
+test('an SVG root under a prefix bound to SVG is one, and a type selector sees it', async () => {
+  const { node } = await render(
+    '<style>body{margin:0}svg{display:block;width:77px}</style>' +
+      '<div xmlns:svg="http://www.w3.org/2000/svg">' +
+      '<svg:svg id="s" height="30"><svg:rect width="10" height="10"/></svg:svg>' +
+      '</div>' +
+      // a Word document's prefix: not SVG, and nothing a selector names
+      '<div xmlns:o="urn:schemas-microsoft-com:office:office">' +
+      '<o:svg id="o">x</o:svg></div>',
+    400,
+  );
+  const el = view(node);
+  const svg = boxOf(el, 's') as ReplacedBox;
+  assert.strictEqual(svg.replaced, 'svg');
+  assert.deepStrictEqual([svg.width, svg.height], [77, 30]);
+  const other = boxOf(el, 'o') as ReplacedBox;
+  assert.strictEqual(other.replaced, 'none');
+  assert.notStrictEqual(other.width, 77);
+});
+
+test('a limit on one axis of an image carries to the other through its ratio (CSS 2.1 10.4)', async () => {
+  // the 10 by 10 red square, in a column 5px wide
+  const { el } = await renderWithBytes(
+    '<style>body{margin:0}img{display:block}</style>' +
+      '<div style="width:5px">' +
+      '<img id="a" src="r.png" style="max-width:100%">' +
+      // a width set, as a mail template sets it, and a limit under it
+      '<img id="b" src="r.png" width="10" style="max-width:100%">' +
+      '</div>' +
+      '<img id="c" src="r.png" style="min-width:20px">' +
+      '<img id="d" src="r.png" style="height:30px;max-width:15px">',
+    { 'r.png': RED_PNG },
+  );
+  const size = (id: string): [number, number] => {
+    const box = boxOf(el, id);
+    return [box.width, box.height];
+  };
+  assert.deepStrictEqual(size('a'), [5, 5], 'max-width: 100%, both auto');
+  assert.deepStrictEqual(size('b'), [5, 5], 'width set, height from it');
+  assert.deepStrictEqual(size('c'), [20, 20], 'min-width, both auto');
+  // a height set is kept: only the width follows the limit
+  assert.deepStrictEqual(size('d'), [15, 30], 'height set');
+});
+
+test('an hr with no width set is as wide as its line', async () => {
+  const { node } = await render(
+    '<style>body{margin:0}</style><hr id="a"><hr id="b" style="width:50%">',
+    400,
+  );
+  const el = view(node);
+  assert.strictEqual(boxOf(el, 'a').width, 400);
+  assert.strictEqual(boxOf(el, 'b').width, 200);
+});
+
+test('an SVG image is sized by what its document says, and a PNG still decodes', async () => {
+  const { el } = await renderWithBytes(
+    '<style>body{margin:0}img{display:block}</style>' +
+      '<img id="h" src="h.svg"><img id="r" src="r.svg">' +
+      '<img id="w" src="w.svg"><img id="p" src="p.png">',
+    {
+      'h.svg': svgBytes(`<svg ${SVG_NS} height="25"><rect/></svg>`),
+      // after a byte order mark and an XML declaration: still sniffed
+      'r.svg': svgBytes(
+        `﻿<?xml version="1.0"?>\n<svg ${SVG_NS} viewBox="0 0 2 1"/>`,
+      ),
+      'w.svg': svgBytes(`<svg ${SVG_NS} width="50" viewBox="0 0 1 2"/>`),
+      'p.png': RED_PNG,
+    },
+  );
+  const size = (id: string): [number, number] => {
+    const box = boxOf(el, id);
+    return [box.width, box.height];
+  };
+  await waitFor(() => assert.deepStrictEqual(size('h'), [300, 25]));
+  assert.deepStrictEqual(size('r'), [400, 200]);
+  assert.deepStrictEqual(size('w'), [50, 100]);
+  assert.deepStrictEqual(size('p'), [10, 10]);
+});
+
+test('an object is its image once its data is one, and its content until then', async () => {
+  const { el } = await renderWithBytes(
+    '<style>body{margin:0}</style>' +
+      '<object id="o" data="r.png" type="image/png">fallback</object>' +
+      '<object id="f" data="gone.png">still here</object>',
+    { 'r.png': RED_PNG },
+  );
+  await waitFor(() =>
+    assert.strictEqual((boxOf(el, 'o') as ReplacedBox).replaced, 'image'),
+  );
+  const o = boxOf(el, 'o');
+  assert.deepStrictEqual([o.width, o.height], [10, 10]);
+  assert.strictEqual((boxOf(el, 'f') as ReplacedBox).replaced, 'none');
+  assert.ok(el.textContent().includes('still here'), 'the fallback content');
+  assert.ok(!el.textContent().includes('fallback'), 'not the loaded one');
+});
+
+metric(
+  'an SVG draws its viewport: percentages, the fit of its viewBox, the clip and currentColor',
+  async () => {
+    const { result } = await renderWithBytes(
+      '<style>body{margin:0}svg{display:block}</style>' +
+        // 100% of a 300 by 20 viewport
+        '<svg height="20"><rect width="100%" height="100%" fill="#00ff00"/></svg>' +
+        // a square viewBox in a 40 by 20 box: 20 by 20, in the middle
+        '<svg viewBox="0 0 10 10" style="width:40px;height:20px">' +
+        '<rect width="10" height="10" fill="#0000ff"/></svg>' +
+        // a rect larger than its viewport is clipped to it
+        '<svg width="10" height="10"><rect width="50" height="50" fill="#ff0000"/></svg>' +
+        // currentColor is the colour the box inherits
+        '<div style="color:#ff00ff"><svg width="10" height="10">' +
+        '<rect width="10" height="10" fill="currentColor"/></svg></div>',
+      {},
+    );
+    const ctx = result.ctx;
+    await expectPixel(ctx, 250, 10, '#00ff00', { message: '100% wide' });
+    await expectPixel(ctx, 5, 30, '#ffffff', { message: 'beside the fit' });
+    await expectPixel(ctx, 20, 30, '#0000ff', { message: 'the fitted square' });
+    await expectPixel(ctx, 35, 30, '#ffffff', { message: 'beside the fit' });
+    await expectPixel(ctx, 5, 45, '#ff0000', { message: 'inside the clip' });
+    await expectPixel(ctx, 20, 45, '#ffffff', { message: 'outside the clip' });
+    await expectPixel(ctx, 5, 55, '#ff00ff', { message: 'currentColor' });
+  },
+);
+
+metric(
+  'an SVG background with no size of its own is sized in its area, its root by its percentages',
+  async () => {
+    const { result } = await renderWithBytes(
+      '<style>body{margin:0}div{width:80px;height:100px;' +
+        'background:#ffffff url(g.svg) no-repeat}</style><div></div>',
+      {
+        'g.svg': svgBytes(
+          `<svg ${SVG_NS} width="40%" height="60%">` +
+            '<rect width="100%" height="100%" fill="#00ff00"/></svg>',
+        ),
+      },
+    );
+    const ctx = result.ctx;
+    // 40% by 60% of the 80 by 100 area: 32 by 60
+    await expectPixel(ctx, 30, 55, '#00ff00', { message: 'inside' });
+    await expectPixel(ctx, 36, 10, '#ffffff', { message: 'past its width' });
+    await expectPixel(ctx, 10, 64, '#ffffff', { message: 'past its height' });
+  },
+);
