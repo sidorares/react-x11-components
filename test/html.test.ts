@@ -3393,6 +3393,31 @@ test("a stylesheet in bytes falls back to its referrer's encoding", async () => 
   );
 });
 
+test("an imported stylesheet's rules come before its importer's", async () => {
+  // CSS 2.1 6.4.1: an import stands where its `@import` does, so the sheet
+  // importing it wins a tie. It was parsed after the sheet, and won.
+  await renderX11(
+    h(
+      'box',
+      { style: { width: 300, flexDirection: 'column' } },
+      h(Html, {
+        source:
+          '<style>@import "a.css"; p { color: #00ff00 }</style><p id="p">x</p>',
+        partial: false,
+        onResource: (r: { kind: string }) =>
+          r.kind === 'stylesheet'
+            ? { kind: 'stylesheet' as const, text: 'p { color: #ff0000 }' }
+            : null,
+        'data-testname': 'doc',
+      }),
+    ),
+    { backend: 'mock' },
+  );
+  const el = view(screen.getByTestName('doc') as DrawnNode);
+  const p = boxOf(el, 'p') as unknown as { style: { color: string } };
+  assert.strictEqual(p.style.color, '#00ff00');
+});
+
 test('an image handed over as bytes is decoded and drawn', async (t) => {
   // `decodeImage` is a named export of react-x11/ntk; read off the default
   // one it was undefined, and every image a host returned as bytes drew as

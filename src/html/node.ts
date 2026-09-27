@@ -349,22 +349,26 @@ export class HtmlViewNode extends Node {
       if (!text) continue;
       const encoding = linked ? linked.encoding : props.charset;
       const sheet = parseStylesheet(text, order);
-      order += sheet.rules.length + 1;
       // `@import` is a resource like any other, and its rules sit *before*
-      // the importing sheet's — so a fetched import is spliced in ahead.
+      // the importing sheet's (CSS 2.1 6.4.1): a fetched import takes the
+      // order the sheet's own rules were given, and they move up past it,
+      // or an imported rule would win a tie against the sheet importing it.
+      let imported = 0;
       for (const url of sheet.imports) {
         this._resources.request({
           url,
           kind: 'stylesheet',
           element: ref.element,
         });
-        const imported = this._resources.stylesheet(url, [encoding]);
-        if (imported) {
-          const parsed = parseStylesheet(imported.text, order);
-          order += parsed.rules.length + 1;
+        const fetched = this._resources.stylesheet(url, [encoding]);
+        if (fetched) {
+          const parsed = parseStylesheet(fetched.text, order + imported);
+          imported += parsed.rules.length + 1;
           sheets.push(parsed);
         }
       }
+      if (imported) for (const rule of sheet.rules) rule.order += imported;
+      order += imported + sheet.rules.length + 1;
       sheets.push(sheet);
     }
     const extra = props.stylesheet;
