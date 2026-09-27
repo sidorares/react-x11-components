@@ -112,6 +112,7 @@ separately, and there are six.
 | 42     | aspect-ratio, object-fit, a flex box's height      | 5,460 (93%) | 4,972 (84%) |
 | 43     | line-clamp, text-overflow                          | 5,460 (93%) | 4,972 (84%) |
 | 44     | 3D border styles                                   | 5,462 (93%) | 4,974 (84%) |
+| 45     | a flex row measured for its content                | 5,462 (93%) | 4,974 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -1482,6 +1483,20 @@ minmax(16rem, 1fr))` are the layouts of half the pages written this
      or where that leaves black, the colour against it lightened — and
      each side is a trapezoid meeting its neighbours on the diagonal,
      clamped to the painted area. 2 tests.
+
+### Round 45
+
+134. **A flex row measured for its content grew into infinity.** A flex
+     container laid out at no width limit — which is how a flex item's
+     max-content is measured, and a table column's — handed Yoga an
+     infinite width, which Yoga took for a width: a `flex: 1` item grew to
+     fill it and its text was placed at 1.7 × 10³⁸. The measure came back
+     vast, and in Tailwind UI's list item — an avatar and a `flex-1` column
+     of a name and an email, beside a column of a role and a badge — the
+     role was squeezed until "Designer" broke inside itself. The container
+     is `auto` wide there now, which Yoga works out from its content. Found
+     rendering a Tailwind-shaped page beside a browser; the CSS 2.1 suite
+     has no flex boxes.
 
 ## What `<Html>` supports
 

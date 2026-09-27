@@ -83,7 +83,14 @@ export function layoutFlex(
 
   const root = Y.Node.create(flexConfig());
   applyContainer(root, box.style);
-  root.setWidth(contentWidth);
+  // Laid out at no width limit — a flex item's max-content measured, a
+  // table column's — the container is as wide as its content, which Yoga
+  // works out from an `auto` width. Handed an infinite one, it took it for
+  // a width, grew a `flex: 1` item to fill it, placed its text at 1.7e38,
+  // and the measure that asked came back vast: a row beside such an item
+  // was squeezed to wrap every word.
+  const bounded = Number.isFinite(contentWidth);
+  if (bounded) root.setWidth(contentWidth);
   // The content box's height, where it is definite: a length or a
   // percentage that resolves, or what `aspect-ratio` makes of the width —
   // less the padding and borders a `border-box` height holds, which put
@@ -116,7 +123,7 @@ export function layoutFlex(
   }
 
   root.calculateLayout(
-    contentWidth,
+    bounded ? contentWidth : Number.NaN,
     height ?? Number.NaN,
     box.style.direction === 'rtl' ? Y.DIRECTION_RTL : Y.DIRECTION_LTR,
   );
