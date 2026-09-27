@@ -303,16 +303,40 @@ function layoutLines(block: Box, options: InlineOptions): InlineResult {
       runs.push(item.run);
     }
     const cut = cutOf(style);
-    const layout = fonts.layout(runs, base, {
+    const layoutOptions = {
       maxWidth: wraps(style) || cut ? options.width : undefined,
       lineHeight: lineHeightMul,
       align,
       direction: style.direction,
       ...cut,
-    });
+    };
+    let layout = fonts.layout(runs, base, layoutOptions);
     LAYOUT_RUNS.set(layout, runs);
+    if (
+      style.textAlign === 'justify' &&
+      wraps(style) &&
+      layout.lines.length > 1
+    ) {
+      // measured as it will be drawn, its spaces spaced apart (`HAIR`)
+      const spaced = spacedApart(runs);
+      const measured = fonts.layout(spaced, base, layoutOptions);
+      const justified = justifiedRuns(spaced, measured, options.width);
+      layout = justified
+        ? fonts.layout(justified, base, layoutOptions)
+        : measured;
+      LAYOUT_RUNS.set(layout, justified ?? spaced);
+    }
     const lines: LineBox[] = [];
-    const widest = emitLayout(layout, spans, 0, 0, lines);
+    const widest = emitLayout(
+      layout,
+      spans,
+      0,
+      0,
+      lines,
+      layoutOptions.maxWidth === undefined
+        ? unwrappedPlacer(style, options.width)
+        : null,
+    );
     return { lines, height: layout.height, width: widest };
   }
 
@@ -756,12 +780,14 @@ function layoutSpaced(
     direction: style.direction,
   });
   LAYOUT_RUNS.set(layout, runs);
+  const place = wraps(style) ? null : unwrappedPlacer(style, width);
   let offsets: number[] | null = null;
   const lines: LineBox[] = [];
   let widest = 0;
   let next = 0;
   for (let i = 0; i < layout.lines.length; i += 1) {
     const natural = layout.lines[i];
+    const dx = place ? place(natural) : 0;
     const edges: EdgePlacement[] = [];
     while (next < spacers.length && spacers[next].at < natural.end) {
       const { at, edge } = spacers[next];
@@ -773,12 +799,17 @@ function layoutSpaced(
         : layout.caretPosition(
             codePointAt((offsets ??= layoutOffsets(layout)), at),
           ).x;
-      edges.push({ box: edge.box, side: edge.side, x, width: edge.width });
+      edges.push({
+        box: edge.box,
+        side: edge.side,
+        x: x + dx,
+        width: edge.width,
+      });
     }
     const text: LineText = {
       layout,
       layoutLine: i,
-      drawX: 0,
+      drawX: dx,
       drawY: 0,
       textStart: spans.documentAt(natural.start),
       textEnd: spans.documentAt(natural.end),
@@ -787,7 +818,7 @@ function layoutSpaced(
     };
     spans.giveGaps(text, natural.start, natural.end);
     lines.push({
-      x: natural.x,
+      x: natural.x + dx,
       y: natural.y,
       width: natural.width,
       height: natural.height,
@@ -842,21 +873,24 @@ export function layoutOffsetOf(
   return units;
 }
 
-/** Append one layout's lines as LineBoxes at an offset; returns the widest. */
+/** Append one layout's lines as LineBoxes at an offset, each moved where
+ *  `place` says; returns the widest. */
 function emitLayout(
   layout: TextLayoutLike,
   spans: SpanMap,
   xOff: number,
   yOff: number,
   lines: LineBox[],
+  place: LinePlacer | null = null,
 ): number {
   let widest = 0;
   for (let i = 0; i < layout.lines.length; i += 1) {
     const natural = layout.lines[i];
+    const dx = place ? place(natural) : 0;
     const text: LineText = {
       layout,
       layoutLine: i,
-      drawX: xOff,
+      drawX: xOff + dx,
       drawY: yOff,
       textStart: spans.documentAt(natural.start),
       textEnd: spans.documentAt(natural.end),
@@ -865,7 +899,7 @@ function emitLayout(
     };
     spans.giveGaps(text, natural.start, natural.end);
     lines.push({
-      x: xOff + natural.x,
+      x: xOff + dx + natural.x,
       y: yOff + natural.y,
       width: natural.width,
       height: natural.height,
@@ -920,6 +954,7 @@ function layoutChunked(
   let chars = 0;
   let hardLines = 0;
 
+  const place = wraps(style) ? null : unwrappedPlacer(style, width);
   const flush = (): void => {
     if (!chunkRuns.length) return;
     const layout = fonts.layout(chunkRuns, base, {
@@ -929,7 +964,10 @@ function layoutChunked(
       direction: style.direction,
     });
     LAYOUT_RUNS.set(layout, chunkRuns);
-    widest = Math.max(widest, emitLayout(layout, chunkSpans, 0, y, lines));
+    widest = Math.max(
+      widest,
+      emitLayout(layout, chunkSpans, 0, y, lines, place),
+    );
     y += layout.height;
     chunkRuns = [];
     chunkSpans = new SpanMap();
@@ -2112,6 +2150,128 @@ function lineShift(style: ComputedStyle): number {
     default:
       return rtl ? 1 : 0;
   }
+}
+
+/** How far a line of a layout moves to where it belongs in its box. */
+type LinePlacer = (line: { x: number; width: number }) => number;
+
+/**
+ * Where `text-align` puts the lines of a layout that was given no width to
+ * align them in — text that does not wrap, which has no `maxWidth` — as how
+ * far each moves: the engine aligns those lines within the widest of them,
+ * which for a single line is no alignment at all, so a centred `<td
+ * nowrap>` or a `white-space: nowrap` button label was set flush left. A
+ * line too long for its box is set at its start, overflowing its end (CSS
+ * Text 3, 7.1), which is its left in a right-to-left paragraph, as in
+ * Blink. Null where every line is already where it belongs: flush left in
+ * a left-to-right paragraph, or measured for a width it has not been given.
+ */
+function unwrappedPlacer(
+  style: ComputedStyle,
+  width: number,
+): LinePlacer | null {
+  const shift = lineShift(style);
+  const rtl = style.direction === 'rtl';
+  if ((shift === 0 && !rtl) || !Number.isFinite(width)) return null;
+  return (line) => {
+    const free = width - line.width;
+    return (free >= 0 ? free * shift : rtl ? free : 0) - line.x;
+  };
+}
+
+/**
+ * The spacing a space is given to be laid out as one that may be spaced
+ * apart, too little to move a glyph. It is not nothing, because neither
+ * engine measures a space that is a spaced run of its own as it measures
+ * the same space inside its run: ntk shapes each run apart, so the kerning
+ * pair a space made with the letter beside it is gone (Arial's `A` and
+ * `T` have them), and CoreText spaces a glyph with its kerning attribute,
+ * which takes the place of the font's pairs. A line justified from a
+ * measure of its spaces as they were came out wider than its box and
+ * broke a word early: on macOS, in Helvetica, half of a paragraph did.
+ */
+const HAIR = 1e-6;
+
+/** The runs with each space a run of its own, spaced a hair apart. */
+function spacedApart(runs: TextRun[]): TextRun[] {
+  const out: TextRun[] = [];
+  for (const run of runs) {
+    const text = run.text;
+    let piece = 0;
+    for (let at = 0; at < text.length; at += 1) {
+      const c = text.charCodeAt(at);
+      if (c !== 0x20 && c !== 0xa0) continue;
+      if (at > piece) out.push({ ...run, text: text.slice(piece, at) });
+      out.push({
+        ...run,
+        text: text[at],
+        letterSpacing: (run.letterSpacing ?? 0) + HAIR,
+      });
+      piece = at + 1;
+    }
+    if (piece === 0) out.push(run);
+    else if (piece < text.length) out.push({ ...run, text: text.slice(piece) });
+  }
+  return out;
+}
+
+/**
+ * `text-align: justify` (CSS Text 3, 7.4), as neither engine has it: the
+ * paragraph's runs again, with each space inside a line that is to be
+ * justified widened by its share of what the line leaves of `width` — the
+ * `letter-spacing` a `word-spacing` is drawn with — so the same breaks fill
+ * their lines. A line that is the paragraph's last, or that a forced break
+ * ends, is not justified, nor one with no space inside it; the spaces a
+ * line ends on hang, and take no share. Null where no line is justified.
+ */
+function justifiedRuns(
+  runs: TextRun[],
+  layout: TextLayoutLike,
+  width: number,
+): TextRun[] | null {
+  const text = runs.map((run) => run.text).join('');
+  // each space's extra, by its offset in the paragraph
+  const extra = new Map<number, number>();
+  const lines = layout.lines;
+  for (let i = 0; i < lines.length - 1; i += 1) {
+    const line = lines[i];
+    let end = line.end;
+    if (text[end - 1] === '\n' || text[end] === '\n') continue;
+    while (
+      end > line.start &&
+      (text[end - 1] === ' ' || text[end - 1] === '\u00a0')
+    )
+      end -= 1;
+    const spaces: number[] = [];
+    for (let at = line.start; at < end; at += 1) {
+      if (text[at] === ' ' || text[at] === '\u00a0') spaces.push(at);
+    }
+    // a hair short, so that the engine breaks where it did
+    const slack = width - line.width - 0.01;
+    if (!spaces.length || !(slack > 0)) continue;
+    for (const at of spaces) extra.set(at, slack / spaces.length);
+  }
+  if (!extra.size) return null;
+  const out: TextRun[] = [];
+  let from = 0;
+  for (const run of runs) {
+    const end = from + run.text.length;
+    let piece = from;
+    for (let at = from; at < end; at += 1) {
+      const add = extra.get(at);
+      if (add === undefined) continue;
+      if (at > piece) out.push({ ...run, text: text.slice(piece, at) });
+      out.push({
+        ...run,
+        text: text[at],
+        letterSpacing: (run.letterSpacing ?? 0) + add,
+      });
+      piece = at + 1;
+    }
+    if (end > piece) out.push({ ...run, text: text.slice(piece, end) });
+    from = end;
+  }
+  return out;
 }
 
 function alignFor(style: ComputedStyle): string {

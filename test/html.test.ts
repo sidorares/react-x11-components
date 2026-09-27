@@ -3284,6 +3284,132 @@ metric('a right-to-left block starts at the right', async () => {
   assert.strictEqual(f.x, 0, "and a fixed box's containing block is the view");
 });
 
+metric('a justified paragraph fills every line but its last', async () => {
+  // `justify` was set as `start`. Each line is widened at its spaces to
+  // fill the box, but not the paragraph's last, nor one a forced break
+  // ends (CSS Text 3, 7.4); the ragged copies say what those are unwidened
+  const words = 'the quick brown fox jumps over the lazy dog and back again ';
+  const { node } = await render(
+    '<style>body{margin:0}p{margin:0;width:200px}.j{text-align:justify}' +
+      '</style>' +
+      `<p id="p" class="j">${words.repeat(3)}</p>` +
+      `<p id="ragged">${words.repeat(3)}</p>` +
+      `<p id="br" class="j">a b<br>${words}</p>` +
+      `<p id="rtl" class="j" dir="rtl">${words.repeat(2)}</p>` +
+      `<p id="rtl-ragged" dir="rtl">${words.repeat(2)}</p>`,
+  );
+  const el = view(node);
+  const extents = (id: string) =>
+    linesOf(el, id).map((line) => extentOf(line.texts[0]));
+  const width = ([from, to]: [number, number]) => to - from;
+  const last = <T>(list: T[]) => list[list.length - 1];
+  const lines = extents('p');
+  const ragged = extents('ragged');
+  assert.ok(lines.length > 2, `${lines.length} lines`);
+  assert.strictEqual(lines.length, ragged.length, 'broken where it was');
+  for (const [from, to] of lines.slice(0, -1)) {
+    assert.ok(from < 0.5 && to > 199.5, `a full line: ${from}..${to}`);
+  }
+  assert.ok(
+    Math.abs(width(last(lines)) - width(last(ragged))) < 0.5,
+    'not the last',
+  );
+  const [[, first]] = extents('br');
+  assert.ok(first < 50, `not one a break ends: ${first}`);
+  const rtl = extents('rtl');
+  const rtlRagged = extents('rtl-ragged');
+  assert.strictEqual(rtl.length, rtlRagged.length);
+  for (const [from, to] of rtl.slice(0, -1)) {
+    assert.ok(from < 0.5 && to > 199.5, `right to left: ${from}..${to}`);
+  }
+  assert.ok(last(rtl)[1] > 199.5, 'whose last line starts at the right');
+  assert.ok(Math.abs(width(last(rtl)) - width(last(rtlRagged))) < 0.5);
+});
+
+metric(
+  'a justified line keeps its breaks where a spaced space is wider',
+  async () => {
+    // an engine measures a space that is a spaced run of its own wider
+    // than the same space inside its run — ntk loses the kerning pair it
+    // made, CoreText drops the font's pairs for its kerning attribute — so
+    // a line justified from a measure of its spaces as they were no longer
+    // fit, and broke a word early, short of the edge
+    const words = 'The quick brown fox jumps over the lazy dog, and back. ';
+    const { result, node } = await render(
+      '<style>body{margin:0}p{margin:0;width:200px;text-align:justify}</style>' +
+        `<p id="p">${words.repeat(3)}</p>`,
+    );
+    const el = view(node);
+    const fonts = (result.app as unknown as { fonts: FontsLike }).fonts;
+    const kerning: FontsLike = {
+      layout: (runs, style, options) =>
+        fonts.layout(
+          runs.map((run) =>
+            run.letterSpacing && (run.text === ' ' || run.text === '\u00a0')
+              ? { ...run, letterSpacing: run.letterSpacing + 0.4 }
+              : run,
+          ),
+          style,
+          options,
+        ),
+      match: (...args) => fonts.match(...args),
+    };
+    const { layoutDocument } = await import('../src/html/layout/block.js');
+    const tree = (el as unknown as { _tree: unknown })._tree;
+    layoutDocument(tree as never, kerning, 400, 600);
+    const lines = linesOf(el, 'p').map((line) => extentOf(line.texts[0]));
+    assert.ok(lines.length > 2, `${lines.length} lines`);
+    for (const [from, to] of lines.slice(0, -1)) {
+      assert.ok(from < 0.5 && to > 199.5, `a full line: ${from}..${to}`);
+    }
+  },
+);
+
+metric('text that does not wrap is aligned in its box', async () => {
+  // the engine aligns lines it is given no width for within the widest of
+  // them, which for one line is no alignment at all: a centred `<td
+  // nowrap>` or `white-space: nowrap` label was set flush left
+  const long = 'a line too long for its box';
+  const { node } = await render(
+    '<style>body{margin:0}div{width:300px}td{padding:0}</style>' +
+      '<div id="c" style="white-space:nowrap;text-align:center">centred</div>' +
+      '<div id="r" style="white-space:nowrap;text-align:right">right</div>' +
+      '<div id="rtl" dir="rtl" style="white-space:nowrap">start</div>' +
+      '<div id="pre" style="white-space:pre;text-align:center">one\n' +
+      'a longer line</div>' +
+      '<table width="300" style="border-spacing:0"><tr>' +
+      '<td id="td" nowrap align="center">cell</td></tr></table>' +
+      '<div id="sp" style="white-space:nowrap;text-align:center">' +
+      '<span style="padding:0 10px;background:#eee">boxed</span></div>' +
+      `<div id="over" dir="rtl" style="white-space:nowrap;width:50px">${long}</div>` +
+      '<div id="wide" style="white-space:nowrap;width:50px;text-align:center">' +
+      `${long}</div>`,
+  );
+  const el = view(node);
+  const extents = (id: string) =>
+    linesOf(el, id).map((line) => extentOf(line.texts[0]));
+  const centred = ([from, to]: [number, number], label: string) =>
+    assert.ok(Math.abs(from + to - 300) < 0.5, `${label}: ${from}..${to}`);
+  centred(extents('c')[0], 'centred');
+  assert.ok(Math.abs(extents('r')[0][1] - 300) < 0.5, 'right');
+  assert.ok(Math.abs(extents('rtl')[0][1] - 300) < 0.5, 'right-to-left');
+  const pre = extents('pre');
+  assert.strictEqual(pre.length, 2);
+  pre.forEach((extent, i) => centred(extent, `pre line ${i}`));
+  centred(extents('td')[0], 'a centred cell');
+  // an inline box's edges go with the line they are on
+  const [boxed] = linesOf(el, 'sp');
+  assert.ok(Math.abs(2 * boxed.x + boxed.width - 300) < 0.5, 'with edges');
+  assert.ok(
+    Math.abs(boxed.edges![0].x - boxed.x) < 0.5,
+    `the start edge at the line's start: ${boxed.edges![0].x}`,
+  );
+  // a line too long for its box is set at its start, overflowing its end
+  const [[overFrom, overTo]] = extents('over');
+  assert.ok(Math.abs(overTo - 50) < 0.5 && overFrom < 0, 'left, in rtl');
+  assert.ok(Math.abs(extents('wide')[0][0]) < 0.5, 'right, centred');
+});
+
 metric(
   'a relatively positioned ::before moves, in a document where nothing else does',
   async () => {
