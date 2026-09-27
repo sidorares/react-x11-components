@@ -115,6 +115,7 @@ separately, and there are six.
 | 45     | a flex row measured for its content                | 5,462 (93%) | 4,974 (84%) |
 | 46     | a table in an aligned cell                         | 5,462 (93%) | 4,974 (84%) |
 | 47     | details, and markers inside                        | 5,466 (93%) | 4,978 (84%) |
+| 48     | justify, and text that does not wrap aligned       | 5,470 (93%) | 4,978 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -1533,6 +1534,37 @@ minmax(16rem, 1fr))` are the layouts of half the pages written this
      own above the block, and an empty item beside a float is a line tall,
      with its marker set past the float. 4 tests.
 
+### Round 48
+
+138. **`text-align: justify` was set as `start`.** Neither text engine
+     justifies, so it had been left ragged. Each line of a justified
+     paragraph but its last, and one a forced break ends, is laid out again
+     with its spaces widened by their share of what the line leaves of the
+     box — the spacing `word-spacing` is drawn with, so a copy takes the
+     text as written. The share is measured with the spaces already apart,
+     because neither engine measures a space that is a spaced run of its
+     own as it measures it inside its run — ntk loses the kerning pair it
+     made, and CoreText drops the font's pairs where it spaces a glyph —
+     and a line measured the other way came out wider than its box and
+     broke a word early: on macOS, in Helvetica, half of a paragraph did. A
+     ragged paragraph keeps its layout across the widths its breaks hold
+     at, and a justified one is laid out twice more at each: 2.1 ms against
+     0.12 to lay out a sixty-paragraph article at a new width, and nothing
+     for text that is not justified. 3 tests on X11; on macOS the same
+     three come within a pixel's fringe of their references, where text
+     drawn over other text is anti-aliased twice.
+139. **Text that does not wrap ignored `text-align`.** A layout given no
+     width to break at — `white-space: nowrap` or `pre` — is aligned by the
+     text engine within its own widest line, which for one line is no
+     alignment at all: a centred `<td nowrap>`, a label in
+     `whitespace-nowrap` and `text-center`, and every right-to-left
+     `nowrap` line were set flush left. Each such line is placed in its box
+     now, and one too long for it is set at its start and overflows its
+     end — its left, in a right-to-left paragraph — as Blink sets it. 1
+     test on X11, whose right-to-left `nowrap` line was set at the left.
+     Found in the justify tests, which set `nowrap` and `pre` beside
+     `justify` to check that it is ignored there.
+
 ## What `<Html>` supports
 
 From the pass rates of the tests that use each feature, at the fixes above,
@@ -1646,7 +1678,7 @@ directories and caniemail's feature list:
    borders and margins in round 3, and the Cocoa line-box difference turned
    out to be CoreText's placement and its font smoothing. `vertical-align`
    on text was done in round 24 and a line height per inline box in round
-   29; `justify` and the float remain.
+   29, and `justify` in round 48; the float remains.
 5. **The CSS3 that documents use**: `background-size`, `box-shadow`,
    gradients, `calc()`, custom properties (`var()`), CSS Color 4 —
    Tailwind's output is written in them — and `@font-face` through
