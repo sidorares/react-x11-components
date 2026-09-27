@@ -204,10 +204,187 @@ export function markdownDoc(secs: Section[]): string {
   );
 }
 
-export function htmlDoc(secs: Section[]): string {
+export function htmlDoc(secs: Section[], framework = ''): string {
   return (
-    `<!doctype html><html><head><title>A generated report</title><style>${HTML_STYLE}</style></head><body><h1>A generated report</h1>\n` +
+    `<!doctype html><html><head><title>A generated report</title><style>${framework}${HTML_STYLE}</style></head><body><h1>A generated report</h1>\n` +
     secs.map(htmlSection).join('\n') +
     '\n</body></html>'
   );
+}
+
+// --- a framework's stylesheet ---------------------------------------------
+
+const HUES: Record<string, number> = {
+  slate: 257,
+  gray: 264,
+  zinc: 286,
+  red: 25,
+  orange: 47,
+  amber: 70,
+  yellow: 86,
+  lime: 128,
+  green: 149,
+  emerald: 163,
+  teal: 182,
+  cyan: 215,
+  sky: 237,
+  blue: 259,
+  indigo: 277,
+  violet: 293,
+  purple: 304,
+  fuchsia: 322,
+  pink: 354,
+  rose: 16,
+};
+const SHADES = [50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 950];
+
+function theme(): string {
+  const out: string[] = [];
+  for (const [name, hue] of Object.entries(HUES)) {
+    SHADES.forEach((shade, i) => {
+      const l = (98 - i * 8.2).toFixed(1);
+      const c = (0.01 + Math.sin((i / 10) * Math.PI) * 0.2).toFixed(3);
+      out.push(`--color-${name}-${shade}: oklch(${l}% ${c} ${hue});`);
+    });
+  }
+  out.push(
+    '--color-white: #fff;',
+    '--color-black: #000;',
+    '--font-sans: ui-sans-serif, system-ui, sans-serif;',
+    '--spacing: 0.25rem;',
+    '--text-xs: 0.75rem;',
+    '--text-xs--line-height: calc(1 / 0.75);',
+    '--text-sm: 0.875rem;',
+    '--text-sm--line-height: calc(1.25 / 0.875);',
+    '--text-base: 1rem;',
+    '--text-base--line-height: calc(1.5 / 1);',
+    '--text-lg: 1.125rem;',
+    '--text-lg--line-height: calc(1.75 / 1.125);',
+    '--text-2xl: 1.5rem;',
+    '--text-2xl--line-height: calc(2 / 1.5);',
+    '--font-weight-medium: 500;',
+    '--font-weight-semibold: 600;',
+    '--radius-md: 0.375rem;',
+    '--radius-lg: 0.5rem;',
+    '--radius-xl: 0.75rem;',
+  );
+  return `:root, :host { ${out.join(' ')} }`;
+}
+
+const PREFLIGHT = `
+*, ::after, ::before, ::backdrop { box-sizing: border-box; margin: 0; padding: 0; border: 0 solid; }
+html, :host { line-height: 1.5; -webkit-text-size-adjust: 100%; tab-size: 4; font-family: var(--font-sans); }
+body { line-height: inherit; }
+h1, h2, h3, h4, h5, h6 { font-size: inherit; font-weight: inherit; }
+a { color: inherit; text-decoration: inherit; }
+b, strong { font-weight: bolder; }
+table { text-indent: 0; border-color: inherit; border-collapse: collapse; }
+ol, ul, menu { list-style: none; }
+img, svg, video { display: block; vertical-align: middle; }
+img, video { max-width: 100%; height: auto; }
+button, input { font: inherit; color: inherit; background-color: transparent; border-radius: 0; }
+`;
+
+const PROPERTIES = `
+@supports ((-webkit-hyphens: none) and (not (margin-trim: inline))) or ((-moz-orient: inline) and (not (color: rgb(from red r g b)))) {
+  *, ::before, ::after, ::backdrop {
+    --tw-border-style: solid; --tw-font-weight: initial; --tw-shadow: 0 0 #0000; --tw-shadow-color: initial;
+    --tw-shadow-alpha: 100%; --tw-inset-shadow: 0 0 #0000; --tw-inset-shadow-color: initial;
+    --tw-inset-shadow-alpha: 100%; --tw-ring-color: initial; --tw-ring-shadow: 0 0 #0000;
+    --tw-inset-ring-color: initial; --tw-inset-ring-shadow: 0 0 #0000; --tw-ring-inset: initial;
+    --tw-ring-offset-width: 0px; --tw-ring-offset-color: #fff; --tw-ring-offset-shadow: 0 0 #0000;
+    --tw-leading: initial; --tw-tracking: initial; --tw-space-y-reverse: 0; --tw-space-x-reverse: 0;
+    --tw-translate-x: 0; --tw-translate-y: 0; --tw-translate-z: 0; --tw-outline-style: solid;
+    --tw-gradient-position: initial; --tw-gradient-from: #0000; --tw-gradient-via: #0000;
+    --tw-gradient-to: #0000; --tw-gradient-stops: initial; --tw-gradient-from-position: 0%;
+    --tw-gradient-via-position: 50%; --tw-gradient-to-position: 100%;
+  }
+}`;
+
+const SHADOW =
+  'box-shadow: var(--tw-inset-shadow), var(--tw-inset-ring-shadow), var(--tw-ring-offset-shadow), var(--tw-ring-shadow), var(--tw-shadow);';
+
+function utilities(): string {
+  const u: string[] = [];
+  const sp = [0, 0.5, 1, 1.5, 2, 3, 4, 5, 6, 8, 10, 12, 16];
+  const key = (n: number) => String(n).replace('.', '\\.');
+  for (const n of sp) {
+    u.push(`.p-${key(n)} { padding: calc(var(--spacing) * ${n}); }`);
+    u.push(`.px-${key(n)} { padding-inline: calc(var(--spacing) * ${n}); }`);
+    u.push(`.py-${key(n)} { padding-block: calc(var(--spacing) * ${n}); }`);
+    u.push(`.gap-${key(n)} { gap: calc(var(--spacing) * ${n}); }`);
+    u.push(`.mt-${key(n)} { margin-top: calc(var(--spacing) * ${n}); }`);
+    u.push(
+      `.size-${key(n)} { width: calc(var(--spacing) * ${n}); height: calc(var(--spacing) * ${n}); }`,
+    );
+    u.push(
+      `.space-y-${key(n)} { :where(& > :not(:last-child)) { --tw-space-y-reverse: 0; margin-block-start: calc(calc(var(--spacing) * ${n}) * var(--tw-space-y-reverse)); margin-block-end: calc(calc(var(--spacing) * ${n}) * calc(1 - var(--tw-space-y-reverse))); } }`,
+    );
+  }
+  for (const [name] of Object.entries(HUES)) {
+    for (const shade of SHADES) {
+      u.push(
+        `.text-${name}-${shade} { color: var(--color-${name}-${shade}); }`,
+      );
+      u.push(
+        `.bg-${name}-${shade} { background-color: var(--color-${name}-${shade}); }`,
+      );
+      u.push(
+        `.ring-${name}-${shade} { --tw-ring-color: var(--color-${name}-${shade}); }`,
+      );
+      u.push(
+        `.hover\\:bg-${name}-${shade} { &:hover { @media (hover: hover) { background-color: var(--color-${name}-${shade}); } } }`,
+      );
+    }
+  }
+  u.push(
+    '.flex { display: flex; }',
+    '.grid { display: grid; }',
+    '.hidden { display: none; }',
+    '.flex-1 { flex: 1; }',
+    '.flex-col { flex-direction: column; }',
+    '.items-center { align-items: center; }',
+    '.justify-between { justify-content: space-between; }',
+    '.min-w-0 { min-width: calc(var(--spacing) * 0); }',
+    '.grid-cols-1 { grid-template-columns: repeat(1, minmax(0, 1fr)); }',
+    '.sm\\:grid-cols-2 { @media (width >= 40rem) { grid-template-columns: repeat(2, minmax(0, 1fr)); } }',
+    '.lg\\:grid-cols-4 { @media (width >= 64rem) { grid-template-columns: repeat(4, minmax(0, 1fr)); } }',
+    '.rounded-md { border-radius: var(--radius-md); }',
+    '.rounded-lg { border-radius: var(--radius-lg); }',
+    '.rounded-xl { border-radius: var(--radius-xl); }',
+    '.rounded-full { border-radius: calc(infinity * 1px); }',
+    '.bg-white { background-color: var(--color-white); }',
+    '.text-xs { font-size: var(--text-xs); line-height: var(--tw-leading, var(--text-xs--line-height)); }',
+    '.text-sm { font-size: var(--text-sm); line-height: var(--tw-leading, var(--text-sm--line-height)); }',
+    '.text-lg { font-size: var(--text-lg); line-height: var(--tw-leading, var(--text-lg--line-height)); }',
+    '.text-2xl { font-size: var(--text-2xl); line-height: var(--tw-leading, var(--text-2xl--line-height)); }',
+    '.font-medium { --tw-font-weight: var(--font-weight-medium); font-weight: var(--font-weight-medium); }',
+    '.font-semibold { --tw-font-weight: var(--font-weight-semibold); font-weight: var(--font-weight-semibold); }',
+    '.truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }',
+    `.shadow-sm { --tw-shadow: 0 1px 3px 0 var(--tw-shadow-color, rgb(0 0 0 / 0.1)), 0 1px 2px -1px var(--tw-shadow-color, rgb(0 0 0 / 0.1)); ${SHADOW} }`,
+    `.ring-1 { --tw-ring-shadow: var(--tw-ring-inset,) 0 0 0 calc(1px + var(--tw-ring-offset-width)) var(--tw-ring-color, currentcolor); ${SHADOW} }`,
+    '.ring-inset { --tw-ring-inset: inset; }',
+    '.border-b { border-bottom-style: var(--tw-border-style); border-bottom-width: 1px; }',
+    '.border-slate-200 { border-color: var(--color-slate-200); }',
+    '.bg-linear-to-r { --tw-gradient-position: to right in oklab; background-image: linear-gradient(var(--tw-gradient-stops)); }',
+    '.from-sky-500 { --tw-gradient-from: var(--color-sky-500); --tw-gradient-stops: var(--tw-gradient-via-stops, var(--tw-gradient-position), var(--tw-gradient-from) var(--tw-gradient-from-position), var(--tw-gradient-to) var(--tw-gradient-to-position)); }',
+    '.to-indigo-500 { --tw-gradient-to: var(--color-indigo-500); --tw-gradient-stops: var(--tw-gradient-via-stops, var(--tw-gradient-position), var(--tw-gradient-from) var(--tw-gradient-from-position), var(--tw-gradient-to) var(--tw-gradient-to-position)); }',
+  );
+  return u.join('\n');
+}
+
+/**
+ * A stylesheet shaped the way Tailwind 4's output is — a theme of custom
+ * properties in oklch, four layers, preflight, the `@supports` block that
+ * sets thirty-five `--tw-*` properties on every element, and utilities in
+ * `var()`, `calc()`, nesting and media ranges — for `DOC=tailwind`: the
+ * report under a framework's stylesheet, in layers, so its own unlayered
+ * rules still win and it looks the same. About 90 KB.
+ */
+export function tailwindStylesheet(): string {
+  return `@layer theme, base, components, utilities;
+@layer theme { ${theme()} }
+@layer base { ${PREFLIGHT} }
+@layer properties { ${PROPERTIES} }
+@layer utilities { ${utilities()} }`;
 }

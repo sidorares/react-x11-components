@@ -149,6 +149,8 @@ const enum Stale {
 export class HtmlViewNode extends Node {
   private _source = new HtmlSource();
   private _resources: ResourceStore;
+  /** The sheets the last restyle read, and the cascade built from them. */
+  private _sheetsRead: SheetsRead | null = null;
   /** Blurred shadows, drawn once each. */
   private _shadowCache: SurfaceCache | null = null;
   private _cascade: Cascade | null = null;
@@ -350,9 +352,9 @@ export class HtmlViewNode extends Node {
   private _restyle(width: number): void {
     const props = this._props();
     const look = this._deviceLook();
-    const sheets: Stylesheet[] = [uaStylesheet(look)];
-    let order = 0;
-    const layers = new Map<string, number>();
+    // What the sheets are read from, in order: a `<style>`'s text or a
+    // fetched `<link>`'s, and after them the host's.
+    const read: { text: string; encoding?: string; element: Element }[] = [];
     for (const ref of this._source.facts().sheets) {
       // A sheet handed over as bytes that names no encoding of its own is in
       // its referrer's: a `<link charset>`, then the document's (CSS 2.1
@@ -367,53 +369,118 @@ export class HtmlViewNode extends Node {
       const text = ref.kind === 'inline' ? ref.text : linked?.text;
       if (!text) continue;
       const encoding = linked ? linked.encoding : props.charset;
-      const sheet = parseStylesheet(text, order, layers);
-      // `@import` is a resource like any other, and its rules sit *before*
-      // the importing sheet's (CSS 2.1 6.4.1): a fetched import takes the
-      // order the sheet's own rules were given, and they move up past it,
-      // or an imported rule would win a tie against the sheet importing it.
-      let imported = 0;
-      for (const url of sheet.imports) {
-        this._resources.request({
-          url,
-          kind: 'stylesheet',
-          element: ref.element,
-        });
-        const fetched = this._resources.stylesheet(url, [encoding]);
-        if (fetched) {
-          const parsed = parseStylesheet(
-            fetched.text,
-            order + imported,
-            layers,
-          );
-          imported += parsed.rules.length + 1;
-          sheets.push(parsed);
-        }
-      }
-      if (imported) for (const rule of sheet.rules) rule.order += imported;
-      order += imported + sheet.rules.length + 1;
-      sheets.push(sheet);
+      read.push({ text, encoding, element: ref.element });
     }
     const extra = props.stylesheet;
-    for (const text of Array.isArray(extra) ? extra : extra ? [extra] : []) {
-      const sheet = parseStylesheet(text, order, layers);
-      order += sheet.rules.length + 1;
-      sheets.push(sheet);
-    }
+    const extras = Array.isArray(extra) ? extra : extra ? [extra] : [];
     const fonts = this._fonts();
-    this._cascade = new Cascade(
-      sheets,
-      look,
-      width,
-      this._viewportHeight(),
-      this._scale,
-      fonts ? (family, size) => xHeightOf(fonts, family, size) : null,
-    );
+    // Sheets that read as they did last time are the same rules: an append
+    // to a streamed document, or a width across a `@media` breakpoint,
+    // restyles the elements without parsing a framework's stylesheet again
+    // or indexing its thousand rules again.
+    const kept = this._sheetsRead;
+    if (
+      kept &&
+      kept.look === look &&
+      kept.scale === this._scale &&
+      kept.fonts === fonts &&
+      this._sameSheets(kept, read, extras)
+    ) {
+      this._cascade = kept.cascade;
+      kept.cascade.viewportWidth = width;
+      kept.cascade.viewportHeight = this._viewportHeight();
+    } else {
+      const sheets: Stylesheet[] = [uaStylesheet(look)];
+      const imports: { url: string; text: string | null }[][] = [];
+      let order = 0;
+      const layers = new Map<string, number>();
+      for (const { text, encoding, element } of read) {
+        const sheet = parseStylesheet(text, order, layers);
+        // `@import` is a resource like any other, and its rules sit *before*
+        // the importing sheet's (CSS 2.1 6.4.1): a fetched import takes the
+        // order the sheet's own rules were given, and they move up past it,
+        // or an imported rule would win a tie against the sheet importing it.
+        let imported = 0;
+        const seen: { url: string; text: string | null }[] = [];
+        for (const url of sheet.imports) {
+          this._resources.request({ url, kind: 'stylesheet', element });
+          const fetched = this._resources.stylesheet(url, [encoding]);
+          seen.push({ url, text: fetched?.text ?? null });
+          if (fetched) {
+            const parsed = parseStylesheet(
+              fetched.text,
+              order + imported,
+              layers,
+            );
+            imported += parsed.rules.length + 1;
+            sheets.push(parsed);
+          }
+        }
+        imports.push(seen);
+        if (imported) for (const rule of sheet.rules) rule.order += imported;
+        order += imported + sheet.rules.length + 1;
+        sheets.push(sheet);
+      }
+      for (const text of extras) {
+        const sheet = parseStylesheet(text, order, layers);
+        order += sheet.rules.length + 1;
+        sheets.push(sheet);
+      }
+      this._cascade = new Cascade(
+        sheets,
+        look,
+        width,
+        this._viewportHeight(),
+        this._scale,
+        fonts ? (family, size) => xHeightOf(fonts, family, size) : null,
+      );
+      this._sheetsRead = {
+        look,
+        scale: this._scale,
+        fonts,
+        texts: read.map((r) => r.text),
+        encodings: read.map((r) => r.encoding),
+        imports,
+        extras,
+        cascade: this._cascade,
+      };
+    }
     this._cascade.setPointer({
       hovered: new Set(this._hovered),
       active: EMPTY_SET,
     });
     this._mediaBand = this._cascade.mediaBand(width);
+  }
+
+  /** Whether the sheets read the same as the ones `kept` was built from,
+   *  down to what each imports — asking for the imports again, as a parse
+   *  of the sheet would have. */
+  private _sameSheets(
+    kept: SheetsRead,
+    read: { text: string; encoding?: string; element: Element }[],
+    extras: string[],
+  ): boolean {
+    if (read.length !== kept.texts.length) return false;
+    if (extras.length !== kept.extras.length) return false;
+    for (let i = 0; i < extras.length; i += 1) {
+      if (extras[i] !== kept.extras[i]) return false;
+    }
+    for (let i = 0; i < read.length; i += 1) {
+      const r = read[i];
+      if (r.text !== kept.texts[i] || r.encoding !== kept.encodings[i]) {
+        return false;
+      }
+      for (const { url, text } of kept.imports[i]) {
+        this._resources.request({
+          url,
+          kind: 'stylesheet',
+          element: r.element,
+        });
+        const fetched = this._resources.stylesheet(url, [r.encoding]);
+        if ((fetched?.text ?? null) !== text) return false;
+      }
+    }
+    return true;
   }
 
   private _viewportHeight(): number {
@@ -618,6 +685,7 @@ export class HtmlViewNode extends Node {
     this._source.destroy();
     this._shadowCache?.destroy();
     this._shadowCache = null;
+    this._sheetsRead = null;
     this._tree = null;
     this._cascade = null;
     super.destroySubtree();
@@ -875,6 +943,20 @@ export class HtmlViewNode extends Node {
 }
 
 const EMPTY_SET: ReadonlySet<Element> = new Set();
+
+/** What a cascade was built from, to tell whether the next would be the
+ *  same one: the look, scale and fonts, each sheet's text and encoding, the
+ *  texts of what each imports, and the host's own. */
+interface SheetsRead {
+  look: RootLook;
+  scale: number;
+  fonts: unknown;
+  texts: string[];
+  encodings: (string | undefined)[];
+  imports: { url: string; text: string | null }[][];
+  extras: string[];
+  cascade: Cascade;
+}
 
 function textOf(el: Element): string {
   let out = '';

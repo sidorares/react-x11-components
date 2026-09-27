@@ -35,7 +35,10 @@ const secs = gen.sections(SIZE + (ACTION === 'append' ? 200 : 0));
 const base = secs.slice(0, SIZE);
 const docOf = (list: typeof secs, open = false): string => {
   if (COMP === 'md') return gen.markdownDoc(list);
-  const full = gen.htmlDoc(list);
+  const full = gen.htmlDoc(
+    list,
+    process.env.DOC === 'tailwind' ? gen.tailwindStylesheet() : '',
+  );
   return open ? full.replace(/\n<\/body><\/html>$/, '\n') : full;
 };
 
