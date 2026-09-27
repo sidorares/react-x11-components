@@ -349,8 +349,49 @@ function freshFacts(): ScannedFacts {
   return { sheets: [], scripts: [], resources: [], title: null, scanned: -1 };
 }
 
+/**
+ * domhandler's handler, with the one rule of HTML's tree construction about
+ * text that htmlparser2 leaves out: a newline straight after the start tag
+ * of a `<pre>`, a `<listing>` or a `<textarea>` is not content (HTML
+ * 13.2.6.4.7, "newlines at the start of pre blocks are ignored as an
+ * authoring convenience"). Without it every code block written `<pre>` and
+ * a line break began with an empty line. A chunk of a stream that ends
+ * between the tag and the newline keeps the rule, since the handler does.
+ */
+class Handler extends DomHandler {
+  private _afterPre = false;
+
+  override onopentag(name: string, attribs: Record<string, string>): void {
+    super.onopentag(name, attribs);
+    this._afterPre =
+      name === 'pre' || name === 'listing' || name === 'textarea';
+  }
+
+  override onclosetag(): void {
+    this._afterPre = false;
+    super.onclosetag();
+  }
+
+  override oncomment(data: string): void {
+    this._afterPre = false;
+    super.oncomment(data);
+  }
+
+  override ontext(data: string): void {
+    if (this._afterPre) {
+      this._afterPre = false;
+      const skip = data.startsWith('\r\n') ? 2 : data.startsWith('\n') ? 1 : 0;
+      if (skip) {
+        if (data.length === skip) return;
+        data = data.slice(skip);
+      }
+    }
+    super.ontext(data);
+  }
+}
+
 function createParser(): { parser: Parser; handler: DomHandler } {
-  const handler = new DomHandler(null, {
+  const handler = new Handler(null, {
     // Positions cost time and memory per node and nothing here reads them.
     withStartIndices: false,
     withEndIndices: false,

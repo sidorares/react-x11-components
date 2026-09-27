@@ -6534,3 +6534,23 @@ test('a box is painted with each edge on the pixel it falls nearest', async () =
     [1, 1, 11, 11],
   );
 });
+
+// --- the newline after <pre> ---------------------------------------------------------
+
+metric(
+  'a newline straight after a <pre> start tag is no part of its text',
+  async () => {
+    // HTML's parser drops it as an authoring convenience (13.2.6.4.7), so a
+    // code block written `<pre>` and a line break starts on its first line
+    // of code, and a second newline is a blank line
+    const { node } = await render(
+      '<pre id="p">\nfirst\n  second</pre><pre id="q">\n\nafter a blank</pre>' +
+        '<pre id="r">\r\ncrlf</pre>',
+    );
+    const el = view(node);
+    assert.deepStrictEqual(lineTextsOf(el, 'p'), ['first\n', '  second']);
+    assert.deepStrictEqual(lineTextsOf(el, 'q'), ['\n', 'after a blank']);
+    assert.deepStrictEqual(lineTextsOf(el, 'r'), ['crlf']);
+    assert.ok(!el.textContent().startsWith('\n'), 'nor of the document');
+  },
+);
