@@ -22,7 +22,7 @@ import type { Element } from 'domhandler';
 
 import { attr, tagOf } from '../dom.js';
 import { svgSizeHint } from '../svg.js';
-import { mediaMatches, readIdent, startsIdent } from './parse.js';
+import { escapeEnd, mediaMatches, readIdent, startsIdent } from './parse.js';
 import type { Declaration, StyleRule, Stylesheet } from './parse.js';
 import {
   applyDeclaration,
@@ -218,14 +218,23 @@ function rightmostKey(selector: string): {
       if (c === quote && selector[i - 1] !== '\\') quote = '';
       continue;
     }
-    // an escaped character is part of a name, whatever it is
-    if (c === '\\') i += 1;
+    // an escaped character is part of a name, whatever it is — and a hex
+    // escape takes the space after it: `.c\6c ass` is the class `class`
+    if (c === '\\') i = escapeEnd(selector, i) - 1;
     else if (c === '"' || c === "'") quote = c;
     else if (c === '(' || c === '[') depth += 1;
     else if (c === ')' || c === ']') depth = Math.max(0, depth - 1);
     else if (
       depth === 0 &&
-      (c === ' ' || c === '>' || c === '+' || c === '~')
+      (c === ' ' ||
+        c === '>' ||
+        c === '+' ||
+        c === '~' ||
+        // CSS's other white space: `div\fp` is a descendant too
+        c === '\t' ||
+        c === '\n' ||
+        c === '\r' ||
+        c === '\f')
     ) {
       start = i + 1;
     }

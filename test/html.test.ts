@@ -5212,6 +5212,26 @@ test("a number is CSS's: an exponent, a sign, and a digit after any point", () =
 });
 
 metric(
+  'a hex escape takes the space after it, and a string its escaped newline',
+  async () => {
+    const { el } = await renderWithBytes(
+      '<style>p.c\\06C ass { color: #00ff00 }' +
+        '[title="a\\\n b"] { background: #0000ff }' +
+        // CSS's other white space is a descendant combinator too
+        'div\fp { font-weight: bold }</style>' +
+        '<div><p id="p" class="class" title="a b">x</p></div>',
+      {},
+    );
+    const style = (
+      boxOf(el, 'p') as unknown as { style: Record<string, unknown> }
+    ).style;
+    assert.strictEqual(style.color, '#00ff00');
+    assert.strictEqual(style.backgroundColor, '#0000ff');
+    assert.strictEqual(style.fontWeight, 700);
+  },
+);
+
+metric(
   "an invalid background is dropped whole, and CSS3's forms are kept",
   async () => {
     const { el } = await renderWithBytes(

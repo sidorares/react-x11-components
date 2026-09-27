@@ -347,7 +347,7 @@ export function selectorList(prelude: string): string[] | null {
   const push = (end: number): boolean => {
     const selector = prelude.slice(start, end).trim();
     if (!selector || !isSelector(selector)) return false;
-    out.push(selector);
+    out.push(selector.includes('\\') ? forMatcher(selector) : selector);
     return true;
   };
   while (i < prelude.length) {
@@ -360,6 +360,40 @@ export function selectorList(prelude: string): string[] | null {
     }
   }
   return push(prelude.length) ? out : null;
+}
+
+/**
+ * A selector's escapes as css-select reads them right. Its hex escapes go
+ * in lower case: css-what takes the space that ends `\\6C ` for a
+ * descendant combinator, where after `\\6c ` it does not. And in a string
+ * an escaped newline goes, since it only continues the line (CSS 2.1
+ * 4.3.7): `[title="a\\` and a newline and `b"]` is `[title="ab"]`.
+ */
+function forMatcher(selector: string): string {
+  let quote = '';
+  let out = '';
+  for (let i = 0; i < selector.length; i += 1) {
+    const c = selector[i];
+    if (c === '\\') {
+      const end = escapeEnd(selector, i);
+      const escape = selector.slice(i, end);
+      if (/^\\[0-9a-f]/i.test(escape)) {
+        // the hex digits, and the one space that may end them
+        out += escape.toLowerCase().replace(/\s+$/, ' ');
+      } else if (!(quote && /^\\[\n\r\f]/.test(escape))) {
+        out += escape;
+      }
+      i = end - 1;
+      continue;
+    }
+    if (quote) {
+      if (c === quote) quote = '';
+    } else if (c === '"' || c === "'") {
+      quote = c;
+    }
+    out += c;
+  }
+  return out;
 }
 
 /**
@@ -799,7 +833,9 @@ function stringEnd(text: string, at: number): number {
 /** Where a backslash at `at` stops meaning something inside a string: a
  *  newline after it continues the line, and an escape — six hex digits and
  *  the white space after them included — is read whole. */
-function escapeEnd(text: string, at: number): number {
+/** Where an escape at `at` ends: past its hex digits and the one space
+ *  that may close them, or past the character it escapes. */
+export function escapeEnd(text: string, at: number): number {
   if (text[at + 1] === '\r' && text[at + 2] === '\n') return at + 3;
   if (isEscape(text, at)) return readEscape(text, at).end;
   return Math.min(text.length, at + 2);
