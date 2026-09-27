@@ -52,7 +52,8 @@ GFM, parsed by `src/internal/markdown/parse.ts`:
 - headings, both ATX (`##`) and setext;
 - emphasis through the real CommonMark delimiter-run algorithm, including
   intraword rules and `***both***`;
-- inline code spans, hard breaks and entities;
+- inline code spans, hard breaks and entities; a tab in running text or a
+  code span is set as the space it reads as, as HTML sets one;
 - inline links, `<autolinks>` and bare email autolinks;
 - **images as their alt text**, linked to the image source — nothing is
   fetched, ever;
