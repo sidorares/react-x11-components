@@ -4923,3 +4923,20 @@ test('a font-family with a name that is none is dropped (CSS 2.1 15.3)', async (
     'Arial Black, Segoe UI, -apple-system, monospace',
   );
 });
+
+metric(
+  'a table that does not let its content overflow clips it to the table box, its caption outside',
+  async () => {
+    const { result } = await renderWithBytes(
+      '<style>body{margin:0}table{overflow:hidden;border-spacing:0}' +
+        'caption{height:20px;background:#0000ff}td{padding:0}' +
+        'div{width:20px;height:20px;margin-top:-10px;background:#ff0000}</style>' +
+        '<table><caption></caption><tr><td><div></div></td></tr></table>',
+      {},
+    );
+    const ctx = result.ctx;
+    // the caption is drawn, and the cell's block does not reach up over it
+    await expectPixel(ctx, 10, 15, '#0000ff', { message: 'the caption' });
+    await expectPixel(ctx, 10, 25, '#ff0000', { message: 'in the table box' });
+  },
+);
