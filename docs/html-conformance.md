@@ -127,6 +127,7 @@ separately, and there are six.
 | 57     | background layers                                  | 5,472 (93%) | 4,979 (84%) |
 | 58     | intrinsic sizes                                    | 5,472 (93%) | 4,979 (84%) |
 | 59     | `text-wrap`                                        | 5,472 (93%) | 4,979 (84%) |
+| 60     | `translate`                                        | 5,472 (93%) | 4,979 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -1778,6 +1779,25 @@ rgba(0,0,0,.5)), url(hero.jpg) center / cover` — was the photograph
      `pretty` and `stable` wrap as `auto` does. Found in a survey of the
      properties real stylesheets write that were dropped; CSS 2.1 has
      none of them, and neither suite moved.
+
+### Round 60
+
+151. **What a translation centres hung off to the right.** The most common
+     way a page centres a badge, a modal or a play button on a point is
+     `left: 50%` and a translation back by half its own width — Tailwind's
+     `absolute left-1/2 -translate-x-1/2`, written as `translate` in
+     version 4 and inside a `transform` in version 3, or a hand-written
+     `transform: translate(-50%, -50%)` — and both properties were
+     dropped, so the box started at the middle. `translate` is read now,
+     and the translation a `transform` makes, from its translate functions
+     and its matrices, with rotating, scaling and skewing read and not
+     drawn; the box is moved after layout by the same pass that moves a
+     relative one, a percentage being of its own border box. A
+     transformed box is a containing block for the absolute and fixed
+     boxes inside it and is painted with the positioned boxes, as a
+     browser paints it. Found in a survey of the properties real
+     stylesheets write that were dropped; CSS 2.1 has no transforms, and
+     neither suite moved.
 
 ## What `<Html>` supports
 

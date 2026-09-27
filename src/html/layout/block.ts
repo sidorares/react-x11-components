@@ -1872,15 +1872,18 @@ function placeStatic(
  *  between is transparent — which is what the spec means by "the nearest
  *  positioned ancestor". */
 function containingBlockFor(box: Box): Box | null {
-  // a fixed box's is the viewport, whatever is positioned around it
-  if (box.style.position === 'fixed') {
-    let root = box;
-    while (root.parent) root = root.parent;
-    return root;
-  }
+  // a fixed box's is the viewport, whatever is positioned around it — but
+  // a transformed box is one for it too
+  const fixed = box.style.position === 'fixed';
   let node = box.parent;
   while (node) {
-    if (node.style.position !== 'static' || node.parent === null) return node;
+    if (
+      (!fixed && node.style.position !== 'static') ||
+      transformed(node.style) ||
+      node.parent === null
+    ) {
+      return node;
+    }
     node = node.parent;
   }
   return null;
@@ -2027,10 +2030,15 @@ export function establishesBFC(box: Box): boolean {
 
 /** What a box's `position: relative` offset moves it by, applied after
  *  layout so it does not affect anything else's position — which is the
- *  whole of what makes it *relative*. */
+ *  whole of what makes it *relative* — and its translation with it. */
 export function applyRelativeOffsets(box: Box): void {
   for (const child of box.children) applyRelativeOffsets(child);
   const style = box.style;
+  if (transformed(style) && box.kind !== 'inline') {
+    // a transform moves the box it is on, and an inline box is none
+    const [dx, dy] = translationOf(box);
+    if (dx || dy) translate(box, dx, dy);
+  }
   if (style.position !== 'relative' && style.position !== 'sticky') return;
   const [dx, dy] = relativeOffset(box);
   translate(box, dx, dy);
@@ -2039,6 +2047,25 @@ export function applyRelativeOffsets(box: Box): void {
   // the blocks it was broken around move with it (9.2.1.1)
   const blocks = box.cut ? CUT_BLOCKS.get(box) : undefined;
   if (blocks) for (const block of blocks) translate(block, dx, dy);
+}
+
+/** Whether a box is transformed, which is what makes it a containing
+ *  block and a layer as a positioned box is (CSS Transforms 1, 2). */
+export function transformed(style: ComputedStyle): boolean {
+  return style.translate !== null || style.transformTranslate !== null;
+}
+
+/** How far `translate` and a `transform` move a box: a percentage is of
+ *  its own border box (CSS Transforms 1, 7). */
+function translationOf(box: Box): [number, number] {
+  let dx = 0;
+  let dy = 0;
+  for (const moved of [box.style.translate, box.style.transformTranslate]) {
+    if (!moved) continue;
+    dx += resolve(moved[0], box.width, 0);
+    dy += resolve(moved[1], box.height, 0);
+  }
+  return [dx, dy];
 }
 
 /** How far `position: relative` moves a box. */

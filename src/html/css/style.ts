@@ -263,6 +263,15 @@ export interface ComputedStyle {
    *  border box's own (CSS 2.1 11.1.2). Null for `auto`. */
   clip: ClipRect | null;
   opacity: number;
+  /** Where `translate` moves the box after layout (CSS Transforms 2): a
+   *  length or a percentage of its own border box across and down; null
+   *  for `none`. */
+  translate: [Len, Len] | null;
+  /** The translation in its `transform`, the one part of a transform
+   *  this draws — rotating, scaling and skewing are not; null for `none`.
+   *  Either makes the box a containing block and paints it with the
+   *  positioned boxes, as a transform does. */
+  transformTranslate: [Len, Len] | null;
   zIndex: number | 'auto';
   /** A keyword, a length to raise the box by, or a percentage of its own
    *  line height. */
@@ -553,6 +562,8 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     overflowY: 'visible',
     clip: null,
     opacity: 1,
+    translate: null,
+    transformTranslate: null,
     zIndex: AUTO,
     verticalAlign: 'baseline',
 
@@ -942,6 +953,25 @@ export function applyDeclaration(
     case 'opacity': {
       const a = parseAlpha(value);
       if (a !== null) style.opacity = a;
+      return;
+    }
+    case 'translate': {
+      // `none`, or across, down, and a depth nothing here has
+      if (value.trim().toLowerCase() === 'none') {
+        style.translate = null;
+        return;
+      }
+      const parts = splitValue(value);
+      if (parts.length > 3) return;
+      const [x, y, z] = parts.map((p) => parseLength(p, ctx));
+      if (x == null || x === AUTO || y === null || y === AUTO) return;
+      if (z !== undefined && typeof z !== 'number') return;
+      style.translate = [x, y ?? 0];
+      return;
+    }
+    case 'transform': {
+      const moved = transformTranslation(value, ctx);
+      if (moved !== undefined) style.transformTranslate = moved;
       return;
     }
     case 'visibility': {
@@ -2323,6 +2353,87 @@ function whiteSpaceOf(collapse: Collapse, wrap: boolean): WhiteSpace {
   return 'pre-line';
 }
 
+/**
+ * The translation a `transform` makes: the sum of its translate functions'
+ * and its matrices' — `translate(-50%, -50%)`, Tailwind 3's `translate(
+ * var(--tw-translate-x), var(--tw-translate-y)) rotate(…) skewX(…) …` —
+ * with the functions that rotate, scale, skew or add perspective read and
+ * not drawn. Null for `none`, and undefined for what is no transform list,
+ * which drops the declaration.
+ */
+function transformTranslation(
+  value: string,
+  ctx: UnitContext,
+): [Len, Len] | null | undefined {
+  if (value.trim().toLowerCase() === 'none') return null;
+  let x: Len = 0;
+  let y: Len = 0;
+  const parts = splitValue(value);
+  if (!parts.length) return undefined;
+  for (const part of parts) {
+    const m = /^([a-z0-9]+)\((.*)\)$/is.exec(part.trim());
+    if (!m) return undefined;
+    const name = m[1].toLowerCase();
+    const args = splitCommas(m[2]).map((a) => a.trim());
+    let dx: Len | null = 0;
+    let dy: Len | null = 0;
+    if (name === 'translate' || name === 'translate3d') {
+      dx = parseLength(args[0] ?? '', ctx);
+      dy = args[1] === undefined ? 0 : parseLength(args[1], ctx);
+    } else if (name === 'translatex') dx = parseLength(args[0] ?? '', ctx);
+    else if (name === 'translatey') dy = parseLength(args[0] ?? '', ctx);
+    else if (name === 'matrix' || name === 'matrix3d') {
+      // the translation is the last column's
+      const n = args.map(Number);
+      if (n.length !== (name === 'matrix' ? 6 : 16) || n.some(isNaN)) {
+        return undefined;
+      }
+      [dx, dy] = name === 'matrix' ? [n[4], n[5]] : [n[12], n[13]];
+    } else if (!TRANSFORMS.has(name)) return undefined;
+    if (dx === null || dx === AUTO || dy === null || dy === AUTO) {
+      return undefined;
+    }
+    const sx = addLen(x, dx);
+    const sy = addLen(y, dy);
+    if (sx === null || sy === null) return undefined;
+    x = sx;
+    y = sy;
+  }
+  return [x, y];
+}
+
+/** The transform functions read and not drawn. */
+const TRANSFORMS = new Set([
+  'translatez',
+  'rotate',
+  'rotatex',
+  'rotatey',
+  'rotatez',
+  'rotate3d',
+  'scale',
+  'scalex',
+  'scaley',
+  'scalez',
+  'scale3d',
+  'skew',
+  'skewx',
+  'skewy',
+  'perspective',
+]);
+
+/** Two lengths added, a percentage and a length kept apart; null where
+ *  one is a `min()` or a `max()`, which a sum cannot be kept of. */
+function addLen(a: Len, b: Len): Len | null {
+  if (a === AUTO || b === AUTO) return null;
+  if (typeof a === 'number' && typeof b === 'number') return a + b;
+  if (a === 0) return b;
+  if (b === 0) return a;
+  const pa: Pct = typeof a === 'number' ? { pct: 0, px: a } : a;
+  const pb: Pct = typeof b === 'number' ? { pct: 0, px: b } : b;
+  if (pa.of || pb.of) return null;
+  return { pct: pa.pct + pb.pct, px: (pa.px ?? 0) + (pb.px ?? 0) };
+}
+
 /** An intrinsic size keyword, with the prefixes browsers still read;
  *  null for anything else. */
 function contentSizeOf(value: string): ContentSize | null {
@@ -3200,6 +3311,8 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'overflow-x': ['overflowX'],
   'overflow-y': ['overflowY'],
   opacity: ['opacity'],
+  translate: ['translate'],
+  transform: ['transformTranslate'],
   'z-index': ['zIndex'],
   'vertical-align': ['verticalAlign'],
   'text-decoration': [

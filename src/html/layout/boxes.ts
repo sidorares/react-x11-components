@@ -717,6 +717,8 @@ class Builder {
         this._movedInline = true;
       }
     }
+    // a translation is moved by the same pass
+    if (style.translate || style.transformTranslate) this._relative = true;
     if (style.verticalAlign !== 'baseline' && style.display === 'inline') {
       this._movedInline = true;
     }
@@ -968,6 +970,8 @@ class Builder {
         this._movedInline = true;
       }
     }
+    // a translation is moved by the same pass
+    if (style.translate || style.transformTranslate) this._relative = true;
     if (style.verticalAlign !== 'baseline' && style.display === 'inline') {
       this._movedInline = true;
     }
