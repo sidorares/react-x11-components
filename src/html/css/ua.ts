@@ -135,13 +135,16 @@ thead { display: table-header-group; }
 tbody { display: table-row-group; }
 tfoot { display: table-footer-group; }
 tr { display: table-row; }
-td { display: table-cell; padding: 1px; vertical-align: middle; }
+/* HTML's rendering rules: the rows are middle, and a cell takes its row's,
+   so a <tr valign="top"> sets its cells at the top */
+thead, tbody, tfoot, tr { vertical-align: middle; }
+td { display: table-cell; padding: 1px; vertical-align: inherit; }
 th {
   display: table-cell;
   padding: 1px;
   font-weight: bold;
   text-align: center;
-  vertical-align: middle;
+  vertical-align: inherit;
 }
 colgroup { display: table-column-group; }
 col { display: table-column; }

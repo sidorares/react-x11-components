@@ -3296,6 +3296,21 @@ test("cells aligned on the baseline hang their first lines from the row's", asyn
   assert.strictEqual(b.y, a.y, 'and the other hangs from it');
 });
 
+test("a table cell takes its row's vertical-align", async () => {
+  // HTML's rendering rules make the rows middle and the cells inherit, so
+  // `<tr valign="top">`, all over mail, sets its cells at the top
+  const { node } = await render(
+    '<table><tr id="r1" valign="top"><td style="height:60px">a</td>' +
+      '<td><div id="t">b</div></td></tr>' +
+      '<tr id="r2"><td style="height:60px">a</td><td><div id="m">b</div></td>' +
+      '</tr></table>',
+  );
+  const el = view(node);
+  const [r1, t, r2, m] = ['r1', 't', 'r2', 'm'].map((id) => boxOf(el, id));
+  assert.ok(t.y - r1.y < 5, `top: ${t.y - r1.y}`);
+  assert.ok(m.y - r2.y > 15, `the next row is still middle: ${m.y - r2.y}`);
+});
+
 test('nothing loads without onResource, and every reference is offered to it', async () => {
   const asked: string[] = [];
   await renderX11(
