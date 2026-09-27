@@ -13,14 +13,13 @@
 // layout can resolve them against a new containing block on its own.
 //
 // Colours are the other half of that decision, from the other side: they are
-// kept as **strings**, never parsed into components — a functional one is
-// only checked to be readable (`readsAsColor`). ntk's context takes a CSS
-// colour for `fillStyle` and parses it behind its own cache, so parsing here
-// would be work done twice — and the only questions this renderer actually
-// asks about a colour are "is it `transparent`" and "is it `currentColor`",
-// both of which are string comparisons.
+// kept as **strings**, never parsed into components, since the only
+// questions this renderer asks about a colour are "is it `transparent`" and
+// "is it `currentColor`", both string comparisons. A named or hex colour
+// goes to the context as written. A functional one is read once, in
+// `color.ts`, and written back in the form every context reads the same.
 
-import * as ntk from 'react-x11/ntk';
+import { functionalColor } from './color.js';
 
 /** A length that layout may still have to resolve. */
 export type Len = number | Pct | 'auto';
@@ -277,33 +276,13 @@ export function parseColor(value: string): string | null {
   // three, four, six or eight digits: ntk's context throws from paint on
   // five or seven, and a typo'd `#ff000` took the application down
   if (v.startsWith('#')) return HEX_COLOR.test(v) ? v : null;
-  if (/^(?:rgb|rgba|hsl|hsla|color|lab|lch|oklab|oklch)\(/i.test(v)) {
-    // The end of a style sheet closes whatever is still open (CSS 2.1 4.2):
-    // `rgb(0, 128, 0` as a sheet's last words is green.
-    const closed = v.endsWith(')') ? v : `${v})`;
-    return readsAsColor(closed) ? closed : null;
+  if (/^(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\(/i.test(v)) {
+    return functionalColor(v);
   }
   return NAMED_COLORS.has(lower) ? lower : null;
 }
 
 const HEX_COLOR = /^#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
-
-const cssColorStraight = (
-  ntk as unknown as { cssColorStraight?: (value: string) => unknown }
-).cssColorStraight;
-
-/**
- * Whether ntk can draw a functional colour. Checked here, once per rule,
- * because ntk's X11 context throws on a colour it cannot read — from inside
- * paint, so a malformed `rgb()` in a stylesheet took the application down —
- * and an invalid value is a declaration CSS ignores anyway. The Cocoa
- * context draws black for one instead. `cssColorStraight` is on ntk's entry
- * point but not in react-x11/ntk's declarations, so it is probed; a
- * version without it keeps the old trust.
- */
-function readsAsColor(value: string): boolean {
-  return cssColorStraight ? cssColorStraight(value) != null : true;
-}
 
 /**
  * The CSS named colours. The list is here rather than reached through ntk's
