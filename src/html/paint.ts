@@ -946,7 +946,8 @@ const MAX_TILES = 4096;
 
 /**
  * A `background-image` (CSS 2.1 14.2.1): positioned in `at`, the padding
- * box, repeated across `area`, the border box within the damage, over the
+ * box — or the viewport, the element, for `background-attachment: fixed` —
+ * repeated across `area`, the border box within the damage, over the
  * colour and under the borders. Filled with a pattern where the context has
  * one, drawn a tile at a time where it does not.
  */
@@ -957,6 +958,9 @@ function paintBackgroundImage(
   at: Rect,
   options: PaintOptions,
 ): void {
+  if (style.backgroundAttachment === 'fixed' && options.canvas) {
+    at = options.canvas;
+  }
   const url = style.backgroundImage;
   const loaded = url ? options.backgroundImageFor?.(url) : null;
   if (!loaded || !ctx.drawImage) return;

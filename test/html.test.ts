@@ -3524,6 +3524,21 @@ test('a float or an absolute box inside an inline box is laid out', async () => 
   assert.strictEqual(a.y, p.y, 'at its static position');
 });
 
+test('background-attachment is read, in its longhand and the shorthand', async () => {
+  // `fixed` positions the image against the viewport, the element, rather
+  // than the box (CSS 2.1 14.2.1); the shorthand sets it back to `scroll`
+  const { node } = await render(
+    '<div id="a" style="background-attachment:fixed"></div>' +
+      '<div id="b" style="background:url(x.png) fixed repeat-x"></div>' +
+      '<div id="c" style="background-attachment:fixed;background:red"></div>',
+  );
+  const el = view(node);
+  const of = (id: string) =>
+    (boxOf(el, id) as unknown as { style: { backgroundAttachment: string } })
+      .style.backgroundAttachment;
+  assert.deepStrictEqual(['a', 'b', 'c'].map(of), ['fixed', 'fixed', 'scroll']);
+});
+
 test('nothing loads without onResource, and every reference is offered to it', async () => {
   const asked: string[] = [];
   await renderX11(
