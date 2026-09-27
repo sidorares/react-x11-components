@@ -341,8 +341,8 @@ start tag is dropped, as HTML's parser drops it), `line-clamp` and
 `-webkit-line-clamp` (a block shows its first lines and is as tall as they
 are, the last cut with an ellipsis — Tailwind's `line-clamp-2`; a block
 laid out a line at a time, around an image or a float, is cut with none),
-`text-overflow: ellipsis` on a `nowrap` block that clips (`truncate`: one
-line, cut at the box's width with an ellipsis, which the text engine makes
+`text-overflow: ellipsis` on a `nowrap` block that clips (`truncate`: each
+line cut at the box's width with an ellipsis, which the text engine makes
 room for inside the line's last word), `direction`,
 `unicode-bidi`, `vertical-align`,
 `text-decoration` in all five rule styles. `unicode-bidi` is carried out as

@@ -175,9 +175,13 @@ export function layoutInline(block: Box, options: InlineOptions): InlineResult {
  * word, so a line of words shows a little less of them than a browser,
  * which fills the line with as much of the text as fits.
  */
-function cutOf(
-  style: ComputedStyle,
-): { maxLines: number; overflow: 'ellipsis' } | null {
+/** A layout cut at a number of lines, with an ellipsis. */
+interface Cut {
+  maxLines: number;
+  overflow: 'ellipsis';
+}
+
+function cutOf(style: ComputedStyle): Cut | null {
   if (style.lineClamp !== null) {
     return { maxLines: style.lineClamp, overflow: 'ellipsis' };
   }
@@ -280,7 +284,26 @@ function layoutLines(block: Box, options: InlineOptions): InlineResult {
         fonts,
       );
     }
+    // `text-overflow` cuts every line that overflows, and a layout can cut
+    // only its last: one that a forced break ends is laid out apart, a hard
+    // line at a time, or the lines after the first were lost. A clamp is
+    // the paragraph's, and stays one layout.
+    let cut = cutOf(style);
+    const perLine = cut !== null && style.lineClamp === null && hasNewline;
     // an embedding cannot be cut into chunks
+    if (perLine && !hasControls(items)) {
+      return layoutChunked(
+        textItems,
+        base,
+        style,
+        options.width,
+        lineHeightMul,
+        align,
+        fonts,
+        { chars: Infinity, hardLines: 1, cut },
+      );
+    }
+    if (perLine) cut = null;
     if (total > CHUNK_TRIGGER_CHARS && hasNewline && !hasControls(items)) {
       return layoutChunked(
         textItems,
@@ -302,7 +325,6 @@ function layoutLines(block: Box, options: InlineOptions): InlineResult {
       );
       runs.push(item.run);
     }
-    const cut = cutOf(style);
     const layoutOptions = {
       maxWidth: wraps(style) || cut ? options.width : undefined,
       lineHeight: lineHeightMul,
@@ -923,6 +945,20 @@ const CHUNK_TRIGGER_CHARS = 16384;
 const CHUNK_MAX_CHARS = 8192;
 const CHUNK_MAX_HARD_LINES = 64;
 
+/** Where `layoutChunked` cuts a text — a chunk's most characters and hard
+ *  lines — and the cut each chunk's layout makes, if any. */
+interface Chunking {
+  chars: number;
+  hardLines: number;
+  cut: Cut | null;
+}
+
+const CHUNKS: Chunking = {
+  chars: CHUNK_MAX_CHARS,
+  hardLines: CHUNK_MAX_HARD_LINES,
+  cut: null,
+};
+
 /**
  * A long hard-broken text — a `<pre>` holding a log, a wall of `<br>`s — laid
  * out as a sequence of layouts split at newline boundaries.
@@ -944,6 +980,7 @@ function layoutChunked(
   lineHeightMul: number,
   align: string,
   fonts: FontsLike,
+  chunking: Chunking = CHUNKS,
 ): InlineResult {
   const lines: LineBox[] = [];
   let widest = 0;
@@ -954,14 +991,16 @@ function layoutChunked(
   let chars = 0;
   let hardLines = 0;
 
-  const place = wraps(style) ? null : unwrappedPlacer(style, width);
+  const { cut } = chunking;
+  const place = wraps(style) || cut ? null : unwrappedPlacer(style, width);
   const flush = (): void => {
     if (!chunkRuns.length) return;
     const layout = fonts.layout(chunkRuns, base, {
-      maxWidth: wraps(style) ? width : undefined,
+      maxWidth: wraps(style) || cut ? width : undefined,
       lineHeight: lineHeightMul,
       align,
       direction: style.direction,
+      ...cut,
     });
     LAYOUT_RUNS.set(layout, chunkRuns);
     widest = Math.max(
@@ -987,8 +1026,8 @@ function layoutChunked(
       let taken = chars;
       while (
         i < text.length &&
-        taken < CHUNK_MAX_CHARS &&
-        lines2 < CHUNK_MAX_HARD_LINES
+        taken < chunking.chars &&
+        lines2 < chunking.hardLines
       ) {
         if (text.charCodeAt(i) === 10) {
           lines2 += 1;
