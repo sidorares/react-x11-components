@@ -253,8 +253,13 @@ export interface ComputedStyle {
   borderRightColor: string;
   borderBottomColor: string;
   borderLeftColor: string;
-  /** top-left, top-right, bottom-right, bottom-left. */
-  borderRadius: [number, number, number, number];
+  /** The corners' horizontal radii — top-left, top-right, bottom-right,
+   *  bottom-left — each a length or a percentage of the border box's
+   *  width. */
+  borderRadius: [Len, Len, Len, Len];
+  /** Their vertical radii, percentages of its height, where `/` wrote
+   *  them apart; null where they are the same values, as almost always. */
+  borderRadiusY: [Len, Len, Len, Len] | null;
 
   top: Len;
   right: Len;
@@ -471,6 +476,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     borderBottomColor: 'currentColor',
     borderLeftColor: 'currentColor',
     borderRadius: [0, 0, 0, 0],
+    borderRadiusY: null,
 
     top: AUTO,
     right: AUTO,
@@ -901,34 +907,35 @@ export function applyDeclaration(
     case 'border-top-right-radius':
     case 'border-bottom-right-radius':
     case 'border-bottom-left-radius': {
-      // the horizontal radius, as the shorthand takes it
-      const len = parseLength(splitValue(value)[0] ?? '', ctx);
-      const r =
-        typeof len === 'number'
-          ? len
-          : len && typeof len === 'object'
-            ? 0
-            : null;
-      if (r === null) return;
+      // a radius, or a horizontal one and a vertical one
+      const parts = splitValue(value).map((p) => radiusOf(p, ctx));
+      if (!parts.length || parts.length > 2 || parts.includes(null)) return;
+      const [x, y = x] = parts as Len[];
+      const corner = CORNERS.indexOf(name);
       const radii = style.borderRadius.slice() as ComputedStyle['borderRadius'];
-      radii[CORNERS.indexOf(name)] = r;
+      const vertical = (
+        style.borderRadiusY ?? style.borderRadius
+      ).slice() as ComputedStyle['borderRadius'];
+      radii[corner] = x;
+      vertical[corner] = y;
       style.borderRadius = radii;
+      style.borderRadiusY = sameRadii(radii, vertical) ? null : vertical;
       return;
     }
     case 'border-radius': {
-      // The `/` form gives elliptical corners, which this rounds to the
-      // horizontal radius rather than dropping the declaration.
-      const horizontal = value.split('/')[0];
-      const parts = splitValue(horizontal).map((p) => {
-        const len = parseLength(p, ctx);
-        return typeof len === 'number'
-          ? len
-          : len && typeof len === 'object'
-            ? 0
-            : null;
-      });
-      if (parts.some((p) => p === null)) return;
-      style.borderRadius = fourSides(parts as number[]);
+      // one to four radii, and after a `/` one to four more for the
+      // vertical radii where they differ: elliptical corners
+      const halves = value.split('/');
+      if (halves.length > 2) return;
+      const [horizontal, vertical] = halves.map((half) =>
+        splitValue(half).map((p) => radiusOf(p, ctx)),
+      );
+      for (const parts of vertical ? [horizontal, vertical] : [horizontal]) {
+        if (!parts.length || parts.length > 4 || parts.includes(null)) return;
+      }
+      style.borderRadius = fourSides(horizontal as Len[]);
+      const y = vertical ? fourSides(vertical as Len[]) : null;
+      style.borderRadiusY = y && !sameRadii(style.borderRadius, y) ? y : null;
       return;
     }
 
@@ -2102,6 +2109,27 @@ function splitTopLevelSlash(value: string): string[] {
 
 // --- logical properties ----------------------------------------------------
 
+/** A corner's radius: a length or a percentage, and neither negative nor
+ *  `auto`; null where it is none. */
+function radiusOf(text: string, ctx: UnitContext): Len | null {
+  const len = parseLength(text, ctx);
+  if (len === null || len === AUTO) return null;
+  if (typeof len === 'number') return len < 0 ? null : len;
+  return len.pct < 0 && !len.px && !len.of ? null : len;
+}
+
+/** Whether two corners' radii are the same values. */
+function sameRadii(a: readonly Len[], b: readonly Len[]): boolean {
+  for (let i = 0; i < 4; i += 1) {
+    const x = a[i];
+    const y = b[i];
+    if (x === y) continue;
+    if (typeof x !== 'object' || typeof y !== 'object') return false;
+    if (x.pct !== y.pct || x.px !== y.px || x.of || y.of) return false;
+  }
+  return true;
+}
+
 /** The four corners, in `border-radius`'s order. */
 const CORNERS = [
   'border-top-left-radius',
@@ -2440,11 +2468,11 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
       ];
     }),
   ),
-  'border-radius': ['borderRadius'],
-  'border-top-left-radius': ['borderRadius'],
-  'border-top-right-radius': ['borderRadius'],
-  'border-bottom-right-radius': ['borderRadius'],
-  'border-bottom-left-radius': ['borderRadius'],
+  'border-radius': ['borderRadius', 'borderRadiusY'],
+  'border-top-left-radius': ['borderRadius', 'borderRadiusY'],
+  'border-top-right-radius': ['borderRadius', 'borderRadiusY'],
+  'border-bottom-right-radius': ['borderRadius', 'borderRadiusY'],
+  'border-bottom-left-radius': ['borderRadius', 'borderRadiusY'],
   inset: ['top', 'right', 'bottom', 'left'],
   background: [
     'backgroundColor',

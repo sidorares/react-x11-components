@@ -107,6 +107,7 @@ separately, and there are six.
 | 37     | grid                                               | 5,461 (93%) | 4,973 (84%) |
 | 38     | rounded borders                                    | 5,461 (93%) | 4,973 (84%) |
 | 39     | linear gradients; WPT's fuzzy rule                 | 5,460 (93%) | 4,972 (84%) |
+| 40     | percentage and elliptical radii                    | 5,460 (93%) | 4,972 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -1376,6 +1377,29 @@ minmax(16rem, 1fr))` are the layouts of half the pages written this
      difference in 150 and 200 pixels passed however much they differed;
      they differ in 10,000 and 440 on X11, and 40,000 and 1,755 on Cocoa,
      so every round above counts both backends two high.
+
+### Round 40
+
+126. **A percentage radius was none.** `border-radius: 50%` was read as
+     nought, so an avatar was a square, and Tailwind 4's `rounded-full`,
+     written `calc(infinity * 1px)`, dropped its declaration, `infinity`
+     being no number `calc()` knew. A radius keeps its percentage now, of
+     the box's width across and its height down, so `50%` is a circle on a
+     square box and an ellipse on any other; a `/` gives the corners
+     vertical radii of their own; and radii that would overlap are reduced
+     together (CSS Backgrounds 3, 5.5), which makes the infinity a pill.
+     `calc()` reads CSS Values 4's constants, `pi`, `e`, `infinity` and
+     `NaN`, and makes of a result that is no finite number what a browser
+     does: NaN is nought, an infinity the largest length. An elliptical
+     corner is drawn in curves, since the Cocoa context's `roundRect` takes
+     circles only and clamps each to half the shorter side, where CSS
+     reduces them together. The inside of a rounded border is rounded by
+     each radius less the border across it, an ellipse where the borders
+     beside a corner differ, and ntk leaves a hairline along a curve two
+     subpaths share under the even-odd rule, so a ring whose inside is
+     curves cuts its hole backwards under the non-zero one. And an image is
+     trimmed to its box's corners: an `<img>` to its content edge's, a
+     background to its border edge's. The CSS 2.1 suite has no radii.
 
 ## What `<Html>` supports
 
