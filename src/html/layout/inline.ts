@@ -207,13 +207,25 @@ function layoutLines(block: Box, options: InlineOptions): InlineResult {
   collect(block, items, options.width, fonts, block.style);
   if (!items.length || !fonts) return EMPTY;
   if (wraps(block.style)) holdNoWrap(items);
+  // one walk for what few paragraphs have: text that casts a shadow, and a
+  // tab, which only a `white-space` that keeps it leaves — so no text is
+  // searched for one where it cannot be
+  let tabbed = false;
+  let shadowed = false;
   for (const item of items) {
-    if (item.kind === 'text' && !item.control && item.box.style.textShadow) {
-      SHADOWED_TEXT.add(block);
-      break;
+    if (item.kind !== 'text' || item.control) continue;
+    const style = item.box.style;
+    if (style.textShadow) shadowed = true;
+    if (
+      !tabbed &&
+      (style.whiteSpace === 'pre' || style.whiteSpace === 'pre-wrap') &&
+      item.run.text.includes('\t')
+    ) {
+      tabbed = true;
     }
   }
-  if (items.some(isTab)) {
+  if (shadowed) SHADOWED_TEXT.add(block);
+  if (tabbed) {
     setTabs(items, fonts, block.style, indentOf(block.style, options.width));
   }
   // an override on the block is one on all of its inline content (CSS 2.1
@@ -1951,12 +1963,6 @@ function firstLineColour(
  * pass makes no new string, and the kept layouts find their text by
  * identity before they compare it.
  */
-/** A text item with a tab in it: one a `white-space` kept, since the others
- *  are spaces by now. */
-function isTab(item: Item): boolean {
-  return item.kind === 'text' && !item.control && item.run.text.includes('\t');
-}
-
 /**
  * Tabs a `white-space` keeps, set at their stops (CSS Text 3, 4.2): a stop
  * every `tab-size` spaces of the block's font from the line's start, and a

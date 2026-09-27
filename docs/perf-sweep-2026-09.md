@@ -1697,6 +1697,61 @@ In process, medians of interleaved runs:
 | two hundred flex items (`flexbench`) | 17.7 ms | 13.7 ms |
 | the report at 300 sections           | 14.8 ms | 14.7 ms |
 
+## Round 17: what correctness cost, a third time
+
+Between rounds 16 and 17, `<Html>` went through fifteen more rounds of
+conformance and real-page work, #204 to #214: `line-clamp` and
+`text-overflow`, 3D borders, `<details>`, justified text, text that does
+not wrap aligned, tab stops, OpenType features, text shadows and the line
+height of raised boxes (`docs/html-conformance.md`, rounds 43 to 53). This
+round measured what they cost, as rounds 13 and 14 did: a tree with the
+`src/html` of #203 and one with master's, sharing everything else, run
+interleaved.
+
+In process, medians of three or four interleaved runs:
+
+|                                  | #203    | master  |
+| -------------------------------- | ------- | ------- |
+| the report's layout at 600 KB    | 15.0 ms | 15.7 ms |
+| an edit's layout, 600 KB         | 24.3 ms | 25.0 ms |
+| an edit's layout, 20 KB          | 0.92 ms | 0.95 ms |
+| the Tailwind dashboard's layout  | 7.2 ms  | 5.7 ms  |
+| the Tailwind dashboard's restyle | 12.6 ms | 11.0 ms |
+
+The dashboard came out faster, and #206 alone makes most of the
+difference, 8.5 → 7.5 ms with nothing else applied: a flex row measured
+for its content no longer grows its items to 10³⁸, which Yoga then had
+to lay out. The report came out slower, by 4.5%. The profile named the cost at once:
+`isTab`, the search of every paragraph's text for a tab (#211), and
+behind it the walk over the same items for a shadow (#213). A tab is
+only left in text whose `white-space` keeps it — every other text's are
+spaces by the time it is laid out — so the search asks that first now,
+and the two walks are one: the report's layout is 15.2 ms, against 15.1
+before any of it.
+
+In real windows, `docsweep` for `<Html>`, medians of two interleaved runs
+and of six for the 20 KB cells on XQuartz, which moved by a quarter
+between runs of the same tree:
+
+|                           | #203           | now            |
+| ------------------------- | -------------- | -------------- |
+| 600 KB, an edit's frame   | 37.4 / 42.4 ms | 38.7 / 42.8 ms |
+| 600 KB, an append's frame | 40.2 / 45.9 ms | 41.0 / 46.8 ms |
+| 600 KB, a reflow's frame  | 40.3 / 84.2 ms | 40.9 / 83.8 ms |
+| 600 KB, a scroll's frame  | 1.4 / 3.0 ms   | 1.4 / 2.9 ms   |
+| 600 KB, first paint       | 466 / 527 ms   | 471 / 532 ms   |
+| 20 KB, an edit's frame    | 8.2 / 11.3 ms  | 7.9 / 11.4 ms  |
+| 20 KB, a reflow's frame   | 2.4 / 5.6 ms   | 2.3 / 5.7 ms   |
+| 20 KB, a scroll's frame   | 1.5 / 2.8 ms   | 1.6 / 2.9 ms   |
+
+XQuartz first, then macOS. Nothing moved past the noise. The paint's
+share of a frame at 20 KB, with the glyphs left out, is 0.034 ms in both.
+
+The one thing tried and dropped: the paint bounds walk every line of
+every box after a layout, and taking the lines' extent as they are placed
+instead measured the same, 0.8 ms either way, because at 600 KB the walk
+is twenty thousand boxes and seven thousand lines.
+
 ## Lessons
 
 1. **Look for caches that never hit.** Identity-keyed caches handed a new
@@ -1817,6 +1872,10 @@ In process, medians of interleaved runs:
     or for thirty-five custom properties on every element; none of the
     four costs above showed until the document was styled the way real
     ones are.
+31. **A search for what few documents have asks first whether it can be
+    there.** A scan of every paragraph for a tab cost the report 4% of its
+    layout, where the answer was already in each text's `white-space`:
+    only a `pre` or a `pre-wrap` keeps one.
 
 ## Still open
 
