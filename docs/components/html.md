@@ -260,8 +260,11 @@ room, which is how a row of inline-blocks is set without gaps.
 
 **Generated content:** `::before` and `::after`, and CSS 2's `:before` and
 `:after`, as boxes of their own `display` holding what `content` comes to:
-strings with their escapes, `attr()`, `counter()` and `counters()` in every
-CSS 2.1 list style, and `open-quote`/`close-quote` over `quotes`.
+strings with their escapes, images, `attr()`, `counter()` and `counters()` in
+every CSS 2.1 list style, and `open-quote`/`close-quote` over `quotes`. An
+image is asked for through `onResource`, as a background image is, and is
+an inline image in the pseudo-element's line, of its own size once it
+arrives and of none before.
 `counter-reset` and `counter-increment` are scoped as CSS 2.1 12.4.1 scopes
 them, so numbered headings and nested outline numbers come out as they do in
 a browser. The generated text is part of the document's text, so a selection
@@ -331,8 +334,7 @@ answers it and a desktop that switches schemes re-cascades the document.
 animations and transitions, multi-column, shadows, gradients,
 `background-size`, more than one background
 layer (the first is drawn), `position: sticky` (treated as `relative`),
-an image in `content` (the rest of the value is drawn), and the font
-properties of `::first-line`. A `<col>`'s or a `<colgroup>`'s borders are
+and the font properties of `::first-line`. A `<col>`'s or a `<colgroup>`'s borders are
 drawn only where the table's collapse. A percentage
 `height` resolves where the containing block's height is set, and on an
 absolutely positioned box. The initial containing block is the viewport —

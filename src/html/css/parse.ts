@@ -899,7 +899,8 @@ function opens(code: number): boolean {
 
 /** `url(` at the parenthesis: a quoted argument is a function like any
  *  other; an unquoted one runs to its `)` with its escapes. */
-function urlEnd(text: string, paren: number): number {
+/** Where a `url(` whose parenthesis is at `paren` ends: past its `)`. */
+export function urlEnd(text: string, paren: number): number {
   let i = paren + 1;
   while (i < text.length && isSpace(text[i])) i += 1;
   if (text[i] === '"' || text[i] === "'") return blockEnd(text, paren);

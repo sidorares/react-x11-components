@@ -55,7 +55,7 @@ import { parseStylesheet } from './css/parse.js';
 import type { Stylesheet } from './css/parse.js';
 import { uaStylesheet } from './css/ua.js';
 import type { RootLook } from './css/style.js';
-import { buildBoxes } from './layout/boxes.js';
+import { buildBoxes, CONTENT_IMAGES } from './layout/boxes.js';
 import type { Box, BoxTree, ReplacedKind } from './layout/boxes.js';
 import { layoutDocument } from './layout/block.js';
 import { TextLayoutCache } from './layout/cache.js';
@@ -326,6 +326,21 @@ export class HtmlViewNode extends Node {
         this._resources.request({ url, kind: 'image', element: box.el });
       }
     }
+    // and every image generated content names, which is only known there
+    // too
+    for (const { url, element } of tree.contentImages) {
+      this._resources.request({ url, kind: 'image', element });
+    }
+  }
+
+  /** Whether an image generated content names arrived as it was asked for,
+   *  the tree built without its size: a host that answers at once is told
+   *  nothing later, where an `<img>` is asked for before the build. */
+  private _contentImagesArrived(tree: BoxTree): boolean {
+    for (const { url, sized } of tree.contentImages) {
+      if (!sized && this._resources.imageSize(url)) return true;
+    }
+    return false;
   }
 
   /** Rebuild the cascade — the document's sheets plus the host's. */
@@ -457,17 +472,21 @@ export class HtmlViewNode extends Node {
 
     if (this._stale >= Stale.Boxes || !this._tree) {
       const look = this._deviceLook();
-      this._tree = buildBoxes(this._source.document, {
-        cascade,
-        scale: this._scale,
-        imageSize: (el) => this._resources.imageSize(imageUrlOf(el) ?? ''),
-        controlSize: (el, kind, style) =>
-          measureControl(el, kind, style, this._fonts(), look),
-      });
+      const build = () =>
+        buildBoxes(this._source.document, {
+          cascade,
+          scale: this._scale,
+          imageSize: (el) => this._resources.imageSize(imageUrlOf(el) ?? ''),
+          urlSize: (url) => this._resources.imageSize(url),
+          controlSize: (el, kind, style) =>
+            measureControl(el, kind, style, this._fonts(), look),
+        });
+      this._tree = build();
+      this._requestBackgrounds(this._tree);
+      if (this._contentImagesArrived(this._tree)) this._tree = build();
       this._textPoints = null;
       this._pointsAreUnits = null;
       this._laidOutWidth = -1;
-      this._requestBackgrounds(this._tree);
     }
 
     if (
@@ -825,8 +844,10 @@ export class HtmlViewNode extends Node {
         ? { start: this._toUnits(range.start), end: this._toUnits(range.end) }
         : null,
       selectionColor: this.selectionColor,
-      imageFor: (box) =>
-        box.el ? this._resources.image(imageUrlOf(box.el) ?? '') : null,
+      imageFor: (box) => {
+        const url = box.el ? imageUrlOf(box.el) : CONTENT_IMAGES.get(box);
+        return url === undefined ? null : this._resources.image(url);
+      },
       backgroundImageFor: (url) => {
         const image = this._resources.image(url);
         const size = image ? this._resources.imageSize(url) : null;
