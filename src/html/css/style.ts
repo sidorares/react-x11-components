@@ -35,6 +35,7 @@ import {
   parseQuotes,
 } from './content.js';
 import type { ContentItem, CounterChange } from './content.js';
+import type { CustomProps } from './vars.js';
 
 export type Display =
   | 'none'
@@ -152,6 +153,9 @@ export interface ComputedStyle {
   tableTextAlignSet: boolean;
   /** The marks `open-quote` and `close-quote` write, pairs outermost first. */
   quotes: readonly string[] | 'none';
+  /** Custom properties, `--name`, with their `var()`s replaced (`vars.ts`);
+   *  null where none is set. Inherited as the same map. */
+  custom: CustomProps | null;
 
   // --- not inherited --------------------------------------------------------
   display: Display;
@@ -288,6 +292,7 @@ const INHERITED = [
   'captionSide',
   'tableTextAlignSet',
   'quotes',
+  'custom',
 ] as const satisfies readonly (keyof ComputedStyle)[];
 
 /** What the document's root inherits from — the host's own text look, so an
@@ -349,6 +354,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     captionSide: 'top',
     tableTextAlignSet: false,
     quotes: DEFAULT_QUOTES,
+    custom: null,
 
     display: 'inline',
     position: 'static',
@@ -1702,12 +1708,26 @@ const INHERITED_NAMES = new Set<string>([
   'quotes',
 ]);
 
-function isInherited(name: string): boolean {
+export function isInherited(name: string): boolean {
   return INHERITED_NAMES.has(name);
 }
 
 /** `prop: inherit` — take the parent's computed value for whatever longhands
  *  the property names. Shorthands copy each of their longhands. */
+/** A property back to its initial value: what a declaration whose `var()`
+ *  has no value comes to, where the property is not inherited. */
+export function initialOne(
+  style: ComputedStyle,
+  initial: ComputedStyle,
+  name: string,
+): void {
+  const keys = INHERIT_TARGETS[name];
+  if (!keys) return;
+  for (const key of keys) {
+    (style as unknown as Record<string, unknown>)[key] = initial[key];
+  }
+}
+
 function inheritOne(
   style: ComputedStyle,
   parent: ComputedStyle,

@@ -5458,3 +5458,93 @@ metric('z-index is an integer, and a calc() rounds to one', async () => {
   assert.strictEqual(z('b'), 2);
   assert.strictEqual(z('c'), -1);
 });
+
+// --- custom properties and var() ----------------------------------------------
+
+metric(
+  'a custom property is inherited, and a var() reads it before the declaration is',
+  async () => {
+    const { el } = await renderWithBytes(
+      '<html><head><style>' +
+        ':root { --brand: #00ff00; --gap: 12px; --tw: 59 130 246 }' +
+        '.card { --brand: #0000ff }' +
+        'p { color: var(--brand); margin: var(--gap) 0; ' +
+        'background-color: rgb(var(--tw) / 1); width: calc(var(--gap) * 10) }' +
+        '#b { padding-left: var(--missing, 7px) }' +
+        '</style></head><body><p id="a">a</p>' +
+        '<div class="card"><p id="b">b</p></div></body></html>',
+      {},
+    );
+    const style = (id: string) =>
+      (boxOf(el, id) as unknown as { style: Record<string, unknown> }).style;
+    assert.strictEqual(style('a').color, '#00ff00');
+    assert.strictEqual(style('a').marginTop, 12);
+    // Tailwind 3 writes its colours this way, and `calc()` reads one too
+    assert.strictEqual(style('a').backgroundColor, '#3b82f6');
+    assert.strictEqual(style('a').width, 120);
+    // the nearer one wins, and a fallback stands in for none
+    assert.strictEqual(style('b').color, '#0000ff');
+    assert.strictEqual(style('b').paddingLeft, 7);
+  },
+);
+
+metric(
+  'a var() with no value leaves its property unset, and a malformed one is no declaration',
+  async () => {
+    const { el } = await renderWithBytes(
+      '<html><head><style>body { color: #00ff00 } p { margin-top: 3px }' +
+        '#a { color: red; color: var(--none) }' +
+        '#b { margin-top: 9px; margin-top: var(--none) }' +
+        // two words where a colour goes: invalid once substituted
+        '#c { --x: red; --y: blue; color: red; color: var(--x) var(--y) }' +
+        // a cycle has no value, whatever its fallbacks say
+        '#d { --p: var(--q, red); --q: var(--p, red); color: var(--p, #0000ff) }' +
+        // and a fallback with a `;` in it makes no declaration at all
+        '#e { color: #0000ff; color: var(--x,;) }' +
+        '</style></head><body><p id="a">a</p><p id="b">b</p><p id="c">c</p>' +
+        '<p id="d">d</p><p id="e">e</p></body></html>',
+      {},
+    );
+    const style = (id: string) =>
+      (boxOf(el, id) as unknown as { style: Record<string, unknown> }).style;
+    // `color` inherits, so unset is the body's
+    assert.strictEqual(style('a').color, '#00ff00');
+    // `margin` does not, so unset is its initial value
+    assert.strictEqual(style('b').marginTop, 0);
+    assert.strictEqual(style('c').color, '#00ff00');
+    assert.strictEqual(style('d').color, '#0000ff');
+    assert.strictEqual(style('e').color, '#0000ff');
+  },
+);
+
+metric("a var() is read as CSS's tokenizer reads it", async () => {
+  const { el } = await renderWithBytes(
+    '<html><head><style>body { color: #00ff00; --k: red }' +
+      // a name keeps its case
+      '#a { --brand: #0000ff; --Brand: red; color: var(--brand) }' +
+      // `initial` is no value, and the fallback stands in
+      '#b { --k: initial; color: var(--k, #0000ff) }' +
+      // a bracket closed that nothing opened is no value either
+      '#c { --u: #0000ff; --u: red); color: var(--u) }' +
+      // `<!--` is a token, not a `!`
+      '#d { --w: #0000ff; color: red; color: var(--w, <!--) }' +
+      '#e { --q: 1px <!--; margin-left: var(--q, 4px) }' +
+      // an escaped name is the name it spells
+      '#f { --0: #0000ff; color: var(--\\30) }' +
+      '</style>' +
+      // the end of a style sheet closes a var(), but a newline in a string
+      // it leaves open makes a bad one
+      '<style>#g { --g: #0000ff; color: var(--g</style>' +
+      '<style>#h { --h: red; color: #0000ff; color: var(--h, "\n</style>' +
+      '</head><body><p id="a">a</p><p id="b">b</p><p id="c">c</p><p id="d">d</p>' +
+      '<p id="e">e</p><p id="f">f</p><p id="g">g</p><p id="h">h</p></body></html>',
+    {},
+  );
+  const style = (id: string) =>
+    (boxOf(el, id) as unknown as { style: Record<string, unknown> }).style;
+  for (const id of ['a', 'b', 'c', 'd', 'f', 'g', 'h']) {
+    assert.strictEqual(style(id).color, '#0000ff', id);
+  }
+  // the value is there, and no margin: unset
+  assert.strictEqual(style('e').marginLeft, 0);
+});
