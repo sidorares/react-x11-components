@@ -146,7 +146,14 @@ cells make, `border-spacing` takes a length for the rows as well as the
 columns, and a
 table's `width` includes its borders, as HTML's rendering rules give every
 table `box-sizing: border-box`. Table cells in an inline box are an inline
-table, with the spaces either side of them kept.
+table, with the spaces either side of them kept. A table right to left —
+by `direction`, or HTML's `dir`, which is read as it — has its first column
+at the right.
+A block in an inline element breaks it (CSS 2.1 9.2.1.1): the pieces of the
+element before and after the block are on lines of their own, without an
+edge where the block cut them, and the block stands between them as a
+block, so `<font>` around paragraphs, or a link around a card, keeps its
+blocks stacked.
 A line with an inline-block or a padded element on it is put in visual order
 a piece at a time — the text engine orders the text inside each piece, and
 the line orders the pieces (UAX #9's L2) — so a right-to-left paragraph with

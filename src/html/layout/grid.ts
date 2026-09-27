@@ -86,6 +86,18 @@ export function tableGrid(table: Box): TableGrid {
     const rows = rowsOf(table);
     const cells = gridOf(rows.rows);
     const { column, group } = columnsOf(table, cells.columnCount);
+    if (table.style.direction === 'rtl') {
+      // A table right to left has its first column at the right (CSS 2.1
+      // 17.2). The grid is turned round once, here, so the layout, the
+      // collapsing borders and the column backgrounds, which all read it
+      // from the left, agree about where a cell is.
+      const count = cells.columnCount;
+      for (const cell of cells.cells) {
+        cell.column = count - cell.column - cell.colSpan;
+      }
+      column.reverse();
+      group.reverse();
+    }
     grid = {
       ...rows,
       ...cells,

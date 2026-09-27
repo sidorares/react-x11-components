@@ -233,6 +233,10 @@ export class Box {
   width = 0;
   height = 0;
 
+  /** For an inline box broken around a block in it (CSS 2.1 9.2.1.1), the
+   *  sides it goes on from, which have no edge: 1 its start, 2 its end. */
+  cut = 0;
+
   /** Resolved edges — border + padding, per side. */
   borderTop = 0;
   borderRight = 0;
@@ -1517,6 +1521,10 @@ function fixUp(box: Box, anonymous: AnonymousStyle): void {
 
   if (!box.children.length) return;
   wrapTableParts(box, anonymous);
+  // An inline box holds no block: a block in one is its block container's,
+  // which breaks the inline box around it
+  if (box.kind === 'inline') return;
+  if (box.kind !== 'flex') breakInlines(box);
   let hasBlockLevel = false;
   let hasInlineLevel = false;
   for (const child of box.children) {
@@ -1560,6 +1568,96 @@ function fixUp(box: Box, anonymous: AnonymousStyle): void {
     }
   }
   box.children = next;
+}
+
+/**
+ * Break a block container's inline children around the blocks in them
+ * (CSS 2.1 9.2.1.1): an inline box with an in-flow block in it — at any
+ * depth of inline box — becomes the pieces of it before, between and after
+ * its blocks, and the blocks stand beside them as the container's own, for
+ * the mixed-content rule to wrap the pieces in anonymous blocks.
+ * `<font><p>One</p><p>Two</p></font>` laid its paragraphs side by side as
+ * inline-blocks, and a link around a card's blocks set them in a line.
+ */
+function breakInlines(box: Box): void {
+  let next: Box[] | null = null;
+  for (let i = 0; i < box.children.length; i += 1) {
+    const child = box.children[i];
+    const pieces =
+      child.kind === 'inline' && holdsBlock(child) ? breakAround(child) : null;
+    if (!pieces) {
+      next?.push(child);
+      continue;
+    }
+    next ??= box.children.slice(0, i);
+    for (const piece of pieces) {
+      piece.parent = box;
+      next.push(piece);
+    }
+  }
+  if (next) box.children = next;
+}
+
+/** Whether an inline box has an in-flow block in it, at any depth of
+ *  inline box: asked first, and without making anything, since nearly
+ *  every inline box has none. */
+function holdsBlock(inline: Box): boolean {
+  for (const child of inline.children) {
+    if (child.kind === 'inline') {
+      if (holdsBlock(child)) return true;
+    } else if (isBlockLevel(child) && !child.outOfFlow && !child.isFloat) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * An inline box broken around the in-flow blocks in it: its pieces, each a
+ * box of its element and style holding the content between two blocks,
+ * with the blocks between them; null where it has none, which is nearly
+ * every inline box. A piece has no edge on a side a block cut: the start of
+ * the first and the end of the last are the box's own.
+ */
+function breakAround(inline: Box): Box[] | null {
+  let out: Box[] | null = null;
+  const pieces: Box[] = [];
+  let run: Box[] = [];
+  const close = (): void => {
+    const piece = new Box('inline', inline.el, inline.style);
+    piece.pseudo = inline.pseudo;
+    for (const child of run) piece.append(child);
+    pieces.push(piece);
+    (out ??= []).push(piece);
+    run = [];
+  };
+  for (const child of inline.children) {
+    if (isBlockLevel(child) && !child.outOfFlow && !child.isFloat) {
+      close();
+      out!.push(child);
+      continue;
+    }
+    const inner =
+      child.kind === 'inline' && holdsBlock(child) ? breakAround(child) : null;
+    if (!inner) {
+      run.push(child);
+      continue;
+    }
+    for (const piece of inner) {
+      if (piece.kind === 'inline') {
+        run.push(piece);
+      } else {
+        close();
+        out!.push(piece);
+      }
+    }
+  }
+  if (!out) return null;
+  close();
+  for (let i = 0; i < pieces.length; i += 1) {
+    pieces[i].cut = (i > 0 ? 1 : 0) | (i < pieces.length - 1 ? 2 : 0);
+  }
+  return out;
 }
 
 /**

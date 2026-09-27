@@ -853,6 +853,10 @@ function presentationHints(el: Element): Declaration[] {
   }
   const valign = attr(el, 'valign');
   if (valign) push('vertical-align', valign.toLowerCase());
+  // HTML's `dir` is its element's `direction`: `<table dir="rtl">` starts
+  // at the right, and a Hebrew or an Arabic message is written this way
+  const dir = attr(el, 'dir')?.toLowerCase();
+  if (dir === 'rtl' || dir === 'ltr') push('direction', dir);
 
   const bgcolor = attr(el, 'bgcolor');
   if (bgcolor) push('background-color', bgcolor);

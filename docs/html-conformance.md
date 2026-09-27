@@ -82,6 +82,7 @@ separately, and there are six.
 | 12     | fixed backgrounds, floats in inline boxes          | 5,145 (87%) | 4,705 (80%) |
 | 13     | SVG, replaced sizes, objects                       | 5,219 (89%) | 4,779 (81%) |
 | 14     | columns' widths and images                         | 5,241 (89%) | 4,800 (81%) |
+| 15     | a block in an inline box, right to left            | 5,299 (90%) | 4,854 (82%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -772,6 +773,23 @@ Round 13 lost none. Two more gaps found, for the upstream list:
     laid-out box holds, and its image is placed against that. 16 tests.
 
 Round 14 lost none.
+
+### Round 15
+
+78. **A block in an inline box was laid out as an inline-block.** CSS 2.1
+    9.2.1.1 breaks the inline box around it: the pieces before and after
+    are inline boxes of their own, without an edge where the block cut
+    them, and the block stands between them. `<font>` around paragraphs,
+    as old mail writes it, set them side by side at their words' widths,
+    and a link around a card's blocks put them in a line. 53 tests on X11
+    and 51 on macOS, and one lost: `white-space-processing-048` passed
+    while a span holding a float was laid out as an inline-block, and fails
+    now by the edge of an Ahem glyph at 16px, with the 68 above.
+79. **Right to left.** HTML's `dir` was not read, so a document marked
+    `dir="rtl"` was laid out left to right; a table right to left had its
+    first column at the left (17.2); and a relative box with both `left`
+    and `right` set moved by its `left`, where right to left it is its
+    `right` that wins (9.4.3). 6 tests on X11 and 4 on macOS.
 
 ## What `<Html>` supports
 

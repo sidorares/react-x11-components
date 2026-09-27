@@ -1467,6 +1467,16 @@ function inlineEdges(
   box.padLeft = resolve(s.paddingLeft, width);
   box.marginLeft = resolve(s.marginLeft, width);
   box.marginRight = resolve(s.marginRight, width);
+  if (box.cut) {
+    // a piece of a box broken around a block has no edge where it was cut
+    const rtl = s.direction === 'rtl';
+    if (box.cut & (rtl ? 2 : 1)) {
+      box.marginLeft = box.borderLeft = box.padLeft = 0;
+    }
+    if (box.cut & (rtl ? 1 : 2)) {
+      box.marginRight = box.borderRight = box.padRight = 0;
+    }
+  }
   const decorated =
     !isTransparent(s.backgroundColor) ||
     box.borderTop + box.borderRight + box.borderBottom + box.borderLeft > 0;
