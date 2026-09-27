@@ -50,6 +50,8 @@ const enum Origin {
 
 interface Candidate {
   origin: Origin;
+  /** The rule's cascade layer, null for none (`StyleRule.layer`). */
+  layer: readonly number[] | null;
   specificity: number;
   order: number;
   declarations: Declaration[];
@@ -830,6 +832,7 @@ export class Cascade {
     if (hints.length) {
       out.push({
         origin: Origin.Presentation,
+        layer: null,
         specificity: 0,
         order: 0,
         declarations: hints,
@@ -846,6 +849,7 @@ export class Cascade {
       if (normal.length) {
         out.push({
           origin: Origin.Inline,
+          layer: null,
           specificity: 0,
           order: 0,
           declarations: normal,
@@ -855,6 +859,7 @@ export class Cascade {
       if (important.length) {
         out.push({
           origin: Origin.InlineImportant,
+          layer: null,
           specificity: 0,
           order: 0,
           declarations: important,
@@ -897,6 +902,7 @@ function pushRule(out: Candidate[], rule: StyleRule, origin: Origin): void {
   if (!hasImportant) {
     out.push({
       origin,
+      layer: rule.layer,
       specificity: rule.specificity,
       order: rule.order,
       declarations: rule.declarations,
@@ -914,6 +920,7 @@ function pushRule(out: Candidate[], rule: StyleRule, origin: Origin): void {
           ? Origin.UserAgent
           : Origin.AuthorImportant
         : origin,
+      layer: rule.layer,
       specificity: rule.specificity,
       order: rule.order,
       declarations: rule.declarations,
@@ -924,8 +931,32 @@ function pushRule(out: Candidate[], rule: StyleRule, origin: Origin): void {
 
 function byCascade(a: Candidate, b: Candidate): number {
   if (a.origin !== b.origin) return a.origin - b.origin;
+  if (a.layer !== b.layer) {
+    // a later layer wins over an earlier one whatever the specificity, and
+    // for `!important` an earlier one does (CSS Cascade 5, 6.4)
+    const by = compareLayers(a.layer, b.layer);
+    if (by !== 0) return a.origin >= Origin.AuthorImportant ? -by : by;
+  }
   if (a.specificity !== b.specificity) return a.specificity - b.specificity;
   return a.order - b.order;
+}
+
+/**
+ * Which of two layers wins for a normal declaration: a later one over an
+ * earlier one, and a rule in no layer over any, as a rule directly in a
+ * layer is over the layers inside it.
+ */
+function compareLayers(
+  a: readonly number[] | null,
+  b: readonly number[] | null,
+): number {
+  if (a === null) return b === null ? 0 : 1;
+  if (b === null) return -1;
+  const n = Math.min(a.length, b.length);
+  for (let i = 0; i < n; i += 1) {
+    if (a[i] !== b[i]) return a[i] - b[i];
+  }
+  return b.length - a.length;
 }
 
 /**
