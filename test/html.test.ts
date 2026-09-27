@@ -27,7 +27,7 @@ import { ThemeProvider } from 'react-x11';
 import { Html } from '../src/index.js';
 import { HtmlViewNode } from '../src/html/index.js';
 import type { FontsLike } from '../src/html/layout/inline.js';
-import { hungSpaces } from '../src/html/layout/inline.js';
+import { featuresOf, hungSpaces } from '../src/html/layout/inline.js';
 import { cocoaShapedLayout } from './cocoa-shaped.js';
 import type { ShapedLayout } from './cocoa-shaped.js';
 import {
@@ -6784,6 +6784,86 @@ metric('a tab is set from where the room before it ends', async () => {
   const tree = (el as unknown as { _tree: unknown })._tree;
   layoutDocument(tree as never, astray, 400, 600);
   assert.deepStrictEqual(drawn(), before);
+});
+
+test('the font-variant longhands, font-kerning and font-feature-settings are read', async () => {
+  const { node } = await render(
+    '<p id="a" style="font-variant-numeric:tabular-nums slashed-zero">a</p>' +
+      '<p id="b" style="font-variant:small-caps oldstyle-nums">b</p>' +
+      '<p id="c" style="font-variant-ligatures:none;font-kerning:none">c</p>' +
+      '<p id="d" style="font-feature-settings:&quot;liga&quot; 0, ' +
+      '&quot;ss01&quot;">d</p>' +
+      '<p id="e" style="font-variant-numeric:tabular-nums small-caps">e</p>' +
+      '<div style="font-variant-numeric:tabular-nums">' +
+      '<p id="f" style="font:small-caps 12px serif">f</p><p id="g">g</p></div>',
+  );
+  const el = view(node);
+  const style = (id: string) =>
+    (boxOf(el, id) as unknown as { style: ComputedStyle }).style;
+  assert.strictEqual(style('a').fontVariantNumeric, 'tnum=1,zero=1');
+  assert.strictEqual(style('b').fontVariantCaps, 'smcp=1');
+  assert.strictEqual(style('b').fontVariantNumeric, 'onum=1');
+  assert.strictEqual(
+    style('c').fontVariantLigatures,
+    'liga=0,clig=0,dlig=0,hlig=0,calt=0',
+  );
+  assert.strictEqual(style('c').fontKerning, 'kern=0');
+  assert.strictEqual(style('d').fontFeatureSettings, 'liga=0,ss01=1');
+  // a keyword of another longhand is no value of this one
+  assert.strictEqual(style('e').fontVariantNumeric, '');
+  // the `font` shorthand sets the variants back, save its small capitals,
+  // and what it does not set is inherited
+  assert.strictEqual(style('f').fontVariantNumeric, '');
+  assert.strictEqual(style('f').fontVariantCaps, 'smcp=1');
+  assert.strictEqual(style('g').fontVariantNumeric, 'tnum=1');
+});
+
+test("a style's features: the variants', then the settings', one object for each set", () => {
+  // the six fields it reads
+  const style = (fields: Partial<ComputedStyle>) =>
+    ({
+      fontVariantNumeric: '',
+      fontVariantCaps: '',
+      fontVariantLigatures: '',
+      fontVariantPosition: '',
+      fontKerning: '',
+      fontFeatureSettings: '',
+      ...fields,
+    }) as ComputedStyle;
+  assert.strictEqual(featuresOf(style({})), null, 'none at all');
+  const tabular = featuresOf(
+    style({
+      fontVariantNumeric: 'tnum=1',
+      fontFeatureSettings: 'tnum=0,ss01=1',
+    }),
+  );
+  assert.deepStrictEqual(tabular, { tnum: 0, ss01: 1 }, 'the settings last');
+  assert.strictEqual(
+    featuresOf(
+      style({
+        fontVariantNumeric: 'tnum=1',
+        fontFeatureSettings: 'tnum=0,ss01=1',
+      }),
+    ),
+    tabular,
+    'the same object, so that a run is found by it',
+  );
+});
+
+metric('text is shaped with the features its style asks for', async () => {
+  const { node } = await render(
+    '<p id="p" style="font-variant-numeric:tabular-nums">1234</p>' +
+      '<p id="q">1234</p>',
+  );
+  const el = view(node);
+  type Spans = { lines: { runs: { span?: { features?: unknown } }[] }[] };
+  const features = (id: string) => {
+    const [line] = linesOf(el, id);
+    const layout = line.texts[0].layout as unknown as Spans;
+    return layout.lines[line.texts[0].layoutLine].runs[0].span?.features;
+  };
+  assert.deepStrictEqual(features('p'), { tnum: 1 });
+  assert.strictEqual(features('q'), undefined);
 });
 
 test('tab-size is a number of spaces, or a length', async () => {

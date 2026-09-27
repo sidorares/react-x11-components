@@ -2142,6 +2142,53 @@ function heldText(box: Box): string {
 
 const HELD = new WeakMap<Box, string>();
 
+/**
+ * The OpenType features a style's text is shaped with: the `font-variant`
+ * longhands' and `font-kerning`'s, then `font-feature-settings`, which has
+ * the last word (CSS Fonts 3, 7.2). One object for each set of them, kept,
+ * because a run's fields are compared by identity — a new object a pass
+ * would find no layout the last pass made.
+ */
+export function featuresOf(
+  style: ComputedStyle,
+): Readonly<Record<string, number>> | null {
+  const {
+    fontKerning: kerning,
+    fontVariantLigatures: ligatures,
+    fontVariantNumeric: numeric,
+    fontVariantCaps: caps,
+    fontVariantPosition: position,
+    fontFeatureSettings: settings,
+  } = style;
+  if (!kerning && !ligatures && !numeric && !caps && !position && !settings) {
+    return null;
+  }
+  const key = `${kerning}|${ligatures}|${numeric}|${caps}|${position}|${settings}`;
+  let features = FEATURES.get(key);
+  if (!features) {
+    const out: Record<string, number> = {};
+    for (const part of [
+      kerning,
+      ligatures,
+      numeric,
+      caps,
+      position,
+      settings,
+    ]) {
+      if (!part) continue;
+      for (const pair of part.split(',')) {
+        const at = pair.indexOf('=');
+        out[pair.slice(0, at)] = Number(pair.slice(at + 1));
+      }
+    }
+    features = Object.freeze(out);
+    FEATURES.set(key, features);
+  }
+  return features;
+}
+
+const FEATURES = new Map<string, Readonly<Record<string, number>>>();
+
 function runFor(text: string, style: ComputedStyle): TextRun {
   const run: TextRun = {
     text,
@@ -2152,6 +2199,8 @@ function runFor(text: string, style: ComputedStyle): TextRun {
     color: style.color,
   };
   if (style.letterSpacing) run.letterSpacing = style.letterSpacing;
+  const features = featuresOf(style);
+  if (features) run.features = features;
   // Hidden text keeps its place on the line and draws nothing, rules
   // included, and the text of a visible element inside it is its own run
   // (CSS 2.1 11.2): drawn in no ink, it is laid out as it was

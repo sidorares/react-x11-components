@@ -118,6 +118,7 @@ separately, and there are six.
 | 48     | justify, and text that does not wrap aligned       | 5,470 (93%) | 4,978 (84%) |
 | 49     | an ellipsis on every line                          | 5,470 (93%) | 4,978 (84%) |
 | 50     | tab stops                                          | 5,471 (93%) | 4,979 (84%) |
+| 51     | OpenType features                                  | 5,471 (93%) | 4,979 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -1605,6 +1606,24 @@ minmax(16rem, 1fr))` are the layouts of half the pages written this
      backend, `content-white-space-002`, whose generated content keeps a
      tab. Found rendering a README beside a browser.
 
+### Round 51
+
+142. **Text was shaped with none of the features its style asked for.**
+     `font-variant-numeric` — Tailwind's `tabular-nums`, which keeps a
+     column of figures from shifting as they change, and matters on macOS,
+     whose `sans-serif` has proportional figures — and the other
+     `font-variant` longhands, the `font-variant` shorthand beyond CSS
+     2.1's `small-caps`, `font-kerning` and `font-feature-settings` were
+     dropped. They are read now, inherited, and handed to the text engine
+     as the run's OpenType features, which both engines shape with: the
+     variants' first and the settings' last, as CSS Fonts 3 orders them.
+     A variant is the font's own feature, so `small-caps` is drawn in
+     small capitals where the font has them and in the font's lowercase
+     where it has not; none is synthesized. The features of a style are
+     one kept object, since a layout is found again by its runs' fields
+     compared by identity. The CSS 2.1 suite's `small-caps` tests set a
+     variant beside the same variant, and none of them moved.
+
 ## What `<Html>` supports
 
 From the pass rates of the tests that use each feature, at the fixes above,
@@ -1619,7 +1638,7 @@ checked against the code.
 | floats and `clear`                                 | 311   | 46–67%  | **supported**, with gaps: a float inside a paragraph is placed at the paragraph's top, not its line's                                                                                                                         |
 | relative and absolute positioning                  | 513   | 84%     | **supported**; an absolute box inside a line takes the line's start for its static position                                                                                                                                   |
 | backgrounds: colour, image, repeat, position       | 336   | 85%     | **supported**, `background-attachment: fixed` and SVG images included                                                                                                                                                         |
-| fonts: family, style, weight, size                 | 159   | 81%     | **supported**; `font-variant: small-caps` is not                                                                                                                                                                              |
+| fonts: family, style, weight, size                 | 159   | 81%     | **supported**; `font-variant` is the font's own OpenType features, so small capitals are drawn where the font has them and not synthesized                                                                                    |
 | line height, `vertical-align`                      | 191   | 87%     | **supported**: every inline box's own line height, and `vertical-align` on text as well as on images and inline blocks; text in a font with taller natural lines than its paragraph's takes a bit more room than CSS gives it |
 | `white-space`                                      | 217   | 46%     | **supported**; collapsing is CSS 2.1's across elements                                                                                                                                                                        |
 | lists and markers                                  | 155   | 94%     | **supported**; `list-style-image` is not                                                                                                                                                                                      |
