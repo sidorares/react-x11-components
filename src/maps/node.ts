@@ -207,6 +207,26 @@ interface VisibleTile {
 const RESTYLE_WAIT_MS = 1500;
 
 /**
+ * The clock {@link RESTYLE_WAIT_MS} is measured on: the raster budget's,
+ * read at the same moment, as a frame begins.
+ *
+ * One object, exported from this module though not from the package, so a
+ * test can stand in for it and move the bound's time on a step at a time,
+ * as `glideClock` in `./controller.ts` does for a glide. On the real clock a
+ * test finds the swap only once the step that made it is over, and on a
+ * loaded runner one step took long enough to put that two and a half
+ * seconds past the bound. It is not the budget's own `now`, because a test
+ * that held that one would hold the raster deadline with it: a frame would
+ * draw every tile to the end, and there would be no redraw left for the
+ * bound to cut short.
+ */
+export const restyleClock = {
+  now(): number {
+    return now();
+  },
+};
+
+/**
  * The previous style, held on screen while a restyle draws the new one.
  *
  * A `mapStyle` change or `refresh()` retires every tile surface at once,
@@ -240,7 +260,8 @@ interface Outgoing {
   view: string;
   moved: boolean;
   /** Milliseconds the map has been free to draw since the switch, and when
-   *  the last frame that was began — `null` when the last frame was not. */
+   *  the last frame that was began on {@link restyleClock} — `null` when
+   *  the last frame was not. */
   waited: number;
   lastDrawn: number | null;
 }
@@ -734,6 +755,7 @@ export class MapViewNode extends Node {
     if (!this._visible() || !isMapCanvas(ctx)) return;
 
     const started = now();
+    const restyleAt = restyleClock.now();
     const scale = this._scale;
     this._frameClip = damage
       ? {
@@ -839,7 +861,7 @@ export class MapViewNode extends Node {
       pane,
       stats,
       budget,
-      started,
+      restyleAt,
       !damage || containsRect(damage, box),
       progressive,
     );
@@ -967,7 +989,8 @@ export class MapViewNode extends Node {
     pane: ScreenRect,
     stats: MapFrameStats,
     budget: number,
-    started: number,
+    /** When this frame began, on {@link restyleClock}. */
+    began: number,
     whole: boolean,
     progressive: boolean,
   ): void {
@@ -987,9 +1010,9 @@ export class MapViewNode extends Node {
     // next frame after it begins.
     if (budget > 0) {
       if (outgoing.lastDrawn !== null) {
-        outgoing.waited += started - outgoing.lastDrawn;
+        outgoing.waited += began - outgoing.lastDrawn;
       }
-      outgoing.lastDrawn = started;
+      outgoing.lastDrawn = began;
     } else {
       outgoing.lastDrawn = null;
     }

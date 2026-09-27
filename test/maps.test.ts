@@ -78,6 +78,7 @@ import type {
   TileData,
 } from '../src/maps/index.js';
 import { GeomType } from '../src/maps/mvt.js';
+import { restyleClock } from '../src/maps/node.js';
 import { drawOverlays } from '../src/maps/overlay.js';
 import { prepareStyle } from '../src/maps/paint.js';
 import { dataSquareOf } from '../src/maps/proj.js';
@@ -3198,7 +3199,7 @@ test('crossing a zoom level during a style switch holds the old style from the l
   assertNewLook(await map.read());
 });
 
-test('a view that keeps moving cannot hold the old style up for ever', async () => {
+test('a view that keeps moving cannot hold the old style up for ever', async (t) => {
   // Only a gesture stops rasterization, so an application animating a
   // controlled camera keeps the map drawing while it brings tiles into
   // view — here a new one every step, in a style that takes four hundred
@@ -3209,28 +3210,53 @@ test('a view that keeps moving cannot hold the old style up for ever', async () 
   // At zoom 10, where the world is a thousand tiles wide. Round a smaller
   // one, the camera comes back to tiles it has been drawing all along, and
   // can find a view that is finished just as the bound runs out.
+  //
+  // The bound is time, on a clock held here and set a step at a time, so
+  // every frame of a step is drawn at the step's time however long the
+  // step takes. Timed on the wall clock, the swap was found only once the
+  // step that made it was over, and a loaded runner took four seconds to
+  // get there.
   const map = await mountLooks({ camera: { center: FOUR_TILES, zoom: 10 } });
-  // Timed from before the switch: the frames the switch's own commit runs
-  // are the first the map counts.
-  const began = Date.now();
+  let time = 0;
+  t.mock.method(restyleClock, 'now', () => time);
+  /** Until `count` frames have been drawn since the switch. */
+  const drawn = async (count: number): Promise<void> => {
+    for (let round = 0; map.frames.length < count; round++) {
+      assert.ok(round < 40, `${map.frames.length} of ${count} frames drawn`);
+      await settleFrames(1);
+    }
+  };
   await map.restyle(slowLookStyle(NEW_LOOK, 400));
-  let swappedAt = 0;
-  for (let lon = 0; Date.now() - began < 8000;) {
+  // The bound counts from the first frame after the switch, drawn at 0.
+  await drawn(1);
+  assert.ok(
+    map.frames.every((f) => f.restyling),
+    'the switch held the old style',
+  );
+  let swappedAt: number | null = null;
+  let lon = 0;
+  // A millisecond short of the bound, then at it, then on past it: the
+  // camera keeps moving after the swap, which must not bring the old style
+  // back.
+  for (const at of [1000, 1499, 1500, 2000]) {
+    time = at;
     // A tile's width a step, east.
     lon += 360 / 1024;
+    const before = map.frames.length;
     await map.moveTo({ center: { lon, lat: 0 }, zoom: 10 });
-    await settleFrames(1);
-    if (!swappedAt && map.frames.some((f) => !f.restyling)) {
-      swappedAt = Date.now();
+    // Two frames at this time, at least: the first to find the bound run
+    // out may have been clipped to less than the pane, and then the swap
+    // is the next one's.
+    await drawn(before + 2);
+    if (swappedAt === null && map.frames.some((f) => !f.restyling)) {
+      swappedAt = at;
     }
-    // …and it keeps moving for a while after the swap, which must not
-    // bring the old style back.
-    if (swappedAt && Date.now() - swappedAt > 300) break;
   }
-  const waited = swappedAt - began;
-  assert.ok(swappedAt > 0, 'the swap came while the camera was moving');
-  assert.ok(waited >= 1450, `and not before the bound: ${waited} ms`);
-  assert.ok(waited < 4000, `nor long after it: ${waited} ms`);
+  assert.equal(
+    swappedAt,
+    1500,
+    'the swap came as the bound ran out, and at no step either side of it',
+  );
   const frames = await map.seen();
   const swap = frames.findIndex((f) => !f.stats.restyling);
   assert.ok(
