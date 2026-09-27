@@ -361,6 +361,25 @@ function layoutLines(block: Box, options: InlineOptions): InlineResult {
     };
     let layout = fonts.layout(runs, base, layoutOptions);
     LAYOUT_RUNS.set(layout, runs);
+    // `text-wrap: balance`: the lines broken at the narrowest width that
+    // keeps as many of them, and then set in the whole width
+    let balanced = false;
+    if (
+      style.textWrapStyle === 'balance' &&
+      layoutOptions.maxWidth !== undefined &&
+      !cut &&
+      style.textAlign !== 'justify' &&
+      layout.lines.length > 1 &&
+      layout.lines.length <= BALANCE_LINES
+    ) {
+      const width = layoutOptions.maxWidth;
+      const at = balancedWidth(fonts, runs, base, layoutOptions, width, layout);
+      if (at < width) {
+        layout = fonts.layout(runs, base, { ...layoutOptions, maxWidth: at });
+        LAYOUT_RUNS.set(layout, runs);
+        balanced = true;
+      }
+    }
     if (
       style.textAlign === 'justify' &&
       wraps(style) &&
@@ -382,7 +401,7 @@ function layoutLines(block: Box, options: InlineOptions): InlineResult {
       0,
       0,
       lines,
-      layoutOptions.maxWidth === undefined
+      layoutOptions.maxWidth === undefined || balanced
         ? unwrappedPlacer(style, options.width)
         : null,
     );
@@ -2482,6 +2501,40 @@ function lineShift(style: ComputedStyle): number {
 
 /** How far a line of a layout moves to where it belongs in its box. */
 type LinePlacer = (line: { x: number; width: number }) => number;
+
+/** The most lines `text-wrap: balance` evens out, as in Chrome: a heading,
+ *  a caption, a pull quote — not a paragraph, whose last line is its own. */
+const BALANCE_LINES = 6;
+
+/**
+ * The narrowest width a paragraph's text breaks into no more lines than
+ * `layout` has (CSS Text 4, 6.2), found by halving the width between the
+ * least that could hold them — their widths over their number — and the
+ * width it was laid out at. The engine breaks the lines, so each step
+ * asks it; eight steps come to within a pixel of the answer for a heading
+ * across a page.
+ */
+function balancedWidth(
+  fonts: FontsLike,
+  runs: TextRun[],
+  base: Record<string, unknown>,
+  options: Parameters<FontsLike['layout']>[2],
+  width: number,
+  layout: TextLayoutLike,
+): number {
+  const count = layout.lines.length;
+  let total = 0;
+  for (const line of layout.lines) total += line.width;
+  let lo = total / count;
+  let hi = width;
+  for (let step = 0; step < 8 && hi - lo > 1; step += 1) {
+    const mid = (lo + hi) / 2;
+    const probe = fonts.layout(runs, base, { ...options, maxWidth: mid });
+    if (probe.lines.length <= count) hi = mid;
+    else lo = mid;
+  }
+  return Math.ceil(hi);
+}
 
 /**
  * Where `text-align` puts the lines of a layout that was given no width to
