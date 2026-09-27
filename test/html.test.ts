@@ -3446,6 +3446,25 @@ test('a table with a width of its own fills it with its columns', async () => {
   assert.ok(d.width < 50 && u.width === d.width, 'a table of `auto` shrinks');
 });
 
+test('a line of an inline-block clears the floats beside all of its height', async () => {
+  // CSS 2.1 9.5: a line box must not run into a float, and an inline-block
+  // makes its line as tall as itself. The room was taken for a line of
+  // text, so the block ran into a float that started beside its lower part.
+  const { node } = await render(
+    '<div id="w" style="width:400px">' +
+      '<div style="float:left;width:150px;height:75px"></div>' +
+      '<div style="float:right;width:300px;height:75px"></div>' +
+      '<span id="a" style="display:inline-block;vertical-align:top;' +
+      'width:200px;height:50px"></span>' +
+      '<span id="b" style="display:inline-block;vertical-align:top;' +
+      'width:200px;height:50px"></span></div>',
+  );
+  const el = view(node);
+  const [w, a, b] = ['w', 'a', 'b'].map((id) => boxOf(el, id));
+  assert.deepStrictEqual([a.x - w.x, a.y - w.y], [150, 0]);
+  assert.deepStrictEqual([b.x - w.x, b.y - w.y], [0, 150], 'below both');
+});
+
 test('nothing loads without onResource, and every reference is offered to it', async () => {
   const asked: string[] = [];
   await renderX11(
