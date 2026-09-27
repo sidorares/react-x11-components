@@ -100,6 +100,9 @@ export interface HtmlViewProps {
   complete?: boolean;
   /** Author stylesheets applied after the document's own. */
   stylesheet?: string | string[];
+  /** The encoding the host decoded `source` from: what a stylesheet handed
+   *  over as bytes falls back to. */
+  charset?: string;
   look: RootLook;
   selectionColor?: string;
   onResource?: (
@@ -123,7 +126,7 @@ export function registerHtmlView(): void {
     // `source` and `look` are this element's own vocabulary and neither is a
     // style name today; declaring them keeps the DEV flat-style-prop
     // assertion honest if core's vocabulary grows underneath us.
-    semanticNames: ['source', 'look', 'stylesheet', 'complete'],
+    semanticNames: ['source', 'look', 'stylesheet', 'charset', 'complete'],
     childrenAllowed: false,
   });
 }
@@ -332,28 +335,40 @@ export class HtmlViewNode extends Node {
     const sheets: Stylesheet[] = [uaStylesheet(look)];
     let order = 0;
     for (const ref of this._source.facts().sheets) {
-      const text =
+      // A sheet handed over as bytes that names no encoding of its own is in
+      // its referrer's: a `<link charset>`, then the document's (CSS 2.1
+      // 4.4), and an import is in the encoding of the sheet importing it.
+      const linked =
         ref.kind === 'inline'
-          ? ref.text
-          : this._resources.stylesheetText(ref.href);
+          ? null
+          : this._resources.stylesheet(ref.href, [
+              attr(ref.element, 'charset') || undefined,
+              props.charset,
+            ]);
+      const text = ref.kind === 'inline' ? ref.text : linked?.text;
       if (!text) continue;
+      const encoding = linked ? linked.encoding : props.charset;
       const sheet = parseStylesheet(text, order);
-      order += sheet.rules.length + 1;
       // `@import` is a resource like any other, and its rules sit *before*
-      // the importing sheet's — so a fetched import is spliced in ahead.
+      // the importing sheet's (CSS 2.1 6.4.1): a fetched import takes the
+      // order the sheet's own rules were given, and they move up past it,
+      // or an imported rule would win a tie against the sheet importing it.
+      let imported = 0;
       for (const url of sheet.imports) {
         this._resources.request({
           url,
           kind: 'stylesheet',
           element: ref.element,
         });
-        const imported = this._resources.stylesheetText(url);
-        if (imported) {
-          const parsed = parseStylesheet(imported, order);
-          order += parsed.rules.length + 1;
+        const fetched = this._resources.stylesheet(url, [encoding]);
+        if (fetched) {
+          const parsed = parseStylesheet(fetched.text, order + imported);
+          imported += parsed.rules.length + 1;
           sheets.push(parsed);
         }
       }
+      if (imported) for (const rule of sheet.rules) rule.order += imported;
+      order += imported + sheet.rules.length + 1;
       sheets.push(sheet);
     }
     const extra = props.stylesheet;
@@ -557,7 +572,11 @@ export class HtmlViewNode extends Node {
     super.applyProps(nextProps, prevProps);
     const next = nextProps as unknown as HtmlViewProps;
     const prev = prevProps as unknown as HtmlViewProps;
-    if (next.look !== prev.look || next.stylesheet !== prev.stylesheet) {
+    if (
+      next.look !== prev.look ||
+      next.stylesheet !== prev.stylesheet ||
+      next.charset !== prev.charset
+    ) {
       this._invalidate(Stale.Style);
     }
     if (next.source !== prev.source || next.complete !== prev.complete) {

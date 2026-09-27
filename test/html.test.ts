@@ -55,6 +55,7 @@ import {
   parseCounterList,
   parseQuotes,
 } from '../src/html/css/content.js';
+import { decodeStylesheet } from '../src/html/css/decode.js';
 
 const h = React.createElement;
 
@@ -2836,7 +2837,7 @@ metric('overflow clips what a box holds to its padding box', async () => {
   const [red] = clipsAround(ops, '#ff0000');
   assert.deepStrictEqual(
     red.map((c) => c.op === 'clip' && [c.x, c.y, c.w, c.h]),
-    [[Math.floor(o.x) + 3, Math.floor(o.y) + 3, 54, 24]],
+    [[Math.round(o.x) + 3, Math.round(o.y) + 3, 54, 24]],
     'the content, clipped to the padding box',
   );
   const [blue] = clipsAround(ops, '#0000ff');
@@ -2848,6 +2849,28 @@ metric('overflow clips what a box holds to its padding box', async () => {
     'nor a positioned box whose containing block is outside it',
   );
 });
+
+metric(
+  "an overflow clip covers the pixels its box's background does",
+  async () => {
+    // A background at a fractional position rounds to the nearest pixel. A
+    // clip rounded out to whole pixels let a row of what it clips show
+    // beyond the background's edge, which a 2x display turns up.
+    const { node } = await render(
+      '<div style="height:10.5px"></div>' +
+        '<div style="overflow:hidden;width:50px;height:20px;background:#0000ff">' +
+        '<div style="height:200px;background:#ff0000"></div></div>',
+    );
+    const ops: PaintOp[] = [];
+    const fills = await fillsOf(view(node), ops);
+    const blue = fills.find((f) => f.style === parseColor('#0000ff'))!;
+    const [[clip]] = clipsAround(ops, '#ff0000');
+    assert.deepStrictEqual(
+      clip.op === 'clip' && [clip.x, clip.y, clip.w, clip.h],
+      [blue.x, blue.y, blue.w, blue.h],
+    );
+  },
+);
 
 metric(
   'a rounded box clips rounded only where its padding leaves a corner to cut',
@@ -3298,6 +3321,141 @@ test('a stylesheet handed back by the seam reaches the cascade', async () => {
   )._tree;
   assert.strictEqual(tree.root.children[0].style.color, '#ff0000');
   void result;
+});
+
+test('a form control or a frame keeps its height when only its width is set', async () => {
+  // Only an image has an intrinsic ratio (CSS 2.1 10.3.2). A control's size
+  // and a frame's 300 by 150 are defaults, and a text field set to
+  // `width: 100%` came out twice its height.
+  const { node } = await render(
+    '<input id="a"><input id="b" style="width:300px">' +
+      '<button id="c">Go</button><button id="d" style="width:200px">Go</button>' +
+      '<iframe id="e"></iframe><iframe id="f" style="height:96px"></iframe>',
+  );
+  const el = view(node);
+  const [a, b, c, d, e, f] = ['a', 'b', 'c', 'd', 'e', 'f'].map((id) =>
+    boxOf(el, id),
+  );
+  assert.strictEqual(b.height, a.height, 'a text field');
+  assert.strictEqual(d.height, c.height, 'a button');
+  assert.strictEqual(f.width, e.width, 'a frame 96px tall is as wide');
+});
+
+test('a stylesheet handed over as bytes is decoded as CSS says', () => {
+  // CSS 2.1 4.4 and CSS Syntax 3 3.2, in order: a byte order mark, the
+  // protocol's charset, an `@charset` at the very start — UTF-16 named in
+  // ASCII meaning UTF-8 — the referrer's encodings, then UTF-8. An é is E9
+  // in windows-1252 and C3 A9 in UTF-8.
+  const bytes = (text: string, ...tail: number[]): Uint8Array =>
+    new Uint8Array([...text].map((c) => c.charCodeAt(0)).concat(tail));
+  const decode = (b: Uint8Array, charset?: string, ...fallbacks: string[]) =>
+    decodeStylesheet(b, charset, fallbacks);
+  assert.deepStrictEqual(
+    decode(bytes('', 0xef, 0xbb, 0xbf, 0xc3, 0xa9), 'windows-1252'),
+    { text: 'é', encoding: 'utf-8' },
+    'the byte order mark first, and it is not text',
+  );
+  assert.strictEqual(
+    decode(bytes('@charset "shift_jis";', 0xe9), 'windows-1252').text,
+    '@charset "shift_jis";é',
+    "then the protocol's",
+  );
+  assert.strictEqual(
+    decode(bytes('@charset "windows-1252";', 0xe9), undefined, 'shift_jis')
+      .encoding,
+    'windows-1252',
+    "then the rule, over the referrer's",
+  );
+  assert.strictEqual(
+    decode(bytes('@charset "utf-16le";', 0xc3, 0xa9)).encoding,
+    'utf-8',
+  );
+  assert.strictEqual(
+    decode(bytes(' @charset "windows-1252";', 0xc3, 0xa9)).encoding,
+    'utf-8',
+    'only at the very start',
+  );
+  assert.strictEqual(
+    decode(bytes('', 0xe9), undefined, 'no-such-encoding', 'windows-1252').text,
+    'é',
+    'a name that names no encoding is passed over',
+  );
+  assert.deepStrictEqual(decode(bytes('', 0xc3, 0xa9)), {
+    text: 'é',
+    encoding: 'utf-8',
+  });
+});
+
+test("a stylesheet in bytes falls back to its referrer's encoding", async () => {
+  // `.é { … }` in windows-1252: read as UTF-8, a selector nothing matches
+  const sheet = new Uint8Array([
+    0x2e,
+    0xe9,
+    ...[...' { color: #00ff00 }'].map((c) => c.charCodeAt(0)),
+  ]);
+  const colorOf = async (source: string, charset?: string) => {
+    await renderX11(
+      h(
+        'box',
+        { style: { width: 300, flexDirection: 'column' } },
+        h(Html, {
+          source: `${source}<p id="p" class="é">text</p>`,
+          charset,
+          partial: false,
+          onResource: (r: { kind: string }) =>
+            r.kind === 'stylesheet'
+              ? { kind: 'stylesheet' as const, bytes: sheet }
+              : null,
+          'data-testname': 'doc',
+        }),
+      ),
+      { backend: 'mock' },
+    );
+    const el = view(screen.getByTestName('doc') as DrawnNode);
+    const p = boxOf(el, 'p') as unknown as { style: { color: string } };
+    cleanup();
+    return p.style.color;
+  };
+  const link = '<link rel="stylesheet" href="a.css">';
+  assert.notStrictEqual(await colorOf(link), '#00ff00', 'UTF-8 by default');
+  assert.strictEqual(await colorOf(link, 'windows-1252'), '#00ff00');
+  assert.strictEqual(
+    await colorOf(
+      '<link rel="stylesheet" charset="windows-1252" href="a.css">',
+    ),
+    '#00ff00',
+    'a <link charset> goes before the document',
+  );
+  assert.strictEqual(
+    await colorOf('<style>@import "b.css";</style>', 'windows-1252'),
+    '#00ff00',
+    'an import is in the encoding of the sheet importing it',
+  );
+});
+
+test("an imported stylesheet's rules come before its importer's", async () => {
+  // CSS 2.1 6.4.1: an import stands where its `@import` does, so the sheet
+  // importing it wins a tie. It was parsed after the sheet, and won.
+  await renderX11(
+    h(
+      'box',
+      { style: { width: 300, flexDirection: 'column' } },
+      h(Html, {
+        source:
+          '<style>@import "a.css"; p { color: #00ff00 }</style><p id="p">x</p>',
+        partial: false,
+        onResource: (r: { kind: string }) =>
+          r.kind === 'stylesheet'
+            ? { kind: 'stylesheet' as const, text: 'p { color: #ff0000 }' }
+            : null,
+        'data-testname': 'doc',
+      }),
+    ),
+    { backend: 'mock' },
+  );
+  const el = view(screen.getByTestName('doc') as DrawnNode);
+  const p = boxOf(el, 'p') as unknown as { style: { color: string } };
+  assert.strictEqual(p.style.color, '#00ff00');
 });
 
 test('an image handed over as bytes is decoded and drawn', async (t) => {

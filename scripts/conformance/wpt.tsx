@@ -179,8 +179,14 @@ function resourcesFor(docPath: string) {
     if (request.kind === 'stylesheet') {
       if (typeof data === 'string') return { kind: 'stylesheet', text: data };
       const file = fileFor(request.url, docPath);
+      // bytes, and the charset the server would send them with: <Html>
+      // decodes a stylesheet as CSS says, which is what these tests test
       return file
-        ? { kind: 'stylesheet', text: readFileSync(file, 'utf8') }
+        ? {
+            kind: 'stylesheet',
+            bytes: readFileSync(file),
+            charset: servedCharset(file),
+          }
         : null;
     }
     if (data instanceof Uint8Array) return { kind: 'image', bytes: data };
@@ -193,10 +199,49 @@ function resourcesFor(docPath: string) {
 /** A reference that is an empty page. */
 const BLANK = 'about:blank';
 
+/** The charset a file's `.headers` has the server send it with, as WPT's
+ *  server does, or undefined. */
+function servedCharset(file: string): string | undefined {
+  const headers = `${file}.headers`;
+  if (!existsSync(headers)) return undefined;
+  const type = /^content-type:(.*)$/im.exec(readFileSync(headers, 'utf8'));
+  return type ? /charset=["']?([^;"'\s]+)/i.exec(type[1])?.[1] : undefined;
+}
+
+/** A page's text and the encoding it was in, found as a browser finds it: a
+ *  byte order mark, the charset it is served with, an XML declaration — or,
+ *  in HTML, a `<meta>` — naming one, else UTF-8. The host decodes a page;
+ *  the encoding is handed on, for the stylesheets that fall back to it. */
+function pageOf(path: string): { text: string; charset: string } {
+  if (path === BLANK) return { text: '', charset: 'utf-8' };
+  const bytes = readFileSync(path);
+  const xml = /\.xht(ml)?$/i.test(path);
+  const head = bytes.subarray(0, 1024).toString('latin1');
+  const bom =
+    bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf
+      ? 'utf-8'
+      : bytes[0] === 0xfe && bytes[1] === 0xff
+        ? 'utf-16be'
+        : bytes[0] === 0xff && bytes[1] === 0xfe
+          ? 'utf-16le'
+          : undefined;
+  const declared = xml
+    ? /^<\?xml[^>]*\sencoding=["']([^"']+)/.exec(head)?.[1]
+    : /<meta[^>]+charset=["']?([^"'\s/>;]+)/i.exec(head)?.[1];
+  for (const label of [bom, servedCharset(path), declared, 'utf-8']) {
+    if (!label) continue;
+    try {
+      const decoder = new TextDecoder(label);
+      return { text: decoder.decode(bytes), charset: decoder.encoding };
+    } catch {
+      // a label that names no encoding says nothing
+    }
+  }
+  return { text: bytes.toString('utf8'), charset: 'utf-8' };
+}
+
 /** The source <Html> is handed: XHTML's CDATA markers dropped. */
-function sourceOf(path: string): string {
-  if (path === BLANK) return '';
-  const text = readFileSync(path, 'utf8');
+function sourceOf(path: string, text = pageOf(path).text): string {
   return /\.xht(ml)?$/i.test(path)
     ? text.replace(/<!\[CDATA\[/g, '').replace(/\]\]>/g, '')
     : text;
@@ -211,6 +256,7 @@ function scripted(source: string): boolean {
 let serial = 0;
 
 function tree(path: string): React.ReactElement {
+  const page = pageOf(path);
   return h(
     ThemeProvider,
     { value: PALETTE, colorScheme: 'light' } as Record<string, unknown>,
@@ -227,7 +273,8 @@ function tree(path: string): React.ReactElement {
       },
       h(Html, {
         key: `${serial++}`,
-        source: sourceOf(path),
+        source: sourceOf(path, page.text),
+        charset: page.charset,
         partial: false,
         selectable: false,
         fontSize: 16,

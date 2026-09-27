@@ -31,6 +31,7 @@ Nothing here fetches or executes anything. See [The seams](#the-seams).
 | `partial`         | `boolean`                                        | Whether more source may still arrive. Default true. While true, a `source` that extends the last one is written to the open parser as a delta — see [Streaming](#streaming). |
 | `selectable`      | `boolean`                                        | Mouse selection, Ctrl+A / Ctrl+C, PRIMARY. Default true.                                                                                                                     |
 | `stylesheet`      | `string \| string[]`                             | Author stylesheets applied after the document's own, so a host can restyle a document it does not control.                                                                   |
+| `charset`         | `string`                                         | The encoding the host decoded `source` from, as a label (`'shift_jis'`). A stylesheet handed over as bytes that names no encoding of its own is in it. Default UTF-8.        |
 | `onResource`      | `(r: ResourceRequest) => ResourceResult \| null` | An `<img>`, a `<link rel=stylesheet>` or an `@import` wants loading. May return a promise. **Absent, nothing loads.**                                                        |
 | `onScript`        | `(s: ScriptRequest) => void`                     | A `<script>` was found, handed over unparsed and unevaluated.                                                                                                                |
 | `onLink`          | `(href, ev) => void`                             | A link was activated. Absent, clicks do nothing — this never navigates by itself.                                                                                            |
@@ -89,6 +90,15 @@ Return `{ kind: 'image', image, width, height }` instead to hand over an
 image the host decoded itself. A declined or absent resource is an ordinary
 state: images draw as a frame at their attribute size, and linked stylesheets
 are skipped.
+
+A stylesheet may be handed over as bytes instead, with the charset the
+protocol named if it named one: `{ kind: 'stylesheet', bytes, charset }`.
+It is then decoded the way CSS says (CSS 2.1 4.4, CSS Syntax 3 3.2). A byte
+order mark decides first. Then comes the charset handed over, then an
+`@charset` rule at the very start of the bytes, then what the referrer says,
+then UTF-8. The referrer is a `<link charset>` and the `charset` prop for a
+linked sheet, and the importing sheet's encoding for an `@import`. A host
+that decodes its stylesheets itself hands over text and is not second-guessed.
 
 **`onScript` never runs anything.** It is handed the `type`, the `src`, the
 element and its text verbatim, and nothing in this package reads any of it —
