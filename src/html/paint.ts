@@ -366,38 +366,8 @@ function paintContent(
   box: Box,
   options: PaintOptions,
 ): void {
-  const style = box.style;
-  const visible = style.visibility === 'visible';
-
-  // A row or a row group paints nothing of its own: its background is
-  // painted in its cells' areas with the table's (`paintPartBackgrounds`),
-  // and its borders are the collapsed grid's or none (CSS 2.1 17.6.1)
-  const part = box.kind === 'table-row' || box.kind === 'table-row-group';
-  if (visible && !part) {
-    if (box !== options.canvasSource) {
-      paintBackground(ctx, box, options);
-      if (style.backgroundImage) {
-        const area = clampRect(
-          options,
-          Math.round(box.x + options.originX),
-          Math.round(frameY(box) + options.originY),
-          Math.ceil(box.width),
-          Math.ceil(frameHeight(box)),
-        );
-        if (area) {
-          paintBackgroundImage(
-            ctx,
-            style,
-            area,
-            paddingBox(box, options),
-            options,
-          );
-        }
-      }
-    }
-    if (!box.bordersCollapsed) paintBorders(ctx, box, options);
-    if (box.kind === 'table') paintPartBackgrounds(ctx, box, options);
-  }
+  const visible = box.style.visibility === 'visible';
+  if (visible) paintOwnBackground(ctx, box, options);
   // a stacking context's descendants with a negative `z-index`, over its
   // background and under everything else in it (CSS 2.1 Appendix E)
   const below = options.negative ? NEGATIVE.get(box) : undefined;
@@ -432,40 +402,157 @@ function paintContent(
     }
   }
 
-  // In-flow and floated descendants first, then the inline content, then the
-  // positioned ones — a flattening of CSS's painting order that is right for
-  // everything short of a document that puts a negative z-index under its own
-  // parent's background.
-  const damage = options.damage;
-  if (box.paintIndex && damage) {
-    for (const child of queryChildIndex(
-      box.paintIndex,
-      damage.y - options.originY,
-      damage.y + damage.height - options.originY,
-    )) {
-      paintBox(ctx, child, options);
-    }
-  } else {
-    for (const child of box.children) {
-      if (child.kind === 'text' || child.kind === 'break') continue;
-      if (layered(box, child) || onLine(box, child)) continue;
-      paintBox(ctx, child, options);
-    }
-  }
-
+  // The flow this box holds, in CSS 2.1 Appendix E's order: the backgrounds
+  // and borders of its in-flow blocks, then its floats, then the lines of
+  // them all, then its positioned boxes. Painted a block at a time instead,
+  // a float was covered by the background of every block after it — the
+  // shaded paragraph beside a floated image hid the image — and a block's
+  // text by the next one's background where a negative margin overlapped
+  // them. A child that is no plain block of the flow — a table, a flex box,
+  // a box that clips, a replaced element — is painted whole in its place.
+  const floats: Box[] = [];
+  const positioned: Box[] = [];
+  paintFlowBackgrounds(ctx, box, options, floats, positioned);
+  for (const float of floats) paintBox(ctx, float, options);
   if (box.lines && visible) paintLines(ctx, box, options);
+  paintFlowLines(ctx, box, options);
   if (box.collapsed && visible) paintCollapsedBorders(ctx, box, options);
 
-  if (box.positionedPaint) {
-    for (const child of box.positionedPaint) {
-      if (options.negative && HOISTED.has(child)) continue;
-      paintPositioned(ctx, child, options);
-    }
-  }
+  // `z-index: auto` and 0 in document order, then the positive ones
+  if (positioned.length > 1) positioned.sort(byZIndex);
+  for (const child of positioned) paintPositioned(ctx, child, options);
   if (level) {
     ctx.restore();
     options.clips!.pop();
     for (const child of level.deferred) paintPositioned(ctx, child, options);
+  }
+}
+
+/** A box's own background, background image and borders, and a table's
+ *  parts' backgrounds; a row or a row group paints none of its own. */
+function paintOwnBackground(
+  ctx: PaintContext,
+  box: Box,
+  options: PaintOptions,
+): void {
+  // A row or a row group paints nothing of its own: its background is
+  // painted in its cells' areas with the table's (`paintPartBackgrounds`),
+  // and its borders are the collapsed grid's or none (CSS 2.1 17.6.1)
+  if (box.kind === 'table-row' || box.kind === 'table-row-group') return;
+  const style = box.style;
+  if (box !== options.canvasSource) {
+    paintBackground(ctx, box, options);
+    if (style.backgroundImage) {
+      const area = clampRect(
+        options,
+        Math.round(box.x + options.originX),
+        Math.round(frameY(box) + options.originY),
+        Math.ceil(box.width),
+        Math.ceil(frameHeight(box)),
+      );
+      if (area) {
+        paintBackgroundImage(
+          ctx,
+          style,
+          area,
+          paddingBox(box, options),
+          options,
+        );
+      }
+    }
+  }
+  if (!box.bordersCollapsed) paintBorders(ctx, box, options);
+  if (box.kind === 'table') paintPartBackgrounds(ctx, box, options);
+}
+
+/** The children of a box a paint may reach, in document order: where the
+ *  box keeps a viewport index, those whose ink meets the damage — which
+ *  leaves its positioned children out, for `positionedPaint` to give. */
+function paintedChildren(box: Box, options: PaintOptions): readonly Box[] {
+  const damage = options.damage;
+  if (!box.paintIndex || !damage) return box.children;
+  return queryChildIndex(
+    box.paintIndex,
+    damage.y - options.originY,
+    damage.y + damage.height - options.originY,
+  );
+}
+
+/** Whether a child is a plain block of its parent's flow, whose background
+ *  goes with the flow's and whose lines with its lines: an in-flow block
+ *  that clips nothing and is no stacking context holding a negative
+ *  `z-index`, in a parent that is no flex box, where an item is painted
+ *  whole (CSS Flexbox 5.4). */
+function inFlow(parent: Box, child: Box, options: PaintOptions): boolean {
+  if (child.kind !== 'block' || parent.kind === 'flex') return false;
+  if (options.negative && NEGATIVE.has(child)) return false;
+  const style = child.style;
+  return style.overflowX === 'visible' && style.overflowY === 'visible';
+}
+
+/**
+ * The first pass over a box's flow: each plain block's background and
+ * borders, in document order and at any depth, while the floats and the
+ * positioned boxes met on the way are kept for their own passes. A child
+ * that is no plain block is left for the last pass, where it is painted
+ * whole among the lines: its text is text, over every block background,
+ * and it stands beside the floats rather than under them.
+ */
+function paintFlowBackgrounds(
+  ctx: PaintContext,
+  box: Box,
+  options: PaintOptions,
+  floats: Box[],
+  positioned: Box[],
+): void {
+  const indexed = box.paintIndex !== null && !!options.damage;
+  if (indexed && box.positionedPaint) {
+    for (const child of box.positionedPaint) {
+      if (!(options.negative && HOISTED.has(child))) positioned.push(child);
+    }
+  }
+  for (const child of paintedChildren(box, options)) {
+    if (child.kind === 'text' || child.kind === 'break') continue;
+    if (layered(box, child)) {
+      if (!indexed && !(options.negative && HOISTED.has(child))) {
+        positioned.push(child);
+      }
+      continue;
+    }
+    if (onLine(box, child)) continue;
+    if (child.isFloat) {
+      floats.push(child);
+      continue;
+    }
+    if (!inFlow(box, child, options) || !intersects(child, options)) continue;
+    if (child.style.visibility === 'visible') {
+      paintOwnBackground(ctx, child, options);
+    }
+    paintFlowBackgrounds(ctx, child, options, floats, positioned);
+  }
+}
+
+/** The last pass over a box's flow: the plain blocks' markers and lines,
+ *  and the children painted whole, in document order and at any depth,
+ *  over the floats. */
+function paintFlowLines(
+  ctx: PaintContext,
+  box: Box,
+  options: PaintOptions,
+): void {
+  for (const child of paintedChildren(box, options)) {
+    if (child.kind === 'text' || child.kind === 'break') continue;
+    if (layered(box, child) || onLine(box, child) || child.isFloat) continue;
+    if (!inFlow(box, child, options)) {
+      paintBox(ctx, child, options);
+      continue;
+    }
+    if (!intersects(child, options)) continue;
+    if (child.style.visibility === 'visible') {
+      if (child.marker) paintMarker(ctx, child.marker, options);
+      if (child.lines) paintLines(ctx, child, options);
+    }
+    paintFlowLines(ctx, child, options);
   }
 }
 
@@ -1209,6 +1296,10 @@ function paintLines(ctx: PaintContext, box: Box, options: PaintOptions): void {
     paintSelection(ctx, line, options);
   }
 
+  // an underline goes under the glyphs, a line through over them (CSS 2.1
+  // Appendix E): a descender crosses its own underline
+  paintRules(ctx, visible, dx, dy, options.scale ?? 1, 'under');
+
   // One `draw` per layout: a paragraph is a single glyph composite, and
   // drawing it once per line would be one X request per line for the same
   // batch.
@@ -1230,19 +1321,35 @@ function paintLines(ctx: PaintContext, box: Box, options: PaintOptions): void {
     }
   }
 
+  paintRules(ctx, visible, dx, dy, options.scale ?? 1, 'over');
   for (const line of visible) {
+    for (const placed of line.atomics) paintBox(ctx, placed.box, options);
+  }
+}
+
+/** One pass of the lines' run rules, `under` or `over` their glyphs. */
+function paintRules(
+  ctx: PaintContext,
+  lines: LineBox[],
+  dx: number,
+  dy: number,
+  scale: number,
+  rules: 'under' | 'over',
+): void {
+  for (const line of lines) {
     for (const text of line.texts) {
       const natural = text.layout.lines[text.layoutLine];
-      if (natural)
+      if (natural) {
         paintRunRules(
           ctx,
           natural,
           text.drawX + dx,
           text.drawY + dy,
-          options.scale ?? 1,
+          scale,
+          rules,
         );
+      }
     }
-    for (const placed of line.atomics) paintBox(ctx, placed.box, options);
   }
 }
 

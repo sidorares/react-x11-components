@@ -1621,12 +1621,11 @@ function anonymousOf(
   return box;
 }
 
+/** White space alone, which the table fix-up drops between the parts of a
+ *  table whether it is kept or not (CSS 2.1 17.2.1, rule 1). Kept, under
+ *  `white-space: pre`, it made a cell of the line break before every row. */
 function isDroppableWhitespace(box: Box): boolean {
-  if (box.kind !== 'text' || !BLANK.test(box.text)) return false;
-  // preserved white space is content, and goes in a cell like any other
-  // (CSS 2.1 17.2.1, rule 1)
-  const ws = box.style.whiteSpace;
-  return ws !== 'pre' && ws !== 'pre-wrap';
+  return box.kind === 'text' && BLANK.test(box.text);
 }
 
 const BLANK = /^\s*$/;

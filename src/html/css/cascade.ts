@@ -23,7 +23,13 @@ import type { Element } from 'domhandler';
 import { attr, tagOf } from '../dom.js';
 import { mediaMatches, readIdent, startsIdent } from './parse.js';
 import type { Declaration, StyleRule, Stylesheet } from './parse.js';
-import { applyDeclaration, blockify, inherit, initialStyle } from './style.js';
+import {
+  applyDeclaration,
+  blockify,
+  decorate,
+  inherit,
+  initialStyle,
+} from './style.js';
 import type { ComputedStyle, RootLook } from './style.js';
 import { parseDeclarations } from './parse.js';
 import type { UnitContext } from './values.js';
@@ -644,6 +650,7 @@ export class Cascade {
     }
 
     blockify(style, inFlexContainer);
+    decorate(style);
     return style;
   }
 

@@ -3350,6 +3350,64 @@ test("a row's background is its cells', and a row group has no borders", async (
   assert.ok(!fills.some((f) => f.style === parseColor('#00ff00')), 'no border');
 });
 
+test('an underline reaches the text of what is inside, in its own colour', async () => {
+  // CSS 2.1 16.3.1: a decoration is propagated to an element's in-flow
+  // descendants, drawn in the colour of the element that set it, so an
+  // underlined link's <strong> is underlined; not to a float, an absolute
+  // box or the inside of an inline block; and `none` takes none away
+  const { node } = await render(
+    '<a href="#" style="color:#0000ff"><strong id="s">x</strong></a>' +
+      '<div style="text-decoration:underline;color:#ff0000">' +
+      '<p id="p" style="color:#0000ff">y<span id="f" style="float:left">z</span>' +
+      '<span id="i" style="display:inline-block">w</span>' +
+      '<span id="n" style="text-decoration:none">v</span></p></div>' +
+      '<u><s id="both">u</s></u>',
+  );
+  const el = view(node);
+  const style = (id: string) =>
+    (
+      boxOf(el, id) as unknown as {
+        style: { underline: string | null; lineThrough: string | null };
+      }
+    ).style;
+  assert.strictEqual(style('s').underline, '#0000ff', "the link's colour");
+  assert.strictEqual(style('p').underline, '#ff0000', "the div's colour");
+  assert.strictEqual(style('n').underline, '#ff0000', '`none` removes none');
+  assert.strictEqual(style('f').underline, null, 'not a float');
+  assert.strictEqual(style('i').underline, null, 'nor an inline block');
+  assert.ok(style('both').underline && style('both').lineThrough, 'both');
+});
+
+test("white space between a table's parts is no cell, kept or not", async () => {
+  // CSS 2.1 17.2.1, rule 1: under `white-space: pre` the line breaks
+  // between a table's rows made a cell of their own before each
+  const { node } = await render(
+    '<div id="t" style="display:table;white-space:pre">\n  ' +
+      '<div style="display:table-row">\n    ' +
+      '<div id="c" style="display:table-cell">x</div>\n  </div>\n</div>',
+  );
+  const el = view(node);
+  const [t, c] = ['t', 'c'].map((id) => boxOf(el, id));
+  assert.deepStrictEqual([c.x, c.y], [t.x, t.y], 'the cell is the first');
+});
+
+test('a float is painted over the backgrounds of the blocks after it', async () => {
+  // CSS 2.1 Appendix E: every in-flow block's background, then the floats,
+  // then the lines. Painted a block at a time, the shaded paragraph beside
+  // a floated image hid the image under its background.
+  const { node } = await render(
+    '<div style="float:left;width:50px;height:50px;background:#00ff00"></div>' +
+      '<p style="margin:0;background:#ff0000">text</p>' +
+      '<div style="float:left;width:50px;height:50px;background:#0000ff"></div>',
+  );
+  const fills = await fillsOf(view(node));
+  const at = (colour: string) =>
+    fills.findIndex((f) => f.style === parseColor(colour));
+  assert.ok(at('#ff0000') >= 0, 'the paragraph has its background');
+  assert.ok(at('#00ff00') > at('#ff0000'), 'the float before it goes over it');
+  assert.ok(at('#0000ff') > at('#00ff00'), 'and the floats keep their order');
+});
+
 test('nothing loads without onResource, and every reference is offered to it', async () => {
   const asked: string[] = [];
   await renderX11(

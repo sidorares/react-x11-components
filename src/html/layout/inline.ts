@@ -33,7 +33,7 @@
 import { codeUnitOffsets } from '../../internal/text.js';
 import type { TextRun } from '../../richtext/index.js';
 import type { ComputedStyle } from '../css/style.js';
-import { inkColor, isTransparent, resolve } from '../css/values.js';
+import { isTransparent, resolve } from '../css/values.js';
 import type {
   AtomicPlacement,
   Box,
@@ -1537,26 +1537,21 @@ function runFor(text: string, style: ComputedStyle): TextRun {
   // A background is not the run's: the inline box it belongs to paints it,
   // behind every fragment of the box — nested elements' text included — and
   // out to its padding (`paintInlineBoxes`).
-  if (style.textDecorationLine === 'underline') {
-    run.underline = inkColor(
-      style.textDecorationColor ?? 'currentColor',
-      style.color,
-    );
+  // the element's own decorations and the ones propagated to it, in the
+  // colours of the elements that set them (`decorate`)
+  if (style.underline) {
+    run.underline = style.underline;
     // CSS's five rule styles and SGR 4's five are the same set under two
     // names; richtext speaks SGR's, so `solid` is `single` and `wavy` is
     // `curly`. The other three are spelled identically.
     run.underlineStyle =
-      style.textDecorationStyle === 'wavy'
+      style.underlineStyle === 'wavy'
         ? 'curly'
-        : style.textDecorationStyle === 'solid'
+        : style.underlineStyle === 'solid'
           ? 'single'
-          : style.textDecorationStyle;
-  } else if (style.textDecorationLine === 'line-through') {
-    run.strike = inkColor(
-      style.textDecorationColor ?? 'currentColor',
-      style.color,
-    );
+          : style.underlineStyle;
   }
+  if (style.lineThrough) run.strike = style.lineThrough;
   return run;
 }
 
