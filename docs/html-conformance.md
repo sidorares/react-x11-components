@@ -121,6 +121,7 @@ separately, and there are six.
 | 51     | OpenType features                                  | 5,471 (93%) | 4,979 (84%) |
 | 52     | text shadows                                       | 5,471 (93%) | 4,979 (84%) |
 | 53     | a raised box's own line height                     | 5,471 (93%) | 4,979 (84%) |
+| 54     | `::marker`                                         | 5,471 (93%) | 4,979 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -1664,6 +1665,21 @@ minmax(16rem, 1fr))` are the layouts of half the pages written this
      only theirs — `<span style="font-size:20px"><small>x</small></span>`
      is 26px tall where a browser makes it 32 — since counting its own
      would take every paragraph with such a box off the one-layout path.
+
+### Round 54
+
+145. **`::marker` rules were read and not applied.** A selector ending in
+     `::marker` parsed, matched nothing and styled nothing, so every list a
+     stylesheet styles through its markers was set in its items' colour:
+     Tailwind's `prose` greys its bullets and mutes its numbers, and both
+     came out in the text's colour, and a list of `list-style: none` with
+     a `::marker` `content` — a checklist — had no marker at all. A list
+     item's `::marker` style is computed now, inheriting from the item: an
+     outside marker is set in its colour, font, weight and slant, an inside
+     one is an inline box in it, and a `content` of strings is the marker
+     text, as written, while the list counts on under it. `content: none`
+     is no marker. Found rendering a page styled as `prose` beside a
+     browser; CSS 2.1 has no `::marker`, and neither suite moved.
 
 ## What `<Html>` supports
 

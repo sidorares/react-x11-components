@@ -5434,6 +5434,38 @@ test("a table in an aligned cell keeps its cells' text at their start", async ()
   assert.strictEqual(align('c3'), 'center', "the author's own centring");
 });
 
+test('a ::marker rule styles the marker, and not its item', async () => {
+  // `::marker` rules were read and never applied: Tailwind's `prose` sets
+  // its bullets in a grey, and they came out in the text's colour
+  const { node } = await render(
+    '<style>li::marker{color:#ff0000;font-weight:700}' +
+      '.arrow::marker{content:"-> ";color:#0000ff}</style>' +
+      '<ul><li id="a">item</li></ul>' +
+      '<ol><li id="b">one</li><li id="c" class="arrow">two</li>' +
+      '<li id="d">three</li></ol>' +
+      '<ul><li id="e" style="list-style-position:inside">inside</li></ul>',
+  );
+  const el = view(node);
+  type Marked = {
+    style: ComputedStyle;
+    marker: { text: string; style: ComputedStyle | null } | null;
+  };
+  const item = (id: string) => boxOf(el, id) as unknown as Marked;
+  const a = item('a');
+  assert.strictEqual(a.marker?.style?.color, '#ff0000');
+  assert.strictEqual(a.marker?.style?.fontWeight, 700);
+  assert.notStrictEqual(a.style.color, '#ff0000', 'not the item');
+  assert.strictEqual(a.style.fontWeight, 400);
+  // a `content` is what the marker is set as, and the list counts on
+  assert.strictEqual(item('c').marker?.text, '-> ');
+  assert.strictEqual(item('c').marker?.style?.color, '#0000ff');
+  assert.strictEqual(item('d').marker?.text, '3.');
+  // an inside marker is an inline box in the marker's style
+  const inside = (boxOf(el, 'e') as unknown as { children: Marked[] })
+    .children[0];
+  assert.strictEqual(inside.style.color, '#ff0000');
+});
+
 test('a closed details shows its summary, and an open one all of it', async () => {
   // a closed `<details>` showed everything in it: an FAQ of them was every
   // answer at once
