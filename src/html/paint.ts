@@ -59,7 +59,7 @@ export interface PaintContext extends FillContext {
   beginPath?(): void;
   rect?(x: number, y: number, w: number, h: number): void;
   roundRect?(x: number, y: number, w: number, h: number, radii: number[]): void;
-  fill?(): void;
+  fill?(rule?: 'nonzero' | 'evenodd'): void;
   clip?(): void;
   drawImage?(image: unknown, ...args: number[]): void;
   /** ntk's X11 context has patterns; the Cocoa one does not, and tiles. */
@@ -1208,6 +1208,7 @@ function paintBorders(
   const w = Math.round(left + box.width) - x;
   const h = Math.round(top + frameHeight(box)) - y;
   if (w <= 0 || h <= 0) return;
+  if (roundedRing(ctx, box, x, y, w, h, options)) return;
 
   const edge = (
     ex: number,
@@ -1261,6 +1262,69 @@ function paintBorders(
       false,
     );
   }
+}
+
+/**
+ * A rounded box's border as the ring between its border edge and its
+ * padding edge, each rounded, where every side that has a border has one
+ * of the same colour and a solid rule: a card's or a button's. Drawn
+ * straight, its corners were square over the background's rounded ones,
+ * and an accent border down one side did not follow the corner. The inner
+ * radius is the outer less the wider border at that corner (CSS
+ * Backgrounds 3, 5.2). False where the border is not such a one, and it is
+ * drawn a side at a time.
+ */
+function roundedRing(
+  ctx: PaintContext,
+  box: Frame,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  options: PaintOptions,
+): boolean {
+  const s = box.style;
+  const radii = s.borderRadius;
+  if (!(radii[0] || radii[1] || radii[2] || radii[3])) return false;
+  if (!ctx.roundRect || !ctx.fill || !ctx.beginPath) return false;
+  const sides: [number, string, string][] = [
+    [box.borderTop, s.borderTopColor, s.borderTopStyle],
+    [box.borderRight, s.borderRightColor, s.borderRightStyle],
+    [box.borderBottom, s.borderBottomColor, s.borderBottomStyle],
+    [box.borderLeft, s.borderLeftColor, s.borderLeftStyle],
+  ];
+  let color: string | null = null;
+  for (const [width, ink, style] of sides) {
+    if (!width) continue;
+    if (style !== 'solid' || (color !== null && ink !== color)) return false;
+    color = ink;
+  }
+  if (color === null) return true;
+  if (isTransparent(color)) return true;
+  const rect = clampRect(options, x, y, w, h);
+  if (!rect) return true;
+  const top = box.borderTop;
+  const right = box.borderRight;
+  const bottom = box.borderBottom;
+  const left = box.borderLeft;
+  const inner = [
+    radii[0] - Math.max(top, left),
+    radii[1] - Math.max(top, right),
+    radii[2] - Math.max(bottom, right),
+    radii[3] - Math.max(bottom, left),
+  ].map((r) => Math.max(0, r));
+  ctx.fillStyle = inkColor(color, s.color);
+  ctx.beginPath();
+  ctx.roundRect(rect.x, rect.y, rect.w, rect.h, radii.slice());
+  ctx.roundRect(
+    rect.x + left,
+    rect.y + top,
+    Math.max(0, rect.w - left - right),
+    Math.max(0, rect.h - top - bottom),
+    inner,
+  );
+  ctx.fill('evenodd');
+  return true;
 }
 
 /**
