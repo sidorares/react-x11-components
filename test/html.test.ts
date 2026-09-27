@@ -4803,3 +4803,48 @@ metric(
     });
   },
 );
+
+// --- a block in an inline box ------------------------------------------------
+
+test('an inline box is broken around a block in it, and its pieces lose their edges there (CSS 2.1 9.2.1.1)', async () => {
+  const { node } = await render(
+    '<style>body{margin:0}p{margin:0}</style>' +
+      // old mail: paragraphs in a <font>
+      '<div><font face="serif"><p id="one">One</p><p id="two">Two</p></font></div>' +
+      // a link around a card's blocks
+      '<div><a href="#">x<div id="card">Card</div>y</a></div>' +
+      // an image set display: block in a link has no line around it
+      '<div id="banner"><a href="#"><img id="img" width="40" height="20" style="display:block"></a></div>' +
+      '<div><span id="s" style="border:2px solid">a<div>b</div>c</span></div>',
+    400,
+  );
+  const el = view(node);
+  const one = boxOf(el, 'one');
+  const two = boxOf(el, 'two');
+  assert.ok(two.y >= one.y + one.height, 'stacked, not side by side');
+  assert.strictEqual(one.width, 400, 'as wide as a block');
+  assert.strictEqual(boxOf(el, 'card').width, 400);
+  assert.strictEqual(
+    boxOf(el, 'img').y,
+    boxOf(el, 'banner').y,
+    'no line above it',
+  );
+  // the span's pieces: the first keeps its start edge, the last its end
+  const pieces: (LaidBox & { borderLeft: number; borderRight: number })[] = [];
+  const walk = (box: LaidBox): void => {
+    const kind = (box as unknown as { kind: string }).kind;
+    if (box.el?.attribs.id === 's' && kind === 'inline') {
+      pieces.push(box as (typeof pieces)[number]);
+    }
+    box.children.forEach(walk);
+  };
+  walk((el as unknown as { _tree: { root: LaidBox } })._tree.root);
+  assert.strictEqual(pieces.length, 2);
+  assert.deepStrictEqual(
+    pieces.map((p) => [p.borderLeft, p.borderRight]),
+    [
+      [2, 0],
+      [0, 2],
+    ],
+  );
+});
