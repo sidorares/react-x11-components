@@ -7887,3 +7887,102 @@ test('a pseudo-element no rule gives a content to is none, whatever reaches it',
     'a ::before box and its text',
   );
 });
+
+// --- line-clamp and text-overflow ------------------------------------------------
+
+test('line-clamp and text-overflow are read', async () => {
+  const { node } = await render(
+    '<p id="a" style="-webkit-line-clamp:2">a</p>' +
+      '<p id="b" style="line-clamp:3;line-clamp:none">b</p>' +
+      '<p id="c" style="-webkit-line-clamp:2;-webkit-line-clamp:0">c</p>' +
+      '<p id="d" style="text-overflow:ellipsis">d</p>' +
+      '<p id="e" style="text-overflow:clip ellipsis">e</p>' +
+      '<p id="f" style="text-overflow:ellipsis;text-overflow:fade">f</p>',
+  );
+  const el = view(node);
+  const style = (id: string) =>
+    (
+      boxOf(el, id) as unknown as {
+        style: { lineClamp: number | null; textOverflow: string };
+      }
+    ).style;
+  assert.strictEqual(style('a').lineClamp, 2);
+  assert.strictEqual(style('b').lineClamp, null);
+  // nought is no clamp, and the one before stands
+  assert.strictEqual(style('c').lineClamp, 2);
+  assert.strictEqual(style('d').textOverflow, 'ellipsis');
+  // two values name the start and the end, and a line's end is cut
+  assert.strictEqual(style('e').textOverflow, 'ellipsis');
+  assert.strictEqual(style('f').textOverflow, 'ellipsis');
+});
+
+metric(
+  'a clamped block shows its first lines, the last cut with an ellipsis',
+  async () => {
+    // Tailwind's line-clamp-2: a card's description, however long, two
+    // lines tall
+    const text =
+      'Boost your conversion rate with a layout that keeps every card the ' +
+      'same height, however long its description runs on and on and on.';
+    const { node } = await render(
+      '<style>body{margin:0} p{margin:0;width:160px;line-height:20px}</style>' +
+        `<p id="a" style="overflow:hidden;display:-webkit-box;` +
+        `-webkit-box-orient:vertical;-webkit-line-clamp:2">${text}</p>` +
+        `<p id="b">${text}</p>` +
+        // one that is shorter than its clamp is all there
+        `<p id="c" style="-webkit-line-clamp:2">Short.</p>`,
+    );
+    const el = view(node);
+    const clamped = linesOf(el, 'a');
+    assert.strictEqual(clamped.length, 2);
+    assert.strictEqual(boxOf(el, 'a').height, 40);
+    assert.ok(linesOf(el, 'b').length > 2, 'the text is longer than two');
+    const layout = clamped[1].texts[0].layout as unknown as {
+      truncated: boolean;
+    };
+    assert.strictEqual(layout.truncated, true, 'cut, with its ellipsis');
+    assert.strictEqual(linesOf(el, 'c').length, 1);
+  },
+);
+
+metric(
+  "truncate: a line that clips ends in an ellipsis at the box's width",
+  async () => {
+    const { node } = await render(
+      '<style>body{margin:0} div{width:120px;overflow:hidden;' +
+        'text-overflow:ellipsis;white-space:nowrap}</style>' +
+        '<div id="a">leslie.alexander@example.com and more</div>' +
+        '<div id="b">Short</div>' +
+        // and a line that does not clip is not cut, however long
+        '<div id="c" style="overflow:visible">leslie.alexander@example.com</div>',
+    );
+    const el = view(node);
+    const [cut] = linesOf(el, 'a');
+    assert.strictEqual(linesOf(el, 'a').length, 1);
+    assert.ok(cut.width <= 120, `within the box: ${cut.width}`);
+    const truncated = (id: string) =>
+      (linesOf(el, id)[0].texts[0].layout as unknown as { truncated: boolean })
+        .truncated;
+    assert.strictEqual(truncated('a'), true);
+    assert.strictEqual(truncated('b'), false);
+    assert.ok(linesOf(el, 'c')[0].width > 120, 'run past the box');
+  },
+);
+
+metric(
+  'a clamped block laid out a line at a time is cut to its lines',
+  async () => {
+    // an image on a line lays the block out a line at a time, which the
+    // engine's clamp does not see: the lines past it are dropped, with no
+    // ellipsis, and the block ends where its last line does
+    const { node } = await render(
+      '<style>body{margin:0} p{margin:0;width:160px;line-height:20px}</style>' +
+        '<p id="a" style="-webkit-line-clamp:2"><img style="width:10px;' +
+        'height:10px"> Boost your conversion rate with a layout that keeps ' +
+        'every card the same height, however long its description runs.</p>',
+    );
+    const el = view(node);
+    assert.strictEqual(linesOf(el, 'a').length, 2);
+    assert.strictEqual(boxOf(el, 'a').height, 40);
+  },
+);

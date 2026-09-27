@@ -58,6 +58,8 @@ export interface FontsLike {
       align?: string;
       direction?: string;
       maxLines?: number;
+      /** What a `maxLines` cut looks like: an ellipsis, or nothing. */
+      overflow?: 'clip' | 'ellipsis';
     },
   ): TextLayoutLike;
   match(
@@ -148,6 +150,48 @@ export interface InlineOptions {
  * relative to the containing block's content box; the caller translates.
  */
 export function layoutInline(block: Box, options: InlineOptions): InlineResult {
+  const result = layoutLines(block, options);
+  const clamp = block.style.lineClamp;
+  // A clamped block shows its first lines and is as tall as they are. The
+  // one-layout paths below had the engine cut them, with its ellipsis; a
+  // block laid out a line at a time — an image on a line, a float beside
+  // it — is cut here, and ends where its last line does, with none.
+  if (clamp !== null && result.lines.length > clamp) {
+    const lines = result.lines.slice(0, clamp);
+    const last = lines[clamp - 1];
+    let widest = 0;
+    for (const line of lines) widest = Math.max(widest, line.width);
+    return { lines, height: last.y + last.height, width: widest };
+  }
+  return result;
+}
+
+/**
+ * The cut a block's own style asks of its text, as the engine takes it:
+ * `line-clamp`'s lines, or the one line of a `white-space: nowrap` block
+ * that clips with `text-overflow: ellipsis` — Tailwind's `truncate`, cut at
+ * the box's width with an ellipsis. The engine cuts the line where it
+ * would have broken it and makes room for the ellipsis inside its last
+ * word, so a line of words shows a little less of them than a browser,
+ * which fills the line with as much of the text as fits.
+ */
+function cutOf(
+  style: ComputedStyle,
+): { maxLines: number; overflow: 'ellipsis' } | null {
+  if (style.lineClamp !== null) {
+    return { maxLines: style.lineClamp, overflow: 'ellipsis' };
+  }
+  if (
+    style.textOverflow === 'ellipsis' &&
+    !wraps(style) &&
+    style.overflowX !== 'visible'
+  ) {
+    return { maxLines: 1, overflow: 'ellipsis' };
+  }
+  return null;
+}
+
+function layoutLines(block: Box, options: InlineOptions): InlineResult {
   const fonts = options.fonts;
   const items: Item[] = [];
   collect(block, items, options.width, fonts, block.style);
@@ -258,11 +302,13 @@ export function layoutInline(block: Box, options: InlineOptions): InlineResult {
       );
       runs.push(item.run);
     }
+    const cut = cutOf(style);
     const layout = fonts.layout(runs, base, {
-      maxWidth: wraps(style) ? options.width : undefined,
+      maxWidth: wraps(style) || cut ? options.width : undefined,
       lineHeight: lineHeightMul,
       align,
       direction: style.direction,
+      ...cut,
     });
     LAYOUT_RUNS.set(layout, runs);
     const lines: LineBox[] = [];
