@@ -77,6 +77,7 @@ separately, and there are six.
 | 7      | margins through empty blocks, and their floats     | 4,982 (85%) | 4,545 (77%) |
 | 8      | stylesheet encodings, clips, replaced sizes        | 5,042 (86%) | 4,606 (78%) |
 | 9      | table baselines and backgrounds, media, sizes      | 5,073 (86%) | 4,637 (79%) |
+| 10     | paint order, propagated decorations                | 5,100 (87%) | 4,660 (79%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -630,6 +631,49 @@ Round 9 lost none. Two clusters it looked at are not layout, and are left:
   than the text around it. The runner gives every family one size, so the
   tests built on it wrap where a browser's do not. 12 tests.
 
+### Round 10
+
+62. **A flow was painted a block at a time.** CSS paints a stacking
+    context's in-flow block backgrounds and borders first, then its floats,
+    then the lines of them all, then its positioned boxes (Appendix E). A
+    float was covered by the background of every block after it, so the
+    shaded paragraph beside a floated image hid the image, and a block's
+    text by the next one's background where a negative margin overlapped
+    them. The painter makes those passes now. A child that is no plain block
+    of the flow — a table, a flex box, a box that clips, a replaced element
+    — is still painted whole, in the last pass among the lines: it stands
+    beside the floats rather than under them, and its text is over every
+    block background like the lines'. 21 tests on X11 and 16 on macOS.
+63. **A text decoration stayed on its element.** An underline or a line
+    through is propagated to an element's in-flow descendants and drawn in
+    the colour of the element that set it (16.3.1): an underlined link's
+    `<strong>`, an `<em>` inside a `<u>`, the cells of an underlined table.
+    Not a float, an absolute box or the inside of an inline block, and
+    `text-decoration: none` takes none away. 7 tests.
+64. **An underline was drawn over its text.** It goes under the glyphs and a
+    line through over them (Appendix E), so a descender crosses its own
+    underline. The decoration one element propagates in its colour showed
+    through another's text in another colour: the one test item 63 would
+    otherwise have lost.
+65. **White space between a table's parts made a cell.** Under
+    `white-space: pre` the line breaks between rows were kept, and each
+    became a cell before its row; rule 1 of 17.2.1 drops them whatever
+    `white-space` says. The six tests it covers draw Ahem glyphs, and are
+    near misses now rather than a row out.
+
+Round 10 lost one test, `margin-collapse-037`, by 25 pixels of
+antialiasing: the reference's paragraph now paints its descenders over
+the green block after it, as CSS orders it, where the test's green is an
+absolute box over them.
+
+One more gap found, for the upstream list beside `vertical-align` on text:
+
+- **A word wider than its line is broken.** CSS lets an unbreakable word
+  overflow its box (`overflow-wrap: normal`), and every text engine here
+  breaks it at a grapheme instead — ntk's `_forceBreak`, CoreText's and
+  DirectWrite's line breakers alike. None takes an option not to. 11
+  tests, and a long URL in a narrow mail column.
+
 ## What `<Html>` supports
 
 From the pass rates of the tests that use each feature, at the fixes above,
@@ -651,7 +695,7 @@ checked against the code.
 | CSS tables (`display: table-*`), `table-layout`    | 250   | 81%     | **supported**: HTML tables and anonymous ones, both border models, captions, fixed layout with `<col>` widths and column backgrounds; `visibility: collapse` and baseline alignment are not              |
 | `::before`, `::after`, `content`, counters, quotes | 332   | 86%     | **supported**; an image in `content` is not                                                                                                                                                              |
 | `::first-letter`, `::first-line`                   | 395   | 19–100% | `::first-letter` **supported**; `::first-line` **missing**                                                                                                                                               |
-| `z-index` stacking                                 | 152   | 73%     | **partial**: a negative `z-index` goes under its stacking context's flow; a context paints block by block, where CSS paints every block background before any text                                       |
+| `z-index` stacking                                 | 152   | 73%     | **supported**: Appendix E's order — block backgrounds, floats, lines, positioned boxes by `z-index` — with a table, a flex box or a box that clips painted whole among the lines                         |
 | `clip`                                             | 44    | 100%    | **supported**                                                                                                                                                                                            |
 | bidi: `direction`, `unicode-bidi`                  | 265   | 68%     | **partial**: shaping and the bidi algorithm are the engine's, a line's pieces are ordered by UAX #9's L2; an override that crosses a padded element is resolved on each side of it                       |
 | selectors                                          | 468   | 94%     | **supported** except `::first-line`                                                                                                                                                                      |
