@@ -315,9 +315,12 @@ and `link`, `dir`, and `align`. A table's `align` places the table
 (`center` gives it auto margins, `left` and `right` float it); `<center>`,
 and `align` on a div, a cell, a row or a row group, align the blocks in
 them as well as their text, as browsers do with `text-align:
--webkit-center`, which is read too. A table with auto margins is centred
-once it has shrunk to its columns, so a mail's button, a one-cell
-`<table align="center">`, stands in the middle.
+-webkit-center`, which is read too — and a table they hold is centred,
+its cells' text left at their start, as a browser resets that alignment on
+a table: the body table of a mail stands in the middle of its
+`<td align="center">` with its text where the mail wrote it. A table with
+auto margins is centred once it has shrunk to its columns, so a mail's
+button, a one-cell `<table align="center">`, stands in the middle.
 
 **Text:** `font` and its longhands, `line-height`, `text-align`,
 `text-indent`, `text-transform`, `letter-spacing` and `word-spacing` (the

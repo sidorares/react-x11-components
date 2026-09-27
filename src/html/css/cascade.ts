@@ -761,6 +761,16 @@ export class Cascade {
       }
     }
 
+    // A table never keeps HTML's alignment, `-webkit-center` and its kin:
+    // the `<td align="center">` every mail centres its body table in
+    // centres the table, and the text in its cells stays at their start —
+    // as Blink resets it ("tables never support the -webkit-* values for
+    // text-align"). An author's own `text-align: center` is not HTML's, and
+    // is inherited into the table as it always was.
+    if (style.alignBlocks !== null && tagOf(el) === 'table') {
+      style.textAlign = 'start';
+      style.alignBlocks = null;
+    }
     blockify(style, inFlexContainer);
     decorate(style);
     return style;
