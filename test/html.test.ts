@@ -6316,3 +6316,26 @@ metric("pre's trailing spaces take room, where a line's hang", async () => {
   const spaced = await widthOf('ab  ');
   assert.ok(spaced > bare * 1.8, `${spaced} against ${bare}`);
 });
+
+// --- clearance and the margins of an empty block -----------------------------------
+
+test('an empty cleared block ends its parent where its collapsed margin ends', async () => {
+  // its margins collapse to one, 140px, and its top border edge is its top
+  // margin's 40px inside it, where clearance puts it: below the float
+  // (CSS 2.1 8.3.1, 10.6.3). The parent is the float and the other 100px:
+  // the margin is not spent in the clearance
+  const { node } = await render(
+    '<style>body{margin:0}#p{border-top:1px solid}' +
+      '#f{float:left;width:10px;height:100px}' +
+      '#c{clear:left;margin:40px 0 140px}' +
+      '#s{margin-bottom:140px}</style>' +
+      '<div id="p"><div id="f"></div><div id="c"></div></div>' +
+      '<div id="q" style="border-top:1px solid"><div id="f2" ' +
+      'style="float:left;width:10px;height:100px"></div>' +
+      '<div style="clear:left;margin:40px 0 80px"></div><div id="s"></div></div>',
+  );
+  const el = view(node);
+  assert.strictEqual(boxOf(el, 'p').height, 201, 'the border and 200px');
+  // and one that following empty blocks' margins collapse with
+  assert.strictEqual(boxOf(el, 'q').height, 201);
+});
