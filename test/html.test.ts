@@ -5517,6 +5517,25 @@ metric(
   },
 );
 
+metric(
+  ':root is the html element, not every element at the top of a fragment',
+  async () => {
+    const { el } = await renderWithBytes(
+      '<style>:root { --c: #00ff00; margin-left: 30px } p { color: var(--c) }</style>' +
+        '<p id="p">x</p>',
+      {},
+    );
+    const p = boxOf(el, 'p') as unknown as {
+      x: number;
+      style: Record<string, unknown>;
+    };
+    // the property reaches the paragraph through the html a browser implies
+    assert.strictEqual(p.style.color, '#00ff00');
+    // and the paragraph does not take the root's margin as its own
+    assert.strictEqual(p.style.marginLeft, 0);
+  },
+);
+
 metric("a var() is read as CSS's tokenizer reads it", async () => {
   const { el } = await renderWithBytes(
     '<html><head><style>body { color: #00ff00; --k: red }' +

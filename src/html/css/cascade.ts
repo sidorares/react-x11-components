@@ -789,6 +789,7 @@ export class Cascade {
             indexed.match = compile(rule.selector, {
               adapter: this._adapter,
               xmlMode: false,
+              pseudos: PSEUDOS,
             } as unknown as Parameters<typeof compile>[1]) as unknown as (
               node: Element,
             ) => boolean;
@@ -866,6 +867,14 @@ export class Cascade {
     return out;
   }
 }
+
+/** `:root` is the `<html>` element: the one a browser implies around a
+ *  fragment, whose style the root box takes (`rootStyle`), and never a
+ *  fragment's top-level elements, which css-select would take for it. */
+const PSEUDOS = {
+  root: (el: Element) =>
+    el.name === 'html' && !(el.parent && isTag(el.parent as Element)),
+};
 
 /** Whether any of these declarations sets a custom property or reads one. */
 function usesVars(declarations: readonly Declaration[]): boolean {

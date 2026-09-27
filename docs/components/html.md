@@ -275,6 +275,16 @@ meets. A percentage that cannot resolve makes the whole value `auto` where
 a plain percentage would be, so `calc(40px + 10%)` against a height nothing
 sets is no height.
 
+**Custom properties:** `--name` declarations and `var()`, with fallbacks
+(CSS Custom Properties 1), which is how Tailwind and most design systems
+write their colours and spacing. A custom property is inherited, and a
+`var()` is replaced before the declaration it is in is read, so it works
+in shorthands and inside `calc()` and colour functions. One that names
+nothing and has no fallback leaves its property `unset`, and a cycle has
+no value. `:root` is the `<html>` element, the one a browser implies
+around a fragment too, so a fragment's `:root { --brand: … }` reaches all
+of it.
+
 **Colours:** the named colours, hex with three, four, six or eight
 digits, and CSS Color 4's functions: `rgb()` and `hsl()` in either the comma
 or the space form, `hwb()`, `lab()`, `lch()`, `oklab()`, `oklch()`, and
