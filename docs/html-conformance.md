@@ -80,6 +80,7 @@ separately, and there are six.
 | 10     | paint order, propagated decorations                | 5,100 (87%) | 4,660 (79%) |
 | 11     | floats beside tall boxes, table widths, clearance  | 5,125 (87%) | 4,685 (79%) |
 | 12     | fixed backgrounds, floats in inline boxes          | 5,145 (87%) | 4,705 (80%) |
+| 13     | SVG, replaced sizes, objects                       | 5,219 (89%) | 4,779 (81%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -722,6 +723,39 @@ engines breaking a word wider than its line (the upstream list, above):
 an inline-block of `12345678` capped at `max-width: 4em` is two lines
 where CSS has it one, overflowing.
 
+### Round 13
+
+73. **SVG was not drawn.** An inline `<svg>` was an unknown inline element
+    whose children made no boxes, and SVG bytes failed the image decoder,
+    so a drawing, an SVG image and an SVG background left a hole or
+    nothing. They are drawn by ntk's `SvgView` now, with CSS's part of it
+    here: the intrinsic width, height and ratio a box is sized by, the
+    `viewBox` fitted as `preserveAspectRatio` says, the clip, and the
+    percentages of the viewport, which `SvgView` reads as numbers. XHTML's
+    `<svg:svg>` counts where its prefix is bound to SVG, and a type
+    selector sees it as `svg`. 65 tests, 44 of them the sizing of a
+    replaced element with an SVG as the element.
+74. **A limit on one axis of an image left the other where it was.** An
+    image under `max-width: 100%` in a narrow column was squashed rather
+    than scaled. The height follows the width that was used now, and an
+    image sized by its ratio alone meets its limits by 10.4's table. An
+    `hr` took its intrinsic width, which it has none of, so every rule in a
+    document drew nothing. 5 tests.
+75. **An `<object>` showed its fallback content always.** Where its `data`
+    is an image, it is that image now. 4 tests.
+
+Round 13 lost none. Two more gaps found, for the upstream list:
+
+- **ntk has no hinting.** 68 tests fail on both backends by one row of
+  pixels. Ahem at 16px has a 12.8px ascent, so a square's top edge lands a
+  fifth of a pixel off the grid and is antialiased, where the reference's
+  box is not. Browsers on Linux pass them because FreeType hints the edge
+  onto the grid; CoreText does not hint either.
+- **`SvgView` reads a percentage as a number.** A `width="100%"` in a
+  drawing was a hundred user units. `<Html>` resolves them against the
+  viewport before it hands the tree over, and core's own `<svg>` element
+  still draws them wrong.
+
 ## What `<Html>` supports
 
 From the pass rates of the tests that use each feature, at the fixes above,
@@ -735,7 +769,7 @@ checked against the code.
 | margins, padding, borders                          | 682   | 95%     | **supported**, inline boxes and collapsed table borders included; the `double`/`groove` families are approximations                                                                                      |
 | floats and `clear`                                 | 311   | 46–67%  | **supported**, with gaps: a float inside a paragraph is placed at the paragraph's top, not its line's                                                                                                    |
 | relative and absolute positioning                  | 513   | 84%     | **supported**; an absolute box inside a line takes the line's start for its static position                                                                                                              |
-| backgrounds: colour, image, repeat, position       | 336   | 85%     | **supported**; `background-attachment: fixed` is not                                                                                                                                                     |
+| backgrounds: colour, image, repeat, position       | 336   | 85%     | **supported**, `background-attachment: fixed` and SVG images included                                                                                                                                    |
 | fonts: family, style, weight, size                 | 159   | 81%     | **supported**; `font-variant: small-caps` is not                                                                                                                                                         |
 | line height, `vertical-align`                      | 191   | 72%     | **partial**: one line height per paragraph, where CSS gives each inline box its own; `vertical-align` moves an image or an inline block, not text, which the text engines lay out on one baseline a line |
 | `white-space`                                      | 217   | 46%     | **supported**; collapsing is CSS 2.1's across elements                                                                                                                                                   |
@@ -744,6 +778,7 @@ checked against the code.
 | `::before`, `::after`, `content`, counters, quotes | 332   | 86%     | **supported**; an image in `content` is not                                                                                                                                                              |
 | `::first-letter`, `::first-line`                   | 395   | 19–100% | `::first-letter` **supported**; `::first-line` **missing**                                                                                                                                               |
 | `z-index` stacking                                 | 152   | 73%     | **supported**: Appendix E's order — block backgrounds, floats, lines, positioned boxes by `z-index` — with a table, a flex box or a box that clips painted whole among the lines                         |
+| SVG: inline, as an image, as a background          | 52    | 98%     | **supported**, as ntk's `SvgView` draws it: shapes, paths, `<use>`, gradients and text; no stylesheet rules, filters, masks or clip paths                                                                |
 | `clip`                                             | 44    | 100%    | **supported**                                                                                                                                                                                            |
 | bidi: `direction`, `unicode-bidi`                  | 265   | 68%     | **partial**: shaping and the bidi algorithm are the engine's, a line's pieces are ordered by UAX #9's L2; an override that crosses a padded element is resolved on each side of it                       |
 | selectors                                          | 468   | 94%     | **supported** except `::first-line`                                                                                                                                                                      |
