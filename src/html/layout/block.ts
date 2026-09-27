@@ -477,12 +477,15 @@ function layoutChildren(
    *  of the box only once a child carries a mark, which few do. */
   let open: boolean | null = null;
   /** Whether the margin still hanging collapsed with a top margin that has
-   *  clearance, an empty block cleared past a float's, and what the empty
-   *  blocks after it add to it. The cleared block's own margins went into
-   *  its clearance; the rest stays in this box rather than escape its
-   *  bottom (CSS 2.1 8.3.1, 10.6.3). */
+   *  clearance, an empty block cleared past a float's, and the margin that
+   *  makes: the block's own two and what the empty blocks after it add to
+   *  them. It stays in this box rather than escape its bottom (CSS 2.1
+   *  8.3.1, 10.6.3). */
   let cleared = false;
   let afterClear = 0;
+  /** The cleared block's own top margin: its top border edge is that far
+   *  inside the margin its margins and the ones after it collapse to. */
+  let clearTop = 0;
   // this box's first formatted line is its first child's in flow (CSS 2.1
   // 5.12.1), which its `::first-line` is handed to
   let firstLine = ctx.firstLine ? firstLineOf(box) : null;
@@ -556,10 +559,11 @@ function layoutChildren(
     open = false;
     y = child.y + child.height;
     pendingMargin = child.marginBottom;
-    // cleared, and empty: what follows collapses with a top margin that has
-    // clearance
+    // cleared, and empty: its margins collapse together, and what follows
+    // collapses with them, a top margin that has clearance (CSS 2.1 8.3.1)
     cleared = moved && collapsesThrough(child);
-    afterClear = 0;
+    afterClear = cleared ? collapseMargins(top, child.marginBottom) : 0;
+    clearTop = cleared ? top : 0;
   }
 
   // The last child's bottom margin collapses through the parent's bottom
@@ -583,7 +587,16 @@ function layoutChildren(
   ) {
     return { height: y - contentTop, hanging: pendingMargin };
   }
-  if (cleared) return { height: y + afterClear - contentTop, hanging: 0 };
+  // The cleared block's top border edge is where it would be with a border
+  // at its bottom, its top margin's depth inside the margin they all make:
+  // the box ends where that margin does, below the edge by what exceeds
+  // the top margin (8.3.1, 10.6.3)
+  if (cleared) {
+    return {
+      height: y + Math.max(0, afterClear - clearTop) - contentTop,
+      hanging: 0,
+    };
+  }
   return { height: y + pendingMargin - contentTop, hanging: 0 };
 }
 

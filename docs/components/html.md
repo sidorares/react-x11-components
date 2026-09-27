@@ -257,8 +257,13 @@ strong letter's direction, and `<bdo>` overrides. `vertical-align` raises and lo
 images and inline blocks: the UA sheet's `<sup>` and `<sub>`, a length, a
 percentage of the line height, `text-top`, `text-bottom`, `middle`, and
 `top` and `bottom` against the line box, whose height each raised box adds
-its own line height to. A paragraph holding one is laid out a line at a
-time. Underlines an element outside a raised text draws through it stay on
+its own line height to. So does an inline box whose own `line-height` is
+more than its paragraph gives its text: a span of 60px lines in a paragraph
+of 20px ones makes a 60px line, with its text in the middle. A paragraph
+holding either is laid out a line at a time. A box whose own line height is
+less keeps the paragraph's multiple of its font's natural one, which in a
+font with taller lines than the paragraph's — a `<code>` in Menlo beside
+Helvetica — is a little more than CSS gives it. Underlines an element outside a raised text draws through it stay on
 the line's baseline. White space collapses across element boundaries as CSS
 2.1 16.6.1 has it — none at the start or the end of a line, one between two
 words whatever elements they are in — and text at `font-size: 0` takes no

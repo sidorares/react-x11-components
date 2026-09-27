@@ -150,7 +150,7 @@ export interface InlineOptions {
 export function layoutInline(block: Box, options: InlineOptions): InlineResult {
   const fonts = options.fonts;
   const items: Item[] = [];
-  collect(block, items, options.width, fonts);
+  collect(block, items, options.width, fonts, block.style);
   if (!items.length || !fonts) return EMPTY;
   if (wraps(block.style)) holdNoWrap(items);
   // an override on the block is one on all of its inline content (CSS 2.1
@@ -193,7 +193,10 @@ export function layoutInline(block: Box, options: InlineOptions): InlineResult {
     if (item.kind === 'atomic') hasAtomics = true;
     else if (item.kind === 'edge') {
       hasEdges = true;
-      if (item.box.style.verticalAlign !== 'baseline') {
+      if (
+        item.box.style.verticalAlign !== 'baseline' ||
+        ownsLeading(fonts, block.style, item.box.style)
+      ) {
         hasOffset = true;
         raised = true;
       } else if (!hasOffset && isOffset(item.box.style)) hasOffset = true;
@@ -297,7 +300,7 @@ export function layoutInline(block: Box, options: InlineOptions): InlineResult {
   };
 
   const strut = fonts ? strutOf(fonts, style) : null;
-  const lifts = raised && fonts ? new Lifts(fonts) : null;
+  const lifts = raised && fonts ? new Lifts(fonts, block.style) : null;
   const close = (): void => {
     const line = finishLine(
       open,
@@ -1432,6 +1435,7 @@ function collect(
   out: Item[],
   width: number,
   fonts: FontsLike | null,
+  block: ComputedStyle,
 ): void {
   for (const child of box.children) {
     if (child.outOfFlow || child.isFloat) continue;
@@ -1490,7 +1494,8 @@ function collect(
           (child.decoration !== null &&
             child.style.borderRadius.some((r) => r > 0)) ||
           isOffset(child.style) ||
-          child.style.verticalAlign !== 'baseline';
+          child.style.verticalAlign !== 'baseline' ||
+          (fonts !== null && ownsLeading(fonts, block, child.style));
         if (edged) {
           out.push({ kind: 'edge', box: child, side: 'start', width: start });
         }
@@ -1504,7 +1509,7 @@ function collect(
         if (controls) {
           pushControls(out, controls[0], child, child.subtreeTextStart);
         }
-        collect(child, out, width, fonts);
+        collect(child, out, width, fonts, block);
         if (controls) {
           pushControls(out, controls[1], child, child.subtreeTextEnd);
         }
@@ -2191,20 +2196,38 @@ interface Lift {
  * percentage of the box's own line height. Worked out once a box a pass.
  */
 class Lifts {
-  private _boxes = new Map<Box, { raise: number; edge: Box | null }>();
+  private _boxes = new Map<
+    Box,
+    { raise: number; edge: Box | null; lead: boolean }
+  >();
 
-  constructor(private readonly fonts: FontsLike) {}
+  constructor(
+    private readonly fonts: FontsLike,
+    private readonly block: ComputedStyle,
+  ) {}
 
-  /** Where a text goes, or null for one that is on the line's baseline. */
+  /** Where a text goes, or null for one that is on the line's baseline and
+   *  in no box with a line height of its own. */
   of(text: LineText): Lift | null {
     const owner = text.spans.boxAt?.(text.layoutStart);
     const parent = owner?.parent;
     if (!owner || !parent || parent.kind !== 'inline') return null;
-    const { raise, edge } = this._box(parent);
-    if (!raise && !edge) return null;
+    const { raise, edge, lead } = this._box(parent);
+    if (!raise && !edge && !lead) return null;
     // the room of every box whose text is in it: no raised box starts or
     // ends inside a fragment, but one it holds may be set larger
     const own = { ...strutOf(this.fonts, owner.style) };
+    // and of the inline boxes around it, each about its own baseline: each
+    // is on the line with its line height, which the text's may not reach
+    if (lead) {
+      for (let at: Box | null = parent; at?.kind === 'inline'; at = at.parent) {
+        const box = this._box(at);
+        const room = strutOf(this.fonts, at.style);
+        own.ascent = Math.max(own.ascent, room.ascent + box.raise - raise);
+        own.descent = Math.max(own.descent, room.descent - box.raise + raise);
+        if (box.edge === at) break;
+      }
+    }
     const natural = text.layout.lines[text.layoutLine];
     let seen = owner.style;
     for (const run of natural?.runs ?? []) {
@@ -2228,19 +2251,24 @@ class Lifts {
     return { raise, ascent: own.ascent, descent: own.descent, edge: to };
   }
 
-  private _box(box: Box): { raise: number; edge: Box | null } {
+  private _box(box: Box): { raise: number; edge: Box | null; lead: boolean } {
     if (box.kind !== 'inline' || !box.parent) return NO_LIFT;
     const known = this._boxes.get(box);
     if (known) return known;
     const va = box.style.verticalAlign;
-    let lift: { raise: number; edge: Box | null };
+    const own = ownsLeading(this.fonts, this.block, box.style);
+    let lift: { raise: number; edge: Box | null; lead: boolean };
     if (va === 'top' || va === 'bottom') {
       // what is in it is raised from its baseline, which the line's edge
       // sets, whatever is around it
-      lift = { raise: 0, edge: box };
+      lift = { raise: 0, edge: box, lead: own };
     } else {
       const up = this._box(box.parent);
-      lift = { raise: up.raise + this._own(box, box.parent), edge: up.edge };
+      lift = {
+        raise: up.raise + this._own(box, box.parent),
+        edge: up.edge,
+        lead: own || up.lead,
+      };
       if (lift.raise && !lift.edge) BOX_RAISES.set(box, lift.raise);
     }
     this._boxes.set(box, lift);
@@ -2286,7 +2314,52 @@ class Lifts {
   }
 }
 
-const NO_LIFT = { raise: 0, edge: null };
+const NO_LIFT = { raise: 0, edge: null, lead: false };
+
+/**
+ * Whether an inline box's own line height is more than the one a
+ * paragraph's layout gives its text. That layout sets every run at the
+ * block's line height, as a multiple of the run's font's natural one;
+ * CSS gives each inline box its own, and the line box holds them all (CSS
+ * 2.1 10.8.1), so a box whose own is more makes its line taller. One whose
+ * own is less, a `<code>` in a font with taller natural lines, is left to
+ * the one layout: the line at a time it would take instead costs a long
+ * document dear.
+ *
+ * Asked of every inline box in every paragraph, so it has to cost nothing
+ * for the ones that are nothing: a box with its block's line height, family
+ * and size is past at once, and any other answer is kept on its style.
+ */
+function ownsLeading(
+  fonts: FontsLike,
+  block: ComputedStyle,
+  style: ComputedStyle,
+): boolean {
+  // a bold or an italic face keeps its family's line metrics, and a
+  // paragraph is thick with <strong>, <em> and <a>
+  if (
+    style.lineHeight === block.lineHeight &&
+    style.lineHeightIsLength === block.lineHeightIsLength &&
+    style.fontSize === block.fontSize &&
+    style.fontFamily === block.fontFamily
+  ) {
+    return false;
+  }
+  const known = LEADS.get(style);
+  if (known && known.block === block && known.fonts === fonts) {
+    return known.own;
+  }
+  const own =
+    lineHeightOf(fonts, style) >
+    lineHeightMultiplier(fonts, block) * naturalLineHeight(fonts, style) + 0.5;
+  LEADS.set(style, { fonts, block, own });
+  return own;
+}
+
+const LEADS = new WeakMap<
+  ComputedStyle,
+  { fonts: FontsLike; block: ComputedStyle; own: boolean }
+>();
 
 /** A style's line height in pixels. */
 function lineHeightOf(fonts: FontsLike, style: ComputedStyle): number {
