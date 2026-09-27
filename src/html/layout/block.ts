@@ -560,11 +560,25 @@ function layoutBesideFloats(
   const right = contentLeft + contentWidth;
   let at = y;
   for (let tries = 0; tries < 64; tries += 1) {
-    const band = floats.bandAt(at, 1, contentLeft, right);
-    const room = band.right - band.left;
-    if (room >= contentWidth) break;
-    layoutBlockLevel(box, ctx, floats, band.left, at, room);
-    if (box.marginLeft + box.width + box.marginRight <= room + 0.5) return;
+    let band = floats.bandAt(at, 1, contentLeft, right);
+    let fits = false;
+    // The room is what the floats leave over the box's whole height, not at
+    // its top: a float that starts lower down, beside the box, narrows it
+    // too (CSS 2.1 9.5). Known only once the box is laid out, so a box
+    // that runs into one is laid out again in what is left.
+    for (let settle = 0; settle < 8; settle += 1) {
+      const room = band.right - band.left;
+      layoutBlockLevel(box, ctx, floats, band.left, at, room);
+      const tall = box.marginTop + box.height + box.marginBottom;
+      const over = floats.bandAt(at, tall, contentLeft, right);
+      if (over.left > band.left + 0.5 || over.right < band.right - 0.5) {
+        band = over;
+        continue;
+      }
+      fits = box.marginLeft + box.width + box.marginRight <= room + 0.5;
+      break;
+    }
+    if (fits) return;
     const below = floats.nextEdgeBelow(at, 1);
     if (below === null || below <= at) break;
     at = below;

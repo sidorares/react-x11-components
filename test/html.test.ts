@@ -3408,6 +3408,23 @@ test('a float is painted over the backgrounds of the blocks after it', async () 
   assert.ok(at('#0000ff') > at('#00ff00'), 'and the floats keep their order');
 });
 
+test('a box with a formatting context of its own clears every float along its height', async () => {
+  // CSS 2.1 9.5: it must not overlap the margin box of any float beside it,
+  // which is every float over its height, not only the one at its top. A
+  // wider float starting halfway down it was run over.
+  const { node } = await render(
+    '<div id="f" style="float:left;clear:left;width:50px;height:75px"></div>' +
+      '<div style="float:left;clear:left;width:100px;height:75px"></div>' +
+      '<div id="a" style="overflow:hidden;width:200px;height:50px"></div>' +
+      '<div id="b" style="overflow:hidden;width:200px;height:50px"></div>',
+  );
+  const el = view(node);
+  const [f, a, b] = ['f', 'a', 'b'].map((id) => boxOf(el, id));
+  assert.strictEqual(a.x, f.x + 50, 'beside the first float');
+  assert.strictEqual(b.x, f.x + 100, 'and beside the second, lower down');
+  assert.strictEqual(b.y, a.y + 50);
+});
+
 test('nothing loads without onResource, and every reference is offered to it', async () => {
   const asked: string[] = [];
   await renderX11(
