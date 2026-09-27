@@ -8201,6 +8201,50 @@ test('a gradient given only a width is as tall as its box', async () => {
   );
 });
 
+metric(
+  'a shrink-to-fit box has the room its margins and offsets leave',
+  async () => {
+    // it had the containing block's whole width: a float with side margins
+    // stood out of it by them, and a box at `left: 50%` ran past its end
+    const text = 'Words enough to wrap in any of these boxes. '.repeat(3);
+    const { node } = await render(
+      '<style>body{margin:0}.p{position:relative;width:320px}</style>' +
+        `<div class="p"><div id="float" style="float:left;margin:0 20px">${text}</div></div>` +
+        `<div class="p"><div id="ib" style="display:inline-block;margin:0 10px">${text}</div></div>` +
+        `<div class="p"><div id="left" style="position:absolute;left:50%">${text}</div></div>` +
+        `<div class="p"><div id="right" style="position:absolute;right:100px;margin-left:10px">${text}</div></div>` +
+        '<div class="p" style="height:300px"><div style="margin-left:120px">' +
+        `<div id="static" style="position:absolute">${text}</div></div></div>`,
+    );
+    const el = view(node);
+    const width = (id: string) => boxOf(el, id).width;
+    assert.strictEqual(width('float'), 280);
+    assert.strictEqual(width('ib'), 300);
+    assert.strictEqual(width('left'), 160);
+    assert.strictEqual(width('right'), 210);
+    assert.strictEqual(width('static'), 200, 'from where the flow put it');
+  },
+);
+
+metric(
+  'a shrink-to-fit box is never narrower than its longest word',
+  async () => {
+    // CSS 2.1 10.3.5: min(max(min-content, room), max-content) — a word
+    // wider than the room widens the box to it rather than overflowing it
+    const { node } = await render(
+      '<style>body{margin:0}.p{width:150px}</style>' +
+        '<div class="p"><div id="f" style="float:left;margin:0 20px">' +
+        'Incomprehensibilities here</div></div>' +
+        '<div style="width:1000px"><div id="ref" style="float:left">' +
+        'Incomprehensibilities</div></div>',
+    );
+    const el = view(node);
+    const word = boxOf(el, 'ref').width;
+    assert.ok(word > 110, `${word}`);
+    assert.strictEqual(boxOf(el, 'f').width, word);
+  },
+);
+
 test('translate and the translation in a transform are read', async () => {
   const { node } = await render(
     '<div id="a" style="translate:10px 20%"></div>' +

@@ -1361,6 +1361,9 @@ function shrinkToFitWidth(
   box: Box,
   ctx: LayoutContext,
   available: number,
+  /** How far into the containing block the box's room starts: an
+   *  absolute box's offset, or its static position. */
+  offset = 0,
 ): number {
   const style = box.style;
   if (style.width !== AUTO) {
@@ -1383,12 +1386,28 @@ function shrinkToFitWidth(
   layoutInternals(box, ctx, Infinity, 0, 0, probe);
   const preferred = intrinsicWidth(box) + box.horizontalExtra;
   box.lines = saved;
-  return clampWidth(
-    box,
-    Math.min(Math.max(preferred, 0), available),
-    available,
-    ctx,
+  // the room is the containing block's, less the box's margins and where
+  // it starts (CSS 2.1 10.3.5, 10.3.7, 10.3.9): a float with side margins
+  // was as wide as its containing block, and stood out of it by them
+  const room = Math.max(
+    0,
+    available - offset - box.marginLeft - box.marginRight,
   );
+  let width = Math.max(preferred, 0);
+  if (width > room) {
+    // and where its content does not fit the room, its longest word is the
+    // least it comes to: `min(max(min-content, room), max-content)`. Only
+    // then is the min-content width measured — a second probe, at a width
+    // every line breaks at — which is kept on the box as a cell's is
+    if (box.intrinsicMinContent < 0) {
+      box.intrinsicMinContent = measureIntrinsicWidth(box, ctx, 1);
+      box.lines = saved;
+      // the probe resolved the box's edges against the width it was given
+      resolveEdges(box, available);
+    }
+    width = Math.min(width, Math.max(box.intrinsicMinContent, room));
+  }
+  return clampWidth(box, width, available, ctx);
 }
 
 /**
@@ -1703,29 +1722,40 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
   const top = resolveOrNull(style.top, cbHeight);
   const bottom = resolveOrNull(style.bottom, cbHeight);
 
+  // with neither offset on an axis, the box is where the flow would have
+  // put it (CSS 2.1 10.3.7, 10.6.4): against its start edge, which is the
+  // right one in a right-to-left flow
+  const at = box.staticPosition;
+  const rtl = (at?.from ?? containing).style.direction === 'rtl';
+  // and a shrink-to-fit box's room starts at the offset on the side it has
+  // one, or at its static position: `left: 50%` leaves it half the width
+  const offset =
+    left ??
+    right ??
+    (!at
+      ? 0
+      : rtl
+        ? cbX + cbWidth - (at.from.x + at.right)
+        : at.from.x + at.x - cbX);
+
   let width: number;
   if (style.width !== AUTO) {
     width = blockWidth(box, cbWidth, cbWidth, ctx);
   } else if (style.widthKeyword) {
     // an intrinsic size, which both offsets do not stretch
-    width = shrinkToFitWidth(box, ctx, cbWidth);
+    width = shrinkToFitWidth(box, ctx, cbWidth, offset);
   } else if (left !== null && right !== null) {
     width = Math.max(
       0,
       cbWidth - left - right - box.marginLeft - box.marginRight,
     );
   } else {
-    width = shrinkToFitWidth(box, ctx, cbWidth);
+    width = shrinkToFitWidth(box, ctx, cbWidth, offset);
   }
 
   if (box.kind === 'replaced') sizeReplaced(box, cbWidth);
   else layoutInternals(box, ctx, width, 0, 0);
 
-  // with neither offset on an axis, the box is where the flow would have
-  // put it (CSS 2.1 10.3.7, 10.6.4): against its start edge, which is the
-  // right one in a right-to-left flow
-  const at = box.staticPosition;
-  const rtl = (at?.from ?? containing).style.direction === 'rtl';
   let x: number;
   if (
     left !== null &&
