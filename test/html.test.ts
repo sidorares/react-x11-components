@@ -5210,3 +5210,59 @@ test("a number is CSS's: an exponent, a sign, and a digit after any point", () =
   assert.strictEqual(parseNumber('0x10'), null);
   assert.strictEqual(parseNumber('1.'), null);
 });
+
+metric(
+  "an invalid background is dropped whole, and CSS3's forms are kept",
+  async () => {
+    const { el } = await renderWithBytes(
+      '<style>p { background: #00ff00 }' +
+        '#a { background: "red" } #b { background: red\\; }' +
+        '#c { background: red green } #d { background: red, url(b.png) }' +
+        '#e { background: url(a.png) no-repeat right 10px center / cover #fff }' +
+        '#f { background: #333 linear-gradient(to right, #fff, #000) }' +
+        '#g { background-position: 5px 5px; background: #fff }</style>' +
+        '<p id="a">a</p><p id="b">b</p><p id="c">c</p><p id="d">d</p>' +
+        '<p id="e">e</p><p id="f">f</p><p id="g">g</p>',
+      {},
+    );
+    const style = (id: string) =>
+      (boxOf(el, id) as unknown as { style: Record<string, unknown> }).style;
+    // each of these was a background reset to nothing
+    for (const id of ['a', 'b', 'c', 'd']) {
+      assert.strictEqual(style(id).backgroundColor, '#00ff00', id);
+    }
+    const e = style('e');
+    assert.strictEqual(e.backgroundColor, '#fff');
+    assert.strictEqual(e.backgroundImage, 'a.png');
+    assert.strictEqual(e.backgroundRepeat, 'no-repeat');
+    assert.strictEqual(e.backgroundSize, 'cover');
+    assert.deepStrictEqual(e.backgroundPositionX, { pct: 100, px: -10 });
+    assert.deepStrictEqual(e.backgroundPositionY, { pct: 50 });
+    // a gradient is drawn as nothing, over the colour beside it
+    assert.strictEqual(style('f').backgroundColor, '#333');
+    // and the shorthand resets what it does not name
+    assert.strictEqual(style('g').backgroundPositionX, 0);
+  },
+);
+
+metric(
+  'a background position from the far edge is that far in from it',
+  async () => {
+    const { result } = await renderWithBytes(
+      '<style>body { margin: 0 }</style>' +
+        '<div style="width: 100px; height: 40px; ' +
+        'background: url(r.png) no-repeat right 20px top 5px"></div>',
+      { 'r.png': RED_PNG },
+    );
+    // the 10px image's right edge twenty pixels in from the box's
+    const red = async (x: number, y: number) => {
+      const [r, g, b] = await pixelAt(result.ctx, x, y);
+      return r > 200 && g < 60 && b < 60;
+    };
+    await waitFor(async () =>
+      assert.ok(await red(75, 10), 'in from the right'),
+    );
+    assert.ok(!(await red(95, 10)), 'not against the right edge');
+    assert.ok(!(await red(75, 2)), 'and five down');
+  },
+);

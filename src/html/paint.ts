@@ -1039,7 +1039,9 @@ function paintBackgroundImage(
   const [iw, ih] = tileSize(loaded, at, scale);
   if (!(iw > 0 && ih > 0)) return;
   const offset = (len: Len, extent: number, size: number): number =>
-    isPct(len) ? (len.pct / 100) * (extent - size) : (len as number);
+    isPct(len)
+      ? (len.pct / 100) * (extent - size) + (len.px ?? 0)
+      : (len as number);
   const x0 = Math.round(at.x + offset(style.backgroundPositionX, at.width, iw));
   const y0 = Math.round(
     at.y + offset(style.backgroundPositionY, at.height, ih),

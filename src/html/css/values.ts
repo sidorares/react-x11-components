@@ -27,6 +27,9 @@ export type Len = number | Pct | 'auto';
 /** A percentage of something layout knows and computed style does not. */
 export interface Pct {
   pct: number;
+  /** A length added to it: only a background position written from its
+   *  far edge, `right 10px`, has one, and only its placement reads it. */
+  px?: number;
 }
 
 export const AUTO = 'auto';
