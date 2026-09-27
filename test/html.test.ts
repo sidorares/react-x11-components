@@ -6848,3 +6848,99 @@ metric(
     assert.ok(Math.abs(end.x + end.width - 700) < 1e-6, `${end.x + end.width}`);
   },
 );
+
+// --- grid --------------------------------------------------------------------------
+
+metric('a grid places its items in its column tracks', async () => {
+  // CSS Grid 1, the subset documents are written in: Tailwind's
+  // `grid-cols-3`, a sidebar in `200px 1fr`, `repeat(auto-fill, …)` and
+  // spans; `display: grid` stacked its items as blocks
+  const grid = async (css: string, items: string) => {
+    const { node } = await render(
+      '<style>body{margin:0;font:14px/20px sans-serif}</style>' +
+        `<div id="g" style="display:grid;${css}">${items}</div>`,
+      700,
+    );
+    const g = boxOf(view(node), 'g');
+    const out = g.children
+      .filter((c) => (c as unknown as { kind: string }).kind !== 'text')
+      .map((c) => [c.x, c.y, c.width].map((v) => Math.round(v)));
+    cleanup();
+    return out;
+  };
+  assert.deepStrictEqual(
+    await grid(
+      'grid-template-columns:repeat(3,minmax(0,1fr));gap:16px',
+      '<div>A</div><div>B</div><div>C</div><div>D</div>',
+    ),
+    [
+      [0, 0, 223],
+      [239, 0, 223],
+      [477, 0, 223],
+      [0, 36, 223],
+    ],
+    'three equal columns, and a fourth item on the next row',
+  );
+  assert.deepStrictEqual(
+    await grid(
+      'grid-template-columns:200px 1fr;gap:10px',
+      '<div>Side</div><div>Main</div>',
+    ),
+    [
+      [0, 0, 200],
+      [210, 0, 490],
+    ],
+  );
+  assert.deepStrictEqual(
+    (
+      await grid(
+        'grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px',
+        '<div>1</div><div>2</div><div>3</div><div>4</div><div>5</div>',
+      )
+    ).map(([x, y]) => [x, y]),
+    [
+      [0, 0],
+      [177, 0],
+      [354, 0],
+      [531, 0],
+      [0, 28],
+    ],
+    'as many columns as fit',
+  );
+  assert.deepStrictEqual(
+    await grid(
+      'grid-template-columns:repeat(4,1fr);gap:4px',
+      '<div style="grid-column:span 2">wide</div><div>x</div><div>y</div>' +
+        '<div style="grid-column:1 / -1">full</div>',
+    ),
+    [
+      [0, 0, 348],
+      [352, 0, 172],
+      [528, 0, 172],
+      [0, 24, 700],
+    ],
+    'spans, and a line counted back from the end',
+  );
+  assert.deepStrictEqual(
+    (
+      await grid(
+        'grid-template-columns:auto 1fr auto;gap:8px',
+        '<div>Label</div><div>stretch</div><div>End</div>',
+      )
+    ).map(([x, , w]) => x + w),
+    [34, 667, 700],
+    'content-sized columns at the sides, and the rest in the middle',
+  );
+  // an item is stretched to its row, and aligned in it where it says
+  const { node } = await render(
+    '<style>body{margin:0;font:14px/20px sans-serif}</style>' +
+      '<div style="display:grid;grid-template-columns:100px 100px">' +
+      '<div>two<br>lines</div><div id="s">one</div>' +
+      '<div id="c" style="justify-self:center;align-self:center">c</div></div>',
+    700,
+  );
+  const el = view(node);
+  assert.strictEqual(boxOf(el, 's').height, 40);
+  const c = boxOf(el, 'c');
+  assert.ok(c.width < 20 && c.x > 40, `${c.x} ${c.width}`);
+});

@@ -29,6 +29,7 @@ import { AUTO, isPct, resolve, resolveOrNull } from '../css/values.js';
 import type { ComputedStyle } from '../css/style.js';
 import { Box } from './boxes.js';
 import { measureIntrinsicWidth, moveTo, resolveEdges } from './block.js';
+import { layoutGrid } from './css-grid.js';
 import type { LayoutContext } from './block.js';
 
 // `react-x11/yoga` re-exports yoga's own declarations, so the node shape and
@@ -70,6 +71,8 @@ export function layoutFlex(
   ctx: LayoutContext,
   contentWidth: number,
 ): number {
+  // a grid container is one of these to the box tree, and laid out apart
+  if (box.style.grid) return layoutGrid(box, ctx, contentWidth);
   if (!layoutLoaded()) return layoutAsBlockFallback(box, ctx, contentWidth);
 
   const root = Y.Node.create(flexConfig());
