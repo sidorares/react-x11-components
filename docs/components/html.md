@@ -158,6 +158,12 @@ element before and after the block are on lines of their own, without an
 edge where the block cut them, and the block stands between them as a
 block, so `<font>` around paragraphs, or a link around a card, keeps its
 blocks stacked.
+A block that makes a formatting context of its own — `overflow` other than
+`visible`, a table, `display: flow-root` — holds its floats and sits beside
+another block's rather than under them, its margins its containing
+block's: a column with `overflow: hidden` and a 220px margin beside a
+200px sidebar starts 220px in, the margin overlapping the float, and one
+the floats leave too little room for goes below them.
 A line with an inline-block or a padded element on it is put in visual order
 a piece at a time — the text engine orders the text inside each piece, and
 the line orders the pieces (UAX #9's L2) — so a right-to-left paragraph with

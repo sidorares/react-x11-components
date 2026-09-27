@@ -6385,3 +6385,128 @@ metric("an inline box's own line height makes its line taller", async () => {
   );
   assert.ok(near(less.height, 20), `${less.height}`);
 });
+
+// --- a minimum height, and the margin below ----------------------------------------
+
+test("a height a minimum sets spends its last child's margin", async () => {
+  // the margin neither escapes the box nor makes it taller, as browsers
+  // have it: the next block starts where the box's height ends
+  const nextAfter = async (parent: string, child: string) => {
+    const { node } = await render(
+      '<style>body{margin:0}</style>' +
+        `<div id="p" style="${parent}"><div style="${child}"></div></div>` +
+        '<div id="n" style="height:10px"></div>',
+    );
+    const el = view(node);
+    const out = [boxOf(el, 'p').height, boxOf(el, 'n').y];
+    cleanup();
+    return out;
+  };
+  assert.deepStrictEqual(
+    await nextAfter('min-height:50px', 'height:49px;margin-bottom:10px'),
+    [50, 50],
+  );
+  // one that leaves the height as it was leaves the margin to collapse
+  // through the box's bottom, as it does through any
+  assert.deepStrictEqual(
+    await nextAfter('min-height:20px', 'height:49px;margin-bottom:10px'),
+    [49, 59],
+  );
+  // and so does a maximum, as CSS 2.1 8.3.1 has it
+  assert.deepStrictEqual(
+    await nextAfter('max-height:50px', 'height:51px;margin-bottom:10px'),
+    [50, 60],
+  );
+});
+
+// --- a formatting context's margins beside a float ---------------------------------
+
+test("a formatting context's margins are its containing block's, beside a float", async () => {
+  // CSS 2.1 9.5 keeps the border box off the floats, and the margins are
+  // the containing block's: one on the float's side overlaps the float
+  // (the WPT suite's floats-wrap-bfc-with-margin tests)
+  const placed = async (float: string, box: string) => {
+    const { node } = await render(
+      '<style>body{margin:0}</style><div style="width:600px">' +
+        `<div style="float:${float};width:200px;height:50px"></div>` +
+        `<div id="b" style="overflow:hidden;height:20px;${box}"></div></div>`,
+      700,
+    );
+    const b = boxOf(view(node), 'b');
+    const out = [b.x, b.y, b.width];
+    cleanup();
+    return out;
+  };
+  // a column beside a sidebar, its margin the sidebar's width and a gap
+  assert.deepStrictEqual(
+    await placed('left', 'margin-left:220px'),
+    [220, 0, 380],
+  );
+  // and one narrower than the float starts at the float
+  assert.deepStrictEqual(
+    await placed('left', 'margin-left:20px'),
+    [200, 0, 400],
+  );
+  assert.deepStrictEqual(
+    await placed('right', 'margin-right:220px'),
+    [0, 0, 380],
+  );
+  // a margin at the end runs past the room; one at the start that pushes
+  // the box into the float puts it below the float
+  assert.deepStrictEqual(
+    await placed('left', 'width:400px;margin-right:10px'),
+    [200, 0, 400],
+  );
+  assert.deepStrictEqual(
+    await placed('right', 'margin-left:401px'),
+    [401, 50, 199],
+  );
+});
+
+test('a negative margin that reaches a float outside its containing block', async () => {
+  // the float is beside the containing block, and the margin takes the
+  // box over it: it goes below the float rather than under it
+  const { node } = await render(
+    '<style>body{margin:0}</style><div style="width:100px">' +
+      '<div style="float:left;width:50px;height:50px"></div>' +
+      '<div style="margin-left:50px"><div id="b" style="overflow:hidden;' +
+      'width:100px;height:50px;margin-left:-50px"></div></div></div>',
+  );
+  const b = boxOf(view(node), 'b');
+  assert.deepStrictEqual([b.x, b.y], [0, 50]);
+  cleanup();
+  // a float of no width has nothing to overlap, and is passed over
+  const { node: zero } = await render(
+    '<style>body{margin:0}</style><div style="width:100px;margin-left:50px">' +
+      '<div style="float:left;width:0;height:50px"></div>' +
+      '<div id="b" style="overflow:hidden;height:50px;margin-left:-50px">' +
+      '</div></div>',
+  );
+  const z = boxOf(view(zero), 'b');
+  assert.deepStrictEqual([z.x, z.y, z.width], [0, 0, 150]);
+});
+
+// --- display: flow-root ----------------------------------------------------------
+
+test('display: flow-root makes a formatting context of its own', async () => {
+  // the clearfix CSS Display 3 gives a name to, and Tailwind's `flow-root`:
+  // it holds its floats, and its children's margins stay inside it
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div id="r" style="display:flow-root">' +
+      '<div style="float:left;width:10px;height:40px"></div>' +
+      '<div style="margin-top:15px;height:5px"></div></div>' +
+      '<div id="n" style="height:10px"></div>',
+  );
+  const el = view(node);
+  const [r, n] = [boxOf(el, 'r'), boxOf(el, 'n')];
+  assert.deepStrictEqual([r.y, r.height], [0, 40], 'it holds the float');
+  assert.strictEqual(n.y, 40);
+  // and a later `display` takes it back
+  const { node: again } = await render(
+    '<style>body{margin:0}#r{display:flow-root}#r{display:block}</style>' +
+      '<div id="r"><div style="float:left;width:10px;height:40px"></div>' +
+      '</div>',
+  );
+  assert.strictEqual(boxOf(view(again), 'r').height, 0);
+});
