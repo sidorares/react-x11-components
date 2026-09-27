@@ -6652,3 +6652,66 @@ test('inset sets all four offsets, and a corner its radius', async () => {
     [8, 0, 4, 0],
   );
 });
+
+// --- cascade layers --------------------------------------------------------------
+
+test('a later cascade layer wins over an earlier one, and no layer over any', async () => {
+  // CSS Cascade 5: Tailwind 4 writes all of its CSS in `@layer theme,
+  // base, components, utilities`, which was dropped whole
+  const colorOf = async (css: string, markup = '<p id="p" class="x">x</p>') => {
+    const { node } = await render(`<style>${css}</style>${markup}`);
+    const style = (
+      boxOf(view(node), 'p') as unknown as { style: { color: string } }
+    ).style;
+    cleanup();
+    return style.color;
+  };
+  const red = '#ff0000';
+  const blue = '#0000ff';
+  // the order the layers are first named in, not their specificity
+  assert.strictEqual(
+    await colorOf(
+      '@layer a, b; @layer b { .x { color: #0000ff } } ' +
+        '@layer a { p#p.x { color: #ff0000 } }',
+    ),
+    blue,
+  );
+  assert.strictEqual(
+    await colorOf(
+      '.x { color: #0000ff } @layer a { p#p.x { color: #ff0000 } }',
+    ),
+    blue,
+    'a rule in no layer over one in any',
+  );
+  assert.strictEqual(
+    await colorOf(
+      '@layer a { .x { color: #ff0000 !important } } ' +
+        '@layer b { .x { color: #0000ff !important } } .x { color: #008000 !important }',
+    ),
+    red,
+    'and the other way round for !important',
+  );
+  assert.strictEqual(
+    await colorOf(
+      '@layer a { .x { color: #ff0000 } @layer b { p#p.x { color: #0000ff } } }',
+    ),
+    red,
+    "a layer's own rules over the layers in it",
+  );
+  assert.strictEqual(
+    await colorOf(
+      '',
+      '<style>@layer b, a;</style><style>@layer a { .x { color: #ff0000 } } ' +
+        '@layer b { .x { color: #0000ff } }</style><p id="p" class="x">x</p>',
+    ),
+    red,
+    "the order is the document's, across its sheets",
+  );
+  assert.strictEqual(
+    await colorOf(
+      '@layer { .x { color: #ff0000 } } @layer { .x { color: #0000ff } }',
+    ),
+    blue,
+    'a layer with no name is one of its own',
+  );
+});

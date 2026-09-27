@@ -349,6 +349,7 @@ export class HtmlViewNode extends Node {
     const look = this._deviceLook();
     const sheets: Stylesheet[] = [uaStylesheet(look)];
     let order = 0;
+    const layers = new Map<string, number>();
     for (const ref of this._source.facts().sheets) {
       // A sheet handed over as bytes that names no encoding of its own is in
       // its referrer's: a `<link charset>`, then the document's (CSS 2.1
@@ -363,7 +364,7 @@ export class HtmlViewNode extends Node {
       const text = ref.kind === 'inline' ? ref.text : linked?.text;
       if (!text) continue;
       const encoding = linked ? linked.encoding : props.charset;
-      const sheet = parseStylesheet(text, order);
+      const sheet = parseStylesheet(text, order, layers);
       // `@import` is a resource like any other, and its rules sit *before*
       // the importing sheet's (CSS 2.1 6.4.1): a fetched import takes the
       // order the sheet's own rules were given, and they move up past it,
@@ -377,7 +378,11 @@ export class HtmlViewNode extends Node {
         });
         const fetched = this._resources.stylesheet(url, [encoding]);
         if (fetched) {
-          const parsed = parseStylesheet(fetched.text, order + imported);
+          const parsed = parseStylesheet(
+            fetched.text,
+            order + imported,
+            layers,
+          );
           imported += parsed.rules.length + 1;
           sheets.push(parsed);
         }
@@ -388,7 +393,7 @@ export class HtmlViewNode extends Node {
     }
     const extra = props.stylesheet;
     for (const text of Array.isArray(extra) ? extra : extra ? [extra] : []) {
-      const sheet = parseStylesheet(text, order);
+      const sheet = parseStylesheet(text, order, layers);
       order += sheet.rules.length + 1;
       sheets.push(sheet);
     }

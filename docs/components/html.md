@@ -364,7 +364,11 @@ starts with a digit — is dropped whole, as CSS 2.1 drops it. `@media` width an
 `prefers-color-scheme` queries are evaluated — the scheme is the react-x11
 palette's in force, so a `<ThemeProvider colorScheme>` above the element
 answers it and a desktop that switches schemes re-cascades the document.
-`@import` goes through the resource seam.
+`@import` goes through the resource seam. Cascade layers are read (CSS
+Cascade 5): `@layer a, b;` fixes their order, the document's across all of
+its sheets, and a rule in a later layer wins over one in an earlier layer
+whatever their specificity, a rule in no layer over both, and the other way
+round for `!important`. Tailwind 4 writes all of its CSS in four of them.
 
 **Not implemented:** CSS grid (degrades to block stacking), transforms,
 animations and transitions, multi-column, shadows, gradients,

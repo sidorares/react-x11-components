@@ -43,6 +43,10 @@ export interface StyleRule {
    *  `(max-width: 60em)` is not the same set as the four conditions in a
    *  row, and flattening cannot tell them apart. */
   media: MediaCondition[][] | null;
+  /** The cascade layer this rule is in (CSS Cascade 5): the rank of each
+   *  layer on its path, outermost first, in the order the document first
+   *  names them. Null for a rule in no layer, which outranks every layer. */
+  layer: readonly number[] | null;
 }
 
 export interface Stylesheet {
@@ -71,6 +75,10 @@ export interface MediaCondition {
 }
 
 const IMPORTANT_RE = /!\s*important\s*$/i;
+
+/** A layer's name: identifiers joined by dots. */
+const LAYER_NAME =
+  /^-?[_a-zA-Z\u00a0-\uffff][\w\u00a0-\uffff-]*(?:\.-?[_a-zA-Z\u00a0-\uffff][\w\u00a0-\uffff-]*)*$/;
 
 /** The at-rules that are rules with a block — which an `@import` after them
  *  is too late for. */
@@ -101,7 +109,14 @@ const BLOCK_AT_RULES = new Set([
  * not one is dropped whole, and so is a group with any selector in it that
  * is not one (CSS 2.1 4.1.7).
  */
-export function parseStylesheet(text: string, startOrder = 0): Stylesheet {
+export function parseStylesheet(
+  text: string,
+  startOrder = 0,
+  /** The document's layers, by their full names, ranked in the order the
+   *  document first names them: one map across all of its sheets, since a
+   *  layer one sheet names first is the same layer in the next. */
+  layers: Map<string, number> = new Map(),
+): Stylesheet {
   text = withoutComments(text);
   const sheet: Stylesheet = { rules: [], imports: [], breakpoints: [] };
   let order = startOrder;
@@ -109,7 +124,38 @@ export function parseStylesheet(text: string, startOrder = 0): Stylesheet {
   // `@import` counts only ahead of every other rule, `@charset` aside
   let importsAllowed = true;
 
-  const walk = (source: string, media: MediaCondition[][] | null): void => {
+  /** A layer's rank, named for the first time if it has not been. */
+  const rankOf = (name: string): number => {
+    let rank = layers.get(name);
+    if (rank === undefined) {
+      rank = layers.size;
+      layers.set(name, rank);
+    }
+    return rank;
+  };
+  /** The path of ranks down to a layer, `a.b` inside `outer` being three
+   *  levels, and the layer's full name. */
+  const enter = (
+    name: string,
+    layer: readonly number[] | null,
+    path: string,
+  ): [number[], string] => {
+    const ranks = layer ? [...layer] : [];
+    let full = path;
+    for (const part of name.split('.')) {
+      full = full ? `${full}.${part}` : part;
+      ranks.push(rankOf(full));
+    }
+    return [ranks, full];
+  };
+  let anonymous = 0;
+
+  const walk = (
+    source: string,
+    media: MediaCondition[][] | null,
+    layer: readonly number[] | null = null,
+    path = '',
+  ): void => {
     let i = 0;
     const n = source.length;
     while (i < n) {
@@ -142,12 +188,36 @@ export function parseStylesheet(text: string, startOrder = 0): Stylesheet {
           // A nested `@media` intersects with the one above it; pushing a
           // level rather than merging keeps "all of these blocks hold" exact
           // when two of them overlap.
-          walk(at.block, media ? [...media, conditions] : [conditions]);
+          walk(
+            at.block,
+            media ? [...media, conditions] : [conditions],
+            layer,
+            path,
+          );
         } else if (name === 'supports' && at.block !== null) {
           // Everything in a `@supports` block is markup this renderer either
           // understands or ignores per-declaration, so entering it is closer
           // to right than skipping it.
-          walk(at.block, media);
+          walk(at.block, media, layer, path);
+        } else if (name === 'layer') {
+          // `@layer a, b;` names layers, and so fixes their order, and
+          // `@layer a { … }` puts rules in one; one with no name is a layer
+          // of its own. Tailwind 4 writes all of its CSS in four of them.
+          const names = at.prelude
+            .split(',')
+            .map((part) => part.trim())
+            .filter(Boolean);
+          if (!names.every((part) => LAYER_NAME.test(part))) continue;
+          if (at.block === null) {
+            for (const part of names) enter(part, layer, path);
+          } else if (names.length <= 1) {
+            const [ranks, full] = enter(
+              names[0] ?? `\u0000${anonymous++}`,
+              layer,
+              path,
+            );
+            walk(at.block, media, ranks, full);
+          }
         }
         // @font-face, @keyframes, @page: nothing to do, and the block was
         // already consumed.
@@ -174,6 +244,7 @@ export function parseStylesheet(text: string, startOrder = 0): Stylesheet {
           order: order++,
           declarations,
           media,
+          layer,
         });
       }
     }

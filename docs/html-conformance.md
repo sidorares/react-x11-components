@@ -101,6 +101,7 @@ separately, and there are six.
 | 31     | a box's edges on the pixel grid                    | 5,460 (93%) | 4,971 (84%) |
 | 32     | the newline after `<pre>`, pseudo-class arguments  | 5,460 (93%) | 4,972 (84%) |
 | 33     | logical properties, `inset`, a corner's radius     | 5,460 (93%) | 4,972 (84%) |
+| 34     | cascade layers                                     | 5,460 (93%) | 4,972 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -1260,6 +1261,18 @@ break: an XML parser keeps it, and `<Html>` parses HTML.
      are in the horizontal writing mode, by the element's direction, and a
      single corner's radius is read as well. The CSS 2.1 suite has none of
      them, and did not move.
+
+### Round 34
+
+119. **`@layer` was dropped, and everything in it.** Tailwind 4 writes all
+     of its CSS in `@layer theme, base, components, utilities`, so a page
+     styled with it rendered as though it had no stylesheet. Cascade layers
+     are read now (CSS Cascade 5): a layer's rank is the order the document
+     first names it in, across all of its sheets, a rule in a later layer
+     wins over one in an earlier layer whatever their specificity, a rule
+     in no layer wins over both, a layer's own rules win over the layers
+     inside it, and `!important` turns all of that round. The CSS 2.1 suite
+     has no layers either.
 
 ## What `<Html>` supports
 
