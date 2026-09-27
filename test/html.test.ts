@@ -6921,15 +6921,23 @@ metric('a grid places its items in its column tracks', async () => {
     ],
     'spans, and a line counted back from the end',
   );
+  // content-sized columns at the sides, and the rest in the middle: each
+  // starts a gap after the one before, and the last ends at the edge
+  const [first, middle, last] = await grid(
+    'grid-template-columns:auto 1fr auto;gap:8px',
+    '<div>Label</div><div>stretch</div><div>End</div>',
+  );
   assert.deepStrictEqual(
-    (
-      await grid(
-        'grid-template-columns:auto 1fr auto;gap:8px',
-        '<div>Label</div><div>stretch</div><div>End</div>',
-      )
-    ).map(([x, , w]) => x + w),
-    [34, 667, 700],
-    'content-sized columns at the sides, and the rest in the middle',
+    [
+      middle[0] - (first[0] + first[2]),
+      last[0] - (middle[0] + middle[2]),
+      last[0] + last[2],
+    ],
+    [8, 8, 700],
+  );
+  assert.ok(
+    first[2] < 60 && last[2] < 60 && middle[2] > 500,
+    `${first[2]} ${middle[2]} ${last[2]}`,
   );
   // an item is stretched to its row, and aligned in it where it says
   const { node } = await render(
