@@ -23,6 +23,7 @@ import {
   resolveEdges,
 } from './block.js';
 import type { LayoutContext } from './block.js';
+import { firstBaselineIn } from './inline.js';
 import { tableGrid } from './grid.js';
 import type { Cell } from './grid.js';
 
@@ -126,9 +127,18 @@ export function layoutTable(
       );
     }
   }
-  for (const cell of cells) {
+  // A cell aligned on the baseline — every value but `top`, `middle` and
+  // `bottom` — hangs its first line on its first row's baseline, the lowest
+  // of theirs from the row's top (CSS 2.1 17.5.3), and the row is as tall as
+  // the cells hung from it need.
+  const lift = baselineLifts(cells, rows.length);
+  for (let i = 0; i < cells.length; i += 1) {
+    const cell = cells[i];
     if (cell.rowSpan > 1) continue;
-    rowHeight[cell.row] = Math.max(rowHeight[cell.row], cell.box.height);
+    rowHeight[cell.row] = Math.max(
+      rowHeight[cell.row],
+      lift[i] + cell.box.height,
+    );
   }
   for (let r = 0; r < rows.length; r += 1) {
     const specified = resolveOrNull(rows[r].style.height, NaN);
@@ -137,13 +147,14 @@ export function layoutTable(
   // A row-spanning cell only forces height when the rows it covers do not
   // already provide it — otherwise a `rowspan="3"` cell would make each of
   // its three rows as tall as all of it.
-  for (const cell of cells) {
+  for (let i = 0; i < cells.length; i += 1) {
+    const cell = cells[i];
     if (cell.rowSpan <= 1) continue;
     const last = Math.min(rows.length - 1, cell.row + cell.rowSpan - 1);
     let covered = 0;
     for (let r = cell.row; r <= last; r += 1) covered += rowHeight[r];
     covered += rowSpacing * (last - cell.row);
-    const missing = cell.box.height - covered;
+    const missing = lift[i] + cell.box.height - covered;
     if (missing > 0) rowHeight[last] += missing;
   }
 
@@ -176,7 +187,8 @@ export function layoutTable(
     y += rowHeight[r] + rowSpacing;
   }
 
-  for (const cell of cells) {
+  for (let i = 0; i < cells.length; i += 1) {
+    const cell = cells[i];
     const last = Math.min(rows.length - 1, cell.row + cell.rowSpan - 1);
     let height = 0;
     for (let r = cell.row; r <= last; r += 1) height += rowHeight[r];
@@ -185,8 +197,8 @@ export function layoutTable(
     const inner = cell.box.height;
     // `vertical-align` inside a cell moves the *content*, not the box: the
     // box fills the row, background and all, and the content sits top,
-    // middle or bottom in it.
-    let offset = 0;
+    // middle, bottom or on the row's baseline in it.
+    let offset = lift[i];
     const va = cell.box.style.verticalAlign;
     if (va === 'middle') offset = Math.max(0, (height - inner) / 2);
     else if (va === 'bottom') offset = Math.max(0, height - inner);
@@ -458,4 +470,52 @@ function lengthAgainst(len: Len, base: number): number | null {
   if (len === AUTO) return null;
   if (isPct(len)) return Number.isFinite(base) ? (len.pct / 100) * base : null;
   return len;
+}
+
+/**
+ * How far each cell's content moves down to put its baseline on its first
+ * row's: 0 for a cell aligned `top`, `middle` or `bottom`, which is placed
+ * once the row's height is known. A cell's baseline is its first line box's,
+ * at any depth, or the bottom of its content where it has none (CSS 2.1
+ * 17.5.3); it is taken as laid out, from the cell's top. An empty cell has
+ * nothing to align and says nothing about the row's, as in a browser: its
+ * content's bottom is its height, which would hang every other cell in the
+ * row from the bottom of a cell given a height and nothing in it.
+ */
+function baselineLifts(cells: Cell[], rowCount: number): number[] {
+  const lift = new Array<number>(cells.length).fill(0);
+  let any = false;
+  for (const cell of cells) {
+    const va = cell.box.style.verticalAlign;
+    if (va !== 'top' && va !== 'middle' && va !== 'bottom') any = true;
+  }
+  if (!any) return lift;
+  const own = new Array<number>(cells.length).fill(NaN);
+  const row = new Array<number>(rowCount).fill(-Infinity);
+  for (let i = 0; i < cells.length; i += 1) {
+    const box = cells[i].box;
+    const va = box.style.verticalAlign;
+    if (va === 'top' || va === 'middle' || va === 'bottom') continue;
+    const first = firstBaselineIn(box);
+    if (first === null && !holdsFlow(box)) continue;
+    own[i] =
+      first !== null
+        ? first - box.y
+        : box.height - box.padBottom - box.borderBottom;
+    row[cells[i].row] = Math.max(row[cells[i].row], own[i]);
+  }
+  for (let i = 0; i < cells.length; i += 1) {
+    if (own[i] === own[i]) lift[i] = row[cells[i].row] - own[i];
+  }
+  return lift;
+}
+
+/** Whether a cell has anything in flow in it. */
+function holdsFlow(box: Box): boolean {
+  for (const child of box.children) {
+    if (child.outOfFlow || child.isFloat) continue;
+    if (child.kind === 'text' && /^\s*$/.test(child.text)) continue;
+    return true;
+  }
+  return false;
 }

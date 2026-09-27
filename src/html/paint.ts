@@ -34,6 +34,7 @@ import type { BoxTree, LineBox, Marker } from './layout/boxes.js';
 import { depthOf, layoutOffsetOf, layoutOffsets } from './layout/inline.js';
 import { halves } from './layout/collapse.js';
 import { tableGrid } from './layout/grid.js';
+import type { Cell } from './layout/grid.js';
 import type { CollapsedBorder } from './layout/collapse.js';
 
 export interface Rect {
@@ -368,7 +369,11 @@ function paintContent(
   const style = box.style;
   const visible = style.visibility === 'visible';
 
-  if (visible) {
+  // A row or a row group paints nothing of its own: its background is
+  // painted in its cells' areas with the table's (`paintPartBackgrounds`),
+  // and its borders are the collapsed grid's or none (CSS 2.1 17.6.1)
+  const part = box.kind === 'table-row' || box.kind === 'table-row-group';
+  if (visible && !part) {
     if (box !== options.canvasSource) {
       paintBackground(ctx, box, options);
       if (style.backgroundImage) {
@@ -391,7 +396,7 @@ function paintContent(
       }
     }
     if (!box.bordersCollapsed) paintBorders(ctx, box, options);
-    if (box.kind === 'table') paintColumnBackgrounds(ctx, box, options);
+    if (box.kind === 'table') paintPartBackgrounds(ctx, box, options);
   }
   // a stacking context's descendants with a negative `z-index`, over its
   // background and under everything else in it (CSS 2.1 Appendix E)
@@ -774,22 +779,32 @@ function paintBackground(
 }
 
 /**
- * The backgrounds of a table's column groups and columns (CSS 2.1 17.5.1):
- * over the table's own and under its rows' and its cells', in the area of
- * each cell that starts in the column, since a column box is laid out
- * nowhere. The colour; an image there is not drawn.
+ * The backgrounds of a table's column groups, columns, row groups and rows
+ * (CSS 2.1 17.5.1), in that order: over the table's own and under its
+ * cells', in the area of each cell in them. So the spacing between the
+ * cells shows the table, and a row group with no cells in it shows nothing,
+ * as neither laid its background over the whole of its box. A row's or a
+ * row group's image is placed against its own box and seen through its
+ * cells; a column's is not drawn, since a column box is laid out nowhere.
  */
-function paintColumnBackgrounds(
+function paintPartBackgrounds(
   ctx: PaintContext,
   table: Box,
   options: PaintOptions,
 ): void {
-  const { cells, columnBoxes, columnGroups } = tableGrid(table);
-  for (const layer of [columnGroups, columnBoxes]) {
-    if (!layer.some(paintsBackground)) continue;
+  const grid = tableGrid(table);
+  const { cells } = grid;
+  const layers: [(Box | null)[], (cell: Cell) => number][] = [
+    [grid.columnGroups, (cell) => cell.column],
+    [grid.columnBoxes, (cell) => cell.column],
+    [grid.groups, (cell) => cell.row],
+    [grid.rows, (cell) => cell.row],
+  ];
+  for (const [layer, indexOf] of layers) {
+    if (!layer.some(paintsPart)) continue;
     for (const cell of cells) {
-      const column = layer[cell.column];
-      if (!column || !paintsBackground(column)) continue;
+      const part = layer[indexOf(cell)];
+      if (!part || !paintsPart(part)) continue;
       const box = cell.box;
       paintBackground(
         ctx,
@@ -804,20 +819,38 @@ function paintColumnBackgrounds(
           borderRight: 0,
           borderBottom: 0,
           borderLeft: 0,
-          style: column.style,
+          style: part.style,
         },
         options,
       );
+      if (part.style.backgroundImage && part.kind !== 'block') {
+        const area = clampRect(
+          options,
+          Math.round(box.x + options.originX),
+          Math.round(box.y + options.originY),
+          Math.ceil(box.width),
+          Math.ceil(box.height),
+        );
+        if (area) {
+          paintBackgroundImage(
+            ctx,
+            part.style,
+            area,
+            paddingBox(part, options),
+            options,
+          );
+        }
+      }
     }
   }
 }
 
-function paintsBackground(box: Box | null): boolean {
-  return (
-    box !== null &&
-    box.style.visibility === 'visible' &&
-    !isTransparent(box.style.backgroundColor)
-  );
+/** Whether a table part has a background to paint: a colour, or an image
+ *  on a part that is laid out. */
+function paintsPart(box: Box | null): boolean {
+  if (box === null || box.style.visibility !== 'visible') return false;
+  if (!isTransparent(box.style.backgroundColor)) return true;
+  return !!box.style.backgroundImage && box.kind !== 'block';
 }
 
 /** How many tiles a repeating background may draw one by one, where the

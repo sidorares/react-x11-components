@@ -3279,6 +3279,77 @@ test('a script is handed over, unparsed and unevaluated', async () => {
   );
 });
 
+test("cells aligned on the baseline hang their first lines from the row's", async () => {
+  // CSS 2.1 17.5.3: a cell's baseline is its first line's, at any depth,
+  // and the row's is the lowest of its cells'. An empty cell has none to
+  // give, as in a browser, or a cell given a height would hang the rest
+  // from its bottom.
+  const { node } = await render(
+    '<div id="t" style="display:table">' +
+      '<div style="display:table-cell;padding-top:40px"><div id="a">a</div></div>' +
+      '<div style="display:table-cell"><div id="b">b</div></div>' +
+      '<div style="display:table-cell;height:200px"></div></div>',
+  );
+  const el = view(node);
+  const [t, a, b] = ['t', 'a', 'b'].map((id) => boxOf(el, id));
+  assert.strictEqual(a.y, t.y + 40, 'the padded cell sets the baseline');
+  assert.strictEqual(b.y, a.y, 'and the other hangs from it');
+});
+
+test("a table cell takes its row's vertical-align", async () => {
+  // HTML's rendering rules make the rows middle and the cells inherit, so
+  // `<tr valign="top">`, all over mail, sets its cells at the top
+  const { node } = await render(
+    '<table><tr id="r1" valign="top"><td style="height:60px">a</td>' +
+      '<td><div id="t">b</div></td></tr>' +
+      '<tr id="r2"><td style="height:60px">a</td><td><div id="m">b</div></td>' +
+      '</tr></table>',
+  );
+  const el = view(node);
+  const [r1, t, r2, m] = ['r1', 't', 'r2', 'm'].map((id) => boxOf(el, id));
+  assert.ok(t.y - r1.y < 5, `top: ${t.y - r1.y}`);
+  assert.ok(m.y - r2.y > 15, `the next row is still middle: ${m.y - r2.y}`);
+});
+
+test('a negative size is no size, and the declaration goes', async () => {
+  // CSS 2.1 10.2, 10.4, 10.5, 10.7: -1px was taken as a maximum height
+  const { node } = await render(
+    '<div id="a" style="height:40px;max-height:-1px"></div>' +
+      '<div id="b" style="width:30px;width:-10px;min-height:-5px;height:20px"></div>',
+  );
+  const el = view(node);
+  assert.strictEqual(boxOf(el, 'a').height, 40);
+  const b = boxOf(el, 'b');
+  assert.deepStrictEqual([b.width, b.height], [30, 20]);
+});
+
+test("a row's background is its cells', and a row group has no borders", async () => {
+  // CSS 2.1 17.5.1 and 17.6.1: a row or a row group paints its background
+  // in the areas of its cells, so the spacing between them shows the
+  // table, and in the separated model it has no borders at all
+  const { node } = await render(
+    '<table style="border-spacing:10px">' +
+      '<tbody style="border:5px solid #00ff00">' +
+      '<tr style="background:#ff0000"><td id="a">a</td><td id="b">b</td></tr>' +
+      '</tbody></table>',
+  );
+  const el = view(node);
+  const fills = await fillsOf(el);
+  const red = fills.filter((f) => f.style === parseColor('#ff0000'));
+  const cells = ['a', 'b'].map((id) => boxOf(el, id));
+  assert.deepStrictEqual(
+    red.map((f) => [f.x, f.y, f.w, f.h]),
+    cells.map((c) => [
+      Math.round(c.x),
+      Math.round(c.y),
+      Math.ceil(c.width),
+      Math.ceil(c.height),
+    ]),
+    'one fill a cell, none across the spacing',
+  );
+  assert.ok(!fills.some((f) => f.style === parseColor('#00ff00')), 'no border');
+});
+
 test('nothing loads without onResource, and every reference is offered to it', async () => {
   const asked: string[] = [];
   await renderX11(
@@ -4215,6 +4286,21 @@ test('prefers-color-scheme is a live condition, alone and beside a width', () =>
   assert.ok(!mediaMatches([[{ max: 520, scheme: 'light' }]], 400, 'dark'));
   // with no scheme given the light branch holds, as before
   assert.ok(mediaMatches([[{ scheme: 'light' }]], 400));
+});
+
+test('a medium other than the screen matches nothing, an @import included', () => {
+  // `print` and `speech`, and the media CSS 2.1 named that Media Queries
+  // retired: `braille`, `embossed`, `handheld`, `projection`, `tty`, `tv`.
+  // A term that is no name, `(color)`, is left as it was.
+  const sheet = parseStylesheet(
+    '@import url(a.css) tv; @import "b.css" screen, print; @import "c.css";' +
+      '@media braille { p { color: red } } @media (color) { p { color: blue } }',
+  );
+  assert.deepStrictEqual(sheet.imports, ['b.css', 'c.css']);
+  assert.deepStrictEqual(
+    sheet.rules.map((r) => r.media),
+    [[[{ staticPass: false }]], [[{ staticPass: true }]]],
+  );
 });
 
 test('the palette in force answers prefers-color-scheme, and a switch re-cascades', async () => {
