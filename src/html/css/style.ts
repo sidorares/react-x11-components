@@ -159,6 +159,9 @@ export type BorderStyle =
 /** A background layer's image: a url, a gradient, or none. */
 export type BackgroundImage = string | LinearGradient | null;
 
+/** An intrinsic size: `min-content`, `max-content` or `fit-content`. */
+export type ContentSize = 'min-content' | 'max-content' | 'fit-content';
+
 export interface ComputedStyle {
   // --- inherited ------------------------------------------------------------
   color: string;
@@ -278,6 +281,14 @@ export interface ComputedStyle {
   maxWidth: Len | 'none';
   minHeight: Len;
   maxHeight: Len | 'none';
+  /** `width`, `min-width` and `max-width` as an intrinsic size (CSS Sizing
+   *  3, 3.1): the box's content's, where the length beside it is `auto`
+   *  or `none` so that what does not know these sizes the box as though it
+   *  had none; null for a length or a percentage. A height of one is its
+   *  content's, which is what `auto` already is. */
+  widthKeyword: ContentSize | null;
+  minWidthKeyword: ContentSize | null;
+  maxWidthKeyword: ContentSize | null;
 
   marginTop: Len;
   marginRight: Len;
@@ -546,6 +557,9 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     maxWidth: 'none',
     minHeight: 0,
     maxHeight: 'none',
+    widthKeyword: null,
+    minWidthKeyword: null,
+    maxWidthKeyword: null,
 
     marginTop: 0,
     marginRight: 0,
@@ -969,22 +983,37 @@ export function applyDeclaration(
     case 'height':
     case 'min-width':
     case 'min-height': {
+      const keyword = contentSizeOf(value);
+      if (keyword) {
+        // `auto` beside it, which is a height's content height already
+        (style as unknown as Record<string, unknown>)[camel(name)] = AUTO;
+        if (name === 'width') style.widthKeyword = keyword;
+        else if (name === 'min-width') style.minWidthKeyword = keyword;
+        return;
+      }
       // a negative size is no value, and the declaration goes (CSS 2.1
       // 10.2, 10.4, 10.5, 10.7)
       const len = parseLength(value, ctx);
-      if (len !== null && notNegative(len))
+      if (len !== null && notNegative(len)) {
         (style as unknown as Record<string, unknown>)[camel(name)] = len;
+        if (name === 'width') style.widthKeyword = null;
+        else if (name === 'min-width') style.minWidthKeyword = null;
+      }
       return;
     }
     case 'max-width':
     case 'max-height': {
-      if (value.toLowerCase() === 'none') {
+      const keyword = contentSizeOf(value);
+      if (keyword || value.toLowerCase() === 'none') {
         (style as unknown as Record<string, unknown>)[camel(name)] = 'none';
+        if (name === 'max-width') style.maxWidthKeyword = keyword;
         return;
       }
       const len = parseLength(value, ctx);
-      if (len !== null && notNegative(len))
+      if (len !== null && notNegative(len)) {
         (style as unknown as Record<string, unknown>)[camel(name)] = len;
+        if (name === 'max-width') style.maxWidthKeyword = null;
+      }
       return;
     }
     case 'top':
@@ -2212,6 +2241,18 @@ function isSizePart(word: string, ctx: UnitContext): boolean {
   return typeof len === 'number' ? len >= 0 : len.pct >= 0;
 }
 
+/** An intrinsic size keyword, with the prefixes browsers still read;
+ *  null for anything else. */
+function contentSizeOf(value: string): ContentSize | null {
+  const v = value
+    .trim()
+    .toLowerCase()
+    .replace(/^-(?:webkit|moz)-/, '');
+  return v === 'min-content' || v === 'max-content' || v === 'fit-content'
+    ? v
+    : null;
+}
+
 /** A `background-size`: `cover`, `contain`, `auto`, or one or two of a
  *  length, a percentage and `auto`, the second `auto` where there is none;
  *  null for what is none of these. */
@@ -2975,10 +3016,10 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'counter-increment': ['counterIncrement'],
   'border-spacing': ['borderSpacing', 'borderSpacingY'],
   display: ['display', 'flowRoot'],
-  width: ['width'],
+  width: ['width', 'widthKeyword'],
   height: ['height'],
-  'min-width': ['minWidth'],
-  'max-width': ['maxWidth'],
+  'min-width': ['minWidth', 'minWidthKeyword'],
+  'max-width': ['maxWidth', 'maxWidthKeyword'],
   'min-height': ['minHeight'],
   'max-height': ['maxHeight'],
   'box-sizing': ['boxSizing'],

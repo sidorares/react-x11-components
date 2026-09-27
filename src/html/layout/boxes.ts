@@ -295,7 +295,8 @@ export class Box {
    *  which is nearly all of them, so it is one field rather than four. */
   intrinsic: Intrinsic | null = null;
   /**
-   * Cached min-/max-content widths, for a table cell. -1 until measured.
+   * Cached min-/max-content widths, for a table cell and for a box an
+   * intrinsic size (`width: fit-content`) sizes. -1 until measured.
    *
    * Intrinsic widths are width-independent by definition, so measuring them
    * per layout pass was this engine breaking its own phase rule — a resize

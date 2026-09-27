@@ -26,10 +26,11 @@ import { Yoga, layoutLoaded } from 'react-x11/yoga';
 import type { Config as YogaConfig, Node as YogaNode } from 'react-x11/yoga';
 
 import { AUTO, isPct, resolve, resolveOrNull } from '../css/values.js';
-import type { ComputedStyle } from '../css/style.js';
+import type { ComputedStyle, ContentSize } from '../css/style.js';
 import { Box } from './boxes.js';
 import {
   clampHeight,
+  contentSizedWidth,
   measureIntrinsicWidth,
   moveTo,
   percentBaseInside,
@@ -231,6 +232,20 @@ function applyItem(
   if (style.maxWidth !== 'none') {
     const maxWidth = resolveOrNull(style.maxWidth, containingWidth);
     if (maxWidth !== null) node.setMaxWidth(maxWidth + across);
+  }
+  if (style.widthKeyword || style.minWidthKeyword || style.maxWidthKeyword) {
+    // an intrinsic size is the item's content's, measured here and handed
+    // over as a length: `w-fit` in a column is not stretched across it,
+    // and `min-w-max` in a row does not shrink below its content
+    const room = Math.max(
+      0,
+      containingWidth - box.marginLeft - box.marginRight,
+    );
+    const size = (keyword: ContentSize): number =>
+      contentSizedWidth(box, ctx, keyword, room, containingWidth);
+    if (style.widthKeyword) node.setWidth(size(style.widthKeyword));
+    if (style.minWidthKeyword) node.setMinWidth(size(style.minWidthKeyword));
+    if (style.maxWidthKeyword) node.setMaxWidth(size(style.maxWidthKeyword));
   }
   const minHeight = resolveOrNull(style.minHeight, NaN);
   if (minHeight !== null) node.setMinHeight(minHeight + down);

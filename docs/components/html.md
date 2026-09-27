@@ -263,6 +263,14 @@ its fallback content until then or when it is not one. `<iframe>`,
 without them, as HTML sizes them — with nothing in them, because nothing is
 loaded.
 
+**Intrinsic sizes:** `width`, `min-width` and `max-width` take
+`fit-content`, `max-content` and `min-content` — Tailwind's `w-fit`, `w-max`
+and `min-w-max` — as CSS Sizing 3 has them: a block as wide as its content
+where its room holds it, auto margins centring it; one as wide as its
+longest line, or as its longest word, whatever the room; a flex item of one
+not stretched across a column, and a row item not shrunk below it. A
+height of one is its content's, which is `auto`.
+
 **Ratios:** `aspect-ratio` makes an `auto` height of the width, of the box
 `box-sizing` names — Tailwind's `aspect-video` and `aspect-square` — and
 that height is one a percentage inside resolves against. A box grows past
