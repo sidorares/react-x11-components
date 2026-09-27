@@ -5629,3 +5629,41 @@ metric(
     assert.ok(await purple(3, Math.round(table.y) + 3), 'the collapsed border');
   },
 );
+
+metric(
+  'custom properties set at every level of a deep tree read the nearest',
+  async () => {
+    // twenty levels, each setting one: the chain an element reads through is
+    // folded once it is long, and has to answer as it did before
+    let open = '';
+    let close = '';
+    for (let i = 0; i < 20; i += 1) {
+      const set =
+        i === 12
+          ? '--gone: initial'
+          : i === 3
+            ? '--gone: 30px'
+            : `--d${i}: ${i}px`;
+      open += `<div style="${set}">`;
+      close += '</div>';
+    }
+    const { el } = await renderWithBytes(
+      '<html><head><style>:root { --top: #00ff00; --d5: 99px }</style></head><body>' +
+        open +
+        '<p id="p" style="color: var(--top); margin-left: var(--d5); ' +
+        'margin-right: var(--d18); padding-left: var(--gone, 4px)">x</p>' +
+        close +
+        '</body></html>',
+      {},
+    );
+    const style = (
+      boxOf(el, 'p') as unknown as { style: Record<string, unknown> }
+    ).style;
+    assert.strictEqual(style.color, '#00ff00');
+    // the nearer one wins over the root's
+    assert.strictEqual(style.marginLeft, 5);
+    assert.strictEqual(style.marginRight, 18);
+    // and `initial` twelve levels down is none, over the one set at three
+    assert.strictEqual(style.paddingLeft, 4);
+  },
+);
