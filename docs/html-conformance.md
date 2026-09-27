@@ -131,6 +131,7 @@ separately, and there are six.
 | 61     | the room a shrink-to-fit box has                   | 5,472 (93%) | 4,979 (84%) |
 | 62     | backgrounds painted through text                   | 5,472 (93%) | 4,979 (84%) |
 | 63     | `display: contents`                                | 5,472 (93%) | 4,984 (84%) |
+| 64     | outlines                                           | 5,472 (93%) | 4,984 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -1872,6 +1873,23 @@ from-… to-… bg-clip-text text-transparent`: the background clipped
      so, which has no children to hand on, is not rendered. Found in a
      survey of the display values stylesheets write; CSS 2.1 has no
      `contents`, and neither suite moved.
+
+### Round 64
+
+155. **Outlines were not drawn.** CSS 2.1 has `outline` (18.4), and pages
+     draw rings with it that take no room: a focus ring, an avatar's
+     ring, and Tailwind UI's `outline -outline-offset-1 outline-black/5`,
+     the hairline it lays over an image's edge. All of it was dropped.
+     `outline`, its width, style and colour, and `outline-offset` are read
+     now, and an outline is drawn as a border of its own round the border
+     box grown by the offset — inside it, where the offset is negative —
+     with the box's rounded corners grown along with it, through the
+     painter the borders are drawn with, so its styles are theirs. It is
+     drawn over the box's content, outside the box's own clip, and an
+     inline box's round each of its fragments; the paint bounds count it,
+     so a repaint that reaches it redraws it. `auto` is drawn solid.
+     Found in a survey of the properties real stylesheets write that were
+     dropped.
 
 ## What `<Html>` supports
 

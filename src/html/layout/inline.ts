@@ -1993,7 +1993,8 @@ function inlineEdges(
   }
   const decorated =
     !isTransparent(s.backgroundColor) ||
-    box.borderTop + box.borderRight + box.borderBottom + box.borderLeft > 0;
+    box.borderTop + box.borderRight + box.borderBottom + box.borderLeft > 0 ||
+    s.outlineStyle !== 'none';
   box.decoration = !decorated ? null : fonts ? faceExtent(fonts, s) : NO_EXTENT;
   const left = box.marginLeft + box.borderLeft + box.padLeft;
   const right = box.padRight + box.borderRight + box.marginRight;

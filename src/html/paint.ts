@@ -169,6 +169,14 @@ export function computePaintBounds(box: Box, moved = false): number {
       y2 = Math.max(y2, box.y + box.height + shadow.y + reach);
     }
   }
+  // and so is an outline
+  if (own && box.style.outlineStyle !== 'none') {
+    const reach = Math.max(0, box.style.outlineOffset + box.style.outlineWidth);
+    x1 = Math.min(x1, box.x - reach);
+    y1 = Math.min(y1, box.y - reach);
+    x2 = Math.max(x2, box.x + box.width + reach);
+    y2 = Math.max(y2, box.y + box.height + reach);
+  }
   const lines = box.lines;
   if (lines) {
     let tallest = 0;
@@ -638,6 +646,11 @@ function paintContent(
     ctx.restore();
     options.clips!.pop();
     for (const child of level.deferred) paintPositioned(ctx, child, options);
+  }
+  // over all of it, outside the box's own clip; an inline box's is drawn a
+  // fragment at a time, on its lines
+  if (box.style.outlineStyle !== 'none' && box.kind !== 'inline') {
+    paintOutline(ctx, box, options);
   }
 }
 
@@ -1230,6 +1243,10 @@ function paintFlowLines(
     }
     if (child.lines) paintLines(ctx, child, options);
     paintFlowLines(ctx, child, options);
+    // an inline box's is drawn a fragment at a time, on its lines
+    if (child.style.outlineStyle !== 'none' && child.kind !== 'inline') {
+      paintOutline(ctx, child, options);
+    }
   }
 }
 
@@ -2230,6 +2247,66 @@ function tileSize(
  * which is right whenever the two sides share a colour and close enough when
  * they do not.
  */
+/**
+ * A box's outline (CSS 2.1 18.4, CSS UI 4 5): a border of its own width,
+ * style and colour round the border box grown by `outline-offset` — which
+ * a negative offset brings inside it, as Tailwind UI's `-outline-offset-1`
+ * frames an image with a hairline over its edge — with the box's corners
+ * grown along with it, and taking no room. Drawn over the box's content,
+ * which is where a browser draws it; `auto` is drawn solid.
+ */
+function paintOutline(
+  ctx: PaintContext,
+  box: Frame,
+  options: PaintOptions,
+): void {
+  const s = box.style;
+  const width = s.outlineWidth;
+  if (!(width > 0) || s.visibility !== 'visible') return;
+  const grow = s.outlineOffset + width;
+  const height = frameHeight(box);
+  const w = box.width + 2 * grow;
+  const h = height + 2 * grow;
+  if (!(w > 0 && h > 0)) return;
+  const corners = cornersOf(s, box.width, height);
+  const kind = s.outlineStyle === 'auto' ? 'solid' : s.outlineStyle;
+  const grown = (r: number): number => (r > 0 ? Math.max(0, r + grow) : 0);
+  const ring: ComputedStyle = {
+    ...s,
+    borderTopStyle: kind,
+    borderRightStyle: kind,
+    borderBottomStyle: kind,
+    borderLeftStyle: kind,
+    borderTopColor: s.outlineColor,
+    borderRightColor: s.outlineColor,
+    borderBottomColor: s.outlineColor,
+    borderLeftColor: s.outlineColor,
+    borderRadius: corners
+      ? (corners.x.map(grown) as ComputedStyle['borderRadius'])
+      : [0, 0, 0, 0],
+    borderRadiusY: corners
+      ? (corners.y.map(grown) as ComputedStyle['borderRadius'])
+      : null,
+  };
+  paintBorders(
+    ctx,
+    {
+      x: box.x - grow,
+      y: frameY(box) - grow,
+      width: w,
+      height: h,
+      captionTop: 0,
+      captionBottom: 0,
+      borderTop: width,
+      borderRight: width,
+      borderBottom: width,
+      borderLeft: width,
+      style: ring,
+    },
+    options,
+  );
+}
+
 function paintBorders(
   ctx: PaintContext,
   box: Frame,
@@ -3302,6 +3379,7 @@ function paintInlineBoxes(
     if (fragment.width <= 0) continue;
     paintLayers(ctx, fragment, options);
     paintBorders(ctx, fragment, options);
+    if (box.style.outlineStyle !== 'none') paintOutline(ctx, fragment, options);
   }
 }
 

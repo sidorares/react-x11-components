@@ -333,6 +333,12 @@ export interface ComputedStyle {
   borderRadiusY: [Len, Len, Len, Len] | null;
   /** Its shadows front to back, the ones that can be seen; null for none. */
   boxShadow: BoxShadow[] | null;
+  /** Its outline (CSS 2.1 18.4, CSS UI 4): drawn around the border box,
+   *  grown by `outlineOffset`, taking no room; `auto` is drawn solid. */
+  outlineStyle: BorderStyle | 'auto';
+  outlineWidth: number;
+  outlineColor: string;
+  outlineOffset: number;
 
   top: Len;
   right: Len;
@@ -615,6 +621,10 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     borderRadius: [0, 0, 0, 0],
     borderRadiusY: null,
     boxShadow: null,
+    outlineStyle: 'none',
+    outlineWidth: medium,
+    outlineColor: 'currentColor',
+    outlineOffset: 0,
 
     top: AUTO,
     right: AUTO,
@@ -770,6 +780,12 @@ const SIDE_PROPS: Record<
   padding: ['paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft'],
   inset: ['top', 'right', 'bottom', 'left'],
 };
+
+/** An `outline-style`: a border style but `hidden`, or `auto`. */
+function outlineStyleOf(v: string): ComputedStyle['outlineStyle'] | null {
+  if (v === 'auto') return 'auto';
+  return BORDER_STYLES.has(v) && v !== 'hidden' ? (v as BorderStyle) : null;
+}
 
 const BORDER_STYLES = new Set<string>([
   'none',
@@ -1178,6 +1194,55 @@ export function applyDeclaration(
       vertical[corner] = y;
       style.borderRadius = radii;
       style.borderRadiusY = sameRadii(radii, vertical) ? null : vertical;
+      return;
+    }
+    case 'outline': {
+      // width, style and colour in any order, each reset where it is left
+      // out, as `border`'s are
+      let width = BORDER_WIDTH_KEYWORDS.medium * ctx.scale;
+      let outline: ComputedStyle['outlineStyle'] = 'none';
+      let color = 'currentColor';
+      for (const part of splitValue(value)) {
+        const v = part.toLowerCase();
+        const kind = outlineStyleOf(v);
+        if (kind) {
+          outline = kind;
+          continue;
+        }
+        const w = borderWidth(part, ctx);
+        if (w !== null) {
+          width = w;
+          continue;
+        }
+        const c = v === 'invert' ? 'currentColor' : parseColor(part);
+        if (c === null) return;
+        color = c;
+      }
+      style.outlineStyle = outline;
+      style.outlineWidth = width;
+      style.outlineColor = color;
+      return;
+    }
+    case 'outline-style': {
+      const kind = outlineStyleOf(value.trim().toLowerCase());
+      if (kind) style.outlineStyle = kind;
+      return;
+    }
+    case 'outline-width': {
+      const w = borderWidth(value, ctx);
+      if (w !== null) style.outlineWidth = w;
+      return;
+    }
+    case 'outline-color': {
+      // `invert` is the text's colour where a browser cannot invert
+      const v = value.trim().toLowerCase();
+      const c = v === 'invert' ? 'currentColor' : parseColor(value);
+      if (c !== null) style.outlineColor = c;
+      return;
+    }
+    case 'outline-offset': {
+      const len = parseLength(value, ctx);
+      if (typeof len === 'number') style.outlineOffset = len;
       return;
     }
     case 'box-shadow': {
@@ -3290,6 +3355,11 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
     }),
   ),
   'box-shadow': ['boxShadow'],
+  outline: ['outlineStyle', 'outlineWidth', 'outlineColor'],
+  'outline-style': ['outlineStyle'],
+  'outline-width': ['outlineWidth'],
+  'outline-color': ['outlineColor'],
+  'outline-offset': ['outlineOffset'],
   'text-shadow': ['textShadow'],
   'line-clamp': ['lineClamp'],
   '-webkit-line-clamp': ['lineClamp'],
