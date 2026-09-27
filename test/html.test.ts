@@ -3391,6 +3391,23 @@ test("white space between a table's parts is no cell, kept or not", async () => 
   assert.deepStrictEqual([c.x, c.y], [t.x, t.y], 'the cell is the first');
 });
 
+test('a float is painted over the backgrounds of the blocks after it', async () => {
+  // CSS 2.1 Appendix E: every in-flow block's background, then the floats,
+  // then the lines. Painted a block at a time, the shaded paragraph beside
+  // a floated image hid the image under its background.
+  const { node } = await render(
+    '<div style="float:left;width:50px;height:50px;background:#00ff00"></div>' +
+      '<p style="margin:0;background:#ff0000">text</p>' +
+      '<div style="float:left;width:50px;height:50px;background:#0000ff"></div>',
+  );
+  const fills = await fillsOf(view(node));
+  const at = (colour: string) =>
+    fills.findIndex((f) => f.style === parseColor(colour));
+  assert.ok(at('#ff0000') >= 0, 'the paragraph has its background');
+  assert.ok(at('#00ff00') > at('#ff0000'), 'the float before it goes over it');
+  assert.ok(at('#0000ff') > at('#00ff00'), 'and the floats keep their order');
+});
+
 test('nothing loads without onResource, and every reference is offered to it', async () => {
   const asked: string[] = [];
   await renderX11(
