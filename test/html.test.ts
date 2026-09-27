@@ -5276,6 +5276,34 @@ test('align places a table, and <center> or an aligned cell centres the blocks i
   assert.notStrictEqual(align, 'center', "the table's text is its own");
 });
 
+test("a table in an aligned cell keeps its cells' text at their start", async () => {
+  // Every mail centres its body in `<td align="center">`, which is
+  // `-webkit-center`: the table is centred, and its cells' text is not,
+  // since a table resets HTML's alignment as Blink does. An author's own
+  // `text-align: center` is inherited into the table as ever.
+  const { node } = await render(
+    '<style>body{margin:0}table{border-spacing:0}td{padding:0}</style>' +
+      '<table width="400"><tr><td align="center">' +
+      '<table id="t1" width="200"><tr><td id="c1">text</td></tr></table>' +
+      '</td></tr></table>' +
+      '<center><table id="t2" width="200"><tr><td id="c2">text</td></tr>' +
+      '</table></center>' +
+      '<table width="400"><tr><td style="text-align:center">' +
+      '<table width="200"><tr><td id="c3">text</td></tr></table>' +
+      '</td></tr></table>',
+    400,
+  );
+  const el = view(node);
+  const align = (id: string) =>
+    (boxOf(el, id) as unknown as { style: { textAlign: string } }).style
+      .textAlign;
+  assert.strictEqual(boxOf(el, 't1').x, 100, 'the table centred');
+  assert.strictEqual(align('c1'), 'start');
+  assert.strictEqual(boxOf(el, 't2').x, 100);
+  assert.strictEqual(align('c2'), 'start');
+  assert.strictEqual(align('c3'), 'center', "the author's own centring");
+});
+
 test("a body's text and link colours, and a background attribute", async () => {
   const { node } = await render(
     '<body text="#123456" link="#00ff00">' +

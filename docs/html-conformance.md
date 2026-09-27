@@ -113,6 +113,7 @@ separately, and there are six.
 | 43     | line-clamp, text-overflow                          | 5,460 (93%) | 4,972 (84%) |
 | 44     | 3D border styles                                   | 5,462 (93%) | 4,974 (84%) |
 | 45     | a flex row measured for its content                | 5,462 (93%) | 4,974 (84%) |
+| 46     | a table in an aligned cell                         | 5,462 (93%) | 4,974 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -1497,6 +1498,19 @@ minmax(16rem, 1fr))` are the layouts of half the pages written this
      is `auto` wide there now, which Yoga works out from its content. Found
      rendering a Tailwind-shaped page beside a browser; the CSS 2.1 suite
      has no flex boxes.
+
+### Round 46
+
+135. **A mail's body was centred line by line.** `<td align="center">` —
+     around the body table of nearly every HTML mail — is `-webkit-center`,
+     which centres the blocks in the cell as well as its text, and it was
+     inherited into the table it centres: every heading, paragraph and
+     cell of the mail was centred. A browser centres the table and leaves
+     its text alone, because a table resets HTML's alignment to `start`
+     (Blink: "tables never support the -webkit-* values for text-align").
+     So does this now; an author's own `text-align: center` is inherited
+     into a table as it always was. Found rendering a transactional mail
+     beside a browser; the CSS 2.1 suite has no `align` attributes.
 
 ## What `<Html>` supports
 
