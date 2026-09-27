@@ -8255,6 +8255,35 @@ metric(
   },
 );
 
+metric('a truncated block cuts each of its lines, and loses none', async () => {
+  // the cut was the paragraph's, one line with an ellipsis: a `truncate`
+  // block with a `<br>` in it, or a `<pre>` that clips with
+  // `text-overflow: ellipsis`, showed its first line and nothing else,
+  // where `text-overflow` cuts every line that overflows
+  const { node } = await render(
+    '<style>body{margin:0} .t{width:120px;overflow:hidden;' +
+      'text-overflow:ellipsis;white-space:nowrap}</style>' +
+      '<div id="a" class="t">leslie.alexander@example.com<br>Short<br>' +
+      'michael.foster@example.com</div>' +
+      '<pre id="b" style="width:120px;padding:0;overflow:hidden;' +
+      'text-overflow:ellipsis">const answer = computeTheAnswer();\n' +
+      'return answer;</pre>',
+  );
+  const el = view(node);
+  const truncated = (line: PlacedLine) =>
+    (line.texts[0].layout as unknown as { truncated: boolean }).truncated;
+  const lines = linesOf(el, 'a');
+  assert.strictEqual(lines.length, 3, 'every line');
+  assert.deepStrictEqual(lines.map(truncated), [true, false, true]);
+  for (const line of lines) {
+    assert.ok(line.width <= 120, `within the box: ${line.width}`);
+  }
+  assert.ok(lines[1].y > lines[0].y && lines[2].y > lines[1].y, 'in order');
+  const pre = linesOf(el, 'b');
+  assert.strictEqual(pre.length, 2);
+  assert.deepStrictEqual(pre.map(truncated), [true, false]);
+});
+
 metric(
   'a clamped block laid out a line at a time is cut to its lines',
   async () => {

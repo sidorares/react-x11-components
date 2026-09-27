@@ -116,6 +116,7 @@ separately, and there are six.
 | 46     | a table in an aligned cell                         | 5,462 (93%) | 4,974 (84%) |
 | 47     | details, and markers inside                        | 5,466 (93%) | 4,978 (84%) |
 | 48     | justify, and text that does not wrap aligned       | 5,470 (93%) | 4,978 (84%) |
+| 49     | an ellipsis on every line                          | 5,470 (93%) | 4,978 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -1564,6 +1565,20 @@ minmax(16rem, 1fr))` are the layouts of half the pages written this
      test on X11, whose right-to-left `nowrap` line was set at the left.
      Found in the justify tests, which set `nowrap` and `pre` beside
      `justify` to check that it is ignored there.
+
+### Round 49
+
+140. **A truncated block kept its first line.** `text-overflow: ellipsis`
+     was the paragraph's cut, one line with an ellipsis, so a `truncate`
+     block with a `<br>` in it, or a `<pre>` that clips with an ellipsis,
+     showed its first line and lost the rest — and on macOS, where
+     CoreText cuts at a line by folding the rest of the text into it, its
+     lines ran together into one. `text-overflow` cuts every line that
+     overflows, and a layout can cut only its last, so such a text is laid
+     out a hard line at a time, each cut apart, as a long `<pre>` is
+     already laid out in chunks. A clamp is the paragraph's, and stays one
+     layout. Found reading the cut for round 48; the CSS 2.1 suite has no
+     `text-overflow`.
 
 ## What `<Html>` supports
 
