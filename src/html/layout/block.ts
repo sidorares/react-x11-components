@@ -1088,10 +1088,18 @@ function layoutMarker(box: Box, marker: Marker, ctx: LayoutContext): void {
  * browser; the document is as tall as what overflows it, so a message
  * longer than the window is not cut off (`layoutDocument`).
  */
-function percentBaseInside(box: Box): number {
+export function percentBaseInside(box: Box): number {
   if (!box.el && !box.pseudo) return box.percentHeightBase;
   const resolved = resolveOrNull(box.style.height, box.percentHeightBase);
-  if (resolved === null) return NaN;
+  if (resolved === null) {
+    // a height `aspect-ratio` gives from a width is as definite as the width
+    const ratio = ratioHeight(box);
+    if (ratio === null) return NaN;
+    return Math.max(
+      0,
+      clampHeight(box, ratio + box.verticalExtra) - box.verticalExtra,
+    );
+  }
   const set = Math.max(0, resolved);
   const borderBox =
     box.style.boxSizing === 'border-box'
@@ -1122,10 +1130,37 @@ function handPercentBase(box: Box, base: number): void {
   }
 }
 
+/**
+ * The content height `aspect-ratio` gives a box whose height is `auto`, from
+ * its width (CSS Sizing 4, 5.1): the ratio is of the box its `box-sizing`
+ * names, which is the border box in everything Tailwind writes. Null where
+ * it has none, or a height of its own; a replaced box is sized apart.
+ */
+export function ratioHeight(box: Box): number | null {
+  const aspect = box.style.aspectRatio;
+  if (!aspect || box.kind === 'replaced') return null;
+  if (resolveOrNull(box.style.height, box.percentHeightBase) !== null) {
+    return null;
+  }
+  return box.style.boxSizing === 'border-box'
+    ? Math.max(0, box.width / aspect.ratio - box.verticalExtra)
+    : Math.max(0, box.contentWidth / aspect.ratio);
+}
+
 function finishHeight(box: Box, contentHeight: number): void {
   const set = resolveOrNull(box.style.height, box.percentHeightBase);
   // at least zero: a `calc()` may come to less
   const specified = set === null ? null : Math.max(0, set);
+  if (specified === null && box.style.aspectRatio) {
+    const ratio = ratioHeight(box);
+    if (ratio !== null) {
+      // the ratio's height, grown to what the box holds unless it clips it
+      // (5.2: the automatic minimum of a box with a ratio is its content)
+      const clips =
+        box.style.overflowX !== 'visible' || box.style.overflowY !== 'visible';
+      contentHeight = clips ? ratio : Math.max(ratio, contentHeight);
+    }
+  }
   const height = specified ?? contentHeight;
   const borderBox =
     box.style.boxSizing === 'border-box' && specified !== null
@@ -1396,7 +1431,10 @@ function sizeReplaced(box: Box, containingWidth: number): void {
   const own = box.intrinsic ?? NO_INTRINSIC;
   const iw = own.missing & 1 ? null : own.width;
   const ih = own.missing & 2 ? null : own.height;
-  const ratio = own.ratio;
+  // `aspect-ratio` over its own, unless written `auto` and it has one
+  const aspect = style.aspectRatio;
+  const ratio =
+    aspect && !(aspect.auto && own.ratio > 0) ? aspect.ratio : own.ratio;
   // the width a block would have here: what a ratio with no size fills, and
   // an `hr`, whose whole appearance is its border across the line
   const room = (): number => {

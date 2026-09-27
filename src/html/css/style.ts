@@ -216,6 +216,14 @@ export interface ComputedStyle {
   float: 'none' | 'left' | 'right';
   clear: 'none' | 'left' | 'right' | 'both';
   boxSizing: 'content-box' | 'border-box';
+  /** `aspect-ratio`: a box's width over its height, where its height is
+   *  `auto`; `auto` beside it, as `auto 16 / 9`, gives a replaced element
+   *  its own where it has one. Null for `auto` alone. */
+  aspectRatio: { ratio: number; auto: boolean } | null;
+  /** How an image fills its content box, and where in it. */
+  objectFit: 'fill' | 'contain' | 'cover' | 'none' | 'scale-down';
+  objectPositionX: Len;
+  objectPositionY: Len;
   overflowX: 'visible' | 'hidden' | 'scroll' | 'auto';
   overflowY: 'visible' | 'hidden' | 'scroll' | 'auto';
   /** `clip: rect(…)`: the part of an absolutely positioned box that shows,
@@ -450,6 +458,10 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     float: 'none',
     clear: 'none',
     boxSizing: 'content-box',
+    aspectRatio: null,
+    objectFit: 'fill',
+    objectPositionX: { pct: 50 },
+    objectPositionY: { pct: 50 },
     overflowX: 'visible',
     overflowY: 'visible',
     clip: null,
@@ -738,6 +750,23 @@ export function applyDeclaration(
     case 'box-sizing': {
       const v = value.toLowerCase();
       if (v === 'border-box' || v === 'content-box') style.boxSizing = v;
+      return;
+    }
+    case 'aspect-ratio': {
+      const parsed = parseAspectRatio(value);
+      if (parsed !== undefined) style.aspectRatio = parsed;
+      return;
+    }
+    case 'object-fit': {
+      const v = value.trim().toLowerCase();
+      if (OBJECT_FITS.has(v)) style.objectFit = v as ComputedStyle['objectFit'];
+      return;
+    }
+    case 'object-position': {
+      const pair = positionPair(splitValue(value), ctx);
+      if (!pair) return;
+      style.objectPositionX = pair[0];
+      style.objectPositionY = pair[1];
       return;
     }
     case 'overflow':
@@ -2130,6 +2159,36 @@ function splitTopLevelSlash(value: string): string[] {
 
 // --- logical properties ----------------------------------------------------
 
+const OBJECT_FITS = new Set(['fill', 'contain', 'cover', 'none', 'scale-down']);
+
+/**
+ * `aspect-ratio` (CSS Sizing 4, 5.1): `auto`, a ratio — one number, or
+ * two with a `/` between — or both, in either order. Undefined where it is
+ * none of that, and the declaration is dropped; a ratio with a nought in it
+ * is none, and `auto` is what is left.
+ */
+function parseAspectRatio(
+  value: string,
+): ComputedStyle['aspectRatio'] | undefined {
+  let auto = false;
+  let rest = value.trim().toLowerCase();
+  const word = /(?:^auto\s+|\s+auto$|^auto$)/.exec(rest);
+  if (word) {
+    auto = true;
+    rest = rest.replace(word[0], '').trim();
+    if (!rest) return null;
+  }
+  const m =
+    /^(\d*\.?\d+(?:e[+-]?\d+)?)(?:\s*\/\s*(\d*\.?\d+(?:e[+-]?\d+)?))?$/.exec(
+      rest,
+    );
+  if (!m) return undefined;
+  const w = Number(m[1]);
+  const h = m[2] === undefined ? 1 : Number(m[2]);
+  if (!(w > 0 && h > 0)) return null;
+  return { ratio: w / h, auto };
+}
+
 /**
  * A `box-shadow` (CSS Backgrounds 3, 7.1): `none`, or shadows front to
  * back, each two offsets and then a blur and a spread, with a colour and
@@ -2560,6 +2619,9 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'background-size': ['backgroundSize'],
   'background-attachment': ['backgroundAttachment'],
   'background-position': ['backgroundPositionX', 'backgroundPositionY'],
+  'aspect-ratio': ['aspectRatio'],
+  'object-fit': ['objectFit'],
+  'object-position': ['objectPositionX', 'objectPositionY'],
   position: ['position'],
   top: ['top'],
   right: ['right'],
