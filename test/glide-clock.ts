@@ -10,62 +10,19 @@
 //
 // The wheel itself still goes through the server: this stands in for the
 // controller's clock (`glideClock` in ../src/maps/controller.ts) and nothing
-// else, so the settle window and the harness's own timers run for real.
+// else, so the settle window and the harness's own timers run for real. The
+// holding is `./held-clock.ts`, which the reorder drop's flight shares.
 //
 // Not a `.test.ts` file, so `tsx --test test/*.test.ts` does not run it, but
 // `tsconfig.json` does typecheck it.
 import type { TestContext } from 'node:test';
-import { act } from 'react-x11/test';
 
 import { glideClock } from '../src/maps/controller.js';
-
-/** A 60Hz frame — what the controller's own timer waits. */
-const FRAME_MS = 16;
-
-export interface HeldGlide {
-  /** Whether a step is waiting for its frame. */
-  readonly pending: boolean;
-  /** One frame: the clock moves on by a frame and the waiting step is
-   *  taken. False when there was none. */
-  frame(): Promise<boolean>;
-  /** Frames until the glide stops asking for them, and how many it took. */
-  finish(): Promise<number>;
-}
+import { holdClock } from './held-clock.js';
+import type { HeldClock } from './held-clock.js';
 
 /** Hold the glide for the rest of `t` — `t.mock` puts the real clock back
  *  when the test ends. */
-export function holdGlide(t: TestContext): HeldGlide {
-  let time = 0;
-  let waiting: (() => void) | null = null;
-  t.mock.method(glideClock, 'now', () => time);
-  t.mock.method(glideClock, 'arm', (tick: () => void) => {
-    waiting = tick;
-    return tick;
-  });
-  t.mock.method(glideClock, 'disarm', () => {
-    waiting = null;
-  });
-  const held: HeldGlide = {
-    get pending() {
-      return waiting !== null;
-    },
-    async frame() {
-      const tick = waiting;
-      if (!tick) return false;
-      waiting = null;
-      time += FRAME_MS;
-      await act(async () => tick());
-      return true;
-    },
-    async finish() {
-      let frames = 0;
-      while (await held.frame()) {
-        // A glide is all but over in three time constants; a hundred frames
-        // is one that never arrives.
-        if (++frames > 100) throw new Error('the glide never arrived');
-      }
-      return frames;
-    },
-  };
-  return held;
+export function holdGlide(t: TestContext): HeldClock {
+  return holdClock(t, glideClock);
 }

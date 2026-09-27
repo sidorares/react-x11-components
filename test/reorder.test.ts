@@ -55,6 +55,8 @@ import type {
   ReorderListProps,
   ReorderRemove,
 } from '../src/index.js';
+import { flightClock } from '../src/reorder/clock.js';
+import { holdClock } from './held-clock.js';
 
 const h = React.createElement;
 
@@ -1467,8 +1469,16 @@ test('a pointer drag is announced, not only a keyboard one', async () => {
 
 // --- the drop animation -----------------------------------------------------
 
-test('the drop flies home, takes no input on the way, and then is gone', async () => {
+test('the drop flies home, takes no input on the way, and then is gone', async (t) => {
   const MS = 80;
+  // The flight is wall-clock time, so it is held (./held-clock.ts): a runner
+  // slow enough to spend eighty milliseconds inside `release()` found the
+  // copy already landed. Held, it waits at its first step for the frames
+  // this test takes, each one an `act()` — so nothing here waits on a real
+  // timer either, which is what once hung CI's Node 20 leg for 53 minutes: a
+  // `waitFor` spent its wait inside `act()`, where the flight's timers could
+  // not run.
+  const clock = holdClock(t, flightClock);
   await mount(
     view(h(List, { name: 'l', items: ['a', 'b', 'c'], dropAnimation: MS })),
   );
@@ -1486,16 +1496,19 @@ test('the drop flies home, takes no input on the way, and then is gone', async (
     'the ghost is gone',
   );
 
-  // **Plain time, then one `act()`** — not `waitFor`. The flight is a chain
-  // of real timers, and `waitFor` spends its wait *inside* `act()`, which
-  // round-trips the X connection: on a slow enough runner that occupies the
-  // loop for longer than the animation, the timers never run, and the test
-  // waits for a flight that its own waiting has frozen mid-air. (CI's Node
-  // 20 leg: one `act()` took 28 seconds, and the test hung for 53 minutes.
-  // Node 22 and 24 never showed it.) Sleeping *outside* `act()` lets the
-  // animation run, and one `act()` after it commits the state it ended on.
-  await new Promise((resolve) => setTimeout(resolve, MS * 3));
-  await act();
+  // It sets off from where the pointer let go, and a frame brings it closer
+  // to where the item is.
+  const away = (): number => {
+    const { left, top } = retained(screen.getByTestName('l-a-flight')).style;
+    return Math.hypot(Number(left), Number(top));
+  };
+  const start = away();
+  assert.ok(start >= 1, `it sets off away from the item: ${start}`);
+  await clock.frame();
+  const next = away();
+  assert.ok(next < start, `and closes in: ${next} < ${start}`);
+
+  await clock.finish();
   assert.ok(
     screen.queryByTestName('l-a-flight') === null,
     'the copy is gone once it has landed',
@@ -2249,11 +2262,16 @@ test('the ghost is the item: same corners, same ground, same width', async () =>
   await release(item('l', 'urgent'), { dx: 20 });
 });
 
-test('a drop that did something does not fly home; one that did not, does', async () => {
+test('a drop that did something does not fly home; one that did not, does', async (t) => {
   // The bug this pins: the flight ends at where the item *is*, so a merge —
   // which leaves the item where it started — animated it back to the source
   // and read as a rejection, though the drop had been taken.
   const MS = 60;
+  // Held (./held-clock.ts), in both directions. A runner that spent sixty
+  // milliseconds inside `release()` found the flight back already landed
+  // and failed; and a flight home after the merge — the bug — could land
+  // unseen the same way, and pass.
+  const clock = holdClock(t, flightClock);
   const combines: ReorderCombine[] = [];
   await mount(
     view(
@@ -2284,13 +2302,15 @@ test('a drop that did something does not fly home; one that did not, does', asyn
     screen.queryByTestName('l-a-flight'),
     'a drag that landed nowhere flies back',
   );
-  await new Promise((resolve) => setTimeout(resolve, MS * 3));
-  await act();
+  await clock.finish();
   assert.ok(screen.queryByTestName('l-a-flight') === null);
 });
 
-test('a copy taken by another list does not fly home either', async () => {
+test('a copy taken by another list does not fly home either', async (t) => {
   const MS = 60;
+  // Held, so that a flight home, were there one, is still in the air when
+  // this looks for it (./held-clock.ts).
+  holdClock(t, flightClock);
   const inserts: ReorderInsert[] = [];
   await mount(
     view(

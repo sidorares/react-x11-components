@@ -1052,7 +1052,12 @@ compare with `===` and pass a message. Two more from the second round: a
 harness helper that seeds `useState(items)` silently ignores later prop
 changes (the mid-drag test that looked like a product bug), and a press
 injected during a live drag never reaches a widget, because the drag owns
-the pointer — drive that state from outside the gesture.
+the pointer — drive that state from outside the gesture. And one from CI:
+the drop flight runs on the wall clock, so a test that looks at it holds
+the clock (`holdClock(t, flightClock)`, `test/held-clock.ts`) — a runner
+slow enough to spend the whole flight inside `release()` found it already
+landed, and a check that there is _no_ flight passes that way whether one
+flew or not.
 
 ## An HTML renderer that draws
 

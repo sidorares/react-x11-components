@@ -152,14 +152,11 @@ import {
 import { hx } from './hx.js';
 // Shared with <Tree> and <Table> — internal, deliberately not a shared
 // *module*; the header of src/internal/timers.ts says why. The drop flight
-// needs both: a tick after the layout that placed the item, and a clock.
-import {
-  afterLayout,
-  cancelAfterLayout,
-  cancelLater,
-  later,
-} from '../internal/timers.js';
+// needs both: a tick after the layout that placed the item, and a clock —
+// which is `./clock.ts`'s, where a test can hold it.
+import { afterLayout, cancelAfterLayout } from '../internal/timers.js';
 import type { DelayTick, LayoutTick } from '../internal/timers.js';
+import { flightClock } from './clock.js';
 import {
   closestSlot,
   insertManyAtSlot,
@@ -1822,7 +1819,7 @@ export function ReorderItem(props: ReorderItemProps): ReactElement {
   useEffect(
     () => () => {
       cancelAfterLayout(ticks.current.layout);
-      cancelLater(ticks.current.timer);
+      flightClock.disarm(ticks.current.timer);
     },
     [],
   );
@@ -1872,9 +1869,9 @@ export function ReorderItem(props: ReorderItemProps): ReactElement {
           setFlight(null);
           return;
         }
-        const started = Date.now();
+        const started = flightClock.now();
         const stepOn = (): void => {
-          const t = Math.min((Date.now() - started) / ms, 1);
+          const t = Math.min((flightClock.now() - started) / ms, 1);
           if (t >= 1) {
             ticks.current.timer = null;
             setFlight(null);
@@ -1882,7 +1879,7 @@ export function ReorderItem(props: ReorderItemProps): ReactElement {
           }
           const left = 1 - ease(t);
           setFlight({ x: dx * left, y: dy * left });
-          ticks.current.timer = later(stepOn, FLIGHT_STEP_MS);
+          ticks.current.timer = flightClock.arm(stepOn, FLIGHT_STEP_MS);
         };
         stepOn();
       });
