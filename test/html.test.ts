@@ -5410,6 +5410,27 @@ metric(
   },
 );
 
+metric(
+  'a percentage offset or minimum is of a height the containing block sets',
+  async () => {
+    const { el } = await renderWithBytes(
+      '<html><head><style>body { margin: 0 } .fixed { height: 100px }' +
+        '.inner { height: 10px }</style></head><body>' +
+        '<div class="fixed"><div id="r1" style="position: relative; top: 50%" class="inner"></div></div>' +
+        '<div><div id="r2" style="position: relative; top: calc(25px + 50%)" class="inner"></div></div>' +
+        '<div><div id="m" style="min-height: calc(25px + 50%)"><div class="inner"></div></div></div>' +
+        '</body></html>',
+      {},
+    );
+    const y = (id: string) => boxOf(el, id).y;
+    assert.strictEqual(y('r1'), 50);
+    // against a height its content decides, the offset is `auto`
+    assert.strictEqual(y('r2'), 100);
+    // and a minimum's percentage is none, which leaves the calc() its pixels
+    assert.strictEqual(boxOf(el, 'm').height, 25);
+  },
+);
+
 metric('a cell whose width adds a percentage to a length is auto', async () => {
   const { el } = await renderWithBytes(
     '<html><head><style>table { table-layout: fixed; width: 500px; ' +

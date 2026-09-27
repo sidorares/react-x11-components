@@ -87,6 +87,7 @@ separately, and there are six.
 | 17     | HTML's alignment and body attributes               | 5,322 (90%) | 4,874 (83%) |
 | 18     | `::first-line`, a pseudo-element's place           | 5,343 (91%) | 4,895 (83%) |
 | 19     | CSS Color 4, CSS syntax, the body's inheritance    | 5,366 (91%) | 4,918 (83%) |
+| 20     | `calc()`, `min()`, `max()`, `clamp()`              | 5,370 (91%) | 4,922 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -922,6 +923,42 @@ upstream list:
   differently from the same glyph mid-line. 9 `color-applies-to` tests on
   X11, which CoreText, placing glyphs exactly, passes.
 
+### Round 20
+
+This round ran WPT's `css/css-values` reftests too, where `calc()` and its
+kin are measured: 40 of their 213 passed on both backends before the round
+and 78 after it.
+
+94. **`calc()`, `min()`, `max()` and `clamp()` were not read** (CSS Values 4
+    10), so `width: calc(100% - 2rem)`, the commonest of them, was dropped.
+    They come down to pixels and a percentage of what layout knows, which
+    layout resolves as it does any percentage. A comparison with a
+    percentage in it, `min(100%, 600px)`, is a different sum at every width
+    and is kept as one; sums and scales distribute into it. A percentage the
+    sum cancels is still one, so `calc(40px + 10% - 20% / 2)` against a
+    height nothing sets is `auto`. Yoga takes a percentage or points, so a
+    flex item's is resolved against its container where that width is
+    known. A padding or a size with a percentage has no sign until layout,
+    which clamps it at zero. In a table, a cell's width that adds a
+    percentage to a length is `auto`, as browsers read it. And `z-index`
+    takes an integer: `2.5` is none, where it was 2, and a `calc()` is
+    rounded half up. 3 tests here.
+95. **A child's width of its own did not bound what it gave its float.**
+    The width a float or an inline-block shrinks to was the widest of its
+    content, so a 47px child holding a 200px image made its float 200 wide.
+    A definite width is the child's contribution, whatever its content does
+    past it (CSS Sizing 3 5.1); a percentage one is cyclic there and counts
+    as `auto`. A minimum's percentage is of zero there, and an inline-level
+    child is measured with its line, so a negative `text-indent` narrows
+    it.
+96. **A percentage `top` or `bottom` was of the content's height** where
+    the content decides that height, in which case it is `auto`, as a
+    percentage height is. A percentage `min-height` against such a height
+    is zero, which leaves a `calc()` its pixels. 1 test here.
+
+Round 20 lost none, here or in `css-values`. `calc-rounding-001` still fails
+on its reference, which sizes the test's boxes with `var()`.
+
 ## What `<Html>` supports
 
 From the pass rates of the tests that use each feature, at the fixes above,
@@ -1039,7 +1076,8 @@ directories and caniemail's feature list:
    Tailwind's output is written in them — and `@font-face` through
    `onResource`. CSS Color 4's functions were done in round 19, read in
    this package rather than by ntk's colour parser; `color-mix()` and
-   relative colours remain.
+   relative colours remain. `calc()`, `min()`, `max()` and `clamp()` were
+   done in round 20.
 6. **Stacking and clipping**: stacking contexts across `z-index`, `clip`,
    the static position of an absolute box. Percentage heights were done in
    round 4; overflow clipping, `clip` and the static position in a block in

@@ -1024,7 +1024,12 @@ function finishHeight(box: Box, contentHeight: number): void {
 export function clampHeight(box: Box, height: number): number {
   let out = height;
   const base = box.percentHeightBase;
-  const min = resolveOrNull(box.style.minHeight, base);
+  // a percentage of a height nothing sets is zero for a minimum (CSS 2.1
+  // 10.7), which leaves a `calc()` its pixels
+  const min =
+    box.style.minHeight === AUTO
+      ? null
+      : resolve(box.style.minHeight, Number.isFinite(base) ? base : 0);
   const max =
     box.style.maxHeight === 'none'
       ? null
@@ -1748,11 +1753,12 @@ export function applyRelativeOffsets(box: Box): void {
   const style = box.style;
   if (style.position !== 'relative' && style.position !== 'sticky') return;
   const parentWidth = box.parent ? box.parent.contentWidth : 0;
-  const parentHeight = box.parent ? box.parent.contentHeight : 0;
   const left = resolveOrNull(style.left, parentWidth);
   const right = resolveOrNull(style.right, parentWidth);
-  const top = resolveOrNull(style.top, parentHeight);
-  const bottom = resolveOrNull(style.bottom, parentHeight);
+  // a percentage down is of a height the containing block sets, as a
+  // percentage height is, and `auto` where its content decides it
+  const top = resolveOrNull(style.top, box.percentHeightBase);
+  const bottom = resolveOrNull(style.bottom, box.percentHeightBase);
   // both set is over-constrained, and the containing block's direction
   // says which wins: `left` left to right, `right` right to left (9.4.3)
   const rtl = box.parent?.style.direction === 'rtl';

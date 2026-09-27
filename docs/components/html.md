@@ -266,6 +266,15 @@ down to it. An element on the line with a colour of its own, a link, keeps
 it. The line's font properties, spacing and `vertical-align` are not
 applied: each would change where the line ends.
 
+**Lengths:** `px`, `em`, `rem`, `ex`, `ch`, `vw`, `vh`, `vmin`, `vmax` and
+the absolute units, and `calc()`, `min()`, `max()` and `clamp()` over them
+(CSS Values 4). A math function comes down to pixels and a percentage, which
+layout resolves as it does any percentage; `min(100%, 600px)`, a
+comparison with a percentage in it, is resolved against each width it
+meets. A percentage that cannot resolve makes the whole value `auto` where
+a plain percentage would be, so `calc(40px + 10%)` against a height nothing
+sets is no height.
+
 **Colours:** the named colours, hex with three, four, six or eight
 digits, and CSS Color 4's functions: `rgb()` and `hsl()` in either the comma
 or the space form, `hwb()`, `lab()`, `lch()`, `oklab()`, `oklch()`, and
