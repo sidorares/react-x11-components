@@ -318,7 +318,9 @@ export interface ComputedStyle {
    *  gradient, where it is one. */
   backgroundGradient: LinearGradient | null;
   backgroundRepeat: 'repeat' | 'repeat-x' | 'repeat-y' | 'no-repeat';
-  backgroundSize: 'auto' | 'cover' | 'contain';
+  /** `auto`, `cover`, `contain`, or a width and a height, either of which
+   *  may be `auto` (CSS Backgrounds 3, 3.9). */
+  backgroundSize: 'auto' | 'cover' | 'contain' | [Len | 'auto', Len | 'auto'];
   backgroundAttachment: 'scroll' | 'fixed' | 'local';
   backgroundPositionX: Len;
   backgroundPositionY: Len;
@@ -1145,9 +1147,12 @@ export function applyDeclaration(
       return;
     }
     case 'background-size': {
-      const v = value.toLowerCase().trim();
-      if (v === 'cover' || v === 'contain' || v === 'auto')
-        style.backgroundSize = v;
+      // the first layer's, as the first layer is the one drawn
+      const size = backgroundSizeOf(
+        splitValue(splitCommas(value)[0] ?? ''),
+        ctx,
+      );
+      if (size) style.backgroundSize = size;
       return;
     }
     case 'background-position': {
@@ -2025,17 +2030,18 @@ function readBackgroundLayer(
       if (!layer.position) return null;
       i = end;
       if (parts[i] !== '/') continue;
-      // `/ <size>`: `cover`, `contain`, or one or two lengths, which have
-      // nothing to be stored as and are read as `auto`
+      // `/ <size>`: `cover`, `contain`, or one or two lengths
       const first = parts[i + 1]?.toLowerCase();
       if (first === 'cover' || first === 'contain') {
         layer.size = first;
         i += 2;
       } else if (first !== undefined && isSizePart(first, ctx)) {
-        i += 2;
-        if (i < parts.length && isSizePart(parts[i].toLowerCase(), ctx)) {
-          i += 1;
-        }
+        const two =
+          i + 2 < parts.length && isSizePart(parts[i + 2].toLowerCase(), ctx);
+        layer.size =
+          backgroundSizeOf(parts.slice(i + 1, i + (two ? 3 : 2)), ctx) ??
+          'auto';
+        i += two ? 3 : 2;
       } else {
         return null;
       }
@@ -2139,6 +2145,29 @@ function isSizePart(word: string, ctx: UnitContext): boolean {
   const len = positionLength(word, ctx);
   if (len === null || len === AUTO) return false;
   return typeof len === 'number' ? len >= 0 : len.pct >= 0;
+}
+
+/** A `background-size`: `cover`, `contain`, `auto`, or one or two of a
+ *  length, a percentage and `auto`, the second `auto` where there is none;
+ *  null for what is none of these. */
+function backgroundSizeOf(
+  parts: string[],
+  ctx: UnitContext,
+): ComputedStyle['backgroundSize'] | null {
+  const words = parts.map((p) => p.toLowerCase());
+  if (words.length === 1 && (words[0] === 'cover' || words[0] === 'contain')) {
+    return words[0];
+  }
+  if (!words.length || words.length > 2) return null;
+  if (!words.every((w) => isSizePart(w, ctx))) return null;
+  const axis = (w: string | undefined): Len | 'auto' => {
+    if (w === undefined || w === 'auto') return 'auto';
+    const len = positionLength(w, ctx);
+    return len === null || len === AUTO ? 'auto' : len;
+  };
+  const width = axis(words[0]);
+  const height = axis(words[1]);
+  return width === 'auto' && height === 'auto' ? 'auto' : [width, height];
 }
 
 /** `center/cover` is three tokens, as `center / cover` is. */

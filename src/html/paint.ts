@@ -1673,7 +1673,15 @@ function paintBackground(
           box.width - box.borderLeft - box.borderRight,
           frameHeight(box) - box.borderTop - box.borderBottom,
         );
-    if (rounded) {
+    if (rounded && box.style.backgroundSize !== 'auto' && ctx.clip) {
+      // tiles of the size it was given, cut to the rounded shape
+      ctx.save();
+      ctx.beginPath!();
+      roundedRect(ctx, rect.x, rect.y, rect.w, rect.h, rounded);
+      ctx.clip();
+      paintGradient(ctx, box.style, gradient, rect, at);
+      ctx.restore();
+    } else if (rounded) {
       // one fill in the rounded shape; under the borders it carries on
       // with its end colours where a browser would show the next tile
       if (!(at.width > 0 && at.height > 0)) return;
@@ -1703,11 +1711,15 @@ function snapped(x: number, y: number, w: number, h: number): Rect {
   };
 }
 
+/** A gradient's own size: none, and no ratio. */
+const NO_SIZE: IntrinsicSize = { width: null, height: null, ratio: 0 };
+
 /**
- * A gradient layer across `area`: an image the size of `at`, where it
- * starts, repeated as `background-repeat` says (CSS Backgrounds 3, 3.9 —
- * an image with no size of its own is the size of its positioning area).
- * Each tile is its own fill, so a tile's colours are the first's.
+ * A gradient layer across `area`: an image the size `background-size`
+ * gives it, the size of `at` where that is `auto` (CSS Backgrounds 3, 3.9 —
+ * an image with no size of its own is the size of its positioning area),
+ * placed by `background-position` and repeated as `background-repeat`
+ * says. Each tile is its own fill, so a tile's colours are the first's.
  */
 function paintGradient(
   ctx: PaintContext,
@@ -1716,28 +1728,30 @@ function paintGradient(
   area: { x: number; y: number; w: number; h: number },
   at: Rect,
 ): void {
-  const w = at.width;
-  const h = at.height;
+  // a gradient has no size of its own: the positioning area's, unless
+  // `background-size` gives it one, and then `background-position` places
+  // it in the area as it does an image
+  const [w, h] = sizedTile(style.backgroundSize, NO_SIZE, at, 1);
   if (!(w > 0 && h > 0)) return;
+  const x0 =
+    w === at.width
+      ? at.x
+      : at.x + resolve(style.backgroundPositionX, at.width - w);
+  const y0 =
+    h === at.height
+      ? at.y
+      : at.y + resolve(style.backgroundPositionY, at.height - h);
   const repeat = style.backgroundRepeat;
   const acrossX = repeat === 'repeat' || repeat === 'repeat-x';
   const acrossY = repeat === 'repeat' || repeat === 'repeat-y';
-  const fromX = acrossX ? at.x - Math.ceil((at.x - area.x) / w) * w : at.x;
-  const fromY = acrossY ? at.y - Math.ceil((at.y - area.y) / h) * h : at.y;
-  const toX = acrossX ? area.x + area.w : at.x + w;
-  const toY = acrossY ? area.y + area.h : at.y + h;
+  const fromX = acrossX ? x0 - Math.ceil((x0 - area.x) / w) * w : x0;
+  const fromY = acrossY ? y0 - Math.ceil((y0 - area.y) / h) * h : y0;
+  const toX = acrossX ? area.x + area.w : x0 + w;
+  const toY = acrossY ? area.y + area.h : y0 + h;
   if (Math.ceil((toX - fromX) / w) * Math.ceil((toY - fromY) / h) > MAX_TILES) {
     // a sliver of a root repeated down a long canvas: the one tile, and
     // its end colours on past it
-    ctx.fillStyle = linearGradient(
-      ctx,
-      gradient,
-      at.x,
-      at.y,
-      w,
-      h,
-      style.color,
-    );
+    ctx.fillStyle = linearGradient(ctx, gradient, x0, y0, w, h, style.color);
     ctx.fillRect(area.x, area.y, area.w, area.h);
     return;
   }
@@ -1993,7 +2007,7 @@ function paintBackgroundImage(
   if (!svg && !ctx.drawImage) return;
   // an image pixel is a CSS pixel, and the box is device
   const scale = options.scale ?? 1;
-  const [iw, ih] = tileSize(loaded, at, scale);
+  const [iw, ih] = sizedTile(style.backgroundSize, loaded, at, scale);
   if (!(iw > 0 && ih > 0)) return;
   const offset = (len: Len, extent: number, size: number): number =>
     resolve(len, extent - size);
@@ -2030,8 +2044,16 @@ function paintBackgroundImage(
     } else {
       svg.draw(ctx, x0, y0, iw, ih, scale);
     }
-  } else if (tiles > 1 && scale === 1 && ctx.createPattern && ctx.translate) {
-    // a pattern tiles from the origin of the space it is filled in
+  } else if (
+    tiles > 1 &&
+    iw === loaded.width &&
+    ih === loaded.height &&
+    ctx.createPattern &&
+    ctx.translate
+  ) {
+    // a pattern tiles from the origin of the space it is filled in, and
+    // draws the image at its own size: a tile of a device pixel an image
+    // pixel, which is 1x and `background-size` leaving it be
     ctx.fillStyle = ctx.createPattern(loaded.image, 'repeat');
     ctx.translate(x0, y0);
     ctx.fillRect(fromX - x0, fromY - y0, toX - fromX, toY - fromY);
@@ -2045,6 +2067,45 @@ function paintBackgroundImage(
     ctx.drawImage!(loaded.image, x0, y0, iw, ih);
   }
   ctx.restore();
+}
+
+/**
+ * A background tile's size (CSS Backgrounds 3, 3.9, over CSS Images' sizing
+ * of an object): `auto` is the image's own, as `tileSize` has it; `cover`
+ * and `contain` scale it to fill the positioning area or to fit inside it,
+ * keeping its ratio, and one with no ratio is the size of the area; and a
+ * width or a height alone takes the other from the ratio, or else from the
+ * image's own size in it, or else from the area. Percentages are of the
+ * area.
+ */
+function sizedTile(
+  size: ComputedStyle['backgroundSize'],
+  image: IntrinsicSize,
+  area: Rect,
+  scale: number,
+): [number, number] {
+  if (size === 'auto') return tileSize(image, area, scale);
+  const { ratio } = image;
+  if (size === 'cover' || size === 'contain') {
+    if (!(ratio > 0 && area.height > 0)) return [area.width, area.height];
+    const wider = area.width / area.height > ratio;
+    return (size === 'cover') === wider
+      ? [area.width, area.width / ratio]
+      : [area.height * ratio, area.height];
+  }
+  const [sw, sh] = size;
+  const w = sw === 'auto' ? null : resolve(sw, area.width);
+  const h = sh === 'auto' ? null : resolve(sh, area.height);
+  if (w !== null && h !== null) return [w, h];
+  if (w !== null) {
+    if (ratio > 0) return [w, w / ratio];
+    return [w, image.height === null ? area.height : image.height * scale];
+  }
+  if (h !== null) {
+    if (ratio > 0) return [h * ratio, h];
+    return [image.width === null ? area.width : image.width * scale, h];
+  }
+  return tileSize(image, area, scale);
 }
 
 /**

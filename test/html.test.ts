@@ -1885,6 +1885,7 @@ async function fillsOf(
       height: number | null;
       ratio: number;
     } | null;
+    scale?: number;
   },
 ): Promise<Fill[]> {
   const { paintDocument } = await import('../src/html/paint.js');
@@ -4321,6 +4322,33 @@ function boxOf(el: HtmlViewNode, id: string): LaidBox {
   assert.ok(found, `#${id} has a box`);
   return found;
 }
+
+test('background-size is in CSS pixels at 2x', async () => {
+  // a length and a percentage are device pixels by the time they are
+  // stored, and an image's own size is CSS pixels until it is drawn
+  const { node } = await render2x(
+    '<style>body{margin:0}div{width:100px;height:100px;' +
+      'background:url(x.png) no-repeat}</style>' +
+      '<div style="background-size:20px 10px"></div>' +
+      '<div style="background-size:contain"></div>' +
+      '<div style="background-size:auto 15px"></div>' +
+      '<div style="background-size:50%"></div>',
+  );
+  const ops: PaintOp[] = [];
+  await fillsOf(view(node), ops, {
+    scale: 2,
+    backgroundImageFor: () => ({ image: {}, width: 20, height: 10, ratio: 2 }),
+  });
+  assert.deepStrictEqual(
+    ops.flatMap((op) => (op.op === 'image' ? [[op.w, op.h]] : [])),
+    [
+      [40, 20],
+      [200, 100],
+      [60, 30],
+      [100, 50],
+    ],
+  );
+});
 
 metric(
   'at a display scale of 2 the document lays out in CSS pixels, on the device grid',
@@ -8049,6 +8077,128 @@ test('a border down one side of a rounded box curves its inside by the ellipse l
     [14, 14],
     [14, 14],
   ]);
+});
+
+test('background-size is read, in its longhand and after the position', async () => {
+  const { node } = await render(
+    '<div id="a" style="background-size:cover"></div>' +
+      '<div id="b" style="background-size:50% auto"></div>' +
+      '<div id="c" style="background-size:20px 10px"></div>' +
+      '<div id="d" style="background-size:auto"></div>' +
+      '<div id="e" style="background:url(x.png) center / 100px no-repeat">' +
+      '</div>' +
+      '<div id="f" style="background-size:contain, 10px"></div>' +
+      '<div id="g" style="background-size:cover 10px"></div>',
+  );
+  const el = view(node);
+  const size = (id: string) =>
+    (boxOf(el, id) as unknown as { style: { backgroundSize: unknown } }).style
+      .backgroundSize;
+  assert.strictEqual(size('a'), 'cover');
+  assert.deepStrictEqual(size('b'), [{ pct: 50 }, 'auto']);
+  assert.deepStrictEqual(size('c'), [20, 10]);
+  assert.strictEqual(size('d'), 'auto');
+  assert.deepStrictEqual(size('e'), [100, 'auto']);
+  assert.strictEqual(size('f'), 'contain', 'the first layer');
+  assert.strictEqual(size('g'), 'auto', 'no such size');
+});
+
+test('a background is drawn at the size background-size gives it', async () => {
+  // it was read and never drawn: a hero's `cover` photograph was tiled at
+  // its own size. A 20×10 image in boxes 100 square
+  const { node } = await render(
+    '<style>body{margin:0}div{width:100px;height:100px;' +
+      'background:url(x.png) no-repeat}</style>' +
+      '<div style="background-size:cover"></div>' +
+      '<div style="background-size:contain"></div>' +
+      '<div style="background-size:50% auto"></div>' +
+      '<div style="background-size:20px 20px;background-repeat:repeat"></div>',
+  );
+  const ops: PaintOp[] = [];
+  await fillsOf(view(node), ops, {
+    backgroundImageFor: () => ({ image: {}, width: 20, height: 10, ratio: 2 }),
+  });
+  const images = ops.filter(
+    (op): op is Extract<PaintOp, { op: 'image' }> => op.op === 'image',
+  );
+  const at = (top: number) =>
+    images.filter((op) => op.y >= top && op.y < top + 100);
+  // covering, it is as tall as the box and twice as wide
+  assert.deepStrictEqual(
+    at(0).map((op) => [op.w, op.h]),
+    [[200, 100]],
+  );
+  // contained, as wide as the box
+  assert.deepStrictEqual(
+    at(100).map((op) => [op.w, op.h]),
+    [[100, 50]],
+  );
+  // half the box's width, and as tall as its ratio makes it
+  assert.deepStrictEqual(
+    at(200).map((op) => [op.w, op.h]),
+    [[50, 25]],
+  );
+  // twenty square, and tiled
+  const tiles = at(300);
+  assert.ok(tiles.length >= 25, `${tiles.length} tiles`);
+  assert.ok(tiles.every((op) => op.w === 20 && op.h === 20));
+});
+
+test('a gradient is tiled at the size background-size gives it', async () => {
+  const { node } = await render(
+    '<style>body{margin:0}</style><div style="width:100px;height:40px;' +
+      'background:linear-gradient(#ff0000,#0000ff);background-size:20px 20px">' +
+      '</div>',
+  );
+  const fills = await fillsOf(view(node));
+  const tiles = fills.filter(
+    (f) => typeof f.style === 'object' && f.style !== null,
+  );
+  assert.strictEqual(tiles.length, 10, 'five across and two down');
+  assert.ok(tiles.every((f) => f.w === 20 && f.h === 20));
+});
+
+test('a sized gradient in a rounded box is tiled and cut to its corners', async () => {
+  // a rounded box's gradient was one fill of its shape, whatever its size
+  const { node } = await render(
+    '<style>body{margin:0}</style><div style="width:100px;height:40px;' +
+      'border-radius:8px;background:linear-gradient(#ff0000,#0000ff);' +
+      'background-size:20px 20px"></div>',
+  );
+  const ops: PaintOp[] = [];
+  const fills = await fillsOf(view(node), ops);
+  const tiles = fills.filter(
+    (f) => typeof f.style === 'object' && f.style !== null,
+  );
+  assert.strictEqual(tiles.length, 10, 'five across and two down');
+  assert.ok(tiles.every((f) => f.w === 20 && f.h === 20 && !f.radii));
+  const clip = ops.findIndex((op) => op.op === 'clip');
+  const first = ops.findIndex(
+    (op) => op.op === 'fill' && typeof op.style === 'object',
+  );
+  assert.ok(clip >= 0 && clip < first, 'clipped before the first tile');
+});
+
+test('a gradient given only a width is as tall as its box', async () => {
+  // it has no ratio to take a height from, and no height of its own
+  const { node } = await render(
+    '<style>body{margin:0}</style><div style="width:100px;height:40px;' +
+      'background:linear-gradient(#ff0000,#0000ff);background-size:25px">' +
+      '</div>',
+  );
+  const fills = await fillsOf(view(node));
+  const tiles = fills.filter(
+    (f) => typeof f.style === 'object' && f.style !== null,
+  );
+  assert.deepStrictEqual(
+    tiles.map((f) => [f.w, f.h]),
+    [
+      [25, 40],
+      [25, 40],
+      [25, 40],
+      [25, 40],
+    ],
+  );
 });
 
 test("an image is trimmed to its box's corners", async () => {
