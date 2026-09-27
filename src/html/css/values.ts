@@ -83,8 +83,16 @@ export interface UnitContext {
   ex?: () => number;
 }
 
-const LENGTH_RE =
-  /^([+-]?(?:\d+\.?\d*|\.\d+))(px|em|rem|pt|pc|in|cm|mm|ex|ch|vw|vh|vmin|vmax|q|%)?$/;
+/** A CSS number (CSS Syntax 3 4.3.12): a sign, digits with at most one
+ *  point and a digit after it, and an exponent — `1e1px` is ten pixels, and
+ *  `1.px` is no length. */
+const NUMBER_SRC = '[+-]?(?:\\d*\\.\\d+|\\d+)(?:e[+-]?\\d+)?';
+
+const LENGTH_RE = new RegExp(
+  `^(${NUMBER_SRC})(px|em|rem|pt|pc|in|cm|mm|ex|ch|vw|vh|vmin|vmax|q|%)?$`,
+);
+
+const NUMBER_RE = new RegExp(`^${NUMBER_SRC}$`, 'i');
 
 /**
  * Parse a length. Returns `null` for anything that is not one, which is how
@@ -159,19 +167,20 @@ function unitScale(unit: string, ctx: UnitContext): number {
 
 /** A plain number — `flex-grow`, `opacity`, `z-index`, `line-height`. */
 export function parseNumber(value: string): number | null {
-  const n = Number(value.trim());
+  // `Number()` alone reads `0x10`, `1.` and white space as numbers
+  const v = value.trim();
+  if (!NUMBER_RE.test(v)) return null;
+  const n = Number(v);
   return Number.isFinite(n) ? n : null;
 }
 
 /** `opacity: 50%` is as legal as `opacity: .5`. */
 export function parseAlpha(value: string): number | null {
   const v = value.trim();
-  if (v.endsWith('%')) {
-    const n = Number(v.slice(0, -1));
-    return Number.isFinite(n) ? Math.max(0, Math.min(1, n / 100)) : null;
-  }
-  const n = Number(v);
-  return Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : null;
+  const pct = v.endsWith('%');
+  const n = parseNumber(pct ? v.slice(0, -1) : v);
+  if (n === null) return null;
+  return Math.max(0, Math.min(1, pct ? n / 100 : n));
 }
 
 /**

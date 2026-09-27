@@ -184,20 +184,32 @@ export function parseStylesheet(text: string, startOrder = 0): Stylesheet {
  * comment wherever it stands (CSS 2.1 4.1.9) — between rules, which the
  * scanner already skipped, but also inside a selector: `div /* note *\/ {`
  * kept the note in the selector, the matcher refused it, and the rule was
- * dropped whole. A comment is replaced by nothing, not a space, as the
- * tokenizer does: `.a/**\/.b` is one compound selector.
+ * dropped whole. In a selector a comment is replaced by nothing, as the
+ * tokenizer does: `.a/**\/.b` is one compound selector. In a declaration
+ * it is replaced by a space, since there it still ends the token before it:
+ * `1/**\/0px` is two values and no length, and `-/**\/10px` is no
+ * negative one. `decls` says the text starts inside a declaration block,
+ * which a `style` attribute does.
  */
-function withoutComments(text: string): string {
+function withoutComments(text: string, decls = false): string {
   if (!text.includes('/*')) return text;
   let out = '';
   let from = 0;
   let quote = '';
+  // for each open block, whether it holds declarations rather than rules
+  const blocks: boolean[] = [];
+  let prelude = 0;
+  // whether the rule being read is an at-rule, once its first token says
+  let atRule: boolean | null = null;
   for (let i = 0; i < text.length; i += 1) {
     const c = text[i];
     if (quote) {
       if (c === '\\') i = escapeEnd(text, i) - 1;
       else if (c === quote || c === '\n') quote = '';
       continue;
+    }
+    if (atRule === null && !isSpace(c) && !(c === '/' && text[i + 1] === '*')) {
+      atRule = c === '@';
     }
     if (c === '\\') {
       // an escape: `\/*` is a slash and an asterisk, not a comment
@@ -213,15 +225,49 @@ function withoutComments(text: string): string {
       // an unquoted url is one token, `/*` and all: `url(a/*b)` is no
       // comment, and taken for one it ran on through the rest of the sheet
       i = urlEnd(text, i + 3) - 1;
+    } else if (c === '{') {
+      const inDecls = blocks.length ? blocks[blocks.length - 1] : decls;
+      blocks.push(inDecls || !opensRuleList(text, prelude, i));
+      prelude = i + 1;
+      atRule = null;
+    } else if (c === '}') {
+      blocks.pop();
+      prelude = i + 1;
+      atRule = null;
+    } else if (c === ';') {
+      prelude = i + 1;
+      atRule = null;
     } else if (c === '/' && text[i + 1] === '*') {
       const close = text.indexOf('*/', i + 2);
-      out += text.slice(from, i);
+      const inDecls = blocks.length ? blocks[blocks.length - 1] : decls;
+      // `@media/**\/all` is `@media all`
+      out += text.slice(from, i) + (inDecls || atRule ? ' ' : '');
       i = close < 0 ? text.length : close + 1;
       from = i + 1;
     }
   }
   return out + text.slice(from);
 }
+
+/** Whether the block a `{` at `end` opens holds rules rather than
+ *  declarations: a conditional or grouping at-rule's does. */
+function opensRuleList(text: string, from: number, end: number): boolean {
+  let j = from;
+  while (j < end && (isSpace(text[j]) || text[j] === '/')) {
+    if (text[j] === '/' && text[j + 1] === '*') {
+      const close = text.indexOf('*/', j + 2);
+      j = close < 0 ? end : close + 2;
+    } else if (text[j] === '/') {
+      break;
+    } else {
+      j += 1;
+    }
+  }
+  return text[j] === '@' && RULE_LIST_AT.test(text.slice(j + 1, end));
+}
+
+const RULE_LIST_AT =
+  /^(?:media|supports|document|-moz-document|layer|container|scope|starting-style)(?![\w-])/i;
 
 /**
  * Parse a declaration block — also the parser for a `style=""` attribute,
@@ -233,7 +279,7 @@ function withoutComments(text: string): string {
  */
 export function parseDeclarations(text: string): Declaration[] {
   // a `style` attribute comes here without the sheet's pass over comments
-  text = withoutComments(text);
+  text = withoutComments(text, true);
   const out: Declaration[] = [];
   let i = 0;
   const n = text.length;

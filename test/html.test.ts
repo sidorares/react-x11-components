@@ -39,6 +39,7 @@ import {
 import {
   parseColor,
   parseLength,
+  parseNumber,
   splitValue,
   isTransparent,
 } from '../src/html/css/values.js';
@@ -5177,3 +5178,35 @@ metric(
 );
 
 // --- CSS syntax: comments, numbers, escapes, white space --------------------
+
+test('a comment ends the token before it in a declaration, and not in a selector', () => {
+  // two values and no length, no negative length, and three channels
+  assert.deepStrictEqual(
+    parseDeclarations(
+      'height: 1/**/0px; margin: -/**/10px; color: rgb(0/**/128/**/0)',
+    ).map((d) => d.value),
+    ['1 0px', '- 10px', 'rgb(0 128 0)'],
+  );
+  const sheet = parseStylesheet(
+    '.a/**/.b { color: red } @media/**/all { p { margin: 1/**/0px } }',
+  );
+  assert.deepStrictEqual(
+    sheet.rules.map((r) => [r.selector, r.declarations[0].value]),
+    [
+      ['.a.b', 'red'],
+      ['p', '1 0px'],
+    ],
+  );
+});
+
+test("a number is CSS's: an exponent, a sign, and a digit after any point", () => {
+  const ctx = { em: 20, rem: 16, vw: 1000, vh: 500, scale: 1 };
+  assert.strictEqual(parseLength('1e1px', ctx), 10);
+  assert.strictEqual(parseLength('0.1e1em', ctx), 20);
+  assert.strictEqual(parseLength('+20px', ctx), 20);
+  assert.strictEqual(parseLength('1em', ctx), 20);
+  assert.strictEqual(parseLength('1.px', ctx), null);
+  assert.strictEqual(parseNumber('1e3'), 1000);
+  assert.strictEqual(parseNumber('0x10'), null);
+  assert.strictEqual(parseNumber('1.'), null);
+});
