@@ -512,14 +512,17 @@ element for this to work — a layout made for one parse is shown for the
 next — which is why hit testing goes through the document's text index
 rather than through the run. The pass before's layouts are all that is
 kept, so a document costs one pass of them and the ones an edit replaced.
-A layout is filed under its width and its text, and found by comparing the
-rest of what it was made from, field by field. Spelling all of it into one
-string key meant 3 MB of strings a pass at 600 KB, built, hashed and
-compared, and a tenth of an edit went on finding the layouts. The natural
-line height a `line-height: 1.5` is converted against is kept per style for
-the same reason: every paragraph asks, and on CoreText every answer was a
-call to the native side. Together they took an edit from 111 to 86 ms on
-macOS and from 80 to 70 ms on XQuartz.
+A layout is filed under a number hashed from its width and the ends of its
+text, and found by comparing what it was made from: each run by the fields
+`TextRun` has, named one by one, and the block's style and the options
+field by field. Spelling all of it into one string key meant 3 MB of
+strings a pass at 600 KB, built, hashed and compared, and a tenth of an
+edit went on finding the layouts; a summary spelled as a string, and
+walking each run's own fields, were still a sixth of a pass's layout. The
+natural line height a `line-height: 1.5` is converted against is kept per
+style for the same reason, found by the style object before its face:
+every paragraph asks, and on CoreText every answer was a call to the
+native side.
 
 **A resize lays the document out once a frame.** Core asks an element for
 its height at the width it was last measured at, as well as at the one it

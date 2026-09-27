@@ -27,8 +27,8 @@ export class TextLayoutCache {
    *  measurements keyed on the fonts (a space's advance) are kept per
    *  object. */
   readonly fonts: FontsLike;
-  private _now = new Map<string, Kept[]>();
-  private _before = new Map<string, Kept[]>();
+  private _now = new Map<number, Kept[]>();
+  private _before = new Map<number, Kept[]>();
 
   constructor(readonly engine: FontsLike) {
     this.fonts = {
@@ -48,13 +48,15 @@ export class TextLayoutCache {
    * The layout for these inputs: one this pass has already made or used,
    * else one the pass before used, else the engine's.
    *
-   * A layout is filed under its width and a summary of its text (`keyOf`),
-   * and found by comparing everything it was made from, field by field,
-   * text and all. The first version spelled all of it into one string key,
-   * every field of every run, and that string was the cost: a pass over a
-   * 600 KB document asks for 8,800 layouts of 15,400 runs. The text alone
-   * as the key was still the whole document built, flattened and hashed a
-   * pass; the comparison that finds the layout reads it once.
+   * A layout is filed under a hash of its width and a summary of its text
+   * (`keyOf`), and found by comparing everything it was made from, field by
+   * field, text and all. The first version spelled all of it into one
+   * string key, every field of every run, and that string was the cost: a
+   * pass over a 600 KB document asks for 8,800 layouts of 15,400 runs. The
+   * text alone as the key was still the whole document built, flattened and
+   * hashed a pass, and even a summary spelled as a string was one to build
+   * and hash for every layout; the comparison that finds the layout reads
+   * the text once.
    */
   private _layout(
     content: TextRun[],
@@ -83,25 +85,34 @@ export class TextLayoutCache {
 const KEY_EDGE = 16;
 
 /**
- * What a layout is filed under: its width, its runs' count, its text's
- * length, and the text's first and last few characters. Paragraphs that
- * share all of that are told apart by `find`; a key of the whole text was
+ * What a layout is filed under: a hash of its width, its runs' count, its
+ * text's length, and the text's first and last few characters, small
+ * enough to stay a small integer. Paragraphs that share all of that, or
+ * whose hashes meet, are told apart by `find`; a key of the whole text was
  * the text copied and hashed for every layout of every pass.
  */
-function keyOf(content: readonly TextRun[], maxWidth: unknown): string {
+function keyOf(content: readonly TextRun[], maxWidth: unknown): number {
   let length = 0;
   for (const run of content) length += run.text.length;
-  let head = '';
-  for (let i = 0; i < content.length && head.length < KEY_EDGE; i += 1) {
-    head += content[i].text.slice(0, KEY_EDGE - head.length);
+  let h = Math.imul(content.length ^ length, 0x9e3779b1);
+  if (typeof maxWidth === 'number') {
+    h = Math.imul(h ^ Math.round(maxWidth * 64), 0x85ebca6b);
   }
-  let tail = '';
-  for (let i = content.length - 1; i >= 0 && tail.length < KEY_EDGE; i -= 1) {
+  let n = 0;
+  for (let i = 0; i < content.length && n < KEY_EDGE; i += 1) {
     const text = content[i].text;
-    tail =
-      text.slice(Math.max(0, text.length - (KEY_EDGE - tail.length))) + tail;
+    for (let j = 0; j < text.length && n < KEY_EDGE; j += 1, n += 1) {
+      h = Math.imul(h ^ text.charCodeAt(j), 0x01000193);
+    }
   }
-  return `${maxWidth}\u0001${content.length}\u0001${length}\u0001${head}\u0001${tail}`;
+  n = 0;
+  for (let i = content.length - 1; i >= 0 && n < KEY_EDGE; i -= 1) {
+    const text = content[i].text;
+    for (let j = text.length - 1; j >= 0 && n < KEY_EDGE; j -= 1, n += 1) {
+      h = Math.imul(h ^ text.charCodeAt(j), 0x01000193);
+    }
+  }
+  return h & 0x3fffffff;
 }
 
 /** A layout, and a copy of everything it was made from. */
@@ -125,11 +136,63 @@ function find(
     if (!sameFields(candidate.options, options)) continue;
     if (!sameFields(candidate.style, style)) continue;
     for (let i = 0; i < content.length; i += 1) {
-      if (!sameFields(candidate.content[i], content[i])) continue outer;
+      if (!sameRun(candidate.content[i], content[i])) continue outer;
     }
     return candidate;
   }
   return undefined;
+}
+
+/**
+ * Every field of a run: two runs are the same run when these are. Checked
+ * against `TextRun` by the compiler, so a field added there cannot be left
+ * out of the list, and `sameRun` compares each of them, which a test holds
+ * it to.
+ */
+export const RUN_FIELDS = [
+  'text',
+  'family',
+  'size',
+  'weight',
+  'style',
+  'color',
+  'letterSpacing',
+  'bg',
+  'bgFill',
+  'underline',
+  'underlineStyle',
+  'strike',
+  'href',
+] as const satisfies readonly (keyof TextRun)[];
+
+/** A field of `TextRun` missing from `RUN_FIELDS` names itself here. */
+type Unlisted = Exclude<keyof TextRun, (typeof RUN_FIELDS)[number]>;
+const everyField: [Unlisted] extends [never] ? true : Unlisted = true;
+void everyField;
+
+/**
+ * Whether two runs are the same run: `RUN_FIELDS`, spelled out. A
+ * paragraph's runs are compared on every pass over a long document, and
+ * walking each run's own fields, or the list's, was most of what finding
+ * its layout cost. A field `TextRun` does not name is not the engine's to
+ * read, and two runs that differ only there are the same.
+ */
+function sameRun(a: TextRun, b: TextRun): boolean {
+  return (
+    a.text === b.text &&
+    a.family === b.family &&
+    a.size === b.size &&
+    a.weight === b.weight &&
+    a.style === b.style &&
+    a.color === b.color &&
+    a.letterSpacing === b.letterSpacing &&
+    a.bg === b.bg &&
+    a.bgFill === b.bgFill &&
+    a.underline === b.underline &&
+    a.underlineStyle === b.underlineStyle &&
+    a.strike === b.strike &&
+    a.href === b.href
+  );
 }
 
 /**

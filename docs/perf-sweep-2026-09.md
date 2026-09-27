@@ -1573,6 +1573,50 @@ block's bounds reaching the top, each of those paints went through the
 whole document. The macOS first paint at 600 KB is a median of eight runs,
 and the 20 KB edit of six; the rest are medians of three.
 
+## Round 15: finding a kept layout, again
+
+`<Html>` went through ten more rounds of conformance work, #181 to #190,
+and passes 5,460 of the CSS 2.1 suite's reftests on X11. Profiling an edit
+at 600 KB afterwards put the text layout cache (#142) back at the top of
+the layout: finding a pass's 8,800 layouts again cost 5 ms of its 32.
+
+- **The key was still a string.** Each layout was filed under its width,
+  its runs' count and length, and the first and last 16 characters of its
+  text, spelled into a string that every lookup built and hashed twice. It
+  is a number now, hashed from the same, small enough to stay a small
+  integer; paragraphs whose hashes meet are told apart by the comparison,
+  as ones whose strings met were.
+- **A run was compared by walking its own fields.** Every field, so that
+  one added to `TextRun` could not be left out: 76 ns a run with `for…in`.
+  The fields are named one by one now, which keeps the guarantee: the
+  compiler holds the list to `TextRun`, so a field added there names itself
+  in an error until the list has it, and a test holds the comparison to the
+  list. A field left `undefined` is now the same as one absent, which the
+  engine cannot tell apart either.
+- **The natural line height spelled its face into a key.** Every paragraph
+  asks for it, and each question built a string of the family, size,
+  weight and style. It is found by the style object first now, as the
+  face's extent already was: the paragraphs of a pass share their styles.
+
+In process, on the built package, medians of interleaved runs:
+
+|                           | before  | after   |
+| ------------------------- | ------- | ------- |
+| an edit's layout, 600 KB  | 32.1 ms | 27.0 ms |
+| an edit's layout, 68 KB   | 2.66 ms | 2.11 ms |
+| an edit's layout, 20 KB   | 1.05 ms | 0.92 ms |
+| a resize's layout, 600 KB | 18.6 ms | 15.8 ms |
+
+And the frames, in real windows, XQuartz first and macOS second:
+
+|                         | before         | after          |
+| ----------------------- | -------------- | -------------- |
+| 600 KB, an edit's frame | 43.8 / 52.5 ms | 39.4 / 45.8 ms |
+| 600 KB, a reflow frame  | 41.0 / 87.4 ms | 40.9 / 84.5 ms |
+
+Medians of three interleaved runs. A reflow's frame is mostly the engine
+laying out every paragraph at the new width, which no lookup changes.
+
 ## Lessons
 
 1. **Look for caches that never hit.** Identity-keyed caches handed a new
@@ -1692,7 +1736,7 @@ and the 20 KB edit of six; the rest are medians of three.
 ## Still open
 
 Ordered by practical impact, after round 12, and `<Html>`'s edit after
-round 14.
+round 15.
 
 - **XQuartz first paints**: the first layout of a family ntk has not warmed
   waits on `fc-match`, which takes 80–150 ms launched from inside a
@@ -1712,11 +1756,11 @@ round 14.
   #387; 1.04–1.08 s on Cocoa with #143, measured on a core without the
   kept typesetters): the height floors, React's development render and the
   layout.
-- **`<Html>` edit and append** (51 ms on macOS and 42 on XQuartz at 600 KB
-  after round 14, 12.6 and 8.8 ms at 20 KB): the parse, the box build and
-  the layout with its bounds still run over the whole document, at about 8,
-  11 and 30 ms of an edit at 600 KB in process. A parse that kept the
-  identity of what it did not change would let each of them skip it.
+- **`<Html>` edit and append** (45.8 ms on macOS and 39.4 on XQuartz at 600 KB after round 15, 12.6
+  and 8.8 ms at 20 KB after round 14): the parse, the box build and the
+  layout with its bounds still run over the whole document, at about 8, 11
+  and 27 ms of an edit at 600 KB in process. A parse that kept the identity
+  of what it did not change would let each of them skip it.
 - **Cocoa scroll**: what is left is the band copy itself, about 1.4 ms a
   frame at 2x, memory-bound; see "The Cocoa scroll's double copy".
 - **`<RichTextEditor>`**: large pastes, mostly React's development render.

@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert';
 
 import type { TextRun } from '../src/richtext/index.js';
-import { TextLayoutCache } from '../src/html/layout/cache.js';
+import { RUN_FIELDS, TextLayoutCache } from '../src/html/layout/cache.js';
 import type { TextLayoutLike } from '../src/html/layout/boxes.js';
 import type { FontsLike } from '../src/html/layout/inline.js';
 
@@ -84,14 +84,6 @@ test('a field that differs anywhere is a different layout', () => {
       'a run field added',
       () => layout([run('Some text', { underline: '#f00' })]),
     ],
-    [
-      'a run field present but undefined',
-      () => layout([run('Some text', { underline: undefined })]),
-    ],
-    [
-      'one undefined field for another',
-      () => layout([run('Some text', { strike: undefined })]),
-    ],
     ['the same text in two runs', () => layout([run('Some '), run('text')])],
     [
       'the block style',
@@ -127,6 +119,57 @@ test('a field that differs anywhere is a different layout', () => {
   assert.strictEqual(layout([run('Some text')]), plain);
   for (const [, ask] of variants) ask();
   assert.strictEqual(engine.made, made, 'all of them kept');
+});
+
+test('every field of a run is what it is found by', () => {
+  // each of `RUN_FIELDS` in turn, the only difference from the run before:
+  // the record names a value for every one of them, so a field added to the
+  // list without a way to tell it apart fails to compile here
+  const other: Record<(typeof RUN_FIELDS)[number], TextRun[keyof TextRun]> = {
+    text: 'Other text',
+    family: 'serif',
+    size: 15,
+    weight: 700,
+    style: 'italic',
+    color: '#000000',
+    letterSpacing: 1,
+    bg: '#eeeeee',
+    bgFill: 'line',
+    underline: '#ff0000',
+    underlineStyle: 'double',
+    strike: '#ff0000',
+    href: 'https://example.com/',
+  };
+  const engine = countingEngine();
+  const cache = new TextLayoutCache(engine);
+  cache.begin();
+  const plain = cache.fonts.layout([run('Some text')], base(), options());
+  for (const field of RUN_FIELDS) {
+    const got = cache.fonts.layout(
+      [{ ...run('Some text'), [field]: other[field] } as TextRun],
+      base(),
+      options(),
+    );
+    assert.notStrictEqual(got, plain, `${field} found the plain run's layout`);
+  }
+  assert.strictEqual(engine.made, 1 + RUN_FIELDS.length);
+});
+
+test('a run field left undefined is one the run does not have', () => {
+  // the engine reads the same from both, so they share a layout
+  const engine = countingEngine();
+  const cache = new TextLayoutCache(engine);
+  cache.begin();
+  const first = cache.fonts.layout([run('Text')], base(), options());
+  assert.strictEqual(
+    cache.fonts.layout(
+      [run('Text', { underline: undefined, strike: undefined })],
+      base(),
+      options(),
+    ),
+    first,
+  );
+  assert.strictEqual(engine.made, 1);
 });
 
 test('a field order is not a difference', () => {

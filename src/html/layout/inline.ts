@@ -2115,32 +2115,41 @@ export function lineHeightMultiplier(
  * The font's natural line height in a style, which CSS's number form is
  * converted against. Kept per font manager per style, like a space's
  * advance: a pass asks once a paragraph — 8,800 times at 600 KB — and on
- * CoreText every answer was a call to the native side.
+ * CoreText every answer was a call to the native side. Found by the style
+ * object first, as `faceExtent` is: the paragraphs of a pass share their
+ * styles, and spelling a face into a string key for each was a millisecond
+ * of every pass over a long document.
  */
-const NATURAL_LINE_HEIGHT = new WeakMap<FontsLike, Map<string, number>>();
+const NATURAL_LINE_HEIGHT = new WeakMap<
+  FontsLike,
+  { byStyle: WeakMap<ComputedStyle, number>; byFace: Map<string, number> }
+>();
 
 function naturalLineHeight(fonts: FontsLike, style: ComputedStyle): number {
   let cache = NATURAL_LINE_HEIGHT.get(fonts);
   if (!cache) {
-    cache = new Map();
+    cache = { byStyle: new WeakMap(), byFace: new Map() };
     NATURAL_LINE_HEIGHT.set(fonts, cache);
   }
+  const known = cache.byStyle.get(style);
+  if (known !== undefined) return known;
   const key = `${style.fontFamily}|${style.fontSize}|${style.fontWeight}|${style.fontStyle}`;
-  const hit = cache.get(key);
-  if (hit !== undefined) return hit;
-  let height: number;
-  try {
-    const font = fonts.match(style.fontFamily, {
-      size: style.fontSize,
-      weight: style.fontWeight,
-      style: style.fontStyle,
-    });
-    height = font.metrics(style.fontSize).lineHeight;
-  } catch {
-    height = style.fontSize * 1.2;
+  let height = cache.byFace.get(key);
+  if (height === undefined) {
+    try {
+      const font = fonts.match(style.fontFamily, {
+        size: style.fontSize,
+        weight: style.fontWeight,
+        style: style.fontStyle,
+      });
+      height = font.metrics(style.fontSize).lineHeight;
+    } catch {
+      height = style.fontSize * 1.2;
+    }
+    if (cache.byFace.size > 64) cache.byFace.clear();
+    cache.byFace.set(key, height);
   }
-  if (cache.size > 64) cache.clear();
-  cache.set(key, height);
+  cache.byStyle.set(style, height);
   return height;
 }
 
