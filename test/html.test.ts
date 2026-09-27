@@ -5567,3 +5567,65 @@ metric("a var() is read as CSS's tokenizer reads it", async () => {
   // the value is there, and no margin: unset
   assert.strictEqual(style('e').marginLeft, 0);
 });
+
+// --- color-mix() ---------------------------------------------------------------
+
+test('color-mix() mixes in the space it names, premultiplied and weighted', () => {
+  const cases: [string, string | null][] = [
+    ['color-mix(in srgb, red, blue)', '#800080'],
+    ['color-mix(in srgb, red 25%, blue)', '#4000bf'],
+    ['color-mix(in srgb, red, blue 75%)', '#4000bf'],
+    // percentages that come to less than 100% take their share of the alpha
+    ['color-mix(in srgb, red 20%, blue 20%)', 'rgba(128, 0, 128, 0.4)'],
+    // premultiplied: transparent lends its alpha and not its black, which is
+    // how Tailwind 4 writes `bg-blue-500/50`
+    ['color-mix(in srgb, #ff0000 50%, transparent)', 'rgba(255, 0, 0, 0.5)'],
+    [
+      'color-mix(in oklab, oklch(0.623 0.214 259.815) 50%, transparent)',
+      'rgba(43, 127, 255, 0.5)',
+    ],
+    ['color-mix(in oklab, white, black)', '#636363'],
+    ['color-mix(in hsl, red, blue)', '#ff00ff'],
+    ['color-mix(in hsl longer hue, red, blue)', '#00ff00'],
+    ['color-mix(in srgb-linear, red, blue)', '#bc00bc'],
+    ['color-mix(in nope, red, blue)', null],
+    ['color-mix(in srgb, red 0%, blue 0%)', null],
+    ['color-mix(in srgb, red 150%, blue)', null],
+    ['color-mix(in srgb, red, nope)', null],
+  ];
+  for (const [value, want] of cases) {
+    assert.strictEqual(parseColor(value), want, value);
+  }
+});
+
+metric(
+  'a color-mix() with currentColor in it mixes the colour where it is used',
+  async () => {
+    const { el, result } = await renderWithBytes(
+      '<html><head><style>body { margin: 0; color: #ff0000 }' +
+        '#a { color: #0000ff; height: 20px; ' +
+        'background-color: color-mix(in srgb, currentColor 50%, #ff0000) }' +
+        '#b { color: color-mix(in srgb, currentColor, #0000ff) }' +
+        // `currentColor` in `color` is the inherited colour
+        '#c { color: #0000ff; color: currentColor }' +
+        'table { border-collapse: collapse; color: #0000ff } ' +
+        'td { border: 10px solid color-mix(in srgb, currentColor 50%, #ff0000); ' +
+        'padding: 0; width: 10px; height: 10px }' +
+        '</style></head><body><div id="a"></div><p id="b">b</p><p id="c">c</p>' +
+        '<table id="t"><tr><td></td></tr></table></body></html>',
+      {},
+    );
+    const style = (id: string) =>
+      (boxOf(el, id) as unknown as { style: Record<string, unknown> }).style;
+    assert.strictEqual(style('b').color, '#800080');
+    assert.strictEqual(style('c').color, '#ff0000');
+    // drawn at all is part of it: an unread mix reaching the context throws
+    const purple = async (x: number, y: number) => {
+      const [r, g, b] = await pixelAt(result.ctx, x, y);
+      return r > 110 && r < 145 && g < 20 && b > 110 && b < 145;
+    };
+    await waitFor(async () => assert.ok(await purple(5, 5), 'the background'));
+    const table = boxOf(el, 't');
+    assert.ok(await purple(3, Math.round(table.y) + 3), 'the collapsed border');
+  },
+);

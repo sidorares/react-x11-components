@@ -290,9 +290,13 @@ digits, and CSS Color 4's functions: `rgb()` and `hsl()` in either the comma
 or the space form, `hwb()`, `lab()`, `lch()`, `oklab()`, `oklch()`, and
 `color()` in its predefined spaces. They are read here and handed to the
 drawing context as `#rrggbb` or `rgba()`, which both backends read alike,
-and one outside sRGB is clipped into it. `color-mix()`, relative colours,
-`light-dark()` and the system colours are not read, and a declaration
-using one is dropped, as a browser that did not know them would drop it.
+and one outside sRGB is clipped into it. `color-mix()` mixes in any of
+the spaces above but the wide-gamut RGB ones, premultiplied, so a colour
+mixed with `transparent` keeps its hue: Tailwind 4's `bg-blue-500/50` is
+written that way. A mix with `currentColor` in it is mixed where the
+colour is used. Relative colours, `light-dark()` and the system colours
+are not read, and a declaration using one is dropped, as a browser that
+did not know them would drop it.
 
 **Selectors:** everything [css-select] supports — combinators, attribute
 operators, `:nth-child(an+b)`, `:not()` — plus `:hover`, which is answered

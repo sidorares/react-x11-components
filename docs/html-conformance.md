@@ -986,6 +986,22 @@ Two more of `css-values` pass, whose references use `var()`.
 
 Round 21 lost none, here or in the other directories.
 
+### Round 22
+
+99. **`color-mix()` was not read**, and Tailwind 4 writes every colour
+    with an opacity through it: `bg-blue-500/50` is
+    `color-mix(in oklab, var(--color-blue-500) 50%, transparent)`. The two
+    colours are taken into the space the mix names, weighted by their
+    percentages, which come to less than 100% only at the cost of alpha,
+    and mixed premultiplied, so `transparent` lends its alpha and not its
+    black; a polar space's hues go the way its hue method says (CSS Color
+    5 3). A mix with `currentColor` in it waits for the colour, as the
+    keyword does, and `currentColor` in `color` is the inherited colour:
+    it kept an earlier declaration's. 7 tests in `css-color`, on both
+    backends.
+
+Round 22 lost none, in CSS 2.1 or in `css-color`.
+
 ## What `<Html>` supports
 
 From the pass rates of the tests that use each feature, at the fixes above,
@@ -1102,9 +1118,9 @@ directories and caniemail's feature list:
    gradients, `calc()`, custom properties (`var()`), CSS Color 4 —
    Tailwind's output is written in them — and `@font-face` through
    `onResource`. CSS Color 4's functions were done in round 19, read in
-   this package rather than by ntk's colour parser; `color-mix()` and
-   relative colours remain. `calc()`, `min()`, `max()` and `clamp()` were
-   done in round 20, and custom properties in round 21.
+   this package rather than by ntk's colour parser, and `color-mix()` in
+   round 22; relative colours remain. `calc()`, `min()`, `max()` and
+   `clamp()` were done in round 20, and custom properties in round 21.
 6. **Stacking and clipping**: stacking contexts across `z-index`, `clip`,
    the static position of an absolute box. Percentage heights were done in
    round 4; overflow clipping, `clip` and the static position in a block in

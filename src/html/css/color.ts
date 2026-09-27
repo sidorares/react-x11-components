@@ -1,3 +1,5 @@
+import * as ntk from 'react-x11/ntk';
+
 // CSS Color 4's functional colours: read here, and written back in the one
 // form every drawing context reads — `#rrggbb`, or `rgba(r, g, b, a)` with
 // channels from 0 to 255.
@@ -48,6 +50,49 @@ function component(token: string): Component | null {
 }
 
 function readFunction(value: string): string | null {
+  const colour = readRgbaFunction(value);
+  return colour ? serialize(colour.rgb, colour.a) : null;
+}
+
+/** A colour as gamma-encoded sRGB, unclipped, and its alpha. */
+interface Rgba {
+  rgb: Triple;
+  a: number;
+}
+
+/** Any colour but `currentColor`, as numbers: what `color-mix()` mixes. */
+function readRgba(value: string): Rgba | null {
+  const v = value.trim();
+  const lower = v.toLowerCase();
+  if (lower === 'transparent') return { rgb: [0, 0, 0], a: 0 };
+  if (v.startsWith('#')) return readHex(v);
+  if (v.includes('(')) return readRgbaFunction(v);
+  const named = cssColorStraight?.(lower);
+  if (!Array.isArray(named) || named.length < 3) return null;
+  return {
+    rgb: [named[0], named[1], named[2]],
+    a: named.length > 3 ? named[3] : 1,
+  };
+}
+
+function readHex(v: string): Rgba | null {
+  const hex = v.slice(1);
+  if (!/^(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(hex)) return null;
+  const long = hex.length <= 4 ? [...hex].map((c) => c + c).join('') : hex;
+  const byte = (i: number) => parseInt(long.slice(i * 2, i * 2 + 2), 16) / 255;
+  return {
+    rgb: [byte(0), byte(1), byte(2)],
+    a: long.length === 8 ? byte(3) : 1,
+  };
+}
+
+/** ntk's reading of a named colour. It is on ntk's entry point but not in
+ *  react-x11/ntk's declarations, so it is probed. */
+const cssColorStraight = (
+  ntk as unknown as { cssColorStraight?: (value: string) => unknown }
+).cssColorStraight as ((value: string) => number[] | null) | undefined;
+
+function readRgbaFunction(value: string): Rgba | null {
   const open = value.indexOf('(');
   if (open < 0) return null;
   const name = value.slice(0, open).toLowerCase();
@@ -55,6 +100,7 @@ function readFunction(value: string): string | null {
   // the end of a style sheet closes whatever is still open (CSS 2.1 4.2):
   // `rgb(0, 128, 0` as a sheet's last words is green
   if (body.endsWith(')')) body = body.slice(0, -1);
+  if (name === 'color-mix') return mix(body);
   // `calc()`, `var()`, a relative colour's channel keywords: not read here,
   // and a declaration this cannot read is dropped
   if (body.includes('(') || body.includes(')')) return null;
@@ -114,7 +160,7 @@ function readFunction(value: string): string | null {
     a = clamp01(alpha.unit === '%' ? alpha.value / 100 : alpha.value);
   }
   const rgb = toSrgb(name, space, channels);
-  return rgb ? serialize(rgb, a) : null;
+  return rgb ? { rgb, a } : null;
 }
 
 const LEGACY = new Set(['rgb', 'rgba', 'hsl', 'hsla']);
@@ -271,6 +317,236 @@ function predefined(space: string, v: Triple): Triple | null {
   }
 }
 
+// --- color-mix() (CSS Color 5 3) ---------------------------------------------
+
+/** `color-mix(in <space> [<hue> hue]?, <colour> <p>?, <colour> <p>?)`: the
+ *  two colours in `space`, premultiplied, weighted by their percentages. */
+function mix(body: string): Rgba | null {
+  const parts = topLevelParts(body, ',');
+  if (parts.length !== 3) return null;
+  const head = parts[0].trim().toLowerCase().split(/\s+/);
+  if (head[0] !== 'in' || head.length < 2) return null;
+  const space = head[1];
+  let method = 'shorter';
+  if (head.length === 4 && head[3] === 'hue' && space in HUE) {
+    if (!HUE_METHODS.has(head[2])) return null;
+    method = head[2];
+  } else if (head.length !== 2) {
+    return null;
+  }
+  const first = weighted(parts[1]);
+  const second = weighted(parts[2]);
+  if (!first || !second) return null;
+  let p1 = first.pct;
+  let p2 = second.pct;
+  if (p1 === null && p2 === null) p1 = p2 = 50;
+  else if (p1 === null) p1 = 100 - (p2 as number);
+  else if (p2 === null) p2 = 100 - p1;
+  const sum = (p1 as number) + (p2 as number);
+  if (!(sum > 0)) return null;
+  const t = (p2 as number) / sum;
+  const x = toSpace(space, first.colour.rgb);
+  const y = toSpace(space, second.colour.rgb);
+  if (!x || !y) return null;
+  const a1 = first.colour.a;
+  const a2 = second.colour.a;
+  const alpha = a1 * (1 - t) + a2 * t;
+  const hueAt = HUE[space] ?? -1;
+  const out: Triple = [0, 0, 0];
+  for (let i = 0; i < 3; i += 1) {
+    if (i === hueAt) {
+      out[i] = mixHue(x[i], y[i], t, method);
+    } else {
+      // premultiplied, so a transparent side lends its alpha and not its
+      // colour: Tailwind's `bg-blue-500/50` is blue, half as opaque
+      const v = x[i] * a1 * (1 - t) + y[i] * a2 * t;
+      out[i] = alpha === 0 ? 0 : v / alpha;
+    }
+  }
+  const rgb = fromSpace(space, out);
+  // percentages that come to less than 100% take their share of the alpha
+  return rgb ? { rgb, a: alpha * Math.min(1, sum / 100) } : null;
+}
+
+/** Which component of a polar space is its hue. */
+const HUE: Record<string, number> = { hsl: 0, hwb: 0, lch: 2, oklch: 2 };
+
+const HUE_METHODS = new Set(['shorter', 'longer', 'increasing', 'decreasing']);
+
+/** A colour and the percentage beside it, either way round. */
+function weighted(text: string): { colour: Rgba; pct: number | null } | null {
+  const tokens = topLevelParts(text.trim(), ' ').filter(Boolean);
+  let pct: number | null = null;
+  let colour: string | null = null;
+  for (const token of tokens) {
+    const m = /^((?:\d*\.\d+|\d+)(?:e[+-]?\d+)?)%$/i.exec(token);
+    if (m) {
+      if (pct !== null) return null;
+      pct = Number(m[1]);
+      if (pct > 100) return null;
+    } else {
+      if (colour !== null) return null;
+      colour = token;
+    }
+  }
+  const read = colour === null ? null : readRgba(colour);
+  return read ? { colour: read, pct } : null;
+}
+
+/** `text` split on `sep` outside brackets. */
+function topLevelParts(text: string, sep: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    const c = text[i];
+    if (c === '(') depth += 1;
+    else if (c === ')') depth -= 1;
+    else if (depth === 0 && (c === sep || (sep === ' ' && /\s/.test(c)))) {
+      out.push(text.slice(start, i));
+      start = i + 1;
+    }
+  }
+  out.push(text.slice(start));
+  return out;
+}
+
+function mixHue(h1: number, h2: number, t: number, method: string): number {
+  // an achromatic side has no hue, and takes the other's
+  if (Number.isNaN(h1)) return Number.isNaN(h2) ? 0 : h2;
+  if (Number.isNaN(h2)) return h1;
+  let a = ((h1 % 360) + 360) % 360;
+  let b = ((h2 % 360) + 360) % 360;
+  const d = b - a;
+  if (method === 'longer') {
+    if (d > 0 && d < 180) a += 360;
+    else if (d > -180 && d <= 0) b += 360;
+  } else if (method === 'increasing') {
+    if (d < 0) b += 360;
+  } else if (method === 'decreasing') {
+    if (d > 0) a += 360;
+  } else if (d > 180) {
+    a += 360;
+  } else if (d < -180) {
+    b += 360;
+  }
+  return (((a + (b - a) * t) % 360) + 360) % 360;
+}
+
+/** Gamma-encoded sRGB into a space a mix can be taken in. */
+function toSpace(space: string, rgb: Triple): Triple | null {
+  switch (space) {
+    case 'srgb':
+      return rgb;
+    case 'srgb-linear':
+      return linearize(rgb);
+    case 'xyz':
+    case 'xyz-d65':
+      return multiply(LINEAR_SRGB_TO_XYZ, linearize(rgb));
+    case 'xyz-d50':
+      return multiply(D65_TO_D50, multiply(LINEAR_SRGB_TO_XYZ, linearize(rgb)));
+    case 'lab':
+    case 'lch': {
+      const lab = xyzD50ToLab(
+        multiply(D65_TO_D50, multiply(LINEAR_SRGB_TO_XYZ, linearize(rgb))),
+      );
+      return space === 'lab' ? lab : toPolar(lab, 0.0015);
+    }
+    case 'oklab':
+    case 'oklch': {
+      const oklab = linearSrgbToOklab(linearize(rgb));
+      return space === 'oklab' ? oklab : toPolar(oklab, 0.000004);
+    }
+    case 'hsl':
+      return srgbToHsl(rgb);
+    case 'hwb': {
+      const [h] = srgbToHsl(rgb);
+      return [h, Math.min(...rgb) * 100, (1 - Math.max(...rgb)) * 100];
+    }
+    default:
+      return null;
+  }
+}
+
+/** A space's components back to gamma-encoded sRGB. */
+function fromSpace(space: string, c: Triple): Triple | null {
+  switch (space) {
+    case 'srgb':
+      return c;
+    case 'srgb-linear':
+      return gamma(c);
+    case 'xyz':
+    case 'xyz-d65':
+      return fromXyzD65(c);
+    case 'xyz-d50':
+      return fromXyzD65(multiply(D50_TO_D65, c));
+    case 'lab':
+    case 'lch': {
+      const [l, a, b] =
+        space === 'lab' ? c : [c[0], ...polar(Math.max(0, c[1]), c[2])];
+      return fromXyzD65(multiply(D50_TO_D65, labToXyzD50(l, a, b)));
+    }
+    case 'oklab':
+    case 'oklch': {
+      const [l, a, b] =
+        space === 'oklab' ? c : [c[0], ...polar(Math.max(0, c[1]), c[2])];
+      return gamma(oklabToLinearSrgb(l, a, b));
+    }
+    case 'hsl':
+      return hslToRgb(c[0], clamp01(c[1] / 100), clamp01(c[2] / 100));
+    case 'hwb':
+      return hwbToRgb(c[0], clamp01(c[1] / 100), clamp01(c[2] / 100));
+    default:
+      return null;
+  }
+}
+
+function linearize(rgb: Triple): Triple {
+  return rgb.map(srgbLinear) as Triple;
+}
+
+function linearSrgbToOklab([r, g, b]: Triple): Triple {
+  const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
+  const m = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b);
+  const s = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
+  return [
+    0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s,
+    1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s,
+    0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s,
+  ];
+}
+
+function xyzD50ToLab(xyz: Triple): Triple {
+  const f = xyz.map((v, i) => {
+    const x = v / D50_WHITE[i];
+    return x > EPSILON ? Math.cbrt(x) : (KAPPA * x + 16) / 116;
+  });
+  return [116 * f[1] - 16, 500 * (f[0] - f[1]), 200 * (f[1] - f[2])];
+}
+
+/** Lightness, chroma and hue — no hue where there is next to no chroma,
+ *  which is what a grey's hue is. */
+function toPolar([l, a, b]: Triple, grey: number): Triple {
+  const chroma = Math.sqrt(a * a + b * b);
+  if (chroma < grey) return [l, chroma, NaN];
+  const h = (Math.atan2(b, a) * 180) / Math.PI;
+  return [l, chroma, h < 0 ? h + 360 : h];
+}
+
+function srgbToHsl([r, g, b]: Triple): Triple {
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const l = (min + max) / 2;
+  const d = max - min;
+  if (d === 0) return [NaN, 0, l * 100];
+  const s = l === 0 || l === 1 ? 0 : (max - l) / Math.min(l, 1 - l);
+  let h: number;
+  if (max === r) h = (g - b) / d + (g < b ? 6 : 0);
+  else if (max === g) h = (b - r) / d + 2;
+  else h = (r - g) / d + 4;
+  return [h * 60, s * 100, l * 100];
+}
+
 function serialize(rgb: Triple, a: number): string {
   const [r, g, b] = rgb.map((x) => Math.round(clamp01(x) * 255));
   if (a === 1) return `#${hex2(r)}${hex2(g)}${hex2(b)}`;
@@ -380,6 +656,18 @@ function multiply(m: readonly Triple[], v: Triple): Triple {
 
 // Each takes its space's white to its white point's XYZ, which the tests
 // check by sending white through every space.
+
+const LINEAR_SRGB_TO_XYZ: readonly Triple[] = [
+  [506752 / 1228815, 87881 / 245763, 12673 / 70218],
+  [87098 / 409605, 175762 / 245763, 12673 / 175545],
+  [7918 / 409605, 87881 / 737289, 1001167 / 1053270],
+];
+
+const D65_TO_D50: readonly Triple[] = [
+  [1.0479297925449969, 0.022946870601609652, -0.05019226628920524],
+  [0.02962780877005599, 0.9904344267538799, -0.017073799063418826],
+  [-0.009243040646204504, 0.015055191490298152, 0.7518742814281371],
+];
 
 const XYZ_TO_LINEAR_SRGB: readonly Triple[] = [
   [12831 / 3959, -329 / 214, -1974 / 3959],

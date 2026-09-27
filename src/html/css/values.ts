@@ -280,8 +280,17 @@ export function fourSides<T>(parts: T[]): [T, T, T, T] {
 /** A colour as it is about to be used: `currentColor` resolved against the
  *  element's own ink, everything else passed through. */
 export function inkColor(color: string, current: string): string {
-  return color === 'currentColor' ? current : color;
+  if (color === 'currentColor') return current;
+  // a `color-mix()` with `currentColor` in it waits for the colour too;
+  // every other functional colour was read when it was parsed
+  if (color.charCodeAt(0) === 99 && color.startsWith('color-mix(')) {
+    return functionalColor(color.replace(CURRENT, current)) ?? current;
+  }
+  return color;
 }
+
+const CURRENT = /currentcolor/gi;
+const HAS_CURRENT = /currentcolor/i;
 
 /** Whether a colour paints anything at all. Two string tests rather than a
  *  parse, for the reason at the top of the file. */
@@ -315,7 +324,14 @@ export function parseColor(value: string): string | null {
   // three, four, six or eight digits: ntk's context throws from paint on
   // five or seven, and a typo'd `#ff000` took the application down
   if (v.startsWith('#')) return HEX_COLOR.test(v) ? v : null;
-  if (/^(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\(/i.test(v)) {
+  if (/^(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color|color-mix)\(/i.test(v)) {
+    // a mix with `currentColor` in it is kept to be mixed where it is used
+    // (`inkColor`), once it is known to be one
+    if (HAS_CURRENT.test(v) && /^color-mix\(/i.test(v)) {
+      return functionalColor(v.replace(CURRENT, '#000')) === null
+        ? null
+        : `color-mix(${v.slice(v.indexOf('(') + 1)}`;
+    }
     return functionalColor(v);
   }
   return NAMED_COLORS.has(lower) ? lower : null;
