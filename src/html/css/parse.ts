@@ -490,8 +490,11 @@ function isSelector(s: string): boolean {
         if (s[i] === '(') {
           const end = componentEnd(s, i);
           if (s[end - 1] !== ')') return false;
+          if (!element && !argumentFits(lower, s.slice(i + 1, end - 1))) {
+            return false;
+          }
           i = end;
-        }
+        } else if (!element && NEEDS_ARGUMENT.has(lower)) return false;
       } else if (startsIdent(s, i) && i === from) {
         i = identEnd(s, i);
       } else {
@@ -502,6 +505,44 @@ function isSelector(s: string): boolean {
   }
   return !expectCompound;
 }
+
+/**
+ * Whether a pseudo-class takes the argument it is given: one where it
+ * takes one — `:lang()` names no language, and makes its group invalid as
+ * an unknown name does — and none where it takes none. `:is()` and
+ * `:where()` forgive an empty list; a vendor's are its own affair.
+ */
+function argumentFits(name: string, argument: string): boolean {
+  if (name.startsWith('-')) return true;
+  if (NEEDS_ARGUMENT.has(name)) {
+    return name === 'is' || name === 'where' || /\S/.test(argument);
+  }
+  return MAY_TAKE_ARGUMENT.has(name);
+}
+
+/** The pseudo-classes that are functions, and are nothing without it. */
+const NEEDS_ARGUMENT = new Set([
+  'contains',
+  'dir',
+  'has',
+  'host-context',
+  'icontains',
+  'is',
+  'lang',
+  'matches',
+  'not',
+  'nth-child',
+  'nth-col',
+  'nth-last-child',
+  'nth-last-col',
+  'nth-last-of-type',
+  'nth-of-type',
+  'state',
+  'where',
+]);
+
+/** The ones that are a pseudo-class with an argument or without. */
+const MAY_TAKE_ARGUMENT = new Set(['current', 'future', 'host', 'past']);
 
 /**
  * Whether a pseudo-class or pseudo-element is one: an unknown one makes its

@@ -310,6 +310,24 @@ test('one invalid selector drops its whole group', () => {
   );
 });
 
+test('a pseudo-class takes an argument where it takes one, and only there', () => {
+  // `:lang()` names no language, `:not()` negates nothing and `:hover(x)`
+  // is no pseudo-class: each makes its group invalid, as an unknown name
+  // does (the WPT suite's lang-selector-002). `:is()` forgives an empty
+  // list, and `:host` is a pseudo-class with an argument or without
+  const sheet = parseStylesheet(
+    ':lang(), div { color: red }\n' +
+      ':not( ), a { color: red }\n' +
+      ':hover(x), b { color: red }\n' +
+      'p:nth-child { color: red }\n' +
+      ':is(), :lang(fr), :nth-child(2n), :host, :host(.x) { color: green }',
+  );
+  assert.deepStrictEqual(
+    sheet.rules.map((r) => r.selector),
+    [':is()', ':lang(fr)', ':nth-child(2n)', ':host', ':host(.x)'],
+  );
+});
+
 test('@import counts only first, and never inside @media', () => {
   const first = parseStylesheet('@charset "utf-8"; @import "a.css"; p {}');
   assert.deepStrictEqual(first.imports, ['a.css']);
@@ -6534,3 +6552,23 @@ test('a box is painted with each edge on the pixel it falls nearest', async () =
     [1, 1, 11, 11],
   );
 });
+
+// --- the newline after <pre> ---------------------------------------------------------
+
+metric(
+  'a newline straight after a <pre> start tag is no part of its text',
+  async () => {
+    // HTML's parser drops it as an authoring convenience (13.2.6.4.7), so a
+    // code block written `<pre>` and a line break starts on its first line
+    // of code, and a second newline is a blank line
+    const { node } = await render(
+      '<pre id="p">\nfirst\n  second</pre><pre id="q">\n\nafter a blank</pre>' +
+        '<pre id="r">\r\ncrlf</pre>',
+    );
+    const el = view(node);
+    assert.deepStrictEqual(lineTextsOf(el, 'p'), ['first\n', '  second']);
+    assert.deepStrictEqual(lineTextsOf(el, 'q'), ['\n', 'after a blank']);
+    assert.deepStrictEqual(lineTextsOf(el, 'r'), ['crlf']);
+    assert.ok(!el.textContent().startsWith('\n'), 'nor of the document');
+  },
+);
