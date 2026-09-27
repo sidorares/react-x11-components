@@ -24,7 +24,7 @@ import {
   pixelAt,
   withFrameClock,
 } from 'react-x11/test';
-import { Button } from 'react-x11';
+import { Button, type ScrollableNode } from 'react-x11';
 import { XK_RETURN } from 'react-x11/keysyms';
 import {
   parseQml,
@@ -684,11 +684,23 @@ describe('QML file components (the resolver seam)', () => {
   );
 });
 
-const mountQml = async (source: string, { width = 400, height = 300 } = {}) => {
+// `scale: 2` renders the tree the way a retina panel does — two device
+// pixels to the logical one — which is the only way to see a number read
+// in one unit and used in the other (react-x11's docs/scale.md). Left out,
+// the harness resolves to 1, where the two coincide.
+const mountQml = async (
+  source: string,
+  {
+    width = 400,
+    height = 300,
+    scale,
+  }: { width?: number; height?: number; scale?: number } = {},
+) => {
   const ref = React.createRef<QmlViewHandle>();
   const handle = await renderX11(h(QmlView, { ref, source }), {
     width,
     height,
+    scale,
     fonts: FONTS ?? undefined,
   });
   await waitFor(() => {
@@ -888,6 +900,47 @@ describe('QML rendered through react-x11', () => {
     );
   });
 
+  test('at display scale 2 MouseArea positions are logical pixels', async () => {
+    // An event's x/y are logical and a node's `abs` device, so at scale 2
+    // an origin taken from a point in the other unit lands at half the
+    // distance. The area sits inside an offset panel, so that a wrong
+    // subtraction cannot come out right by starting from zero.
+    const { ref } = await mountQml(
+      `
+      import QtQuick 2.15
+      Rectangle {
+        width: 300; height: 200; color: "#101010"
+        Rectangle {
+          x: 20; y: 20; width: 200; height: 120; color: "#202020"
+          MouseArea { id: area; x: 10; y: 10; width: 120; height: 60 }
+        }
+      }
+    `,
+      { scale: 2 },
+    );
+    const area = ref.current!.instance.context.ids.get('area')!;
+    const seen = new Map<string, { x: number; y: number }>();
+    const signals = ['pressed', 'released', 'clicked', 'wheel'];
+    for (const name of signals) {
+      area.onSignal(name, (m) => seen.set(name, m as { x: number; y: number }));
+    }
+    const node = hostNode(area)!;
+    await act(async () => {
+      fireEvent.click(node);
+    });
+    await act(async () => {
+      fireEvent.wheel(node, { deltaY: 1 });
+    });
+    await waitFor(() => assert.equal(seen.size, signals.length));
+    for (const [name, at] of seen) {
+      assert.deepEqual(
+        { x: at.x, y: at.y },
+        { x: 60, y: 30 },
+        `${name}: the middle of a 120 × 60 area, in the unit it is written in`,
+      );
+    }
+  });
+
   test(
     'Repeater + Row: model drives instances; updates rebuild and reflow',
     { skip: !FONTS },
@@ -1063,6 +1116,45 @@ describe('QML rendered through react-x11', () => {
   );
 
   test(
+    'at display scale 2 the root takes the view’s size in logical pixels',
+    { skip: !FONTS },
+    async () => {
+      const ref = React.createRef<QmlViewHandle>();
+      const { ctx } = await renderX11(
+        h(QmlView, {
+          ref,
+          source: `
+            import QtQuick 2.15
+            Rectangle {
+              id: root
+              color: "#204080"
+              Rectangle {
+                x: Math.max(0, root.width - 50); y: 0
+                width: 50; height: 50; color: "#e67e22"
+              }
+            }
+          `,
+          style: { width: 300, height: 220 },
+        }),
+        { width: 400, height: 300, scale: 2, fonts: FONTS ?? undefined },
+      );
+      // The wrapper is 300 × 220 in the unit its style is written in, and
+      // 600 × 440 in the device pixels its `abs` reports.
+      await waitFor(() => {
+        const view = ref.current!;
+        assert.equal(view.root.implicitWidth, 300);
+        assert.equal(view.root.implicitHeight, 220);
+        assert.equal(view.root.width, 300, 'the default binding follows');
+      });
+      // A logical point (x, y) is the pixel (2x, 2y). At 600 wide the box
+      // sat off the window's right edge.
+      await expectPixel(ctx, 2 * 280, 2 * 25, '#e67e22', {
+        message: 'a binding on root.width put the box in the view’s corner',
+      });
+    },
+  );
+
+  test(
     'Behavior rides the style transition engine, on the frame clock',
     { skip: !FONTS },
     async () => {
@@ -1207,6 +1299,44 @@ describe('QML rendered through react-x11', () => {
     },
   );
 
+  test('at display scale 2 a Flickable hears a wheel without echoing it', async () => {
+    const { ref } = await mountQml(
+      `
+      import QtQuick 2.15
+      Rectangle {
+        width: 300; height: 200
+        Flickable {
+          id: flick
+          x: 10; y: 10; width: 200; height: 100
+          contentWidth: 200; contentHeight: 1000
+          Rectangle { width: 200; height: 1000; color: "#2ecc71" }
+        }
+      }
+    `,
+      { scale: 2 },
+    );
+    const node = hostNode(
+      ref.current!.instance.context.ids.get('flick')!,
+    ) as ScrollableNode;
+    // The pane's offsets are device pixels, contentY and scrollTo logical.
+    // Compared raw, the contentY a wheel reported came back to the pane as
+    // a scrollTo to where it already was.
+    const asked: unknown[] = [];
+    const scrollTo = node.scrollTo.bind(node);
+    node.scrollTo = (to) => {
+      asked.push(to);
+      scrollTo(to);
+    };
+    await act(async () => {
+      fireEvent.wheel(node, { deltaY: 1 });
+    });
+    await waitFor(() => assert.ok(node.scrollY > 0, 'the wheel scrolled'));
+    // Long enough for the re-render contentY causes, and its effect.
+    await act(() => new Promise((resolve) => setTimeout(resolve, 30)));
+    assert.equal(ref.current!.id('flick')!.contentY, node.scrollY / 2);
+    assert.deepEqual(asked, [], 'no scrollTo');
+  });
+
   test(
     'TextInput binds two ways and fires accepted on Return',
     { skip: !FONTS },
@@ -1240,6 +1370,45 @@ describe('QML rendered through react-x11', () => {
         ref.current!.id('field')!.text = 'reset';
       });
       await waitFor(() => assert.ok(screen.getByText('echo: reset')));
+    },
+  );
+
+  test(
+    'at display scale 2 Text and TextInput measure in logical pixels',
+    { skip: !FONTS },
+    async () => {
+      const { ref } = await mountQml(
+        `
+        import QtQuick 2.15
+        Rectangle {
+          width: 300; height: 200; color: "#101010"
+          Text { id: label; x: 10; y: 10; color: "white"; text: "Hello world"; font.pixelSize: 20 }
+          TextInput { id: field; x: 10; y: 60; width: 200; text: "abc"; font.pixelSize: 20 }
+        }
+      `,
+        { scale: 2 },
+      );
+      const label = ref.current!.instance.context.ids.get('label')!;
+      const near = (actual: number, expected: number, what: string) =>
+        assert.ok(
+          Math.abs(actual - expected) <= 1,
+          `${what}: ${actual}, against ${expected}`,
+        );
+      // A content-sized `<text>` is react-x11's own measure of the string,
+      // in device pixels — twice the logical size a binding reads. The
+      // engine measures at the resolved font size, which is the device one.
+      await waitFor(() => {
+        const drawn = hostNode(label)!.abs;
+        assert.ok(drawn.width > 0, 'laid out');
+        const view = ref.current!;
+        near(view.id('label')!.implicitWidth, drawn.width / 2, 'Text width');
+        near(view.id('label')!.implicitHeight, drawn.height / 2, 'Text height');
+        near(
+          view.id('field')!.implicitHeight,
+          drawn.height / 2 + 8,
+          'TextInput height: a line of the same font, and its frame',
+        );
+      });
     },
   );
 
@@ -1351,6 +1520,50 @@ describe('QtQuick.Layouts over yoga', () => {
         assert.equal(ref.current!.id('c')!.width, 260, '400 - 140 fills');
       });
       await waitFor(() => assert.ok(screen.getByText('cw=260')));
+    },
+  );
+
+  test(
+    'at display scale 2 the read-back is in the unit the document is written in',
+    { skip: !FONTS },
+    async () => {
+      // `b` gives its size as a plain `width:`, which is both its size hint
+      // and the slot the read-back writes: a device number there is a hint
+      // twice the size, and the row draws it.
+      const { ctx, ref } = await mountQml(
+        `
+        import QtQuick 2.15
+        import QtQuick.Layouts 1.15
+        Rectangle {
+          width: 400; height: 130; color: "#000000"
+          RowLayout {
+            x: 10; y: 10; width: 380; height: 100
+            spacing: 10
+            Rectangle { id: a; Layout.preferredWidth: 50; Layout.preferredHeight: 40; color: "#e74c3c" }
+            Rectangle { id: b; width: 70; height: 40; color: "#2ecc71" }
+            Rectangle { id: c; Layout.fillWidth: true; Layout.preferredHeight: 40; color: "#3498db" }
+          }
+        }
+      `,
+        { scale: 2 },
+      );
+      // x, y, width, height, as a binding reads them.
+      const geometry = (id: string) => {
+        const { x, y, width, height } = ref.current!.id(id)!;
+        return [x, y, width, height];
+      };
+      await waitFor(() => {
+        assert.deepEqual(geometry('a'), [0, 30, 50, 40]);
+        assert.deepEqual(geometry('b'), [60, 30, 70, 40]);
+        assert.deepEqual(geometry('c'), [140, 30, 240, 40], '380 - 140');
+      });
+      // A logical point (x, y) is the pixel (2x, 2y); the items span
+      // y 40–80, and b x 70–140.
+      await expectPixel(ctx, 2 * 105, 2 * 60, '#2ecc71', { message: 'b' });
+      await expectPixel(ctx, 2 * 145, 2 * 60, '#000000', {
+        message: 'the gap after b: b drew at the 70 it was given',
+      });
+      await expectPixel(ctx, 2 * 200, 2 * 60, '#3498db', { message: 'c' });
     },
   );
 

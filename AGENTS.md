@@ -281,6 +281,21 @@ for at all, since it leaves the arithmetic in one unit instead of converting
 into the other. `test/color-picker.test.ts` drags the area and clicks the
 hue strip at `scale: 2`, which is the test the file never had.
 
+Composing is no exemption once a component reads geometry back. The QML
+family draws nothing and still carried device numbers into documents
+written in logical ones: `mouse.x` (a logical event less a device `abs`),
+the RowLayout read-back and the root's implicit size (a device `abs` in a
+logical slot), and a `Text`'s implicit size — `app.fonts.layout` measures
+at `resolvedTextStyle()`'s size, and that is the device one, because the
+cascade resolves a theme's size once, at the root. The read-back fed
+itself: an author `width:` is the slot it writes, so at 2x the item drew
+double. Each now divides by the node's scale where it crosses. The
+read-back subtracts first, since `(a - b) / s` rounds once; it and
+`mouse.x` read `abs` rather than `getClientRects()`, which answers nothing
+for a 0×0 box, and a 0×0 QML item still has an `x` and still hears a click
+on a child that hangs outside it. `test/qml.test.ts` runs each at
+`scale: 2`.
+
 `src/internal/hx.ts` is what makes the no-JSX rule survive TypeScript.
 `React.createElement`'s own overloads are `@types/react`'s and describe the
 DOM, so a `<box onKeyDown>` handler gets checked against React's

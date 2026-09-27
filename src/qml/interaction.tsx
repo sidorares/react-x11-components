@@ -29,6 +29,7 @@ import {
   qmlColor,
   str,
 } from './view-utils.js';
+import { scaleOf } from '../internal/units.js';
 
 // --- Keys + focus ----------------------------------------------------------
 
@@ -152,10 +153,16 @@ function MouseAreaView({ inst }: { inst: QmlInstance }): ReactElement {
   applyMotion(inst, style);
 
   const mouse = (e: PointerEventLike) => {
-    const abs = hostNode(inst)?.abs;
+    // `e.x` is logical and `abs` device (react-x11's docs/scale.md), so the
+    // area's origin is divided into the event's unit first. Not
+    // `getClientRects()`, the same box already divided: it answers nothing
+    // for a box with no area, and a 0×0 MouseArea still hears a click on a
+    // child that hangs outside it.
+    const node = hostNode(inst);
+    const s = scaleOf(node);
     return {
-      x: e.x - (abs?.x ?? 0),
-      y: e.y - (abs?.y ?? 0),
+      x: e.x - (node?.abs.x ?? 0) / s,
+      y: e.y - (node?.abs.y ?? 0) / s,
       button: e.button,
       modifiers: modifiersOf(e),
       accepted: true,
@@ -255,7 +262,11 @@ function useImplicitLineHeight(inst: QmlInstance, text: string): void {
         text || 'Mg',
         node.resolvedTextStyle(),
       );
-      inst.slots.get('implicitHeight')?.assign(Math.ceil(probe.height) + 8);
+      // Laid out at the resolved size, which is the device one (TextView,
+      // in qtquick.tsx), so the height is divided back into logical pixels.
+      inst.slots
+        .get('implicitHeight')
+        ?.assign(Math.ceil(probe.height / scaleOf(node)) + 8);
     } catch {
       // No fonts loaded (headless without the fonts option): leave 0.
     }

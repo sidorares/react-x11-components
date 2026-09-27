@@ -175,7 +175,9 @@ export const QmlView = forwardRef(function QmlView(
 
   // Root-size feedback. `afterLayout` (not a bare effect): react-x11 lays
   // out on the frame flush, so an effect body reads the geometry of the
-  // previous pass — src/internal/timers.ts documents the shape.
+  // previous pass — src/internal/timers.ts documents the shape. The client
+  // rect, not `abs`: `abs` is device pixels, and the root's size is read in
+  // the logical ones the document and the wrapper's `style` are written in.
   const wrapRef = useRef<DrawnNode>(null);
   const rootW = root.slots.get('width');
   const rootH = root.slots.get('height');
@@ -183,10 +185,10 @@ export const QmlView = forwardRef(function QmlView(
   useEffect(() => {
     if (sized) return;
     const tick = afterLayout(() => {
-      const abs = wrapRef.current?.abs;
-      if (!abs || root.destroyed) return;
-      if (abs.width) root.slots.get('implicitWidth')?.assign(abs.width);
-      if (abs.height) root.slots.get('implicitHeight')?.assign(abs.height);
+      const box = wrapRef.current?.getClientRects()[0];
+      if (!box || root.destroyed) return;
+      if (box.width) root.slots.get('implicitWidth')?.assign(box.width);
+      if (box.height) root.slots.get('implicitHeight')?.assign(box.height);
       flushBindings();
     });
     return () => cancelAfterLayout(tick);
