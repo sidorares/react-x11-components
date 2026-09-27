@@ -22,6 +22,7 @@ import {
   parseLength,
   parseNumber,
   parseWeight,
+  resolve,
   splitCommas,
   splitValue,
 } from './values.js';
@@ -61,15 +62,18 @@ export interface ClipRect {
   left: number | null;
 }
 
-/** Whether a length is one `padding` takes: not `auto`, not negative. */
+/** Whether a length is one `padding` takes: not `auto`, not negative. A
+ *  `calc()` with a percentage in it has no sign until layout, which clamps
+ *  it at zero (CSS Values 4 10.12). */
 function notNegative(len: Len): boolean {
   if (len === AUTO) return true;
-  return typeof len === 'number' ? len >= 0 : len.pct >= 0;
+  if (typeof len === 'number') return len >= 0;
+  return len.px !== undefined || len.pct >= 0;
 }
 
 function validPadding(len: Len | null): boolean {
   if (len === null || len === AUTO) return false;
-  return typeof len === 'number' ? len >= 0 : len.pct >= 0;
+  return notNegative(len);
 }
 
 /** `auto`, or `rect()` of four lengths or `auto`s, commas between them or
@@ -628,10 +632,14 @@ export function applyDeclaration(
       return;
     }
     case 'z-index': {
-      if (value.toLowerCase() === 'auto') style.zIndex = AUTO;
-      else {
-        const n = parseNumber(value);
-        if (n !== null) style.zIndex = Math.trunc(n);
+      // an integer: `1.5` is none, and a `calc()` is rounded to one, half
+      // up (CSS Values 4 10.9)
+      const v = value.trim().toLowerCase();
+      if (v === 'auto') style.zIndex = AUTO;
+      else if (/^[+-]?\d+$/.test(v)) style.zIndex = Number(v);
+      else if (/^[a-z-]+\(/.test(v)) {
+        const n = parseNumber(v);
+        if (n !== null) style.zIndex = Math.floor(n + 0.5);
       }
       return;
     }
@@ -881,8 +889,9 @@ export function applyDeclaration(
       const len = parseLength(value, { ...ctx, em: parent.fontSize });
       if (typeof len === 'number') {
         if (len >= 0) style.fontSize = len;
-      } else if (len && typeof len === 'object' && len.pct >= 0) {
-        style.fontSize = (len.pct / 100) * parent.fontSize;
+      } else if (len && typeof len === 'object') {
+        const size = resolve(len, parent.fontSize);
+        if (size >= 0) style.fontSize = size;
       }
       return;
     }
@@ -914,7 +923,7 @@ export function applyDeclaration(
         style.lineHeight = len;
         style.lineHeightIsLength = true;
       } else if (len && typeof len === 'object') {
-        style.lineHeight = (len.pct / 100) * style.fontSize;
+        style.lineHeight = resolve(len, style.fontSize);
         style.lineHeightIsLength = true;
       }
       return;
@@ -1319,19 +1328,19 @@ function edgePosition(words: string[], ctx: UnitContext): [Len, Len] | null {
     [h, v] = [v, h];
   }
   if (!(h.word in HORIZONTAL) || !(v.word in VERTICAL)) return null;
-  return [
-    fromEdge(HORIZONTAL[h.word], h.offset),
-    fromEdge(VERTICAL[v.word], v.offset),
-  ];
+  const x = fromEdge(HORIZONTAL[h.word], h.offset);
+  const y = fromEdge(VERTICAL[v.word], v.offset);
+  return x === null || y === null ? null : [x, y];
 }
 
-function fromEdge(at: number, offset: Len | null): Len {
+function fromEdge(at: number, offset: Len | null): Len | null {
   if (offset === null) return at === 0 ? 0 : { pct: at };
   if (at === 0) return offset;
-  // in from the right or the bottom
-  return typeof offset === 'number'
-    ? { pct: 100, px: -offset }
-    : { pct: 100 - (offset as { pct: number }).pct };
+  // in from the right or the bottom: `100% - offset`, which a comparison
+  // (`right min(10%, 20px)`) is not the sum for
+  if (typeof offset === 'number') return { pct: 100, px: -offset };
+  if (offset === AUTO || offset.of) return null;
+  return { pct: 100 - offset.pct, px: -(offset.px ?? 0) };
 }
 
 /** `background-repeat`: one keyword, or one for each axis (CSS3). `space`

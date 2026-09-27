@@ -25,7 +25,7 @@
 import { Yoga, layoutLoaded } from 'react-x11/yoga';
 import type { Node as YogaNode } from 'react-x11/yoga';
 
-import { AUTO, isPct, resolveOrNull } from '../css/values.js';
+import { AUTO, isPct, resolve, resolveOrNull } from '../css/values.js';
 import type { ComputedStyle } from '../css/style.js';
 import { Box } from './boxes.js';
 import { moveTo, resolveEdges } from './block.js';
@@ -184,9 +184,16 @@ function applyItem(
 
   if (style.flexBasis === 'content') node.setFlexBasisAuto();
   else if (style.flexBasis === AUTO) node.setFlexBasisAuto();
-  else if (isPct(style.flexBasis))
-    node.setFlexBasisPercent(style.flexBasis.pct);
-  else node.setFlexBasis(style.flexBasis);
+  else if (isPct(style.flexBasis)) {
+    // a percentage of the main size, which is known across a row
+    const basis = style.flexBasis;
+    const row = box.parent?.style.flexDirection.startsWith('row') ?? true;
+    if (!basis.px && !basis.of) node.setFlexBasisPercent(basis.pct);
+    else if (row && Number.isFinite(containingWidth)) {
+      node.setFlexBasis(resolve(basis, containingWidth));
+    } else if (basis.of) node.setFlexBasisAuto();
+    else node.setFlexBasisPercent(basis.pct);
+  } else node.setFlexBasis(style.flexBasis);
 
   // The item's padding and border belong to Yoga so it can size the item,
   // and to this engine so it can paint it. Both read the same numbers.
@@ -223,10 +230,15 @@ function setLength(
     return;
   }
   if (isPct(len)) {
-    setPercent(len.pct);
+    // Yoga takes a percentage or points, not both: `calc(100% - 20px)`
+    // resolves here where its base is known, and keeps its percentage alone
+    // where it is not
+    if (!len.px && !len.of) setPercent(len.pct);
+    else if (Number.isFinite(base)) setPx(resolve(len, base));
+    else if (len.of) setAuto();
+    else setPercent(len.pct);
     return;
   }
-  void base;
   setPx(len);
 }
 

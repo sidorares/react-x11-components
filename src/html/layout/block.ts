@@ -10,13 +10,7 @@
 // Float coordinates are absolute for the same reason, which is what lets the
 // inline pass ask "how wide is the line at this y" without knowing whose
 // formatting context it is inside.
-import {
-  AUTO,
-  isPct,
-  isTransparent,
-  resolve,
-  resolveOrNull,
-} from '../css/values.js';
+import { AUTO, isTransparent, resolve, resolveOrNull } from '../css/values.js';
 import type { Len } from '../css/values.js';
 import type { BorderStyle, ComputedStyle } from '../css/style.js';
 import { Box, FIRST_LINE } from './boxes.js';
@@ -983,8 +977,9 @@ function layoutMarker(box: Box, marker: Marker, ctx: LayoutContext): void {
  */
 function percentBaseInside(box: Box): number {
   if (!box.el && !box.pseudo) return box.percentHeightBase;
-  const set = resolveOrNull(box.style.height, box.percentHeightBase);
-  if (set === null) return NaN;
+  const resolved = resolveOrNull(box.style.height, box.percentHeightBase);
+  if (resolved === null) return NaN;
+  const set = Math.max(0, resolved);
   const borderBox =
     box.style.boxSizing === 'border-box'
       ? Math.max(set, box.verticalExtra)
@@ -1015,7 +1010,9 @@ function handPercentBase(box: Box, base: number): void {
 }
 
 function finishHeight(box: Box, contentHeight: number): void {
-  const specified = resolveOrNull(box.style.height, box.percentHeightBase);
+  const set = resolveOrNull(box.style.height, box.percentHeightBase);
+  // at least zero: a `calc()` may come to less
+  const specified = set === null ? null : Math.max(0, set);
   const height = specified ?? contentHeight;
   const borderBox =
     box.style.boxSizing === 'border-box' && specified !== null
@@ -1086,7 +1083,8 @@ function blockWidth(box: Box, containingWidth: number): number {
   if (style.width === AUTO) {
     return clampWidth(box, Math.max(0, available), containingWidth);
   }
-  const specified = resolve(style.width, containingWidth, 0);
+  // at least zero: a `calc()` may come to less
+  const specified = Math.max(0, resolve(style.width, containingWidth, 0));
   const borderBox =
     style.boxSizing === 'border-box'
       ? Math.max(specified, box.horizontalExtra)
@@ -1127,7 +1125,7 @@ function shrinkToFitWidth(
 ): number {
   const style = box.style;
   if (style.width !== AUTO) {
-    const specified = resolve(style.width, available, 0);
+    const specified = Math.max(0, resolve(style.width, available, 0));
     const borderBox =
       style.boxSizing === 'border-box'
         ? Math.max(specified, box.horizontalExtra)
@@ -1636,10 +1634,11 @@ export function resolveEdges(box: Box, containingWidth: number): void {
     style.borderLeftStyle === 'none' || style.borderLeftStyle === 'hidden'
       ? 0
       : style.borderLeftWidth;
-  box.padTop = edge(style.paddingTop, containingWidth);
-  box.padRight = edge(style.paddingRight, containingWidth);
-  box.padBottom = edge(style.paddingBottom, containingWidth);
-  box.padLeft = edge(style.paddingLeft, containingWidth);
+  // at least zero: a `calc()` may come to less
+  box.padTop = Math.max(0, edge(style.paddingTop, containingWidth));
+  box.padRight = Math.max(0, edge(style.paddingRight, containingWidth));
+  box.padBottom = Math.max(0, edge(style.paddingBottom, containingWidth));
+  box.padLeft = Math.max(0, edge(style.paddingLeft, containingWidth));
   box.marginTop = edge(style.marginTop, containingWidth);
   box.marginRight = edge(style.marginRight, containingWidth);
   box.marginBottom = edge(style.marginBottom, containingWidth);
@@ -1649,11 +1648,7 @@ export function resolveEdges(box: Box, containingWidth: number): void {
 
 function edge(len: Len, containingWidth: number): number {
   if (len === AUTO) return 0;
-  if (isPct(len))
-    return Number.isFinite(containingWidth)
-      ? (len.pct / 100) * containingWidth
-      : 0;
-  return len;
+  return resolve(len, containingWidth, 0);
 }
 
 /** Whether every in-flow child is inline-level, which is what makes this box
