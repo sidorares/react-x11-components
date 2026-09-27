@@ -3323,6 +3323,33 @@ test('a negative size is no size, and the declaration goes', async () => {
   assert.deepStrictEqual([b.width, b.height], [30, 20]);
 });
 
+test("a row's background is its cells', and a row group has no borders", async () => {
+  // CSS 2.1 17.5.1 and 17.6.1: a row or a row group paints its background
+  // in the areas of its cells, so the spacing between them shows the
+  // table, and in the separated model it has no borders at all
+  const { node } = await render(
+    '<table style="border-spacing:10px">' +
+      '<tbody style="border:5px solid #00ff00">' +
+      '<tr style="background:#ff0000"><td id="a">a</td><td id="b">b</td></tr>' +
+      '</tbody></table>',
+  );
+  const el = view(node);
+  const fills = await fillsOf(el);
+  const red = fills.filter((f) => f.style === parseColor('#ff0000'));
+  const cells = ['a', 'b'].map((id) => boxOf(el, id));
+  assert.deepStrictEqual(
+    red.map((f) => [f.x, f.y, f.w, f.h]),
+    cells.map((c) => [
+      Math.round(c.x),
+      Math.round(c.y),
+      Math.ceil(c.width),
+      Math.ceil(c.height),
+    ]),
+    'one fill a cell, none across the spacing',
+  );
+  assert.ok(!fills.some((f) => f.style === parseColor('#00ff00')), 'no border');
+});
+
 test('nothing loads without onResource, and every reference is offered to it', async () => {
   const asked: string[] = [];
   await renderX11(
