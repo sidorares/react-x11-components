@@ -12,7 +12,7 @@
 // formatting context it is inside.
 import { AUTO, isTransparent, resolve, resolveOrNull } from '../css/values.js';
 import type { Len } from '../css/values.js';
-import type { BorderStyle, ComputedStyle } from '../css/style.js';
+import type { BorderStyle, ComputedStyle, ContentSize } from '../css/style.js';
 import {
   Box,
   CUT_BLOCKS,
@@ -856,7 +856,7 @@ function layoutBlockLevel(
     return;
   }
 
-  const width = blockWidth(box, containingWidth, percentBase);
+  const width = blockWidth(box, containingWidth, percentBase, ctx);
   box.width = width;
   placeBlock(box, contentLeft, y, containingWidth);
   layoutInternals(box, ctx, width, box.x, box.y, outerFloats);
@@ -889,7 +889,7 @@ export function layoutBlockIn(
   containingWidth: number,
 ): void {
   resolveEdges(box, containingWidth);
-  const width = blockWidth(box, containingWidth);
+  const width = blockWidth(box, containingWidth, containingWidth, ctx);
   box.width = width;
   placeBlock(box, 0, 0, containingWidth);
   layoutInternals(box, ctx, width, box.x, 0);
@@ -1237,16 +1237,24 @@ function placeBlock(
   box.y = y;
 }
 
-/** The border-box width of an in-flow block-level box. */
+/** The border-box width of an in-flow block-level box: the room its
+ *  margins leave, a length, or an intrinsic size where `ctx` is there to
+ *  measure it with. */
 function blockWidth(
   box: Box,
   containingWidth: number,
   percentBase = containingWidth,
+  ctx?: LayoutContext,
 ): number {
   const style = box.style;
   const available = containingWidth - box.marginLeft - box.marginRight;
   if (style.width === AUTO) {
-    return clampWidth(box, Math.max(0, available), percentBase);
+    const room = Math.max(0, available);
+    const width =
+      style.widthKeyword && ctx
+        ? contentSizedWidth(box, ctx, style.widthKeyword, room, percentBase)
+        : room;
+    return clampWidth(box, width, percentBase, ctx);
   }
   // at least zero: a `calc()` may come to less
   const specified = Math.max(0, resolve(style.width, percentBase, 0));
@@ -1254,10 +1262,17 @@ function blockWidth(
     style.boxSizing === 'border-box'
       ? Math.max(specified, box.horizontalExtra)
       : specified + box.horizontalExtra;
-  return clampWidth(box, borderBox, percentBase);
+  return clampWidth(box, borderBox, percentBase, ctx);
 }
 
-function clampWidth(box: Box, width: number, containingWidth: number): number {
+/** A width within `min-width` and `max-width` — the minimum winning — the
+ *  intrinsic ones among them where `ctx` is there to measure them. */
+function clampWidth(
+  box: Box,
+  width: number,
+  containingWidth: number,
+  ctx?: LayoutContext,
+): number {
   const style = box.style;
   const extra = style.boxSizing === 'border-box' ? 0 : box.horizontalExtra;
   let out = width;
@@ -1266,9 +1281,68 @@ function clampWidth(box: Box, width: number, containingWidth: number): number {
       ? null
       : resolveOrNull(style.maxWidth, containingWidth);
   if (max !== null) out = Math.min(out, max + extra);
+  const room = (): number =>
+    Math.max(0, containingWidth - box.marginLeft - box.marginRight);
+  if (style.maxWidthKeyword && ctx) {
+    out = Math.min(
+      out,
+      contentSizedWidth(
+        box,
+        ctx,
+        style.maxWidthKeyword,
+        room(),
+        containingWidth,
+      ),
+    );
+  }
   const min = resolveOrNull(style.minWidth, containingWidth);
   if (min !== null) out = Math.max(out, min + extra);
+  if (style.minWidthKeyword && ctx) {
+    out = Math.max(
+      out,
+      contentSizedWidth(
+        box,
+        ctx,
+        style.minWidthKeyword,
+        room(),
+        containingWidth,
+      ),
+    );
+  }
   return Math.max(0, out);
+}
+
+/**
+ * A box's border-box width from an intrinsic size (CSS Sizing 3, 3.1): its
+ * max-content width, its min-content width, or `fit-content` — the
+ * max-content width where `available` holds it, and `available` where it
+ * does not, but never less than the min-content width. Each is measured
+ * once a box, as a table cell's are, and by laying the box out on its own,
+ * which resolves its edges against nothing: they are resolved again
+ * against `percentBase`, as its caller had them.
+ */
+export function contentSizedWidth(
+  box: Box,
+  ctx: LayoutContext,
+  size: ContentSize,
+  available: number,
+  percentBase: number,
+): number {
+  let probed = false;
+  if (box.intrinsicMaxContent < 0) {
+    box.intrinsicMaxContent = measureIntrinsicWidth(box, ctx, Infinity);
+    probed = true;
+  }
+  if (size !== 'max-content' && box.intrinsicMinContent < 0) {
+    box.intrinsicMinContent = measureIntrinsicWidth(box, ctx, 1);
+    probed = true;
+  }
+  if (probed) resolveEdges(box, percentBase);
+  const max = box.intrinsicMaxContent;
+  if (size === 'max-content') return max;
+  const min = box.intrinsicMinContent;
+  if (size === 'min-content') return min;
+  return Math.min(max, Math.max(min, available));
 }
 
 /**
@@ -1295,7 +1369,14 @@ function shrinkToFitWidth(
       style.boxSizing === 'border-box'
         ? Math.max(specified, box.horizontalExtra)
         : specified + box.horizontalExtra;
-    return clampWidth(box, borderBox, available);
+    return clampWidth(box, borderBox, available, ctx);
+  }
+  // `fit-content` is what shrink-to-fit is; the other two are not bounded
+  // by the room, or not by the longest line
+  const keyword = style.widthKeyword;
+  if (keyword === 'max-content' || keyword === 'min-content') {
+    const width = contentSizedWidth(box, ctx, keyword, available, available);
+    return clampWidth(box, width, available, ctx);
   }
   const probe = new FloatContext(0, Infinity);
   const saved = box.lines;
@@ -1306,6 +1387,7 @@ function shrinkToFitWidth(
     box,
     Math.min(Math.max(preferred, 0), available),
     available,
+    ctx,
   );
 }
 
@@ -1623,7 +1705,10 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
 
   let width: number;
   if (style.width !== AUTO) {
-    width = blockWidth(box, cbWidth);
+    width = blockWidth(box, cbWidth, cbWidth, ctx);
+  } else if (style.widthKeyword) {
+    // an intrinsic size, which both offsets do not stretch
+    width = shrinkToFitWidth(box, ctx, cbWidth);
   } else if (left !== null && right !== null) {
     width = Math.max(
       0,
@@ -1645,7 +1730,9 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
   if (
     left !== null &&
     right !== null &&
-    (style.width !== AUTO || box.kind === 'replaced')
+    (style.width !== AUTO ||
+      style.widthKeyword !== null ||
+      box.kind === 'replaced')
   ) {
     // Both offsets and a width: what is left over goes to the margins that
     // are `auto`, shared where both are, and where none is, the end offset

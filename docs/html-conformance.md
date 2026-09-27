@@ -125,6 +125,7 @@ separately, and there are six.
 | 55     | an underline's offset and thickness                | 5,471 (93%) | 4,979 (84%) |
 | 56     | `background-size`                                  | 5,471 (93%) | 4,979 (84%) |
 | 57     | background layers                                  | 5,472 (93%) | 4,979 (84%) |
+| 58     | intrinsic sizes                                    | 5,472 (93%) | 4,979 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -1739,6 +1740,25 @@ rgba(0,0,0,.5)), url(hero.jpg) center / cover` — was the photograph
      write that were dropped. CSS 2.1 has one layer, but one test in the
      suite draws its pass condition as a sized image over a second layer
      of red (`visudet/line-height-201`), and it passes now on X11.
+
+### Round 58
+
+149. **`fit-content`, `max-content` and `min-content` were not widths.** A
+     `width` of any of them was a declaration nothing could read, so it
+     was dropped: `w-fit` left a block filling its row, a badge in a card's
+     column was stretched across it, a tooltip placed with both offsets and
+     `mx-auto w-fit` spanned its container, and `w-full sm:w-fit` kept the
+     full width at every size. They are read now beside an `auto` length,
+     so what does not know them sizes the box as it did, and a block, a
+     float, an inline-block, an absolute box and a flex item are sized by
+     them as CSS Sizing 3 has it — its content's max-content width, its
+     min-content width, or the first where the room holds it and the room
+     where it does not, never less than the second — and `min-width` and
+     `max-width` take them too, so `min-w-max` keeps a row item whole. The
+     two widths are measured once a box, as a table cell's are. A height
+     of one is its content's, which `auto` already is. Found in a survey
+     of the properties real stylesheets write that were dropped; CSS 2.1
+     has none of them, and neither suite moved.
 
 ## What `<Html>` supports
 

@@ -8201,6 +8201,130 @@ test('a gradient given only a width is as tall as its box', async () => {
   );
 });
 
+test('an intrinsic size is read beside an auto length', async () => {
+  const { node } = await render(
+    '<style>.full{width:100%;height:60px}.fit{width:fit-content;' +
+      'height:fit-content}</style>' +
+      '<div id="a" style="width:fit-content"></div>' +
+      '<div id="b" style="width:-moz-max-content"></div>' +
+      '<div id="c" style="width:min-content;width:40px"></div>' +
+      '<div id="d" class="full fit"></div>' +
+      '<div id="e" style="min-width:max-content;max-width:fit-content"></div>' +
+      '<div id="f" style="max-width:min-content;max-width:none"></div>',
+  );
+  const el = view(node);
+  type Sized = {
+    width: unknown;
+    height: unknown;
+    minWidth: unknown;
+    maxWidth: unknown;
+    widthKeyword: string | null;
+    minWidthKeyword: string | null;
+    maxWidthKeyword: string | null;
+  };
+  const style = (id: string) =>
+    (boxOf(el, id) as unknown as { style: Sized }).style;
+  assert.deepStrictEqual(
+    [style('a').width, style('a').widthKeyword],
+    ['auto', 'fit-content'],
+  );
+  assert.strictEqual(style('b').widthKeyword, 'max-content', 'prefixed');
+  assert.deepStrictEqual(
+    [style('c').width, style('c').widthKeyword],
+    [40, null],
+    'a length after it is the width',
+  );
+  assert.deepStrictEqual(
+    [style('d').width, style('d').widthKeyword, style('d').height],
+    ['auto', 'fit-content', 'auto'],
+    'and it is the width after a length, as a height is auto',
+  );
+  assert.deepStrictEqual(
+    [
+      style('e').minWidthKeyword,
+      style('e').maxWidth,
+      style('e').maxWidthKeyword,
+    ],
+    ['max-content', 'none', 'fit-content'],
+  );
+  assert.strictEqual(style('f').maxWidthKeyword, null);
+});
+
+metric(
+  'a block is as wide as its content where its width is an intrinsic size',
+  async () => {
+    // `w-fit` and `w-max` were dropped, and the block filled its row
+    const { node } = await render(
+      '<style>body{margin:0}div{padding:0 5px}.p{width:200px;padding:0}' +
+        '.f{float:left;clear:left}</style>' +
+        '<div class="p"><div id="fit" style="width:fit-content">A few words</div>' +
+        '<div id="centred" style="width:fit-content;margin:0 auto">A few words</div>' +
+        '<div id="max" style="width:max-content">Words that run well past the parent</div>' +
+        '<div id="min" style="width:min-content">Words longestword</div>' +
+        '<div id="long" style="width:fit-content">Words that run well past the parent</div>' +
+        '</div><div class="p">' +
+        '<div class="f" id="ref-fit">A few words</div>' +
+        '<div class="f" id="ref-min">longestword</div></div>' +
+        '<div style="width:1000px"><div class="f" id="ref-max">' +
+        'Words that run well past the parent</div></div>',
+    );
+    const el = view(node);
+    const width = (id: string) => boxOf(el, id).width;
+    assert.ok(width('fit') < 150, `${width('fit')}`);
+    assert.strictEqual(width('fit'), width('ref-fit'), 'shrunk to fit');
+    assert.strictEqual(
+      boxOf(el, 'centred').x,
+      (200 - width('centred')) / 2,
+      'and centred by its auto margins',
+    );
+    assert.ok(width('max') > 200, `${width('max')}`);
+    assert.strictEqual(width('max'), width('ref-max'), 'its longest line');
+    assert.strictEqual(width('min'), width('ref-min'), 'its longest word');
+    assert.strictEqual(width('long'), 200, 'no wider than its room');
+  },
+);
+
+metric(
+  "an intrinsic size is a flex item's width, stretched or not",
+  async () => {
+    const { node } = await render(
+      '<style>body{margin:0}span{padding:0 4px}</style>' +
+        '<div style="display:flex;flex-direction:column;width:300px">' +
+        '<div id="badge" style="width:fit-content">New</div>' +
+        '<div id="stretched">New</div></div>' +
+        '<div style="display:flex;width:200px">' +
+        '<div id="whole" style="min-width:max-content">stays whole here</div>' +
+        '<div id="wraps">this one shrinks and wraps instead</div></div>' +
+        '<div style="width:1000px"><div style="float:left" id="ref">' +
+        'stays whole here</div></div>',
+    );
+    const el = view(node);
+    const width = (id: string) => boxOf(el, id).width;
+    assert.strictEqual(width('stretched'), 300);
+    assert.ok(width('badge') < 100, `${width('badge')}: not stretched`);
+    assert.strictEqual(
+      width('whole'),
+      width('ref'),
+      'min-w-max keeps a row item from shrinking below its content',
+    );
+  },
+);
+
+metric(
+  'an absolute box with both offsets and an intrinsic width is centred by its margins',
+  async () => {
+    const { node } = await render(
+      '<style>body{margin:0}</style>' +
+        '<div style="position:relative;width:400px;height:40px">' +
+        '<div id="pop" style="position:absolute;left:0;right:0;margin:0 auto;' +
+        'width:fit-content">A tooltip</div></div>',
+    );
+    const pop = boxOf(view(node), 'pop');
+    assert.ok(pop.width < 200, `${pop.width}: not stretched`);
+    assert.strictEqual(pop.x, (400 - pop.width) / 2);
+  },
+);
+
 test('background layers are read, top first, from the shorthand and the longhands', async () => {
   const { node } = await render(
     '<style>.d{background-image:url(a.png),url(b.png)}' +
