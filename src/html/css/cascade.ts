@@ -849,6 +849,19 @@ function presentationHints(el: Element): Declaration[] {
     const side = v === 'middle' ? 'center' : v;
     if ((tag === 'img' || tag === 'table') && (v === 'left' || v === 'right')) {
       push('float', v);
+    } else if (tag === 'img') {
+      // an image's other alignments are its line's
+      const va = IMAGE_ALIGN[v];
+      if (va) push('vertical-align', va);
+    } else if (tag === 'hr') {
+      // a rule narrower than its line stands where it is aligned
+      if (v === 'left') {
+        push('margin-left', '0');
+        push('margin-right', 'auto');
+      } else if (v === 'right') {
+        push('margin-left', 'auto');
+        push('margin-right', '0');
+      }
     } else if (tag === 'table') {
       // a table's `align` places the table and leaves its text alone: set
       // as its text's, `<table align="center">` — the frame of nearly
@@ -941,6 +954,20 @@ function presentationHints(el: Element): Declaration[] {
   if (tag === 'hr') {
     const noshade = attr(el, 'noshade');
     if (noshade !== undefined) push('border-top-width', '2px');
+    // the rule's colour and its thickness
+    const color = attr(el, 'color');
+    if (color) push('border-top-color', color);
+    const size = attr(el, 'size');
+    if (size && Number(size) > 0) push('border-top-width', `${Number(size)}px`);
+  }
+  if ((tag === 'td' || tag === 'th') && attr(el, 'nowrap') !== undefined) {
+    push('white-space', 'nowrap');
+  }
+  if (tag === 'br') {
+    // below the floats: `<br clear="all">` after a floated image
+    const clear = attr(el, 'clear')?.toLowerCase();
+    if (clear === 'all' || clear === 'both') push('clear', 'both');
+    else if (clear === 'left' || clear === 'right') push('clear', clear);
   }
   if (tag === 'ol') {
     const type = attr(el, 'type');
@@ -963,6 +990,18 @@ function presentationHints(el: Element): Declaration[] {
   }
   return out;
 }
+
+/** An image's `align` other than a side, as its `vertical-align`. */
+const IMAGE_ALIGN: Record<string, string> = {
+  top: 'top',
+  texttop: 'text-top',
+  middle: 'middle',
+  absmiddle: 'middle',
+  center: 'middle',
+  bottom: 'baseline',
+  baseline: 'baseline',
+  absbottom: 'bottom',
+};
 
 /** The elements whose `align` aligns the blocks in them too. */
 const ALIGNS_BLOCKS = new Set([

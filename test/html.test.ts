@@ -4991,3 +4991,36 @@ test("a body's text and link colours, and a background attribute", async () => {
   assert.strictEqual(style('a').color, '#00ff00');
   assert.strictEqual(style('t').backgroundImage, 'bg.png');
 });
+
+test("nowrap, a clearing br, an image aligned in its line, and a rule's own attributes", async () => {
+  const { node } = await render(
+    '<style>body{margin:0}table{border-spacing:0}td{padding:0}p{margin:0}</style>' +
+      '<div style="width:60px"><table><tr>' +
+      '<td id="n" nowrap>one two three</td></tr></table></div>' +
+      '<img id="f" src="a.png" width="30" height="30" style="float:left">x' +
+      '<br clear="all"><p id="after">after</p>' +
+      '<p><img id="m" src="a.png" width="10" height="10" align="middle">x</p>' +
+      '<hr id="h" width="50%" size="3" color="#ff0000">' +
+      '<hr id="l" width="50%" align="left">',
+    400,
+  );
+  const el = view(node);
+  type Styled = LaidBox & {
+    lines: unknown[] | null;
+    style: {
+      verticalAlign: string;
+      borderTopWidth: number;
+      borderTopColor: string;
+    };
+  };
+  const box = (id: string) => boxOf(el, id) as Styled;
+  assert.strictEqual(box('n').lines?.length, 1, 'one line, and no wrap');
+  const f = box('f');
+  assert.ok(box('after').y >= f.y + f.height, 'below the float');
+  assert.strictEqual(box('m').style.verticalAlign, 'middle');
+  const h = box('h');
+  assert.strictEqual(h.x, 100, 'centred, as a browser centres a rule');
+  assert.strictEqual(h.style.borderTopWidth, 3);
+  assert.strictEqual(h.style.borderTopColor, '#ff0000');
+  assert.strictEqual(box('l').x, 0);
+});

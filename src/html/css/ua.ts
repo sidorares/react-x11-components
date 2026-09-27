@@ -118,7 +118,7 @@ nobr { white-space: nowrap; }
 a[href] { color: ${look.linkColor}; text-decoration: underline; cursor: pointer; }
 
 hr {
-  margin: 0.5em 0;
+  margin: 0.5em auto;
   border: none;
   border-top: 1px solid ${look.borderColor};
   height: 0;
