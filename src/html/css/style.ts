@@ -169,6 +169,9 @@ export interface ComputedStyle {
 
   // --- not inherited --------------------------------------------------------
   display: Display;
+  /** `display: flow-root`: a block that makes a formatting context of its
+   *  own, which is what `display` is then (CSS Display 3, 2.3). */
+  flowRoot: boolean;
   position: 'static' | 'relative' | 'absolute' | 'fixed' | 'sticky';
   float: 'none' | 'left' | 'right';
   clear: 'none' | 'left' | 'right' | 'both';
@@ -379,6 +382,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     custom: null,
 
     display: 'inline',
+    flowRoot: false,
     position: 'static',
     float: 'none',
     clear: 'none',
@@ -598,7 +602,10 @@ export function applyDeclaration(
       else if (v === 'grid')
         style.display = 'block'; // graceful, per the PRD
       else if (v === 'inline-grid') style.display = 'inline-block';
+      else if (v === 'flow-root') style.display = 'block';
       else if (DISPLAYS.has(v)) style.display = v as Display;
+      else return;
+      style.flowRoot = v === 'flow-root';
       return;
     }
     case 'position': {
@@ -1828,7 +1835,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'counter-reset': ['counterReset'],
   'counter-increment': ['counterIncrement'],
   'border-spacing': ['borderSpacing', 'borderSpacingY'],
-  display: ['display'],
+  display: ['display', 'flowRoot'],
   width: ['width'],
   height: ['height'],
   'min-width': ['minWidth'],

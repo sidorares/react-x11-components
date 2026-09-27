@@ -1839,6 +1839,7 @@ export function establishesBFC(box: Box): boolean {
   const style = box.style;
   if (style.overflowX !== 'visible' || style.overflowY !== 'visible')
     return true;
+  if (style.flowRoot) return true;
   if (style.float !== 'none') return true;
   if (style.position === 'absolute' || style.position === 'fixed') return true;
   if (

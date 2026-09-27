@@ -6485,3 +6485,28 @@ test('a negative margin that reaches a float outside its containing block', asyn
   const z = boxOf(view(zero), 'b');
   assert.deepStrictEqual([z.x, z.y, z.width], [0, 0, 150]);
 });
+
+// --- display: flow-root ----------------------------------------------------------
+
+test('display: flow-root makes a formatting context of its own', async () => {
+  // the clearfix CSS Display 3 gives a name to, and Tailwind's `flow-root`:
+  // it holds its floats, and its children's margins stay inside it
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div id="r" style="display:flow-root">' +
+      '<div style="float:left;width:10px;height:40px"></div>' +
+      '<div style="margin-top:15px;height:5px"></div></div>' +
+      '<div id="n" style="height:10px"></div>',
+  );
+  const el = view(node);
+  const [r, n] = [boxOf(el, 'r'), boxOf(el, 'n')];
+  assert.deepStrictEqual([r.y, r.height], [0, 40], 'it holds the float');
+  assert.strictEqual(n.y, 40);
+  // and a later `display` takes it back
+  const { node: again } = await render(
+    '<style>body{margin:0}#r{display:flow-root}#r{display:block}</style>' +
+      '<div id="r"><div style="float:left;width:10px;height:40px"></div>' +
+      '</div>',
+  );
+  assert.strictEqual(boxOf(view(again), 'r').height, 0);
+});

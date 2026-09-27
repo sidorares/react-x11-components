@@ -97,6 +97,7 @@ separately, and there are six.
 | 27     | `unicode-bidi`                                     | 5,432 (92%) | 4,956 (84%) |
 | 28     | `white-space` on an element                        | 5,436 (92%) | 4,959 (84%) |
 | 29     | an inline box's line height, cleared empty blocks  | 5,443 (92%) | 4,962 (84%) |
+| 30     | margins beside floats, `flow-root`, `min-height`   | 5,450 (92%) | 4,969 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -1173,6 +1174,43 @@ Round 28 lost none, on either backend.
      at the edge. 2 tests.
 
 Round 29 lost none, on either backend.
+
+### Round 30
+
+112. **A formatting context beside a float took its margins from the
+     float.** A block with a formatting context of its own — `overflow`
+     other than `visible`, a table — may not overlap a float's margin box
+     (9.5), and it was laid out in the room beside the floats as though
+     that room were its containing block, so its margins were measured
+     from the float. A column with `overflow: hidden` and a 220px margin
+     beside a 200px sidebar, the two-column layout of a thousand pages,
+     started at 420px. Its margins are its containing block's now, and may
+     overlap a float on their own side; only its border box has to clear
+     the floats. What is too wide overflows at the end of the line, as far
+     as a negative margin there takes it, and a box whose margin at the
+     start would push it into a float goes below the float, as Gecko has
+     it — the suite's floats-wrap-bfc-with-margin tests settle on that
+     where the engines disagree. A float that a negative margin reaches
+     past the containing block counts, and one of no width does not: it
+     has no area to overlap. Auto margins and HTML's `align` still centre
+     the box in the room the floats leave. 5 tests, 2 of them with the
+     next item.
+113. **`display: flow-root` was not read**, so the declaration was dropped
+     and the element stayed a block that let its floats out and its
+     children's margins through. It is a block that makes a formatting
+     context of its own (CSS Display 3, 2.3), and it is Tailwind's
+     `flow-root` and the clearfix CSS has a name for now.
+114. **A minimum height that made a box taller let its last child's margin
+     out below it.** 8.3.1 collapses a box's bottom margin with its last
+     child's only where the box has no `min-height`, which would put the
+     margin inside the box; browsers, and the suite, part the margin only
+     where the minimum is what sets the height, and spend it: the next
+     block starts where the box ends. A maximum leaves the margin to
+     collapse through, as 8.3.1 has it: browsers disagree there, and the
+     suite has a test either way (margin-collapse-038 against
+     max-height-separates-margin). 2 tests.
+
+Round 30 lost none, on either backend.
 
 ## What `<Html>` supports
 
