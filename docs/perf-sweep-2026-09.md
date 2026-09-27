@@ -1682,6 +1682,21 @@ Without the framework nothing moved, small or large: an append's frame at
 10 sections 12.8 → 12.1 ms and at 60 17.6 → 16.6 ms, and an edit's
 12.3 → 11.6 ms and 15.0 → 14.6 ms.
 
+Then the layout, which the four left where it was. Two fifths of it was
+the calls into Yoga: every flex container and item set its direction,
+wrap, alignment, growth, shrinking, four margins, four paddings, four
+borders, a width, a height and a basis, each a call from JavaScript into
+the engine's assembly, and each width and height built three bound
+setters to make it with — and most of them restated what a new Yoga node
+already is. They are left unsaid now, and the setters called directly.
+In process, medians of interleaved runs:
+
+|                                      | before  | after   |
+| ------------------------------------ | ------- | ------- |
+| the dashboard's layout               | 8.6 ms  | 6.5 ms  |
+| two hundred flex items (`flexbench`) | 17.7 ms | 13.7 ms |
+| the report at 300 sections           | 14.8 ms | 14.7 ms |
+
 ## Lessons
 
 1. **Look for caches that never hit.** Identity-keyed caches handed a new
