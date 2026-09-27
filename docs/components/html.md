@@ -138,9 +138,12 @@ in the markup, and a cell's background fills its row whatever
 `vertical-align` does with its content. A fixed table takes its columns'
 widths from its `<col>`s, then from its first row's cells, border box and
 all, and shares what is left among the rest (CSS 2.1 17.5.2.1); with
-`width: auto` it is laid out by its content, as the section says. A column's
-or a column group's background is painted under the cells that start in it,
-`border-spacing` takes a length for the rows as well as the columns, and a
+`width: auto` it is laid out by its content, as the section says, where a
+column's `width` counts as its cells' do, and a column group's is spread
+over its columns (17.5.2.2). A column's or a column group's background is
+painted under the cells that start in it, its image placed in the box those
+cells make, `border-spacing` takes a length for the rows as well as the
+columns, and a
 table's `width` includes its borders, as HTML's rendering rules give every
 table `box-sizing: border-box`. Table cells in an inline box are an inline
 table, with the spaces either side of them kept.
@@ -251,8 +254,8 @@ animations and transitions, multi-column, shadows, gradients,
 `background-size`, more than one background
 layer (the first is drawn), `position: sticky` (treated as `relative`),
 `::first-line`, and an image in `content` (the rest of the value is
-drawn). A `<col>` or a `<colgroup>` takes no part in layout: its width is
-not read, and its borders only where the table's collapse. A percentage
+drawn). A `<col>`'s or a `<colgroup>`'s borders are drawn only where the
+table's collapse. A percentage
 `height` resolves where the containing block's height is set, and on an
 absolutely positioned box. The initial containing block is the viewport —
 the window's height, since the element sizes to its content — so

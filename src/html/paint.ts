@@ -871,9 +871,13 @@ function paintBackground(
  * (CSS 2.1 17.5.1), in that order: over the table's own and under its
  * cells', in the area of each cell in them. So the spacing between the
  * cells shows the table, and a row group with no cells in it shows nothing,
- * as neither laid its background over the whole of its box. A row's or a
- * row group's image is placed against its own box and seen through its
- * cells; a column's is not drawn, since a column box is laid out nowhere.
+ * as neither laid its background over the whole of its box. An image is
+ * placed against the part's own box and seen through its cells. A column is
+ * laid out nowhere, so its box is the one its cells make: from the first of
+ * its columns to the last, and from the table's first row to its last. And
+ * where borders are separate a part's edges are its cells' border edges
+ * (17.5.1), so a row's box runs from its first cell to its last, without
+ * the spacing either side of them that the row's laid-out box holds.
  */
 function paintPartBackgrounds(
   ctx: PaintContext,
@@ -883,13 +887,17 @@ function paintPartBackgrounds(
   const grid = tableGrid(table);
   const { cells } = grid;
   const layers: [(Box | null)[], (cell: Cell) => number][] = [
-    [grid.columnGroups, (cell) => cell.column],
-    [grid.columnBoxes, (cell) => cell.column],
+    [grid.columnGroups, columnOf],
+    [grid.columnBoxes, columnOf],
     [grid.groups, (cell) => cell.row],
     [grid.rows, (cell) => cell.row],
   ];
+  // each part's box, and the cells' extent across the table, found once
+  const areas = new Map<Box, Rect>();
+  let across: Rect | null = null;
   for (const [layer, indexOf] of layers) {
     if (!layer.some(paintsPart)) continue;
+    const columns = indexOf === columnOf;
     for (const cell of cells) {
       const part = layer[indexOf(cell)];
       if (!part || !paintsPart(part)) continue;
@@ -911,7 +919,7 @@ function paintPartBackgrounds(
         },
         options,
       );
-      if (part.style.backgroundImage && part.kind !== 'block') {
+      if (part.style.backgroundImage) {
         const area = clampRect(
           options,
           Math.round(box.x + options.originX),
@@ -920,25 +928,72 @@ function paintPartBackgrounds(
           Math.ceil(box.height),
         );
         if (area) {
-          paintBackgroundImage(
-            ctx,
-            part.style,
-            area,
-            paddingBox(part, options),
-            options,
-          );
+          let at = areas.get(part);
+          if (!at) {
+            at = columns
+              ? columnBox(part, layer, grid.rows, cells, options)
+              : paddingBox(part, options);
+            if (!columns && table.style.borderCollapse !== 'collapse') {
+              across ??= columnBox(null, null, grid.rows, cells, options);
+              at = { ...at, x: across.x, width: across.width };
+            }
+            areas.set(part, at);
+          }
+          paintBackgroundImage(ctx, part.style, area, at, options);
         }
       }
     }
   }
 }
 
-/** Whether a table part has a background to paint: a colour, or an image
- *  on a part that is laid out. */
+const columnOf = (cell: Cell): number => cell.column;
+
+/** Whether a table part has a background to paint: a colour, or an image. */
 function paintsPart(box: Box | null): boolean {
   if (box === null || box.style.visibility !== 'visible') return false;
-  if (!isTransparent(box.style.backgroundColor)) return true;
-  return !!box.style.backgroundImage && box.kind !== 'block';
+  return (
+    !isTransparent(box.style.backgroundColor) || !!box.style.backgroundImage
+  );
+}
+
+/** The box a column or a column group would have, in window coordinates:
+ *  across its columns, as its cells lay them out, and down the table's
+ *  rows — or, with no part, across all of them. */
+function columnBox(
+  part: Box | null,
+  layer: (Box | null)[] | null,
+  rows: Box[],
+  cells: Cell[],
+  options: PaintOptions,
+): Rect {
+  let first = 0;
+  let last = 0;
+  if (part && layer) {
+    first = layer.indexOf(part);
+    last = layer.lastIndexOf(part);
+  } else {
+    for (const cell of cells) {
+      last = Math.max(last, cell.column + cell.colSpan - 1);
+    }
+  }
+  let left = Infinity;
+  let right = -Infinity;
+  for (const cell of cells) {
+    if (cell.column === first) left = Math.min(left, cell.box.x);
+    if (cell.column + cell.colSpan - 1 === last) {
+      right = Math.max(right, cell.box.x + cell.box.width);
+    }
+  }
+  const top = rows.length ? rows[0].y : 0;
+  const end = rows.length ? rows[rows.length - 1] : null;
+  const bottom = end ? end.y + end.height : 0;
+  if (!(right > left)) return { x: 0, y: 0, width: 0, height: 0 };
+  return {
+    x: left + options.originX,
+    y: top + options.originY,
+    width: right - left,
+    height: bottom - top,
+  };
 }
 
 /** How many tiles a repeating background may draw one by one, where the

@@ -4748,3 +4748,58 @@ metric(
     await expectPixel(ctx, 10, 64, '#ffffff', { message: 'past its height' });
   },
 );
+
+// --- columns and column groups -------------------------------------------------
+
+test('a column, or a column group, sets its columns in an auto table (CSS 2.1 17.5.2.2)', async () => {
+  const { node } = await render(
+    '<style>body{margin:0}table{border-spacing:0}td{padding:0}</style>' +
+      // an empty group is one column, and its width is that column's
+      '<table id="g"><colgroup style="width:100px"></colgroup><tr><td></td></tr></table>' +
+      // a column within its limits
+      '<table id="c"><col style="width:300px;max-width:50px"><tr><td></td></tr></table>' +
+      // a limit alone sets one
+      '<table id="m"><colgroup style="min-width:80px"></colgroup><tr><td></td></tr></table>' +
+      // a group wider than its columns spreads the rest over them
+      '<table id="s"><colgroup style="width:100px"><col style="width:20px">' +
+      '<col style="width:20px"></colgroup>' +
+      '<tr><td id="s1"></td><td id="s2"></td></tr></table>',
+    400,
+  );
+  const el = view(node);
+  assert.strictEqual(boxOf(el, 'g').width, 100);
+  assert.strictEqual(boxOf(el, 'c').width, 50);
+  assert.strictEqual(boxOf(el, 'm').width, 80);
+  assert.strictEqual(boxOf(el, 's').width, 100);
+  assert.strictEqual(boxOf(el, 's1').width, 50);
+  assert.strictEqual(boxOf(el, 's2').width, 50);
+});
+
+metric(
+  "a column group's image is placed in the box its cells make, and a row's against its cells",
+  async () => {
+    const { result } = await renderWithBytes(
+      '<style>body{margin:0}td{padding:0;height:30px;width:30px}' +
+        'table{border-spacing:10px}' +
+        // the group's two columns: its image at the bottom right of both
+        '#g{background:url(r.png) no-repeat 100% 100%}' +
+        // the row's at its first cell's corner, not the spacing's
+        '#r{background:url(r.png) no-repeat 0 0}</style>' +
+        '<table><colgroup id="g"><col><col></colgroup><col>' +
+        '<tr><td></td><td></td><td></td></tr></table>' +
+        '<table><tr id="r"><td></td><td></td></tr></table>',
+      { 'r.png': RED_PNG },
+    );
+    const ctx = result.ctx;
+    // the group runs from x 10 to 80, y 10 to 40: the 10px square ends there
+    await expectPixel(ctx, 75, 35, '#ff0000', {
+      message: 'group, bottom right',
+    });
+    await expectPixel(ctx, 15, 15, '#ffffff', { message: 'group, top left' });
+    // the second table starts at y 50; its first cell at x 10, y 60
+    await expectPixel(ctx, 15, 65, '#ff0000', { message: 'row, at its cell' });
+    await expectPixel(ctx, 25, 65, '#ffffff', {
+      message: 'row, past the tile',
+    });
+  },
+);
