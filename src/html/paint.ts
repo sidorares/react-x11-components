@@ -30,6 +30,7 @@ import { alphaOf, inkColor, isTransparent, resolve } from './css/values.js';
 import { borderShades } from './css/color.js';
 import type { Len } from './css/values.js';
 import type { BoxShadow, ComputedStyle, LinearGradient } from './css/style.js';
+import { copyStyle } from './css/style.js';
 import {
   BOX_RAISES,
   Box,
@@ -2272,23 +2273,21 @@ function paintOutline(
   const corners = cornersOf(s, box.width, height);
   const kind = s.outlineStyle === 'auto' ? 'solid' : s.outlineStyle;
   const grown = (r: number): number => (r > 0 ? Math.max(0, r + grow) : 0);
-  const ring: ComputedStyle = {
-    ...s,
-    borderTopStyle: kind,
-    borderRightStyle: kind,
-    borderBottomStyle: kind,
-    borderLeftStyle: kind,
-    borderTopColor: s.outlineColor,
-    borderRightColor: s.outlineColor,
-    borderBottomColor: s.outlineColor,
-    borderLeftColor: s.outlineColor,
-    borderRadius: corners
-      ? (corners.x.map(grown) as ComputedStyle['borderRadius'])
-      : [0, 0, 0, 0],
-    borderRadiusY: corners
-      ? (corners.y.map(grown) as ComputedStyle['borderRadius'])
-      : null,
-  };
+  const ring = copyStyle(s);
+  ring.borderTopStyle = kind;
+  ring.borderRightStyle = kind;
+  ring.borderBottomStyle = kind;
+  ring.borderLeftStyle = kind;
+  ring.borderTopColor = s.outlineColor;
+  ring.borderRightColor = s.outlineColor;
+  ring.borderBottomColor = s.outlineColor;
+  ring.borderLeftColor = s.outlineColor;
+  ring.borderRadius = corners
+    ? (corners.x.map(grown) as ComputedStyle['borderRadius'])
+    : [0, 0, 0, 0];
+  ring.borderRadiusY = corners
+    ? (corners.y.map(grown) as ComputedStyle['borderRadius'])
+    : null;
   paintBorders(
     ctx,
     {
@@ -3358,14 +3357,8 @@ function paintInlineBoxes(
     const rtl = box.style.direction === 'rtl';
     const leftEnds = rtl ? f.end : f.start;
     const rightEnds = rtl ? f.start : f.end;
-    const ends = (radii: ComputedStyle['borderRadius']) =>
-      [
-        leftEnds ? radii[0] : 0,
-        rightEnds ? radii[1] : 0,
-        rightEnds ? radii[2] : 0,
-        leftEnds ? radii[3] : 0,
-      ] as ComputedStyle['borderRadius'];
     const moved = shifted ? offsetOf(box) : null;
+    const style = fragmentStyle(box.style, leftEnds, rightEnds);
     const fragment: Frame = {
       x: f.left + (moved?.x ?? 0),
       y: top + (moved?.y ?? 0),
@@ -3377,19 +3370,51 @@ function paintInlineBoxes(
       borderBottom: box.borderBottom,
       borderLeft: leftEnds ? box.borderLeft : 0,
       borderRight: rightEnds ? box.borderRight : 0,
-      style: {
-        ...box.style,
-        borderRadius: ends(box.style.borderRadius),
-        borderRadiusY: box.style.borderRadiusY
-          ? ends(box.style.borderRadiusY)
-          : null,
-      },
+      style,
     };
     if (fragment.width <= 0) continue;
     paintLayers(ctx, fragment, options);
     paintBorders(ctx, fragment, options);
     if (box.style.outlineStyle !== 'none') paintOutline(ctx, fragment, options);
   }
+}
+
+/** An inline box's style on a line it does not both start and end on: no
+ *  rounded corner on a side it goes on from. Made once a style and a pair
+ *  of ends, so a repaint copies no style and the layers made of it are
+ *  found again. */
+const FRAGMENT_STYLES = new WeakMap<
+  ComputedStyle,
+  (ComputedStyle | undefined)[]
+>();
+
+function fragmentStyle(
+  style: ComputedStyle,
+  leftEnds: boolean,
+  rightEnds: boolean,
+): ComputedStyle {
+  if (leftEnds && rightEnds) return style;
+  let made = FRAGMENT_STYLES.get(style);
+  if (!made) {
+    made = [];
+    FRAGMENT_STYLES.set(style, made);
+  }
+  const which = (leftEnds ? 1 : 0) | (rightEnds ? 2 : 0);
+  let out = made[which];
+  if (!out) {
+    const ends = (radii: ComputedStyle['borderRadius']) =>
+      [
+        leftEnds ? radii[0] : 0,
+        rightEnds ? radii[1] : 0,
+        rightEnds ? radii[2] : 0,
+        leftEnds ? radii[3] : 0,
+      ] as ComputedStyle['borderRadius'];
+    out = copyStyle(style);
+    out.borderRadius = ends(style.borderRadius);
+    out.borderRadiusY = style.borderRadiusY ? ends(style.borderRadiusY) : null;
+    made[which] = out;
+  }
+  return out;
 }
 
 /** How far `position: relative` moved an inline box: its own offset, and
