@@ -105,6 +105,11 @@ export interface TextRun {
    *  sub-parameters, which a captured terminal session carries. Ignored
    *  without `underline`, which is what says the rule exists at all. */
   underlineStyle?: 'single' | 'double' | 'curly' | 'dotted' | 'dashed';
+  /** How far below the baseline the underline's top is, and how thick it
+   *  is, in the unit `size` is in — CSS's `text-underline-offset` and
+   *  `text-decoration-thickness`. Unset, two pixels below and one thick. */
+  underlineOffset?: number;
+  underlineThickness?: number;
   /** 1px rule through the x-height, in this colour — `~~del~~`. */
   strike?: string;
   /** Link target. `null` is a link still streaming in (not clickable). */
@@ -341,7 +346,20 @@ export class RichTextNode extends Node {
     const runs = this._runs();
     if (scale === 1) return runs;
     return runs.map((r) =>
-      typeof r.size === 'number' ? { ...r, size: r.size * scale } : r,
+      typeof r.size === 'number' ||
+      r.underlineOffset !== undefined ||
+      r.underlineThickness !== undefined
+        ? {
+            ...r,
+            ...(typeof r.size === 'number' ? { size: r.size * scale } : null),
+            ...(r.underlineOffset !== undefined
+              ? { underlineOffset: r.underlineOffset * scale }
+              : null),
+            ...(r.underlineThickness !== undefined
+              ? { underlineThickness: r.underlineThickness * scale }
+              : null),
+          }
+        : r,
     );
   }
 

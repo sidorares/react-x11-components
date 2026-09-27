@@ -163,6 +163,8 @@ export const RUN_FIELDS = [
   'bgFill',
   'underline',
   'underlineStyle',
+  'underlineOffset',
+  'underlineThickness',
   'strike',
   'href',
   'features',
@@ -193,6 +195,8 @@ function sameRun(a: TextRun, b: TextRun): boolean {
     a.bgFill === b.bgFill &&
     a.underline === b.underline &&
     a.underlineStyle === b.underlineStyle &&
+    a.underlineOffset === b.underlineOffset &&
+    a.underlineThickness === b.underlineThickness &&
     a.strike === b.strike &&
     a.href === b.href &&
     a.features === b.features
@@ -216,6 +220,8 @@ function sameStyle(
     a.bgFill === b.bgFill &&
     a.underline === b.underline &&
     a.underlineStyle === b.underlineStyle &&
+    a.underlineOffset === b.underlineOffset &&
+    a.underlineThickness === b.underlineThickness &&
     a.strike === b.strike &&
     a.href === b.href &&
     a.features === b.features

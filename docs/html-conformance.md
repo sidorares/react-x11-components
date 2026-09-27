@@ -122,6 +122,7 @@ separately, and there are six.
 | 52     | text shadows                                       | 5,471 (93%) | 4,979 (84%) |
 | 53     | a raised box's own line height                     | 5,471 (93%) | 4,979 (84%) |
 | 54     | `::marker`                                         | 5,471 (93%) | 4,979 (84%) |
+| 55     | an underline's offset and thickness                | 5,471 (93%) | 4,979 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -1680,6 +1681,21 @@ minmax(16rem, 1fr))` are the layouts of half the pages written this
      text, as written, while the list counts on under it. `content: none`
      is no marker. Found rendering a page styled as `prose` beside a
      browser; CSS 2.1 has no `::marker`, and neither suite moved.
+
+### Round 55
+
+146. **Every underline was two pixels below the baseline and one thick.**
+     `text-underline-offset` — shadcn's links, Tailwind's
+     `underline-offset-4` — and `text-decoration-thickness`, and a length
+     in the `text-decoration` shorthand, were dropped. They are read now:
+     the offset from the alphabetic baseline down, as Blink measures it,
+     inherited, and the thickness of the box that sets the underline,
+     which it propagates with the underline's colour and style; either as a
+     length or a percentage of the font size, and `auto` leaves the rule
+     where it was. A run carries both to the painter `<Html>` shares with
+     `<richtext>`, whose own runs can set them too. Found in a survey of the
+     properties real stylesheets write that were dropped; CSS 2.1 has
+     neither, and neither suite moved.
 
 ## What `<Html>` supports
 
