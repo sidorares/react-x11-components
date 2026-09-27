@@ -3425,6 +3425,27 @@ test('a box with a formatting context of its own clears every float along its he
   assert.strictEqual(b.y, a.y + 50);
 });
 
+test('a table with a width of its own fills it with its columns', async () => {
+  // CSS 2.1 17.5.2.2: the columns not set to a width take what the table
+  // has beyond their content, in proportion to it; <table width="600"> drew
+  // its cells at their content's width and left the rest empty
+  const { node } = await render(
+    '<table id="t" width="300" style="border-spacing:0">' +
+      '<tr><td id="a" style="padding:0">x</td></tr></table>' +
+      '<table width="300" style="border-spacing:0"><tr>' +
+      '<td id="b" style="padding:0;width:50px">x</td>' +
+      '<td id="c" style="padding:0">x</td></tr></table>' +
+      '<table id="u" style="border-spacing:0">' +
+      '<tr><td id="d" style="padding:0">x</td></tr></table>',
+  );
+  const el = view(node);
+  const [a, b, c, d, u] = ['a', 'b', 'c', 'd', 'u'].map((id) => boxOf(el, id));
+  assert.strictEqual(a.width, 300, 'one column takes it all');
+  assert.strictEqual(b.width, 50, 'a column set to a width keeps it');
+  assert.strictEqual(c.width, 250, 'and the other takes the rest');
+  assert.ok(d.width < 50 && u.width === d.width, 'a table of `auto` shrinks');
+});
+
 test('nothing loads without onResource, and every reference is offered to it', async () => {
   const asked: string[] = [];
   await renderX11(
