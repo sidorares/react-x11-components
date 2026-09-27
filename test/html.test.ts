@@ -6167,3 +6167,26 @@ test('head content with no <head> around it stays hidden, as in the head a brows
   assert.ok(!text.includes('display'), 'no stylesheet');
   assert.ok(text.includes('body'));
 });
+
+metric('a negative inline margin takes room back on its line', async () => {
+  // `margin-right: -30px` pulls what follows the span back over it, so the
+  // last word fits beside it (CSS 2.1 8.3); taken for no margin, it wrapped
+  const lines = async (margin: string) => {
+    const { node } = await render(
+      '<style>p{margin:0;font:10px monospace;width:60px}</style>' +
+        '<p id="p">aaaa <span style="margin-right:' +
+        margin +
+        '">bbbb</span> cccc</p>',
+    );
+    const found = linesOf(view(node), 'p');
+    cleanup();
+    return found;
+  };
+  assert.strictEqual((await lines('0')).length, 2);
+  const [pulled, ...rest] = await lines('-30px');
+  assert.strictEqual(rest.length, 0, 'one line');
+  // and laid out a piece at a time, where a positive margin is a spacer in
+  // one layout: CoreText's typesetter breaks before a space whose letter
+  // spacing is negative, and only this suite's engine does not
+  assert.ok(pulled.texts.length > 1, 'in pieces');
+});

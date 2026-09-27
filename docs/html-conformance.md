@@ -92,6 +92,7 @@ separately, and there are six.
 | perf   | a link or a column no longer stretches its bounds  | 5,372 (91%) | 4,924 (84%) |
 | 23     | relative inline boxes, hidden inline text          | 5,381 (91%) | 4,929 (84%) |
 | 24     | `vertical-align` on text                           | 5,404 (92%) | 4,930 (84%) |
+| 25     | what is in the head, negative inline margins       | 5,415 (92%) | 4,938 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -1067,6 +1068,26 @@ CoreText's antialiased edges of the Ahem squares again. The one lost,
 `vertical-align-nested-top-001`, is a pixel off by 7 of 255: its two top
 boxes' letters are laid out apart and the reference's together, and
 CoreText places the second letter a fraction of a pixel differently.
+
+### Round 25
+
+105. **What is in `<head>` was never rendered, whatever the stylesheet
+     said.** The box builder skipped `<head>`, `<meta>`, `<title>`,
+     `<style>` and `<script>`. The UA sheet's `display: none` is all that
+     hides them now, so `head, meta { display: block }` shows a `<meta>`'s
+     `::before`, as a browser shows it. Where the markup has no `<head>`,
+     what a browser would put in the one it implies stays hidden, whatever
+     `* { display: block }` says, as the head it implies is hidden. A
+     `<template>`'s content is still never rendered. 6 tests.
+106. **A negative margin on an inline box took no room back.** Only an
+     edge wider than nothing was laid out, so `margin-right: -4em` was no
+     margin at all. It now pulls what follows back over the box. A
+     paragraph with one is laid out a line at a time: as a spacer in one
+     layout it is a space with negative letter spacing, which CoreText's
+     typesetter breaks the line before. 5 tests on X11, 2 on macOS, where
+     the other three are Ahem's antialiased edges.
+
+Round 25 lost none, on either backend.
 
 ## What `<Html>` supports
 
