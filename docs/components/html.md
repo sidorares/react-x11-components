@@ -214,7 +214,12 @@ is a pill. A rounded box's border is a ring rounded on both its edges, the
 inside by each radius less the border across it, where every side that has
 one has it in one colour and a solid rule: a card's, a button's, and an
 accent down one side, which curves into the corners it meets; a rounded
-box with sides of different colours has them drawn straight. An image is
+box with sides of different colours has them drawn straight. `groove`,
+`ridge`, `inset` and `outset` are drawn in two shades of their colour, lit
+from the top left and shaded as Chromium shades them — a groove in black
+is black against a dark grey — each side a trapezoid meeting its
+neighbours on the diagonal, which is what the UA sheet's `<iframe>`
+border, `2px inset`, is drawn with. An image is
 trimmed to the corners too — an `<img>` to the curve of its content edge,
 so an avatar is a round photograph, and a background to its box's — at the
 cost on X11 of a clip the size of the window, which only a rounded box

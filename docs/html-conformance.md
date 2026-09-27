@@ -111,6 +111,7 @@ separately, and there are six.
 | 41     | box shadows                                        | 5,460 (93%) | 4,972 (84%) |
 | 42     | aspect-ratio, object-fit, a flex box's height      | 5,460 (93%) | 4,972 (84%) |
 | 43     | line-clamp, text-overflow                          | 5,460 (93%) | 4,972 (84%) |
+| 44     | 3D border styles                                   | 5,462 (93%) | 4,974 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -1467,6 +1468,20 @@ minmax(16rem, 1fr))` are the layouts of half the pages written this
      line's last word, where a browser fills the line with as much of the
      text as fits, so a line of words shows a little less than it would.
      The CSS 2.1 suite has neither.
+
+### Round 44
+
+133. **A groove was a solid border.** `groove`, `ridge`, `inset` and
+     `outset` were read and drawn as `solid`, so a groove in its default
+     colour was a black frame, where a browser draws it in two shades
+     (WPT borders/groove-default and ridge-default, which require only
+     that it differ). They are drawn in two shades now, lit from the top
+     left: `inset` shades its top and left, `outset` its bottom and right,
+     and `groove` and `ridge` are two bands, one of each. The shades are
+     Chromium's — the colour darkened by a third of its brightest channel,
+     or where that leaves black, the colour against it lightened — and
+     each side is a trapezoid meeting its neighbours on the diagonal,
+     clamped to the painted area. 2 tests.
 
 ## What `<Html>` supports
 
