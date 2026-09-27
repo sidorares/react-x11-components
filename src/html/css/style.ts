@@ -177,6 +177,16 @@ export interface ComputedStyle {
   textTransform: 'none' | 'uppercase' | 'lowercase' | 'capitalize';
   letterSpacing: number;
   wordSpacing: number;
+  /** The OpenType features the `font-variant` longhands, `font-kerning`
+   *  and `font-feature-settings` ask for, each as `tag=value` pairs joined
+   *  by commas, and '' for none: strings, so that equal ones are equal,
+   *  and a run's features are found by them (`featuresOf`). */
+  fontVariantNumeric: string;
+  fontVariantCaps: string;
+  fontVariantLigatures: string;
+  fontVariantPosition: string;
+  fontKerning: string;
+  fontFeatureSettings: string;
   /** Where a kept tab's stops are (CSS Text 3, 4.2): every so many spaces,
    *  or every so many pixels where `tabSizeIsLength`. */
   tabSize: number;
@@ -388,6 +398,12 @@ export const INHERITED = [
   'textTransform',
   'letterSpacing',
   'wordSpacing',
+  'fontVariantNumeric',
+  'fontVariantCaps',
+  'fontVariantLigatures',
+  'fontVariantPosition',
+  'fontKerning',
+  'fontFeatureSettings',
   'tabSize',
   'tabSizeIsLength',
   'whiteSpace',
@@ -450,6 +466,12 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     textTransform: 'none',
     letterSpacing: 0,
     wordSpacing: 0,
+    fontVariantNumeric: '',
+    fontVariantCaps: '',
+    fontVariantLigatures: '',
+    fontVariantPosition: '',
+    fontKerning: '',
+    fontFeatureSettings: '',
     tabSize: 8,
     tabSizeIsLength: false,
     whiteSpace: 'normal',
@@ -603,6 +625,12 @@ export function inherit(
   out.textTransform = parent.textTransform;
   out.letterSpacing = parent.letterSpacing;
   out.wordSpacing = parent.wordSpacing;
+  out.fontVariantNumeric = parent.fontVariantNumeric;
+  out.fontVariantCaps = parent.fontVariantCaps;
+  out.fontVariantLigatures = parent.fontVariantLigatures;
+  out.fontVariantPosition = parent.fontVariantPosition;
+  out.fontKerning = parent.fontKerning;
+  out.fontFeatureSettings = parent.fontFeatureSettings;
   out.tabSize = parent.tabSize;
   out.tabSizeIsLength = parent.tabSizeIsLength;
   out.whiteSpace = parent.whiteSpace;
@@ -1251,6 +1279,32 @@ export function applyDeclaration(
         if (name === 'letter-spacing') style.letterSpacing = len;
         else style.wordSpacing = len;
       }
+      return;
+    }
+    case 'font-variant-numeric':
+    case 'font-variant-caps':
+    case 'font-variant-ligatures':
+    case 'font-variant-position': {
+      const kind = name.slice('font-variant-'.length) as VariantKind;
+      const variant = parseFontVariant(value, kind);
+      if (variant) Object.assign(style, variant);
+      return;
+    }
+    case 'font-variant': {
+      const variant = parseFontVariant(value, null);
+      if (variant) Object.assign(style, variant);
+      return;
+    }
+    case 'font-kerning': {
+      const v = value.trim().toLowerCase();
+      if (v === 'auto') style.fontKerning = '';
+      else if (v === 'normal') style.fontKerning = 'kern=1';
+      else if (v === 'none') style.fontKerning = 'kern=0';
+      return;
+    }
+    case 'font-feature-settings': {
+      const settings = parseFeatureSettings(value);
+      if (settings !== null) style.fontFeatureSettings = settings;
       return;
     }
     case 'tab-size':
@@ -2051,6 +2105,103 @@ function splitSlash(part: string): string[] {
   return part.split(/(\/)/).filter(Boolean);
 }
 
+type VariantKind = 'numeric' | 'caps' | 'ligatures' | 'position';
+
+/** Each `font-variant` keyword: the longhand it belongs to and the features
+ *  it stands for (CSS Fonts 3, 6). */
+const VARIANTS: Record<string, [VariantKind, string]> = {
+  'lining-nums': ['numeric', 'lnum=1'],
+  'oldstyle-nums': ['numeric', 'onum=1'],
+  'proportional-nums': ['numeric', 'pnum=1'],
+  'tabular-nums': ['numeric', 'tnum=1'],
+  'diagonal-fractions': ['numeric', 'frac=1'],
+  'stacked-fractions': ['numeric', 'afrc=1'],
+  ordinal: ['numeric', 'ordn=1'],
+  'slashed-zero': ['numeric', 'zero=1'],
+  'small-caps': ['caps', 'smcp=1'],
+  'all-small-caps': ['caps', 'c2sc=1,smcp=1'],
+  'petite-caps': ['caps', 'pcap=1'],
+  'all-petite-caps': ['caps', 'c2pc=1,pcap=1'],
+  unicase: ['caps', 'unic=1'],
+  'titling-caps': ['caps', 'titl=1'],
+  'common-ligatures': ['ligatures', 'liga=1,clig=1'],
+  'no-common-ligatures': ['ligatures', 'liga=0,clig=0'],
+  'discretionary-ligatures': ['ligatures', 'dlig=1'],
+  'no-discretionary-ligatures': ['ligatures', 'dlig=0'],
+  'historical-ligatures': ['ligatures', 'hlig=1'],
+  'no-historical-ligatures': ['ligatures', 'hlig=0'],
+  contextual: ['ligatures', 'calt=1'],
+  'no-contextual': ['ligatures', 'calt=0'],
+  sub: ['position', 'subs=1'],
+  super: ['position', 'sups=1'],
+};
+
+const VARIANT_FIELDS = {
+  numeric: 'fontVariantNumeric',
+  caps: 'fontVariantCaps',
+  ligatures: 'fontVariantLigatures',
+  position: 'fontVariantPosition',
+} as const;
+
+const ALL_VARIANTS: VariantKind[] = [
+  'numeric',
+  'caps',
+  'ligatures',
+  'position',
+];
+
+/**
+ * A `font-variant` longhand's value, or the shorthand's (`kind` null), as
+ * the fields it sets; null for a value it does not take. The shorthand
+ * sets all four, the ones it names nothing of back to `normal`.
+ */
+function parseFontVariant(
+  value: string,
+  kind: VariantKind | null,
+): Partial<ComputedStyle> | null {
+  const words = value.trim().toLowerCase().split(/\s+/);
+  const kinds = kind ? [kind] : ALL_VARIANTS;
+  const named: Partial<Record<VariantKind, string[]>> = {};
+  if (words.length === 1 && words[0] === 'normal') {
+    // every longhand the value sets goes back to none
+  } else if (
+    words.length === 1 &&
+    words[0] === 'none' &&
+    (kind === null || kind === 'ligatures')
+  ) {
+    named.ligatures = ['liga=0,clig=0,dlig=0,hlig=0,calt=0'];
+  } else {
+    for (const word of words) {
+      const known = VARIANTS[word];
+      if (!known || !kinds.includes(known[0])) return null;
+      (named[known[0]] ??= []).push(known[1]);
+    }
+  }
+  const fields: Partial<ComputedStyle> = {};
+  for (const k of kinds) {
+    fields[VARIANT_FIELDS[k]] = (named[k] ?? []).join(',');
+  }
+  return fields;
+}
+
+/** `font-feature-settings`: `"tnum", "liga" 0, "ss01" on` as `tnum=1,…`,
+ *  '' for `normal`, and null for a value that is neither. */
+function parseFeatureSettings(value: string): string | null {
+  const v = value.trim();
+  if (v.toLowerCase() === 'normal') return '';
+  const pairs: string[] = [];
+  for (const part of splitCommas(v)) {
+    const m = /^(["'])([\x20-\x7e]{4})\1(?:\s+(on|off|\d+))?$/i.exec(
+      part.trim(),
+    );
+    if (!m) return null;
+    const setting = (m[3] ?? 'on').toLowerCase();
+    const n = setting === 'on' ? 1 : setting === 'off' ? 0 : Number(setting);
+    pairs.push(`${m[2]}=${n}`);
+  }
+  return pairs.join(',');
+}
+
 function applyFontShorthand(
   style: ComputedStyle,
   parent: ComputedStyle,
@@ -2063,6 +2214,7 @@ function applyFontShorthand(
   if (parts.length < 2) return;
   let fontStyle: ComputedStyle['fontStyle'] = 'normal';
   let weight: string | null = null;
+  let smallCaps = false;
   let i = 0;
   for (; i < parts.length; i += 1) {
     const v = parts[i].toLowerCase();
@@ -2074,7 +2226,8 @@ function applyFontShorthand(
       /^\d{3}$/.test(v)
     ) {
       weight = v;
-    } else if (v === 'normal' || v === 'small-caps') continue;
+    } else if (v === 'small-caps') smallCaps = true;
+    else if (v === 'normal') continue;
     else break;
   }
   // `12px/1.5`, or the same with space round the slash
@@ -2096,6 +2249,13 @@ function applyFontShorthand(
   // inside a document set at `20px/1em` has lines of normal height, not 20px.
   style.fontStyle = fontStyle;
   style.fontWeight = weight ? parseWeight(weight, parent.fontWeight) : 400;
+  // the variants too, save the small capitals it may name; not the
+  // features `font-feature-settings` sets, which the shorthand leaves
+  style.fontVariantNumeric = '';
+  style.fontVariantCaps = smallCaps ? 'smcp=1' : '';
+  style.fontVariantLigatures = '';
+  style.fontVariantPosition = '';
+  style.fontKerning = '';
   style.lineHeight = 'normal';
   style.lineHeightIsLength = false;
   applyDeclaration(style, parent, 'font-size', sizeText, ctx);
@@ -2633,6 +2793,11 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
     'fontStyle',
     'lineHeight',
     'lineHeightIsLength',
+    'fontVariantNumeric',
+    'fontVariantCaps',
+    'fontVariantLigatures',
+    'fontVariantPosition',
+    'fontKerning',
   ],
   'line-height': ['lineHeight', 'lineHeightIsLength'],
   'text-align': ['textAlign', 'alignBlocks'],
@@ -2640,6 +2805,18 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'text-transform': ['textTransform'],
   'letter-spacing': ['letterSpacing'],
   'word-spacing': ['wordSpacing'],
+  'font-variant': [
+    'fontVariantNumeric',
+    'fontVariantCaps',
+    'fontVariantLigatures',
+    'fontVariantPosition',
+  ],
+  'font-variant-numeric': ['fontVariantNumeric'],
+  'font-variant-caps': ['fontVariantCaps'],
+  'font-variant-ligatures': ['fontVariantLigatures'],
+  'font-variant-position': ['fontVariantPosition'],
+  'font-kerning': ['fontKerning'],
+  'font-feature-settings': ['fontFeatureSettings'],
   'tab-size': ['tabSize', 'tabSizeIsLength'],
   '-moz-tab-size': ['tabSize', 'tabSizeIsLength'],
   'white-space': ['whiteSpace'],

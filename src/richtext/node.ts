@@ -109,6 +109,11 @@ export interface TextRun {
   strike?: string;
   /** Link target. `null` is a link still streaming in (not clickable). */
   href?: string | null;
+  /** OpenType features the run is shaped with, by tag — `{ tnum: 1 }`,
+   *  `{ liga: 0 }` — which both text engines take on a span. A run's fields
+   *  are compared by identity (`sameRuns`), so the same features should be
+   *  the same object. */
+  features?: Readonly<Record<string, number>>;
 }
 
 /** The props `<richtext>` takes. */

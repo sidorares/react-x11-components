@@ -165,6 +165,7 @@ export const RUN_FIELDS = [
   'underlineStyle',
   'strike',
   'href',
+  'features',
 ] as const satisfies readonly (keyof TextRun)[];
 
 /** A field of `TextRun` missing from `RUN_FIELDS` names itself here. */
@@ -193,7 +194,8 @@ function sameRun(a: TextRun, b: TextRun): boolean {
     a.underline === b.underline &&
     a.underlineStyle === b.underlineStyle &&
     a.strike === b.strike &&
-    a.href === b.href
+    a.href === b.href &&
+    a.features === b.features
   );
 }
 
@@ -215,7 +217,8 @@ function sameStyle(
     a.underline === b.underline &&
     a.underlineStyle === b.underlineStyle &&
     a.strike === b.strike &&
-    a.href === b.href
+    a.href === b.href &&
+    a.features === b.features
   );
 }
 

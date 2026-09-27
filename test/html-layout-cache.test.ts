@@ -141,6 +141,7 @@ const other: Record<(typeof RUN_FIELDS)[number], TextRun[keyof TextRun]> = {
   underlineStyle: 'double',
   strike: '#ff0000',
   href: 'https://example.com/',
+  features: { tnum: 1 },
 };
 
 test('every field of a run is what it is found by', () => {
