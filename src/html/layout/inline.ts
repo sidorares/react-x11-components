@@ -99,9 +99,9 @@ const WIDEST_WORD = new WeakMap<TextLayoutLike, number>();
  * again with every space a line break, at no width limit. Where a text's
  * only breaks are spaces that is its min-content width, and where it has
  * others — a hyphen, a slash — more: an upper bound of it either way. The
- * other way to ask, a layout a pixel wide, has the engine search every
- * word for a place to cut it, since none fits, which costs fifteen layouts
- * of this one. Infinity where the runs are no longer kept.
+ * other way to ask, a layout of no width, has ntk search every word for a
+ * place to cut it, since none fits, which costs fifteen layouts of this
+ * one. Infinity where the runs are no longer kept.
  */
 export function widestWord(
   fonts: FontsLike,
@@ -127,6 +127,57 @@ export function widestWord(
   for (const line of words.lines) widest = Math.max(widest, line.width);
   WIDEST_WORD.set(layout, widest);
   return widest;
+}
+
+const SPACE_BREAKS = new WeakMap<TextLayoutLike, boolean>();
+
+/**
+ * Whether a layout's text breaks only at its spaces: letters and digits of
+ * the Latin, Greek and Cyrillic scripts, and the punctuation that UAX #14
+ * never breaks after between two letters — no hyphen, slash, `!`, `?`,
+ * `|`, `}`, soft hyphen or ellipsis, and nothing of a script that breaks
+ * between its letters or by dictionary. Where it does, its widest word
+ * (`widestWord`) is exactly its min-content width.
+ */
+export function spaceBreaksOnly(layout: TextLayoutLike): boolean {
+  let only = SPACE_BREAKS.get(layout);
+  if (only !== undefined) return only;
+  const held = LAYOUT_RUNS.get(layout);
+  only = !!held && (held.length === 0 || typeof held[0] !== 'number');
+  if (only) {
+    outer: for (const run of held as TextRun[]) {
+      const text = run.text;
+      for (let i = 0; i < text.length; i += 1) {
+        if (!breaksOnlyAtSpace(text.charCodeAt(i))) {
+          only = false;
+          break outer;
+        }
+      }
+    }
+  }
+  SPACE_BREAKS.set(layout, only);
+  return only;
+}
+
+function breaksOnlyAtSpace(c: number): boolean {
+  if (c < 0x80) {
+    // `-` `/` `!` `?` `|` `}`: a break may follow each
+    return (
+      c >= 0x20 &&
+      c !== 0x2d &&
+      c !== 0x2f &&
+      c !== 0x21 &&
+      c !== 0x3f &&
+      c !== 0x7c &&
+      c !== 0x7d &&
+      c !== 0x7f
+    );
+  }
+  // Latin-1 but the soft hyphen and the acute accent, which a break may
+  // precede; Latin Extended, the combining marks, Greek and Cyrillic
+  if (c >= 0xa0 && c < 0x530) return c !== 0xad && c !== 0xb4 && c !== 0x2c8;
+  // the curly quotes
+  return c >= 0x2018 && c <= 0x201f;
 }
 
 const LONGEST_WORD = new WeakMap<TextLayoutLike, number>();

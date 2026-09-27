@@ -15,7 +15,9 @@ import { AUTO, isPct, resolveOrNull } from '../css/values.js';
 import type { Len } from '../css/values.js';
 import { Box } from './boxes.js';
 import {
+  MIN_CONTENT_PROBE,
   clampHeight,
+  exactMinContent,
   layoutBlockIn,
   measureIntrinsicWidth,
   moveContent,
@@ -283,7 +285,7 @@ function layoutCaptions(captions: Box[], ctx: LayoutContext, table: Box): void {
 function captionMinimum(captions: Box[], ctx: LayoutContext): number {
   let widest = 0;
   for (const caption of captions) {
-    const width = measureIntrinsicWidth(caption, ctx, 1);
+    const width = measureIntrinsicWidth(caption, ctx, MIN_CONTENT_PROBE);
     widest = Math.max(widest, width + caption.marginLeft + caption.marginRight);
   }
   return widest;
@@ -404,10 +406,10 @@ function autoColumns(
   ).fill(null);
 
   for (const cell of cells) {
-    // Two probe layouts per cell: unconstrained for max-content, and at a
-    // width of 1 for min-content — which the line breaker answers by
-    // breaking at every opportunity, so the widest line is the longest
-    // unbreakable word.
+    // Two probe layouts per cell: unconstrained for max-content, and at no
+    // width for min-content (`MIN_CONTENT_PROBE`) — which the line breaker
+    // answers by breaking at every opportunity, so the widest line is the
+    // longest unbreakable word.
     //
     // Cached on the box, because intrinsic widths are width-independent by
     // definition — measuring them per layout pass made a *resize* of a
@@ -420,7 +422,10 @@ function autoColumns(
         ctx,
         Infinity,
       );
-      cell.box.intrinsicMinContent = measureIntrinsicWidth(cell.box, ctx, 1);
+      // where its words say it exactly, read from the layout just made
+      cell.box.intrinsicMinContent =
+        (ctx.fonts && exactMinContent(cell.box, ctx.fonts)) ??
+        measureIntrinsicWidth(cell.box, ctx, MIN_CONTENT_PROBE);
     }
     const cellMax = cell.box.intrinsicMaxContent;
     const cellMin = cell.box.intrinsicMinContent;

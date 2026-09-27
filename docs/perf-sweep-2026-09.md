@@ -1783,6 +1783,66 @@ were flagged and each was run three times more before it was believed:
 - **`<Flow>`'s 2,000-node zoom on GL, XQuartz**, which printed nothing once
   and ran at 84 fps each of three times after.
 
+## Round 18: the probe a pixel wide
+
+`<Html>` asks for an element's min-content width by laying it out at a
+width of one pixel and reading its widest line: every line breaks at every
+opportunity, and the widest is the longest word. Table cells have asked
+it that way since the first table, and grid items since the grid; round 61
+of the conformance work (#225) asked it of a float, an inline-block or an
+absolute box whose text does not fit its room, for the floor CSS 2.1 puts
+under shrink-to-fit.
+
+On X11 that question is the dearest layout there is. ntk fills lines
+greedily and force-breaks a word wider than the width by a binary search
+over its prefixes, shaping one at each step; at a pixel every word is too
+wide, so every word pays the search, and still overflows whole. An ntk
+layout of a paragraph of 36 words measured 120–160 µs at one pixel, and
+4 µs unbounded or at 200px. Without its probes a hundred-row table laid
+out in a fifth of the time.
+
+The answer is to ask the words. The same runs, laid out again with every
+space a line break and no width limit, cut nothing and put one word to a
+line, and the widest line is the widest word: 7.5 µs for that paragraph.
+Where a text breaks only at spaces — letters and digits of the Latin,
+Greek and Cyrillic scripts, and the punctuation UAX #14 never breaks after
+between letters — that is its min-content width, exactly. So:
+
+- **a shrink-to-fit box** (#226) needs only to know whether a word is
+  wider than its room: first from each word's characters at half again
+  their size, with no layout at all; then, past the room, from the words
+  laid out one to a line; and only past it still, from the probe;
+- **a table cell and a grid item** take their min-content from their
+  words where the words say it exactly — plain text in blocks, with
+  nothing on a line but text, no inline box's edges, and no widths of
+  their own — and are probed as before otherwise, a hyphen or a slash
+  being a break the words do not know.
+
+A fresh box tree's first layout, X11, with the text engine's layouts
+uncached and cached, medians:
+
+|                                         | before        | after        |
+| --------------------------------------- | ------------- | ------------ |
+| 360 wrapping shrink-to-fit boxes (#225) | 40.8 / 2.6 ms | 9.1 / 1.9 ms |
+| a table of a hundred rows               | 28.6 / 2.4 ms | 9.2 / 1.6 ms |
+| the report, 100 sections                | 25.3 ms       | 23.4 ms      |
+| the report under Tailwind's stylesheet  | 26.2 ms       | 20.6 ms      |
+
+Before #225 the shrink-to-fit page took 8.9 ms uncached; #225 made it
+four times that, and #226 took it back.
+
+And on macOS the probe was not even asking the right question. React-x11's
+CoreText engine reads a layout of no width as "break at every
+opportunity" and gives the longest word; at a pixel it breaks inside
+words, and so every table cell on macOS had a min-content a character or
+two wide, and a table short of room shrank its columns to letters where
+a browser keeps its words whole. The fast path, right on macOS, disagreed
+with the probe beside it in two tests of anonymous tables, which is how
+it was found. The probe asks at no width now (`MIN_CONTENT_PROBE`), where
+both engines answer the longest word, and ntk is no slower for it. Five
+tests of the CSS 2.1 suite that put their text in a table cell pass on
+macOS that did not — 4,984 of them now — and none moved on X11.
+
 ## Lessons
 
 1. **Look for caches that never hit.** Identity-keyed caches handed a new
@@ -1907,6 +1967,13 @@ were flagged and each was run three times more before it was believed:
     there.** A scan of every paragraph for a tab cost the report 4% of its
     layout, where the answer was already in each text's `white-space`:
     only a `pre` or a `pre-wrap` keeps one.
+32. **An engine's cheap question can have a dear twin.** A layout at no
+    width limit and one at a pixel look like the same kind of work; on
+    ntk the second searches every word for a place to cut it, and costs
+    thirty of the first. Time the engine at the arguments a caller
+    actually passes, and when a question's answer can be read another
+    way — the widest word, from a layout with a word to a line — read it
+    there.
 
 ## Still open
 

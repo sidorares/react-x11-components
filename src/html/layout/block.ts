@@ -27,6 +27,7 @@ import {
   faceExtentOf,
   layoutInline,
   lineHeightMultiplier,
+  spaceBreaksOnly,
   strutOf,
   widestWord,
 } from './inline.js';
@@ -902,6 +903,16 @@ export function layoutBlockIn(
 }
 
 /**
+ * The width a min-content probe lays a box out at: none at all. Every line
+ * breaks at every opportunity there, and the widest is the longest word —
+ * which is what both text engines answer at zero; react-x11's CoreText
+ * engine answers it at zero only, and at a pixel breaks inside words, so a
+ * probe a pixel wide gave every table cell on macOS a min-content a
+ * character or two wide.
+ */
+export const MIN_CONTENT_PROBE = 0;
+
+/**
  * Lay a box out at a width and report the widest thing it drew.
  *
  * This is what a table column asks twice — once unbounded for max-content,
@@ -1340,7 +1351,11 @@ export function contentSizedWidth(
     probed = true;
   }
   if (size !== 'max-content' && box.intrinsicMinContent < 0) {
-    box.intrinsicMinContent = measureIntrinsicWidth(box, ctx, 1);
+    box.intrinsicMinContent = measureIntrinsicWidth(
+      box,
+      ctx,
+      MIN_CONTENT_PROBE,
+    );
     probed = true;
   }
   if (probed) resolveEdges(box, percentBase);
@@ -1414,7 +1429,11 @@ function shrinkToFitWidth(
     wordBound(box, fonts, true) + box.horizontalExtra > room;
   box.lines = saved;
   if (floored) {
-    box.intrinsicMinContent = measureIntrinsicWidth(box, ctx, 1);
+    box.intrinsicMinContent = measureIntrinsicWidth(
+      box,
+      ctx,
+      MIN_CONTENT_PROBE,
+    );
     box.lines = saved;
     // the probe resolved the box's edges against the width it was given
     resolveEdges(box, available);
@@ -1422,6 +1441,81 @@ function shrinkToFitWidth(
   if (width > room)
     width = Math.min(width, Math.max(box.intrinsicMinContent, room));
   return clampWidth(box, width, available, ctx);
+}
+
+/**
+ * A box's min-content width as its words give it, laid out at no width
+ * limit, and null where they may not: blocks and plain text that breaks
+ * only at its spaces (`spaceBreaksOnly`) are as narrow as their widest
+ * word (`widestWord`) with the edges of the blocks between, which is what
+ * the probe finds (`MIN_CONTENT_PROBE`) — for a fifteenth of the cost on
+ * ntk, which searches every word of that probe for a place to cut it, as
+ * none fits in no width at all. Anything else
+ * is left to the probe: another kind of break, an inline box's edges, a
+ * box on a line, a float, a table or a flex box, text that does not wrap
+ * or is indented, a block with widths of its own.
+ */
+export function exactMinContent(box: Box, fonts: FontsLike): number | null {
+  if (hasWidths(box.style)) return null;
+  const inner = exactWords(box, fonts);
+  return inner === null ? null : inner + box.horizontalExtra;
+}
+
+/** Whether a style sets its box's width, or its least or greatest width. */
+function hasWidths(style: ComputedStyle): boolean {
+  return (
+    style.width !== AUTO ||
+    style.widthKeyword !== null ||
+    (style.minWidth !== 0 && style.minWidth !== AUTO) ||
+    style.minWidthKeyword !== null ||
+    style.maxWidth !== 'none' ||
+    style.maxWidthKeyword !== null
+  );
+}
+
+function exactWords(box: Box, fonts: FontsLike): number | null {
+  const style = box.style;
+  if (style.whiteSpace !== 'normal' || style.textIndent !== 0) return null;
+  let widest = 0;
+  if (box.lines) {
+    let last: object | null = null;
+    for (const line of box.lines) {
+      if (line.atomics.length || line.edges?.length) return null;
+      for (const text of line.texts) {
+        if (text.layout === last) continue;
+        last = text.layout;
+        if (!spaceBreaksOnly(text.layout)) return null;
+        widest = Math.max(widest, widestWord(fonts, text.layout));
+      }
+    }
+  }
+  for (const child of box.children) {
+    if (child.kind === 'text' || child.kind === 'break') continue;
+    if (child.kind === 'inline') {
+      if (!plainInline(child)) return null;
+      continue;
+    }
+    if (child.kind !== 'block' || child.isFloat) return null;
+    if (child.outOfFlow) continue;
+    if (hasWidths(child.style)) return null;
+    const inner = exactWords(child, fonts);
+    if (inner === null) return null;
+    widest = Math.max(
+      widest,
+      inner + child.horizontalExtra + child.marginLeft + child.marginRight,
+    );
+  }
+  return widest;
+}
+
+/** Whether an inline box and what is in it are text that wraps. */
+function plainInline(box: Box): boolean {
+  if (box.style.whiteSpace !== 'normal') return false;
+  for (const child of box.children) {
+    if (child.kind === 'text' || child.kind === 'break') continue;
+    if (child.kind !== 'inline' || !plainInline(child)) return false;
+  }
+  return true;
 }
 
 /**
