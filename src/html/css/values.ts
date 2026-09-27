@@ -239,27 +239,6 @@ export function fourSides<T>(parts: T[]): [T, T, T, T] {
   return [a, b, c, d];
 }
 
-/** `url(x)`, `url("x")`, or a bare token. `null` for `none`. */
-export function parseUrl(value: string): string | null {
-  const v = value.trim();
-  if (!v || v.toLowerCase() === 'none') return null;
-  const m = /^url\(\s*(.*?)\s*\)$/i.exec(v);
-  const inner = m ? m[1] : v;
-  return unquote(inner) || null;
-}
-
-export function unquote(value: string): string {
-  const v = value.trim();
-  if (
-    v.length >= 2 &&
-    (v[0] === '"' || v[0] === "'") &&
-    v[v.length - 1] === v[0]
-  ) {
-    return v.slice(1, -1);
-  }
-  return v;
-}
-
 /** A colour as it is about to be used: `currentColor` resolved against the
  *  element's own ink, everything else passed through. */
 export function inkColor(color: string, current: string): string {

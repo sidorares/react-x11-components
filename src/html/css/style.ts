@@ -21,12 +21,12 @@ import {
   parseColor,
   parseLength,
   parseNumber,
-  parseUrl,
   parseWeight,
   splitCommas,
   splitValue,
 } from './values.js';
 import type { Len, UnitContext } from './values.js';
+import { parseUrl } from './parse.js';
 import {
   DEFAULT_QUOTES,
   parseContent,
@@ -787,7 +787,9 @@ export function applyDeclaration(
       return;
     }
     case 'background-image': {
-      style.backgroundImage = parseUrl(splitCommas(value)[0]);
+      // a bad url makes the declaration invalid, and it is dropped
+      const url = parseUrl(splitCommas(value)[0]);
+      if (url !== undefined) style.backgroundImage = url;
       return;
     }
     case 'background-repeat': {
@@ -1337,16 +1339,20 @@ function applyBackgroundShorthand(
   // Only the last layer paints against the box, so a multi-layer background
   // reduces to its last comma group rather than being dropped.
   const layer = splitCommas(value).pop() ?? '';
-  style.backgroundColor = null;
-  style.backgroundImage = null;
-  style.backgroundRepeat = 'repeat';
-  style.backgroundSize = 'auto';
-  style.backgroundAttachment = 'scroll';
+  // read whole before anything is set: a bad url makes the declaration
+  // invalid, and it is dropped rather than half applied
+  let color: string | null = null;
+  let image: string | null = null;
+  let repeat: ComputedStyle['backgroundRepeat'] = 'repeat';
+  let size: ComputedStyle['backgroundSize'] = 'auto';
+  let attachment: ComputedStyle['backgroundAttachment'] = 'scroll';
   const positions: string[] = [];
   for (const part of splitValue(layer)) {
     const v = part.toLowerCase();
     if (v.startsWith('url(')) {
-      style.backgroundImage = parseUrl(part);
+      const url = parseUrl(part);
+      if (url === undefined) return;
+      image = url;
       continue;
     }
     if (
@@ -1355,15 +1361,15 @@ function applyBackgroundShorthand(
       v === 'repeat-y' ||
       v === 'no-repeat'
     ) {
-      style.backgroundRepeat = v;
+      repeat = v;
       continue;
     }
     if (v === 'cover' || v === 'contain') {
-      style.backgroundSize = v;
+      size = v;
       continue;
     }
     if (v === 'fixed' || v === 'scroll' || v === 'local') {
-      style.backgroundAttachment = v;
+      attachment = v;
       continue;
     }
     if (v === 'border-box' || v === 'padding-box' || v === 'content-box') {
@@ -1371,11 +1377,16 @@ function applyBackgroundShorthand(
     }
     const c = parseColor(part);
     if (c !== null) {
-      style.backgroundColor = c;
+      color = c;
       continue;
     }
     if (backgroundPosition(part, ctx) !== null) positions.push(part);
   }
+  style.backgroundColor = color;
+  style.backgroundImage = image;
+  style.backgroundRepeat = repeat;
+  style.backgroundSize = size;
+  style.backgroundAttachment = attachment;
   const pair = positions.length ? positionPair(positions, ctx) : null;
   if (pair) {
     style.backgroundPositionX = pair[0];
