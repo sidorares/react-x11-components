@@ -6141,3 +6141,29 @@ metric(
     assert.ok(Math.abs(a.y - b.y - 10) <= 1, 'the raised one goes with it');
   },
 );
+
+// --- what is in the head ------------------------------------------------------------
+
+test('the head is shown where a stylesheet says so, as a browser shows it', async () => {
+  // `display: none` by the UA sheet, like the rest of what has no box of
+  // its own, and no longer skipped whatever the stylesheet said
+  const { node } = await render(
+    '<html><head><meta name="x" content="PASS"><title>T</title>' +
+      '<style>head, meta { display: block } meta::before { content: attr(content) }</style>' +
+      '</head><body><p>body</p></body></html>',
+  );
+  const text = view(node).textContent();
+  assert.ok(text.includes('PASS'), `the meta's ::before is drawn: ${text}`);
+  assert.ok(!text.includes('T\n') && !text.startsWith('T'), 'the title is not');
+  assert.ok(text.includes('body'));
+});
+
+test('head content with no <head> around it stays hidden, as in the head a browser implies', async () => {
+  const { node } = await render(
+    '<title>Title</title><style>* { display: block }</style><p>body</p>',
+  );
+  const text = view(node).textContent();
+  assert.ok(!text.includes('Title'), `no title: ${text}`);
+  assert.ok(!text.includes('display'), 'no stylesheet');
+  assert.ok(text.includes('body'));
+});
