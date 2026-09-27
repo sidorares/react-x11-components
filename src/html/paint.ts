@@ -96,10 +96,13 @@ export interface PaintOptions {
  * writing it and reading it back cost this walk a fifth of its time.
  */
 export function computePaintBounds(box: Box): number {
-  let x1 = box.x;
-  let y1 = box.y;
-  let x2 = box.x + box.width;
-  let y2 = box.y + box.height;
+  // A box with no rectangle of its own gives only what it holds: nothing,
+  // until a child with bounds is met.
+  const own = hasRect(box);
+  let x1 = own ? box.x : Infinity;
+  let y1 = own ? box.y : Infinity;
+  let x2 = own ? box.x + box.width : -Infinity;
+  let y2 = own ? box.y + box.height : -Infinity;
   // How far down the content reaches, for the document's height: the
   // border box, and every box and line under it, but not past a box that
   // clips what it holds — where the scrollable overflow ends. Out-of-flow
@@ -117,6 +120,7 @@ export function computePaintBounds(box: Box): number {
       for (const placed of line.atomics) {
         const atomic = placed.box;
         computePaintBounds(atomic);
+        if (atomic.boundsY === Infinity) continue;
         x1 = Math.min(x1, atomic.boundsX);
         y1 = Math.min(y1, atomic.boundsY);
         x2 = Math.max(x2, atomic.boundsX + atomic.boundsWidth);
@@ -143,25 +147,50 @@ export function computePaintBounds(box: Box): number {
     if (child.kind === 'text' || child.kind === 'break') continue;
     const reach = computePaintBounds(child);
     if (!child.outOfFlow) bottom = Math.max(bottom, reach);
+    if (child.boundsY === Infinity) continue;
     x1 = Math.min(x1, child.boundsX);
     y1 = Math.min(y1, child.boundsY);
     x2 = Math.max(x2, child.boundsX + child.boundsWidth);
     y2 = Math.max(y2, child.boundsY + child.boundsHeight);
   }
-  box.boundsX = x1;
-  box.boundsY = y1;
-  box.boundsWidth = x2 - x1;
-  box.boundsHeight = y2 - y1;
+  if (x1 === Infinity) {
+    // nothing to draw: no damage meets it, and no parent takes it in
+    box.boundsX = Infinity;
+    box.boundsY = Infinity;
+    box.boundsWidth = 0;
+    box.boundsHeight = 0;
+  } else {
+    box.boundsX = x1;
+    box.boundsY = y1;
+    box.boundsWidth = x2 - x1;
+    box.boundsHeight = y2 - y1;
+  }
   buildChildIndexes(box);
   // whether the box clips only matters where its content reaches past it,
   // and its style is one more object a walk of every box would read
-  const own = box.y + box.height;
-  if (bottom <= own) return own;
+  const end = box.y + box.height;
+  if (bottom <= end) return end;
   const style = box.style;
   return box.parent &&
     (style.overflowX !== 'visible' || style.overflowY !== 'visible')
-    ? own
+    ? end
     : bottom;
+}
+
+/**
+ * Whether a box has a rectangle of its own to draw in. An inline box has
+ * none: it is drawn on its block's lines, which the block's bounds hold,
+ * and its `x`…`height` are never laid out. Nor has a table column, drawn in
+ * its cells. Taken for rectangles, their (0, 0, 0, 0) stretched every block
+ * with a link in it, and every table with a `<col>`, up to the top of the
+ * document — and a paint low in a long document went through every block
+ * above the viewport, as did a hit test during a selection drag.
+ */
+function hasRect(box: Box): boolean {
+  if (box.kind === 'inline') return false;
+  if (box.kind !== 'block') return true;
+  const display = box.style.display;
+  return display !== 'table-column' && display !== 'table-column-group';
 }
 
 /** Children lists past this size get the sorted viewport index; below it a
@@ -1130,6 +1159,9 @@ function paintBorders(
   box: Frame,
   options: PaintOptions,
 ): void {
+  // most boxes have none, and are asked on every paint
+  if (!(box.borderTop || box.borderRight || box.borderBottom || box.borderLeft))
+    return;
   const s = box.style;
   const x = Math.round(box.x + options.originX);
   const y = Math.round(frameY(box) + options.originY);

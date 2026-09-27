@@ -5719,3 +5719,49 @@ metric(
     assert.strictEqual(style.paddingLeft, 4);
   },
 );
+
+// --- what a paint goes through -------------------------------------------------
+
+metric(
+  'a block with a link or a column in it is found where it is, not from the top',
+  async () => {
+    // An inline box is drawn on its block's lines and a column in its
+    // cells, and neither has a rectangle of its own. Taken for one at
+    // (0, 0), each stretched the paint bounds of the block it was in up to
+    // the top of the document, and a paint low in a long document went
+    // through every block above the viewport.
+    const paras = Array.from(
+      { length: 80 },
+      (_, i) =>
+        `<p id="p${i}">paragraph ${i} with <a href="#">a <b>link</b></a></p>`,
+    ).join('');
+    const { node } = await render(
+      `<style>p{margin:0 0 20px}</style>${paras}` +
+        '<table id="t"><colgroup><col><col></colgroup>' +
+        '<tr><td>a</td><td>b</td></tr></table>',
+    );
+    const el = view(node);
+    type Bounded = LaidBox & { boundsY: number; boundsHeight: number };
+    for (const id of ['p40', 'p79', 't']) {
+      const box = boxOf(el, id) as Bounded;
+      assert.ok(
+        box.boundsY >= box.y - 1 && box.boundsHeight < box.height + 20,
+        `#${id}'s ink is where it is: ${box.boundsY}+${box.boundsHeight} ` +
+          `for a box at ${box.y}+${box.height}`,
+      );
+    }
+    const { queryChildIndex } = await import('../src/html/paint.js');
+    const root = (
+      el as unknown as {
+        _tree: { root: { paintIndex: Parameters<typeof queryChildIndex>[0] } };
+      }
+    )._tree.root;
+    assert.ok(root.paintIndex, 'eighty paragraphs are indexed');
+    const at = boxOf(el, 'p60');
+    const hits = queryChildIndex(root.paintIndex, at.y, at.y + at.height);
+    assert.ok(
+      hits.length <= 2,
+      `a strip one paragraph tall meets ${hits.length} of them`,
+    );
+  },
+);
