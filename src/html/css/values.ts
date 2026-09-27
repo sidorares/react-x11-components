@@ -79,6 +79,9 @@ export interface UnitContext {
   vh: number;
   /** Device pixels per CSS pixel — the display scale. */
   scale: number;
+  /** The x-height of the font the lengths are in, asked only for a length
+   *  in `ex`; half an em where it is missing. */
+  ex?: () => number;
 }
 
 const LENGTH_RE =
@@ -134,11 +137,12 @@ function unitScale(unit: string, ctx: UnitContext): number {
       return (96 / 25.4) * ctx.scale;
     case 'q':
       return (96 / 101.6) * ctx.scale;
-    // Approximations rather than font queries: both are within a few percent
-    // for every text face, and asking the font manager here would make the
-    // cascade depend on font loading.
+    // The font's own x-height where the cascade was handed a way to ask
+    // for it, and half an em where it was not, which is within a few
+    // percent for most text faces — and for Ahem, whose x-height is 0.8em,
+    // is not.
     case 'ex':
-      return ctx.em * 0.5;
+      return ctx.ex ? ctx.ex() : ctx.em * 0.5;
     case 'ch':
       return ctx.em * 0.5;
     case 'vw':

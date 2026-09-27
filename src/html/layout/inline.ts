@@ -38,6 +38,7 @@ import type {
   AtomicPlacement,
   Box,
   EdgePlacement,
+  InlineDecoration,
   LineBox,
   LineText,
   TextLayoutLike,
@@ -112,6 +113,10 @@ type Item =
   | { kind: 'atomic'; box: Box }
   | { kind: 'edge'; box: Box; side: 'start' | 'end'; width: number };
 
+function isText(item: Item): item is Extract<Item, { kind: 'text' }> {
+  return item.kind === 'text';
+}
+
 export interface InlineResult {
   lines: LineBox[];
   height: number;
@@ -152,23 +157,44 @@ export function layoutInline(block: Box, options: InlineOptions): InlineResult {
   const align = alignFor(style);
   const indent = indentOf(style, options.width);
 
-  // an inline box's edges take room on their lines, which one layout of the
-  // text cannot give them
-  const hasAtomics = items.some((i) => i.kind !== 'text');
+  let hasAtomics = false;
+  let hasEdges = false;
+  for (const item of items) {
+    if (item.kind === 'atomic') hasAtomics = true;
+    else if (item.kind === 'edge') hasEdges = true;
+  }
   const floated = options.floats?.intersects(options.startY, Infinity) ?? false;
+  // An inline box's edges take room on their lines. Where nothing else on
+  // the lines has to be placed a piece at a time, they go into the one
+  // layout as spacers (`spacerRun`) — which only holds where no bidi
+  // reordering can move one off the side of its box it belongs to.
+  const spaced = hasEdges && !hasAtomics && spacersHold(style, items);
 
   // The text-only, float-free, unindented case: one call, every line — or
   // one call per *chunk*, when the text is long and carries hard breaks.
-  if (!hasAtomics && !floated && !indent) {
-    // `hasAtomics` is false, so every item is text; the cast is that fact.
-    const textItems = items as Extract<Item, { kind: 'text' }>[];
+  if (!hasAtomics && (!hasEdges || spaced) && !floated && !indent) {
+    // no atomics, so what is not an edge is text
+    const textItems = hasEdges
+      ? items.filter(isText)
+      : (items as Extract<Item, { kind: 'text' }>[]);
     let total = 0;
     let hasNewline = false;
     for (const item of textItems) {
       total += item.length;
       if (!hasNewline && item.run.text.includes('\n')) hasNewline = true;
     }
-    if (!total) return EMPTY;
+    if (!total && !hasEdges) return EMPTY;
+    if (spaced) {
+      return layoutSpaced(
+        items,
+        base,
+        style,
+        options.width,
+        lineHeightMul,
+        align,
+        fonts,
+      );
+    }
     if (total > CHUNK_TRIGGER_CHARS && hasNewline) {
       return layoutChunked(
         textItems,
@@ -509,6 +535,199 @@ export function layoutInline(block: Box, options: InlineOptions): InlineResult {
 
 const EMPTY: InlineResult = { lines: [], height: 0, width: 0 };
 
+/** A no-break space in a paragraph's face, and its advance, per font
+ *  manager and per style — which the cascade shares between every element
+ *  of a kind, so a document of paragraphs asks once. */
+const SPACERS = new WeakMap<
+  object,
+  WeakMap<ComputedStyle, { run: TextRun; advance: number }>
+>();
+
+/**
+ * An inline box's edge as a run of the one layout: a no-break space in the
+ * paragraph's face, letter-spaced to the edge's width. A no-break space
+ * glues to the text on either side, so a start edge goes to whichever line
+ * the box's first word goes to, and an end edge stays with its last; a line
+ * may still break after a space before it (UAX #14, LB12a). It is drawn as
+ * nothing, and is no part of the document's text: the line's text notes
+ * where it is (`LineText.gaps`). Laid out piece by piece instead, a
+ * paragraph with an inline `<code>` in it — whose padding is an edge —
+ * cost five layouts where one does, and a document of them reflowed two
+ * and a half times slower.
+ */
+function spacerRun(
+  fonts: FontsLike,
+  style: ComputedStyle,
+  width: number,
+): TextRun {
+  let byStyle = SPACERS.get(fonts);
+  if (!byStyle) {
+    byStyle = new WeakMap();
+    SPACERS.set(fonts, byStyle);
+  }
+  let spacer = byStyle.get(style);
+  if (!spacer) {
+    const face = {
+      family: style.fontFamily,
+      size: style.fontSize,
+      weight: style.fontWeight,
+      style:
+        style.fontStyle === 'normal'
+          ? ('normal' as const)
+          : ('italic' as const),
+    };
+    const run: TextRun = { text: '\u00a0', ...face };
+    spacer = { run, advance: fonts.layout([run], face, {}).width };
+    byStyle.set(style, spacer);
+  }
+  return { ...spacer.run, letterSpacing: width - spacer.advance };
+}
+
+/** Text that bidi could reorder around a spacer: any right-to-left
+ *  letter, and the explicit embedding and isolate controls. */
+const REORDERS =
+  /[\u0590-\u08ff\ufb1d-\ufdff\ufe70-\ufefc\u202a-\u202e\u2066-\u2069]|[\ud802\ud803\ud83a\ud83b]/;
+
+/** Whether a paragraph's edges can be spacers: it reads left to right, and
+ *  nothing in it can be reordered. */
+function spacersHold(style: ComputedStyle, items: Item[]): boolean {
+  if (style.direction !== 'ltr') return false;
+  for (const item of items) {
+    if (item.kind === 'text' && REORDERS.test(item.run.text)) return false;
+    if (item.kind === 'edge' && item.box.style.direction !== 'ltr')
+      return false;
+  }
+  return true;
+}
+
+/** A paragraph whose inline boxes have edges, as one layout with the edges
+ *  in it as spacers (`spacerRun`), each line told where its spacers are and
+ *  where they put the edges. */
+function layoutSpaced(
+  items: Item[],
+  base: Record<string, unknown>,
+  style: ComputedStyle,
+  width: number,
+  lineHeightMul: number,
+  align: string,
+  fonts: FontsLike,
+): InlineResult {
+  const runs: TextRun[] = [];
+  const spans = new SpanMap();
+  const spacers: { at: number; edge: Extract<Item, { kind: 'edge' }> }[] = [];
+  let doc = 0;
+  for (const item of items) {
+    if (item.kind === 'text') {
+      doc = item.start;
+      break;
+    }
+  }
+  for (const item of items) {
+    if (item.kind === 'edge') {
+      spacers.push({ at: spans.laidOut, edge: item });
+      spans.add(doc, 1, null);
+      runs.push(spacerRun(fonts, style, item.width));
+    } else if (item.kind === 'text') {
+      spans.add(item.start, item.run.text.length, item.box);
+      runs.push(item.run);
+      doc = item.start + item.run.text.length;
+    }
+  }
+  const layout = fonts.layout(runs, base, {
+    maxWidth: wraps(style) ? width : undefined,
+    lineHeight: lineHeightMul,
+    align,
+    direction: style.direction,
+  });
+  LAYOUT_RUNS.set(layout, runs);
+  let offsets: number[] | null = null;
+  const lines: LineBox[] = [];
+  let widest = 0;
+  let next = 0;
+  for (let i = 0; i < layout.lines.length; i += 1) {
+    const natural = layout.lines[i];
+    const gaps: number[] = [];
+    const edges: EdgePlacement[] = [];
+    while (next < spacers.length && spacers[next].at < natural.end) {
+      const { at, edge } = spacers[next];
+      next += 1;
+      if (at < natural.start) continue;
+      gaps.push(at);
+      const run = natural.runs?.find((r) => r.start === at);
+      const x = run
+        ? natural.x + run.x
+        : layout.caretPosition(
+            codePointAt((offsets ??= layoutOffsets(layout)), at),
+          ).x;
+      edges.push({ box: edge.box, side: edge.side, x, width: edge.width });
+    }
+    const text: LineText = {
+      layout,
+      layoutLine: i,
+      drawX: 0,
+      drawY: 0,
+      textStart: spans.documentAt(natural.start),
+      textEnd: spans.documentAt(natural.end),
+      layoutStart: natural.start,
+      spans,
+      ...(gaps.length ? { gaps } : null),
+    };
+    lines.push({
+      x: natural.x,
+      y: natural.y,
+      width: natural.width,
+      height: natural.height,
+      baseline: natural.baseline - natural.y,
+      texts: [text],
+      textStart: text.textStart,
+      textEnd: text.textEnd,
+      atomics: [],
+      ...(edges.length ? { edges } : null),
+    });
+    widest = Math.max(widest, natural.width);
+  }
+  return { lines, height: layout.height, width: widest };
+}
+
+/** The code point a code-unit offset into a layout's text starts. */
+function codePointAt(offsets: number[], units: number): number {
+  if (!offsets.length) return units;
+  let lo = 0;
+  let hi = offsets.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (offsets[mid] <= units) lo = mid;
+    else hi = mid - 1;
+  }
+  return lo;
+}
+
+/**
+ * A code-unit offset in a line's layout as a document index, and back:
+ * `textStart` is `layoutStart`, and every spacer before the offset is a
+ * unit of the layout that is no text of the document's. A document offset
+ * with a spacer right at it is past the spacer, where a caret or a range's
+ * start goes — inside a padded box, after its padding — and before it as
+ * a range's `end`, so a selection does not take in the padding after it.
+ */
+export function documentOffsetOf(text: LineText, units: number): number {
+  let doc = text.textStart + (units - text.layoutStart);
+  for (const gap of text.gaps ?? []) if (gap < units) doc -= 1;
+  return doc;
+}
+
+export function layoutOffsetOf(
+  text: LineText,
+  doc: number,
+  end = false,
+): number {
+  let units = text.layoutStart + (doc - text.textStart);
+  for (const gap of text.gaps ?? []) {
+    if (end ? gap < units : gap <= units) units += 1;
+  }
+  return units;
+}
+
 /** Append one layout's lines as LineBoxes at an offset; returns the widest. */
 function emitLayout(
   layout: TextLayoutLike,
@@ -680,6 +899,8 @@ interface OpenLine {
   /** The advance of the spaces the line ends with, kept in `x` for what
    *  may follow them on it and no part of the line if nothing does. */
   hang: number;
+  /** The first line's `text-indent`, which `x` starts at. */
+  indent: number;
 }
 
 type Placed =
@@ -700,6 +921,7 @@ function openLine(indent: number): OpenLine {
     edges: [],
     order: [],
     hang: 0,
+    indent,
   };
 }
 
@@ -749,10 +971,14 @@ function finishLine(
 
   // Placed beside the floats at the text's height; a float the whole line
   // reaches moves it, and the alignment divides the room that is left.
+  // The indent is at the line's start, which is its right in a
+  // right-to-left paragraph: the content moves back over it there, and
+  // the room it takes is at the other end (CSS 2.1 16.1).
   const band = bandFor(height);
-  const used = open.x - open.hang;
-  const free = band.right - band.left - used;
-  let dx = band.left - open.left;
+  const indent = rtl ? open.indent : 0;
+  const used = open.x - open.hang - indent;
+  const free = band.right - indent - band.left - used;
+  let dx = band.left - open.left - indent;
   if (shift > 0 && Number.isFinite(free) && free > 0) dx += free * shift;
   if (dx) {
     for (const text of open.texts) text.drawX += dx;
@@ -768,7 +994,7 @@ function finishLine(
     textEnd = Math.max(textEnd, text.textEnd);
   }
   const line: LineBox = {
-    x: open.left,
+    x: open.left + indent,
     y,
     width: used,
     height,
@@ -1117,7 +1343,8 @@ function collect(
         const edged =
           start > 0 ||
           end > 0 ||
-          (child.decorated && child.style.borderRadius.some((r) => r > 0));
+          (child.decoration !== null &&
+            child.style.borderRadius.some((r) => r > 0));
         if (edged) {
           out.push({ kind: 'edge', box: child, side: 'start', width: start });
         }
@@ -1187,48 +1414,58 @@ function inlineEdges(
   fonts: FontsLike | null,
 ): [number, number] {
   const s = box.style;
-  const border = (w: number, style: ComputedStyle['borderTopStyle']) =>
-    style === 'none' || style === 'hidden' ? 0 : w;
-  box.borderTop = border(s.borderTopWidth, s.borderTopStyle);
-  box.borderRight = border(s.borderRightWidth, s.borderRightStyle);
-  box.borderBottom = border(s.borderBottomWidth, s.borderBottomStyle);
-  box.borderLeft = border(s.borderLeftWidth, s.borderLeftStyle);
+  box.borderTop = usedBorder(s.borderTopWidth, s.borderTopStyle);
+  box.borderRight = usedBorder(s.borderRightWidth, s.borderRightStyle);
+  box.borderBottom = usedBorder(s.borderBottomWidth, s.borderBottomStyle);
+  box.borderLeft = usedBorder(s.borderLeftWidth, s.borderLeftStyle);
   box.padTop = resolve(s.paddingTop, width);
   box.padRight = resolve(s.paddingRight, width);
   box.padBottom = resolve(s.paddingBottom, width);
   box.padLeft = resolve(s.paddingLeft, width);
   box.marginLeft = resolve(s.marginLeft, width);
   box.marginRight = resolve(s.marginRight, width);
-  box.decorated =
+  const decorated =
     !isTransparent(s.backgroundColor) ||
     box.borderTop + box.borderRight + box.borderBottom + box.borderLeft > 0;
-  if (box.decorated && fonts) {
-    const extent = faceExtent(fonts, s);
-    box.contentAscent = extent.ascent;
-    box.contentDescent = extent.descent;
-  }
+  box.decoration = !decorated ? null : fonts ? faceExtent(fonts, s) : NO_EXTENT;
   const left = box.marginLeft + box.borderLeft + box.padLeft;
   const right = box.padRight + box.borderRight + box.marginRight;
   return s.direction === 'rtl' ? [right, left] : [left, right];
 }
 
-/** A face's ascent and descent at a style's size, kept per font manager. */
+/** A border's width, or none where its style draws none. */
+function usedBorder(
+  width: number,
+  style: ComputedStyle['borderTopStyle'],
+): number {
+  return style === 'none' || style === 'hidden' ? 0 : width;
+}
+
+/** A face's ascent and descent at a style's size, kept per font manager
+ *  and shared by the boxes set in it: by the style, which the cascade
+ *  shares between every element of a kind, and by the face, which styles
+ *  that differ in anything else share. */
 const FACE_EXTENTS = new WeakMap<
   FontsLike,
-  Map<string, { ascent: number; descent: number }>
+  {
+    byStyle: WeakMap<ComputedStyle, InlineDecoration>;
+    byFace: Map<string, InlineDecoration>;
+  }
 >();
 
-function faceExtent(
-  fonts: FontsLike,
-  style: ComputedStyle,
-): { ascent: number; descent: number } {
+/** The extent of a decorated box where there are no fonts to ask. */
+const NO_EXTENT: InlineDecoration = { ascent: 0, descent: 0 };
+
+function faceExtent(fonts: FontsLike, style: ComputedStyle): InlineDecoration {
   let cache = FACE_EXTENTS.get(fonts);
   if (!cache) {
-    cache = new Map();
+    cache = { byStyle: new WeakMap(), byFace: new Map() };
     FACE_EXTENTS.set(fonts, cache);
   }
+  let extent = cache.byStyle.get(style);
+  if (extent) return extent;
   const key = `${style.fontFamily}|${style.fontSize}|${style.fontWeight}|${style.fontStyle}`;
-  let extent = cache.get(key);
+  extent = cache.byFace.get(key);
   if (!extent) {
     try {
       const m = fonts
@@ -1242,9 +1479,10 @@ function faceExtent(
     } catch {
       extent = { ascent: style.fontSize * 0.8, descent: style.fontSize * 0.2 };
     }
-    if (cache.size > 64) cache.clear();
-    cache.set(key, extent);
+    if (cache.byFace.size > 64) cache.byFace.clear();
+    cache.byFace.set(key, extent);
   }
+  cache.byStyle.set(style, extent);
   return extent;
 }
 

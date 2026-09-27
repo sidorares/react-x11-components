@@ -13,12 +13,13 @@
 import { AUTO, isPct, resolve, resolveOrNull } from '../css/values.js';
 import type { Len } from '../css/values.js';
 import { Box } from './boxes.js';
-import type { BoxTree, LineBox } from './boxes.js';
+import type { BoxTree, LineBox, Marker } from './boxes.js';
 import { FloatContext } from './floats.js';
 import { layoutInline } from './inline.js';
 import type { FontsLike } from './inline.js';
 import { layoutFlex } from './flex.js';
-import { layoutTable } from './table.js';
+import { finishCaptions, layoutTable } from './table.js';
+import { collapseEdges } from './collapse.js';
 import { computePaintBounds } from '../paint.js';
 
 export interface LayoutContext {
@@ -87,6 +88,13 @@ export function layoutDocument(
 
   const contentWidth = Math.max(0, viewportWidth - root.horizontalExtra);
   const floats = new FloatContext(root.contentX, root.contentX + contentWidth);
+  // the initial containing block is the viewport's size, which a percentage
+  // height on the root element resolves against (CSS 2.1 10.1, 10.5); a
+  // fragment has no root element, and the box standing in for its body has
+  // the body's `auto` height to give
+  for (const child of root.children) {
+    if (child.el?.name === 'html') child.percentHeightBase = viewportHeight;
+  }
   const flow = layoutChildren(
     root,
     ctx,
@@ -110,10 +118,13 @@ export function layoutDocument(
   // against where it *was* — which is the whole of what makes it relative —
   // and the ink bounds are computed after that, so culling sees where boxes
   // ended up rather than where they were laid out.
-  applyRelativeOffsets(root);
-  computePaintBounds(root);
+  if (tree.relative) applyRelativeOffsets(root);
+  const reach = computePaintBounds(root);
 
-  let bottom = root.height;
+  // The document is as tall as what overflows the root, not the root: an
+  // `html, body { height: 100% }` a window tall holds a message longer than
+  // the window, and the element sizes to all of it.
+  let bottom = Math.max(root.height, reach);
   for (const { box } of ctx.positioned) {
     if (box.style.position !== 'fixed')
       bottom = Math.max(bottom, box.y + box.height);
@@ -165,17 +176,52 @@ function collapsedTopMargin(box: Box, containingWidth: number): number {
   }
 }
 
-/** The first in-flow child of a block container that holds blocks, or null
- *  when it holds lines — whose first line box stops a margin — or nothing. */
-function firstInFlowBlock(box: Box): Box | null {
-  if (box.kind !== 'block' || establishesInlineContext(box)) return null;
+/**
+ * Whether a box's top and bottom margins collapse through it: a block with
+ * no height, no border or padding, no line in it and no formatting context
+ * of its own, whose blocks are all the same (CSS 2.1 8.3.1). An empty
+ * `<div>` between two paragraphs is the case: its margins and theirs are
+ * one margin, where they were stacked.
+ */
+function collapsesThrough(box: Box): boolean {
+  if (box.kind !== 'block' || box.height !== 0) return false;
+  if (box.lines?.length || establishesBFC(box)) return false;
+  const min = resolveOrNull(box.style.minHeight, box.percentHeightBase);
+  if (min !== null && min > 0) return false;
   for (const child of box.children) {
-    if (child.kind === 'text' && !child.text.trim()) continue;
     if (child.outOfFlow || child.isFloat) continue;
-    return child.kind === 'text' || isInlineLevel(child) ? null : child;
+    if (child.kind === 'text' && isBlank(child.text)) continue;
+    if (!collapsesThrough(child)) return false;
+  }
+  return true;
+}
+
+/** The first in-flow child of a block container that holds blocks, or null
+ *  when it holds lines — whose first line box stops a margin — or nothing.
+ *  A box holds lines where every child in flow is inline-level, so then its
+ *  first is, and that answers without an `establishesInlineContext` walk. */
+function firstInFlowBlock(box: Box): Box | null {
+  if (box.kind !== 'block') return null;
+  for (const child of box.children) {
+    if (child.kind === 'text' && isBlank(child.text)) continue;
+    if (child.outOfFlow || child.isFloat) continue;
+    return child.kind === 'text' ||
+      child.kind === 'inline' ||
+      child.kind === 'break' ||
+      isInlineLevel(child)
+      ? null
+      : child;
   }
   return null;
 }
+
+/** Whether a text is white space alone, as `!text.trim()` says, without
+ *  copying the text to find out — which `trim` does to a paragraph's text
+ *  that ends in a space, on every pass. */
+function isBlank(text: string): boolean {
+  return BLANK.test(text);
+}
+const BLANK = /^\s*$/;
 
 /** What a box's children came to: their height, and the margin still hanging
  *  past the last of them when the box's own bottom edge does not stop it. */
@@ -217,8 +263,9 @@ function layoutChildren(
   let first = true;
 
   for (const child of box.children) {
-    if (child.kind === 'text' && !child.text.trim()) continue;
+    if (child.kind === 'text' && isBlank(child.text)) continue;
     if (child.outOfFlow) {
+      placeStatic(child, box, contentLeft, contentWidth, y + pendingMargin);
       ctx.positioned.push({
         box: child,
         containing: containingBlockFor(child) ?? box,
@@ -247,10 +294,23 @@ function layoutChildren(
     const clearance = floats.clearance(child.style.clear);
     if (clearance > -Infinity && clearance > childY) childY = clearance;
 
-    layoutBlockLevel(child, ctx, floats, contentLeft, childY, contentWidth);
+    if (
+      !floats.isEmpty &&
+      (child.kind === 'replaced' || establishesBFC(child))
+    ) {
+      layoutBesideFloats(child, ctx, floats, contentLeft, childY, contentWidth);
+    } else {
+      layoutBlockLevel(child, ctx, floats, contentLeft, childY, contentWidth);
+    }
+    first = false;
+    if (childY === y + collapsed && collapsesThrough(child)) {
+      // nothing in it parts its margins: they and the ones either side of
+      // it are one (CSS 2.1 8.3.1), still hanging for what comes next
+      pendingMargin = collapseMargins(collapsed, child.marginBottom);
+      continue;
+    }
     y = child.y + child.height;
     pendingMargin = child.marginBottom;
-    first = false;
   }
 
   // The last child's bottom margin collapses through the parent's bottom
@@ -265,11 +325,46 @@ function layoutChildren(
     !box.borderBottom &&
     !box.padBottom &&
     box.style.height === AUTO &&
+    !(
+      resolveOrNull(box.style.minHeight, box.percentHeightBase)! >
+      y - contentTop
+    ) &&
     !establishesBFC(box)
   ) {
     return { height: y - contentTop, hanging: pendingMargin };
   }
   return { height: y + pendingMargin - contentTop, hanging: 0 };
+}
+
+/**
+ * A block that makes its own formatting context — a table, a box that
+ * clips its overflow — or a block-level image does not flow round the
+ * floats beside it: it is a rectangle beside them (CSS 2.1 9.5), in the
+ * room they leave at its top, or lower down where it does not fit there.
+ * An image floated left with an `overflow: hidden` block of text beside it
+ * is the layout this is for; the block ran under the image.
+ */
+function layoutBesideFloats(
+  box: Box,
+  ctx: LayoutContext,
+  floats: FloatContext,
+  contentLeft: number,
+  y: number,
+  contentWidth: number,
+): void {
+  const right = contentLeft + contentWidth;
+  let at = y;
+  for (let tries = 0; tries < 64; tries += 1) {
+    const band = floats.bandAt(at, 1, contentLeft, right);
+    const room = band.right - band.left;
+    if (room >= contentWidth) break;
+    layoutBlockLevel(box, ctx, floats, band.left, at, room);
+    if (box.marginLeft + box.width + box.marginRight <= room + 0.5) return;
+    const below = floats.nextEdgeBelow(at, 1);
+    if (below === null || below <= at) break;
+    at = below;
+  }
+  layoutBlockLevel(box, ctx, floats, contentLeft, at, contentWidth);
 }
 
 function layoutInlineContent(
@@ -284,6 +379,7 @@ function layoutInlineContent(
   // so the lines already know to avoid them.
   for (const child of box.children) {
     if (child.outOfFlow) {
+      placeStatic(child, box, contentLeft, contentWidth, contentTop);
       ctx.positioned.push({
         box: child,
         containing: containingBlockFor(child) ?? box,
@@ -375,6 +471,24 @@ function layoutBlockLevel(
 }
 
 /**
+ * Lay a block-level box out as a block in a containing block of a width,
+ * at its own `width` or at the room its margins leave, with the offset its
+ * margins give it; the caller moves it into place. What a table's caption
+ * is, in the box around the table.
+ */
+export function layoutBlockIn(
+  box: Box,
+  ctx: LayoutContext,
+  containingWidth: number,
+): void {
+  resolveEdges(box, containingWidth);
+  const width = blockWidth(box, containingWidth);
+  box.width = width;
+  placeBlock(box, 0, 0, containingWidth);
+  layoutInternals(box, ctx, width, box.x, 0);
+}
+
+/**
  * Lay a box out at a width and report the widest thing it drew.
  *
  * This is what a table column asks twice — once unbounded for max-content,
@@ -443,6 +557,7 @@ function layoutInternals(
   if (box.kind === 'table') {
     const height = layoutTable(box, ctx, contentWidth);
     finishHeight(box, height);
+    finishCaptions(box);
     return;
   }
 
@@ -467,7 +582,7 @@ function layoutInternals(
   if (flow.hanging) {
     box.marginBottom = collapseMargins(box.marginBottom, flow.hanging);
   }
-  if (box.markerText) layoutMarker(box, ctx);
+  if (box.marker) layoutMarker(box, box.marker, ctx);
 }
 
 /** The first line box anywhere under a box, in layout order. */
@@ -493,14 +608,14 @@ function firstLineIn(box: Box): LineBox | null {
  * content: it must not join the selection, or copying a list would paste a
  * bullet before every line.
  */
-function layoutMarker(box: Box, ctx: LayoutContext): void {
+function layoutMarker(box: Box, marker: Marker, ctx: LayoutContext): void {
   const fonts = ctx.fonts;
   if (!fonts) return;
   const style = box.style;
   const layout = fonts.layout(
     [
       {
-        text: box.markerText,
+        text: marker.text,
         family: style.fontFamily,
         size: style.fontSize,
         color: style.color,
@@ -509,7 +624,7 @@ function layoutMarker(box: Box, ctx: LayoutContext): void {
     { family: style.fontFamily, size: style.fontSize, color: style.color },
     {},
   );
-  box.markerLayout = layout;
+  marker.layout = layout;
   const gap = Math.round(style.fontSize * 0.4);
   // The marker sits on the first line of the item's *content*, which is not
   // always the item's own: an `<li>` holding a paragraph, or one holding text
@@ -519,8 +634,8 @@ function layoutMarker(box: Box, ctx: LayoutContext): void {
   const first = firstLineIn(box);
   const baselineY = first ? first.y + first.baseline : box.contentY;
   const own = layout.lines[0];
-  box.markerY = baselineY - (own ? own.baseline : style.fontSize);
-  box.markerX =
+  marker.y = baselineY - (own ? own.baseline : style.fontSize);
+  marker.x =
     style.listStylePosition === 'inside'
       ? box.contentX
       : box.contentX - gap - layout.width;
@@ -533,10 +648,10 @@ function layoutMarker(box: Box, ctx: LayoutContext): void {
  * so `auto`, where it is not. An anonymous box is no containing block for
  * this (9.2.1.1) and hands on its parent's.
  *
- * The document's own root has none: this element sizes to its content, so
- * `html, body { height: 100% }` — which mail sets as often as not — takes
- * the height of what it holds rather than a window's, which would cut off
- * a message taller than one.
+ * The root element's is the viewport's height, so `html, body { height:
+ * 100% }` — which mail sets as often as not — is a window tall, as in a
+ * browser; the document is as tall as what overflows it, so a message
+ * longer than the window is not cut off (`layoutDocument`).
  */
 function percentBaseInside(box: Box): number {
   if (!box.el && !box.pseudo) return box.percentHeightBase;
@@ -549,13 +664,25 @@ function percentBaseInside(box: Box): number {
   return Math.max(0, clampHeight(box, borderBox) - box.verticalExtra);
 }
 
-/** Hand a box's children the height their percentages resolve against —
- *  through inline boxes, which are no containing block, to the inline-block
- *  or image in them. */
+/**
+ * Hand a box's children the height their percentages resolve against —
+ * through inline boxes, which are no containing block, to the inline-block
+ * or image in them. Nearly every box has none to give, and its children
+ * hold NaN until it has, so it visits them only when there is a height, or
+ * was one on the last pass: visiting every child of every block on every
+ * pass cost more than laying out a table.
+ */
 function givePercentBase(box: Box, base: number): void {
+  const given = !Number.isNaN(base);
+  if (!given && !box.gavePercentBase) return;
+  box.gavePercentBase = given;
+  handPercentBase(box, base);
+}
+
+function handPercentBase(box: Box, base: number): void {
   for (const child of box.children) {
     child.percentHeightBase = base;
-    if (child.kind === 'inline') givePercentBase(child, base);
+    if (child.kind === 'inline') handPercentBase(child, base);
   }
 }
 
@@ -569,7 +696,7 @@ function finishHeight(box: Box, contentHeight: number): void {
   box.height = clampHeight(box, borderBox);
 }
 
-function clampHeight(box: Box, height: number): number {
+export function clampHeight(box: Box, height: number): number {
   let out = height;
   const base = box.percentHeightBase;
   const min = resolveOrNull(box.style.minHeight, base);
@@ -601,10 +728,18 @@ function placeBlock(
   const leftAuto = style.marginLeft === AUTO;
   const rightAuto = style.marginRight === AUTO;
   const slack = containingWidth - box.width - box.marginLeft - box.marginRight;
+  // what the width and the margins do not add up to goes to the margin at
+  // the end: the right one, or in a right-to-left containing block the
+  // left one, and a box too wide overflows there (CSS 2.1 10.3.3)
+  const rtl = box.parent?.style.direction === 'rtl';
   let left = contentLeft + box.marginLeft;
   if (slack > 0) {
     if (leftAuto && rightAuto) left = contentLeft + slack / 2 + box.marginLeft;
-    else if (leftAuto) left = contentLeft + slack + box.marginLeft;
+    else if (leftAuto || (rtl && !rightAuto)) {
+      left = contentLeft + slack + box.marginLeft;
+    }
+  } else if (rtl) {
+    left = contentLeft + slack + box.marginLeft;
   }
   box.x = left;
   box.y = y;
@@ -802,10 +937,28 @@ function layoutFloat(
  * is how a badge, a tooltip and an overlay are all written.
  */
 function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
-  const cbWidth = containing.contentWidth;
-  const cbHeight = containing.contentHeight;
-  const cbX = containing.contentX;
-  const cbY = containing.contentY;
+  // the containing block is the positioned box's padding box (CSS 2.1
+  // 10.1), not its content box: `left: 0` in a padded box is at its
+  // padding edge, and at the viewport's edge where nothing is positioned
+  const cbX = containing.x + containing.borderLeft;
+  const cbY = containing.y + containing.captionTop + containing.borderTop;
+  const cbWidth = Math.max(
+    0,
+    containing.width - containing.borderLeft - containing.borderRight,
+  );
+  // with nothing positioned around it the containing block is the initial
+  // one, as tall as the viewport rather than as the document (10.1), and a
+  // fixed box's is the viewport itself
+  const cbHeight = !containing.parent
+    ? ctx.viewportHeight
+    : Math.max(
+        0,
+        containing.height -
+          containing.captionTop -
+          containing.captionBottom -
+          containing.borderTop -
+          containing.borderBottom,
+      );
   resolveEdges(box, cbWidth);
   box.percentHeightBase = cbHeight;
 
@@ -830,19 +983,46 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
   if (box.kind === 'replaced') sizeReplaced(box, cbWidth);
   else layoutInternals(box, ctx, width, 0, 0);
 
+  // with neither offset on an axis, the box is where the flow would have
+  // put it (CSS 2.1 10.3.7, 10.6.4): against its start edge, which is the
+  // right one in a right-to-left flow
+  const at = box.staticPosition;
+  const rtl = (at?.from ?? containing).style.direction === 'rtl';
   const x =
     left !== null
       ? cbX + left + box.marginLeft
       : right !== null
         ? cbX + cbWidth - right - box.width - box.marginRight
-        : cbX;
+        : rtl
+          ? (at ? at.from.x + at.right : cbX + cbWidth) -
+            box.width -
+            box.marginRight
+          : (at ? at.from.x + at.x : cbX) + box.marginLeft;
   const y =
     top !== null
       ? cbY + top + box.marginTop
       : bottom !== null
         ? cbY + cbHeight - bottom - box.height - box.marginBottom
-        : cbY;
+        : (at ? at.from.y + at.y : cbY) + box.marginTop;
   moveTo(box, x, y);
+}
+
+/** Where an out-of-flow box would have gone in its parent's flow: its
+ *  margin edge's, at either side, kept from the parent's corner, which may
+ *  yet move. */
+function placeStatic(
+  box: Box,
+  parent: Box,
+  x: number,
+  width: number,
+  y: number,
+): void {
+  box.staticPosition = {
+    from: parent,
+    x: x - parent.x,
+    right: x + width - parent.x,
+    y: y - parent.y,
+  };
 }
 
 /** The nearest positioned ancestor, or null for the initial containing
@@ -850,6 +1030,12 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
  *  between is transparent — which is what the spec means by "the nearest
  *  positioned ancestor". */
 function containingBlockFor(box: Box): Box | null {
+  // a fixed box's is the viewport, whatever is positioned around it
+  if (box.style.position === 'fixed') {
+    let root = box;
+    while (root.parent) root = root.parent;
+    return root;
+  }
   let node = box.parent;
   while (node) {
     if (node.style.position !== 'static' || node.parent === null) return node;
@@ -863,10 +1049,22 @@ export function moveTo(box: Box, x: number, y: number): void {
   translate(box, x - box.x, y - box.y);
 }
 
+/** Move what a box holds down, and not the box: a table cell's content
+ *  sits where its `vertical-align` puts it, in a box that fills the row. */
+export function moveContent(box: Box, dy: number): void {
+  translate(box, 0, dy);
+  box.y -= dy;
+}
+
 function translate(box: Box, dx: number, dy: number): void {
   if (!dx && !dy) return;
   box.x += dx;
   box.y += dy;
+  // a list item's marker is placed in the same coordinates as its lines
+  if (box.marker) {
+    box.marker.x += dx;
+    box.marker.y += dy;
+  }
   if (box.lines) {
     for (const line of box.lines) {
       line.x += dx;
@@ -914,6 +1112,7 @@ export function resolveEdges(box: Box, containingWidth: number): void {
   box.marginRight = edge(style.marginRight, containingWidth);
   box.marginBottom = edge(style.marginBottom, containingWidth);
   box.marginLeft = edge(style.marginLeft, containingWidth);
+  if (box.kind === 'table' || box.kind === 'table-cell') collapseEdges(box);
 }
 
 function edge(len: Len, containingWidth: number): number {
@@ -936,9 +1135,6 @@ function establishesInlineContext(box: Box): boolean {
       case 'text':
       case 'inline':
       case 'break':
-        sawInline = true;
-        break;
-      case 'replaced':
         sawInline = true;
         break;
       default:
@@ -975,7 +1171,13 @@ export function establishesBFC(box: Box): boolean {
   ) {
     return true;
   }
-  if (box.kind === 'table-cell' || box.kind === 'table') return true;
+  if (
+    box.kind === 'table-cell' ||
+    box.kind === 'table-caption' ||
+    box.kind === 'table'
+  ) {
+    return true;
+  }
   // The root element establishes the document's formatting context. Here it
   // is a box below the synthetic initial containing block, so it is named:
   // without it, <html>'s own margin collapsed with <body>'s first block's.

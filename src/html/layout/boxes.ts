@@ -27,7 +27,8 @@ import {
   NON_RENDERED,
   tagOf,
 } from '../dom.js';
-import type { Cascade } from '../css/cascade.js';
+import type { Cascade, FirstLetterRules } from '../css/cascade.js';
+import type { CollapsedTable } from './collapse.js';
 import { counterText, quoteAt } from '../css/content.js';
 import type { ContentItem } from '../css/content.js';
 import { inherit } from '../css/style.js';
@@ -46,6 +47,35 @@ export type BoxKind =
   | 'table-caption'
   | 'marker'
   | 'break';
+
+// What only a few boxes carry lives beside the box rather than in it: a box
+// is made for every element and every run of text, and each field on it is
+// memory every walk over the tree goes through — fifteen fields more, never
+// read, made a document's first paint 6% slower.
+
+/** A list item's marker: its text, a bullet or the item's number, and
+ *  where it was laid out. */
+export interface Marker {
+  text: string;
+  layout: TextLayoutLike | null;
+  x: number;
+  y: number;
+}
+
+/** An out-of-flow box's static position, as an offset from the box whose
+ *  flow it was taken from, which may yet move. */
+export interface StaticPosition {
+  from: Box;
+  x: number;
+  right: number;
+  y: number;
+}
+
+/** The ascent and descent of a decorated inline box's own face. */
+export interface InlineDecoration {
+  ascent: number;
+  descent: number;
+}
 
 /** A laid-out line inside an inline formatting context. */
 export interface LineBox {
@@ -101,6 +131,10 @@ export interface LineText {
   /** Code-unit offset within the layout's own text that `textStart` maps to,
    *  so a document index can be turned into a caret index in this layout. */
   layoutStart: number;
+  /** Where in the layout's text an inline box's edge was laid out as a
+   *  spacer: a unit of the layout that is no text of the document's
+   *  (`documentOffsetOf`, `layoutOffsetOf`). */
+  gaps?: number[];
   /** Any offset in the layout's own text as a document index — how a run
    *  under the pointer finds the element whose text it is. Per pass: the
    *  layout may be one an earlier pass made (`TextLayoutCache`), and the
@@ -211,16 +245,18 @@ export class Box {
   marginBottom = 0;
   marginLeft = 0;
   /** An inline box with a background or a border to paint behind its
-   *  fragments, and the ascent and descent of its own face — the height CSS
+   *  fragments: the ascent and descent of its own face, the height CSS
    *  paints them over (10.6.1). Set by the inline layout. */
-  decorated = false;
-  contentAscent = 0;
-  contentDescent = 0;
+  decoration: InlineDecoration | null = null;
   /** What a percentage `height` resolves against: an absolutely positioned
    *  box's containing block's height, which is known before the box is laid
    *  out (CSS 2.1 10.5). NaN everywhere else, where that height depends on
    *  the content and a percentage is `auto`. */
   percentHeightBase = NaN;
+  /** Whether this box last handed its children a percentage base that
+   *  was a number: until it does, they hold NaN already, and the next
+   *  pass need not visit them to say so again. */
+  gavePercentBase = false;
   /** Whether this box's top margin collapsed through its parent's top edge
    *  and was spent placing the parent (CSS 2.1 8.3.1): its own layout puts
    *  it at the parent's content top, and applies no margin again. Set by
@@ -255,19 +291,16 @@ export class Box {
    *  key on this rather than re-reading the tag. */
   replaced: ReplacedKind = 'none';
 
-  /** The marker text of a `list-item`, if it generated one, and where it
-   *  was laid out. The marker is not a box: it is not in the flow, nothing
-   *  can select it (CSS spells that `::marker`, and no author styles it
-   *  here), and giving it one would put a bullet in every copied list. */
-  markerText = '';
-  markerLayout: TextLayoutLike | null = null;
-  /** Which of an element's pseudo-elements this box is, for generated
-   *  content. Its `el` is null — it is no element — and its text box's is
-   *  the element it hangs off, so a click on a link's generated text is a
-   *  click on the link. */
-  pseudo: 'before' | 'after' | null = null;
-  markerX = 0;
-  markerY = 0;
+  /** The marker of a `list-item`, if it generated one. The marker is not a
+   *  box: it is not in the flow, nothing can select it (CSS spells that
+   *  `::marker`, and no author styles it here), and giving it one would put
+   *  a bullet in every copied list. */
+  marker: Marker | null = null;
+  /** Which of an element's pseudo-elements this box is. Its `el` is null —
+   *  it is no element — and its text box's is the element it hangs off, so
+   *  a click on a link's generated text or first letter is a click on the
+   *  link. */
+  pseudo: 'before' | 'after' | 'first-letter' | null = null;
 
   /**
    * The bounds of everything this box and its descendants draw, in document
@@ -316,6 +349,21 @@ export class Box {
   outOfFlow = false;
   /** Set on a float, for the same reason. */
   isFloat = false;
+  /** Where an out-of-flow box would have been in the flow it was taken
+   *  from — its static position (CSS 2.1 10.3.7, 10.6.4). */
+  staticPosition: StaticPosition | null = null;
+
+  /** A table's captions, above and below it: they are in the box's height,
+   *  and outside the table's own border and background (CSS 2.1 17.4). */
+  captionTop = 0;
+  captionBottom = 0;
+  /** A table whose borders collapse: the border each segment of its grid
+   *  carries, resolved once per build (`collapseTable`). */
+  collapsed: CollapsedTable | null = null;
+  /** Set on a table whose borders collapse, and on its cells: their border
+   *  widths are the halves the collapsing model leaves them, and the table
+   *  paints the borders rather than the boxes. */
+  bordersCollapsed = false;
 
   constructor(kind: BoxKind, el: Element | null, style: ComputedStyle) {
     this.kind = kind;
@@ -391,6 +439,13 @@ export interface BoxTree {
   controls: Box[];
   /** Every box carrying an `href`, for click and hover. */
   links: Box[];
+  /** Every element's box with a `background-image`, for the host to be
+   *  asked for: a document has a handful, and finding them was a walk over
+   *  every box after every build. */
+  backgrounds: Box[];
+  /** Whether any box is relatively positioned: where none is, layout skips
+   *  the walk that moves them. */
+  relative: boolean;
 }
 
 export interface BuildOptions {
@@ -447,6 +502,8 @@ class Builder {
   private _textBoxes: Box[] = [];
   private _controls: Box[] = [];
   private _links: Box[] = [];
+  private _backgrounds: Box[] = [];
+  private _relative = false;
   /** Counter stack for `<ol>` numbering, one entry per open list. */
   private _counters: number[] = [];
   /** The CSS counters in scope, for `counter()` in generated content. */
@@ -457,6 +514,10 @@ class Builder {
    *  space across element boundaries. */
   private _ws: Collapse = 'start';
   private _depth = 0;
+  /** The `::first-letter` whose letter is still to come, for the block
+   *  container whose first line has not begun. Null when there is none,
+   *  and once anything but a letter begins that line. */
+  private _firstLetter: LetterSearch | null = null;
 
   constructor(options: BuildOptions) {
     this._options = options;
@@ -484,6 +545,8 @@ class Builder {
       textBoxes: this._textBoxes,
       controls: this._controls,
       links: this._links,
+      backgrounds: this._backgrounds,
+      relative: this._relative || isRelative(rootStyle),
     };
   }
 
@@ -530,6 +593,7 @@ class Builder {
     );
     if (style.display === 'none') return;
     if (onlyColumns && style.display !== 'table-column') return;
+    if (isRelative(style)) this._relative = true;
     // before anything else of the element's, including its `::before`,
     // and for the element whatever box it makes (CSS 2.1 12.4)
     if (style.counterReset || style.counterIncrement) {
@@ -540,6 +604,8 @@ class Builder {
     // whose *absence* of a box still has to reach the inline layout.
     if (tag === 'br') {
       this._endLine();
+      // the first line ends with no letter on it (CSS 2.1 5.12.2)
+      this._abandonLetter();
       const box = new Box('break', el, style);
       into.append(box);
       this._push('\n', box);
@@ -557,6 +623,7 @@ class Builder {
     const kind = boxKindFor(style.display);
     const box = new Box(kind, el, style);
     into.append(box);
+    if (style.backgroundImage) this._backgrounds.push(box);
     if (style.position === 'absolute' || style.position === 'fixed')
       box.outOfFlow = true;
     else if (style.float !== 'none') box.isFloat = true;
@@ -568,7 +635,8 @@ class Builder {
     if (style.display === 'table-column') return;
 
     if (style.display === 'list-item') {
-      box.markerText = markerFor(el, style, this._counters);
+      const text = markerFor(el, style, this._counters);
+      if (text) box.marker = { text, layout: null, x: 0, y: 0 };
     }
     const opensCounter = tag === 'ol' || tag === 'ul';
     if (opensCounter) {
@@ -582,6 +650,22 @@ class Builder {
     const around = this._ws;
     if (flow === 'block') this._endLine();
     if (flow !== 'inline') this._ws = 'start';
+    // A first letter is looked for in the first line of a block container,
+    // down through its inline content and its first blocks. A float, a
+    // positioned box and a flex container are no part of that line, and
+    // an atomic inline is something other than a letter at its start
+    // (CSS 2.1 5.12.2). A block container with rules of its own takes the
+    // search over.
+    const outerLetter = this._firstLetter;
+    const skipped = flow === 'out' || flow === 'atomic' || kind === 'flex';
+    if (skipped) this._firstLetter = null;
+    // a block starts a line, and punctuation before it was on another
+    else if (flow === 'block' && outerLetter) giveBack(outerLetter);
+    const ownRules = hasFirstLetter(style.display)
+      ? this._options.cascade.firstLetterRules(el)
+      : null;
+    const ownLetter = ownRules ? { rules: ownRules, punctuation: [] } : null;
+    if (ownLetter) this._firstLetter = ownLetter;
     this._depth += 1;
     // a counter reset in here reaches the element's later children and not
     // past its end; `::before` and `::after` are children like any other
@@ -591,6 +675,7 @@ class Builder {
     this._pseudo(el, 'after', style, box);
     this._scopes.close();
     this._depth -= 1;
+    this._letterAfter(flow, skipped, outerLetter, ownLetter);
     if (flow !== 'inline') this._endLine();
     this._ws = after(flow, this._ws, around);
 
@@ -607,12 +692,14 @@ class Builder {
     const box = new Box('replaced', el, style);
     box.replaced = replaced;
     into.append(box);
+    if (style.backgroundImage) this._backgrounds.push(box);
     if (style.position === 'absolute' || style.position === 'fixed')
       box.outOfFlow = true;
     else if (style.float !== 'none') box.isFloat = true;
     const flow = flowOf(style, box);
     if (flow === 'block') this._endLine();
     this._ws = after(flow, this._ws, this._ws);
+    if (flow === 'atomic') this._abandonLetter();
 
     if (replaced === 'image') {
       // Both sources are CSS pixels — an image pixel is one, and so is an
@@ -669,6 +756,7 @@ class Builder {
   ): void {
     const style = this._options.cascade.pseudoStyleFor(el, which, elementStyle);
     if (!style || style.display === 'none') return;
+    if (isRelative(style)) this._relative = true;
     // a column renders no content, and generated content is all it would
     // hold; in a column group it is not a column either (CSS 2.1 17.2.1)
     if (
@@ -692,7 +780,14 @@ class Builder {
     const around = this._ws;
     if (flow === 'block') this._endLine();
     if (flow !== 'inline') this._ws = 'start';
+    // the first letter can be generated, and is looked for here as in an
+    // element of the same display
+    const outerLetter = this._firstLetter;
+    const skipped = flow === 'out' || flow === 'atomic';
+    if (skipped) this._firstLetter = null;
+    else if (flow === 'block' && outerLetter) giveBack(outerLetter);
     if (text) this._textNode(text, box, style, el);
+    this._letterAfter(flow, skipped, outerLetter, null);
     if (flow !== 'inline') this._endLine();
     this._ws = after(flow, this._ws, around);
   }
@@ -775,7 +870,9 @@ class Builder {
       text =
         ws === 'pre-line'
           ? data.replace(/[ \t]+/g, ' ').replace(/ *\n */g, '\n')
-          : data.replace(/[\t\n\r\f ]+/g, ' ');
+          : COLLAPSIBLE.test(data)
+            ? data.replace(/[\t\n\r\f ]+/g, ' ')
+            : data;
       // A space at the start of a line goes, and so does one after another
       // space, across element boundaries (CSS 2.1 16.6.1): `<p>\n  Hi` has
       // no space before the H, and `Hi <b> there</b>` has one between.
@@ -787,6 +884,94 @@ class Builder {
       this._ws = last === 32 ? 'space' : last === 10 ? 'start' : 'content';
     }
     text = transformText(text, style.textTransform);
+    const search = this._firstLetter;
+    const letter = search ? FIRST_LETTER.exec(text) : null;
+    if (!search || !letter) {
+      const punctuation = search ? PUNCTUATION_ONLY.exec(text) : null;
+      if (!search || !punctuation) {
+        this._textBox(text, into, style, owner);
+        return;
+      }
+      // punctuation the letter comes after, in a text of its own —
+      // `<q>`'s open quote — takes the letter's style, and gives it back
+      // if no letter follows on the line
+      const start = punctuation[1].length;
+      if (start > 0) this._textBox(text.slice(0, start), into, style, owner);
+      search.punctuation.push(
+        this._letterBox(search, text.slice(start), into, style, owner),
+      );
+      return;
+    }
+    // The first letter, with the punctuation around it, in a box of its
+    // own inside the box it was found in, and so inheriting from that
+    // (CSS 2.1 5.12.2): `<p><b>T</b>his` has a bold first letter.
+    this._firstLetter = null;
+    const start = letter[1].length;
+    const end = letter[0].length;
+    if (start > 0) this._textBox(text.slice(0, start), into, style, owner);
+    this._letterBox(search, text.slice(start, end), into, style, owner);
+    if (end < text.length) {
+      this._textBox(text.slice(end), into, style, owner);
+    }
+  }
+
+  /** A box of the first letter's style around `text`, in `into`. */
+  private _letterBox(
+    search: LetterSearch,
+    text: string,
+    into: Box,
+    style: ComputedStyle,
+    owner: Element | null,
+  ): { box: Box; text: Box; style: ComputedStyle } {
+    const cascade = this._options.cascade;
+    const letterStyle = cascade.firstLetterStyle(search.rules, style);
+    const box = new Box(boxKindFor(letterStyle.display), null, letterStyle);
+    box.pseudo = 'first-letter';
+    if (letterStyle.float !== 'none') box.isFloat = true;
+    into.append(box);
+    if (letterStyle.textTransform !== style.textTransform) {
+      text = transformText(text, letterStyle.textTransform);
+    }
+    return { box, text: this._textBox(text, box, letterStyle, owner), style };
+  }
+
+  /**
+   * Where the search for a first letter stands after a box. A box that was
+   * no part of the line — a float, a positioned box — leaves it where it
+   * was, and one that was something other than a letter on it ends it. A
+   * block that looked for a letter of its own and found its first line
+   * ended its parent's too, and one that found no line leaves the parent
+   * looking. A block ends the line it is on.
+   */
+  private _letterAfter(
+    flow: 'inline' | 'atomic' | 'block' | 'out',
+    skipped: boolean,
+    outer: LetterSearch | null,
+    own: LetterSearch | null,
+  ): void {
+    const lined = own !== null && this._firstLetter !== own;
+    if (own && !lined) this._abandonLetter();
+    if (skipped || own) this._firstLetter = skipped || !lined ? outer : null;
+    if (lined && !skipped && outer) giveBack(outer);
+    if (flow === 'atomic') this._abandonLetter();
+    else if (flow === 'block' && this._firstLetter) giveBack(this._firstLetter);
+  }
+
+  /** The first line ended, or began with something other than a letter:
+   *  there is no first letter, and punctuation that took its style gives
+   *  it back. */
+  private _abandonLetter(): void {
+    const search = this._firstLetter;
+    this._firstLetter = null;
+    if (search) giveBack(search);
+  }
+
+  private _textBox(
+    text: string,
+    into: Box,
+    style: ComputedStyle,
+    owner: Element | null,
+  ): Box {
     // The owning element rides on the text box, and from there onto the
     // `TextRun`: hit testing inside a paragraph has no rectangle to test —
     // an inline box is the runs on its lines — so the run is what has to
@@ -795,6 +980,7 @@ class Builder {
     box.text = text;
     into.append(box);
     this._push(text, box);
+    return box;
   }
 
   /**
@@ -944,6 +1130,59 @@ function transformText(
  *  start of a line, just after a space that may collapse, or after anything
  *  else. */
 type Collapse = 'start' | 'space' | 'content';
+
+/**
+ * A text's first letter, with the punctuation before and after it that CSS
+ * 2.1 5.12.2 counts in — the Ps, Pe, Pi, Pf and Po classes — and the white
+ * space before it in the first group. No match when the text ends, or
+ * reaches a space, before any letter: its first letter is in a later text,
+ * as browsers read it.
+ */
+const FIRST_LETTER =
+  /^([ \t\n\r\f\u00a0]*)(?:[\p{Ps}\p{Pe}\p{Pi}\p{Pf}\p{Po}]\p{M}*)*[^ \t\n\r\f\u00a0\p{Ps}\p{Pe}\p{Pi}\p{Pf}\p{Po}]\p{M}*(?:[\p{Ps}\p{Pe}\p{Pi}\p{Pf}\p{Po}]\p{M}*)*/u;
+
+/** A text that is punctuation and nothing else, but for the white space
+ *  before it in the first group. */
+const PUNCTUATION_ONLY =
+  /^([ \t\n\r\f\u00a0]*)(?:[\p{Ps}\p{Pe}\p{Pi}\p{Pf}\p{Po}]\p{M}*)+$/u;
+
+/** A `::first-letter` looking for its letter. */
+interface LetterSearch {
+  rules: FirstLetterRules;
+  /** Punctuation already in the letter's style, from texts that ended
+   *  before the letter came. */
+  punctuation: { box: Box; text: Box; style: ComputedStyle }[];
+}
+
+/** Put punctuation a search styled back in its own box and style: the
+ *  letter it was waiting for is not on its line. */
+function giveBack(search: LetterSearch): void {
+  for (const { box, text, style } of search.punctuation) {
+    const parent = box.parent;
+    if (!parent) continue;
+    const at = parent.children.indexOf(box);
+    if (at < 0) continue;
+    parent.children[at] = text;
+    text.parent = parent;
+    text.style = style;
+  }
+  search.punctuation.length = 0;
+}
+
+/** Whether a box of this display is a block container, which is what can
+ *  have a first letter. */
+function hasFirstLetter(display: ComputedStyle['display']): boolean {
+  switch (display) {
+    case 'block':
+    case 'inline-block':
+    case 'list-item':
+    case 'table-cell':
+    case 'table-caption':
+      return true;
+    default:
+      return false;
+  }
+}
 
 /**
  * How a box sits in its parent's inline content, for white space. An inline
@@ -1191,6 +1430,9 @@ function fixUp(box: Box, anonymous: AnonymousStyle): void {
     wrapOrphans(box, 'table-cell', (k) => k === 'table-cell', anonymous);
     return;
   }
+  // a column group holds its columns, which are where they belong, and the
+  // builder kept nothing else in it
+  if (box.style.display === 'table-column-group') return;
 
   if (!box.children.length) return;
   wrapTableParts(box, anonymous);
@@ -1285,6 +1527,14 @@ function isBlockLevel(box: Box): boolean {
       // An `inline-block` or `inline-flex` is a block *container* with an
       // inline-level outer role, so it belongs to the inline run around it.
       return !isInlineLevelDisplay(box.style.display);
+    case 'replaced':
+      // an image is inline unless it is told otherwise, and then it is a
+      // block: `img { display: block }`, which mail writes to lose the gap
+      // under its images, stacks them
+      return (
+        box.style.display !== 'inline' &&
+        !isInlineLevelDisplay(box.style.display)
+      );
     default:
       return false;
   }
@@ -1351,19 +1601,32 @@ function isDroppableWhitespace(box: Box): boolean {
   return box.kind === 'text' && !box.text.trim();
 }
 
+/** White space that collapsing would change: anything but a lone space.
+ *  Most of a document's text has none, and is its own collapsed form. */
+const COLLAPSIBLE = /[\t\n\r\f]| {2}/;
+
+function isRelative(style: ComputedStyle): boolean {
+  return style.position === 'relative' || style.position === 'sticky';
+}
+
 /** A box that belongs inside a table: a row group, a row, a cell, a
- *  caption or a column. */
+ *  caption or a column. Asked of every child of every box in a build, so
+ *  a text or an inline box is answered from its kind, without its style. */
 function isTablePart(box: Box): boolean {
-  if (box.outOfFlow || box.isFloat) return false;
-  const display = box.style.display;
-  return (
-    box.kind === 'table-row-group' ||
-    box.kind === 'table-row' ||
-    box.kind === 'table-cell' ||
-    box.kind === 'table-caption' ||
-    display === 'table-column' ||
-    display === 'table-column-group'
-  );
+  switch (box.kind) {
+    case 'table-row-group':
+    case 'table-row':
+    case 'table-cell':
+    case 'table-caption':
+      return !box.outOfFlow && !box.isFloat;
+    case 'block': {
+      if (box.outOfFlow || box.isFloat) return false;
+      const display = box.style.display;
+      return display === 'table-column' || display === 'table-column-group';
+    }
+    default:
+      return false;
+  }
 }
 
 /**

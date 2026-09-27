@@ -448,7 +448,31 @@ async function run(test: string): Promise<Outcome> {
   const source = readFileSync(path, 'utf8');
   const refs = referencesOf(source);
   if (refs.length === 0) return { test, result: 'no-ref' };
-  const { kind, href } = refs[0];
+  // References a test names side by side are alternatives, as WPT's own
+  // runner walks them: the test passes on the first it answers — a test
+  // whose right rendering depends on the font's x-height names one for
+  // each.
+  let first: Outcome | null = null;
+  let shot: Uint8ClampedArray | null = null;
+  const shotOf = async () => (shot ??= await shoot(path));
+  for (const reference of refs) {
+    const outcome = await against(test, path, source, reference, shotOf);
+    if (outcome.result === 'pass' || outcome.result === 'pass-blank') {
+      return outcome;
+    }
+    first ??= outcome;
+    if (outcome.result !== 'fail' && outcome.result !== 'fail-blank') break;
+  }
+  return first!;
+}
+
+async function against(
+  test: string,
+  path: string,
+  source: string,
+  { kind, href }: { kind: 'match' | 'mismatch'; href: string },
+  shotOf: () => Promise<Uint8ClampedArray>,
+): Promise<Outcome> {
   const refPath =
     href === BLANK
       ? BLANK
@@ -464,7 +488,7 @@ async function run(test: string): Promise<Outcome> {
     return { test, ref, kind, result: 'script' };
   }
   const started = performance.now();
-  const shot = await shoot(path);
+  const shot = await shotOf();
   let refShot = refShots.get(refPath);
   if (!refShot) {
     refShot = await shoot(refPath);

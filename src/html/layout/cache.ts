@@ -48,21 +48,20 @@ export class TextLayoutCache {
    * The layout for these inputs: one this pass has already made or used,
    * else one the pass before used, else the engine's.
    *
-   * A layout is filed under its width and its text, and found by comparing
-   * everything else it was made from, field by field. The first version
-   * spelled all of it into one string key, every field of every run, and
-   * that string was the cost: a pass over a 600 KB document asks for 8,800
-   * layouts of 15,400 runs, and building, hashing and comparing their keys
-   * was 3 MB of strings a pass and a tenth of an edit. The key is a fifth
-   * of that now, and a comparison allocates nothing.
+   * A layout is filed under its width and a summary of its text (`keyOf`),
+   * and found by comparing everything it was made from, field by field,
+   * text and all. The first version spelled all of it into one string key,
+   * every field of every run, and that string was the cost: a pass over a
+   * 600 KB document asks for 8,800 layouts of 15,400 runs. The text alone
+   * as the key was still the whole document built, flattened and hashed a
+   * pass; the comparison that finds the layout reads it once.
    */
   private _layout(
     content: TextRun[],
     style: Record<string, unknown>,
     options: Parameters<FontsLike['layout']>[2],
   ): TextLayoutLike {
-    let key = `${options.maxWidth}\u0001`;
-    for (const run of content) key += run.text;
+    const key = keyOf(content, options.maxWidth);
     const now = this._now.get(key);
     let kept = now && find(now, content, style, options);
     if (kept) return kept.layout;
@@ -78,6 +77,31 @@ export class TextLayoutCache {
     else this._now.set(key, [kept]);
     return kept.layout;
   }
+}
+
+/** How many characters of a text's start and of its end go into its key. */
+const KEY_EDGE = 16;
+
+/**
+ * What a layout is filed under: its width, its runs' count, its text's
+ * length, and the text's first and last few characters. Paragraphs that
+ * share all of that are told apart by `find`; a key of the whole text was
+ * the text copied and hashed for every layout of every pass.
+ */
+function keyOf(content: readonly TextRun[], maxWidth: unknown): string {
+  let length = 0;
+  for (const run of content) length += run.text.length;
+  let head = '';
+  for (let i = 0; i < content.length && head.length < KEY_EDGE; i += 1) {
+    head += content[i].text.slice(0, KEY_EDGE - head.length);
+  }
+  let tail = '';
+  for (let i = content.length - 1; i >= 0 && tail.length < KEY_EDGE; i -= 1) {
+    const text = content[i].text;
+    tail =
+      text.slice(Math.max(0, text.length - (KEY_EDGE - tail.length))) + tail;
+  }
+  return `${maxWidth}\u0001${content.length}\u0001${length}\u0001${head}\u0001${tail}`;
 }
 
 /** A layout, and a copy of everything it was made from. */

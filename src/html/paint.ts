@@ -30,8 +30,10 @@ import { inkColor, isPct, isTransparent } from './css/values.js';
 import type { Len } from './css/values.js';
 import type { ComputedStyle } from './css/style.js';
 import { Box } from './layout/boxes.js';
-import type { BoxTree, LineBox } from './layout/boxes.js';
-import { depthOf, layoutOffsets } from './layout/inline.js';
+import type { BoxTree, LineBox, Marker } from './layout/boxes.js';
+import { depthOf, layoutOffsetOf, layoutOffsets } from './layout/inline.js';
+import { halves } from './layout/collapse.js';
+import type { CollapsedBorder } from './layout/collapse.js';
 
 export interface Rect {
   x: number;
@@ -78,62 +80,84 @@ export interface PaintOptions {
   canvas?: Rect;
   /** @internal The box whose background went to the canvas instead. */
   canvasSource?: Box | null;
+  /** @internal The boxes clipping what is being painted, outermost first. */
+  clips?: ClipLevel[];
 }
 
 /**
  * The bounds of everything a box and its descendants draw, in document
- * coordinates. Computed once per layout; the paint pass reads it.
+ * coordinates, into `boundsX`…. Computed once per layout; the paint pass
+ * reads it. Returns how far down the box's content reaches, for the
+ * document's height — handed up rather than kept on every box, where
+ * writing it and reading it back cost this walk a fifth of its time.
  */
-export function computePaintBounds(box: Box): Rect {
+export function computePaintBounds(box: Box): number {
   let x1 = box.x;
   let y1 = box.y;
   let x2 = box.x + box.width;
   let y2 = box.y + box.height;
-  if (box.lines) {
-    for (const line of box.lines) {
+  // How far down the content reaches, for the document's height: the
+  // border box, and every box and line under it, but not past a box that
+  // clips what it holds — where the scrollable overflow ends. Out-of-flow
+  // boxes are the layout's to count.
+  let bottom = y2;
+  const lines = box.lines;
+  if (lines) {
+    let tallest = 0;
+    for (const line of lines) {
       x1 = Math.min(x1, line.x);
       y1 = Math.min(y1, line.y);
       x2 = Math.max(x2, line.x + line.width);
       y2 = Math.max(y2, line.y + line.height);
+      tallest = Math.max(tallest, line.height);
       for (const placed of line.atomics) {
-        const bounds = computePaintBounds(placed.box);
-        x1 = Math.min(x1, bounds.x);
-        y1 = Math.min(y1, bounds.y);
-        x2 = Math.max(x2, bounds.x + bounds.width);
-        y2 = Math.max(y2, bounds.y + bounds.height);
+        const atomic = placed.box;
+        computePaintBounds(atomic);
+        x1 = Math.min(x1, atomic.boundsX);
+        y1 = Math.min(y1, atomic.boundsY);
+        x2 = Math.max(x2, atomic.boundsX + atomic.boundsWidth);
+        y2 = Math.max(y2, atomic.boundsY + atomic.boundsHeight);
       }
     }
+    box.maxLineHeight = tallest;
+    if (lines.length) {
+      const last = lines[lines.length - 1];
+      bottom = Math.max(bottom, last.y + last.height);
+    }
   }
-  if (box.markerLayout) {
+  const marker = box.marker;
+  if (marker?.layout) {
     // The marker hangs in the padding to the left of the content, so it is
     // outside the border box and has to widen the ink bounds or a repaint
     // clipped to a narrow strip drops it.
-    x1 = Math.min(x1, box.markerX);
-    y1 = Math.min(y1, box.markerY);
-    x2 = Math.max(x2, box.markerX + box.markerLayout.width);
-    y2 = Math.max(y2, box.markerY + box.markerLayout.height);
+    x1 = Math.min(x1, marker.x);
+    y1 = Math.min(y1, marker.y);
+    x2 = Math.max(x2, marker.x + marker.layout.width);
+    y2 = Math.max(y2, marker.y + marker.layout.height);
   }
   for (const child of box.children) {
     if (child.kind === 'text' || child.kind === 'break') continue;
-    const bounds = computePaintBounds(child);
-    x1 = Math.min(x1, bounds.x);
-    y1 = Math.min(y1, bounds.y);
-    x2 = Math.max(x2, bounds.x + bounds.width);
-    y2 = Math.max(y2, bounds.y + bounds.height);
+    const reach = computePaintBounds(child);
+    if (!child.outOfFlow) bottom = Math.max(bottom, reach);
+    x1 = Math.min(x1, child.boundsX);
+    y1 = Math.min(y1, child.boundsY);
+    x2 = Math.max(x2, child.boundsX + child.boundsWidth);
+    y2 = Math.max(y2, child.boundsY + child.boundsHeight);
   }
   box.boundsX = x1;
   box.boundsY = y1;
   box.boundsWidth = x2 - x1;
   box.boundsHeight = y2 - y1;
-
-  if (box.lines) {
-    let tallest = 0;
-    for (const line of box.lines) tallest = Math.max(tallest, line.height);
-    box.maxLineHeight = tallest;
-  }
   buildChildIndexes(box);
-
-  return { x: x1, y: y1, width: box.boundsWidth, height: box.boundsHeight };
+  // whether the box clips only matters where its content reaches past it,
+  // and its style is one more object a walk of every box would read
+  const own = box.y + box.height;
+  if (bottom <= own) return own;
+  const style = box.style;
+  return box.parent &&
+    (style.overflowX !== 'visible' || style.overflowY !== 'visible')
+    ? own
+    : bottom;
 }
 
 /** Children lists past this size get the sorted viewport index; below it a
@@ -147,8 +171,8 @@ function buildChildIndexes(box: Box): void {
   let paintable = 0;
   for (const child of box.children) {
     if (child.kind === 'text' || child.kind === 'break') continue;
-    if (child.outOfFlow) (positioned ??= []).push(child);
-    else paintable += 1;
+    if (layered(box, child)) (positioned ??= []).push(child);
+    else if (!onLine(box, child)) paintable += 1;
   }
   if (positioned) {
     // Pre-sorted once per layout instead of filtered and sorted per paint.
@@ -158,9 +182,8 @@ function buildChildIndexes(box: Box): void {
   if (paintable < PAINT_INDEX_MIN) return;
   const boxes: Box[] = [];
   for (const child of box.children) {
-    if (child.kind === 'text' || child.kind === 'break' || child.outOfFlow)
-      continue;
-    boxes.push(child);
+    if (child.kind === 'text' || child.kind === 'break') continue;
+    if (!layered(box, child) && !onLine(box, child)) boxes.push(child);
   }
   const order = boxes.map((_, i) => i);
   order.sort((a, b) => boxes[a].boundsY - boxes[b].boundsY);
@@ -281,14 +304,60 @@ function paintCanvas(
 function paddingBox(box: Box, options: PaintOptions): Rect {
   return {
     x: box.x + box.borderLeft + options.originX,
-    y: box.y + box.borderTop + options.originY,
+    y: frameY(box) + box.borderTop + options.originY,
     width: box.width - box.borderLeft - box.borderRight,
-    height: box.height - box.borderTop - box.borderBottom,
+    height: frameHeight(box) - box.borderTop - box.borderBottom,
   };
+}
+
+/** What the background and border painters read of a box — which an
+ *  inline box's fragment on a line is as well. */
+type Frame = Pick<
+  Box,
+  | 'x'
+  | 'y'
+  | 'width'
+  | 'height'
+  | 'captionTop'
+  | 'captionBottom'
+  | 'borderTop'
+  | 'borderRight'
+  | 'borderBottom'
+  | 'borderLeft'
+  | 'style'
+>;
+
+/** Where a box's background and border go: its border box, which for a
+ *  table leaves out the captions around it (CSS 2.1 17.4). */
+function frameY(box: Frame): number {
+  return box.y + box.captionTop;
+}
+
+function frameHeight(box: Frame): number {
+  return box.height - box.captionTop - box.captionBottom;
 }
 
 function paintBox(ctx: PaintContext, box: Box, options: PaintOptions): void {
   if (!intersects(box, options)) return;
+  // `clip` shows the part of an absolutely positioned box it names, its own
+  // background and borders among it (CSS 2.1 11.1.2)
+  const clip = box.outOfFlow && box.style.clip ? clipOf(box, options) : null;
+  if (clip) {
+    if (clip.w <= 0 || clip.h <= 0) return;
+    if (!pushClip(ctx, clip, null)) {
+      paintContent(ctx, box, options);
+      return;
+    }
+  }
+  paintContent(ctx, box, options);
+  if (clip) ctx.restore();
+}
+
+function paintContent(
+  ctx: PaintContext,
+  box: Box,
+  options: PaintOptions,
+): void {
   const style = box.style;
   const visible = style.visibility === 'visible';
 
@@ -299,9 +368,9 @@ function paintBox(ctx: PaintContext, box: Box, options: PaintOptions): void {
         const area = clampRect(
           options,
           Math.round(box.x + options.originX),
-          Math.round(box.y + options.originY),
+          Math.round(frameY(box) + options.originY),
           Math.ceil(box.width),
-          Math.ceil(box.height),
+          Math.ceil(frameHeight(box)),
         );
         if (area) {
           paintBackgroundImage(
@@ -314,9 +383,31 @@ function paintBox(ctx: PaintContext, box: Box, options: PaintOptions): void {
         }
       }
     }
-    paintBorders(ctx, box, options);
-    if (box.markerText) paintMarker(ctx, box, options);
+    if (!box.bordersCollapsed) paintBorders(ctx, box, options);
+    if (box.marker) paintMarker(ctx, box.marker, options);
     if (box.replaced === 'image') paintImage(ctx, box, options);
+  }
+
+  // A box that does not let its content overflow clips it to its padding
+  // box, rounded where the box is (CSS 2.1 11.1.1). Everything inside is
+  // clipped but a positioned box whose containing block is outside: that
+  // is painted once this clip is gone (`paintPositioned`).
+  let level: ClipLevel | null = null;
+  if (clipsOverflow(box)) {
+    // out to whole pixels, so that ink at a fractional edge is not cut
+    const inner = paddingBox(box, options);
+    const x = Math.floor(inner.x);
+    const y = Math.floor(inner.y);
+    const rect = {
+      x,
+      y,
+      w: Math.ceil(inner.x + inner.width) - x,
+      h: Math.ceil(inner.y + inner.height) - y,
+    };
+    if (pushClip(ctx, rect, innerRadii(box))) {
+      level = { box, deferred: [] };
+      (options.clips ??= []).push(level);
+    }
   }
 
   // In-flow and floated descendants first, then the inline content, then the
@@ -335,16 +426,207 @@ function paintBox(ctx: PaintContext, box: Box, options: PaintOptions): void {
   } else {
     for (const child of box.children) {
       if (child.kind === 'text' || child.kind === 'break') continue;
-      if (child.outOfFlow) continue;
+      if (layered(box, child) || onLine(box, child)) continue;
       paintBox(ctx, child, options);
     }
   }
 
   if (box.lines && visible) paintLines(ctx, box, options);
+  if (box.collapsed && visible) paintCollapsedBorders(ctx, box, options);
 
   if (box.positionedPaint) {
-    for (const child of box.positionedPaint) paintBox(ctx, child, options);
+    for (const child of box.positionedPaint) {
+      paintPositioned(ctx, child, options);
+    }
   }
+  if (level) {
+    ctx.restore();
+    options.clips!.pop();
+    for (const child of level.deferred) paintPositioned(ctx, child, options);
+  }
+}
+
+/** A box clipping what it holds, and the positioned boxes inside it that
+ *  escape the clip, waiting for it to end. */
+interface ClipLevel {
+  box: Box;
+  deferred: Box[];
+}
+
+/**
+ * A positioned box, painted under the clips of the boxes its containing
+ * block is inside and no others (CSS 2.1 11.1.1): a clip it escapes puts
+ * it off until that clip ends. A fixed box escapes them all.
+ */
+function paintPositioned(
+  ctx: PaintContext,
+  box: Box,
+  options: PaintOptions,
+): void {
+  const clips = options.clips;
+  if (clips?.length && box.outOfFlow) {
+    let escaped = clips.length;
+    if (box.style.position !== 'fixed') {
+      let containing = box.parent;
+      while (containing?.parent && containing.style.position === 'static') {
+        containing = containing.parent;
+      }
+      escaped = 0;
+      for (let i = clips.length - 1; i >= 0; i -= 1) {
+        if (holds(clips[i].box, containing)) break;
+        escaped += 1;
+      }
+    }
+    if (escaped > 0) {
+      clips[clips.length - escaped].deferred.push(box);
+      return;
+    }
+  }
+  paintBox(ctx, box, options);
+}
+
+/** Whether `inner` is `outer` or inside it. */
+function holds(outer: Box, inner: Box | null): boolean {
+  for (let at = inner; at; at = at.parent) if (at === outer) return true;
+  return false;
+}
+
+/**
+ * Whether a box clips its content: `overflow` other than `visible`, on a
+ * block container (CSS 2.1 11.1.1) — not a table, a row or a row group.
+ * The root element's `overflow` is the viewport's, and so is the
+ * `<body>`'s where the root's is `visible`, an `<html>` the markup left out
+ * among them; the viewport here is the element, which clips anyway.
+ */
+function clipsOverflow(box: Box): boolean {
+  const style = box.style;
+  if (style.overflowX === 'visible' && style.overflowY === 'visible') {
+    return false;
+  }
+  const parent = box.parent;
+  if (!parent) return false;
+  switch (box.kind) {
+    case 'block':
+    case 'table-cell':
+    case 'table-caption':
+    case 'flex':
+      break;
+    default:
+      return false;
+  }
+  const name = box.el?.name;
+  if (name === 'html') return false;
+  if (name === 'body') {
+    if (parent.el?.name !== 'html') return !!parent.parent;
+    return (
+      parent.style.overflowX !== 'visible' ||
+      parent.style.overflowY !== 'visible'
+    );
+  }
+  return true;
+}
+
+/** A box's `clip` region, in window coordinates. */
+function clipOf(
+  box: Box,
+  options: PaintOptions,
+): { x: number; y: number; w: number; h: number } {
+  const clip = box.style.clip!;
+  const left = clip.left ?? 0;
+  const top = clip.top ?? 0;
+  const right = clip.right ?? box.width;
+  const bottom = clip.bottom ?? box.height;
+  const x = Math.round(box.x + options.originX + left);
+  const y = Math.round(box.y + options.originY + top);
+  return {
+    x,
+    y,
+    w: Math.round(box.x + options.originX + right) - x,
+    h: Math.round(box.y + options.originY + bottom) - y,
+  };
+}
+
+/**
+ * The radii of a box's padding edge — its border radii less the borders —
+ * for a clip, or null where a rectangle clips the same: padding at least a
+ * corner's radius on both of its sides keeps the content box clear of the
+ * corner, so only content overflowing it both ways at once could tell them
+ * apart. A rounded clip is a mask the size of the window on X11, and a code
+ * block — rounded, padded, `overflow: hidden` — had one made for every
+ * paint.
+ */
+function innerRadii(box: Box): number[] | null {
+  const radii = box.style.borderRadius;
+  if (!radii.some((r) => r > 0)) return null;
+  const [tl, tr, br, bl] = radii;
+  const inner = [
+    Math.max(0, tl - Math.max(box.borderTop, box.borderLeft)),
+    Math.max(0, tr - Math.max(box.borderTop, box.borderRight)),
+    Math.max(0, br - Math.max(box.borderBottom, box.borderRight)),
+    Math.max(0, bl - Math.max(box.borderBottom, box.borderLeft)),
+  ];
+  if (
+    clearOf(inner[0], box.padLeft, box.padTop) &&
+    clearOf(inner[1], box.padRight, box.padTop) &&
+    clearOf(inner[2], box.padRight, box.padBottom) &&
+    clearOf(inner[3], box.padLeft, box.padBottom)
+  ) {
+    return null;
+  }
+  return inner;
+}
+
+/** Whether padding of `x` and `y` beside a corner of radius `r` keeps the
+ *  content box out of it. */
+function clearOf(r: number, x: number, y: number): boolean {
+  return x >= r && y >= r;
+}
+
+/** Clip what follows to a rectangle, rounded where `radii` are: false
+ *  where the context cannot clip, and nothing was pushed. */
+function pushClip(
+  ctx: PaintContext,
+  rect: { x: number; y: number; w: number; h: number },
+  radii: number[] | null,
+): boolean {
+  if (!ctx.beginPath || !ctx.rect || !ctx.clip) return false;
+  ctx.save();
+  ctx.beginPath();
+  const w = Math.max(0, rect.w);
+  const h = Math.max(0, rect.h);
+  if (radii && ctx.roundRect) ctx.roundRect(rect.x, rect.y, w, h, radii);
+  else ctx.rect(rect.x, rect.y, w, h);
+  ctx.clip();
+  return true;
+}
+
+/**
+ * Whether a child is painted with the positioned boxes, after the flow
+ * rather than in it: an absolutely positioned box, and a relatively
+ * positioned block, which CSS paints among them in document order (CSS 2.1
+ * Appendix E) — a relative box after an absolute one covers it. An inline
+ * or an inline-block is painted by its line.
+ */
+function layered(parent: Box, child: Box): boolean {
+  if (child.outOfFlow) return true;
+  const position = child.style.position;
+  if (position !== 'relative' && position !== 'sticky') return false;
+  return child.kind !== 'inline' && !onLine(parent, child);
+}
+
+/**
+ * Whether a child is painted by its parent's lines rather than as a child:
+ * an inline-block or an image in a line of text is placed on the line, and
+ * `paintLines` paints it there. Painted as a child as well, its text was
+ * drawn twice — darker at every antialiased edge — and a translucent
+ * background had its alpha doubled.
+ */
+function onLine(parent: Box, child: Box): boolean {
+  if (parent.lines === null && parent.kind !== 'inline') return false;
+  if (child.isFloat || child.outOfFlow) return false;
+  return (
+    child.kind !== 'inline' && child.kind !== 'text' && child.kind !== 'break'
+  );
 }
 
 function byZIndex(a: Box, b: Box): number {
@@ -402,7 +684,7 @@ function clampRect(
 
 function paintBackground(
   ctx: PaintContext,
-  box: Box,
+  box: Frame,
   options: PaintOptions,
 ): void {
   const color = box.style.backgroundColor;
@@ -410,9 +692,9 @@ function paintBackground(
   const rect = clampRect(
     options,
     Math.round(box.x + options.originX),
-    Math.round(box.y + options.originY),
+    Math.round(frameY(box) + options.originY),
     Math.ceil(box.width),
-    Math.ceil(box.height),
+    Math.ceil(frameHeight(box)),
   );
   if (!rect) return;
   ctx.fillStyle = inkColor(color as string, box.style.color);
@@ -505,14 +787,14 @@ function paintBackgroundImage(
  */
 function paintBorders(
   ctx: PaintContext,
-  box: Box,
+  box: Frame,
   options: PaintOptions,
 ): void {
   const s = box.style;
   const x = Math.round(box.x + options.originX);
-  const y = Math.round(box.y + options.originY);
+  const y = Math.round(frameY(box) + options.originY);
   const w = Math.ceil(box.width);
-  const h = Math.ceil(box.height);
+  const h = Math.ceil(frameHeight(box));
   if (w <= 0 || h <= 0) return;
 
   const edge = (
@@ -569,6 +851,79 @@ function paintBorders(
   }
 }
 
+/**
+ * A table's collapsed borders: one per segment of its grid, centred on the
+ * line, reaching across the borders it meets at either end. The winners
+ * are painted last, so where two cross, the corner is the one that won
+ * (CSS 2.1 17.6.2.1). Painted over the cells, as the table's borders are.
+ */
+function paintCollapsedBorders(
+  ctx: PaintContext,
+  table: Box,
+  options: PaintOptions,
+): void {
+  const grid = table.collapsed!;
+  const { rows: R, columns: C, lineX, lineY, horizontal, vertical } = grid;
+  if (lineX.length !== C + 1 || lineY.length !== R + 1) return;
+  const ox = Math.round(table.x + options.originX);
+  const oy = Math.round(table.y + options.originY);
+  const widthOf = (b: CollapsedBorder | null): number => (b ? b.width : 0);
+  const h = (line: number, c: number): number =>
+    c < 0 || c >= C ? 0 : widthOf(horizontal[line * C + c]);
+  const v = (r: number, line: number): number =>
+    r < 0 || r >= R ? 0 : widthOf(vertical[r * (C + 1) + line]);
+  const segments: {
+    border: CollapsedBorder;
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+    horizontal: boolean;
+  }[] = [];
+  for (let line = 0; line <= R; line += 1) {
+    for (let c = 0; c < C; c += 1) {
+      const border = horizontal[line * C + c];
+      if (!border) continue;
+      const start = halves(Math.max(v(line - 1, c), v(line, c)))[0];
+      const end = halves(Math.max(v(line - 1, c + 1), v(line, c + 1)))[1];
+      const x = ox + Math.round(lineX[c]) - start;
+      segments.push({
+        border,
+        x,
+        y: oy + Math.round(lineY[line]) - halves(border.width)[0],
+        w: ox + Math.round(lineX[c + 1]) + end - x,
+        h: border.width,
+        horizontal: true,
+      });
+    }
+  }
+  for (let r = 0; r < R; r += 1) {
+    for (let line = 0; line <= C; line += 1) {
+      const border = vertical[r * (C + 1) + line];
+      if (!border) continue;
+      const start = halves(Math.max(h(r, line - 1), h(r, line)))[0];
+      const end = halves(Math.max(h(r + 1, line - 1), h(r + 1, line)))[1];
+      const y = oy + Math.round(lineY[r]) - start;
+      segments.push({
+        border,
+        x: ox + Math.round(lineX[line]) - halves(border.width)[0],
+        y,
+        w: border.width,
+        h: oy + Math.round(lineY[r + 1]) + end - y,
+        horizontal: false,
+      });
+    }
+  }
+  segments.sort((a, b) => a.border.rank - b.border.rank);
+  for (const s of segments) {
+    if (isTransparent(s.border.color)) continue;
+    const rect = clampRect(options, s.x, s.y, s.w, s.h);
+    if (!rect) continue;
+    ctx.fillStyle = s.border.color;
+    fillEdge(ctx, rect, s.horizontal ? s.x : s.y, s.border.style, s.horizontal);
+  }
+}
+
 function fillEdge(
   ctx: PaintContext,
   rect: { x: number; y: number; w: number; h: number },
@@ -611,12 +966,16 @@ function fillEdge(
 }
 
 /** A list item's bullet or number, in the margin. */
-function paintMarker(ctx: PaintContext, box: Box, options: PaintOptions): void {
-  const marker = box.markerLayout;
-  if (!marker) return;
-  const x = box.markerX + options.originX;
-  const y = box.markerY + options.originY;
-  marker.draw(ctx, x, y);
+function paintMarker(
+  ctx: PaintContext,
+  marker: Marker,
+  options: PaintOptions,
+): void {
+  marker.layout?.draw(
+    ctx,
+    marker.x + options.originX,
+    marker.y + options.originY,
+  );
 }
 
 function paintImage(ctx: PaintContext, box: Box, options: PaintOptions): void {
@@ -803,7 +1162,7 @@ function paintInlineBoxes(
   }
   for (const edge of line.edges ?? []) {
     const box = edge.box;
-    if (!box.decorated) continue;
+    if (!box.decoration) continue;
     // The element's `direction` says which side its start is on, whatever
     // its text reads as (CSS 2.1 8.6); the edge's margin is outside the box,
     // its border and padding inside.
@@ -826,9 +1185,9 @@ function paintInlineBoxes(
   for (const box of boxes) {
     if (box.style.visibility !== 'visible') continue;
     const f = (fragments as Map<Box, InlineFragment>).get(box)!;
-    const top = baseline - box.contentAscent - box.padTop - box.borderTop;
-    const bottom =
-      baseline + box.contentDescent + box.padBottom + box.borderBottom;
+    const face = box.decoration!;
+    const top = baseline - face.ascent - box.padTop - box.borderTop;
+    const bottom = baseline + face.descent + box.padBottom + box.borderBottom;
     // Sliced where the box goes on to another line: no border and no
     // rounded corner on a side it does not end on (`box-decoration-break:
     // slice`, CSS's default). Left and right swap for right-to-left text.
@@ -836,11 +1195,13 @@ function paintInlineBoxes(
     const leftEnds = rtl ? f.end : f.start;
     const rightEnds = rtl ? f.start : f.end;
     const [tl, tr, br, bl] = box.style.borderRadius;
-    const fragment = {
+    const fragment: Frame = {
       x: f.left,
       y: top,
       width: f.right - f.left,
       height: bottom - top,
+      captionTop: 0,
+      captionBottom: 0,
       borderTop: box.borderTop,
       borderBottom: box.borderBottom,
       borderLeft: leftEnds ? box.borderLeft : 0,
@@ -854,7 +1215,7 @@ function paintInlineBoxes(
           leftEnds ? bl : 0,
         ],
       },
-    } as unknown as Box;
+    };
     if (fragment.width <= 0) continue;
     paintBackground(ctx, fragment, options);
     paintBorders(ctx, fragment, options);
@@ -878,7 +1239,7 @@ function decoratedAncestors(box: Box): Box[] {
   if (found) return found;
   found = [];
   for (let at = box.parent; at && at.kind === 'inline'; at = at.parent) {
-    if (at.decorated) found.push(at);
+    if (at.decoration) found.push(at);
   }
   DECORATED.set(box, found);
   return found;
@@ -907,8 +1268,8 @@ function paintSelection(
     const to = Math.min(range.end, text.textEnd);
     if (to <= from) continue;
     const offsets = layoutOffsets(text.layout);
-    const layoutFrom = text.layoutStart + (from - text.textStart);
-    const layoutTo = text.layoutStart + (to - text.textStart);
+    const layoutFrom = layoutOffsetOf(text, from);
+    const layoutTo = layoutOffsetOf(text, to, true);
     for (const band of lineBands(
       text.layout,
       natural,

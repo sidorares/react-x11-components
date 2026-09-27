@@ -62,7 +62,11 @@ import { TextLayoutCache } from './layout/cache.js';
 import type { FontsLike } from './layout/inline.js';
 // Through the inline module rather than a second cache: the offsets table for
 // a layout is built once, on the first selection that needs it.
-import { layoutOffsets as layoutOffsetsOf } from './layout/inline.js';
+import {
+  documentOffsetOf,
+  layoutOffsetOf,
+  layoutOffsets as layoutOffsetsOf,
+} from './layout/inline.js';
 import { lineBands as bandsFor } from '../richtext/runs.js';
 import { paintDocument, queryChildIndex } from './paint.js';
 import type { PaintContext } from './paint.js';
@@ -312,12 +316,13 @@ export class HtmlViewNode extends Node {
    * cascade has run, where an `<img>` is known from the markup; the store
    * asks once a URL, so a tree built again asks nothing new.
    */
-  private _requestBackgrounds(box: Box): void {
-    const url = box.style.backgroundImage;
-    if (url && box.el) {
-      this._resources.request({ url, kind: 'image', element: box.el });
+  private _requestBackgrounds(tree: BoxTree): void {
+    for (const box of tree.backgrounds) {
+      const url = box.style.backgroundImage;
+      if (url && box.el) {
+        this._resources.request({ url, kind: 'image', element: box.el });
+      }
     }
-    for (const child of box.children) this._requestBackgrounds(child);
   }
 
   /** Rebuild the cascade — the document's sheets plus the host's. */
@@ -357,12 +362,14 @@ export class HtmlViewNode extends Node {
       order += sheet.rules.length + 1;
       sheets.push(sheet);
     }
+    const fonts = this._fonts();
     this._cascade = new Cascade(
       sheets,
       look,
       width,
       this._viewportHeight(),
       this._scale,
+      fonts ? (family, size) => xHeightOf(fonts, family, size) : null,
     );
     this._cascade.setPointer({
       hovered: new Set(this._hovered),
@@ -445,7 +452,7 @@ export class HtmlViewNode extends Node {
       this._textPoints = null;
       this._pointsAreUnits = null;
       this._laidOutWidth = -1;
-      this._requestBackgrounds(this._tree.root);
+      this._requestBackgrounds(this._tree);
     }
 
     if (
@@ -884,7 +891,7 @@ function nearestText(box: Box, x: number, y: number): number | null {
       const units = offsets.length
         ? offsets[Math.max(0, Math.min(local, offsets.length - 1))]
         : local;
-      best = text.textStart + Math.max(0, units - text.layoutStart);
+      best = Math.max(text.textStart, documentOffsetOf(text, units));
     }
   };
 
@@ -995,7 +1002,7 @@ function caretAt(
         for (const text of line.texts) {
           if (units < text.textStart || units > text.textEnd) continue;
           const offsets = layoutOffsetsOf(text.layout);
-          const layoutUnits = text.layoutStart + (units - text.textStart);
+          const layoutUnits = layoutOffsetOf(text, units);
           const caret = text.layout.caretPosition(
             codePointAtOffset(offsets, layoutUnits),
           );
@@ -1053,8 +1060,8 @@ function collectBands(
             text.layout,
             natural,
             offsets,
-            text.layoutStart + (a - text.textStart),
-            text.layoutStart + (b - text.textStart),
+            layoutOffsetOf(text, a),
+            layoutOffsetOf(text, b, true),
           )) {
             out.push({
               x: dx + band.x + text.drawX,
@@ -1168,3 +1175,20 @@ function ownerOf(boxes: readonly Box[], index: number): Element | null {
 }
 
 export type { ControlRect, ReplacedKind, ResourceRequest, ResourceResult };
+
+/** A font's x-height at a size, as the engine reports it: null where the
+ *  face states none, or the engine does not say. */
+function xHeightOf(
+  fonts: FontsLike,
+  family: string,
+  size: number,
+): number | null {
+  try {
+    const metrics = fonts.match(family, { size }).metrics(size) as {
+      xHeight?: number | null;
+    };
+    return typeof metrics.xHeight === 'number' ? metrics.xHeight : null;
+  } catch {
+    return null;
+  }
+}
