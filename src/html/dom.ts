@@ -112,6 +112,13 @@ export function attr(el: Element, name: string): string | undefined {
   return el.attribs?.[name];
 }
 
+/** Where an image element's image is: an `<img>`'s `src`, an `<object>`'s
+ *  `data` — which is shown as an image when it is one (HTML's "the object
+ *  element"), and as the element's fallback content otherwise. */
+export function imageUrlOf(el: Element): string | undefined {
+  return tagOf(el) === 'object' ? attr(el, 'data') : attr(el, 'src');
+}
+
 /** The text under a node, uncollapsed — what `<style>` hands the CSS parser
  *  and what a `<script>` seam is given. */
 export function rawTextOf(node: AnyNode): string {
@@ -301,8 +308,8 @@ export class HtmlSource {
         }
       } else if (tag === 'script') {
         facts.scripts.push(el);
-      } else if (tag === 'img' || tag === 'image') {
-        if (attr(el, 'src')) facts.resources.push(el);
+      } else if (tag === 'img' || tag === 'image' || tag === 'object') {
+        if (imageUrlOf(el)) facts.resources.push(el);
       } else if (tag === 'title' && facts.title === null) {
         facts.title = rawTextOf(el).trim();
       }

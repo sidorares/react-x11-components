@@ -642,7 +642,13 @@ class Builder {
       return;
     }
 
-    const replaced = replacedKind(el, tag);
+    // an `<object>` is its image once it has one, and its content until
+    const replaced =
+      tag === 'object'
+        ? this._options.imageSize(el)
+          ? 'image'
+          : 'none'
+        : replacedKind(el, tag);
     if (replaced !== 'none') {
       this._replaced(el, tag, replaced, style, into);
       return;

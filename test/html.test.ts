@@ -4683,6 +4683,23 @@ test('an SVG image is sized by what its document says, and a PNG still decodes',
   assert.deepStrictEqual(size('p'), [10, 10]);
 });
 
+test('an object is its image once its data is one, and its content until then', async () => {
+  const { el } = await renderWithBytes(
+    '<style>body{margin:0}</style>' +
+      '<object id="o" data="r.png" type="image/png">fallback</object>' +
+      '<object id="f" data="gone.png">still here</object>',
+    { 'r.png': RED_PNG },
+  );
+  await waitFor(() =>
+    assert.strictEqual((boxOf(el, 'o') as ReplacedBox).replaced, 'image'),
+  );
+  const o = boxOf(el, 'o');
+  assert.deepStrictEqual([o.width, o.height], [10, 10]);
+  assert.strictEqual((boxOf(el, 'f') as ReplacedBox).replaced, 'none');
+  assert.ok(el.textContent().includes('still here'), 'the fallback content');
+  assert.ok(!el.textContent().includes('fallback'), 'not the loaded one');
+});
+
 metric(
   'an SVG draws its viewport: percentages, the fit of its viewBox, the clip and currentColor',
   async () => {
