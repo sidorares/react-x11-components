@@ -8359,6 +8359,61 @@ metric(
   },
 );
 
+test('list-style-image and the list-style shorthand are read', async () => {
+  // CSS 2.1 12.5.1: a `none` is whichever of the type and the image is not
+  // otherwise given, both where neither is, and invalid where both are
+  const { node } = await render(
+    '<style>li{list-style:disc outside}</style><ul>' +
+      '<li id="a" style="list-style:none"></li>' +
+      '<li id="b" style="list-style:none square"></li>' +
+      '<li id="c" style="list-style:url(d.png) none inside"></li>' +
+      '<li id="d" style="list-style:none url(d.png)"></li>' +
+      '<li id="e" style="list-style:none none"></li>' +
+      '<li id="f" style="list-style:circle;list-style:none square none"></li>' +
+      '<li id="g" style="list-style-image:url(g.png)"></li>' +
+      '<li id="h" style="list-style-image:url(g.png);list-style:square"></li>' +
+      '</ul>',
+  );
+  const el = view(node);
+  type Listed = {
+    listStyleType: string;
+    listStylePosition: string;
+    listStyleImage: string | null;
+  };
+  const seen = (id: string) => {
+    const s = (boxOf(el, id) as unknown as { style: Listed }).style;
+    return [s.listStyleType, s.listStylePosition, s.listStyleImage];
+  };
+  assert.deepStrictEqual(seen('a'), ['none', 'outside', null]);
+  assert.deepStrictEqual(seen('b'), ['square', 'outside', null]);
+  assert.deepStrictEqual(seen('c'), ['none', 'inside', 'd.png']);
+  assert.deepStrictEqual(seen('d'), ['none', 'outside', 'd.png']);
+  assert.deepStrictEqual(seen('e'), ['none', 'outside', null]);
+  assert.deepStrictEqual(seen('f'), ['circle', 'outside', null], 'invalid');
+  assert.deepStrictEqual(seen('g'), ['disc', 'outside', 'g.png']);
+  assert.deepStrictEqual(seen('h'), ['square', 'outside', null], 'reset');
+});
+
+metric(
+  "a list item's marker is its list-style-image where it loads",
+  async () => {
+    // dropped: every custom bullet was the type's disc
+    const ctx = await renderWithImages(
+      '<style>body{margin:0}ul{margin:0;padding:0 0 0 40px;font-size:16px;' +
+        'line-height:30px}</style><ul style="list-style-image:url(dot.png)">' +
+        '<li>Item</li></ul>',
+    );
+    let red = 0;
+    for (let y = 0; y < 30; y += 1) {
+      for (let x = 16; x < 40; x += 1) {
+        if (isNear(await pixelAt(ctx, x, y), '#ff0000')) red += 1;
+      }
+    }
+    // the ten pixel square of red the image is, before the text
+    assert.ok(red >= 80, `${red} red pixels`);
+  },
+);
+
 test('outline and its longhands are read', async () => {
   const { node } = await render(
     '<div id="a" style="outline:2px dashed #ff0000;outline-offset:-1px"></div>' +

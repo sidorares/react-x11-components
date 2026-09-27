@@ -67,6 +67,9 @@ export interface Marker {
   /** Its own style where a `::marker` rule gives it one; the item's where
    *  none does. */
   style: ComputedStyle | null;
+  /** The image it is, `list-style-image`'s, at its size in device pixels,
+   *  where that has arrived; its text is then not drawn. */
+  image?: { url: string; width: number; height: number };
 }
 
 /** An out-of-flow box's static position, as an offset from the box whose
@@ -818,6 +821,17 @@ class Builder {
     let insideMarker: string | null = null;
     let markerStyle: ComputedStyle | null = null;
     let ownMarker = false;
+    let markerImage: { url: string; size: IntrinsicSize } | null = null;
+    let insideImage: string | null = null;
+    if (style.display === 'list-item' && style.listStyleImage) {
+      // asked for as generated content's images are, and the tree built
+      // again when it arrives; until it has, and where it never does, the
+      // item's marker is its `list-style-type`'s
+      const url = style.listStyleImage;
+      const size = this._options.urlSize?.(url) ?? null;
+      this._contentImages.push({ url, element: el, sized: !!size });
+      if (size) markerImage = { url, size };
+    }
     if (style.display === 'list-item') {
       // the item's number, which counts whatever it is set as
       let text = markerFor(el, style, this._counters);
@@ -833,8 +847,26 @@ class Builder {
         text = content.map((c) => (c.kind === 'string' ? c.text : '')).join('');
         ownMarker = true;
       }
-      if (text && style.listStylePosition === 'inside') insideMarker = text;
-      else if (text) {
+      if (markerImage && !ownMarker) {
+        if (style.listStylePosition === 'inside') insideImage = markerImage.url;
+        else {
+          const scale = this._options.scale ?? 1;
+          box.marker = {
+            text: '',
+            layout: null,
+            x: 0,
+            y: 0,
+            style: markerStyle,
+            image: {
+              url: markerImage.url,
+              width: (markerImage.size.width ?? 0) * scale,
+              height: (markerImage.size.height ?? 0) * scale,
+            },
+          };
+        }
+      } else if (text && style.listStylePosition === 'inside') {
+        insideMarker = text;
+      } else if (text) {
         box.marker = { text, layout: null, x: 0, y: 0, style: markerStyle };
       }
     }
@@ -870,7 +902,12 @@ class Builder {
     // a counter reset in here reaches the element's later children and not
     // past its end; `::before` and `::after` are children like any other
     this._scopes.open();
-    if (insideMarker) {
+    if (insideImage) {
+      // an inline image at the start of the first line, as a generated
+      // image is, and the space a marker's text ends in
+      this._contentImage(insideImage, box, style, el);
+      this._textNode(' ', box, style, el);
+    } else if (insideMarker) {
       this._insideMarker(
         ownMarker ? insideMarker : `${insideMarker} `,
         markerStyle ?? style,

@@ -132,6 +132,7 @@ separately, and there are six.
 | 62     | backgrounds painted through text                   | 5,472 (93%) | 4,979 (84%) |
 | 63     | `display: contents`                                | 5,472 (93%) | 4,984 (84%) |
 | 64     | outlines                                           | 5,472 (93%) | 4,984 (84%) |
+| 65     | `list-style-image`                                 | 5,476 (93%) | 4,988 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -1890,6 +1891,29 @@ from-… to-… bg-clip-text text-transparent`: the background clipped
      so a repaint that reaches it redraws it. `auto` is drawn solid.
      Found in a survey of the properties real stylesheets write that were
      dropped.
+
+### Round 65
+
+156. **A list's bullet was never its image.** `list-style-image` was not
+     read, so a custom bullet — a check mark, a brand's dot — was the
+     type's disc; and the `list-style` shorthand took a `url()` for a
+     type and read `none` by a rule of its own. `list-style-image` is read
+     now, and the shorthand as CSS 2.1 12.5.1 has it: a type, a position
+     and an image, each at most once and each reset where it is left out,
+     and a `none` that is whichever of the type and the image is not
+     otherwise given — both where neither is, and none at all, which makes
+     the declaration invalid, where both are. An item's image is asked for
+     through `onResource` as a generated image is, and is its marker once
+     it arrives: outside, its bottom on the first line's baseline and the
+     gap a bullet has before the content; inside, an inline image at the
+     start of the first line. Until it arrives, and where it never does,
+     the type's marker stands. An outside image taller than its line hangs
+     over the line above rather than making its line taller, as a browser
+     does, and an empty item's marker beside a float is not moved past the
+     float (`list-style-image-applies-to-017`); both are markers' as a
+     whole, text or image. Four tests pass on both backends: two of the
+     shorthand's `none` (`lists/list-style-020`, `-021`) and two CSS1 tests
+     whose lists are styled through it.
 
 ## What `<Html>` supports
 

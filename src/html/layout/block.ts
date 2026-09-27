@@ -1060,6 +1060,17 @@ function layoutMarker(box: Box, marker: Marker, ctx: LayoutContext): void {
   const fonts = ctx.fonts;
   if (!fonts) return;
   const style = box.style;
+  if (marker.image) {
+    // an image: its bottom on the first line's baseline, as an inline
+    // image's is, and the gap a bullet has before the content
+    const first = firstLineIn(box);
+    marker.y = first
+      ? first.y + first.baseline - marker.image.height
+      : box.contentY;
+    marker.x =
+      box.contentX - Math.round(style.fontSize * 0.4) - marker.image.width;
+    return;
+  }
   // in its own style where a `::marker` rule gives it one — the colour and
   // the face a bullet or a number is set in — and the item's where not
   const set = marker.style ?? style;
@@ -1298,18 +1309,10 @@ function clampWidth(
       ? null
       : resolveOrNull(style.maxWidth, containingWidth);
   if (max !== null) out = Math.min(out, max + extra);
-  const room = (): number =>
-    Math.max(0, containingWidth - box.marginLeft - box.marginRight);
   if (style.maxWidthKeyword && ctx) {
     out = Math.min(
       out,
-      contentSizedWidth(
-        box,
-        ctx,
-        style.maxWidthKeyword,
-        room(),
-        containingWidth,
-      ),
+      keywordWidth(box, ctx, style.maxWidthKeyword, containingWidth),
     );
   }
   const min = resolveOrNull(style.minWidth, containingWidth);
@@ -1317,16 +1320,23 @@ function clampWidth(
   if (style.minWidthKeyword && ctx) {
     out = Math.max(
       out,
-      contentSizedWidth(
-        box,
-        ctx,
-        style.minWidthKeyword,
-        room(),
-        containingWidth,
-      ),
+      keywordWidth(box, ctx, style.minWidthKeyword, containingWidth),
     );
   }
   return Math.max(0, out);
+}
+
+/** An intrinsic `min-width` or `max-width` in the room a box's margins
+ *  leave it. Apart from `clampWidth`, which every block is sized through,
+ *  so that it makes nothing for the ones that have none. */
+function keywordWidth(
+  box: Box,
+  ctx: LayoutContext,
+  keyword: ContentSize,
+  containingWidth: number,
+): number {
+  const room = Math.max(0, containingWidth - box.marginLeft - box.marginRight);
+  return contentSizedWidth(box, ctx, keyword, room, containingWidth);
 }
 
 /**
