@@ -33,7 +33,8 @@ export function layoutTable(
   ctx: LayoutContext,
   contentWidth: number,
 ): number {
-  const { rows, captions, cells, columnCount, columnBoxes } = tableGrid(table);
+  const { rows, captions, cells, columnCount, columnBoxes, columnGroups } =
+    tableGrid(table);
   table.captionTop = 0;
   table.captionBottom = 0;
   if (!columnCount) {
@@ -54,10 +55,13 @@ export function layoutTable(
   // a fixed layout needs a width to be fixed to; with `auto` a table is laid
   // out by its contents after all (CSS 2.1 17.5.2.1)
   const fixed = style.tableLayout === 'fixed' && style.width !== AUTO;
+  // a percentage of the table's width less its spacing (CSS 2.1 17.5.2.1)
+  const set = columnWidths(columnBoxes, columnGroups, available);
   const widths = fixed
-    ? fixedColumns(cells, columnBoxes, columnCount, available, spacing)
+    ? fixedColumns(cells, set, columnCount, available, spacing)
     : autoColumns(
         cells,
+        set,
         columnCount,
         available,
         ctx,
@@ -317,7 +321,7 @@ function spannedWidth(widths: number[], cell: Cell, spacing: number): number {
  */
 function fixedColumns(
   cells: Cell[],
-  columnBoxes: (Box | null)[],
+  columnWidths: (number | null)[],
   columnCount: number,
   available: number,
   spacing: number,
@@ -325,10 +329,9 @@ function fixedColumns(
   const widths: number[] = new Array<number>(columnCount).fill(0);
   const set: boolean[] = new Array<boolean>(columnCount).fill(false);
   for (let c = 0; c < columnCount; c += 1) {
-    const column = columnBoxes[c];
-    const px = column ? lengthAgainst(column.style.width, available) : null;
+    const px = columnWidths[c];
     if (px === null) continue;
-    widths[c] = Math.max(0, px);
+    widths[c] = px;
     set[c] = true;
   }
   for (const cell of cells) {
@@ -387,6 +390,7 @@ function fixedColumns(
  */
 function autoColumns(
   cells: Cell[],
+  columnWidths: (number | null)[],
   columnCount: number,
   available: number,
   ctx: LayoutContext,
@@ -455,6 +459,13 @@ function autoColumns(
     }
   }
 
+  // a column's own width counts as its cells' do: at least that, and its
+  // content's max where that is wider (CSS 2.1 17.5.2.2, step 2)
+  for (let c = 0; c < columnCount; c += 1) {
+    const own = columnWidths[c];
+    if (own !== null) explicit[c] = Math.max(explicit[c] ?? 0, own);
+  }
+
   // what the columns' content alone asks, before their set widths: the
   // least a column gives way to when the table has less room than its
   // cells' widths want, as beside a float
@@ -505,6 +516,60 @@ function autoColumns(
   const slack = available - totalMin;
   const surplus = totalMax - totalMin;
   return max.map((m, c) => min[c] + ((m - min[c]) / surplus) * slack);
+}
+
+/**
+ * The width each column is set to, or null: a column's own `width`, or its
+ * group's shared among the columns of a group that has none of its own
+ * (HTML's `<colgroup span>`); and a group's `width` spread over its columns
+ * where theirs come to less (CSS 2.1 17.5.2.2, step 4). Each within its
+ * `min-width` and `max-width`, which apply to columns and column groups as
+ * to any block (10.4), so `min-width` alone sets one.
+ */
+function columnWidths(
+  columnBoxes: (Box | null)[],
+  columnGroups: (Box | null)[],
+  base: number,
+): (number | null)[] {
+  const widths = columnBoxes.map((column) =>
+    column ? partWidth(column, base) : null,
+  );
+  let group: Box | null = null;
+  for (let c = 0; c <= columnGroups.length; c += 1) {
+    if (c < columnGroups.length && columnGroups[c] === group) continue;
+    // the group that ends here, over its columns from `start`
+    if (group) {
+      const width = partWidth(group, base);
+      let start = c - 1;
+      while (start > 0 && columnGroups[start - 1] === group) start -= 1;
+      if (width !== null) {
+        let have = 0;
+        for (let i = start; i < c; i += 1) have += widths[i] ?? 0;
+        if (have < width) {
+          const each = (width - have) / (c - start);
+          for (let i = start; i < c; i += 1) {
+            widths[i] = (widths[i] ?? 0) + each;
+          }
+        }
+      }
+    }
+    group = c < columnGroups.length ? columnGroups[c] : null;
+  }
+  return widths;
+}
+
+/** A column's or a column group's width, within its limits, or null where
+ *  it sets none. */
+function partWidth(box: Box, base: number): number | null {
+  const style = box.style;
+  const width = lengthAgainst(style.width, base);
+  const min = lengthAgainst(style.minWidth, base) ?? 0;
+  if (width === null && !(min > 0)) return null;
+  const max =
+    style.maxWidth === 'none' ? null : lengthAgainst(style.maxWidth, base);
+  let out = width ?? 0;
+  if (max !== null) out = Math.min(out, max);
+  return Math.max(0, out, min);
 }
 
 function lengthAgainst(len: Len, base: number): number | null {
