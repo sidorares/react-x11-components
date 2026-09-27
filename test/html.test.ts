@@ -6977,6 +6977,34 @@ test('tab-size is a number of spaces, or a length', async () => {
   assert.deepStrictEqual(tab('e'), [5, false], 'inherited');
 });
 
+metric(
+  'a raised box is as tall on its line as its own face makes it',
+  async () => {
+    // a `<sup>` holding a smaller `<a>` — every footnote mark — made its
+    // line no taller than the `<a>` did, and an empty raised box none; each
+    // inline box is on the line with its own line height (CSS 2.1 10.8)
+    const { node } = await render(
+      '<style>body{margin:0;font:16px/1.6 serif}p{margin:0}</style>' +
+        '<p id="plain">text</p>' +
+        '<p id="mark">text<sup><a style="font-size:11px">1</a></sup></p>' +
+        '<p id="sup">text<sup>1</sup></p>' +
+        '<p id="empty">text<span style="vertical-align:super"></span></p>' +
+        '<p id="full">text<span style="vertical-align:super">x</span></p>',
+    );
+    const el = view(node);
+    const height = (id: string) => boxOf(el, id).height;
+    assert.ok(height('sup') > height('plain') + 0.5, 'a raised mark');
+    assert.ok(
+      Math.abs(height('mark') - height('sup')) < 0.01,
+      `the sup's own: ${height('mark')} against ${height('sup')}`,
+    );
+    assert.ok(
+      Math.abs(height('empty') - height('full')) < 0.01,
+      `an empty one's: ${height('empty')} against ${height('full')}`,
+    );
+  },
+);
+
 metric("pre's trailing spaces take room, where a line's hang", async () => {
   const widthOf = async (text: string) => {
     const { node } = await render(
