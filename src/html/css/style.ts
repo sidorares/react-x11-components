@@ -26,7 +26,7 @@ import {
   splitValue,
 } from './values.js';
 import type { Len, UnitContext } from './values.js';
-import { parseUrl } from './parse.js';
+import { parseUrl, readIdent, startsIdent } from './parse.js';
 import {
   DEFAULT_QUOTES,
   parseContent,
@@ -855,8 +855,12 @@ export function applyDeclaration(
     }
     case 'font-family': {
       // ntk's font matcher takes the CSS list as written and walks it, so the
-      // value passes through whole rather than being resolved here.
-      style.fontFamily = splitCommas(value)
+      // value passes through whole rather than being resolved here — once
+      // every name in it is one: a string, or identifiers (CSS 2.1 15.3).
+      // `test!foo, Ahem` is no list, and set Ahem.
+      const names = splitCommas(value);
+      if (!names.every(isFamilyName)) return;
+      style.fontFamily = names
         .map((f) => f.replace(/^['"]|['"]$/g, ''))
         .filter(Boolean)
         .join(', ');
@@ -1329,6 +1333,19 @@ function applyBorderShorthand(
       (style as unknown as Record<string, unknown>)[`border${side}Color`] =
         color;
   }
+}
+
+/** A font family name: quoted, or a sequence of identifiers. */
+function isFamilyName(name: string): boolean {
+  const n = name.trim();
+  if (n[0] === '"' || n[0] === "'") return true;
+  if (!n) return false;
+  for (const word of n.split(/\s+/)) {
+    if (!startsIdent(word, 0) || readIdent(word, 0).end !== word.length) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function applyBackgroundShorthand(

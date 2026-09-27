@@ -4903,3 +4903,23 @@ test('a url() is read as CSS Syntax reads it, and a bad one drops its declaratio
   assert.strictEqual(style('d').backgroundImage, 'x.png');
   assert.strictEqual(style('e').backgroundImage, 'e.png');
 });
+
+test('a font-family with a name that is none is dropped (CSS 2.1 15.3)', async () => {
+  const { node } = await render(
+    '<div id="p" style="font-family: serif">' +
+      '<div id="a" style="font-family: test!foo, monospace"></div>' +
+      '<div id="b" style="font-family: 1996, monospace"></div>' +
+      '<div id="c" style="font-family: Arial Black, \'Segoe UI\', -apple-system, monospace"></div>' +
+      '</div>',
+  );
+  const el = view(node);
+  const family = (id: string) =>
+    (boxOf(el, id) as unknown as { style: { fontFamily: string } }).style
+      .fontFamily;
+  assert.strictEqual(family('a'), family('p'), 'inherited, not set');
+  assert.strictEqual(family('b'), family('p'));
+  assert.strictEqual(
+    family('c'),
+    'Arial Black, Segoe UI, -apple-system, monospace',
+  );
+});
