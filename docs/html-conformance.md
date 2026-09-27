@@ -129,6 +129,7 @@ separately, and there are six.
 | 59     | `text-wrap`                                        | 5,472 (93%) | 4,979 (84%) |
 | 60     | `translate`                                        | 5,472 (93%) | 4,979 (84%) |
 | 61     | the room a shrink-to-fit box has                   | 5,472 (93%) | 4,979 (84%) |
+| 62     | backgrounds painted through text                   | 5,472 (93%) | 4,979 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -1831,6 +1832,29 @@ room), max-content)`, the longest word flooring the box — and
      the probe runs only where that too is past it — a URL, a long
      compound — and the page lays out as fast as it did before. Found
      comparing round 60's probe with a browser.
+
+### Round 62
+
+153. **A gradient headline was a bar with no words in it.** The way a
+     landing page colours its headline is Tailwind's `bg-gradient-to-r
+from-… to-… bg-clip-text text-transparent`: the background clipped
+     to the text, and the text itself no colour at all. `background-clip`
+     was dropped, so the box was painted with the gradient and the text
+     drawn in no ink over it — a coloured bar where the words were — and
+     a gradient `<span>` inside a heading vanished outright; with
+     `-webkit-text-fill-color: transparent` instead, also dropped, the
+     text sat in its colour over the bar. `background-clip: text` is read
+     now, and `-webkit-text-fill-color` as the glyphs' own fill, apart
+     from `color`, which the decorations keep. A box that paints its
+     background through its text paints no box; a paragraph holding such
+     text is laid out through a recorder, and paint lays the same runs out
+     again with no ink of their own — which ntk fills with the context's
+     fill picture and react-x11's CoreText context with a gradient
+     natively — and draws that layout with the background as the fill,
+     clipped to the runs that are the box's, so the text around them keeps
+     its ink. A document with none pays one flag. Found rendering a landing
+     page beside a browser; CSS 2.1 has no `background-clip`, and neither
+     suite moved.
 
 ## What `<Html>` supports
 

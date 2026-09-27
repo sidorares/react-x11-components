@@ -534,6 +534,9 @@ export interface BoxTree {
    *  raises one: where none does, no text is off its line's baseline, and
    *  the bounds walk looks for none. */
   movedInline: boolean;
+  /** Whether any box paints its background through its text
+   *  (`background-clip: text`): where none does, no paragraph looks. */
+  clipText: boolean;
 }
 
 export interface BuildOptions {
@@ -603,6 +606,7 @@ class Builder {
   private _firstLine = false;
   private _nestedOutOfLine = false;
   private _movedInline = false;
+  private _clipText = false;
   /** Counter stack for `<ol>` numbering, one entry per open list. */
   private _counters: number[] = [];
   /** The CSS counters in scope, for `counter()` in generated content. */
@@ -651,6 +655,7 @@ class Builder {
       firstLine: this._firstLine,
       nestedOutOfLine: this._nestedOutOfLine,
       movedInline: this._movedInline,
+      clipText: this._clipText,
     };
   }
 
@@ -719,6 +724,7 @@ class Builder {
     }
     // a translation is moved by the same pass
     if (style.translate || style.transformTranslate) this._relative = true;
+    if (style.backgroundClipText) this._clipText = true;
     if (style.verticalAlign !== 'baseline' && style.display === 'inline') {
       this._movedInline = true;
     }
@@ -972,6 +978,7 @@ class Builder {
     }
     // a translation is moved by the same pass
     if (style.translate || style.transformTranslate) this._relative = true;
+    if (style.backgroundClipText) this._clipText = true;
     if (style.verticalAlign !== 'baseline' && style.display === 'inline') {
       this._movedInline = true;
     }

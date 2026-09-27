@@ -33,7 +33,7 @@
 import { codeUnitOffsets } from '../../internal/text.js';
 import type { TextRun } from '../../richtext/index.js';
 import type { ComputedStyle } from '../css/style.js';
-import { isTransparent, resolve } from '../css/values.js';
+import { inkColor, isTransparent, resolve } from '../css/values.js';
 import {
   BOX_RAISES,
   isOffset,
@@ -220,6 +220,9 @@ export interface InlineOptions {
   /** A `::first-line` colour, for the text before `end` — the first line's
    *  end, in the document index — whose colour is `from`, the block's. */
   firstLine?: { color: string; from: string; end: number };
+  /** Whether any box in the document paints its background through its
+   *  text (`BoxTree.clipText`). */
+  clipText?: boolean;
 }
 
 /**
@@ -273,10 +276,17 @@ function cutOf(style: ComputedStyle): Cut | null {
 }
 
 function layoutLines(block: Box, options: InlineOptions): InlineResult {
-  const fonts = options.fonts;
+  let fonts = options.fonts;
   const items: Item[] = [];
   collect(block, items, options.width, fonts, block.style);
   if (!items.length || !fonts) return EMPTY;
+  // text a box's background shows through (`background-clip: text`): its
+  // layouts are made through a recorder, so paint can lay the same text out
+  // again with no ink of its own and fill it with that background
+  if (options.clipText && clipsText(block, items)) {
+    CLIPPED_TEXT.add(block);
+    fonts = recording(fonts);
+  }
   if (wraps(block.style)) holdNoWrap(items);
   // one walk for what few paragraphs have: text that casts a shadow, and a
   // tab, which only a `white-space` that keeps it leaves — so no text is
@@ -2316,7 +2326,12 @@ function runFor(text: string, style: ComputedStyle): TextRun {
     size: style.fontSize,
     weight: style.fontWeight,
     style: style.fontStyle === 'normal' ? 'normal' : 'italic',
-    color: style.color,
+    // the glyphs' fill, which `-webkit-text-fill-color` sets apart from
+    // `color` — the decorations keep `color`
+    color:
+      style.textFillColor === null
+        ? style.color
+        : inkColor(style.textFillColor, style.color),
   };
   if (style.letterSpacing) run.letterSpacing = style.letterSpacing;
   const features = featuresOf(style);
@@ -2572,6 +2587,82 @@ function lineShift(style: ComputedStyle): number {
 
 /** How far a line of a layout moves to where it belongs in its box. */
 type LinePlacer = (line: { x: number; width: number }) => number;
+
+/** The blocks whose lines hold text a box's background shows through. */
+export const CLIPPED_TEXT = new WeakSet<Box>();
+
+/** How each of those blocks' layouts was made, to make it again. */
+const RECORDED = new WeakMap<
+  object,
+  {
+    fonts: FontsLike;
+    content: TextRun[];
+    style: Record<string, unknown>;
+    options: Parameters<FontsLike['layout']>[2];
+  }
+>();
+const RECORDERS = new WeakMap<FontsLike, FontsLike>();
+const INKLESS = new WeakMap<object, TextLayoutLike | null>();
+
+/** The fonts, noting how each layout they make was made. One recorder a
+ *  fonts object, so what is kept per fonts object is kept for it too. */
+function recording(fonts: FontsLike): FontsLike {
+  let recorder = RECORDERS.get(fonts);
+  if (!recorder) {
+    recorder = {
+      layout(content, style, options) {
+        const layout = fonts.layout(content, style, options);
+        RECORDED.set(layout, { fonts, content, style, options });
+        return layout;
+      },
+      match: (family, style) => fonts.match(family, style),
+    };
+    RECORDERS.set(fonts, recorder);
+  }
+  return recorder;
+}
+
+/**
+ * A layout of the same text with no ink of its own, which an engine draws
+ * in the context's fill — a gradient's, for text a background shows
+ * through; the same runs, so the same glyphs where the first put them.
+ * Null for a layout that was not recorded.
+ */
+export function inklessLayout(layout: object): TextLayoutLike | null {
+  let inkless = INKLESS.get(layout);
+  if (inkless !== undefined) return inkless;
+  const made = RECORDED.get(layout);
+  inkless = made
+    ? made.fonts.layout(
+        made.content.map((run) => ({ ...run, color: undefined })),
+        { ...made.style, color: undefined },
+        made.options,
+      )
+    : null;
+  INKLESS.set(layout, inkless);
+  return inkless;
+}
+
+/** Whether any of a block's text is text a background shows through. */
+function clipsText(block: Box, items: Item[]): boolean {
+  for (const item of items) {
+    if (item.kind === 'text' && !item.control && clipBoxOf(item.box, block)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** The box whose background a text box's glyphs show: the nearest element
+ *  box from it up to the block its lines are in with `background-clip:
+ *  text`, or null. */
+export function clipBoxOf(box: Box | null, block: Box): Box | null {
+  for (let at = box; at; at = at.parent) {
+    if (at.kind !== 'text' && at.style.backgroundClipText) return at;
+    if (at === block) break;
+  }
+  return null;
+}
 
 /** The most lines `text-wrap: balance` evens out, as in Chrome: a heading,
  *  a caption, a pull quote — not a paragraph, whose last line is its own. */
