@@ -13,7 +13,14 @@
 import { AUTO, isTransparent, resolve, resolveOrNull } from '../css/values.js';
 import type { Len } from '../css/values.js';
 import type { BorderStyle, ComputedStyle } from '../css/style.js';
-import { Box, FIRST_LINE } from './boxes.js';
+import {
+  Box,
+  CUT_BLOCKS,
+  FIRST_LINE,
+  INLINE_OFFSETS,
+  SHIFTED_LINES,
+  TEXT_SHIFTS,
+} from './boxes.js';
 import type { BoxTree, Intrinsic, LineBox, Marker } from './boxes.js';
 import { FloatContext } from './floats.js';
 import {
@@ -132,7 +139,7 @@ export function layoutDocument(
   // and the ink bounds are computed after that, so culling sees where boxes
   // ended up rather than where they were laid out.
   if (tree.relative) applyRelativeOffsets(root);
-  const reach = computePaintBounds(root);
+  const reach = computePaintBounds(root, tree.movedInline);
   if (tree.negative) hoistNegative(root);
 
   // The document is as tall as what overflows the root, not the root: an
@@ -1756,6 +1763,18 @@ export function applyRelativeOffsets(box: Box): void {
   for (const child of box.children) applyRelativeOffsets(child);
   const style = box.style;
   if (style.position !== 'relative' && style.position !== 'sticky') return;
+  const [dx, dy] = relativeOffset(box);
+  translate(box, dx, dy);
+  if (box.kind !== 'inline' || !(dx || dy)) return;
+  offsetInline(box, dx, dy);
+  // the blocks it was broken around move with it (9.2.1.1)
+  const blocks = box.cut ? CUT_BLOCKS.get(box) : undefined;
+  if (blocks) for (const block of blocks) translate(block, dx, dy);
+}
+
+/** How far `position: relative` moves a box. */
+function relativeOffset(box: Box): [number, number] {
+  const style = box.style;
   const parentWidth = box.parent ? box.parent.contentWidth : 0;
   const left = resolveOrNull(style.left, parentWidth);
   const right = resolveOrNull(style.right, parentWidth);
@@ -1768,5 +1787,42 @@ export function applyRelativeOffsets(box: Box): void {
   const rtl = box.parent?.style.direction === 'rtl';
   const dx = right !== null && (left === null || rtl) ? -right : (left ?? 0);
   const dy = top ?? (bottom !== null ? -bottom : 0);
-  translate(box, dx, dy);
+  return [dx, dy];
+}
+
+/**
+ * Move an inline box's text where `position: relative` puts the box. Its
+ * text is on its block's lines, laid out apart from the text around it
+ * (`collect`), and those fragments are what move; the lines stay where
+ * they are (CSS 2.1 9.4.3). A box inside it has moved its own already, so
+ * a text in both moves by the two together.
+ */
+function offsetInline(box: Box, dx: number, dy: number): void {
+  let block = box.parent;
+  while (block && block.kind === 'inline') block = block.parent;
+  const lines = block?.lines;
+  if (!lines) return;
+  INLINE_OFFSETS.set(box, { x: dx, y: dy });
+  for (const line of lines) {
+    for (const text of line.texts) {
+      const owner = text.spans.boxAt?.(text.layoutStart);
+      if (!owner || !holds(box, owner)) continue;
+      text.drawX += dx;
+      text.drawY += dy;
+      const was = TEXT_SHIFTS.get(text);
+      TEXT_SHIFTS.set(text, {
+        x: (was?.x ?? 0) + dx,
+        y: (was?.y ?? 0) + dy,
+      });
+      SHIFTED_LINES.add(line);
+    }
+  }
+}
+
+/** Whether `inner` is `outer` or inside it. */
+function holds(outer: Box, inner: Box): boolean {
+  for (let at: Box | null = inner; at; at = at.parent) {
+    if (at === outer) return true;
+  }
+  return false;
 }

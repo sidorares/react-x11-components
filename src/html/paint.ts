@@ -29,7 +29,12 @@ import type { FillContext } from '../richtext/runs.js';
 import { inkColor, isTransparent, resolve } from './css/values.js';
 import type { Len } from './css/values.js';
 import type { ComputedStyle } from './css/style.js';
-import { Box } from './layout/boxes.js';
+import {
+  Box,
+  INLINE_OFFSETS,
+  SHIFTED_LINES,
+  TEXT_SHIFTS,
+} from './layout/boxes.js';
 import type { BoxTree, LineBox, Marker } from './layout/boxes.js';
 import { depthOf, layoutOffsetOf, layoutOffsets } from './layout/inline.js';
 import { halves } from './layout/collapse.js';
@@ -90,12 +95,13 @@ export interface PaintOptions {
 
 /**
  * The bounds of everything a box and its descendants draw, in document
- * coordinates, into `boundsX`…. Computed once per layout; the paint pass
+ * coordinates, into `boundsX`…, with the text `position: relative` moved off
+ * its lines where `moved` says there is some. Computed once per layout; the paint pass
  * reads it. Returns how far down the box's content reaches, for the
  * document's height — handed up rather than kept on every box, where
  * writing it and reading it back cost this walk a fifth of its time.
  */
-export function computePaintBounds(box: Box): number {
+export function computePaintBounds(box: Box, moved = false): number {
   // A box with no rectangle of its own gives only what it holds: nothing,
   // until a child with bounds is met.
   const own = hasRect(box);
@@ -117,9 +123,22 @@ export function computePaintBounds(box: Box): number {
       x2 = Math.max(x2, line.x + line.width);
       y2 = Math.max(y2, line.y + line.height);
       tallest = Math.max(tallest, line.height);
+      if (moved && SHIFTED_LINES.has(line)) {
+        // text `position: relative` moved off its line
+        for (const text of line.texts) {
+          const natural = text.layout.lines[text.layoutLine];
+          if (!natural) continue;
+          const x = text.drawX + natural.x;
+          const y = text.drawY + natural.y;
+          x1 = Math.min(x1, x);
+          y1 = Math.min(y1, y);
+          x2 = Math.max(x2, x + natural.width);
+          y2 = Math.max(y2, y + natural.height);
+        }
+      }
       for (const placed of line.atomics) {
         const atomic = placed.box;
-        computePaintBounds(atomic);
+        computePaintBounds(atomic, moved);
         if (atomic.boundsY === Infinity) continue;
         x1 = Math.min(x1, atomic.boundsX);
         y1 = Math.min(y1, atomic.boundsY);
@@ -145,7 +164,7 @@ export function computePaintBounds(box: Box): number {
   }
   for (const child of box.children) {
     if (child.kind === 'text' || child.kind === 'break') continue;
-    const reach = computePaintBounds(child);
+    const reach = computePaintBounds(child, moved);
     if (!child.outOfFlow) bottom = Math.max(bottom, reach);
     if (child.boundsY === Infinity) continue;
     x1 = Math.min(x1, child.boundsX);
@@ -1542,12 +1561,16 @@ function paintLineBackground(
   let left = Infinity;
   let right = -Infinity;
   let baseline = line.y + line.baseline;
+  const shifted = SHIFTED_LINES.has(line);
   for (const text of line.texts) {
     const natural = text.layout.lines[text.layoutLine];
     if (!natural) continue;
-    baseline = text.drawY + natural.baseline;
-    left = Math.min(left, text.drawX + natural.x);
-    right = Math.max(right, text.drawX + natural.x + natural.width);
+    // where the line has it, not where `position: relative` moved it
+    const shift = shifted ? TEXT_SHIFTS.get(text) : undefined;
+    const x = text.drawX - (shift?.x ?? 0) + natural.x;
+    baseline = text.drawY - (shift?.y ?? 0) + natural.baseline;
+    left = Math.min(left, x);
+    right = Math.max(right, x + natural.width);
   }
   for (const placed of line.atomics) {
     left = Math.min(left, placed.x - placed.box.marginLeft);
@@ -1594,14 +1617,18 @@ function paintInlineBoxes(
     }
   };
   // Every text on a line is drawn on one baseline (`finishLine`), and an
-  // engine's is from the top of its layout rather than of the line.
+  // engine's is from the top of its layout rather than of the line. Taken
+  // where the line has each text: a box `position: relative` moves is
+  // moved by its own offset below, and the boxes around it are not.
   let baseline = line.y + line.baseline;
+  const shifted = SHIFTED_LINES.has(line);
   for (const text of line.texts) {
     const natural = text.layout.lines[text.layoutLine];
     const boxAt = text.spans.boxAt;
     if (!natural || !boxAt) continue;
-    baseline = text.drawY + natural.baseline;
-    const x = text.drawX + natural.x;
+    const shift = shifted ? TEXT_SHIFTS.get(text) : undefined;
+    baseline = text.drawY - (shift?.y ?? 0) + natural.baseline;
+    const x = text.drawX - (shift?.x ?? 0) + natural.x;
     for (const run of natural.runs) {
       const owner = boxAt.call(text.spans, run.start);
       if (!owner) continue;
@@ -1658,9 +1685,10 @@ function paintInlineBoxes(
     const leftEnds = rtl ? f.end : f.start;
     const rightEnds = rtl ? f.start : f.end;
     const [tl, tr, br, bl] = box.style.borderRadius;
+    const moved = shifted ? offsetOf(box) : null;
     const fragment: Frame = {
-      x: f.left,
-      y: top,
+      x: f.left + (moved?.x ?? 0),
+      y: top + (moved?.y ?? 0),
       width: f.right - f.left,
       height: bottom - top,
       captionTop: 0,
@@ -1683,6 +1711,22 @@ function paintInlineBoxes(
     paintBackground(ctx, fragment, options);
     paintBorders(ctx, fragment, options);
   }
+}
+
+/** How far `position: relative` moved an inline box: its own offset, and
+ *  those of the inline boxes around it. */
+function offsetOf(box: Box): { x: number; y: number } | null {
+  let x = 0;
+  let y = 0;
+  let moved = false;
+  for (let at: Box | null = box; at?.kind === 'inline'; at = at.parent) {
+    const offset = INLINE_OFFSETS.get(at);
+    if (!offset) continue;
+    x += offset.x;
+    y += offset.y;
+    moved = true;
+  }
+  return moved ? { x, y } : null;
 }
 
 interface InlineFragment {

@@ -32,6 +32,7 @@ import type { CollapsedTable } from './collapse.js';
 import { counterText, quoteAt } from '../css/content.js';
 import type { ContentItem } from '../css/content.js';
 import { inherit } from '../css/style.js';
+import { AUTO } from '../css/values.js';
 import { svgIntrinsics } from '../svg.js';
 import type { IntrinsicSize } from '../svg.js';
 import type { ComputedStyle } from '../css/style.js';
@@ -461,6 +462,21 @@ export interface Intrinsic {
  *  kept beside the boxes: few documents have any (`BoxTree.firstLine`). */
 export const FIRST_LINE = new WeakMap<Box, ComputedStyle>();
 
+/** How far `position: relative` moved an inline box (`offsetInline`), how
+ *  far each text on a line moved with the boxes it is in, and the lines
+ *  holding one: beside the boxes and the lines, since few documents move an
+ *  inline box. A moved text's `drawX` and `drawY` are where it is drawn;
+ *  its box's decorations are worked out from where it was, and moved by
+ *  their own box's offset. */
+export const INLINE_OFFSETS = new WeakMap<Box, { x: number; y: number }>();
+export const TEXT_SHIFTS = new WeakMap<LineText, { x: number; y: number }>();
+export const SHIFTED_LINES = new WeakSet<LineBox>();
+
+/** The blocks that broke a relatively positioned inline box in pieces,
+ *  under its first piece: its offset moves them too (CSS 2.1 9.2.1.1),
+ *  though they stand outside it (`breakAround`). */
+export const CUT_BLOCKS = new WeakMap<Box, Box[]>();
+
 /** What the builder produced, plus the document-wide text it indexed. */
 export interface BoxTree {
   root: Box;
@@ -490,6 +506,9 @@ export interface BoxTree {
    *  none does, layout looks for them among a block's own children and
    *  goes through no inline box to find them. */
   nestedOutOfLine: boolean;
+  /** Whether `position: relative` moves an inline box: where none does,
+   *  no text is off its line, and the bounds walk looks for none. */
+  movedInline: boolean;
 }
 
 export interface BuildOptions {
@@ -551,6 +570,7 @@ class Builder {
   private _negative = false;
   private _firstLine = false;
   private _nestedOutOfLine = false;
+  private _movedInline = false;
   /** Counter stack for `<ol>` numbering, one entry per open list. */
   private _counters: number[] = [];
   /** The CSS counters in scope, for `counter()` in generated content. */
@@ -597,6 +617,7 @@ class Builder {
       negative: this._negative,
       firstLine: this._firstLine,
       nestedOutOfLine: this._nestedOutOfLine,
+      movedInline: this._movedInline,
     };
   }
 
@@ -643,7 +664,12 @@ class Builder {
     );
     if (style.display === 'none') return;
     if (onlyColumns && style.display !== 'table-column') return;
-    if (isRelative(style)) this._relative = true;
+    if (isRelative(style)) {
+      this._relative = true;
+      if (style.display === 'inline' && isOffset(style)) {
+        this._movedInline = true;
+      }
+    }
     if (isNegative(style)) this._negative = true;
     // before anything else of the element's, including its `::before`,
     // and for the element whatever box it makes (CSS 2.1 12.4)
@@ -855,7 +881,12 @@ class Builder {
   ): void {
     const style = this._options.cascade.pseudoStyleFor(el, which, elementStyle);
     if (!style || style.display === 'none') return;
-    if (isRelative(style)) this._relative = true;
+    if (isRelative(style)) {
+      this._relative = true;
+      if (style.display === 'inline' && isOffset(style)) {
+        this._movedInline = true;
+      }
+    }
     if (isNegative(style)) this._negative = true;
     // a column renders no content, and generated content is all it would
     // hold; in a column group it is not a column either (CSS 2.1 17.2.1)
@@ -1684,10 +1715,12 @@ function breakAround(inline: Box): Box[] | null {
     (out ??= []).push(piece);
     run = [];
   };
+  const blocks: Box[] = [];
   for (const child of inline.children) {
     if (isBlockLevel(child) && !child.outOfFlow && !child.isFloat) {
       close();
       out!.push(child);
+      blocks.push(child);
       continue;
     }
     const inner =
@@ -1702,6 +1735,7 @@ function breakAround(inline: Box): Box[] | null {
       } else {
         close();
         out!.push(piece);
+        blocks.push(piece);
       }
     }
   }
@@ -1710,6 +1744,7 @@ function breakAround(inline: Box): Box[] | null {
   for (let i = 0; i < pieces.length; i += 1) {
     pieces[i].cut = (i > 0 ? 1 : 0) | (i < pieces.length - 1 ? 2 : 0);
   }
+  if (isRelative(inline.style)) CUT_BLOCKS.set(pieces[0], blocks);
   return out;
 }
 
@@ -1844,6 +1879,20 @@ const COLLAPSIBLE = /[\t\n\r\f]| {2}/;
 
 function isRelative(style: ComputedStyle): boolean {
   return style.position === 'relative' || style.position === 'sticky';
+}
+
+/** Whether `position: relative` moves a box: an inset is set. An inline box
+ *  that is moved has its text laid out apart (`collect`), so one whose
+ *  insets resolve to nothing still costs its paragraph the layout of a line
+ *  at a time, which a box with every inset `auto` does not. */
+export function isOffset(style: ComputedStyle): boolean {
+  if (!isRelative(style)) return false;
+  return (
+    style.top !== AUTO ||
+    style.right !== AUTO ||
+    style.bottom !== AUTO ||
+    style.left !== AUTO
+  );
 }
 
 function isNegative(style: ComputedStyle): boolean {

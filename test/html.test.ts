@@ -1744,6 +1744,8 @@ interface PlacedText {
   drawY: number;
   layout: { lines: { x: number; width: number; baseline: number }[] };
   layoutLine: number;
+  textStart: number;
+  textEnd: number;
 }
 
 interface PlacedLine {
@@ -5763,5 +5765,150 @@ metric(
       hits.length <= 2,
       `a strip one paragraph tall meets ${hits.length} of them`,
     );
+  },
+);
+
+// --- a relatively positioned inline box -----------------------------------------
+
+/** The fragments of a paragraph's lines, each with the document text it
+ *  draws and where its layout's origin is. */
+function fragmentsOf(el: HtmlViewNode, id: string) {
+  const text = el.textContent();
+  return linesOf(el, id).flatMap((line) =>
+    line.texts.map((t) => ({
+      text: text.slice(t.textStart, t.textEnd),
+      x: t.drawX,
+      y: t.drawY,
+      line: [line.y, line.height],
+    })),
+  );
+}
+
+metric(
+  'a relatively positioned inline box moves its text, and nothing around it',
+  async () => {
+    // CSS 2.1 9.4.3: the box is moved after the line is laid out, so the
+    // line and the text either side of it stay where they were
+    const doc = (offset: string) =>
+      '<style>p{margin:0}</style><p id="p">one <span ' +
+      `style="position:relative;${offset}">two</span> three</p>`;
+    const still = fragmentsOf(
+      view((await render(doc('top:0;left:0'))).node),
+      'p',
+    );
+    cleanup();
+    const moved = fragmentsOf(
+      view((await render(doc('top:10px;left:5px'))).node),
+      'p',
+    );
+    assert.deepStrictEqual(
+      moved.map((f) => f.text),
+      still.map((f) => f.text),
+    );
+    const two = still.findIndex((f) => f.text.includes('two'));
+    assert.ok(two >= 0 && still[two].text.trim() === 'two', 'laid out apart');
+    for (let i = 0; i < still.length; i += 1) {
+      const [dx, dy] = i === two ? [5, 10] : [0, 0];
+      assert.deepStrictEqual(
+        [moved[i].x - still[i].x, moved[i].y - still[i].y, moved[i].line],
+        [dx, dy, still[i].line],
+        `"${still[i].text}"`,
+      );
+    }
+  },
+);
+
+metric(
+  "text moved off its line is inside its paragraph's paint bounds",
+  async () => {
+    // a repaint of where the text went has to find the paragraph there
+    const { node } = await render(
+      '<style>p{margin:0}</style><p id="p">one <span ' +
+        'style="position:relative;top:120px">two</span></p>',
+    );
+    const el = view(node);
+    const p = boxOf(el, 'p') as LaidBox & {
+      boundsY: number;
+      boundsHeight: number;
+    };
+    const two = fragmentsOf(el, 'p').find((f) => f.text === 'two')!;
+    assert.ok(two.y >= p.y + 100, 'moved down');
+    assert.ok(
+      p.boundsY + p.boundsHeight >= two.y + 10,
+      `bounds to ${p.boundsY + p.boundsHeight}, text at ${two.y}`,
+    );
+  },
+);
+
+metric(
+  "a relatively positioned inline box's background goes with it",
+  async () => {
+    const doc = (offset: string) =>
+      '<style>p{margin:0}</style><p id="p">one <span ' +
+      `style="position:relative;background:#00ff00;${offset}">two</span> ` +
+      '<b style="background:#0000ff">three</b></p>';
+    const fills = async (offset: string) =>
+      (await fillsOf(view((await render(doc(offset))).node))).filter(
+        (f) => f.style === '#00ff00' || f.style === '#0000ff',
+      );
+    const still = await fills('top:0;left:0');
+    cleanup();
+    const moved = await fills('top:-6px;left:4px');
+    assert.strictEqual(still.length, 2);
+    assert.deepStrictEqual(
+      moved.map((f) => [f.style, f.x, f.y, f.w, f.h]),
+      [
+        ['#00ff00', still[0].x + 4, still[0].y - 6, still[0].w, still[0].h],
+        ['#0000ff', still[1].x, still[1].y, still[1].w, still[1].h],
+      ],
+    );
+  },
+);
+
+metric(
+  'a superscript raised as Tailwind and normalize.css raise it',
+  async () => {
+    // `sup { position: relative; top: -0.5em; vertical-align: baseline }`:
+    // the line keeps its height, and the figure is half its own em higher
+    const doc = (raise: string) =>
+      '<style>p{margin:0;font-size:16px}' +
+      `sup{font-size:75%;line-height:0;vertical-align:baseline;${raise}}` +
+      '</style><p id="p">E = mc<sup>2</sup> and more</p>';
+    const still = fragmentsOf(
+      view((await render(doc('position:relative;top:0'))).node),
+      'p',
+    );
+    cleanup();
+    const raised = fragmentsOf(
+      view((await render(doc('position:relative;top:-0.5em'))).node),
+      'p',
+    );
+    const two = still.findIndex((f) => f.text === '2');
+    assert.ok(two >= 0, 'the figure is laid out apart');
+    assert.strictEqual(raised[two].y - still[two].y, -6);
+    assert.deepStrictEqual(
+      raised.map((f) => f.line),
+      still.map((f) => f.line),
+    );
+  },
+);
+
+metric(
+  'a block in a relatively positioned inline box moves with it',
+  async () => {
+    // it stands outside the pieces of the box it broke in two, and the
+    // box's offset moves it all the same (CSS 2.1 9.2.1.1)
+    const doc = (offset: string) =>
+      '<style>body{margin:0}</style><div><span ' +
+      `style="position:relative;${offset}">a<div id="b">block</div>c</span>` +
+      '</div>';
+    const at = async (offset: string) => {
+      const b = boxOf(view((await render(doc(offset))).node), 'b');
+      return [b.x, b.y, b.width];
+    };
+    const still = await at('top:0;left:0');
+    cleanup();
+    const moved = await at('top:5px;left:30px');
+    assert.deepStrictEqual(moved, [still[0] + 30, still[1] + 5, still[2]]);
   },
 );

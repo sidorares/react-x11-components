@@ -34,6 +34,7 @@ import { codeUnitOffsets } from '../../internal/text.js';
 import type { TextRun } from '../../richtext/index.js';
 import type { ComputedStyle } from '../css/style.js';
 import { isTransparent, resolve } from '../css/values.js';
+import { isOffset } from './boxes.js';
 import type {
   AtomicPlacement,
   Box,
@@ -164,16 +165,22 @@ export function layoutInline(block: Box, options: InlineOptions): InlineResult {
 
   let hasAtomics = false;
   let hasEdges = false;
+  let hasOffset = false;
   for (const item of items) {
     if (item.kind === 'atomic') hasAtomics = true;
-    else if (item.kind === 'edge') hasEdges = true;
+    else if (item.kind === 'edge') {
+      hasEdges = true;
+      if (!hasOffset && isOffset(item.box.style)) hasOffset = true;
+    }
   }
   const floated = options.floats?.intersects(options.startY, Infinity) ?? false;
   // An inline box's edges take room on their lines. Where nothing else on
   // the lines has to be placed a piece at a time, they go into the one
   // layout as spacers (`spacerRun`) — which only holds where no bidi
-  // reordering can move one off the side of its box it belongs to.
-  const spaced = hasEdges && !hasAtomics && spacersHold(style, items);
+  // reordering can move one off the side of its box it belongs to, and no
+  // box between edges is moved afterwards, which needs its text apart.
+  const spaced =
+    hasEdges && !hasAtomics && !hasOffset && spacersHold(style, items);
 
   // The text-only, float-free, unindented case: one call, every line — or
   // one call per *chunk*, when the text is long and carries hard breaks.
@@ -1387,11 +1394,15 @@ function collect(
         // right-to-left line finds them (`reorderLine`), and how a rounded
         // background knows the fragments that open and close it, to round
         // only those corners — so it gets them even at width zero.
+        // And a box that `position: relative` moves has them, so that its
+        // text is laid out apart from the text around it, to be drawn
+        // where the box goes (`offsetInline`)
         const edged =
           start > 0 ||
           end > 0 ||
           (child.decoration !== null &&
-            child.style.borderRadius.some((r) => r > 0));
+            child.style.borderRadius.some((r) => r > 0)) ||
+          isOffset(child.style);
         if (edged) {
           out.push({ kind: 'edge', box: child, side: 'start', width: start });
         }
