@@ -344,6 +344,14 @@ after, so thirty cards with one shadow blur it once; it is ntk's canvas
 shadow on X11, which is a blur on every fill of a path otherwise, and
 CoreGraphics' on macOS.
 
+**Outlines:** `outline` and its longhands, and `outline-offset`: a border
+of the outline's width, style and colour round the border box grown by
+the offset, taking no room and drawn over the box's content, with the
+box's rounded corners grown along with it — a focus ring, an avatar's
+ring, and Tailwind UI's `-outline-offset-1` hairline over an image's
+edge. An inline box's is drawn round each of its fragments; `auto` is
+drawn solid and `invert` in the text's colour.
+
 **HTML's own attributes:** the presentational ones mail and generated
 documents are written in are read as the styles they stand for, below
 every author rule — `bgcolor`, `background`, `width` and `height`,

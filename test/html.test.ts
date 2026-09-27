@@ -8359,6 +8359,82 @@ metric(
   },
 );
 
+test('outline and its longhands are read', async () => {
+  const { node } = await render(
+    '<div id="a" style="outline:2px dashed #ff0000;outline-offset:-1px"></div>' +
+      '<div id="b" style="outline:1px solid;outline:none"></div>' +
+      '<div id="c" style="outline:auto;outline-color:invert"></div>' +
+      '<div id="d" style="outline-style:dotted;outline-style:hidden"></div>' +
+      '<div id="e" style="outline:thick groove #00ff00 bogus"></div>',
+  );
+  const el = view(node);
+  type Outlined = {
+    outlineStyle: string;
+    outlineWidth: number;
+    outlineColor: string;
+    outlineOffset: number;
+  };
+  const style = (id: string) =>
+    (boxOf(el, id) as unknown as { style: Outlined }).style;
+  const a = style('a');
+  assert.deepStrictEqual(
+    [a.outlineStyle, a.outlineWidth, a.outlineOffset],
+    ['dashed', 2, -1],
+  );
+  assert.strictEqual(style('b').outlineStyle, 'none');
+  assert.deepStrictEqual(
+    [style('c').outlineStyle, style('c').outlineColor],
+    ['auto', 'currentColor'],
+  );
+  assert.strictEqual(
+    style('d').outlineStyle,
+    'dotted',
+    'hidden is no outline style',
+  );
+  assert.strictEqual(
+    style('e').outlineStyle,
+    'none',
+    'an unknown part drops it',
+  );
+});
+
+test('an outline is drawn round the border box grown by its offset, over the content', async () => {
+  // dropped: a focus ring, an avatar's ring and Tailwind UI's hairline
+  // over an image's edge were not drawn at all
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="width:100px;height:40px;outline:3px solid #ff0000;' +
+      'outline-offset:4px;margin:10px"></div>' +
+      '<div style="width:100px;outline:2px solid #00ff00;outline-offset:-2px">' +
+      '<div style="height:20px;background:#0000ff"></div></div>',
+  );
+  const fills = await fillsOf(view(node));
+  const red = fills.filter((f) => f.style === '#ff0000');
+  // four edges three pixels thick, round the 100 by 40 box at 10, 10
+  // grown by the offset and the width, 7
+  assert.deepStrictEqual(
+    red.map((f) => [f.x, f.y, f.w, f.h]).sort(),
+    [
+      [3, 3, 114, 3],
+      [3, 54, 114, 3],
+      [3, 6, 3, 48],
+      [114, 6, 3, 48],
+    ].sort(),
+  );
+  const blue = fills.findIndex((f) => f.style === '#0000ff');
+  const green = fills.findIndex((f) => f.style === '#00ff00');
+  assert.ok(blue >= 0 && green > blue, 'over the block inside it');
+});
+
+test("an inline box's outline is drawn round its fragment", async () => {
+  const { node } = await render(
+    '<style>body{margin:0}</style><p>a <span style="outline:1px solid ' +
+      '#ff0000">framed</span> word</p>',
+  );
+  const fills = await fillsOf(view(node));
+  assert.strictEqual(fills.filter((f) => f.style === '#ff0000').length, 4);
+});
+
 test("an element of display: contents has no box, and its children are its parent's", async () => {
   // dropped, so the element stayed a block: a wrapper Tailwind's
   // `contents` takes out of a flex row was one item, its children stacked
