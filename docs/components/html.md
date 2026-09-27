@@ -219,8 +219,9 @@ it.
 **HTML's own attributes:** the presentational ones mail and generated
 documents are written in are read as the styles they stand for, below
 every author rule — `bgcolor`, `background`, `width` and `height`,
-`cellpadding` and `cellspacing`, `border`, `valign`, `<font>`'s, `<body>`'s
-`text` and `link`, `dir`, and `align`. A table's `align` places the table
+`cellpadding` and `cellspacing`, `border`, `valign`, a cell's `nowrap`, a
+`<br>`'s `clear`, a rule's `color` and `size`, `<font>`'s, `<body>`'s `text`
+and `link`, `dir`, and `align`. A table's `align` places the table
 (`center` gives it auto margins, `left` and `right` float it); `<center>`,
 and `align` on a div, a cell, a row or a row group, align the blocks in
 them as well as their text, as browsers do with `text-align:

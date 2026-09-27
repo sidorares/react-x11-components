@@ -84,7 +84,7 @@ separately, and there are six.
 | 14     | columns' widths and images                         | 5,241 (89%) | 4,800 (81%) |
 | 15     | a block in an inline box, right to left            | 5,299 (90%) | 4,854 (82%) |
 | 16     | url(), font-family, tables that clip               | 5,317 (90%) | 4,869 (83%) |
-| 17     | HTML's alignment and body attributes               | 5,318 (90%) | 4,870 (83%) |
+| 17     | HTML's alignment and body attributes               | 5,322 (90%) | 4,874 (83%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -828,6 +828,12 @@ against the suite.
     columns and stayed at the left: a mail's centred button.
 84. **`<body text link>` and the `background` attribute were not read.**
     1 test, `content-145`.
+85. **Nor were a cell's `nowrap`, a `<br>`'s `clear`, an image's `align`
+    in its line, or a rule's `color`, `size` and `align`.** A `<br>` that
+    clears is an empty block that clears, which the inline content around
+    it is broken for, as for any block in an inline box — so CSS's `clear`
+    on a `<br>` works too: 4 tests. A rule narrower than its line is
+    centred, as browsers centre one.
 
 Round 17 lost none.
 
