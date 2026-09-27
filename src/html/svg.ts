@@ -1,0 +1,455 @@
+// SVG, drawn.
+//
+// An inline `<svg>` and an SVG image are drawn by ntk's `SvgView`, over the
+// same 2d context as the rest of the document — the drawing core's own
+// `<svg>` element uses. It is reached through `react-x11/ntk`, which
+// re-exports ntk whole: `SvgView` is a runtime export the subpath's
+// declarations do not name, so it is read off the namespace and probed, the
+// way `resources.ts` reaches `decodeImage`. Without it an SVG is a box of its
+// size with nothing drawn in it, which is what it was before.
+//
+// What is here is the part CSS and SVG own between them: an SVG's intrinsic
+// width, height and ratio, which size its box (CSS 2.1 10.3.2, SVG 2's
+// intrinsic sizing), and its viewport — the `viewBox` scaled into the box
+// as `preserveAspectRatio` says, and clipped to it.
+import { parseDocument } from 'htmlparser2';
+import { Element, Text } from 'domhandler';
+import type { ChildNode } from 'domhandler';
+import * as ntk from 'react-x11/ntk';
+import { isSvgRoot } from './dom.js';
+
+export { isSvgRoot };
+
+/** What an image says about its own size, in CSS pixels: a width and a
+ *  height — a raster image always has both, an SVG those that are absolute
+ *  lengths — and its ratio, width over height, or 0 where it has none. */
+export interface IntrinsicSize {
+  width: number | null;
+  height: number | null;
+  ratio: number;
+}
+
+function svgAttr(el: Element, name: string): string | undefined {
+  // an XML parse keeps SVG's camelCase, an HTML one lowercases it
+  return el.attribs[name] ?? el.attribs[name.toLowerCase()];
+}
+
+/** CSS pixels per unit, for the absolute units. */
+const ABSOLUTE: Record<string, number> = {
+  '': 1,
+  px: 1,
+  pt: 4 / 3,
+  pc: 16,
+  in: 96,
+  cm: 96 / 2.54,
+  mm: 96 / 25.4,
+  q: 96 / 101.6,
+};
+
+const LENGTH = /^\s*([+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)\s*([a-z]*)\s*$/i;
+
+/** An SVG `width` or `height` in CSS pixels, where it is an absolute length.
+ *  A percentage, `auto` and anything unparseable are no length at all, and
+ *  a negative one is an error, which is the same. */
+function absoluteLength(
+  value: string | undefined,
+  fontSize: number,
+): number | null {
+  if (value === undefined) return null;
+  const m = LENGTH.exec(value);
+  if (!m) return null;
+  const n = parseFloat(m[1]);
+  const unit = m[2].toLowerCase();
+  let px: number;
+  if (unit in ABSOLUTE) px = n * ABSOLUTE[unit];
+  else if (unit === 'em') px = n * fontSize;
+  else if (unit === 'ex') px = (n * fontSize) / 2;
+  else return null;
+  return px >= 0 ? px : null;
+}
+
+/**
+ * The `width`/`height` of an inline `<svg>` as CSS: they are presentation
+ * attributes for the properties of the same names (SVG 2, 5.1.1), so
+ * `height="50%"` is a percentage of the containing block like a style's.
+ * A bare number is pixels; null for what CSS would not parse.
+ */
+export function svgSizeHint(value: string): string | null {
+  const v = value.trim();
+  if (/^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?%$/i.test(v)) return v;
+  const m = LENGTH.exec(v);
+  if (!m) return null;
+  return m[2] ? v : `${parseFloat(m[1])}px`;
+}
+
+/** A percentage length as a fraction, or 1 for anything else. */
+function percentOf(value: string | undefined): number {
+  const v = value?.trim();
+  if (!v?.endsWith('%')) return 1;
+  const n = parseFloat(v);
+  return Number.isFinite(n) && n >= 0 ? n / 100 : 1;
+}
+
+function viewBoxOf(el: Element): [number, number, number, number] | null {
+  const parts = (svgAttr(el, 'viewBox') ?? '')
+    .trim()
+    .split(/[\s,]+/)
+    .map(Number);
+  if (parts.length !== 4 || !parts.every(Number.isFinite)) return null;
+  // a zero or negative extent is an error: as though there were none
+  return parts[2] > 0 && parts[3] > 0
+    ? [parts[0], parts[1], parts[2], parts[3]]
+    : null;
+}
+
+/**
+ * An SVG root's intrinsic size and ratio (SVG 2, "Intrinsic sizing
+ * properties of the viewport of SVG images"): its `width` and `height` where
+ * they are absolute, and a ratio from those two, or else from its `viewBox`.
+ * `fontSize` is what an `em` in them is, in CSS pixels.
+ */
+export function svgIntrinsics(el: Element, fontSize = 16): IntrinsicSize {
+  const width = absoluteLength(svgAttr(el, 'width'), fontSize);
+  const height = absoluteLength(svgAttr(el, 'height'), fontSize);
+  let ratio = 0;
+  if (width !== null && height !== null && width > 0 && height > 0) {
+    ratio = width / height;
+  } else {
+    const box = viewBoxOf(el);
+    if (box) ratio = box[2] / box[3];
+  }
+  return { width, height, ratio };
+}
+
+/** The slice of ntk's `SvgView` this draws with. */
+interface SvgViewLike {
+  naturalWidth: number;
+  naturalHeight: number;
+  setSvgDom(element: Element): unknown;
+  draw(
+    ctx: unknown,
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+    opts?: { color?: string },
+  ): void;
+}
+
+type SvgViewConstructor = new (window: null) => SvgViewLike;
+
+function svgViewClass(): SvgViewConstructor | null {
+  const ctor = (ntk as unknown as Record<string, unknown>).SvgView;
+  return typeof ctor === 'function' ? (ctor as SvgViewConstructor) : null;
+}
+
+/** The context slice an SVG needs besides what `SvgView` itself calls. */
+interface ClipContext {
+  save(): void;
+  restore(): void;
+  beginPath?(): void;
+  rect?(x: number, y: number, w: number, h: number): void;
+  clip?(): void;
+  fill?: unknown;
+}
+
+const ALIGN = /^x(Min|Mid|Max)Y(Min|Mid|Max)$/;
+const AT: Record<string, number> = { Min: 0, Mid: 0.5, Max: 1 };
+
+/**
+ * One SVG drawing: an inline `<svg>` element, or an SVG image's document.
+ * The `SvgView` is made at the first draw, so a document whose drawings are
+ * never scrolled to never pays for them.
+ */
+export class SvgDrawing {
+  readonly intrinsics: IntrinsicSize;
+  private readonly _root: Element;
+  private _view: SvgViewLike | null = null;
+  /** What the view was last handed the tree for: the root's child count
+   *  and last child — a streamed document grows an inline drawing after its
+   *  first paint — and, for a drawing with percentages in it, the viewport
+   *  they were resolved against. */
+  private _seen = -1;
+  private _seenLast: ChildNode | null = null;
+  private _seenViewport = '';
+  /** Whether a length in the tree is a percentage of the viewport; null
+   *  until the tree is first read. */
+  private _percent: boolean | null = null;
+  private _failed = false;
+  /** An SVG image's own document, rather than an element of this one. */
+  private readonly _standalone: boolean;
+
+  constructor(root: Element, intrinsics: IntrinsicSize, standalone = false) {
+    this._root = root;
+    this.intrinsics = intrinsics;
+    this._standalone = standalone;
+  }
+
+  /**
+   * Draw into a rectangle — the box's content box, in device pixels —
+   * clipped to it. The `viewBox`, where there is one, is fitted to it as
+   * `preserveAspectRatio` says; without one a user unit is a CSS pixel,
+   * which is `scale` device pixels. `color` is `currentColor`.
+   */
+  draw(
+    ctx: ClipContext,
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+    scale: number,
+    color?: string,
+  ): void {
+    if (this._failed || !(w > 0 && h > 0)) return;
+    // the mock backend has no path API, and SvgView draws paths
+    if (!ctx.beginPath || !ctx.rect || !ctx.clip || !ctx.fill) return;
+    const root = this._root;
+    if (this._standalone) {
+      // an image's root is sized in the rectangle it is drawn into, which
+      // is its viewport: `width="40%"` is two fifths of it. An inline one's
+      // percentages are its box's, already (`svgSizeHint`).
+      w *= percentOf(svgAttr(root, 'width'));
+      h *= percentOf(svgAttr(root, 'height'));
+      if (!(w > 0 && h > 0)) return;
+    }
+    const box = viewBoxOf(root);
+    // the viewport in user units, which a percentage is of
+    const view = box
+      ? this._viewFor(box[2], box[3])
+      : this._viewFor(w / scale, h / scale);
+    if (!view) return;
+    ctx.save();
+    try {
+      ctx.beginPath();
+      ctx.rect(x, y, w, h);
+      ctx.clip();
+      const opts = color ? { color } : undefined;
+      if (!box) {
+        view.draw(
+          ctx,
+          x,
+          y,
+          view.naturalWidth * scale,
+          view.naturalHeight * scale,
+          opts,
+        );
+      } else {
+        const fit = (svgAttr(root, 'preserveAspectRatio') ?? '')
+          .trim()
+          .split(/\s+/);
+        if (fit[0] === 'defer') fit.shift();
+        if (fit[0] === 'none') {
+          view.draw(ctx, x, y, w, h, opts);
+        } else {
+          const align = ALIGN.exec(fit[0] ?? '') ?? ['xMidYMid', 'Mid', 'Mid'];
+          const sx = w / box[2];
+          const sy = h / box[3];
+          const s = fit[1] === 'slice' ? Math.max(sx, sy) : Math.min(sx, sy);
+          const dw = box[2] * s;
+          const dh = box[3] * s;
+          view.draw(
+            ctx,
+            x + (w - dw) * AT[align[1]],
+            y + (h - dh) * AT[align[2]],
+            dw,
+            dh,
+            opts,
+          );
+        }
+      }
+    } catch {
+      // a drawing ntk cannot read is left undrawn, once, rather than thrown
+      // out of paint on every frame, where nothing could catch it
+      this._failed = true;
+    } finally {
+      ctx.restore();
+    }
+  }
+
+  private _viewFor(width: number, height: number): SvgViewLike | null {
+    const root = this._root;
+    const count = root.children.length;
+    const last = root.lastChild;
+    const grown = count !== this._seen || last !== this._seenLast;
+    if (grown || this._percent === null) this._percent = hasPercent(root);
+    const viewport = this._percent ? `${width}x${height}` : '';
+    if (this._view && !grown && viewport === this._seenViewport) {
+      return this._view;
+    }
+    const View = svgViewClass();
+    if (!View) {
+      this._failed = true;
+      return null;
+    }
+    try {
+      const view = this._view ?? new View(null);
+      view.setSvgDom(
+        this._percent || root.name.includes(':')
+          ? copyTree(root, this._percent ? [width, height] : null)
+          : root,
+      );
+      this._view = view;
+      this._seen = count;
+      this._seenLast = last;
+      this._seenViewport = viewport;
+      return view;
+    } catch {
+      this._failed = true;
+      return null;
+    }
+  }
+}
+
+/** Drawings of inline `<svg>` elements, per element: the element is the
+ *  document's, and outlives the box trees built over it. */
+const INLINE = new WeakMap<Element, SvgDrawing>();
+
+/** The drawing of an inline `<svg>`. */
+export function inlineDrawing(el: Element): SvgDrawing {
+  let drawing = INLINE.get(el);
+  if (!drawing) {
+    drawing = new SvgDrawing(el, svgIntrinsics(el));
+    INLINE.set(el, drawing);
+  }
+  return drawing;
+}
+
+/** The geometry a percentage of the viewport can give, and of which of its
+ *  dimensions: its width, its height, or its normalized diagonal (SVG 2,
+ *  8.9, "Units"). */
+const PERCENT_OF: Record<string, 'x' | 'y' | 'd'> = {
+  x: 'x',
+  width: 'x',
+  cx: 'x',
+  rx: 'x',
+  x1: 'x',
+  x2: 'x',
+  y: 'y',
+  height: 'y',
+  cy: 'y',
+  ry: 'y',
+  y1: 'y',
+  y2: 'y',
+  r: 'd',
+  'stroke-width': 'd',
+};
+
+/** What a percentage in it means is not the viewport's: a gradient's are
+ *  of the box it paints, and `SvgView` reads those itself. */
+const OWN_UNITS = new Set(['lineargradient', 'radialgradient', 'pattern']);
+
+function localName(name: string): string {
+  const i = name.indexOf(':');
+  return (i < 0 ? name : name.slice(i + 1)).toLowerCase();
+}
+
+/** Whether a length under the root is a percentage `SvgView` would read as
+ *  a number: it resolves none against the viewport, so `width="100%"` was
+ *  a hundred user units. */
+function hasPercent(root: Element): boolean {
+  const walk = (el: Element): boolean => {
+    for (const child of el.children) {
+      if (child.type !== 'tag') continue;
+      const tag = child as Element;
+      if (OWN_UNITS.has(localName(tag.name))) continue;
+      for (const name in tag.attribs) {
+        if (PERCENT_OF[name] && tag.attribs[name].trim().endsWith('%')) {
+          return true;
+        }
+      }
+      if (walk(tag)) return true;
+    }
+    return false;
+  };
+  return walk(root);
+}
+
+/**
+ * The tree `SvgView` reads, where the document's own will not do: with
+ * local names — `SvgView` knows `rect`, not `svg:rect`, and a prefix is
+ * dropped only where it is bound to SVG — and with its percentages resolved
+ * against a viewport of `[width, height]` user units, where one is given.
+ */
+function copyTree(root: Element, viewport: [number, number] | null): Element {
+  const colon = root.name.indexOf(':');
+  const prefix = colon < 0 ? null : `${root.name.slice(0, colon)}:`;
+  const strip = (name: string): string =>
+    prefix && name.startsWith(prefix) ? name.slice(prefix.length) : name;
+  const diagonal = viewport
+    ? Math.sqrt((viewport[0] ** 2 + viewport[1] ** 2) / 2)
+    : 0;
+  const copy = (el: Element, resolve: boolean): Element => {
+    const here = resolve && !OWN_UNITS.has(localName(el.name));
+    const attribs = { ...el.attribs };
+    if (here && viewport && el !== root) {
+      for (const name in attribs) {
+        const axis = PERCENT_OF[name];
+        const value = attribs[name].trim();
+        if (!axis || !value.endsWith('%')) continue;
+        const pct = parseFloat(value);
+        if (!Number.isFinite(pct)) continue;
+        const of =
+          axis === 'x' ? viewport[0] : axis === 'y' ? viewport[1] : diagonal;
+        attribs[name] = String((pct / 100) * of);
+      }
+    }
+    const children: ChildNode[] = [];
+    for (const child of el.children) {
+      if (child.type === 'tag') children.push(copy(child as Element, here));
+      else if (child.type === 'text') children.push(new Text(child.data));
+    }
+    return new Element(strip(el.name), attribs, children);
+  };
+  return copy(root, true);
+}
+
+/**
+ * An SVG image's bytes as a drawing, or null for bytes that are not SVG —
+ * which is how a PNG or a JPEG goes on to the image decoder. Nothing names
+ * the type, so it is sniffed: markup, with an `<svg>` root.
+ */
+export function svgFromBytes(bytes: Uint8Array): SvgDrawing | null {
+  let i = bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf ? 3 : 0;
+  while (
+    bytes[i] === 0x20 ||
+    bytes[i] === 0x09 ||
+    bytes[i] === 0x0a ||
+    bytes[i] === 0x0d
+  ) {
+    i += 1;
+  }
+  if (bytes[i] !== 0x3c) return null;
+  const text = textOf(bytes);
+  if (!/<(?:[a-z0-9_-]+:)?svg[\s>/]/i.test(text)) return null;
+  try {
+    const doc = parseDocument(text, { xmlMode: true });
+    const root = findRoot(doc.children);
+    return root ? new SvgDrawing(root, svgIntrinsics(root), true) : null;
+  } catch {
+    return null;
+  }
+}
+
+function findRoot(nodes: ChildNode[]): Element | null {
+  for (const node of nodes) {
+    if (node.type !== 'tag') continue;
+    const el = node as Element;
+    if (isSvgRoot(el)) return el;
+    const inner = findRoot(el.children);
+    if (inner) return inner;
+  }
+  return null;
+}
+
+type DecoderConstructor = new (label: string) => {
+  decode(input: Uint8Array): string;
+};
+
+function textOf(bytes: Uint8Array): string {
+  const Decoder = (globalThis as { TextDecoder?: DecoderConstructor })
+    .TextDecoder;
+  if (Decoder) return new Decoder('utf-8').decode(bytes);
+  let out = '';
+  for (const b of bytes) out += String.fromCharCode(b);
+  return out;
+}

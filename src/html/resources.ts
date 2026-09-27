@@ -16,6 +16,8 @@
 import * as ntk from 'react-x11/ntk';
 import { decodeStylesheet } from './css/decode.js';
 import type { DecodedStylesheet } from './css/decode.js';
+import { svgFromBytes } from './svg.js';
+import type { IntrinsicSize } from './svg.js';
 import type { Element } from 'domhandler';
 
 /** What the host is asked for. */
@@ -31,8 +33,8 @@ export interface ResourceRequest {
 /**
  * What the host hands back. A stylesheet is text, or bytes this decodes as
  * CSS says to — with `charset`, the encoding the protocol named, if it named
- * one (`css/decode.ts`); an image is bytes, which this decodes, or an
- * already-decoded ntk `Image` for a host with its own cache.
+ * one (`css/decode.ts`); an image is bytes, which this decodes — PNG, JPEG
+ * or SVG — or an already-decoded ntk `Image` for a host with its own cache.
  */
 export type ResourceResult =
   | { kind: 'stylesheet'; text: string }
@@ -48,9 +50,9 @@ interface Entry {
   bytes?: Uint8Array;
   charset?: string;
   decoded?: { fallbacks: string; sheet: DecodedStylesheet };
+  /** An ntk `Image`, or an `SvgDrawing`. */
   image?: unknown;
-  width?: number;
-  height?: number;
+  size?: IntrinsicSize;
 }
 
 /** The ntk `Image` slice this uses. Structural, as everywhere else here. */
@@ -136,8 +138,15 @@ export class ResourceStore {
     }
     if ('image' in result) {
       entry.image = result.image;
-      entry.width = result.width;
-      entry.height = result.height;
+      entry.size = rasterSize(result.width, result.height);
+      entry.state = 'ready';
+      if (!synchronous) this._changed();
+      return;
+    }
+    const svg = svgFromBytes(result.bytes);
+    if (svg) {
+      entry.image = svg;
+      entry.size = svg.intrinsics;
       entry.state = 'ready';
       if (!synchronous) this._changed();
       return;
@@ -148,8 +157,7 @@ export class ResourceStore {
         (image) => {
           if (this._destroyed) return;
           entry.image = image;
-          entry.width = image.width;
-          entry.height = image.height;
+          entry.size = rasterSize(image.width, image.height);
           entry.state = 'ready';
           this._changed();
         },
@@ -164,8 +172,7 @@ export class ResourceStore {
       return;
     }
     entry.image = decoded;
-    entry.width = decoded.width;
-    entry.height = decoded.height;
+    entry.size = rasterSize(decoded.width, decoded.height);
     entry.state = 'ready';
     if (!synchronous) this._changed();
   }
@@ -202,16 +209,24 @@ export class ResourceStore {
   }
 
   /** A loaded image's intrinsic size, for the box builder. */
-  imageSize(url: string): { width: number; height: number } | null {
+  imageSize(url: string): IntrinsicSize | null {
     const entry = this._entries.get(url);
-    if (entry?.state !== 'ready' || entry.width === undefined) return null;
-    return { width: entry.width, height: entry.height ?? 0 };
+    return entry?.state === 'ready' ? (entry.size ?? null) : null;
   }
 
   destroy(): void {
     this._destroyed = true;
     this._entries.clear();
   }
+}
+
+/** A raster image's size: both dimensions, and their ratio. */
+function rasterSize(width: number, height: number): IntrinsicSize {
+  return {
+    width,
+    height,
+    ratio: width > 0 && height > 0 ? width / height : 0,
+  };
 }
 
 function isPromise<T>(value: unknown): value is Promise<T> {

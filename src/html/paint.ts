@@ -35,6 +35,8 @@ import { depthOf, layoutOffsetOf, layoutOffsets } from './layout/inline.js';
 import { halves } from './layout/collapse.js';
 import { tableGrid } from './layout/grid.js';
 import type { Cell } from './layout/grid.js';
+import { SvgDrawing, inlineDrawing } from './svg.js';
+import type { IntrinsicSize } from './svg.js';
 import type { CollapsedBorder } from './layout/collapse.js';
 
 export interface Rect {
@@ -73,10 +75,8 @@ export interface PaintOptions {
   /** A decoded image for an element, when the host has one. */
   imageFor(box: Box): unknown | null;
   /** A decoded `background-image`, with its size in CSS pixels, once it has
-   *  arrived. */
-  backgroundImageFor?(
-    url: string,
-  ): { image: unknown; width: number; height: number } | null;
+   *  arrived. An SVG may lack either dimension. */
+  backgroundImageFor?(url: string): ({ image: unknown } & IntrinsicSize) | null;
   /** The whole element in window coordinates: the canvas the root's
    *  background covers (CSS 2.1 14.2). Absent, the root box is it. */
   canvas?: Rect;
@@ -377,6 +377,7 @@ function paintContent(
   if (visible) {
     if (box.marker) paintMarker(ctx, box.marker, options);
     if (box.replaced === 'image') paintImage(ctx, box, options);
+    else if (box.replaced === 'svg') paintSvg(ctx, box, options);
   }
 
   // A box that does not let its content overflow clips it to its padding
@@ -963,11 +964,12 @@ function paintBackgroundImage(
   }
   const url = style.backgroundImage;
   const loaded = url ? options.backgroundImageFor?.(url) : null;
-  if (!loaded || !ctx.drawImage) return;
+  if (!loaded) return;
+  const svg = loaded.image instanceof SvgDrawing ? loaded.image : null;
+  if (!svg && !ctx.drawImage) return;
   // an image pixel is a CSS pixel, and the box is device
   const scale = options.scale ?? 1;
-  const iw = loaded.width * scale;
-  const ih = loaded.height * scale;
+  const [iw, ih] = tileSize(loaded, at, scale);
   if (!(iw > 0 && ih > 0)) return;
   const offset = (len: Len, extent: number, size: number): number =>
     isPct(len) ? (len.pct / 100) * (extent - size) : (len as number);
@@ -991,7 +993,17 @@ function paintBackgroundImage(
     ctx.clip();
   }
   const tiles = Math.ceil((toX - fromX) / iw) * Math.ceil((toY - fromY) / ih);
-  if (tiles > 1 && scale === 1 && ctx.createPattern && ctx.translate) {
+  if (svg) {
+    // a drawing is drawn a tile at a time, at the size it was given
+    if (tiles <= MAX_TILES) {
+      for (let y = fromY; y < toY; y += ih) {
+        for (let x = fromX; x < toX; x += iw)
+          svg.draw(ctx, x, y, iw, ih, scale);
+      }
+    } else {
+      svg.draw(ctx, x0, y0, iw, ih, scale);
+    }
+  } else if (tiles > 1 && scale === 1 && ctx.createPattern && ctx.translate) {
     // a pattern tiles from the origin of the space it is filled in
     ctx.fillStyle = ctx.createPattern(loaded.image, 'repeat');
     ctx.translate(x0, y0);
@@ -999,13 +1011,40 @@ function paintBackgroundImage(
   } else if (tiles <= MAX_TILES) {
     for (let y = fromY; y < toY; y += ih) {
       for (let x = fromX; x < toX; x += iw) {
-        ctx.drawImage(loaded.image, x, y, iw, ih);
+        ctx.drawImage!(loaded.image, x, y, iw, ih);
       }
     }
   } else {
-    ctx.drawImage(loaded.image, x0, y0, iw, ih);
+    ctx.drawImage!(loaded.image, x0, y0, iw, ih);
   }
   ctx.restore();
+}
+
+/**
+ * A background image's size, in device pixels, where nothing sets it — CSS
+ * 2.1 has no `background-size` — which is CSS Images' default sizing: an
+ * image's own size where it has one; the dimension it lacks from its ratio,
+ * or else from the positioning area; and one with a ratio alone as large as
+ * fits in the area. An SVG may be any of these, and a raster image is the
+ * first.
+ */
+function tileSize(
+  size: IntrinsicSize,
+  area: Rect,
+  scale: number,
+): [number, number] {
+  const { ratio } = size;
+  const width = size.width === null ? null : size.width * scale;
+  const height = size.height === null ? null : size.height * scale;
+  if (width !== null && height !== null) return [width, height];
+  if (width !== null) return [width, ratio > 0 ? width / ratio : area.height];
+  if (height !== null) return [ratio > 0 ? height * ratio : area.width, height];
+  if (ratio > 0) {
+    return area.width / area.height > ratio
+      ? [area.height * ratio, area.height]
+      : [area.width, area.width / ratio];
+  }
+  return [area.width, area.height];
 }
 
 /**
@@ -1218,6 +1257,10 @@ function paintImage(ctx: PaintContext, box: Box, options: PaintOptions): void {
   const w = Math.ceil(box.contentWidth);
   const h = Math.ceil(box.contentHeight);
   if (w <= 0 || h <= 0) return;
+  if (image instanceof SvgDrawing) {
+    image.draw(ctx, x, y, w, h, options.scale ?? 1);
+    return;
+  }
   if (image && ctx.drawImage) {
     ctx.drawImage(image, x, y, w, h);
     return;
@@ -1233,6 +1276,25 @@ function paintImage(ctx: PaintContext, box: Box, options: PaintOptions): void {
     ctx.fillRect(x, y, t, h);
     ctx.fillRect(x + w - t, y, t, h);
   }
+}
+
+/** An inline `<svg>`, drawn in its content box. Its `currentColor` is the
+ *  box's `color`, as an icon's is the text's around it. */
+function paintSvg(ctx: PaintContext, box: Box, options: PaintOptions): void {
+  if (!box.el) return;
+  const x = Math.round(box.contentX + options.originX);
+  const y = Math.round(box.contentY + options.originY);
+  const w = Math.round(box.contentX + options.originX + box.contentWidth) - x;
+  const h = Math.round(box.contentY + options.originY + box.contentHeight) - y;
+  inlineDrawing(box.el).draw(
+    ctx,
+    x,
+    y,
+    w,
+    h,
+    options.scale ?? 1,
+    box.style.color,
+  );
 }
 
 /**

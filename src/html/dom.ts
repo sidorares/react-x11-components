@@ -52,11 +52,39 @@ export const NON_RENDERED = new Set([
 ]);
 
 /** An element's tag name, lowercased — htmlparser2 already lowercases in
- *  HTML mode, so this is the assertion rather than the work. */
+ *  HTML mode, so this is the assertion rather than the work. An SVG root
+ *  under a prefix (`isSvgRoot`) is `svg`, which is what a type selector and
+ *  everything else here that asks for the tag sees. */
 export function tagOf(node: AnyNode): string {
-  return node.type === 'tag' || node.type === 'script' || node.type === 'style'
-    ? (node as Element).name.toLowerCase()
-    : '';
+  if (node.type !== 'tag' && node.type !== 'script' && node.type !== 'style') {
+    return '';
+  }
+  const name = (node as Element).name.toLowerCase();
+  return name.endsWith(':svg') && isSvgRoot(node as Element) ? 'svg' : name;
+}
+
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+/**
+ * Whether an element is the root of an SVG drawing. The HTML parser names
+ * an inline `<svg>` plainly; XHTML may bind a prefix to the SVG namespace
+ * (`<svg:svg xmlns:svg="http://www.w3.org/2000/svg">`), which is the same
+ * element to an XML parser, and is honoured where the prefix is declared.
+ * Only SVG's: a Word document's `<o:p>` under `xmlns:o` is not a paragraph,
+ * to this any more than to a browser reading it as HTML.
+ */
+export function isSvgRoot(el: Element): boolean {
+  const name = el.name.toLowerCase();
+  if (name === 'svg') return true;
+  if (!name.endsWith(':svg')) return false;
+  const declaration = `xmlns:${name.slice(0, -4)}`;
+  for (let node: Element | null = el; node;) {
+    const bound = node.attribs[declaration];
+    if (bound !== undefined) return bound === SVG_NS;
+    const parent: ParentNode | null = node.parent;
+    node = parent && parent.type === 'tag' ? (parent as Element) : null;
+  }
+  return false;
 }
 
 export function isElement(node: AnyNode | null | undefined): node is Element {
