@@ -5912,3 +5912,80 @@ metric(
     assert.deepStrictEqual(moved, [still[0] + 30, still[1] + 5, still[2]]);
   },
 );
+
+// --- visibility on inline content ------------------------------------------------
+
+/** How many pixels of each of three colours a laid-out element covers. */
+async function inkIn(
+  result: { ctx: unknown },
+  el: HtmlViewNode,
+  id: string,
+): Promise<{ red: number; green: number; blue: number }> {
+  const box = boxOf(el, id);
+  const abs = (el as unknown as { abs: { x: number; y: number } }).abs;
+  const data: Uint8ClampedArray = await new Promise((ok, fail) =>
+    (
+      result.ctx as {
+        getImageData(
+          x: number,
+          y: number,
+          w: number,
+          h: number,
+          cb: (e: unknown, d: { data: Uint8ClampedArray }) => void,
+        ): void;
+      }
+    ).getImageData(
+      Math.round(abs.x + box.x),
+      Math.round(abs.y + box.y),
+      Math.ceil(box.width),
+      Math.ceil(box.height),
+      (e, d) => (e ? fail(e) : ok(d.data)),
+    ),
+  );
+  const seen = { red: 0, green: 0, blue: 0 };
+  for (let i = 0; i < data.length; i += 4) {
+    const [r, g, b] = [data[i], data[i + 1], data[i + 2]];
+    if (r > 200 && g < 60 && b < 60) seen.red += 1;
+    if (g > 200 && r < 60 && b < 60) seen.green += 1;
+    if (b > 200 && r < 60 && g < 60) seen.blue += 1;
+  }
+  return seen;
+}
+
+metric(
+  'hidden inline text is not drawn, and visible text inside it is',
+  async () => {
+    // `visibility: hidden` leaves the text its room and draws none of it,
+    // and a descendant can be visible again (CSS 2.1 11.2)
+    const style =
+      '<style>body{margin:0}p,div{margin:0 0 10px;font:bold 30px/40px ' +
+      'sans-serif;color:#ff0000}</style>';
+    const width = (el: HtmlViewNode, id: string) =>
+      linesOf(el, id).reduce((w, line) => Math.max(w, line.width), 0);
+    const bare = await renderWithBytes(style + '<p id="a">III</p>', {});
+    const alone = await inkIn(bare.result, bare.el, 'a');
+    const aloneWidth = width(bare.el, 'a');
+    cleanup();
+
+    const { result, el } = await renderWithBytes(
+      style +
+        '<p id="a">III<span style="visibility:hidden"> IIII</span></p>' +
+        '<p id="b"><span style="visibility:hidden">III <b ' +
+        'style="visibility:visible;color:#00ff00">III</b></span></p>' +
+        '<div id="c" style="visibility:hidden">III <span ' +
+        'style="visibility:visible;color:#0000ff">III</span></div>',
+      {},
+    );
+    const [a, b, c] = await Promise.all(
+      ['a', 'b', 'c'].map((id) => inkIn(result, el, id)),
+    );
+    assert.ok(a.red > 0, 'the visible text is drawn');
+    assert.ok(
+      width(el, 'a') > aloneWidth * 2,
+      'the hidden text keeps its room',
+    );
+    assert.strictEqual(a.red, alone.red, 'and none of the hidden text is');
+    assert.deepStrictEqual([b.red > 0, b.green > 0], [false, true]);
+    assert.deepStrictEqual([c.red > 0, c.blue > 0], [false, true]);
+  },
+);

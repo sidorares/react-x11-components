@@ -472,7 +472,9 @@ function paintContent(
   const positioned: Box[] = [];
   paintFlowBackgrounds(ctx, box, options, floats, positioned);
   for (const float of floats) paintBox(ctx, float, options);
-  if (box.lines && visible) paintLines(ctx, box, options);
+  // a hidden box's text is drawn in no ink, so that a visible element's in
+  // it is drawn (`runFor`)
+  if (box.lines) paintLines(ctx, box, options);
   paintFlowLines(ctx, box, options);
   if (box.collapsed && visible) paintCollapsedBorders(ctx, box, options);
 
@@ -608,10 +610,10 @@ function paintFlowLines(
       continue;
     }
     if (!intersects(child, options)) continue;
-    if (child.style.visibility === 'visible') {
-      if (child.marker) paintMarker(ctx, child.marker, options);
-      if (child.lines) paintLines(ctx, child, options);
+    if (child.marker && child.style.visibility === 'visible') {
+      paintMarker(ctx, child.marker, options);
     }
+    if (child.lines) paintLines(ctx, child, options);
     paintFlowLines(ctx, child, options);
   }
 }

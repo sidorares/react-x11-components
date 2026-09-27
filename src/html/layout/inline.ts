@@ -1617,6 +1617,13 @@ function runFor(text: string, style: ComputedStyle): TextRun {
     color: style.color,
   };
   if (style.letterSpacing) run.letterSpacing = style.letterSpacing;
+  // Hidden text keeps its place on the line and draws nothing, rules
+  // included, and the text of a visible element inside it is its own run
+  // (CSS 2.1 11.2): drawn in no ink, it is laid out as it was
+  if (style.visibility !== 'visible') {
+    run.color = 'transparent';
+    return run;
+  }
   // A background is not the run's: the inline box it belongs to paints it,
   // behind every fragment of the box — nested elements' text included — and
   // out to its padding (`paintInlineBoxes`).

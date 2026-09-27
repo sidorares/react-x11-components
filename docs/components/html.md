@@ -126,7 +126,11 @@ markers, tables (the auto algorithm and `table-layout: fixed`, with `colspan`
 and `rowspan`, and the anonymous table CSS builds around table parts that
 have none), `position: relative | absolute | fixed`, and `display: flex`. An
 inline-block sits on its last line's baseline and an inline-table on its
-first row's.
+first row's. A relatively positioned inline box moves its text, its
+background and borders and any block inside it, and leaves its lines where
+they were, which is how Tailwind's preflight and normalize.css raise a
+`<sup>`; a paragraph with one is laid out a line at a time, as one with an
+inline-block is.
 A table's borders collapse where it asks: one border along each edge of its
 grid, centred on it, chosen from the cells, rows, row groups, columns,
 column groups and the table that meet there as CSS 2.1 17.6.2.1 chooses —
@@ -162,7 +166,9 @@ is centred with its images, not text first and the image after it.
 
 **Boxes:** `width`/`height` with `min-`/`max-`, `margin`, `padding`,
 `border` (width, style, colour, radius), `box-sizing`, `overflow`, `clip`,
-`opacity`, `visibility`, `z-index`: a positioned box with a negative
+`opacity`, `visibility` — a hidden element keeps its room and draws
+nothing, its text included, and a visible element inside it is drawn —
+`z-index`: a positioned box with a negative
 `z-index` is painted under the flow of its stacking context, the root
 element or a positioned box with a `z-index` of its own, and over that
 context's background (CSS 2.1 Appendix E). An absolute box with both
