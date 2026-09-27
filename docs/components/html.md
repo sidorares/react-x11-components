@@ -246,8 +246,12 @@ once it has shrunk to its columns, so a mail's button, a one-cell
 first is the text engine's; the second is spacing added to each space and
 no-break space, so only text that asks for it is split into more runs),
 `white-space` (including
-`pre` and `pre-wrap`), `direction`, `vertical-align`, `text-decoration` in
-all five rule styles. `vertical-align` raises and lowers text as well as
+`pre` and `pre-wrap`), `direction`, `unicode-bidi`, `vertical-align`,
+`text-decoration` in all five rule styles. `unicode-bidi` is carried out as
+the bidi controls it stands for, laid out around the element's text and no
+part of the document's: a copy, a caret and a selection skip them. HTML's
+`dir` isolates its element, `dir="auto"` and `<bdi>` take their first
+strong letter's direction, and `<bdo>` overrides. `vertical-align` raises and lowers text as well as
 images and inline blocks: the UA sheet's `<sup>` and `<sub>`, a length, a
 percentage of the line height, `text-top`, `text-bottom`, `middle`, and
 `top` and `bottom` against the line box, whose height each raised box adds

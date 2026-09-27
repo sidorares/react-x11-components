@@ -55,6 +55,13 @@ summary, dir, menu, center, marquee {
 head, link, meta, style, script, title, base, template, noscript, param,
 source, track, col, colgroup, datalist, area, map, rp { display: none; }
 
+/* HTML's bidi rules for the two elements that are about it: <bdi> takes
+   its first strong letter's direction, and <bdo> overrides. The \`dir\`
+   attribute's isolation is a presentational hint (\`hints\`), where the
+   attribute is read already, rather than a selector every element tries */
+bdi { unicode-bidi: plaintext; }
+bdo { unicode-bidi: isolate-override; }
+
 /* the theme's colour and font are the root's (\`initialStyle\`), and the
    body inherits them, from an author's \`html\` rule too */
 body { margin: 8px; }

@@ -94,6 +94,7 @@ separately, and there are six.
 | 24     | `vertical-align` on text                           | 5,404 (92%) | 4,930 (84%) |
 | 25     | what is in the head, negative inline margins       | 5,415 (92%) | 4,938 (84%) |
 | 26     | images in generated content                        | 5,419 (92%) | 4,942 (84%) |
+| 27     | `unicode-bidi`                                     | 5,432 (92%) | 4,956 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -1106,6 +1107,25 @@ Round 25 lost none, on either backend.
 
 Round 26 lost none, on either backend.
 
+### Round 27
+
+108. **`unicode-bidi` was not read**, so `bidi-override` reversed nothing,
+     `embed` and `isolate` kept no text apart, and `<bdo>` did nothing.
+     It is carried out as the controls it stands for (CSS Writing Modes 3,
+     2.4.2): an inline box's text is laid out between them, and a block's
+     override is one on all its inline content (CSS 2.1 9.10). They are no
+     text of the document's: like a spacer, each is a unit of the layout
+     a caret, a selection and a copy step over (`LineText.gaps`). HTML's
+     rules come with it: `dir` isolates its element, `dir="auto"` and
+     `<bdi>` take the first strong letter's direction, and `<bdo>`
+     overrides. The `dir` rules are presentational hints, read where the
+     attribute is read already, rather than selectors every element would
+     try. An embedding does not reach across a padded or bordered
+     element's edge, where the line is laid out in pieces. 13 tests on
+     X11, 14 on macOS.
+
+Round 27 lost none, on either backend.
+
 ## What `<Html>` supports
 
 From the pass rates of the tests that use each feature, at the fixes above,
@@ -1130,7 +1150,7 @@ checked against the code.
 | `z-index` stacking                                 | 152   | 73%     | **supported**: Appendix E's order — block backgrounds, floats, lines, positioned boxes by `z-index` — with a table, a flex box or a box that clips painted whole among the lines                                              |
 | SVG: inline, as an image, as a background          | 52    | 98%     | **supported**, as ntk's `SvgView` draws it: shapes, paths, `<use>`, gradients and text; no stylesheet rules, filters, masks or clip paths                                                                                     |
 | `clip`                                             | 44    | 100%    | **supported**                                                                                                                                                                                                                 |
-| bidi: `direction`, `unicode-bidi`                  | 265   | 68%     | **partial**: shaping and the bidi algorithm are the engine's, a line's pieces are ordered by UAX #9's L2; an override that crosses a padded element is resolved on each side of it                                            |
+| bidi: `direction`, `unicode-bidi`                  | 265   | 68%     | **partial**: shaping and the bidi algorithm are the engine's, `unicode-bidi` its controls, and a line's pieces are ordered by UAX #9's L2; an embedding does not reach across a padded element's edge                         |
 | selectors                                          | 468   | 94%     | **supported**                                                                                                                                                                                                                 |
 | cascade, `@import`, `@media`                       | 134   | 66–75%  | **supported**                                                                                                                                                                                                                 |
 

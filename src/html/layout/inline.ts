@@ -111,6 +111,9 @@ type Item =
       /** Where the run's text starts in the document index: its box's
        *  start, or further in, where the box's text is split. */
       start: number;
+      /** A bidi control `unicode-bidi` stands for (`bidiControls`): laid
+       *  out, and no text of the document's. */
+      control?: true;
     }
   | { kind: 'atomic'; box: Box }
   | { kind: 'edge'; box: Box; side: 'start' | 'end'; width: number };
@@ -149,6 +152,24 @@ export function layoutInline(block: Box, options: InlineOptions): InlineResult {
   const items: Item[] = [];
   collect(block, items, options.width, fonts);
   if (!items.length || !fonts) return EMPTY;
+  // an override on the block is one on all of its inline content (CSS 2.1
+  // 9.10); its embedding or isolation is the paragraph's own direction
+  const own =
+    block.style.unicodeBidi === 'bidi-override' ||
+    block.style.unicodeBidi === 'isolate-override'
+      ? bidiControls(block.style, true)
+      : null;
+  if (own) {
+    const first = items.find(isText);
+    let last: Extract<Item, { kind: 'text' }> | undefined;
+    for (const item of items) if (item.kind === 'text') last = item;
+    if (first && last) {
+      const opening: Item[] = [];
+      pushControls(opening, own[0], block, first.start);
+      items.unshift(...opening);
+      pushControls(items, own[1], block, last.start + last.length);
+    }
+  }
   if (options.firstLine) firstLineColour(items, options.firstLine);
 
   const style = block.style;
@@ -211,7 +232,8 @@ export function layoutInline(block: Box, options: InlineOptions): InlineResult {
         fonts,
       );
     }
-    if (total > CHUNK_TRIGGER_CHARS && hasNewline) {
+    // an embedding cannot be cut into chunks
+    if (total > CHUNK_TRIGGER_CHARS && hasNewline && !hasControls(items)) {
       return layoutChunked(
         textItems,
         base,
@@ -225,7 +247,11 @@ export function layoutInline(block: Box, options: InlineOptions): InlineResult {
     const runs: TextRun[] = [];
     const spans = new SpanMap();
     for (const item of textItems) {
-      spans.add(item.start, item.run.text.length, item.box);
+      spans.add(
+        item.start,
+        item.run.text.length,
+        item.control ? null : item.box,
+      );
       runs.push(item.run);
     }
     const layout = fonts.layout(runs, base, {
@@ -406,6 +432,7 @@ export function layoutInline(block: Box, options: InlineOptions): InlineResult {
           layoutStart: natural.start,
           spans: segment.spans,
         };
+        segment.spans.giveGaps(text, natural.start, natural.end);
         lines.push({
           x: band.left + natural.x,
           y: y + natural.y,
@@ -494,6 +521,7 @@ export function layoutInline(block: Box, options: InlineOptions): InlineResult {
       layoutStart: first.start,
       spans: segment.spans,
     };
+    segment.spans.giveGaps(placed, first.start, first.end);
     open.texts.push(placed);
     open.order.push({
       kind: 'text',
@@ -662,9 +690,13 @@ function layoutSpaced(
       spans.add(doc, 1, null);
       runs.push(spacerRun(fonts, style, item.width));
     } else if (item.kind === 'text') {
-      spans.add(item.start, item.run.text.length, item.box);
+      spans.add(
+        item.start,
+        item.run.text.length,
+        item.control ? null : item.box,
+      );
       runs.push(item.run);
-      doc = item.start + item.run.text.length;
+      if (!item.control) doc = item.start + item.run.text.length;
     }
   }
   const layout = fonts.layout(runs, base, {
@@ -680,13 +712,11 @@ function layoutSpaced(
   let next = 0;
   for (let i = 0; i < layout.lines.length; i += 1) {
     const natural = layout.lines[i];
-    const gaps: number[] = [];
     const edges: EdgePlacement[] = [];
     while (next < spacers.length && spacers[next].at < natural.end) {
       const { at, edge } = spacers[next];
       next += 1;
       if (at < natural.start) continue;
-      gaps.push(at);
       const run = natural.runs?.find((r) => r.start === at);
       const x = run
         ? natural.x + run.x
@@ -704,8 +734,8 @@ function layoutSpaced(
       textEnd: spans.documentAt(natural.end),
       layoutStart: natural.start,
       spans,
-      ...(gaps.length ? { gaps } : null),
     };
+    spans.giveGaps(text, natural.start, natural.end);
     lines.push({
       x: natural.x,
       y: natural.y,
@@ -783,6 +813,7 @@ function emitLayout(
       layoutStart: natural.start,
       spans,
     };
+    spans.giveGaps(text, natural.start, natural.end);
     lines.push({
       x: xOff + natural.x,
       y: yOff + natural.y,
@@ -1462,7 +1493,20 @@ function collect(
         if (edged) {
           out.push({ kind: 'edge', box: child, side: 'start', width: start });
         }
+        // `unicode-bidi` as the controls it stands for, inside the box's
+        // edges and around its text, where it has any
+        const controls =
+          child.style.unicodeBidi !== 'normal' &&
+          child.subtreeTextEnd > child.subtreeTextStart
+            ? bidiControls(child.style, false)
+            : null;
+        if (controls) {
+          pushControls(out, controls[0], child, child.subtreeTextStart);
+        }
         collect(child, out, width, fonts);
+        if (controls) {
+          pushControls(out, controls[1], child, child.subtreeTextEnd);
+        }
         if (edged) {
           out.push({ kind: 'edge', box: child, side: 'end', width: end });
         }
@@ -1475,6 +1519,60 @@ function collect(
         break;
     }
   }
+}
+
+/** The bidi controls `unicode-bidi` stands for, opening and closing (CSS
+ *  Writing Modes 3, 2.4.2), in the direction of the box; null for `normal`.
+ *  On a block only an override opens anything: the block's embedding is
+ *  its paragraph's direction. */
+function bidiControls(
+  style: ComputedStyle,
+  block: boolean,
+): [string, string] | null {
+  const rtl = style.direction === 'rtl';
+  const override = rtl ? '\u202E' : '\u202D';
+  switch (style.unicodeBidi) {
+    case 'embed':
+      return [rtl ? '\u202B' : '\u202A', '\u202C'];
+    case 'bidi-override':
+      return [override, '\u202C'];
+    case 'isolate':
+      return [rtl ? '\u2067' : '\u2066', '\u2069'];
+    case 'isolate-override':
+      return block
+        ? [override, '\u202C']
+        : [(rtl ? '\u2067' : '\u2066') + override, '\u202C\u2069'];
+    case 'plaintext':
+      return ['\u2068', '\u2069'];
+    default:
+      return null;
+  }
+}
+
+/** Bidi controls as items of their own, one a unit, at a document index
+ *  none of them takes up. */
+function pushControls(
+  out: Item[],
+  controls: string,
+  box: Box,
+  start: number,
+): void {
+  for (const control of controls) {
+    out.push({
+      kind: 'text',
+      run: runFor(control, box.style),
+      box,
+      length: 1,
+      start,
+      control: true,
+    });
+  }
+}
+
+function hasControls(items: Item[]): boolean {
+  for (const item of items)
+    if (item.kind === 'text' && item.control) return true;
+  return false;
 }
 
 /**
@@ -1710,13 +1808,29 @@ class SpanMap {
   private _laid: number[] = [];
   private _doc: number[] = [];
   private _boxes: (Box | null)[] = [];
+  /** Where the laid-out text has a unit that is no text of the document's:
+   *  a spacer, a bidi control. */
+  private _gaps: number[] | null = null;
   laidOut = 0;
 
   add(documentStart: number, length: number, box: Box | null = null): void {
     this._laid.push(this.laidOut);
     this._doc.push(documentStart);
     this._boxes.push(box);
+    if (!box) {
+      this._gaps ??= [];
+      for (let i = 0; i < length; i += 1) this._gaps.push(this.laidOut + i);
+    }
     this.laidOut += length;
+  }
+
+  /** Give a line's text the gaps in its part of the laid-out text, where
+   *  it has any. Set after the text is made rather than spread into it: a
+   *  spread in an object literal costs every line that has none. */
+  giveGaps(text: LineText, start: number, end: number): void {
+    if (!this._gaps) return;
+    const gaps = this._gaps.filter((at) => at >= start && at < end);
+    if (gaps.length) text.gaps = gaps;
   }
 
   /** The text box whose text an offset in the laid-out text is. */
@@ -1762,7 +1876,7 @@ function segmentFrom(items: Item[], index: number, offset: number): Segment {
     if (item.kind !== 'text') break;
     const text = skip > 0 ? item.run.text.slice(skip) : item.run.text;
     if (text) {
-      spans.add(item.start + skip, text.length, item.box);
+      spans.add(item.start + skip, text.length, item.control ? null : item.box);
       runs.push(skip > 0 ? { ...item.run, text } : item.run);
     }
     skip = 0;

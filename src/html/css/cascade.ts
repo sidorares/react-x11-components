@@ -987,6 +987,19 @@ function presentationHints(el: Element): Declaration[] {
   // at the right, and a Hebrew or an Arabic message is written this way
   const dir = attr(el, 'dir')?.toLowerCase();
   if (dir === 'rtl' || dir === 'ltr') push('direction', dir);
+  // and it isolates the element from the text around it, or with `auto`
+  // takes its first strong letter's direction (HTML's UA sheet: `[dir]`,
+  // `[dir=auto i]`, `bdo[dir]`)
+  if (dir !== undefined) {
+    push(
+      'unicode-bidi',
+      tag === 'bdo'
+        ? 'isolate-override'
+        : dir === 'auto'
+          ? 'plaintext'
+          : 'isolate',
+    );
+  }
 
   const bgcolor = attr(el, 'bgcolor');
   if (bgcolor) push('background-color', bgcolor);

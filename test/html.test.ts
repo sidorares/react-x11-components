@@ -6227,3 +6227,45 @@ test('content: url() is an item of the value, and a bad url is no value', async 
   ]);
   assert.strictEqual(parseContent('url(a b.png)'), null);
 });
+
+// --- unicode-bidi -------------------------------------------------------------------
+
+metric(
+  'unicode-bidi overrides and embeds as its controls do, and they are no text',
+  async () => {
+    // carried out as the bidi controls it stands for, which are laid out
+    // and are no text of the document's: the text, a caret and a
+    // selection skip them (CSS Writing Modes 3, 2.4.2)
+    const { node } = await render(
+      '<p style="margin:0">ab<span style="direction:rtl;unicode-bidi:bidi-override">' +
+        'cde</span>fg <bdo dir="rtl">hij</bdo></p>',
+    );
+    const el = view(node);
+    assert.strictEqual(el.textContent(), 'abcdefg hij');
+    const at = (i: number) => el.textCaretRect(i)!.x;
+    // `cde` is drawn `edc`: before `d` is right of before `e`. The carets
+    // at the run's two ends are the engine's to place, on either side.
+    assert.ok(at(3) > at(4), `d at ${at(3)}, e at ${at(4)}`);
+    // and the text on either side reads on
+    assert.ok(at(1) < at(3) && at(6) < at(7));
+    // `<bdo dir="rtl">` overrides by the UA sheet's rule
+    assert.ok(at(9) > at(10), `i at ${at(9)}, j at ${at(10)}`);
+  },
+);
+
+test('HTML isolates what has a dir of its own, and a <bdo> overrides', async () => {
+  const { node } = await render(
+    '<p id="a" dir="rtl">x</p><span id="b" dir="ltr">y</span>' +
+      '<bdi id="c">z</bdi><bdo id="d" dir="rtl">w</bdo>',
+  );
+  const el = view(node);
+  const of = (id: string) =>
+    (boxOf(el, id) as unknown as { style: { unicodeBidi: string } }).style
+      .unicodeBidi;
+  assert.deepStrictEqual(['a', 'b', 'c', 'd'].map(of), [
+    'isolate',
+    'isolate',
+    'plaintext',
+    'isolate-override',
+  ]);
+});
