@@ -4,9 +4,12 @@
 // where, how deep the quotes are — is the box builder's, because it is a walk
 // in document order and the builder is that walk.
 
+import { parseUrl, urlEnd } from './parse.js';
+
 /** One part of a `content` value, in the order it was written. */
 export type ContentItem =
   | { kind: 'string'; text: string }
+  | { kind: 'url'; url: string }
   | { kind: 'attr'; name: string }
   | { kind: 'counter'; name: string; style: string }
   | { kind: 'counters'; name: string; separator: string; style: string }
@@ -26,15 +29,15 @@ export const DEFAULT_QUOTES: readonly string[] = ['“', '”', '‘', '’'];
 
 type Token =
   | { kind: 'string'; text: string }
+  | { kind: 'url'; url: string }
   | { kind: 'ident'; name: string }
   | { kind: 'function'; name: string; args: Token[][] }
   | { kind: 'number'; value: number };
 
 /**
- * `content`: `normal`, `none`, or its items. An image — `url()` — is dropped
- * rather than the declaration, since the rest of the value still says
- * something; the other items are CSS 2.1's. Null when the value cannot be
- * read, which drops the declaration, as CSS does.
+ * `content`: `normal`, `none`, or its items, CSS 2.1's: strings, images,
+ * `attr()`, counters and quotes. Null when the value cannot be read, which
+ * drops the declaration, as CSS does.
  */
 export function parseContent(
   value: string,
@@ -49,6 +52,8 @@ export function parseContent(
   for (const token of tokens) {
     if (token.kind === 'string') {
       items.push({ kind: 'string', text: token.text });
+    } else if (token.kind === 'url') {
+      items.push(token);
     } else if (token.kind === 'ident') {
       const name = token.name.toLowerCase();
       if (
@@ -62,7 +67,7 @@ export function parseContent(
     } else if (token.kind === 'function') {
       const item = contentFunction(token);
       if (item === null) return null;
-      if (item !== 'skip') items.push(item);
+      items.push(item);
     } else return null;
   }
   return items;
@@ -70,14 +75,13 @@ export function parseContent(
 
 function contentFunction(
   token: Extract<Token, { kind: 'function' }>,
-): ContentItem | 'skip' | null {
+): ContentItem | null {
   const name = token.name.toLowerCase();
   const args = token.args;
   const ident = (i: number): string | null => {
     const arg = args[i];
     return arg?.length === 1 && arg[0].kind === 'ident' ? arg[0].name : null;
   };
-  if (name === 'url') return 'skip';
   if (name === 'attr') {
     const attr = ident(0);
     // an HTML attribute's name is case-insensitive, and the DOM keeps it
@@ -342,17 +346,20 @@ function tokenize(value: string): Token[] | null {
           continue;
         }
       }
+      const start = i;
       const name = readIdent();
       if (name === null) return null;
       if (value[i] === '(') {
-        i += 1;
         if (name.toLowerCase() === 'url') {
-          const close = value.indexOf(')', i);
-          if (close < 0) return null;
-          i = close + 1;
-          tokens.push({ kind: 'function', name, args: [] });
+          // a url token, read as a background's is; a bad one is no value
+          const end = urlEnd(value, i);
+          const url = parseUrl(value.slice(start, end));
+          if (url === undefined) return null;
+          if (url !== null) tokens.push({ kind: 'url', url });
+          i = end;
           continue;
         }
+        i += 1;
         const args: Token[][] = [];
         for (;;) {
           const arg = read(',)');

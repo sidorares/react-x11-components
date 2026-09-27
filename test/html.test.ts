@@ -1029,8 +1029,9 @@ test('content values: strings with escapes, attr(), counters and quotes', () => 
       { kind: 'open-quote' },
     ],
   );
-  // an image is dropped and the rest stands; what cannot be read drops all
+  // an image is an item among the rest; what cannot be read drops all
   assert.deepStrictEqual(parseContent('url(x.png) "a"'), [
+    { kind: 'url', url: 'x.png' },
     { kind: 'string', text: 'a' },
   ]);
   assert.strictEqual(parseContent('"a", "b"'), null);
@@ -6189,4 +6190,40 @@ metric('a negative inline margin takes room back on its line', async () => {
   // one layout: CoreText's typesetter breaks before a space whose letter
   // spacing is negative, and only this suite's engine does not
   assert.ok(pulled.texts.length > 1, 'in pieces');
+});
+
+// --- an image in generated content ----------------------------------------------------
+
+metric(
+  'an image generated content names is drawn, at its size, among its text',
+  async () => {
+    // `content: url(…)` was dropped from the value: the rest was drawn and
+    // the image was not (CSS 2.1 12.2). It is asked for as a background image
+    // is, and a host that answers at once is answered in the same pass.
+    const ctx = await renderWithImages(
+      '<style>body{margin:0;font:10px/10px monospace}' +
+        'p{margin:0;color:#0000ff}p::before{content:url(red.png) "x"}</style>' +
+        '<p>y</p>',
+    );
+    await expectPixel(ctx, 5, 5, '#ff0000', {
+      message: 'the ten-pixel square, first on the line',
+    });
+    const [r, g, b] = await pixelAt(ctx, 14, 5);
+    assert.ok(
+      b > 150 && r < 100,
+      `the text after it, beside it: ${r},${g},${b}`,
+    );
+  },
+);
+
+test('content: url() is an item of the value, and a bad url is no value', async () => {
+  const { parseContent } = await import('../src/html/css/content.js');
+  assert.deepStrictEqual(parseContent('url(a.png) "b"'), [
+    { kind: 'url', url: 'a.png' },
+    { kind: 'string', text: 'b' },
+  ]);
+  assert.deepStrictEqual(parseContent('url("a b.png")'), [
+    { kind: 'url', url: 'a b.png' },
+  ]);
+  assert.strictEqual(parseContent('url(a b.png)'), null);
 });

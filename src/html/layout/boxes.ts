@@ -463,6 +463,10 @@ export interface Intrinsic {
  *  kept beside the boxes: few documents have any (`BoxTree.firstLine`). */
 export const FIRST_LINE = new WeakMap<Box, ComputedStyle>();
 
+/** The url of an image generated content put in a pseudo-element: it has
+ *  no element of its own to name it (`imageUrlOf`). */
+export const CONTENT_IMAGES = new WeakMap<Box, string>();
+
 /** How far `position: relative` moved an inline box (`offsetInline`), how
  *  far each text on a line moved with the boxes it is in, and the lines
  *  holding one: beside the boxes and the lines, since few documents move an
@@ -501,6 +505,10 @@ export interface BoxTree {
    *  asked for: a document has a handful, and finding them was a walk over
    *  every box after every build. */
   backgrounds: Box[];
+  /** Every image generated content names, the element whose
+   *  pseudo-element names it, for the host to be asked for, and whether its
+   *  size was known when the box was built. */
+  contentImages: { url: string; element: Element; sized: boolean }[];
   /** Whether any box is relatively positioned: where none is, layout skips
    *  the walk that moves them. */
   relative: boolean;
@@ -530,6 +538,8 @@ export interface BuildOptions {
    *  image's own pixels. `null` when it has not: the box takes the attribute
    *  size, or a placeholder. */
   imageSize(el: Element): IntrinsicSize | null;
+  /** The same for an image named by url — generated content's. */
+  urlSize?(url: string): IntrinsicSize | null;
   /** The size a real widget wants, so the box in the flow is the size the
    *  control will be drawn at. */
   controlSize(
@@ -575,6 +585,11 @@ class Builder {
   private _controls: Box[] = [];
   private _links: Box[] = [];
   private _backgrounds: Box[] = [];
+  private _contentImages: {
+    url: string;
+    element: Element;
+    sized: boolean;
+  }[] = [];
   private _relative = false;
   private _negative = false;
   private _firstLine = false;
@@ -622,6 +637,7 @@ class Builder {
       controls: this._controls,
       links: this._links,
       backgrounds: this._backgrounds,
+      contentImages: this._contentImages,
       relative: this._relative || isRelative(rootStyle),
       negative: this._negative,
       firstLine: this._firstLine,
@@ -923,7 +939,7 @@ class Builder {
     else if (style.float !== 'none') box.isFloat = true;
     if (into.kind === 'inline' && (box.outOfFlow || box.isFloat))
       this._nestedOutOfLine = true;
-    const text = this._generated(style.content as ContentItem[], style, el);
+    const pieces = this._generated(style.content as ContentItem[], style, el);
     const flow = flowOf(style, box);
     const around = this._ws;
     if (flow === 'block') this._endLine();
@@ -934,7 +950,10 @@ class Builder {
     const skipped = flow === 'out' || flow === 'atomic';
     if (skipped) this._firstLetter = null;
     else if (flow === 'block' && outerLetter) giveBack(outerLetter);
-    if (text) this._textNode(text, box, style, el);
+    for (const piece of pieces) {
+      if (typeof piece === 'string') this._textNode(piece, box, style, el);
+      else this._contentImage(piece.url, box, style, el);
+    }
     this._letterAfter(flow, skipped, outerLetter, null);
     if (flow !== 'inline') this._endLine();
     this._ws = after(flow, this._ws, around);
@@ -950,18 +969,25 @@ class Builder {
     }
   }
 
-  /** What `content` comes to here, in document order: the quotes it opens
-   *  and closes count for everything after it. */
+  /** What `content` comes to here, in document order: its text, broken
+   *  where it names an image. The quotes it opens and closes count for
+   *  everything after it. */
   private _generated(
     items: ContentItem[],
     style: ComputedStyle,
     el: Element,
-  ): string {
+  ): (string | { url: string })[] {
+    const pieces: (string | { url: string })[] = [];
     let text = '';
     for (const item of items) {
       switch (item.kind) {
         case 'string':
           text += item.text;
+          break;
+        case 'url':
+          if (text) pieces.push(text);
+          text = '';
+          pieces.push({ url: item.url });
           break;
         case 'attr':
           text += attr(el, item.name) ?? '';
@@ -994,7 +1020,35 @@ class Builder {
           break;
       }
     }
-    return text;
+    if (text) pieces.push(text);
+    return pieces;
+  }
+
+  /**
+   * An image generated content names: an inline replaced box in the
+   * pseudo-element, of the style it inherits and no other (CSS 2.1 12.2),
+   * the image's size once the host has it and none before. An image that
+   * never arrives takes no room, as no image does.
+   */
+  private _contentImage(
+    url: string,
+    into: Box,
+    style: ComputedStyle,
+    owner: Element,
+  ): void {
+    const box = new Box('replaced', null, {
+      ...inherit(style, this._options.cascade.initial),
+      display: 'inline',
+    });
+    box.replaced = 'image';
+    into.append(box);
+    CONTENT_IMAGES.set(box, url);
+    const size = this._options.urlSize?.(url) ?? null;
+    this._contentImages.push({ url, element: owner, sized: !!size });
+    if (size) setIntrinsics(box, size, this._options.scale ?? 1);
+    else box.intrinsic = { width: 0, height: 0, missing: 0, ratio: 0 };
+    this._ws = after('atomic', this._ws, this._ws);
+    this._abandonLetter();
   }
 
   /** A text node, whitespace-processed per the inherited `white-space`. */

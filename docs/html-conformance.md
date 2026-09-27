@@ -93,6 +93,7 @@ separately, and there are six.
 | 23     | relative inline boxes, hidden inline text          | 5,381 (91%) | 4,929 (84%) |
 | 24     | `vertical-align` on text                           | 5,404 (92%) | 4,930 (84%) |
 | 25     | what is in the head, negative inline margins       | 5,415 (92%) | 4,938 (84%) |
+| 26     | images in generated content                        | 5,419 (92%) | 4,942 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -1089,6 +1090,22 @@ CoreText places the second letter a fraction of a pixel differently.
 
 Round 25 lost none, on either backend.
 
+### Round 26
+
+107. **An image in `content` was dropped from the value**, and the rest of
+     it drawn, so an icon a stylesheet puts in a `::before` never showed.
+     `url()` is an item of the value now, read as a background's is. It
+     is an inline image in the pseudo-element, of the style the
+     pseudo-element passes on and no other (CSS 2.1 12.2), asked for
+     through `onResource` as a background image is. It takes the image's
+     size once it arrives and none before. A host that answers as it is
+     asked is answered in the same pass: an `<img>` is asked for before
+     the boxes are built, and a generated image is known only once they
+     are, so the boxes are built again when one arrives that way. 4 tests,
+     on both backends; a fifth is closer, and fails on a cell's background.
+
+Round 26 lost none, on either backend.
+
 ## What `<Html>` supports
 
 From the pass rates of the tests that use each feature, at the fixes above,
@@ -1108,7 +1125,7 @@ checked against the code.
 | `white-space`                                      | 217   | 46%     | **supported**; collapsing is CSS 2.1's across elements                                                                                                                                                                        |
 | lists and markers                                  | 155   | 94%     | **supported**; `list-style-image` is not                                                                                                                                                                                      |
 | CSS tables (`display: table-*`), `table-layout`    | 250   | 81%     | **supported**: HTML tables and anonymous ones, both border models, captions, `<col>` widths in both layouts, and column backgrounds with their images; `visibility: collapse` and baseline alignment are not                  |
-| `::before`, `::after`, `content`, counters, quotes | 332   | 86%     | **supported**; an image in `content` is not                                                                                                                                                                                   |
+| `::before`, `::after`, `content`, counters, quotes | 332   | 86%     | **supported**, images in `content` included                                                                                                                                                                                   |
 | `::first-letter`, `::first-line`                   | 398   | 79–100% | `::first-letter` **supported**; `::first-line` **partial**: its colour and background, not its font, spacing or `vertical-align`                                                                                              |
 | `z-index` stacking                                 | 152   | 73%     | **supported**: Appendix E's order — block backgrounds, floats, lines, positioned boxes by `z-index` — with a table, a flex box or a box that clips painted whole among the lines                                              |
 | SVG: inline, as an image, as a background          | 52    | 98%     | **supported**, as ntk's `SvgView` draws it: shapes, paths, `<use>`, gradients and text; no stylesheet rules, filters, masks or clip paths                                                                                     |
@@ -1188,8 +1205,8 @@ directories and caniemail's feature list:
    than one that renders badly.
 2. **Generated content**: `::before`, `::after`, `content` with strings,
    `attr()`, counters and quotes. About 330 tests, and used everywhere —
-   clearfixes, icons, quotation marks, numbered headings. Done in round 2;
-   an image in `content` remains.
+   clearfixes, icons, quotation marks, numbered headings. Done in round 2,
+   and images in `content` in round 26.
 3. **Tables as mail uses them**: anonymous table boxes, the collapsing
    border model, `table-layout: fixed`, row groups, captions. About 600
    tests, and the layout of most HTML mail. Anonymous tables were done in
