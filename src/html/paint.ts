@@ -448,13 +448,19 @@ function paintContent(
     // on the pixels the box's own background covers, inside its borders:
     // rounded out to whole pixels instead, a box at a fractional position
     // showed a row of what it clips beyond its background's edge
-    const x = Math.round(box.x + options.originX) + box.borderLeft;
-    const y = Math.round(frameY(box) + options.originY) + box.borderTop;
+    const left = box.x + options.originX;
+    const top = frameY(box) + options.originY;
+    const x = Math.round(left);
+    const y = Math.round(top);
     const rect = {
-      x,
-      y,
-      w: Math.ceil(box.width) - box.borderLeft - box.borderRight,
-      h: Math.ceil(frameHeight(box)) - box.borderTop - box.borderBottom,
+      x: x + box.borderLeft,
+      y: y + box.borderTop,
+      w: Math.round(left + box.width) - x - box.borderLeft - box.borderRight,
+      h:
+        Math.round(top + frameHeight(box)) -
+        y -
+        box.borderTop -
+        box.borderBottom,
     };
     if (pushClip(ctx, rect, innerRadii(box))) {
       level = { box, deferred: [] };
@@ -505,12 +511,14 @@ function paintOwnBackground(
   if (box !== options.canvasSource) {
     paintBackground(ctx, box, options);
     if (style.backgroundImage) {
+      const left = box.x + options.originX;
+      const top = frameY(box) + options.originY;
       const area = clampRect(
         options,
-        Math.round(box.x + options.originX),
-        Math.round(frameY(box) + options.originY),
-        Math.ceil(box.width),
-        Math.ceil(frameHeight(box)),
+        Math.round(left),
+        Math.round(top),
+        Math.round(left + box.width) - Math.round(left),
+        Math.round(top + frameHeight(box)) - Math.round(top),
       );
       if (area) {
         paintBackgroundImage(
@@ -909,12 +917,17 @@ function paintBackground(
 ): void {
   const color = box.style.backgroundColor;
   if (isTransparent(color)) return;
+  // each edge on the pixel it falls nearest, as browsers snap a box: boxes
+  // that meet share the column their edge is in, and a rule 1.33px wide is
+  // one pixel, not two
+  const left = box.x + options.originX;
+  const top = frameY(box) + options.originY;
   const rect = clampRect(
     options,
-    Math.round(box.x + options.originX),
-    Math.round(frameY(box) + options.originY),
-    Math.ceil(box.width),
-    Math.ceil(frameHeight(box)),
+    Math.round(left),
+    Math.round(top),
+    Math.round(left + box.width) - Math.round(left),
+    Math.round(top + frameHeight(box)) - Math.round(top),
   );
   if (!rect) return;
   ctx.fillStyle = inkColor(color as string, box.style.color);
@@ -985,12 +998,14 @@ function paintPartBackgrounds(
         options,
       );
       if (part.style.backgroundImage) {
+        const left = box.x + options.originX;
+        const top = box.y + options.originY;
         const area = clampRect(
           options,
-          Math.round(box.x + options.originX),
-          Math.round(box.y + options.originY),
-          Math.ceil(box.width),
-          Math.ceil(box.height),
+          Math.round(left),
+          Math.round(top),
+          Math.round(left + box.width) - Math.round(left),
+          Math.round(top + box.height) - Math.round(top),
         );
         if (area) {
           let at = areas.get(part);
@@ -1186,10 +1201,12 @@ function paintBorders(
   if (!(box.borderTop || box.borderRight || box.borderBottom || box.borderLeft))
     return;
   const s = box.style;
-  const x = Math.round(box.x + options.originX);
-  const y = Math.round(frameY(box) + options.originY);
-  const w = Math.ceil(box.width);
-  const h = Math.ceil(frameHeight(box));
+  const left = box.x + options.originX;
+  const top = frameY(box) + options.originY;
+  const x = Math.round(left);
+  const y = Math.round(top);
+  const w = Math.round(left + box.width) - x;
+  const h = Math.round(top + frameHeight(box)) - y;
   if (w <= 0 || h <= 0) return;
 
   const edge = (
@@ -1375,10 +1392,12 @@ function paintMarker(
 
 function paintImage(ctx: PaintContext, box: Box, options: PaintOptions): void {
   const image = options.imageFor(box);
-  const x = Math.round(box.contentX + options.originX);
-  const y = Math.round(box.contentY + options.originY);
-  const w = Math.ceil(box.contentWidth);
-  const h = Math.ceil(box.contentHeight);
+  const left = box.contentX + options.originX;
+  const top = box.contentY + options.originY;
+  const x = Math.round(left);
+  const y = Math.round(top);
+  const w = Math.round(left + box.contentWidth) - x;
+  const h = Math.round(top + box.contentHeight) - y;
   if (w <= 0 || h <= 0) return;
   if (image instanceof SvgDrawing) {
     image.draw(ctx, x, y, w, h, options.scale ?? 1);
