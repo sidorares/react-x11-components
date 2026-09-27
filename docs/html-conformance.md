@@ -95,6 +95,7 @@ separately, and there are six.
 | 25     | what is in the head, negative inline margins       | 5,415 (92%) | 4,938 (84%) |
 | 26     | images in generated content                        | 5,419 (92%) | 4,942 (84%) |
 | 27     | `unicode-bidi`                                     | 5,432 (92%) | 4,956 (84%) |
+| 28     | `white-space` on an element                        | 5,436 (92%) | 4,959 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -1125,6 +1126,23 @@ Round 26 lost none, on either backend.
      X11, 14 on macOS.
 
 Round 27 lost none, on either backend.
+
+### Round 28
+
+109. **`white-space` was read from the block alone.** A `nowrap` element in
+     a paragraph that wraps broke between its words, and `pre` text
+     dropped the spaces a line ends on from its width, as `normal` text
+     hangs them, so a `pre` block in a table cell was narrower than its
+     text. Laid out, a space `pre` keeps is a no-break space, as wide and
+     as many, so every offset holds, and so is one a `nowrap` element may
+     not break after. The space such an element ends on stays breakable
+     where the text after it wraps: a break after a space is the call of
+     the nearest element holding both (CSS Text 3, 5.1). A `pre` text's
+     held spaces are made once a box, so that a pass makes no new string.
+     4 tests on X11, 3 on macOS. A `nowrap` run wider than its line is
+     still broken inside, which only the engine can stop (`overflow-wrap`).
+
+Round 28 lost none, on either backend.
 
 ## What `<Html>` supports
 
