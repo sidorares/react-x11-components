@@ -128,6 +128,7 @@ separately, and there are six.
 | 58     | intrinsic sizes                                    | 5,472 (93%) | 4,979 (84%) |
 | 59     | `text-wrap`                                        | 5,472 (93%) | 4,979 (84%) |
 | 60     | `translate`                                        | 5,472 (93%) | 4,979 (84%) |
+| 61     | the room a shrink-to-fit box has                   | 5,472 (93%) | 4,979 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -1798,6 +1799,28 @@ rgba(0,0,0,.5)), url(hero.jpg) center / cover` — was the photograph
      browser paints it. Found in a survey of the properties real
      stylesheets write that were dropped; CSS 2.1 has no transforms, and
      neither suite moved.
+
+### Round 61
+
+152. **A shrink-to-fit box had its containing block's whole width.** CSS
+     2.1 gives a float, an inline-block and an absolute box of `width:
+auto` the room its margins leave (10.3.5, 10.3.9), and an absolute
+     box also the room left beside the offset it has, or beside its static
+     position where it has none (10.3.7). Each took the containing block's
+     width instead: a float with side margins and text enough to wrap
+     stood out of its containing block by them, and a box placed at
+     `left: 50%` — the other half of the centring round 60 made work —
+     ran past its end rather than wrapping in the half it has. The room
+     is the containing block's less the margins and that offset now, and
+     percentages are still of the containing block; the five cases in the
+     test measure what Chrome measures. With the room right, the part of
+     the rule the engine had skipped matters — `min(max(min-content,
+room), max-content)`, the longest word flooring the box — and
+     `floats-clear/floats-121` said so the first time the suite ran: a
+     float with a 200px word in 199px of room is 200px wide. The
+     min-content width is measured now, only where the content does not
+     fit the room, and kept on the box. Found comparing round 60's probe
+     with a browser.
 
 ## What `<Html>` supports
 

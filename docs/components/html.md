@@ -127,7 +127,10 @@ and `rowspan`, and the anonymous table CSS builds around table parts that
 have none), `position: relative | absolute | fixed`, `display: flex`, and
 `display: grid` as documents write it (below). An
 inline-block sits on its last line's baseline and an inline-table on its
-first row's. A relatively positioned inline box moves its text, its
+first row's. A float, an inline-block and an absolute box of `width: auto`
+shrink to fit the room their margins leave, and an absolute box the room
+its offset or its static position leaves: at `left: 50%` it has half the
+width. None is narrower than its longest word. A relatively positioned inline box moves its text, its
 background and borders and any block inside it, and leaves its lines where
 they were, which is how Tailwind's preflight and normalize.css raise a
 `<sup>`; a paragraph with one is laid out a line at a time, as one with an
