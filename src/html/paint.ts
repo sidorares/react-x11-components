@@ -410,15 +410,16 @@ function paintContent(
   // is painted once this clip is gone (`paintPositioned`).
   let level: ClipLevel | null = null;
   if (clipsOverflow(box)) {
-    // out to whole pixels, so that ink at a fractional edge is not cut
-    const inner = paddingBox(box, options);
-    const x = Math.floor(inner.x);
-    const y = Math.floor(inner.y);
+    // on the pixels the box's own background covers, inside its borders:
+    // rounded out to whole pixels instead, a box at a fractional position
+    // showed a row of what it clips beyond its background's edge
+    const x = Math.round(box.x + options.originX) + box.borderLeft;
+    const y = Math.round(frameY(box) + options.originY) + box.borderTop;
     const rect = {
       x,
       y,
-      w: Math.ceil(inner.x + inner.width) - x,
-      h: Math.ceil(inner.y + inner.height) - y,
+      w: Math.ceil(box.width) - box.borderLeft - box.borderRight,
+      h: Math.ceil(frameHeight(box)) - box.borderTop - box.borderBottom,
     };
     if (pushClip(ctx, rect, innerRadii(box))) {
       level = { box, deferred: [] };

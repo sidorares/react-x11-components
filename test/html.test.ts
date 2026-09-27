@@ -2837,7 +2837,7 @@ metric('overflow clips what a box holds to its padding box', async () => {
   const [red] = clipsAround(ops, '#ff0000');
   assert.deepStrictEqual(
     red.map((c) => c.op === 'clip' && [c.x, c.y, c.w, c.h]),
-    [[Math.floor(o.x) + 3, Math.floor(o.y) + 3, 54, 24]],
+    [[Math.round(o.x) + 3, Math.round(o.y) + 3, 54, 24]],
     'the content, clipped to the padding box',
   );
   const [blue] = clipsAround(ops, '#0000ff');
@@ -2849,6 +2849,28 @@ metric('overflow clips what a box holds to its padding box', async () => {
     'nor a positioned box whose containing block is outside it',
   );
 });
+
+metric(
+  "an overflow clip covers the pixels its box's background does",
+  async () => {
+    // A background at a fractional position rounds to the nearest pixel. A
+    // clip rounded out to whole pixels let a row of what it clips show
+    // beyond the background's edge, which a 2x display turns up.
+    const { node } = await render(
+      '<div style="height:10.5px"></div>' +
+        '<div style="overflow:hidden;width:50px;height:20px;background:#0000ff">' +
+        '<div style="height:200px;background:#ff0000"></div></div>',
+    );
+    const ops: PaintOp[] = [];
+    const fills = await fillsOf(view(node), ops);
+    const blue = fills.find((f) => f.style === parseColor('#0000ff'))!;
+    const [[clip]] = clipsAround(ops, '#ff0000');
+    assert.deepStrictEqual(
+      clip.op === 'clip' && [clip.x, clip.y, clip.w, clip.h],
+      [blue.x, blue.y, blue.w, blue.h],
+    );
+  },
+);
 
 metric(
   'a rounded box clips rounded only where its padding leaves a corner to cut',
