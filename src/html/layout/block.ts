@@ -178,7 +178,8 @@ function collapseMargins(a: number, b: number): number {
  */
 function collapsedTopMargin(box: Box, containingWidth: number): number {
   floatsPassed = false;
-  floatsWidth = 0;
+  floatsLeft = 0;
+  floatsRight = 0;
   return absorbChildren(box, containingWidth, box.marginTop);
 }
 
@@ -187,12 +188,13 @@ function collapsedTopMargin(box: Box, containingWidth: number): number {
  *  take that box's bottom margin too. Read straight after the call. */
 let throughAll = false;
 /** Whether the walk has passed a float, and how wide the floats it passed
- *  are, their margin boxes as their styles state them — NaN once one does
- *  not. Such a float is placed where the margin ends, so it moves with the
- *  margin, and a new formatting context the margin reaches next has to be
- *  able to sit beside it. */
+ *  on each side are, their margin boxes as their styles state them — NaN
+ *  once one does not. Such a float is placed where the margin ends, so it
+ *  moves with the margin, and a new formatting context the margin reaches
+ *  next has to be able to sit beside it. */
 let floatsPassed = false;
-let floatsWidth = 0;
+let floatsLeft = 0;
+let floatsRight = 0;
 
 /**
  * Collapse into `margin` the margins of `at`'s children that adjoin its top
@@ -373,15 +375,31 @@ function hasBorder(style: BorderStyle, width: number): boolean {
 function passFloat(float: Box, width: number): void {
   resolveEdges(float, width);
   floatsPassed = true;
-  floatsWidth += statedOuterWidth(float, width);
+  if (float.style.float === 'right') {
+    floatsRight += statedOuterWidth(float, width);
+  } else floatsLeft += statedOuterWidth(float, width);
 }
 
 /** Whether a new formatting context fits beside the floats the walk passed
- *  (CSS 2.1 9.5): where its width and theirs are stated, whether together
- *  they take no more than the room; where one is not, yes, since a box of
- *  `width: auto` there shrinks to the room it has. */
+ *  (CSS 2.1 9.5), as `layoutBesideFloats` places it: where its width and
+ *  theirs are stated, whether its border box, set in from its margins or
+ *  the floats, ends before them or the room does; where the floats' are
+ *  not, yes, and a box of `width: auto` there shrinks to the room it has. */
 function fitsBeside(box: Box, width: number): boolean {
-  return !(statedOuterWidth(box, width) + floatsWidth > width + 0.01);
+  const stated =
+    statedOuterWidth(box, width) - box.marginLeft - box.marginRight;
+  const lo = floatsLeft ? floatsLeft : -Infinity;
+  const hi = floatsRight ? width - floatsRight : Infinity;
+  const [start, end] = besideFloats(box, 0, width, lo, hi);
+  const across = Number.isNaN(stated)
+    ? Math.max(box.horizontalExtra, end - start)
+    : stated;
+  return box.parent?.style.direction === 'rtl'
+    ? !(end - across < Math.max(Math.min(0, box.marginLeft), lo) - 0.01)
+    : !(
+        start + across >
+        Math.min(width - Math.min(0, box.marginRight), hi) + 0.01
+      );
 }
 
 /** A box's margin-box width as its style states it, before it is laid out:
@@ -623,9 +641,26 @@ function layoutBesideFloats(
   contentWidth: number,
 ): void {
   const right = contentLeft + contentWidth;
+  const style = box.style;
+  // auto margins, and HTML's alignment, place the box in the room the
+  // floats leave, as browsers do
+  const inRoom =
+    style.marginLeft === AUTO ||
+    style.marginRight === AUTO ||
+    !!box.parent?.style.alignBlocks;
+  const rtl = box.parent?.style.direction === 'rtl';
+  // Otherwise its margins are its containing block's, and may overlap a
+  // float on their own side; its border box may not. So a column beside a
+  // 200px sidebar with a margin of 220px starts 220px in, not 420px. A
+  // float is looked for as far out as a negative margin takes the box
+  resolveEdges(box, contentWidth);
+  const reachLeft = inRoom
+    ? contentLeft
+    : Math.min(contentLeft, contentLeft + box.marginLeft);
+  const reachRight = inRoom ? right : Math.max(right, right - box.marginRight);
   let at = y;
   for (let tries = 0; tries < 64; tries += 1) {
-    let band = floats.bandAt(at, 1, contentLeft, right);
+    let band = floats.bandAt(at, 1, reachLeft, reachRight, !inRoom);
     let fits = false;
     // The room is what the floats leave over the box's whole height, not at
     // its top: a float that starts lower down, beside the box, narrows it
@@ -633,14 +668,40 @@ function layoutBesideFloats(
     // that runs into one is laid out again in what is left.
     for (let settle = 0; settle < 8; settle += 1) {
       const room = band.right - band.left;
-      layoutBlockLevel(box, ctx, floats, band.left, at, room);
+      const lo = band.left > reachLeft ? band.left : -Infinity;
+      const hi = band.right < reachRight ? band.right : Infinity;
+      if (inRoom) layoutBlockLevel(box, ctx, floats, band.left, at, room);
+      else {
+        const [start, end] = besideFloats(box, contentLeft, right, lo, hi);
+        layoutBlockLevel(
+          box,
+          ctx,
+          floats,
+          start - box.marginLeft,
+          at,
+          end - start + box.marginLeft + box.marginRight,
+          contentWidth,
+        );
+      }
       const tall = box.marginTop + box.height + box.marginBottom;
-      const over = floats.bandAt(at, tall, contentLeft, right);
+      const over = floats.bandAt(at, tall, reachLeft, reachRight, !inRoom);
       if (over.left > band.left + 0.5 || over.right < band.right - 0.5) {
         band = over;
         continue;
       }
-      fits = box.marginLeft + box.width + box.marginRight <= room + 0.5;
+      // What is too wide overflows at the end of the line, as far as a
+      // negative margin there takes it, but no further into a float or
+      // past the room; at the start it would run into the floats, and
+      // waits below them (the suite's floats-wrap-bfc-with-margin tests)
+      if (inRoom) {
+        fits = box.marginLeft + box.width + box.marginRight <= room + 0.5;
+      } else if (rtl) {
+        const limit = Math.max(contentLeft + Math.min(0, box.marginLeft), lo);
+        fits = box.x >= limit - 0.5;
+      } else {
+        const limit = Math.min(right - Math.min(0, box.marginRight), hi);
+        fits = box.x + box.width <= limit + 0.5;
+      }
       break;
     }
     if (fits) return;
@@ -649,6 +710,25 @@ function layoutBesideFloats(
     at = below;
   }
   layoutBlockLevel(box, ctx, floats, contentLeft, at, contentWidth);
+}
+
+/**
+ * The left and right edges a block with a formatting context of its own
+ * has for its border box beside floats that reach `lo` from the left and
+ * `hi` from the right (infinite where none does): each margin set in from
+ * its containing block's edge, or the float's where that is further in.
+ */
+function besideFloats(
+  box: Box,
+  left: number,
+  right: number,
+  lo: number,
+  hi: number,
+): [number, number] {
+  return [
+    Math.max(left + box.marginLeft, lo),
+    Math.min(right - box.marginRight, hi),
+  ];
 }
 
 function layoutInlineContent(
@@ -764,16 +844,19 @@ function layoutBlockLevel(
   contentLeft: number,
   y: number,
   containingWidth: number,
+  /** What percentages are of: the containing block's width, where the
+   *  room is narrower than it beside floats */
+  percentBase = containingWidth,
 ): void {
-  resolveEdges(box, containingWidth);
+  resolveEdges(box, percentBase);
 
   if (box.kind === 'replaced') {
-    sizeReplaced(box, containingWidth);
+    sizeReplaced(box, percentBase);
     placeBlock(box, contentLeft, y, containingWidth);
     return;
   }
 
-  const width = blockWidth(box, containingWidth);
+  const width = blockWidth(box, containingWidth, percentBase);
   box.width = width;
   placeBlock(box, contentLeft, y, containingWidth);
   layoutInternals(box, ctx, width, box.x, box.y, outerFloats);
@@ -1112,19 +1195,23 @@ function placeBlock(
 }
 
 /** The border-box width of an in-flow block-level box. */
-function blockWidth(box: Box, containingWidth: number): number {
+function blockWidth(
+  box: Box,
+  containingWidth: number,
+  percentBase = containingWidth,
+): number {
   const style = box.style;
   const available = containingWidth - box.marginLeft - box.marginRight;
   if (style.width === AUTO) {
-    return clampWidth(box, Math.max(0, available), containingWidth);
+    return clampWidth(box, Math.max(0, available), percentBase);
   }
   // at least zero: a `calc()` may come to less
-  const specified = Math.max(0, resolve(style.width, containingWidth, 0));
+  const specified = Math.max(0, resolve(style.width, percentBase, 0));
   const borderBox =
     style.boxSizing === 'border-box'
       ? Math.max(specified, box.horizontalExtra)
       : specified + box.horizontalExtra;
-  return clampWidth(box, borderBox, containingWidth);
+  return clampWidth(box, borderBox, percentBase);
 }
 
 function clampWidth(box: Box, width: number, containingWidth: number): number {

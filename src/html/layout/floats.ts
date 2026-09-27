@@ -58,16 +58,22 @@ export class FloatContext {
    * not when the line's top is inside the float — which is why this takes a
    * height rather than just a position. Getting that wrong lets the last
    * line of a wrapped paragraph slide under a floated image by a pixel.
+   *
+   * `solid` leaves out a float of no width: a block with a formatting
+   * context of its own may not overlap a float's margin box (CSS 2.1 9.5),
+   * and one with no area has nothing to overlap, wherever it is.
    */
   bandAt(
     y: number,
     height: number,
     left = this.left,
     right = this.right,
+    solid = false,
   ): Band {
     const bottom = y + Math.max(1, height);
     for (const box of this._boxes) {
       if (box.bottom <= y || box.top >= bottom) continue;
+      if (solid && box.right <= box.left) continue;
       if (box.side === 'left') left = Math.max(left, box.right);
       else right = Math.min(right, box.left);
     }
