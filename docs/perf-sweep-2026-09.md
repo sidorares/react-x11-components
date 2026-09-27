@@ -1843,6 +1843,68 @@ both engines answer the longest word, and ntk is no slower for it. Five
 tests of the CSS 2.1 suite that put their text in a table cell pass on
 macOS that did not — 4,984 of them now — and none moved on X11.
 
+## Round 19: a style past 128 fields
+
+The rounds after 18 — #219 to #231, rounds 56 to 65 of the conformance
+work — were measured as rounds 13, 14 and 17 measured theirs: a tree from
+before them against master, in process and in real windows.
+
+In windows one cell seemed to move: a reflow's frame on XQuartz, 37.9
+against 40.4 ms at 600 KB, in each of four interleaved runs and again with
+the trees' order reversed. Launched with `node --import tsx` instead of
+`npx tsx`, the same comparison came out the other way, 41.0 against 39.9 —
+with the same requests a frame, about 64 composites and 50 glyph runs, the
+same scavenges and the same processor time. A difference that changes sign
+with the launcher is where the JIT put the code, not what the code does,
+and it was left there.
+
+In process the box build had moved, and most on the smallest document:
+13.7 → 14.3 ms for the report at 600 KB and 1.50 → 1.60 ms at 20 KB, while
+the layout came down, 24.5 → 23.0 ms, by #228's words. The profile put the
+difference in one function, `inherit` — a child's starting style — which
+went from 124 to 161 ms of the run.
+
+`inherit` began `{ ...initial }`. V8 gives an object literal of 128
+properties or more a dictionary map, a hash table where a shape would be,
+and a spread of a dictionary adds the copy's properties one at a time:
+16.6 µs a copy at 131 fields and 19.2 at 149, where a literal of 127
+spreads in 0.23 µs. `initialStyle`'s literal went from 127 fields to 131
+in #219, the first of these rounds, with four fields for an underline's
+offset and thickness. Styles are shared (#141), so `inherit` runs once for each
+distinct style rather than each element, about a hundred times a build of
+the report — which at 17 µs a copy was still 1.9 ms of a 14 ms box build,
+and at 20 KB more than half of one. Before #219 the cost was a quarter of
+a microsecond, and no round measured the crossing: this morning's baseline
+already had it.
+
+A constructor that assigns every field makes an object with its fields
+laid out in it, however many there are: 0.13 µs a copy, and read as fast
+as a small literal's. `copyStyle` is that constructor, written from the
+fields of `initialStyle`'s literal so that none can be left out of it, and
+every place that spread a style copies one with it now: `inherit`, the
+root's style, an anonymous box's, a clearing `<br>`'s, an outline's ring,
+and an inline box's fragment, which was copied on every paint and is now
+made once for each style and pair of ends. A test holds every box's style
+to the constructor, so a spread creeping back fails it.
+
+In process, medians:
+
+|                                    | before  | after   |
+| ---------------------------------- | ------- | ------- |
+| the report's box build, 600 KB     | 14.2 ms | 11.6 ms |
+| the report's box build, 20 KB      | 1.60 ms | 0.70 ms |
+| the Tailwind dashboard's box build | 9.5 ms  | 8.8 ms  |
+| the Tailwind dashboard's restyle   | 11.0 ms | 10.6 ms |
+
+In windows, input to paint, medians of three interleaved runs, XQuartz
+first and then macOS:
+
+|                   | before         | after          |
+| ----------------- | -------------- | -------------- |
+| 600 KB, an edit   | 55.6 / 61.9 ms | 54.0 / 60.0 ms |
+| 600 KB, an append | 51.1 / 55.8 ms | 48.5 / 54.9 ms |
+| 20 KB, an edit    | 14.8 / 17.8 ms | 12.5 / 17.9 ms |
+
 ## Lessons
 
 1. **Look for caches that never hit.** Identity-keyed caches handed a new
@@ -1974,6 +2036,17 @@ macOS that did not — 4,984 of them now — and none moved on X11.
     actually passes, and when a question's answer can be read another
     way — the widest word, from a layout with a word to a line — read it
     there.
+33. **An object literal of 128 properties is a hash table.** V8 gives one
+    a dictionary map, and a spread of it copies a property at a time,
+    eighty times what a spread of 127 costs. Nothing warns: the style
+    crossed the line with four fields for an underline, and it showed
+    only as one function's share of a profile. Copy a wide object with a
+    constructor, whose fields are laid out however many there are.
+34. **An A/B that changes sign with the launcher measures the JIT.** A
+    frame 2 ms slower in every interleaved run, in either order, was 1 ms
+    faster launched another way, with the same requests, scavenges and
+    processor time. Before chasing a difference of a few percent, run it
+    under a second launcher.
 
 ## Still open
 

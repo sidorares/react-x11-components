@@ -13,6 +13,7 @@ import type { Element } from 'domhandler';
 
 import { Cascade } from '../src/html/css/cascade.js';
 import { parseStylesheet } from '../src/html/css/parse.js';
+import { copyStyle, initialStyle } from '../src/html/css/style.js';
 import type { ComputedStyle, RootLook } from '../src/html/css/style.js';
 import { uaStylesheet } from '../src/html/css/ua.js';
 import { HtmlSource } from '../src/html/dom.js';
@@ -362,4 +363,62 @@ test('a shared set of custom properties is the set the element computes alone', 
   );
   const sets = new Set(paragraphs.map((p) => p.style.custom));
   assert.ok(sets.size < paragraphs.length, 'fewer sets than elements');
+});
+
+// A style is 149 fields, and V8 gives an object literal of 128 or more a
+// dictionary map: `{ ...style }` copies one a property at a time, a hundred
+// times what `copyStyle`'s constructor costs, and the copy is a dictionary
+// too. So every style a box carries has to come from the constructor — the
+// cascade's, the root's, an anonymous box's, a pseudo-element's — and a
+// spread creeping back in shows here as a style made by `Object`.
+test('every style is made by the copy constructor, never by a spread', () => {
+  const made = Object.getPrototypeOf(initialStyle(LOOK));
+  assert.notStrictEqual(made, Object.prototype, 'a constructor of its own');
+  const sheet = `
+    p::first-line { font-weight: bold; }
+    p::first-letter { font-size: 2em; }
+    li::marker { color: red; }
+    .q::before { content: '<'; }
+    .q::after { content: '>'; }
+  `;
+  const html =
+    `<style>${sheet}</style>` +
+    `<p>Text with <span>an inline <div>block inside</div> split</span> in it.</p>` +
+    `<p>A break<br clear="all">that clears, and <b class="q">quoted</b>.</p>` +
+    `<ul><li>one</li><li style="list-style-position: inside">two</li></ul>` +
+    `<div style="display: table-cell">an anonymous table around a cell</div>` +
+    `<div style="display: flex">loose text in a flex container<i>and</i></div>`;
+  for (const hasHtml of [true, false]) {
+    const doc = parse(hasHtml ? `<html><body>${html}</body></html>` : html);
+    const cascade = new Cascade(
+      [uaStylesheet(LOOK), parseStylesheet(sheet, 0)],
+      LOOK,
+      800,
+      600,
+      1,
+    );
+    const tree = build(doc, cascade);
+    const kinds = new Set<string>();
+    for (const box of boxes(tree.root)) {
+      kinds.add(box.kind);
+      assert.ok(
+        Object.getPrototypeOf(box.style) === made,
+        `the style of a ${box.kind} box <${box.el?.name ?? ''}>`,
+      );
+    }
+    assert.ok(kinds.has('block') && kinds.has('inline'), [...kinds].join());
+  }
+});
+
+test('a copied style has every field of the one it copies', () => {
+  const style = initialStyle(LOOK);
+  style.color = '#123456';
+  const copy = copyStyle(style);
+  assert.notStrictEqual(copy, style);
+  assert.deepStrictEqual(Object.keys(copy), Object.keys(style));
+  for (const key of Object.keys(style) as (keyof ComputedStyle)[]) {
+    assert.strictEqual(copy[key], style[key], key);
+  }
+  copy.color = '#654321';
+  assert.strictEqual(style.color, '#123456', 'and is its own object');
 });

@@ -27,6 +27,7 @@ import type { Declaration, StyleRule, Stylesheet } from './parse.js';
 import {
   applyDeclaration,
   blockify,
+  copyStyle,
   decorate,
   inherit,
   initialOne,
@@ -834,7 +835,7 @@ export class Cascade {
    * `html { … }` rules have styled, as the one a browser implies would be.
    */
   rootStyle(hasBody: boolean, hasHtml = true): ComputedStyle {
-    const style = { ...this.initial };
+    const style = copyStyle(this.initial);
     style.display = 'block';
     if (hasBody) return style;
     const synthetic = new DomElement('body', {}, []);

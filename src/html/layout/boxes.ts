@@ -32,7 +32,7 @@ import type { Cascade, FirstLetterRules } from '../css/cascade.js';
 import type { CollapsedTable } from './collapse.js';
 import { counterText, quoteAt } from '../css/content.js';
 import type { ContentItem } from '../css/content.js';
-import { inherit } from '../css/style.js';
+import { copyStyle, inherit } from '../css/style.js';
 import { AUTO } from '../css/values.js';
 import { svgIntrinsics } from '../svg.js';
 import type { IntrinsicSize } from '../svg.js';
@@ -766,7 +766,9 @@ class Builder {
         // floated image — puts what follows it below them: an empty block
         // that clears them, which the inline content around it is broken
         // for (`breakInlines`), where a line break went on beside them
-        into.append(new Box('block', el, { ...style, display: 'block' }));
+        const clearing = copyStyle(style);
+        clearing.display = 'block';
+        into.append(new Box('block', el, clearing));
         this._ws = 'start';
         return;
       }
@@ -1989,7 +1991,8 @@ function anonymousStyles(initial: ComputedStyle): AnonymousStyle {
     if (!style) {
       // `display` is the one property it does not start from: it is the
       // box the fix-up made, and layout asks the style what a box is
-      style = { ...inherit(parent.style, initial), display };
+      style = inherit(parent.style, initial);
+      style.display = display;
       byDisplay.set(display, style);
     }
     return style;
