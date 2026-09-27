@@ -14,6 +14,7 @@
 // places cells exactly as before; the table then paints the segments
 // (`paintCollapsedBorders`) and nothing paints the boxes' own.
 import type { BorderStyle, ComputedStyle } from '../css/style.js';
+import { inkColor } from '../css/values.js';
 import type { Box } from './boxes.js';
 import { tableGrid } from './grid.js';
 import type { Cell } from './grid.js';
@@ -174,7 +175,7 @@ function resolve(candidates: Candidate[]): CollapsedBorder | null {
   return {
     width: bestWidth,
     style: best.style[styleKey],
-    color: color === 'currentColor' ? best.style.color : color,
+    color: inkColor(color, best.style.color),
     rank: (bestWidth * 16 + bestStyle) * 8 + best.origin,
   };
 }

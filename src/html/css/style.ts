@@ -558,9 +558,12 @@ export function applyDeclaration(
   if (color) {
     const parsed = parseColor(value);
     if (parsed === null) return;
-    // `color: currentColor` is the one place the token refers to itself; it
-    // means "keep the inherited colour", which the style already holds.
-    if (name === 'color' && parsed === 'currentColor') return;
+    // `currentColor` in `color` is the one place the token refers to itself:
+    // it means the inherited colour, and so does one in a `color-mix()`
+    if (name === 'color') {
+      style.color = inkColor(parsed, parent.color);
+      return;
+    }
     (style as unknown as Record<string, unknown>)[color] = parsed;
     return;
   }
