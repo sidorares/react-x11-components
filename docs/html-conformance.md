@@ -119,6 +119,7 @@ separately, and there are six.
 | 49     | an ellipsis on every line                          | 5,470 (93%) | 4,978 (84%) |
 | 50     | tab stops                                          | 5,471 (93%) | 4,979 (84%) |
 | 51     | OpenType features                                  | 5,471 (93%) | 4,979 (84%) |
+| 52     | text shadows                                       | 5,471 (93%) | 4,979 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -1623,6 +1624,25 @@ minmax(16rem, 1fr))` are the layouts of half the pages written this
      one kept object, since a layout is found again by its runs' fields
      compared by identity. The CSS 2.1 suite's `small-caps` tests set a
      variant beside the same variant, and none of them moved.
+
+### Round 52
+
+143. **Text cast no shadow.** `text-shadow` — a hero heading's glow, a
+     label's hard outline — was dropped. It is read now, inherited, and
+     painted under the text and its underline, the last shadow first. The
+     engines draw a layout's glyphs in its runs' own colours, so a shadow
+     is the layout drawn again clear of the window to the left, with its
+     shadow offset back by as much, as a box's blurred shadow already was:
+     only the shadow lands. A hard shadow is blurred a hundredth of a
+     pixel, because CoreGraphics casts none with no blur at all. A layout
+     whose runs do not all cast the same shadows — a `<span>` with one in a
+     paragraph — draws each stretch's shadows clipped to it, a line at a
+     time, and letters beside the stretch, as near it as its blur reaches,
+     cast into the clip too. Which a layout casts is worked out once, by the paragraph's map
+     of runs to their boxes rather than by the layout, which a paragraph
+     of the same runs may share while casting other shadows. A block with
+     no shadowed text pays nothing. Found rendering a landing page beside
+     a browser; CSS 2.1 has no `text-shadow`, and neither suite moved.
 
 ## What `<Html>` supports
 

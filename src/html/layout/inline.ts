@@ -34,7 +34,13 @@ import { codeUnitOffsets } from '../../internal/text.js';
 import type { TextRun } from '../../richtext/index.js';
 import type { ComputedStyle } from '../css/style.js';
 import { isTransparent, resolve } from '../css/values.js';
-import { BOX_RAISES, isOffset, SHIFTED_LINES, TEXT_RAISES } from './boxes.js';
+import {
+  BOX_RAISES,
+  isOffset,
+  SHADOWED_TEXT,
+  SHIFTED_LINES,
+  TEXT_RAISES,
+} from './boxes.js';
 import type {
   AtomicPlacement,
   Box,
@@ -201,6 +207,12 @@ function layoutLines(block: Box, options: InlineOptions): InlineResult {
   collect(block, items, options.width, fonts, block.style);
   if (!items.length || !fonts) return EMPTY;
   if (wraps(block.style)) holdNoWrap(items);
+  for (const item of items) {
+    if (item.kind === 'text' && !item.control && item.box.style.textShadow) {
+      SHADOWED_TEXT.add(block);
+      break;
+    }
+  }
   if (items.some(isTab)) {
     setTabs(items, fonts, block.style, indentOf(block.style, options.width));
   }

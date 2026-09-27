@@ -177,6 +177,9 @@ export interface ComputedStyle {
   textTransform: 'none' | 'uppercase' | 'lowercase' | 'capitalize';
   letterSpacing: number;
   wordSpacing: number;
+  /** The shadows its text casts, front to back, as `boxShadow`'s are but
+   *  with no spread and never inset; null for none. Inherited. */
+  textShadow: BoxShadow[] | null;
   /** The OpenType features the `font-variant` longhands, `font-kerning`
    *  and `font-feature-settings` ask for, each as `tag=value` pairs joined
    *  by commas, and '' for none: strings, so that equal ones are equal,
@@ -398,6 +401,7 @@ export const INHERITED = [
   'textTransform',
   'letterSpacing',
   'wordSpacing',
+  'textShadow',
   'fontVariantNumeric',
   'fontVariantCaps',
   'fontVariantLigatures',
@@ -466,6 +470,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     textTransform: 'none',
     letterSpacing: 0,
     wordSpacing: 0,
+    textShadow: null,
     fontVariantNumeric: '',
     fontVariantCaps: '',
     fontVariantLigatures: '',
@@ -625,6 +630,7 @@ export function inherit(
   out.textTransform = parent.textTransform;
   out.letterSpacing = parent.letterSpacing;
   out.wordSpacing = parent.wordSpacing;
+  out.textShadow = parent.textShadow;
   out.fontVariantNumeric = parent.fontVariantNumeric;
   out.fontVariantCaps = parent.fontVariantCaps;
   out.fontVariantLigatures = parent.fontVariantLigatures;
@@ -1062,6 +1068,11 @@ export function applyDeclaration(
     case 'box-shadow': {
       const shadows = parseBoxShadow(value, ctx);
       if (shadows !== undefined) style.boxShadow = shadows;
+      return;
+    }
+    case 'text-shadow': {
+      const shadows = parseBoxShadow(value, ctx, true);
+      if (shadows !== undefined) style.textShadow = shadows;
       return;
     }
     case 'border-radius': {
@@ -2456,9 +2467,13 @@ function parseAspectRatio(
  * in is left out — Tailwind writes four of them, `0 0 #0000`, under every
  * one it means.
  */
+/** `box-shadow`'s shadows, or with `text` `text-shadow`'s, which have no
+ *  spread and are never inset (CSS Text Decoration 3, 4): null for none,
+ *  and undefined for a value that is not one. */
 function parseBoxShadow(
   value: string,
   ctx: UnitContext,
+  text = false,
 ): BoxShadow[] | null | undefined {
   if (value.trim().toLowerCase() === 'none') return null;
   const out: BoxShadow[] = [];
@@ -2470,14 +2485,14 @@ function parseBoxShadow(
     let closed = false;
     for (const token of splitValue(part.trim())) {
       if (token.toLowerCase() === 'inset') {
-        if (inset) return undefined;
+        if (inset || text) return undefined;
         inset = true;
         closed = lengths.length > 0;
         continue;
       }
       const len = parseLength(token, ctx);
       if (typeof len === 'number') {
-        if (closed || lengths.length === 4) return undefined;
+        if (closed || lengths.length === (text ? 3 : 4)) return undefined;
         lengths.push(len);
         continue;
       }
@@ -2875,6 +2890,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
     }),
   ),
   'box-shadow': ['boxShadow'],
+  'text-shadow': ['textShadow'],
   'line-clamp': ['lineClamp'],
   '-webkit-line-clamp': ['lineClamp'],
   'text-overflow': ['textOverflow'],
