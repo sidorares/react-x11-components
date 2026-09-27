@@ -1818,9 +1818,19 @@ auto` the room its margins leave (10.3.5, 10.3.9), and an absolute
 room), max-content)`, the longest word flooring the box — and
      `floats-clear/floats-121` said so the first time the suite ran: a
      float with a 200px word in 199px of room is 200px wide. The
-     min-content width is measured now, only where the content does not
-     fit the room, and kept on the box. Found comparing round 60's probe
-     with a browser.
+     min-content width is measured now, and kept on the box — but only
+     where a word may be wider than the room, which is rare. As first
+     shipped it was measured wherever the content did not fit the room,
+     by a probe a pixel wide, and ntk makes that fifteen to thirty times
+     an ordinary layout: every word is too wide for a pixel, and each is
+     searched for a place to cut it, shaping a prefix at every step. A
+     page of wrapping floats and inline-blocks took four times as long to
+     lay out. The floor is bounded now before it is measured: from each
+     word's characters, at half again their size, and where that is past
+     the room, from the words laid out one to a line at no width limit;
+     the probe runs only where that too is past it — a URL, a long
+     compound — and the page lays out as fast as it did before. Found
+     comparing round 60's probe with a browser.
 
 ## What `<Html>` supports
 

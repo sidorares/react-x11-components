@@ -92,6 +92,77 @@ export interface FontsLike {
  */
 const LAYOUT_RUNS = new WeakMap<TextLayoutLike, TextRun[] | number[]>();
 
+const WIDEST_WORD = new WeakMap<TextLayoutLike, number>();
+
+/**
+ * The widest word between spaces in a layout's text: its runs laid out
+ * again with every space a line break, at no width limit. Where a text's
+ * only breaks are spaces that is its min-content width, and where it has
+ * others — a hyphen, a slash — more: an upper bound of it either way. The
+ * other way to ask, a layout a pixel wide, has the engine search every
+ * word for a place to cut it, since none fits, which costs fifteen layouts
+ * of this one. Infinity where the runs are no longer kept.
+ */
+export function widestWord(
+  fonts: FontsLike,
+  layout: TextLayoutLike,
+  measured = true,
+): number {
+  if (!measured) return longestWord(layout);
+  let widest = WIDEST_WORD.get(layout);
+  if (widest !== undefined) return widest;
+  const held = LAYOUT_RUNS.get(layout);
+  if (!held || (held.length > 0 && typeof held[0] === 'number')) {
+    return Infinity;
+  }
+  const words = fonts.layout(
+    (held as TextRun[]).map((run) => ({
+      ...run,
+      text: run.text.replace(/[ \t\u200b]+/g, '\n'),
+    })),
+    {},
+    {},
+  );
+  widest = 0;
+  for (const line of words.lines) widest = Math.max(widest, line.width);
+  WIDEST_WORD.set(layout, widest);
+  return widest;
+}
+
+const LONGEST_WORD = new WeakMap<TextLayoutLike, number>();
+
+/**
+ * `widestWord` estimated from the text alone, with no layout: each word's
+ * characters at half again their size, which no glyph a document sets
+ * words in is wider than, and their letter spacing. What is under it
+ * needs no measuring, and most words are.
+ */
+function longestWord(layout: TextLayoutLike): number {
+  let longest = LONGEST_WORD.get(layout);
+  if (longest !== undefined) return longest;
+  const held = LAYOUT_RUNS.get(layout);
+  if (!held || (held.length > 0 && typeof held[0] === 'number')) {
+    return Infinity;
+  }
+  longest = 0;
+  let word = 0;
+  for (const run of held as TextRun[]) {
+    const per = (run.size ?? 16) * 1.5 + Math.max(0, run.letterSpacing ?? 0);
+    const text = run.text;
+    for (let i = 0; i < text.length; i += 1) {
+      const c = text.charCodeAt(i);
+      if (c === 0x20 || c === 0x09 || c === 0x0a || c === 0x200b) word = 0;
+      else if (c < 0xdc00 || c > 0xdfff) {
+        // a surrogate pair is one character
+        word += per;
+        if (word > longest) longest = word;
+      }
+    }
+  }
+  LONGEST_WORD.set(layout, longest);
+  return longest;
+}
+
 /** Code-unit → code-point offsets for a layout's text, built once. */
 export function layoutOffsets(layout: TextLayoutLike): number[] {
   const held = LAYOUT_RUNS.get(layout);

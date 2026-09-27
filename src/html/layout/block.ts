@@ -28,6 +28,7 @@ import {
   layoutInline,
   lineHeightMultiplier,
   strutOf,
+  widestWord,
 } from './inline.js';
 import type { FontsLike } from './inline.js';
 import { layoutFlex } from './flex.js';
@@ -1385,7 +1386,6 @@ function shrinkToFitWidth(
   const saved = box.lines;
   layoutInternals(box, ctx, Infinity, 0, 0, probe);
   const preferred = intrinsicWidth(box) + box.horizontalExtra;
-  box.lines = saved;
   // the room is the containing block's, less the box's margins and where
   // it starts (CSS 2.1 10.3.5, 10.3.7, 10.3.9): a float with side margins
   // was as wide as its containing block, and stood out of it by them
@@ -1394,20 +1394,74 @@ function shrinkToFitWidth(
     available - offset - box.marginLeft - box.marginRight,
   );
   let width = Math.max(preferred, 0);
-  if (width > room) {
-    // and where its content does not fit the room, its longest word is the
-    // least it comes to: `min(max(min-content, room), max-content)`. Only
-    // then is the min-content width measured — a second probe, at a width
-    // every line breaks at — which is kept on the box as a cell's is
-    if (box.intrinsicMinContent < 0) {
-      box.intrinsicMinContent = measureIntrinsicWidth(box, ctx, 1);
-      box.lines = saved;
-      // the probe resolved the box's edges against the width it was given
-      resolveEdges(box, available);
-    }
-    width = Math.min(width, Math.max(box.intrinsicMinContent, room));
+  // and where its content does not fit the room, its longest word is the
+  // least it comes to: `min(max(min-content, room), max-content)`. That
+  // matters only for a word wider than the room, which the widest word
+  // between spaces bounds, from the probe just laid out; only past the
+  // room is the min-content width measured — a second probe, at a width
+  // every line breaks at — and it is kept on the box, as a cell's is
+  const fonts = ctx.fonts;
+  const floored =
+    width > room &&
+    box.intrinsicMinContent < 0 &&
+    fonts !== null &&
+    wordBound(box, fonts, false) + box.horizontalExtra > room &&
+    wordBound(box, fonts, true) + box.horizontalExtra > room;
+  box.lines = saved;
+  if (floored) {
+    box.intrinsicMinContent = measureIntrinsicWidth(box, ctx, 1);
+    box.lines = saved;
+    // the probe resolved the box's edges against the width it was given
+    resolveEdges(box, available);
   }
+  if (width > room)
+    width = Math.min(width, Math.max(box.intrinsicMinContent, room));
   return clampWidth(box, width, available, ctx);
+}
+
+/**
+ * An upper bound of a laid-out block's min-content width inside its edges:
+ * the widest word of its lines (`widestWord`, measured or estimated from
+ * its characters), the widest box on them, and the same of each block in
+ * it with that block's edges. A table, a flex
+ * box and anything else not laid out as blocks and lines is as wide as the
+ * probe made it, which is more than it has to be; a box that is itself one
+ * has no bound.
+ */
+function wordBound(box: Box, fonts: FontsLike, measured: boolean): number {
+  if (box.kind !== 'block') return Infinity;
+  let widest = 0;
+  if (box.lines) {
+    let last: object | null = null;
+    for (const line of box.lines) {
+      for (const text of line.texts) {
+        if (text.layout === last) continue;
+        last = text.layout;
+        widest = Math.max(widest, widestWord(fonts, text.layout, measured));
+      }
+      for (const placed of line.atomics) {
+        const b = placed.box;
+        widest = Math.max(widest, b.width + b.marginLeft + b.marginRight);
+      }
+    }
+  }
+  for (const child of box.children) {
+    if (child.outOfFlow) continue;
+    if (
+      child.kind !== 'block' &&
+      child.kind !== 'flex' &&
+      child.kind !== 'table' &&
+      child.kind !== 'replaced'
+    )
+      continue;
+    const edges = child.marginLeft + child.marginRight;
+    const inner =
+      child.kind === 'block' && child.style.width === AUTO
+        ? wordBound(child, fonts, measured) + child.horizontalExtra
+        : child.width;
+    widest = Math.max(widest, inner + edges);
+  }
+  return widest;
 }
 
 /**
