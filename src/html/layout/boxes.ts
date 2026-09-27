@@ -259,9 +259,14 @@ export class Box {
   gavePercentBase = false;
   /** Whether this box's top margin collapsed through its parent's top edge
    *  and was spent placing the parent (CSS 2.1 8.3.1): its own layout puts
-   *  it at the parent's content top, and applies no margin again. Set by
-   *  the parent's flow each pass. */
-  topAbsorbed = false;
+   *  it at the parent's content top, and applies no margin again. `2` when
+   *  the box is empty and its bottom margin went the same way, so the next
+   *  sibling's may have too; `3` for a new formatting context the margin
+   *  stopped above, separated from the floats it carries, which sits where
+   *  the margins before it end and applies none of its own. Set by the walk
+   *  that places the parent, each pass, and read only while every sibling
+   *  before it was a `2`. */
+  topAbsorbed: 0 | 1 | 2 | 3 = 0;
 
   /** Text, for a `text` box: already whitespace-processed and transformed. */
   text = '';

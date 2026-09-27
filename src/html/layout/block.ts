@@ -12,6 +12,7 @@
 // formatting context it is inside.
 import { AUTO, isPct, resolve, resolveOrNull } from '../css/values.js';
 import type { Len } from '../css/values.js';
+import type { BorderStyle } from '../css/style.js';
 import { Box } from './boxes.js';
 import type { BoxTree, LineBox, Marker } from './boxes.js';
 import { FloatContext } from './floats.js';
@@ -145,36 +146,236 @@ function collapseMargins(a: number, b: number): number {
 
 /**
  * A block's top margin as its placement uses it: its own, collapsed with
- * its first in-flow child's while nothing parts them — no top border, no
- * top padding, no formatting context of its own, no line of text first —
- * and with that child's first child's, down the chain (CSS 2.1 8.3.1). The
- * children the chain went through are marked, so their own layout does not
- * apply the margin a second time. Without it `<div><p>` stood a paragraph's
- * margin lower than `<p>`, and every section of a document a margin apart.
+ * every margin that adjoins it (CSS 2.1 8.3.1). That is its first in-flow
+ * child's while nothing parts them — no top border, no top padding, no
+ * formatting context of its own, no line of text first — and that child's
+ * first child's, down the chain; and past a child that is empty, its bottom
+ * margin and the next child's top, because an empty block's two margins
+ * adjoin each other. The children the chain went through are marked, so
+ * their own layout does not apply the margin a second time. Without it
+ * `<div><p>` stood a paragraph's margin lower than `<p>`, and a `<div>`
+ * holding only an absolute image stood the rest of a document a body's
+ * margin lower than a browser does.
  */
 function collapsedTopMargin(box: Box, containingWidth: number): number {
-  let margin = box.marginTop;
-  let at = box;
-  let width = containingWidth;
-  for (;;) {
-    const first = firstInFlowBlock(at);
-    if (!first) return margin;
-    const through =
-      at.borderTop === 0 &&
-      at.padTop === 0 &&
-      at.kind === 'block' &&
-      !establishesBFC(at) &&
-      first.style.clear === 'none';
-    if (!through) {
-      first.topAbsorbed = false;
-      return margin;
+  floatsPassed = false;
+  floatsWidth = 0;
+  return absorbChildren(box, containingWidth, box.marginTop);
+}
+
+/** Whether the last `absorbChildren` went through every child in flow of
+ *  its box, each empty and absorbed whole — which is what lets the caller
+ *  take that box's bottom margin too. Read straight after the call. */
+let throughAll = false;
+/** Whether the walk has passed a float, and how wide the floats it passed
+ *  are, their margin boxes as their styles state them — NaN once one does
+ *  not. Such a float is placed where the margin ends, so it moves with the
+ *  margin, and a new formatting context the margin reaches next has to be
+ *  able to sit beside it. */
+let floatsPassed = false;
+let floatsWidth = 0;
+
+/**
+ * Collapse into `margin` the margins of `at`'s children that adjoin its top
+ * edge, marking each child it takes, and return it. The walk stops at the
+ * first child something parts from the margin — a line, a clearance, a
+ * border, padding or height, a formatting context of its own — and counts
+ * a child empty only where its layout is sure to agree, since this runs
+ * before anything is laid out and the parent is placed by what it answers:
+ * an inline box with an edge, or a percentage, stops it where it might have
+ * gone on.
+ */
+function absorbChildren(at: Box, width: number, margin: number): number {
+  let whole = true;
+  /** `at`'s content width, worked out when a child first needs it: most
+   *  blocks start with text, and never do. */
+  let inner = -1;
+  for (const child of at.children) {
+    if (child.outOfFlow) continue;
+    if (child.kind === 'text') {
+      if (makesNoLine(child)) continue;
+      // a line box stops a margin
+      whole = false;
+      break;
     }
-    width = Math.max(0, blockWidth(at, width) - at.horizontalExtra);
-    resolveEdges(first, width);
-    margin = collapseMargins(margin, first.marginTop);
-    first.topAbsorbed = true;
-    at = first;
+    const floated = child.isFloat;
+    const inLine =
+      !floated &&
+      (child.kind === 'inline' ||
+        child.kind === 'break' ||
+        isInlineLevel(child));
+    if (inLine) {
+      const made = phantom(child);
+      if (made === 0) {
+        whole = false;
+        break;
+      }
+      if (made === 1) continue;
+    }
+    if (inner < 0) {
+      if (!topOpen(at)) {
+        whole = false;
+        break;
+      }
+      inner = Math.max(0, blockWidth(at, width) - at.horizontalExtra);
+    }
+    if (floated) {
+      passFloat(child, inner);
+      continue;
+    }
+    if (inLine) {
+      passFloatsIn(child, inner);
+      continue;
+    }
+    if (child.style.clear !== 'none') {
+      child.topAbsorbed = 0;
+      whole = false;
+      break;
+    }
+    resolveEdges(child, inner);
+    if (
+      floatsPassed &&
+      (child.kind === 'replaced' || establishesBFC(child)) &&
+      !fitsBeside(child, inner)
+    ) {
+      // it would be pushed below the floats the margin carries, so it
+      // separates from them as clearance does: the margin stops above it,
+      // and it sits under the floats rather than a margin under them
+      child.topAbsorbed = 3;
+      whole = false;
+      break;
+    }
+    margin = collapseMargins(margin, child.marginTop);
+    margin = absorbChildren(child, inner, margin);
+    if (!throughAll || !bottomOpen(child)) {
+      child.topAbsorbed = 1;
+      whole = false;
+      break;
+    }
+    child.topAbsorbed = 2;
+    margin = collapseMargins(margin, child.marginBottom);
   }
+  throughAll = whole && (inner >= 0 || topOpen(at));
+  return margin;
+}
+
+/** Whether a box's top margin adjoins its first child's: a block, with no
+ *  border or padding at the top and no formatting context of its own. */
+function topOpen(box: Box): boolean {
+  return (
+    box.kind === 'block' &&
+    box.borderTop === 0 &&
+    box.padTop === 0 &&
+    !establishesBFC(box)
+  );
+}
+
+/** Whether nothing at an empty block's bottom holds its margins apart: no
+ *  border, padding or height there, and no marker to stand a line tall. A
+ *  percentage says no, whatever it resolves to. */
+function bottomOpen(box: Box): boolean {
+  const { height, minHeight } = box.style;
+  return (
+    box.borderBottom === 0 &&
+    box.padBottom === 0 &&
+    !box.marker &&
+    (height === AUTO || height === 0) &&
+    (minHeight === AUTO || minHeight === 0)
+  );
+}
+
+/** Whether a text makes no line of its own: white space that collapses
+ *  away. A no-break space is not white space to CSS, though `\s` says it
+ *  is, and white space that is kept makes a line. */
+function makesNoLine(text: Box): boolean {
+  const ws = text.style.whiteSpace;
+  return (ws === 'normal' || ws === 'nowrap') && COLLAPSIBLE.test(text.text);
+}
+const COLLAPSIBLE = /^[ \t\n\r\f]*$/;
+
+/** Whether an inline box makes no line either — nothing in it that does,
+ *  and no margin, border or padding on any side: the phantom line of CSS
+ *  2.1 9.4.2, which a margin collapses through. `0` where it makes one,
+ *  `1` where it does not, and `2` where it does not and holds a float, which
+ *  the walk has to pass. The children go first: most inline boxes hold text,
+ *  and that answers without a look at their edges. */
+function phantom(box: Box): 0 | 1 | 2 {
+  if (box.kind !== 'inline' || box.style.display !== 'inline') return 0;
+  let made: 1 | 2 = 1;
+  for (const child of box.children) {
+    if (child.outOfFlow) continue;
+    if (child.isFloat) {
+      made = 2;
+      continue;
+    }
+    if (child.kind === 'text') {
+      if (makesNoLine(child)) continue;
+      return 0;
+    }
+    const inner = phantom(child);
+    if (inner === 0) return 0;
+    if (inner === 2) made = 2;
+  }
+  const style = box.style;
+  return noLength(style.marginLeft) &&
+    noLength(style.marginRight) &&
+    noLength(style.marginTop) &&
+    noLength(style.marginBottom) &&
+    noLength(style.paddingLeft) &&
+    noLength(style.paddingRight) &&
+    noLength(style.paddingTop) &&
+    noLength(style.paddingBottom) &&
+    !hasBorder(style.borderLeftStyle, style.borderLeftWidth) &&
+    !hasBorder(style.borderRightStyle, style.borderRightWidth) &&
+    !hasBorder(style.borderTopStyle, style.borderTopWidth) &&
+    !hasBorder(style.borderBottomStyle, style.borderBottomWidth)
+    ? made
+    : 0;
+}
+
+/** Pass the floats in a phantom inline box, at any depth. */
+function passFloatsIn(box: Box, width: number): void {
+  for (const child of box.children) {
+    if (child.isFloat) passFloat(child, width);
+    else if (child.kind === 'inline') passFloatsIn(child, width);
+  }
+}
+
+function noLength(len: Len): boolean {
+  return len === 0 || len === AUTO;
+}
+
+function hasBorder(style: BorderStyle, width: number): boolean {
+  return style !== 'none' && style !== 'hidden' && width !== 0;
+}
+
+/** Count a float the walk passes toward the room a new formatting context
+ *  after it would have beside it. */
+function passFloat(float: Box, width: number): void {
+  resolveEdges(float, width);
+  floatsPassed = true;
+  floatsWidth += statedOuterWidth(float, width);
+}
+
+/** Whether a new formatting context fits beside the floats the walk passed
+ *  (CSS 2.1 9.5): where its width and theirs are stated, whether together
+ *  they take no more than the room; where one is not, yes, since a box of
+ *  `width: auto` there shrinks to the room it has. */
+function fitsBeside(box: Box, width: number): boolean {
+  return !(statedOuterWidth(box, width) + floatsWidth > width + 0.01);
+}
+
+/** A box's margin-box width as its style states it, before it is laid out:
+ *  NaN for `width: auto`, which only layout can answer. */
+function statedOuterWidth(box: Box, containingWidth: number): number {
+  const { width, boxSizing } = box.style;
+  if (width === AUTO) return NaN;
+  const set = resolve(width, containingWidth, NaN);
+  const border =
+    boxSizing === 'border-box'
+      ? Math.max(set, box.horizontalExtra)
+      : set + box.horizontalExtra;
+  return border + box.marginLeft + box.marginRight;
 }
 
 /**
@@ -191,29 +392,18 @@ function collapsesThrough(box: Box): boolean {
   if (min !== null && min > 0) return false;
   for (const child of box.children) {
     if (child.outOfFlow || child.isFloat) continue;
-    if (child.kind === 'text' && isBlank(child.text)) continue;
-    if (!collapsesThrough(child)) return false;
-  }
-  return true;
-}
-
-/** The first in-flow child of a block container that holds blocks, or null
- *  when it holds lines — whose first line box stops a margin — or nothing.
- *  A box holds lines where every child in flow is inline-level, so then its
- *  first is, and that answers without an `establishesInlineContext` walk. */
-function firstInFlowBlock(box: Box): Box | null {
-  if (box.kind !== 'block') return null;
-  for (const child of box.children) {
-    if (child.kind === 'text' && isBlank(child.text)) continue;
-    if (child.outOfFlow || child.isFloat) continue;
-    return child.kind === 'text' ||
+    // what is in line made a line or did not, and the lines said which
+    if (
+      child.kind === 'text' ||
       child.kind === 'inline' ||
       child.kind === 'break' ||
       isInlineLevel(child)
-      ? null
-      : child;
+    ) {
+      continue;
+    }
+    if (!collapsesThrough(child)) return false;
   }
-  return null;
+  return true;
 }
 
 /** Whether a text is white space alone, as `!text.trim()` says, without
@@ -262,6 +452,11 @@ function layoutChildren(
    *  child, the one `leading` hands down — for collapsing. */
   let pendingMargin = leading;
   let first = true;
+  /** Whether every child in flow so far was absorbed whole into this box's
+   *  top margin: the walk that marked the next child reached it only
+   *  through them, so past any other its mark is an earlier pass's. Asked
+   *  of the box only once a child carries a mark, which few do. */
+  let open: boolean | null = null;
 
   for (const child of box.children) {
     if (child.kind === 'text' && isBlank(child.text)) continue;
@@ -289,7 +484,9 @@ function layoutChildren(
     // A child whose margin this box already spent — collapsed through its
     // top edge — sits at the content top; any other brings its own margin,
     // collapsed with its first descendants' where nothing parts them.
-    const top = child.topAbsorbed ? 0 : collapsedTopMargin(child, contentWidth);
+    let absorbed = child.topAbsorbed;
+    if (absorbed !== 0 && !(open ??= topOpen(box))) absorbed = 0;
+    const top = absorbed ? 0 : collapsedTopMargin(child, contentWidth);
     const collapsed = collapseMargins(pendingMargin, top);
     let childY = y + collapsed;
     const clearance = floats.clearance(child.style.clear);
@@ -306,10 +503,17 @@ function layoutChildren(
     first = false;
     if (childY === y + collapsed && collapsesThrough(child)) {
       // nothing in it parts its margins: they and the ones either side of
-      // it are one (CSS 2.1 8.3.1), still hanging for what comes next
+      // it are one (CSS 2.1 8.3.1), still hanging for what comes next —
+      // or, where the walk took them all into this box's top margin, spent
+      if (absorbed === 2) {
+        pendingMargin = collapsed;
+        continue;
+      }
+      open = false;
       pendingMargin = collapseMargins(collapsed, child.marginBottom);
       continue;
     }
+    open = false;
     y = child.y + child.height;
     pendingMargin = child.marginBottom;
   }

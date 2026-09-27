@@ -2342,6 +2342,62 @@ test("an empty block's margins collapse through it", async () => {
   assert.strictEqual(f.y, p.y + 200, 'and stays inside its parent');
 });
 
+test("a margin collapses through an empty block into its parent's", async () => {
+  // An empty block's two margins adjoin each other, so the margin after it
+  // adjoins its parent's top margin through it (CSS 2.1 8.3.1): a `<div>`
+  // holding only an absolute image left the rest of a document a body's
+  // margin lower than a browser does. An empty `<span>` makes no line
+  // (9.4.2), so a block holding one is as empty.
+  const { node } = await render(
+    '<body><div id="e"><img style="position:absolute;width:10px;height:10px">' +
+      '</div>' +
+      '<p id="p" style="margin:24px 0 0;height:10px"></p>' +
+      '<div id="top" style="height:10px"></div>' +
+      '<div id="g"><div><div style="margin-bottom:30px"></div></div>' +
+      '<p id="h" style="margin:24px 0 0;height:10px"></p></div>' +
+      '<div id="s" style="margin-top:10px"><div><span></span></div>' +
+      '<p id="t" style="margin:24px 0 0;height:10px"></p></div></body>',
+  );
+  const el = view(node);
+  const [e, p, top, g, h, s, t] = ['e', 'p', 'top', 'g', 'h', 's', 't'].map(
+    (id) => boxOf(el, id),
+  );
+  assert.strictEqual(p.y, 24, "the body's 8px and the 24px are one margin");
+  assert.strictEqual(e.y, 24, "the empty block stands at its parent's top");
+  assert.strictEqual(g.y, top.y + 10 + 30, 'the largest of them, nested');
+  assert.strictEqual(h.y, g.y);
+  assert.strictEqual(s.y, g.y + 10 + 24, 'through a phantom line');
+  assert.strictEqual(t.y, s.y);
+});
+
+test('a new formatting context separates from floats it cannot sit beside', async () => {
+  // A float in an empty block is placed where the margin collapsing through
+  // the block ends, so it moves with the margin, and a box with a formatting
+  // context of its own after it must not overlap it (CSS 2.1 9.5). Where the
+  // box fits beside the float, the margins collapse and both move; where it
+  // does not, it separates from the float as clearance would, and sits under
+  // the float rather than pushing it down.
+  const { node } = await render(
+    '<div id="o" style="overflow:hidden;width:200px"><div><div>' +
+      '<div id="f1" style="float:left;width:200px;height:50px"></div></div>' +
+      '<div id="c1" style="overflow:hidden;width:200px;height:10px;' +
+      'margin-top:80px"></div></div></div>' +
+      '<div id="w" style="overflow:hidden;width:300px"><div><div>' +
+      '<div id="f2" style="float:left;width:200px;height:50px"></div></div>' +
+      '<div id="c2" style="overflow:hidden;width:100px;height:10px;' +
+      'margin-top:80px"></div></div></div>',
+  );
+  const el = view(node);
+  const [o, f1, c1, w, f2, c2] = ['o', 'f1', 'c1', 'w', 'f2', 'c2'].map((id) =>
+    boxOf(el, id),
+  );
+  assert.strictEqual(f1.y, o.y, 'the float stays at the top');
+  assert.strictEqual(c1.y, f1.y + 50, 'and the box goes under it');
+  assert.strictEqual(f2.y, w.y + 80, 'the float moves with the margin');
+  assert.strictEqual(c2.y, f2.y, 'and the box sits beside it');
+  assert.strictEqual(c2.x, f2.x + 200);
+});
+
 test('html and body at 100% are a window tall, and hold what is longer', async () => {
   // A percentage height on the root element resolves against the initial
   // containing block, the viewport (CSS 2.1 10.1): the usual reset is a
