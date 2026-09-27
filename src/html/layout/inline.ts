@@ -2254,6 +2254,12 @@ function runFor(text: string, style: ComputedStyle): TextRun {
         : style.underlineStyle === 'solid'
           ? 'single'
           : style.underlineStyle;
+    if (style.underlineOffset !== null) {
+      run.underlineOffset = style.underlineOffset;
+    }
+    if (style.underlineThickness !== null) {
+      run.underlineThickness = style.underlineThickness;
+    }
   }
   if (style.lineThrough) run.strike = style.lineThrough;
   return run;

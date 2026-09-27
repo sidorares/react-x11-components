@@ -139,6 +139,8 @@ const other: Record<(typeof RUN_FIELDS)[number], TextRun[keyof TextRun]> = {
   bgFill: 'line',
   underline: '#ff0000',
   underlineStyle: 'double',
+  underlineOffset: 4,
+  underlineThickness: 2,
   strike: '#ff0000',
   href: 'https://example.com/',
   features: { tnum: 1 },

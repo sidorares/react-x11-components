@@ -326,11 +326,19 @@ export interface ComputedStyle {
   textDecorationLine: 'none' | 'underline' | 'line-through' | 'overline';
   textDecorationColor: string | null;
   textDecorationStyle: 'solid' | 'double' | 'dotted' | 'dashed' | 'wavy';
+  /** `text-decoration-thickness`, or null for `auto` and `from-font`. */
+  textDecorationThickness: number | null;
+  /** `text-underline-offset`, from the alphabetic baseline down, or null
+   *  for `auto`. Inherited. */
+  textUnderlineOffset: number | null;
   /** What this box's text is drawn with: its own `text-decoration` and the
    *  ones its ancestors propagate to it, each in the colour of the box that
    *  set it (`decorate`). No property: the cascade works them out. */
   underline: string | null;
   underlineStyle: 'solid' | 'double' | 'dotted' | 'dashed' | 'wavy';
+  /** And the underline's thickness and offset, the box's that set it. */
+  underlineThickness: number | null;
+  underlineOffset: number | null;
   lineThrough: string | null;
 
   // flex — handed to yoga rather than interpreted here
@@ -399,6 +407,7 @@ export const INHERITED = [
   'alignBlocks',
   'textIndent',
   'textTransform',
+  'textUnderlineOffset',
   'letterSpacing',
   'wordSpacing',
   'textShadow',
@@ -569,8 +578,12 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     textDecorationLine: 'none',
     textDecorationColor: null,
     textDecorationStyle: 'solid',
+    textDecorationThickness: null,
+    textUnderlineOffset: null,
     underline: null,
     underlineStyle: 'solid',
+    underlineThickness: null,
+    underlineOffset: null,
     lineThrough: null,
 
     flexDirection: 'row',
@@ -656,9 +669,12 @@ export function inherit(
   out.borderRightColor = 'currentColor';
   out.borderBottomColor = 'currentColor';
   out.borderLeftColor = 'currentColor';
+  out.textUnderlineOffset = parent.textUnderlineOffset;
   // propagated, not inherited: `decorate` drops them where CSS stops them
   out.underline = parent.underline;
   out.underlineStyle = parent.underlineStyle;
+  out.underlineThickness = parent.underlineThickness;
+  out.underlineOffset = parent.underlineOffset;
   out.lineThrough = parent.lineThrough;
   return out;
 }
@@ -1383,9 +1399,24 @@ export function applyDeclaration(
           else if (DECORATION_STYLES.has(v)) {
             style.textDecorationStyle =
               v as ComputedStyle['textDecorationStyle'];
+          } else {
+            const thickness = decorationLength(part, ctx);
+            if (thickness !== undefined) {
+              style.textDecorationThickness = thickness;
+            }
           }
         }
       }
+      return;
+    }
+    case 'text-decoration-thickness': {
+      const thickness = decorationLength(value, ctx, 'from-font');
+      if (thickness !== undefined) style.textDecorationThickness = thickness;
+      return;
+    }
+    case 'text-underline-offset': {
+      const offset = decorationLength(value, ctx);
+      if (offset !== undefined) style.textUnderlineOffset = offset;
       return;
     }
     case 'text-decoration-style': {
@@ -2940,8 +2971,28 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   ],
   'text-decoration-line': ['textDecorationLine'],
   'text-decoration-style': ['textDecorationStyle'],
+  'text-decoration-thickness': ['textDecorationThickness'],
+  'text-underline-offset': ['textUnderlineOffset'],
   'table-layout': ['tableLayout'],
 };
+
+/**
+ * A decoration's thickness or an underline's offset: a length, a
+ * percentage of the font size, or null for `auto` (and `alsoAuto`, which is
+ * `from-font` for a thickness); undefined for a value that is none.
+ */
+function decorationLength(
+  value: string,
+  ctx: UnitContext,
+  alsoAuto?: string,
+): number | null | undefined {
+  const v = value.trim().toLowerCase();
+  if (v === 'auto' || v === alsoAuto) return null;
+  const pct = /^(-?\d*\.?\d+)%$/.exec(v);
+  if (pct) return (Number(pct[1]) / 100) * ctx.em;
+  const len = parseLength(v, ctx);
+  return typeof len === 'number' ? len : undefined;
+}
 
 /**
  * The decorations a box's text is drawn with (CSS 2.1 16.3.1): those its
@@ -2971,6 +3022,8 @@ export function decorate(style: ComputedStyle): void {
       style.color,
     );
     style.underlineStyle = style.textDecorationStyle;
+    style.underlineThickness = style.textDecorationThickness;
+    style.underlineOffset = style.textUnderlineOffset;
   } else if (own === 'line-through') {
     style.lineThrough = inkColor(
       style.textDecorationColor ?? 'currentColor',

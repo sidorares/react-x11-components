@@ -5465,6 +5465,50 @@ test('a ::marker rule styles the marker, and not its item', async () => {
     .children[0];
   assert.strictEqual(inside.style.color, '#ff0000');
 });
+metric(
+  'an underline sits at its offset, as thick as its thickness',
+  async () => {
+    // `text-underline-offset` and `text-decoration-thickness` were dropped:
+    // every underline sat two pixels under the baseline, a pixel thick —
+    // shadcn's links set theirs four pixels down
+    const { node } = await render(
+      '<style>body{margin:0;font:20px sans-serif}p{margin:0}' +
+        'a{text-decoration:underline #ff0000}</style>' +
+        '<p id="a"><a>plain</a></p>' +
+        '<p id="b"><a style="text-underline-offset:6px;' +
+        'text-decoration-thickness:3px">offset</a></p>' +
+        '<p id="c"><a style="text-decoration:underline #00ff00 4px">short</a>' +
+        '</p>',
+    );
+    const el = view(node);
+    const fills = await fillsOf(el);
+    const baseline = (id: string) => {
+      const [line] = linesOf(el, id) as unknown as {
+        y: number;
+        baseline: number;
+      }[];
+      return line.y + line.baseline;
+    };
+    const rule = (color: string, id: string) => {
+      const b = baseline(id);
+      return fills.find(
+        (f) => f.style === color && f.y > b - 1 && f.y < b + 12,
+      );
+    };
+    const plain = rule('#ff0000', 'a')!;
+    assert.deepStrictEqual(
+      [Math.round(plain.y - baseline('a')), plain.h],
+      [2, 1],
+      'two below, a pixel thick',
+    );
+    const offset = rule('#ff0000', 'b')!;
+    assert.deepStrictEqual(
+      [Math.round(offset.y - baseline('b')), offset.h],
+      [6, 3],
+    );
+    assert.strictEqual(rule('#00ff00', 'c')!.h, 4, 'the shorthand thickness');
+  },
+);
 
 test('a closed details shows its summary, and an open one all of it', async () => {
   // a closed `<details>` showed everything in it: an FAQ of them was every
@@ -8446,6 +8490,8 @@ test('a style takes from its parent the fields INHERITED names, and no others', 
     ...INHERITED,
     'underline',
     'underlineStyle',
+    'underlineThickness',
+    'underlineOffset',
     'lineThrough',
   ].sort();
   assert.deepStrictEqual(taken, expected);

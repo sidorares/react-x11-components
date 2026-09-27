@@ -350,7 +350,8 @@ laid out a line at a time, around an image or a float, is cut with none),
 line cut at the box's width with an ellipsis, which the text engine makes
 room for inside the line's last word), `direction`,
 `unicode-bidi`, `vertical-align`,
-`text-decoration` in all five rule styles. `unicode-bidi` is carried out as
+`text-decoration` in all five rule styles, with `text-decoration-thickness`
+and `text-underline-offset`. `unicode-bidi` is carried out as
 the bidi controls it stands for, laid out around the element's text and no
 part of the document's: a copy, a caret and a selection skip them. HTML's
 `dir` isolates its element, `dir="auto"` and `<bdi>` take their first
