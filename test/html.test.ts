@@ -60,6 +60,7 @@ import {
   parseQuotes,
 } from '../src/html/css/content.js';
 import { decodeStylesheet } from '../src/html/css/decode.js';
+import { SurfaceCache } from '../src/html/surfaces.js';
 
 const h = React.createElement;
 
@@ -1841,6 +1842,8 @@ interface Fill {
   /** A path of curves: each curve's reach across and down, in the order
    *  drawn — a quarter ellipse's radii. The bounds are the whole path's. */
   corners?: [number, number][];
+  /** The context's shadow when the fill was made, where it had a blur. */
+  shadow?: { color: string; blur: number; x: number; y: number };
 }
 
 /** What a paint did, in order: a fill, or a clip pushed or popped. */
@@ -1867,6 +1870,12 @@ async function fillsOf(
   options?: {
     canvas?: { x: number; y: number; width: number; height: number };
     imageFor?: () => unknown;
+    cached?: (
+      key: string,
+      width: number,
+      height: number,
+      draw: (ctx: never) => void,
+    ) => unknown;
     backgroundImageFor?: (url: string) => {
       image: unknown;
       width: number | null;
@@ -1903,7 +1912,21 @@ async function fillsOf(
     b[2] = Math.max(b[2], x);
     b[3] = Math.max(b[3], y);
   };
+  const shadowOf = (): Fill['shadow'] =>
+    ctx.shadowBlur > 0
+      ? {
+          color: ctx.shadowColor,
+          blur: ctx.shadowBlur,
+          x: ctx.shadowOffsetX,
+          y: ctx.shadowOffsetY,
+        }
+      : undefined;
+  const saved: [string, number, number, number][] = [];
   const ctx = {
+    shadowColor: 'rgba(0, 0, 0, 0)',
+    shadowBlur: 0,
+    shadowOffsetX: 0,
+    shadowOffsetY: 0,
     get fillStyle() {
       return fillStyle;
     },
@@ -1911,9 +1934,24 @@ async function fillsOf(
       fillStyle = v;
     },
     save() {
+      saved.push([
+        ctx.shadowColor,
+        ctx.shadowBlur,
+        ctx.shadowOffsetX,
+        ctx.shadowOffsetY,
+      ]);
       ops?.push({ op: 'save' });
     },
     restore() {
+      const state = saved.pop();
+      if (state) {
+        [
+          ctx.shadowColor,
+          ctx.shadowBlur,
+          ctx.shadowOffsetX,
+          ctx.shadowOffsetY,
+        ] = state;
+      }
       ops?.push({ op: 'restore' });
     },
     fillRect(x: number, y: number, w: number, h: number) {
@@ -1960,6 +1998,8 @@ async function fillsOf(
           corners: curves.corners,
           rule,
         };
+        const shadow = shadowOf();
+        if (shadow) fill.shadow = shadow;
         fills.push(fill);
         ops?.push({ op: 'fill', ...fill });
         curves = null;
@@ -1970,6 +2010,8 @@ async function fillsOf(
       if (path) {
         const fill: Fill = { style: fillStyle, ...path };
         if (inner) Object.assign(fill, { inner, rule });
+        const shadow = shadowOf();
+        if (shadow) fill.shadow = shadow;
         fills.push(fill);
         ops?.push({ op: 'fill', ...fill });
       }
@@ -7402,4 +7444,204 @@ test("an image is trimmed to its box's corners", async () => {
   );
   // and a square image is drawn with no clip of its own
   assert.strictEqual(drawn(0, 74), null);
+});
+
+// --- box shadows -----------------------------------------------------------------
+
+test('box-shadow: offsets, blur, spread, a colour and inset in either place', async () => {
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div id="a" style="box-shadow:0 1px 3px 0 rgb(0 0 0 / 0.1), ' +
+      'inset 0 0 0 1px #d1d5db, 0 0 #0000"></div>' +
+      '<div id="b" style="box-shadow:2px 3px red inset"></div>' +
+      '<div id="c" style="box-shadow:1px 1px;box-shadow:1px red 2px"></div>' +
+      '<div id="d" style="box-shadow:0 0 0 1px #000;box-shadow:none"></div>',
+  );
+  const el = view(node);
+  const shadowOf = (id: string) =>
+    (boxOf(el, id) as unknown as { style: { boxShadow: unknown } }).style
+      .boxShadow;
+  // the transparent one, Tailwind's placeholder, is left out
+  assert.deepStrictEqual(shadowOf('a'), [
+    {
+      x: 0,
+      y: 1,
+      blur: 3,
+      spread: 0,
+      color: 'rgba(0, 0, 0, 0.1)',
+      inset: false,
+    },
+    { x: 0, y: 0, blur: 0, spread: 1, color: '#d1d5db', inset: true },
+  ]);
+  assert.deepStrictEqual(shadowOf('b'), [
+    { x: 2, y: 3, blur: 0, spread: 0, color: 'red', inset: true },
+  ]);
+  // a colour between the lengths drops the declaration, and the one
+  // before stands, in currentColor
+  assert.deepStrictEqual(shadowOf('c'), [
+    { x: 1, y: 1, blur: 0, spread: 0, color: 'currentColor', inset: false },
+  ]);
+  assert.strictEqual(shadowOf('d'), null);
+});
+
+test('a ring is the band between a box and its spread, and needs no clip', async () => {
+  // Tailwind's `ring-1` on a box with no background of its own
+  const [ring] = await fillsIn(
+    '<div style="width:100px;height:40px;margin:5px;' +
+      'box-shadow:0 0 0 2px #0f0f0f"></div>',
+    '#0f0f0f',
+  );
+  assert.deepStrictEqual(
+    [ring.x, ring.y, ring.w, ring.h, ring.rule],
+    [3, 3, 104, 44, 'evenodd'],
+  );
+  assert.deepStrictEqual(ring.inner, {
+    x: 5,
+    y: 5,
+    w: 100,
+    h: 40,
+    radii: [0, 0, 0, 0],
+  });
+  // and `ring-inset`, inside the padding edge
+  const [inside] = await fillsIn(
+    '<div style="width:100px;height:40px;border:1px solid #fff;' +
+      'box-shadow:inset 0 0 0 2px #0e0e0e"></div>',
+    '#0e0e0e',
+  );
+  assert.deepStrictEqual(
+    [inside.x, inside.y, inside.w, inside.h],
+    [1, 1, 100, 40],
+  );
+  assert.deepStrictEqual(
+    [inside.inner!.x, inside.inner!.y, inside.inner!.w, inside.inner!.h],
+    [3, 3, 96, 36],
+  );
+});
+
+test('a blurred shadow is the shadow of a shape drawn clear of the window', async () => {
+  const { node } = await render(
+    '<style>body{margin:0}</style><div style="width:100px;height:40px;' +
+      'margin:20px;background:#fff;border-radius:8px;' +
+      'box-shadow:0 4px 6px -1px #0d0d0d"></div>',
+  );
+  const ops: PaintOp[] = [];
+  const fills = await fillsOf(view(node), ops);
+  const shadow = fills.find((f) => f.shadow);
+  assert.ok(shadow, 'a fill with a shadow');
+  // the spread shrinks the shape and its corners by a pixel; the shape is
+  // drawn left of the window, and its shadow offset back onto the box
+  assert.deepStrictEqual(
+    [shadow.x + shadow.shadow!.x, shadow.y, shadow.w, shadow.h],
+    [21, 25, 98, 38],
+  );
+  assert.ok(shadow.x + shadow.w < 0, 'the shape itself is off the window');
+  assert.deepStrictEqual(
+    [shadow.shadow!.color, shadow.shadow!.blur, shadow.shadow!.y],
+    ['#0d0d0d', 6, 0],
+  );
+  assert.deepStrictEqual(shadow.radii, [7, 7, 7, 7]);
+  // an opaque box covers what falls under it: no clip
+  assert.ok(!ops.some((op) => op.op === 'clip'));
+});
+
+test('a shadow is not drawn under a box that shows what is behind it', async () => {
+  // a hard shadow under a box with no background, clipped out of the box
+  const { node } = await render(
+    '<style>body{margin:0}</style><div style="width:90px;height:40px;' +
+      'margin:10px;box-shadow:5px 5px 0 #0c0c0c"></div>',
+  );
+  const ops: PaintOp[] = [];
+  await fillsOf(view(node), ops);
+  const at = ops.findIndex(
+    (op) => op.op === 'fill' && op.style === parseColor('#0c0c0c'),
+  );
+  assert.ok(at > 0, 'the shadow is filled');
+  const fill = ops[at] as Fill;
+  assert.deepStrictEqual([fill.x, fill.y, fill.w, fill.h], [15, 15, 90, 40]);
+  const clip = ops
+    .slice(0, at)
+    .reverse()
+    .find((op) => op.op === 'clip');
+  assert.ok(clip, 'a clip around it');
+});
+
+test("a shadow's reach is ink: a repaint beside the box reaches it", async () => {
+  const { node } = await render(
+    '<style>body{margin:0}</style><div id="s" style="width:100px;' +
+      'height:40px;margin:30px;box-shadow:0 10px 15px -3px #000"></div>',
+  );
+  const box = boxOf(view(node), 's') as unknown as {
+    y: number;
+    height: number;
+    boundsY: number;
+    boundsHeight: number;
+  };
+  // 10px down, 3px in, and a blur of 15 reaching 23px past the edge: the
+  // ink runs from 10px above the box to 30px below it
+  assert.deepStrictEqual(
+    [box.boundsY - box.y, box.boundsY + box.boundsHeight - box.y - box.height],
+    [-10, 30],
+  );
+});
+
+test('a blurred shadow is drawn once for its geometry and composited after', async () => {
+  // ntk blurs a path's shadow afresh on every fill, which put 500ms on a
+  // repaint of thirty cards: the same shadow on three cards is one key
+  const card =
+    '<div style="width:100px;height:40px;margin:10px;background:#fff;' +
+    'border-radius:8px;box-shadow:0 4px 6px -1px rgb(0 0 0 / 0.1)"></div>';
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      card.repeat(3) +
+      '<div style="width:100px;height:40px;margin:10px;' +
+      'box-shadow:0 4px 6px -1px rgb(0 0 0 / 0.1)"></div>',
+  );
+  const keys: string[] = [];
+  const ops: PaintOp[] = [];
+  await fillsOf(view(node), ops, {
+    cached: (key) => {
+      keys.push(key);
+      return {};
+    },
+  });
+  assert.strictEqual(keys.length, 4);
+  assert.strictEqual(new Set(keys.slice(0, 3)).size, 1, 'one for the cards');
+  // the box with no background has its own, the box cut out of it
+  assert.notStrictEqual(keys[3], keys[0]);
+  const images = ops.filter((op) => op.op === 'image');
+  assert.deepStrictEqual(
+    images.map((op) => (op.op === 'image' ? op.y : 0)),
+    // the cards 50px apart, their margins collapsed; each image 4px down
+    // and a pixel in with its shape, and the blur and one more around it
+    [10, 60, 110, 160].map((y) => y + 4 + 1 - 10),
+    'each at its card',
+  );
+  // and no blur was drawn in the window
+  assert.ok(!ops.some((op) => op.op === 'clip'));
+});
+
+test('the shadow cache keeps a surface per key, the oldest given up first', async () => {
+  const result = await renderX11(h('box', { 'data-testname': 'b' }), {
+    width: 20,
+    height: 20,
+  });
+  const app = (screen.getByTestName('b') as unknown as { app: unknown }).app;
+  const cache = new SurfaceCache(app, 400);
+  let drawn = 0;
+  const draw = () => {
+    drawn += 1;
+  };
+  const a = cache.get('a', 10, 10, draw);
+  assert.ok(a, 'a surface');
+  assert.strictEqual(cache.get('a', 10, 10, draw), a);
+  assert.strictEqual(drawn, 1, 'drawn once');
+  // one larger than a quarter of the budget is not made
+  assert.strictEqual(cache.get('big', 11, 10, draw), null);
+  // four more of 100 pixels: the first is given up for the fifth
+  for (const key of ['b', 'c', 'd', 'e']) cache.get(key, 10, 10, draw);
+  assert.strictEqual(drawn, 5);
+  cache.get('a', 10, 10, draw);
+  assert.strictEqual(drawn, 6, 'drawn again');
+  cache.destroy();
+  void result;
 });

@@ -14,8 +14,10 @@
 //    correct at every width, which is the whole of the resize story.
 import {
   AUTO,
+  alphaOf,
   fourSides,
   inkColor,
+  isTransparent,
   keywordFontSize,
   parseAlpha,
   parseColor,
@@ -69,6 +71,17 @@ export interface GridTrack {
 export interface GridTemplate {
   tracks: GridTrack[];
   repeat: { at: number; tracks: GridTrack[] } | null;
+}
+
+/** One of a `box-shadow`'s shadows, in device pixels. */
+export interface BoxShadow {
+  x: number;
+  y: number;
+  blur: number;
+  spread: number;
+  /** A colour as `parseColor` leaves it, `currentColor` included. */
+  color: string;
+  inset: boolean;
 }
 
 /** A `linear-gradient()` (CSS Images 3, 3.1): its direction, an angle
@@ -260,6 +273,8 @@ export interface ComputedStyle {
   /** Their vertical radii, percentages of its height, where `/` wrote
    *  them apart; null where they are the same values, as almost always. */
   borderRadiusY: [Len, Len, Len, Len] | null;
+  /** Its shadows front to back, the ones that can be seen; null for none. */
+  boxShadow: BoxShadow[] | null;
 
   top: Len;
   right: Len;
@@ -477,6 +492,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     borderLeftColor: 'currentColor',
     borderRadius: [0, 0, 0, 0],
     borderRadiusY: null,
+    boxShadow: null,
 
     top: AUTO,
     right: AUTO,
@@ -920,6 +936,11 @@ export function applyDeclaration(
       vertical[corner] = y;
       style.borderRadius = radii;
       style.borderRadiusY = sameRadii(radii, vertical) ? null : vertical;
+      return;
+    }
+    case 'box-shadow': {
+      const shadows = parseBoxShadow(value, ctx);
+      if (shadows !== undefined) style.boxShadow = shadows;
       return;
     }
     case 'border-radius': {
@@ -2109,6 +2130,54 @@ function splitTopLevelSlash(value: string): string[] {
 
 // --- logical properties ----------------------------------------------------
 
+/**
+ * A `box-shadow` (CSS Backgrounds 3, 7.1): `none`, or shadows front to
+ * back, each two offsets and then a blur and a spread, with a colour and
+ * `inset` on either side of the lengths. Undefined where the value is none
+ * of that, and the declaration is dropped. A shadow no colour can be seen
+ * in is left out — Tailwind writes four of them, `0 0 #0000`, under every
+ * one it means.
+ */
+function parseBoxShadow(
+  value: string,
+  ctx: UnitContext,
+): BoxShadow[] | null | undefined {
+  if (value.trim().toLowerCase() === 'none') return null;
+  const out: BoxShadow[] = [];
+  for (const part of splitCommas(value)) {
+    let inset = false;
+    let color: string | null = null;
+    const lengths: number[] = [];
+    // the lengths are written together, with nothing between them
+    let closed = false;
+    for (const token of splitValue(part.trim())) {
+      if (token.toLowerCase() === 'inset') {
+        if (inset) return undefined;
+        inset = true;
+        closed = lengths.length > 0;
+        continue;
+      }
+      const len = parseLength(token, ctx);
+      if (typeof len === 'number') {
+        if (closed || lengths.length === 4) return undefined;
+        lengths.push(len);
+        continue;
+      }
+      const c = parseColor(token);
+      if (c === null || color !== null) return undefined;
+      color = c;
+      closed = lengths.length > 0;
+    }
+    if (lengths.length < 2) return undefined;
+    const [x, y, blur = 0, spread = 0] = lengths;
+    if (blur < 0) return undefined;
+    const ink = color ?? 'currentColor';
+    if (alphaOf(ink) === 0 || isTransparent(ink)) continue;
+    out.push({ x, y, blur, spread, color: ink, inset });
+  }
+  return out.length ? out : null;
+}
+
 /** A corner's radius: a length or a percentage, and neither negative nor
  *  `auto`; null where it is none. */
 function radiusOf(text: string, ctx: UnitContext): Len | null {
@@ -2468,6 +2537,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
       ];
     }),
   ),
+  'box-shadow': ['boxShadow'],
   'border-radius': ['borderRadius', 'borderRadiusY'],
   'border-top-left-radius': ['borderRadius', 'borderRadiusY'],
   'border-top-right-radius': ['borderRadius', 'borderRadiusY'],

@@ -108,6 +108,7 @@ separately, and there are six.
 | 38     | rounded borders                                    | 5,461 (93%) | 4,973 (84%) |
 | 39     | linear gradients; WPT's fuzzy rule                 | 5,460 (93%) | 4,972 (84%) |
 | 40     | percentage and elliptical radii                    | 5,460 (93%) | 4,972 (84%) |
+| 41     | box shadows                                        | 5,460 (93%) | 4,972 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -1401,6 +1402,28 @@ minmax(16rem, 1fr))` are the layouts of half the pages written this
      trimmed to its box's corners: an `<img>` to its content edge's, a
      background to its border edge's. The CSS 2.1 suite has no radii.
 
+### Round 41
+
+127. **A shadow was not drawn.** `box-shadow` was not read, so a card had
+     no shadow and an input styled by Tailwind's `ring-1 ring-inset` no
+     border, the ring being a shadow that only spreads. Shadows are read
+     now (CSS Backgrounds 3, 7.1) — offsets, blur, spread, colour and
+     `inset`, as many as are written — and a shadow no colour can be seen
+     in is left out, which is four of the six Tailwind writes under every
+     shadow utility. An outer shadow is painted under the box's background
+     and not under the box: a box's opaque colour covers it, and where
+     there is none the box is cut out of it. An inset one is painted over
+     the background inside the padding box. A ring, a shadow with no blur
+     and no offset, is the band between two shapes, as a rounded border
+     is. A blurred one is the canvas shadow of its shape drawn clear of the
+     window. ntk does not cache the shadow of a path, and re-blurred every
+     one on every paint — thirty cards with a `shadow-md` repainted in
+     506ms on the test server — so a blurred shadow, and one cut around its
+     box, is drawn once for its geometry and colour on a surface of its
+     own, with the cut made there rather than as a clip the size of the
+     window, and composited after: 23ms for the same thirty, and 10ms
+     without shadows. The CSS 2.1 suite has none.
+
 ## What `<Html>` supports
 
 From the pass rates of the tests that use each feature, at the fixes above,
@@ -1523,8 +1546,8 @@ directories and caniemail's feature list:
    round 22; relative colours remain. `calc()`, `min()`, `max()` and
    `clamp()` were done in round 20, custom properties in round 21, and the
    logical properties Tailwind 4 writes its spacing in, with `inset`, in
-   round 33. Linear gradients were done in round 39; `background-size`,
-   `box-shadow` and the other gradients remain.
+   round 33. Linear gradients were done in round 39 and `box-shadow` in
+   round 41; `background-size` and the other gradients remain.
 6. **Stacking and clipping**: stacking contexts across `z-index`, `clip`,
    the static position of an absolute box. Percentage heights were done in
    round 4; overflow clipping, `clip` and the static position in a block in
