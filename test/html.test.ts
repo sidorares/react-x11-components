@@ -2952,6 +2952,31 @@ test("a collapsed table's sides are half its widest outer borders", async () => 
   assert.strictEqual(boxOf(view(node), 't').width, 75 + 75 + 50);
 });
 
+test('empty-cells: hide draws nothing of an empty cell', async () => {
+  // CSS 2.1 17.6.1.1: no background of its own or its row's and no
+  // borders, where borders are separate; white space collapsed away is
+  // nothing, an empty element is something, and collapsed borders are
+  // the grid's, which it does not touch
+  const { node } = await render(
+    '<table style="empty-cells:hide"><tr style="background:#0000ff">' +
+      '<td style="background:#ff0000;border:2px solid #ff0000"> </td>' +
+      '<td style="background:#00ff00"><span></span></td></tr></table>' +
+      '<table style="empty-cells:hide;border-collapse:collapse"><tr>' +
+      '<td style="border:2px solid #ff00ff"></td></tr></table>',
+  );
+  const fills = await fillsOf(view(node));
+  const any = (color: string) =>
+    fills.some((f) => f.style === parseColor(color));
+  assert.ok(!any('#ff0000'), "the empty cell's background and borders");
+  assert.ok(any('#00ff00'), 'a cell with an empty element in it is drawn');
+  assert.strictEqual(
+    fills.filter((f) => f.style === parseColor('#0000ff')).length,
+    1,
+    "the row's background under the second cell only",
+  );
+  assert.ok(any('#ff00ff'), 'collapsed borders are drawn');
+});
+
 metric('a column group draws its borders where they collapse', async () => {
   const { node } = await render(
     '<table style="border-collapse:collapse"><colgroup ' +
