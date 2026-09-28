@@ -26,7 +26,7 @@
 //   such as `onload` on an element — is recorded as `script` and not
 //   rendered: the component never executes one, by design.
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, extname, join, resolve } from 'node:path';
 import React from 'react';
 import { createRoot, loadFont, ThemeProvider } from 'react-x11';
 import { WindowNode } from 'react-x11/node';
@@ -182,6 +182,11 @@ function resourcesFor(docPath: string) {
     if (request.kind === 'stylesheet') {
       if (typeof data === 'string') return { kind: 'stylesheet', text: data };
       const file = fileFor(request.url, docPath);
+      // A sheet served as anything but CSS is not a style sheet, and a
+      // browser ignores it in a document in standards mode — every one here
+      // (CSS 2.1 errata, `syntax/content-type-*`). The host decides what it
+      // loads, and this host is standing in for WPT's server.
+      if (file && !servedAsCss(file)) return null;
       // bytes, and the charset the server would send them with: <Html>
       // decodes a stylesheet as CSS says, which is what these tests test
       return file
@@ -208,6 +213,32 @@ function servedCharset(file: string): string | undefined {
   if (!existsSync(headers)) return undefined;
   const type = /^content-type:(.*)$/im.exec(readFileSync(headers, 'utf8'));
   return type ? /charset=["']?([^;"'\s]+)/i.exec(type[1])?.[1] : undefined;
+}
+
+/** The extensions WPT's server sends as something other than CSS, of the
+ *  ones a test links a style sheet from. Any other is taken as CSS. */
+const NOT_CSS = new Set([
+  '.txt',
+  '.html',
+  '.htm',
+  '.xht',
+  '.xhtml',
+  '.xml',
+  '.js',
+  '.png',
+]);
+
+/** Whether WPT's server would send a file as CSS: as its `.headers` says,
+ *  else as its extension does. */
+function servedAsCss(file: string): boolean {
+  const headers = `${file}.headers`;
+  if (existsSync(headers)) {
+    const type = /^content-type:\s*([^;\s]+)/im.exec(
+      readFileSync(headers, 'utf8'),
+    );
+    if (type) return type[1].toLowerCase() === 'text/css';
+  }
+  return !NOT_CSS.has(extname(file).toLowerCase());
 }
 
 /** A page's text and the encoding it was in, found as a browser finds it: a

@@ -2452,6 +2452,26 @@ export function resolveEdges(box: Box, containingWidth: number): void {
   box.marginRight = edge(style.marginRight, containingWidth);
   box.marginBottom = edge(style.marginBottom, containingWidth);
   box.marginLeft = edge(style.marginLeft, containingWidth);
+  // A table's parts but its caption have no margins, and its rows and row
+  // groups no padding either (CSS 2.1 8.3, 8.4): a cell set `margin: 50px`
+  // left a gap in its table that no browser draws. The values stay theirs,
+  // for a cell to inherit (`padding: inherit`); they only do nothing here.
+  if (
+    box.kind === 'table-cell' ||
+    box.kind === 'table-row' ||
+    box.kind === 'table-row-group'
+  ) {
+    box.marginTop = 0;
+    box.marginRight = 0;
+    box.marginBottom = 0;
+    box.marginLeft = 0;
+    if (box.kind !== 'table-cell') {
+      box.padTop = 0;
+      box.padRight = 0;
+      box.padBottom = 0;
+      box.padLeft = 0;
+    }
+  }
   if (box.kind === 'table' || box.kind === 'table-cell') collapseEdges(box);
 }
 

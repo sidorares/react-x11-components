@@ -177,6 +177,7 @@ npx tsx scripts/conformance/run.ts wpt fuzz1 --chunk 50 --timeout 60000
 | 88     | a `<q>` in quotation marks                         | 5,550 (93%) | 5,021 (84%) |
 | 89     | an absolute box a `max-width` holds, centred       | 5,554 (93%) | 5,025 (84%) |
 | 90     | an image set `middle`, and `capitalize`            | 5,566 (94%) | 5,038 (85%) |
+| 91     | a table cell's sizes, and `text-decoration`        | 5,575 (95%) | 5,047 (86%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -2573,6 +2574,35 @@ On ntk 8.13.1 and react-x11 2.22.11, where master passes 5,554 on X11 and
      container held beside a block, which lays out as nothing, and the
      table was as wide as the block. The cells it makes have their turn
      now.
+
+### Round 91
+
+204. **A table cell was no taller than the height it set.** Its content is
+     laid out as a block's, which keeps a height it sets and lets the
+     content run out, and a cell does not: the height is a least one (CSS
+     2.1 17.5.3). `<td height="10">` with a line in it is as tall as the
+     line.
+205. **A cell, a row and a row group took margins, and rows their
+     padding**, which CSS 2.1 applies to no part of a table but the caption
+     (8.3, 8.4): a cell set `margin: 50px` left a gap in its table. The
+     values are still theirs, for a cell's `inherit`; they do nothing.
+206. **A cell's `min-width` and `max-width` did nothing.** CSS 2.1 leaves
+     them undefined on a cell, and every browser holds the cell's width
+     within them, as this does a column's.
+207. **Ten floats of `0.87em` in a box `8.7em` wide did not fit.** The
+     widths add up to more than the room by a rounding error, and the tenth
+     went under the other nine; a float fits in room short of it by less
+     than a millionth of a pixel.
+208. **`text-decoration` with a word it does not know kept the words before
+     it**: `underline overline line-through diagonal` drew a line through,
+     where the whole declaration is invalid (CSS 2.1 4.2). It is read whole
+     first, and a line named with another is drawn with it, where the last
+     one named was the only one.
+209. **The runner served a style sheet whatever its type.** WPT's server
+     sends `plaintext.css` as `text/plain`, as its `.headers` say, and a
+     `.txt` file as that; a browser ignores either as a style sheet in a
+     document in standards mode, and the runner, standing in for the server
+     and the host, now declines them (`content-type-000`, `-001`).
 
 ## What `<Html>` supports
 
