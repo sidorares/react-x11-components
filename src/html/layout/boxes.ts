@@ -540,6 +540,13 @@ export const CLIPPED_CELLS = new WeakSet<Box>();
  *  though they stand outside it (`breakAround`). */
 export const CUT_BLOCKS = new WeakMap<Box, Box[]>();
 
+/** The blocks that broke an inline box under full opacity in pieces, and
+ *  the opacity they take from it — from each such inline box around them,
+ *  multiplied. They stand outside it (CSS 2.1 9.2.1.1) and are still its
+ *  content, which its opacity fades as a group: a green square in a
+ *  `<span style="opacity: .5">` was drawn at full strength. */
+export const FADED_BLOCKS = new WeakMap<Box, number>();
+
 /** What the builder produced, plus the document-wide text it indexed. */
 export interface BoxTree {
   root: Box;
@@ -2319,6 +2326,12 @@ function breakAround(inline: Box): Box[] | null {
     pieces[i].cut = (i > 0 ? 1 : 0) | (i < pieces.length - 1 ? 2 : 0);
   }
   if (isRelative(inline.style)) CUT_BLOCKS.set(pieces[0], blocks);
+  const fade = inline.style.opacity;
+  if (fade < 1) {
+    for (const block of blocks) {
+      FADED_BLOCKS.set(block, (FADED_BLOCKS.get(block) ?? 1) * fade);
+    }
+  }
   return out;
 }
 

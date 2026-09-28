@@ -5738,6 +5738,39 @@ test('an element at no opacity is not drawn, and at half is drawn faded', async 
   });
 });
 
+test('a block inside an inline element is faded with it', async (t) => {
+  if (!FONTS) return t.skip('no font files for the in-process server');
+  // CSS 2.1 9.2.1.1: the block breaks the inline box in pieces and stands
+  // outside it, and is still its content, which the inline box's opacity
+  // fades as a group (WPT's stacking-context/opacity-affects-block-in-inline).
+  // Around two inline boxes, it takes both.
+  const result = await renderX11(
+    h(
+      'box',
+      { style: { width: 200, flexDirection: 'column' } },
+      h(Html, {
+        source:
+          '<body style="margin:0;background:#ffffff">' +
+          '<span style="opacity:0.5"><div style="height:20px;' +
+          'background:#ff0000"></div></span>' +
+          '<span style="opacity:0.5"><b style="opacity:0.5">' +
+          '<div style="height:20px;background:#ff0000"></div></b></span>' +
+          '</body>',
+        partial: false,
+      }),
+    ),
+    { width: 240, height: 100, fonts: FONTS },
+  );
+  await expectPixel(result.ctx, 10, 10, '#ff8080', {
+    tolerance: 3,
+    message: 'the block is its colour at half over the page',
+  });
+  await expectPixel(result.ctx, 10, 30, '#ffc0c0', {
+    tolerance: 3,
+    message: 'and at a quarter inside two such boxes',
+  });
+});
+
 // a 10x10 PNG, solid #ff0000
 const RED_PNG = new Uint8Array(
   Buffer.from(

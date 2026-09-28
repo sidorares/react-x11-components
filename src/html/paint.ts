@@ -37,6 +37,7 @@ import {
   Box,
   CLIPPED_CELLS,
   COLLAPSED_CELLS,
+  FADED_BLOCKS,
   INLINE_OFFSETS,
   SHADOWED_TEXT,
   SHIFTED_LINES,
@@ -580,7 +581,7 @@ function paintBox(ctx: PaintContext, box: Box, options: PaintOptions): void {
   // each thing drawn rather than the group they make, so where two of its
   // own boxes overlap the lower shows through the upper, as a browser's
   // group does not let it.
-  const opacity = box.style.opacity;
+  const opacity = opacityOf(box);
   if (opacity <= 0) return;
   const fade = opacity < 1 && typeof ctx.globalAlpha === 'number';
   if (fade) {
@@ -1231,8 +1232,15 @@ function inFlow(parent: Box, child: Box, options: PaintOptions): boolean {
   return (
     style.overflowX === 'visible' &&
     style.overflowY === 'visible' &&
-    style.opacity >= 1
+    opacityOf(child) >= 1
   );
+}
+
+/** How opaque a box is drawn: its own `opacity`, and the one it takes from
+ *  an inline box it broke in pieces (`FADED_BLOCKS`). */
+function opacityOf(box: Box): number {
+  const taken = FADED_BLOCKS.get(box);
+  return taken === undefined ? box.style.opacity : box.style.opacity * taken;
 }
 
 /**
@@ -1775,9 +1783,10 @@ function settleLayers(box: Box, list: Box[]): void {
 }
 
 /** Whether a box is a stacking context, which paints the positioned boxes
- *  in it itself (`stacksContext`). */
+ *  in it itself (`stacksContext`) — and a block that takes its opacity
+ *  from an inline box around it is one too. */
 function stacksLayers(box: Box): boolean {
-  return stacksContext(box.style);
+  return stacksContext(box.style) || FADED_BLOCKS.has(box);
 }
 
 /**
@@ -1886,7 +1895,7 @@ function hoistFrom(box: Box, root: boolean): Box[] | null {
       (pending ??= []).push(child);
     }
   }
-  if (!root && !stacksContext(box.style)) return pending;
+  if (!root && !stacksLayers(box)) return pending;
   if (pending) {
     pending.sort(byZIndex);
     NEGATIVE.set(box, pending);

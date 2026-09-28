@@ -319,8 +319,9 @@ on an inline box takes its room back from the line), `padding`,
 `opacity` — an element under 1 is a stacking context painted whole in its
 place, the positioned boxes in it with it, at 0 not at all and between
 faded, each thing drawn in it multiplied rather than the
-group, so where two of its boxes overlap the lower shows through; the
-opacity of an inline element's own text is not applied — `visibility` — a
+group, so where two of its boxes overlap the lower shows through; a block
+inside an inline element is faded with it, and the inline element's own
+text is not — `visibility` — a
 hidden element keeps its room and draws nothing, its text included, and a
 visible element inside it is drawn; a
 collapsed table row or column gives its room and its spacing back —
