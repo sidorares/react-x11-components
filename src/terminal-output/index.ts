@@ -48,6 +48,7 @@ import {
 } from '../codeblock/index.js';
 import { documentRuns } from './runs.js';
 import { hx } from './hx.js';
+import { useFontPrewarm } from '../internal/prewarm.js';
 
 const h = React.createElement;
 
@@ -257,6 +258,7 @@ export function TerminalOutput(props: TerminalOutputProps): ReactElement {
       }),
     [theme, props.fontSize, props.monoFamily],
   );
+  useFontPrewarm(look.family);
 
   // The colour maths (dim, inverse, conceal) resolves against the *page*
   // rather than against the block's tint: the tint is translucent, and an

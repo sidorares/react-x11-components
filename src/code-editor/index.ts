@@ -60,6 +60,7 @@ import type {
   Position,
 } from '../code-language/types.js';
 import { wordRangeAt } from './doc.js';
+import { styleFamily, useFontPrewarm } from '../internal/prewarm.js';
 
 export { ELEMENT as CODE_EDITOR_ELEMENT };
 export { CodeEditorNode };
@@ -185,6 +186,8 @@ export function CodeEditor(props: CodeEditorComponentProps): ReactElement {
   } = props;
 
   const theme = useTheme();
+  // the editor's text is all in this family, from its first frame
+  useFontPrewarm(styleFamily(style, 'monospace'));
   const nodeRef = useRef<CodeEditorNode | null>(null);
   const [completion, setCompletion] = useState<CompletionState | null>(null);
   // bumped per query; a stale async result compares and drops itself
