@@ -25,6 +25,7 @@ every cell after the crash failing to connect.
 | `docsweep.tsx`    | `<Markdown>`, `<Html>` (`COMP=md\|html`) | `mount`, `edit`, `append`, `scroll`, `reflow` (`SIZE` sections, default 300 ≈ 600 KB; `DOC=tailwind` puts a Tailwind-4-shaped stylesheet under the report)                                |
 | `editorsweep.tsx` | `<CodeEditor>` (`COMP=code`)             | `mount`, `scroll`, `type-end`, `type-mid`, `type-start`, `undo`, `replace`, `long-mount`, `long-type`, `caret-down`, `enter-end`, `jump-end` (`LINES`, `LONG`, `PLAIN=1` for no language) |
 | `editorsweep.tsx` | `<RichTextEditor>` (`COMP=rte`)          | `mount`, `scroll`, `type-mid`, `type-hidden`, `type-long`, `bold-all`, `paste` (`SIZE`)                                                                                                   |
+| `startup.mjs`     | an app's start, run with plain `node`    | `APP=small\|menubar\|editor`: the imports, `createRoot` and the first paint, in ms since the process started (`editor` reads `dist/`; `npm run build` first)                              |
 | `docgen.ts`       | the documents                            | a report of N sections, deterministic by seed; the Markdown and HTML spellings of the same content                                                                                        |
 
 What the fields mean: `fps` — frames that painted, per second; `frame50`,
