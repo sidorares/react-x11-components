@@ -90,6 +90,7 @@ an older one, and the final sweep's results (see the README there):
 | `mapsweep.tsx`    | `<Map>`                | `pan`, `drag`, `wheel`, `fly` over London z15                                                                                                | `RENDERER` (`retained`/`gl`), `DIAG`; tiles from `BENCH_TILES`   |
 | `chartsweep.tsx`  | charts                 | `stream`, `pan1m`, `zoom1m`, `multiples`, `scatter`, `scroll`                                                                                |                                                                  |
 | `tablesweep.tsx`  | `<Table>`              | `wheel`, `fling`, `thumb`, `jump` over 100k rows                                                                                             | `DIAG`, `PREFETCH`                                               |
+| `treesweep.tsx`   | `<Tree>`               | `wheel`, `fling`, `thumb`, `keys` over 100k rows, all expanded                                                                               | `ROWS`, `FRAMES`                                                 |
 | `docsweep.tsx`    | `<Markdown>`, `<Html>` | `mount`, `edit`, `append`, `scroll`, `reflow`                                                                                                | `COMP`, `SIZE` (sections), `PHASES`, `NO_FLOORS`                 |
 | `editorsweep.tsx` | `<CodeEditor>`         | `mount`, `scroll`, `type-end`, `type-mid`, `type-start`, `undo`, `replace`, `long-mount`, `long-type`, `caret-down`, `enter-end`, `jump-end` | `COMP=code`, `LINES`, `LONG`, `PLAIN`                            |
 | `editorsweep.tsx` | `<RichTextEditor>`     | `mount`, `scroll`, `type-mid`, `type-hidden`, `type-long`, `bold-all`, `paste`                                                               | `COMP=rte`, `SIZE`                                               |
@@ -2648,13 +2649,76 @@ marks the way `removeMark` removes them. A node that already has the mark
 still ends a run, so the undo is exact. A toggle, from the key to the paint,
 went from 69–75 ms to 45–50 ms; the rest is re-rendering the blocks.
 
+### A box whose children did not move keeps its reach (react-x11 #734)
+
+`contentReach` kept a box's reach while yoga's has-new-layout flag was clear
+on it. But a pass flags every child of a box it lays out, and an edit that
+grows one block lays the document's column out again. So every block came back
+flagged, and each block's children were read back out of yoga, four calls
+each, to find the reach the block already had.
+
+A flagged box whose children are all clear now keeps its reach: their own
+flags are the witness that nothing inside it moved. In the report's edits,
+72,404 of 83,383 reach visits were settled that way. Placing an edit's boxes
+went from 8.2–8.8 ms to 6.2–6.4 ms, and the frame from 15.4–16.1 ms to
+13.3–13.6 ms.
+
+react-x11's own harness could not count this. In its mock app and in
+`renderX11`'s in-process server, a small scene lays out every block of a
+column again on every frame, even blocks whose elements React reused, while
+the report drawn on Xorg keeps most of its blocks in yoga's cache.
+
+### The sweep, ntk 8.13.0 against master, interleaved
+
+The sweep's 2D cells, 79 of them, were each run once under ntk 8.13.0 and
+once under master. The order alternated from cell to cell, so load from other
+work on the machine fell on both. The runs used the same react-x11 and a Node
+resolve hook that pointed `ntk` at the other copy, so nothing was reinstalled
+between cells.
+
+- **The frames suite** (what each frame shows) was identical under both.
+- **Seven cells were flagged**, among them the retained map's wheel and fly,
+  `<CodeEditor>`'s latency and `<Html>`'s tails. Three more interleaved runs
+  each, on a quiet machine, put all seven in the same band on both.
+- **Better under master:**
+  - every Markdown cell's first paint, 1.41–1.47 s to 1.21–1.24 s;
+  - the 2,000-node `<Flow>` zoom, 29.6 to 33 fps;
+  - `<RichTextEditor>` paste, p50 64 ms to 32.
+
+`<Table>`'s thumb drag sat at 29–30 fps under both. That cell is waiting on
+react-x11 #728, which is not released yet: with react-x11 master installed it
+runs at 47.7–48.8 fps, with the same frame times.
+
+### `<Tree>` over 100,000 rows
+
+The sweep had no tree. A probe over the tree example's stress data (100,000
+rows, fifty to a branch, all expanded, every seventh name long enough to
+wrap) measured:
+
+- first paint in 352–376 ms;
+- a wheel at 60 fps (5.7 ms frames), and a fling at 58;
+- the thumb drag at 38 fps on react-x11 2.22.11 and 52 on react-x11 master
+  (#728 again).
+
+Arrow keys paint twice a press. The cursor moves in one commit; the reveal
+then scrolls the pane, and the window's `sync` re-renders the rows around the
+new top in a second. Both frames are about 1.5 ms, and in both the selection
+is inside the viewport. Joining them would need the window to take its top
+from the reveal's target before the first render, which is a change to
+`src/internal/window.ts` shared with `<Table>`.
+
 ### Still open on this machine
 
-- **A Markdown edit's walks in core.** `contentReach` reads every block of
-  a column that was laid out again, and an edit that changes one block's
-  height re-lays out the column: about 5 ms of the 9.5 ms placing an edit's
-  boxes takes at 600 KB. An incremental reach would need core to know
-  which children moved only by their offset.
+- **A Markdown edit's remaining walks in core.** An edit places its boxes in
+  6.2 ms at 600 KB. The column's blocks still have their own place and size
+  read twice, once for the reach and once to be placed. The floors' stale
+  collection is another 2.3 ms, spread over the spine scope's checks of every
+  block in the column.
+- **`<Html>` redoes the whole document on an edit.** The parse, the box
+  build and the inline layout of every paragraph take 85 ms a frame at
+  600 KB here. The text layouts are cached; the line boxes and boxes are
+  not. A parse that kept the nodes it did not change would let all three
+  skip them (round 15 said the same).
 - **Reflow is yoga's.** A Markdown reflow step is 209–215 ms at 600 KB. The
   root layout is half of it, and seven tenths of that is yoga's own
   algorithm over 8,606 nodes, run 3.8 times a frame.

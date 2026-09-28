@@ -171,7 +171,7 @@ const SUITES: Suite[] = [
       { title: 'Cocoa GL', match: onBackend('cocoa', (r) => r.asked === 'gl') },
     ],
   },
-  ...['charts', 'table'].map((name): Suite => ({
+  ...['charts', 'table', 'tree'].map((name): Suite => ({
     name,
     key: (r) => r.action,
     metrics: () => [fps, frame],
