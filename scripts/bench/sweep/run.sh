@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Every probe in this directory on each backend, one JSON line per cell, into
-# $1. SUITES narrows it (default: "frames maps charts table docs editors
-# flow" — `frames` is ../frames, what a frame shows rather than what it costs);
+# $1. SUITES narrows it (default: "frames maps charts table tree docs
+# editors flow" — `frames` is ../frames, what a frame shows rather than what it costs);
 # BACKENDS the backends (default: "x11 cocoa" on a Mac, "x11" elsewhere). A
 # cell that prints no RESULT is recorded as {"failed": "<probe> <env>"} and
 # the run goes on.
@@ -16,7 +16,7 @@ set -u
 here=$(cd "$(dirname "$0")" && pwd)
 out=${1:?usage: run.sh <out.jsonl>}
 : >"$out"
-SUITES=${SUITES:-"frames maps charts table docs editors flow"}
+SUITES=${SUITES:-"frames maps charts table tree docs editors flow"}
 if [ "$(uname)" = Darwin ]; then
   BACKENDS=${BACKENDS:-"x11 cocoa"}
 else
@@ -85,6 +85,9 @@ for b in $BACKENDS; do
   fi
   if has table; then
     for a in wheel fling thumb jump; do cell tablesweep.tsx REACT_X11_BACKEND=$b ACTION=$a; done
+  fi
+  if has tree; then
+    for a in wheel fling thumb keys; do cell treesweep.tsx REACT_X11_BACKEND=$b ACTION=$a; done
   fi
   if has docs; then
     for c in md html; do
