@@ -184,6 +184,7 @@ npx tsx scripts/conformance/run.ts wpt fuzz1 --chunk 50 --timeout 60000
 | 95     | clearance, empty inline boxes and `initial`        | 5,609 (95%) | 5,073 (86%) |
 | 96     | float rules 3 and 7, a canvas, a table's height    | 5,615 (95%) | 5,078 (86%) |
 | 97     | a `top` line's baseline, collapsed borders, fields | 5,625 (95%) | 5,085 (86%) |
+| 98     | margins of both signs, clearance, floats, columns  | 5,643 (95%) | 5,100 (86%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -2819,6 +2820,66 @@ solid 16px red` is invalid, each of the three at most once
      background; its size is its text's, the border and padding around it
      the author's (`blocks-026`). A button keeps the theme's look: core's
      `<Button>` draws its own label, and a page's button is its own round.
+
+### Round 98
+
+237. **Margins of both signs collapsed two at a time.** CSS 2.1 8.3.1
+     collapses a set of adjoining margins to the largest positive one
+     plus the most negative, and summed at each join that is not
+     associative: 2, -4, 0, 14, -4 and 2 are 10, and two at a time 8. The
+     margins are kept as a strut now, the two apart, through the walk
+     that collapses a box's top margin, the margins left hanging between
+     siblings and the one that comes out through a box's bottom
+     (`margin-collapse-111`, `-135`, `margin-bottom-103`, `-104`,
+     `abspos-022`).
+238. **Clearance was decided from a box's own margin, and never went
+     up.** A cleared box's place without clearance is where its margin
+     and every one that collapses up through its top put it, and a large
+     margin inside it takes it past the floats with no clearance at all
+     (`no-clearance-due-to-large-margin-after-left-right`). With
+     clearance, its border edge goes under the floats whatever its own
+     margin, which may take it up: the clearance is negative
+     (`negative-clearance-after-bottom-margin`). And the block after an
+     empty one with clearance starts at that one's edge where the margins
+     they collapse to come to no more than its top margin, which is above
+     the edge (`margin-collapse-125`).
+239. **A new formatting context beside floats.** Where a float narrows
+     the room, a negative margin takes the box no further out than its
+     containing block's edge, as every engine has it
+     (`zero-width-floats-positioning`); the suite's
+     `floats-wrap-bfc-with-margin-006` and `-007` propose otherwise, pass
+     in no browser, and are lost. And what may not overlap a float is the
+     box's border box, from its top: taken as tall as its margins, a box
+     a negative top margin took up missed the float it then overlapped
+     (`floats-wrap-bfc-with-margin-010`'s boxes, whose reference, a
+     positioned `<body>` standing in as the root, still comes out 8px off).
+240. **Floats and the line they are met on.** A float after one that
+     waits for the next line waits too, since none goes higher than one
+     before it (`floats-placement-vertical-003`). And a float met inside
+     text that may not break there — a `nowrap` element, or a word — is no
+     place for the line to break: the line keeps room for the text after
+     the float up to where it may, or breaks before the word it is tied
+     to (`floats-line-wrap-shifted-001`, and `float-nowrap-9`, which only
+     Firefox passes).
+241. **A column set to a width is that wide.** Browsers take a set width
+     on a cell or a column for the column's, which its content widens only
+     where it cannot break narrower; CSS 2.1's step 2 took it for a floor
+     under the text's widest line (`vertical-align-baseline-003`, and
+     `c5501-mrgn-t-000` and `c5503-mrgn-b-000` on X11). And a table of no
+     cells is as wide as its caption can be, as one with cells is at the
+     least, where it was the width of the page (`vertical-align-baseline-009`).
+242. **`<map>` was `display: none`.** It is inline (HTML 15.3.1), and an
+     `<area>` in it an author gives a display is drawn (`content-100`).
+243. **An anonymous block after a block took the `text-indent`.** Only an
+     element's first formatted line is indented (CSS 2.1 16.1), and an
+     anonymous block's is that only where it is its parent's first child:
+     the text after a `<div>` inside a `<span>` started indented
+     (`block-in-inline-first-line-002`, `text-indent-014`).
+244. **An outline under an inline-block after it.** An in-flow block's
+     outline was drawn after its own lines, so a later line's
+     inline-block went over it. Outlines are drawn after all of the
+     flow's lines and under its positioned boxes, as browsers draw them
+     (`z-index-020`, which allows either of CSS 2.1's two orders).
 
 ## What `<Html>` supports
 

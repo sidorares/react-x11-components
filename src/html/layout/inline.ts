@@ -421,7 +421,7 @@ function linesOf(
   }
   if (shadowed) SHADOWED_TEXT.add(block);
   if (tabbed) {
-    setTabs(items, fonts, block.style, indentOf(block.style, options.width));
+    setTabs(items, fonts, block.style, blockIndent(block, options.width));
   }
   // an override on the block is one on all of its inline content (CSS 2.1
   // 9.10); its embedding or isolation is the paragraph's own direction
@@ -454,7 +454,7 @@ function linesOf(
   };
   const lineHeightMul = lineHeightMultiplier(fonts, style);
   const align = alignFor(style);
-  const indent = indentOf(style, options.width);
+  const indent = blockIndent(block, options.width);
 
   let hasAtomics = false;
   let hasEdges = false;
@@ -698,7 +698,11 @@ function linesOf(
       // as browsers place one: `nowrap` text it is in the middle of runs on
       // past it otherwise, under it.
       const outer = options.floatBoxes!.size(item.box);
-      let fits = isEmpty(open) || open.x + pendingWidth + outer <= available;
+      // and after a float that waits for the next line, since none goes
+      // higher than one before it (9.5.1, rule 5)
+      let fits =
+        !deferred.length &&
+        (isEmpty(open) || open.x + pendingWidth + outer <= available);
       if (fits && !isEmpty(open) && !breaksAtEnd(open, style)) {
         const after = unbreakableAfter(items, index + 1, style, fonts!, base);
         fits = open.x + pendingWidth + after + outer <= available;
@@ -867,8 +871,19 @@ function linesOf(
     // float). ntk's shaping memo makes the successive cuts cheap; only the
     // line breaker re-runs.
     const room = Math.max(1, available - open.x - pendingWidth);
+    // A float met inside a word, or inside a `nowrap` element, is no place
+    // for the line to break: the text after it up to where it may break
+    // is on this line too, so this line keeps room for it — or breaks
+    // before the word it is tied to. It overran the line otherwise, the
+    // float having gone below, and the break it could have taken passed.
+    const tied =
+      wraps(style) &&
+      items[segment.nextIndex]?.kind === 'float' &&
+      !BREAKS_AFTER.test(segment.runs[segment.runs.length - 1].text)
+        ? unbreakableAfter(items, segment.nextIndex, style, fonts, base)
+        : 0;
     const fragment = fonts.layout(segment.runs, base, {
-      maxWidth: wraps(style) ? room : undefined,
+      maxWidth: wraps(style) ? Math.max(1, room - tied) : undefined,
       lineHeight: lineHeightMul,
       // Never aligned by the text layout: the alignment belongs to the whole
       // line — its text, its atomics and its inline boxes' edges together —
@@ -3040,6 +3055,10 @@ function segmentFrom(items: Item[], index: number, offset: number): Segment {
   return { runs, spans, nextIndex: i };
 }
 
+/** A text a line may break after where its block wraps: one that ends in
+ *  white space, which a no-break space a `nowrap` element holds is not. */
+const BREAKS_AFTER = /[ \t\n]$/;
+
 /** Move `(index, offset)` forward by `consumed` code units of text. */
 function advance(
   items: Item[],
@@ -3409,6 +3428,20 @@ function alignFor(style: ComputedStyle): string {
   // ntk has no justification; `start` is closer than a silent left on an RTL
   // paragraph, and closer than a ragged-right lie about what was drawn.
   return style.textAlign === 'justify' ? 'start' : style.textAlign;
+}
+
+/**
+ * The `text-indent` a block's first line takes: none where that line is
+ * not its element's first formatted line (CSS 2.1 16.1). An anonymous
+ * block's is only where the block is its parent's first child: the text
+ * after a `<div>` in a `<span>`, or after a paragraph in a `<div>`, starts
+ * a line of no indent.
+ */
+function blockIndent(block: Box, width: number): number {
+  if (!block.el && block.parent && block.parent.children[0] !== block) {
+    return 0;
+  }
+  return indentOf(block.style, width);
 }
 
 function indentOf(style: ComputedStyle, width: number): number {
