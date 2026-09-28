@@ -52,6 +52,11 @@ export class FloatContext {
     return this._boxes.length === 0;
   }
 
+  /** How many floats are placed: a mark for `clearanceSince`. */
+  get count(): number {
+    return this._boxes.length;
+  }
+
   add(box: FloatBox): void {
     this._boxes.push(box);
     if (box.top > this._lastTop) this._lastTop = box.top;
@@ -130,6 +135,22 @@ export class FloatContext {
       default:
         return -Infinity;
     }
+  }
+
+  /** `clearance`, of the floats placed since `mark` alone. */
+  clearanceSince(
+    clear: 'none' | 'left' | 'right' | 'both',
+    mark: number,
+  ): number {
+    if (clear === 'none') return -Infinity;
+    let lowest = -Infinity;
+    for (let i = mark; i < this._boxes.length; i += 1) {
+      const float = this._boxes[i];
+      if (clear === 'both' || clear === float.side) {
+        lowest = Math.max(lowest, float.bottom);
+      }
+    }
+    return lowest;
   }
 
   /** How far down the floats reach — what a container that establishes a

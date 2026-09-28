@@ -466,7 +466,8 @@ function linesOf(
       hasEdges = true;
       if (
         item.box.style.verticalAlign !== 'baseline' ||
-        ownsLeading(fonts, block.style, item.box.style)
+        ownsLeading(fonts, block.style, item.box.style) ||
+        tallerStrut(fonts, block.style, item.box)
       ) {
         hasOffset = true;
         raised = true;
@@ -801,10 +802,15 @@ function linesOf(
     // one layout, every line of it. This is the exit that keeps the loop
     // below from being quadratic on an ordinary paragraph: it runs line by
     // line only while it has to.
+    // An inline box's edges of no width on the open line are no room it
+    // takes, and are still on it: an empty `<span>` with a tall line height
+    // before the text was left on a line of its own after it, and the
+    // text's line was as short as the paragraph's
     const tailIsPlain =
       segment.nextIndex >= items.length &&
       open.x === 0 &&
       !open.atomics.length &&
+      !open.edges.length &&
       !pending.length &&
       !deferred.length &&
       !(options.floats?.intersects(options.startY + y, Infinity) ?? false);
@@ -1559,7 +1565,9 @@ function finishLine(
       open.atomics.some((placed) =>
         placed.box.style.display.startsWith('inline'),
       ) ||
-      open.edges.some((edge) => edge.width !== 0));
+      open.edges.some(
+        (edge) => edge.width !== 0 || hasEdgeOn(edge.box, edge.side),
+      ));
   let ascent = held ? strut.ascent : 0;
   let descent = held ? strut.descent : 0;
   let height = ascent + descent;
@@ -1592,10 +1600,13 @@ function finishLine(
     descent = Math.max(descent, natural.height - own);
     height = Math.max(height, natural.height);
   }
-  // a raised inline box with no text on the line is on it all the same,
-  // as tall as its own face and line height make it (CSS 2.1 10.8): an
-  // empty one, or one whose text is on another line
-  if (lifts) {
+  // an inline box with no text on the line is on it all the same, as tall
+  // as its own face and line height make it (CSS 2.1 10.8): an empty one,
+  // or one whose text is on another line — raised, or with a line height
+  // of its own, which an empty `<span>` made the line's no taller for.
+  // Only on a line that is one at all, which is none for boxes of no
+  // edges and no text (9.4.2)
+  if (lifts && held) {
     for (const placed of open.edges) {
       if (placed.side !== 'start' || placed.box.kind !== 'inline') continue;
       const room = lifts.ofBox(placed.box);
@@ -3567,8 +3578,11 @@ class Lifts {
    *  face at its line height, raised as it is — or null for one on the
    *  baseline, or one the line's edge sets. */
   ofBox(box: Box): { raise: number; ascent: number; descent: number } | null {
-    const { raise, edge } = this._box(box);
-    if (!raise || edge) return null;
+    const { raise, edge, lead } = this._box(box);
+    if (edge) return null;
+    if (!raise && !lead && !tallerStrut(this.fonts, this.block, box)) {
+      return null;
+    }
     const room = strutOf(this.fonts, box.style);
     return { raise, ascent: room.ascent, descent: room.descent };
   }
@@ -3689,6 +3703,35 @@ const LEADS = new WeakMap<
   ComputedStyle,
   { fonts: FontsLike; block: ComputedStyle; own: boolean }
 >();
+
+/**
+ * Whether an inline box with no text is taller on its line than the
+ * paragraph's own line height: what it holds there, which the engine,
+ * which lays out text, gives no room (CSS 2.1 10.8). A box with text is
+ * given its face's room with the text, at the paragraph's leading, which
+ * `ownsLeading` compares its own line height with; asked of one with none,
+ * the border of an empty `<span>` in a large face was drawn over the text
+ * above its line, which was as short as the paragraph's. Not asked of a
+ * box with text, which the one-layout paths lay out whole: a padded
+ * `<code>` in a paragraph would have been laid out a line at a time.
+ */
+function tallerStrut(
+  fonts: FontsLike,
+  block: ComputedStyle,
+  box: Box,
+): boolean {
+  if (box.subtreeTextEnd > box.subtreeTextStart) return false;
+  const style = box.style;
+  if (
+    style.fontSize === block.fontSize &&
+    style.lineHeight === block.lineHeight
+  ) {
+    return false;
+  }
+  const own = strutOf(fonts, style);
+  const theirs = strutOf(fonts, block);
+  return own.ascent + own.descent > theirs.ascent + theirs.descent + 0.5;
+}
 
 /** A style's line height in pixels. */
 function lineHeightOf(fonts: FontsLike, style: ComputedStyle): number {

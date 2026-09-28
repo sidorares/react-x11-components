@@ -181,6 +181,7 @@ npx tsx scripts/conformance/run.ts wpt fuzz1 --chunk 50 --timeout 60000
 | 92     | a top-aligned box's background, and `font`         | 5,588 (95%) | 5,051 (86%) |
 | 93     | where an absolute box in a line would have been    | 5,595 (95%) | 5,058 (86%) |
 | 94     | positioned boxes in their stacking context         | 5,600 (95%) | 5,063 (86%) |
+| 95     | clearance, empty inline boxes and `initial`        | 5,609 (95%) | 5,073 (86%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -2705,6 +2706,47 @@ font-size: 3.75em }` was 15px, its `em`s 3.75 of its parent's. The size
      unless an inline box on it has margin, border or padding — any of
      them, whatever they come to — and a block-level absolute box after
      such a box goes under its line (`static-inside-inline-002`).
+
+### Round 95
+
+222. **A block that cleared a float placed before anything fixed where its
+     parent's content goes had its margin above the float.** Such a float
+     would go down with a margin collapsing up through the parent's top
+     were `clear` none, so the block is never below it there: it always
+     has clearance, and its border edge goes under the float whatever its
+     margin, which may take it back up (CSS 2.1 9.5.2, as the browsers read
+     it; `adjoining-float-before-clearance`, `adjoining-float-new-fc`,
+     `adjoining-float-nested-forced-clearance`,
+     `negative-clearance-after-adjoining-float`). A float after content
+     does not move with the margins after it, and a block that clears it
+     is where its margin puts it when that is below the float, as before.
+223. **A cleared block whose margin took it past the floats parted its
+     margin from its parent's** as if it had clearance: with none, nothing
+     parts them, and the margin goes on up through the parent's top, which
+     it moves (`no-clearance-due-to-large-margin`). A `clear` with no float
+     to clear is no clearance either.
+224. **A border shorthand that named a part twice took the second**: `red
+solid 16px red` is invalid, each of the three at most once
+     (`shand-border-001`). A token the parser does not know still leaves
+     the rest, for a colour syntax it does not read yet.
+225. **An empty inline box's line height made its line no taller.** Every
+     inline box is on its line as tall as its own line height, text or
+     none (CSS 2.1 10.8), and one with no text is given no room by the
+     engine, which lays out text: an empty `<span>` of taller lines before
+     the text, or the last piece of a large-faced box a block was split
+     from, was on a line as short as the paragraph's — the empty span on a
+     line of its own after the text, its edges having taken no room. A
+     line of nothing but empty boxes stays no line (9.4.2), unless one has
+     a margin, border or padding, whatever they add up to
+     (`empty-inline-003`, `margin-right-114`, and
+     `inline-formatting-context-023` on Cocoa).
+226. **`initial` left a property as it was**, which an inherited property
+     had from its parent and any property from an earlier declaration:
+     `line-height: initial` in a block inside a box of 200px lines was
+     200px (`split-inline-borders`), and in css-cascade
+     `initial-background-color`, `initial-color-background-001`,
+     `unset-val-001` and `-002`. It is the property's initial value now,
+     and `unset` on a property that does not inherit is too.
 
 ## What `<Html>` supports
 
