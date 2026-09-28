@@ -120,6 +120,25 @@ test('declarations survive semicolons, comments and !important', () => {
   );
 });
 
+test('pseudo-class names and :lang() fold ASCII case only', async () => {
+  // CSS 2.1 4.1.3: `:LINK` is `:link`, but a Kelvin sign is no K, where
+  // Unicode's lower case makes one of it — and a rule with no pseudo-class
+  // CSS knows is dropped
+  const { node } = await render(
+    '<style>p { color: #0000ff } :LiNk { color: #00ff00 }' +
+      ' :lin\u212a { color: #ff0000 } :lang(\u212al) { color: #ff0000 }' +
+      ' :lang(KL) { font-style: italic }</style>' +
+      '<p><a id="a" href="x">link</a></p><p id="k" lang="kl">kl</p>',
+  );
+  const el = view(node);
+  const style = (id: string) =>
+    (boxOf(el, id) as LaidBox & { style: { color: string; fontStyle: string } })
+      .style;
+  assert.strictEqual(style('a').color, '#00ff00');
+  assert.strictEqual(style('k').color, '#0000ff', 'not a K');
+  assert.strictEqual(style('k').fontStyle, 'italic', 'but KL is kl');
+});
+
 test('a selector list becomes one rule per selector', () => {
   const sheet = parseStylesheet('h1, h2 > .lead { color: red }');
   assert.deepStrictEqual(
@@ -1004,6 +1023,22 @@ test('the generic monospace on its own is smaller, as in a browser', async () =>
   assert.strictEqual(size('e'), size('m') * (13 / 16), 'medium, smaller');
   assert.strictEqual(size('f'), size('m') * (13 / 16), 'through `font` too');
   assert.strictEqual(size('g'), 26, "an em of the parent's");
+});
+
+test('a first line keeps its first box after the indent, however wide', async () => {
+  // there is no break before a line's first content, and a first line's
+  // `text-indent` is room, not content: an inline-block that did not fit
+  // after it went to a second line, and a float laid out at its least
+  // width was as wide as the block without the indent
+  const { node } = await render(
+    '<div id="f" style="float:left;text-indent:30px">' +
+      '<span style="display:inline-block;width:10px;height:10px"></span>' +
+      '</div>',
+    1,
+  );
+  const f = boxOf(view(node), 'f') as LaidBox & { lines: unknown[] };
+  assert.strictEqual(f.width, 40);
+  assert.strictEqual(f.lines.length, 1);
 });
 
 metric('font-size: 0 leaves no room between inline-blocks', async () => {

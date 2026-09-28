@@ -730,7 +730,10 @@ function layoutLines(block: Box, options: InlineOptions): InlineResult {
       const room =
         tall > style.fontSize * 1.4 ? bandAt(options, y, tall) : band;
       const roomWidth = room.right - room.left;
-      if (open.x > 0 && open.x + pendingWidth + outer > roomWidth) {
+      // a line with nothing on it keeps what comes first, indent or not:
+      // there is no break before it (a first line's `text-indent` is room
+      // taken, and no content)
+      if (open.x !== open.indent && open.x + pendingWidth + outer > roomWidth) {
         close();
         continue;
       }
@@ -3495,8 +3498,13 @@ function xHeightOf(fonts: FontsLike, style: ComputedStyle): number {
 }
 
 /** Whether a line has nothing on it yet. */
-function isEmpty(open: { x: number; texts: unknown[]; atomics: unknown[] }) {
-  return open.x === 0 && !open.texts.length && !open.atomics.length;
+function isEmpty(open: {
+  x: number;
+  indent: number;
+  texts: unknown[];
+  atomics: unknown[];
+}) {
+  return open.x === open.indent && !open.texts.length && !open.atomics.length;
 }
 
 /** Where a line at `y` next has more room, in the block's own space: the

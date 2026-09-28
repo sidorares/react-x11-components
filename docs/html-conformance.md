@@ -44,8 +44,11 @@ What the run adapts, and why each is fair to a static renderer:
   `<Html>` ignores along with everything else that would load. An
   application brings its fonts the same way.
 - **XHTML is read as HTML.** Most of the suite is `.xht`, which a browser
-  parses as XML; the CDATA markers round a style sheet are the one XML
-  construct an HTML parser reads differently, so they are removed.
+  parses as XML. Two XML constructs in a style sheet read differently to an
+  HTML parser: the CDATA markers round one, which are removed, and the
+  entities outside them, which XML decodes and HTML leaves be — a
+  selector written `div &gt; span` is a `>` to a browser — so a style
+  sheet's are decoded first (from round 86).
 - **The palette is a browser's**: black on white, links `#0000ee`, a 16px
   serif. The rest of the user-agent sheet is `<Html>`'s own, themed rules
   included.
@@ -169,6 +172,7 @@ npx tsx scripts/conformance/run.ts wpt fuzz1 --chunk 50 --timeout 60000
 | 83     | a collapsed border on a half-pixel grid line       | 5,541 (93%) | 5,013 (84%) |
 | 84     | an image told to be a table's part                 | 5,542 (93%) | 5,014 (84%) |
 | 85     | a cell's content in a height of its own            | 5,544 (93%) | 5,015 (84%) |
+| 86     | XHTML style sheets as XML reads them               | 5,548 (93%) | 5,019 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -2445,6 +2449,38 @@ two agreed.
      box already, and there was no room to move it: a `<td height>`
      kept its text at the top, where every browser centres it. The
      content's own height is kept apart now, and aligned in the box.
+
+### Round 86
+
+The runner read XHTML's style sheets raw, as HTML does, where a browser
+reads them as XML and decodes their entities: 106 of the suite's files
+have one in a style sheet outside CDATA, most of them a combinator written
+`&gt;`, and every rule with one was dropped — from a test and from its
+reference alike, so that a pair that both lost their rules matched
+whatever `<Html>` did with them. The runner now decodes them first. Eight
+tests pass that could not, the `inline-table` and `inline-block` stacking
+tests among them. Six that passed by that accident are compared for real
+now: two showed the case folding below, and pass again; the four
+`text-indent-intrinsic` tests showed the indent below, and fail still, as
+they set a `<pre>` beside their floats and the user-agent sheet's own
+`<pre>` has padding.
+
+194. **A pseudo-class's name folded Unicode's case, not ASCII's.** CSS
+     matches the names of pseudo-classes, and a `:lang()` argument,
+     without regard to ASCII case alone (CSS 2.1 4.1.3), and Unicode's
+     lower case makes a Kelvin sign a K: `:lin\212A` was taken for
+     `:link`, and `:lang(\212Al)` matched `lang="kl"`. Both are read
+     with ASCII's case now, and a name with a letter from anywhere else
+     is no pseudo-class, and drops its rule.
+195. **A first line's indent made it look full.** A line keeps whatever
+     comes first on it — there is no break before it — and a first
+     line's `text-indent` is room it takes, not content; but an
+     inline-block measured against the room after the indent went to a
+     second line where it did not fit, leaving the first line empty. At
+     a float's least width, that was a float as wide as the
+     inline-block, without the indent.
+
+     `css-text`: 607 of its 1,489 tests passed on X11, 610 do now.
 
 ## What `<Html>` supports
 
