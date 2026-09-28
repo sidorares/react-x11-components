@@ -162,8 +162,10 @@ export type BorderStyle =
 /** A background layer's image: a url, a gradient, or none. */
 export type BackgroundImage = string | LinearGradient | null;
 
-/** An intrinsic size: `min-content`, `max-content` or `fit-content`. */
-export type ContentSize = 'min-content' | 'max-content' | 'fit-content';
+/** An intrinsic size: `min-content`, `max-content` or `fit-content`, and
+ *  `fit-content()`, whose argument stands in for the room (`fit`). */
+export type ContentSize =
+  'min-content' | 'max-content' | 'fit-content' | { fit: Len };
 
 export interface ComputedStyle {
   // --- inherited ------------------------------------------------------------
@@ -1310,7 +1312,7 @@ export function applyDeclaration(
     case 'height':
     case 'min-width':
     case 'min-height': {
-      const keyword = contentSizeOf(value);
+      const keyword = contentSizeOf(value, ctx, name.endsWith('width'));
       if (keyword) {
         // `auto` beside it, which is a height's content height already
         (style as unknown as Record<string, unknown>)[camel(name)] = AUTO;
@@ -1332,7 +1334,7 @@ export function applyDeclaration(
     }
     case 'max-width':
     case 'max-height': {
-      const keyword = contentSizeOf(value);
+      const keyword = contentSizeOf(value, ctx, name === 'max-width');
       if (keyword || value.toLowerCase() === 'none') {
         (style as unknown as Record<string, unknown>)[camel(name)] = 'none';
         if (name === 'max-width') style.maxWidthKeyword = keyword;
@@ -2997,16 +2999,27 @@ function addLen(a: Len, b: Len): Len | null {
   return { pct: pa.pct + pb.pct, px: (pa.px ?? 0) + (pb.px ?? 0) };
 }
 
-/** An intrinsic size keyword, with the prefixes browsers still read;
+/** An intrinsic size keyword, with the prefixes browsers still read, or
+ *  `fit-content()` of a length or a percentage (CSS Sizing 3, 3.1) — a
+ *  width's, where a height's is its content height as the keyword is;
  *  null for anything else. */
-function contentSizeOf(value: string): ContentSize | null {
+function contentSizeOf(
+  value: string,
+  ctx: UnitContext,
+  inline: boolean,
+): ContentSize | null {
   const v = value
     .trim()
     .toLowerCase()
     .replace(/^-(?:webkit|moz)-/, '');
-  return v === 'min-content' || v === 'max-content' || v === 'fit-content'
-    ? v
-    : null;
+  if (v === 'min-content' || v === 'max-content' || v === 'fit-content') {
+    return v;
+  }
+  const m = /^fit-content\((.*)\)$/s.exec(v);
+  if (!m) return null;
+  const fit = parseLength(m[1], ctx);
+  if (fit === null || fit === AUTO || !notNegative(fit)) return null;
+  return inline ? { fit } : 'fit-content';
 }
 
 /** A `background-size`: `cover`, `contain`, `auto`, or one or two of a
