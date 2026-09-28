@@ -2988,6 +2988,69 @@ Cocoa, which is core's.
 - **XQuartz's crash** in the GL lattice cells, which is XQuartz's.
 - **The GL surface's two extra frames on Cocoa**, which are core's.
 
+## Round 28: a 2D graph pan, and the colours every paint sets
+
+The same machine; the monitor came back on partway through. The cell is the
+2,000-node lattice's 2D pan at zoom 0.5 (`matrix.tsx`, `GL=0 ACTION=pan`).
+That is the fallback where there is no GL, and the heaviest 2D scene the
+sweep has. It went from 38.9 fps to about 48 over five changes, each
+measured interleaved against the master before it.
+
+### A pass leaves behind the routes it cannot reach (#287)
+
+A 2D pan frame paints six passes: the two-pixel strip the pan exposed, the
+minimap and the controls repaired in place, and three rounded corners. Each
+pass routes the edges whose coarse box reaches it. The lattice wraps at the
+end of every row and at the bottom into edges that cross the whole graph, so
+their boxes cover most of the pane. A 5×5 corner reached 263 edges on
+average and the strip 605; about 2,300 were routed a frame, and two in three
+drew nothing. A cached route that cannot reach the pass is now not moved to
+the frame at all, and the next pass that reaches it adds up the pans it
+missed.
+
+The pan went from 38.9 to 42.0 fps at 0.5 and from 49.5 to 55.7 at zoom 1.
+
+### Colours, parsed once and painted by their spelling (ntk #421, #422)
+
+Every `fillStyle` and `strokeStyle` set from a string was parsed, and
+premultiplied, and handed to `solidPicture`, whose cache key is four floats
+turned into text. Profiled, the parse alone was 6.3% of the pan's flush,
+3.3% of the streaming charts' and 2.9% of a `<Table>` scrub's. It is the path
+of every box background react-x11 paints on X11. react-x11's Cocoa context
+already kept a parse cache in front of the same function.
+
+- **#421:** `cssColorStraight` keeps each spelling it has parsed (bounded,
+  returning copies). The pan went from 38.7 to 42.2 fps, and the stream
+  from 9.1 to 8.6 ms a frame.
+- **#422:** the app keeps the solid pictures by the colour's spelling too. The
+  pan went from 46.3 to 47.5 fps, and the stream from 8.9 to 8.5 ms.
+
+The first push of #422 threw `solidPictureOf is not a function` in ten of
+ntk's tests. They hand the 2D context an app of their own that answers only
+`solidPicture`, and a host could do the same, so the context falls back to
+the old path for such an app.
+
+### The palette and a label's place, kept (#288, #290)
+
+- **The palette.** Every text the pane measures asked for the palette, and
+  each ask resolved it again, tinting the accent and parsing the
+  background's lightness. It is now kept for the theme object and the
+  `palette` prop it came from. The pan went from 36.6 to 37.7 fps (on the
+  locked ntk).
+- **A label's place.** Every pass that reached a labelled edge walked the
+  whole route to find its middle. The middle is now kept on the cached
+  route and moved with it, and the plate's default fill is worked out once
+  a pass. The pan went from 46.6 to 48.4 fps.
+
+### What is left in that pan
+
+The flush is now the rasterizer and the routes. ntk's coverage rasterizer
+(`edge`, `toAlpha`, the stroke's triangles) is about a quarter of it, and it
+is the standard signed-area design, which an earlier attempt could not
+speed up. Every reached route still has all its points moved in place each
+frame, about 2 ms of it; not moving them would mean every consumer of a
+scene taking an offset.
+
 ## Lessons
 
 1. **Look for caches that never hit.** Identity-keyed caches handed a new
