@@ -187,6 +187,21 @@ test('a document nests no deeper than 256 elements, as a browser has it', () => 
   assert.strictEqual(divs, 1000);
 });
 
+test('a table asked for again at the same width is not laid out again', async () => {
+  // A table in a table's cell is laid out as the cell is, and the cell as
+  // its table is, and every level lays out all of what it holds again:
+  // a hundred nested tables around five hundred more took a second. Asked
+  // at a width it was laid out at in this pass, with nothing laid out over
+  // it since, a table is moved rather than laid out.
+  const node = await render(
+    '<table>'.repeat(100) +
+      '<table><tr><td>x</td></tr></table>'.repeat(500) +
+      '</table>'.repeat(100),
+  );
+  const ms = coldLayout(node);
+  assert.ok(ms < 500, `${ms.toFixed(0)} ms`);
+});
+
 test('a thousand nested table cells render', async () => {
   // each a table of its own, so every level is four boxes and a table's
   // layout: the stack ran out, where now the document stops at 256

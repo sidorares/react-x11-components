@@ -1970,6 +1970,27 @@ In process, a fresh layout, milliseconds:
 | 2,000 in rows                     | 6,429  | 22    |
 | 4,000 in 250 levels of right ones | 24,000 | 179   |
 
+## Round 22: tables in tables
+
+Round 20's shape a last time, in tables: a table's cell is laid out as its
+table is, and a table in the cell as the cell is, so every level laid out
+all it held again. A table asked for at a width this pass laid it out at,
+and not laid out over since, is moved there now (`kept` in `block.ts`,
+round 20's record of a box's last layout). And a box that clips to no area
+— a menu at `max-height: 0` — paints nothing of what it holds unless an
+absolute box in it can be outside it: clipped to an empty rectangle, it
+painted all of it through ntk's mask the size of the window, rebuilt at
+every restore.
+
+In process, milliseconds:
+
+| page                                                | before | after |
+| --------------------------------------------------- | ------ | ----- |
+| 40 nested tables, a fresh layout                    | 15     | 5     |
+| 100 nested tables around 500 more, a fresh layout   | 1,010  | 87    |
+| the fuzzer's 256 levels around 2,700, a layout      | 5,085  | 222   |
+| 700 nested empty `overflow` tables, the first frame | 69,800 | 299   |
+
 ## Lessons
 
 1. **Look for caches that never hit.** Identity-keyed caches handed a new

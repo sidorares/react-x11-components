@@ -3126,6 +3126,26 @@ metric(
   },
 );
 
+metric('what a box clipped to no area holds is not painted', async () => {
+  // A menu at `max-height: 0`: clipped to an empty rectangle, what it held
+  // was painted through a mask the size of the window, which is what an
+  // empty rectangle is to the context, and a nest of them made one at
+  // every level. An absolute box whose containing block is outside it
+  // still shows.
+  const { node } = await render(
+    '<div style="max-height:0;overflow:hidden">' +
+      '<div style="height:20px;background:#ff0000"></div></div>' +
+      '<div style="height:0;overflow:hidden">' +
+      '<div style="position:absolute;top:50px;width:20px;height:20px;' +
+      'background:#0000ff"></div></div>',
+  );
+  const fills = await fillsOf(view(node));
+  const painted = (color: string) =>
+    fills.some((f) => f.style === parseColor(color));
+  assert.ok(!painted('#ff0000'), 'what it holds');
+  assert.ok(painted('#0000ff'), 'an absolute box outside its clip');
+});
+
 metric(
   'a rounded box clips rounded only where its padding leaves a corner to cut',
   async () => {

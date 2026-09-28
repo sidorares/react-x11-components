@@ -925,6 +925,50 @@ function layoutOwn(box: Box, ctx: LayoutContext, width: number): void {
 /** Every box's layout counted, for `Box.layoutSerial`. */
 let layoutSerial = 0;
 
+/**
+ * Whether a box's layout is one this pass made at `width`, with the same
+ * edges and the same height to take percentages of, and nothing has laid
+ * it out since (`keep`): what a table in a table in a table is asked for
+ * again at every level, and at the same width each time. Its height is put
+ * back, where a caller may have stretched it; where it stands is the
+ * caller's to move it to.
+ */
+function kept(box: Box, ctx: LayoutContext, width: number): boolean {
+  const laid = LAID_OWN.get(box);
+  if (
+    laid === undefined ||
+    laid.ctx !== ctx ||
+    laid.serial !== box.layoutSerial ||
+    laid.width !== width ||
+    !Object.is(laid.base, box.percentHeightBase) ||
+    laid.padTop !== box.padTop ||
+    laid.padRight !== box.padRight ||
+    laid.padBottom !== box.padBottom ||
+    laid.padLeft !== box.padLeft ||
+    !Number.isFinite(box.x) ||
+    !Number.isFinite(box.y)
+  ) {
+    return false;
+  }
+  box.height = laid.height;
+  return true;
+}
+
+/** Note the layout a box was just given, at `width`, for `kept`. */
+function keep(box: Box, ctx: LayoutContext, width: number): void {
+  LAID_OWN.set(box, {
+    ctx,
+    serial: box.layoutSerial,
+    width,
+    base: box.percentHeightBase,
+    padTop: box.padTop,
+    padRight: box.padRight,
+    padBottom: box.padBottom,
+    padLeft: box.padLeft,
+    height: box.height,
+  });
+}
+
 /** What `layoutOwn` laid each box out at, and in which pass. */
 const LAID_OWN = new WeakMap<
   Box,
@@ -961,6 +1005,25 @@ function layoutBlockLevel(
   }
 
   const width = blockWidth(box, containingWidth, percentBase, ctx);
+  if (box.kind === 'table' && kept(box, ctx, width)) {
+    // laid out at this width earlier in the pass, and not since: put where
+    // a layout would put it, and moved there whole
+    const laid = box.width;
+    const x = box.x;
+    const top = box.y;
+    box.width = width;
+    placeBlock(box, contentLeft, y, containingWidth);
+    if (laid !== width && Number.isFinite(containingWidth)) {
+      box.width = laid;
+      placeBlock(box, contentLeft, y, containingWidth);
+    }
+    box.width = laid;
+    const to = { x: box.x, y: box.y };
+    box.x = x;
+    box.y = top;
+    moveTo(box, to.x, to.y);
+    return;
+  }
   box.width = width;
   placeBlock(box, contentLeft, y, containingWidth);
   layoutInternals(box, ctx, width, box.x, box.y, outerFloats);
@@ -979,6 +1042,7 @@ function layoutBlockLevel(
     box.x = x;
     translate(box, dx, 0);
   }
+  if (box.kind === 'table') keep(box, ctx, width);
 }
 
 /**
