@@ -19,6 +19,8 @@ const load = (file: string): Row[] =>
  *  is in the environment `run.sh` recorded. */
 function normalize(r: Row): Row {
   if (!r.suite && r.scene && r.asked) r.suite = 'flow';
+  // the frames probes are two tables with nothing in common but the suite
+  if (r.suite === 'frames') r.suite = `frames: ${r.probe}`;
   // an instrumented run pays for its counters: not a number to compare
   if (typeof r.action === 'string' && r.action.endsWith('-diag'))
     r.suite = 'diag';
@@ -54,6 +56,8 @@ interface Metric {
   label: string;
   value: (r: Row) => number | undefined;
   higherIsBetter: boolean;
+  /** a count of things that should not happen: any change is shown */
+  exact?: boolean;
 }
 const fps: Metric = { label: 'fps', value: (r) => r.fps, higherIsBetter: true };
 const firstPaint: Metric = {
@@ -71,6 +75,17 @@ const frame: Metric = {
   value: (r) => r.frame50,
   higherIsBetter: false,
 };
+
+const exact = (label: string, value: Metric['value']): Metric => ({
+  label,
+  value,
+  higherIsBetter: false,
+  exact: true,
+});
+const badSamples = exact('bad samples', (r) => r.bad);
+const inFlight = exact('draws in flight', (r) => r.drawsInFlight);
+const missingInk = exact('GL ink missing, %', (r) => r.missingPct);
+const extraInk = exact('extra, %', (r) => r.extraPct);
 
 interface Column {
   title: string;
@@ -130,6 +145,21 @@ const SUITES: Suite[] = [
       { title: 'Cocoa', match: onBackend('cocoa') },
     ],
   })),
+  {
+    name: 'frames: drag',
+    key: (r) => `${r.scene} z${r.zoom}`,
+    metrics: () => [badSamples, inFlight],
+    columns: [
+      { title: 'X11 2D', match: onBackend('x11', (r) => !r.gl) },
+      { title: 'X11 GL', match: onBackend('x11', (r) => r.gl) },
+    ],
+  },
+  {
+    name: 'frames: renderers',
+    key: (r) => `${r.scene} z${r.zoom}`,
+    metrics: () => [missingInk, extraInk],
+    columns: [{ title: 'X11, GL against 2D', match: onBackend('x11') }],
+  },
   ...['docs', 'editors'].map((name): Suite => ({
     name,
     key: (r) => `${r.comp} · ${r.action}${r.variant ? ` (${r.variant})` : ''}`,
@@ -157,6 +187,10 @@ function cell(
     now!.asked === 'gl' && now!.renderer && now!.renderer !== 'gl' ? '²' : '';
   const o = was && metric.value(was);
   if (o == null || Number.isNaN(o)) return `${round(n)}${fellBack}`;
+  if (metric.exact) {
+    if (n === o) return `${round(n)}`;
+    return `${round(o)} → **${round(n)}**${n < o ? '' : ' ⚠'}`;
+  }
   const noise = metric.higherIsBetter ? 3 : 1;
   if (Math.abs(n - o) <= Math.max(noise, Math.abs(o) * 0.1))
     return `${round(n)}${fellBack}`;

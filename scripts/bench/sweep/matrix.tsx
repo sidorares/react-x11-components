@@ -153,22 +153,9 @@ const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 await wait(4000);
 const wnd = wref.current;
 const cocoa = typeof wnd.app?._route === 'function';
-const { execSync } = await import('node:child_process');
-const server = !cocoa
-  ? (() => {
-      try {
-        return execSync('pgrep -x X11.bin').toString().trim().split('\n')[0];
-      } catch {
-        return '';
-      }
-    })()
-  : '';
-const cpuOf = (pid: string) => {
-  if (!pid) return NaN;
-  const tt = execSync(`ps -o cputime= -p ${pid}`).toString().trim();
-  const [m, sec] = tt.split(':');
-  return Number(m) * 60 + Number(sec);
-};
+const { serverPid, cpuSeconds } = await import('./xserver.js');
+const server = !cocoa ? serverPid() : '';
+const cpuOf = cpuSeconds;
 const s = wnd.scale ?? 1;
 const t = () => Date.now() & 0x7fffffff;
 const emit = (type: string, x: number, y: number, extra: any = {}) =>
