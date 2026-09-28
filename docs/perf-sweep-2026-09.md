@@ -2537,6 +2537,14 @@ on other paths. Fills, strokes, clip paths, rectangles and batches of
 rectangles are now cut to the surface first, with a pixel to spare. A
 drawing that fits is sent exactly as before.
 
+That cut was too eager, and the sweep's `<Flow>` zoom found it: 2,000 nodes
+zoomed in have hundreds of edges a little past the window every frame, and
+cutting each one in JS cost more than the server's clipping of it. The 2D
+zoom fell from 30–32 fps to about 25. ntk #420 cuts only what reaches past
+16,384 pixels, which is what the wire cannot carry. A stroke now also drops
+any triangle wholly off the surface, which adds nothing on either route. The
+same zoom runs at 30–33 fps.
+
 ### Only the lines the surface shows (ntk #415)
 
 With the crash gone, the first paint was 5.0 s. 1.5 s of it was
