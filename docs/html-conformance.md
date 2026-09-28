@@ -160,6 +160,7 @@ npx tsx scripts/conformance/run.ts wpt fuzz1 --chunk 50 --timeout 60000
 | 74     | percentages of a stretched or flexed item's height | 5,484 (93%) | 4,992 (84%) |
 | 75     | the font's own `ch`, floats in unbroken text       | 5,486 (93%) | 4,994 (84%) |
 | 76     | a word too long for its line kept whole            | 5,520 (93%) | 4,994 (84%) |
+| 77     | `visibility: collapse` in tables                   | 5,525 (93%) | 4,999 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -2270,6 +2271,37 @@ two agreed.
      has, and two whose `break-spaces` wants a break between two
      ideographic spaces, which the engine does not make.
 
+### Round 77
+
+178. **`visibility: collapse` took nothing out of a table.** It was read
+     as `hidden`, so a collapsed row or column kept its room and drew
+     nothing in it. CSS 2.1 17.5.5 takes it out: the row is as tall as
+     nothing and the column as wide, with no spacing after either, and
+     the table is that much smaller, a table with a width of its own
+     too. Neither changes anything else: they size the table with the
+     rest, and their cells are laid out at the widths they would have
+     had, so no row is taller or shorter for a column taken out. A row's
+     cells inherit the value and are not drawn; a column is no ancestor
+     of its cells, so one wholly in columns taken out is left out of
+     the paint (`COLLAPSED_CELLS`).
+179. **A cell spanning a collapsed column is clipped to the ones left.**
+     It is laid out across all of its columns, moved left by the width
+     of the ones taken out before the first left in, and clipped to the
+     rest (`CLIPPED_CELLS`), which cuts out what was in them; a cell
+     spanning a row taken out is cut at the last row left. The spacing
+     after a column taken out goes from the end of the content, which
+     does not line up with the columns it spans. `column-visibility-004`
+     passes, where all four browsers on wpt.fyi fail it: Chromium draws
+     the collapsed column's part at the first column left.
+180. **A row was as wide as its table**, the spacing round the cells
+     included, where in the separated borders model its edges are its
+     first and last cells' (CSS 2.1 17.5.1), and a row group's its
+     rows'. An outline on a `<tbody>` stood a spacing out on either
+     side, and a row's background image was placed against the wider
+     box.
+
+     `css-tables`: 83 of its 167 reftests passed on X11, 86 do now.
+
 ## What `<Html>` supports
 
 From the pass rates of the tests that use each feature, at the fixes above,
@@ -2288,7 +2320,7 @@ checked against the code.
 | line height, `vertical-align`                      | 191   | 87%     | **supported**: every inline box's own line height, and `vertical-align` on text as well as on images and inline blocks; text in a font with taller natural lines than its paragraph's takes a bit more room than CSS gives it |
 | `white-space`                                      | 217   | 46%     | **supported**; collapsing is CSS 2.1's across elements                                                                                                                                                                        |
 | lists and markers                                  | 155   | 94%     | **supported**, `list-style-image` included                                                                                                                                                                                    |
-| CSS tables (`display: table-*`), `table-layout`    | 250   | 81%     | **supported**: HTML tables and anonymous ones, both border models, captions, `<col>` widths in both layouts, and column backgrounds with their images; `visibility: collapse` and baseline alignment are not                  |
+| CSS tables (`display: table-*`), `table-layout`    | 250   | 93%     | **supported**: HTML tables and anonymous ones, both border models, captions, `<col>` widths in both layouts, column backgrounds with their images, and `visibility: collapse`; baseline alignment is not                      |
 | `::before`, `::after`, `content`, counters, quotes | 332   | 86%     | **supported**, images in `content` included                                                                                                                                                                                   |
 | `::first-letter`, `::first-line`                   | 398   | 79–100% | `::first-letter` **supported**; `::first-line` **partial**: its colour and background, not its font, spacing or `vertical-align`                                                                                              |
 | `z-index` stacking                                 | 152   | 73%     | **supported**: Appendix E's order — block backgrounds, floats, lines, positioned boxes by `z-index` — with a table, a flex box or a box that clips painted whole among the lines                                              |

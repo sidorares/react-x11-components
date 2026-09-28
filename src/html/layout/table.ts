@@ -13,7 +13,7 @@
 // algorithm is too slow — which, on a table with a thousand rows, it is.
 import { AUTO, isPct, resolveOrNull } from '../css/values.js';
 import type { Len } from '../css/values.js';
-import { Box } from './boxes.js';
+import { Box, CLIPPED_CELLS, COLLAPSED_CELLS } from './boxes.js';
 import {
   MIN_CONTENT_PROBE,
   clampHeight,
@@ -96,11 +96,20 @@ export function layoutTable(
     }
   }
 
+  // A column that `visibility: collapse` takes out of the table has been
+  // sized with the rest, and is no room at all where they are placed (CSS
+  // 2.1 17.5.5): no width, and no spacing after it. Its cells are still
+  // laid out at the width they would have had, so that taking it out
+  // changes no row's height.
   const columnX: number[] = new Array<number>(columnCount);
+  const gone: boolean[] = new Array<boolean>(columnCount);
+  let anyGone = false;
   let x = table.contentX + spacing;
   for (let c = 0; c < columnCount; c += 1) {
     columnX[c] = x;
-    x += widths[c] + spacing;
+    gone[c] = collapsedColumn(columnBoxes[c], columnGroups[c]);
+    if (gone[c]) anyGone = true;
+    else x += widths[c] + spacing;
   }
   // A table with `width: auto` is as wide as its columns need, not as wide as
   // its container — it shrinks to fit, which is what makes a two-column table
@@ -111,13 +120,14 @@ export function layoutTable(
   // room, as a word is, and one beside a float goes below it.
   //
   // A table set to a width is as wide as it or its columns, whichever is the
-  // wider: columns set wider than the table widen it.
+  // wider: columns set wider than the table widen it. A column taken out
+  // gives its room back either way, set width or not.
   const used = x - table.contentX;
   let tableContentWidth = contentWidth;
   if (style.width === AUTO) {
     tableContentWidth = used;
     table.width = tableContentWidth + table.horizontalExtra;
-  } else if (used > contentWidth) {
+  } else if (used > contentWidth || anyGone) {
     tableContentWidth = used;
     table.width = used + table.horizontalExtra;
   }
@@ -197,18 +207,71 @@ export function layoutTable(
     }
   }
 
+  // And a row it takes out has sized the columns with the rest, and is as
+  // tall as nothing, with no spacing after it; its cells inherit the value,
+  // and are not drawn.
+  const rowGone: boolean[] = new Array<boolean>(rows.length);
   for (let r = 0; r < rows.length; r += 1) {
     rowTop[r] = y;
-    y += rowHeight[r] + rowSpacing;
+    rowGone[r] = rows[r].style.visibility === 'collapse';
+    if (rowGone[r]) rowHeight[r] = 0;
+    else y += rowHeight[r] + rowSpacing;
   }
 
   for (let i = 0; i < cells.length; i += 1) {
     const cell = cells[i];
     const last = Math.min(rows.length - 1, cell.row + cell.rowSpan - 1);
     let height = 0;
-    for (let r = cell.row; r <= last; r += 1) height += rowHeight[r];
+    let clip = false;
+    for (let r = cell.row; r <= last; r += 1) {
+      height += rowHeight[r];
+      if (r > cell.row && rowGone[r]) clip = true;
+    }
     height += rowSpacing * (last - cell.row);
-    const width = spannedWidth(widths, cell, spacing);
+    if (clip) {
+      // down to the last of its rows left in the table, whose spacing went
+      // with the rows taken out
+      let bottom = rowTop[cell.row] + rowHeight[cell.row];
+      for (let r = cell.row + 1; r <= last; r += 1) {
+        if (!rowGone[r]) bottom = rowTop[r] + rowHeight[r];
+      }
+      height = bottom - rowTop[cell.row];
+    }
+    let width = spannedWidth(widths, cell, spacing);
+    // Where its columns are: a cell spanning a column taken out is laid out
+    // across all of them, moved left by the width of the ones before the
+    // first left in, and clipped to the ones left, which cuts out what was
+    // in those (CSS 2.1 17.5.5). The spacing after them goes from the end
+    // of its content, which does not line up with the columns it spans.
+    // One wholly in them is not drawn.
+    let placeX = columnX[cell.column];
+    let boxX = placeX;
+    if (anyGone) {
+      const lastColumn = Math.min(
+        columnCount - 1,
+        cell.column + cell.colSpan - 1,
+      );
+      let first = -1;
+      let end = -1;
+      let before = 0;
+      let some = false;
+      for (let c = cell.column; c <= lastColumn; c += 1) {
+        if (!gone[c]) {
+          if (first < 0) first = c;
+          end = c;
+        } else {
+          if (first < 0) before += (some ? spacing : 0) + widths[c];
+          some = true;
+        }
+      }
+      if (first < 0) COLLAPSED_CELLS.add(cell.box);
+      else if (some) {
+        clip = true;
+        boxX = columnX[first];
+        placeX = boxX - before;
+        width = columnX[end] + widths[end] - boxX;
+      }
+    }
     const inner = cell.box.height;
     // `vertical-align` inside a cell moves the *content*, not the box: the
     // box fills the row, background and all, and the content sits top,
@@ -217,10 +280,16 @@ export function layoutTable(
     const va = cell.box.style.verticalAlign;
     if (va === 'middle') offset = Math.max(0, (height - inner) / 2);
     else if (va === 'bottom') offset = Math.max(0, height - inner);
-    moveTo(cell.box, columnX[cell.column], rowTop[cell.row]);
+    moveTo(cell.box, placeX, rowTop[cell.row]);
     moveContent(cell.box, offset);
+    cell.box.x = boxX;
     cell.box.width = width;
-    cell.box.height = Math.max(inner, height);
+    if (clip) {
+      cell.box.height = height;
+      CLIPPED_CELLS.add(cell.box);
+    } else {
+      cell.box.height = Math.max(inner, height);
+    }
   }
 
   // where the grid lines fell, for the collapsed borders drawn along them
@@ -234,20 +303,25 @@ export function layoutTable(
     collapsed.lineY.push(rowTop[bottom] + rowHeight[bottom] - table.y);
   }
 
+  // A row, and a group of them, spans the columns: from the first one's
+  // left edge to the last one's right, the spacing around them outside it
+  // (CSS 2.1 17.5.1), as it is above and below.
+  const gridX = table.contentX + spacing;
+  const gridWidth = Math.max(0, x - spacing - gridX);
   for (let r = 0; r < rows.length; r += 1) {
     const row = rows[r];
-    row.x = table.contentX;
+    row.x = gridX;
     row.y = rowTop[r];
-    row.width = tableContentWidth;
+    row.width = gridWidth;
     row.height = rowHeight[r];
   }
   for (const child of table.children) {
     if (child.kind !== 'table-row-group') continue;
     const groupRows = child.children.filter((row) => row.kind === 'table-row');
     if (!groupRows.length) continue;
-    child.x = table.contentX;
+    child.x = gridX;
     child.y = groupRows[0].y;
-    child.width = tableContentWidth;
+    child.width = gridWidth;
     child.height =
       groupRows[groupRows.length - 1].y +
       groupRows[groupRows.length - 1].height -
@@ -255,6 +329,12 @@ export function layoutTable(
   }
 
   return y - top;
+}
+
+/** Whether `visibility: collapse` takes a column out: its own, or the
+ *  column group's that holds it with no column box of its own. */
+function collapsedColumn(column: Box | null, group: Box | null): boolean {
+  return (column ?? group)?.style.visibility === 'collapse';
 }
 
 /**
