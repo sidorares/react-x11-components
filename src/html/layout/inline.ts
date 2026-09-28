@@ -260,6 +260,9 @@ export interface InlineResult {
   height: number;
   /** The widest line — what a shrink-to-fit width takes. */
   width: number;
+  /** The widest row of floats the paragraph placed beside none of its
+   *  lines — all of them, where it has nothing else — side by side. */
+  floatRow?: number;
 }
 
 export interface InlineOptions {
@@ -353,13 +356,16 @@ function layoutLines(block: Box, options: InlineOptions): InlineResult {
   );
   if (items.length === floatCount || !fonts) {
     // no line to wait for: the floats go at the top
+    const placed: Box[] = [];
     for (const item of items) {
       if (item.kind === 'float') {
         placing!.size(item.box);
         placing!.place(item.box, options.startY);
+        placed.push(item.box);
       }
     }
-    return EMPTY;
+    if (!placed.length) return EMPTY;
+    return { ...EMPTY, floatRow: besideLines([], placed, options.startY) };
   }
   // text a box's background shows through (`background-clip: text`): its
   // layouts are made through a recorder, so paint can lay the same text out
@@ -605,9 +611,13 @@ function layoutLines(block: Box, options: InlineOptions): InlineResult {
   /** Floats met on a line they did not fit beside: they go at the top of
    *  the next line, as the line they were met on closes. */
   let deferred: Box[] = [];
+  /** Every float placed, in order, for the lines they stand beside. */
+  const floatsPlaced: Box[] = [];
   const placeDeferred = (): void => {
-    for (const box of deferred)
+    for (const box of deferred) {
       options.floatBoxes!.place(box, options.startY + y);
+      floatsPlaced.push(box);
+    }
     deferred = [];
   };
 
@@ -650,6 +660,7 @@ function layoutLines(block: Box, options: InlineOptions): InlineResult {
       const outer = options.floatBoxes!.size(item.box);
       if (isEmpty(open) || open.x + pendingWidth + outer <= available) {
         options.floatBoxes!.place(item.box, options.startY + y);
+        floatsPlaced.push(item.box);
         const left = bandAt(options, y, style.fontSize * 1.4).left;
         if (!isEmpty(open) && left !== open.left) {
           const dx = left - open.left;
@@ -943,10 +954,53 @@ function layoutLines(block: Box, options: InlineOptions): InlineResult {
   if (open.texts.length || open.atomics.length || open.edges.length) close();
   placeDeferred();
 
-  return { lines, height: y, width: widest };
+  if (!floatsPlaced.length) return { lines, height: y, width: widest };
+  const floatRow = besideLines(
+    Number.isFinite(options.width) ? [] : lines,
+    floatsPlaced,
+    options.startY,
+  );
+  return { lines, height: y, width: widest, floatRow };
 }
 
 const EMPTY: InlineResult = { lines: [], height: 0, width: 0 };
+
+/**
+ * Which line each float a paragraph placed stands beside: the one whose top
+ * it went at, whose content moved over for it — added up on the line, for
+ * what the line is measured with (`LineBox.floats`). The widest row of the
+ * rest, side by side where they went at one top, is the answer. Both lines
+ * and floats come in order down the paragraph, since a float goes no
+ * higher than the one before it.
+ *
+ * The lines are handed over only where the paragraph had no width limit,
+ * where its content is measured at its widest and a float is beside a line
+ * because nothing made the line go under it. At a width, the least a
+ * paragraph can be is its widest word or float, not the two side by side
+ * (where the word ran past the room a float left it), and its floats are
+ * rows of their own.
+ */
+function besideLines(lines: LineBox[], placed: Box[], startY: number): number {
+  let row = 0;
+  let rowTop = NaN;
+  let widest = 0;
+  let at = 0;
+  for (const box of placed) {
+    const top = box.y - box.marginTop - startY;
+    const width = box.width + box.marginLeft + box.marginRight;
+    while (at < lines.length && lines[at].y < top - 0.01) at += 1;
+    const line = lines[at];
+    if (line && Math.abs(line.y - top) <= 0.01) {
+      line.floats = (line.floats ?? 0) + width;
+    } else if (Math.abs(top - rowTop) <= 0.01) row += width;
+    else {
+      widest = Math.max(widest, row);
+      row = width;
+      rowTop = top;
+    }
+  }
+  return Math.max(widest, row);
+}
 
 /** A no-break space in a paragraph's face, and its advance, per font
  *  manager and per style — which the cascade shares between every element
