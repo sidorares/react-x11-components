@@ -2473,7 +2473,9 @@ function isInlineLevel(box: Box): boolean {
     d === 'inline' ||
     d === 'inline-block' ||
     d === 'inline-flex' ||
-    d === 'inline-table'
+    d === 'inline-table' ||
+    // an image told to be a table's part is inline (CSS Display 3, 2.4)
+    (box.kind === 'replaced' && d.startsWith('table-'))
   );
 }
 

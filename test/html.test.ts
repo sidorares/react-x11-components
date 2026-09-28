@@ -3002,6 +3002,24 @@ test('a collapsed border on a line between two pixels starts on one', async () =
   );
 });
 
+test('an image told to be a table cell is inline', async () => {
+  // CSS Display 3, 2.4: a table's part is no display a replaced element
+  // takes, and it is inline — in a row, wrapped in a cell with what is
+  // beside it, and in a block, on the line; they were stacked as blocks
+  const { node } = await render(
+    '<div style="display:table-row">' +
+      '<img id="a" style="display:table-cell;width:15px;height:15px"> ' +
+      '<img id="b" style="display:table-cell;width:15px;height:15px"></div>' +
+      '<div><img id="c" style="display:table-cell;width:15px;height:15px">' +
+      ' <img id="d" style="display:table-row;width:15px;height:15px"></div>',
+  );
+  const el = view(node);
+  const [a, b, c, d] = ['a', 'b', 'c', 'd'].map((id) => boxOf(el, id));
+  assert.strictEqual(b.y, a.y, 'side by side in the row');
+  assert.ok(b.x > a.x + a.width, 'a space between them');
+  assert.strictEqual(d.y, c.y, 'and on one line in a block');
+});
+
 metric('a column group draws its borders where they collapse', async () => {
   const { node } = await render(
     '<table style="border-collapse:collapse"><colgroup ' +
