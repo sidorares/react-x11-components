@@ -1766,9 +1766,14 @@ function plainInline(box: Box): boolean {
 function wordBound(box: Box, fonts: FontsLike, measured: boolean): number {
   if (box.kind !== 'block') return Infinity;
   let widest = 0;
+  // a line that does not wrap is one word: a `nowrap` tooltip in a narrow
+  // containing block was cut to its width, the rest of the line out of it
+  const unbroken =
+    box.style.whiteSpace === 'nowrap' || box.style.whiteSpace === 'pre';
   if (box.lines) {
     let last: object | null = null;
     for (const line of box.lines) {
+      if (unbroken) widest = Math.max(widest, line.width);
       for (const text of line.texts) {
         if (text.layout === last) continue;
         last = text.layout;

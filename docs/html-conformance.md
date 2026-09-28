@@ -2675,6 +2675,11 @@ font-size: 3.75em }` was 15px, its `em`s 3.75 of its parent's. The size
      so the `&nbsp;` a mail layout holds a gap open with vanished beside a
      block, in a flex box and in a grid, as if it held nothing
      (`between-float-and-text`, `vertical-align-baseline-004a`, `-005a`).
+219. **A shrink-to-fit box that does not wrap was cut to its room.** Its
+     least width was bounded by its widest word, and a `nowrap` line has no
+     place to break, so the whole line is the word: a `nowrap` tooltip
+     under a link narrower than it was the link's width, the rest of its
+     line out of its background. No test in the suite has one.
 
 ## What `<Html>` supports
 

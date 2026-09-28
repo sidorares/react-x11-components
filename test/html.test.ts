@@ -3854,6 +3854,25 @@ metric(
   },
 );
 
+metric(
+  'a shrink-to-fit box that does not wrap is as wide as its line',
+  async () => {
+    // min(max(min-content, room), max-content) (CSS 2.1 10.3.5), and a line
+    // that does not wrap is its own min-content: a `nowrap` tooltip in a
+    // link narrower than it was cut to the link's width, its words taken
+    // for places it could break
+    const { node } = await render(
+      '<div style="width:40px"><div id="f" style="float:left;' +
+        'white-space:nowrap">one two three</div></div>',
+    );
+    const el = view(node);
+    const [line] = linesOf(el, 'f');
+    const f = boxOf(el, 'f');
+    assert.ok(f.width > 40, `past its room: ${f.width}`);
+    assert.ok(Math.abs(f.width - line.width) < 1, 'as wide as its line');
+  },
+);
+
 metric('a relative box after an absolute one is painted over it', async () => {
   // both are positioned, and CSS paints positioned boxes in document order
   // after the flow (CSS 2.1 Appendix E); the relative one was painted with
