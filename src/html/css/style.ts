@@ -21,6 +21,7 @@ import {
   keywordFontSize,
   parseAlpha,
   parseColor,
+  isPct,
   parseLength,
   parseNumber,
   parseWeight,
@@ -1586,6 +1587,10 @@ export function applyDeclaration(
       if (typeof len === 'number') {
         if (name === 'letter-spacing') style.letterSpacing = len;
         else style.wordSpacing = len;
+      } else if (name === 'letter-spacing' && len && isPct(len)) {
+        // a percentage of the font size, as `em` is (CSS Text 4): `200%`
+        // was dropped, where it is twice the letter's size apart
+        style.letterSpacing = resolve(len, ctx.em);
       }
       return;
     }
