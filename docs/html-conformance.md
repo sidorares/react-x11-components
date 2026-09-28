@@ -155,6 +155,7 @@ npx tsx scripts/conformance/run.ts wpt fuzz1 --chunk 50 --timeout 60000
 | 69     | nested grids, floats no higher than the last       | 5,482 (93%) | 4,993 (84%) |
 | 70     | floats side by side in a content width             | 5,485 (93%) | 4,995 (84%) |
 | 71     | tables in tables, boxes clipped to nothing         | 5,485 (93%) | 4,995 (84%) |
+| 72     | the list-item counter, CSS Lists 3 scopes          | 5,484 (93%) | 4,992 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -2113,6 +2114,38 @@ two agreed.
 
      After them no page of the five fuzzed corpora crashes or hangs, and
      this suite does not move.
+
+### Round 72
+
+167. **A list counted with a counter of its own.** An `<ol>`'s items were
+     numbered by a stack in the box builder, beside the CSS counters
+     `counter()` reads, so `counter(list-item)` came to 0, `<ol reversed>`
+     counted up, and neither `counter-set` nor `reversed()` was read at
+     all. Lists count with CSS Lists 3's `list-item` counter now: `ol`,
+     `ul` and `menu` reset it, a list item adds one to it, or takes one
+     from it where it counts down, and HTML's `start`, `value`, `reversed`
+     and `type` are hints for it. A reversed counter written with no number
+     starts at what its scope counts (4.4.2), so `<ol reversed>` counts
+     down to 1, and to an item's `value` before it. A marker is its type
+     written out — Greek, Armenian and Georgian among them — or a string
+     (`list-style-type: "→ "`), set against the content with no gap, or
+     its `::marker`'s `content`, counters and all; and an outside marker
+     in a right-to-left item stands at its right and reads right to left,
+     its full stop before the number.
+168. **A counter reset in an element whose parent had one reached the
+     element's later siblings.** That was CSS 2.1's rule, which CSS Lists 3
+     narrows: such a reset nests a counter for the element's own
+     descendants, and the parent's goes on after it — a reset in a
+     `::before`, or in an element among others that count.
+
+     `css-lists`: 27 of its 143 tests passed on X11, 117 do now. The one
+     lost, `marker-text-matches-disc`, passed with a disc for a counter
+     style this does not know (`@counter-style` extending `disc`), which is
+     decimal. This suite wins `counter-reset-increment-002` on both
+     backends and loses four written to CSS 2.1's rule, which Chrome fails
+     as this does now: `content-counter-006`, `-007` and `-008` and
+     `counters-010`, whose nested resets reach their later siblings (two of
+     them on X11, where the other two fail for their fonts).
 
 ## What `<Html>` supports
 

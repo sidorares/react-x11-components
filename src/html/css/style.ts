@@ -34,6 +34,7 @@ import {
   DEFAULT_QUOTES,
   parseContent,
   parseCounterList,
+  parseListStyleType,
   parseQuotes,
 } from './content.js';
 import type { ContentItem, CounterChange } from './content.js';
@@ -444,6 +445,7 @@ export interface ComputedStyle {
   content: ContentItem[] | 'normal' | 'none';
   counterReset: CounterChange[] | null;
   counterIncrement: CounterChange[] | null;
+  counterSet: CounterChange[] | null;
 }
 
 /** The properties that inherit. Named once, so `inherit()` and the `inherit`
@@ -692,6 +694,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     content: 'normal',
     counterReset: null,
     counterIncrement: null,
+    counterSet: null,
   });
 }
 
@@ -1396,13 +1399,16 @@ export function applyDeclaration(
       return;
     }
     case 'counter-reset':
-    case 'counter-increment': {
+    case 'counter-increment':
+    case 'counter-set': {
       const reset = name === 'counter-reset';
-      const parsed = parseCounterList(value, reset ? 0 : 1);
+      const increment = name === 'counter-increment';
+      const parsed = parseCounterList(value, increment ? 1 : 0, reset);
       if (parsed === null) return;
       const list = parsed === 'none' ? null : parsed;
       if (reset) style.counterReset = list;
-      else style.counterIncrement = list;
+      else if (increment) style.counterIncrement = list;
+      else style.counterSet = list;
       return;
     }
     case 'quotes': {
@@ -1740,7 +1746,8 @@ export function applyDeclaration(
           image = v.startsWith('url(') ? (parseUrl(part) ?? null) : null;
         } else {
           if (type !== null) return;
-          type = v;
+          type = parseListStyleType(part);
+          if (type === null) return;
         }
       }
       if (nones > 2) return;
@@ -1772,7 +1779,8 @@ export function applyDeclaration(
       return;
     }
     case 'list-style-type': {
-      style.listStyleType = value.toLowerCase();
+      const type = parseListStyleType(value);
+      if (type !== null) style.listStyleType = type;
       return;
     }
     case 'list-style-position': {
@@ -3405,6 +3413,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   content: ['content'],
   'counter-reset': ['counterReset'],
   'counter-increment': ['counterIncrement'],
+  'counter-set': ['counterSet'],
   'border-spacing': ['borderSpacing', 'borderSpacingY'],
   display: ['display', 'flowRoot'],
   width: ['width', 'widthKeyword'],

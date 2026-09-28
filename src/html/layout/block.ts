@@ -1229,8 +1229,12 @@ function layoutMarker(box: Box, marker: Marker, ctx: LayoutContext): void {
     marker.y = first
       ? first.y + first.baseline - marker.image.height
       : box.contentY;
+    const gap = Math.round(style.fontSize * 0.4);
+    // at the start of the line, which is its right in a right-to-left item
     marker.x =
-      box.contentX - Math.round(style.fontSize * 0.4) - marker.image.width;
+      style.direction === 'rtl'
+        ? box.contentX + box.contentWidth + gap
+        : box.contentX - gap - marker.image.width;
     return;
   }
   // in its own style where a `::marker` rule gives it one — the colour and
@@ -1252,11 +1256,19 @@ function layoutMarker(box: Box, marker: Marker, ctx: LayoutContext): void {
   };
   // set in a line of the item's own height, so that where the item has no
   // line of its own the marker stands where its first would have been
+  // in the item's direction, which puts a number's full stop on its left
+  // in a right-to-left list, as the bidi algorithm has it
   const layout = fonts.layout([{ text: marker.text, ...face }], face, {
     lineHeight: lineHeightMultiplier(fonts, style),
+    direction: style.direction,
   });
   marker.layout = layout;
-  const gap = Math.round(style.fontSize * 0.4);
+  // a space between it and the content, which the text of one of its own
+  // brings where it ends in one — measured as a line does, without it
+  const gap =
+    marker.flush && !/\s$/.test(marker.text)
+      ? 0
+      : Math.round(style.fontSize * 0.4);
   // The marker sits on the first line of the item's *content*, which is not
   // always the item's own: an `<li>` holding a paragraph, or one holding text
   // and a nested list, has its inline content in an anonymous block. Looking
@@ -1271,7 +1283,9 @@ function layoutMarker(box: Box, marker: Marker, ctx: LayoutContext): void {
   marker.x =
     style.listStylePosition === 'inside'
       ? box.contentX
-      : box.contentX - gap - layout.width;
+      : style.direction === 'rtl'
+        ? box.contentX + box.contentWidth + gap
+        : box.contentX - gap - layout.width;
 }
 
 /**

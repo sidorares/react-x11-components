@@ -78,6 +78,8 @@ h6 { font-size: 0.67em; font-weight: bold; margin: 2.33em 0; }
 ul, ol { margin: 1em 0; padding-left: 2.5em; }
 ul { list-style-type: disc; }
 ol { list-style-type: decimal; }
+ol, ul, menu, dir { counter-reset: list-item; }
+ol[reversed] { counter-reset: reversed(list-item); }
 li { display: list-item; }
 ul ul, ol ul { list-style-type: circle; }
 ul ul ul, ol ol ul, ul ol ul, ol ul ul { list-style-type: square; }
@@ -180,7 +182,7 @@ legend { display: block; padding: 0 2px; }
 label { cursor: pointer; }
 
 details { margin: 0.5em 0; }
-summary { display: list-item; list-style: disclosure-closed inside; cursor: pointer; }
+summary { display: list-item; counter-increment: list-item 0; list-style: disclosure-closed inside; cursor: pointer; }
 details[open] > summary:first-of-type { list-style-type: disclosure-open; }
 
 /* 'hidden' is an attribute, not a style, and a document that uses it expects

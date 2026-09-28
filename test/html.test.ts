@@ -1147,6 +1147,92 @@ test('counters nest, and a reset reaches the siblings after it', async () => {
   );
 });
 
+/** The markers a document's list items draw, in document order. */
+async function markersOf(source: string): Promise<string[]> {
+  const { node } = await render(source, 300);
+  type B = { marker: { text: string } | null; children: B[] };
+  const root = (view(node) as unknown as { _tree: { root: B } })._tree.root;
+  const out: string[] = [];
+  const walk = (b: B): void => {
+    if (b.marker) out.push(b.marker.text);
+    b.children.forEach(walk);
+  };
+  walk(root);
+  cleanup();
+  return out;
+}
+
+test('a list counts with the list-item counter, down where it is reversed', async () => {
+  // `<ol reversed>` counts its items down to 1, and to an item's `value`
+  // before it: its counter is `reversed(list-item)`, which starts at as
+  // many as its scope counts (CSS Lists 3, 4.4.2)
+  assert.deepStrictEqual(await markersOf('<ol reversed><li>a<li>b<li>c</ol>'), [
+    '3.',
+    '2.',
+    '1.',
+  ]);
+  assert.deepStrictEqual(
+    await markersOf('<ol reversed><li>a<li value=6>b<li>c</ol>'),
+    ['7.', '6.', '5.'],
+  );
+  assert.deepStrictEqual(
+    await markersOf('<ol reversed start=10><li>a<li>b</ol>'),
+    ['10.', '9.'],
+  );
+  // a list in an item is a counter of its own, and the outer goes on
+  assert.deepStrictEqual(
+    await markersOf('<ol reversed><li>a<ol reversed><li>x<li>y</ol><li>b</ol>'),
+    ['2.', '2.', '1.', '1.'],
+  );
+  // `start`, `value` and `type`, and an item that counts by what it says
+  assert.deepStrictEqual(
+    await markersOf(
+      '<ol start=5><li>a<li value=10>b<li>c' +
+        '<li style="counter-increment:list-item 5">d</ol>' +
+        '<ol type=a><li>a<li type=I>b</ol><ul type=square><li>x</ul>',
+    ),
+    ['5.', '10.', '11.', '16.', 'a.', 'II.', '▪'],
+  );
+});
+
+test('a marker is its type written out, a string, or its ::marker content', async () => {
+  assert.deepStrictEqual(
+    await markersOf(
+      '<ol style="list-style-type:lower-greek"><li>a<li>b</ol>' +
+        '<ul style="list-style-type:\'→ \'"><li>x</ul>' +
+        '<style>.m li::marker { content: "(" counter(list-item) ")" }</style>' +
+        '<ol class=m><li>a<li>b</ol>',
+    ),
+    ['α.', 'β.', '→ ', '(1)', '(2)'],
+  );
+});
+
+test('a reset in an element whose parent has the counter reaches its own', async () => {
+  // and not its later siblings: the parent's counter goes on after it (CSS
+  // Lists 3, 4.5), where CSS 2.1 had the nested reset reach them too
+  assert.strictEqual(
+    await documentText(
+      '<style>.reset{counter-reset:c} .use{counter-increment:c}' +
+        '.use:before{content:counters(c,".") " "}' +
+        '.rb:before{counter-reset:c;content:"R "}</style>' +
+        '<div><span class=reset></span><span class=use></span>' +
+        '<span class=reset></span><span class=use></span>' +
+        '<span class=rb><span class=use></span><span class=reset></span>' +
+        '<span class=use></span></span></div>',
+    ),
+    '1 1 R 2 3',
+  );
+  // counter-set changes the counter in scope, after the element counts
+  assert.strictEqual(
+    await documentText(
+      '<style>body{counter-reset:n} p{counter-increment:n}' +
+        'p:before{content:counter(n) " "} .jump{counter-set:n 10}</style>' +
+        '<p>a</p><p class=jump>b</p><p>c</p>',
+    ),
+    '1 a10 b11 c',
+  );
+});
+
 test('quotes open and close by depth, and none writes nothing', async () => {
   assert.strictEqual(
     await documentText(

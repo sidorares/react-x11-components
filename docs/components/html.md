@@ -143,7 +143,12 @@ takes its room there; a `list-style-image` is the marker where it loads —
 asked for through `onResource`, its bottom on the first line's baseline —
 and the `list-style-type`'s is until then (one taller than its line hangs
 over the line above, where a browser makes the line taller); a `::marker` rule sets its colour and its font, and a
-`content` of strings sets it as those. A `<details>` shows its first `<summary>` and nothing
+`content` sets it as that, counters and all. A list item counts with the
+`list-item` counter, which `<ol>`, `<ul>` and `<menu>` reset, and which
+`start`, `value`, `reversed` and `type` set as HTML has them: an
+`<ol reversed>` counts down to 1. A string `list-style-type` is the marker
+as it is written, and an outside marker of a right-to-left item stands at
+its right, reading right to left. A `<details>` shows its first `<summary>` and nothing
 more until it is `open`, the summary with the ▸ or ▾ HTML gives it — a
 system font's, where the document's has none.
 A flex container is laid out by Yoga, the engine react-x11 lays itself out
@@ -433,9 +438,9 @@ every CSS 2.1 list style, and `open-quote`/`close-quote` over `quotes`. An
 image is asked for through `onResource`, as a background image is, and is
 an inline image in the pseudo-element's line, of its own size once it
 arrives and of none before.
-`counter-reset` and `counter-increment` are scoped as CSS 2.1 12.4.1 scopes
-them, so numbered headings and nested outline numbers come out as they do in
-a browser. The generated text is part of the document's text, so a selection
+`counter-reset`, `counter-increment` and `counter-set` are scoped as CSS
+Lists 3 scopes them, `reversed()` included, so numbered headings and nested
+outline numbers come out as they do in a browser. The generated text is part of the document's text, so a selection
 over it copies it.
 
 **First letters:** `::first-letter` (and `:first-letter`) styles the first

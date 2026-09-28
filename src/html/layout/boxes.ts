@@ -70,6 +70,10 @@ export interface Marker {
   /** The image it is, `list-style-image`'s, at its size in device pixels,
    *  where that has arrived; its text is then not drawn. */
   image?: { url: string; width: number; height: number };
+  /** Its text is its own — a string `list-style-type`, a `::marker`'s
+   *  `content` — and ends at the content's edge, with no gap a number
+   *  or a bullet is set apart by. */
+  flush?: true;
 }
 
 /** An out-of-flow box's static position, as an offset from the box whose
@@ -624,8 +628,6 @@ class Builder {
   private _nestedOutOfLine = false;
   private _movedInline = false;
   private _clipText = false;
-  /** Counter stack for `<ol>` numbering, one entry per open list. */
-  private _counters: number[] = [];
   /** The CSS counters in scope, for `counter()` in generated content. */
   private _scopes = new CounterScopes();
   /** How many quotes generated content has opened and not closed. */
@@ -649,9 +651,13 @@ class Builder {
     const rootStyle = cascade.rootStyle(hasBody(root), hasHtml(root));
     const rootBox = new Box('block', null, rootStyle);
     // a fragment's root stands in for a `<body>`, counters and all
-    if (rootStyle.counterReset || rootStyle.counterIncrement) {
-      this._counterChanges(rootStyle);
-    }
+    this._scopes.open();
+    this._counterChanges(rootStyle, {
+      node: root,
+      style: rootStyle,
+      key: ROOT_SHARE_KEY,
+      parent: null,
+    });
     // The DOM's `<html>`/`<body>` are ordinary elements with ordinary styles;
     // the box above them exists only to be the initial containing block, so
     // it carries no margins of its own and cannot collapse with anything.
@@ -733,6 +739,28 @@ class Builder {
     );
     if (style.display === 'none') return;
     if (onlyColumns && style.display !== 'table-column') return;
+    // what an element counts is in scope for it and what it holds, and for
+    // what follows it where its parent has no such counter
+    // (`CounterScopes`)
+    this._scopes.open();
+    this._elementIn(el, tag, style, key, into, inFlex, {
+      node: el,
+      style,
+      key,
+      parent: { style: parentStyle, key: parentKey, inFlex },
+    });
+    this._scopes.close();
+  }
+
+  private _elementIn(
+    el: Element,
+    tag: string,
+    style: ComputedStyle,
+    key: number,
+    into: Box,
+    inFlex: boolean,
+    place: CounterPlace,
+  ): void {
     if (style.display === 'contents') {
       // no box of its own (CSS Display 3, 2.5): its `::before`, its
       // children and its `::after` are its parent's, in its style — the
@@ -740,14 +768,10 @@ class Builder {
       // takes out — and a replaced element, which has nothing to hand on,
       // is not rendered
       if (tag === 'br' || replacedKind(el, tag) !== 'none') return;
-      if (style.counterReset || style.counterIncrement) {
-        this._counterChanges(style);
-      }
-      this._scopes.open();
+      this._counterChanges(style, place);
       this._pseudo(el, 'before', style, into);
       this._children(el, into, style, inFlex, el, key);
       this._pseudo(el, 'after', style, into);
-      this._scopes.close();
       return;
     }
     if (isRelative(style)) {
@@ -765,9 +789,7 @@ class Builder {
     if (isNegative(style)) this._negative = true;
     // before anything else of the element's, including its `::before`,
     // and for the element whatever box it makes (CSS 2.1 12.4)
-    if (style.counterReset || style.counterIncrement) {
-      this._counterChanges(style);
-    }
+    this._counterChanges(style, place);
 
     // `<br>` is a line break rather than a box, and it is the one element
     // whose *absence* of a box still has to reach the inline layout.
@@ -849,20 +871,19 @@ class Builder {
       if (size) markerImage = { url, size };
     }
     if (style.display === 'list-item') {
-      // the item's number, which counts whatever it is set as
-      let text = markerFor(el, style, this._counters);
+      // the item's number, the `list-item` counter it has just counted
+      let text = markerFor(style, this._scopes.value('list-item'));
       markerStyle = this._options.cascade.markerStyle(el, style);
-      // a `::marker` with a `content` of strings is set as those, as they
-      // are written, and one of `none` is no marker
+      // a `::marker` with a `content` is set as that, as it is written —
+      // its strings and its counters, where one of `none` is no marker
       const content = markerStyle?.content;
       if (content === 'none') text = '';
-      else if (
-        Array.isArray(content) &&
-        content.every((c) => c.kind === 'string')
-      ) {
-        text = content.map((c) => (c.kind === 'string' ? c.text : '')).join('');
+      else if (Array.isArray(content) && markerStyle) {
+        text = this._generated(content, markerStyle, el)
+          .filter((piece) => typeof piece === 'string')
+          .join('');
         ownMarker = true;
-      }
+      } else if (style.listStyleType.startsWith('"')) ownMarker = true;
       if (markerImage && !ownMarker) {
         if (style.listStylePosition === 'inside') insideImage = markerImage.url;
         else {
@@ -884,14 +905,9 @@ class Builder {
         insideMarker = text;
       } else if (text) {
         box.marker = { text, layout: null, x: 0, y: 0, style: markerStyle };
+        if (ownMarker) box.marker.flush = true;
       }
     }
-    const opensCounter = tag === 'ol' || tag === 'ul';
-    if (opensCounter) {
-      const start = Number(attr(el, 'start') ?? '1');
-      this._counters.push(Number.isFinite(start) ? start : 1);
-    }
-
     const childInFlex =
       style.display === 'flex' || style.display === 'inline-flex';
     const flow = flowOf(style, box);
@@ -915,9 +931,6 @@ class Builder {
     const ownLetter = ownRules ? { rules: ownRules, punctuation: [] } : null;
     if (ownLetter) this._firstLetter = ownLetter;
     this._depth += 1;
-    // a counter reset in here reaches the element's later children and not
-    // past its end; `::before` and `::after` are children like any other
-    this._scopes.open();
     if (insideImage) {
       // an inline image at the start of the first line, as a generated
       // image is, and the space a marker's text ends in
@@ -934,13 +947,10 @@ class Builder {
     this._pseudo(el, 'before', style, box);
     this._children(el, box, style, childInFlex, el, key);
     this._pseudo(el, 'after', style, box);
-    this._scopes.close();
     this._depth -= 1;
     this._letterAfter(flow, skipped, outerLetter, ownLetter);
     if (flow !== 'inline') this._endLine();
     this._ws = after(flow, this._ws, around);
-
-    if (opensCounter) this._counters.pop();
   }
 
   private _replaced(
@@ -1062,9 +1072,10 @@ class Builder {
     ) {
       return;
     }
-    if (style.counterReset || style.counterIncrement) {
-      this._counterChanges(style);
-    }
+    // a scope of its own, which what it counts is in where its element has
+    // the counter already (`CounterScopes`)
+    this._scopes.open();
+    this._counterChanges(style, null);
     const box = new Box(boxKindFor(style.display), null, style);
     box.pseudo = which;
     into.append(box);
@@ -1074,6 +1085,7 @@ class Builder {
     if (into.kind === 'inline' && (box.outOfFlow || box.isFloat))
       this._nestedOutOfLine = true;
     const pieces = this._generated(style.content as ContentItem[], style, el);
+    this._scopes.close();
     const flow = flowOf(style, box);
     const around = this._ws;
     if (flow === 'block') this._endLine();
@@ -1115,14 +1127,169 @@ class Builder {
     this._textNode(text, box, style, el);
   }
 
-  /** `counter-reset`, then `counter-increment`, as CSS 2.1 orders them. */
-  private _counterChanges(style: ComputedStyle): void {
-    for (const { name, value } of style.counterReset ?? []) {
-      this._scopes.reset(name, value);
+  /**
+   * `counter-reset`, then `counter-increment`, then `counter-set`, as CSS
+   * Lists 3 orders them (4.2). A list item counts `list-item` besides,
+   * unless its `counter-increment` names it: one up, or one down in a list
+   * that counts down. `place` is where an element is, for a reversed
+   * counter to be counted from; a pseudo-element has none.
+   */
+  private _counterChanges(
+    style: ComputedStyle,
+    place: CounterPlace | null,
+  ): void {
+    const resets = style.counterReset;
+    const increments = style.counterIncrement;
+    const sets = style.counterSet;
+    const listItem = style.display === 'list-item';
+    if (!resets && !increments && !sets && !listItem) return;
+    if (resets) {
+      for (let i = 0; i < resets.length; i += 1) {
+        const change = resets[i];
+        // a name reset twice is reset by the last
+        if (resets.some((c, j) => j > i && c.name === change.name)) continue;
+        const value = change.counted
+          ? this._countedStart(change.name, style, place)
+          : change.value;
+        this._scopes.reset(change.name, value, !!change.reversed);
+      }
     }
-    for (const { name, value } of style.counterIncrement ?? []) {
+    let counted = false;
+    for (const { name, value } of increments ?? []) {
       this._scopes.increment(name, value);
+      if (name === 'list-item') counted = true;
     }
+    if (listItem && !counted) {
+      this._scopes.increment(
+        'list-item',
+        this._scopes.reversed('list-item') ? -1 : 1,
+      );
+    }
+    for (const { name, value } of sets ?? []) this._scopes.set(name, value);
+  }
+
+  /**
+   * Where a reversed counter written with no number starts (CSS Lists 3,
+   * 4.4.2): minus what the elements and pseudo-elements in its scope add to
+   * it, as far as the first that sets it, and what that sets it to, and as
+   * much again as the last of them that counted took away — 1 for a list
+   * item. `<ol reversed>`'s items count down to 1, and to an item's
+   * `value` before it. The scope is walked ahead of the builder, from the styles it will
+   * find shared when it gets there (`Cascade.sharedStyleFor`), and only for
+   * such a counter.
+   */
+  private _countedStart(
+    name: string,
+    style: ComputedStyle,
+    place: CounterPlace | null,
+  ): number {
+    const cascade = this._options.cascade;
+    /** What each element and pseudo-element in the scope does to the
+     *  counter, in document order: what it adds, and what it sets it to. */
+    const steps: { by: number; set: number | null }[] = [];
+    const note = (st: ComputedStyle): void => {
+      let by = 0;
+      let increments = false;
+      for (const change of st.counterIncrement ?? []) {
+        if (change.name !== name) continue;
+        by += change.value;
+        increments = true;
+      }
+      if (!increments && name === 'list-item' && st.display === 'list-item') {
+        by = -1;
+        increments = true;
+      }
+      let set: number | null = null;
+      for (const change of st.counterSet ?? []) {
+        if (change.name === name) set = change.value;
+      }
+      if (increments || set !== null) steps.push({ by, set });
+    };
+    const resets = (st: ComputedStyle): boolean =>
+      st.counterReset?.some((change) => change.name === name) ?? false;
+    const pseudo = (
+      el: Element,
+      which: 'before' | 'after',
+      st: ComputedStyle,
+    ): void => {
+      const own = cascade.pseudoStyleFor(el, which, st);
+      if (own && own.display !== 'none' && !resets(own)) note(own);
+    };
+    /** The elements from `from` on of a parent, and what is in them: a
+     *  reset of the counter in one is a counter of its own, and a later
+     *  sibling's reset at the scope's own level ends it (`stopAtReset`). */
+    const walk = (
+      children: ReturnType<typeof childrenOf>,
+      from: number,
+      parentStyle: ComputedStyle,
+      parentKey: number,
+      inFlex: boolean,
+      stopAtReset: boolean,
+    ): void => {
+      for (let i = from; i < children.length; i += 1) {
+        const child = children[i];
+        if (!isElement(child)) continue;
+        const tag = tagOf(child);
+        if (NON_RENDERED.has(tag) || inImpliedHead(child, tag)) continue;
+        const shared = cascade.sharedStyleFor(
+          child,
+          parentStyle,
+          parentKey,
+          inFlex,
+        );
+        const st = shared.style;
+        if (st.display === 'none') continue;
+        if (resets(st)) {
+          if (stopAtReset) return;
+          continue;
+        }
+        note(st);
+        inside(child, st, shared.key);
+      }
+    };
+    const inside = (el: Element, st: ComputedStyle, key: number): void => {
+      pseudo(el, 'before', st);
+      walk(
+        childrenOf(el),
+        0,
+        st,
+        key,
+        st.display === 'flex' || st.display === 'inline-flex',
+        false,
+      );
+      pseudo(el, 'after', st);
+    };
+
+    // the element that resets it counts in it too, after the reset
+    note(style);
+    if (place) {
+      const siblings = this._scopes.reachesSiblings(name);
+      inside(place.node, place.style, place.key);
+      const parent = place.parent;
+      const node = place.node as Element & { parent?: Element | null };
+      if (siblings && parent && node.parent) {
+        const children = childrenOf(node.parent);
+        walk(
+          children,
+          children.indexOf(place.node) + 1,
+          parent.style,
+          parent.key,
+          parent.inFlex,
+          true,
+        );
+      }
+    }
+    let num = 0;
+    let last = 0;
+    for (const { by, set } of steps) {
+      if (by !== 0) last = -by;
+      if (set !== null) {
+        num += set;
+        break;
+      }
+      num -= by;
+    }
+    return num + last;
   }
 
   /** What `content` comes to here, in document order: its text, broken
@@ -1382,18 +1549,24 @@ class Builder {
 }
 
 /**
- * The CSS counters in scope as the builder walks the document (CSS 2.1
- * 12.4.1). A `counter-reset` makes an instance that reaches the element's
- * descendants and its later siblings, so the instance belongs to the level
- * the element is on — its parent's children — and goes when that level
- * closes; a later reset on the same level takes its place. `counter()` reads
- * the innermost instance and `counters()` all of them, outermost first. A
- * counter used where none is in scope is reset to 0 there, as though the
- * element had asked.
+ * The CSS counters in scope as the builder walks the document (CSS Lists 3,
+ * 4.5). Every element and pseudo-element opens a level, which closes after
+ * what it holds. A `counter-reset` makes an instance that reaches the
+ * element's descendants and — where its parent has no counter of the name
+ * — its later siblings too, so that instance belongs to the level the
+ * element is on, its parent's, and goes when that closes; a later sibling's
+ * reset takes its place. Where its parent has one, the new instance nests
+ * in it and reaches the element's descendants alone, on the element's own
+ * level: a list in a list item, a counter reset in a `::before`. `counter()`
+ * reads the innermost instance and `counters()` all of them, outermost
+ * first. A counter used where none is in scope is reset to 0 there, as
+ * though the element had asked.
  */
 class CounterScopes {
-  /** Per name, its instances, outermost first, with the level each is on. */
-  private _instances = new Map<string, { level: number; value: number }[]>();
+  /** Per name, its instances, outermost first: the level each goes with,
+   *  whether it is the own one of the element that level is, and whether it
+   *  counts down. */
+  private _instances = new Map<string, CounterInstance[]>();
   /** The names each open level made an instance of, so closing it drops
    *  exactly those. */
   private _made: string[][] = [[]];
@@ -1410,42 +1583,102 @@ class CounterScopes {
     }
   }
 
-  reset(name: string, value: number): void {
-    const level = this._made.length - 1;
+  /** Whether the parent of the element whose level is open has a counter
+   *  of this name: its own, or one from further out — not one a sibling
+   *  before the element made. */
+  private _parentHas(name: string): boolean {
+    const stack = this._instances.get(name);
+    if (!stack?.length) return false;
+    const parent = this._made.length - 2;
+    for (let i = stack.length - 1; i >= 0; i -= 1) {
+      const instance = stack[i];
+      if (instance.level < parent) return true;
+      if (instance.level === parent && instance.own) return true;
+    }
+    return false;
+  }
+
+  /** Whether a reset of `name` here reaches the element's later siblings,
+   *  or its descendants alone. */
+  reachesSiblings(name: string): boolean {
+    return this._made.length < 2 || !this._parentHas(name);
+  }
+
+  reset(name: string, value: number, reversed: boolean): void {
+    const own = !this.reachesSiblings(name);
+    const level = own ? this._made.length - 1 : this._made.length - 2;
     let stack = this._instances.get(name);
     if (!stack) {
       stack = [];
       this._instances.set(name, stack);
     }
     const top = stack[stack.length - 1];
-    if (top?.level === level) {
+    if (top?.level === level && top.own === own) {
       top.value = value;
+      top.reversed = reversed;
       return;
     }
-    stack.push({ level, value });
+    stack.push({ level, own, value, reversed });
     this._made[level].push(name);
   }
 
+  /** The innermost instance, made here at 0 where there is none. */
+  private _innermost(name: string): CounterInstance {
+    let stack = this._instances.get(name);
+    if (!stack?.length) {
+      this.reset(name, 0, false);
+      stack = this._instances.get(name)!;
+    }
+    return stack[stack.length - 1];
+  }
+
   increment(name: string, by: number): void {
-    const stack = this._instances.get(name);
-    if (!stack?.length) this.reset(name, 0);
-    const innermost = this._instances.get(name)!;
-    innermost[innermost.length - 1].value += by;
+    const instance = this._innermost(name);
+    instance.value = clampCounter(instance.value + by);
+  }
+
+  set(name: string, value: number): void {
+    this._innermost(name).value = value;
+  }
+
+  /** Whether the innermost instance counts down: a list item takes one
+   *  from it rather than adding one. */
+  reversed(name: string): boolean {
+    return this._innermost(name).reversed;
   }
 
   value(name: string): number {
-    const stack = this._instances.get(name);
-    if (stack?.length) return stack[stack.length - 1].value;
-    this.reset(name, 0);
-    return 0;
+    return this._innermost(name).value;
   }
 
   values(name: string): number[] {
-    const stack = this._instances.get(name);
-    if (stack?.length) return stack.map((instance) => instance.value);
-    this.reset(name, 0);
-    return [0];
+    this._innermost(name);
+    return this._instances.get(name)!.map((instance) => instance.value);
   }
+}
+
+interface CounterInstance {
+  level: number;
+  own: boolean;
+  value: number;
+  reversed: boolean;
+}
+
+/** A counter is a 32-bit integer in a browser, and saturates there. */
+function clampCounter(value: number): number {
+  return Math.max(-2147483648, Math.min(2147483647, value));
+}
+
+/** Where the element whose counters change is: what the walk that counts
+ *  a reversed counter's scope starts from (`BoxBuilder._countedStart`). */
+interface CounterPlace {
+  node: Element;
+  style: ComputedStyle;
+  key: number;
+  /** The element's parent's style and share key, and whether it is a flex
+   *  container: what its later siblings' styles are computed from. Null
+   *  for the root. */
+  parent: { style: ComputedStyle; key: number; inFlex: boolean } | null;
 }
 
 /** Whether the parsed document has a `<body>`. htmlparser2 does not
@@ -1683,93 +1916,30 @@ function replacedKind(el: Element, tag: string): ReplacedKind {
   }
 }
 
-const ROMAN: [number, string][] = [
-  [1000, 'm'],
-  [900, 'cm'],
-  [500, 'd'],
-  [400, 'cd'],
-  [100, 'c'],
-  [90, 'xc'],
-  [50, 'l'],
-  [40, 'xl'],
-  [10, 'x'],
-  [9, 'ix'],
-  [5, 'v'],
-  [4, 'iv'],
-  [1, 'i'],
-];
-
 /**
- * The marker a `list-item` draws. The counter is the *builder's*, not the
- * element's, because `value` on an `<li>` restarts it and a nested list has
- * its own — both of which are lost if the number is derived from the index
- * of the child in its parent.
+ * The marker a `list-item` draws: its `list-item` counter written in its
+ * `list-style-type`, with the full stop a number takes, or the symbol a
+ * bullet is, or the string the type is. The counter is the builder's
+ * (`CounterScopes`), which is what lets `value` on an `<li>`, `start` and
+ * `reversed` on an `<ol>`, a list in a list and an author's own
+ * `counter-reset` and `counter-set` all count as a browser counts them.
  */
-function markerFor(
-  el: Element,
-  style: ComputedStyle,
-  counters: number[],
-): string {
+function markerFor(style: ComputedStyle, n: number): string {
   const type = style.listStyleType;
   if (type === 'none') return '';
-  const depth = counters.length;
-  if (depth) {
-    const value = numberAttr(el, 'value');
-    if (value !== null) counters[depth - 1] = value;
-  }
-  const n = depth ? counters[depth - 1]++ : 1;
-  switch (type) {
-    case 'decimal':
-      return `${n}.`;
-    case 'decimal-leading-zero':
-      return `${n < 10 ? '0' : ''}${n}.`;
-    case 'lower-alpha':
-    case 'lower-latin':
-      return `${alpha(n).toLowerCase()}.`;
-    case 'upper-alpha':
-    case 'upper-latin':
-      return `${alpha(n)}.`;
-    case 'lower-roman':
-      return `${roman(n)}.`;
-    case 'upper-roman':
-      return `${roman(n).toUpperCase()}.`;
-    case 'circle':
-      return '◦';
-    case 'square':
-      return '▪';
-    // a `<summary>`'s: closed, and open
-    case 'disclosure-closed':
-      return '▸';
-    case 'disclosure-open':
-      return '▾';
-    case 'disc':
-    default:
-      return '•';
-  }
+  if (type.startsWith('"')) return type.slice(1);
+  const text = counterText(n, type);
+  return SYMBOLS.has(type) ? text : `${text}.`;
 }
 
-function alpha(n: number): string {
-  let out = '';
-  let v = Math.max(1, n);
-  while (v > 0) {
-    const rem = (v - 1) % 26;
-    out = String.fromCharCode(65 + rem) + out;
-    v = Math.floor((v - 1) / 26);
-  }
-  return out;
-}
-
-function roman(n: number): string {
-  let v = Math.max(1, Math.min(3999, n));
-  let out = '';
-  for (const [value, sym] of ROMAN) {
-    while (v >= value) {
-      out += sym;
-      v -= value;
-    }
-  }
-  return out;
-}
+/** The types a marker is a symbol of rather than a number. */
+const SYMBOLS = new Set([
+  'disc',
+  'circle',
+  'square',
+  'disclosure-open',
+  'disclosure-closed',
+]);
 
 /**
  * Give every box the document range its subtree covers. Runs after `fixUp`,

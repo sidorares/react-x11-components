@@ -1,6 +1,6 @@
 // Generated content (CSS 2.1 12): what `content`, `counter-reset`,
-// `counter-increment` and `quotes` compute to, and the styles a counter is
-// written in. Resolving them against a document — which counter is in scope
+// `counter-increment`, `counter-set` and `quotes` compute to, and the styles
+// a counter is written in. Resolving them against a document — which counter is in scope
 // where, how deep the quotes are — is the box builder's, because it is a walk
 // in document order and the builder is that walk.
 
@@ -17,10 +17,17 @@ export type ContentItem =
       kind: 'open-quote' | 'close-quote' | 'no-open-quote' | 'no-close-quote';
     };
 
-/** One name in a `counter-reset` or `counter-increment`, with its number. */
+/** One name in a `counter-reset`, `counter-increment` or `counter-set`,
+ *  with its number. */
 export interface CounterChange {
   name: string;
   value: number;
+  /** A reset's `reversed(name)`: a counter that counts down (CSS Lists 3,
+   *  4.4.2), which the list items in it take one from each. */
+  reversed?: true;
+  /** A reversed counter written with no number, which starts at as many
+   *  as its scope counts: its `value` is the box builder's to work out. */
+  counted?: true;
 }
 
 /** English's quotation marks, outer pair first: `quotes`' initial value,
@@ -124,13 +131,15 @@ function contentFunction(
 }
 
 /**
- * `counter-reset` and `counter-increment`: `none`, or names each followed by
- * an optional integer — `fallback` where there is none, 0 for a reset and 1
- * for an increment. Null when the value cannot be read.
+ * `counter-reset`, `counter-increment` and `counter-set`: `none`, or names
+ * each followed by an optional integer — `fallback` where there is none, 0
+ * for a reset and a set and 1 for an increment. A reset's name may be
+ * `reversed(name)` (`reversible`). Null when the value cannot be read.
  */
 export function parseCounterList(
   value: string,
   fallback: number,
+  reversible = false,
 ): CounterChange[] | 'none' | null {
   const tokens = tokenize(value);
   if (!tokens?.length) return null;
@@ -144,9 +153,22 @@ export function parseCounterList(
   const out: CounterChange[] = [];
   for (let i = 0; i < tokens.length; i += 1) {
     const token = tokens[i];
-    if (token.kind !== 'ident') return null;
+    let name: string;
+    let reversed = false;
+    if (token.kind === 'ident') name = token.name;
+    else if (
+      reversible &&
+      token.kind === 'function' &&
+      token.name.toLowerCase() === 'reversed' &&
+      token.args.length === 1 &&
+      token.args[0].length === 1 &&
+      token.args[0][0].kind === 'ident'
+    ) {
+      name = token.args[0][0].name;
+      reversed = true;
+    } else return null;
     // CSS-wide keywords and `none` cannot name a counter
-    const lower = token.name.toLowerCase();
+    const lower = name.toLowerCase();
     if (
       lower === 'none' ||
       lower === 'inherit' ||
@@ -156,15 +178,30 @@ export function parseCounterList(
       return null;
     }
     const next = tokens[i + 1];
+    let change: CounterChange;
     if (next?.kind === 'number') {
       if (!Number.isInteger(next.value)) return null;
-      out.push({ name: token.name, value: next.value });
+      change = { name, value: next.value };
       i += 1;
-    } else {
-      out.push({ name: token.name, value: fallback });
-    }
+    } else if (reversed) change = { name, value: 0, counted: true };
+    else change = { name, value: fallback };
+    if (reversed) change.reversed = true;
+    out.push(change);
   }
   return out;
+}
+
+/**
+ * `list-style-type`: a counter style's name, lower-cased, or a string the
+ * marker is written as (CSS Lists 3, 3.3), kept with the `"` it was quoted
+ * in so it cannot be taken for a name. Null when the value is neither.
+ */
+export function parseListStyleType(value: string): string | null {
+  const tokens = tokenize(value);
+  if (tokens?.length !== 1) return null;
+  const token = tokens[0];
+  if (token.kind === 'string') return `"${token.text}`;
+  return token.kind === 'ident' ? token.name.toLowerCase() : null;
 }
 
 /** `quotes`: `none`, or pairs of strings, outermost first. Null when the
