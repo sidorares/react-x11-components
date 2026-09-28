@@ -163,6 +163,9 @@ interface CachedRoute {
   from: HandleAnchor;
   to: HandleAnchor;
   bounds: FlowRect;
+  /** The middle of the whole route, where a label sits: worked out the
+   *  first time a label asks (`middleOf`), and moved with the route. */
+  middle: XYPosition | null;
 }
 
 /** Bounded, so a graph that churns edge ids cannot turn this into a leak. */
@@ -285,8 +288,23 @@ function buildRoute(
     from: routed.from,
     to: routed.to,
     bounds: pathBounds(all),
+    middle: null,
   });
   return entry;
+}
+
+/**
+ * Where a route's label sits. Walking the route to its middle is the length
+ * of every segment twice, and a 2D pan's passes asked it of every labelled
+ * edge they reached, every frame; kept, it is two additions a pan. A copy,
+ * never one of the route's own points, which the pan moves as well.
+ */
+function middleOf(route: CachedRoute): XYPosition {
+  if (route.middle === null) {
+    const p = pointAtFraction(route.points, 0.5);
+    route.middle = { x: p.x, y: p.y };
+  }
+  return route.middle;
 }
 
 /**
@@ -568,6 +586,10 @@ export class SceneCache {
         if (hit.startHead) shift(hit.startHead, dx, dy);
         hit.bounds.x += dx;
         hit.bounds.y += dy;
+        if (hit.middle) {
+          hit.middle.x += dx;
+          hit.middle.y += dy;
+        }
         hit.originX = v.x;
         hit.originY = v.y;
       }
@@ -1105,6 +1127,8 @@ function buildEdges(input: SceneInput, scene: FlowScene): SceneEdge[] {
   const out: SceneEdge[] = [];
   const cache = input.cache;
   let animBox: FlowRect | null = null;
+  // a label's plate, the same for every edge that names none of its own
+  let plateFill: string | undefined;
 
   // Two rejects: one from the nodes alone — the coarse box, culled once for
   // every pass of a frame where there is a cache — and one from the route
@@ -1229,7 +1253,7 @@ function buildEdges(input: SceneInput, scene: FlowScene): SceneEdge[] {
     }
 
     if (labels && edge.label) {
-      const at = pointAtFraction(routed.points, 0.5);
+      const at = middleOf(routed);
       const size = Math.max(8, 11 * v.zoom);
       const metrics = input.measure(edge.label, { size });
       const padX = 5 * v.zoom;
@@ -1242,7 +1266,9 @@ function buildEdges(input: SceneInput, scene: FlowScene): SceneEdge[] {
           height: Math.round(metrics.height + padY * 2),
         },
         radius: Math.max(2, Math.round(3 * v.zoom)),
-        fill: edge.style?.labelBackground ?? tint(palette.background, 0.92),
+        fill:
+          edge.style?.labelBackground ??
+          (plateFill ??= tint(palette.background, 0.92)),
       };
       item.label = {
         kind: 'text',
