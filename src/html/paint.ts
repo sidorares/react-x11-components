@@ -624,6 +624,18 @@ function paintContent(
         box.borderTop -
         box.borderBottom,
     };
+    // Clipped to no area, nothing in the box shows but an absolute box
+    // whose containing block is outside it, and where it holds none what it
+    // holds is not painted at all: a menu at `max-height: 0`. Clipped to an
+    // empty rectangle instead, it was painted through a mask the size of
+    // the window, which is what an empty rectangle is to the context, built
+    // again at every restore — and a nest of them did that at every level.
+    if ((rect.w <= 0 || rect.h <= 0) && !holdsAbsolute(box)) {
+      if (box.style.outlineStyle !== 'none' && box.kind !== 'inline') {
+        paintOutline(ctx, box, options);
+      }
+      return;
+    }
     if (pushClip(ctx, rect, innerRadii(box))) {
       level = { box, deferred: [] };
       (options.clips ??= []).push(level);
@@ -1325,6 +1337,25 @@ function paintPositioned(
   }
   paintBox(ctx, box, options);
 }
+
+/** Whether anything in a box is positioned out of the flow, which may be
+ *  outside the box's clip; kept for the tree's life. */
+function holdsAbsolute(box: Box): boolean {
+  let holds = HOLDS_ABSOLUTE.get(box);
+  if (holds === undefined) {
+    holds = false;
+    for (const child of box.children) {
+      if (child.outOfFlow || holdsAbsolute(child)) {
+        holds = true;
+        break;
+      }
+    }
+    HOLDS_ABSOLUTE.set(box, holds);
+  }
+  return holds;
+}
+
+const HOLDS_ABSOLUTE = new WeakMap<Box, boolean>();
 
 /** Whether `inner` is `outer` or inside it. */
 function holds(outer: Box, inner: Box | null): boolean {

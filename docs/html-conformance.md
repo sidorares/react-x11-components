@@ -154,6 +154,7 @@ npx tsx scripts/conformance/run.ts wpt fuzz1 --chunk 50 --timeout 60000
 | 68     | nested boxes, fuzzed pages                         | 5,479 (93%) | 4,990 (84%) |
 | 69     | nested grids, floats no higher than the last       | 5,482 (93%) | 4,993 (84%) |
 | 70     | floats side by side in a content width             | 5,485 (93%) | 4,995 (84%) |
+| 71     | tables in tables, boxes clipped to nothing         | 5,485 (93%) | 4,995 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -2088,6 +2089,30 @@ two agreed.
      `intrinsic-size-float-and-line`, and `text-indent-012`, an absolute
      box around a float and an indented inline-block that is as wide as
      the three of them.
+
+### Round 71
+
+165. **A table in a table in a table was laid out again at every level.**
+     A table's cell is laid out as its table is, and a table in the cell
+     as the cell is, so every level laid out all it held again, and the
+     fuzzer's pages of a few hundred nested tables around a few thousand
+     more took five to twelve seconds. A table asked for at a width it was
+     laid out at earlier in the pass, and not laid out over since, is moved
+     there now, as a box that sizes itself has been since round 68: the
+     same pages take 0.2 and 0.5 seconds, and forty nested tables of mail
+     a third of what they did.
+166. **A box clipped to no area painted what it held through a mask the
+     size of the window.** An empty rectangle is no rectangle to ntk's
+     context, which clips through an a8 mask for anything that is not one
+     and builds it again at every restore — so a nest of such boxes, the
+     fuzzer's seven hundred nested tables with `overflow: auto` and nothing
+     in them, took 46 seconds to paint in the harness's X server. Nothing
+     in a box clipped to no area shows but an absolute box whose containing
+     block is outside it, and where it holds none, what it holds is not
+     painted now. The everyday case is a menu at `max-height: 0`.
+
+     After them no page of the five fuzzed corpora crashes or hangs, and
+     this suite does not move.
 
 ## What `<Html>` supports
 
