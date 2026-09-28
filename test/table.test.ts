@@ -22,6 +22,7 @@ import type { Node as RetainedNode } from 'react-x11/node';
 import type { DrawnNode, KeyboardEvent, ScrollableNode } from 'react-x11';
 
 import { Table } from '../src/index.js';
+import { orderRows, resolveGetId } from '../src/table/rows.js';
 import type {
   TableColumn,
   TableHandle,
@@ -288,6 +289,59 @@ test('the controlled descriptor still orders rows unless presorted', async () =>
   await mount({ sort: { column: 'name', direction: 'asc' }, presorted: true });
   await settle();
   assert.deepStrictEqual(firstCells(), ['banana', 'apple', 'cherry']);
+});
+
+test('the default sort reads a row once, and orders as localeCompare did', () => {
+  // a 100,000-row sort asked the column for about 17 values a row, and made
+  // a collator for every string comparison
+  const values: unknown[] = [
+    'b',
+    'B',
+    'a',
+    'á',
+    'Z',
+    10,
+    2,
+    null,
+    undefined,
+    'a',
+    '10',
+    '',
+  ];
+  const rows = values.map((v, i) => ({ id: i, v }));
+  let reads = 0;
+  const column = {
+    id: 'v',
+    value: (row: { v: unknown }) => {
+      reads++;
+      return row.v;
+    },
+  };
+  const was = (a: unknown, b: unknown): number =>
+    typeof a === 'number' && typeof b === 'number'
+      ? a - b
+      : String(a ?? '').localeCompare(String(b ?? ''));
+  for (const direction of ['asc', 'desc'] as const) {
+    reads = 0;
+    const ordered = orderRows(
+      rows,
+      [column],
+      resolveGetId(undefined),
+      { column: 'v', direction },
+      false,
+    );
+    assert.strictEqual(reads, rows.length, 'one read a row');
+    const sign = direction === 'desc' ? -1 : 1;
+    const expected = rows
+      .map((row, index) => ({ row, index }))
+      .sort((a, b) => sign * was(a.row.v, b.row.v) || a.index - b.index)
+      .map((e) => e.row.id);
+    assert.deepStrictEqual(
+      ordered.map((r) => r.id),
+      expected,
+      direction,
+    );
+  }
 });
 
 // --- selection: single -----------------------------------------------------
