@@ -161,6 +161,22 @@ across a minified line threw from the paint, and the window stopped
 painting. What it gives up is shaping across a seam: a kerning pair or a
 ligature that straddles one is set as two.
 
+A piece is laid out only when something asks about it or about a piece
+after it: a paint, a caret, a click. Opening a file whose one line is a
+million characters long shaped every piece before the first paint, which
+took 1.4 s on Linux, though the view showed one piece. Now it takes 0.12 s.
+Everything left of what is asked about is laid out too, so text on screen
+is exactly where one layout of the whole line would put it. Only the width
+of the part nobody has looked at yet is guessed: one column for each
+character, which in a monospace face is the pixel-exact width of ASCII. The
+horizontal scroll extent grows as that part is laid out. The first jump to
+the end of such a line pays for the layout that opening the file used to.
+
+The next piece starts where the caret stands at the end of the one before
+it, not at the edge of that piece's ink. A piece that ended on a space used
+to lose it: the next piece started a column early, and every column after
+it was off by one more.
+
 Tokenizing stops 10,000 characters into a line (`TOKENIZE_LIMIT`, the same
 cut CodeMirror makes with `maxHighlightLength`): a line is tokenized again
 whole on every edit to it, and the rest of a longer one is drawn unstyled.
