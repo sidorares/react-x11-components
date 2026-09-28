@@ -158,6 +158,7 @@ npx tsx scripts/conformance/run.ts wpt fuzz1 --chunk 50 --timeout 60000
 | 72     | the list-item counter, CSS Lists 3 scopes          | 5,484 (93%) | 4,992 (84%) |
 | 73     | flex items no smaller than their content           | 5,484 (93%) | 4,992 (84%) |
 | 74     | percentages of a stretched or flexed item's height | 5,484 (93%) | 4,992 (84%) |
+| 75     | the font's own `ch`, floats in unbroken text       | 5,486 (93%) | 4,994 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -2193,6 +2194,32 @@ two agreed.
      `css-flexbox`: 522 of its 1,012 tests passed on X11, 555 do now, and
      `css-sizing` 217 of 562, 220 now; none lost in either, and none moved
      in this suite.
+
+### Round 75
+
+172. **A `ch` was half an em.** CSS Values 4 makes it the advance of the
+     font's "0", and that is what it is now, laid out once per face and
+     size where the cascade meets one, as `ex` already asked for the
+     x-height: a monospace font's "0" is three fifths of an em, Arial's a
+     little over half, and Ahem's the whole of one. Tailwind's `max-w-prose`
+     is `65ch`, so a prose column was an eighth narrower than a browser
+     draws it, and a `20ch` column of code held seventeen characters.
+173. **A float met where its line cannot break went beside the text before
+     it.** In text that does not wrap, what follows the float is on its
+     line whatever the room, so the float goes at the line's top only
+     where that fits beside it as well, and under the line where it does
+     not, as browsers place it; it went at the top wherever it fitted
+     beside the text before it, and the text ran on under it.
+     `float-nowrap-8` had passed only because its `10ch` box was narrower
+     than its text.
+
+     `css-text`: 454 of its 1,489 tests passed on X11, 568 do now; that
+     suite sizes most of its boxes in `ch`. The five it loses passed with
+     test and reference drawn equally wrong in boxes half an em a `ch`:
+     two whose `word-break: break-all` wants a break between any two
+     letters, which the engines emulate by cutting a word where the line
+     runs out; two whose `break-spaces` spaces must not hang; and one whose
+     U+2010 the monospace face does not have.
 
 ## What `<Html>` supports
 

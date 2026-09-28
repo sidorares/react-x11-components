@@ -347,6 +347,10 @@ export class Cascade {
   /** A font's x-height at a size, for `ex`, where the fonts can say. */
   private _xHeightOf: ((family: string, size: number) => number | null) | null;
   private _xHeights = new Map<string, number>();
+  /** The advance of a font's "0" at a size, for `ch`, likewise. */
+  private _zeroWidthOf:
+    ((family: string, size: number) => number | null) | null;
+  private _zeroWidths = new Map<string, number>();
   /** Whether any declaration sets a custom property or reads one: without
    *  one, no element's style asks about them. */
   private _vars = false;
@@ -358,8 +362,10 @@ export class Cascade {
     viewportHeight: number,
     scale = 1,
     xHeight: ((family: string, size: number) => number | null) | null = null,
+    zeroWidth: ((family: string, size: number) => number | null) | null = null,
   ) {
     this._xHeightOf = xHeight;
+    this._zeroWidthOf = zeroWidth;
     this.look = look;
     this.initial = initialStyle(look, scale);
     this.viewportWidth = viewportWidth;
@@ -733,6 +739,19 @@ export class Cascade {
     return ex;
   }
 
+  /** The advance of a style's font's "0": the font's own, asked once per
+   *  face and size, or half an em. */
+  private _chOf(style: ComputedStyle): number {
+    const key = `${style.fontFamily}\u0001${style.fontSize}`;
+    let ch = this._zeroWidths.get(key);
+    if (ch === undefined) {
+      ch = this._zeroWidthOf?.(style.fontFamily, style.fontSize) ?? NaN;
+      if (!(ch > 0)) ch = style.fontSize * 0.5;
+      this._zeroWidths.set(key, ch);
+    }
+    return ch;
+  }
+
   /** `styleFor`, from the rules and hints already gathered for `el`. */
   private _computeStyle(
     el: Element,
@@ -756,6 +775,7 @@ export class Cascade {
       vh: this.viewportHeight,
       scale: this.scale,
       ex: () => this._exOf(parentStyle),
+      ch: () => this._chOf(parentStyle),
     };
     // the family goes with the size, so an `ex` after it is its font's
     for (const c of candidates) {
@@ -773,6 +793,7 @@ export class Cascade {
       ...ctxParent,
       em: style.fontSize,
       ex: () => this._exOf(style),
+      ch: () => this._chOf(style),
     };
     for (const c of candidates) {
       for (const d of pick(c)) {

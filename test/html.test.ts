@@ -2528,6 +2528,21 @@ metric("ex is the font's x-height, or half an em", async () => {
   assert.ok(Math.abs(boxOf(el, 'd').width - 10 * x) < 0.01);
 });
 
+metric('a ch is the advance of the font\'s "0"', async () => {
+  // CSS Values 4, 6.1.1. It was half an em, which is a monospace font's
+  // "0" short by a sixth: Tailwind's `max-w-prose` is 65ch, and a `20ch`
+  // column of code held seventeen characters
+  const { node } = await render(
+    '<style>body{margin:0} div{font:20px monospace}</style>' +
+      '<div id="a" style="width:10ch;height:10px"></div>' +
+      '<div><span id="b" style="display:inline-block">0000000000</span></div>',
+  );
+  const el = view(node);
+  const b = boxOf(el, 'b').width;
+  assert.ok(b > 100, `ten zeros are wider than ten half ems: ${b}`);
+  assert.ok(Math.abs(boxOf(el, 'a').width - b) < 0.01);
+});
+
 metric('letter-spacing and word-spacing reach the text', async () => {
   const widthOf = async (style: string): Promise<number> => {
     const probe = await render(
@@ -4069,6 +4084,29 @@ test('a float too wide for what is left of its line goes under it', async () => 
   assert.deepStrictEqual([i1.x - w.x, i2.x - w.x], [0, 200], 'unmoved');
   assert.strictEqual(i2.y, i1.y, 'what follows it stays on the line');
   assert.strictEqual(i3.x - w.x, 150, 'and the next line is beside it');
+});
+
+test('a float the line cannot break at fits with what follows it', async () => {
+  // float-nowrap: in text that does not wrap, what follows the float is on
+  // its line whatever the room, so the float goes beside the line only
+  // where that fits too, and under it where it does not — as browsers
+  // place it. It went at the top where it fitted beside the text before it,
+  // under the text that ran on past it.
+  const para = (wrap: string) =>
+    `<p id="p${wrap}" style="margin:0;width:300px;white-space:${wrap};` +
+    'clear:both">' +
+    'Some <span id="f' +
+    wrap +
+    '" style="float:right;width:150px;height:20px"></span>' +
+    'text that runs on past the end of its box</p>';
+  const { node } = await render(para('nowrap') + para('normal'));
+  const el = view(node);
+  const lines = linesOf(el, 'pnowrap');
+  assert.strictEqual(lines.length, 1);
+  const f = boxOf(el, 'fnowrap');
+  assert.strictEqual(f.y, lines[0].y + lines[0].height, 'under the line');
+  // where the line may break after "Some", the float goes at its top
+  assert.strictEqual(boxOf(el, 'fnormal').y, linesOf(el, 'pnormal')[0].y);
 });
 
 test('a float goes no higher than the float before it', async () => {
