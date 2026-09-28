@@ -1752,9 +1752,12 @@ function settleLayers(box: Box, list: Box[]): void {
 }
 
 /** Whether a box is a stacking context, which paints the positioned boxes
- *  in it itself: positioned, with a `z-index`. */
+ *  in it itself: positioned with a `z-index`, or fixed or sticky with none
+ *  (CSS Positioned Layout 3, as browsers paint them) — a fixed header's
+ *  box set behind its content with `z-index: -1` went behind the page. */
 function stacksLayers(box: Box): boolean {
   const style = box.style;
+  if (style.position === 'fixed' || style.position === 'sticky') return true;
   return style.position !== 'static' && typeof style.zIndex === 'number';
 }
 
@@ -1850,10 +1853,7 @@ function hoistFrom(box: Box, root: boolean): Box[] | null {
       (pending ??= []).push(child);
     }
   }
-  const style = box.style;
-  if (!root && (style.position === 'static' || style.zIndex === 'auto')) {
-    return pending;
-  }
+  if (!root && !stacksLayers(box)) return pending;
   if (pending) {
     pending.sort(byZIndex);
     NEGATIVE.set(box, pending);
@@ -3244,8 +3244,15 @@ function paintLines(ctx: PaintContext, box: Box, options: PaintOptions): void {
 
   paintRules(ctx, visible, dx, dy, options.scale ?? 1, 'over');
   if (bleeds.length) paintBleeds(ctx, bleeds, options);
+  // an atomic set below the flow with a negative `z-index` is its
+  // stacking context's to paint, there (`hoistNegative`): painted by its
+  // line as well, it came back over the box it was under
+  const hoisted = options.negative;
   for (const line of visible) {
-    for (const placed of line.atomics) paintBox(ctx, placed.box, options);
+    for (const placed of line.atomics) {
+      if (hoisted && HOISTED.has(placed.box)) continue;
+      paintBox(ctx, placed.box, options);
+    }
   }
 }
 

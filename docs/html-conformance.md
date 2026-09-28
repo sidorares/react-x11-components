@@ -182,6 +182,7 @@ npx tsx scripts/conformance/run.ts wpt fuzz1 --chunk 50 --timeout 60000
 | 93     | where an absolute box in a line would have been    | 5,595 (95%) | 5,058 (86%) |
 | 94     | positioned boxes in their stacking context         | 5,600 (95%) | 5,063 (86%) |
 | 95     | clearance, empty inline boxes and `initial`        | 5,609 (95%) | 5,073 (86%) |
+| 96     | float rules 3 and 7, a canvas, a table's height    | 5,615 (95%) | 5,078 (86%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -2747,6 +2748,36 @@ solid 16px red` is invalid, each of the three at most once
      `initial-background-color`, `initial-color-background-001`,
      `unset-val-001` and `-002`. It is the property's initial value now,
      and `unset` on a property that does not inherit is too.
+
+### Round 96
+
+227. **A table set shorter than its rows was as short as it was set.** A
+     table's height is a least one (CSS 2.1 17.5.3), which the table layout
+     shares out to the rows; the block layout then took the set height for
+     the table's own, which ended its background over the rows and let a
+     float after it go up beside them (`floated-table-wider-than-specified`).
+228. **A float was held to its containing block always.** CSS 2.1 9.5.1
+     keeps a left float short of the right floats beside it (rule 3), and
+     within its containing block only where a left float is beside it too
+     (rule 7); a float wider than its block went below every float beside
+     it, where it fitted beside them in the formatting context
+     (`floats-rule3-outside-left-001`, `-right-001`).
+229. **A `<canvas>` took no room.** It is a replaced element the size of
+     its bitmap, which its `width` and `height` attributes give, 300 by 150
+     where they do not, and it keeps their proportions (HTML 4.12.5); the
+     attributes were taken for size hints, as an image's are, so one set a
+     height kept no width. No script draws in it here, so it is a box of
+     its size with nothing in it, as an `<iframe>` is
+     (`intrinsic-size-with-anonymous-block`, and `vertical-align-122` on
+     X11).
+230. **A box on a line set below the flow was drawn twice**, by its
+     stacking context below the flow and by its line after it, and so over
+     the box it was set under (`intrinsic-size-with-anonymous-block`).
+231. **A fixed box was no stacking context without a `z-index`.** A fixed or
+     sticky box is one whatever its `z-index` (CSS Positioned Layout 3, as
+     the browsers paint it), so a box in it set to `z-index: -1` is drawn
+     over its background, where it went behind the page
+     (`fixed-pos-stacking-001`).
 
 ## What `<Html>` supports
 

@@ -1454,6 +1454,21 @@ function finishHeight(box: Box, contentHeight: number): void {
   const set = resolveOrNull(box.style.height, box.percentHeightBase);
   // at least zero: a `calc()` may come to less
   const specified = set === null ? null : Math.max(0, set);
+  if (specified !== null && box.kind === 'table') {
+    // A table's height is a least one, which `layoutTable` has shared out
+    // to its rows: one set shorter than they are leaves them their height
+    // (CSS 2.1 17.5.3). Taken as the table's, it ended its background
+    // over its rows, and a float after it went up beside them.
+    const outer =
+      box.style.boxSizing === 'border-box'
+        ? specified
+        : specified + box.verticalExtra;
+    box.height = Math.max(
+      clampHeight(box, outer),
+      contentHeight + box.verticalExtra,
+    );
+    return;
+  }
   if (specified === null && box.style.aspectRatio) {
     const ratio = ratioHeight(box);
     if (ratio !== null) {
@@ -2204,14 +2219,10 @@ function placeFloat(
 }
 
 /**
- * An absolutely positioned box, against its containing block.
- *
- * The static position — where the box would have been in flow — is not
- * tracked: a box with neither `top` nor `bottom` is placed at its containing
- * block's content top rather than where its markup sat. That is the one
- * deliberate simplification in positioning, and it is invisible for the
- * overwhelmingly common `position: absolute` with an explicit offset, which
- * is how a badge, a tooltip and an overlay are all written.
+ * An absolutely positioned box, against its containing block: a box's
+ * padding box, or an inline box's fragments (`inlineContainingBlock`). An
+ * axis with neither offset takes the static position, where the box would
+ * have been in flow (`placeStatic`, and `staticPositions` in a line).
  */
 function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
   const {
