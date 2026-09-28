@@ -73,7 +73,7 @@ import { lineBands as bandsFor } from '../richtext/runs.js';
 import { paintDocument, queryChildIndex } from './paint.js';
 import type { PaintContext } from './paint.js';
 import { controlRectsOf, measureControl } from './controls.js';
-import type { ControlRect } from './controls.js';
+import type { ControlFace, ControlRect } from './controls.js';
 import { ResourceStore } from './resources.js';
 import type { ResourceRequest, ResourceResult } from './resources.js';
 import { WebFonts } from './fonts.js';
@@ -863,6 +863,15 @@ export class HtmlViewNode extends Node {
             y: r.y / s,
             width: r.width / s,
             height: r.height / s,
+            face: r.face && {
+              ...r.face,
+              fontSize: r.face.fontSize / s,
+              border: r.face.border.map((v) => v / s) as ControlFace['border'],
+              radius: r.face.radius / s,
+              padding: r.face.padding.map(
+                (v) => v / s,
+              ) as ControlFace['padding'],
+            },
           },
     );
     if (sameRects(rects, this._controls)) return;
@@ -1394,7 +1403,8 @@ function sameRects(a: ControlRect[], b: ControlRect[]): boolean {
       p.x !== q.x ||
       p.y !== q.y ||
       p.width !== q.width ||
-      p.height !== q.height
+      p.height !== q.height ||
+      JSON.stringify(p.face) !== JSON.stringify(q.face)
     ) {
       return false;
     }

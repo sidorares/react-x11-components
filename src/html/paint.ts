@@ -98,6 +98,8 @@ export interface PaintContext extends FillContext {
   /** ntk's X11 context has patterns; the Cocoa one does not, and tiles. */
   createPattern?(image: unknown, repetition: string): unknown;
   translate?(x: number, y: number): void;
+  /** What every drawing is multiplied by: an element's `opacity`. */
+  globalAlpha?: number;
 }
 
 export interface PaintOptions {
@@ -567,18 +569,29 @@ function frameHeight(box: Frame): number {
 
 function paintBox(ctx: PaintContext, box: Box, options: PaintOptions): void {
   if (!intersects(box, options) || COLLAPSED_CELLS.has(box)) return;
+  // An element under full opacity is painted whole in its place, as the
+  // group it is (it is a stacking context, CSS Color 4 3.2; `inFlow`): at
+  // 0 not at all — the control a page keeps invisible until its row is
+  // hovered — and between through the context's alpha. That multiplies
+  // each thing drawn rather than the group they make, so where two of its
+  // own boxes overlap the lower shows through the upper, as a browser's
+  // group does not let it.
+  const opacity = box.style.opacity;
+  if (opacity <= 0) return;
+  const fade = opacity < 1 && typeof ctx.globalAlpha === 'number';
+  if (fade) {
+    ctx.save();
+    ctx.globalAlpha = ctx.globalAlpha! * opacity;
+  }
   // `clip` shows the part of an absolutely positioned box it names, its own
   // background and borders among it (CSS 2.1 11.1.2)
   const clip = box.outOfFlow && box.style.clip ? clipOf(box, options) : null;
-  if (clip) {
-    if (clip.w <= 0 || clip.h <= 0) return;
-    if (!pushClip(ctx, clip, null)) {
-      paintContent(ctx, box, options);
-      return;
-    }
+  if (!clip || (clip.w > 0 && clip.h > 0)) {
+    const clipped = !!clip && pushClip(ctx, clip, null);
+    paintContent(ctx, box, options);
+    if (clipped) ctx.restore();
   }
-  paintContent(ctx, box, options);
-  if (clip) ctx.restore();
+  if (fade) ctx.restore();
 }
 
 function paintContent(
@@ -1220,14 +1233,18 @@ function paintedChildren(box: Box, options: PaintOptions): readonly Box[] {
 
 /** Whether a child is a plain block of its parent's flow, whose background
  *  goes with the flow's and whose lines with its lines: an in-flow block
- *  that clips nothing and is no stacking context holding a negative
- *  `z-index`, in a parent that is no flex box, where an item is painted
- *  whole (CSS Flexbox 5.4). */
+ *  that clips nothing, is fully opaque and is no stacking context holding
+ *  a negative `z-index`, in a parent that is no flex box, where an item is
+ *  painted whole (CSS Flexbox 5.4). */
 function inFlow(parent: Box, child: Box, options: PaintOptions): boolean {
   if (child.kind !== 'block' || parent.kind === 'flex') return false;
   if (options.negative && NEGATIVE.has(child)) return false;
   const style = child.style;
-  return style.overflowX === 'visible' && style.overflowY === 'visible';
+  return (
+    style.overflowX === 'visible' &&
+    style.overflowY === 'visible' &&
+    style.opacity >= 1
+  );
 }
 
 /**

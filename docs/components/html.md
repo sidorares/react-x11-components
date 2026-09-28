@@ -37,7 +37,7 @@ Nothing here fetches or executes anything. See [The seams](#the-seams).
 | `onScript`        | `(s: ScriptRequest) => void`                     | A `<script>` was found, handed over unparsed and unevaluated.                                                                                                                |
 | `onLink`          | `(href, ev) => void`                             | A link was activated. Absent, clicks do nothing — this never navigates by itself.                                                                                            |
 | `onDocument`      | `(document: Document) => void`                   | The parsed DOM, each time it is re-parsed.                                                                                                                                   |
-| `onControlChange` | `(element, value) => void`                       | A form control changed. The element is the one in the DOM.                                                                                                                   |
+| `onControlChange` | `(element, value) => void`                       | A form control changed, or a `<button>` was pressed, with its `value`. The element is the one in the DOM.                                                                    |
 | `fontSize`        | `number`                                         | Base text size. Default: theme `fontSize`, or 14.                                                                                                                            |
 | `fontFamily`      | `string`                                         | Default `'sans-serif'`.                                                                                                                                                      |
 | `monoFamily`      | `string`                                         | Code font. Default `'monospace'` — there is no theme token for it.                                                                                                           |
@@ -316,8 +316,12 @@ is centred with its images, not text first and the image after it.
 **Boxes:** `width`/`height` with `min-`/`max-`, `margin` (a negative one
 on an inline box takes its room back from the line), `padding`,
 `border` (width, style, colour, radius), `box-sizing`, `overflow`, `clip`,
-`opacity`, `visibility` — a hidden element keeps its room and draws
-nothing, its text included, and a visible element inside it is drawn; a
+`opacity` — an element under 1 is painted whole in its place, at 0 not at
+all and between faded, each thing drawn in it multiplied rather than the
+group, so where two of its boxes overlap the lower shows through; the
+opacity of an inline element's own text is not applied — `visibility` — a
+hidden element keeps its room and draws nothing, its text included, and a
+visible element inside it is drawn; a
 collapsed table row or column gives its room and its spacing back —
 `z-index`: a positioned box with a negative
 `z-index` is painted under the flow of its stacking context, the root
@@ -685,12 +689,23 @@ engine, so those are painted and `hrefAtPoint` answers there too.
 
 **Form controls are real widgets, not pictures of them.** A `<select>` in a
 document drops the same menu as a `<Select>` in the window around it, because
-it _is_ one; the same goes for `<button>`, checkboxes, radios and text
-fields. They mount as absolutely positioned siblings of the element, at the
-rectangles layout reserved for them — the escape hatch [`<Flow>`](flow.md)
-opened for a node whose body is a form. A drawn control would take no focus,
-say nothing to a screen reader, and have to reimplement every keyboard
-convention the platform already has.
+it _is_ one; the same goes for checkboxes, radios, text fields and
+`<input type=submit>`. They mount as absolutely positioned siblings of the
+element, at the rectangles layout reserved for them — the escape hatch
+[`<Flow>`](flow.md) opened for a node whose body is a form. A drawn control
+would take no focus, say nothing to a screen reader, and have to reimplement
+every keyboard convention the platform already has.
+
+A `<button>` is the exception, because its content is the document's: an
+icon, a label in spans, a pill of the page's own design — most of the
+buttons on the web — which a widget's text label drew as "Button". It is
+laid out and drawn like any box, in the palette's control look where the
+page leaves it alone, and a press on it is reported through
+`onControlChange`, with its `value`, as a widget's is; it takes no focus of
+its own. And a text field the page draws itself, `appearance: none` — how a
+design system writes every field it has — is mounted in the page's face
+rather than the palette's: its background, borders, corner, padding and
+text, its box a line of its text's height with the page's padding round it.
 
 **The application scrolls it, and height does not frighten it.** The element
 sizes to its content; put it in a `<box overflow="scroll">`, the same shape

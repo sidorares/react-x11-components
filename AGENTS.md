@@ -1140,7 +1140,12 @@ same font metrics and the same palette tokens (`paddingY`, `borderWidth`,
 `radius`) core's own widgets read. `<textinput>` and `<textarea>` are
 elements rather than components and draw no frame of their own, so the
 component supplies one from those tokens — a form in a document and a form in
-the window around it have to be the same height.
+the window around it have to be the same height. Two things are not widgets
+of the palette's: a `<button>`, whose content is the document's and which is
+drawn like any box (its press reported through `onControlChange`), and a
+field with `appearance: none`, mounted in the page's own face
+(`ControlFace`). A design system restyles every control it has, and a
+palette frame inside the page's drew two boxes where it designed one.
 
 **Nothing is fetched and nothing is executed, by construction.**
 `onResource` is the only way anything loads and `onScript` never runs

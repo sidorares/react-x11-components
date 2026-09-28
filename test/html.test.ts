@@ -4293,6 +4293,108 @@ metric('a click on a link reports its href; a drag does not', async () => {
   void result;
 });
 
+metric(
+  'a <button> is drawn with its content, and a press on it is reported',
+  async () => {
+    // A `<button>` was a mounted widget labelled with its text — or with
+    // "Button", where its content was an icon or spans, as most buttons on the
+    // web are — and the look the page gave it was lost. It is laid out and
+    // drawn like any box, and pressing it is reported through
+    // `onControlChange`, as pressing a widget is.
+    const pressed: [string | undefined, unknown][] = [];
+    await renderX11(
+      h(
+        'box',
+        { style: { width: 400, flexDirection: 'column' } },
+        h(Html, {
+          source:
+            '<button id="b" value="go"><span>Search</span></button> ' +
+            '<button id="off" disabled><span>Off</span></button>',
+          partial: false,
+          onControlChange: (
+            el: { attribs: Record<string, string> },
+            v: unknown,
+          ) => void pressed.push([el.attribs.id, v]),
+          'data-testname': 'doc',
+        }),
+      ),
+      { width: 440, height: 200, fonts: FONTS! },
+    );
+    const el = view(screen.getByTestName('doc') as DrawnNode);
+    const tree = (el as unknown as { _tree: { controls: unknown[] } })._tree;
+    assert.strictEqual(tree.controls.length, 0, 'no widget is mounted for it');
+    assert.ok(
+      el.textContent().includes('Search'),
+      "its text is the document's",
+    );
+    const press = async (id: string) => {
+      const box = boxOf(el, id);
+      const target = el as unknown as DrawnNode;
+      const dx = box.x + box.width / 2 - target.abs.width / 2;
+      const dy = box.y + box.height / 2 - target.abs.height / 2;
+      await act(async () => {
+        fireEvent.mouseDown(target, { dx, dy });
+        fireEvent.mouseUp(target, { dx, dy });
+      });
+    };
+    await press('b');
+    assert.deepStrictEqual(pressed, [['b', 'go']]);
+    await press('off');
+    assert.strictEqual(pressed.length, 1, 'a disabled one is not pressed');
+  },
+);
+
+test('a field the page draws itself is mounted in its own face', async () => {
+  // `appearance: none` is how a design system writes every field it has,
+  // and the palette's frame drew a box inside the page's own: meetup.com's
+  // search pill holds two fields with no background and a rule between
+  // them. Such a field is its text's height, the page's padding and border
+  // round it, and the widget is mounted in the page's face.
+  const { node } = await render(
+    '<input id="own" style="appearance:none;margin:0;padding:2px 0;' +
+      'border:0;border-right:1px solid #ff0000;background:transparent;' +
+      'line-height:20px">' +
+      '<input id="plain">',
+  );
+  const el = view(node);
+  const rects = (
+    el as unknown as {
+      _controls: {
+        element: { attribs: Record<string, string> };
+        face?: Record<string, unknown> | null;
+      }[];
+    }
+  )._controls;
+  const own = rects.find((r) => r.element.attribs.id === 'own')!;
+  const plain = rects.find((r) => r.element.attribs.id === 'plain')!;
+  assert.strictEqual(boxOf(el, 'own').height, 24, 'a line, and its padding');
+  assert.deepStrictEqual(own.face?.border, [0, 1, 0, 0]);
+  assert.strictEqual((own.face?.borderColor as string[])[1], '#ff0000');
+  assert.deepStrictEqual(own.face?.padding, [2, 0, 2, 0]);
+  assert.ok(!plain.face, "a field left alone keeps the palette's frame");
+});
+
+test('a replaced flex item is as wide as the flex layout made it', async () => {
+  // Laid out alone a replaced box takes its own `width` or its intrinsic
+  // one: two fields `width: 0; flex: 1` were no width at all, and so never
+  // mounted, and images `flex: 1` overlapped at their own widths.
+  const { node } = await render(
+    '<div style="display:flex;width:300px">' +
+      '<input id="a" style="width:0;flex:1;margin:0">' +
+      '<input id="b" style="width:0;flex:1;margin:0">' +
+      '<img id="c" width="50" height="20" style="flex:1">' +
+      '</div>',
+  );
+  const el = view(node);
+  const [a, b, c] = ['a', 'b', 'c'].map((id) => boxOf(el, id));
+  assert.deepStrictEqual(
+    [a.width, b.width, c.width],
+    [100, 100, 100],
+    'each takes a third',
+  );
+  assert.deepStrictEqual([a.x, b.x, c.x], [a.x, a.x + 100, a.x + 200]);
+});
+
 // --- the seams --------------------------------------------------------------
 
 test('a script is handed over, unparsed and unevaluated', async () => {
@@ -5129,6 +5231,42 @@ test('an image handed over as bytes is decoded and drawn', async (t) => {
   // the body's 8px margin, and the middle of the square
   await expectPixel(result.ctx, 13, 13, '#ff0000', {
     message: 'the decoded image is drawn',
+  });
+});
+
+test('an element at no opacity is not drawn, and at half is drawn faded', async (t) => {
+  if (!FONTS) return t.skip('no font files for the in-process server');
+  // `opacity` was read and never painted, so the control a page keeps at
+  // `opacity: 0` until its row is hovered — meetup.com's "Homepage" behind
+  // its logo, the share button on each event card — was drawn over what it
+  // hides. At 0 nothing in the element is drawn, a positioned child
+  // included; between, each thing drawn is multiplied by it.
+  const result = await renderX11(
+    h(
+      'box',
+      { style: { width: 200, flexDirection: 'column' } },
+      h(Html, {
+        source:
+          '<body style="margin:0;background:#ffffff">' +
+          '<div style="opacity:0;height:20px;background:#ff0000">' +
+          '<div style="position:absolute;left:40px;top:0;width:20px;' +
+          'height:20px;background:#0000ff"></div></div>' +
+          '<div style="opacity:0.5;height:20px;background:#ff0000"></div>' +
+          '</body>',
+        partial: false,
+      }),
+    ),
+    { width: 240, height: 100, fonts: FONTS },
+  );
+  await expectPixel(result.ctx, 10, 10, '#ffffff', {
+    message: 'the transparent block is not drawn',
+  });
+  await expectPixel(result.ctx, 50, 10, '#ffffff', {
+    message: 'nor its positioned child',
+  });
+  await expectPixel(result.ctx, 10, 30, '#ff8080', {
+    tolerance: 3,
+    message: 'the half-opaque block is its colour at half over the page',
   });
 });
 

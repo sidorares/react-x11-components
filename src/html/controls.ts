@@ -23,7 +23,8 @@ import type { Element } from 'domhandler';
 
 import { attr, tagOf } from './dom.js';
 import type { ComputedStyle } from './css/style.js';
-import type { BoxTree, ReplacedKind } from './layout/boxes.js';
+import { resolve } from './css/values.js';
+import type { Box, BoxTree, ReplacedKind } from './layout/boxes.js';
 import type { FontsLike } from './layout/inline.js';
 
 /** The palette numbers a control's box has to reserve room for. */
@@ -46,6 +47,28 @@ export interface ControlRect {
   y: number;
   width: number;
   height: number;
+  /** The page's own look for a text field it draws itself, if it does. */
+  face?: ControlFace | null;
+}
+
+/**
+ * How a text field looks that the page draws itself — `appearance: none`,
+ * which is how a design system writes every field it has: its background,
+ * borders, corner, padding and text, as its box has them. The widget is
+ * mounted in that face instead of the palette's (`fieldChrome`): meetup.com's
+ * search pill holds two fields with no background and a rule between them,
+ * where the palette's frame drew two boxes inside the pill.
+ */
+export interface ControlFace {
+  background: string | null;
+  color: string;
+  fontSize: number;
+  fontFamily: string;
+  /** Top, right, bottom, left, as CSS lists them. */
+  border: [number, number, number, number];
+  borderColor: [string, string, string, string];
+  radius: number;
+  padding: [number, number, number, number];
 }
 
 /** The rectangles every control in a laid-out document landed on. */
@@ -61,9 +84,32 @@ export function controlRectsOf(tree: BoxTree): ControlRect[] {
       y: box.y,
       width: box.width,
       height: box.height,
+      face: faceOf(box),
     });
   }
   return out;
+}
+
+/** A text field's own face, where the page draws it (`ControlFace`). */
+function faceOf(box: Box): ControlFace | null {
+  const style = box.style;
+  if (style.appearance !== 'none') return null;
+  if (box.replaced !== 'input' && box.replaced !== 'textarea') return null;
+  return {
+    background: style.backgroundColor,
+    color: style.color,
+    fontSize: style.fontSize,
+    fontFamily: style.fontFamily,
+    border: [box.borderTop, box.borderRight, box.borderBottom, box.borderLeft],
+    borderColor: [
+      style.borderTopColor,
+      style.borderRightColor,
+      style.borderBottomColor,
+      style.borderLeftColor,
+    ],
+    radius: resolve(style.borderRadius[0], box.width),
+    padding: [box.padTop, box.padRight, box.padBottom, box.padLeft],
+  };
 }
 
 /**
@@ -84,6 +130,30 @@ export function measureControl(
 ): { width: number; height: number } {
   const em = style.fontSize;
   const ch = charWidth(style, fonts);
+  // A field the page draws itself has none of the palette's chrome: its
+  // box is its text, a line of the page's own height, and the page's
+  // padding and border go round it as round any box (`ControlFace`).
+  if (
+    style.appearance === 'none' &&
+    (kind === 'input' || kind === 'textarea')
+  ) {
+    const line =
+      style.lineHeight === 'normal'
+        ? Math.round(em * 1.2)
+        : Math.round(
+            style.lineHeightIsLength ? style.lineHeight : style.lineHeight * em,
+          );
+    if (kind === 'textarea') {
+      return {
+        width: Math.round(ch * (numberAttr(el, 'cols') ?? 30)),
+        height: line * (numberAttr(el, 'rows') ?? 3),
+      };
+    }
+    return {
+      width: Math.round(ch * (numberAttr(el, 'size') ?? 20)),
+      height: line,
+    };
+  }
   const lineHeight = Math.round(em * 1.35);
   const padding = Math.round(em * 0.5);
   // The widget's own vertical chrome, so the reserved box and the mounted

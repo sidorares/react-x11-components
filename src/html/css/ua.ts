@@ -26,6 +26,10 @@ export function lookKey(look: RootLook): string {
     look.borderColor,
     look.mutedColor,
     look.background,
+    look.surface,
+    look.controlPadY,
+    look.controlBorder,
+    look.controlRadius,
   ].join('|');
 }
 
@@ -176,6 +180,22 @@ input, button, select, textarea, meter, progress {
 input[type=checkbox] { margin: 3px 4px 3px 4px; }
 input[type=radio] { margin: 3px 4px 3px 5px; }
 input[type=hidden] { display: none; }
+/* A <button> is drawn rather than mounted: its content is the document's —
+   an icon, a label in spans, a pill of the page's own design, which is what
+   most buttons on the web are — and the page restyles it as it restyles
+   anything. What the sheet gives one the page left alone is the palette's
+   control, the chrome a mounted widget around it has. */
+button {
+  vertical-align: baseline;
+  padding: ${look.controlPadY}px 0.75em;
+  border: ${look.controlBorder}px solid ${look.borderColor};
+  border-radius: ${look.controlRadius}px;
+  background-color: ${look.surface};
+  color: ${look.color};
+  text-align: center;
+  cursor: pointer;
+}
+button[disabled] { color: ${look.mutedColor}; cursor: default; }
 textarea { vertical-align: top; }
 fieldset { margin: 0 2px; padding: 0.35em 0.75em 0.6em; border: 1px solid ${look.borderColor}; }
 legend { display: block; padding: 0 2px; }

@@ -1914,8 +1914,9 @@ function replacedKind(el: Element, tag: string): ReplacedKind {
       return 'textarea';
     case 'select':
       return 'select';
-    case 'button':
-      return 'button';
+    // A `<button>` is not one: its content is the document's, laid out and
+    // drawn like any box's (the UA sheet's `button` rule), where an
+    // `<input type=submit>` has only a value to show and is a widget.
     case 'input': {
       const type = (attr(el, 'type') ?? 'text').toLowerCase();
       if (type === 'checkbox') return 'checkbox';

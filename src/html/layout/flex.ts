@@ -251,6 +251,12 @@ function layoutItemAt(
   // A stretched item is taller than its content, and the box has to say so
   // or its background stops short of the row.
   if (height > box.height || column) box.height = height;
+  // A replaced item is as wide as the flex layout made it — grown, shrunk
+  // or stretched — where laid out alone it takes its own `width` or its
+  // intrinsic one: meetup.com's search fields, `width: 0; flex: 1`, filled
+  // their pill in a browser and were no width at all here, so never
+  // mounted, and two images `flex: 1` overlapped at their own widths.
+  if (box.kind === 'replaced') box.width = width;
   moveTo(box, x, y);
 }
 

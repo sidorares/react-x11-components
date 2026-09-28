@@ -276,6 +276,9 @@ export interface ComputedStyle {
   aspectRatio: { ratio: number; auto: boolean } | null;
   /** How an image fills its content box, and where in it. */
   objectFit: 'fill' | 'contain' | 'cover' | 'none' | 'scale-down';
+  /** A form control's own look (`auto`), or `none`: the page draws it,
+   *  with its own background, borders and padding (`ControlFace`). */
+  appearance: 'auto' | 'none';
   objectPositionX: Len;
   objectPositionY: Len;
   overflowX: 'visible' | 'hidden' | 'scroll' | 'auto';
@@ -607,6 +610,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     textOverflow: 'clip',
     aspectRatio: null,
     objectFit: 'fill',
+    appearance: 'auto',
     objectPositionX: { pct: 50 },
     objectPositionY: { pct: 50 },
     overflowX: 'visible',
@@ -1036,6 +1040,16 @@ export function applyDeclaration(
     case 'object-fit': {
       const v = value.trim().toLowerCase();
       if (OBJECT_FITS.has(v)) style.objectFit = v as ComputedStyle['objectFit'];
+      return;
+    }
+    case 'appearance':
+    case '-webkit-appearance':
+    case '-moz-appearance': {
+      // every keyword but `none` is some control's own look, which is the
+      // only other thing this engine has
+      const v = value.trim().toLowerCase();
+      if (/^[a-z-]+$/.test(v))
+        style.appearance = v === 'none' ? 'none' : 'auto';
       return;
     }
     case 'object-position': {
@@ -3597,6 +3611,9 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   ],
   'aspect-ratio': ['aspectRatio'],
   'object-fit': ['objectFit'],
+  appearance: ['appearance'],
+  '-webkit-appearance': ['appearance'],
+  '-moz-appearance': ['appearance'],
   'object-position': ['objectPositionX', 'objectPositionY'],
   position: ['position'],
   top: ['top'],

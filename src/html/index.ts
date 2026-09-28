@@ -30,7 +30,7 @@ import type {} from 'react-x11/jsx-runtime';
 
 import { useLinkClicks, useSelectionMenu } from '../richtext/index.js';
 import { hx } from './hx.js';
-import { attr } from './dom.js';
+import { attr, tagOf } from './dom.js';
 import type { Document, Element } from './dom.js';
 import { ELEMENT, HtmlViewNode, registerHtmlView } from './node.js';
 import type { HtmlViewProps, ScriptRequest } from './node.js';
@@ -147,9 +147,10 @@ export interface HtmlProps {
   /** The parsed document, each time it is re-parsed — the DOM handle. */
   onDocument?: (document: Document) => void;
   /**
-   * A form control changed. The element is the one in the DOM, so a handler
-   * that wants to keep the value writes it back with `setAttribute`-shaped
-   * mutation and calls the handle's `refresh()`.
+   * A form control changed, or a `<button>` was pressed — reported with its
+   * `value`. The element is the one in the DOM, so a handler that wants to
+   * keep the value writes it back with `setAttribute`-shaped mutation and
+   * calls the handle's `refresh()`.
    */
   onControlChange?: (element: Element, value: string | boolean) => void;
   /** Base text style. Defaults: theme `fontSize` (14), `sans-serif`. */
@@ -262,6 +263,7 @@ export function Html(props: HtmlProps): ReactElement {
 
   const theme = useTheme() as unknown as Record<string, unknown>;
   const links = useLinkClicks(onLink);
+  const buttons = useButtonPresses(onControlChange);
   const menu = useSelectionMenu(selectable);
 
   const look = React.useMemo(
@@ -339,6 +341,14 @@ export function Html(props: HtmlProps): ReactElement {
       selectable,
       selectionColor: props.selectionColor,
       ...links,
+      onMouseDown: (ev: X11MouseEvent<DrawnNode>) => {
+        links.onMouseDown(ev);
+        buttons.onMouseDown(ev);
+      },
+      onMouseUp: (ev: X11MouseEvent<DrawnNode>) => {
+        links.onMouseUp(ev);
+        buttons.onMouseUp(ev);
+      },
       ...menu,
       'data-testname': props['data-testname'],
     } as Record<string, unknown>,
@@ -385,6 +395,54 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
     }),
     [],
   );
+}
+
+/**
+ * A press and a release on the same `<button>` the document draws, reported
+ * as a pressed widget reports one: `onControlChange` with the button and its
+ * `value`. A `<button>` is laid out and drawn like any box (the UA sheet's
+ * `button` rule) — its content is the page's, and most of the buttons on
+ * the web are an icon or a pill of a page's own design — so it is the
+ * element that finds out it was pressed, not a widget. A disabled one, or
+ * a press that lands in a link inside one, is not a press of it.
+ */
+function useButtonPresses(onControlChange: HtmlProps['onControlChange']): {
+  onMouseDown: (ev: X11MouseEvent<DrawnNode>) => void;
+  onMouseUp: (ev: X11MouseEvent<DrawnNode>) => void;
+} {
+  const press = React.useRef<Element | null>(null);
+  const buttonAt = (ev: X11MouseEvent<DrawnNode>): Element | null => {
+    const target = ev.target as {
+      elementAtPoint?: (x: number, y: number) => Element | null;
+    } | null;
+    let node =
+      typeof target?.elementAtPoint === 'function'
+        ? target.elementAtPoint(ev.x, ev.y)
+        : null;
+    for (
+      ;
+      node;
+      node = node.parent?.type === 'tag' ? (node.parent as Element) : null
+    ) {
+      if (tagOf(node) === 'a' && attr(node, 'href') !== undefined) return null;
+      if (tagOf(node) === 'button') {
+        return attr(node, 'disabled') === undefined ? node : null;
+      }
+    }
+    return null;
+  };
+  return {
+    onMouseDown: (ev) => {
+      press.current = onControlChange && ev.button === 1 ? buttonAt(ev) : null;
+    },
+    onMouseUp: (ev) => {
+      const pressed = press.current;
+      press.current = null;
+      if (!pressed || !onControlChange || ev.button !== 1) return;
+      if (buttonAt(ev) !== pressed) return;
+      onControlChange(pressed, attr(pressed, 'value') ?? '');
+    },
+  };
 }
 
 // --- the widgets ------------------------------------------------------------
@@ -493,7 +551,7 @@ function renderControl(
       // with whatever was last echoed into the DOM.
       widget = hx('textarea', {
         defaultValue: textareaValue(el),
-        style: [fieldChrome(look), { width: '100%', height: '100%' }],
+        style: [chromeOf(rect, look), { width: '100%', height: '100%' }],
         onChange: readOnly ? undefined : (ev) => reportText(ev.value),
       });
       break;
@@ -505,7 +563,7 @@ function renderControl(
         // Core's word for a password field: nothing in it reaches a
         // selection, PRIMARY included.
         sensitive: type === 'password',
-        style: [fieldChrome(look), { width: '100%', height: '100%' }],
+        style: [chromeOf(rect, look), { width: '100%', height: '100%' }],
         onChange: readOnly
           ? undefined
           : (ev) => {
@@ -530,6 +588,35 @@ function renderControl(
  * The values are the palette's, so a field in a document and a `<Select>`
  * beside it are the same height with the same corner and the same edge.
  */
+function chromeOf(rect: ControlRect, look: RootLook): Style {
+  const face = rect.face;
+  if (!face) return fieldChrome(look);
+  // the page's own face (`ControlFace`): a field with no background, or
+  // only a rule on one side, is drawn so
+  const [bt, br, bb, bl] = face.border;
+  const [ct, cr, cb, cl] = face.borderColor;
+  const [pt, pr, pb, pl] = face.padding;
+  return {
+    backgroundColor: face.background ?? 'transparent',
+    borderTopWidth: bt,
+    borderRightWidth: br,
+    borderBottomWidth: bb,
+    borderLeftWidth: bl,
+    borderTopColor: ct,
+    borderRightColor: cr,
+    borderBottomColor: cb,
+    borderLeftColor: cl,
+    borderRadius: face.radius,
+    paddingTop: pt,
+    paddingRight: pr,
+    paddingBottom: pb,
+    paddingLeft: pl,
+    color: face.color,
+    fontFamily: face.fontFamily,
+    fontSize: face.fontSize,
+  };
+}
+
 function fieldChrome(look: RootLook): Style {
   return {
     backgroundColor: look.surface,
