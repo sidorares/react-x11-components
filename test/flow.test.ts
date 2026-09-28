@@ -73,6 +73,7 @@ import {
   edgePath,
   pointAtFraction,
 } from '../src/flow/paths.js';
+import { flowClock } from '../src/flow/node.js';
 
 const h = React.createElement;
 
@@ -4231,17 +4232,32 @@ test('the dashes sit a pan out, and every step of it moves the pixels', async ()
     invalidate(...a: unknown[]): void;
   };
   let ticks = 0;
+  let panning = false;
   const invalidate = node.invalidate.bind(node);
   node.invalidate = (...a: unknown[]) => {
-    if (a[2] === 'animation') ticks++;
+    if (a[2] === 'animation' && panning) ticks++;
     invalidate(...a);
   };
+  // The pane's time is held through the pan, 20 ms a step: a runner that
+  // took longer than the dashes' wait over one step let them march in the
+  // middle of it, which is what they should do after a pause and not what
+  // this pan is asking about. Counted from the first step, since a tick due
+  // before the pan began is no tick in the middle of one.
+  const realNow = flowClock.now;
+  let held = realNow();
+  flowClock.now = () => held;
   const steps = 16;
-  for (let step = 1; step <= steps; step++) {
-    await act(() => node.setViewport({ x: step * 4, y: 0, zoom: 1 }));
-    await new Promise((r) => setTimeout(r, 20));
+  try {
+    for (let step = 1; step <= steps; step++) {
+      held += 20;
+      await act(() => node.setViewport({ x: step * 4, y: 0, zoom: 1 }));
+      panning = true;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    await act();
+  } finally {
+    flowClock.now = realNow;
   }
-  await act();
   assert.strictEqual(ticks, 0, 'no tick in the middle of the pan');
   assert.strictEqual(moved, steps, 'and every step was a copy');
   await until(() => ticks >= 2);

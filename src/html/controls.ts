@@ -23,8 +23,8 @@ import type { Element } from 'domhandler';
 
 import { attr, tagOf } from './dom.js';
 import type { ComputedStyle } from './css/style.js';
-import { resolve } from './css/values.js';
-import type { Box, BoxTree, ReplacedKind } from './layout/boxes.js';
+import { isTransparent } from './css/values.js';
+import type { BoxTree, ReplacedKind } from './layout/boxes.js';
 import type { FontsLike } from './layout/inline.js';
 
 /** The palette numbers a control's box has to reserve room for. */
@@ -47,28 +47,24 @@ export interface ControlRect {
   y: number;
   width: number;
   height: number;
-  /** The page's own look for a text field it draws itself, if it does. */
-  face?: ControlFace | null;
+  /**
+   * Set on a text field whose own box the author styled — gave it a border
+   * or a background (`styledField`). The document draws that box, and the
+   * widget goes bare inside its content box, here, with no frame or fill
+   * of its own and its text in the element's colour and font.
+   */
+  bare?: BareField;
 }
 
-/**
- * How a text field looks that the page draws itself — `appearance: none`,
- * which is how a design system writes every field it has: its background,
- * borders, corner, padding and text, as its box has them. The widget is
- * mounted in that face instead of the palette's (`fieldChrome`): meetup.com's
- * search pill holds two fields with no background and a rule between them,
- * where the palette's frame drew two boxes inside the pill.
- */
-export interface ControlFace {
-  background: string | null;
+/** Where a styled text field's widget goes, and how its text looks. */
+export interface BareField {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
   color: string;
-  fontSize: number;
   fontFamily: string;
-  /** Top, right, bottom, left, as CSS lists them. */
-  border: [number, number, number, number];
-  borderColor: [string, string, string, string];
-  radius: number;
-  padding: [number, number, number, number];
+  fontSize: number;
 }
 
 /** The rectangles every control in a laid-out document landed on. */
@@ -77,39 +73,57 @@ export function controlRectsOf(tree: BoxTree): ControlRect[] {
   for (const box of tree.controls) {
     if (!box.el) continue;
     if (box.width <= 0 || box.height <= 0) continue;
-    out.push({
+    const rect: ControlRect = {
       element: box.el,
       kind: box.replaced,
       x: box.x,
       y: box.y,
       width: box.width,
       height: box.height,
-      face: faceOf(box),
-    });
+    };
+    if (styledField(box.replaced, box.style)) {
+      rect.bare = {
+        x: box.contentX,
+        y: box.contentY,
+        width: box.contentWidth,
+        height: box.contentHeight,
+        color: box.style.color,
+        fontFamily: box.style.fontFamily,
+        fontSize: box.style.fontSize,
+      };
+    }
+    out.push(rect);
   }
   return out;
 }
 
-/** A text field's own face, where the page draws it (`ControlFace`). */
-function faceOf(box: Box): ControlFace | null {
-  const style = box.style;
-  if (style.appearance !== 'none') return null;
-  if (box.replaced !== 'input' && box.replaced !== 'textarea') return null;
-  return {
-    background: style.backgroundColor,
-    color: style.color,
-    fontSize: style.fontSize,
-    fontFamily: style.fontFamily,
-    border: [box.borderTop, box.borderRight, box.borderBottom, box.borderLeft],
-    borderColor: [
-      style.borderTopColor,
-      style.borderRightColor,
-      style.borderBottomColor,
-      style.borderLeftColor,
-    ],
-    radius: resolve(style.borderRadius[0], box.width),
-    padding: [box.padTop, box.padRight, box.padBottom, box.padLeft],
-  };
+/**
+ * Whether a text field's box is the author's to draw: one given a border or
+ * a background of its own, which the UA sheet gives no control, or set to
+ * `appearance: none`, which says so outright. A browser drops a field's
+ * native look for the author's then (CSS UI 4 7.1, `appearance`), and so
+ * does this: the widget's frame and fill would hide the author's, and what
+ * they would draw is the theme's rather than the page's. `appearance: none`
+ * is how a design system writes every field it has — meetup.com's search
+ * pill holds two with no background, only one of them with a border.
+ */
+export function styledField(kind: ReplacedKind, style: ComputedStyle): boolean {
+  if (kind !== 'input' && kind !== 'textarea') return false;
+  return (
+    style.appearance === 'none' ||
+    !isTransparent(style.backgroundColor) ||
+    !!style.backgroundImage ||
+    !!style.backgroundGradient ||
+    !!style.backgroundImages ||
+    edged(style.borderTopStyle, style.borderTopWidth) ||
+    edged(style.borderRightStyle, style.borderRightWidth) ||
+    edged(style.borderBottomStyle, style.borderBottomWidth) ||
+    edged(style.borderLeftStyle, style.borderLeftWidth)
+  );
+}
+
+function edged(style: ComputedStyle['borderTopStyle'], width: number): boolean {
+  return style !== 'none' && style !== 'hidden' && width > 0;
 }
 
 /**
@@ -130,30 +144,6 @@ export function measureControl(
 ): { width: number; height: number } {
   const em = style.fontSize;
   const ch = charWidth(style, fonts);
-  // A field the page draws itself has none of the palette's chrome: its
-  // box is its text, a line of the page's own height, and the page's
-  // padding and border go round it as round any box (`ControlFace`).
-  if (
-    style.appearance === 'none' &&
-    (kind === 'input' || kind === 'textarea')
-  ) {
-    const line =
-      style.lineHeight === 'normal'
-        ? Math.round(em * 1.2)
-        : Math.round(
-            style.lineHeightIsLength ? style.lineHeight : style.lineHeight * em,
-          );
-    if (kind === 'textarea') {
-      return {
-        width: Math.round(ch * (numberAttr(el, 'cols') ?? 30)),
-        height: line * (numberAttr(el, 'rows') ?? 3),
-      };
-    }
-    return {
-      width: Math.round(ch * (numberAttr(el, 'size') ?? 20)),
-      height: line,
-    };
-  }
   const lineHeight = Math.round(em * 1.35);
   const padding = Math.round(em * 0.5);
   // The widget's own vertical chrome, so the reserved box and the mounted
@@ -189,9 +179,17 @@ export function measureControl(
         height: lineHeight + chrome,
       };
     }
+    // a field the author drew the box of is its text and no more, as a
+    // browser's is: the room around it is the author's border and padding
     case 'textarea': {
       const cols = numberAttr(el, 'cols') ?? 30;
       const rows = numberAttr(el, 'rows') ?? 3;
+      if (styledField(kind, style)) {
+        return {
+          width: Math.round(ch * cols),
+          height: Math.round(lineHeight * rows),
+        };
+      }
       return {
         width: Math.round(ch * cols + padding * 2 + chrome),
         height: Math.round(lineHeight * rows + chrome),
@@ -199,6 +197,9 @@ export function measureControl(
     }
     case 'input': {
       const size = numberAttr(el, 'size') ?? 20;
+      if (styledField(kind, style)) {
+        return { width: Math.round(ch * size), height: lineHeight };
+      }
       return {
         width: Math.round(ch * size + padding * 2 + chrome),
         height: lineHeight + chrome,

@@ -42,7 +42,7 @@ import {
   selectedOption,
   textareaValue,
 } from './controls.js';
-import type { ControlRect } from './controls.js';
+import type { BareField, ControlRect } from './controls.js';
 import type { ResourceRequest, ResourceResult } from './resources.js';
 
 export {
@@ -52,7 +52,7 @@ export {
 } from './node.js';
 export type { HtmlViewProps, ScriptRequest } from './node.js';
 export type { ResourceRequest, ResourceResult } from './resources.js';
-export type { ControlRect } from './controls.js';
+export type { BareField, ControlRect } from './controls.js';
 export type { ComputedStyle, RootLook } from './css/style.js';
 export type {
   AnyNode,
@@ -495,13 +495,16 @@ function renderControl(
   const key = `${rect.kind}:${rect.x},${rect.y}`;
   const disabled = attr(el, 'disabled') !== undefined;
   const readOnly = attr(el, 'readonly') !== undefined;
+  // a field whose box the document draws takes its content box
+  const at = rect.bare ?? rect;
   const frame: Style = {
     position: 'absolute',
-    left: Math.round(rect.x),
-    top: Math.round(rect.y),
-    width: Math.round(rect.width),
-    height: Math.round(rect.height),
+    left: Math.round(at.x),
+    top: Math.round(at.y),
+    width: Math.round(at.width),
+    height: Math.round(at.height),
   };
+  const field = rect.bare ? bareField(rect.bare) : fieldChrome(look);
   const report = (value: string | boolean): void => {
     onChange?.(el, value);
     touch();
@@ -580,7 +583,7 @@ function renderControl(
       // with whatever was last echoed into the DOM.
       widget = hx('textarea', {
         defaultValue: textareaValue(el),
-        style: [chromeOf(rect, look), { width: '100%', height: '100%' }],
+        style: [field, { width: '100%', height: '100%' }],
         onChange: readOnly ? undefined : (ev) => reportText(ev.value),
       });
       break;
@@ -592,7 +595,7 @@ function renderControl(
         // Core's word for a password field: nothing in it reaches a
         // selection, PRIMARY included.
         sensitive: type === 'password',
-        style: [chromeOf(rect, look), { width: '100%', height: '100%' }],
+        style: [field, { width: '100%', height: '100%' }],
         onChange: readOnly
           ? undefined
           : (ev) => {
@@ -617,35 +620,6 @@ function renderControl(
  * The values are the palette's, so a field in a document and a `<Select>`
  * beside it are the same height with the same corner and the same edge.
  */
-function chromeOf(rect: ControlRect, look: RootLook): Style {
-  const face = rect.face;
-  if (!face) return fieldChrome(look);
-  // the page's own face (`ControlFace`): a field with no background, or
-  // only a rule on one side, is drawn so
-  const [bt, br, bb, bl] = face.border;
-  const [ct, cr, cb, cl] = face.borderColor;
-  const [pt, pr, pb, pl] = face.padding;
-  return {
-    backgroundColor: face.background ?? 'transparent',
-    borderTopWidth: bt,
-    borderRightWidth: br,
-    borderBottomWidth: bb,
-    borderLeftWidth: bl,
-    borderTopColor: ct,
-    borderRightColor: cr,
-    borderBottomColor: cb,
-    borderLeftColor: cl,
-    borderRadius: face.radius,
-    paddingTop: pt,
-    paddingRight: pr,
-    paddingBottom: pb,
-    paddingLeft: pl,
-    color: face.color,
-    fontFamily: face.fontFamily,
-    fontSize: face.fontSize,
-  };
-}
-
 function fieldChrome(look: RootLook): Style {
   return {
     backgroundColor: look.surface,
@@ -657,6 +631,25 @@ function fieldChrome(look: RootLook): Style {
     color: look.color,
     fontFamily: look.fontFamily,
     fontSize: look.fontSize,
+  };
+}
+
+/**
+ * A text field whose box the author styled: the document draws the border
+ * and the background, so the widget draws neither, and its text is the
+ * element's colour and font, which the author chose to go on that
+ * background, rather than the theme's.
+ */
+function bareField(bare: BareField): Style {
+  return {
+    backgroundColor: 'transparent',
+    borderWidth: 0,
+    borderRadius: 0,
+    paddingLeft: 0,
+    paddingRight: 0,
+    color: bare.color,
+    fontFamily: bare.fontFamily,
+    fontSize: bare.fontSize,
   };
 }
 

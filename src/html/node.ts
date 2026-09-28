@@ -73,7 +73,7 @@ import { lineBands as bandsFor } from '../richtext/runs.js';
 import { paintDocument, queryChildIndex } from './paint.js';
 import type { PaintContext } from './paint.js';
 import { controlRectsOf, measureControl } from './controls.js';
-import type { ControlFace, ControlRect } from './controls.js';
+import type { BareField, ControlRect } from './controls.js';
 import { ResourceStore } from './resources.js';
 import type { ResourceRequest, ResourceResult } from './resources.js';
 import { WebFonts } from './fonts.js';
@@ -863,15 +863,16 @@ export class HtmlViewNode extends Node {
             y: r.y / s,
             width: r.width / s,
             height: r.height / s,
-            face: r.face && {
-              ...r.face,
-              fontSize: r.face.fontSize / s,
-              border: r.face.border.map((v) => v / s) as ControlFace['border'],
-              radius: r.face.radius / s,
-              padding: r.face.padding.map(
-                (v) => v / s,
-              ) as ControlFace['padding'],
-            },
+            ...(r.bare && {
+              bare: {
+                ...r.bare,
+                x: r.bare.x / s,
+                y: r.bare.y / s,
+                width: r.bare.width / s,
+                height: r.bare.height / s,
+                fontSize: r.bare.fontSize / s,
+              },
+            }),
           },
     );
     if (sameRects(rects, this._controls)) return;
@@ -1404,12 +1405,25 @@ function sameRects(a: ControlRect[], b: ControlRect[]): boolean {
       p.y !== q.y ||
       p.width !== q.width ||
       p.height !== q.height ||
-      JSON.stringify(p.face) !== JSON.stringify(q.face)
+      !sameBare(p.bare, q.bare)
     ) {
       return false;
     }
   }
   return true;
+}
+
+function sameBare(a?: BareField, b?: BareField): boolean {
+  if (!a || !b) return a === b;
+  return (
+    a.x === b.x &&
+    a.y === b.y &&
+    a.width === b.width &&
+    a.height === b.height &&
+    a.color === b.color &&
+    a.fontFamily === b.fontFamily &&
+    a.fontSize === b.fontSize
+  );
 }
 
 // --- walks over the laid-out tree -------------------------------------------

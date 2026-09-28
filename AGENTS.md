@@ -1143,8 +1143,9 @@ component supplies one from those tokens — a form in a document and a form in
 the window around it have to be the same height. Two things are not widgets
 of the palette's: a `<button>`, whose content is the document's and which is
 drawn like any box (its press reported through `onControlChange`), and a
-field with `appearance: none`, mounted in the page's own face
-(`ControlFace`). A design system restyles every control it has, and a
+field the page styled — a border, a background, or `appearance: none`
+(`styledField`) — whose box the document draws, the widget mounted bare in
+its content box. A design system restyles every control it has, and a
 palette frame inside the page's drew two boxes where it designed one.
 
 **Nothing is fetched and nothing is executed, by construction.**

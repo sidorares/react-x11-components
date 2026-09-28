@@ -187,6 +187,7 @@ npx tsx scripts/conformance/run.ts wpt fuzz1 --chunk 50 --timeout 60000
 | 94     | positioned boxes in their stacking context         | 5,600 (95%) | 5,063 (86%) |
 | 95     | clearance, empty inline boxes and `initial`        | 5,609 (95%) | 5,073 (86%) |
 | 96     | float rules 3 and 7, a canvas, a table's height    | 5,615 (95%) | 5,078 (86%) |
+| 97     | a `top` line's baseline, collapsed borders, fields | 5,625 (95%) | 5,085 (86%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -2782,6 +2783,46 @@ solid 16px red` is invalid, each of the three at most once
      the browsers paint it), so a box in it set to `z-index: -1` is drawn
      over its background, where it went behind the page
      (`fixed-pos-stacking-001`).
+
+### Round 97
+
+232. **A line an image set `top` made taller had its text halfway down
+     it.** Where the baseline goes in a line a `top` or `bottom` box made
+     taller than the rest is left open (CSS 2.1 10.8.1), and it was centred
+     in the room the box left. Browsers keep it where the rest of the line
+     puts it, under the line's top, and only a `bottom` box taller than the
+     rest moves it down: Gecko's rule, which needs no order between the two
+     (`clear-inline-001`, `floats-029`, `vertical-align-121` and two
+     `::first-line` tests, whose references set text beside a `top`
+     image).
+233. **A collapsed border was drawn half a pixel early.** Layout split a
+     border between two rows a whole pixel to one side, where browsers
+     split it half and half; paint centred it on the line all the same,
+     and rounded the table's place and the line's offset apart, so a
+     pixel's border between two rows was drawn a pixel into the row above
+     (`block-formatting-contexts-003`). The halves are exact, which moves
+     no cell's content — the two always come to the border — and the
+     border is placed on the page and rounded once there.
+234. **A line took its room beside the floats over a guessed height.** The
+     room was measured over 1.4em, a line of text's, whatever the line
+     held, before its height was known: a line of `line-height: 0` holding
+     a 20px inline-block went below the floats that start 20px down, where
+     it fitted beside the one at its top (`floats-placement-003`). It is
+     measured over the paragraph's strut, and over an item's own height
+     where that is taller, as before. The 1.4em held no test up.
+235. **The canvas missed a `<body>` in an `<html>` set to be a table.** The
+     body is in an anonymous row and cell there, and only the root's
+     children were looked at (`abspos-containing-block-initial-004e`,
+     `-004f`).
+236. **A text field the author gave a border or a background had the
+     theme's drawn over them.** A browser drops a field's native look for
+     the author's (CSS UI 4, `appearance`), and the widget was mounted over
+     the whole box with its own frame and fill. The document paints the
+     field's box now, and the widget goes bare in its content box, in the
+     element's colour and font, which the author chose for that
+     background; its size is its text's, the border and padding around it
+     the author's (`blocks-026`). A button keeps the theme's look: core's
+     `<Button>` draws its own label, and a page's button is its own round.
 
 ## What `<Html>` supports
 

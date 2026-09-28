@@ -2084,6 +2084,7 @@ interface PlacedLine {
   y: number;
   width: number;
   height: number;
+  baseline: number;
   texts: PlacedText[];
   atomics: { x: number; box: { width: number } }[];
   edges?: { side: 'start' | 'end'; x: number; width: number }[];
@@ -3494,6 +3495,29 @@ test('a collapsed border on a line between two pixels starts on one', async () =
   );
 });
 
+test('a collapsed border between rows is drawn where the rows part', async () => {
+  // a pixel's border is half in each row, and the two halves are what
+  // layout leaves them; it was split a whole pixel to the row below, drawn
+  // centred on the line all the same, and rounded apart from the table's
+  // own place — a pixel over the row above, where a block's line was not
+  const { node } = await render(
+    '<div style="height:10.4px"></div>' +
+      '<table id="t" style="border-collapse:collapse;width:50px"><tr>' +
+      '<td style="padding:0;height:18.4px"></td></tr><tr>' +
+      '<td style="padding:0;height:18.4px;border-top:1px solid #00ff00">' +
+      '</td></tr></table>',
+  );
+  const el = view(node);
+  const t = boxOf(el, 't');
+  const green = (await fillsOf(el)).filter(
+    (f) => f.style === parseColor('#00ff00'),
+  );
+  assert.deepStrictEqual(
+    green.map((f) => [f.y, f.h]),
+    [[Math.round(t.y + 18.4), 1]],
+  );
+});
+
 test('an image told to be a table cell is inline', async () => {
   // CSS Display 3, 2.4: a table's part is no display a replaced element
   // takes, and it is inline — in a row, wrapped in a cell with what is
@@ -4672,6 +4696,37 @@ metric('form controls carry default margins from the UA sheet', async () => {
   );
 });
 
+metric(
+  'a text field the author gave a box is drawn by the document',
+  async () => {
+    // a browser drops a field's native look for the author's border and
+    // background (CSS UI 4 7.1); the widget was mounted over the whole
+    // box, with the theme's frame and fill over the author's
+    const { result, node } = await render(
+      '<style>body{margin:0}</style><input id="f" placeholder="q" ' +
+        'style="margin:0;border:10px solid #00ff00;background:#0000ff;' +
+        'padding:5px;width:100px;height:20px">',
+    );
+    const field = await screen.findByPlaceholder('q');
+    const at = (node as unknown as { abs: { x: number; y: number } }).abs;
+    const inner = (field as unknown as { abs: Record<string, number> }).abs;
+    assert.deepStrictEqual(
+      [inner.x - at.x, inner.y - at.y, inner.width, inner.height],
+      [15, 15, 100, 20],
+      'bare in the content box',
+    );
+    await waitFor(async () => {
+      const [r, g, b] = await pixelAt(result.ctx, at.x + 5, at.y + 5);
+      assert.ok(g > 200 && r < 60 && b < 60, `a green edge: ${r},${g},${b}`);
+      const [r2, g2, b2] = await pixelAt(result.ctx, at.x + 100, at.y + 25);
+      assert.ok(
+        b2 > 200 && r2 < 60 && g2 < 60,
+        `a blue field: ${r2},${g2},${b2}`,
+      );
+    });
+  },
+);
+
 // --- selection and hit testing ----------------------------------------------
 
 metric('the caret and the selection bands agree with the glyphs', async () => {
@@ -4814,16 +4869,15 @@ metric(
   },
 );
 
-test('a field the page draws itself is mounted in its own face', async () => {
-  // `appearance: none` is how a design system writes every field it has,
-  // and the palette's frame drew a box inside the page's own: meetup.com's
-  // search pill holds two fields with no background and a rule between
-  // them. Such a field is its text's height, the page's padding and border
-  // round it, and the widget is mounted in the page's face.
+test("a field set to appearance: none is the page's to draw", async () => {
+  // `appearance: none` says a field's native look is off whether or not
+  // the page gave it a border or a background — and it is how a design
+  // system writes every field it has: meetup.com's search pill holds two
+  // with no background, only one of them with a rule, and the other was
+  // framed by the theme inside the pill.
   const { node } = await render(
     '<input id="own" style="appearance:none;margin:0;padding:2px 0;' +
-      'border:0;border-right:1px solid #ff0000;background:transparent;' +
-      'line-height:20px">' +
+      'border:0;background:transparent">' +
       '<input id="plain">',
   );
   const el = view(node);
@@ -4831,17 +4885,19 @@ test('a field the page draws itself is mounted in its own face', async () => {
     el as unknown as {
       _controls: {
         element: { attribs: Record<string, string> };
-        face?: Record<string, unknown> | null;
+        bare?: { height: number } | null;
       }[];
     }
   )._controls;
   const own = rects.find((r) => r.element.attribs.id === 'own')!;
   const plain = rects.find((r) => r.element.attribs.id === 'plain')!;
-  assert.strictEqual(boxOf(el, 'own').height, 24, 'a line, and its padding');
-  assert.deepStrictEqual(own.face?.border, [0, 1, 0, 0]);
-  assert.strictEqual((own.face?.borderColor as string[])[1], '#ff0000');
-  assert.deepStrictEqual(own.face?.padding, [2, 0, 2, 0]);
-  assert.ok(!plain.face, "a field left alone keeps the palette's frame");
+  assert.ok(own.bare, 'mounted bare');
+  assert.strictEqual(
+    own.bare.height,
+    boxOf(el, 'own').height - 4,
+    'inside its padding',
+  );
+  assert.ok(!plain.bare, "a field left alone keeps the theme's frame");
 });
 
 test('a replaced flex item is as wide as the flex layout made it', async () => {
@@ -5179,6 +5235,23 @@ test('a line of an inline-block clears the floats beside all of its height', asy
   const [w, a, b] = ['w', 'a', 'b'].map((id) => boxOf(el, id));
   assert.deepStrictEqual([a.x - w.x, a.y - w.y], [150, 0]);
   assert.deepStrictEqual([b.x - w.x, b.y - w.y], [0, 150], 'below both');
+});
+
+test('a line takes its room beside the floats over its own height', async () => {
+  // the room was taken over a line of text's, 1.4em, whatever the line
+  // held: a 20px inline-block on a line of no height went below floats
+  // that start 20px down, rather than beside the one at its top
+  const { node } = await render(
+    '<div id="w" style="width:100px;font-size:20px;line-height:0">' +
+      '<div style="float:right;width:40px;height:20px"></div>' +
+      '<div style="float:right;clear:right;width:50px;height:50px"></div>' +
+      '<div style="float:left;width:50px;height:50px"></div>' +
+      '<span id="s" style="display:inline-block;width:40px;height:20px">' +
+      '</span></div>',
+  );
+  const el = view(node);
+  const [w, s] = ['w', 's'].map((id) => boxOf(el, id));
+  assert.deepStrictEqual([s.x - w.x, s.y - w.y], [0, 0]);
 });
 
 test('a margin after an empty block with clearance stays in the parent', async () => {
@@ -7519,6 +7592,19 @@ metric('a body with no html tag paints the canvas', async () => {
   assert.ok(g > 200 && r < 60 && b < 60, `the canvas is green: ${r},${g},${b}`);
 });
 
+metric('a body in an html set to be a table paints the canvas', async () => {
+  // the body is in an anonymous row and cell there, and the canvas looked
+  // for it among the root's children only
+  const { result } = await renderWithBytes(
+    '<html style="display:table"><body style="position:absolute;' +
+      'left:50px;top:50px;width:20px;height:20px;margin:0;' +
+      'background:#00ff00"></body></html>',
+    {},
+  );
+  const [r, g, b] = await pixelAt(result.ctx, 4, 4);
+  assert.ok(g > 200 && r < 60 && b < 60, `the canvas is green: ${r},${g},${b}`);
+});
+
 metric(
   'a background position from the far edge is that far in from it',
   async () => {
@@ -8378,6 +8464,28 @@ metric(
     // the big letter's ascent, not the box's own small font's, from the top
     assert.ok(t.at - line.y > 20, `${t.at - line.y} below the line's top`);
     assert.ok(t.at < all.find((f) => f.text.startsWith('x'))!.at);
+  },
+);
+
+metric(
+  'an image set top beside text leaves the text at the top of the line',
+  async () => {
+    // where the baseline goes in a line a `top` or `bottom` box made taller
+    // than the rest is left open (CSS 2.1 10.8.1). Browsers keep it where
+    // the rest of the line puts it, under its top, unless a `bottom` box is
+    // the taller; the text was centred in what the image left
+    const { node } = await render(
+      '<style>p{margin:0;font-size:16px}' +
+        'img{width:96px;height:96px}</style>' +
+        '<p id="t"><img style="vertical-align:top">Filler</p>' +
+        '<p id="b"><img style="vertical-align:bottom">Filler</p>',
+    );
+    const el = view(node);
+    const [top] = linesOf(el, 't');
+    const [bottom] = linesOf(el, 'b');
+    assert.strictEqual(top.height, 96);
+    assert.ok(top.baseline < 20, `under the line's top: ${top.baseline}`);
+    assert.ok(bottom.baseline > 80, `at its foot: ${bottom.baseline}`);
   },
 );
 

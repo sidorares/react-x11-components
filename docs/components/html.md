@@ -704,10 +704,18 @@ buttons on the web — which a widget's text label drew as "Button". It is
 laid out and drawn like any box, in the palette's control look where the
 page leaves it alone, and a press on it is reported through
 `onControlChange`, with its `value`, as a widget's is; it takes no focus of
-its own. And a text field the page draws itself, `appearance: none` — how a
-design system writes every field it has — is mounted in the page's face
-rather than the palette's: its background, borders, corner, padding and
-text, its box a line of its text's height with the page's padding round it.
+its own.
+
+**A text field the page styled is the page's to draw.** Give an `<input>` or
+a `<textarea>` a border or a background of its own, or `appearance: none`,
+and the document paints that box, as a browser drops a field's native look
+for the author's; the widget is mounted bare inside its content box, with no
+frame or fill, and writes in the element's own colour and font, which the
+author chose to go on that background. Its size is then its text's, and the
+border and padding around it are the author's. `appearance: none` is how a
+design system writes every field it has, often with neither a border nor a
+background. A field with none of the three keeps the theme's frame, and so
+does every `<input type=submit>`: core's `<Button>` draws its own label.
 
 **The application scrolls it, and height does not frighten it.** The element
 sizes to its content; put it in a `<box overflow="scroll">`, the same shape

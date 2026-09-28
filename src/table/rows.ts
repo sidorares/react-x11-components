@@ -7,6 +7,7 @@
 // answer, and the tests assert on the answer directly.
 
 import type { ReactNode } from 'react';
+import { compareText } from '../internal/collate.js';
 
 /** What a row is keyed by. Numbers are allowed because a row often comes
  *  from a database, and stringifying an id is a chance to lose one. */
@@ -108,11 +109,12 @@ export function columnValue<Row>(row: Row, column: TableColumn<Row>): unknown {
     : (row as Record<string, unknown>)[column.id];
 }
 
-/** Core's comparator, verbatim: numbers numerically, everything else as
- *  text, with `null`/`undefined` sorting as the empty string. */
+/** Core's comparator: numbers numerically, everything else as text, with
+ *  `null`/`undefined` sorting as the empty string. The text half is
+ *  `localeCompare`'s, through one collator (`../internal/collate.ts`). */
 export function defaultCompare(a: unknown, b: unknown): number {
   if (typeof a === 'number' && typeof b === 'number') return a - b;
-  return String(a ?? '').localeCompare(String(b ?? ''));
+  return compareText(String(a ?? ''), String(b ?? ''));
 }
 
 /**
@@ -165,11 +167,19 @@ export function orderRows<Row>(
     sort && !presorted ? columns.find((c) => c.id === sort.column) : undefined;
   if (sort && column) {
     const sign = sort.direction === 'desc' ? -1 : 1;
-    const compare =
-      column.compare ??
-      ((a: Row, b: Row) =>
-        defaultCompare(columnValue(a, column), columnValue(b, column)));
-    entries.sort((a, b) => sign * compare(a.row, b.row));
+    const compare = column.compare;
+    if (compare) {
+      entries.sort((a, b) => sign * compare(a.row, b.row));
+    } else {
+      // each row's value read once rather than twice a comparison: a sort
+      // asks for about 17 of them a row at 100,000 rows
+      const keyed = entries.map((entry) => ({
+        entry,
+        key: columnValue(entry.row, column),
+      }));
+      keyed.sort((a, b) => sign * defaultCompare(a.key, b.key));
+      for (let i = 0; i < keyed.length; i++) entries[i] = keyed[i].entry;
+    }
     entries.forEach((entry, index) => {
       entry.index = index;
     });

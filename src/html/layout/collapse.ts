@@ -56,13 +56,6 @@ export interface CollapsedTable {
   lineY: number[];
 }
 
-/** The part of a border that lies before its grid line — to its left, or
- *  above it — and the part after. */
-export function halves(width: number): [number, number] {
-  const before = Math.floor(width / 2);
-  return [before, width - before];
-}
-
 /**
  * Give a table, or a cell of one, the border widths the collapsing model
  * leaves it, when its table's borders collapse. A table has no padding
@@ -283,14 +276,14 @@ export function collapseTable(table: Box): CollapsedTable {
     for (let c = cell.column; c < lastColumn; c += 1) {
       const top = widthOf(horizontal[cell.row * C + c]);
       const bottom = widthOf(horizontal[lastRow * C + c]);
-      edges.top = Math.max(edges.top, halves(top)[1]);
-      edges.bottom = Math.max(edges.bottom, halves(bottom)[0]);
+      edges.top = Math.max(edges.top, top / 2);
+      edges.bottom = Math.max(edges.bottom, bottom / 2);
     }
     for (let r = cell.row; r < lastRow; r += 1) {
       const left = widthOf(vertical[r * (C + 1) + cell.column]);
       const right = widthOf(vertical[r * (C + 1) + lastColumn]);
-      edges.left = Math.max(edges.left, halves(left)[1]);
-      edges.right = Math.max(edges.right, halves(right)[0]);
+      edges.left = Math.max(edges.left, left / 2);
+      edges.right = Math.max(edges.right, right / 2);
     }
     cellEdges.set(cell.box, edges);
   }
@@ -303,18 +296,12 @@ export function collapseTable(table: Box): CollapsedTable {
   if (R && C) {
     for (let r = 0; r < R; r += 1) {
       const row = r * (C + 1);
-      edges.left = Math.max(edges.left, halves(widthOf(vertical[row]))[0]);
-      edges.right = Math.max(
-        edges.right,
-        halves(widthOf(vertical[row + C]))[1],
-      );
+      edges.left = Math.max(edges.left, widthOf(vertical[row]) / 2);
+      edges.right = Math.max(edges.right, widthOf(vertical[row + C]) / 2);
     }
     for (let c = 0; c < C; c += 1) {
-      edges.top = Math.max(edges.top, halves(widthOf(horizontal[c]))[0]);
-      edges.bottom = Math.max(
-        edges.bottom,
-        halves(widthOf(horizontal[R * C + c]))[1],
-      );
+      edges.top = Math.max(edges.top, widthOf(horizontal[c]) / 2);
+      edges.bottom = Math.max(edges.bottom, widthOf(horizontal[R * C + c]) / 2);
     }
   }
   return {

@@ -3303,6 +3303,126 @@ Left from the same profile:
   colour emoji. Hashing off the main thread when the face loads would take
   it out of the frame.
 
+## Round 34: what a start loads, and what a scroll walks
+
+### Less loaded at start
+
+Timing every CommonJS module's compile inside a react-x11 app's startup put
+two packages ahead of everything but node-x11:
+
+- **dbus-native: 25 ms.** 11 ms of it was introspection's XML (xml2js, and
+  xmlbuilder under it), required at the top of the bus although only a
+  proxy for a remote object needs it, and the accessibility bridge builds
+  none at startup. It loads with the first `getObject` now (dbus-native
+  #412): `require('dbus-native')` 27 → 17 ms, and 10.7 ms inside
+  `createRoot`. It ships in dbus-native 0.16.0, outside core's `^0.15.1`,
+  so core's range has to move to take it.
+- **brotli: 14.5 ms**, through fontkit, which imports it for WOFF2. Its
+  `dictionary.js` requires a 756 KB JavaScript file at load that only the
+  first decompress uses. The fix is a line upstream; ntk #427 asks whether
+  to send it.
+
+On the Mac, the Mac session found `import 'react-x11'` loading `ntk/font`,
+`ntk/image` and `ntk/svg` on every backend: about 55 ms of a Cocoa app's
+start, none of it used by a first frame that decodes no image and draws no
+SVG. Loading them lazily trades against `<svg>`'s first frame or needs a
+renderer hook that waits for them, so it is react-x11 #743, open.
+
+### One collator (components #305)
+
+`String#localeCompare` with no locale is defined as a new `Intl.Collator()`
+a call, and two sorts made one every comparison. `<Table>`'s default sort
+also read each row's value twice a comparison. Both now share one collator
+(`src/internal/collate.ts`), and the table reads a row's value once:
+
+| on 100,000 rows or 5,000 candidates | before |  after |
+| ----------------------------------- | -----: | -----: |
+| `<Table>` sort, a text column       | 338 ms | 186 ms |
+| `<Table>` sort, a numeric column    | 130 ms |  48 ms |
+| completion ranking, nothing typed   | 8.5 ms | 4.4 ms |
+
+### A scroll walks the whole document (react-x11 #744, open)
+
+A pure scroll moves every descendant's `abs` by the scroll delta (#405's
+fast path) and re-verifies and culls every child of each container it
+paints. On a long `<Markdown>`, that is most of the frame, and it grows
+with the document:
+
+| nodes in the pane | median frame | the shift | the paint |
+| ----------------: | -----------: | --------: | --------: |
+|             2,891 |       1.8 ms |   0.98 ms |   0.76 ms |
+|             8,606 |       4.4 ms |   3.06 ms |   1.36 ms |
+|            28,644 |      11.6 ms |   8.22 ms |   3.36 ms |
+
+An iterative shift that keeps the overrides (`<glarea>` and `<foreign>`
+move their X windows; a nested scroller re-derives its origin) was slower:
+the checks it needs per node cost more than the virtual calls they
+replace. Making a scroll cost what is visible changes the `abs` contract,
+or virtualizes `<Markdown>` the way `<RichTextEditor>` already is. #744
+asks which.
+
+### What did not pay
+
+- **`FileDialog`'s sort.** 0.44 → 0.24 ms for 2,283 entries: V8 takes a
+  fast path on short names that the table's sort missed. Left as it is.
+- **pngjs's sync reader alone** instead of the package: 2.4 ms, through
+  pngjs's internals. Not taken.
+- **A two-stage `fc-match`**, the best face first (15 ms) and the sorted
+  list with its coverage after (30 ms). That would halve a first frame's
+  wait on a font it has not warmed: up to 7 ms here, more on XQuartz.
+  Left, since it is a delicate change to ntk's matching.
+- **A popup's first open** is 17–20 ms to its first painted frame, and 4–7
+  after. Nothing to take.
+
+## Round 35: what a first layout reads
+
+With round 33's changes in, timing each `FontManager#match` during an app's
+start showed where a first layout still waited: on reading fontconfig's
+answers, and on the answers arriving.
+
+### Only the head of an answer (ntk #429)
+
+A prewarm's answer is the whole fallback chain `fc-match -s` gives, each
+face with its coverage: 634 KB for `sans-serif` here. A layout setting text
+in a face needs its first line, and it read and parsed all of it, 2.6–3.3 ms
+a face. `FontManager#match` now asks the source for the best face alone,
+and the fontconfig source reads the head of a waiting answer. The chain
+stays in its file for the first character that falls back. An editor beside
+a markdown pane read four answers whole during its start and now reads
+none. A small app read one and now reads none, and its `createRoot` to
+first paint went 68.5 → 65.1 ms.
+
+### The best face beside the chain (ntk #430)
+
+fontconfig answers "which face" in about half the time it takes to answer
+the chain: 15 ms against 30, since it sorts nothing and writes one line. A
+prewarm now runs one `best` job beside a family's chains, for the face a
+layout will ask for first. That's the face being asked for, or the regular
+when a family is warmed ahead. Across 22 families and scripts, 5 faces
+each, the best face was always the chain's first face ntk can open.
+
+| an editor beside a markdown pane, 8 pairs | before    | after      |
+| ----------------------------------------- | --------- | ---------- |
+| the first monospace match                 | 2.4–32 ms | 2.1–2.5 ms |
+| `FontManager#match`, the whole start      | 12.3 ms   | 4.5 ms     |
+| `createRoot` to the first paint           | 122.7 ms  | 115.6 ms   |
+
+Before, the first monospace match waited 9–32 ms in 5 of the 8 starts, on
+the fc-match `<CodeEditor>` started while it rendered. After, it waited in
+none. On XQuartz, where fc-match takes 80–150 ms, the wait should shrink
+about in half, which is round 36's to measure.
+
+### The probe, and a test that raced the clock
+
+The startup probe these rounds quote is in the repository now
+(`scripts/bench/sweep/startup.mjs`, #309). It runs under plain `node`, since
+what it measures is module loading. `<Flow>`'s "the dashes sit a pan out"
+failed a docs-only PR's CI: the dashes march again once the view has held
+still for two ticks, and a runner slow over one step of the test's pan let
+them. The pane's time now reads through a `flowClock` the test holds
+(#308). Stalling one step 250 ms reproduced the failure on the old test,
+and the new one passes through it.
+
 ## Lessons
 
 1. **Look for caches that never hit.** Identity-keyed caches handed a new
@@ -3513,6 +3633,17 @@ Left from the same profile:
     after it, which the first-frame probes could not see and a scroll
     through new text could. Measure the steady state of any path a
     first-frame change sits on.
+48. **A convenience defined as a construction is a construction.**
+    `localeCompare` with no locale is a new `Intl.Collator` by the spec's
+    own definition, and a sort of 100,000 rows made 1.7 million of them.
+    Read what a convenience is defined as before calling it in a loop.
+49. **The tree a probe runs on is part of the probe.** An `npm install
+--no-save` of one tarball pruned another package that had been
+    installed the same way. Resolution then fell through to a parent
+    checkout's copy of it, with a second React behind that copy. The
+    result was broken hooks and startups 100 ms slower, none of it the
+    change's. Unpacking tarballs over an `npm ci` tree held. Count the
+    packages and check where each one resolves from before trusting a run.
 
 ## Still open
 
