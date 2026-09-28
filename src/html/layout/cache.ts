@@ -169,6 +169,7 @@ export const RUN_FIELDS = [
   'href',
   'features',
   'nowrap',
+  'shapeApart',
 ] as const satisfies readonly (keyof TextRun)[];
 
 /** A field of `TextRun` missing from `RUN_FIELDS` names itself here. */
@@ -201,7 +202,8 @@ function sameRun(a: TextRun, b: TextRun): boolean {
     a.strike === b.strike &&
     a.href === b.href &&
     a.features === b.features &&
-    a.nowrap === b.nowrap
+    a.nowrap === b.nowrap &&
+    a.shapeApart === b.shapeApart
   );
 }
 
@@ -227,7 +229,8 @@ function sameStyle(
     a.strike === b.strike &&
     a.href === b.href &&
     a.features === b.features &&
-    a.nowrap === b.nowrap
+    a.nowrap === b.nowrap &&
+    a.shapeApart === b.shapeApart
   );
 }
 

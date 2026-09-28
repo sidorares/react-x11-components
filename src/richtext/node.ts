@@ -123,6 +123,12 @@ export interface TextRun {
    *  them — the text of one element with `white-space: nowrap`, the element
    *  being the value. ntk's, from 8.13.0; CoreText breaks as it would. */
   nowrap?: unknown;
+  /** Shaped on its own: ntk shapes a word that runs across spans shaped
+   *  alike as one, kerned and joined across them, and a run marked so is
+   *  kept apart from the ones either side of it — as CSS keeps the text
+   *  either side of an inline box's margin, border or padding. ntk's, from
+   *  8.14.2. */
+  shapeApart?: boolean;
 }
 
 /** The props `<richtext>` takes. */

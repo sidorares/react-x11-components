@@ -121,7 +121,10 @@ test suite on both backends, is in
 [`<Html>` against the CSS 2.1 test suite](../html-conformance.md).
 
 **Layout:** block flow with margin collapsing, inline formatting with
-bidi and full shaping, `inline-block`, floats and `clear`, lists with their
+bidi and full shaping — a word that runs across elements shaped as one,
+kerned and joined across them, but for an element with a margin, border or
+padding at a side, whose text is shaped on its own — `inline-block`, floats
+and `clear`, lists with their
 markers, tables (the auto algorithm and `table-layout: fixed`, with `colspan`
 and `rowspan`, and the anonymous table CSS builds around table parts that
 have none), `position: relative | absolute | fixed`, `display: flex` (and
