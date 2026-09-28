@@ -7114,6 +7114,93 @@ metric(
   },
 );
 
+metric(
+  'a word too long for its line runs past it unless the style cuts it',
+  async () => {
+    // CSS Text 3, 5.5: `overflow-wrap: normal`, the initial value, lets a
+    // word wider than its line run past the line's end, as a browser does;
+    // `break-word` or `anywhere`, `word-break: break-all` or `break-word`
+    // whatever `overflow-wrap` says, cut it. Every such word was cut.
+    const word = 'Pneumonoultramicroscopicsilicovolcanoconiosis';
+    const { node } = await render(
+      '<style>body{margin:0} p{margin:0;width:100px}</style>' +
+        `<p id="a">${word}</p>` +
+        `<p id="b" style="overflow-wrap:break-word">${word}</p>` +
+        `<p id="c" style="word-break:break-word;overflow-wrap:normal">${word}</p>` +
+        `<div style="word-break:break-all"><p id="d">${word}</p></div>` +
+        // the engine cuts a paragraph's words or none, so a span that asks
+        // for it has them cut
+        `<p id="e">a <span style="overflow-wrap:anywhere">${word}</span></p>`,
+    );
+    const el = view(node);
+    const a = linesOf(el, 'a');
+    assert.strictEqual(a.length, 1, 'whole');
+    assert.ok(a[0].width > 100, `past the line's end: ${a[0].width}`);
+    for (const id of ['b', 'c', 'd', 'e']) {
+      const lines = linesOf(el, id);
+      assert.ok(lines.length > 1, `${id}: cut`);
+      assert.ok(
+        lines.every((line) => line.width <= 100.5),
+        `${id}: within the line`,
+      );
+    }
+  },
+);
+
+metric(
+  'a space that collapses between two nowrap elements is a break',
+  async () => {
+    // CSS Text 3, 4.1.1: a space after another collapses away and keeps its
+    // chance to wrap where its own element wraps, so the lines break between
+    // the elements. They ran on as one word, cut where the line ran out.
+    const spans = Array.from(
+      { length: 8 },
+      (_, i) => `<span style="white-space:nowrap">w${i} </span>`,
+    );
+    const { node } = await render(
+      '<style>p{margin:0;font:10px monospace}</style>' +
+        `<p id="a" style="width:100px">${spans.join(' ')}</p>`,
+    );
+    const lines = lineTextsOf(view(node), 'a').map((line) => line.trim());
+    assert.ok(lines.length > 1, JSON.stringify(lines));
+    for (const line of lines) {
+      assert.match(line, /^w\d(\sw\d)*$/, JSON.stringify(lines));
+    }
+  },
+);
+
+metric('a nowrap element does not break at its hyphens', async () => {
+  // CSS Text 3, 5.1: no break inside an element that does not wrap, at a
+  // space or anywhere else. Its spaces were held; a hyphen was still a
+  // place to break, and `whitespace-nowrap` on "state-of-the-art" broke
+  // inside it.
+  const { node } = await render(
+    '<style>p{margin:0;font:10px monospace;width:100px}</style>' +
+      '<p id="a">a <span style="white-space:nowrap">state-of-the-art</span> ' +
+      'design</p>',
+  );
+  // whole on a line of its own: the line before cannot take it
+  const a = lineTextsOf(view(node), 'a').map((line) => line.trim());
+  assert.deepStrictEqual(a.slice(0, 2), ['a', 'state-of-the-art'], `${a}`);
+});
+
+metric(
+  'a word too long for the room beside a float goes below it whole',
+  async () => {
+    // CSS 2.1 9.5: a line with too little room beside the floats for its
+    // first word moves down past them. A word kept whole ran past the room,
+    // over the float's side of the paragraph, and stayed beside it.
+    const { node } = await render(
+      '<style>body{margin:0}</style><div style="width:200px">' +
+        '<div style="float:left;width:150px;height:30px"></div>' +
+        '<p id="p" style="margin:0">Supercalifragilistic words</p></div>',
+    );
+    const [line] = linesOf(view(node), 'p');
+    assert.ok(line.y >= 30, `below the float: ${line.y}`);
+    assert.strictEqual(line.x, 0);
+  },
+);
+
 metric('a kept tab goes to its stop', async () => {
   // a tab was a space wide in ntk and at CoreText's own stops, 28 points
   // apart: code indented with tabs, and columns a tab apart, did not line

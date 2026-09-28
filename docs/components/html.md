@@ -405,7 +405,8 @@ first is the text engine's; the second is spacing added to each space and
 no-break space, so only text that asks for it is split into more runs),
 `white-space` (including
 `pre` and `pre-wrap`, on an element as well as on its block: a `nowrap`
-element's words stay together, and `pre`'s spaces take their room at a
+element's text stays together, at its hyphens as well as its spaces, and
+`pre`'s spaces take their room at a
 line's end, where other spaces hang, and its tabs go to their stops, every
 `tab-size` spaces; a line break straight after `<pre>`'s
 start tag is dropped, as HTML's parser drops it) and CSS Text 4's halves
@@ -417,8 +418,16 @@ width, as Chrome does it; `pretty` wraps as `auto` does), `line-clamp` and
 are, the last cut with an ellipsis — Tailwind's `line-clamp-2`; a block
 laid out a line at a time, around an image or a float, is cut with none),
 `text-overflow: ellipsis` on a `nowrap` block that clips (`truncate`: each
-line cut at the box's width with an ellipsis, which the text engine makes
-room for inside the line's last word), `direction`,
+line cut where the box ends, inside a word if need be, with an ellipsis, as
+a browser cuts it), `overflow-wrap` (a word too long for
+its line runs past the line's end, as in a browser, unless the paragraph
+says it may be cut: `overflow-wrap: break-word` or `anywhere`,
+`word-break: break-all` or `break-word`, or `line-break: anywhere`, all of
+which cut it where the line runs out; the text engine answers for a whole
+paragraph, so an element in it that asks has its every word cut, and text
+in a script written without spaces is cut regardless, as the engine finds
+no words in it — CoreText, on macOS, cuts a word too long whatever the
+style says), `direction`,
 `unicode-bidi`, `vertical-align`,
 `text-decoration` in all five rule styles, with `text-decoration-thickness`
 and `text-underline-offset`. `unicode-bidi` is carried out as

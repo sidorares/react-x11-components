@@ -168,6 +168,7 @@ export const RUN_FIELDS = [
   'strike',
   'href',
   'features',
+  'nowrap',
 ] as const satisfies readonly (keyof TextRun)[];
 
 /** A field of `TextRun` missing from `RUN_FIELDS` names itself here. */
@@ -199,7 +200,8 @@ function sameRun(a: TextRun, b: TextRun): boolean {
     a.underlineThickness === b.underlineThickness &&
     a.strike === b.strike &&
     a.href === b.href &&
-    a.features === b.features
+    a.features === b.features &&
+    a.nowrap === b.nowrap
   );
 }
 
@@ -224,7 +226,8 @@ function sameStyle(
     a.underlineThickness === b.underlineThickness &&
     a.strike === b.strike &&
     a.href === b.href &&
-    a.features === b.features
+    a.features === b.features &&
+    a.nowrap === b.nowrap
   );
 }
 
@@ -237,6 +240,8 @@ export const OPTION_FIELDS = [
   'direction',
   'maxLines',
   'overflow',
+  'overflowWrap',
+  'wrap',
 ] as const satisfies readonly (keyof Options)[];
 
 /** An option missing from `OPTION_FIELDS` names itself here. */
@@ -254,6 +259,8 @@ function sameOptions(a: Options, b: Options): boolean {
     a.align === b.align &&
     a.direction === b.direction &&
     a.maxLines === b.maxLines &&
-    a.overflow === b.overflow
+    a.overflow === b.overflow &&
+    a.overflowWrap === b.overflowWrap &&
+    a.wrap === b.wrap
   );
 }
