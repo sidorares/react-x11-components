@@ -21,6 +21,7 @@ import {
   keywordFontSize,
   parseAlpha,
   parseColor,
+  isPct,
   parseLength,
   parseNumber,
   parseWeight,
@@ -403,7 +404,9 @@ export interface ComputedStyle {
    *  `bg-clip-text` gradient; null for `color`, as `currentColor` is. */
   textFillColor: string | null;
 
-  textDecorationLine: 'none' | 'underline' | 'line-through' | 'overline';
+  /** `none`, or the lines drawn, space-separated in the order written:
+   *  `underline line-through` draws both. */
+  textDecorationLine: string;
   textDecorationColor: string | null;
   textDecorationStyle: 'solid' | 'double' | 'dotted' | 'dashed' | 'wavy';
   /** `text-decoration-thickness`, or null for `auto` and `from-font`. */
@@ -1599,6 +1602,10 @@ export function applyDeclaration(
       if (typeof len === 'number') {
         if (name === 'letter-spacing') style.letterSpacing = len;
         else style.wordSpacing = len;
+      } else if (name === 'letter-spacing' && len && isPct(len)) {
+        // a percentage of the font size, as `em` is (CSS Text 4): `200%`
+        // was dropped, where it is twice the letter's size apart
+        style.letterSpacing = resolve(len, ctx.em);
       }
       return;
     }
@@ -1766,28 +1773,48 @@ export function applyDeclaration(
     }
     case 'text-decoration':
     case 'text-decoration-line': {
+      // Read whole before any of it is taken: a word the property does not
+      // know, one given twice, or `none` beside a line makes the declaration
+      // invalid, and it is ignored (CSS 2.1 4.2) — `underline overline
+      // line-through diagonal` draws nothing, where it drew a line-through.
+      const lines: string[] = [];
+      let none = false;
+      let color: string | null = null;
+      let decorationStyle: ComputedStyle['textDecorationStyle'] | null = null;
+      let thickness: number | null | undefined;
       for (const part of splitValue(value)) {
         const v = part.toLowerCase();
-        if (
-          v === 'underline' ||
-          v === 'line-through' ||
-          v === 'overline' ||
-          v === 'none'
-        ) {
-          style.textDecorationLine = v;
-        } else if (name === 'text-decoration') {
-          const c = parseColor(part);
-          if (c) style.textDecorationColor = c;
-          else if (DECORATION_STYLES.has(v)) {
-            style.textDecorationStyle =
-              v as ComputedStyle['textDecorationStyle'];
-          } else {
-            const thickness = decorationLength(part, ctx);
-            if (thickness !== undefined) {
-              style.textDecorationThickness = thickness;
-            }
-          }
+        if (LINE_KEYWORDS.has(v)) {
+          if (none || lines.includes(v)) return;
+          lines.push(v);
+          continue;
         }
+        if (v === 'none') {
+          if (none || lines.length) return;
+          none = true;
+          continue;
+        }
+        if (name !== 'text-decoration') return;
+        const c = parseColor(part);
+        if (c) {
+          if (color !== null) return;
+          color = c;
+        } else if (DECORATION_STYLES.has(v)) {
+          if (decorationStyle !== null) return;
+          decorationStyle = v as ComputedStyle['textDecorationStyle'];
+        } else {
+          const t = decorationLength(part, ctx);
+          if (t === undefined || thickness !== undefined) return;
+          thickness = t;
+        }
+      }
+      if (!none && !lines.length && name === 'text-decoration-line') return;
+      style.textDecorationLine = lines.length ? lines.join(' ') : 'none';
+      if (name === 'text-decoration') {
+        // a shorthand: what it does not name goes back to its initial value
+        style.textDecorationColor = color;
+        style.textDecorationStyle = decorationStyle ?? 'solid';
+        style.textDecorationThickness = thickness ?? null;
       }
       return;
     }
@@ -2104,6 +2131,16 @@ const DISPLAYS = new Set<string>([
   'table-column',
   'table-column-group',
   'contents',
+]);
+
+/** `text-decoration-line`'s lines. `blink` is one a user agent may leave
+ *  undrawn (CSS 2.1 16.3.1), and this one does; `overline` is not drawn
+ *  yet either. */
+const LINE_KEYWORDS = new Set([
+  'underline',
+  'overline',
+  'line-through',
+  'blink',
 ]);
 
 const DECORATION_STYLES = new Set([
@@ -3683,7 +3720,9 @@ export function decorate(style: ComputedStyle): void {
     style.lineThrough = null;
   }
   const own = style.textDecorationLine;
-  if (own === 'underline') {
+  if (own === 'none') return;
+  const lines = own.split(' ');
+  if (lines.includes('underline')) {
     style.underline = inkColor(
       style.textDecorationColor ?? 'currentColor',
       style.color,
@@ -3691,13 +3730,21 @@ export function decorate(style: ComputedStyle): void {
     style.underlineStyle = style.textDecorationStyle;
     style.underlineThickness = style.textDecorationThickness;
     style.underlineOffset = style.textUnderlineOffset;
-  } else if (own === 'line-through') {
+  }
+  if (lines.includes('line-through')) {
     style.lineThrough = inkColor(
       style.textDecorationColor ?? 'currentColor',
       style.color,
     );
   }
 }
+
+/**
+ * The absolutely positioned styles that were inline-level before they were
+ * made blocks: where such a box would have been in flow is on its line,
+ * where a block's is under it (CSS 2.1 10.3.7, `staticPositions`).
+ */
+export const INLINE_BEFORE_ABSOLUTE = new WeakSet<ComputedStyle>();
 
 /**
  * The blockification the box tree depends on: a floated or absolutely
@@ -3713,6 +3760,15 @@ export function blockify(style: ComputedStyle, inFlexContainer: boolean): void {
     style.position === 'absolute' ||
     style.position === 'fixed';
   if (!isOutOfFlow && !inFlexContainer) return;
+  if (
+    (style.position === 'absolute' || style.position === 'fixed') &&
+    (out === 'inline' ||
+      out === 'inline-block' ||
+      out === 'inline-table' ||
+      out === 'inline-flex')
+  ) {
+    INLINE_BEFORE_ABSOLUTE.add(style);
+  }
   switch (out) {
     case 'inline':
     case 'inline-block':

@@ -176,6 +176,10 @@ npx tsx scripts/conformance/run.ts wpt fuzz1 --chunk 50 --timeout 60000
 | 87     | a document's language, and attribute selectors     | 5,550 (93%) | 5,021 (84%) |
 | 88     | a `<q>` in quotation marks                         | 5,550 (93%) | 5,021 (84%) |
 | 89     | an absolute box a `max-width` holds, centred       | 5,554 (93%) | 5,025 (84%) |
+| 90     | an image set `middle`, and `capitalize`            | 5,566 (94%) | 5,038 (85%) |
+| 91     | a table cell's sizes, and `text-decoration`        | 5,575 (95%) | 5,047 (86%) |
+| 92     | a top-aligned box's background, and `font`         | 5,588 (95%) | 5,051 (86%) |
+| 93     | where an absolute box in a line would have been    | 5,595 (95%) | 5,058 (86%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -2531,6 +2535,152 @@ they set a `<pre>` beside their floats and the user-agent sheet's own
      `max-height` held it back and the margins stayed at nothing, so a
      box meant to sit in the middle sat at the top.
 
+### Round 90
+
+On ntk 8.13.1 and react-x11 2.22.11, where master passes 5,554 on X11 and
+5,031 on Cocoa.
+
+200. **An image set `vertical-align: middle` was centred in its line.**
+     CSS 2.1 puts its middle half the parent's x-height above the parent's
+     baseline (10.8.1). The middle of the line is somewhere else whenever
+     the line is taller than its text, which an image taller than the text
+     makes it on its own: beside a 30-pixel image, 15-pixel Ahem sat a
+     pixel and a half higher than CSS puts it, which `c544-valgn-001` and
+     three of the `c44-ln-box` tests show. An image or an inline block now
+     takes its raise from its parent's baseline as an inline box does:
+     `sub` and `super` by the parent's font size, where they went by the
+     line's height, and `text-top` and `text-bottom` to the parent's font,
+     where they were the baseline. A face that states no x-height — an
+     OS/2 table older than version 2, as DejaVu's is — is taken at half an
+     em, as `ex` already took it: the engine answers NaN for it, and an
+     image or an inline box set `middle` was raised by that.
+201. **`text-transform: capitalize` capitalized the first character after
+     a space**, and the first of every text, in upper case. So `(p.p.)`
+     stayed as it was, its bracket "capitalized"; a word an element's edge
+     crossed — `<b>fo</b>o` — got a second capital after the edge; and `ǆ`
+     became `Ǆ`. The first letter or number of each word is in title case
+     now, which for a digraph is `ǅ` and for a Greek vowel keeps its iota
+     subscript, and a word runs on across element edges as white space
+     collapses across them. What joins letters into one word is UAX #29's,
+     as the spec suggests — `x.y`, `don't` — and a hyphen or a bracket is
+     between words. Chrome splits `x.y` and `a:b` too.
+202. **A `::before` or `::after` set `display: list-item` had no marker.**
+     It counted the `list-item` counter, as an element does, and drew
+     nothing for it. It has the marker an element has, outside, or at the
+     start of its content where it is `inside`.
+203. **Text beside a block in an anonymous table cell was never laid
+     out.** The fix-up works from the leaves up, so a cell the table
+     part of it makes has children that were fixed as the table's, and
+     the cell itself never had the block container's turn: `bcd` beside a
+     block in `<span style="display: inline-table">` was text a block
+     container held beside a block, which lays out as nothing, and the
+     table was as wide as the block. The cells it makes have their turn
+     now.
+
+### Round 91
+
+204. **A table cell was no taller than the height it set.** Its content is
+     laid out as a block's, which keeps a height it sets and lets the
+     content run out, and a cell does not: the height is a least one (CSS
+     2.1 17.5.3). `<td height="10">` with a line in it is as tall as the
+     line.
+205. **A cell, a row and a row group took margins, and rows their
+     padding**, which CSS 2.1 applies to no part of a table but the caption
+     (8.3, 8.4): a cell set `margin: 50px` left a gap in its table. The
+     values are still theirs, for a cell's `inherit`; they do nothing.
+206. **A cell's `min-width` and `max-width` did nothing.** CSS 2.1 leaves
+     them undefined on a cell, and every browser holds the cell's width
+     within them, as this does a column's.
+207. **Ten floats of `0.87em` in a box `8.7em` wide did not fit.** The
+     widths add up to more than the room by a rounding error, and the tenth
+     went under the other nine; a float fits in room short of it by less
+     than a millionth of a pixel.
+208. **`text-decoration` with a word it does not know kept the words before
+     it**: `underline overline line-through diagonal` drew a line through,
+     where the whole declaration is invalid (CSS 2.1 4.2). It is read whole
+     first, and a line named with another is drawn with it, where the last
+     one named was the only one.
+209. **The runner served a style sheet whatever its type.** WPT's server
+     sends `plaintext.css` as `text/plain`, as its `.headers` say, and a
+     `.txt` file as that; a browser ignores either as a style sheet in a
+     document in standards mode, and the runner, standing in for the server
+     and the host, now declines them (`content-type-000`, `-001`).
+
+### Round 92
+
+210. **The background of an inline box set `top` or `bottom` was drawn on
+     the line's baseline**, not its own. The text went where the line's
+     edge put it and the background stayed behind, so in a line made taller
+     by its paragraph the box sat a pixel or two off its text: in
+     `content-174`'s reference, and `padding-applies-to-017`'s and
+     `floats-124`'s, which is one file. Each such box's baseline is kept for
+     the line it is on, which is a different height on every line.
+211. **A line's inline box whose padding reached up over the line before
+     was drawn under that line's text.** CSS 2.1 Appendix E paints a block
+     a line at a time, backgrounds before text, so the box covers it. The
+     ink here goes on in one batch after every line's backgrounds, for its
+     speed, so the part of such a box above its own line is drawn again
+     over it, and nothing is drawn again where no box reaches up
+     (`border-padding-bleed-001` to `-003`).
+212. **The `font` shorthand's size won over a more specific `font-size`.**
+     The cascade takes the font first, so that an `em` in the rest of a rule
+     is the element's own, and then applies everything else in order again
+     but `font-size` — the `font` included, for its other longhands, and so
+     its size too: `span { font: 15px/1 Ahem }` under `.b > span {
+font-size: 3.75em }` was 15px, its `em`s 3.75 of its parent's. The size
+     is the first pass's now (`c43-rpl-bbx-002`, `c43-rpl-ibx-000`,
+     `c42-ibx-ht-000`, `c5506-ipadn-t-000`). Five `text-fit` tests in
+     css-text had passed on it: their references write `font: 10px Ahem`
+     and then `font-size: 20px`, and rendered at the 10px their tests,
+     which `text-fit` would enlarge, are drawn at.
+213. **`letter-spacing` took no percentage**, which CSS Text 4 makes one of
+     the font size (`c542-letter-sp-001`).
+214. **An image told to be a column or a column group was taken for one**
+     and never drawn; it is an inline image, as one told to be a cell is
+     (`outline-applies-to-016`, `-017`).
+
+### Round 93
+
+215. **An absolute box among a paragraph's text took the paragraph's top
+     for its static position**, and was drawn over the text before it. A
+     block-level one goes under the line that text is on, which it would
+     have broken, and an inline-level one where the text left the pen: on
+     that line, or under it after a `<br>` (`abspos-block-level-001`,
+     `abspos-inline-007`, `hypothetical-inline-alone-on-second-line`, and
+     `abspos-007` on Cocoa, which X11 misses by five pixels: a descender
+     reaches a row past its line there, and the box covers it). The
+     position is found from the text before the box once the lines are
+     made, whichever of the four ways they were made: a paragraph laid out
+     in one call to the engine, or around a padded span, never met its
+     absolute boxes at all.
+216. **An absolute box inside a `position: relative` inline box was placed
+     against a rectangle of no size at the page's corner.** An inline box
+     lays nothing out of its own, and was read as a box that does; its
+     containing block is now the padding boxes of its fragments on the
+     lines, from the start of its first to the end of its last (CSS 2.1
+     10.1, `abspos-float-with-inline-container` on Cocoa, which X11 misses
+     by a row: the content area starts a fraction of a pixel under the line
+     there, and a browser rounds that fraction down). A tooltip set under a
+     positioned link was drawn at the top left of the document.
+217. **A page with a `<body>` and no `<html>` lost its `html { … }`
+     rules.** htmlparser2 parses what it is given, and a page that starts
+     `<!DOCTYPE html><title>` has no `<html>` element for a rule to match.
+     The root box stands in for the one a browser implies, as it already
+     did for a fragment with neither, so `html { font-size: 10px }` reaches
+     the body (`abspos-negative-margin-001`, with 215).
+218. **A no-break space beside a block was dropped as white space.**
+     JavaScript's `trim` and `\s` take in U+00A0 and the other Unicode
+     spaces, and CSS's white space is the space, the tab and the line
+     breaks alone. Nine places asked the first whether a text was blank,
+     so the `&nbsp;` a mail layout holds a gap open with vanished beside a
+     block, in a flex box and in a grid, as if it held nothing
+     (`between-float-and-text`, `vertical-align-baseline-004a`, `-005a`).
+219. **A shrink-to-fit box that does not wrap was cut to its room.** Its
+     least width was bounded by its widest word, and a `nowrap` line has no
+     place to break, so the whole line is the word: a `nowrap` tooltip
+     under a link narrower than it was the link's width, the rest of its
+     line out of its background. No test in the suite has one.
+
 ## What `<Html>` supports
 
 From the pass rates of the tests that use each feature, at the fixes above,
@@ -2543,7 +2693,7 @@ checked against the code.
 | block flow, margin collapsing                      | 694   | 83%     | **supported**, through empty blocks and into a parent's; a set of margins of both signs collapses two at a time                                                                                                               |
 | margins, padding, borders                          | 682   | 95%     | **supported**, inline boxes and collapsed table borders included; the `double`/`groove` families are approximations                                                                                                           |
 | floats and `clear`                                 | 311   | 46–67%  | **supported**, a float inside a paragraph at the top of the line it is met on; a word wider than its line is broken where CSS lets it overflow                                                                                |
-| relative and absolute positioning                  | 513   | 84%     | **supported**; an absolute box inside a line takes the line's start for its static position                                                                                                                                   |
+| relative and absolute positioning                  | 513   | 84%     | **supported**, against an inline box too; an absolute box inside a line is where the text before it left off                                                                                                                  |
 | backgrounds: colour, image, repeat, position       | 336   | 85%     | **supported**, `background-attachment: fixed`, `background-size`, any number of layers and SVG images included                                                                                                                |
 | fonts: family, style, weight, size                 | 159   | 81%     | **supported**; `font-variant` is the font's own OpenType features, so small capitals are drawn where the font has them and not synthesized                                                                                    |
 | line height, `vertical-align`                      | 191   | 87%     | **supported**: every inline box's own line height, and `vertical-align` on text as well as on images and inline blocks; text in a font with taller natural lines than its paragraph's takes a bit more room than CSS gives it |

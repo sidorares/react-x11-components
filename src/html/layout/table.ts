@@ -13,7 +13,7 @@
 // algorithm is too slow — which, on a table with a thousand rows, it is.
 import { AUTO, isPct, resolveOrNull } from '../css/values.js';
 import type { Len } from '../css/values.js';
-import { Box, CLIPPED_CELLS, COLLAPSED_CELLS } from './boxes.js';
+import { Box, CLIPPED_CELLS, COLLAPSED_CELLS, isBlank } from './boxes.js';
 import {
   CELL_CONTENT,
   MIN_CONTENT_PROBE,
@@ -151,6 +151,12 @@ export function layoutTable(
     const width = spannedWidth(widths, cell, spacing);
     ctx.layoutSubtree(cell.box, width);
     natural[i] = CELL_CONTENT.get(cell.box) ?? cell.box.height;
+    // A height a cell sets is a least one: its content is laid out as a
+    // block's, which keeps a height it sets and lets the content run out of
+    // it, and a cell does not. `<td height="10">` with a line in it is as
+    // tall as the line (CSS 2.1 17.5.3), where it was 10px with the line
+    // hanging out of it.
+    if (natural[i] > cell.box.height) cell.box.height = natural[i];
     const specified = resolveOrNull(cell.box.style.height, NaN);
     if (specified !== null) {
       cell.box.height = Math.max(
@@ -702,13 +708,26 @@ function partWidth(box: Box, base: number): number | null {
 /** A cell's own `width`, its padding and borders in, or null. A
  *  percentage is a share of the table its padding and borders are part
  *  of, as browsers read it: added on, a 90% cell and a 10% one came to
- *  more than the table, which then took it back from both. */
+ *  more than the table, which then took it back from both. Held within its
+ *  `min-width` and `max-width` as a column's is (`partWidth`), which CSS
+ *  2.1 leaves undefined and every browser does: a cell set `width: 3in;
+ *  max-width: 1in` is an inch wide, and one with `min-width` alone is as
+ *  wide as that. */
 function cellWidth(cell: Cell, base: number): number | null {
-  const len = cell.box.style.width;
+  const style = cell.box.style;
+  const len = style.width;
   const width = len === AUTO ? null : tableWidth(len, base);
-  if (width === null) return null;
-  if (isPct(len)) return Math.max(width, cell.box.horizontalExtra);
-  return width + cell.box.horizontalExtra;
+  const min = lengthAgainst(style.minWidth, base) ?? 0;
+  if (width === null && !(min > 0)) return null;
+  const max =
+    style.maxWidth === 'none' ? null : lengthAgainst(style.maxWidth, base);
+  let own = width ?? 0;
+  if (max !== null) own = Math.min(own, max);
+  own = Math.max(0, own, min);
+  if (isPct(len) && own === width) {
+    return Math.max(width, cell.box.horizontalExtra);
+  }
+  return own + cell.box.horizontalExtra;
 }
 
 /** A cell's or a column's width. One that adds a percentage to a length,
@@ -766,7 +785,7 @@ function baselineLifts(cells: Cell[], rowCount: number): number[] {
 function holdsFlow(box: Box): boolean {
   for (const child of box.children) {
     if (child.outOfFlow || child.isFloat) continue;
-    if (child.kind === 'text' && /^\s*$/.test(child.text)) continue;
+    if (child.kind === 'text' && isBlank(child.text)) continue;
     return true;
   }
   return false;

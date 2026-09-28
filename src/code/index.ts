@@ -31,6 +31,7 @@ import {
 } from '../codeblock/index.js';
 import type { Language, TokenStyles } from '../code-language/index.js';
 import { hx } from './hx.js';
+import { useFontPrewarm } from '../internal/prewarm.js';
 
 const h = React.createElement;
 
@@ -104,6 +105,7 @@ export function Code(props: CodeProps): ReactElement {
       }),
     [theme, props.fontSize, props.monoFamily, props.tokenStyles],
   );
+  useFontPrewarm(look.family);
 
   const runs: TextRun[] = React.useMemo(
     () => codeBlockRuns(source, look, { lang, language, resolveLanguage }),

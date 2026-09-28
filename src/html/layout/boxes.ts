@@ -171,6 +171,10 @@ export interface AtomicPlacement {
   box: Box;
   x: number;
   y: number;
+  /** How far its `vertical-align` raises its baseline above its parent's,
+   *  worked out as it joined the line; absent for none, and for `top` and
+   *  `bottom`, which the line box's edges place instead. */
+  raise?: number;
 }
 
 /**
@@ -511,6 +515,12 @@ export const TEXT_RAISES = new WeakMap<LineText, number>();
 export const SHADOWED_TEXT = new WeakSet<Box>();
 export const BOX_RAISES = new WeakMap<Box, number>();
 
+/** And the raise, on one line, of each inline box a `top` or `bottom` box
+ *  holds, the box itself among them: that box's baseline is where the
+ *  line's edge puts it, which is a different height on every line, so its
+ *  background, drawn from its baseline, is put there by line. */
+export const LINE_BOX_RAISES = new WeakMap<LineBox, Map<Box, number>>();
+
 /** The table cells wholly in columns `visibility: collapse` took out of
  *  their table (CSS 2.1 17.5.5), which the paint pass leaves out: a cell is
  *  no descendant of its column and inherits nothing from it, so its own
@@ -645,6 +655,10 @@ class Builder {
   /** Where the inline content being built stands, for collapsing white
    *  space across element boundaries. */
   private _ws: Collapse = 'start';
+  /** Whether the word the inline content being built is in has had its
+   *  first letter, for `text-transform: capitalize`: a word runs on across
+   *  element boundaries, as white space collapses across them. */
+  private _lettered = false;
   private _depth = 0;
   /** The `::first-letter` whose letter is still to come, for the block
    *  container whose first line has not begun. Null when there is none,
@@ -922,6 +936,7 @@ class Builder {
       style.display === 'flex' || style.display === 'inline-flex';
     const flow = flowOf(style, box);
     const around = this._ws;
+    const aroundWord = this._lettered;
     if (flow === 'block') this._endLine();
     if (flow !== 'inline') this._ws = 'start';
     // A first letter is looked for in the first line of a block container,
@@ -961,6 +976,7 @@ class Builder {
     this._letterAfter(flow, skipped, outerLetter, ownLetter);
     if (flow !== 'inline') this._endLine();
     this._ws = after(flow, this._ws, around);
+    this._lettered = letteredAfterFlow(flow, this._lettered, aroundWord);
   }
 
   private _replaced(
@@ -984,6 +1000,7 @@ class Builder {
     const flow = flowOf(style, box);
     if (flow === 'block') this._endLine();
     this._ws = after(flow, this._ws, this._ws);
+    this._lettered = letteredAfterFlow(flow, this._lettered, this._lettered);
     if (flow === 'atomic') this._abandonLetter();
 
     if (replaced === 'image') {
@@ -1089,15 +1106,28 @@ class Builder {
     const box = new Box(boxKindFor(style.display), null, style);
     box.pseudo = which;
     into.append(box);
+    // a list item it generates has a marker as an element's has, of the
+    // `list-item` counter it has just counted (CSS 2.1 12.5): outside it,
+    // or at the start of its content
+    let marker =
+      style.display === 'list-item'
+        ? markerFor(style, this._scopes.value('list-item'))
+        : '';
+    if (marker && style.listStylePosition !== 'inside') {
+      box.marker = { text: marker, layout: null, x: 0, y: 0, style: null };
+      marker = '';
+    }
     if (style.position === 'absolute' || style.position === 'fixed')
       box.outOfFlow = true;
     else if (style.float !== 'none') box.isFloat = true;
     if (into.kind === 'inline' && (box.outOfFlow || box.isFloat))
       this._nestedOutOfLine = true;
     const pieces = this._generated(style.content as ContentItem[], style, el);
+    if (marker) pieces.unshift(`${marker} `);
     this._scopes.close();
     const flow = flowOf(style, box);
     const around = this._ws;
+    const aroundWord = this._lettered;
     if (flow === 'block') this._endLine();
     if (flow !== 'inline') this._ws = 'start';
     // the first letter can be generated, and is looked for here as in an
@@ -1113,6 +1143,7 @@ class Builder {
     this._letterAfter(flow, skipped, outerLetter, null);
     if (flow !== 'inline') this._endLine();
     this._ws = after(flow, this._ws, around);
+    this._lettered = letteredAfterFlow(flow, this._lettered, aroundWord);
   }
 
   /**
@@ -1381,6 +1412,7 @@ class Builder {
     if (size) setIntrinsics(box, size, this._options.scale ?? 1);
     else box.intrinsic = { width: 0, height: 0, missing: 0, ratio: 0 };
     this._ws = after('atomic', this._ws, this._ws);
+    this._lettered = false;
     this._abandonLetter();
   }
 
@@ -1394,6 +1426,8 @@ class Builder {
     // text set at no size draws nothing and takes no room, so it needs no
     // box — and it is no part of the white space around it either
     if (!(style.fontSize > 0)) return;
+    // a word does not run on over the start of a line
+    if (this._ws === 'start') this._lettered = false;
     const ws = style.whiteSpace;
     let text: string;
     if (ws === 'pre' || ws === 'pre-wrap') {
@@ -1418,7 +1452,8 @@ class Builder {
       const last = text.charCodeAt(text.length - 1);
       this._ws = last === 32 ? 'space' : last === 10 ? 'start' : 'content';
     }
-    text = transformText(text, style.textTransform);
+    text = transformText(text, style.textTransform, this._lettered);
+    this._lettered = letteredAfter(text, this._lettered);
     const search = this._firstLetter;
     const letter = search ? FIRST_LETTER.exec(text) : null;
     if (!search || !letter) {
@@ -1721,6 +1756,7 @@ function numberAttr(el: Element, name: string): number | null {
 function transformText(
   text: string,
   transform: ComputedStyle['textTransform'],
+  lettered = false,
 ): string {
   switch (transform) {
     case 'uppercase':
@@ -1728,13 +1764,128 @@ function transformText(
     case 'lowercase':
       return text.toLowerCase();
     case 'capitalize':
-      return text.replace(
-        /(^|\s)(\S)/g,
-        (_, sp: string, c: string) => sp + c.toUpperCase(),
-      );
+      return capitalize(text, lettered);
     default:
       return text;
   }
+}
+
+/** A letter or a number: what a word's first typographic letter unit is
+ *  (CSS Text 3, 2.1). */
+const LETTER_UNIT = /[\p{L}\p{N}]/u;
+
+/**
+ * What does not end a word (UAX #29): a combining mark, and the
+ * punctuation that joins letters into one — `x.y`, `don't`, `a:b`. Any
+ * other character that is not a letter or a number is between words: a
+ * space, a no-break space, a hyphen, a bracket.
+ */
+const IN_WORD =
+  /[\p{M}'.:\u00b7\u0387\u05f4\u2018\u2019\u2024\u2027\ufe13\ufe52\ufe55\uff07\uff0e\uff1a]/u;
+
+/**
+ * `text-transform: capitalize` (CSS Text 3, 2.1): the first letter or
+ * number of each word in upper case, and nothing else. Punctuation a word
+ * starts with is not its first letter — `(p.p.)` is `(P.p.)` — and a word
+ * the text continues, `lettered`, has had its own: `<b>fo</b>o` is `Foo`.
+ */
+function capitalize(text: string, lettered: boolean): string {
+  let out = '';
+  let from = 0;
+  let at = 0;
+  for (const ch of text) {
+    if (LETTER_UNIT.test(ch)) {
+      if (!lettered) {
+        const title = titleCase(ch);
+        if (title !== ch) {
+          out += text.slice(from, at) + title;
+          from = at + ch.length;
+        }
+        lettered = true;
+      }
+    } else if (!IN_WORD.test(ch)) {
+      lettered = false;
+    }
+    at += ch.length;
+  }
+  return from ? out + text.slice(from) : text;
+}
+
+/**
+ * A letter in title case (Unicode's SpecialCasing), which is its upper case
+ * but for a letter that is two: a digraph is capitalized as its first
+ * letter alone — `ǆ` as `ǅ`, where upper case is `Ǆ` — and a Greek vowel
+ * with a subscript iota keeps the iota subscript, where upper case writes
+ * it out. A letter whose upper case is two letters, as `ß` is `SS`, is the
+ * first of them: `Ss`.
+ */
+function titleCase(ch: string): string {
+  const cp = ch.codePointAt(0)!;
+  if (cp >= 0x1c4 && cp <= 0x1cc) {
+    return String.fromCharCode(0x1c5 + 3 * Math.floor((cp - 0x1c4) / 3));
+  }
+  if (cp >= 0x1f1 && cp <= 0x1f3) return '\u01f2';
+  if (cp >= 0x1f80 && cp <= 0x1faf) return String.fromCharCode(cp | 0x08);
+  if (cp === 0x1fb3 || cp === 0x1fc3 || cp === 0x1ff3) {
+    return String.fromCharCode(cp + 9);
+  }
+  if (cp === 0x1fbc || cp === 0x1fcc || cp === 0x1ffc) return ch;
+  const upper = ch.toUpperCase();
+  if (upper.length <= ch.length) return upper;
+  const first = String.fromCodePoint(upper.codePointAt(0)!);
+  return first + upper.slice(first.length).toLowerCase();
+}
+
+/**
+ * Whether a word is under way after `text`, as `capitalize` reads words: its
+ * last letter, number or character between words decides, and a text of
+ * nothing but joining punctuation leaves it as it was. Asked of every text,
+ * from the end, where it is almost always decided by the last character.
+ */
+function letteredAfter(text: string, lettered: boolean): boolean {
+  for (let i = text.length - 1; i >= 0; i -= 1) {
+    const c = text.charCodeAt(i);
+    if (c < 0x80) {
+      if (
+        (c >= 0x61 && c <= 0x7a) ||
+        (c >= 0x41 && c <= 0x5a) ||
+        (c >= 0x30 && c <= 0x39)
+      ) {
+        return true;
+      }
+      if (c === 0x27 || c === 0x2e || c === 0x3a) continue;
+      return false;
+    }
+    // a low surrogate is read with the high one before it
+    const start =
+      c >= 0xdc00 && c <= 0xdfff && i > 0 && isHighSurrogate(text, i - 1)
+        ? i - 1
+        : i;
+    const ch = text.slice(start, i + 1);
+    if (LETTER_UNIT.test(ch)) return true;
+    if (!IN_WORD.test(ch)) return false;
+    i = start;
+  }
+  return lettered;
+}
+
+function isHighSurrogate(text: string, i: number): boolean {
+  const c = text.charCodeAt(i);
+  return c >= 0xd800 && c <= 0xdbff;
+}
+
+/** Whether a word is under way after a box, as `after` says where white
+ *  space stands: an inline box leaves it as its content did, an atomic
+ *  inline and a block end it, and a float or a positioned box leaves the
+ *  word around it as it was. */
+function letteredAfterFlow(
+  flow: 'inline' | 'atomic' | 'block' | 'out',
+  inside: boolean,
+  before: boolean,
+): boolean {
+  if (flow === 'inline') return inside;
+  if (flow === 'out') return before;
+  return false;
 }
 
 /** Where the inline content being built stands, for white space: at the
@@ -2001,7 +2152,11 @@ function assignSubtreeRanges(box: Box): { start: number; end: number } {
  */
 function fixUp(box: Box, anonymous: AnonymousStyle): void {
   for (const child of box.children) fixUp(child, anonymous);
+  fixUpOwn(box, anonymous);
+}
 
+/** `fixUp` of a box whose children have had theirs. */
+function fixUpOwn(box: Box, anonymous: AnonymousStyle): void {
   if (box.kind === 'table') {
     fixUpTable(box, anonymous);
     return;
@@ -2056,11 +2211,11 @@ function fixUp(box: Box, anonymous: AnonymousStyle): void {
     }
     // Whitespace between two blocks is not content and must not generate a
     // line box — `<div><p>a</p> <p>b</p></div>` has no blank line in it.
-    if (!run && child.kind === 'text' && !child.text.trim()) continue;
+    if (!run && child.kind === 'text' && isBlank(child.text)) continue;
     (run ??= []).push(child);
   }
   if (run) {
-    if (run.every((c) => c.kind === 'text' && !c.text.trim())) {
+    if (run.every((c) => c.kind === 'text' && isBlank(c.text))) {
       // trailing whitespace after the last block: same rule
     } else {
       next.push(anonymousOf(box, 'block', run, anonymous));
@@ -2279,6 +2434,16 @@ function wrapOrphans(
     next.push(anonymousOf(box, kind, run, anonymous));
   }
   box.children = next;
+  // A cell made here is a block container the fix-up has not been to: its
+  // children had theirs, as the table's, before it held them. Text beside a
+  // block in it goes in an anonymous block as in any other (CSS 2.1
+  // 9.2.1.1) — `<span style="display: inline-table">bcd<div>x</div>` laid
+  // `bcd` out as nothing, and drew the table as wide as the `x`.
+  if (kind === 'table-cell') {
+    for (const child of next) {
+      if (child.kind === 'table-cell' && !child.el) fixUpOwn(child, anonymous);
+    }
+  }
 }
 
 function anonymousOf(
@@ -2301,10 +2466,22 @@ function anonymousOf(
  *  table whether it is kept or not (CSS 2.1 17.2.1, rule 1). Kept, under
  *  `white-space: pre`, it made a cell of the line break before every row. */
 function isDroppableWhitespace(box: Box): boolean {
-  return box.kind === 'text' && BLANK.test(box.text);
+  return box.kind === 'text' && isBlank(box.text);
 }
 
-const BLANK = /^\s*$/;
+/**
+ * Whether a text is white space alone: CSS's white space, which is the
+ * space, the tab and the three line breaks and nothing else (CSS Text 3,
+ * 4.1). JavaScript's `\s` and `trim` take in the no-break space and the
+ * other Unicode spaces too, so a `<p>&nbsp;</p>` spacer or a
+ * `<td>&nbsp;</td>` beside a block was dropped as if it held nothing. Tested
+ * rather than trimmed, which copies a paragraph's text to find out.
+ */
+export function isBlank(text: string): boolean {
+  return BLANK.test(text);
+}
+
+const BLANK = /^[ \t\n\r\f]*$/;
 
 /** White space that collapsing would change: anything but a lone space.
  *  Most of a document's text has none, and is its own collapsed form. */
@@ -2414,7 +2591,12 @@ function fixUpTable(table: Box, anonymous: AnonymousStyle): void {
   };
   for (const child of table.children) {
     const display = child.style.display;
-    if (display === 'table-column' || display === 'table-column-group') {
+    // an image told to be a column is an inline image, as one told to be a
+    // cell is (`flowOf`): taken for a column, it was never drawn
+    if (
+      (display === 'table-column' || display === 'table-column-group') &&
+      child.kind !== 'replaced'
+    ) {
       // A column is the table's, beside its rows: it lays out nothing and
       // paints nothing (17.2.1). Taken for a stray child, it was wrapped in
       // a row of its own and drawn as a cell.

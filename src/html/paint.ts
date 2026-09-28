@@ -33,6 +33,7 @@ import type { BoxShadow, ComputedStyle, LinearGradient } from './css/style.js';
 import { copyStyle } from './css/style.js';
 import {
   BOX_RAISES,
+  LINE_BOX_RAISES,
   Box,
   CLIPPED_CELLS,
   COLLAPSED_CELLS,
@@ -3093,9 +3094,10 @@ function paintLines(ctx: PaintContext, box: Box, options: PaintOptions): void {
   }
   if (!visible.length) return;
 
+  const bleeds: Bleed[] = [];
   for (const line of visible) {
     if (line.background) paintLineBackground(ctx, line, options);
-    paintInlineBoxes(ctx, line, options);
+    paintInlineBoxes(ctx, line, options, line === lines[0] ? null : bleeds);
     for (const text of line.texts) {
       const natural = text.layout.lines[text.layoutLine];
       if (natural)
@@ -3140,8 +3142,46 @@ function paintLines(ctx: PaintContext, box: Box, options: PaintOptions): void {
   }
 
   paintRules(ctx, visible, dx, dy, options.scale ?? 1, 'over');
+  if (bleeds.length) paintBleeds(ctx, bleeds, options);
   for (const line of visible) {
     for (const placed of line.atomics) paintBox(ctx, placed.box, options);
+  }
+}
+
+/** An inline box's fragment whose padding or border reaches up over the
+ *  lines before its own, and where its own line starts. */
+interface Bleed {
+  fragment: Frame;
+  lineTop: number;
+}
+
+/**
+ * The part of each such fragment above its line, drawn again over the
+ * text there. CSS 2.1 Appendix E paints a block's inline content a line at
+ * a time, backgrounds before text, so a box on the second line with
+ * padding enough to reach the first is drawn over the first line's text;
+ * the ink here goes on in one batch after every line's backgrounds
+ * (`paintLines`), which left that text over it.
+ */
+function paintBleeds(
+  ctx: PaintContext,
+  bleeds: Bleed[],
+  options: PaintOptions,
+): void {
+  if (!ctx.save || !ctx.restore || !ctx.beginPath || !ctx.rect || !ctx.clip)
+    return;
+  for (const { fragment, lineTop } of bleeds) {
+    const left = Math.floor(fragment.x + options.originX) - 1;
+    const top = Math.floor(fragment.y + options.originY) - 1;
+    const bottom = Math.round(lineTop + options.originY);
+    if (bottom <= top) continue;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(left, top, Math.ceil(fragment.width) + 2, bottom - top);
+    ctx.clip();
+    paintLayers(ctx, fragment, options);
+    paintBorders(ctx, fragment, options);
+    ctx.restore();
   }
 }
 
@@ -3554,6 +3594,9 @@ function paintInlineBoxes(
   ctx: PaintContext,
   line: LineBox,
   options: PaintOptions,
+  /** Where a fragment that reaches up over the lines before goes, to be
+   *  drawn again over their text; null for a block's first line. */
+  bleeds: Bleed[] | null = null,
 ): void {
   let fragments: Map<Box, InlineFragment> | null = null;
   const widen = (box: Box, left: number, right: number): void => {
@@ -3628,7 +3671,10 @@ function paintInlineBoxes(
     const f = (fragments as Map<Box, InlineFragment>).get(box)!;
     const face = box.decoration!;
     // on its own baseline, which `vertical-align` may raise off the line's
-    const own = shifted ? baseline - (BOX_RAISES.get(box) ?? 0) : baseline;
+    const own = shifted
+      ? baseline -
+        (LINE_BOX_RAISES.get(line)?.get(box) ?? BOX_RAISES.get(box) ?? 0)
+      : baseline;
     const top = own - face.ascent - box.padTop - box.borderTop;
     const bottom = own + face.descent + box.padBottom + box.borderBottom;
     // Sliced where the box goes on to another line: no border and no
@@ -3656,6 +3702,9 @@ function paintInlineBoxes(
     paintLayers(ctx, fragment, options);
     paintBorders(ctx, fragment, options);
     if (box.style.outlineStyle !== 'none') paintOutline(ctx, fragment, options);
+    if (bleeds && fragment.y < line.y - 0.5) {
+      bleeds.push({ fragment, lineTop: line.y + (moved?.y ?? 0) });
+    }
   }
 }
 

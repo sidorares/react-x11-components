@@ -29,7 +29,6 @@ import {
   chainCommands,
   exitCode,
   setBlockType,
-  toggleMark,
   wrapIn,
 } from 'prosemirror-commands';
 import { history, redo, undo } from 'prosemirror-history';
@@ -64,6 +63,7 @@ import {
   toggleTaskList,
 } from './commands.js';
 import { hasTables, tableRepair } from './tables.js';
+import { toggleMark } from './marks.js';
 
 // --- the event ---------------------------------------------------------------
 

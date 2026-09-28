@@ -137,6 +137,30 @@ class RuleIndex {
   size = 0;
   private _nextId = 0;
 
+  /**
+   * Whether a bucket here could hold a rule for `el`, by its tag, id and
+   * classes and without matching anything: an index of a rule or two is
+   * asked of every element — the user-agent sheet's `q::before` and
+   * `q::after` made every element of a document split its `class` twice —
+   * and almost none of them has a rule in it.
+   */
+  reaches(el: Element): boolean {
+    if (this.universal.length || this.byTag.has(tagOf(el))) return true;
+    if (this.byId.size) {
+      const id = attr(el, 'id');
+      if (id && this.byId.has(id)) return true;
+    }
+    if (this.byClass.size) {
+      const className = attr(el, 'class');
+      if (className) {
+        for (const name of className.split(/\s+/)) {
+          if (name && this.byClass.has(name)) return true;
+        }
+      }
+    }
+    return false;
+  }
+
   add(rule: StyleRule): void {
     this.size += 1;
     const indexed: IndexedRule = {
@@ -671,7 +695,7 @@ export class Cascade {
     elementStyle: ComputedStyle,
   ): ComputedStyle | null {
     const index = this._pseudo[which];
-    if (!index.size) return null;
+    if (!index.size || !index.reaches(el)) return null;
     const candidates: Candidate[] = [];
     this._matchInto(index, el, candidates);
     if (!candidates.length) return null;
@@ -700,7 +724,7 @@ export class Cascade {
    */
   firstLetterRules(el: Element): FirstLetterRules | null {
     const index = this._pseudo['first-letter'];
-    if (!index.size) return null;
+    if (!index.size || !index.reaches(el)) return null;
     const candidates: Candidate[] = [];
     this._matchInto(index, el, candidates);
     if (!candidates.length) return null;
@@ -721,7 +745,7 @@ export class Cascade {
    */
   markerStyle(el: Element, style: ComputedStyle): ComputedStyle | null {
     const index = this._pseudo.marker;
-    if (!index.size) return null;
+    if (!index.size || !index.reaches(el)) return null;
     const candidates: Candidate[] = [];
     this._matchInto(index, el, candidates);
     if (!candidates.length) return null;
@@ -844,12 +868,10 @@ export class Cascade {
     // smaller scale — the size it sets itself stays its own. Blink's
     // CheckForGenericFamilyChange, and why a `<pre>` in a browser is 13px.
     const mono = monospaceOnly(style.fontFamily);
-    let scaled = NaN;
     if (
       sized ? keyword && mono : mono !== monospaceOnly(parentStyle.fontFamily)
     ) {
       style.fontSize *= mono ? FIXED_SIZE : 1 / FIXED_SIZE;
-      scaled = style.fontSize;
     }
     const ctx: UnitContext = {
       ...ctxParent,
@@ -857,15 +879,20 @@ export class Cascade {
       ex: () => this._exOf(style),
       ch: () => this._chOf(style),
     };
+    const settled = style.fontSize;
     for (const c of candidates) {
       for (const d of pick(c)) {
         if (d.prop === 'font-size' || d.custom) continue;
         this._apply(style, parentStyle, d, ctx);
       }
     }
-    // a `font` applied again, to keep its longhands in cascade order, set
-    // the size it names as it was before the scale
-    if (!Number.isNaN(scaled)) style.fontSize = scaled;
+    // A `font` is applied again, to keep its other longhands in cascade
+    // order, and it sets the size it names as well: the size is the first
+    // pass's, which the declarations that outrank the `font` had their say
+    // in, and the scale after them. `span { font: 15px/1 Ahem }` under
+    // `.b > span { font-size: 3.75em }` was 15px, its `em`s 3.75 of its
+    // parent's.
+    style.fontSize = settled;
 
     // A table never keeps HTML's alignment, `-webkit-center` and its kin:
     // the `<td align="center">` every mail centres its body table in
@@ -922,25 +949,28 @@ export class Cascade {
    * reads as a bug in the renderer rather than as a missing element. With
    * no `<html>` either, the body inherits from an `<html>` that author
    * `html { … }` rules have styled, as the one a browser implies would be.
+   *
+   * A document with a `<body>` and no `<html>` — the usual shape of a page
+   * that starts `<!DOCTYPE html><title>` — has the root box standing in for
+   * that implied `<html>` instead, so an `html { font-size }` still reaches
+   * the body. Taken as the initial style, the rule matched nothing and the
+   * whole page came out at the theme's size.
    */
   rootStyle(hasBody: boolean, hasHtml = true): ComputedStyle {
     const style = copyStyle(this.initial);
     style.display = 'block';
-    if (hasBody) return style;
+    if (hasBody && hasHtml) return style;
     const synthetic = new DomElement('body', {}, []);
     let parent = style;
     if (!hasHtml) {
-      const html = new DomElement('html', {}, [synthetic]);
+      const html = new DomElement('html', {}, hasBody ? [] : [synthetic]);
       synthetic.parent = html;
       parent = this.styleFor(html, style, false);
+      if (hasBody) return asRoot(parent);
     }
-    const bodyStyle = this.styleFor(synthetic, parent, false);
     // Only the box the body would have drawn is taken, not its layout role:
     // the root is still the initial containing block.
-    bodyStyle.display = 'block';
-    bodyStyle.position = 'static';
-    bodyStyle.float = 'none';
-    return bodyStyle;
+    return asRoot(this.styleFor(synthetic, parent, false));
   }
 
   /** The rules of `index` that match `el`, pushed onto `out` as candidates,
@@ -1046,6 +1076,15 @@ export class Cascade {
     out.sort(byCascade);
     return out;
   }
+}
+
+/** An implied element's style as the root box's: its look, not its role —
+ *  the root is still a block, in flow, and the initial containing block. */
+function asRoot(style: ComputedStyle): ComputedStyle {
+  style.display = 'block';
+  style.position = 'static';
+  style.float = 'none';
+  return style;
 }
 
 /** `:root` is the `<html>` element: the one a browser implies around a

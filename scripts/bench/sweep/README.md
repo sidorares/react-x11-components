@@ -10,6 +10,10 @@ RESULT {"suite":"docs","comp":"md","action":"edit","backend":"cocoa","fps":9,"fr
 
 They need a display — a real `$DISPLAY` for `x11`, a Mac for `cocoa` — and
 the window has to stay uncovered: an occluded Cocoa window gets no frames.
+On a Mac, keep the `$DISPLAY` a login shell has, launchd's XQuartz socket,
+rather than a display number: XQuartz crashes in the GL cells over 2,000
+nodes, and the socket starts it again for the next cell, where `:29` leaves
+every cell after the crash failing to connect.
 
 | Probe             | What                                     | `ACTION=`                                                                                                                                                                                 |
 | ----------------- | ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -17,6 +21,7 @@ the window has to stay uncovered: an occluded Cocoa window gets no frames.
 | `mapsweep.tsx`    | `<Map>`, London z15                      | `pan`, `drag`, `wheel`, `fly` (`RENDERER=retained\|gl`; tiles from `BENCH_TILES`)                                                                                                         |
 | `chartsweep.tsx`  | the charts                               | `stream`, `pan1m`, `zoom1m`, `multiples`, `scatter`, `scroll`                                                                                                                             |
 | `tablesweep.tsx`  | `<Table>`, 100,000 log rows              | `wheel`, `fling`, `thumb`, `jump`                                                                                                                                                         |
+| `treesweep.tsx`   | `<Tree>`, 100,000 rows, all expanded     | `wheel`, `fling`, `thumb`, `keys` (`ROWS`; `FRAMES=1` says where the selection sits in each frame)                                                                                        |
 | `docsweep.tsx`    | `<Markdown>`, `<Html>` (`COMP=md\|html`) | `mount`, `edit`, `append`, `scroll`, `reflow` (`SIZE` sections, default 300 ≈ 600 KB; `DOC=tailwind` puts a Tailwind-4-shaped stylesheet under the report)                                |
 | `editorsweep.tsx` | `<CodeEditor>` (`COMP=code`)             | `mount`, `scroll`, `type-end`, `type-mid`, `type-start`, `undo`, `replace`, `long-mount`, `long-type`, `caret-down`, `enter-end`, `jump-end` (`LINES`, `LONG`, `PLAIN=1` for no language) |
 | `editorsweep.tsx` | `<RichTextEditor>` (`COMP=rte`)          | `mount`, `scroll`, `type-mid`, `type-hidden`, `type-long`, `bold-all`, `paste` (`SIZE`)                                                                                                   |

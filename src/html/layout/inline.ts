@@ -30,12 +30,14 @@
 // (`TextLayoutCache`), so the element under a run is found from its text's
 // place in the document (`LineText.spans`) instead.
 
-import { codeUnitOffsets } from '../../internal/text.js';
+import { codePointAtOffset, codeUnitOffsets } from '../../internal/text.js';
 import type { TextRun } from '../../richtext/index.js';
 import type { ComputedStyle } from '../css/style.js';
+import { INLINE_BEFORE_ABSOLUTE } from '../css/style.js';
 import { inkColor, isTransparent, resolve } from '../css/values.js';
 import {
   BOX_RAISES,
+  LINE_BOX_RAISES,
   isOffset,
   SHADOWED_TEXT,
   SHIFTED_LINES,
@@ -351,17 +353,34 @@ function cutOf(style: ComputedStyle): Cut | null {
 }
 
 function layoutLines(block: Box, options: InlineOptions): InlineResult {
-  let fonts = options.fonts;
   const items: Item[] = [];
-  const placing = options.floatBoxes;
+  const statics: StaticMark[] = [];
   const floatCount = collect(
     block,
     items,
     options.width,
-    fonts,
+    options.fonts,
     block.style,
-    !!placing,
+    !!options.floatBoxes,
+    statics,
   );
+  const result = linesOf(block, options, items, floatCount);
+  // whichever way the lines were made, one pass over them
+  if (statics.length) {
+    staticPositions(statics, items, result.lines, block, options);
+  }
+  return result;
+}
+
+/** The lines of a block's inline content, gathered into `items`. */
+function linesOf(
+  block: Box,
+  options: InlineOptions,
+  items: Item[],
+  floatCount: number,
+): InlineResult {
+  let fonts = options.fonts;
+  const placing = options.floatBoxes;
   if (items.length === floatCount || !fonts) {
     // no line to wait for: the floats go at the top
     const placed: Box[] = [];
@@ -756,6 +775,8 @@ function layoutLines(block: Box, options: InlineOptions): InlineResult {
         x: room.left + open.x + box.marginLeft,
         y: 0,
       };
+      const raise = atomicRaise(fonts, box, (box.parent ?? block).style);
+      if (raise) placed.raise = raise;
       open.atomics.push(placed);
       open.order.push({ kind: 'atomic', at: open.x, item: placed });
       open.x += outer;
@@ -1587,12 +1608,13 @@ function finishLine(
     const box = placed.box;
     const h = box.height + box.marginTop + box.marginBottom;
     const va = box.style.verticalAlign;
-    if (va === 'top' || va === 'bottom' || va === 'middle') {
+    if (va === 'top' || va === 'bottom') {
       height = Math.max(height, h);
       continue;
     }
-    // on the line's baseline by its own, and below it by the rest of it
-    const raise = typeof va === 'number' ? va : 0;
+    // on the line's baseline by its own, raised from it by its
+    // `vertical-align`, and below it by the rest of it
+    const raise = placed.raise ?? 0;
     const b = atomicBaseline(box);
     ascent = Math.max(ascent, b + raise);
     descent = Math.max(descent, h - b - raise);
@@ -1641,8 +1663,7 @@ function finishLine(
     atomics: open.atomics,
     ...(open.edges.length ? { edges: open.edges } : null),
   };
-  for (const placed of open.atomics)
-    placed.y = y + alignAtomic(placed.box, line);
+  for (const placed of open.atomics) placed.y = y + alignAtomic(placed, line);
   // Every fragment on this line shares the line's baseline, whatever its own
   // layout thinks: that is what makes a small `<span>` beside body text sit
   // on the same baseline rather than on its own. One that `vertical-align`
@@ -1660,6 +1681,29 @@ function finishLine(
       if (at !== y + baseline) {
         TEXT_RAISES.set(text, y + baseline - at);
         SHIFTED_LINES.add(line);
+      }
+      // and the boxes it is in, up to the `top` or `bottom` one, whose
+      // backgrounds are drawn from their own baselines
+      if (lift.edge && lifts) {
+        const owner = text.spans.boxAt?.(text.layoutStart);
+        for (
+          let at2 = owner?.parent;
+          at2?.kind === 'inline';
+          at2 = at2.parent
+        ) {
+          const placed = lifts.edgeOf(at2);
+          if (!placed) break;
+          const room = edges!.get(placed.edge);
+          if (!room) break;
+          const own =
+            placed.edge.style.verticalAlign === 'top'
+              ? y + room.ascent
+              : y + height - room.descent;
+          let raises = LINE_BOX_RAISES.get(line);
+          if (!raises) LINE_BOX_RAISES.set(line, (raises = new Map()));
+          raises.set(at2, y + baseline - (own - placed.raise));
+          SHIFTED_LINES.add(line);
+        }
       }
     }
     text.drawY = at - natural.baseline;
@@ -1840,24 +1884,61 @@ const LEFT_TO_RIGHT =
   /(?![\u0590-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFF\u{10800}-\u{10FFF}\u{1E800}-\u{1EFFF}])\p{L}/u;
 
 /** Where an atomic's top edge sits, relative to the line box top. */
-function alignAtomic(box: Box, line: LineBox): number {
-  const h = box.height + box.marginTop + box.marginBottom;
+function alignAtomic(placed: AtomicPlacement, line: LineBox): number {
+  const box = placed.box;
   switch (box.style.verticalAlign) {
     case 'top':
       return 0;
     case 'bottom':
-      return line.height - h;
-    case 'middle':
-      return (line.height - h) / 2;
-    case 'sub':
-      return line.baseline - atomicBaseline(box) + line.height * 0.1;
-    case 'super':
-      return line.baseline - atomicBaseline(box) - line.height * 0.25;
+      return line.height - (box.height + box.marginTop + box.marginBottom);
     default:
-      if (typeof box.style.verticalAlign === 'number') {
-        return line.baseline - atomicBaseline(box) - box.style.verticalAlign;
-      }
-      return line.baseline - atomicBaseline(box);
+      return line.baseline - atomicBaseline(box) - (placed.raise ?? 0);
+  }
+}
+
+/**
+ * How far an atomic's `vertical-align` raises its baseline above its
+ * parent's (CSS 2.1 10.8.1), as `Lifts` raises an inline box's: `sub` and
+ * `super` by a fifth and a third of the parent's font size and a pixel,
+ * `text-top` and `text-bottom` to the edges of the parent's font, `middle`
+ * by its middle to half the parent's x-height above the baseline, a length
+ * by itself and a percentage of its own line height. `top` and `bottom` are
+ * the line box's edges, and raise nothing from a baseline.
+ *
+ * `middle` is the parent's baseline, not the middle of the line: an image
+ * set `middle` beside text in a line an image before it made tall sat
+ * where that image left room, and drew the text beside it a pixel off.
+ * Read before the line moves the atomic, as `atomicBaseline` is.
+ */
+function atomicRaise(
+  fonts: FontsLike,
+  box: Box,
+  parent: ComputedStyle,
+): number {
+  const va = box.style.verticalAlign;
+  switch (va) {
+    case 'baseline':
+    case 'top':
+    case 'bottom':
+      return 0;
+    case 'sub':
+      return -(parent.fontSize / 5 + parent.fontSize / 16);
+    case 'super':
+      return parent.fontSize / 3 + parent.fontSize / 16;
+  }
+  const h = box.height + box.marginTop + box.marginBottom;
+  const b = atomicBaseline(box);
+  switch (va) {
+    case 'text-top':
+      return faceExtent(fonts, parent).ascent - b;
+    case 'text-bottom':
+      return h - b - faceExtent(fonts, parent).descent;
+    case 'middle':
+      return xHeightOf(fonts, parent) / 2 + h / 2 - b;
+    default:
+      return typeof va === 'number'
+        ? va
+        : resolve(va, lineHeightOf(fonts, box.style));
   }
 }
 
@@ -1952,6 +2033,100 @@ function childBaseline(
   return inside(child);
 }
 
+/** An absolutely positioned box among a paragraph's content, before the
+ *  item at `index`. */
+interface StaticMark {
+  index: number;
+  box: Box;
+}
+
+/**
+ * The static position of each absolutely positioned box among a
+ * paragraph's content (CSS 2.1 10.3.7, 10.6.4): where it would have been
+ * in flow, found from the content before it. A block-level one would have
+ * broken the line that content is on, so it goes under that line at the
+ * line's start; an inline-level one goes on it, where the pen stood after
+ * that content, or under it where a forced break ends the text; either goes
+ * at the top where nothing comes before it. Taken as the block's content
+ * top for every one of them, a box after a line of text was drawn over that
+ * line, and a menu under its link came up on it. Not from a probe of
+ * intrinsic width, whose room is no place for one.
+ */
+function staticPositions(
+  statics: StaticMark[],
+  items: Item[],
+  lines: LineBox[],
+  block: Box,
+  options: InlineOptions,
+): void {
+  if (!Number.isFinite(options.width)) return;
+  for (const { index, box } of statics) {
+    const inline = INLINE_BEFORE_ABSOLUTE.has(box.style);
+    let top = lines.length ? lines[0].y : 0;
+    let x = 0;
+    const after = lines.length ? penAfter(items, index, lines) : null;
+    if (after) {
+      const { line, pen, broken } = after;
+      if (inline && !broken) {
+        top = line.y;
+        x = pen;
+      } else {
+        top = line.y + line.height;
+      }
+    }
+    box.staticPosition = {
+      from: block,
+      x: options.originX + x - block.x,
+      right: options.originX + options.width - block.x,
+      y: options.startY + top - block.y,
+    };
+  }
+}
+
+/** The line the content before `items[index]` ended on, where the pen
+ *  stood after it, and whether it ended in a forced break. Null where no
+ *  text or atomic comes before. */
+function penAfter(
+  items: Item[],
+  index: number,
+  lines: LineBox[],
+): { line: LineBox; pen: number; broken: boolean } | null {
+  for (let i = index - 1; i >= 0; i -= 1) {
+    const item = items[i];
+    if (item.kind === 'atomic') {
+      for (const line of lines) {
+        const placed = line.atomics.find((a) => a.box === item.box);
+        if (!placed) continue;
+        const pen = placed.x + item.box.width + item.box.marginRight;
+        return { line, pen, broken: false };
+      }
+      return null;
+    }
+    if (item.kind !== 'text' || item.control) continue;
+    const end = item.start + item.length;
+    const line =
+      lines.find((l) => l.textStart < end && end <= l.textEnd) ??
+      lines[lines.length - 1];
+    const broken = item.run.text.endsWith('\n');
+    return { line, pen: broken ? 0 : caretX(line, end), broken };
+  }
+  return null;
+}
+
+/** Where the caret at document offset `at` stands on a line, in the
+ *  paragraph's coordinates: the line's end where no text of it holds the
+ *  offset. */
+function caretX(line: LineBox, at: number): number {
+  for (const text of line.texts) {
+    if (at < text.textStart || at > text.textEnd) continue;
+    const offsets = layoutOffsets(text.layout);
+    const units = layoutOffsetOf(text, at, true);
+    const caret = text.layout.caretPosition(codePointAtOffset(offsets, units));
+    return text.drawX + caret.x;
+  }
+  return line.x + line.width;
+}
+
 // --- gathering --------------------------------------------------------------
 
 /** Flatten an inline subtree into a stream of runs, atomics, breaks and the
@@ -1965,10 +2140,16 @@ function collect(
   fonts: FontsLike | null,
   block: ComputedStyle,
   floats: boolean,
+  /** Where each absolutely positioned box among the content is: before the
+   *  item at `index`. No item of the stream, which reads none of them. */
+  statics?: StaticMark[],
 ): number {
   let floated = 0;
   for (const child of box.children) {
-    if (child.outOfFlow) continue;
+    if (child.outOfFlow) {
+      statics?.push({ index: out.length, box: child });
+      continue;
+    }
     if (child.isFloat) {
       if (floats) {
         out.push({ kind: 'float', box: child });
@@ -2046,7 +2227,7 @@ function collect(
         if (controls) {
           pushControls(out, controls[0], child, child.subtreeTextStart);
         }
-        floated += collect(child, out, width, fonts, block, floats);
+        floated += collect(child, out, width, fonts, block, floats, statics);
         if (controls) {
           pushControls(out, controls[1], child, child.subtreeTextEnd);
         }
@@ -2892,7 +3073,10 @@ function inkBeyond(runs: TextRun[], offset: number): boolean {
   let at = 0;
   for (const run of runs) {
     const next = at + run.text.length;
-    if (next > offset && /\S/.test(run.text.slice(Math.max(0, offset - at)))) {
+    if (
+      next > offset &&
+      /[^ \t\n\r\f]/.test(run.text.slice(Math.max(0, offset - at)))
+    ) {
       return true;
     }
     at = next;
@@ -3362,6 +3546,13 @@ class Lifts {
     return { raise, ascent: room.ascent, descent: room.descent };
   }
 
+  /** The `top` or `bottom` box a box is in, itself included, and how far
+   *  its baseline is raised from that box's; null outside one. */
+  edgeOf(box: Box): { edge: Box; raise: number } | null {
+    const lift = this._box(box);
+    return lift.edge ? { edge: lift.edge, raise: lift.raise } : null;
+  }
+
   private _box(box: Box): { raise: number; edge: Box | null; lead: boolean } {
     if (box.kind !== 'inline' || !box.parent) return NO_LIFT;
     const known = this._boxes.get(box);
@@ -3480,7 +3671,12 @@ function lineHeightOf(fonts: FontsLike, style: ComputedStyle): number {
     : (style.lineHeight as number) * style.fontSize;
 }
 
-/** A style's x-height, where its font says, or half its size. */
+/**
+ * A style's x-height, where its font says, or half its size, as `ex` takes
+ * it (CSS 2.1 4.3.2). A face whose OS/2 table is older than version 2 —
+ * DejaVu's — states none, and the engine's answer is then NaN, which is a
+ * number: taken for one, it put an image set `middle` nowhere at all.
+ */
 function xHeightOf(fonts: FontsLike, style: ComputedStyle): number {
   try {
     const metrics = fonts
@@ -3490,7 +3686,8 @@ function xHeightOf(fonts: FontsLike, style: ComputedStyle): number {
         style: style.fontStyle,
       })
       .metrics(style.fontSize) as { xHeight?: number | null };
-    if (typeof metrics.xHeight === 'number') return metrics.xHeight;
+    const x = metrics.xHeight;
+    if (typeof x === 'number' && x > 0) return x;
   } catch {
     // no font to ask
   }

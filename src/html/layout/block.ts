@@ -20,12 +20,15 @@ import {
 import type { Len } from '../css/values.js';
 import type { BorderStyle, ComputedStyle, ContentSize } from '../css/style.js';
 import {
+  BOX_RAISES,
   Box,
   CUT_BLOCKS,
   FIRST_LINE,
   INLINE_OFFSETS,
+  LINE_BOX_RAISES,
   SHIFTED_LINES,
   TEXT_SHIFTS,
+  isBlank,
 } from './boxes.js';
 import type { BoxTree, Intrinsic, LineBox, Marker } from './boxes.js';
 import { FloatContext } from './floats.js';
@@ -481,14 +484,6 @@ function collapsesThrough(box: Box): boolean {
   }
   return true;
 }
-
-/** Whether a text is white space alone, as `!text.trim()` says, without
- *  copying the text to find out — which `trim` does to a paragraph's text
- *  that ends in a space, on every pass. */
-function isBlank(text: string): boolean {
-  return BLANK.test(text);
-}
-const BLANK = /^\s*$/;
 
 /** What a box's children came to: their height, and the margin still hanging
  *  past the last of them when the box's own bottom edge does not stop it. */
@@ -1811,9 +1806,14 @@ function plainInline(box: Box): boolean {
 function wordBound(box: Box, fonts: FontsLike, measured: boolean): number {
   if (box.kind !== 'block') return Infinity;
   let widest = 0;
+  // a line that does not wrap is one word: a `nowrap` tooltip in a narrow
+  // containing block was cut to its width, the rest of the line out of it
+  const unbroken =
+    box.style.whiteSpace === 'nowrap' || box.style.whiteSpace === 'pre';
   if (box.lines) {
     let last: object | null = null;
     for (const line of box.lines) {
+      if (unbroken) widest = Math.max(widest, line.width);
       for (const text of line.texts) {
         if (text.layout === last) continue;
         last = text.layout;
@@ -2184,29 +2184,14 @@ function placeFloat(
  * is how a badge, a tooltip and an overlay are all written.
  */
 function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
-  // the containing block is the positioned box's padding box (CSS 2.1
-  // 10.1), not its content box: `left: 0` in a padded box is at its
-  // padding edge, and at the viewport's edge where nothing is positioned
-  const cbX = containing.x + containing.borderLeft;
-  const cbY = containing.y + containing.captionTop + containing.borderTop;
-  const cbWidth = Math.max(
-    0,
-    containing.width - containing.borderLeft - containing.borderRight,
-  );
-  // with nothing positioned around it the containing block is the initial
-  // one, as tall as the viewport rather than as the document (10.1), and a
-  // fixed box's is the viewport itself
-  if (!containing.parent) ctx.readViewportHeight = true;
-  const cbHeight = !containing.parent
-    ? ctx.viewportHeight
-    : Math.max(
-        0,
-        containing.height -
-          containing.captionTop -
-          containing.captionBottom -
-          containing.borderTop -
-          containing.borderBottom,
-      );
+  const {
+    x: cbX,
+    y: cbY,
+    width: cbWidth,
+    height: cbHeight,
+  } = containing.kind === 'inline'
+    ? inlineContainingBlock(containing, box, ctx)
+    : containingRect(containing, ctx);
   resolveEdges(box, cbWidth);
   box.percentHeightBase = cbHeight;
 
@@ -2339,6 +2324,156 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
           : (at ? at.from.y + at.y : cbY) + box.marginTop;
   }
   moveTo(box, x, y);
+}
+
+/** A containing block's rectangle, in document coordinates. */
+interface CbRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * The containing block a box that lays itself out gives: its padding box
+ * (CSS 2.1 10.1), not its content box — `left: 0` in a padded box is at
+ * its padding edge — and with nothing positioned around it the initial
+ * one, as tall as the viewport rather than as the document, which a fixed
+ * box's is too.
+ */
+function containingRect(containing: Box, ctx: LayoutContext): CbRect {
+  // a layout that reads the viewport's height lays out differently in
+  // another (`LayoutResult.readsViewportHeight`)
+  if (!containing.parent) ctx.readViewportHeight = true;
+  return {
+    x: containing.x + containing.borderLeft,
+    y: containing.y + containing.captionTop + containing.borderTop,
+    width: Math.max(
+      0,
+      containing.width - containing.borderLeft - containing.borderRight,
+    ),
+    height: !containing.parent
+      ? ctx.viewportHeight
+      : Math.max(
+          0,
+          containing.height -
+            containing.captionTop -
+            containing.captionBottom -
+            containing.borderTop -
+            containing.borderBottom,
+        ),
+  };
+}
+
+/**
+ * The containing block a `position: relative` inline box gives (CSS 2.1
+ * 10.1, item 4): from the padding edge its first fragment starts at to the
+ * one its last ends at, over the top of the first and the bottom of the
+ * last. The box lays nothing out of its own — its fragments are on its
+ * block's lines — so read as a box that does, it was a rectangle of no size
+ * at the page's corner, and a tooltip under a positioned link came up
+ * there. A box with no fragment at all stands where the box inside it
+ * would have been in flow.
+ */
+function inlineContainingBlock(
+  inline: Box,
+  box: Box,
+  ctx: LayoutContext,
+): CbRect {
+  let block = inline.parent;
+  while (block && block.kind === 'inline') block = block.parent;
+  const face = ctx.fonts ? faceExtentOf(ctx.fonts, inline.style) : null;
+  let first: CbRect | null = null;
+  let last: CbRect | null = null;
+  for (const line of block?.lines ?? []) {
+    const span = spanOn(line, inline);
+    if (!span) continue;
+    let top = line.y;
+    let bottom = line.y + line.height;
+    if (face) {
+      const baseline =
+        line.y +
+        line.baseline -
+        (LINE_BOX_RAISES.get(line)?.get(inline) ?? BOX_RAISES.get(inline) ?? 0);
+      top = baseline - face.ascent - inline.padTop;
+      bottom = baseline + face.descent + inline.padBottom;
+    }
+    const rect = {
+      x: span[0],
+      y: top,
+      width: span[1] - span[0],
+      height: bottom - top,
+    };
+    first ??= rect;
+    last = rect;
+  }
+  if (!first || !last) {
+    const at = box.staticPosition;
+    const x = at ? at.from.x + at.x : 0;
+    const y = at ? at.from.y + at.y : 0;
+    const height = face ? face.ascent + face.descent : 0;
+    return { x, y, width: 0, height };
+  }
+  const rtl = inline.style.direction === 'rtl';
+  const start = rtl ? first.x + first.width : first.x;
+  const end = rtl ? last.x : last.x + last.width;
+  let x = Math.min(start, end);
+  let width = Math.abs(end - start);
+  if (rtl ? end > start : end < start) {
+    // the last fragment ends before the first begins, which CSS 2.1 leaves
+    // undefined: both, then, as a browser takes them
+    x = Math.min(first.x, last.x);
+    width = Math.max(first.x + first.width, last.x + last.width) - x;
+  }
+  return { x, y: first.y, width, height: last.y + last.height - first.y };
+}
+
+/** How far an inline box's padding box reaches across a line, left and
+ *  right; null where nothing of it is on the line. */
+function spanOn(line: LineBox, inline: Box): [number, number] | null {
+  let left = Infinity;
+  let right = -Infinity;
+  for (const text of line.texts) {
+    const natural = text.layout.lines[text.layoutLine];
+    const boxAt = text.spans.boxAt;
+    if (!natural || !boxAt) continue;
+    const x = text.drawX + natural.x;
+    for (const run of natural.runs) {
+      const owner = boxAt.call(text.spans, run.start);
+      if (!owner || !holds(inline, owner)) continue;
+      left = Math.min(left, x + run.x);
+      right = Math.max(right, x + run.x + run.width);
+    }
+  }
+  for (const placed of line.atomics) {
+    if (!holds(inline, placed.box)) continue;
+    left = Math.min(left, placed.x - placed.box.marginLeft);
+    right = Math.max(
+      right,
+      placed.x + placed.box.width + placed.box.marginRight,
+    );
+  }
+  for (const edge of line.edges ?? []) {
+    if (edge.box !== inline) {
+      if (!holds(inline, edge.box)) continue;
+      left = Math.min(left, edge.x);
+      right = Math.max(right, edge.x + edge.width);
+      continue;
+    }
+    // its own: the padding edge, inside the margin and the border
+    const onLeft =
+      (edge.side === 'start') !== (inline.style.direction === 'rtl');
+    if (onLeft) {
+      const at = edge.x + inline.marginLeft + inline.borderLeft;
+      left = Math.min(left, at);
+      right = Math.max(right, at);
+    } else {
+      const at = edge.x + edge.width - inline.marginRight - inline.borderRight;
+      left = Math.min(left, at);
+      right = Math.max(right, at);
+    }
+  }
+  return left <= right ? [left, right] : null;
 }
 
 /**
@@ -2498,6 +2633,26 @@ export function resolveEdges(box: Box, containingWidth: number): void {
   box.marginRight = edge(style.marginRight, containingWidth);
   box.marginBottom = edge(style.marginBottom, containingWidth);
   box.marginLeft = edge(style.marginLeft, containingWidth);
+  // A table's parts but its caption have no margins, and its rows and row
+  // groups no padding either (CSS 2.1 8.3, 8.4): a cell set `margin: 50px`
+  // left a gap in its table that no browser draws. The values stay theirs,
+  // for a cell to inherit (`padding: inherit`); they only do nothing here.
+  if (
+    box.kind === 'table-cell' ||
+    box.kind === 'table-row' ||
+    box.kind === 'table-row-group'
+  ) {
+    box.marginTop = 0;
+    box.marginRight = 0;
+    box.marginBottom = 0;
+    box.marginLeft = 0;
+    if (box.kind !== 'table-cell') {
+      box.padTop = 0;
+      box.padRight = 0;
+      box.padBottom = 0;
+      box.padLeft = 0;
+    }
+  }
   if (box.kind === 'table' || box.kind === 'table-cell') collapseEdges(box);
 }
 

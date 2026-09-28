@@ -90,6 +90,7 @@ an older one, and the final sweep's results (see the README there):
 | `mapsweep.tsx`    | `<Map>`                | `pan`, `drag`, `wheel`, `fly` over London z15                                                                                                | `RENDERER` (`retained`/`gl`), `DIAG`; tiles from `BENCH_TILES`   |
 | `chartsweep.tsx`  | charts                 | `stream`, `pan1m`, `zoom1m`, `multiples`, `scatter`, `scroll`                                                                                |                                                                  |
 | `tablesweep.tsx`  | `<Table>`              | `wheel`, `fling`, `thumb`, `jump` over 100k rows                                                                                             | `DIAG`, `PREFETCH`                                               |
+| `treesweep.tsx`   | `<Tree>`               | `wheel`, `fling`, `thumb`, `keys` over 100k rows, all expanded                                                                               | `ROWS`, `FRAMES`                                                 |
 | `docsweep.tsx`    | `<Markdown>`, `<Html>` | `mount`, `edit`, `append`, `scroll`, `reflow`                                                                                                | `COMP`, `SIZE` (sections), `PHASES`, `NO_FLOORS`                 |
 | `editorsweep.tsx` | `<CodeEditor>`         | `mount`, `scroll`, `type-end`, `type-mid`, `type-start`, `undo`, `replace`, `long-mount`, `long-type`, `caret-down`, `enter-end`, `jump-end` | `COMP=code`, `LINES`, `LONG`, `PLAIN`                            |
 | `editorsweep.tsx` | `<RichTextEditor>`     | `mount`, `scroll`, `type-mid`, `type-hidden`, `type-long`, `bold-all`, `paste`                                                               | `COMP=rte`, `SIZE`                                               |
@@ -2637,19 +2638,466 @@ transparent black. Fixed, the whole file still passes against the old
 compositor, and each new path was broken on purpose to see the file catch
 it.
 
+### Bold over a whole document is one step (#281)
+
+Round 25 left this to ProseMirror. Its `addMark` makes a step for each run of
+text lacking the mark, and a run ends with its textblock, so bold over the
+600 KB report was 1,700 steps that each copied the document's top-level
+children. Its `removeMark` joins runs across blocks already. The editor's
+`toggleMark` is prosemirror-commands' own, but the transaction it starts adds
+marks the way `removeMark` removes them. A node that already has the mark
+still ends a run, so the undo is exact. A toggle, from the key to the paint,
+went from 69–75 ms to 45–50 ms; the rest is re-rendering the blocks.
+
+### A box whose children did not move keeps its reach (react-x11 #734)
+
+`contentReach` kept a box's reach while yoga's has-new-layout flag was clear
+on it. But a pass flags every child of a box it lays out, and an edit that
+grows one block lays the document's column out again. So every block came back
+flagged, and each block's children were read back out of yoga, four calls
+each, to find the reach the block already had.
+
+A flagged box whose children are all clear now keeps its reach: their own
+flags are the witness that nothing inside it moved. In the report's edits,
+72,404 of 83,383 reach visits were settled that way. Placing an edit's boxes
+went from 8.2–8.8 ms to 6.2–6.4 ms, and the frame from 15.4–16.1 ms to
+13.3–13.6 ms.
+
+react-x11's own harness could not count this. In its mock app and in
+`renderX11`'s in-process server, a small scene lays out every block of a
+column again on every frame, even blocks whose elements React reused, while
+the report drawn on Xorg keeps most of its blocks in yoga's cache.
+
+### The sweep, ntk 8.13.0 against master, interleaved
+
+The sweep's 2D cells, 79 of them, were each run once under ntk 8.13.0 and
+once under master. The order alternated from cell to cell, so load from other
+work on the machine fell on both. The runs used the same react-x11 and a Node
+resolve hook that pointed `ntk` at the other copy, so nothing was reinstalled
+between cells.
+
+- **The frames suite** (what each frame shows) was identical under both.
+- **Seven cells were flagged**, among them the retained map's wheel and fly,
+  `<CodeEditor>`'s latency and `<Html>`'s tails. Three more interleaved runs
+  each, on a quiet machine, put all seven in the same band on both.
+- **Better under master:**
+  - every Markdown cell's first paint, 1.41–1.47 s to 1.21–1.24 s;
+  - the 2,000-node `<Flow>` zoom, 29.6 to 33 fps;
+  - `<RichTextEditor>` paste, p50 64 ms to 32.
+
+`<Table>`'s thumb drag sat at 29–30 fps under both. That cell is waiting on
+react-x11 #728, which is not released yet: with react-x11 master installed it
+runs at 47.7–48.8 fps, with the same frame times.
+
+### `<Tree>` over 100,000 rows
+
+The sweep had no tree. A probe over the tree example's stress data (100,000
+rows, fifty to a branch, all expanded, every seventh name long enough to
+wrap) measured:
+
+- first paint in 352–376 ms;
+- a wheel at 60 fps (5.7 ms frames), and a fling at 58;
+- the thumb drag at 38 fps on react-x11 2.22.11 and 52 on react-x11 master
+  (#728 again).
+
+Arrow keys paint twice a press. The cursor moves in one commit; the reveal
+then scrolls the pane, and the window's `sync` re-renders the rows around the
+new top in a second. Both frames are about 1.5 ms, and in both the selection
+is inside the viewport. Joining them would need the window to take its top
+from the reveal's target before the first render, which is a change to
+`src/internal/window.ts` shared with `<Table>`.
+
 ### Still open on this machine
 
-- **A Markdown edit's walks in core.** `contentReach` reads every block of
-  a column that was laid out again, and an edit that changes one block's
-  height re-lays out the column: about 5 ms of the 9.5 ms placing an edit's
-  boxes takes at 600 KB. An incremental reach would need core to know
-  which children moved only by their offset.
+- **A Markdown edit's remaining walks in core.** An edit places its boxes in
+  6.2 ms at 600 KB. The column's blocks still have their own place and size
+  read twice, once for the reach and once to be placed. The floors' stale
+  collection is another 2.3 ms, spread over the spine scope's checks of every
+  block in the column.
+- **`<Html>` redoes the whole document on an edit.** The parse, the box
+  build and the inline layout of every paragraph take 85 ms a frame at
+  600 KB here. The text layouts are cached; the line boxes and boxes are
+  not. A parse that kept the nodes it did not change would let all three
+  skip them (round 15 said the same).
 - **Reflow is yoga's.** A Markdown reflow step is 209–215 ms at 600 KB. The
   root layout is half of it, and seven tenths of that is yoga's own
   algorithm over 8,606 nodes, run 3.8 times a frame.
 - **Shaping a word the memo has not seen** is fontkit's set-up per call:
   feature assignment, lookups and script selection for every word. It is
   most of what a 20,000-line code block's layout still costs.
+
+## Round 27: an edit's two walks, and a node's style
+
+The same machine, with the monitor blanked for the whole round. Every number
+here is a CPU phase or a latency, which a blanked screen does not change
+(round 25, "A sweep taken with the screen blanked"). Frame rates are left
+out. Each before and after is interleaved, one run against the other, on a
+quiet machine.
+
+### One stale collection a frame (react-x11 #735)
+
+A flush collected what had changed before `_refit`. The floors' measurement
+then collected again, and nothing laid the tree out in between unless the
+window sized itself from its content. On an edit, each collection went down
+the document's column twice for every one of its 1,704 blocks:
+
+- once for yoga's dirty flag;
+- once for a dozen style names the spine checks, most of them unset.
+
+The flush now leaves its collection owed to the first pass that would clear
+yoga's record. The spine now reads a block's style once per style object,
+since a resolved style is replaced when it changes, never edited in place.
+
+On an edit to the 600 KB document:
+
+- the collection went from 2.6 ms a frame to 1.0 ms;
+- the frame p50 went from 14.8 ms to 13.3 ms.
+
+### A pane's measure hands its boxes to the walk (react-x11 #736)
+
+`contentReach` reads every box in a pane to find how far its content
+reaches, and the walk that places those boxes read each of them again. That
+is four crossings into yoga's wasm per box, at about 140 ns each. Now the
+measure reads each box once with `getComputedLayout()`, a third cheaper than
+four getters, and leaves it for the walk. No pass runs in between: the walk's
+reports are deferred, and the measure is only called from the walk.
+
+- placing an edit's boxes: 7.2 ms a frame to 5.7 ms;
+- the frame p50: 13.4 ms to 11.7 ms;
+- change to paint: 22.9 ms to 21.4 ms.
+
+The same hand-over for the has-new-layout flag, which the two also both read,
+was tried and dropped. The `Map` it went through cost what the saved calls
+did.
+
+### A style applied by the keys it carries (react-x11 #739)
+
+`applyLayoutStyle` asked all 57 layout properties of both styles on every
+call, and allocated their names each time. A style names a handful of them.
+It now walks the keys the new style carries, then the ones the old one
+dropped. A typical row's styles:
+
+|                                   | before |  after |
+| --------------------------------- | -----: | -----: |
+| a node that mounts                | 2.5 µs | 1.0 µs |
+| a restyle that changes only paint | 1.6 µs | 0.2 µs |
+
+Measured in the sweep:
+
+- `<Tree>`'s thumb drag, which replaces rows at input rate, went from
+  53.4 fps to 55 at 115% CPU instead of 117%.
+- The Markdown document's first paint went from 1.20 s to 1.15 s.
+
+The test written for it applies a seeded corpus of styles, each over the one
+before, and holds yoga to where the same style leaves a fresh node. It failed
+on master, on a real bug (react-x11 #738): a restyle that dropped `rowGap` or
+`columnGap` reset it to 0, which yoga takes over `gap`. So `{ gap: 8,
+columnGap: 5 }` followed by `{ gap: 8 }` laid a row out with no gap. The
+floors' column sums already fell back to `gap`, so for such a restyle they
+disagreed with yoga as well.
+
+### What a reflow's measurements throw away (react-x11 #737, open)
+
+`measuringExactly` takes the floors' measurements off the pixel grid by
+setting the shared yoga config's point scale factor to 0 and back. Yoga
+answers any config change by treating every cached layout as stale. So each
+of a reflow step's 3.9 passes lays out all 8,606 nodes. Removing the switch,
+as an experiment that measures on the grid, took a reflow step from 198 ms
+to 127.
+
+The fix is a decision about where rounding lives: keep yoga off the grid for
+good and round in the layout walk. It is filed with the measurements.
+
+An append pays for the same thing another way. The new blocks are measured
+on exact copies, then laid out again, from nothing, in the real pass. That is
+most of why an append's pass costs 11 ms where an edit's costs 4.
+
+### Tried and dropped
+
+- **`<Table>`'s fast-scroll pill as a floor boundary.** A scrub was 169 of
+  170 frames on the whole tree's measurement, because the pill's label
+  changes every step and its lane is sized by its insets. Given a size of
+  its own, the frames went scoped and got slower, 10.9 ms to 14.2. A table
+  has a few hundred visible nodes, so three whole passes over them cost less
+  than measuring each row that mounts on a copy of its own.
+- **Warming the code font early.** The Markdown first paint waits about 36 ms
+  on `fc-match` for the monospace faces a code block asks for. A component
+  reaching into ntk's font source is the wrong shape; a public prewarm in
+  ntk would be the right one.
+
+### The cells now
+
+This round's react-x11 master and ntk master (ea37afc), against round 26's
+interleaved sweep, which ran react-x11 2.22.11 and the ntk master of the
+day:
+
+| cell, 600 KB               | round 26 |     now |
+| -------------------------- | -------: | ------: |
+| Markdown edit, frame p50   |  20.7 ms | 11.3 ms |
+| Markdown insert, frame p50 |  23.9 ms | 14.0 ms |
+| Markdown append, frame p50 |  32.9 ms | 22.3 ms |
+| Markdown first paint       |   1.22 s |  1.15 s |
+
+Round 26's Markdown cells ran at a load of about 2 and these on a quiet
+machine, so the columns are not an A/B. Each change's own interleaved
+numbers are in its section above. Round 26's charts stream read 24.9 ms a
+frame at a load of 9; on a quiet machine the cell is 8.9 ms.
+
+### Still open on this machine
+
+- **The reflow's thrown-away layouts** (react-x11 #737), above.
+- **`<Html>` redoes the whole document on an edit**, as round 26 said.
+- **A new node's cost is spread thin now.** A `<Tree>` scrub's React work
+  is creating yoga nodes through embind, flattening styles, the node
+  constructor and inserting it, 50–120 ms each over a run. No single one
+  is left worth taking alone.
+
+## Round 28: the Mac, after the correctness rounds again
+
+The M1 Pro with its built-in panel alone, X11 through XQuartz. `<Html>` went
+through fourteen more rounds of conformance work between round 24 and this
+one, #258 to #279, and passes 5,554 of the CSS 2.1 suite's reftests on X11
+where it passed 5,486.
+
+### What they cost
+
+The documents suite on master before them (6a70961) and after them
+(3d0f4b9): one lockfile, interleaved, medians of two runs each. Input to
+paint, p50; every other cell held.
+
+| cell                | X11 before |   after | Cocoa before |   after |
+| ------------------- | ---------: | ------: | -----------: | ------: |
+| Markdown, an edit   |      40 ms |   28 ms |      46.7 ms | 34.7 ms |
+| Markdown, an append |    47.4 ms | 32.7 ms |      57.9 ms | 42.8 ms |
+| `<Html>`, an append |    51.6 ms | 57.4 ms |        57 ms | 63.1 ms |
+
+The two Markdown gains are round 25's #262 and #263, which landed among the
+rounds. The third is this round's.
+
+### Every element asked for its `::before`
+
+Bisected across the rounds' commits on X11, two passes of two runs each:
+about 2 ms spread over the rounds before it, none clear of its own noise,
+and 4.3 ms at #278, which gave the user-agent sheet `q::before` and
+`q::after`.
+
+The cascade keeps pseudo-element rules in indexes of their own and asks one
+only when it holds a rule, so a document with none of its own asked
+nothing. With the quotation marks both held a rule, in every document, and
+every element asked both — its id looked up, its `class` split into words,
+its tag and the universal bucket read — to find nothing but on a `<q>`. An
+index now answers whether any of its buckets could hold a rule for an
+element, by its tag first, before anything is matched.
+
+The append is back where it was before #278, three runs each: 58.4 →
+53.6 ms on X11, where it was 53.1, and 62.1 → 58.4 on Cocoa, where it was
+58.2. The CSS 2.1 run on X11 passes the same 5,554 tests.
+
+### The whole sweep, against the tree round 24's ran on
+
+`run.sh` on master after the rounds, against round 24's sweep, flagged cells
+in six families. Each was run again interleaved on three trees: the one
+round 24's sweep ran on (a89ed37, on ntk 8.12.11 and react-x11 2.22.9),
+master before #277, and master. Most of it was the machine:
+
+- every `<CodeEditor>` cell on X11, 1.1 → 2.4 ms from sweep to sweep and
+  2.0–2.6 ms on all three trees, and its replace, 18.4–18.9 ms;
+- the charts' stream, 8–10 ms a frame on all three;
+- the rich text editor's bold-all and paste, on both backends;
+- the Cocoa code editor's cells.
+
+Two things were not:
+
+- **`<Flow>`'s 2D pans on X11**, of the lattice and the fan-out, 82 →
+  62–69 fps, and **`<Map>`'s GL wheel**, 60 → 54–56. Every source tree over
+  round 24's ntk runs them fast, and every one over ntk 8.12.13 or 8.13.0
+  slow. Between the two releases are ntk #401, the Linux round's frame
+  pacing, and #404, a clip of no area; ntk 8.13.0 with #401 alone taken out
+  runs them at 80–82 and 58–61 again. The next section is why. The charts
+  scene's pan went from 68 to 63 fps too, and was not bisected.
+- **Long-line typing on Cocoa** paints 47 frames a second for 62.5 keys,
+  where it painted 54: #268 lays a long line's pieces out when something
+  asks. Key to paint stays at 9.7 ms, its p95 went from 14.0 to 10.6 ms and
+  the CPU from 71% to 58%, so some keystrokes now share a frame, which
+  nobody sees.
+
+### Two frames in flight on XQuartz (ntk #401)
+
+XQuartz ends frames on the fence, and its interval is 8.33 ms, the 120 Hz
+panel's. ntk #401 counts the interval from a frame's start rather than its
+end. Before it, a pan frame of 3.5 ms was followed by the whole interval, 12
+ms in all, and XQuartz had answered its fence (4–7 ms) before the next one
+started: one frame was in flight at a time. Now the next frame starts 4.8
+ms after the last one ends, before that answer, and two are in flight. With
+two queued, XQuartz answers a fence every 16.6 ms, and the pan runs at the
+rate of the answers.
+
+Taking #401 out is not the answer. On the same machine it took `<Table>`'s
+fling from 60 to 89 fps, and neither limit wins every cell. Two runs each,
+ntk 8.13.0 on XQuartz, fps:
+
+| cell                      | #401, two in flight (now) | #401, one in flight | without #401 |
+| ------------------------- | ------------------------: | ------------------: | -----------: |
+| `<Flow>` fan-out, 2D pan  |                      66.2 |                89.7 |    80.5–81.7 |
+| `<Flow>` lattice, 2D pan  |                 64.7–71.5 |           90.2–90.5 |    80.5–82.0 |
+| `<Flow>` widgets, GL pan  |                 67.4–67.8 |           80.5–81.8 |    64.6–66.4 |
+| `<Flow>` widgets, 2D drag |                 78.6–79.2 |           80.2–81.7 |    74.7–75.3 |
+| `<Map>` GL wheel          |                 56.5–57.2 |           53.2–55.4 |    61.4–61.6 |
+| `<Table>` fling           |                 89.4–89.8 |           78.2–78.4 |    59.6–59.7 |
+
+The retained map's pan is the same in all three, and typing within 0.4 ms.
+ntk's own drag bench, a card under a 120 Hz pointer, keeps what it was
+written to show: 114–117 fps at two in flight, 95–100 at one.
+
+One frame in flight would beat the Mac as it was before #401 in every cell
+but the map's wheel, and give back an eighth of the fling and a sixth of
+the drag bench. What makes a full-window pan so much slower than a fling
+with two frames queued is inside XQuartz, and was not found. The choice is
+ntk's, and so is any limit that adapts, dropping to a frame in flight while
+the answers come a refresh apart; none was tried here.
+
+### A server that crashed under the sweep
+
+XQuartz crashes in `<Flow>`'s GL cells over 2,000 nodes, a bus error in its
+own code: at 16:51 during round 24's sweep, and twice during this one. Round
+24's sweep lost nothing to it, because its `DISPLAY` was launchd's socket,
+which starts XQuartz again for the next client. This round's named the
+display, `:29` and then `:30`, and every cell after the crash failed to
+connect. The sweep's README says so now.
+
+### What a drag feels like on the Mac (#257)
+
+`scripts/bench/frames/e2p.tsx` times a pointer move to the frame that shows
+it, on the window server's own clock. A `<Flow>` node dragged in the stress
+example's widgets scene at zoom 0.95 is 50–54 ms from event to pixel under
+GL, and 40–44 under 2D.
+
+The GL frame is swapped 18 ms after the event, before the 2D one has
+flushed at 25–26. It then takes 31.5 ms to reach the screen, against the
+flush's 15–17: two of the display's frames more. The same numbers came from
+the morning's master, from master before #251, and with core 2.22.8 in
+place of 2.22.10. That last one clears react-x11 #722, which puts a tick's
+GL frame and overlay in one Core Animation commit: it is in 2.22.10 and not
+in 2.22.8. What is left is how a `<glarea>`'s surface reaches the screen on
+Cocoa, which is core's.
+
+### Still open on this machine
+
+- **Frames in flight on XQuartz**, which are ntk's to choose: the table
+  above.
+- **XQuartz's crash** in the GL lattice cells, which is XQuartz's.
+- **The GL surface's two extra frames on Cocoa**, which are core's.
+
+## Round 29: a 2D graph pan, and the colours every paint sets
+
+The same machine; the monitor came back on partway through. The cell is the
+2,000-node lattice's 2D pan at zoom 0.5 (`matrix.tsx`, `GL=0 ACTION=pan`).
+That is the fallback where there is no GL, and the heaviest 2D scene the
+sweep has. It went from 38.9 fps to about 48 over five changes, each
+measured interleaved against the master before it.
+
+### A pass leaves behind the routes it cannot reach (#287)
+
+A 2D pan frame paints six passes: the two-pixel strip the pan exposed, the
+minimap and the controls repaired in place, and three rounded corners. Each
+pass routes the edges whose coarse box reaches it. The lattice wraps at the
+end of every row and at the bottom into edges that cross the whole graph, so
+their boxes cover most of the pane. A 5×5 corner reached 263 edges on
+average and the strip 605; about 2,300 were routed a frame, and two in three
+drew nothing. A cached route that cannot reach the pass is now not moved to
+the frame at all, and the next pass that reaches it adds up the pans it
+missed.
+
+The pan went from 38.9 to 42.0 fps at 0.5 and from 49.5 to 55.7 at zoom 1.
+
+### Colours, parsed once and painted by their spelling (ntk #421, #422)
+
+Every `fillStyle` and `strokeStyle` set from a string was parsed, and
+premultiplied, and handed to `solidPicture`, whose cache key is four floats
+turned into text. Profiled, the parse alone was 6.3% of the pan's flush,
+3.3% of the streaming charts' and 2.9% of a `<Table>` scrub's. It is the path
+of every box background react-x11 paints on X11. react-x11's Cocoa context
+already kept a parse cache in front of the same function.
+
+- **#421:** `cssColorStraight` keeps each spelling it has parsed (bounded,
+  returning copies). The pan went from 38.7 to 42.2 fps, and the stream
+  from 9.1 to 8.6 ms a frame.
+- **#422:** the app keeps the solid pictures by the colour's spelling too. The
+  pan went from 46.3 to 47.5 fps, and the stream from 8.9 to 8.5 ms.
+
+The first push of #422 threw `solidPictureOf is not a function` in ten of
+ntk's tests. They hand the 2D context an app of their own that answers only
+`solidPicture`, and a host could do the same, so the context falls back to
+the old path for such an app.
+
+### The palette and a label's place, kept (#288, #290)
+
+- **The palette.** Every text the pane measures asked for the palette, and
+  each ask resolved it again, tinting the accent and parsing the
+  background's lightness. It is now kept for the theme object and the
+  `palette` prop it came from. The pan went from 36.6 to 37.7 fps (on the
+  locked ntk).
+- **A label's place.** Every pass that reached a labelled edge walked the
+  whole route to find its middle. The middle is now kept on the cached
+  route and moved with it, and the plate's default fill is worked out once
+  a pass. The pan went from 46.6 to 48.4 fps.
+
+### What is left in that pan
+
+The flush is now the rasterizer and the routes. ntk's coverage rasterizer
+(`edge`, `toAlpha`, the stroke's triangles) is about a quarter of it, and it
+is the standard signed-area design, which an earlier attempt could not
+speed up. Every reached route still has all its points moved in place each
+frame, about 2 ms of it; not moving them would mean every consumer of a
+scene taking an offset.
+
+## Round 29: what a first frame waits for
+
+Two waits sat on every first frame; neither is layout or paint.
+
+### A family nobody warmed (ntk #423, #292, #293)
+
+ntk warms sans-serif's four faces while the client connects. Any other
+family started matching only when a layout first asked for it, and that
+layout then waited on `fc-match`: 20–40 ms here, and 80–150 on XQuartz.
+Monospace is the family that matters: code, a terminal's grid, a document's
+code spans.
+
+- **ntk #423** adds `FontManager#prewarm(family)`: the family's four faces
+  start off the event loop, and a layout that asks before the loop runs
+  takes their answers.
+- **#292 and #293** call it while a component renders, because a render
+  runs ahead of the frame that lays it out, and a long document's render is
+  hundreds of milliseconds of head start. The components that call it:
+  - `<CodeEditor>`, in the family its style names;
+  - `<Code>` and `<TerminalOutput>`;
+  - a vt `<Terminal>`;
+  - `<Markdown>` and `<RichTextEditor>`, only when what they mount has
+    code in it.
+
+  The four spawns cost the main thread about 8 ms, so a document with no
+  code does not warm anything.
+
+| cell                                       | first flush before |          after |
+| ------------------------------------------ | -----------------: | -------------: |
+| `<CodeEditor>` mount                       |     127.5–134.9 ms | 101.4–107.4 ms |
+| `<RichTextEditor>` mount, 600 KB with code |         239–257 ms |     194–223 ms |
+| `<Markdown>` mount, 600 KB with code       |         783–830 ms |     769–793 ms |
+
+### The layout engine, fetched from itself (react-x11 #740)
+
+yoga-layout ships its WebAssembly only as a base64 `data:` URL inside its
+loader, and the loader, handed nothing, fetches that URL. That is Node
+loading undici, its `fetch`, at every app's startup, and compiling the
+module through a streamed Response: 36–50 ms. The same bytes handed to the
+loader as `wasmBinary` compile in 9–13. `loadLayout()` now reads them out
+of the loader's file. Where it cannot, in a bundle, a single executable, or
+a yoga-layout that moved its files, it loads the stock way.
+
+Over the startup probe (import, connect, first paint of a small app), the
+time inside `createRoot()` went from a median of 154 ms to 128 ms. What is
+left of the roughly 480 ms to a first paint is mostly Node's module loader:
+resolving and compiling several hundred modules, about 180 ms of it.
 
 ## Lessons
 
@@ -2815,6 +3263,31 @@ it.
     passed for years. Their colours were saturated to 0 and 255 and their
     solid sources transparent. Break the code a test guards and watch it
     fail before trusting it.
+39. **A property test holds a path to itself unless it also pins an
+    answer.** "A style over the one before lands where a fresh node does"
+    caught a dropped-key bug on its first run, and could not catch a change
+    that made both sides wrong alike. One absolute assertion (a placed node
+    holds no offsets) closed that.
+40. **Reinstalling the same package is not a restore.** `npm install
+--no-save` of the tarball already installed does nothing, so a
+    hand-patched `node_modules` stays patched and an A/B runs one side
+    twice. Remove the package first, and diff it against its source.
+41. **A rule in the user-agent sheet is in every document.** An index that
+    is asked only when it holds a rule is free for a document with none of
+    its own, until the user-agent sheet gives it one. #278's two
+    quotation-mark rules made every element of every document ask two
+    indexes for nothing. Check what a user-agent rule wakes up, not only
+    what it styles.
+42. **A/B against the tree the baseline ran on.** Round 28's first A/Bs
+    used the tree after round 23's fixes, two ntk releases later than the
+    sweep they were checking, and cleared every cell. Against the tree round
+    24's sweep ran on, two were real, and one was in those releases. Write down
+    a sweep's tree and its lockfile, and A/B that.
+43. **A pacing change moves every limit tuned under the old pacing.** ntk
+    chose two frames in flight on XQuartz under a timer armed at a frame's
+    end, which kept its frames apart by itself. The start-to-start timer of
+    the Linux round let them queue, and the Mac's pans lost a fifth, where
+    no Linux cell could show it.
 
 ## Still open
 

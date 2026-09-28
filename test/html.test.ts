@@ -717,6 +717,39 @@ metric('a malformed colour does not reach paint', async () => {
 });
 
 metric(
+  "a letter-spacing percentage is of the font size, and a font's size loses to a later font-size",
+  async () => {
+    // CSS Text 4: `letter-spacing: 200%` is two ems. And the `font`
+    // shorthand's size lost to a more specific `font-size` only until the
+    // cascade's second pass applied the `font` again
+    const { node } = await render(
+      '<style>span{font:15px/1 sans-serif} .b > span{font-size:30px}</style>' +
+        '<p id="p" style="font-size:10px;letter-spacing:200%">x</p>' +
+        '<div class="b"><span id="s">x</span></div>',
+    );
+    const el = view(node);
+    const styleOf = (id: string) =>
+      (
+        boxOf(el, id) as unknown as {
+          style: { letterSpacing: number; fontSize: number };
+        }
+      ).style;
+    assert.strictEqual(styleOf('p').letterSpacing, 20);
+    assert.strictEqual(styleOf('s').fontSize, 30);
+  },
+);
+
+test('an image told to be a column is drawn, as one told to be a cell is', async () => {
+  // a column is not drawn, and an image that is one is an inline image
+  const { node } = await render(
+    '<div style="display:table"><img id="i" width="20" height="10" ' +
+      'style="display:table-column-group" src="x.png"></div>',
+  );
+  const img = boxOf(view(node), 'i');
+  assert.ok(img.width === 20 && img.height === 10, 'laid out at its size');
+});
+
+metric(
   'a hex colour of five or seven digits is none, and does not throw from paint',
   async () => {
     const { el } = await renderWithBytes(
@@ -1326,6 +1359,30 @@ async function markersOf(source: string): Promise<string[]> {
   cleanup();
   return out;
 }
+
+metric('a pseudo-element set list-item has a marker', async () => {
+  // CSS 2.1 12.5: outside it, or its content's start where it is inside
+  const { node } = await render(
+    '<style>#a::after{content:"x";display:list-item;margin-left:1em}' +
+      '#b::before{content:"y";display:list-item;' +
+      'list-style-position:inside}</style>' +
+      '<div id="a">a</div><div id="b">b</div>',
+  );
+  const el = view(node);
+  type Marked = LaidBox & {
+    pseudo: string | null;
+    marker: { text: string } | null;
+  };
+  const after = (boxOf(el, 'a').children as Marked[]).find(
+    (child) => child.pseudo === 'after',
+  );
+  assert.ok(after?.marker, 'an outside marker');
+  assert.strictEqual(after.marker.text, '\u2022');
+  assert.ok(
+    el.textContent().includes('\u2022 y'),
+    'an inside one, in its text',
+  );
+});
 
 test('a list counts with the list-item counter, down where it is reversed', async () => {
   // `<ol reversed>` counts its items down to 1, and to an item's `value`
@@ -3779,6 +3836,30 @@ metric(
   },
 );
 
+metric(
+  'text beside a block in an anonymous table cell is laid out',
+  async () => {
+    // the cell the table fix-up makes is a block container like another, and
+    // wraps the text in an anonymous block (CSS 2.1 9.2.1.1)
+    const { node } = await render(
+      '<p>a<span id="t" style="display:inline-table">bcd' +
+        '<span style="display:block">x</span></span>e</p>' +
+        '<p>a<span id="u" style="display:inline-table">bcd</span>e</p>',
+    );
+    const el = view(node);
+    const [t, u] = [boxOf(el, 't'), boxOf(el, 'u')];
+    assert.ok(
+      Math.abs(t.width - u.width) < 0.5,
+      `${t.width} wide, as ${u.width}`,
+    );
+    assert.ok(t.height > u.height, 'and a line taller, for the block');
+    assert.ok(
+      linesOf(el, 't').some((line) => line.texts.length > 0 && line.y === t.y),
+      'its text on its first line',
+    );
+  },
+);
+
 metric("a footer group's rows come last wherever it stands", async () => {
   const { node } = await render(
     '<table><thead><tr><td id="h">h</td></tr></thead>' +
@@ -3788,6 +3869,60 @@ metric("a footer group's rows come last wherever it stands", async () => {
   const el = view(node);
   const [h, f, b] = ['h', 'f', 'b'].map((id) => boxOf(el, id).y);
   assert.ok(h < b && b < f, 'header, body, footer');
+});
+
+metric(
+  'a table cell is as tall as its content, whatever height it sets',
+  async () => {
+    // CSS 2.1 17.5.3: a cell's height is a least one
+    const { node } = await render(
+      '<table style="border-spacing:0"><tr>' +
+        '<td id="a" height="4" style="padding:0">text</td>' +
+        '<td id="b" style="height:4px;padding:0"></td></tr></table>',
+    );
+    const el = view(node);
+    const [a, b] = [boxOf(el, 'a'), boxOf(el, 'b')];
+    assert.ok(a.height > 12, `a line tall: ${a.height}`);
+    assert.strictEqual(b.height, a.height, 'and so is its row');
+  },
+);
+
+metric(
+  "a table's parts take no margins, and a cell's width keeps within min and max",
+  async () => {
+    // CSS 2.1 8.3: margins apply to no part of a table but its caption; and
+    // a cell's `min-width` and `max-width` hold it, as in every browser
+    const { node } = await render(
+      '<style>td{padding:0} table{border-spacing:0}</style>' +
+        '<table id="t"><tr><td id="c" style="margin:50px">x</td></tr></table>' +
+        '<div style="display:table"><div style="display:table-row">' +
+        '<div id="max" style="display:table-cell;width:300px;max-width:100px;height:10px"></div>' +
+        '</div></div>' +
+        '<div style="display:table"><div style="display:table-row">' +
+        '<div id="min" style="display:table-cell;min-width:80px;height:10px"></div>' +
+        '</div></div>',
+    );
+    const el = view(node);
+    const [t, c] = [boxOf(el, 't'), boxOf(el, 'c')];
+    assert.strictEqual(c.x, t.x, 'at the start of its table');
+    assert.strictEqual(c.y, t.y, 'at its top');
+    assert.strictEqual(boxOf(el, 'max').width, 100);
+    assert.strictEqual(boxOf(el, 'min').width, 80);
+  },
+);
+
+metric('floats that add up to their room exactly fit in it', async () => {
+  // ten of 0.87em in 8.7em came to more than it by a rounding error, and
+  // the tenth went under the other nine
+  const { node } = await render(
+    '<div style="width:8.7em;font-size:16px">' +
+      '<span id="f0" style="float:left;width:0.87em;height:5px"></span>'.repeat(
+        9,
+      ) +
+      '<span id="last" style="float:left;width:0.87em;height:5px"></span></div>',
+  );
+  const el = view(node);
+  assert.strictEqual(boxOf(el, 'last').y, boxOf(el, 'f0').y, 'one row');
 });
 
 /** The clips standing when a fill of this colour was made, innermost last. */
@@ -3969,6 +4104,76 @@ metric(
     assert.deepStrictEqual([a.x, a.y], [c.x + 10, p.y + p.height]);
     assert.strictEqual(b.x, c.x + 10, 'one axis at a time');
     assert.strictEqual(b.y, 0);
+  },
+);
+
+metric(
+  'an absolute box after text is under its line, or after it on the line',
+  async () => {
+    // The static position among a paragraph's text (CSS 2.1 10.3.7,
+    // 10.6.4): a block-level box would have broken the line, so it goes
+    // under it, and an inline-level one goes where the text left the pen.
+    // Both went at the paragraph's top, over its text. The second is in a
+    // padded span, whose paragraph is laid out another way.
+    const { node } = await render(
+      '<style>body{margin:0} div{line-height:20px}</style>' +
+        '<div id="p">Some text<div id="a" style="position:absolute;' +
+        'width:5px;height:5px"></div></div>' +
+        '<div id="q">Some <span style="padding-left:4px">text<span id="b" ' +
+        'style="position:absolute;width:5px;height:5px"></span></span></div>',
+    );
+    const el = view(node);
+    const [p, a, q, b] = ['p', 'a', 'q', 'b'].map((id) => boxOf(el, id));
+    assert.deepStrictEqual([a.x, a.y], [p.x, p.y + 20], 'under the line');
+    const [line] = linesOf(el, 'q');
+    assert.strictEqual(b.y, q.y, 'on the line');
+    const end = line.x + line.width;
+    assert.ok(Math.abs(b.x - end) < 1, `after the text: ${b.x}, ${end}`);
+  },
+);
+
+metric(
+  'an absolute box in a positioned inline box is placed against it',
+  async () => {
+    // CSS 2.1 10.1, item 4: a `position: relative` inline box is the
+    // containing block of what is absolute in it, from the padding edge its
+    // first fragment starts at. Read as a box that lays itself out, it was
+    // a rectangle of no size at the page's corner, and a tooltip under its
+    // link came up there.
+    const { node } = await render(
+      '<style>body{margin:0}</style>' +
+        '<p id="p" style="margin:0 0 0 30px;line-height:20px">Hover ' +
+        '<a id="l" style="position:relative;padding-left:4px">here<span ' +
+        'id="t" style="position:absolute;left:0;top:100%;width:10px;' +
+        'height:10px"></span></a></p>',
+    );
+    const el = view(node);
+    const [p, t] = ['p', 't'].map((id) => boxOf(el, id));
+    const [line] = linesOf(el, 'p');
+    // the link's, the one inline box on the line
+    const start = line.edges!.find((e) => e.side === 'start')!;
+    assert.strictEqual(t.x, start.x, "at the link's padding edge");
+    assert.ok(t.x > p.x, 'not at the corner');
+    assert.ok(t.y > p.y && t.y <= p.y + 20, `under its text: ${t.y}`);
+  },
+);
+
+metric(
+  'a shrink-to-fit box that does not wrap is as wide as its line',
+  async () => {
+    // min(max(min-content, room), max-content) (CSS 2.1 10.3.5), and a line
+    // that does not wrap is its own min-content: a `nowrap` tooltip in a
+    // link narrower than it was cut to the link's width, its words taken
+    // for places it could break
+    const { node } = await render(
+      '<div style="width:40px"><div id="f" style="float:left;' +
+        'white-space:nowrap">one two three</div></div>',
+    );
+    const el = view(node);
+    const [line] = linesOf(el, 'f');
+    const f = boxOf(el, 'f');
+    assert.ok(f.width > 40, `past its room: ${f.width}`);
+    assert.ok(Math.abs(f.width - line.width) < 1, 'as wide as its line');
   },
 );
 
@@ -4624,6 +4829,21 @@ test("white space between a table's parts is no cell, kept or not", async () => 
   assert.deepStrictEqual([c.x, c.y], [t.x, t.y], 'the cell is the first');
 });
 
+metric('a no-break space beside a block is a line of its own', async () => {
+  // CSS's white space is the space, the tab and the line breaks (CSS Text
+  // 3, 4.1); `trim` and `\s` take the no-break space in too, so the
+  // `&nbsp;` a mail layout holds a gap open with was dropped beside a
+  // block as if it held nothing
+  const { node } = await render(
+    '<style>body{margin:0} div{line-height:20px}</style>' +
+      '<div id="d">&nbsp;<div>x</div></div>' +
+      '<div id="e"> <div>x</div></div>',
+  );
+  const el = view(node);
+  assert.strictEqual(boxOf(el, 'd').height, 40, 'its line, then the block');
+  assert.strictEqual(boxOf(el, 'e').height, 20, 'a space is white space');
+});
+
 test("an auto table is as wide as its caption's own width", async () => {
   // CSS 2.1 17.4: the caption's least width is the table's, and one set to
   // a length has that one; measured at no width, an empty caption set to
@@ -5179,6 +5399,24 @@ test('a stylesheet handed back by the seam reaches the cascade', async () => {
   )._tree;
   assert.strictEqual(tree.root.children[0].style.color, '#ff0000');
   void result;
+});
+
+test('text-decoration with a word it does not know is ignored, and draws every line it names', async () => {
+  // CSS 2.1 4.2: the whole declaration goes, not the words after it
+  const { node } = await render(
+    '<p id="a" style="text-decoration: underline line-through diagonal">a</p>' +
+      '<p id="b" style="text-decoration: underline line-through">b</p>',
+  );
+  const el = view(node);
+  const styleOf = (id: string) =>
+    (
+      boxOf(el, id) as unknown as {
+        style: { underline: string | null; lineThrough: string | null };
+      }
+    ).style;
+  assert.strictEqual(styleOf('a').underline, null);
+  assert.strictEqual(styleOf('a').lineThrough, null);
+  assert.ok(styleOf('b').underline && styleOf('b').lineThrough, 'both lines');
 });
 
 test('a form control or a frame keeps its height when only its width is set', async () => {
@@ -7032,6 +7270,17 @@ metric(
       {},
     );
     assert.strictEqual(style(fragment.el).color, '#00ff00');
+    cleanup();
+    // and so does a page with a <body> and no <html>, the usual shape of
+    // one that starts `<!DOCTYPE html><title>`, where the rule matched
+    // nothing and the page came out at the theme's size
+    const page = await renderWithBytes(
+      '<!DOCTYPE html><title>t</title><style>html { color: #00ff00; ' +
+        'font-size: 10px }</style><body><p id="p">x</p></body>',
+      {},
+    );
+    assert.strictEqual(style(page.el).color, '#00ff00');
+    assert.strictEqual(style(page.el).fontSize, 10);
   },
 );
 
@@ -7758,6 +8007,55 @@ metric(
 );
 
 metric(
+  "an image set middle is centred on its parent's x-height, not on its line",
+  async () => {
+    // CSS 2.1 10.8.1: its middle half the parent's x-height above the
+    // baseline, wherever a taller image beside it puts the line's middle
+    const { node } = await render(
+      '<style>p{margin:0;font-size:16px;line-height:20px}</style>' +
+        '<p id="a">x<img id="m" width="10" height="30" src="x.png" ' +
+        'style="vertical-align:middle"></p>' +
+        '<p id="b">x<img width="10" height="60" src="x.png">' +
+        '<img id="n" width="10" height="30" src="x.png" ' +
+        'style="vertical-align:middle"></p>',
+    );
+    const el = view(node);
+    const above = (img: string, p: string) => {
+      const box = boxOf(el, img);
+      const [line] = linesOf(el, p);
+      const { baseline } = line as unknown as { baseline: number };
+      return line.y + baseline - (box.y + box.height / 2);
+    };
+    const alone = above('m', 'a');
+    assert.ok(alone > 0 && alone < 8, `half an x-height up: ${alone}`);
+    assert.ok(
+      Math.abs(above('n', 'b') - alone) < 0.01,
+      `and there beside a taller image: ${above('n', 'b')}`,
+    );
+  },
+);
+
+metric(
+  'text-transform: capitalize takes the first letter of each word',
+  async () => {
+    // CSS Text 3, 2.1: punctuation a word starts with is not its first
+    // letter, and a word runs on across an element's edge
+    const { node } = await render(
+      '<p style="text-transform:capitalize">(p.p.) <b>fo</b>o ' +
+        "well-known don't x.y 3rd éa a&#xA0;b ǆa ᾀa ßa</p>",
+    );
+    const text = view(node).textContent();
+    // in title case, which is not upper case for a letter that is two
+    assert.ok(
+      text.includes(
+        "(P.p.) Foo Well-Known Don't X.y 3rd Éa A\u00a0B ǅa ᾈa Ssa",
+      ),
+      JSON.stringify(text),
+    );
+  },
+);
+
+metric(
   "a raised box's background is drawn around its raised text",
   async () => {
     const fills = async (align: string) => {
@@ -7778,6 +8076,60 @@ metric(
     assert.deepStrictEqual(
       [raised.x, raised.y, raised.w, raised.h],
       [flat.x, flat.y - 8, flat.w, flat.h],
+    );
+  },
+);
+
+metric(
+  "a top-aligned box's background is drawn around its own text",
+  async () => {
+    // its baseline is where the line's top puts it, not the line's: in a line
+    // made tall by its paragraph, the background stayed on the paragraph's
+    // baseline while the text went up
+    const around = async (align: string) => {
+      const { node } = await render(
+        '<style>p{margin:0;font-size:16px;line-height:40px}</style>' +
+          '<p id="p">a <span id="s" style="background:#00ff00;line-height:1;' +
+          `vertical-align:${align}">x</span></p>`,
+      );
+      const el = view(node);
+      const [fill] = (await fillsOf(el)).filter((f) => f.style === '#00ff00');
+      // on the baseline it is laid out with the text before it
+      const x = baselinesOf(el, 'p').find((f) => f.text.includes('x'))!;
+      cleanup();
+      return x.at - fill.y;
+    };
+    assert.ok(
+      Math.abs((await around('top')) - (await around('baseline'))) < 0.01,
+      'as far above its baseline as on the baseline',
+    );
+  },
+);
+
+metric(
+  'a box whose padding reaches up over the line before is drawn over its text',
+  async () => {
+    // CSS 2.1 Appendix E paints a block a line at a time, backgrounds first:
+    // the second line's padding covers the first line's text
+    const { node } = await render(
+      '<style>body{margin:0}</style>' +
+        '<p style="margin:0;font-size:16px;line-height:20px">first line<br>' +
+        '<span style="background:#00ff00;padding-top:20px">second</span></p>',
+    );
+    const ops: PaintOp[] = [];
+    await fillsOf(view(node), ops);
+    const text = ops.findIndex((op) => op.op === 'text');
+    const again = ops.findIndex(
+      (op, i) => i > text && op.op === 'fill' && op.style === '#00ff00',
+    );
+    assert.ok(text >= 0 && again > text, 'filled again after the text');
+    const clip = ops
+      .slice(text, again)
+      .reverse()
+      .find((op): op is Extract<PaintOp, { op: 'clip' }> => op.op === 'clip');
+    assert.ok(
+      clip && clip.y + clip.h <= 21,
+      `only above its own line: ${JSON.stringify(clip)}`,
     );
   },
 );
@@ -7828,7 +8180,9 @@ metric(
       1,
       'all of it on one line',
     );
-    const own = await rules('text-decoration:underline');
+    // the longhand: `text-decoration: underline` would reset the colour
+    // the sheet gave the span, as a shorthand does
+    const own = await rules('text-decoration-line:underline');
     const a = own.find((f) => f.style === '#ff00ff')!;
     const b = own.find((f) => f.style === '#00ffff')!;
     assert.ok(Math.abs(a.y - b.y - 10) <= 1, 'the raised one goes with it');

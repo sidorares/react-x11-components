@@ -163,6 +163,9 @@ interface CachedRoute {
   from: HandleAnchor;
   to: HandleAnchor;
   bounds: FlowRect;
+  /** The middle of the whole route, where a label sits: worked out the
+   *  first time a label asks (`middleOf`), and moved with the route. */
+  middle: XYPosition | null;
 }
 
 /** Bounded, so a graph that churns edge ids cannot turn this into a leak. */
@@ -285,8 +288,42 @@ function buildRoute(
     from: routed.from,
     to: routed.to,
     bounds: pathBounds(all),
+    middle: null,
   });
   return entry;
+}
+
+/**
+ * Where a route's label sits. Walking the route to its middle is the length
+ * of every segment twice, and a 2D pan's passes asked it of every labelled
+ * edge they reached, every frame; kept, it is two additions a pan. A copy,
+ * never one of the route's own points, which the pan moves as well.
+ */
+function middleOf(route: CachedRoute): XYPosition {
+  if (route.middle === null) {
+    const p = pointAtFraction(route.points, 0.5);
+    route.middle = { x: p.x, y: p.y };
+  }
+  return route.middle;
+}
+
+/**
+ * How far an edge's arrowheads can reach past its route's box: a head is
+ * drawn back from a tip set `inset` short of the route's end, and no point
+ * of it is farther from that tip than its size (`buildRoute`).
+ */
+function headsReach(
+  v: Viewport,
+  markerEnd: EdgeMarker | null,
+  markerStart: EdgeMarker | null,
+): number {
+  if (!markerEnd && !markerStart) return 0;
+  const inset = v.zoom >= HANDLE_ZOOM ? handleRadius(v.zoom) + 1 : 1;
+  const size = Math.max(
+    markerEnd ? (markerEnd.size ?? DEFAULT_MARKER_SIZE) : 0,
+    markerStart ? (markerStart.size ?? DEFAULT_MARKER_SIZE) : 0,
+  );
+  return size * v.zoom + inset;
 }
 
 /** Which arrowheads a route was built for — their shapes and sizes, never
@@ -487,6 +524,13 @@ export class SceneCache {
     return map;
   }
 
+  /**
+   * The route for `edge` at `v`, from the cache where it still holds. With
+   * `within`, a cached route whose box, carried to `v`, misses that rect is
+   * left where it is and null comes back: the pass has nothing of it to
+   * draw, and the pan it was not moved by is added to the next one that
+   * reaches it.
+   */
   route(
     v: Viewport,
     edge: AnyEdge,
@@ -494,6 +538,7 @@ export class SceneCache {
     to: SceneNodeSource,
     markerEnd: EdgeMarker | null,
     markerStart: EdgeMarker | null,
+    within: FlowRect | null = null,
   ): CachedRoute | null {
     const loop = edge.source === edge.target;
     const markerKey = markerKeyOf(markerEnd, markerStart);
@@ -521,6 +566,17 @@ export class SceneCache {
     ) {
       const dx = v.x - hit.originX;
       const dy = v.y - hit.originY;
+      if (within) {
+        const b = hit.bounds;
+        if (!(
+          b.x + dx < within.x + within.width &&
+          b.x + dx + b.width > within.x &&
+          b.y + dy < within.y + within.height &&
+          b.y + dy + b.height > within.y
+        )) {
+          return null;
+        }
+      }
       if (dx !== 0 || dy !== 0) {
         shift(hit.points, dx, dy);
         // `trimmed` is null when it would be `points`, so nothing is moved
@@ -530,6 +586,10 @@ export class SceneCache {
         if (hit.startHead) shift(hit.startHead, dx, dy);
         hit.bounds.x += dx;
         hit.bounds.y += dy;
+        if (hit.middle) {
+          hit.middle.x += dx;
+          hit.middle.y += dy;
+        }
         hit.originX = v.x;
         hit.originY = v.y;
       }
@@ -1067,6 +1127,8 @@ function buildEdges(input: SceneInput, scene: FlowScene): SceneEdge[] {
   const out: SceneEdge[] = [];
   const cache = input.cache;
   let animBox: FlowRect | null = null;
+  // a label's plate, the same for every edge that names none of its own
+  let plateFill: string | undefined;
 
   // Two rejects: one from the nodes alone — the coarse box, culled once for
   // every pass of a frame where there is a cache — and one from the route
@@ -1092,11 +1154,37 @@ function buildEdges(input: SceneInput, scene: FlowScene): SceneEdge[] {
     );
     const markerStart = normalizeMarker(edge.markerStart);
 
+    const selected = edge.selected ?? false;
+    const hovered = hover.edgeId === edge.id;
+    const stroke =
+      edge.style?.stroke ??
+      (selected ? palette.edgeSelected : hovered ? palette.text : palette.edge);
+    const lineWidth = Math.max(
+      1,
+      (edge.style?.strokeWidth ?? (selected ? 2 : 1.5)) * v.zoom,
+    );
+    // How far ink reaches from a segment is the pen and its join — a miter
+    // at the sharpest corner a route takes stays well inside three widths.
+    const reach = lineWidth * 3 + 2;
+
     // The route, from the cache where there is one: a pan keeps the zoom, so
     // the cached route is the same curve translated, and re-deriving it —
     // the handles, the curve, the arrowheads — is the work this skips.
+    //
+    // And a cached route that cannot reach this pass is not moved to it at
+    // all. A long edge's coarse box reaches a strip its curve never comes
+    // near — the lattice's diagonals reach every corner of the pane — and
+    // carrying each such route to the frame, cutting it to the pass and
+    // finding it empty was most of what a 2D pan's strips cost. Only where
+    // nothing of the edge could land there: its stroke and heads stay
+    // within `within` of its route's box; a label's plate is sized by its
+    // text, and a marching edge's box is tracked whatever it reaches.
+    const within =
+      clip && reached && !edge.animated && !(labels && edge.label)
+        ? inflateRect(clip, reach + headsReach(v, markerEnd, markerStart))
+        : null;
     const routed = cache
-      ? cache.route(v, edge, from, to, markerEnd, markerStart)
+      ? cache.route(v, edge, from, to, markerEnd, markerStart, within)
       : uncachedRoute(v, edge, from, to, markerEnd, markerStart);
     if (!routed) continue;
     const bounds = routed.bounds;
@@ -1111,15 +1199,6 @@ function buildEdges(input: SceneInput, scene: FlowScene): SceneEdge[] {
     }
     if (!reached) continue;
 
-    const selected = edge.selected ?? false;
-    const hovered = hover.edgeId === edge.id;
-    const stroke =
-      edge.style?.stroke ??
-      (selected ? palette.edgeSelected : hovered ? palette.text : palette.edge);
-    const lineWidth = Math.max(
-      1,
-      (edge.style?.strokeWidth ?? (selected ? 2 : 1.5)) * v.zoom,
-    );
     // The heads' geometry came with the route; only their ink is this
     // frame's, because selection and hover recolour without moving anything.
     const markers: SceneMarker[] = [];
@@ -1155,9 +1234,8 @@ function buildEdges(input: SceneInput, scene: FlowScene): SceneEdge[] {
     };
     // A pass over part of the edge draws the part it reaches: a strip down
     // the pane's edge crossed by a hundred long edges traced every point of
-    // every one of them, to keep the handful of segments inside it. How far
-    // ink reaches from a segment is the pen and its join — a miter at the
-    // sharpest corner a route takes stays well inside three widths.
+    // every one of them, to keep the handful of segments inside it
+    // (`reach`, above).
     //
     // A dashed edge too, with where each run starts along it: the pattern
     // is picked up there through the dash offset (`paintEdges`). Left
@@ -1165,7 +1243,6 @@ function buildEdges(input: SceneInput, scene: FlowScene): SceneEdge[] {
     // to end, and on X11 that is a coverage mask the size of the edge's box
     // uploaded for a strip two pixels wide — 1.1 MB a frame over the
     // stress example's widgets, a pan held to 38 fps by ten dashed edges.
-    const reach = lineWidth * 3 + 2;
     if (clip) {
       const starts: number[] | undefined = dash ? [] : undefined;
       const runs = runsReaching(points, clip, reach, starts);
@@ -1176,7 +1253,7 @@ function buildEdges(input: SceneInput, scene: FlowScene): SceneEdge[] {
     }
 
     if (labels && edge.label) {
-      const at = pointAtFraction(routed.points, 0.5);
+      const at = middleOf(routed);
       const size = Math.max(8, 11 * v.zoom);
       const metrics = input.measure(edge.label, { size });
       const padX = 5 * v.zoom;
@@ -1189,7 +1266,9 @@ function buildEdges(input: SceneInput, scene: FlowScene): SceneEdge[] {
           height: Math.round(metrics.height + padY * 2),
         },
         radius: Math.max(2, Math.round(3 * v.zoom)),
-        fill: edge.style?.labelBackground ?? tint(palette.background, 0.92),
+        fill:
+          edge.style?.labelBackground ??
+          (plateFill ??= tint(palette.background, 0.92)),
       };
       item.label = {
         kind: 'text',
