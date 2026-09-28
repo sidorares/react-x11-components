@@ -2988,7 +2988,7 @@ Cocoa, which is core's.
 - **XQuartz's crash** in the GL lattice cells, which is XQuartz's.
 - **The GL surface's two extra frames on Cocoa**, which are core's.
 
-## Round 28: a 2D graph pan, and the colours every paint sets
+## Round 29: a 2D graph pan, and the colours every paint sets
 
 The same machine; the monitor came back on partway through. The cell is the
 2,000-node lattice's 2D pan at zoom 0.5 (`matrix.tsx`, `GL=0 ACTION=pan`).
