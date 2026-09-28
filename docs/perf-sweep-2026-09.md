@@ -1943,6 +1943,33 @@ resize's frame from 6.9 to 3.5 ms on XQuartz and from 10.5 to 6.2 ms on
 macOS, medians of two runs each; the report, with no flex boxes in it,
 does not move.
 
+## Round 21: floats in rows
+
+The fuzzer's pages from the rest of WPT's `css/` directories
+(`docs/html-conformance.md`, round 69) found round 20's shape once more — a
+grid item's min- and max-content widths, measured for every layout of its
+grid and measured once in the box's life now — and two in floats:
+
+- **A float looked for room in every row above its own.** Placing one
+  walked the bottom of every float placed before it, asking at each for
+  the room left there, which takes every float to answer: `n` floats in
+  rows cost `n³`. CSS 2.1 keeps a float no higher than the one before it
+  (9.5.1, rule 5), which the placement had not, so the rows above were
+  candidates when they could not be. From the last float's top they are
+  none, and a float that fits there is placed with one question.
+- **A right float measured at no width limit stood at infinity**, and its
+  box went there. A box at infinity cannot be moved back, so a layout kept
+  for reuse (`layoutOwn`, round 20) was never reused for anything inside
+  one, and the content of a nest of them was laid out once a level.
+
+In process, a fresh layout, milliseconds:
+
+| floats                            | before | after |
+| --------------------------------- | ------ | ----- |
+| 1,000 in rows                     | 694    | 7.7   |
+| 2,000 in rows                     | 6,429  | 22    |
+| 4,000 in 250 levels of right ones | 24,000 | 179   |
+
 ## Lessons
 
 1. **Look for caches that never hit.** Identity-keyed caches handed a new

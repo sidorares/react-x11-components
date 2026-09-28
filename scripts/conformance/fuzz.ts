@@ -1,7 +1,12 @@
-// Pages for `run.ts` to crash on: CSS 2.1's tests, cut up.
+// Pages for `run.ts` to crash on: WPT's tests, cut up.
 //
 //   npx tsx scripts/conformance/fuzz.ts <wpt root> <out dir> [count] [seed]
+//     [--from css/CSS2,css/css-grid,…]
 //   npx tsx scripts/conformance/run.ts <wpt root> <out dir> --chunk 50 --timeout 60000
+//
+// The pages are CSS 2.1's by default; `--from` names other directories of
+// the checkout, which is how the grid, flex, colour and custom-property code
+// is reached with the syntax it reads.
 //
 // Each page is a test of the suite with a few things done to it — a span cut
 // out or repeated, a token put in (a brace, an unclosed `calc(`, a length of
@@ -17,9 +22,14 @@
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 
-const [root, out, countArg = '3000', seedArg = '1'] = process.argv.slice(2);
+const args = process.argv.slice(2);
+const fromAt = args.indexOf('--from');
+const from = fromAt < 0 ? ['css/CSS2'] : args.splice(fromAt, 2)[1].split(',');
+const [root, out, countArg = '3000', seedArg = '1'] = args;
 if (!root || !out) {
-  console.error('usage: fuzz.ts <wpt root> <out dir> [count] [seed]');
+  console.error(
+    'usage: fuzz.ts <wpt root> <out dir> [count] [seed] [--from dir,…]',
+  );
   process.exit(2);
 }
 
@@ -126,6 +136,37 @@ const TOKENS = [
   '​',
   '&#0;',
   '&#x110000;',
+  // what documents written for today's browsers are made of
+  'grid-template-columns: repeat(auto-fit, minmax(0, 1fr));',
+  'grid-template-areas: "a a" "b";',
+  'grid-area: 1 / 1 / -1 / -1;',
+  'grid-column: span 1000000;',
+  'grid-row: -2147483648;',
+  'aspect-ratio: 0 / 0;',
+  'aspect-ratio: 1e308;',
+  'color: oklch(1e308 1e308 1e308);',
+  'background: color-mix(in oklab, red 1e308%, blue);',
+  'width: fit-content(1e308px);',
+  'width: min-content;',
+  'height: max-content;',
+  'min-width: max-content;',
+  'inset: 1e308px;',
+  'translate: 1e308px 1e308px;',
+  'outline-offset: -1e308px;',
+  'background-size: 1e308px 0;',
+  'text-wrap: balance;',
+  'order: -2147483648;',
+  'flex-basis: 1e308%;',
+  'gap: 1e308px;',
+  'line-clamp: 1;',
+  '& .x {',
+  ':has(',
+  ':is(',
+  ':where(',
+  '@container (',
+  'clamp(',
+  '--a: var(--b); --b: var(--a);',
+  'color: var(--a, var(--b, var(--c)));',
 ];
 const NESTING = ['div', 'span', 'b', 'table', 'ul', 'li', 'blockquote'];
 
@@ -155,7 +196,6 @@ function mutate(text: string): string {
   return text;
 }
 
-const suite = join(root, 'css', 'CSS2');
 const tests: string[] = [];
 const walk = (dir: string): void => {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -170,7 +210,7 @@ const walk = (dir: string): void => {
     }
   }
 };
-walk(suite);
+for (const dir of from) walk(join(root, dir));
 tests.sort();
 
 const dir = join(root, out);

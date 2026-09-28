@@ -69,6 +69,7 @@ function coldLayout(node: Awaited<ReturnType<typeof render>>): number {
 
 for (const [kind, open, close] of [
   ['flex boxes', '<div style="display:flex">', '</div>'],
+  ['grids', '<div style="display:grid">', '</div>'],
   ['floats', '<div style="float:left">', '</div>'],
   ['inline-blocks', '<div style="display:inline-block">', '</div>'],
   ['absolute boxes', '<div style="position:absolute">', '</div>'],
@@ -113,6 +114,33 @@ test('a box laid out again is where its last layout put it, not at infinity', as
   const float = find(node._tree!.root)!;
   assert.ok(Number.isFinite(float.x), `x ${float.x}`);
   assert.ok(float.x > 150, 'at the right of its cell');
+});
+
+test('two thousand floats in rows are placed in a moment', async () => {
+  // each went up into any gap the rows above it left, and so walked the
+  // bottom of every float above its own row: two thousand floated
+  // thumbnails took six seconds
+  const node = await render(
+    '<div>' +
+      '<span style="float:left;width:20px;height:20px"></span>'.repeat(2000) +
+      '</div>',
+  );
+  const ms = coldLayout(node);
+  assert.ok(ms < 2000, `${ms.toFixed(0)} ms`);
+});
+
+test('a nest of right floats lays out what it holds once, not once a level', async () => {
+  // Measured at no width limit, a right float stands at an infinite x, and
+  // its box went there: nothing in it could be moved back, so it was all
+  // laid out again at its next layout — the floats in the innermost once a
+  // level, and a page of 250 levels around 4,000 of them took 24 seconds
+  const node = await render(
+    '<span style="float:right">'.repeat(100) +
+      '<span style="float:right">x</span>'.repeat(2000) +
+      '</span>'.repeat(100),
+  );
+  const ms = coldLayout(node);
+  assert.ok(ms < 1000, `${ms.toFixed(0)} ms`);
 });
 
 test('flex boxes past sixty-four deep are laid out as blocks, not thrown', async () => {

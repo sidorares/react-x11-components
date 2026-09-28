@@ -29,6 +29,8 @@ export class FloatContext {
   private _boxes: FloatBox[] = [];
   private _lowestLeft = -Infinity;
   private _lowestRight = -Infinity;
+  /** The top of the float placed last, which no later one goes above. */
+  private _lastTop = -Infinity;
   /** The BFC's own content edges, which is what a band is clipped to. */
   readonly left: number;
   readonly right: number;
@@ -44,6 +46,7 @@ export class FloatContext {
 
   add(box: FloatBox): void {
     this._boxes.push(box);
+    if (box.top > this._lastTop) this._lastTop = box.top;
     if (box.side === 'left')
       this._lowestLeft = Math.max(this._lowestLeft, box.bottom);
     else this._lowestRight = Math.max(this._lowestRight, box.bottom);
@@ -133,6 +136,15 @@ export class FloatContext {
    * float that does not fit beside the ones already placed goes under them,
    * which is the rule that makes two 60%-wide floats stack; one wider than
    * its containing block goes where nothing is beside it.
+   *
+   * No higher than the float placed before it, either (CSS 2.1 9.5.1, rule
+   * 5): a float that fits in a gap an earlier one went under does not go
+   * back up into it. That also makes every float already placed start at or
+   * above the one being placed, so the band only widens below its top and a
+   * band one pixel tall there is the band over its whole height. And it is
+   * what keeps a row of floats cheap: from the top of the one before, the
+   * floats of the rows above are no candidates at all, where a thousand
+   * floated thumbnails walked the bottoms of every row above theirs.
    */
   placeAt(
     from: number,
@@ -141,15 +153,21 @@ export class FloatContext {
     left = this.left,
     right = this.right,
   ): number {
-    let y = from;
-    // Candidate positions are `from` and the bottom of every float below it;
-    // there is no other height at which the band can get wider.
-    const candidates = [from];
+    if (from < this._lastTop) from = this._lastTop;
+    // where it fits at once, as most do, nothing below is looked at
+    const first = this.bandAt(from, 1, left, right);
+    if (first.right - first.left >= width) return from;
+    // Candidate positions are the bottom of every float below `from`; there
+    // is no other height at which the band can get wider.
+    const candidates: number[] = [];
     for (const box of this._boxes) {
       if (box.bottom > from) candidates.push(box.bottom);
     }
     candidates.sort((a, b) => a - b);
+    let y = from;
     for (const candidate of candidates) {
+      // a row of floats ends at one height, asked about once
+      if (candidate === y) continue;
       const band = this.bandAt(candidate, 1, left, right);
       if (band.right - band.left >= width) return candidate;
       y = candidate;
