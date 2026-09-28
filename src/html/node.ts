@@ -51,7 +51,7 @@ import { codePointAtOffset, codeUnitOffsets } from '../internal/text.js';
 import { attr, HtmlSource, imageUrlOf, isElement, tagOf } from './dom.js';
 import type { Document } from './dom.js';
 import { Cascade } from './css/cascade.js';
-import { parseStylesheet } from './css/parse.js';
+import { mediaMatches, parseStylesheet } from './css/parse.js';
 import type { Stylesheet } from './css/parse.js';
 import { uaStylesheet } from './css/ua.js';
 import type { RootLook } from './css/style.js';
@@ -75,6 +75,9 @@ import { controlRectsOf, measureControl } from './controls.js';
 import type { ControlRect } from './controls.js';
 import { ResourceStore } from './resources.js';
 import type { ResourceRequest, ResourceResult } from './resources.js';
+import { WebFonts } from './fonts.js';
+import type { DeclaredFace } from './fonts.js';
+import { resolveUrl, UrlResolver } from './url.js';
 
 /** The element name — registration key, `node.kind` and JSX tag alike. */
 export const ELEMENT = 'htmlview';
@@ -104,6 +107,9 @@ export interface HtmlViewProps {
   /** The encoding the host decoded `source` from: what a stylesheet handed
    *  over as bytes falls back to. */
   charset?: string;
+  /** The URL the document came from, which its relative URLs resolve
+   *  against — see `url.ts`. */
+  baseUrl?: string | null;
   look: RootLook;
   selectionColor?: string;
   onResource?: (
@@ -127,7 +133,14 @@ export function registerHtmlView(): void {
     // `source` and `look` are this element's own vocabulary and neither is a
     // style name today; declaring them keeps the DEV flat-style-prop
     // assertion honest if core's vocabulary grows underneath us.
-    semanticNames: ['source', 'look', 'stylesheet', 'charset', 'complete'],
+    semanticNames: [
+      'source',
+      'look',
+      'stylesheet',
+      'charset',
+      'complete',
+      'baseUrl',
+    ],
     childrenAllowed: false,
   });
 }
@@ -136,6 +149,13 @@ export function registerHtmlView(): void {
  *  two a frame of a resize asks, and a little slack for a drag that turns
  *  back. */
 const SIZES_KEPT = 4;
+
+/** How deep `@import`s are followed: an import in an import in an import is
+ *  a stylesheet; sixteen of them is a loop that changes its URL each time. */
+const MAX_IMPORT_DEPTH = 16;
+
+/** A scheme at the start: an absolute URL, a base that means something. */
+const ABSOLUTE_URL = /^[a-zA-Z][a-zA-Z0-9+.-]*:/;
 
 /** What changed, and therefore how far back up the pipeline to go. */
 const enum Stale {
@@ -148,7 +168,12 @@ const enum Stale {
 
 export class HtmlViewNode extends Node {
   private _source = new HtmlSource();
+  /** Where the document's relative URLs resolve: its `<base href>` against
+   *  the `baseUrl` prop, or the prop, or nowhere (`url.ts`). */
+  private _urls = new UrlResolver();
   private _resources: ResourceStore;
+  /** The families the document's `@font-face` rules declare (`fonts.ts`). */
+  private _webFonts: WebFonts;
   /** The sheets the last restyle read, and the cascade built from them. */
   private _sheetsRead: SheetsRead | null = null;
   /** Blurred shadows, drawn once each. */
@@ -178,14 +203,32 @@ export class HtmlViewNode extends Node {
 
   constructor(props: Record<string, unknown>, app: NtkApp) {
     super(ELEMENT, props, app);
+    const ask = (request: ResourceRequest) =>
+      this._props().onResource?.(request) ?? null;
     this._resources = new ResourceStore(
-      (request) => this._props().onResource?.(request) ?? null,
+      ask,
+      (what) => {
+        // A late stylesheet is a new cascade: its rules, what it imports,
+        // the faces it declares. A late image changes intrinsic sizes, so
+        // the box tree is what has to be rebuilt — not merely repainted.
+        // Either arriving after first paint is the ordinary case, not an
+        // error path: a host on a network answers every request that way.
+        this._invalidate(what === 'stylesheet' ? Stale.Style : Stale.Boxes);
+      },
+      this._urls,
+    );
+    this._webFonts = new WebFonts(
+      app,
+      ask,
       () => {
-        // A late resource changes intrinsic sizes, so the box tree is what
-        // has to be rebuilt — not merely repainted. An image that arrives
-        // after first paint is the ordinary case, not an error path.
+        // A face arrived: the family lists change, so the styles do, and
+        // every text layout kept from before was set in the face it
+        // replaces — under the same list, where a family of the document's
+        // had loaded one weight and now has another.
+        this._layouts = null;
         this._invalidate(Stale.Boxes);
       },
+      'sans-serif',
     );
     this._read();
   }
@@ -279,7 +322,22 @@ export class HtmlViewNode extends Node {
       props.onDocument?.(this._source.document);
       this._reportedDomRevision = props.domRevision ?? 0;
     }
+    this._updateBase();
     this._sweep();
+  }
+
+  /**
+   * The document's base URL: its first `<base href>`, resolved against the
+   * `baseUrl` prop, or the prop — and only an absolute one, since a relative
+   * base resolves nothing. Everything resolved against the old one is
+   * stale when it moves, the sheets' URLs with it, so the cascade is.
+   */
+  private _updateBase(): void {
+    const given = this._props().baseUrl || null;
+    const href = this._source.facts().base;
+    let base = href ? resolveUrl(href, given) : given;
+    if (base && !ABSOLUTE_URL.test(base)) base = null;
+    if (this._urls.setBase(base)) this._invalidate(Stale.Style);
   }
 
   /**
@@ -357,9 +415,12 @@ export class HtmlViewNode extends Node {
   private _restyle(width: number): void {
     const props = this._props();
     const look = this._deviceLook();
+    const documentBase = this._urls.base;
     // What the sheets are read from, in order: a `<style>`'s text or a
-    // fetched `<link>`'s, and after them the host's.
-    const read: { text: string; encoding?: string; element: Element }[] = [];
+    // fetched `<link>`'s, and after them the host's — each with the URL its
+    // own relative URLs resolve against: the document's for a `<style>`,
+    // the sheet's own for a `<link>`.
+    const read: SheetText[] = [];
     for (const ref of this._source.facts().sheets) {
       // A sheet handed over as bytes that names no encoding of its own is in
       // its referrer's: a `<link charset>`, then the document's (CSS 2.1
@@ -374,7 +435,11 @@ export class HtmlViewNode extends Node {
       const text = ref.kind === 'inline' ? ref.text : linked?.text;
       if (!text) continue;
       const encoding = linked ? linked.encoding : props.charset;
-      read.push({ text, encoding, element: ref.element });
+      const base =
+        ref.kind === 'inline'
+          ? documentBase
+          : this._resources.sheetBase(ref.href);
+      read.push({ text, encoding, element: ref.element, base });
     }
     const extra = props.stylesheet;
     const extras = Array.isArray(extra) ? extra : extra ? [extra] : [];
@@ -384,6 +449,7 @@ export class HtmlViewNode extends Node {
     // restyles the elements without parsing a framework's stylesheet again
     // or indexing its thousand rules again.
     const kept = this._sheetsRead;
+    let faces: DeclaredFace[];
     if (
       kept &&
       kept.look === look &&
@@ -394,37 +460,30 @@ export class HtmlViewNode extends Node {
       this._cascade = kept.cascade;
       kept.cascade.viewportWidth = width;
       kept.cascade.viewportHeight = this._viewportHeight();
+      faces = kept.faces;
     } else {
       const sheets: Stylesheet[] = [uaStylesheet(look)];
-      const imports: { url: string; text: string | null }[][] = [];
+      const imports: ImportRead[][] = [];
+      faces = [];
       let order = 0;
       const layers = new Map<string, number>();
-      for (const { text, encoding, element } of read) {
-        const sheet = parseStylesheet(text, order, layers);
-        // `@import` is a resource like any other, and its rules sit *before*
-        // the importing sheet's (CSS 2.1 6.4.1): a fetched import takes the
-        // order the sheet's own rules were given, and they move up past it,
-        // or an imported rule would win a tie against the sheet importing it.
-        let imported = 0;
-        const seen: { url: string; text: string | null }[] = [];
-        for (const url of sheet.imports) {
-          this._resources.request({ url, kind: 'stylesheet', element });
-          const fetched = this._resources.stylesheet(url, [encoding]);
-          seen.push({ url, text: fetched?.text ?? null });
-          if (fetched) {
-            const parsed = parseStylesheet(
-              fetched.text,
-              order + imported,
-              layers,
-            );
-            imported += parsed.rules.length + 1;
-            sheets.push(parsed);
-          }
-        }
-        imports.push(seen);
-        if (imported) for (const rule of sheet.rules) rule.order += imported;
-        order += imported + sheet.rules.length + 1;
+      // A sheet takes its place in the cascade's order once everything it
+      // imports has taken theirs: `@import` is a resource like any other,
+      // and an imported sheet's rules sit *before* the importing sheet's
+      // (CSS 2.1 6.4.1), or an imported rule would win a tie against the
+      // sheet importing it.
+      const place = (sheet: Stylesheet, element: Element): void => {
+        for (const rule of sheet.rules) rule.order = order++;
+        order += 1;
         sheets.push(sheet);
+        for (const rule of sheet.fontFaces) faces.push({ rule, element });
+      };
+      for (const { text, encoding, element, base } of read) {
+        const sheet = parseStylesheet(text, 0, layers, base);
+        const seen: ImportRead[] = [];
+        this._placeImports(sheet, encoding, element, layers, seen, place);
+        imports.push(seen);
+        place(sheet, element);
       }
       for (const text of extras) {
         const sheet = parseStylesheet(text, order, layers);
@@ -439,6 +498,7 @@ export class HtmlViewNode extends Node {
         this._scale,
         fonts ? (family, size) => xHeightOf(fonts, family, size) : null,
         fonts ? (family, size) => zeroWidthOf(fonts, family, size) : null,
+        faces.length ? this._webFonts : null,
       );
       this._sheetsRead = {
         look,
@@ -446,11 +506,22 @@ export class HtmlViewNode extends Node {
         fonts,
         texts: read.map((r) => r.text),
         encodings: read.map((r) => r.encoding),
+        bases: read.map((r) => r.base),
         imports,
         extras,
+        faces,
         cascade: this._cascade,
       };
     }
+    // The faces this width and scheme declare: a `@font-face` may sit in a
+    // `@media` block like any rule.
+    const cssWidth = width / this._scale;
+    this._webFonts.setFallback(look.fontFamily);
+    this._webFonts.setFaces(
+      faces.filter((f) =>
+        mediaMatches(f.rule.media, cssWidth, look.colorScheme),
+      ),
+    );
     this._cascade.setPointer({
       hovered: new Set(this._hovered),
       active: EMPTY_SET,
@@ -458,12 +529,53 @@ export class HtmlViewNode extends Node {
     this._mediaBand = this._cascade.mediaBand(width);
   }
 
+  /**
+   * Place what a sheet imports, and what each of those imports, depth
+   * first — asking for each through the seam, as a parse of the sheet has
+   * to. `seen` records every import read, in order, which is what tells the
+   * next restyle whether the sheets read the same (`_sameSheets`). A sheet
+   * that imports itself, or one of the sheets importing it, is read once.
+   */
+  private _placeImports(
+    sheet: Stylesheet,
+    encoding: string | undefined,
+    element: Element,
+    layers: Map<string, number>,
+    seen: ImportRead[],
+    place: (sheet: Stylesheet, element: Element) => void,
+    depth = 0,
+    chain: Set<string> = new Set(),
+  ): void {
+    for (const url of sheet.imports) {
+      this._resources.request({ url, kind: 'stylesheet', element });
+      const fetched = this._resources.stylesheet(url, [encoding]);
+      const base = this._resources.sheetBase(url);
+      seen.push({ url, text: fetched?.text ?? null, base });
+      const key = base ?? url;
+      if (!fetched || depth >= MAX_IMPORT_DEPTH || chain.has(key)) continue;
+      const imported = parseStylesheet(fetched.text, 0, layers, base);
+      chain.add(key);
+      this._placeImports(
+        imported,
+        fetched.encoding,
+        element,
+        layers,
+        seen,
+        place,
+        depth + 1,
+        chain,
+      );
+      chain.delete(key);
+      place(imported, element);
+    }
+  }
+
   /** Whether the sheets read the same as the ones `kept` was built from,
    *  down to what each imports — asking for the imports again, as a parse
    *  of the sheet would have. */
   private _sameSheets(
     kept: SheetsRead,
-    read: { text: string; encoding?: string; element: Element }[],
+    read: SheetText[],
     extras: string[],
   ): boolean {
     if (read.length !== kept.texts.length) return false;
@@ -473,10 +585,17 @@ export class HtmlViewNode extends Node {
     }
     for (let i = 0; i < read.length; i += 1) {
       const r = read[i];
-      if (r.text !== kept.texts[i] || r.encoding !== kept.encodings[i]) {
+      if (
+        r.text !== kept.texts[i] ||
+        r.encoding !== kept.encodings[i] ||
+        r.base !== kept.bases[i]
+      ) {
         return false;
       }
-      for (const { url, text } of kept.imports[i]) {
+      // The encodings an import falls back to are its importer's, which
+      // only a parse knows; the text an import decoded to under them is what
+      // was kept, and bytes that decode differently now are a new sheet.
+      for (const { url, text, base } of kept.imports[i]) {
         this._resources.request({
           url,
           kind: 'stylesheet',
@@ -484,6 +603,7 @@ export class HtmlViewNode extends Node {
         });
         const fetched = this._resources.stylesheet(url, [r.encoding]);
         if ((fetched?.text ?? null) !== text) return false;
+        if (this._resources.sheetBase(url) !== base) return false;
       }
     }
     return true;
@@ -567,6 +687,7 @@ export class HtmlViewNode extends Node {
     if ((props.domRevision ?? 0) !== this._reportedDomRevision) {
       this._reportedDomRevision = props.domRevision ?? 0;
       this._source.touch();
+      this._updateBase();
       this._sweep();
       if (this._stale < Stale.Style) this._stale = Stale.Style;
     }
@@ -607,7 +728,14 @@ export class HtmlViewNode extends Node {
         });
       this._tree = build();
       this._requestBackgrounds(this._tree);
-      if (this._contentImagesArrived(this._tree)) this._tree = build();
+      let again = this._contentImagesArrived(this._tree);
+      // the faces the styles just asked for, of the families the document
+      // loads itself — which, answered at once, change the styles asking
+      if (this._webFonts.request(this._tree.text)) {
+        this._layouts = null;
+        again = true;
+      }
+      if (again) this._tree = build();
       this._textPoints = null;
       this._pointsAreUnits = null;
       this._laidOutWidth = -1;
@@ -729,11 +857,16 @@ export class HtmlViewNode extends Node {
       this._read();
     } else if ((next.domRevision ?? 0) !== (prev.domRevision ?? 0)) {
       this._invalidate(Stale.Style);
+    } else if ((next.baseUrl ?? null) !== (prev.baseUrl ?? null)) {
+      // the same document somewhere else: every URL in it is another one
+      this._updateBase();
+      this._sweep();
     }
   }
 
   override destroySubtree(): void {
     this._resources.destroy();
+    this._webFonts.destroy();
     this._source.destroy();
     this._shadowCache?.destroy();
     this._shadowCache = null;
@@ -840,18 +973,75 @@ export class HtmlViewNode extends Node {
   // handler hand over — and are the one place the two units meet on the way
   // in. `_toDocument` multiplies.
 
-  /** The link under a logical window point, if any. Not part of the
-   *  selection seam: core deliberately left hover and `cursorAt` out of
-   *  #291, so following a link stays this package's. */
+  /** The link under a logical window point, if any — resolved against the
+   *  document's base where it has one. Not part of the selection seam: core
+   *  deliberately left hover and `cursorAt` out of #291, so following a
+   *  link stays this package's. */
   hrefAtPoint(x: number, y: number): string | null {
     const el = this.elementAtPoint(x, y);
     let node: Element | null = el;
     while (node) {
       const href = attr(node, 'href');
-      if (href && (tagOf(node) === 'a' || tagOf(node) === 'area')) return href;
+      if (href && (tagOf(node) === 'a' || tagOf(node) === 'area')) {
+        return this._urls.resolve(href);
+      }
       node = isElement(node.parent) ? node.parent : null;
     }
     return null;
+  }
+
+  /** The URL the document's relative URLs resolve against, or null where
+   *  it has none (`_updateBase`). */
+  get documentBase(): string | null {
+    return this._urls.base;
+  }
+
+  /**
+   * Where an element is, in document coordinates: logical pixels from this
+   * element's top left, the space the scroll offset of a box around it is
+   * in — so scrolling to a fragment is `scrollTo({ y: rect.y })`. A block's
+   * border box; an inline element's text, from its first line to its last,
+   * or where its text would start when it has none, as `<a name>` has none.
+   * Null for an element with no box — `display: none`, or not in the
+   * document.
+   */
+  elementRect(element: Element): Rect | null {
+    this._prepare(this.abs.width || 1);
+    const tree = this._tree;
+    if (!tree) return null;
+    const box = boxFor(tree.root, element);
+    if (!box) return null;
+    let rect: Rect | null = null;
+    if (box.kind !== 'inline' && box.kind !== 'text') {
+      rect = { x: box.x, y: box.y, width: box.width, height: box.height };
+    } else {
+      const bands: Rect[] = [];
+      if (box.subtreeTextEnd > box.subtreeTextStart) {
+        collectBands(
+          tree.root,
+          box.subtreeTextStart,
+          box.subtreeTextEnd,
+          0,
+          0,
+          bands,
+        );
+      }
+      for (const band of bands) rect = rect ? unionRect(rect, band) : band;
+      if (!rect) {
+        // an empty subtree's range is `[0, 0)`, wherever it stands: where
+        // its text would be is where the text after it starts
+        const caret = caretAt(tree.root, textAfter(tree.root, box));
+        if (!caret) return null;
+        rect = { x: caret.x, y: caret.y, width: 0, height: caret.height };
+      }
+    }
+    const s = this._scale;
+    return {
+      x: rect.x / s,
+      y: rect.y / s,
+      width: rect.width / s,
+      height: rect.height / s,
+    };
   }
 
   /** The deepest element whose box contains a logical window point. */
@@ -906,6 +1096,7 @@ export class HtmlViewNode extends Node {
    */
   touchDocument(): void {
     this._source.touch();
+    this._updateBase();
     this._sweep();
     this._invalidate(Stale.Style);
   }
@@ -1009,18 +1200,84 @@ export class HtmlViewNode extends Node {
 
 const EMPTY_SET: ReadonlySet<Element> = new Set();
 
+/** A sheet as the restyle reads it: its text, the encoding it was decoded
+ *  from, the element that brought it, and what its URLs resolve against. */
+interface SheetText {
+  text: string;
+  encoding?: string;
+  element: Element;
+  base: string | null;
+}
+
+/** One `@import` a sheet read, and what it read as. */
+interface ImportRead {
+  url: string;
+  text: string | null;
+  base: string | null;
+}
+
 /** What a cascade was built from, to tell whether the next would be the
- *  same one: the look, scale and fonts, each sheet's text and encoding, the
- *  texts of what each imports, and the host's own. */
+ *  same one: the look, scale and fonts, each sheet's text, encoding and
+ *  base, the texts of everything each imports, and the host's own — and
+ *  the faces all of them declare. */
 interface SheetsRead {
   look: RootLook;
   scale: number;
   fonts: unknown;
   texts: string[];
   encodings: (string | undefined)[];
-  imports: { url: string; text: string | null }[][];
+  bases: (string | null)[];
+  imports: ImportRead[][];
   extras: string[];
+  faces: DeclaredFace[];
   cascade: Cascade;
+}
+
+/** The first box an element made, depth first. */
+function boxFor(root: Box, element: Element): Box | null {
+  const stack: Box[] = [root];
+  while (stack.length) {
+    const box = stack.pop()!;
+    if (box.el === element) return box;
+    for (let i = box.children.length - 1; i >= 0; i -= 1) {
+      stack.push(box.children[i]);
+    }
+  }
+  return null;
+}
+
+/** Where the document's text goes on after a box with none: the start of
+ *  the next text in document order, or the end of the last before it. */
+function textAfter(root: Box, target: Box): number {
+  const stack: Box[] = [root];
+  let passed = false;
+  let before = 0;
+  while (stack.length) {
+    const box = stack.pop()!;
+    if (box === target) {
+      passed = true;
+      continue;
+    }
+    if (box.kind === 'text' && box.textEnd > box.textStart) {
+      if (passed) return box.textStart;
+      before = box.textEnd;
+    }
+    for (let i = box.children.length - 1; i >= 0; i -= 1) {
+      stack.push(box.children[i]);
+    }
+  }
+  return before;
+}
+
+function unionRect(a: Rect, b: Rect): Rect {
+  const x = Math.min(a.x, b.x);
+  const y = Math.min(a.y, b.y);
+  return {
+    x,
+    y,
+    width: Math.max(a.x + a.width, b.x + b.width) - x,
+    height: Math.max(a.y + a.height, b.y + b.height) - y,
+  };
 }
 
 function textOf(el: Element): string {

@@ -1437,10 +1437,11 @@ export function applyDeclaration(
       // `test!foo, Ahem` is no list, and set Ahem.
       const names = splitCommas(value);
       if (!names.every(isFamilyName)) return;
-      style.fontFamily = names
+      const list = names
         .map((f) => f.replace(/^['"]|['"]$/g, ''))
         .filter(Boolean)
         .join(', ');
+      style.fontFamily = ctx.families ? ctx.families(list) : list;
       return;
     }
     case 'font-size': {

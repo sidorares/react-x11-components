@@ -14,6 +14,7 @@
 // Selector *matching* is still `css-select`'s (see cascade.ts). Parsing a
 // stylesheet is easy; matching `li:nth-child(2n+1) > a[href^="/"]` correctly
 // and quickly is not, and that is the part worth importing.
+import { resolveUrl } from '../url.js';
 import { parseLength } from './values.js';
 import { hasVar, unbalanced, validVars } from './vars.js';
 
@@ -52,12 +53,42 @@ export interface StyleRule {
 export interface Stylesheet {
   rules: StyleRule[];
   /** `@import` targets, in order — the host fetches them through the
-   *  resource seam and splices the result in ahead of this sheet. */
+   *  resource seam and splices the result in ahead of this sheet. Absolute
+   *  when the sheet was parsed with a base. */
   imports: string[];
   /** Every width a `@media` rule in this sheet switches on. The renderer
    *  keeps these so a resize can tell "the layout changed" from "the
    *  *cascade* changed", and restyle only when it crossed one. */
   breakpoints: number[];
+  /** The `@font-face` rules, in order (see `fonts.ts`). */
+  fontFaces: FontFaceRule[];
+}
+
+/**
+ * One `@font-face` (CSS Fonts 4, 4): a face of a family, and where to get
+ * it. The descriptors are kept to what choosing and registering a face
+ * reads — `font-stretch`, `font-display` and the feature descriptors are
+ * not.
+ */
+export interface FontFaceRule {
+  /** The family as the document names it, unquoted. */
+  family: string;
+  /** The `url()`s of `src`, in order, each with its `format()` hint
+   *  lowercased; `local()` entries are left out. */
+  sources: FontFaceSource[];
+  /** The weights the face covers: `[400, 400]` for a static regular, a
+   *  range for a variable face. */
+  weight: [number, number];
+  style: 'normal' | 'italic';
+  /** Code point ranges, inclusive; null for every code point. */
+  unicodeRange: [number, number][] | null;
+  /** The `@media` blocks the rule sits under, as a style rule's. */
+  media: MediaCondition[][] | null;
+}
+
+export interface FontFaceSource {
+  url: string;
+  format: string | null;
 }
 
 /** The tests this evaluates live: a width, a colour scheme, or both.
@@ -116,9 +147,18 @@ export function parseStylesheet(
    *  document first names them: one map across all of its sheets, since a
    *  layer one sheet names first is the same layer in the next. */
   layers: Map<string, number> = new Map(),
+  /** The URL the sheet's own relative URLs resolve against — its own, or
+   *  the document's for a `<style>` — or null to leave them as written.
+   *  Every `url()`, `@import` and `@font-face` source comes out absolute. */
+  base: string | null = null,
 ): Stylesheet {
   text = withoutComments(text);
-  const sheet: Stylesheet = { rules: [], imports: [], breakpoints: [] };
+  const sheet: Stylesheet = {
+    rules: [],
+    imports: [],
+    breakpoints: [],
+    fontFaces: [],
+  };
   let order = startOrder;
   const breakpoints = new Set<number>();
   // `@import` counts only ahead of every other rule, `@charset` aside
@@ -170,7 +210,9 @@ export function parseStylesheet(
         if (name === 'import') {
           if (importsAllowed && media === null) {
             const url = importUrl(at.prelude);
-            if (url && importApplies(at.prelude)) sheet.imports.push(url);
+            if (url && importApplies(at.prelude)) {
+              sheet.imports.push(resolveUrl(url, base));
+            }
           }
           continue;
         }
@@ -218,9 +260,12 @@ export function parseStylesheet(
             );
             walk(at.block, media, ranks, full);
           }
+        } else if (name === 'font-face' && at.block !== null) {
+          const face = parseFontFace(at.block, base, media);
+          if (face) sheet.fontFaces.push(face);
         }
-        // @font-face, @keyframes, @page: nothing to do, and the block was
-        // already consumed.
+        // @keyframes, @page: nothing to do, and the block was already
+        // consumed.
         continue;
       }
 
@@ -304,6 +349,9 @@ export function parseStylesheet(
     layer: readonly number[] | null,
   ): void => {
     if (!declarations.length) return;
+    if (base !== null) {
+      for (const d of declarations) d.value = absoluteUrls(d.value, base);
+    }
     for (const raw of selectors) {
       const selector = raw.includes('\\') ? forMatcher(raw) : raw;
       sheet.rules.push({
@@ -1466,6 +1514,204 @@ function importApplies(prelude: string): boolean {
   const list = m?.[1].trim();
   if (!list) return true;
   return parseMediaQuery(list).some((c) => c.staticPass !== false);
+}
+
+/**
+ * A declaration value with every `url()` in it made absolute against `base`
+ * — inside a function too, `image-set()` or a `var()` fallback, and never
+ * inside a string. `url(#id)`, a reference into the document itself, is left
+ * as it is, as are a `data:` URL, absolute already, and a url that is none.
+ */
+export function absoluteUrls(value: string, base: string): string {
+  if (!/url\(/i.test(value)) return value;
+  let out = '';
+  let from = 0;
+  let i = 0;
+  while (i < value.length) {
+    const c = value[i];
+    if (c === '"' || c === "'") {
+      i = stringEnd(value, i);
+      continue;
+    }
+    if (c === '\\') {
+      i = escapeEnd(value, i);
+      continue;
+    }
+    if (
+      (c === 'u' || c === 'U') &&
+      value[i + 3] === '(' &&
+      value.slice(i, i + 3).toLowerCase() === 'url' &&
+      !isNameChar(value[i - 1])
+    ) {
+      const end = urlEnd(value, i + 3);
+      const url = parseUrl(value.slice(i, end));
+      if (typeof url === 'string' && url[0] !== '#' && !/^data:/i.test(url)) {
+        const resolved = resolveUrl(url, base);
+        if (resolved !== url) {
+          out += value.slice(from, i) + cssUrl(resolved);
+          from = end;
+        }
+      }
+      i = end;
+      continue;
+    }
+    i += 1;
+  }
+  return from === 0 ? value : out + value.slice(from);
+}
+
+/** A URL as a `url()` that reads back as it: quoted, with the characters a
+ *  string cannot hold as they are escaped. */
+function cssUrl(url: string): string {
+  const escaped = url.replace(/[\\"\n]/g, (c) =>
+    c === '\n' ? '\\a ' : `\\${c}`,
+  );
+  return `url("${escaped}")`;
+}
+
+/** The generic families: a `@font-face` may not take one's name, and one
+ *  that did would take over every element that asks for it. */
+const GENERIC_FAMILIES = new Set([
+  'serif',
+  'sans-serif',
+  'monospace',
+  'cursive',
+  'fantasy',
+  'system-ui',
+  'ui-serif',
+  'ui-sans-serif',
+  'ui-monospace',
+  'ui-rounded',
+  'math',
+  'emoji',
+  'fangsong',
+  '-apple-system',
+  'blinkmacsystemfont',
+  'inherit',
+  'initial',
+  'unset',
+  'revert',
+  'default',
+]);
+
+/**
+ * A `@font-face` block, or null when it names no family, or no source this
+ * can ask for: `local()` names a face the system has, which this does not
+ * look up, and a family that is only `local()`s is left to the system as it
+ * would be anyway.
+ */
+function parseFontFace(
+  block: string,
+  base: string | null,
+  media: MediaCondition[][] | null,
+): FontFaceRule | null {
+  let family: string | null = null;
+  let src: string | null = null;
+  let weight: [number, number] = [400, 400];
+  let style: 'normal' | 'italic' = 'normal';
+  let unicodeRange: [number, number][] | null = null;
+  // a descriptor that is not one is dropped, as a declaration is, and the
+  // one before it stands
+  for (const d of parseDeclarations(block)) {
+    if (d.prop === 'font-family') {
+      family = faceFamily(d.value) ?? family;
+    } else if (d.prop === 'src') {
+      src = d.value;
+    } else if (d.prop === 'font-weight') {
+      weight = faceWeight(d.value) ?? weight;
+    } else if (d.prop === 'font-style') {
+      const v = d.value.trim().toLowerCase();
+      if (v === 'normal') style = 'normal';
+      else if (v === 'italic' || /^oblique\b/.test(v)) style = 'italic';
+    } else if (d.prop === 'unicode-range') {
+      unicodeRange = unicodeRanges(d.value) ?? unicodeRange;
+    }
+  }
+  if (!family || src === null) return null;
+  const sources: FontFaceSource[] = [];
+  for (const part of splitTopLevel(src, ',')) {
+    const item = part.trim();
+    if (!/^url\(/i.test(item)) continue;
+    const end = urlEnd(item, 3);
+    const url = parseUrl(item.slice(0, end));
+    if (typeof url !== 'string') continue;
+    // `format("woff2")`, the older `format(woff2)`, or a list of them, of
+    // which the first says enough
+    const hint = /format\(\s*(?:"([^"]*)"|'([^']*)'|([\w-]+))/i.exec(
+      item.slice(end),
+    );
+    const format = hint ? (hint[1] ?? hint[2] ?? hint[3]).toLowerCase() : null;
+    sources.push({ url: resolveUrl(url, base), format });
+  }
+  if (!sources.length) return null;
+  return { family, sources, weight, style, unicodeRange, media };
+}
+
+/** A `@font-face`'s one family name: a string, or identifiers, which one
+ *  space joins. Not a list, and not a generic family's name. */
+function faceFamily(value: string): string | null {
+  const v = value.trim();
+  let name: string;
+  if (v[0] === '"' || v[0] === "'") {
+    if (stringEnd(v, 0) !== v.length) return null;
+    name = unquote(v).trim();
+  } else {
+    const words = v.split(/\s+/);
+    for (const word of words) {
+      if (!startsIdent(word, 0) || readIdent(word, 0).end !== word.length) {
+        return null;
+      }
+    }
+    name = words.join(' ');
+  }
+  if (!name || name.includes(',')) return null;
+  return GENERIC_FAMILIES.has(name.toLowerCase()) ? null : name;
+}
+
+/** A `@font-face`'s `font-weight`: one weight, or the range a variable face
+ *  covers. `auto` — the file's own range — is taken to be every weight. */
+function faceWeight(value: string): [number, number] | null {
+  const parts = value.trim().toLowerCase().split(/\s+/);
+  const one = (p: string): number | null => {
+    if (p === 'normal') return 400;
+    if (p === 'bold') return 700;
+    if (!/^\d+(?:\.\d+)?$/.test(p)) return null;
+    const n = Number(p);
+    return n >= 1 && n <= 1000 ? n : null;
+  };
+  if (parts.length === 1) {
+    if (parts[0] === 'auto') return [1, 1000];
+    const w = one(parts[0]);
+    return w === null ? null : [w, w];
+  }
+  if (parts.length !== 2) return null;
+  const a = one(parts[0]);
+  const b = one(parts[1]);
+  if (a === null || b === null) return null;
+  return a <= b ? [a, b] : [b, a];
+}
+
+/** `unicode-range`: `U+26`, `U+0-7F`, `U+4??` — inclusive ranges, or null
+ *  when any part is not one, and the descriptor is dropped. */
+function unicodeRanges(value: string): [number, number][] | null {
+  const out: [number, number][] = [];
+  for (const part of value.split(',')) {
+    const m = /^\s*u\+([0-9a-f?]{1,6})(?:-([0-9a-f]{1,6}))?\s*$/i.exec(part);
+    if (!m) return null;
+    let lo: number;
+    let hi: number;
+    if (m[1].includes('?')) {
+      if (m[2] || !/^[0-9a-f]*\?+$/i.test(m[1])) return null;
+      lo = parseInt(m[1].replace(/\?/g, '0'), 16);
+      hi = parseInt(m[1].replace(/\?/g, 'f'), 16);
+    } else {
+      lo = parseInt(m[1], 16);
+      hi = m[2] ? parseInt(m[2], 16) : lo;
+    }
+    if (hi < lo || lo > 0x10ffff) return null;
+    out.push([lo, Math.min(hi, 0x10ffff)]);
+  }
+  return out.length ? out : null;
 }
 
 /**

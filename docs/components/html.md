@@ -32,7 +32,8 @@ Nothing here fetches or executes anything. See [The seams](#the-seams).
 | `selectable`      | `boolean`                                        | Mouse selection, Ctrl+A / Ctrl+C, PRIMARY. Default true.                                                                                                                     |
 | `stylesheet`      | `string \| string[]`                             | Author stylesheets applied after the document's own, so a host can restyle a document it does not control.                                                                   |
 | `charset`         | `string`                                         | The encoding the host decoded `source` from, as a label (`'shift_jis'`). A stylesheet handed over as bytes that names no encoding of its own is in it. Default UTF-8.        |
-| `onResource`      | `(r: ResourceRequest) => ResourceResult \| null` | An `<img>`, a `<link rel=stylesheet>` or an `@import` wants loading. May return a promise. **Absent, nothing loads.**                                                        |
+| `baseUrl`         | `string \| null`                                 | The URL the document came from. With it, every URL reaches `onResource` and `onLink` absolute — see [Base URLs](#base-urls). Absent, URLs are handed over as written.        |
+| `onResource`      | `(r: ResourceRequest) => ResourceResult \| null` | An `<img>`, a `<link rel=stylesheet>`, an `@import` or an `@font-face` font wants loading. May return a promise. **Absent, nothing loads.**                                  |
 | `onScript`        | `(s: ScriptRequest) => void`                     | A `<script>` was found, handed over unparsed and unevaluated.                                                                                                                |
 | `onLink`          | `(href, ev) => void`                             | A link was activated. Absent, clicks do nothing — this never navigates by itself.                                                                                            |
 | `onDocument`      | `(document: Document) => void`                   | The parsed DOM, each time it is re-parsed.                                                                                                                                   |
@@ -59,12 +60,15 @@ links[0].attribs.href = '#changed';
 handle.refresh();
 ```
 
-| Member            | What it is                                                                                               |
-| ----------------- | -------------------------------------------------------------------------------------------------------- |
-| `document`        | The live DOM — [domhandler]'s tree, which [domutils] speaks natively.                                    |
-| `refresh()`       | The DOM changed: restyle, re-lay-out, repaint.                                                           |
-| `elementAt(x, y)` | The element under a point, in the window's logical coordinates — the ones a mouse event's `x`/`y` carry. |
-| `title`           | The document's `<title>`, if it had one.                                                                 |
+| Member                 | What it is                                                                                                                                       |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `document`             | The live DOM — [domhandler]'s tree, which [domutils] speaks natively.                                                                            |
+| `refresh()`            | The DOM changed: restyle, re-lay-out, repaint.                                                                                                   |
+| `elementAt(x, y)`      | The element under a point, in the window's logical coordinates — the ones a mouse event's `x`/`y` carry.                                         |
+| `hrefAt(x, y)`         | The link under a point, resolved as `onLink` is handed one — for a status bar, or a menu on a link.                                              |
+| `elementRect(element)` | Where an element is, in logical pixels from the document's top left — the space a scrolling box's offset is in. Null for an element with no box. |
+| `title`                | The document's `<title>`, if it had one.                                                                                                         |
+| `base`                 | What the document's relative URLs resolve against — its `<base href>`, or `baseUrl` — or null.                                                   |
 
 `refresh()` is explicit rather than observed, and that is a decision — see
 [Manipulating the DOM](#manipulating-the-dom).
@@ -72,9 +76,8 @@ handle.refresh();
 ## The seams
 
 **`onResource` is the only way anything loads.** This component has no
-network client and no filesystem access; it does not resolve URLs against a
-base, because it has no base and the host does. The request names the URL as
-the document wrote it, what kind of thing it is, and the element that asked:
+network client and no filesystem access. The request names the URL, what
+kind of thing it is, and the element that asked:
 
 ```jsx
 onResource={async (request) => {
@@ -82,16 +85,26 @@ onResource={async (request) => {
   if (request.kind === 'stylesheet') {
     return { kind: 'stylesheet', text: await readText(request.url) };
   }
+  if (request.kind === 'font') {
+    return { kind: 'font', bytes: await readBytes(request.url) };
+  }
   return { kind: 'image', bytes: await readBytes(request.url) };
 }}
 ```
 
-Image bytes may be PNG, JPEG or SVG; nothing names the type, so an SVG is
-told apart by its markup. Return `{ kind: 'image', image, width, height }`
-instead to hand over an image the host decoded itself. A declined or absent
-resource is an ordinary state: images draw as a frame at their attribute
-size, an `<object>` shows its fallback content, and linked stylesheets are
-skipped.
+Image bytes may be PNG, JPEG, GIF — its first frame — or SVG; nothing names
+the type, so each is told apart by its bytes. Return
+`{ kind: 'image', image, width, height }` instead to hand over an image the
+host decoded itself. A declined or absent resource is an ordinary state:
+images draw as a frame at their attribute size, an `<object>` shows its
+fallback content, linked stylesheets are skipped and text is set in the
+fonts the system has. A resource may arrive whenever it arrives: a
+stylesheet that comes after the first paint restyles the document, and an
+image rebuilds its boxes.
+
+`@import` is asked for through the same seam, an import inside an import
+too, each sheet's rules standing where its `@import` does; a sheet that
+imports itself, or one of the sheets importing it, is read once.
 
 A stylesheet may be handed over as bytes instead, with the charset the
 protocol named if it named one: `{ kind: 'stylesheet', bytes, charset }`.
@@ -111,6 +124,77 @@ handle.
 
 Inline event attributes (`onclick="…"`) are likewise left in the DOM as
 attributes and never invoked.
+
+### Base URLs
+
+The component has no idea where a document came from — it is handed a
+string — so by default the URL in a request is the one the document wrote,
+and resolving it is the host's. Give it `baseUrl` and it resolves them
+itself, as a browser does, and hands every URL over absolute:
+
+- a URL in the markup — `<img src>`, `<link href>`, a `style` attribute's
+  `url()` — against the document's first `<base href>`, itself resolved
+  against `baseUrl`, or against `baseUrl` where it has none;
+- a `url()`, an `@import` or an `@font-face` source in a **linked or
+  imported stylesheet** against _that stylesheet's_ URL, as CSS says, which
+  is the one thing the host could not have done: by the time a background
+  is asked for, nothing says which sheet it was written in. A stylesheet
+  result may carry `url`, where the host was redirected — `{ kind:
+'stylesheet', text, url }` — and the sheet's URLs resolve against where
+  it came from in the end;
+- the `href` handed to `onLink`, and the one `handle.hrefAt` answers.
+
+An absolute `<base href>` in the document is a base without the prop. With
+neither, nothing is resolved, and a host rendering mail or a help page sees
+exactly what it saw before. Nothing is fetched because of a base: it says
+where a URL points, and `onResource` still decides whether anything goes
+there.
+
+### Fonts
+
+An `@font-face` is read, and its family is the document's to use:
+
+```css
+@font-face {
+  font-family: Inter;
+  src:
+    url(inter.woff2) format('woff2'),
+    url(inter.woff) format('woff');
+  font-weight: 100 900;
+  unicode-range: U+0000-00FF;
+}
+```
+
+A source is asked for as `{ kind: 'font', url }`, and handed back as the
+file's bytes, `{ kind: 'font', bytes }` — TrueType, OpenType, WOFF or WOFF2.
+What decides whether one is asked for at all is the page, as it is in a
+browser: a face loads when a computed style wants its family at its weight
+and slant, the nearest face to them as CSS Fonts 4 matches one, and when a
+character of the document falls in its `unicode-range`. A Google Fonts sheet
+declares a family once per script and a self-hosted family often declares
+every weight it has; a page that uses two weights of the Latin half asks for
+two files. The sources are tried in order: one whose `format()` is not a
+font a text engine reads (`embedded-opentype`, `svg`) is passed over, and so
+is one the host declines or whose bytes do not register — a WOFF2 on macOS,
+whose CoreText reads no such container, falls through to the WOFF beside
+it. `local()` is not looked up.
+
+Until a face has loaded its family is left out of the list, and the text is
+set in the next family the author named, as `font-display: swap` has it;
+when it arrives the document is set again.
+
+**A family is registered under a name nothing else has.** Fonts go to
+react-x11's font manager, which is the application's, so the component
+registers each family's faces under a private name (`loadFont`'s `family`)
+and rewrites the document's `font-family` lists to it. A page's `Inter`
+changes nothing that `Inter` means to the window around it, to another
+document, or to a page that ships another file under that name — an icon
+font called `Icons` on two sites is two sets of glyphs. Two documents that
+declare a family the same way, the same files at the same weights, share one
+registration, so the second is not asked for it at all. What is still the
+application's is the font manager's fallback chain: a registered face can
+supply a glyph that no other face has to text anywhere in the app, and
+nothing is ever unregistered, which react-x11's `loadFont` documents.
 
 ## What renders
 
@@ -393,7 +477,8 @@ a table: the body table of a mail stands in the middle of its
 auto margins is centred once it has shrunk to its columns, so a mail's
 button, a one-cell `<table align="center">`, stands in the middle.
 
-**Text:** `font` and its longhands, the `font-variant` longhands,
+**Text:** `font` and its longhands, the families a document brings with
+`@font-face` ([Fonts](#fonts)), the `font-variant` longhands,
 `font-kerning` and `font-feature-settings` (the font's own OpenType
 features: small capitals where the font has them, none synthesized),
 `text-shadow` (any number, blurred or hard), `line-height`, `text-align` (with
@@ -785,6 +870,20 @@ loader that reads from a whitelist directory, and a script hook that reports
 what it was handed without running it. Its stylesheet is light on its own and
 re-tints under `@media (prefers-color-scheme: dark)`, so the same document
 follows a dark desktop.
+
+```bash
+npm run examples:browser -- [url]
+```
+
+The other end of the seams: a tabbed web browser, and a network. `<Tabs>`
+is its strip, each tab a toolbar over an `<Html>` given the page's URL as
+`baseUrl`, and [`examples/browser/`](../../examples/browser/) is the host a
+document's requests go to — the page streamed in as it arrives, then every
+stylesheet, image and `@font-face` font through `onResource`, from one cache
+the tabs share, a few requests a host at a time. A tab shows the page's
+`<title>` and its icon; Ctrl+T (⌘T on macOS) opens one. It is where the
+component's policy — nothing fetched, nothing run — meets an application's:
+the browser fetches what a page asks for and runs none of its scripts.
 
 [domhandler]: https://github.com/fb55/domhandler
 [domutils]: https://github.com/fb55/domutils

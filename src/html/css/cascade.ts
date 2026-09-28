@@ -35,6 +35,7 @@ import {
   isInherited,
 } from './style.js';
 import type { ComputedStyle, RootLook } from './style.js';
+import type { FontFamilies } from '../fonts.js';
 import { parseDeclarations } from './parse.js';
 import type { UnitContext } from './values.js';
 import { customProperties, substituteIn } from './vars.js';
@@ -354,6 +355,10 @@ export class Cascade {
   /** Whether any declaration sets a custom property or reads one: without
    *  one, no element's style asks about them. */
   private _vars = false;
+  /** The families the document loads itself (`fonts.ts`), or null for a
+   *  document with no `@font-face`. */
+  private _families: FontFamilies | null;
+  private _mapFamilies: ((list: string) => string) | undefined;
 
   constructor(
     sheets: Stylesheet[],
@@ -363,9 +368,14 @@ export class Cascade {
     scale = 1,
     xHeight: ((family: string, size: number) => number | null) | null = null,
     zeroWidth: ((family: string, size: number) => number | null) | null = null,
+    families: FontFamilies | null = null,
   ) {
     this._xHeightOf = xHeight;
     this._zeroWidthOf = zeroWidth;
+    this._families = families;
+    this._mapFamilies = families
+      ? (list: string) => families.map(list)
+      : undefined;
     this.look = look;
     this.initial = initialStyle(look, scale);
     this.viewportWidth = viewportWidth;
@@ -776,6 +786,7 @@ export class Cascade {
       scale: this.scale,
       ex: () => this._exOf(parentStyle),
       ch: () => this._chOf(parentStyle),
+      families: this._mapFamilies,
     };
     // the family goes with the size, so an `ex` after it is its font's
     for (const c of candidates) {
@@ -814,6 +825,9 @@ export class Cascade {
     }
     blockify(style, inFlexContainer);
     decorate(style);
+    // which faces of the document's own families this family, weight and
+    // slant ask for — known only now, with all three computed
+    this._families?.note(style);
     return style;
   }
 

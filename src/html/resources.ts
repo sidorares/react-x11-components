@@ -18,32 +18,48 @@ import { decodeStylesheet } from './css/decode.js';
 import type { DecodedStylesheet } from './css/decode.js';
 import { svgFromBytes } from './svg.js';
 import type { IntrinsicSize } from './svg.js';
+import { decodeGif } from './gif.js';
+import type { UrlResolver } from './url.js';
 import type { Element } from 'domhandler';
 
 /** What the host is asked for. */
 export interface ResourceRequest {
-  /** The URL exactly as the document wrote it — not resolved against a base,
-   *  because this has no base and the host does. */
+  /**
+   * The URL. As the document wrote it, where the document has no base — no
+   * `baseUrl` prop and no `<base href>` — because then this has none and
+   * the host does. Absolute where it has one: resolved against the
+   * document's base, or, for a `url()` in a stylesheet that came from
+   * somewhere, against the stylesheet's own URL, as CSS resolves it.
+   */
   url: string;
-  kind: 'image' | 'stylesheet';
-  /** The element that referred to it, for a host that wants the context. */
+  /** An `<img>`, an `<object>`, a background or a list marker; a
+   *  `<link rel=stylesheet>` or an `@import`; an `@font-face` source. */
+  kind: 'image' | 'stylesheet' | 'font';
+  /** The element that referred to it, for a host that wants the context:
+   *  for a font, the `<style>` or `<link>` whose sheet declared it. */
   element: Element;
 }
 
 /**
  * What the host hands back. A stylesheet is text, or bytes this decodes as
  * CSS says to — with `charset`, the encoding the protocol named, if it named
- * one (`css/decode.ts`); an image is bytes, which this decodes — PNG, JPEG
- * or SVG — or an already-decoded ntk `Image` for a host with its own cache.
+ * one (`css/decode.ts`) — and may say the URL it finally came from, after
+ * redirects, which is what the relative URLs in it resolve against. An image
+ * is bytes, which this decodes — PNG, JPEG, GIF or SVG — or an
+ * already-decoded ntk `Image` for a host with its own cache. A font is the
+ * file's bytes: TrueType, OpenType, WOFF or WOFF2 (see `fonts.ts`).
  */
 export type ResourceResult =
-  | { kind: 'stylesheet'; text: string }
-  | { kind: 'stylesheet'; bytes: Uint8Array; charset?: string }
+  | { kind: 'stylesheet'; text: string; url?: string }
+  | { kind: 'stylesheet'; bytes: Uint8Array; charset?: string; url?: string }
   | { kind: 'image'; bytes: Uint8Array }
-  | { kind: 'image'; image: unknown; width: number; height: number };
+  | { kind: 'image'; image: unknown; width: number; height: number }
+  | { kind: 'font'; bytes: Uint8Array };
 
 interface Entry {
   state: 'pending' | 'ready' | 'failed';
+  /** A stylesheet's own URL, after redirects, as the host said it. */
+  url?: string;
   text?: string;
   /** A stylesheet handed over as bytes, decoded when it is first read: what
    *  it falls back to is the referrer's, known only then. */
@@ -67,32 +83,54 @@ interface ImageConstructor {
   new (...args: unknown[]): ImageLike;
 }
 
+/**
+ * The resources a document asked for, by URL — resolved against the
+ * document's base (`url.ts`) on the way in and on every lookup, so a caller
+ * names a resource by what the document wrote and the host is asked for,
+ * and caches by, what it resolves to.
+ */
 export class ResourceStore {
   private _entries = new Map<string, Entry>();
   private _ask: (
     request: ResourceRequest,
   ) => Promise<ResourceResult | null> | ResourceResult | null;
-  private _changed: () => void;
+  private _changed: (what: 'stylesheet' | 'image') => void;
+  private _urls: UrlResolver | null;
   private _destroyed = false;
 
+  /**
+   * `changed` is told when a resource arrives after the request that asked
+   * for it returned, and which kind: a stylesheet changes the cascade and an
+   * image the boxes, and a host answering over a network answers every one
+   * of them later.
+   */
   constructor(
     ask: (
       request: ResourceRequest,
     ) => Promise<ResourceResult | null> | ResourceResult | null,
-    changed: () => void,
+    changed: (what: 'stylesheet' | 'image') => void,
+    urls: UrlResolver | null = null,
   ) {
     this._ask = ask;
     this._changed = changed;
+    this._urls = urls;
+  }
+
+  /** A URL as the document wrote it, as the store keys it. */
+  private _key(url: string): string {
+    return this._urls ? this._urls.resolve(url) : url;
   }
 
   /** Ask for a resource, once per URL. */
   request(request: ResourceRequest): void {
-    if (this._destroyed || this._entries.has(request.url)) return;
+    if (this._destroyed || !request.url) return;
+    const url = this._key(request.url);
+    if (this._entries.has(url)) return;
     const entry: Entry = { state: 'pending' };
-    this._entries.set(request.url, entry);
+    this._entries.set(url, entry);
     let answer: Promise<ResourceResult | null> | ResourceResult | null;
     try {
-      answer = this._ask(request);
+      answer = this._ask(url === request.url ? request : { ...request, url });
     } catch {
       entry.state = 'failed';
       return;
@@ -103,14 +141,14 @@ export class ResourceStore {
     }
     if (isPromise(answer)) {
       answer.then(
-        (result) => this._settle(request.url, entry, result),
+        (result) => this._settle(url, entry, result),
         () => {
           entry.state = 'failed';
         },
       );
       return;
     }
-    this._settle(request.url, entry, answer, true);
+    this._settle(url, entry, answer, true);
   }
 
   private _settle(
@@ -120,12 +158,13 @@ export class ResourceStore {
     synchronous = false,
   ): void {
     if (this._destroyed) return;
-    void url;
-    if (!result) {
+    // a font is `fonts.ts`'s to ask for, and never comes through here
+    if (!result || result.kind === 'font') {
       entry.state = 'failed';
       return;
     }
     if (result.kind === 'stylesheet') {
+      entry.url = result.url || url;
       if ('bytes' in result) {
         entry.bytes = result.bytes;
         entry.charset = result.charset;
@@ -133,14 +172,14 @@ export class ResourceStore {
         entry.text = result.text;
       }
       entry.state = 'ready';
-      if (!synchronous) this._changed();
+      if (!synchronous) this._changed('stylesheet');
       return;
     }
     if ('image' in result) {
       entry.image = result.image;
       entry.size = rasterSize(result.width, result.height);
       entry.state = 'ready';
-      if (!synchronous) this._changed();
+      if (!synchronous) this._changed('image');
       return;
     }
     const svg = svgFromBytes(result.bytes);
@@ -148,7 +187,7 @@ export class ResourceStore {
       entry.image = svg;
       entry.size = svg.intrinsics;
       entry.state = 'ready';
-      if (!synchronous) this._changed();
+      if (!synchronous) this._changed('image');
       return;
     }
     const decoded = decodeImage(result.bytes);
@@ -159,7 +198,7 @@ export class ResourceStore {
           entry.image = image;
           entry.size = rasterSize(image.width, image.height);
           entry.state = 'ready';
-          this._changed();
+          this._changed('image');
         },
         () => {
           entry.state = 'failed';
@@ -174,7 +213,7 @@ export class ResourceStore {
     entry.image = decoded;
     entry.size = rasterSize(decoded.width, decoded.height);
     entry.state = 'ready';
-    if (!synchronous) this._changed();
+    if (!synchronous) this._changed('image');
   }
 
   /** A loaded stylesheet, as text, or null while it has not arrived.
@@ -184,7 +223,7 @@ export class ResourceStore {
     url: string,
     fallbacks: readonly (string | undefined)[] = [],
   ): DecodedStylesheet | null {
-    const entry = this._entries.get(url);
+    const entry = this._entries.get(this._key(url));
     if (entry?.state !== 'ready') return null;
     if (!entry.bytes) {
       if (entry.text === undefined) return null;
@@ -202,15 +241,30 @@ export class ResourceStore {
     return entry.decoded.sheet;
   }
 
+  /**
+   * The URL a loaded stylesheet's own relative URLs resolve against: where
+   * the host said it came from, or where it was asked for. Null while it
+   * has not arrived, or where that is not an absolute URL — a sheet asked
+   * for by a relative one, from a document with no base, whose URLs are
+   * left as they are written.
+   */
+  sheetBase(url: string): string | null {
+    const entry = this._entries.get(this._key(url));
+    const base = entry?.state === 'ready' ? entry.url : undefined;
+    return base && /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(base) ? base : null;
+  }
+
   /** A loaded image, for the paint pass. */
   image(url: string): unknown | null {
-    const entry = this._entries.get(url);
+    if (!url) return null;
+    const entry = this._entries.get(this._key(url));
     return entry?.state === 'ready' ? (entry.image ?? null) : null;
   }
 
   /** A loaded image's intrinsic size, for the box builder. */
   imageSize(url: string): IntrinsicSize | null {
-    const entry = this._entries.get(url);
+    if (!url) return null;
+    const entry = this._entries.get(this._key(url));
     return entry?.state === 'ready' ? (entry.size ?? null) : null;
   }
 
@@ -234,7 +288,8 @@ function isPromise<T>(value: unknown): value is Promise<T> {
 }
 
 /**
- * Decode image bytes through ntk — PNG and JPEG.
+ * Decode image bytes through ntk — PNG and JPEG — or, for a GIF, here: its
+ * first frame (`gif.ts`), handed to ntk's `Image` as the RGBA it takes.
  *
  * `decodeImage` is ntk's own front door — the one its `HtmlView` used. It is
  * a **named** export of `react-x11/ntk`, which re-exports ntk with
@@ -248,6 +303,11 @@ function isPromise<T>(value: unknown): value is Promise<T> {
  */
 function decodeImage(bytes: Uint8Array): ImageLike | Promise<ImageLike> | null {
   try {
+    const gif = decodeGif(bytes);
+    if (gif) {
+      const ctor = ntk.Image as unknown as ImageConstructor | undefined;
+      return ctor ? new ctor(gif) : null;
+    }
     const decode = (ntk as unknown as Record<string, unknown>).decodeImage;
     if (typeof decode === 'function') {
       return (decode as (b: Uint8Array) => ImageLike | Promise<ImageLike>)(

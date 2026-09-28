@@ -22,7 +22,7 @@ import {
   Select,
   useTheme,
 } from 'react-x11';
-import type { DrawnNode, MouseEvent as X11MouseEvent } from 'react-x11';
+import type { DrawnNode, MouseEvent as X11MouseEvent, Rect } from 'react-x11';
 import { tint } from 'react-x11/style';
 import type { Style } from 'react-x11/style';
 
@@ -105,15 +105,29 @@ export interface HtmlProps {
    */
   charset?: string;
   /**
+   * The URL the document came from. Given one — or a document with an
+   * absolute `<base href>` — every URL the document names reaches
+   * `onResource` and `onLink` absolute: resolved against its `<base href>`
+   * or this, and a `url()` in a linked stylesheet against the stylesheet's
+   * own URL, as a browser resolves it. Absent, URLs are handed over as the
+   * document wrote them.
+   *
+   * Nothing is fetched because of it: it says where relative URLs point,
+   * and `onResource` still decides whether anything goes there.
+   */
+  baseUrl?: string | null;
+  /**
    * An external resource is wanted — an `<img src>`, a `<link rel=stylesheet>`
-   * or an `@import`. Return the bytes or the text, or a promise of them, or
-   * `null` to decline. A stylesheet's bytes are decoded as CSS says, from
-   * the `charset` the protocol named, if the host passes it on.
+   * or an `@import`, or a font an `@font-face` declares and the document
+   * uses. Return the bytes or the text, or a promise of them, or `null` to
+   * decline. A stylesheet's bytes are decoded as CSS says, from the
+   * `charset` the protocol named, if the host passes it on, and its `url`,
+   * if the host passes that, is where it came from after redirects.
    *
    * **Absent, nothing loads.** This component has no network and no
-   * filesystem of its own; images render as a frame and linked stylesheets
-   * are skipped. The host is the one that knows its cache, its proxy and
-   * whether this document is trusted.
+   * filesystem of its own; images render as a frame, linked stylesheets are
+   * skipped and text is set in the fonts the system has. The host is the one
+   * that knows its cache, its proxy and whether this document is trusted.
    */
   onResource?: (
     request: ResourceRequest,
@@ -126,7 +140,8 @@ export interface HtmlProps {
   onScript?: (script: ScriptRequest) => void;
   /**
    * A link was activated. Absent means clicks do nothing: this component
-   * never navigates by itself.
+   * never navigates by itself. The `href` is resolved against the
+   * document's base where it has one (`baseUrl`), and as written where not.
    */
   onLink?: (href: string, ev: X11MouseEvent<DrawnNode>) => void;
   /** The parsed document, each time it is re-parsed — the DOM handle. */
@@ -173,8 +188,21 @@ export interface HtmlHandle {
   refresh(): void;
   /** The element under a point, in the window's coordinates. */
   elementAt(x: number, y: number): Element | null;
+  /** The link under a point, in the window's coordinates — resolved, as
+   *  `onLink` is handed one — for a status bar, or a menu on a link. */
+  hrefAt(x: number, y: number): string | null;
+  /**
+   * Where an element is, in logical pixels from the document's top left:
+   * the space the offset of a box scrolling the document is in, so a link
+   * to `#section` is `scroller.scrollTo({ y: handle.elementRect(el).y })`.
+   * Null for an element with no box.
+   */
+  elementRect(element: Element): Rect | null;
   /** The document's `<title>`, if it had one. */
   readonly title: string | null;
+  /** The URL the document's relative URLs resolve against — its
+   *  `<base href>`, or `baseUrl` — or null where it has none. */
+  readonly base: string | null;
 }
 
 // --- the look ---------------------------------------------------------------
@@ -223,6 +251,7 @@ export function Html(props: HtmlProps): ReactElement {
     selectable = true,
     stylesheet,
     charset,
+    baseUrl,
     onLink,
     onResource,
     onScript,
@@ -268,6 +297,7 @@ export function Html(props: HtmlProps): ReactElement {
     complete: !partial,
     stylesheet,
     charset,
+    baseUrl,
     look,
     selectionColor,
     onResource,
@@ -339,12 +369,19 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
       get title() {
         return nodeRef.current?.title ?? null;
       },
+      get base() {
+        return nodeRef.current?.documentBase ?? null;
+      },
       refresh: () => {
         nodeRef.current?.touchDocument();
         force();
       },
       elementAt: (x: number, y: number) =>
         nodeRef.current?.elementAtPoint(x, y) ?? null,
+      hrefAt: (x: number, y: number) =>
+        nodeRef.current?.hrefAtPoint(x, y) ?? null,
+      elementRect: (element: Element) =>
+        nodeRef.current?.elementRect(element) ?? null,
     }),
     [],
   );
