@@ -64,7 +64,12 @@ function view(node: DrawnNode): HtmlViewNode {
 
 interface LaidBox {
   el: { attribs: Record<string, string> } | null;
-  style: { fontFamily: string; color: string; backgroundImage: unknown };
+  style: {
+    fontFamily: string;
+    fontSize: number;
+    color: string;
+    backgroundImage: unknown;
+  };
   children: LaidBox[];
 }
 
@@ -617,13 +622,19 @@ withFonts(
   'until a face arrives, its family is left out of the list',
   async () => {
     const { node } = await mount(
-      `<style>${FACES} p { font-family: Doc, monospace }</style><p id="p">x</p>`,
+      `<style>${FACES} p { font-family: Doc, monospace }</style>` +
+        '<p id="p">x</p><div id="d">y</div>',
       (r) => (r.kind === 'font' ? new Promise(() => {}) : null),
       {},
       true,
     );
     await settle(node);
-    assert.strictEqual(boxOf(node, 'p').style.fontFamily, 'monospace');
+    const p = boxOf(node, 'p').style;
+    const d = boxOf(node, 'd').style;
+    // Not `monospace` alone, which the cascade sets at 13/16: the list the
+    // author wrote is not that one, and the text would jump when Doc came.
+    assert.strictEqual(p.fontFamily, 'monospace, monospace');
+    assert.strictEqual(p.fontSize, d.fontSize, 'the size the list has');
   },
 );
 
@@ -723,7 +734,10 @@ withFonts(
       true,
     );
     await settle(node);
-    assert.strictEqual(boxOf(node, 'p').style.fontFamily, 'monospace');
+    assert.strictEqual(
+      boxOf(node, 'p').style.fontFamily,
+      'monospace, monospace',
+    );
   },
 );
 

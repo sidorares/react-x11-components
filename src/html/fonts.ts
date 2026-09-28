@@ -295,7 +295,17 @@ export class WebFonts implements FontFamilies {
         if (group.faces.some((f) => f.state === 'ready')) out.push(group.name);
       }
     }
-    const mapped = out.length ? out.join(', ') : this._fallback;
+    let mapped = out.length ? out.join(', ') : this._fallback;
+    // The generic `monospace` as the whole of a list is set smaller than any
+    // other list (the cascade's `FIXED_SIZE`), and the author's list, with a
+    // family of the document's in it, is not that list. Left as `monospace`
+    // while its family loads, `"Courier Prime", monospace` was set at 13/16
+    // and jumped to its size when the face arrived; `monospace, monospace`
+    // is the same face at the size the author's list has — normalize.css's
+    // spelling of it.
+    if (used.length && /^monospace$/i.test(mapped)) {
+      mapped = 'monospace, monospace';
+    }
     this._memo.set(list, mapped);
     if (used.length) {
       const sources = this._sources.get(mapped);
