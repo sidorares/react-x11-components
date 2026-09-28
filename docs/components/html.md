@@ -601,6 +601,15 @@ opened for a node whose body is a form. A drawn control would take no focus,
 say nothing to a screen reader, and have to reimplement every keyboard
 convention the platform already has.
 
+**A text field the page styled is the page's to draw.** Give an `<input>` or
+a `<textarea>` a border or a background of its own and the document paints
+that box, as a browser drops a field's native look for the author's; the
+widget is mounted bare inside its content box, with no frame or fill, and
+writes in the element's own colour and font, which the author chose to go on
+that background. Its size is then its text's, and the border and padding
+around it are the author's. A field with neither keeps the theme's frame,
+and so does every button: core's `<Button>` draws its own label.
+
 **The application scrolls it, and height does not frighten it.** The element
 sizes to its content; put it in a `<box overflow="scroll">`, the same shape
 `<Markdown>` uses. That keeps the mounted controls scrolling with the

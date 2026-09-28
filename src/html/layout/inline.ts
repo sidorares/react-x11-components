@@ -652,6 +652,12 @@ function linesOf(
   };
 
   const strut = fonts ? strutOf(fonts, style) : null;
+  // How tall a line is taken to be before it is made, for its room beside
+  // the floats: the paragraph's strut, a line of its text. An item taller
+  // asks over its own height, and the line made over its whole (`close`).
+  // A 1.4em guess put a line of `line-height: 0` below floats it fitted
+  // beside.
+  const guess = strut ? strut.ascent + strut.descent : style.fontSize * 1.4;
   const lifts = raised && fonts ? new Lifts(fonts, block.style) : null;
   const close = (): void => {
     const line = finishLine(
@@ -659,7 +665,7 @@ function linesOf(
       y,
       // the room beside the floats over the whole line box, which an
       // inline-block can make taller than its text (CSS 2.1 9.5)
-      (height) => bandAt(options, y, Math.max(height, style.fontSize * 1.4)),
+      (height) => bandAt(options, y, Math.max(height, guess)),
       lineShift(style),
       style.direction === 'rtl',
       strut,
@@ -678,7 +684,7 @@ function linesOf(
   };
 
   while (index < items.length) {
-    const band = bandAt(options, y, style.fontSize * 1.4);
+    const band = bandAt(options, y, guess);
     const available = band.right - band.left;
     const item = items[index];
 
@@ -700,7 +706,7 @@ function linesOf(
       if (fits) {
         options.floatBoxes!.place(item.box, options.startY + y);
         floatsPlaced.push(item.box);
-        const left = bandAt(options, y, style.fontSize * 1.4).left;
+        const left = bandAt(options, y, guess).left;
         if (!isEmpty(open) && left !== open.left) {
           const dx = left - open.left;
           for (const text of open.texts) text.drawX += dx;
@@ -746,9 +752,8 @@ function linesOf(
       // must not run into a float over that height either (CSS 2.1 9.5):
       // the room is what the floats leave beside all of it.
       const tall = box.marginTop + box.height + box.marginBottom;
-      const lineTall = Math.max(style.fontSize * 1.4, tall);
-      const room =
-        tall > style.fontSize * 1.4 ? bandAt(options, y, tall) : band;
+      const lineTall = Math.max(guess, tall);
+      const room = tall > guess ? bandAt(options, y, tall) : band;
       const roomWidth = room.right - room.left;
       // a line with nothing on it keeps what comes first, indent or not:
       // there is no break before it (a first line's `text-indent` is room
@@ -894,7 +899,7 @@ function linesOf(
       available < options.width &&
       tooNarrow(segment.runs, first.end, first.width, room)
     ) {
-      const below = belowFloats(options, y, style.fontSize * 1.4);
+      const below = belowFloats(options, y, guess);
       if (below !== null) {
         y = below;
         continue;
@@ -998,8 +1003,7 @@ function linesOf(
     offset = advanced.offset;
   }
 
-  if (pending.length)
-    placePending(bandAt(options, y, style.fontSize * 1.4).left);
+  if (pending.length) placePending(bandAt(options, y, guess).left);
   if (open.texts.length || open.atomics.length || open.edges.length) close();
   placeDeferred();
 
@@ -1570,12 +1574,14 @@ function finishLine(
       ));
   let ascent = held ? strut.ascent : 0;
   let descent = held ? strut.descent : 0;
-  let height = ascent + descent;
   // A text `vertical-align` raises takes its own box's room about where it
   // is raised to. A `top` or `bottom` box takes the room of all it holds
   // on the line about its baseline, and the line is as tall as that.
   const lifted = lifts ? open.texts.map((text) => lifts.of(text)) : null;
-  let edges: Map<Box, { ascent: number; descent: number }> | null = null;
+  let edges: Map<
+    Box,
+    { to: 'top' | 'bottom'; ascent: number; descent: number }
+  > | null = null;
   for (let i = 0; i < open.texts.length; i += 1) {
     const lift = lifted?.[i];
     if (lift) {
@@ -1583,7 +1589,11 @@ function finishLine(
         edges ??= new Map();
         let room = edges.get(lift.edge.box);
         if (!room) {
-          room = { ascent: lift.edge.ascent, descent: lift.edge.descent };
+          room = {
+            to: lift.edge.to,
+            ascent: lift.edge.ascent,
+            descent: lift.edge.descent,
+          };
           edges.set(lift.edge.box, room);
         }
         room.ascent = Math.max(room.ascent, lift.ascent + lift.raise);
@@ -1598,7 +1608,6 @@ function finishLine(
     const own = natural.baseline - natural.y;
     ascent = Math.max(ascent, own);
     descent = Math.max(descent, natural.height - own);
-    height = Math.max(height, natural.height);
   }
   // an inline box with no text on the line is on it all the same, as tall
   // as its own face and line height make it (CSS 2.1 10.8): an empty one,
@@ -1615,12 +1624,17 @@ function finishLine(
       descent = Math.max(descent, room.descent - room.raise);
     }
   }
+  // `top` and `bottom` boxes are set against the line's edges rather than
+  // its baseline, so all they ask of it is to be as tall as they are
+  let top = 0;
+  let bottom = 0;
   for (const placed of open.atomics) {
     const box = placed.box;
     const h = box.height + box.marginTop + box.marginBottom;
     const va = box.style.verticalAlign;
     if (va === 'top' || va === 'bottom') {
-      height = Math.max(height, h);
+      if (va === 'top') top = Math.max(top, h);
+      else bottom = Math.max(bottom, h);
       continue;
     }
     // on the line's baseline by its own, raised from it by its
@@ -1632,11 +1646,23 @@ function finishLine(
   }
   if (edges) {
     for (const room of edges.values()) {
-      height = Math.max(height, room.ascent + room.descent);
+      const h = room.ascent + room.descent;
+      if (room.to === 'top') top = Math.max(top, h);
+      else bottom = Math.max(bottom, h);
     }
   }
-  height = Math.max(height, ascent + descent);
-  const baseline = Math.max(ascent, (height - ascent - descent) / 2 + ascent);
+  // Where the baseline goes in a line one of them made taller than the
+  // rest is left open (CSS 2.1 10.8.1). Browsers keep it where the rest
+  // puts it, under the line's top, and only a taller `bottom` box moves it
+  // down: an image set `top` beside a line of text has the text at its
+  // top, not halfway down it.
+  let height = ascent + descent;
+  let baseline = ascent;
+  if (bottom > height) {
+    baseline += bottom - height;
+    height = bottom;
+  }
+  height = Math.max(height, top);
 
   // Placed beside the floats at the text's height; a float the whole line
   // reaches moves it, and the alignment divides the room that is left.

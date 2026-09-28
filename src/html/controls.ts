@@ -23,6 +23,7 @@ import type { Element } from 'domhandler';
 
 import { attr, tagOf } from './dom.js';
 import type { ComputedStyle } from './css/style.js';
+import { isTransparent } from './css/values.js';
 import type { BoxTree, ReplacedKind } from './layout/boxes.js';
 import type { FontsLike } from './layout/inline.js';
 
@@ -46,6 +47,24 @@ export interface ControlRect {
   y: number;
   width: number;
   height: number;
+  /**
+   * Set on a text field whose own box the author styled — gave it a border
+   * or a background (`styledField`). The document draws that box, and the
+   * widget goes bare inside its content box, here, with no frame or fill
+   * of its own and its text in the element's colour and font.
+   */
+  bare?: BareField;
+}
+
+/** Where a styled text field's widget goes, and how its text looks. */
+export interface BareField {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  color: string;
+  fontFamily: string;
+  fontSize: number;
 }
 
 /** The rectangles every control in a laid-out document landed on. */
@@ -54,16 +73,54 @@ export function controlRectsOf(tree: BoxTree): ControlRect[] {
   for (const box of tree.controls) {
     if (!box.el) continue;
     if (box.width <= 0 || box.height <= 0) continue;
-    out.push({
+    const rect: ControlRect = {
       element: box.el,
       kind: box.replaced,
       x: box.x,
       y: box.y,
       width: box.width,
       height: box.height,
-    });
+    };
+    if (styledField(box.replaced, box.style)) {
+      rect.bare = {
+        x: box.contentX,
+        y: box.contentY,
+        width: box.contentWidth,
+        height: box.contentHeight,
+        color: box.style.color,
+        fontFamily: box.style.fontFamily,
+        fontSize: box.style.fontSize,
+      };
+    }
+    out.push(rect);
   }
   return out;
+}
+
+/**
+ * Whether a text field's box is the author's to draw: one given a border or
+ * a background of its own, which the UA sheet gives no control. A browser
+ * drops a field's native look for the author's then (CSS UI 4 7.1,
+ * `appearance`), and so does this: the widget's frame and fill would hide
+ * the author's, and what they would draw is the theme's rather than the
+ * page's.
+ */
+export function styledField(kind: ReplacedKind, style: ComputedStyle): boolean {
+  if (kind !== 'input' && kind !== 'textarea') return false;
+  return (
+    !isTransparent(style.backgroundColor) ||
+    !!style.backgroundImage ||
+    !!style.backgroundGradient ||
+    !!style.backgroundImages ||
+    edged(style.borderTopStyle, style.borderTopWidth) ||
+    edged(style.borderRightStyle, style.borderRightWidth) ||
+    edged(style.borderBottomStyle, style.borderBottomWidth) ||
+    edged(style.borderLeftStyle, style.borderLeftWidth)
+  );
+}
+
+function edged(style: ComputedStyle['borderTopStyle'], width: number): boolean {
+  return style !== 'none' && style !== 'hidden' && width > 0;
 }
 
 /**
@@ -119,9 +176,17 @@ export function measureControl(
         height: lineHeight + chrome,
       };
     }
+    // a field the author drew the box of is its text and no more, as a
+    // browser's is: the room around it is the author's border and padding
     case 'textarea': {
       const cols = numberAttr(el, 'cols') ?? 30;
       const rows = numberAttr(el, 'rows') ?? 3;
+      if (styledField(kind, style)) {
+        return {
+          width: Math.round(ch * cols),
+          height: Math.round(lineHeight * rows),
+        };
+      }
       return {
         width: Math.round(ch * cols + padding * 2 + chrome),
         height: Math.round(lineHeight * rows + chrome),
@@ -129,6 +194,9 @@ export function measureControl(
     }
     case 'input': {
       const size = numberAttr(el, 'size') ?? 20;
+      if (styledField(kind, style)) {
+        return { width: Math.round(ch * size), height: lineHeight };
+      }
       return {
         width: Math.round(ch * size + padding * 2 + chrome),
         height: lineHeight + chrome,

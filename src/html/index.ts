@@ -42,7 +42,7 @@ import {
   selectedOption,
   textareaValue,
 } from './controls.js';
-import type { ControlRect } from './controls.js';
+import type { BareField, ControlRect } from './controls.js';
 import type { ResourceRequest, ResourceResult } from './resources.js';
 
 export {
@@ -52,7 +52,7 @@ export {
 } from './node.js';
 export type { HtmlViewProps, ScriptRequest } from './node.js';
 export type { ResourceRequest, ResourceResult } from './resources.js';
-export type { ControlRect } from './controls.js';
+export type { BareField, ControlRect } from './controls.js';
 export type { ComputedStyle, RootLook } from './css/style.js';
 export type {
   AnyNode,
@@ -400,13 +400,16 @@ function renderControl(
   const key = `${rect.kind}:${rect.x},${rect.y}`;
   const disabled = attr(el, 'disabled') !== undefined;
   const readOnly = attr(el, 'readonly') !== undefined;
+  // a field whose box the document draws takes its content box
+  const at = rect.bare ?? rect;
   const frame: Style = {
     position: 'absolute',
-    left: Math.round(rect.x),
-    top: Math.round(rect.y),
-    width: Math.round(rect.width),
-    height: Math.round(rect.height),
+    left: Math.round(at.x),
+    top: Math.round(at.y),
+    width: Math.round(at.width),
+    height: Math.round(at.height),
   };
+  const field = rect.bare ? bareField(rect.bare) : fieldChrome(look);
   const report = (value: string | boolean): void => {
     onChange?.(el, value);
     touch();
@@ -485,7 +488,7 @@ function renderControl(
       // with whatever was last echoed into the DOM.
       widget = hx('textarea', {
         defaultValue: textareaValue(el),
-        style: [fieldChrome(look), { width: '100%', height: '100%' }],
+        style: [field, { width: '100%', height: '100%' }],
         onChange: readOnly ? undefined : (ev) => reportText(ev.value),
       });
       break;
@@ -497,7 +500,7 @@ function renderControl(
         // Core's word for a password field: nothing in it reaches a
         // selection, PRIMARY included.
         sensitive: type === 'password',
-        style: [fieldChrome(look), { width: '100%', height: '100%' }],
+        style: [field, { width: '100%', height: '100%' }],
         onChange: readOnly
           ? undefined
           : (ev) => {
@@ -533,6 +536,25 @@ function fieldChrome(look: RootLook): Style {
     color: look.color,
     fontFamily: look.fontFamily,
     fontSize: look.fontSize,
+  };
+}
+
+/**
+ * A text field whose box the author styled: the document draws the border
+ * and the background, so the widget draws neither, and its text is the
+ * element's colour and font, which the author chose to go on that
+ * background, rather than the theme's.
+ */
+function bareField(bare: BareField): Style {
+  return {
+    backgroundColor: 'transparent',
+    borderWidth: 0,
+    borderRadius: 0,
+    paddingLeft: 0,
+    paddingRight: 0,
+    color: bare.color,
+    fontFamily: bare.fontFamily,
+    fontSize: bare.fontSize,
   };
 }
 

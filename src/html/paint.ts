@@ -391,10 +391,24 @@ function canvasBackground(root: Box): { source: Box; anchor: Box } | null {
     !!b.style.backgroundImage ||
     !!b.style.backgroundGradient ||
     !!b.style.backgroundImages;
-  const top = root.children.find((c) => c.el?.name === 'html') ?? root;
+  const top = childNamed(root, 'html') ?? root;
   if (has(top)) return { source: top, anchor: top };
-  const body = top.children.find((c) => c.el?.name === 'body');
+  const body = childNamed(top, 'body');
   return body && has(body) ? { source: body, anchor: top } : null;
+}
+
+/** A box's child element of that name, or one inside the anonymous boxes
+ *  it is wrapped in: a `<body>` in an `<html>` set `display: table` is in
+ *  an anonymous row and cell. */
+function childNamed(box: Box, name: string): Box | null {
+  for (const child of box.children) {
+    if (child.el?.name === name) return child;
+    if (!child.el) {
+      const found = childNamed(child, name);
+      if (found) return found;
+    }
+  }
+  return null;
 }
 
 function paintCanvas(
@@ -2903,8 +2917,8 @@ function paintCollapsedBorders(
   const grid = table.collapsed!;
   const { rows: R, columns: C, lineX, lineY, horizontal, vertical } = grid;
   if (lineX.length !== C + 1 || lineY.length !== R + 1) return;
-  const ox = Math.round(table.x + options.originX);
-  const oy = Math.round(table.y + options.originY);
+  const ox = table.x + options.originX;
+  const oy = table.y + options.originY;
   const widthOf = (b: CollapsedBorder | null): number => (b ? b.width : 0);
   const h = (line: number, c: number): number =>
     c < 0 || c >= C ? 0 : widthOf(horizontal[line * C + c]);
@@ -2922,22 +2936,24 @@ function paintCollapsedBorders(
     column: number;
   }[] = [];
   // A border centred on a grid line starts half its width before it,
-  // rounded there: a line at 12.5 carries a 25px border from 0, where
-  // rounding the line first and taking a whole half off drew it from 1
-  const from = (line: number, width: number): number =>
-    Math.round(line - width / 2);
+  // rounded there, on the page: a line at 12.5 carries a 25px border from
+  // 0, where rounding the line first and taking a whole half off drew it
+  // from 1, and a line 18.4 into a table at 50.4 carries a pixel's from
+  // 69, where rounding the two apart drew it from 68
+  const from = (origin: number, line: number, width: number): number =>
+    Math.round(origin + line - width / 2);
   for (let line = 0; line <= R; line += 1) {
     for (let c = 0; c < C; c += 1) {
       const border = horizontal[line * C + c];
       if (!border) continue;
       const start = Math.max(v(line - 1, c), v(line, c));
       const end = Math.max(v(line - 1, c + 1), v(line, c + 1));
-      const x = ox + from(lineX[c], start);
+      const x = from(ox, lineX[c], start);
       segments.push({
         border,
         x,
-        y: oy + from(lineY[line], border.width),
-        w: ox + from(lineX[c + 1], end) + end - x,
+        y: from(oy, lineY[line], border.width),
+        w: from(ox, lineX[c + 1], end) + end - x,
         h: border.width,
         horizontal: true,
         row: line,
@@ -2951,13 +2967,13 @@ function paintCollapsedBorders(
       if (!border) continue;
       const start = Math.max(h(r, line - 1), h(r, line));
       const end = Math.max(h(r + 1, line - 1), h(r + 1, line));
-      const y = oy + from(lineY[r], start);
+      const y = from(oy, lineY[r], start);
       segments.push({
         border,
-        x: ox + from(lineX[line], border.width),
+        x: from(ox, lineX[line], border.width),
         y,
         w: border.width,
-        h: oy + from(lineY[r + 1], end) + end - y,
+        h: from(oy, lineY[r + 1], end) + end - y,
         horizontal: false,
         row: r,
         column: line,
