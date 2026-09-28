@@ -116,6 +116,10 @@ export function parseStylesheet(
    *  document first names them: one map across all of its sheets, since a
    *  layer one sheet names first is the same layer in the next. */
   layers: Map<string, number> = new Map(),
+  /** The sheet's own URL, for one a `<link>` or an `@import` fetched: the
+   *  URLs in it are relative to it (CSS 2.1 4.3.4), and are handed on
+   *  resolved against it, relative to the document as the rest are. */
+  base?: string,
 ): Stylesheet {
   text = withoutComments(text);
   const sheet: Stylesheet = { rules: [], imports: [], breakpoints: [] };
@@ -170,7 +174,9 @@ export function parseStylesheet(
         if (name === 'import') {
           if (importsAllowed && media === null) {
             const url = importUrl(at.prelude);
-            if (url && importApplies(at.prelude)) sheet.imports.push(url);
+            if (url && importApplies(at.prelude)) {
+              sheet.imports.push(base ? rebaseUrl(url, base) : url);
+            }
           }
           continue;
         }
@@ -304,6 +310,11 @@ export function parseStylesheet(
     layer: readonly number[] | null,
   ): void => {
     if (!declarations.length) return;
+    if (base) {
+      for (const d of declarations) {
+        if (URL_TOKEN.test(d.value)) d.value = rebaseUrls(d.value, base);
+      }
+    }
     for (const raw of selectors) {
       const selector = raw.includes('\\') ? forMatcher(raw) : raw;
       sheet.rules.push({
@@ -1128,6 +1139,121 @@ export function urlEnd(text: string, paren: number): number {
  * parenthesis or white space inside an unquoted one, or anything after a
  * quoted one's string — which makes the declaration it is in invalid.
  */
+/** Where a `url(` may begin in a value. */
+const URL_TOKEN = /url\(/i;
+
+/** The slice of the WHATWG `URL` this uses, through `globalThis`: `src/`
+ *  compiles with no runtime's globals (`types: []`), and every runtime this
+ *  runs on has it. */
+interface ParsedUrl {
+  href: string;
+  origin: string;
+  pathname: string;
+  search: string;
+  hash: string;
+}
+type UrlConstructor = new (url: string, base?: string | ParsedUrl) => ParsedUrl;
+
+const SCHEME = /^[a-z][a-z0-9+.-]*:/i;
+const MADE_UP_ORIGIN = 'http://base.invalid';
+const MADE_UP_DEPTH = 32;
+const MADE_UP_SEGMENT = '.html-base';
+const MADE_UP_DIR = '/' + `${MADE_UP_SEGMENT}/`.repeat(MADE_UP_DEPTH);
+
+/**
+ * `ref`, written in a stylesheet at `base`, as the document would write it:
+ * resolved against `base` as a URL is (RFC 3986 5.2), and relative to the
+ * document again where both were relative to it. `support/a.png` in
+ * `support/a.css` is `support/support/a.png`, and `../img/b.png` in
+ * `css/site.css` is `img/b.png`. A reference with a scheme, a root-relative
+ * one, a fragment and a `data:` URL are what they were. The parsing is the
+ * URL parser's, against a directory made up deep enough that no `..` climbs
+ * out of it, and counted back into `..` where one climbed past the
+ * document's.
+ */
+export function rebaseUrl(ref: string, base: string): string {
+  if (!ref || SCHEME.test(ref) || ref.startsWith('#') || ref.startsWith('//')) {
+    return ref;
+  }
+  const URL = (globalThis as { URL?: UrlConstructor }).URL;
+  if (!URL) return ref;
+  try {
+    if (SCHEME.test(base) || base.startsWith('//')) {
+      return new URL(ref, new URL(base, `${MADE_UP_ORIGIN}/`)).href;
+    }
+    const url = new URL(ref, new URL(base, MADE_UP_ORIGIN + MADE_UP_DIR));
+    if (url.origin !== MADE_UP_ORIGIN) return url.href;
+    const tail = url.search + url.hash;
+    if (base.startsWith('/') || ref.startsWith('/')) return url.pathname + tail;
+    const segments = url.pathname.slice(1).split('/');
+    let kept = 0;
+    while (kept < MADE_UP_DEPTH && segments[kept] === MADE_UP_SEGMENT)
+      kept += 1;
+    const path = segments
+      .slice(kept)
+      .map((segment: string) => {
+        try {
+          return decodeURIComponent(segment).replace(/\//g, '%2F');
+        } catch {
+          return segment;
+        }
+      })
+      .join('/');
+    return '../'.repeat(MADE_UP_DEPTH - kept) + path + tail;
+  } catch {
+    return ref;
+  }
+}
+
+/** A declaration's value with each `url()` in it rebased (`rebaseUrl`),
+ *  strings in it left as they are. */
+function rebaseUrls(value: string, base: string): string {
+  let out = '';
+  let i = 0;
+  const n = value.length;
+  while (i < n) {
+    const c = value[i];
+    if (c === '"' || c === "'") {
+      let j = i + 1;
+      while (j < n && value[j] !== c) j += value[j] === '\\' ? 2 : 1;
+      out += value.slice(i, j + 1);
+      i = j + 1;
+      continue;
+    }
+    if (
+      (c === 'u' || c === 'U') &&
+      value.slice(i, i + 4).toLowerCase() === 'url(' &&
+      (i === 0 || !/[\w-]/.test(value[i - 1]))
+    ) {
+      let j = i + 4;
+      while (j < n && isSpace(value[j])) j += 1;
+      const quote = value[j];
+      if (quote === '"' || quote === "'") {
+        j += 1;
+        while (j < n && value[j] !== quote) j += value[j] === '\\' ? 2 : 1;
+        j += 1;
+      }
+      while (j < n && value[j] !== ')') j += value[j] === '\\' ? 2 : 1;
+      const token = value.slice(i, j + 1);
+      const url = parseUrl(token);
+      if (typeof url === 'string') {
+        const rebased = rebaseUrl(url, base);
+        out +=
+          rebased === url
+            ? token
+            : `url("${rebased.replace(/[\\"]/g, '\\$&').replace(/\n/g, '\\a ')}")`;
+      } else {
+        out += token;
+      }
+      i = j + 1;
+      continue;
+    }
+    out += c;
+    i += 1;
+  }
+  return out;
+}
+
 export function parseUrl(value: string): string | null | undefined {
   const v = value.trim();
   if (!v || v.toLowerCase() === 'none') return null;

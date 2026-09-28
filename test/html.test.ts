@@ -3534,6 +3534,60 @@ metric("a footer group's rows come last wherever it stands", async () => {
   assert.ok(h < b && b < f, 'header, body, footer');
 });
 
+metric(
+  'a table cell is as tall as its content, whatever height it sets',
+  async () => {
+    // CSS 2.1 17.5.3: a cell's height is a least one
+    const { node } = await render(
+      '<table style="border-spacing:0"><tr>' +
+        '<td id="a" height="4" style="padding:0">text</td>' +
+        '<td id="b" style="height:4px;padding:0"></td></tr></table>',
+    );
+    const el = view(node);
+    const [a, b] = [boxOf(el, 'a'), boxOf(el, 'b')];
+    assert.ok(a.height > 12, `a line tall: ${a.height}`);
+    assert.strictEqual(b.height, a.height, 'and so is its row');
+  },
+);
+
+metric(
+  "a table's parts take no margins, and a cell's width keeps within min and max",
+  async () => {
+    // CSS 2.1 8.3: margins apply to no part of a table but its caption; and
+    // a cell's `min-width` and `max-width` hold it, as in every browser
+    const { node } = await render(
+      '<style>td{padding:0} table{border-spacing:0}</style>' +
+        '<table id="t"><tr><td id="c" style="margin:50px">x</td></tr></table>' +
+        '<div style="display:table"><div style="display:table-row">' +
+        '<div id="max" style="display:table-cell;width:300px;max-width:100px;height:10px"></div>' +
+        '</div></div>' +
+        '<div style="display:table"><div style="display:table-row">' +
+        '<div id="min" style="display:table-cell;min-width:80px;height:10px"></div>' +
+        '</div></div>',
+    );
+    const el = view(node);
+    const [t, c] = [boxOf(el, 't'), boxOf(el, 'c')];
+    assert.strictEqual(c.x, t.x, 'at the start of its table');
+    assert.strictEqual(c.y, t.y, 'at its top');
+    assert.strictEqual(boxOf(el, 'max').width, 100);
+    assert.strictEqual(boxOf(el, 'min').width, 80);
+  },
+);
+
+metric('floats that add up to their room exactly fit in it', async () => {
+  // ten of 0.87em in 8.7em came to more than it by a rounding error, and
+  // the tenth went under the other nine
+  const { node } = await render(
+    '<div style="width:8.7em;font-size:16px">' +
+      '<span id="f0" style="float:left;width:0.87em;height:5px"></span>'.repeat(
+        9,
+      ) +
+      '<span id="last" style="float:left;width:0.87em;height:5px"></span></div>',
+  );
+  const el = view(node);
+  assert.strictEqual(boxOf(el, 'last').y, boxOf(el, 'f0').y, 'one row');
+});
+
 /** The clips standing when a fill of this colour was made, innermost last. */
 function clipsAround(ops: PaintOp[], color: string): PaintOp[][] {
   const stack: (PaintOp | null)[] = [];
@@ -4821,6 +4875,67 @@ test('a stylesheet handed back by the seam reaches the cascade', async () => {
   )._tree;
   assert.strictEqual(tree.root.children[0].style.color, '#ff0000');
   void result;
+});
+
+test("a stylesheet's URLs are its own, asked for as the document would write them", async () => {
+  // CSS 2.1 4.3.4: a URL in a sheet is relative to the sheet, so a host that
+  // resolves against the document is asked for `img/a.png`, not the
+  // `../img/a.png` written in `css/site.css`
+  const asked: string[] = [];
+  await renderX11(
+    h(Html, {
+      source:
+        '<style>span { background-image: url(c.png) }</style>' +
+        '<link rel="stylesheet" href="css/site.css">' +
+        '<p>text</p><div>block</div><span>span</span>',
+      partial: false,
+      onResource: (r: { url: string; kind: string }) => {
+        asked.push(r.url);
+        if (r.url === 'css/site.css') {
+          return {
+            kind: 'stylesheet' as const,
+            text: '@import url(more.css); p { background: url("../img/a.png") }',
+          };
+        }
+        if (r.url === 'css/more.css') {
+          return {
+            kind: 'stylesheet' as const,
+            text: 'div { background-image: url(b.png) }',
+          };
+        }
+        return null;
+      },
+    }),
+    { backend: 'mock' },
+  );
+  for (const url of [
+    'css/site.css',
+    'css/more.css',
+    'img/a.png',
+    'css/b.png',
+    'c.png',
+  ]) {
+    assert.ok(asked.includes(url), `${url} in ${JSON.stringify(asked)}`);
+  }
+  assert.ok(!asked.includes('../img/a.png') && !asked.includes('b.png'));
+});
+
+test('text-decoration with a word it does not know is ignored, and draws every line it names', async () => {
+  // CSS 2.1 4.2: the whole declaration goes, not the words after it
+  const { node } = await render(
+    '<p id="a" style="text-decoration: underline line-through diagonal">a</p>' +
+      '<p id="b" style="text-decoration: underline line-through">b</p>',
+  );
+  const el = view(node);
+  const styleOf = (id: string) =>
+    (
+      boxOf(el, id) as unknown as {
+        style: { underline: string | null; lineThrough: string | null };
+      }
+    ).style;
+  assert.strictEqual(styleOf('a').underline, null);
+  assert.strictEqual(styleOf('a').lineThrough, null);
+  assert.ok(styleOf('b').underline && styleOf('b').lineThrough, 'both lines');
 });
 
 test('a form control or a frame keeps its height when only its width is set', async () => {
@@ -7483,7 +7598,9 @@ metric(
       1,
       'all of it on one line',
     );
-    const own = await rules('text-decoration:underline');
+    // the longhand: `text-decoration: underline` would reset the colour
+    // the sheet gave the span, as a shorthand does
+    const own = await rules('text-decoration-line:underline');
     const a = own.find((f) => f.style === '#ff00ff')!;
     const b = own.find((f) => f.style === '#00ffff')!;
     assert.ok(Math.abs(a.y - b.y - 10) <= 1, 'the raised one goes with it');

@@ -25,6 +25,14 @@ export interface Band {
   right: number;
 }
 
+/**
+ * How much narrower than a float its room may be and still hold it: the
+ * error of adding up widths, which are fractions of a pixel. Ten floats of
+ * `0.87em` in a box `8.7em` wide came to more than the box by 1e-14 px,
+ * and the tenth went under the other nine.
+ */
+const FIT_SLACK = 1e-6;
+
 export class FloatContext {
   private _boxes: FloatBox[] = [];
   private _lowestLeft = -Infinity;
@@ -156,7 +164,7 @@ export class FloatContext {
     if (from < this._lastTop) from = this._lastTop;
     // where it fits at once, as most do, nothing below is looked at
     const first = this.bandAt(from, 1, left, right);
-    if (first.right - first.left >= width) return from;
+    if (first.right - first.left + FIT_SLACK >= width) return from;
     // Candidate positions are the bottom of every float below `from`; there
     // is no other height at which the band can get wider.
     const candidates: number[] = [];
@@ -169,7 +177,7 @@ export class FloatContext {
       // a row of floats ends at one height, asked about once
       if (candidate === y) continue;
       const band = this.bandAt(candidate, 1, left, right);
-      if (band.right - band.left >= width) return candidate;
+      if (band.right - band.left + FIT_SLACK >= width) return candidate;
       y = candidate;
     }
     return y;

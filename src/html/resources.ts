@@ -22,8 +22,10 @@ import type { Element } from 'domhandler';
 
 /** What the host is asked for. */
 export interface ResourceRequest {
-  /** The URL exactly as the document wrote it — not resolved against a base,
-   *  because this has no base and the host does. */
+  /** The URL as the document wrote it — not resolved against a base,
+   *  because this has no base and the host does. One a linked or imported
+   *  stylesheet wrote is relative to that sheet, and comes resolved against
+   *  the sheet's URL, relative to the document again (`css/rebaseUrl`). */
   url: string;
   kind: 'image' | 'stylesheet';
   /** The element that referred to it, for a host that wants the context. */
