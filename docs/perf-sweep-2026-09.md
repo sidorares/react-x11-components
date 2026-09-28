@@ -13,10 +13,11 @@ Mac) and Cocoa — and, where a component has one, both renderers. It ends
 with a sweep of everything against the final tree, which is the baseline for
 the next round.
 
-One machine throughout: an Apple M1 Pro (10 cores, 16 GB), macOS 15.2, the
-built-in 120 Hz display at scale 2 for Cocoa and XQuartz 2.8.6 at scale 1 for
-X11, Node 26, React in development mode. Numbers from another machine are not
-comparable with these; the method is.
+One machine through round 22: an Apple M1 Pro (10 cores, 16 GB), macOS 15.2,
+the built-in 120 Hz display at scale 2 for Cocoa and XQuartz 2.8.6 at scale 1
+for X11, Node 26, React in development mode. Round 23 is a second machine — a
+Linux desktop on native Xorg with an NVIDIA GPU — and its numbers are its own.
+Numbers from another machine are not comparable with these; the method is.
 
 ## Where things landed
 
@@ -59,6 +60,15 @@ comparable with these; the method is.
 | ntk        | #389 text under 64 characters does not go through the paragraph cache             | released, 8.12.8    |
 | ntk        | #390 fc-match spawned by its path; a fallback asks for its face's pattern         | released, 8.12.8    |
 | components | #153 `<Html>`: padded inline boxes as spacers; the walks the conformance added    | open                |
+| ntk        | #399 a GL surface is never destroyed while it is current (round 23)               | released, 8.12.11   |
+| x11-dri    | #34 destroying the current surface unbinds it first (round 23)                    | released, 0.9.1     |
+| react-x11  | #715, #717 a `<glarea>`'s panes: one per child, atomic, backing-stored, cut       | released, 2.22.9    |
+| components | #236 the sweep on bash, and the `frames` suite (round 23)                         | merged              |
+| components | #240 an animated zoom holds its bodies however slow its frames                    | merged              |
+| ntk        | #401 the frame interval runs from a frame's start                                 | released, 8.12.12   |
+| ntk        | #402 the vblank clock under NVIDIA and a compositor (a decision)                  | open                |
+| react-x11  | #719 both accessibility bridges pace what they push                               | merged              |
+| react-x11  | #721 a named size that neither shrinks nor grows is floored by nothing            | open                |
 
 ## Method
 
@@ -1990,6 +2000,167 @@ In process, milliseconds:
 | 100 nested tables around 500 more, a fresh layout   | 1,010  | 87    |
 | the fuzzer's 256 levels around 2,700, a layout      | 5,085  | 222   |
 | 700 nested empty `overflow` tables, the first frame | 69,800 | 299   |
+
+## Round 23: a second machine
+
+Every round before this one ran on the M1 Pro: Cocoa, and X11 through XQuartz.
+This round ran the sweep on a Linux desktop instead:
+
+- Linux Mint on native Xorg 21.1;
+- an NVIDIA GTX 1080 Ti on driver 580;
+- an i7-7700K;
+- Cinnamon's compositor (Muffin);
+- one 2560×1440 panel at 60 Hz.
+
+Three things are different here, and XQuartz never exercised any of them:
+
+- **Present has a real display behind it**, so ntk's vblank clock ends the
+  frames of 2D windows;
+- **direct GL runs through DRI3/GBM**;
+- **an AT-SPI bus runs in the session** whether or not a screen reader does.
+
+The sweep scripts were ported from zsh to bash (#236). The same PR added a
+`frames` suite, which measures what a frame shows rather than what it costs.
+An external X client samples the window with GetImage at about 500 samples a
+second and compares each sample against oracles:
+
+- regions that must not change;
+- the 2D and GL renderers' ink;
+- old and new states only, through a transition.
+
+### GL on NVIDIA (ntk #399, x11-dri #34, react-x11 #715 #717)
+
+**Resize.** Resizing a `<glarea>` destroyed the GBM surface while it was
+current. On NVIDIA every swap after that failed with EGL_BAD_SURFACE, and the
+surface kept its last frame with no error to anyone. The chain now unbinds
+before it destroys (ntk #399, x11-dri #34). A failure after `ready` also now
+reaches `onError`.
+
+**Drag.** Dragging one card in `<Flow>`'s 400-widget scene made the other
+cards flicker and shake. The panes that a `<glarea>`'s children are drawn on
+were shared, recycled and resized per frame, and a move and its copy reached
+the server as two requests. Now:
+
+- there is one pane per child, keyed by node;
+- a present is atomic;
+- the GL window keeps an X backing store, and each pane one too;
+- a pane is cut to its ink with SHAPE.
+
+Result: 631 of 1,566 samples showed shake before, and 0 after. The bench's own
+count went from 938 to 0.
+
+**Padding.** The same 2D-against-GL ink comparison found the GL panes covering
+the edges around each node, missing 9% of the 2D ink. The pane cut fixed that
+as well: 0%.
+
+### `<Flow>`: an animated zoom that ran at 2 fps or 20 (#240)
+
+The zoom's picture holds mounted bodies through a stream of zoom steps. The
+stream was judged on how far apart the steps came. A frame that re-scales
+every body can take longer than the 120 ms stream window, so each step of such
+an animation looked like a jump, re-scaled the bodies again, and was slow in
+turn. The first frames decided which way the whole animation went.
+
+A step that follows the frame that drew the step before it now continues the
+stream. The rest is also counted from that frame.
+
+Results, charts scene:
+
+- GL: 1.5–20 fps (varying run to run) → 48 fps;
+- 2D: 11 → 34 fps.
+
+### ntk: the frame interval runs from a frame's start (ntk #401)
+
+The fence clock paces a direct GL window, which has no present of its own. Its
+timer was armed at the end of each frame, so every frame paid its own length
+on top of `frameInterval`: 3 ms frames came 19 ms apart. It now runs start to
+start. Results:
+
+- `<Map>` GL pan: 51 → 61 fps;
+- `<Map>` GL wheel: 35 → 54 fps;
+- `<Flow>` GL widgets pan: 42 → 59 fps;
+- `<Flow>` GL charts pan: 40 → 60 fps.
+
+The frames watcher still sees 0 bad samples.
+
+### The vblank clock on this machine (ntk #402, open)
+
+I also tried the opposite for GL: ending its frames on its swap chain's
+completions (`perf/gl-vblank-clock`). It measured _worse_. A bare node-x11
+client shows why. `CompleteNotify` here arrives anywhere from 0 to 16.5 ms
+after the vblank its msc names, and the phase drifts over seconds. So a
+present sent when a completion arrives misses the next vblank 8–16% of the
+time, even with nothing drawn. `ust` is always 0.
+
+2D windows pay for this too. Here is the vblank clock (P) against the fence
+with CopyArea blits (K), which is what XQuartz gets. Runs were interleaved,
+and both use #401:
+
+| cell                           | P          | K               |
+| ------------------------------ | ---------- | --------------- |
+| typing: fps / key-to-paint p50 | 41 / 13 ms | 55 / 2.3–4.5 ms |
+| `<Table>` wheel                | 41         | 60              |
+| `<Table>` fling                | 16–17      | 27–31           |
+| charts scatter                 | 33         | 61              |
+| `<Flow>` drag (2D)             | 34         | 54              |
+| frames watcher, bad samples    | 0          | 0               |
+
+The fence with Present blits (F) is as fast as K but shows half-drawn frames:
+458 and 551 bad samples, the hazard from #223. So the blit has to go with the
+clock.
+
+Whether ntk should prefer the fence under a compositor is a default for every
+X11 user, so it is filed rather than changed.
+
+One more finding came from this: **a monitor that DPMS switches off takes
+Present's display away.** The msc becomes synthetic, `_probeMsc` sends new
+windows to K, and the verdict is final by design. Every 2D number measured
+after the unattended session's monitor went off is K. Fling at 31 fps and
+wheel at 88 are that state, not a code change.
+
+### The accessibility bridge, paced (react-x11 #719)
+
+The AT-SPI bridge pushed on every commit. It exported, diffed and unexported
+every row a `<Table>` scrolled past. This desktop runs the bus, but
+`GetRegisteredEvents` is empty and `IsEnabled` is false. Dropping the D-Bus
+signals alone changed nothing. The cost was the walk.
+
+Both bridges, AT-SPI and UIA, now share one pacing. Chromium serializes
+non-interactive updates 150–350 ms apart and focus at once. Here:
+
+- a change after a quiet spell goes at once;
+- a stream goes at most every 500 ms (`REACT_X11_A11Y_INTERVAL`);
+- focus, announcements and the focused element's own changes go at once;
+- an AT's reads flush first.
+
+Fling results: 31 fps with the bridge on master, 36.4–36.8 paced, and
+37.4–37.7 with no bridge at all.
+
+### Content floors a named size never needed (react-x11 #721)
+
+With the bridge out of the way, a fling frame was 62% content floors: 9.3 of
+15.1 ms. Every row that scrolled in was laid out alone for its cells' width
+floors. Each cell is `flexShrink: 0` at its column's width, and its floor is
+that width.
+
+An item with a numeric size, no `flexBasis`, `flexShrink: 0` and no `flexGrow`
+now receives no floor. The broader "`flexShrink: 0`" rule looked right and was
+not. Laying 1,200 random trees out both ways, 314 differed, and each clause
+above is a case that did. With all four clauses, 0 of 3,600 differ from
+master.
+
+Fling results: floors 9.4 → 6.3 ms a frame, and 30.9 → 36.2 fps.
+
+### Still open on this machine
+
+- **`<Table>`'s cell text.** Its height floors remain: 6.3 ms of an 11 ms
+  fling frame. They are floors on text in a column cell, and in a fixed-height
+  row they decide where a line that does not fit is drawn. That is behaviour,
+  not waste.
+- **Document reflows.** Markdown and `<Html>` reflow at 250 and 234 ms a step.
+  That is the same order as XQuartz, so it is not a Linux problem.
+- **`<CodeEditor>` long mount (1.4 s)** and **`<RichTextEditor>` paste and
+  bold-all.** Not looked at this round.
 
 ## Lessons
 
