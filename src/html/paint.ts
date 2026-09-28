@@ -35,6 +35,7 @@ import {
   BOX_RAISES,
   LINE_BOX_RAISES,
   Box,
+  CLAMPED,
   CLIPPED_CELLS,
   COLLAPSED_CELLS,
   FADED_BLOCKS,
@@ -225,6 +226,15 @@ export function computePaintBounds(box: Box, moved = false): number {
   }
   for (const child of box.children) {
     if (child.kind === 'text' || child.kind === 'break') continue;
+    // past a clamp point: nothing drawn, and no overflow (CSS Overflow 4,
+    // 5.3.1)
+    if (CLAMPED.has(child)) {
+      child.boundsX = Infinity;
+      child.boundsY = Infinity;
+      child.boundsWidth = 0;
+      child.boundsHeight = 0;
+      continue;
+    }
     const reach = computePaintBounds(child, moved);
     if (!child.outOfFlow) bottom = Math.max(bottom, reach);
     if (child.boundsY === Infinity) continue;
@@ -587,7 +597,13 @@ function frameHeight(box: Frame): number {
 }
 
 function paintBox(ctx: PaintContext, box: Box, options: PaintOptions): void {
-  if (!intersects(box, options) || COLLAPSED_CELLS.has(box)) return;
+  if (
+    !intersects(box, options) ||
+    COLLAPSED_CELLS.has(box) ||
+    CLAMPED.has(box)
+  ) {
+    return;
+  }
   // An element under full opacity is painted whole in its place, as the
   // group it is (it is a stacking context, CSS Color 4 3.2; `inFlow`): at
   // 0 not at all — the control a page keeps invisible until its row is
@@ -1281,6 +1297,7 @@ function paintFlowBackgrounds(
   for (const child of paintedChildren(box, options)) {
     if (child.kind === 'text' || child.kind === 'break') continue;
     if (layered(box, child) || onLine(box, child)) continue;
+    if (CLAMPED.has(child)) continue;
     if (child.isFloat) {
       floats.push(child);
       continue;
@@ -1305,6 +1322,7 @@ function paintFlowLines(
   for (const child of paintedChildren(box, options)) {
     if (child.kind === 'text' || child.kind === 'break') continue;
     if (layered(box, child) || onLine(box, child) || child.isFloat) continue;
+    if (CLAMPED.has(child)) continue;
     if (!inFlow(box, child, options)) {
       // a clipping table's captions were painted before its clip
       if (child.kind === 'table-caption' && clipsOverflow(box)) continue;
@@ -1774,6 +1792,8 @@ export function stackLayers(root: Box): void {
 function gatherLayers(box: Box, context: Box, into: Box[]): void {
   for (const child of box.children) {
     if (child.kind === 'text' || child.kind === 'break') continue;
+    // a positioned box past a clamp point, or in a box that is
+    if (CLAMPED.has(child)) continue;
     // one below the flow is on its stacking context's list already
     const below = HOISTED.has(child);
     if (below || layered(box, child)) {

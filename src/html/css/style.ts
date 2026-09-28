@@ -273,10 +273,41 @@ export interface ComputedStyle {
   float: 'none' | 'left' | 'right';
   clear: 'none' | 'left' | 'right' | 'both';
   boxSizing: 'content-box' | 'border-box';
-  /** `line-clamp` (or `-webkit-line-clamp`, as Tailwind writes it): how
-   *  many of its lines a block shows, the last cut with an ellipsis; null
-   *  for all of them. */
+  /** Whether a block is a line-clamp container, and how many lines of its
+   *  formatting context it shows (CSS Overflow 4, 5.3.1): its `max-lines`,
+   *  or Infinity for `line-clamp: auto`, which shows as many as its height
+   *  holds; null for a box that clamps nothing. Settled from the longhands
+   *  below once the cascade is done (`settleClamp`), since whether
+   *  `-webkit-line-clamp` counts depends on `display` and
+   *  `-webkit-box-orient`. */
   lineClamp: number | null;
+  /** `max-lines`, which `line-clamp` sets: null for `none`. */
+  maxLines: number | null;
+  /** `continue`: `collapse` hides what is past the clamp point, and
+   *  `-webkit-line-clamp`'s `-webkit-legacy` does so only in a vertical
+   *  `-webkit-box`; `discard` is read as `collapse`. */
+  clampContinue: 'auto' | 'collapse' | 'legacy';
+  /** `block-ellipsis`, inherited: whether the line before a clamp point
+   *  ends in an ellipsis. */
+  blockEllipsis: boolean;
+  /** `display: -webkit-box` (`block`) or `-webkit-inline-box`, as
+   *  specified: the legacy flexible box, a flex box whose direction is
+   *  `-webkit-box-orient`'s, or where it clamps its lines vertically, a
+   *  block of its own formatting context (`settleClamp`). */
+  webkitBox: 'block' | 'inline' | null;
+  webkitBoxOrient: 'horizontal' | 'vertical';
+  webkitBoxDirection: 'normal' | 'reverse';
+  /** `-webkit-box-pack` and `-webkit-box-align`, which such a box takes
+   *  for `justify-content` and `align-items`; null where unset. */
+  webkitBoxPack: ComputedStyle['justifyContent'] | null;
+  webkitBoxAlign: ComputedStyle['alignItems'] | null;
+  /** `-webkit-box-flex`: how an item of a `-webkit-box` grows and shrinks,
+   *  which is not at all unless it is set. */
+  webkitBoxFlex: number;
+  /** Whether `column-count` (1) or `column-width` (2) makes the box a
+   *  multicol container, which this lays out as one column and which
+   *  `line-clamp` does not clamp (CSS Overflow 4, 5.2). */
+  columns: number;
   /** How a line cut by `overflow` ends: `clip`, or with an ellipsis. */
   textOverflow: 'clip' | 'ellipsis';
   /** `aspect-ratio`: a box's width over its height, where its height is
@@ -499,6 +530,7 @@ export const INHERITED = [
   'textAlign',
   'textAlignLast',
   'textJustify',
+  'blockEllipsis',
   'alignBlocks',
   'textIndent',
   'textTransform',
@@ -622,6 +654,16 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     clear: 'none',
     boxSizing: 'content-box',
     lineClamp: null,
+    maxLines: null,
+    clampContinue: 'auto',
+    blockEllipsis: false,
+    webkitBox: null,
+    webkitBoxOrient: 'horizontal',
+    webkitBoxDirection: 'normal',
+    webkitBoxPack: null,
+    webkitBoxAlign: null,
+    webkitBoxFlex: 0,
+    columns: 0,
     textOverflow: 'clip',
     aspectRatio: null,
     objectFit: 'fill',
@@ -805,6 +847,7 @@ export function inherit(
   out.textAlign = parent.textAlign;
   out.textAlignLast = parent.textAlignLast;
   out.textJustify = parent.textJustify;
+  out.blockEllipsis = parent.blockEllipsis;
   out.alignBlocks = parent.alignBlocks;
   out.textIndent = parent.textIndent;
   out.textTransform = parent.textTransform;
@@ -991,10 +1034,67 @@ export function applyDeclaration(
       else if (v === 'grid') style.display = 'flex';
       else if (v === 'inline-grid') style.display = 'inline-flex';
       else if (v === 'flow-root') style.display = 'block';
-      else if (DISPLAYS.has(v)) style.display = v as Display;
+      // the legacy flexible box, a flex box until `settleClamp` has read
+      // its orient, and the prefixed spelling of the modern one
+      else if (v === '-webkit-box' || v === '-webkit-flex') {
+        style.display = 'flex';
+      } else if (v === '-webkit-inline-box' || v === '-webkit-inline-flex') {
+        style.display = 'inline-flex';
+      } else if (DISPLAYS.has(v)) style.display = v as Display;
       else return;
       style.flowRoot = v === 'flow-root';
       style.grid = v === 'grid' || v === 'inline-grid';
+      style.webkitBox =
+        v === '-webkit-box'
+          ? 'block'
+          : v === '-webkit-inline-box'
+            ? 'inline'
+            : null;
+      return;
+    }
+    case '-webkit-box-orient': {
+      const v = value.toLowerCase();
+      if (v === 'horizontal' || v === 'inline-axis') {
+        style.webkitBoxOrient = 'horizontal';
+      } else if (v === 'vertical' || v === 'block-axis') {
+        style.webkitBoxOrient = 'vertical';
+      }
+      return;
+    }
+    case '-webkit-box-direction': {
+      const v = value.toLowerCase();
+      if (v === 'normal' || v === 'reverse') style.webkitBoxDirection = v;
+      return;
+    }
+    case '-webkit-box-pack': {
+      const v = BOX_PACK.get(value.trim().toLowerCase());
+      if (v) style.webkitBoxPack = v;
+      return;
+    }
+    case '-webkit-box-align': {
+      const v = BOX_ALIGN.get(value.trim().toLowerCase());
+      if (v) style.webkitBoxAlign = v;
+      return;
+    }
+    case 'column-count':
+    case 'column-width':
+    case 'columns': {
+      // `auto`, or a count, a width or both of them
+      const bit = name === 'column-count' ? 1 : name === 'column-width' ? 2 : 3;
+      let set = 0;
+      for (const part of splitValue(value)) {
+        const v = part.toLowerCase();
+        if (v === 'auto') continue;
+        if (/^\d+$/.test(v) && Number(v) >= 1) set |= 1;
+        else if (parseLength(part, ctx) !== null) set |= 2;
+        else return;
+      }
+      style.columns = (style.columns & ~bit) | (set & bit);
+      return;
+    }
+    case '-webkit-box-flex': {
+      const n = parseNumber(value);
+      if (n !== null && n >= 0) style.webkitBoxFlex = n;
       return;
     }
     case 'position': {
@@ -1031,15 +1131,71 @@ export function applyDeclaration(
         style.clear = style.direction === 'rtl' ? 'left' : 'right';
       return;
     }
-    case 'line-clamp':
-    case '-webkit-line-clamp': {
-      // `none`, or how many lines; the ellipsis a `line-clamp` may name
-      // after it is the one this draws anyway
-      const first = splitValue(value)[0]?.toLowerCase() ?? '';
-      if (first === 'none') style.lineClamp = null;
-      else if (/^\d+$/.test(first) && Number(first) >= 1) {
-        style.lineClamp = Number(first);
+    case 'line-clamp': {
+      // `none`, or a count of lines, an ellipsis or both, and
+      // `-webkit-legacy` (CSS Overflow 4, 5.1): the ellipsis a string
+      // names is drawn as the one `auto` draws
+      const parts = splitValue(value);
+      if (parts.length === 1 && parts[0].toLowerCase() === 'none') {
+        style.maxLines = null;
+        style.clampContinue = 'auto';
+        style.blockEllipsis = false;
+        return;
       }
+      let lines: number | null = null;
+      let ellipsis: boolean | null = null;
+      let legacy = false;
+      for (const part of parts) {
+        const v = part.toLowerCase();
+        if (/^\d+$/.test(v) && lines === null) lines = Number(v);
+        else if (v === '-webkit-legacy' && !legacy) legacy = true;
+        else if (ellipsis === null && (v === 'auto' || v === 'no-ellipsis')) {
+          ellipsis = v === 'auto';
+        } else if (ellipsis === null && /^(["']).*\1$/s.test(part)) {
+          ellipsis = part.length > 2;
+        } else return;
+      }
+      if (lines === 0 || (lines === null && ellipsis === null)) return;
+      style.maxLines = lines;
+      style.clampContinue = legacy ? 'legacy' : 'collapse';
+      style.blockEllipsis = ellipsis ?? true;
+      return;
+    }
+    case '-webkit-line-clamp': {
+      // `line-clamp` as it was, which clamps only a vertical `-webkit-box`
+      // (5.1.1) and always with an ellipsis
+      const v = value.trim().toLowerCase();
+      if (v === 'none') {
+        style.maxLines = null;
+        style.clampContinue = 'auto';
+        style.blockEllipsis = true;
+      } else if (/^\d+$/.test(v) && Number(v) >= 1) {
+        style.maxLines = Number(v);
+        style.clampContinue = 'legacy';
+        style.blockEllipsis = true;
+      }
+      return;
+    }
+    case 'max-lines': {
+      const v = value.trim().toLowerCase();
+      if (v === 'none') style.maxLines = null;
+      else if (/^\d+$/.test(v) && Number(v) >= 1) style.maxLines = Number(v);
+      return;
+    }
+    case 'continue': {
+      const v = value.trim().toLowerCase();
+      if (v === 'auto') style.clampContinue = 'auto';
+      else if (v === 'collapse' || v === 'discard') {
+        style.clampContinue = 'collapse';
+      } else if (v === '-webkit-legacy') style.clampContinue = 'legacy';
+      return;
+    }
+    case 'block-ellipsis': {
+      const v = value.trim();
+      const lower = v.toLowerCase();
+      if (lower === 'auto' || lower === 'no-ellipsis') {
+        style.blockEllipsis = lower === 'auto';
+      } else if (/^(["']).*\1$/s.test(v)) style.blockEllipsis = v.length > 2;
       return;
     }
     case 'text-overflow': {
@@ -2184,6 +2340,22 @@ export function applyDeclaration(
       return;
   }
 }
+
+/** `-webkit-box-pack` and `-webkit-box-align`, as `justify-content` and
+ *  `align-items` say them. */
+const BOX_PACK = new Map<string, ComputedStyle['justifyContent']>([
+  ['start', 'flex-start'],
+  ['end', 'flex-end'],
+  ['center', 'center'],
+  ['justify', 'space-between'],
+]);
+const BOX_ALIGN = new Map<string, ComputedStyle['alignItems']>([
+  ['start', 'flex-start'],
+  ['end', 'flex-end'],
+  ['center', 'center'],
+  ['baseline', 'baseline'],
+  ['stretch', 'stretch'],
+]);
 
 const DISPLAYS = new Set<string>([
   'none',
@@ -3520,6 +3692,7 @@ const INHERITED_NAMES = new Set<string>([
   'text-align',
   'text-align-last',
   'text-justify',
+  'block-ellipsis',
   'text-indent',
   'text-transform',
   'letter-spacing',
@@ -3658,7 +3831,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'counter-increment': ['counterIncrement'],
   'counter-set': ['counterSet'],
   'border-spacing': ['borderSpacing', 'borderSpacingY'],
-  display: ['display', 'flowRoot'],
+  display: ['display', 'flowRoot', 'webkitBox'],
   width: ['width', 'widthKeyword'],
   height: ['height'],
   'min-width': ['minWidth', 'minWidthKeyword'],
@@ -3705,8 +3878,19 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'outline-color': ['outlineColor'],
   'outline-offset': ['outlineOffset'],
   'text-shadow': ['textShadow'],
-  'line-clamp': ['lineClamp'],
-  '-webkit-line-clamp': ['lineClamp'],
+  'line-clamp': ['maxLines', 'clampContinue', 'blockEllipsis'],
+  '-webkit-line-clamp': ['maxLines', 'clampContinue', 'blockEllipsis'],
+  'max-lines': ['maxLines'],
+  continue: ['clampContinue'],
+  'block-ellipsis': ['blockEllipsis'],
+  '-webkit-box-orient': ['webkitBoxOrient'],
+  '-webkit-box-direction': ['webkitBoxDirection'],
+  '-webkit-box-pack': ['webkitBoxPack'],
+  '-webkit-box-align': ['webkitBoxAlign'],
+  '-webkit-box-flex': ['webkitBoxFlex'],
+  columns: ['columns'],
+  'column-count': ['columns'],
+  'column-width': ['columns'],
   'text-overflow': ['textOverflow'],
   'border-radius': ['borderRadius', 'borderRadiusY'],
   'border-top-left-radius': ['borderRadius', 'borderRadiusY'],
@@ -3843,6 +4027,68 @@ export function decorate(style: ComputedStyle): void {
  * where a block's is under it (CSS 2.1 10.3.7, `staticPositions`).
  */
 export const INLINE_BEFORE_ABSOLUTE = new WeakSet<ComputedStyle>();
+
+/**
+ * `line-clamp`'s longhands and the legacy flexible box they are written
+ * with, settled once the cascade is done, since each reads the others
+ * (CSS Overflow 4, 5.1.1 and 5.3). `continue: collapse` makes a block
+ * container a line-clamp container, and `-webkit-line-clamp`'s
+ * `-webkit-legacy` does only in a `display: -webkit-box` whose
+ * `-webkit-box-orient` is vertical — which is then a block of its own
+ * formatting context, as Tailwind's `line-clamp-2` writes all four. Any
+ * other `-webkit-box` is a flex box, in its orient's direction, packed and
+ * aligned as it says, whose items grow and shrink by `-webkit-box-flex`
+ * alone (as Blink lays one out). Before `blockify`, whose `display` this
+ * decides.
+ */
+export function settleClamp(
+  style: ComputedStyle,
+  parent: ComputedStyle | null,
+): void {
+  const box = style.webkitBox;
+  const vertical = style.webkitBoxOrient === 'vertical';
+  const collapses =
+    style.clampContinue === 'collapse' ||
+    (style.clampContinue === 'legacy' && box !== null && vertical);
+  if (box !== null) {
+    if (collapses && vertical) {
+      style.display = box === 'inline' ? 'inline-block' : 'block';
+      style.flowRoot = box === 'block';
+    } else {
+      const reverse = style.webkitBoxDirection === 'reverse';
+      style.flexDirection = vertical
+        ? reverse
+          ? 'column-reverse'
+          : 'column'
+        : reverse
+          ? 'row-reverse'
+          : 'row';
+      style.flexWrap = 'nowrap';
+      style.justifyContent = style.webkitBoxPack ?? 'flex-start';
+      style.alignItems = style.webkitBoxAlign ?? 'stretch';
+    }
+  }
+  if (
+    parent?.webkitBox &&
+    (parent.display === 'flex' || parent.display === 'inline-flex')
+  ) {
+    style.flexGrow = style.webkitBoxFlex;
+    style.flexShrink = style.webkitBoxFlex;
+  }
+  style.lineClamp =
+    collapses && CLAMPS.has(style.display) && !style.columns
+      ? (style.maxLines ?? Infinity)
+      : null;
+}
+
+/** The displays of a block container, which `continue` applies to. */
+const CLAMPS = new Set<ComputedStyle['display']>([
+  'block',
+  'inline-block',
+  'list-item',
+  'table-cell',
+  'table-caption',
+]);
 
 /**
  * The blockification the box tree depends on: a floated or absolutely

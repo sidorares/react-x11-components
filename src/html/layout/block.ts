@@ -22,6 +22,7 @@ import type { BorderStyle, ComputedStyle, ContentSize } from '../css/style.js';
 import {
   BOX_RAISES,
   Box,
+  CLAMPED,
   CUT_BLOCKS,
   FIRST_LINE,
   INLINE_OFFSETS,
@@ -46,7 +47,7 @@ import {
   strutOf,
   widestWord,
 } from './inline.js';
-import type { FontsLike } from './inline.js';
+import type { FontsLike, InlineOptions, InlineResult } from './inline.js';
 import { layoutFlex } from './flex.js';
 import { finishCaptions, layoutTable } from './table.js';
 import { collapseEdges } from './collapse.js';
@@ -86,6 +87,33 @@ export interface LayoutContext {
   /** How many flex boxes' Yoga passes are running, one inside the last's
    *  measure (`layoutFlex`). */
   flexDepth?: number;
+  /** The clamp of the line-clamp container whose formatting context is
+   *  being laid out, if any (`layoutInternals`). */
+  clamp?: Clamp | null;
+}
+
+/**
+ * A line-clamp container's clamp, carried through its formatting context as
+ * the lines in it are laid out (CSS Overflow 4, 5.2 and 5.3.1). Only the
+ * lines of that formatting context count: a box that makes one of its own
+ * is laid out with none, and counts as a block.
+ */
+interface Clamp {
+  /** The line-clamp container. */
+  box: Box;
+  /** How many more lines show before the clamp point. */
+  left: number;
+  /** Whether the clamp point is passed: every box after it in the flow is
+   *  invisible, and takes no room (`CLAMPED`). */
+  done: boolean;
+  /**
+   * For `line-clamp: auto`, whose clamp point is after as many lines as
+   * the box's height holds: the first pass lays the content out whole and
+   * counts the lines that end above `floor` — the box's content bottom, in
+   * document coordinates — with what closes below each. `over` once one
+   * does not; null where the lines are cut rather than counted.
+   */
+  fit: { floor: number; lines: number; over: boolean } | null;
 }
 
 export interface LayoutResult {
@@ -671,9 +699,20 @@ function layoutChildren(
   // this box's first formatted line is its first child's in flow (CSS 2.1
   // 5.12.1), which its `::first-line` is handed to
   let firstLine = ctx.firstLine ? firstLineOf(box) : null;
+  const clamp = ctx.clamp ?? null;
 
   for (const child of box.children) {
     if (child.kind === 'text' && isBlank(child.text)) continue;
+    // Past a line-clamp container's clamp point, a box in flow or floating
+    // is invisible and takes no room (CSS Overflow 4, 5.3.1); a positioned
+    // box keeps its place, invisible only where its containing block is.
+    if (clamp !== null && !child.outOfFlow) {
+      if (clamp.done) {
+        hideClamped(child);
+        continue;
+      }
+      CLAMPED.delete(child);
+    }
     if (firstLine && !child.outOfFlow && !child.isFloat) {
       if (!FIRST_LINE.has(child)) HANDED.set(child, firstLine);
       firstLine = null;
@@ -748,6 +787,7 @@ function layoutChildren(
       } else if (clearance > childY) childY = clearance;
     }
 
+    const counted = clamp?.fit?.lines ?? 0;
     if (
       !floats.isEmpty &&
       (child.kind === 'replaced' || establishesBFC(child))
@@ -755,6 +795,19 @@ function layoutChildren(
       layoutBesideFloats(child, ctx, floats, contentLeft, childY, contentWidth);
     } else {
       layoutBlockLevel(child, ctx, floats, contentLeft, childY, contentWidth);
+    }
+    // a block with none of the flow's lines in it — an image, a box of a
+    // formatting context of its own — puts the clamp point of an `auto`
+    // clamp before it where it ends below the room
+    const fit = clamp?.fit;
+    if (fit && !fit.over && fit.lines === counted) {
+      const bottom =
+        child.y +
+        child.height -
+        child.padBottom -
+        child.borderBottom +
+        closingBelow(child, clamp!.box);
+      if (bottom > fit.floor) fit.over = true;
     }
     first = false;
     const moved = childY !== at;
@@ -956,6 +1009,14 @@ function layoutInlineContent(
   contentWidth: number,
   contentLeft: number,
 ): number {
+  // a line-clamp container whose clamp point is at its start shows none of
+  // its own lines
+  const clamp = ctx.clamp ?? null;
+  if (clamp !== null && (clamp.done || clamp.left <= 0)) {
+    box.lines = [];
+    box.floatRow = 0;
+    return 0;
+  }
   // An absolute box's static position is the block's; a float is placed
   // on the line it is on, as the lines reach it (`floatBoxes`).
   const floated = placeOutOfLine(
@@ -983,6 +1044,15 @@ function layoutInlineContent(
             placeFloat(child, floats, y, contentLeft, contentWidth),
         }
       : undefined,
+    // the lines the clamp leaves, where it cuts rather than counts
+    clamp:
+      clamp !== null && clamp.fit === null && clamp.left !== Infinity
+        ? {
+            lines: clamp.left,
+            ellipsis: box.style.blockEllipsis,
+            follows: followsInFlow(box, clamp.box),
+          }
+        : undefined,
   };
   let result = layoutInline(box, options);
   const firstLine = ctx.firstLine ? firstLineOf(box) : null;
@@ -1008,6 +1078,7 @@ function layoutInlineContent(
     result.floatRow = placed.floatRow;
   }
   box.floatRow = result.floatRow ?? 0;
+  if (clamp !== null) countLines(clamp, box, result, contentTop, options.clamp);
   if (
     firstLine &&
     ctx.fonts &&
@@ -1038,6 +1109,113 @@ function layoutInlineContent(
   }
   box.lines = result.lines;
   return result.height;
+}
+
+/**
+ * A block's lines, counted against the clamp: the ones left, or for an
+ * `auto` clamp's first pass, the ones that end above its floor. The clamp
+ * point is passed where they were cut, or where they were all the lines
+ * left and more of the container follows them.
+ */
+function countLines(
+  clamp: Clamp,
+  box: Box,
+  result: InlineResult,
+  contentTop: number,
+  cut: InlineOptions['clamp'],
+): void {
+  const fit = clamp.fit;
+  if (fit !== null) {
+    if (fit.over) return;
+    const below = closingBelow(box, clamp.box);
+    for (const line of result.lines) {
+      if (contentTop + line.y + line.height + below > fit.floor) {
+        fit.over = true;
+        return;
+      }
+      fit.lines += 1;
+    }
+    return;
+  }
+  clamp.left -= result.lines.length;
+  if (result.cut || (clamp.left <= 0 && cut?.follows)) clamp.done = true;
+}
+
+/** Mark a box past a clamp point, and take from everything in it the lines
+ *  a layout before gave it: a hidden box is not laid out, and nothing —
+ *  a selection, a caret — may find text in it where it stood. */
+function hideClamped(box: Box): void {
+  CLAMPED.add(box);
+  const stack = [box];
+  while (stack.length) {
+    const at = stack.pop()!;
+    at.lines = null;
+    for (const child of at.children) stack.push(child);
+  }
+}
+
+/**
+ * How far below a box's content a line-clamp container's content ends,
+ * where the clamp point is just after it: the bottom padding, border and
+ * margin of the box and of each block around it in the container, the
+ * margins collapsed where nothing parts them.
+ */
+function closingBelow(box: Box, container: Box): number {
+  let below = 0;
+  let margin = 0;
+  for (let at: Box | null = box; at && at !== container; at = at.parent) {
+    const edge = at.padBottom + at.borderBottom;
+    if (edge) {
+      below += margin + edge;
+      margin = 0;
+    }
+    margin = Math.max(margin, at.marginBottom);
+  }
+  return below + margin;
+}
+
+/**
+ * Whether anything in flow follows a block in a line-clamp container — a
+ * block after it, or after a block around it. Then a clamp point is just
+ * after its last line, which ends in an ellipsis (CSS Overflow 4, 4.2);
+ * where nothing does, the lines end where the content does.
+ */
+function followsInFlow(box: Box, container: Box): boolean {
+  for (let at = box; at !== container && at.parent; at = at.parent) {
+    const siblings = at.parent.children;
+    for (let i = siblings.indexOf(at) + 1; i < siblings.length; i += 1) {
+      const next = siblings[i];
+      if (next.outOfFlow || next.isFloat || makesNothing(next)) continue;
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Whether a box in flow makes neither a line nor a height of its own: a
+ *  block of phantom lines — the rest of an inline box a block broke — with
+ *  no edge or height to part it, which puts no clamp point after the line
+ *  before it. */
+function makesNothing(box: Box): boolean {
+  if (box.kind === 'text') return makesNoLine(box);
+  if (box.kind === 'inline') return phantom(box) !== 0;
+  if (box.kind !== 'block' || establishesBFC(box)) return false;
+  const style = box.style;
+  if (
+    style.height !== AUTO ||
+    style.minHeight !== AUTO ||
+    !noLength(style.paddingTop) ||
+    !noLength(style.paddingBottom) ||
+    hasBorder(style.borderTopStyle, style.borderTopWidth) ||
+    hasBorder(style.borderBottomStyle, style.borderBottomWidth)
+  ) {
+    return false;
+  }
+  for (const child of box.children) {
+    if (child.outOfFlow || child.isFloat) continue;
+    if (!makesNothing(child)) return false;
+  }
+  return true;
 }
 
 /** `::first-line` styles handed down to the first child in flow of a box
@@ -1336,8 +1514,84 @@ function layoutSubtree(box: Box, ctx: LayoutContext, width: number): void {
  * float context, passed only when this box does *not* establish one of its
  * own — which is the difference between text flowing beside a float that
  * started in an earlier sibling and text that starts below it.
+ *
+ * A line-clamp container's clamp is carried through its formatting context
+ * (`Clamp`), and a box that makes one of its own is laid out outside it.
  */
 function layoutInternals(
+  box: Box,
+  ctx: LayoutContext,
+  borderBoxWidth: number,
+  x: number,
+  y: number,
+  outerFloats?: FloatContext,
+): void {
+  const outer = ctx.clamp ?? null;
+  const lines = box.style.lineClamp;
+  if (lines === null && (outer === null || !establishesBFC(box))) {
+    layoutBox(box, ctx, borderBoxWidth, x, y, outerFloats);
+    return;
+  }
+  if (lines === null) {
+    ctx.clamp = null;
+    layoutBox(box, ctx, borderBoxWidth, x, y, outerFloats);
+  } else {
+    layoutClamped(box, ctx, lines, borderBoxWidth, x, y, outerFloats);
+  }
+  ctx.clamp = outer;
+}
+
+/**
+ * A line-clamp container, laid out with its clamp. `line-clamp: auto`'s
+ * clamp point is after the lines its height holds, where it has a height
+ * of its own (CSS Overflow 4, 5.3.1): the content is laid out whole to
+ * count them, and again cut after them, where they are not all of it.
+ */
+function layoutClamped(
+  box: Box,
+  ctx: LayoutContext,
+  lines: number,
+  borderBoxWidth: number,
+  x: number,
+  y: number,
+  outerFloats?: FloatContext,
+): void {
+  const floor = lines === Infinity ? autoFloor(box, y) : Infinity;
+  if (floor === Infinity) {
+    // counted against the number, or where `auto` has no height to fill,
+    // against none: the boxes a clamp hid before show again
+    ctx.clamp = { box, left: lines, done: false, fit: null };
+    layoutBox(box, ctx, borderBoxWidth, x, y, outerFloats);
+    return;
+  }
+  const fit = { floor, lines: 0, over: false };
+  ctx.clamp = { box, left: Infinity, done: false, fit };
+  const positioned = ctx.positioned.length;
+  layoutBox(box, ctx, borderBoxWidth, x, y, outerFloats);
+  if (!fit.over) return;
+  ctx.positioned.length = positioned;
+  ctx.clamp = { box, left: fit.lines, done: fit.lines === 0, fit: null };
+  layoutBox(box, ctx, borderBoxWidth, x, y, outerFloats);
+}
+
+/** Where an `auto` clamp's lines have to end by, in document coordinates:
+ *  the content bottom of a box as tall as its `height`, or `max-height`,
+ *  lets it be — Infinity where neither is set. */
+function autoFloor(box: Box, y: number): number {
+  const set = resolveOrNull(box.style.height, box.percentHeightBase);
+  const outer =
+    set === null
+      ? Infinity
+      : box.style.boxSizing === 'border-box'
+        ? Math.max(set, box.verticalExtra)
+        : set + box.verticalExtra;
+  const height = clampHeight(box, outer);
+  return Number.isFinite(height)
+    ? y + height - box.padBottom - box.borderBottom
+    : Infinity;
+}
+
+function layoutBox(
   box: Box,
   ctx: LayoutContext,
   borderBoxWidth: number,
@@ -1396,12 +1650,16 @@ function layoutInternals(
   // A box that establishes a formatting context contains its own floats, so
   // it has to be at least as tall as they are. One that does not, does not —
   // that is the classic "collapsed parent" every author has met.
-  const withFloats = ownFloats
-    ? Math.max(
-        height,
-        floats.bottom === -Infinity ? 0 : floats.bottom - box.contentY,
-      )
-    : height;
+  // Past a clamp point, a line-clamp container clips its floats rather
+  // than holding them (CSS Overflow 4, 5.3.1).
+  const clamped = ctx.clamp?.box === box && ctx.clamp.done;
+  const withFloats =
+    ownFloats && !clamped
+      ? Math.max(
+          height,
+          floats.bottom === -Infinity ? 0 : floats.bottom - box.contentY,
+        )
+      : height;
   finishHeight(box, withFloats);
   // The margin that escaped through this box's bottom edge becomes part of
   // its own: the parent's flow loop reads `child.marginBottom` for the next
@@ -2901,6 +3159,9 @@ export function establishesBFC(box: Box): boolean {
   if (style.overflowX !== 'visible' || style.overflowY !== 'visible')
     return true;
   if (style.flowRoot) return true;
+  // `continue: collapse` makes a block container a formatting context of
+  // its own (CSS Overflow 4, 5.3)
+  if (style.lineClamp !== null) return true;
   if (style.float !== 'none') return true;
   if (style.position === 'absolute' || style.position === 'fixed') return true;
   if (

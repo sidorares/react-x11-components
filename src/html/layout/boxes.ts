@@ -553,6 +553,13 @@ export const COLLAPSED_CELLS = new WeakSet<Box>();
  *  clipped to it. */
 export const CLIPPED_CELLS = new WeakSet<Box>();
 
+/** The boxes after a line-clamp container's clamp point (CSS Overflow 4,
+ *  5.3.1): invisible, with all they hold, and no taller than nothing to
+ *  the blocks around them. Marked by the layout of the flow they are in,
+ *  which leaves them where the last layout put them, and passed over by
+ *  paint and the paint bounds. */
+export const CLAMPED = new WeakSet<Box>();
+
 /** The blocks that broke a relatively positioned inline box in pieces,
  *  under its first piece: its offset moves them too (CSS 2.1 9.2.1.1),
  *  though they stand outside it (`breakAround`). */

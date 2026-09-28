@@ -191,6 +191,7 @@ npx tsx scripts/conformance/run.ts wpt fuzz1 --chunk 50 --timeout 60000
 | 98     | margins of both signs, clearance, floats, columns  | 5,643 (95%) | 5,100 (86%) |
 | 99     | `text-align-last`, family names, line heights      | 5,646 (95%) | 5,102 (86%) |
 | 100    | ntk 8.14.1: kerning off, a family list's fallback  | 5,649 (95%) | 5,102 (86%) |
+| 101    | `line-clamp` through a flow, `lh`, `-webkit-box`   | 5,649 (95%) | 5,102 (86%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -2921,6 +2922,48 @@ solid 16px red` is invalid, each of the three at most once
 249. **ntk 8.14.1**, which carries the two fixes of item 248: the lockfile
      moves to it, and the three tests pass on X11. Cocoa's text is
      CoreText's, which kerns and falls back as browsers do already.
+
+### Round 101
+
+The CSS 2.1 suite has no `line-clamp`. css-overflow went from 145 to 263
+of 639 on X11, every test of it a line-clamp one, and css-overflow and
+css-values together from 187 to 335 of 852 on Cocoa.
+
+250. **A clamp counted only its block's own lines.** `line-clamp` makes a
+     block a line-clamp container (CSS Overflow 4, 5.3.1), whose count runs
+     through the blocks of its formatting context: Tailwind's
+     `line-clamp-3` on a card whose text is in paragraphs clamped none of
+     them, the card having no lines of its own. The lines are counted as
+     the flow is laid out, and a box of a formatting context of its own
+     counts as a block. The boxes after the clamp point are invisible, take
+     no room and are not laid out; a positioned box among them shows where
+     its containing block does. The last line ends in an ellipsis where the
+     clamp cut the text or more of the container follows it, and in none
+     where the content ends with it, or only a phantom line follows.
+251. **`-webkit-line-clamp` clamped any block.** It clamps only a
+     `display: -webkit-box` whose `-webkit-box-orient` is vertical, which
+     is then a block of its own formatting context (5.1.1, 5.3): written
+     alone, as stylesheets carry it, a browser shows every line. A
+     `-webkit-box` that does not clamp was a block, and is a flex box in
+     its orient's direction, packed, aligned and flexed by the
+     `-webkit-box-*` properties, as Blink lays one out. `line-clamp` on a
+     multicol container does nothing (5.2).
+252. **The ellipsis cut a word.** The engine's ellipsis, the one
+     `text-overflow` asks for, takes its room from inside the line's last
+     word; a clamp's goes after the words that fit beside it, and the rest
+     go to the lines it hides (4.2). The last line's text is broken again
+     in the room the ellipsis leaves, cut inside a word only where the line
+     has one, and the ellipsis is set in the block's own style.
+253. **`line-clamp: auto`** shows as many lines as the box's `height` or
+     `max-height` holds (5.3.1): the flow is laid out whole once to count
+     them, each with what closes below it — the bottom padding, border and
+     margin of the blocks around it — and again cut after them.
+254. **`lh` and `rlh` were not read.** A length in them is the element's
+     computed line height, or the root's, `normal` as its font's own (CSS
+     Values 4, 6.1.1). Where a sheet has one, the line height is settled
+     ahead of the declarations that read it, with this element's `em`; the
+     `max-height: 4lh` most of css-overflow's `line-clamp: auto` tests size
+     their box with was no height at all.
 
 ## What `<Html>` supports
 

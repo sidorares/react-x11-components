@@ -561,6 +561,7 @@ export class HtmlViewNode extends Node {
         this._scale,
         fonts ? (family, size) => xHeightOf(fonts, family, size) : null,
         fonts ? (family, size) => zeroWidthOf(fonts, family, size) : null,
+        fonts ? (family, size) => normalLineOf(fonts, family, size) : null,
         faces.length ? this._webFonts : null,
       );
       this._sheetsRead = {
@@ -1805,6 +1806,21 @@ function zeroWidthOf(
   try {
     return fonts.layout([{ text: '0', family, size }], { family, size }, {})
       .width;
+  } catch {
+    return null;
+  }
+}
+
+/** A font's own line height at a size, as the engine reports it: null
+ *  where it cannot say. */
+function normalLineOf(
+  fonts: FontsLike,
+  family: string,
+  size: number,
+): number | null {
+  try {
+    const line = fonts.match(family, { size }).metrics(size).lineHeight;
+    return line > 0 ? line : null;
   } catch {
     return null;
   }
