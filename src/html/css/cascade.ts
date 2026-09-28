@@ -355,6 +355,12 @@ export class Cascade {
   /** Whether any declaration sets a custom property or reads one: without
    *  one, no element's style asks about them. */
   private _vars = false;
+  /** Whether any declaration is in a unit of the viewport's width — `vw`,
+   *  `vmin`, `vmax` — or of its height, `vh` and the same two: a style
+   *  holds such a length as a number, so it is computed again when that
+   *  side of the viewport moves (`HtmlViewNode._update`). */
+  readsViewportWidth = false;
+  readsViewportHeight = false;
   /** The families the document loads itself (`fonts.ts`), or null for a
    *  document with no `@font-face`. */
   private _families: FontFamilies | null;
@@ -385,6 +391,7 @@ export class Cascade {
     for (const sheet of sheets) {
       for (const rule of sheet.rules) {
         if (!this._vars && usesVars(rule.declarations)) this._vars = true;
+        this._noteViewportUnits(rule.declarations);
         const pseudo = splitPseudoElement(rule);
         if (pseudo) this._pseudo[pseudo.which].add(pseudo.rule);
         else this._index.add(rule);
@@ -411,6 +418,20 @@ export class Cascade {
       isActive: (el: Element) => this._pointer.active.has(el),
       isVisited: () => false,
     };
+  }
+
+  /** Whether declarations read the viewport's width or height (`vw`,
+   *  `vh`, `vmin`, `vmax`), noted on the cascade. */
+  private _noteViewportUnits(declarations: readonly Declaration[]): void {
+    if (this.readsViewportWidth && this.readsViewportHeight) return;
+    for (const d of declarations) {
+      if (!VIEWPORT_UNIT.test(d.value)) continue;
+      for (const m of d.value.matchAll(VIEWPORT_UNITS)) {
+        const unit = m[1].toLowerCase();
+        if (unit !== 'vh') this.readsViewportWidth = true;
+        if (unit !== 'vw') this.readsViewportHeight = true;
+      }
+    }
   }
 
   /** Whether a pointer move can change what this cascade produces. */
@@ -991,6 +1012,7 @@ export class Cascade {
     if (inline) {
       const declarations = parseDeclarations(inline);
       if (!this._vars && usesVars(declarations)) this._vars = true;
+      this._noteViewportUnits(declarations);
       const normal = declarations.filter((d) => !d.important);
       const important = declarations.filter((d) => d.important);
       if (normal.length) {
@@ -1027,6 +1049,11 @@ const PSEUDOS = {
   root: (el: Element) =>
     el.name === 'html' && !(el.parent && isTag(el.parent as Element)),
 };
+
+/** A length in a unit of the viewport: a number, then the unit, and no
+ *  more of a name after it. */
+const VIEWPORT_UNIT = /\d(?:vw|vh|vmin|vmax)(?![\w-])/i;
+const VIEWPORT_UNITS = /\d(vw|vh|vmin|vmax)(?![\w-])/gi;
 
 /** Whether any of these declarations sets a custom property or reads one. */
 function usesVars(declarations: readonly Declaration[]): boolean {

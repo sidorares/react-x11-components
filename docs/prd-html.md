@@ -78,7 +78,10 @@ enforced by the shape of the data rather than by discipline:
 
 `@media` width queries are the exception that proves the first rule, so they
 are handled explicitly: every width at which some rule changes its mind is
-collected at parse time, and a resize restyles only when it crossed one.
+collected at parse time, and a resize restyles only when it crossed one. The
+viewport units are the second exception, since the viewport's width is the
+element's: whether any declaration uses one is noted at parse time too, and
+only a document that does restyles when that side of the viewport moves.
 
 ### Why the element draws
 

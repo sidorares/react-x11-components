@@ -10,7 +10,13 @@
 // Float coordinates are absolute for the same reason, which is what lets the
 // inline pass ask "how wide is the line at this y" without knowing whose
 // formatting context it is inside.
-import { AUTO, isTransparent, resolve, resolveOrNull } from '../css/values.js';
+import {
+  AUTO,
+  isPct,
+  isTransparent,
+  resolve,
+  resolveOrNull,
+} from '../css/values.js';
 import type { Len } from '../css/values.js';
 import type { BorderStyle, ComputedStyle, ContentSize } from '../css/style.js';
 import {
@@ -49,6 +55,9 @@ export interface LayoutContext {
   clipText?: boolean;
   viewportWidth: number;
   viewportHeight: number;
+  /** Set once a box is placed against the initial containing block, whose
+   *  height is the viewport's (`LayoutResult.readsViewportHeight`). */
+  readViewportHeight?: boolean;
   /** Out-of-flow boxes, collected in flow order and laid out afterwards —
    *  an absolutely positioned box may be positioned against an ancestor
    *  whose size is not known until its in-flow content has been laid out. */
@@ -73,6 +82,13 @@ export interface LayoutContext {
 export interface LayoutResult {
   width: number;
   height: number;
+  /**
+   * Whether the layout read the viewport's height: a percentage height on
+   * the root element, or a box positioned against the initial containing
+   * block. A document that did lays out differently in a viewport of
+   * another height, and one that did not — most — lays out the same.
+   */
+  readsViewportHeight: boolean;
 }
 
 /** Lay the whole document out at a width. */
@@ -121,8 +137,18 @@ export function layoutDocument(
   // height on the root element resolves against (CSS 2.1 10.1, 10.5); a
   // fragment has no root element, and the box standing in for its body has
   // the body's `auto` height to give
+  let readsViewportHeight = false;
   for (const child of root.children) {
-    if (child.el?.name === 'html') child.percentHeightBase = viewportHeight;
+    if (child.el?.name !== 'html') continue;
+    child.percentHeightBase = viewportHeight;
+    const { height, minHeight, maxHeight } = child.style;
+    if (
+      isPct(height) ||
+      isPct(minHeight) ||
+      (maxHeight !== 'none' && isPct(maxHeight))
+    ) {
+      readsViewportHeight = true;
+    }
   }
   const flow = layoutChildren(
     root,
@@ -159,7 +185,11 @@ export function layoutDocument(
     if (box.style.position !== 'fixed')
       bottom = Math.max(bottom, box.y + box.height);
   }
-  return { width: viewportWidth, height: bottom };
+  return {
+    width: viewportWidth,
+    height: bottom,
+    readsViewportHeight: readsViewportHeight || ctx.readViewportHeight === true,
+  };
 }
 
 /**
@@ -2159,6 +2189,7 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
   // with nothing positioned around it the containing block is the initial
   // one, as tall as the viewport rather than as the document (10.1), and a
   // fixed box's is the viewport itself
+  if (!containing.parent) ctx.readViewportHeight = true;
   const cbHeight = !containing.parent
     ? ctx.viewportHeight
     : Math.max(

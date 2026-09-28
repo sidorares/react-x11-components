@@ -1121,7 +1121,15 @@ coordinates). Both are properties of the data shapes in `css/values.ts` and
 `layout/boxes.ts`. Breaking either turns every resize into a full restyle,
 silently and only on large documents. `@media` is the deliberate exception:
 the widths at which some rule changes its mind are collected at parse time,
-so a resize restyles only when it crossed one.
+so a resize restyles only when it crossed one. The viewport units are the
+other, handled the same way: a `vw` or a `vh` is a number once computed, so
+the cascade notes at parse time whether any declaration uses one, and only
+those documents restyle when that side of the viewport moves. The viewport
+is the box that scrolls the element, whose height core's layout pass
+decides _after_ the element was measured — so a document that reads it (a
+`vh`, the root's percentage height, a box against the initial containing
+block; `LayoutResult.readsViewportHeight`) finds the move at paint and asks
+to be measured again, which costs a frame per resize and only for those.
 
 **Form controls are real widgets, mounted beside the element.** `<Flow>`'s
 escape hatch, and the same reason: a drawn control takes no focus, says

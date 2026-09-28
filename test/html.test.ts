@@ -2866,6 +2866,155 @@ test('html and body at 100% are a window tall, and hold what is longer', async (
   assert.ok(el._documentHeight >= 900, 'and the document holds all 900px');
 });
 
+/**
+ * A document in a box `height` tall that scrolls it — the viewport a `vh`,
+ * the root's percentage height and the initial containing block are
+ * measured against — with a `resize` that sets the box's size again.
+ */
+async function renderScrolled(source: string, height: number, width = 400) {
+  const doc = (height: number, width: number) =>
+    h(
+      'box',
+      { style: { width, height, flexDirection: 'column' } },
+      h(
+        'box',
+        { style: { flexGrow: 1, overflow: 'scroll' } },
+        h(Html, { source, partial: false, 'data-testname': 'doc' }),
+      ),
+    );
+  const result = await renderX11(
+    doc(height, width),
+    FONTS
+      ? { width: 640, height: 800, fonts: FONTS }
+      : { backend: 'mock' as const },
+  );
+  // How tall the scroll box came out is a layout pass's to decide, and the
+  // element reads it after that pass, so a frame of its own is where a
+  // change of viewport is seen — and the one after, where core asks again.
+  await act();
+  const el = view(screen.getByTestName('doc') as DrawnNode);
+  const resize = async (height: number, w = width): Promise<void> => {
+    await act(() => result.rerender(doc(height, w)));
+    await act();
+  };
+  return { el, resize };
+}
+
+test('a 100vh page follows the height of the box that scrolls it', async () => {
+  // A page's own "fill the window" — a column at least 100vh tall with its
+  // footer pushed to the bottom — in a browser's page area. The viewport is
+  // the box that scrolls the document, whose height only core's layout
+  // decides, so the element read the old one while it was being measured
+  // and the page kept the height the window had when it loaded.
+  const { el, resize } = await renderScrolled(
+    '<body style="margin:0"><div style="min-height:100vh;display:flex;' +
+      'flex-direction:column"><div style="flex:1"></div>' +
+      '<div id="foot" style="height:20px"></div></div></body>',
+    300,
+  );
+  const bottomOf = (id: string): number => {
+    const box = boxOf(el, id);
+    return box.y + box.height;
+  };
+  assert.strictEqual(el.abs.height, 300);
+  assert.strictEqual(bottomOf('foot'), 300);
+  await resize(500);
+  assert.strictEqual(el.abs.height, 500, 'the page grows with the viewport');
+  assert.strictEqual(bottomOf('foot'), 500, 'with its footer at the bottom');
+  await resize(200);
+  assert.strictEqual(el.abs.height, 200, 'and shrinks with it');
+  assert.strictEqual(bottomOf('foot'), 200);
+});
+
+test("html and body at 100% follow the viewport's height", async () => {
+  const { el, resize } = await renderScrolled(
+    '<html style="height:100%"><body style="height:100%;margin:0">' +
+      '<div id="fill" style="height:100%"></div></body></html>',
+    300,
+  );
+  assert.strictEqual(boxOf(el, 'fill').height, 300);
+  await resize(450);
+  assert.strictEqual(boxOf(el, 'fill').height, 450);
+  assert.strictEqual(el.abs.height, 450);
+});
+
+test('a box placed against the initial containing block follows the viewport', async () => {
+  // nothing positioned around it: `bottom: 0` is the viewport's bottom
+  const { el, resize } = await renderScrolled(
+    '<body style="margin:0"><div id="pin" style="position:absolute;' +
+      'bottom:0;width:10px;height:10px"></div></body>',
+    300,
+  );
+  assert.strictEqual(boxOf(el, 'pin').y, 290);
+  await resize(400);
+  assert.strictEqual(boxOf(el, 'pin').y, 390);
+});
+
+test('a document that reads no viewport height is not laid out for one', async () => {
+  // The layout says whether it read the height (a `vh`, the root's
+  // percentage, the initial containing block's bottom), and a document that
+  // read none of them — most — is left alone when the window only grows
+  // taller: a page a hundred screens long is not laid out again per frame
+  // of a vertical resize for nothing.
+  const { el, resize } = await renderScrolled(
+    '<body style="margin:0"><div id="a" style="height:40px"></div></body>',
+    300,
+  );
+  const under = () =>
+    (el as unknown as { _laidOutUnder: number })._laidOutUnder;
+  const before = under();
+  await resize(500);
+  assert.strictEqual(under(), before, 'not laid out again');
+  assert.strictEqual(boxOf(el, 'a').height, 40);
+  assert.strictEqual(el.abs.height, 40);
+});
+
+test('a vw length follows the width of the viewport', async () => {
+  // A `vw` is a number by the time the computed style holds it, so a resize
+  // that crossed no `@media` breakpoint — the one kind that restyled —
+  // left it at the width the page loaded at.
+  const { el, resize } = await renderScrolled(
+    '<body style="margin:0"><div id="half" style="width:50vw;' +
+      'height:10px"></div></body>',
+    300,
+    400,
+  );
+  assert.strictEqual(boxOf(el, 'half').width, 200);
+  await resize(300, 600);
+  assert.strictEqual(boxOf(el, 'half').width, 300);
+});
+
+test('a document a hair past a whole pixel measures that pixel', async () => {
+  // A sum of Yoga's single-precision positions carries noise — a page
+  // exactly 100vh tall came to 737.0000076 under a 737 pixel viewport — and
+  // rounding that up scrolled the page by a pixel under a scrollbar.
+  const { node } = await render(
+    '<body style="margin:0"><div style="height:100.004px"></div></body>',
+  );
+  const el = view(node);
+  const measure = () =>
+    el.measureContent({
+      width: 400,
+      height: Infinity,
+      widthMode: 'at-most',
+      heightMode: 'unconstrained',
+    }).height;
+  assert.strictEqual(measure(), 100);
+  const { node: over } = await render(
+    '<body style="margin:0"><div style="height:100.3px"></div></body>',
+  );
+  assert.strictEqual(
+    view(over).measureContent({
+      width: 400,
+      height: Infinity,
+      widthMode: 'at-most',
+      heightMode: 'unconstrained',
+    }).height,
+    101,
+    'a fraction that is ink is a pixel of it',
+  );
+});
+
 metric("a table column is the table's, not a row of its own", async () => {
   // A <colgroup> was taken for a stray child, wrapped in a row and a cell of
   // its own, and drawn as one — a table of one row had two.

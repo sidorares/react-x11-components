@@ -643,11 +643,17 @@ linear ones, `position: sticky` (treated as `relative`), and the font
 properties of `::first-line`. A `<col>`'s or a `<colgroup>`'s borders are
 drawn only where the table's collapse. A percentage `height` resolves where
 the containing block's height is set, and on an absolutely positioned box.
-The initial containing block is the viewport — the window's height, since
-the element sizes to its content — so `html, body { height: 100% }` is a
-window tall and `bottom: 0` with nothing positioned around it is the
-window's bottom, as in a browser; the document is as tall as what overflows
-its root, so nothing longer than the window is cut off. A fragment has no
+The initial containing block is the viewport: the box that scrolls the
+element, where one does — a browser's page area, under its tabs and its
+toolbar — and the window where nothing does, since the element sizes to its
+content. So `html, body { height: 100% }` is a viewport tall and `bottom: 0`
+with nothing positioned around it is the viewport's bottom, as in a browser;
+the document is as tall as what overflows its root, so nothing longer than
+the viewport is cut off. A document that reads the viewport's height — a
+`vh`, a percentage height on the root, a box placed against the initial
+containing block — follows it when the window is resized, a frame behind
+the scroll box it is measured by; one that reads none is not laid out again
+when only the height moved. A fragment has no
 root element, and its blocks have the body's `auto` height to resolve
 against. Explicit bidi embeddings and overrides (U+202A–U+202E) that open on
 one side of an inline element with padding, border or margin and close on
@@ -831,7 +837,10 @@ itself out there, then at the new width again for the pass after: three
 passes over all of its text a frame. The size a width came to is kept
 instead, a few widths deep, and answers until anything a layout reads
 changes: the source, a stylesheet, a resource, the hover, the viewport
-height. Only a size comes from it; paint and the selection read the boxes,
+height where the document reads it. A `vw` or a `vh` is a number once
+computed, so a document whose styles use one is restyled when that side of
+the viewport moves, and one that uses neither skips the cascade on a resize
+as before. Only a size comes from it; paint and the selection read the boxes,
 and those are only ever laid out for real. A frame of a window resize at
 600 KB went from 573 to 196 ms on macOS and from 256 to 86 ms on XQuartz.
 

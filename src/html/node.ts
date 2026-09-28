@@ -150,6 +150,16 @@ export function registerHtmlView(): void {
  *  back. */
 const SIZES_KEPT = 4;
 
+/**
+ * A size in the whole pixels core lays out in, rounded up — less the float
+ * noise a sum of Yoga's single-precision positions carries: a page exactly
+ * `100vh` tall came to 737.0000076 under a 737-pixel viewport, and a
+ * rounding that took it for 738 scrolled it by a pixel under a scrollbar.
+ */
+function wholePixels(n: number): number {
+  return Math.max(0, Math.ceil(n - 1 / 64));
+}
+
 /** How deep `@import`s are followed: an import in an import in an import is
  *  a stylesheet; sixteen of them is a loop that changes its URL each time. */
 const MAX_IMPORT_DEPTH = 16;
@@ -185,13 +195,22 @@ export class HtmlViewNode extends Node {
    *  `Node` has a method of that name, which a field would hide. */
   private _laidOutWidth = -1;
   private _mediaBand = -1;
+  /** The viewport the box tree's styles were computed at, for the ones
+   *  that read it (`vw`, `vh`). */
+  private _styledWidth = -1;
+  private _styledHeight = -1;
   private _documentHeight = 0;
   private _documentWidth = 0;
+  /** The viewport height the document was last laid out under, and whether
+   *  that layout read it (`LayoutResult.readsViewportHeight`). */
+  private _laidOutUnder = -1;
+  private _layoutReadsViewport = false;
+  /** Whether core is asking for this element's size right now — inside
+   *  its layout pass, where a node must not ask to be measured again. */
+  private _measuring = false;
   /** What the document came to at the widths it was last laid out at, while
-   *  nothing a layout reads has changed, and the viewport height those
-   *  layouts were made under (`_sizeAt`). */
+   *  nothing a layout reads has changed (`_sizeAt`). */
   private _sizes = new Map<number, { width: number; height: number }>();
-  private _sizesUnder = -1;
   private _textPoints: number[] | null = null;
   /** Whether code points and code units are the same index — true unless
    *  the text carries surrogate pairs. null until checked. */
@@ -610,9 +629,20 @@ export class HtmlViewNode extends Node {
   }
 
   private _viewportHeight(): number {
-    // The viewport a `vh` resolves against is the window's, not the
-    // document's — a document taller than the window does not make `100vh`
-    // taller with it.
+    // The viewport a `vh` resolves against is the one the document is seen
+    // through, not the document — a document taller than it does not make
+    // `100vh` taller with it. That is the box that scrolls the element,
+    // where one does: a browser's page area, below its tab strip and its
+    // toolbar, where `100vh` measured by the window put a page's footer the
+    // toolbar's height below the fold. The window, where nothing scrolls it.
+    for (let node = this.parent; node; node = node.parent) {
+      // `Scrollable`'s, and not every node's: asked the way core asks it
+      const scroller = node as { isScroller?: () => boolean };
+      if (!scroller.isScroller?.()) continue;
+      const height = node.contentBox().height;
+      if (height > 0) return height;
+      break;
+    }
     const root = this.root;
     const height = root?.abs?.height;
     return height && height > 0 ? height : 600;
@@ -691,9 +721,28 @@ export class HtmlViewNode extends Node {
       this._sweep();
       if (this._stale < Stale.Style) this._stale = Stale.Style;
     }
+    // A document that reads its viewport's height — a `vh`, a percentage
+    // height on the root, a box placed against the initial containing block
+    // — is laid out again when that height moves. One that reads none, which
+    // is most, goes on skipping layout when the window only grew taller.
+    const viewport = this._viewportHeight();
+    const viewportMoved =
+      viewport !== this._laidOutUnder && this._readsViewportHeight();
     // the sizes other widths came to were read from what just changed
-    if (this._stale !== Stale.Nothing) this._sizes.clear();
-    if (this._stale === Stale.Nothing && this._laidOutWidth === target) return;
+    if (this._stale !== Stale.Nothing || viewportMoved) this._sizes.clear();
+    if (
+      this._stale === Stale.Nothing &&
+      this._laidOutWidth === target &&
+      !viewportMoved
+    ) {
+      return;
+    }
+    // Nothing but the viewport: the size core laid this element out at came
+    // from a layout under the old one, and nothing else will tell it so.
+    const onlyViewport =
+      this._stale === Stale.Nothing && this._laidOutWidth === target;
+    const wasWidth = this._documentWidth;
+    const wasHeight = this._documentHeight;
 
     if (this._stale >= Stale.Style || !this._cascade) {
       this._restyle(target);
@@ -709,10 +758,17 @@ export class HtmlViewNode extends Node {
     const cascade = this._cascade;
     if (!cascade) return;
     cascade.viewportWidth = target;
-    cascade.viewportHeight = this._viewportHeight();
-    if (cascade.viewportHeight !== this._sizesUnder) {
-      this._sizes.clear();
-      this._sizesUnder = cascade.viewportHeight;
+    cascade.viewportHeight = viewport;
+    // A `vw` or a `vh` is a number by the time a style holds it, so the
+    // styles computed for another viewport are wrong for this one: built
+    // again, where some style reads the side that moved. A document that
+    // reads neither — most — goes on skipping the cascade on a resize.
+    if (
+      this._stale < Stale.Boxes &&
+      ((cascade.readsViewportWidth && this._styledWidth !== target) ||
+        (cascade.readsViewportHeight && this._styledHeight !== viewport))
+    ) {
+      this._stale = Stale.Boxes;
     }
 
     if (this._stale >= Stale.Boxes || !this._tree) {
@@ -727,6 +783,8 @@ export class HtmlViewNode extends Node {
             measureControl(el, kind, style, this._fonts(), look),
         });
       this._tree = build();
+      this._styledWidth = target;
+      this._styledHeight = viewport;
       this._requestBackgrounds(this._tree);
       let again = this._contentImagesArrived(this._tree);
       // the faces the styles just asked for, of the families the document
@@ -743,17 +801,21 @@ export class HtmlViewNode extends Node {
 
     if (
       this._tree &&
-      (this._laidOutWidth !== target || this._stale >= Stale.Layout)
+      (this._laidOutWidth !== target ||
+        viewportMoved ||
+        this._stale >= Stale.Layout)
     ) {
       const result = layoutDocument(
         this._tree,
         this._layoutFonts(),
         target,
-        this._viewportHeight(),
+        viewport,
       );
       this._documentWidth = result.width;
       this._documentHeight = result.height;
       this._laidOutWidth = target;
+      this._laidOutUnder = viewport;
+      this._layoutReadsViewport = result.readsViewportHeight;
       this._sizes.delete(target);
       this._sizes.set(target, { width: result.width, height: result.height });
       if (this._sizes.size > SIZES_KEPT) {
@@ -762,6 +824,24 @@ export class HtmlViewNode extends Node {
       this._reportControls();
     }
     this._stale = Stale.Nothing;
+    // Read after core's layout pass — the viewport is the box around this
+    // one, whose new height only that pass decides — so it is a paint that
+    // finds it moved, and the next frame that measures this element again.
+    // Inside a measure the answer already is the new size.
+    if (
+      onlyViewport &&
+      !this._measuring &&
+      (this._documentWidth !== wasWidth || this._documentHeight !== wasHeight)
+    ) {
+      this.invalidateMeasure('content');
+    }
+  }
+
+  /** Whether the document as laid out reads its viewport's height. */
+  private _readsViewportHeight(): boolean {
+    return (
+      this._layoutReadsViewport || this._cascade?.readsViewportHeight === true
+    );
   }
 
   private _reportControls(): void {
@@ -800,13 +880,19 @@ export class HtmlViewNode extends Node {
    */
   override measureContent({ width }: MeasureConstraints): MeasuredSize {
     const offered = Number.isFinite(width) ? width : 800;
-    const size = this._sizeAt(offered);
+    this._measuring = true;
+    let size: { width: number; height: number };
+    try {
+      size = this._sizeAt(offered);
+    } finally {
+      this._measuring = false;
+    }
     // core takes finite numbers only, and throws on any other from the
     // layout — a document of lengths no clamp foresaw is none too tall
     const finite = (n: number): number => (Number.isFinite(n) ? n : 0);
     return {
-      width: Math.ceil(Math.min(finite(size.width), offered)),
-      height: Math.ceil(finite(size.height)),
+      width: wholePixels(Math.min(finite(size.width), offered)),
+      height: wholePixels(finite(size.height)),
     };
   }
 
@@ -830,7 +916,8 @@ export class HtmlViewNode extends Node {
       target !== this._laidOutWidth &&
       this._stale === Stale.Nothing &&
       (this._props().domRevision ?? 0) === this._reportedDomRevision &&
-      this._viewportHeight() === this._sizesUnder
+      (!this._readsViewportHeight() ||
+        this._viewportHeight() === this._laidOutUnder)
     ) {
       const known = this._sizes.get(target);
       if (known) return known;
