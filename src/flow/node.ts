@@ -294,7 +294,18 @@ const VISUAL_PROPS = [
 
 /** The clock, through `globalThis`: `src/` compiles with `types: []`. */
 const clock = globalThis as { performance?: { now(): number } };
-const now = (): number => clock.performance?.now() ?? Date.now();
+
+/**
+ * The pane's time: what a pan is stamped with, and what the dashes' march
+ * reads to decide it has held still. A test holds it (test/flow.test.ts):
+ * a runner that spends longer than the dashes' wait over one step of a pan
+ * lets them march in the middle of it — as they should — and a test of the
+ * pan cannot tell that from a march it should not have made.
+ */
+export const flowClock = {
+  now: (): number => clock.performance?.now() ?? Date.now(),
+};
+const now = (): number => flowClock.now();
 
 const CONTROL_SIZE = 26;
 const PANEL_MARGIN = 10;
