@@ -4,9 +4,11 @@
 // fetches nothing itself (docs/components/html.md, "The seams"). This is the
 // other side of that seam — the host — and it is where the policy lives:
 //
-//   - **One cache for the whole browser**, keyed by absolute URL. A second
-//     tab on the same site, or Back, costs no request for anything already
-//     here. It is bounded by bytes and forgets the oldest first.
+//   - **One cache for the process**, keyed by absolute URL: a tab's own,
+//     where each tab's page is a process of its own (page.tsx), and every
+//     tab's where the pages run inline. Back, or a second page from the
+//     same site, costs no request for anything already here. It is bounded
+//     by bytes and forgets the oldest first.
 //   - **A few requests at a time**, six per host, the way browsers pace a
 //     page's hundred images, rather than a burst the server throttles.
 //   - **`file:` only for `file:` pages.** A page from the web naming
@@ -123,7 +125,7 @@ export class Network {
   }
 
   /**
-   * A page's image, stylesheet or font. Cached by URL, so every tab asking
+   * A page's image, stylesheet or font. Cached by URL, so every page asking
    * for it shares one request; null for anything that did not come back as
    * a 200 with a body, or that the page may not have.
    */

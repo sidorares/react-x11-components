@@ -911,14 +911,17 @@ npm run examples:browser -- [url]
 ```
 
 The other end of the seams: a tabbed web browser, and a network. `<Tabs>`
-is its strip, each tab a toolbar over an `<Html>` given the page's URL as
-`baseUrl`, and [`examples/browser/`](../../examples/browser/) is the host a
-document's requests go to — the page streamed in as it arrives, then every
-stylesheet, image and `@font-face` font through `onResource`, from one cache
-the tabs share, a few requests a host at a time. A tab shows the page's
-`<title>` and its icon; Ctrl+T (⌘T on macOS) opens one. It is where the
-component's policy — nothing fetched, nothing run — meets an application's:
-the browser fetches what a page asks for and runs none of its scripts.
+is its strip, and each tab a toolbar over a page that runs in a process of
+its own — core's `<Frame>`, with `page.tsx` as the pane — so a page that
+throws, wedges or grows without bound costs its own tab and nothing else.
+In the pane an `<Html>` is given the page's URL as `baseUrl`, and
+[`examples/browser/`](../../examples/browser/) is the host a document's
+requests go to — the page streamed in as it arrives, then every stylesheet,
+image and `@font-face` font through `onResource`, a few requests a host at a
+time. A tab shows the page's `<title>` and its icon; Ctrl+T (⌘T on macOS)
+opens one. It is where the component's policy — nothing fetched, nothing
+run — meets an application's: the browser fetches what a page asks for and
+runs none of its scripts.
 
 [domhandler]: https://github.com/fb55/domhandler
 [domutils]: https://github.com/fb55/domutils

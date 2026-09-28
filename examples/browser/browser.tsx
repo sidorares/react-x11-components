@@ -10,6 +10,14 @@
 // arrives, and each stylesheet, image and `@font-face` font the page asks
 // for through `onResource`, resolved against the page's URL by `baseUrl`.
 //
+// Each tab's page runs in a process of its own, through core's `<Frame>`:
+// `page.tsx` is that pane, and everything a page needs is in it. A page that
+// throws, wedges its event loop or grows without bound costs its own tab —
+// which says so, and offers to reload — and never the strip, the toolbar or
+// another tab. This file is the rest: the history, the strip, the toolbar
+// and the keys. Where no pane can be shown, the same page runs in this
+// process instead, and `BROWSER_INLINE=1` asks for that anywhere.
+//
 // Nothing a page contains runs. `<Html>` hands scripts to `onScript` and
 // executes none, and this browser has no engine to give them; a page that
 // only draws itself with JavaScript shows what it has without it.
@@ -22,41 +30,29 @@
 //
 // A middle click, or a click with the modifier held, opens a link in a new
 // tab behind this one; a middle click on a tab closes it.
-import {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useReducer,
-  useRef,
-  useState,
-} from 'react';
+import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import type { ReactElement } from 'react';
-import * as DomUtils from 'domutils';
 import {
   Button,
+  Frame,
   Icon,
   ThemeProvider,
   createRoot,
-  useAccelerator,
+  matchesShortcut,
   useSupports,
   useTheme,
 } from 'react-x11';
 import type {
   DrawnNode,
+  FrameComponentProps,
+  FrameError,
+  FrameProps,
+  KeyboardEvent as X11KeyboardEvent,
   MouseEvent as X11MouseEvent,
-  ScrollableNode,
   TextInputNode,
 } from 'react-x11';
 import { XK_ESCAPE } from 'react-x11/keysyms';
 
-import { Html, useHtmlHandle } from '../../src/html/index.js';
-import type {
-  Document,
-  Element,
-  ResourceRequest,
-  ResourceResult,
-} from '../../src/html/index.js';
 import {
   Tabs,
   TabsContent,
@@ -64,46 +60,27 @@ import {
   TabsTrigger,
 } from '../../src/tabs/index.js';
 import { displayUrl, urlFromInput } from './address.js';
-import { decodeIcon, iconCandidates } from './favicon.js';
 import type { TabIcon } from './favicon.js';
-import { Network, NetworkError, schemeOf } from './network.js';
-import type { DocumentResponse } from './network.js';
-import {
-  BLANK,
-  HOME,
-  blankPage,
-  errorPage,
-  fileName,
-  homePage,
-  imagePage,
-  textPage,
-  unsupportedPage,
-} from './pages.js';
+import Page from './page.js';
+import type { LinkTarget, PageProps } from './page.js';
+import { shortcuts } from './keys.js';
+import type { Command } from './keys.js';
+import { HOME, fileName } from './pages.js';
 
-const network = new Network();
+/** The pane each tab's page runs in: `page.tsx`'s default export. */
+const PAGE = new URL('./page.tsx', import.meta.url);
 
 // --- the model ---------------------------------------------------------------
-
-/** What `<Html>` is given for one page. */
-interface Page {
-  source: string;
-  /** More source may still arrive — the document is streaming. */
-  partial: boolean;
-  charset?: string;
-  /** What its relative URLs resolve against; null for the browser's own
-   *  pages, which name only absolute ones. */
-  baseUrl: string | null;
-}
 
 /** One step of a tab's history. */
 interface Entry {
   id: number;
-  /** The document it shows. A link to a `#fragment` of the same document
-   *  is a step of its own that shows the same one: nothing is loaded, the
-   *  page is not built again, and it only scrolls. */
+  /** The document it shows, by the id of the navigation that loaded it —
+   *  the page keeps it under that id. A link to a `#fragment` of the same
+   *  document is a step of its own that shows the same one: nothing is
+   *  loaded, the page is not built again, and it only scrolls. */
   doc: number;
   url: string;
-  page: Page;
   title: string | null;
   icon: TabIcon | null;
 }
@@ -111,7 +88,7 @@ interface Entry {
 interface Navigation {
   seq: number;
   url: string;
-  /** Push a history entry, or replace this one: a reload replaces. */
+  /** This step again rather than a new one: a reload. */
   replace: boolean;
   /** Past the cache: a reload with Shift. */
   fresh: boolean;
@@ -138,8 +115,13 @@ type Action =
   | { type: 'close'; id: string; fallback: Tab }
   | { type: 'select'; id: string }
   | { type: 'navigate'; id: string; nav: Navigation }
-  | { type: 'commit'; id: string; seq: number; entry: Entry; replace: boolean }
-  | { type: 'progress'; id: string; doc: number; page: Page }
+  | {
+      type: 'commit';
+      id: string;
+      seq: number;
+      url: string;
+      title: string | null;
+    }
   | { type: 'finish'; id: string; seq: number }
   | { type: 'stop'; id: string }
   | { type: 'go'; id: string; delta: number }
@@ -219,35 +201,31 @@ function reducer(state: State, action: Action): State {
       }));
     case 'commit':
       return update(state, action.id, (tab) => {
-        if (tab.loading?.seq !== action.seq) return tab;
-        const kept = tab.entries.slice(
-          0,
-          action.replace ? Math.max(0, tab.index) : tab.index + 1,
-        );
-        const entries = [...kept, action.entry];
+        const nav = tab.loading;
+        if (nav?.seq !== action.seq) return tab;
+        const entry: Entry = {
+          id: nav.seq,
+          doc: nav.seq,
+          url: action.url,
+          title: action.title,
+          icon: null,
+        };
+        // a reload is this step again, in place: the steps after it stay
+        if (nav.replace && tab.index >= 0) {
+          return {
+            ...tab,
+            entries: tab.entries.map((e, i) => (i === tab.index ? entry : e)),
+          };
+        }
+        const entries = [...tab.entries.slice(0, tab.index + 1), entry];
         return { ...tab, entries, index: entries.length - 1 };
       });
-    case 'progress':
-      return update(state, action.id, (tab) => ({
-        ...tab,
-        entries: tab.entries.map((e) =>
-          e.doc === action.doc ? { ...e, page: action.page } : e,
-        ),
-      }));
     case 'finish':
       return update(state, action.id, (tab) =>
         tab.loading?.seq === action.seq ? { ...tab, loading: null } : tab,
       );
     case 'stop':
-      return update(state, action.id, (tab) => ({
-        ...tab,
-        loading: null,
-        entries: tab.entries.map((e, i) =>
-          i === tab.index && e.page.partial
-            ? { ...e, page: { ...e.page, partial: false } }
-            : e,
-        ),
-      }));
+      return update(state, action.id, (tab) => ({ ...tab, loading: null }));
     case 'go':
       return update(state, action.id, (tab) => {
         const index = tab.index + action.delta;
@@ -292,6 +270,29 @@ function zoomStep(zoom: number, direction: 1 | -1): number {
 
 const withoutHash = (url: string): string => url.split('#')[0];
 
+/** Go to `url` in `tab`: a new step, and a `#fragment` of the document the
+ *  tab shows is one that loads nothing — the page only scrolls. */
+function navigateIn(
+  tab: Tab,
+  url: string,
+  dispatch: (action: Action) => void,
+): void {
+  const entry = tab.entries[tab.index];
+  if (
+    entry &&
+    url.includes('#') &&
+    withoutHash(url) === withoutHash(entry.url)
+  ) {
+    dispatch({
+      type: 'fragment',
+      id: tab.id,
+      entry: { ...entry, id: nextId(), url },
+    });
+    return;
+  }
+  dispatch({ type: 'navigate', id: tab.id, nav: navigation(url) });
+}
+
 /**
  * Focus the address bar with its text selected, so what is typed replaces
  * it — what Ctrl+L does in every browser. `<textinput>` has no public call
@@ -305,281 +306,6 @@ function focusField(node: TextInputNode | null | undefined): void {
   node.focus();
   const own = (node as unknown as { _selectAll?: () => void })._selectAll;
   if (typeof own === 'function') own.call(node);
-}
-
-// --- loading a document ------------------------------------------------------
-
-/**
- * How soon a streaming document is first handed to `<Html>`, and how that
- * grows. Each hand-over parses what arrived and lays out the whole document
- * so far, which on a long page costs more than the network does: at a
- * steady 120 ms Wikipedia's 540 KB article took 18 seconds to arrive, the
- * layouts starving the stream. Doubling after each one keeps the first
- * screen early and a long page to a handful of layouts.
- */
-const STREAM_FIRST = 120;
-const STREAM_MOST = 2000;
-
-interface LoadCallbacks {
-  commit(entry: Entry): void;
-  progress(doc: number, page: Page): void;
-  finish(): void;
-}
-
-/**
- * Load a navigation's document: the browser's own pages at once, anything
- * else through the network, an HTML response streamed into the page as it
- * arrives and a response of another kind turned into a page of its own.
- */
-async function loadDocument(
-  nav: Navigation,
-  cocoa: boolean,
-  signal: AbortSignal,
-  on: LoadCallbacks,
-): Promise<void> {
-  const own = (source: string, title: string | null, url = nav.url) => {
-    const id = nextId();
-    on.commit({
-      id,
-      doc: id,
-      url,
-      page: { source, partial: false, baseUrl: null },
-      title,
-      icon: null,
-    });
-    on.finish();
-  };
-  if (nav.url === HOME) return own(homePage(cocoa), 'New Tab');
-  if (nav.url === BLANK) return own(blankPage(), 'about:blank');
-  if (schemeOf(nav.url) === 'about') {
-    return own(
-      errorPage(nav.url, 'There is no such page.', 'ERR_INVALID_URL'),
-      nav.url,
-    );
-  }
-  const viewSource = nav.url.startsWith('view-source:');
-  const target = viewSource ? nav.url.slice('view-source:'.length) : nav.url;
-  if (nav.fresh) network.clear();
-
-  let response: DocumentResponse;
-  try {
-    response = await network.document(target, signal);
-  } catch (error) {
-    if (signal.aborted) return;
-    const { message, code } =
-      error instanceof NetworkError
-        ? error
-        : {
-            message: String((error as Error)?.message ?? error),
-            code: 'ERR_FAILED',
-          };
-    return own(errorPage(target, message, code), null);
-  }
-  if (signal.aborted) return;
-
-  const kind = viewSource ? 'text' : kindOf(response.type, response.url);
-  if (kind !== 'html') {
-    const bytes = await readAll(response.body, signal);
-    if (signal.aborted) return;
-    const url = viewSource ? `view-source:${response.url}` : response.url;
-    if (kind === 'image') {
-      network.seed({ ...response, bytes });
-      return own(imagePage(response.url), fileName(response.url), url);
-    }
-    if (kind === 'text') {
-      const text = decode(bytes, response.charset ?? sniffCharset(bytes));
-      return own(textPage(url, text), viewSource ? url : fileName(url), url);
-    }
-    return own(unsupportedPage(response.url, response.type), null, url);
-  }
-
-  // HTML: stream it. The encoding is the response's, or the one a `<meta>`
-  // in the first kilobyte names, or UTF-8 — found before a byte is decoded.
-  let head: Uint8Array = new Uint8Array(0);
-  const iterator = response.body[Symbol.asyncIterator]();
-  let ended = false;
-  while (head.length < 1024) {
-    const { done, value } = await iterator.next();
-    if (signal.aborted) return;
-    if (done) {
-      ended = true;
-      break;
-    }
-    head = concat(head, value);
-  }
-  const charset = response.charset ?? sniffCharset(head) ?? 'utf-8';
-  let decoder: TextDecoder;
-  try {
-    decoder = new TextDecoder(charset);
-  } catch {
-    decoder = new TextDecoder('utf-8');
-  }
-  let source = decoder.decode(head, { stream: true });
-  const id = nextId();
-  const entry: Entry = {
-    id,
-    doc: id,
-    url: response.url,
-    page: { source, partial: !ended, charset, baseUrl: response.url },
-    title: null,
-    icon: null,
-  };
-  on.commit(entry);
-  let last = Date.now();
-  let interval = STREAM_FIRST;
-  while (!ended) {
-    const { done, value } = await iterator.next();
-    if (signal.aborted) {
-      void iterator.return?.();
-      return;
-    }
-    if (done) break;
-    source += decoder.decode(value, { stream: true });
-    if (Date.now() - last >= interval) {
-      last = Date.now();
-      interval = Math.min(interval * 2, STREAM_MOST);
-      on.progress(entry.doc, { ...entry.page, source });
-    }
-  }
-  source += decoder.decode();
-  on.progress(entry.doc, { ...entry.page, source, partial: false });
-  on.finish();
-}
-
-function kindOf(
-  type: string,
-  url: string,
-): 'html' | 'text' | 'image' | 'other' {
-  if (type === 'text/html' || type === 'application/xhtml+xml') return 'html';
-  if (type.startsWith('image/')) return 'image';
-  if (
-    type.startsWith('text/') ||
-    type === 'application/json' ||
-    type === 'application/javascript' ||
-    type.endsWith('+xml') ||
-    type === 'application/xml'
-  ) {
-    return 'text';
-  }
-  // no type at all: what the address says, and HTML where it says nothing
-  if (!type) return /\.(txt|md|json|css|js)$/i.test(url) ? 'text' : 'html';
-  return 'other';
-}
-
-/** The encoding a document names in its first kilobyte: a byte order mark,
- *  or a `<meta charset>` or its `http-equiv` spelling (HTML 13.2.3.2). */
-function sniffCharset(bytes: Uint8Array): string | null {
-  if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf)
-    return 'utf-8';
-  if (bytes[0] === 0xfe && bytes[1] === 0xff) return 'utf-16be';
-  if (bytes[0] === 0xff && bytes[1] === 0xfe) return 'utf-16le';
-  const head = new TextDecoder('latin1').decode(bytes.subarray(0, 1024));
-  const m = /<meta[^>]+charset\s*=\s*["']?\s*([\w.:-]+)/i.exec(head);
-  return m ? m[1].toLowerCase() : null;
-}
-
-function decode(bytes: Uint8Array, charset: string | null): string {
-  try {
-    return new TextDecoder(charset ?? 'utf-8').decode(bytes);
-  } catch {
-    return new TextDecoder('utf-8').decode(bytes);
-  }
-}
-
-async function readAll(
-  body: AsyncIterable<Uint8Array>,
-  signal: AbortSignal,
-): Promise<Uint8Array> {
-  let out: Uint8Array = new Uint8Array(0);
-  for await (const chunk of body) {
-    if (signal.aborted) break;
-    out = concat(out, chunk);
-  }
-  return out;
-}
-
-function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
-  const out = new Uint8Array(a.length + b.length);
-  out.set(a);
-  out.set(b, a.length);
-  return out;
-}
-
-/** The subresource a page asked for, as `<Html>` takes it back. WebP and
- *  AVIF are declined — nothing here decodes them, and a declined image
- *  keeps its box. */
-async function resource(
-  request: ResourceRequest,
-  page: string,
-  signal: AbortSignal,
-): Promise<ResourceResult | null> {
-  const fetched = await network.resource(
-    request.url,
-    request.kind,
-    page,
-    signal,
-  );
-  if (!fetched) return null;
-  if (request.kind === 'stylesheet') {
-    return {
-      kind: 'stylesheet',
-      bytes: fetched.bytes,
-      charset: fetched.charset ?? undefined,
-      url: fetched.url,
-    };
-  }
-  if (request.kind === 'font') return { kind: 'font', bytes: fetched.bytes };
-  const b = fetched.bytes;
-  const webp =
-    b.length > 12 &&
-    String.fromCharCode(b[0], b[1], b[2], b[3], b[8], b[9], b[10], b[11]) ===
-      'RIFFWEBP';
-  if (webp || fetched.type === 'image/avif') return null;
-  return { kind: 'image', bytes: b };
-}
-
-/** Decoded icons by URL, shared by every tab: a site's icon is fetched and
- *  decoded once. */
-const icons = new Map<string, Promise<TabIcon | null>>();
-
-async function loadIcon(
-  candidates: string[],
-  page: string,
-): Promise<TabIcon | null> {
-  for (const url of candidates) {
-    let pending = icons.get(url);
-    if (!pending) {
-      pending = network
-        .resource(url, 'image', page)
-        .then((f) => (f ? decodeIcon(f.bytes, url) : null));
-      icons.set(url, pending);
-    }
-    const icon = await pending;
-    if (icon) return icon;
-  }
-  return null;
-}
-
-/** The document's `<title>`, its white space collapsed as a tab shows it. */
-function titleOf(doc: Document): string | null {
-  const title = DomUtils.findOne((el) => el.name === 'title', doc.children);
-  const text = title
-    ? DomUtils.textContent(title).replace(/\s+/g, ' ').trim()
-    : '';
-  return text || null;
-}
-
-/** The element a fragment names: an `id`, or an old `<a name>`. */
-function fragmentTarget(doc: Document, fragment: string): Element | null {
-  const id = decodeURIComponent(fragment);
-  if (!id) return null;
-  return (
-    DomUtils.findOne((el) => el.attribs.id === id, doc.children) ??
-    DomUtils.findOne(
-      (el) => el.name === 'a' && el.attribs.name === id,
-      doc.children,
-    )
-  );
 }
 
 // --- glyphs ---------------------------------------------------------------
@@ -769,130 +495,27 @@ function TabLabel({
   );
 }
 
-// --- one tab's toolbar and page ----------------------------------------------
+// --- one tab's toolbar ---------------------------------------------------------
 
-interface TabViewProps {
+interface ToolbarProps {
   tab: Tab;
   active: boolean;
-  /** The shortcut modifier, as a chord names it: Cmd on macOS. */
-  mod: 'Super' | 'Control';
   dispatch: (action: Action) => void;
-  open: (url: string, background: boolean) => void;
   register: (id: string, input: TextInputNode | null) => void;
 }
 
-function TabView({
+function Toolbar({
   tab,
   active,
-  mod,
   dispatch,
-  open,
   register,
-}: TabViewProps): ReactElement {
+}: ToolbarProps): ReactElement {
   const entry = tab.entries[tab.index] ?? null;
-  const handle = useHtmlHandle();
-  const scroller = useRef<ScrollableNode | null>(null);
   const input = useRef<TextInputNode | null>(null);
   const [draft, setDraft] = useState<string | null>(null);
-  const [hoverLink, setHoverLink] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
-  /** Where each history entry was scrolled to, for Back and Forward. */
-  const scrolls = useRef(new Map<number, number>());
-  const [pending, setPending] = useState(0);
+  // a document that arrived replaces what was being typed
+  useEffect(() => setDraft(null), [entry?.id]);
 
-  // the navigation in progress, loaded; a new one, or a closed tab, aborts it
-  const loading = tab.loading;
-  useEffect(() => {
-    if (!loading) return;
-    const controller = new AbortController();
-    const id = tab.id;
-    void loadDocument(loading, mod === 'Super', controller.signal, {
-      commit: (e) => {
-        dispatch({
-          type: 'commit',
-          id,
-          seq: loading.seq,
-          entry: e,
-          replace: loading.replace,
-        });
-        setDraft(null);
-      },
-      progress: (doc, page) => dispatch({ type: 'progress', id, doc, page }),
-      finish: () => dispatch({ type: 'finish', id, seq: loading.seq }),
-    });
-    return () => controller.abort();
-    // `seq` is the navigation's identity; the object is rebuilt with the tab
-  }, [loading?.seq]);
-
-  // a document's resources are fetched while it is the one showing
-  const entryId = entry?.id ?? 0;
-  const docId = entry?.doc ?? 0;
-  const pageUrl = entry ? withoutHash(entry.url) : '';
-  const requests = useMemo(() => new AbortController(), [docId]);
-  useEffect(() => () => requests.abort(), [requests]);
-  const inFlight = useRef(0);
-  const onResource = useCallback(
-    (request: ResourceRequest) => {
-      inFlight.current += 1;
-      setPending(inFlight.current);
-      return resource(request, pageUrl, requests.signal).finally(() => {
-        inFlight.current -= 1;
-        setPending(inFlight.current);
-      });
-    },
-    [pageUrl, requests],
-  );
-
-  // the title as the document states it, and its icon once its head is in
-  const iconAsked = useRef<number>(0);
-  const onDocument = useCallback(
-    (doc: Document) => {
-      if (!entry) return;
-      const title = titleOf(doc);
-      const id = entry.doc;
-      const url = entry.url;
-      queueMicrotask(() => {
-        if (title !== entry.title) {
-          dispatch({ type: 'meta', id: tab.id, doc: id, title });
-        }
-        const headDone =
-          !entry.page.partial ||
-          !!DomUtils.findOne((el) => el.name === 'body', doc.children);
-        if (headDone && iconAsked.current !== id && schemeOf(url) !== 'about') {
-          iconAsked.current = id;
-          void loadIcon(iconCandidates(doc, url), url).then((icon) => {
-            if (icon) dispatch({ type: 'meta', id: tab.id, doc: id, icon });
-          });
-        }
-      });
-    },
-    [entry, tab.id, dispatch],
-  );
-
-  // scroll: to where this entry was left, or to its fragment, or the top
-  const fragment = entry ? (entry.url.split('#')[1] ?? '') : '';
-  const finished = !!entry && !entry.page.partial;
-  useLayoutEffect(() => {
-    if (!entry) return;
-    const saved = scrolls.current.get(entry.id);
-    if (saved === undefined && fragment) return;
-    scroller.current?.scrollTo({ x: 0, y: saved ?? 0 });
-  }, [entryId]);
-  useEffect(() => {
-    if (!fragment || !finished || scrolls.current.has(entryId)) return;
-    // Where the element is is a question for the layout, which runs after
-    // this commit rather than in it: asked a macrotask later, a page just
-    // built has been laid out at the width it is shown at.
-    const timer = setTimeout(() => {
-      const doc = handle.document;
-      const target = doc && fragmentTarget(doc, fragment);
-      const rect = target && handle.elementRect(target);
-      if (rect) scroller.current?.scrollTo({ y: rect.y * tab.zoom });
-    }, 0);
-    return () => clearTimeout(timer);
-  }, [fragment, finished, entryId]);
-
-  // the address bar
   useEffect(() => {
     register(tab.id, input.current);
     return () => register(tab.id, null);
@@ -902,6 +525,7 @@ function TabView({
     input.current?.focus();
     dispatch({ type: 'focused', id: tab.id });
   }, [active, tab.focusAddress]);
+
   const address =
     draft ??
     (tab.loading && !entry ? tab.loading.url : displayUrl(entry?.url ?? ''));
@@ -909,270 +533,281 @@ function TabView({
     const url = urlFromInput(text);
     if (!url) return;
     setDraft(null);
-    navigate(url);
+    navigateIn(tab, url, dispatch);
   };
-
-  const navigate = (url: string) => {
-    if (
-      entry &&
-      withoutHash(url) === withoutHash(entry.url) &&
-      url.includes('#')
-    ) {
-      // the same document: a new history entry, and a scroll, no request
-      dispatch({
-        type: 'fragment',
-        id: tab.id,
-        entry: { ...entry, id: nextId(), url },
-      });
-      return;
-    }
-    dispatch({ type: 'navigate', id: tab.id, nav: navigation(url) });
-  };
-
-  const onLink = (href: string, ev: X11MouseEvent<DrawnNode>) => {
-    if (/^javascript:/i.test(href)) {
-      setNotice('Scripts do not run in this browser.');
-      return;
-    }
-    if (!/^(?:https?|file|data|about|view-source):/i.test(href)) {
-      setNotice(
-        `${schemeOf(href) || 'That'}: links are not something this browser opens.`,
-      );
-      return;
-    }
-    const modifier = mod === 'Super' ? ev.metaKey : ev.ctrlKey;
-    let target = handle.elementAt(ev.x, ev.y);
-    while (target && target.name !== 'a' && target.name !== 'area') {
-      target =
-        target.parent?.type === 'tag' ? (target.parent as Element) : null;
-    }
-    if (modifier) open(href, true);
-    else if (target?.attribs.target === '_blank') open(href, false);
-    else navigate(href);
-  };
-
-  useEffect(() => {
-    if (!notice) return;
-    const timer = setTimeout(() => setNotice(null), 3000);
-    return () => clearTimeout(timer);
-  }, [notice]);
-  // the link under the pointer was the last document's
-  useEffect(() => setHoverLink(null), [docId]);
-
-  const busy = !!tab.loading || !!entry?.page.partial;
-  const status =
-    hoverLink ??
-    notice ??
-    (busy
-      ? 'Loading…'
-      : pending > 0
-        ? `Loading ${pending} resource${pending === 1 ? '' : 's'}…`
-        : null);
+  const busy = !!tab.loading;
 
   return (
-    // Every box from the panel down to the scroller shrinks, or a page
-    // taller than the window makes them all as tall as it is, and nothing
-    // scrolls: a flex item's floor is its content until it says otherwise.
     <box
       style={{
-        flexDirection: 'column',
-        flexGrow: 1,
-        flexShrink: 1,
-        minHeight: 0,
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 2,
+        paddingLeft: 8,
+        paddingRight: 8,
+        paddingTop: 6,
+        paddingBottom: 6,
+        borderBottomWidth: 1,
+        borderColor: '$border',
+        backgroundColor: '$surface',
       }}
     >
-      <box
-        style={{
-          flexDirection: 'row',
-          alignItems: 'center',
-          gap: 2,
-          paddingLeft: 8,
-          paddingRight: 8,
-          paddingTop: 6,
-          paddingBottom: 6,
-          borderBottomWidth: 1,
-          borderColor: '$border',
-          backgroundColor: '$surface',
-        }}
+      <Button
+        variant="ghost"
+        size="small"
+        aria-label="Back"
+        disabled={tab.index <= 0}
+        onPress={() => dispatch({ type: 'go', id: tab.id, delta: -1 })}
       >
-        <Button
-          variant="ghost"
-          size="small"
-          aria-label="Back"
-          disabled={tab.index <= 0}
-          onPress={() => dispatch({ type: 'go', id: tab.id, delta: -1 })}
-        >
-          <Icon name="chevronLeft" size={10} />
-        </Button>
-        <Button
-          variant="ghost"
-          size="small"
-          aria-label="Forward"
-          disabled={tab.index >= tab.entries.length - 1}
-          onPress={() => dispatch({ type: 'go', id: tab.id, delta: 1 })}
-        >
-          <Icon name="chevronRight" size={10} />
-        </Button>
-        <Button
-          variant="ghost"
-          size="small"
-          aria-label={busy ? 'Stop' : 'Reload'}
-          onPress={() =>
-            busy
-              ? dispatch({ type: 'stop', id: tab.id })
-              : entry &&
-                dispatch({
-                  type: 'navigate',
-                  id: tab.id,
-                  nav: navigation(entry.url, true),
-                })
-          }
-        >
-          {busy ? <Icon name="close" size={9} /> : <ReloadGlyph />}
-        </Button>
-        <textinput
-          ref={input}
-          value={address}
-          placeholder="Search, or enter an address"
-          onChange={(ev) => setDraft(ev.value)}
-          onSubmit={(ev) => go(ev.value)}
-          onKeyDown={(ev) => {
-            // Escape puts back the address the page is at
-            if (ev.keysym === XK_ESCAPE) setDraft(null);
-          }}
-          // the field is the pill, so the focus ring core draws round it
-          // follows its corners
-          style={{
-            flexGrow: 1,
-            height: 30,
-            marginLeft: 6,
-            paddingLeft: 14,
-            paddingRight: 14,
-            borderRadius: 15,
-            borderWidth: 1,
-            borderColor: '$border',
-            backgroundColor: '$background',
-            fontSize: 13,
-            color: '$text',
-          }}
-        />
-        {tab.zoom !== 1 ? (
-          <Button
-            variant="ghost"
-            size="small"
-            onPress={() => dispatch({ type: 'zoom', id: tab.id, zoom: 1 })}
-          >
-            {`${Math.round(tab.zoom * 100)}%`}
-          </Button>
-        ) : null}
-      </box>
-      <box
+        <Icon name="chevronLeft" size={10} />
+      </Button>
+      <Button
+        variant="ghost"
+        size="small"
+        aria-label="Forward"
+        disabled={tab.index >= tab.entries.length - 1}
+        onPress={() => dispatch({ type: 'go', id: tab.id, delta: 1 })}
+      >
+        <Icon name="chevronRight" size={10} />
+      </Button>
+      <Button
+        variant="ghost"
+        size="small"
+        aria-label={busy ? 'Stop' : 'Reload'}
+        onPress={() =>
+          busy
+            ? dispatch({ type: 'stop', id: tab.id })
+            : entry &&
+              dispatch({
+                type: 'navigate',
+                id: tab.id,
+                nav: navigation(entry.url, true),
+              })
+        }
+      >
+        {busy ? <Icon name="close" size={9} /> : <ReloadGlyph />}
+      </Button>
+      <textinput
+        ref={input}
+        value={address}
+        placeholder="Search, or enter an address"
+        onChange={(ev) => setDraft(ev.value)}
+        onSubmit={(ev) => go(ev.value)}
+        onKeyDown={(ev) => {
+          // Escape puts back the address the page is at
+          if (ev.keysym === XK_ESCAPE) setDraft(null);
+        }}
+        // the field is the pill, so the focus ring core draws round it
+        // follows its corners
         style={{
           flexGrow: 1,
-          flexShrink: 1,
-          minHeight: 0,
-          position: 'relative',
+          height: 30,
+          marginLeft: 6,
+          paddingLeft: 14,
+          paddingRight: 14,
+          borderRadius: 15,
+          borderWidth: 1,
+          borderColor: '$border',
+          backgroundColor: '$background',
+          fontSize: 13,
+          color: '$text',
         }}
-      >
-        <box
-          ref={scroller}
-          style={{
-            overflow: 'scroll',
-            flexGrow: 1,
-            flexShrink: 1,
-            minHeight: 0,
-          }}
-          onScroll={(ev) => {
-            if (entry) scrolls.current.set(entry.id, ev.scrollY);
-          }}
-          onMouseMove={(ev: X11MouseEvent<DrawnNode>) => {
-            const href = handle.hrefAt(ev.x, ev.y);
-            if (href !== hoverLink) setHoverLink(href);
-          }}
-          onMouseLeave={() => setHoverLink(null)}
-          onMouseDown={(ev: X11MouseEvent<DrawnNode>) => {
-            // a middle click opens the link in a tab behind this one
-            if (ev.button !== 2) return;
-            const href = handle.hrefAt(ev.x, ev.y);
-            if (href) open(href, true);
-          }}
+      />
+      {tab.zoom !== 1 ? (
+        <Button
+          variant="ghost"
+          size="small"
+          onPress={() => dispatch({ type: 'zoom', id: tab.id, zoom: 1 })}
         >
-          {entry ? (
-            // Zoom is core's `scale`, CSS `zoom` for a subtree. A node's
-            // scale is constant for its life by core's contract, and
-            // `<Html>` keeps its device-pixel work on that promise, so a new
-            // zoom is a new page — built from the source it already has and
-            // resources the network layer kept.
-            //
-            // Both grow: a page shorter than the window is still as tall as
-            // it, as a browser's canvas is, so its background reaches the
-            // bottom of the window at any size rather than stopping where
-            // the text does (`<Html>` paints its root's background down the
-            // whole element).
-            <box
-              scale={tab.zoom}
-              style={{ flexDirection: 'column', flexGrow: 1 }}
-            >
-              <Html
-                key={`${entry.doc}@${tab.zoom}`}
-                ref={handle.ref}
-                source={entry.page.source}
-                partial={entry.page.partial}
-                charset={entry.page.charset}
-                baseUrl={entry.page.baseUrl}
-                onResource={onResource}
-                onDocument={onDocument}
-                onLink={onLink}
-                style={{ flexGrow: 1 }}
-              />
-            </box>
-          ) : null}
-        </box>
-        {status ? (
-          <box
-            style={{
-              position: 'absolute',
-              left: 0,
-              bottom: 0,
-              maxWidth: '70%',
-              paddingLeft: 8,
-              paddingRight: 8,
-              paddingTop: 3,
-              paddingBottom: 3,
-              borderTopWidth: 1,
-              borderRightWidth: 1,
-              borderColor: '$border',
-              backgroundColor: '$surface',
-            }}
-          >
-            <text
-              style={{
-                fontSize: 11,
-                color: '$textMuted',
-                maxLines: 1,
-                textOverflow: 'ellipsis',
-              }}
-            >
-              {status}
-            </text>
-          </box>
-        ) : null}
-      </box>
+          {`${Math.round(tab.zoom * 100)}%`}
+        </Button>
+      ) : null}
     </box>
   );
 }
 
+// --- one tab's page ------------------------------------------------------------
+
+type PaneTransport = FrameComponentProps['transport'];
+
+interface TabPageProps {
+  tab: Tab;
+  /** Run the page in this process rather than a pane of its own. */
+  inline: boolean;
+  transport?: PaneTransport;
+  dispatch: (action: Action) => void;
+  open: (url: string, background: boolean) => void;
+  onCommand: (command: Command) => void;
+}
+
+/**
+ * A tab's page: `page.tsx` in a pane of its own, told which step of the
+ * history to show and what to load, and telling the history what arrived.
+ * The callbacks it is handed keep their identity for the tab's life, so a
+ * render of the browser that changed nothing the page shows sends it
+ * nothing (`<Frame>` compares the bag value by value).
+ */
+function TabPage({
+  tab,
+  inline,
+  transport,
+  dispatch,
+  open,
+  onCommand,
+}: TabPageProps): ReactElement {
+  const id = tab.id;
+  const entry = tab.entries[tab.index] ?? null;
+  const latest = useRef(tab);
+  latest.current = tab;
+
+  const onCommit = useCallback(
+    (seq: number, url: string, title: string | null) =>
+      dispatch({ type: 'commit', id, seq, url, title }),
+    [id, dispatch],
+  );
+  const onFinish = useCallback(
+    (seq: number) => dispatch({ type: 'finish', id, seq }),
+    [id, dispatch],
+  );
+  const onMeta = useCallback(
+    (
+      doc: number,
+      title: string | null | undefined,
+      icon: TabIcon | null | undefined,
+    ) => dispatch({ type: 'meta', id, doc, title, icon }),
+    [id, dispatch],
+  );
+  const onLink = useCallback(
+    (url: string, target: LinkTarget) => {
+      if (target === 'here') navigateIn(latest.current, url, dispatch);
+      else open(url, target === 'background');
+    },
+    [dispatch, open],
+  );
+  const onLost = useCallback(
+    (entryId: number) => {
+      // loaded again as the same step, where it still is the one showing
+      const now = latest.current;
+      const shown = now.entries[now.index];
+      if (shown?.id !== entryId || now.loading) return;
+      dispatch({ type: 'navigate', id, nav: navigation(shown.url, true) });
+    },
+    [id, dispatch],
+  );
+
+  const props: PageProps = {
+    entryId: entry?.id ?? 0,
+    doc: entry?.doc ?? 0,
+    url: entry?.url ?? '',
+    loadSeq: tab.loading?.seq ?? 0,
+    loadUrl: tab.loading?.url ?? '',
+    loadFresh: tab.loading?.fresh ?? false,
+    zoom: tab.zoom,
+    docs: [...new Set(tab.entries.map((e) => e.doc))].join(','),
+    onCommit,
+    onFinish,
+    onMeta,
+    onLink,
+    onLost,
+    onCommand,
+  };
+
+  if (inline) return <Page {...props} />;
+  return (
+    <Frame
+      src={PAGE}
+      props={props as unknown as FrameProps}
+      transport={transport}
+      style={{ flexGrow: 1, backgroundColor: '$background' }}
+      // A backend with no way to show a pane says so before anything is
+      // spawned, as an `embed` failure: the page runs here instead. Any
+      // other failure is the page's process ending under it.
+      fallback={({ error, restart }) =>
+        error?.phase === 'embed' ? (
+          <Page {...props} />
+        ) : (
+          <Stopped error={error} onReload={restart} />
+        )
+      }
+      onExit={({ expected }) => {
+        // a navigation the process was loading is not arriving
+        if (!expected) dispatch({ type: 'stop', id });
+      }}
+    />
+  );
+}
+
+/** A tab whose page's process ended. Reloading starts a new one, which
+ *  finds it has no document for the step it is shown and asks for it. */
+function Stopped({
+  error,
+  onReload,
+}: {
+  error: FrameError | null;
+  onReload: () => void;
+}): ReactElement {
+  return (
+    <box
+      style={{
+        flexGrow: 1,
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 12,
+        padding: 24,
+        backgroundColor: '$background',
+      }}
+    >
+      <text style={{ fontSize: 20, color: '$text' }}>
+        This tab’s page stopped
+      </text>
+      <text
+        style={{
+          fontSize: 12,
+          color: '$textMuted',
+          maxWidth: 560,
+          maxLines: 4,
+          textOverflow: 'ellipsis',
+        }}
+      >
+        {error?.message ?? 'Its process ended.'}
+      </text>
+      <Button onPress={onReload}>Reload</Button>
+    </box>
+  );
+}
+
+/**
+ * Where a tab that is not showing keeps its page: its process, its
+ * document and where it was scrolled all stay, so the pane stays mounted —
+ * at its full size, off to the side of the window, where the window clips
+ * it away whole. Hidden the way `<TabsContent>` hides a panel,
+ * `display: 'none'`, a `<foreign>` stays mapped and is squeezed to a pixel,
+ * and the page inside would lay its whole document out again at that width
+ * on every switch of tab, and again on the way back. X carries a window's
+ * position in 16 bits, which is what bounds how far aside.
+ */
+const ASIDE = -30000;
+
 // --- the window --------------------------------------------------------------
 
-/** `colorScheme` is a seam for screenshots; by default the browser, and
- *  every page's `prefers-color-scheme`, follow the desktop. */
+export interface BrowserProps {
+  start?: string;
+  /** A seam for screenshots; by default the browser, and every page's
+   *  `prefers-color-scheme`, follow the desktop. */
+  colorScheme?: 'light' | 'dark' | 'system';
+  /** Run every page in this process rather than a pane of its own. */
+  inline?: boolean;
+  /** How a page's pane is started — `<Frame transport>`, the seam a test
+   *  runs panes through without forking. */
+  paneTransport?: PaneTransport;
+}
+
 export function Browser({
   start = HOME,
   colorScheme = 'system',
-}: {
-  start?: string;
-  colorScheme?: 'light' | 'dark' | 'system';
-}): ReactElement {
+  inline = false,
+  paneTransport,
+}: BrowserProps): ReactElement {
   const [state, dispatch] = useReducer(reducer, start, (url) => {
     const tab = newTab(url, url === HOME);
     return { tabs: [tab], active: tab.id };
@@ -1199,7 +834,6 @@ export function Browser({
   }, []);
   const close = (id: string) =>
     dispatch({ type: 'close', id, fallback: newTab(HOME, true) });
-  const focusAddress = () => focusField(inputs.current.get(active.id));
   const reload = (fresh: boolean) => {
     if (entry) {
       dispatch({
@@ -1214,85 +848,81 @@ export function Browser({
     const next = state.tabs[(at + by + state.tabs.length) % state.tabs.length];
     dispatch({ type: 'select', id: next.id });
   };
-
-  useAccelerator([[mod, 'T']], () => open(HOME, false));
-  useAccelerator([[mod, 'W']], () => close(active.id));
-  useAccelerator([[mod, 'L'], ['F6'], ['Alt', 'D']], focusAddress);
-  useAccelerator([[mod, 'R'], ['F5']], () => reload(false));
-  useAccelerator(
-    [
-      [mod, 'Shift', 'R'],
-      ['Shift', 'F5'],
-    ],
-    () => reload(true),
-  );
-  useAccelerator(
-    [
-      ['Alt', 'Left'],
-      [mod, 'bracketleft'],
-    ],
-    () => dispatch({ type: 'go', id: active.id, delta: -1 }),
-  );
-  useAccelerator(
-    [
-      ['Alt', 'Right'],
-      [mod, 'bracketright'],
-    ],
-    () => dispatch({ type: 'go', id: active.id, delta: 1 }),
-  );
-  useAccelerator(
-    [
-      ['Control', 'Tab'],
-      ['Control', 'Page_Down'],
-    ],
-    () => cycle(1),
-  );
-  useAccelerator(
-    [
-      ['Control', 'Shift', 'Tab'],
-      ['Control', 'Page_Up'],
-    ],
-    () => cycle(-1),
-  );
-  useAccelerator(
-    [
-      [mod, 'plus'],
-      [mod, 'equal'],
-    ],
-    () =>
-      dispatch({ type: 'zoom', id: active.id, zoom: zoomStep(active.zoom, 1) }),
-  );
-  useAccelerator([[mod, 'minus']], () =>
-    dispatch({ type: 'zoom', id: active.id, zoom: zoomStep(active.zoom, -1) }),
-  );
-  useAccelerator([[mod, '0']], () =>
-    dispatch({ type: 'zoom', id: active.id, zoom: 1 }),
-  );
-  useAccelerator(
-    [['Escape']],
-    () => dispatch({ type: 'stop', id: active.id }),
-    {
-      enabled: !!active.loading,
-    },
-  );
   const selectAt = (n: number) => {
     const tab = n === 9 ? state.tabs[state.tabs.length - 1] : state.tabs[n - 1];
     if (tab) dispatch({ type: 'select', id: tab.id });
   };
-  useAccelerator([[mod, '1']], () => selectAt(1));
-  useAccelerator([[mod, '2']], () => selectAt(2));
-  useAccelerator([[mod, '3']], () => selectAt(3));
-  useAccelerator([[mod, '4']], () => selectAt(4));
-  useAccelerator([[mod, '5']], () => selectAt(5));
-  useAccelerator([[mod, '6']], () => selectAt(6));
-  useAccelerator([[mod, '7']], () => selectAt(7));
-  useAccelerator([[mod, '8']], () => selectAt(8));
-  useAccelerator([[mod, '9']], () => selectAt(9));
+  const zoom = (to: number) =>
+    dispatch({ type: 'zoom', id: active.id, zoom: to });
+
+  const run = (command: Command) => {
+    switch (command) {
+      case 'newTab':
+        return open(HOME, false);
+      case 'closeTab':
+        return close(active.id);
+      case 'address':
+        return focusField(inputs.current.get(active.id));
+      case 'reload':
+        return reload(false);
+      case 'reloadFresh':
+        return reload(true);
+      case 'back':
+        return dispatch({ type: 'go', id: active.id, delta: -1 });
+      case 'forward':
+        return dispatch({ type: 'go', id: active.id, delta: 1 });
+      case 'nextTab':
+        return cycle(1);
+      case 'previousTab':
+        return cycle(-1);
+      case 'zoomIn':
+        return zoom(zoomStep(active.zoom, 1));
+      case 'zoomOut':
+        return zoom(zoomStep(active.zoom, -1));
+      case 'zoomReset':
+        return zoom(1);
+      case 'stop':
+        return dispatch({ type: 'stop', id: active.id });
+      default:
+        return selectAt(Number(command.slice(3)));
+    }
+  };
+  // Checked in the window's `onKeyDown` rather than bound as accelerators.
+  // While a page has the focus a key is on its way into the page's pane,
+  // and an accelerator runs only after the focused element's own default
+  // action — a pane's is to forward the key — so it would never see one. A
+  // handler on the window sees every key first, and a key it takes
+  // (`preventDefault`) goes no further. A page the pointer rests on is sent
+  // keys past all of this on X11, and passes the chords back (`keys.ts`).
+  const chords = shortcuts(mod);
+  const onKeyDown = (ev: X11KeyboardEvent) => {
+    for (const [command, shortcut] of chords) {
+      if (!matchesShortcut(ev, shortcut)) continue;
+      // Escape is the page's, or the address bar's, unless there is a load
+      // to stop
+      if (command === 'stop' && !active.loading) return;
+      ev.preventDefault();
+      run(command);
+      return;
+    }
+  };
+  // what a page passes back is the same command, from the tab it is in
+  const latestRun = useRef(run);
+  latestRun.current = run;
+  const onCommand = useCallback(
+    (command: Command) => latestRun.current(command),
+    [],
+  );
 
   const title = entry?.title ?? (entry ? fileName(entry.url) : 'New Tab');
 
   return (
-    <window title={`${title} — react-x11 browser`} width={1180} height={820}>
+    <window
+      title={`${title} — react-x11 browser`}
+      width={1180}
+      height={820}
+      onKeyDown={onKeyDown}
+    >
       <ThemeProvider
         colorScheme={colorScheme}
         style={{ backgroundColor: '$background', flexGrow: 1 }}
@@ -1303,7 +933,8 @@ export function Browser({
           variant="outline"
           size="sm"
           ground="$surface"
-          style={{ flexGrow: 1 }}
+          // the strip and the toolbar; the page below takes the rest
+          style={{ flexGrow: 0, flexShrink: 0 }}
         >
           <TabsList
             style={{
@@ -1328,18 +959,55 @@ export function Browser({
             </Button>
           </TabsList>
           {state.tabs.map((tab) => (
-            <TabsContent key={tab.id} value={tab.id} style={{ paddingTop: 0 }}>
-              <TabView
+            <TabsContent
+              key={tab.id}
+              value={tab.id}
+              style={{ paddingTop: 0, flexGrow: 0 }}
+            >
+              <Toolbar
                 tab={tab}
                 active={tab.id === active.id}
-                mod={mod}
                 dispatch={dispatch}
-                open={open}
                 register={register}
               />
             </TabsContent>
           ))}
         </Tabs>
+        {/* Every box from here to the page's scroller shrinks, or a page
+            taller than the window makes them all as tall as it is, and
+            nothing scrolls: a flex item's floor is its content until it
+            says otherwise. */}
+        <box
+          style={{
+            flexGrow: 1,
+            flexShrink: 1,
+            minHeight: 0,
+            position: 'relative',
+          }}
+        >
+          {state.tabs.map((tab) => (
+            <box
+              key={tab.id}
+              style={{
+                position: 'absolute',
+                top: 0,
+                bottom: 0,
+                left: tab.id === active.id ? 0 : ASIDE,
+                width: '100%',
+                flexDirection: 'column',
+              }}
+            >
+              <TabPage
+                tab={tab}
+                inline={inline}
+                transport={paneTransport}
+                dispatch={dispatch}
+                open={open}
+                onCommand={onCommand}
+              />
+            </box>
+          ))}
+        </box>
       </ThemeProvider>
     </window>
   );
@@ -1351,5 +1019,7 @@ if (!process.env.REACT_X11_NO_AUTORUN) {
   const arg = process.argv[2];
   const start = arg ? (urlFromInput(arg) ?? HOME) : HOME;
   const root = await createRoot();
-  root.render(<Browser start={start} />);
+  root.render(
+    <Browser start={start} inline={process.env.BROWSER_INLINE === '1'} />,
+  );
 }

@@ -408,8 +408,9 @@ speaks); mutate it and call `handle.refresh()`. That is explicit rather than
 observed on purpose: watching a plain object graph costs a proxy per node,
 and the budget went on the static render instead. `npm run examples:html`
 drives both seams for real, and `npm run examples:browser` is the other end
-of them: a tabbed web browser — `<Tabs>`, `<Html>` and an address bar — whose
-host fetches what a page asks for and runs none of its scripts.
+of them: a tabbed web browser — `<Tabs>`, `<Html>` and an address bar, each
+tab's page in a process of its own through core's `<Frame>` — whose host
+fetches what a page asks for and runs none of its scripts.
 
 [domhandler]: https://github.com/fb55/domhandler
 [domutils]: https://github.com/fb55/domutils

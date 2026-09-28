@@ -1173,8 +1173,23 @@ everything itself — markup against the document's base, a sheet's `url()`s,
 parsed (`absoluteUrls`, `css/parse.ts`) — and `onResource` and `onLink` see
 absolute URLs. Without a base nothing is resolved, which is what every host
 before it saw. `examples/browser/` is the host that does fetch, and the
-place a fetching policy belongs: a cache the tabs share, per-host pacing,
+place a fetching policy belongs: a cache per page process, per-host pacing,
 `file:` only for `file:` pages, no cookies.
+
+**The browser runs each tab's page in a `<Frame>`, and two things about a
+pane are worth knowing before the next example makes one.** A pane is a
+real child window on X11, so the pointer decides who gets a key: X hands it
+to the deepest window under the pointer, and while that is the page the
+browser's handlers never run (core's `<foreign>` documents the gap). The
+page watches for the browser's chords and passes them back through a
+callback (`examples/browser/keys.ts`) — only where the pane is its own
+window, since on Cocoa the host forwards every key and would see a chord
+twice. And a pane that is not showing is kept beside the window rather than
+under `display: 'none'`: a `<foreign>` in a hidden subtree stays mapped and
+is squeezed to one pixel, so the page inside would lay itself out again at
+that width on every switch of tab. Both are core's to fix — an embeddable
+window that selected no keys, a `<foreign>` that unmapped when hidden — and
+the example's workarounds say so where they are.
 
 **A document's fonts are registered under names nothing else has.**
 `@font-face` faces go through `onResource` as `kind: 'font'` and into
