@@ -1117,6 +1117,40 @@ test('a picture gives way when the graph paints quickly again', async () => {
   });
 });
 
+test('a new palette or theme is drawn in, however the last was resolved', async () => {
+  // The palette is resolved once for a theme and a `palette` prop
+  // (`_palette`), so each of the two has to bring a new one as it changes.
+  type Palette = FlowProps['palette'];
+  const frame = (theme: Record<string, string> | undefined, palette: Palette) =>
+    h(
+      'box',
+      // `theme` on any node, which react-x11's declarations say of <window>
+      { ...({ theme } as object), style: { width: 400, height: 300 } },
+      h(TypedFlow, {
+        nodes: [],
+        edges: [],
+        background: false,
+        palette,
+        style: { width: 400, height: 300 },
+      }),
+    );
+  const { ctx, rerender } = await renderX11(
+    frame(undefined, { background: '#00ff00' }),
+    { width: 400, height: 300 },
+  );
+  await act();
+  const { abs } = pane();
+  const px = Math.round(abs.x + 200);
+  const py = Math.round(abs.y + 150);
+  await expectPixel(ctx, px, py, '#00ff00', { message: 'the palette prop' });
+  await act(() => rerender(frame(undefined, { background: '#0000ff' })));
+  await expectPixel(ctx, px, py, '#0000ff', { message: 'a new palette prop' });
+  await act(() => rerender(frame({ background: '#ff00ff' }, undefined)));
+  await expectPixel(ctx, px, py, '#ff00ff', { message: 'the theme' });
+  await act(() => rerender(frame({ background: '#ffff00' }, undefined)));
+  await expectPixel(ctx, px, py, '#ffff00', { message: 'a new theme' });
+});
+
 test('a 2D zoom out paints the ring its picture no longer covers', async () => {
   // Zoomed out, the picture is smaller than the pane, and the graph round it
   // was never in it. The card starts right of the pane, and zooming out
