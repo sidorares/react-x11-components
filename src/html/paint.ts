@@ -34,6 +34,8 @@ import { copyStyle } from './css/style.js';
 import {
   BOX_RAISES,
   Box,
+  CLIPPED_CELLS,
+  COLLAPSED_CELLS,
   INLINE_OFFSETS,
   SHADOWED_TEXT,
   SHIFTED_LINES,
@@ -413,7 +415,7 @@ function paintCanvas(
   );
   if (!area) return;
   const layers = layersOf(source.style) ?? [source.style];
-  const visible = source.style.visibility !== 'hidden';
+  const visible = source.style.visibility === 'visible';
   for (let i = layers.length - 1; i >= 0; i -= 1) {
     const style = layers[i];
     if (!isTransparent(style.backgroundColor) && visible) {
@@ -559,7 +561,7 @@ function frameHeight(box: Frame): number {
 }
 
 function paintBox(ctx: PaintContext, box: Box, options: PaintOptions): void {
-  if (!intersects(box, options)) return;
+  if (!intersects(box, options) || COLLAPSED_CELLS.has(box)) return;
   // `clip` shows the part of an absolutely positioned box it names, its own
   // background and borders among it (CSS 2.1 11.1.2)
   const clip = box.outOfFlow && box.style.clip ? clipOf(box, options) : null;
@@ -1371,6 +1373,7 @@ function holds(outer: Box, inner: Box | null): boolean {
  * among them; the viewport here is the element, which clips anyway.
  */
 function clipsOverflow(box: Box): boolean {
+  if (CLIPPED_CELLS.has(box)) return true;
   const style = box.style;
   if (style.overflowX === 'visible' && style.overflowY === 'visible') {
     return false;

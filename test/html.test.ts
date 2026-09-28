@@ -3068,6 +3068,106 @@ metric("a column's background is painted under its cells", async () => {
   );
 });
 
+metric('a row spans its columns, not the spacing round them', async () => {
+  // CSS 2.1 17.5.1: in the separated borders model a row's edges are its
+  // cells', and a group's are its rows' — the spacing is the table's
+  const { node } = await render(
+    '<table id="t" style="border-spacing:10px;border:none">' +
+      '<tbody id="g"><tr id="r"><td id="a">a</td><td id="b">b</td></tr>' +
+      '</tbody></table>',
+  );
+  const el = view(node);
+  const [t, g, r, a, b] = ['t', 'g', 'r', 'a', 'b'].map((id) => boxOf(el, id));
+  assert.strictEqual(r.x - t.x, 10, 'the spacing before it outside it');
+  assert.strictEqual(r.x, a.x);
+  assert.strictEqual(r.x + r.width, b.x + b.width, 'and the spacing after');
+  assert.deepStrictEqual([g.x, g.width], [r.x, r.width], 'its group the same');
+});
+
+metric(
+  'visibility: collapse takes a row out of its table, and its spacing',
+  async () => {
+    // CSS 2.1 17.5.5: the row has sized the columns with the rest, and takes
+    // no room; its cells inherit the value, and are not drawn
+    const { node } = await render(
+      '<table id="t" style="border-spacing:2px 10px;border:none">' +
+        '<tr><td id="a" style="padding:0">a</td></tr>' +
+        '<tr style="visibility:collapse"><td id="b" ' +
+        'style="padding:0;background:#ff0000">a much wider cell</td></tr>' +
+        '<tr><td id="c" style="padding:0">c</td></tr></table>',
+    );
+    const el = view(node);
+    const [t, a, b, c] = ['t', 'a', 'b', 'c'].map((id) => boxOf(el, id));
+    assert.strictEqual(
+      c.y - (a.y + a.height),
+      10,
+      'one spacing where two were',
+    );
+    assert.strictEqual(t.height, 10 + a.height + 10 + c.height + 10);
+    assert.ok(
+      a.width > 50,
+      `the column as wide as the row taken out: ${a.width}`,
+    );
+    assert.strictEqual(a.width, b.width);
+    const fills = await fillsOf(el);
+    assert.ok(
+      !fills.some((f) => f.style === parseColor('#ff0000')),
+      'its cell not drawn',
+    );
+  },
+);
+
+metric(
+  'visibility: collapse takes a column out, and changes no row',
+  async () => {
+    // Its cells are laid out at the width they had, so a row is as tall as
+    // it was, and are not drawn; the columns after it close up
+    const row = (id: string, collapse: string) =>
+      `<table id="t${id}" style="border-spacing:0;width:100px">` +
+      `<col><col${collapse}><col>` +
+      `<tr id="r${id}"><td id="a${id}">a</td>` +
+      `<td id="b${id}" style="background:#ff0000">one two three` +
+      ` four</td><td id="c${id}">c</td></tr></table>`;
+    const { node } = await render(
+      row('1', '') + row('2', ' style="visibility:collapse"'),
+    );
+    const el = view(node);
+    const box = (id: string) => boxOf(el, id);
+    const lines = (id: string) =>
+      (box(id) as LaidBox & { lines: unknown[] | null }).lines?.length ?? 0;
+    assert.ok(lines('b1') > 1 && lines('b2') === lines('b1'), 'wrapped alike');
+    assert.strictEqual(box('r2').height, box('r1').height, 'as tall as it was');
+    assert.strictEqual(box('c2').x, box('a2').x + box('a2').width, 'closed up');
+    assert.strictEqual(box('t2').width, box('t1').width - box('b1').width);
+    const fills = await fillsOf(el);
+    const red = fills.filter((f) => f.style === parseColor('#ff0000'));
+    assert.strictEqual(red.length, 1, "the first table's cell only");
+  },
+);
+
+metric(
+  'a cell spanning a column taken out is clipped to the ones left',
+  async () => {
+    // CSS 2.1 17.5.5: laid out across all its columns, moved left by the one
+    // taken out, which cuts out what was in it
+    const { node } = await render(
+      '<table style="border-spacing:0"><col style="width:50px">' +
+        '<col style="visibility:collapse;width:30px"><col style="width:40px">' +
+        '<tr><td id="a" style="padding:0">a</td>' +
+        '<td id="s" colspan="2" style="padding:0">x</td></tr>' +
+        '<tr><td style="padding:0"></td><td style="padding:0"></td>' +
+        '<td id="c" style="padding:0">c</td></tr></table>',
+    );
+    const el = view(node);
+    const [a, s, c] = ['a', 's', 'c'].map((id) => boxOf(el, id));
+    assert.strictEqual(s.x, a.x + a.width, 'over the column left');
+    assert.strictEqual(s.width, c.width);
+    const lines = (s as LaidBox & { lines: { texts: { drawX: number }[] }[] })
+      .lines;
+    assert.strictEqual(lines[0].texts[0].drawX, s.x - 30, 'its text cut');
+  },
+);
+
 metric("a table's height is shared among its rows", async () => {
   // CSS 2.1 17.5.3: the height is a least height, and what the rows come
   // short of it goes to them; `max-height` holds it back

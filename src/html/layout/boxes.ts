@@ -511,6 +511,16 @@ export const TEXT_RAISES = new WeakMap<LineText, number>();
 export const SHADOWED_TEXT = new WeakSet<Box>();
 export const BOX_RAISES = new WeakMap<Box, number>();
 
+/** The table cells wholly in columns `visibility: collapse` took out of
+ *  their table (CSS 2.1 17.5.5), which the paint pass leaves out: a cell is
+ *  no descendant of its column and inherits nothing from it, so its own
+ *  style still says `visible`. */
+export const COLLAPSED_CELLS = new WeakSet<Box>();
+/** And the cells spanning into a column or a row taken out: laid out as
+ *  they would have been, placed over what is left of their span, and
+ *  clipped to it. */
+export const CLIPPED_CELLS = new WeakSet<Box>();
+
 /** The blocks that broke a relatively positioned inline box in pieces,
  *  under its first piece: its offset moves them too (CSS 2.1 9.2.1.1),
  *  though they stand outside it (`breakAround`). */

@@ -232,7 +232,8 @@ is centred with its images, not text first and the image after it.
 on an inline box takes its room back from the line), `padding`,
 `border` (width, style, colour, radius), `box-sizing`, `overflow`, `clip`,
 `opacity`, `visibility` — a hidden element keeps its room and draws
-nothing, its text included, and a visible element inside it is drawn —
+nothing, its text included, and a visible element inside it is drawn; a
+collapsed table row or column gives its room and its spacing back —
 `z-index`: a positioned box with a negative
 `z-index` is painted under the flow of its stacking context, the root
 element or a positioned box with a `z-index` of its own, and over that

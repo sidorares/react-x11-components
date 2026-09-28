@@ -229,7 +229,9 @@ export interface ComputedStyle {
     | 'bidi-override'
     | 'isolate-override'
     | 'plaintext';
-  visibility: 'visible' | 'hidden';
+  /** `collapse` is `hidden` but on a table's rows, which it takes out of
+   *  the table (CSS 2.1 17.5.5); paint draws `visible` only. */
+  visibility: 'visible' | 'hidden' | 'collapse';
   listStyleType: string;
   listStylePosition: 'inside' | 'outside';
   /** `list-style-image`: an image a list item's marker is, where it loads,
@@ -1078,8 +1080,9 @@ export function applyDeclaration(
     }
     case 'visibility': {
       const v = value.toLowerCase();
-      if (v === 'hidden' || v === 'collapse') style.visibility = 'hidden';
-      else if (v === 'visible') style.visibility = 'visible';
+      if (v === 'hidden' || v === 'collapse' || v === 'visible') {
+        style.visibility = v;
+      }
       return;
     }
     case 'z-index': {
