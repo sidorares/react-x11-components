@@ -24,14 +24,40 @@ else
 fi
 has() { case " $SUITES " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 
+# Whether the screen was up: `on`, `off` (DPMS switched the monitor off) or
+# either with `,saver` when a screensaver was in front. Off, Present has no
+# display behind it, so ntk's windows fall to the fence clock for good; a
+# screensaver throttles the window manager, and Cinnamon's Muffin then
+# applies a client's resize about once a second. A cell measured either way
+# measured something else, so each records it and tabulate.ts says so.
+# `unknown` on a Mac, where neither is asked.
+display_state() {
+  if [ "$(uname)" = Darwin ]; then
+    printf unknown
+    return
+  fi
+  local state=on svc
+  if xset q 2>/dev/null | grep -q 'Monitor is Off'; then state=off; fi
+  for svc in org.cinnamon.ScreenSaver org.gnome.ScreenSaver org.mate.ScreenSaver org.freedesktop.ScreenSaver; do
+    if dbus-send --session --dest="$svc" --print-reply --reply-timeout=500 \
+      "/$(printf %s "$svc" | tr . /)" "$svc.GetActive" 2>/dev/null | grep -q 'boolean true'; then
+      state="$state,saver"
+      break
+    fi
+  done
+  printf %s "$state"
+}
+
 # one cell: the probe, its environment, a two-and-a-half-minute ceiling
 cell() {
   local probe=$1
   shift
-  local line
+  local line before after
+  before=$(display_state)
   line=$(env "$@" perl -e 'alarm 150; exec @ARGV' npx tsx "$here/$probe" 2>&1 | grep '^RESULT' | sed 's/^RESULT //')
+  after=$(display_state)
   if [ -n "$line" ]; then
-    printf '%s\n' "$line" | python3 -c 'import json,sys; d=json.loads(sys.stdin.read()); d["env"]=sys.argv[1]; print(json.dumps(d))' "$*" >>"$out"
+    printf '%s\n' "$line" | python3 -c 'import json,sys; d=json.loads(sys.stdin.read()); d["env"]=sys.argv[1]; d["display"]=sys.argv[2] if sys.argv[2]==sys.argv[3] else sys.argv[2]+">"+sys.argv[3]; print(json.dumps(d))' "$*" "$before" "$after" >>"$out"
   else
     printf '{"failed":"%s %s"}\n' "$probe" "$*" >>"$out"
   fi
