@@ -3270,6 +3270,19 @@ and without combining marks, no run changed: 33,735 runs in sequence, and
 | a window with a `<MenuBar>`          | 101 ms |  81 ms |
 | `<CodeEditor>` beside `<Markdown>`   | 182 ms | 121 ms |
 
+That first cut left the features out through fontkit's feature overrides,
+and fontkit applies overrides to the plan it builds on every call. Every
+word the shaping memo had not seen then paid 1–3 µs (DejaVu Sans Mono,
+8.1 → 11.0 µs a word), and a long `<Markdown>` scrolled into unshaped text
+went from 3.81 to 4.05 ms a frame in one A/B. ntk #428 stands an empty
+lookup in for each `mark` and `mkmk` lookup in fontkit's cache instead, and
+hands fontkit the caller's features untouched. An empty lookup costs less
+to apply than the real one did, so a word now shapes 5–10% faster than
+before #425: Noto Sans 23.3 → 22.0 µs, DejaVu Sans 14.2 → 12.8. The first
+shaping keeps the win, Noto Sans 17.8 → 4.2 ms. A stood-in lookup is exact
+however it is reached, so the variation and GSUB-tag bail-outs went too.
+Again no run changed on the 2,113 faces.
+
 ### An answer read when a layout asks (ntk #426)
 
 A prewarm's answers are 634 KB apiece here: `fc-match -s` lists 210 faces,
@@ -3495,6 +3508,11 @@ Left from the same profile:
     directly and found 2,737 differences. Master's `Font` found the same
     2,737, so the harness was wrong. Against master's code, 30 remained,
     each of them NaN compared with NaN; compared with `Object.is`, none did.
+47. **A first-frame win can bill every frame after it.** #425 took 14 ms
+    out of each face's first shaping and put 1–3 µs on every unseen word
+    after it, which the first-frame probes could not see and a scroll
+    through new text could. Measure the steady state of any path a
+    first-frame change sits on.
 
 ## Still open
 
