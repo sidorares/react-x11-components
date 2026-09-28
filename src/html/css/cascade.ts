@@ -1210,8 +1210,31 @@ function presentationHints(el: Element): Declaration[] {
     const type = attr(el, 'type');
     const mapped = OL_TYPES[type ?? ''];
     if (mapped) push('list-style-type', mapped);
-    const start = attr(el, 'start');
-    if (start) push('counter-reset', start);
+    // the number a list starts at is its `list-item` counter's, one before
+    // it, or counting down one after it (HTML's rendering, "Lists")
+    const start = htmlInteger(attr(el, 'start'));
+    if (start !== null) {
+      push(
+        'counter-reset',
+        attr(el, 'reversed') !== undefined
+          ? `reversed(list-item) ${start + 1}`
+          : `list-item ${start - 1}`,
+      );
+    }
+  }
+  if (tag === 'ul') {
+    const type = attr(el, 'type')?.toLowerCase();
+    if (type && BULLETS.has(type)) push('list-style-type', type);
+  }
+  if (tag === 'li') {
+    // an item's `value` is the number it goes on from
+    const value = htmlInteger(attr(el, 'value'));
+    if (value !== null) push('counter-set', `list-item ${value}`);
+    const type = attr(el, 'type');
+    const mapped =
+      OL_TYPES[type ?? ''] ??
+      (type && BULLETS.has(type.toLowerCase()) ? type.toLowerCase() : null);
+    if (mapped) push('list-style-type', mapped);
   }
   if (tag === 'img' || tag === 'object') {
     const hspace = attr(el, 'hspace');
@@ -1297,6 +1320,18 @@ const OL_TYPES: Record<string, string> = {
   i: 'lower-roman',
   I: 'upper-roman',
 };
+
+/** What a `<ul type>` or an `<li type>` names that is not a number. */
+const BULLETS = new Set(['disc', 'circle', 'square', 'none']);
+
+/** An attribute read as HTML reads an integer: its leading digits, signed,
+ *  whatever follows them; null where it has none. A counter is a 32-bit
+ *  integer in a browser, and one past that is kept to it. */
+function htmlInteger(value: string | undefined): number | null {
+  const match = value === undefined ? null : /^\s*([+-]?\d+)/.exec(value);
+  if (!match) return null;
+  return Math.max(-2147483648, Math.min(2147483647, Number(match[1])));
+}
 
 const FONT_SIZE_STEPS = [1, 0.63, 0.82, 1, 1.13, 1.5, 2, 3];
 
