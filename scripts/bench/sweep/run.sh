@@ -71,6 +71,10 @@ for b in $BACKENDS; do
     done
     for sc in widgets charts fanout lattice; do cell ../frames/renderers.tsx REACT_X11_BACKEND=$b SCENE=$sc; done
   fi
+  # Cocoa only: its capture is ScreenCaptureKit, and it needs Screen Recording
+  if has frames && [ "$b" = cocoa ]; then
+    for gl in 0 1; do cell ../frames/e2p.tsx REACT_X11_BACKEND=$b GL=$gl; done
+  fi
   if has maps; then
     for r in retained gl; do
       for a in pan drag wheel fly; do cell mapsweep.tsx REACT_X11_BACKEND=$b RENDERER=$r ACTION=$a; done
