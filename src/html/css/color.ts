@@ -81,6 +81,24 @@ export function borderShades(
   return { lit: css(light), shadowed: css(rgb) };
 }
 
+/**
+ * The colour a fraction `t` of the way from `a` to `b`, premultiplied, as a
+ * gradient interpolates between two stops (CSS Images 4, 3.4.3): so a
+ * transparent stop lends its alpha and not its colour. Null for a colour
+ * this cannot read.
+ */
+export function blend(a: string, b: string, t: number): string | null {
+  const x = readRgba(a);
+  const y = readRgba(b);
+  if (!x || !y) return null;
+  const alpha = x.a + (y.a - x.a) * t;
+  if (!(alpha > 0)) return 'transparent';
+  const rgb = [0, 1, 2].map(
+    (i) => (x.rgb[i] * x.a + (y.rgb[i] * y.a - x.rgb[i] * x.a) * t) / alpha,
+  ) as Triple;
+  return serialize(rgb, alpha);
+}
+
 function scaled(c: Triple, k: number): Triple {
   return [c[0] * k, c[1] * k, c[2] * k];
 }

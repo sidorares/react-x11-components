@@ -134,6 +134,7 @@ separately, and there are six.
 | 64     | outlines                                           | 5,472 (93%) | 4,984 (84%) |
 | 65     | `list-style-image`                                 | 5,476 (93%) | 4,988 (84%) |
 | 66     | a float on the line it is met on                   | 5,479 (93%) | 4,990 (84%) |
+| 67     | gradients and shadows far off the window           | 5,479 (93%) | 4,990 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -1948,6 +1949,30 @@ put the float at different places in the text, put it on different lines.
 They passed while every float went at the top of its paragraph, where the
 two agreed.
 
+### Round 67
+
+159. **A gradient or a shadow past ±32,767 pixels threw from the paint.**
+     X RENDER takes a gradient's ends and a path's outline in 16.16 fixed
+     point, and nothing cut either to what a paint reaches: a
+     `linear-gradient()` down a long document's wrapper, scrolled far
+     enough, a stop at `calc(Infinity * 1px)`, or a blurred `box-shadow`
+     down a box tens of thousands of pixels tall threw a `RangeError` out
+     of the X11 paint, and took the application with it. A gradient whose
+     ends would pass ±16,384 has its line cut to the part the fill
+     covers, moved along its perpendicular to run through it and ending in
+     the colours the whole line has there; a shadow's shape, its clip and
+     the box it is cut around are cut to the painted area and as far again
+     as its blur reaches, as a background already was. Found running
+     nineteen more of WPT's `css/` directories for crashes, 9,942
+     reftests: `css-text`, `css-flexbox`, `css-grid`, `css-tables`,
+     `css-display`, `css-lists`, `css-inline`, `css-backgrounds`,
+     `css-position`, `css-sizing`, `css-box`, `css-overflow`,
+     `css-pseudo`, `css-transforms`, `selectors`, `css-cascade`, `css-ui`,
+     `css-align` and `css-images`. Eleven gradient tests crashed there
+     (`css-images/gradient/gradient-eval-*`, `gradient-infinity-*`) and
+     none does now; nothing else crashed or hung. The shadow was found by
+     a page of such boxes, made to look for more.
+
 ## What `<Html>` supports
 
 From the pass rates of the tests that use each feature, at the fixes above,
@@ -2041,10 +2066,12 @@ In order, each step measured by this runner and, for the CSS3 half, by
 WPT's `css-backgrounds`, `css-color`, `css-values` and `css-flexbox`
 directories and caniemail's feature list:
 
-1. **Never hang, never throw.** Done for everything this suite reaches. Next:
-   run all of WPT's `css/` tree for crashes alone, reftest or not, and a
-   fuzzer over the CSS parser — a renderer that can freeze its host is worse
-   than one that renders badly.
+1. **Never hang, never throw.** Done for everything this suite reaches, and
+   for the 9,942 reftests of nineteen more of WPT's `css/` directories in
+   round 67. Next: the rest of the `css/` tree, and its crash tests, which
+   have no reference and so no place in this runner yet, and a fuzzer over
+   the CSS parser — a renderer that can freeze its host is worse than one
+   that renders badly.
 2. **Generated content**: `::before`, `::after`, `content` with strings,
    `attr()`, counters and quotes. About 330 tests, and used everywhere —
    clearfixes, icons, quotation marks, numbered headings. Done in round 2,

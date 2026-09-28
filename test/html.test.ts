@@ -7089,6 +7089,26 @@ metric('text is shaped with the features its style asks for', async () => {
   assert.strictEqual(features('q'), undefined);
 });
 
+test('a shadow down a box far off the window is cut to what the paint reaches', async () => {
+  // Its outline goes to the server in 16.16 fixed point, and a shadow cast
+  // down a box tens of thousands of pixels tall, scrolled far, threw from
+  // the paint. Cut where the blur cannot reach what is painted, as a
+  // background is.
+  const { node } = await render(
+    '<style>body{margin:0}</style><div style="position:relative;' +
+      'top:-40000px;height:50000px;margin:10px;border-radius:12px;' +
+      'box-shadow:0 8px 30px #0006, inset 0 0 12px #ff0000"></div>',
+  );
+  const fills = await fillsOf(view(node));
+  const shadows = fills.filter((f) => f.shadow);
+  assert.strictEqual(shadows.length, 2, 'the outer shadow and the inset');
+  for (const f of fills) {
+    for (const v of [f.x, f.y, f.x + f.w, f.y + f.h]) {
+      assert.ok(Math.abs(v) < 32768, `${f.x},${f.y} ${f.w}x${f.h}`);
+    }
+  }
+});
+
 test('text-shadow is read, inherited, and has no spread and no inset', async () => {
   const { node } = await render(
     '<div id="a" style="text-shadow:1px 2px 3px red, blue 4px 5px">' +
@@ -8031,6 +8051,43 @@ test("a gradient's stops past its ends lengthen its line", async () => {
   assert.deepStrictEqual(
     only.stops.map(([at]) => at),
     [0, 0.5, 1],
+  );
+});
+
+test('a gradient far off the window is drawn from the part of its line it shows', async () => {
+  // X RENDER takes a gradient's ends in 16.16 fixed point, and a line that
+  // ended past ±32,767 pixels threw from the paint: a gradient down a long
+  // wrapper scrolled far enough, or a stop at calc(Infinity * 1px) (WPT
+  // css-images/gradient/gradient-infinity-001). The line is cut to what
+  // the fill covers, and its ends are the colours the whole line has there.
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="width:100px;height:20px;background:linear-gradient(' +
+      'to right, #00ff00 100px, #ff0000 calc(Infinity * 1px))"></div>' +
+      '<div style="position:relative;top:-40020px;height:50000px;' +
+      'background:linear-gradient(#000000,#ffffff)"></div>',
+  );
+  const fills = gradientFills(await fillsOf(view(node)));
+  assert.strictEqual(fills.length, 2);
+  for (const fill of fills) {
+    for (const v of fill.line) assert.ok(Math.abs(v) < 32768, `${fill.line}`);
+  }
+  const grey = (color: string) => parseInt(color.slice(1, 3), 16);
+  const [far, tall] = fills;
+  const [, top, , bottom] = tall.line;
+  const [[first, from], [last, to]] = [
+    tall.stops[0],
+    tall.stops[tall.stops.length - 1],
+  ];
+  assert.deepStrictEqual([first, last], [0, 1]);
+  const at = (y: number) => (255 * (y + 40000)) / 50000;
+  assert.ok(Math.abs(grey(from) - at(top)) <= 1, `${from} at ${top}`);
+  assert.ok(Math.abs(grey(to) - at(bottom)) <= 1, `${to} at ${bottom}`);
+  assert.ok(bottom > top, 'down the box');
+  // the far stop is past the whole box: all of it is the first colour
+  assert.deepStrictEqual(
+    [...new Set(far.stops.map(([, color]) => color))],
+    ['#00ff00'],
   );
 });
 
