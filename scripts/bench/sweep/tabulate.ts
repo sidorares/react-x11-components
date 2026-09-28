@@ -86,6 +86,16 @@ const badSamples = exact('bad samples', (r) => r.bad);
 const inFlight = exact('draws in flight', (r) => r.drawsInFlight);
 const missingInk = exact('GL ink missing, %', (r) => r.missingPct);
 const extraInk = exact('extra, %', (r) => r.extraPct);
+const toPixel: Metric = {
+  label: 'event to pixel p50, ms',
+  value: (r) => r.first50,
+  higherIsBetter: false,
+};
+const toRest: Metric = {
+  label: 'to rest p90, ms',
+  value: (r) => r.settled90,
+  higherIsBetter: false,
+};
 
 interface Column {
   title: string;
@@ -159,6 +169,21 @@ const SUITES: Suite[] = [
     key: (r) => `${r.scene} z${r.zoom}`,
     metrics: () => [missingInk, extraInk],
     columns: [{ title: 'X11, GL against 2D', match: onBackend('x11') }],
+  },
+  {
+    name: 'frames: e2p',
+    key: (r) => `${r.scene} · drag z${r.zoom}`,
+    metrics: () => [toPixel, toRest],
+    columns: [
+      {
+        title: 'Cocoa 2D',
+        match: onBackend('cocoa', (r) => r.renderer === '2d'),
+      },
+      {
+        title: 'Cocoa GL',
+        match: onBackend('cocoa', (r) => r.renderer === 'gl'),
+      },
+    ],
   },
   ...['docs', 'editors'].map((name): Suite => ({
     name,
