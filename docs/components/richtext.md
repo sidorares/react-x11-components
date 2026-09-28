@@ -37,7 +37,10 @@ its content and keeps its layout and its pixels, for one pass over the runs:
 a component that builds its runs in render, as the rich text editor does,
 is not laying its paragraphs out again on every render. `wrap: false` lays
 the text out at its natural width, unwrapped, which is what a code line
-wants.
+wants. A tab goes to the next stop, every eight spaces from its line's
+start, as CSS's `tab-size` has it — neither text engine sets one so, ntk
+drawing a box for it and CoreText stopping every 28 points — and it is still
+a tab in the text a selection copies.
 
 ```ts
 interface TextRun {

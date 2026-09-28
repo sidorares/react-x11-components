@@ -195,3 +195,42 @@ test(
     assert.equal(surface().selectedText(), '', 'and nothing would be copied');
   },
 );
+
+test(
+  'a tab goes to its stop, every eight spaces',
+  { skip: !FONTS },
+  async () => {
+    // Neither engine sets a tab: ntk draws a box for it and CoreText stops
+    // every 28 points, so a Go file indented with tabs came out boxed or
+    // ragged. A stop is every eight spaces from the line's start, and one
+    // less than half a "0" on is passed over (CSS Text 3, 4.2).
+    const source = '\tA\n\t\tB\nab\tC\nabcdefghij\tD\nabcdefg\tE';
+    await renderX11(h(Code, { source, 'data-testname': 'code' }), {
+      fonts: FONTS!,
+      width: 600,
+      height: 240,
+    });
+    const code = richNodes().find((n) =>
+      n.textContent().includes('abcdefghij'),
+    );
+    assert.ok(code);
+    const node = drawn(code) as DrawnNode & {
+      textCaretRect(index: number): { x: number } | null;
+    };
+    const text = code.textContent();
+    assert.ok(text.includes('\t\tB'), 'the text keeps its tabs');
+    const x = (letter: string, line: string) =>
+      node.textCaretRect([...text.slice(0, text.indexOf(letter))].length)!.x -
+      node.textCaretRect([...text.slice(0, text.indexOf(line))].length)!.x;
+    // a "0" across, in the monospace face every character here is
+    const ch = x('D', 'abcdefghij') / 16;
+    const near = (a: number, b: number, what: string) =>
+      assert.ok(Math.abs(a - b) < 0.5, `${what}: ${a} against ${b}`);
+    near(x('A', '\tA'), 8 * ch, 'one tab');
+    near(x('B', '\t\tB'), 16 * ch, 'two tabs');
+    near(x('C', 'ab\tC'), 8 * ch, 'a tab after two letters');
+    // seven letters leave a space to the stop, more than half a "0", so the
+    // tab takes it rather than the next
+    near(x('E', 'abcdefg\tE'), 8 * ch, 'a tab after seven letters');
+  },
+);
