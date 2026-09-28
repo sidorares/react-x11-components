@@ -4088,6 +4088,65 @@ test('a box with a formatting context of its own clears every float along its he
   assert.strictEqual(b.y, a.y + 50);
 });
 
+test("a spanning cell's width is shared by its columns, less the spacing", async () => {
+  // CSS 2.1 17.5.2.2, steps 1 and 3: its own width is the least it is,
+  // and the spacing between its columns is part of it, so a cell over
+  // three columns set to 100px, with 20px between them, has 60 to share
+  const { node } = await render(
+    '<table style="border-spacing:20px"><tr>' +
+      '<td id="s" colspan="3" style="width:100px;padding:0"></td></tr></table>',
+  );
+  assert.strictEqual(boxOf(view(node), 's').width, 100);
+});
+
+test('a spanning cell comes after the cells of one column', async () => {
+  // in a first row it was shared out evenly before the cells under it
+  // were seen, and a column one of them sets to 5px took half of it
+  const { node } = await render(
+    '<table style="width:110px;border-spacing:0">' +
+      '<tr><td colspan="2" style="width:100px;padding:0"></td>' +
+      '<td colspan="2" style="padding:0"></td></tr>' +
+      '<tr><td id="a" style="width:5px;padding:0"></td>' +
+      '<td id="s" colspan="2" style="padding:0"></td>' +
+      '<td id="b" style="width:5px;padding:0"></td></tr></table>',
+  );
+  const el = view(node);
+  const [a, s, b] = ['a', 's', 'b'].map((id) => boxOf(el, id));
+  assert.deepStrictEqual([a.width, s.width, b.width], [5, 100, 5]);
+});
+
+test("a cell's percentage is a share of the table, its borders in it", async () => {
+  // added on, a 90% cell and a 10% one came to more than the table,
+  // which took it back from both and left them 8.8 to 1
+  const { node } = await render(
+    '<table style="width:400px;border-collapse:collapse"><tr>' +
+      '<td id="a" style="width:90%;border:1px solid;padding:0"></td>' +
+      '<td id="b" style="width:10%;border:1px solid;padding:0"></td></tr>' +
+      '</table>',
+  );
+  const el = view(node);
+  const [a, b] = ['a', 'b'].map((id) => boxOf(el, id));
+  assert.ok(Math.abs(a.width - 9 * b.width) < 0.01, `${a.width} ${b.width}`);
+});
+
+metric(
+  'a cell set to a narrow percentage is no narrower than its word',
+  async () => {
+    // a table never goes narrower than its words (CSS 2.1 17.5.2.2): a
+    // cell's own width is weighed apart from its content, and the content
+    // was measured at the width the probe laid the cell out at, which for
+    // one set to a width was its padding, so a 3% column cut its word
+    const { node } = await render(
+      '<table style="width:320px;border-spacing:0"><tr>' +
+        '<td style="width:97%;padding:0">a</td>' +
+        '<td id="b" style="width:3%;padding:0">unbreakable</td></tr></table>',
+    );
+    const el = view(node);
+    const b = boxOf(el, 'b') as LaidBox & { lines: { width: number }[] };
+    assert.ok(b.width >= b.lines[0].width, `${b.width} ${b.lines[0].width}`);
+  },
+);
+
 test('a table with a width of its own fills it with its columns', async () => {
   // CSS 2.1 17.5.2.2: the columns not set to a width take what the table
   // has beyond their content, in proportion to it; <table width="600"> drew

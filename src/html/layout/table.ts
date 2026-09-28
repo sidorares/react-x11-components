@@ -69,6 +69,7 @@ export function layoutTable(
         ctx,
         contentWidth,
         style.width !== AUTO,
+        spacing,
       );
 
   // --- place ---------------------------------------------------------------
@@ -492,12 +493,14 @@ function autoColumns(
   ctx: LayoutContext,
   containingWidth: number,
   fill: boolean,
+  spacing: number,
 ): number[] {
   const max: number[] = new Array<number>(columnCount).fill(0);
   const min: number[] = new Array<number>(columnCount).fill(0);
   const explicit: (number | null)[] = new Array<number | null>(
     columnCount,
   ).fill(null);
+  const spanning: Cell[] = [];
 
   for (const cell of cells) {
     // Two probe layouts per cell: unconstrained for max-content, and at no
@@ -519,42 +522,17 @@ function autoColumns(
       // where its words say it exactly, read from the layout just made
       cell.box.intrinsicMinContent =
         (ctx.fonts && exactMinContent(cell.box, ctx.fonts)) ??
-        measureIntrinsicWidth(cell.box, ctx, MIN_CONTENT_PROBE);
+        measureIntrinsicWidth(cell.box, ctx, MIN_CONTENT_PROBE, true);
     }
-    const cellMax = cell.box.intrinsicMaxContent;
-    const cellMin = cell.box.intrinsicMinContent;
-
-    const len = cell.box.style.width;
-    const width = len === AUTO ? null : tableWidth(len, containingWidth);
-    if (cell.colSpan === 1) {
-      max[cell.column] = Math.max(max[cell.column], cellMax);
-      min[cell.column] = Math.max(min[cell.column], cellMin);
-      if (width !== null) {
-        explicit[cell.column] = Math.max(
-          explicit[cell.column] ?? 0,
-          width + cell.box.horizontalExtra,
-        );
-      }
-    } else {
-      // A spanning cell contributes to its columns only when they cannot
-      // already hold it, spread evenly — which is the spec's rule reduced to
-      // the part that matters visually.
-      const last = Math.min(columnCount - 1, cell.column + cell.colSpan - 1);
-      let currentMax = 0;
-      let currentMin = 0;
-      for (let c = cell.column; c <= last; c += 1) {
-        currentMax += max[c];
-        currentMin += min[c];
-      }
-      const spread = last - cell.column + 1;
-      if (cellMax > currentMax) {
-        const each = (cellMax - currentMax) / spread;
-        for (let c = cell.column; c <= last; c += 1) max[c] += each;
-      }
-      if (cellMin > currentMin) {
-        const each = (cellMin - currentMin) / spread;
-        for (let c = cell.column; c <= last; c += 1) min[c] += each;
-      }
+    if (cell.colSpan > 1) {
+      spanning.push(cell);
+      continue;
+    }
+    max[cell.column] = Math.max(max[cell.column], cell.box.intrinsicMaxContent);
+    min[cell.column] = Math.max(min[cell.column], cell.box.intrinsicMinContent);
+    const width = cellWidth(cell, containingWidth);
+    if (width !== null) {
+      explicit[cell.column] = Math.max(explicit[cell.column] ?? 0, width);
     }
   }
 
@@ -565,17 +543,58 @@ function autoColumns(
     if (own !== null) explicit[c] = Math.max(explicit[c] ?? 0, own);
   }
 
+  // A spanning cell comes after the cells of one column, the narrower
+  // spans first, and adds to its columns only what they come short of it
+  // (CSS 2.1 17.5.2.2, step 3). It holds the spacing between them too,
+  // room the columns need not find. What it adds goes to those of them
+  // with no width set, in proportion to their content, and evenly where
+  // they have none. Taken in document order and spread evenly, a spanning
+  // cell in a first row was shared out before the cells of one column
+  // under it were seen, and a column one of them set to 5px took half.
+  spanning.sort((a, b) => a.colSpan - b.colSpan);
+  const grow = (into: number[], want: number, cell: Cell): void => {
+    const last = Math.min(columnCount - 1, cell.column + cell.colSpan - 1);
+    let have = spacing * (last - cell.column);
+    for (let c = cell.column; c <= last; c += 1) have += into[c];
+    if (!(want > have)) return;
+    let free = false;
+    for (let c = cell.column; c <= last && !free; c += 1) {
+      free = explicit[c] === null;
+    }
+    let weight = 0;
+    let count = 0;
+    for (let c = cell.column; c <= last; c += 1) {
+      if (free && explicit[c] !== null) continue;
+      weight += max[c];
+      count += 1;
+    }
+    for (let c = cell.column; c <= last; c += 1) {
+      if (free && explicit[c] !== null) continue;
+      into[c] +=
+        weight > 0 ? ((want - have) * max[c]) / weight : (want - have) / count;
+    }
+  };
+
   // what the columns' content alone asks, before their set widths: the
   // least a column gives way to when the table has less room than its
   // cells' widths want, as beside a float
   const least = min.slice();
+  for (const cell of spanning) grow(least, cell.box.intrinsicMinContent, cell);
   for (let c = 0; c < columnCount; c += 1) {
     if (explicit[c] !== null) {
       max[c] = Math.max(max[c], explicit[c] as number);
       min[c] = Math.max(min[c], Math.min(explicit[c] as number, max[c]));
     }
-    min[c] = Math.min(min[c], max[c]);
   }
+  // and with them: a spanning cell's own width is the least it is, as a
+  // single cell's is (step 1), so a cell over three columns set to 100px,
+  // with 20px between them, has 60 to share, where it had none
+  for (const cell of spanning) {
+    const own = cellWidth(cell, containingWidth) ?? 0;
+    grow(min, Math.max(cell.box.intrinsicMinContent, own), cell);
+    grow(max, Math.max(cell.box.intrinsicMaxContent, own), cell);
+  }
+  for (let c = 0; c < columnCount; c += 1) min[c] = Math.min(min[c], max[c]);
 
   const totalMax = max.reduce((a, b) => a + b, 0);
   if (totalMax <= available) {
@@ -669,6 +688,18 @@ function partWidth(box: Box, base: number): number | null {
   let out = width ?? 0;
   if (max !== null) out = Math.min(out, max);
   return Math.max(0, out, min);
+}
+
+/** A cell's own `width`, its padding and borders in, or null. A
+ *  percentage is a share of the table its padding and borders are part
+ *  of, as browsers read it: added on, a 90% cell and a 10% one came to
+ *  more than the table, which then took it back from both. */
+function cellWidth(cell: Cell, base: number): number | null {
+  const len = cell.box.style.width;
+  const width = len === AUTO ? null : tableWidth(len, base);
+  if (width === null) return null;
+  if (isPct(len)) return Math.max(width, cell.box.horizontalExtra);
+  return width + cell.box.horizontalExtra;
 }
 
 /** A cell's or a column's width. One that adds a percentage to a length,
