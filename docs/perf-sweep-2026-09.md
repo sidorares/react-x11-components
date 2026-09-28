@@ -3303,6 +3303,77 @@ Left from the same profile:
   colour emoji. Hashing off the main thread when the face loads would take
   it out of the frame.
 
+## Round 34: what a start loads, and what a scroll walks
+
+### Less loaded at start
+
+Timing every CommonJS module's compile inside a react-x11 app's startup put
+two packages ahead of everything but node-x11:
+
+- **dbus-native: 25 ms.** 11 ms of it was introspection's XML (xml2js, and
+  xmlbuilder under it), required at the top of the bus although only a
+  proxy for a remote object needs it, and the accessibility bridge builds
+  none at startup. It loads with the first `getObject` now (dbus-native
+  #412): `require('dbus-native')` 27 → 17 ms, and 10.7 ms inside
+  `createRoot`. It ships in dbus-native 0.16.0, outside core's `^0.15.1`,
+  so core's range has to move to take it.
+- **brotli: 14.5 ms**, through fontkit, which imports it for WOFF2. Its
+  `dictionary.js` requires a 756 KB JavaScript file at load that only the
+  first decompress uses. The fix is a line upstream; ntk #427 asks whether
+  to send it.
+
+On the Mac, the Mac session found `import 'react-x11'` loading `ntk/font`,
+`ntk/image` and `ntk/svg` on every backend: about 55 ms of a Cocoa app's
+start, none of it used by a first frame that decodes no image and draws no
+SVG. Loading them lazily trades against `<svg>`'s first frame or needs a
+renderer hook that waits for them, so it is react-x11 #743, open.
+
+### One collator (components #305)
+
+`String#localeCompare` with no locale is defined as a new `Intl.Collator()`
+a call, and two sorts made one every comparison. `<Table>`'s default sort
+also read each row's value twice a comparison. Both now share one collator
+(`src/internal/collate.ts`), and the table reads a row's value once:
+
+| on 100,000 rows or 5,000 candidates | before |  after |
+| ----------------------------------- | -----: | -----: |
+| `<Table>` sort, a text column       | 338 ms | 186 ms |
+| `<Table>` sort, a numeric column    | 130 ms |  48 ms |
+| completion ranking, nothing typed   | 8.5 ms | 4.4 ms |
+
+### A scroll walks the whole document (react-x11 #744, open)
+
+A pure scroll moves every descendant's `abs` by the scroll delta (#405's
+fast path) and re-verifies and culls every child of each container it
+paints. On a long `<Markdown>`, that is most of the frame, and it grows
+with the document:
+
+| nodes in the pane | median frame | the shift | the paint |
+| ----------------: | -----------: | --------: | --------: |
+|             2,891 |       1.8 ms |   0.98 ms |   0.76 ms |
+|             8,606 |       4.4 ms |   3.06 ms |   1.36 ms |
+|            28,644 |      11.6 ms |   8.22 ms |   3.36 ms |
+
+An iterative shift that keeps the overrides (`<glarea>` and `<foreign>`
+move their X windows; a nested scroller re-derives its origin) was slower:
+the checks it needs per node cost more than the virtual calls they
+replace. Making a scroll cost what is visible changes the `abs` contract,
+or virtualizes `<Markdown>` the way `<RichTextEditor>` already is. #744
+asks which.
+
+### What did not pay
+
+- **`FileDialog`'s sort.** 0.44 → 0.24 ms for 2,283 entries: V8 takes a
+  fast path on short names that the table's sort missed. Left as it is.
+- **pngjs's sync reader alone** instead of the package: 2.4 ms, through
+  pngjs's internals. Not taken.
+- **A two-stage `fc-match`**, the best face first (15 ms) and the sorted
+  list with its coverage after (30 ms). That would halve a first frame's
+  wait on a font it has not warmed: up to 7 ms here, more on XQuartz.
+  Left, since it is a delicate change to ntk's matching.
+- **A popup's first open** is 17–20 ms to its first painted frame, and 4–7
+  after. Nothing to take.
+
 ## Lessons
 
 1. **Look for caches that never hit.** Identity-keyed caches handed a new
@@ -3513,6 +3584,10 @@ Left from the same profile:
     after it, which the first-frame probes could not see and a scroll
     through new text could. Measure the steady state of any path a
     first-frame change sits on.
+48. **A convenience defined as a construction is a construction.**
+    `localeCompare` with no locale is a new `Intl.Collator` by the spec's
+    own definition, and a sort of 100,000 rows made 1.7 million of them.
+    Read what a convenience is defined as before calling it in a loop.
 
 ## Still open
 
