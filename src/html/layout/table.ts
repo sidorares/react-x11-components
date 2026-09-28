@@ -365,7 +365,21 @@ function layoutCaptions(captions: Box[], ctx: LayoutContext, table: Box): void {
 function captionMinimum(captions: Box[], ctx: LayoutContext): number {
   let widest = 0;
   for (const caption of captions) {
-    const width = measureIntrinsicWidth(caption, ctx, MIN_CONTENT_PROBE);
+    let width = measureIntrinsicWidth(caption, ctx, MIN_CONTENT_PROBE);
+    // and as wide as a length its own `width` sets: the probe lays it out
+    // at none, so an empty caption set to 100px measured nothing, and the
+    // table under it was as narrow as its cells
+    const set = caption.style.width;
+    if (set !== AUTO && !isPct(set)) {
+      const length = resolveOrNull(set, 0);
+      if (length !== null) {
+        const extra =
+          caption.style.boxSizing === 'border-box'
+            ? 0
+            : caption.horizontalExtra;
+        width = Math.max(width, length + extra);
+      }
+    }
     widest = Math.max(widest, width + caption.marginLeft + caption.marginRight);
   }
   return widest;

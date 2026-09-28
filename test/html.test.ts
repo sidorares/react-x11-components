@@ -4021,6 +4021,39 @@ test("white space between a table's parts is no cell, kept or not", async () => 
   assert.deepStrictEqual([c.x, c.y], [t.x, t.y], 'the cell is the first');
 });
 
+test("an auto table is as wide as its caption's own width", async () => {
+  // CSS 2.1 17.4: the caption's least width is the table's, and one set to
+  // a length has that one; measured at no width, an empty caption set to
+  // 100px counted nothing, and the table under it was as narrow as its
+  // empty cell
+  const { node } = await render(
+    '<table id="t" style="border-spacing:0"><caption style="width:100px">' +
+      '</caption><tr><td style="padding:0"></td></tr></table>',
+  );
+  assert.strictEqual(boxOf(view(node), 't').width, 100);
+});
+
+metric(
+  'white space beside what a table wraps in a cell stays in it',
+  async () => {
+    // CSS 2.1 17.2.1, rule 1: it goes only between two of a table's parts;
+    // between two inline boxes in a row it is the anonymous cell's, as it is
+    // between two loose ones in a table, and it was dropped from both
+    const { node } = await render(
+      '<div style="display:table-row"><span id="a">a</span> <span>b</span></div>' +
+        '<div style="display:table"><span id="c">a</span> <span>b</span></div>' +
+        '<div style="display:table"><div id="ref" style="display:table-cell">' +
+        'a b</div></div>',
+    );
+    const el = view(node);
+    const cellOf = (id: string) =>
+      (boxOf(el, id) as LaidBox & { parent: LaidBox }).parent;
+    const ref = boxOf(el, 'ref').width;
+    assert.strictEqual(cellOf('a').width, ref, 'in a row: as wide as "a b"');
+    assert.strictEqual(cellOf('c').width, ref, 'loose in a table: the same');
+  },
+);
+
 test('a float is painted over the backgrounds of the blocks after it', async () => {
   // CSS 2.1 Appendix E: every in-flow block's background, then the floats,
   // then the lines. Painted a block at a time, the shaded paragraph beside

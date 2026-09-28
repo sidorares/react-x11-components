@@ -2241,21 +2241,35 @@ function wrapOrphans(
     }
   }
   if (!needed) return;
+  // White space goes only between two of the parts, or beside one at an
+  // end (CSS 2.1 17.2.1, rule 1): beside a child the fix-up wraps, it is
+  // that child's run's, so `<span>a</span> <span>b</span>` in a row is one
+  // anonymous cell of `a b`, where it was `ab`
   const next: Box[] = [];
   let run: Box[] | null = null;
+  let space: Box[] = [];
   for (const child of box.children) {
     if (accept(child.kind)) {
       if (run) {
+        run.push(...space);
         next.push(anonymousOf(box, kind, run, anonymous));
         run = null;
       }
+      space = [];
       next.push(child);
       continue;
     }
-    if (isDroppableWhitespace(child)) continue;
-    (run ??= []).push(child);
+    if (isDroppableWhitespace(child)) {
+      space.push(child);
+      continue;
+    }
+    (run ??= []).push(...space, child);
+    space = [];
   }
-  if (run) next.push(anonymousOf(box, kind, run, anonymous));
+  if (run) {
+    run.push(...space);
+    next.push(anonymousOf(box, kind, run, anonymous));
+  }
   box.children = next;
 }
 
@@ -2409,6 +2423,9 @@ function fixUpTable(table: Box, anonymous: AnonymousStyle): void {
     } else if (child.kind === 'table-caption') {
       captions.push(child);
     } else if (isDroppableWhitespace(child)) {
+      // after a loose child it goes with the loose children, and the cells
+      // they are wrapped in say whether it stays (`wrapOrphans`)
+      if (looseCells) looseCells.push(child);
       continue;
     } else if (child.kind === 'table-row') {
       flushCells();
