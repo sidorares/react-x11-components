@@ -1436,6 +1436,16 @@ function placeBlock(
   // `<center>` and `align`)
   const aligned = leftAuto || rightAuto ? null : box.parent?.style.alignBlocks;
   let left = contentLeft + box.marginLeft;
+  // In the unbounded room a shrink-to-fit probe lays a box out in, there is
+  // no slack to share: half of an infinite one put an auto-margined box at
+  // x = Infinity, and the pass after moved it from there by a finite amount
+  // — NaN, which went up every ink bound above it and left a whole article
+  // unpainted.
+  if (!Number.isFinite(slack)) {
+    box.x = left;
+    box.y = y;
+    return;
+  }
   if (slack > 0) {
     if (leftAuto && rightAuto) left = contentLeft + slack / 2 + box.marginLeft;
     else if (aligned) {
@@ -2361,6 +2371,11 @@ function containingBlockFor(box: Box): Box | null {
 
 /** Move a box and everything under it, keeping the subtree's shape. */
 export function moveTo(box: Box, x: number, y: number): void {
+  // A position only a probe of an unbounded width comes to — a column after
+  // an infinitely wide one — is no place to move a box to: it stays where
+  // it is, since the probe only wants its size, and the pass after moves it
+  // from somewhere finite (see `placeBlock`).
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return;
   translate(box, x - box.x, y - box.y);
 }
 

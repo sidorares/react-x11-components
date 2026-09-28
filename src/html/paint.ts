@@ -257,6 +257,12 @@ export function computePaintBounds(box: Box, moved = false): number {
     box.boundsHeight = y2 - y1;
   }
   buildChildIndexes(box);
+  // A box with no rectangle reaches as far as what it holds, and no
+  // further: its `y` and `height` were never laid out, but moving a laid
+  // out subtree (`translate`) moves them with the rest, so they add up
+  // across passes. A flex item laid out at one width and then another had a
+  // link in it reach a document's height below its end.
+  if (!own) return bottom;
   // whether the box clips only matters where its content reaches past it,
   // and its style is one more object a walk of every box would read
   const end = box.y + box.height;

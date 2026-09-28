@@ -864,6 +864,65 @@ metric('display:flex lays out through yoga', async () => {
 });
 
 metric(
+  'an inline box laid out again reaches no further than its text',
+  async () => {
+    // A flex item's subtree is laid out and then moved into place, and the
+    // move shifted the inline boxes in it too, whose position is never laid
+    // out, so each pass added to it. A page whose first layout was at a
+    // width of 1 — a window before its size is known — measured a card grid
+    // with a <span> in each card three times its height.
+    const { node } = await render(
+      '<style>body{margin:0}.grid{display:flex;flex-wrap:wrap}' +
+        '.grid a{display:block;width:120px;height:40px}' +
+        '.grid b{display:block}</style>' +
+        '<div class="grid">' +
+        '<a><b>One</b><span>a note</span></a><a><b>Two</b><span>a note</span></a>' +
+        '<a><b>Three</b><span>a note</span></a><a><b>Four</b><span>a note</span></a>' +
+        '</div>',
+      300,
+    );
+    const el = view(node) as unknown as {
+      measureContent(constraints: { width: number }): { height: number };
+    };
+    const settled = el.measureContent({ width: 300 }).height;
+    // two cards a row at 300px, and room for them at every width below
+    for (const width of [1, 290, 2, 280, 3, 270]) el.measureContent({ width });
+    assert.strictEqual(el.measureContent({ width: 260 }).height, settled);
+  },
+);
+
+metric('a probe of an unbounded width puts no box at infinity', async () => {
+  // A flex item is measured at its max-content width, a layout in unbounded
+  // room. Its table's cell centred a block by its auto margins in that room
+  // — at x = Infinity — and the pass after moved the image in it from there
+  // by a finite amount: NaN, which went up every ink bound above it and left
+  // everything under the flex container unpainted. Wikipedia's navboxes are
+  // this shape, and the article under them did not draw.
+  const { node } = await render(
+    '<div style="display:flex"><div><table><tr><td>list</td><td>' +
+      '<div style="margin:0 auto;width:80px"><img width="64" height="64">' +
+      '</div></td></tr></table></div></div><p>after</p>',
+    400,
+  );
+  type Laid = {
+    x: number;
+    y: number;
+    boundsX: number;
+    boundsWidth: number;
+    children: Laid[];
+  };
+  const root = (view(node) as unknown as { _tree: { root: Laid } })._tree.root;
+  const bad: Laid[] = [];
+  const walk = (box: Laid): void => {
+    if (!Number.isFinite(box.x) || !Number.isFinite(box.y)) bad.push(box);
+    for (const child of box.children) walk(child);
+  };
+  walk(root);
+  assert.strictEqual(bad.length, 0, 'every box has a place');
+  assert.ok(Number.isFinite(root.boundsX) && Number.isFinite(root.boundsWidth));
+});
+
+metric(
   'a fragment gets the body margin it would have had inside <body>',
   async () => {
     const { node } = await render(
