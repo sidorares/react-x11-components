@@ -10,6 +10,10 @@ RESULT {"suite":"docs","comp":"md","action":"edit","backend":"cocoa","fps":9,"fr
 
 They need a display — a real `$DISPLAY` for `x11`, a Mac for `cocoa` — and
 the window has to stay uncovered: an occluded Cocoa window gets no frames.
+On a Mac, keep the `$DISPLAY` a login shell has, launchd's XQuartz socket,
+rather than a display number: XQuartz crashes in the GL cells over 2,000
+nodes, and the socket starts it again for the next cell, where `:29` leaves
+every cell after the crash failing to connect.
 
 | Probe             | What                                     | `ACTION=`                                                                                                                                                                                 |
 | ----------------- | ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

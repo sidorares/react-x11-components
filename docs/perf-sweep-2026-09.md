@@ -2852,6 +2852,142 @@ frame at a load of 9; on a quiet machine the cell is 8.9 ms.
   constructor and inserting it, 50–120 ms each over a run. No single one
   is left worth taking alone.
 
+## Round 28: the Mac, after the correctness rounds again
+
+The M1 Pro with its built-in panel alone, X11 through XQuartz. `<Html>` went
+through fourteen more rounds of conformance work between round 24 and this
+one, #258 to #279, and passes 5,554 of the CSS 2.1 suite's reftests on X11
+where it passed 5,486.
+
+### What they cost
+
+The documents suite on master before them (6a70961) and after them
+(3d0f4b9): one lockfile, interleaved, medians of two runs each. Input to
+paint, p50; every other cell held.
+
+| cell                | X11 before |   after | Cocoa before |   after |
+| ------------------- | ---------: | ------: | -----------: | ------: |
+| Markdown, an edit   |      40 ms |   28 ms |      46.7 ms | 34.7 ms |
+| Markdown, an append |    47.4 ms | 32.7 ms |      57.9 ms | 42.8 ms |
+| `<Html>`, an append |    51.6 ms | 57.4 ms |        57 ms | 63.1 ms |
+
+The two Markdown gains are round 25's #262 and #263, which landed among the
+rounds. The third is this round's.
+
+### Every element asked for its `::before`
+
+Bisected across the rounds' commits on X11, two passes of two runs each:
+about 2 ms spread over the rounds before it, none clear of its own noise,
+and 4.3 ms at #278, which gave the user-agent sheet `q::before` and
+`q::after`.
+
+The cascade keeps pseudo-element rules in indexes of their own and asks one
+only when it holds a rule, so a document with none of its own asked
+nothing. With the quotation marks both held a rule, in every document, and
+every element asked both — its id looked up, its `class` split into words,
+its tag and the universal bucket read — to find nothing but on a `<q>`. An
+index now answers whether any of its buckets could hold a rule for an
+element, by its tag first, before anything is matched.
+
+The append is back where it was before #278, three runs each: 58.4 →
+53.6 ms on X11, where it was 53.1, and 62.1 → 58.4 on Cocoa, where it was
+58.2. The CSS 2.1 run on X11 passes the same 5,554 tests.
+
+### The whole sweep, against the tree round 24's ran on
+
+`run.sh` on master after the rounds, against round 24's sweep, flagged cells
+in six families. Each was run again interleaved on three trees: the one
+round 24's sweep ran on (a89ed37, on ntk 8.12.11 and react-x11 2.22.9),
+master before #277, and master. Most of it was the machine:
+
+- every `<CodeEditor>` cell on X11, 1.1 → 2.4 ms from sweep to sweep and
+  2.0–2.6 ms on all three trees, and its replace, 18.4–18.9 ms;
+- the charts' stream, 8–10 ms a frame on all three;
+- the rich text editor's bold-all and paste, on both backends;
+- the Cocoa code editor's cells.
+
+Two things were not:
+
+- **`<Flow>`'s 2D pans on X11**, of the lattice and the fan-out, 82 →
+  62–69 fps, and **`<Map>`'s GL wheel**, 60 → 54–56. Every source tree over
+  round 24's ntk runs them fast, and every one over ntk 8.12.13 or 8.13.0
+  slow. Between the two releases are ntk #401, the Linux round's frame
+  pacing, and #404, a clip of no area; ntk 8.13.0 with #401 alone taken out
+  runs them at 80–82 and 58–61 again. The next section is why. The charts
+  scene's pan went from 68 to 63 fps too, and was not bisected.
+- **Long-line typing on Cocoa** paints 47 frames a second for 62.5 keys,
+  where it painted 54: #268 lays a long line's pieces out when something
+  asks. Key to paint stays at 9.7 ms, its p95 went from 14.0 to 10.6 ms and
+  the CPU from 71% to 58%, so some keystrokes now share a frame, which
+  nobody sees.
+
+### Two frames in flight on XQuartz (ntk #401)
+
+XQuartz ends frames on the fence, and its interval is 8.33 ms, the 120 Hz
+panel's. ntk #401 counts the interval from a frame's start rather than its
+end. Before it, a pan frame of 3.5 ms was followed by the whole interval, 12
+ms in all, and XQuartz had answered its fence (4–7 ms) before the next one
+started: one frame was in flight at a time. Now the next frame starts 4.8
+ms after the last one ends, before that answer, and two are in flight. With
+two queued, XQuartz answers a fence every 16.6 ms, and the pan runs at the
+rate of the answers.
+
+Taking #401 out is not the answer. On the same machine it took `<Table>`'s
+fling from 60 to 89 fps, and neither limit wins every cell. Two runs each,
+ntk 8.13.0 on XQuartz, fps:
+
+| cell                      | #401, two in flight (now) | #401, one in flight | without #401 |
+| ------------------------- | ------------------------: | ------------------: | -----------: |
+| `<Flow>` fan-out, 2D pan  |                      66.2 |                89.7 |    80.5–81.7 |
+| `<Flow>` lattice, 2D pan  |                 64.7–71.5 |           90.2–90.5 |    80.5–82.0 |
+| `<Flow>` widgets, GL pan  |                 67.4–67.8 |           80.5–81.8 |    64.6–66.4 |
+| `<Flow>` widgets, 2D drag |                 78.6–79.2 |           80.2–81.7 |    74.7–75.3 |
+| `<Map>` GL wheel          |                 56.5–57.2 |           53.2–55.4 |    61.4–61.6 |
+| `<Table>` fling           |                 89.4–89.8 |           78.2–78.4 |    59.6–59.7 |
+
+The retained map's pan is the same in all three, and typing within 0.4 ms.
+ntk's own drag bench, a card under a 120 Hz pointer, keeps what it was
+written to show: 114–117 fps at two in flight, 95–100 at one.
+
+One frame in flight would beat the Mac as it was before #401 in every cell
+but the map's wheel, and give back an eighth of the fling and a sixth of
+the drag bench. What makes a full-window pan so much slower than a fling
+with two frames queued is inside XQuartz, and was not found. The choice is
+ntk's, and so is any limit that adapts, dropping to a frame in flight while
+the answers come a refresh apart; none was tried here.
+
+### A server that crashed under the sweep
+
+XQuartz crashes in `<Flow>`'s GL cells over 2,000 nodes, a bus error in its
+own code: at 16:51 during round 24's sweep, and twice during this one. Round
+24's sweep lost nothing to it, because its `DISPLAY` was launchd's socket,
+which starts XQuartz again for the next client. This round's named the
+display, `:29` and then `:30`, and every cell after the crash failed to
+connect. The sweep's README says so now.
+
+### What a drag feels like on the Mac (#257)
+
+`scripts/bench/frames/e2p.tsx` times a pointer move to the frame that shows
+it, on the window server's own clock. A `<Flow>` node dragged in the stress
+example's widgets scene at zoom 0.95 is 50–54 ms from event to pixel under
+GL, and 40–44 under 2D.
+
+The GL frame is swapped 18 ms after the event, before the 2D one has
+flushed at 25–26. It then takes 31.5 ms to reach the screen, against the
+flush's 15–17: two of the display's frames more. The same numbers came from
+the morning's master, from master before #251, and with core 2.22.8 in
+place of 2.22.10. That last one clears react-x11 #722, which puts a tick's
+GL frame and overlay in one Core Animation commit: it is in 2.22.10 and not
+in 2.22.8. What is left is how a `<glarea>`'s surface reaches the screen on
+Cocoa, which is core's.
+
+### Still open on this machine
+
+- **Frames in flight on XQuartz**, which are ntk's to choose: the table
+  above.
+- **XQuartz's crash** in the GL lattice cells, which is XQuartz's.
+- **The GL surface's two extra frames on Cocoa**, which are core's.
+
 ## Lessons
 
 1. **Look for caches that never hit.** Identity-keyed caches handed a new
@@ -3025,6 +3161,22 @@ frame at a load of 9; on a quiet machine the cell is 8.9 ms.
 --no-save` of the tarball already installed does nothing, so a
     hand-patched `node_modules` stays patched and an A/B runs one side
     twice. Remove the package first, and diff it against its source.
+41. **A rule in the user-agent sheet is in every document.** An index that
+    is asked only when it holds a rule is free for a document with none of
+    its own, until the user-agent sheet gives it one. #278's two
+    quotation-mark rules made every element of every document ask two
+    indexes for nothing. Check what a user-agent rule wakes up, not only
+    what it styles.
+42. **A/B against the tree the baseline ran on.** Round 28's first A/Bs
+    used the tree after round 23's fixes, two ntk releases later than the
+    sweep they were checking, and cleared every cell. Against the tree round
+    24's sweep ran on, two were real, and one was in those releases. Write down
+    a sweep's tree and its lockfile, and A/B that.
+43. **A pacing change moves every limit tuned under the old pacing.** ntk
+    chose two frames in flight on XQuartz under a timer armed at a frame's
+    end, which kept its frames apart by itself. The start-to-start timer of
+    the Linux round let them queue, and the Mac's pans lost a fifth, where
+    no Linux cell could show it.
 
 ## Still open
 
