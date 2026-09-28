@@ -394,7 +394,9 @@ a table: the body table of a mail stands in the middle of its
 auto margins is centred once it has shrunk to its columns, so a mail's
 button, a one-cell `<table align="center">`, stands in the middle.
 
-**Text:** `font` and its longhands, the `font-variant` longhands,
+**Text:** `font` and its longhands (the generic `monospace`, as the whole
+of a family list, at 13/16 of the size the others take, as in a
+browser), the `font-variant` longhands,
 `font-kerning` and `font-feature-settings` (the font's own OpenType
 features: small capitals where the font has them, none synthesized),
 `text-shadow` (any number, blurred or hard), `line-height`, `text-align` (with
