@@ -451,6 +451,162 @@ test('the passes of one frame cull the graph once, and draw what they would alon
   }
 });
 
+/** Two passes that draw the same: the same edges, runs, heads and plates. */
+function sameScene(got: FlowScene, want: FlowScene, message: string): void {
+  assert.deepStrictEqual(
+    got.edges.map((e) => e.id),
+    want.edges.map((e) => e.id),
+    `${message}: the edges`,
+  );
+  for (let i = 0; i < want.edges.length; i++) {
+    const g = got.edges[i];
+    const w = want.edges[i];
+    const at = `${message}, ${w.id}`;
+    assertSameLine(g.points, w.points, `${at} stroke`);
+    assert.strictEqual(g.runs?.length, w.runs?.length, `${at} runs`);
+    for (let r = 0; r < (w.runs?.length ?? 0); r++) {
+      assertSameLine(g.runs![r], w.runs![r], `${at} run ${r}`);
+    }
+    assert.strictEqual(g.markers.length, w.markers.length, `${at} heads`);
+    for (let m = 0; m < w.markers.length; m++) {
+      assertSameLine(g.markers[m].points, w.markers[m].points, `${at} head`);
+    }
+    assert.deepStrictEqual(g.chip, w.chip, `${at} plate`);
+    assert.strictEqual(g.label?.text, w.label?.text, `${at} label`);
+  }
+  // and the box the dash ticks repaint, which every marching edge on screen
+  // is in whatever this pass reaches
+  assert.strictEqual(got.animated, want.animated, `${message}: marching`);
+  const box = (r: FlowScene['animBox']): XYPosition[] =>
+    r
+      ? [
+          { x: r.x, y: r.y },
+          { x: r.x + r.width, y: r.y + r.height },
+        ]
+      : [];
+  assertSameLine(box(got.animBox), box(want.animBox), `${message}: dash box`);
+}
+
+test('an edge no pass reaches is left behind, and caught up by the one that does', () => {
+  // A long edge's coarse box reaches strips and corners its curve never
+  // comes near, and a cached route that cannot reach the pass is not moved
+  // to the frame at all (`SceneCache.route`'s `within`). What has to hold is
+  // that every pass still draws what it would with no cache — an edge left
+  // behind for a few frames lands where it belongs in the first pass that
+  // reaches it, with every pan it missed added up.
+  const cols = 9;
+  const count = 54;
+  const nodes: SceneNodeSource[] = [];
+  for (let i = 0; i < count; i++) {
+    nodes.push(
+      source(node(`n${i}`, (i % cols) * 170, Math.floor(i / cols) * 90)),
+    );
+  }
+  // the stress example's lattice: a row down and a few columns on, wrapping
+  // at the end of each row and at the bottom into edges across the graph
+  const edges: FlowEdge[] = [];
+  for (let i = 0; i < count; i++) {
+    for (const k of [1, 2]) {
+      edges.push({
+        id: `e${i}-${k}`,
+        source: `n${i}`,
+        target: `n${(i + cols + k * 3) % count}`,
+        type: TYPES[(i + k) % TYPES.length],
+        label: i % 7 === 0 ? `w${i}` : undefined,
+        animated: i % 11 === 0,
+        markerStart: i % 5 === 0 ? 'arrow' : undefined,
+      });
+    }
+  }
+  // a 2D frame's passes: the strips a pan exposes, the rounded corners, the
+  // minimap and the controls repaired in place, and a whole repaint
+  const clips = [
+    { x: 0, y: 0, width: 2, height: 800 },
+    { x: 1198, y: 0, width: 2, height: 800 },
+    { x: 0, y: 795, width: 5, height: 5 },
+    { x: 1195, y: 0, width: 5, height: 5 },
+    { x: 990, y: 650, width: 194, height: 132 },
+    { x: 1150, y: 100, width: 37, height: 89 },
+    null,
+  ];
+  const cache = new SceneCache();
+  let left = 0;
+  const route = cache.route.bind(cache);
+  cache.route = (...args: Parameters<SceneCache['route']>) => {
+    const routed = route(...args);
+    if (routed === null && args[6]) left++;
+    return routed;
+  };
+  // Whole pixels and one half, which floats add exactly: a plate is rounded
+  // where it is built, and drift would be a different test.
+  let v: Viewport = { x: 0.5, y: 0, zoom: 0.5 };
+  for (let step = 0; step < 24; step++) {
+    v =
+      step === 12
+        ? { ...v, zoom: 0.75 }
+        : { x: v.x - 7, y: v.y + (step % 3) - 1, zoom: v.zoom };
+    // and only some of the passes each frame, as a pan's strips come and go
+    for (const clip of clips.filter((_, i) => (step + i) % 3 !== 0)) {
+      sameScene(
+        buildScene({ ...input(nodes, edges, v, cache), clip }),
+        buildScene({ ...input(nodes, edges, v), clip }),
+        `step ${step}, the pass over ${JSON.stringify(clip)}`,
+      );
+    }
+  }
+  assert.ok(left > 100, `${left} routes were left where they were`);
+});
+
+test('a head or a plate past its route still reaches the pass that holds it', () => {
+  // What can land outside a route's box: its heads, by their size — a big
+  // one here, its far corner the pass — and a label's plate, which is sized
+  // by its text, so an edge with a label is never left behind: a short edge
+  // with a long name, and the pass over the end of the name.
+  const nodes = [
+    source(node('a', 0, 0)),
+    source(node('b', 300, 0)),
+    source(node('c', 0, 200)),
+    source(node('d', 130, 200)),
+  ];
+  const edges: FlowEdge[] = [
+    {
+      id: 'head',
+      source: 'a',
+      target: 'b',
+      type: 'straight',
+      markerEnd: { type: 'arrowclosed', size: 60 },
+    },
+    {
+      id: 'plate',
+      source: 'c',
+      target: 'd',
+      type: 'straight',
+      markerEnd: null,
+      label: 'a name far longer than the edge it is on',
+    },
+  ];
+  const v: Viewport = { x: 0, y: 0, zoom: 1 };
+  const whole = buildScene(input(nodes, edges, v));
+  const head = whole.edges.find((e) => e.id === 'head')!.markers[0].points;
+  const plate = whole.edges.find((e) => e.id === 'plate')!.chip!.rect;
+  const low = head.reduce((a, p) => (p.y > a.y ? p : a));
+  const cache = new SceneCache();
+  // routed once from somewhere else, so the passes below are cache hits
+  buildScene(input(nodes, edges, { x: -10, y: 0, zoom: 1 }, cache));
+  for (const clip of [
+    { x: low.x - 1, y: low.y - 1, width: 2, height: 2 },
+    { x: plate.x + plate.width - 3, y: plate.y, width: 2, height: 4 },
+  ]) {
+    const cached = buildScene({ ...input(nodes, edges, v, cache), clip });
+    assert.strictEqual(cached.edges.length, 1, JSON.stringify(clip));
+    sameScene(
+      cached,
+      buildScene({ ...input(nodes, edges, v), clip }),
+      `the pass over ${JSON.stringify(clip)}`,
+    );
+  }
+});
+
 test('a minimap’s run of one colour is one fill, in the order it was drawn', () => {
   // A call apiece was 400 of them on every repaint of a drag. Runs are
   // consecutive, not grouped: two colours that overlap keep their order.
