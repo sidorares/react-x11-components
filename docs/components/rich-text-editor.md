@@ -123,7 +123,7 @@ The `ref`. Everything the toolbar does, it does through this.
 | `insertContent(value, format?)`               | Insert markdown, HTML, text or a node at the selection; a single paragraph joins the one the caret is in.                  |
 | `run(command)`, `can(command)`                | Run a ProseMirror command, or ask whether it could run now — what greys a toolbar button.                                  |
 | `isActive(name, attrs?)`                      | A mark on the selection, or a node (with attributes) around it: `isActive('strong')`, `isActive('heading', { level: 2 })`. |
-| `toggleMark(name, attrs?)`                    |                                                                                                                            |
+| `toggleMark(name, attrs?)`                    | prosemirror-commands' `toggleMark`, except that a mark added across blocks is one step, not one a paragraph.               |
 | `setBlock(name, attrs?)`                      | A textblock type — back to a paragraph when it already is one.                                                             |
 | `toggleList(name)`, `toggleWrap(name)`        | `toggleList('bullet_list')`, `toggleWrap('blockquote')`.                                                                   |
 | `undo()`, `redo()`                            |                                                                                                                            |

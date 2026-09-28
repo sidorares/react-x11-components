@@ -30,7 +30,6 @@ import type { ReactElement, ReactNode } from 'react';
 import type { MouseEvent as X11MouseEvent } from 'react-x11';
 import { tint } from 'react-x11/style';
 import type { Style } from 'react-x11/style';
-import { toggleMark } from 'prosemirror-commands';
 import { redo, redoDepth, undo, undoDepth } from 'prosemirror-history';
 import type { Schema } from 'prosemirror-model';
 import type { Command, EditorState } from 'prosemirror-state';
@@ -48,6 +47,7 @@ import {
   toggleWrap,
 } from './commands.js';
 import type { EditorLook } from './look.js';
+import { toggleMark } from './marks.js';
 import {
   addColumnAfter,
   addColumnBefore,

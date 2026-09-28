@@ -50,7 +50,6 @@ import type {
 import { XK_ESCAPE, XK_KP_ENTER, XK_RETURN } from 'react-x11/keysyms';
 import { tint } from 'react-x11/style';
 import type { Style } from 'react-x11/style';
-import { toggleMark } from 'prosemirror-commands';
 import { redo, undo } from 'prosemirror-history';
 import { Fragment, Slice } from 'prosemirror-model';
 import type { Node as PMNode, Schema } from 'prosemirror-model';
@@ -80,6 +79,7 @@ import type { DropAnswer } from './drag.js';
 import { docFromHTML, htmlFromContent } from './html.js';
 import { defaultPlugins } from './keymap.js';
 import { deriveLook } from './look.js';
+import { toggleMark } from './marks.js';
 import type { MarkStyle } from './look.js';
 import { docFromText, markdownCodec, textFromDoc } from './markdown.js';
 import type { MarkdownCodec } from './markdown.js';
