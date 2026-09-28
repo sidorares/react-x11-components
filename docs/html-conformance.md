@@ -174,6 +174,7 @@ npx tsx scripts/conformance/run.ts wpt fuzz1 --chunk 50 --timeout 60000
 | 85     | a cell's content in a height of its own            | 5,544 (93%) | 5,015 (84%) |
 | 86     | XHTML style sheets as XML reads them               | 5,548 (93%) | 5,019 (84%) |
 | 87     | a document's language, and attribute selectors     | 5,550 (93%) | 5,021 (84%) |
+| 88     | a `<q>` in quotation marks                         | 5,550 (93%) | 5,021 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -2502,6 +2503,17 @@ they set a `<pre>` beside their floats and the user-agent sheet's own
      title of spaces: the matcher's `~=` took the empty word for the
      one between two spaces, and is handed a selector that matches
      nothing in its place.
+
+### Round 88
+
+198. **A `<q>` had no quotation marks.** HTML's rendering puts them there
+     with `q::before { content: open-quote }` and its close, and the
+     user-agent sheet did not have the rule, though `<Html>` has had
+     `open-quote`, `close-quote` and `quotes` since round 2: a
+     quotation was bare, and a nested one no different. They take the
+     `quotes` in force, so `q:lang(fr) { quotes: "« " " »" }` gives a
+     French one its guillemets. No CSS 2.1 reftest has a `<q>`;
+     `css-content`, which has six, passes 16 of its 63 where it passed 10.
 
 ## What `<Html>` supports
 
