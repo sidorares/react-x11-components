@@ -1522,6 +1522,53 @@ test('typing at the end of a long line shapes the piece it lands in, not the lin
   assert.strictEqual(node.value, `${line}xxxxx`);
 });
 
+test('an edit keeps the pieces before it as they were, and builds nothing for them', async () => {
+  // Typing at the end of a line of a million characters built a key from
+  // every piece's text and looked each one up, on every keystroke: most of
+  // 34 ms a key. The pieces an edit left alone — the same text at the same
+  // place, in the same colours — are now the old pieces themselves.
+  const line = 'let alpha = beta(gamma, { delta: 1 }); '.repeat(160);
+  await renderX11(h(CodeEditor, { defaultValue: line }), {
+    width: 600,
+    height: 200,
+  });
+  const node = editorNode();
+  type Pieces = { chunks: ReadonlyArray<{ u16: number; text: string }> };
+  const pieces = () =>
+    (node as unknown as LineInternals)._lineEntry(0)
+      .layout as unknown as Pieces;
+  const before = pieces().chunks;
+  assert.ok(before.length > 3, `${before.length} pieces`);
+  const end = { line: 0, ch: line.length };
+  node.select(end, end);
+  node.insertText('x');
+  await act(() => {});
+  const after = pieces().chunks;
+  // every piece but the last is the one it was, object for object
+  for (let k = 0; k < before.length - 1; k++) {
+    assert.strictEqual(after[k], before[k], `piece ${k} was rebuilt`);
+  }
+  assert.strictEqual(
+    after.map((c) => c.text).join(''),
+    `${line}x`,
+    'and the pieces are the line',
+  );
+  // an edit in the middle keeps the pieces before it, not the ones after
+  const mid = { line: 0, ch: before[2].u16 + 5 };
+  node.select(mid, mid);
+  node.insertText('y');
+  await act(() => {});
+  const again = pieces().chunks;
+  assert.strictEqual(again[0], after[0]);
+  assert.strictEqual(again[1], after[1]);
+  assert.notStrictEqual(again[2], after[2], 'the piece it landed in is new');
+  assert.strictEqual(
+    again.map((c) => c.text).join(''),
+    node.value,
+    'and the pieces are still the line',
+  );
+});
+
 test('a jump far into a fresh file paints a guess, then the tokens the walk found', async () => {
   // The first jump to the end of a file tokenized every line above it
   // first. Now the lines in view run from a guess — here the top level,
