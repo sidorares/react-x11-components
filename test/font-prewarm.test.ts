@@ -25,16 +25,27 @@ const h = React.createElement;
 
 afterEach(cleanup);
 
+/** A stand-in for `FontManager#prewarm` that records the families warmed
+ *  whole. An `<Html>` document also asks for the faces its text is set in
+ *  once its boxes are built, and those calls name them (html.test.ts). */
+function recordFamilies(families: string[]) {
+  return (family: string, faces?: unknown) => {
+    if (faces === undefined) families.push(family);
+  };
+}
+
 /** What mounting `element`, and rendering it again unchanged, asked the
  *  app's fonts to warm, in order. */
 async function asked(element: ReactElement): Promise<string[]> {
   const families: string[] = [];
   let stubbed = false;
   function Probe(props: { children?: ReactNode }): ReactNode {
-    const app = useApp() as { fonts?: { prewarm?: (f: string) => void } };
+    const app = useApp() as {
+      fonts?: { prewarm?: (f: string, faces?: unknown) => void };
+    };
     if (!stubbed && app.fonts) {
       stubbed = true;
-      app.fonts.prewarm = (family: string) => void families.push(family);
+      app.fonts.prewarm = recordFamilies(families);
     }
     return props.children ?? null;
   }
@@ -112,10 +123,14 @@ test('an HTML document warms the mono family only when it has code', async () =>
 
 test('a streamed HTML document warms the mono family when code arrives', async () => {
   const families: string[] = [];
+  let stubbed = false;
   function Probe(props: { children?: ReactNode }): ReactNode {
-    const app = useApp() as { fonts?: { prewarm?: (f: string) => void } };
-    if (app.fonts && !families.length) {
-      app.fonts.prewarm = (family: string) => void families.push(family);
+    const app = useApp() as {
+      fonts?: { prewarm?: (f: string, faces?: unknown) => void };
+    };
+    if (app.fonts && !stubbed) {
+      stubbed = true;
+      app.fonts.prewarm = recordFamilies(families);
     }
     return props.children ?? null;
   }

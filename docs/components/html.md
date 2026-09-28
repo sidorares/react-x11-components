@@ -788,6 +788,19 @@ frame of a resize at 600 KB went from 172 to 92 ms on macOS and from 124
 to 59 ms on XQuartz, and the first paint from 581 to 521 ms and from 549
 to 464 ms.
 
+**A document's faces are asked for as soon as its boxes say which.** A face
+the application had not set text in before was a synchronous `fc-match`
+inside the layout that first reached it: the benchmark report's `th`, at
+600, waited 38 ms before its first paint. The box build now keeps the
+styles its text is set in, and every face among them the fonts have not
+been asked for is warmed before layout starts (ntk's `FontManager#prewarm`),
+in one child process for all of them, off the event loop. A layout that
+reaches a face still on its way takes the answer rather than asking again.
+The report's first paint went from 954 to 928 ms on X11, and an edit pays
+about 0.15 ms for keeping the styles. Where the fonts have nothing to look
+up, a native text engine or faces handed over in memory, the call does
+nothing.
+
 ## Types
 
 `Document`, `Element`, `AnyNode`, `ChildNode` and `ParentNode` are

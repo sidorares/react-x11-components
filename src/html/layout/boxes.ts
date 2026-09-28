@@ -566,6 +566,10 @@ export interface BoxTree {
   text: string;
   /** Text boxes in document order — the selection binary-searches this. */
   textBoxes: Box[];
+  /** The styles text is set in, each once: the faces a host warms before
+   *  laying the text out, found here rather than by walking `textBoxes`
+   *  again after every build. */
+  textStyles: Set<ComputedStyle>;
   /** Every replaced box that needs a real widget, in document order. */
   controls: Box[];
   /** Every box carrying an `href`, for click and hover. */
@@ -656,6 +660,10 @@ class Builder {
   private _chunks: string[] = [];
   private _length = 0;
   private _textBoxes: Box[] = [];
+  private _textStyles = new Set<ComputedStyle>();
+  /** The last text box's style: runs of text share their parent's, so
+   *  most text boxes repeat it and add nothing to `_textStyles`. */
+  private _lastTextStyle: ComputedStyle | null = null;
   private _controls: Box[] = [];
   private _links: Box[] = [];
   private _backgrounds: Box[] = [];
@@ -715,6 +723,7 @@ class Builder {
       root: rootBox,
       text: this._chunks.join(''),
       textBoxes: this._textBoxes,
+      textStyles: this._textStyles,
       controls: this._controls,
       links: this._links,
       backgrounds: this._backgrounds,
@@ -1627,7 +1636,13 @@ class Builder {
     this._chunks.push(text);
     this._length += text.length;
     box.textEnd = this._length;
-    if (box.kind === 'text') this._textBoxes.push(box);
+    if (box.kind === 'text') {
+      this._textBoxes.push(box);
+      if (box.style !== this._lastTextStyle) {
+        this._lastTextStyle = box.style;
+        this._textStyles.add(box.style);
+      }
+    }
   }
 }
 
