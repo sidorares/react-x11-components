@@ -688,6 +688,7 @@ function paintOwnBackground(
   // painted in its cells' areas with the table's (`paintPartBackgrounds`),
   // and its borders are the collapsed grid's or none (CSS 2.1 17.6.1)
   if (box.kind === 'table-row' || box.kind === 'table-row-group') return;
+  if (hidden(box)) return;
   const style = box.style;
   if (style.boxShadow) paintShadows(ctx, box, options, false);
   if (box !== options.canvasSource) {
@@ -2185,7 +2186,7 @@ function paintPartBackgrounds(
     const columns = indexOf === columnOf;
     for (const cell of cells) {
       const part = layer[indexOf(cell)];
-      if (!part || !paintsPart(part)) continue;
+      if (!part || !paintsPart(part) || hidden(cell.box)) continue;
       const box = cell.box;
       const frame: Frame = {
         x: box.x,
@@ -2230,6 +2231,30 @@ function paintPartBackgrounds(
 }
 
 const columnOf = (cell: Cell): number => cell.column;
+
+/**
+ * A cell `empty-cells: hide` leaves undrawn: one with no content, where
+ * borders are separate — no background of its own or of its row, its
+ * column or their groups, and no borders (CSS 2.1 17.6.1.1). A cell holds
+ * content when anything in its flow does, an empty element or a float
+ * among it, but not white space its `white-space` collapses away.
+ */
+function hidden(cell: Box): boolean {
+  if (cell.kind !== 'table-cell' || cell.style.emptyCells !== 'hide') {
+    return false;
+  }
+  if (cell.bordersCollapsed) return false;
+  for (const child of cell.children) {
+    if (child.outOfFlow) continue;
+    if (child.kind !== 'text' || !BLANK_TEXT.test(child.text)) return false;
+    const ws = child.style.whiteSpace;
+    if (ws === 'pre' || ws === 'pre-wrap') return false;
+    if (ws === 'pre-line' && /[\n\r]/.test(child.text)) return false;
+  }
+  return true;
+}
+
+const BLANK_TEXT = /^[ \t\n\r\f]*$/;
 
 /** Whether a table part has a background to paint: a colour, or an image. */
 function paintsPart(box: Box | null): boolean {

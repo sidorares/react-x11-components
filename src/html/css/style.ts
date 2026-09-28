@@ -243,6 +243,9 @@ export interface ComputedStyle {
   borderSpacing: number;
   borderSpacingY: number;
   captionSide: 'top' | 'bottom';
+  /** `empty-cells` (CSS 2.1 17.6.1.1): `hide` draws no background and no
+   *  borders for a cell with nothing in it, where borders are separate. */
+  emptyCells: 'show' | 'hide';
   /** Inherited so a `<td>` picks up the table's, which is how authors expect
    *  `text-align` on a `<table>` to behave. */
   tableTextAlignSet: boolean;
@@ -510,6 +513,7 @@ export const INHERITED = [
   'borderSpacing',
   'borderSpacingY',
   'captionSide',
+  'emptyCells',
   'tableTextAlignSet',
   'quotes',
   'custom',
@@ -588,6 +592,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     borderSpacing: 0,
     borderSpacingY: 0,
     captionSide: 'top',
+    emptyCells: 'show',
     tableTextAlignSet: false,
     quotes: DEFAULT_QUOTES,
     custom: null,
@@ -808,6 +813,7 @@ export function inherit(
   out.borderSpacing = parent.borderSpacing;
   out.borderSpacingY = parent.borderSpacingY;
   out.captionSide = parent.captionSide;
+  out.emptyCells = parent.emptyCells;
   out.tableTextAlignSet = parent.tableTextAlignSet;
   out.quotes = parent.quotes;
   out.custom = parent.custom;
@@ -2034,6 +2040,11 @@ export function applyDeclaration(
     case 'caption-side': {
       const v = value.toLowerCase();
       if (v === 'top' || v === 'bottom') style.captionSide = v;
+      return;
+    }
+    case 'empty-cells': {
+      const v = value.trim().toLowerCase();
+      if (v === 'show' || v === 'hide') style.emptyCells = v;
       return;
     }
     case 'border-spacing': {
@@ -3383,6 +3394,7 @@ const INHERITED_NAMES = new Set<string>([
   'cursor',
   'border-collapse',
   'border-spacing',
+  'empty-cells',
   'quotes',
 ]);
 
@@ -3489,6 +3501,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   cursor: ['cursor'],
   'border-collapse': ['borderCollapse'],
   'caption-side': ['captionSide'],
+  'empty-cells': ['emptyCells'],
   quotes: ['quotes'],
   content: ['content'],
   'counter-reset': ['counterReset'],

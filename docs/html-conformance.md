@@ -165,6 +165,7 @@ npx tsx scripts/conformance/run.ts wpt fuzz1 --chunk 50 --timeout 60000
 | 79     | white space in a table's anonymous cells           | 5,536 (93%) | 5,010 (84%) |
 | 80     | a spanning cell's width, and a percentage's        | 5,537 (93%) | 5,011 (84%) |
 | 81     | collapsed borders at corners and at the sides      | 5,539 (93%) | 5,012 (84%) |
+| 82     | `empty-cells: hide`                                | 5,540 (93%) | 5,013 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -2396,6 +2397,18 @@ two agreed.
      half the widest along each side, as this already did at the top
      and the bottom.
 
+### Round 82
+
+190. **`empty-cells` did nothing.** With `hide`, a cell with nothing in
+     it draws no background, of its own or of its row, its column or
+     their groups, and no borders, where borders are separate (CSS 2.1
+     17.6.1.1); the table's background shows through. A cell holds
+     something when anything is in its flow — an empty element or a
+     float among it — but not white space collapsed away. Collapsed
+     borders are the grid's, and it leaves them be. What CSS 2.1 adds
+     for a row whose every cell is empty and hidden, that it takes no
+     height, is not done.
+
 ## What `<Html>` supports
 
 From the pass rates of the tests that use each feature, at the fixes above,
@@ -2414,7 +2427,7 @@ checked against the code.
 | line height, `vertical-align`                      | 191   | 87%     | **supported**: every inline box's own line height, and `vertical-align` on text as well as on images and inline blocks; text in a font with taller natural lines than its paragraph's takes a bit more room than CSS gives it |
 | `white-space`                                      | 217   | 46%     | **supported**; collapsing is CSS 2.1's across elements                                                                                                                                                                        |
 | lists and markers                                  | 155   | 94%     | **supported**, `list-style-image` included                                                                                                                                                                                    |
-| CSS tables (`display: table-*`), `table-layout`    | 250   | 93%     | **supported**: HTML tables and anonymous ones, both border models, captions, `<col>` widths in both layouts, column backgrounds with their images, and `visibility: collapse`; baseline alignment is not                      |
+| CSS tables (`display: table-*`), `table-layout`    | 250   | 93%     | **supported**: HTML tables and anonymous ones, both border models, captions, `<col>` widths in both layouts, column backgrounds with their images, `visibility: collapse` and `empty-cells`; baseline alignment is not        |
 | `::before`, `::after`, `content`, counters, quotes | 332   | 86%     | **supported**, images in `content` included                                                                                                                                                                                   |
 | `::first-letter`, `::first-line`                   | 398   | 79–100% | `::first-letter` **supported**; `::first-line` **partial**: its colour and background, not its font, spacing or `vertical-align`                                                                                              |
 | `z-index` stacking                                 | 152   | 73%     | **supported**: Appendix E's order — block backgrounds, floats, lines, positioned boxes by `z-index` — with a table, a flex box or a box that clips painted whole among the lines                                              |
