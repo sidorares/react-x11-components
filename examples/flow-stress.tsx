@@ -27,6 +27,10 @@
 // from `react-x11/debug`'s trace — everything that renderer draws is X
 // protocol on an X server — and the opcode tally is printed on exit. See
 // docs/components/flow.md, "What the pane batches".
+//
+// The line above it is the viewport, exactly, as the `setViewport` call that
+// puts a pane back there — the thing to quote when reporting what the pane
+// drew somewhere. Drag across it and copy.
 import {
   createContext,
   useCallback,
@@ -36,7 +40,7 @@ import {
   useRef,
   useState,
 } from 'react';
-import type { ReactElement } from 'react';
+import type { ReactElement, RefObject } from 'react';
 import { Button, Checkbox, Select, createRoot, useScale } from 'react-x11';
 import { startTrace } from 'react-x11/debug';
 import type { TraceSession } from 'react-x11/debug';
@@ -59,6 +63,7 @@ import type {
   FlowNode,
   FlowNodeData,
   FlowNodeType,
+  Viewport,
 } from '../src/flow/index.js';
 
 export interface Scene {
@@ -455,6 +460,45 @@ const BUDGETS = [
 
 const EMPTY: Scene = { name: 'empty', detail: 'nothing', nodes: [], edges: [] };
 
+/** A viewport as the `setViewport` argument that restores it — whole
+ *  hundredths of a pixel and six places of zoom, well under a device pixel
+ *  anywhere in these scenes. */
+export function viewportLiteral(v: Viewport): string {
+  return (
+    `{ x: ${v.x.toFixed(2)}, y: ${v.y.toFixed(2)}, ` +
+    `zoom: ${v.zoom.toFixed(6)} }`
+  );
+}
+
+/**
+ * Where the pane is looking, exactly. Read off the handle ten times a second
+ * rather than pushed from `onViewportChange`: a render per pan step would be
+ * one more thing in the frames this example measures. So it trails a moving
+ * view by up to a tenth of a second, and is exact once the view rests —
+ * which is when anyone reads it. Selectable, to be copied into a report.
+ */
+function ViewportReadout(props: {
+  flow: RefObject<FlowInstance | null>;
+}): ReactElement {
+  const { flow } = props;
+  const [text, setText] = useState('');
+  useEffect(() => {
+    const read = (): void => {
+      const v = flow.current?.getViewport();
+      // the same string is no render: React compares it and bails out
+      setText(v ? `viewport ${viewportLiteral(v)}` : '');
+    };
+    read();
+    const timer = setInterval(read, 100);
+    return () => clearInterval(timer);
+  }, [flow]);
+  return (
+    <box selectable tabIndex={-1}>
+      <text style={{ fontSize: 12 }}>{text}</text>
+    </box>
+  );
+}
+
 function App(): ReactElement {
   const [scene, setScene] = useState<Scene>(EMPTY);
   // The graph lives here, not in the pane, so a body's state — its node's
@@ -706,6 +750,7 @@ function App(): ReactElement {
             onPress={() => setTicking((on) => !on)}
           />
         </box>
+        <ViewportReadout flow={flow} />
         <text style={{ fontSize: 12, color: '$textMuted' }}>{stats}</text>
         <PatchWidget.Provider value={patchWidget}>
           <Flow
