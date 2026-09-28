@@ -2917,6 +2917,41 @@ metric(
   },
 );
 
+metric("a corner equal borders meet at is the top-left cell's", async () => {
+  // CSS 2.1 17.6.2.1: between two borders that win alike, the one further
+  // up and further left; painted in the order they were found, the border
+  // below the corner in the middle of four cells took it
+  const { node } = await render(
+    '<table style="border-collapse:collapse"><tr>' +
+      '<td id="a" style="border:10px solid #0000ff">a</td>' +
+      '<td style="border:10px solid #ff0000">b</td></tr><tr>' +
+      '<td style="border:10px solid #ff0000">c</td>' +
+      '<td style="border:10px solid #ff0000">d</td></tr></table>',
+  );
+  const el = view(node);
+  const a = boxOf(el, 'a');
+  // the middle of the corner: a's bottom right, half a border in
+  const x = Math.round(a.x + a.width);
+  const y = Math.round(a.y + a.height);
+  const over = (await fillsOf(el)).filter(
+    (f) => f.x <= x && x < f.x + f.w && f.y <= y && y < f.y + f.h,
+  );
+  assert.ok(over.length > 1, 'more than one border meets there');
+  assert.strictEqual(over[over.length - 1].style, parseColor('#0000ff'));
+});
+
+test("a collapsed table's sides are half its widest outer borders", async () => {
+  // CSS Tables 3: along each side, the widest of its rows' borders, where
+  // CSS 2.1 took the first row's and let a wider one below spill out of
+  // the table, from under its background
+  const { node } = await render(
+    '<table id="t" style="border-collapse:collapse">' +
+      '<tr><td style="padding:0;border-left:150px solid"></td></tr>' +
+      '<tr><td style="padding:0;border-right:100px solid"></td></tr></table>',
+  );
+  assert.strictEqual(boxOf(view(node), 't').width, 75 + 75 + 50);
+});
+
 metric('a column group draws its borders where they collapse', async () => {
   const { node } = await render(
     '<table style="border-collapse:collapse"><colgroup ' +

@@ -295,13 +295,20 @@ export function collapseTable(table: Box): CollapsedTable {
     cellEdges.set(cell.box, edges);
   }
 
-  // The table's own: half the first row's outer borders at the sides, and
-  // half the widest along the top and the bottom (17.6.2). A later row with
-  // a wider side border spills into the table's margin.
+  // The table's own: half the widest of its outer borders along each side
+  // (CSS Tables 3, 3.9.1), as browsers have it. CSS 2.1 (17.6.2) took the
+  // first row's at the sides and let a later row's wider one spill into
+  // the margin, where the table's background did not reach under it.
   const edges: Edges = { top: 0, right: 0, bottom: 0, left: 0 };
   if (R && C) {
-    edges.left = halves(widthOf(vertical[0]))[0];
-    edges.right = halves(widthOf(vertical[C]))[1];
+    for (let r = 0; r < R; r += 1) {
+      const row = r * (C + 1);
+      edges.left = Math.max(edges.left, halves(widthOf(vertical[row]))[0]);
+      edges.right = Math.max(
+        edges.right,
+        halves(widthOf(vertical[row + C]))[1],
+      );
+    }
     for (let c = 0; c < C; c += 1) {
       edges.top = Math.max(edges.top, halves(widthOf(horizontal[c]))[0]);
       edges.bottom = Math.max(

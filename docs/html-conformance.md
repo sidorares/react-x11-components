@@ -164,6 +164,7 @@ npx tsx scripts/conformance/run.ts wpt fuzz1 --chunk 50 --timeout 60000
 | 78     | the generic `monospace` at its smaller size        | 5,531 (93%) | 5,005 (84%) |
 | 79     | white space in a table's anonymous cells           | 5,536 (93%) | 5,010 (84%) |
 | 80     | a spanning cell's width, and a percentage's        | 5,537 (93%) | 5,011 (84%) |
+| 81     | collapsed borders at corners and at the sides      | 5,539 (93%) | 5,012 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -2376,6 +2377,24 @@ two agreed.
      width says.
 
      `css-tables`: 89 of its 167 reftests pass on X11.
+
+### Round 81
+
+188. **A corner four equal borders met at went to the one below it.**
+     Collapsed borders are painted winners last, so a corner goes to the
+     strongest border meeting there, and between two that won alike the
+     one painted later took it — the one found later, which was the one
+     below the corner. The rule between two borders on one segment is
+     the one further up and further left (CSS 2.1 17.6.2.1), and the
+     corner follows it now: in a grid of equal borders each corner is
+     its top-left cell's.
+189. **A collapsed table's sides took their width from its first row.**
+     CSS 2.1 (17.6.2) sets the table's left and right borders from the
+     first row's outer cells, and a later row's wider one spills into
+     the margin, outside the table — and outside its background, which
+     the cells over it showed through. CSS Tables 3, and browsers, take
+     half the widest along each side, as this already did at the top
+     and the bottom.
 
 ## What `<Html>` supports
 
