@@ -470,8 +470,9 @@ export type ReplacedKind =
   | 'checkbox'
   | 'radio'
   | 'hr'
-  /** An `<iframe>`, `<video>` or `<embed>`: what it would show is never
-   *  loaded, so it is a box of its size with nothing in it. */
+  /** An `<iframe>`, `<video>`, `<embed>` or `<canvas>`: what it would
+   *  show is never loaded or drawn, so it is a box of its size with nothing
+   *  in it. */
   | 'frame'
   /** An inline `<svg>`: a drawing, sized by what it says of its size. */
   | 'svg';
@@ -1043,9 +1044,25 @@ class Builder {
       return;
     }
     if (replaced === 'frame') {
+      const scale = this._options.scale ?? 1;
+      if (tag === 'canvas') {
+        // A canvas is the size of its bitmap, which its `width` and
+        // `height` attributes give, 300 by 150 where they do not, and
+        // keeps its proportions (HTML 4.12.5): no script draws in it, so it
+        // is that box with nothing in it. Taken for an element with no box
+        // of its own, it took no room, and one set a height kept no width.
+        const width = canvasSize(el, 'width', 300);
+        const height = canvasSize(el, 'height', 150);
+        box.intrinsic = {
+          width: width * scale,
+          height: height * scale,
+          missing: 0,
+          ratio: width > 0 && height > 0 ? width / height : 0,
+        };
+        return;
+      }
       // HTML's default object size, in CSS pixels; `width` and `height`
       // attributes reach the style as presentational hints and win
-      const scale = this._options.scale ?? 1;
       box.intrinsic = {
         width: 300 * scale,
         height: 150 * scale,
@@ -1750,6 +1767,14 @@ function hasBody(root: Element | { children: unknown }): boolean {
   return false;
 }
 
+/** A canvas's bitmap dimension: a non-negative integer, as HTML parses
+ *  one, or its default where the attribute is missing or no number. */
+function canvasSize(el: Element, name: string, fallback: number): number {
+  const raw = attr(el, name);
+  const n = raw == null ? NaN : parseInt(raw.trim(), 10);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+
 function numberAttr(el: Element, name: string): number | null {
   const raw = attr(el, name);
   if (!raw) return null;
@@ -2064,6 +2089,7 @@ function replacedKind(el: Element, tag: string): ReplacedKind {
     case 'iframe':
     case 'video':
     case 'embed':
+    case 'canvas':
       return 'frame';
     case 'textarea':
       return 'textarea';

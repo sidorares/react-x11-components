@@ -184,8 +184,7 @@ export class FloatContext {
   ): number {
     if (from < this._lastTop) from = this._lastTop;
     // where it fits at once, as most do, nothing below is looked at
-    const first = this.bandAt(from, 1, left, right);
-    if (first.right - first.left + FIT_SLACK >= width) return from;
+    if (this._fits(from, width, side, left, right)) return from;
     // Candidate positions are the bottom of every float below `from`; there
     // is no other height at which the band can get wider.
     const candidates: number[] = [];
@@ -197,10 +196,44 @@ export class FloatContext {
     for (const candidate of candidates) {
       // a row of floats ends at one height, asked about once
       if (candidate === y) continue;
-      const band = this.bandAt(candidate, 1, left, right);
-      if (band.right - band.left + FIT_SLACK >= width) return candidate;
+      if (this._fits(candidate, width, side, left, right)) return candidate;
       y = candidate;
     }
     return y;
+  }
+
+  /**
+   * Whether a float `width` wide fits at `y` (CSS 2.1 9.5.1): past the
+   * floats on its own side, and short of every float on the other (rule
+   * 3), which lets it stand out of its containing block where no float of
+   * its own side is beside it, and within the containing block where one
+   * is (rule 7). Held to the containing block always, a float wider than
+   * its block went below every float beside it, where it fitted beside
+   * them in the formatting context.
+   */
+  private _fits(
+    y: number,
+    width: number,
+    side: 'left' | 'right',
+    left: number,
+    right: number,
+  ): boolean {
+    const start = side === 'left';
+    let near = start ? left : right;
+    let far = start ? Infinity : -Infinity;
+    let beside = false;
+    for (const box of this._boxes) {
+      if (box.bottom <= y || box.top >= y + 1) continue;
+      if (box.side === side) {
+        beside = true;
+        near = start ? Math.max(near, box.right) : Math.min(near, box.left);
+      } else {
+        far = start ? Math.min(far, box.left) : Math.max(far, box.right);
+      }
+    }
+    if (beside) far = start ? Math.min(far, right) : Math.max(far, left);
+    return start
+      ? near + width <= far + FIT_SLACK
+      : near - width >= far - FIT_SLACK;
   }
 }
