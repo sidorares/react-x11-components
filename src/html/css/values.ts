@@ -20,7 +20,7 @@
 // `color.ts`, and written back in the form every context reads the same.
 
 import { functionalColor } from './color.js';
-import { parseMath, parseMathNumber } from './calc.js';
+import { LARGEST, parseMath, parseMathNumber } from './calc.js';
 
 /** A length that layout may still have to resolve. */
 export type Len = number | Pct | 'auto';
@@ -51,7 +51,8 @@ export function isPct(len: Len): len is Pct {
 export function resolve(len: Len, base: number, fallback = 0): number {
   if (typeof len === 'number') return len;
   if (len === AUTO || !Number.isFinite(base)) return fallback;
-  return len.of ? compared(len.of, base) : ofBase(len, base);
+  const px = len.of ? compared(len.of, base) : ofBase(len, base);
+  return px > LARGEST ? LARGEST : px < -LARGEST ? -LARGEST : px;
 }
 
 /** Resolve, but keep "indefinite" distinguishable from zero — what a height
@@ -148,7 +149,11 @@ export function parseLength(
   // a zero needs no unit however it is written — `-0`, `+0`, `0.0`
   if (!unit) return n === 0 ? 0 : bareIsPx ? n * ctx.scale : null;
   if (unit === '%') return { pct: n };
-  return n * unitScale(unit, ctx);
+  // Kept to what a browser holds: a `1e308px` height or margin, which a
+  // hostile or broken page writes, added up past what a number holds, and
+  // the document's height came to infinity
+  const px = n * unitScale(unit, ctx);
+  return px > LARGEST ? LARGEST : px < -LARGEST ? -LARGEST : px;
 }
 
 /** Device pixels per one of `unit`. The absolute units are CSS pixels and

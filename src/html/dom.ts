@@ -361,6 +361,31 @@ function freshFacts(): ScannedFacts {
 class Handler extends DomHandler {
   private _afterPre = false;
 
+  /**
+   * Past `MAX_DEPTH` open elements, what is opened goes into the element at
+   * that depth rather than into the one open, still open itself so its end
+   * tag closes it: Chrome's parser does the same past 512. Everything that
+   * walks a document here — the cascade, the box builder, layout, paint —
+   * goes a call deeper for each level, and a page of a few hundred unclosed
+   * `<div>`s, which a broken generator writes, ran the stack out.
+   */
+  protected override addNode(node: ChildNode): void {
+    const stack = this.tagStack;
+    if (stack.length <= MAX_DEPTH) {
+      super.addNode(node);
+      return;
+    }
+    const parent = stack[MAX_DEPTH - 1];
+    const previous = parent.children[parent.children.length - 1];
+    parent.children.push(node);
+    if (previous) {
+      node.prev = previous;
+      previous.next = node;
+    }
+    node.parent = parent;
+    this.lastNode = null;
+  }
+
   override onopentag(name: string, attribs: Record<string, string>): void {
     super.onopentag(name, attribs);
     this._afterPre =
@@ -389,6 +414,9 @@ class Handler extends DomHandler {
     super.ontext(data);
   }
 }
+
+/** How deep a document's elements nest (`Handler.addNode`). */
+const MAX_DEPTH = 256;
 
 function createParser(): { parser: Parser; handler: DomHandler } {
   const handler = new Handler(null, {

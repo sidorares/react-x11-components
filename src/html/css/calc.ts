@@ -111,8 +111,10 @@ function censor(n: number): number {
   return n;
 }
 
-/** The largest length a browser holds, 2^25 pixels less a little. */
-const LARGEST = 33554428;
+/** The largest length a browser holds, 2^25 pixels less a little: what a
+ *  calculation's infinity comes to, and what any length is kept within
+ *  (`parseLength`, `resolve`). */
+export const LARGEST = 33554428;
 
 function tokenize(text: string): Token[] | null {
   const out: Token[] = [];

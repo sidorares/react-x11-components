@@ -1905,6 +1905,44 @@ first and then macOS:
 | 600 KB, an append | 51.1 / 55.8 ms | 48.5 / 54.9 ms |
 | 20 KB, an edit    | 14.8 / 17.8 ms | 12.5 / 17.9 ms |
 
+## Round 20: a layout a level
+
+A fuzzer over `<Html>` (`docs/html-conformance.md`, round 68) found its
+hangs in nesting, and the cause was the shape of intrinsic sizing here. A
+box that sizes itself to its content lays that content out to measure it,
+then is laid out at the width it measured; nested, each level laid out all
+it held two or three times over, so the cost of `n` levels was `2^n` or
+`3^n`. Three places did it:
+
+- **A flex item's max-content width** was measured for each layout of its
+  container, where it is the same at every one. It is measured once in the
+  box's life now, as a table cell's already was; Yoga's answers are kept
+  for the widths it asks twice; and the item's last measure is its layout
+  where the width Yoga settles on is the one it measured at.
+- **A shrink-to-fit box** — a float, an inline-block, an absolute box —
+  probed its content at no width on every layout. The probe's width is kept
+  for the box's life, and a box laid out at the same width earlier in the
+  pass is moved rather than laid out again (`layoutOwn`), with a serial on
+  every box's layout so that a probe laid over it since is not mistaken
+  for it.
+- **The paint bounds** went into an inline-block from its line and again
+  from its parent.
+
+In process, a fresh layout, milliseconds:
+
+| nested         | 12 levels, before | 30 levels, after | 100 levels, after |
+| -------------- | ----------------- | ---------------- | ----------------- |
+| flex boxes     | 2,149             | 0.3              | 0.9               |
+| floats         | 4.7               | 0.1              | 0.1               |
+| inline-blocks  | 8.4               | 0.2              | 0.2               |
+| absolute boxes | 4.9               | 0.1              | 0.2               |
+
+And it is not only pathological pages that nest flex boxes. The Tailwind
+dashboard's layout falls from 7.3 to 3.3 ms in process, and in a window a
+resize's frame from 6.9 to 3.5 ms on XQuartz and from 10.5 to 6.2 ms on
+macOS, medians of two runs each; the report, with no flex boxes in it,
+does not move.
+
 ## Lessons
 
 1. **Look for caches that never hit.** Identity-keyed caches handed a new
@@ -2047,6 +2085,12 @@ first and then macOS:
     faster launched another way, with the same requests, scavenges and
     processor time. Before chasing a difference of a few percent, run it
     under a second launcher.
+35. **A measure that lays out is a layout a level.** Intrinsic sizing
+    that measures by laying out, nested, multiplies: two or three layouts
+    a level is `2^n` or `3^n`, and a page of Tailwind nests flex boxes
+    half a dozen deep before anything is wrong with it. Keep a measurement
+    for as long as its inputs last — the box's life, for a width that no
+    containing width changes — and test with depth, not only with length.
 
 ## Still open
 

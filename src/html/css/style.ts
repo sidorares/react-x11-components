@@ -840,6 +840,9 @@ const BORDER_STYLES = new Set<string>([
   'outset',
 ]);
 
+/** The largest font size, in CSS pixels (`font-size`). */
+const MAX_FONT_SIZE = 10000;
+
 const BORDER_WIDTH_KEYWORDS: Record<string, number> = {
   thin: 1,
   medium: 3,
@@ -1427,9 +1430,13 @@ export function applyDeclaration(
       return;
     }
     case 'font-size': {
+      // No larger than 10,000 pixels, as Chrome keeps it: a text engine
+      // handed a face at a size of millions shapes and caches glyphs that
+      // size, and a nest of `larger`s gets there on its own
+      const most = MAX_FONT_SIZE * ctx.scale;
       const kw = keywordFontSize(value, parent.fontSize, ctx.rem);
       if (kw !== null) {
-        style.fontSize = kw;
+        style.fontSize = Math.min(kw, most);
         return;
       }
       // `em` in a `font-size` is relative to the *parent's* size, not this
@@ -1439,10 +1446,10 @@ export function applyDeclaration(
       // one is no size at all, so the declaration goes
       const len = parseLength(value, { ...ctx, em: parent.fontSize });
       if (typeof len === 'number') {
-        if (len >= 0) style.fontSize = len;
+        if (len >= 0) style.fontSize = Math.min(len, most);
       } else if (len && typeof len === 'object') {
         const size = resolve(len, parent.fontSize);
-        if (size >= 0) style.fontSize = size;
+        if (size >= 0) style.fontSize = Math.min(size, most);
       }
       return;
     }
