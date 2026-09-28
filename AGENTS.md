@@ -1156,6 +1156,42 @@ Two things it changed elsewhere, both extractions rather than copies:
   two directories need the code-point/code-unit conversions. Exactly the
   promotion path "Layout" describes for `src/internal/`.
 
+**Resolving a URL is the component's; fetching one is not.** A host cannot
+resolve a `url()` in a linked stylesheet: by the time a background is asked
+for it is a computed value, and nothing says which sheet it was written in.
+So given `baseUrl` (or an absolute `<base href>`) the component resolves
+everything itself — markup against the document's base, a sheet's `url()`s,
+`@import`s and `@font-face` sources against the sheet's own URL as it is
+parsed (`absoluteUrls`, `css/parse.ts`) — and `onResource` and `onLink` see
+absolute URLs. Without a base nothing is resolved, which is what every host
+before it saw. `examples/browser/` is the host that does fetch, and the
+place a fetching policy belongs: a cache the tabs share, per-host pacing,
+`file:` only for `file:` pages, no cookies.
+
+**A document's fonts are registered under names nothing else has.**
+`@font-face` faces go through `onResource` as `kind: 'font'` and into
+react-x11's font manager with `loadFont` — the application's manager, so
+`fonts.ts` registers each family as `html webfont <letters>`, keyed by its
+files, weights and range, and rewrites the cascade's `font-family` lists to
+it. A page's `Inter` must not change what `Inter` means to the window around
+it, and two sites' `Icons` are two fonts. A face loads when a computed style
+wants it and the document has a character in its `unicode-range`, and its
+family is out of the list until then: the list changing is what tells every
+cache keyed by a family string — the text layouts', the metrics', ntk's —
+to set the text again.
+
+**A probe of an unbounded width places nothing at infinity.** A
+shrink-to-fit probe lays a subtree out in infinite room, where sharing room
+out — auto margins, a table's columns — comes to `Infinity`; the pass after
+moved the box from there by a finite amount, `NaN`, and one `NaN` in the ink
+bounds culls every ancestor from paint. Wikipedia's navboxes in a flex item
+did it, and its whole article drew nothing. `placeBlock` shares no infinite
+slack and `moveTo` refuses a non-finite destination. The same pass found
+that `translate` moves an inline box's `x`/`y`, which are never laid out,
+with the rest — they add up across passes — so nothing may read an inline
+box's rect: `computePaintBounds` read it as the box's reach and measured a
+card grid three times its height.
+
 **The isolated mode is designed and not built.** `<Html isolated>` — a child
 process rendering into an XEmbed window — is specified in `docs/prd-html.md`,
 including why the seams stay the parent's and why `handle.document` would
@@ -1527,6 +1563,7 @@ npm run examples:media-player -- <file>   # X11 only, and mpv or VLC
 npm run examples:tray-host   # X11 only, and no other tray on that display
 npm run examples:three       # a GL context: see docs/components/three.md
 npm run examples:tree -- <dir>  # defaults to cwd
+npm run examples:browser -- [url]  # and a network; BROWSER_DEBUG=1 logs requests
 npm run examples:tree -- --stress[=rows]  # generated 100k-row tree instead
 npm run examples:flow-stress    # the measured pan loop, with an X-traffic HUD
 ```

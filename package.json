@@ -163,6 +163,7 @@
     "check:package": "tsx scripts/check-package.ts",
     "docs": "npm --prefix website start",
     "docs:build": "npm --prefix website run build",
+    "examples:browser": "node --import tsx examples/browser/browser.tsx",
     "examples:calendar": "node --import tsx examples/calendar.tsx",
     "examples:charts": "node --import tsx examples/charts.tsx",
     "examples:code": "node --import tsx examples/code.tsx",
