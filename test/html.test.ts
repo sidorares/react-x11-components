@@ -120,6 +120,60 @@ test('declarations survive semicolons, comments and !important', () => {
   );
 });
 
+test('pseudo-class names and :lang() fold ASCII case only', async () => {
+  // CSS 2.1 4.1.3: `:LINK` is `:link`, but a Kelvin sign is no K, where
+  // Unicode's lower case makes one of it — and a rule with no pseudo-class
+  // CSS knows is dropped
+  const { node } = await render(
+    '<style>p { color: #0000ff } :LiNk { color: #00ff00 }' +
+      ' :lin\u212a { color: #ff0000 } :lang(\u212al) { color: #ff0000 }' +
+      ' :lang(KL) { font-style: italic }</style>' +
+      '<p><a id="a" href="x">link</a></p><p id="k" lang="kl">kl</p>',
+  );
+  const el = view(node);
+  const style = (id: string) =>
+    (boxOf(el, id) as LaidBox & { style: { color: string; fontStyle: string } })
+      .style;
+  assert.strictEqual(style('a').color, '#00ff00');
+  assert.strictEqual(style('k').color, '#0000ff', 'not a K');
+  assert.strictEqual(style('k').fontStyle, 'italic', 'but KL is kl');
+});
+
+test("a document's language is its meta's, where no element says", async () => {
+  // HTML's pragma-set default language: `<meta http-equiv=
+  // "content-language">` is the language of what no `lang` covers
+  const { node } = await render(
+    '<meta http-equiv="content-language" content="fr">' +
+      '<style>:lang(fr) { color: #00ff00 } :lang(de) { color: #0000ff }</style>' +
+      '<p id="a">a</p><div lang="de"><p id="b">b</p></div>',
+  );
+  const el = view(node);
+  const color = (id: string) =>
+    (boxOf(el, id) as LaidBox & { style: { color: string } }).style.color;
+  assert.strictEqual(color('a'), '#00ff00', "the document's");
+  assert.strictEqual(color('b'), '#0000ff', "an element's own wins");
+});
+
+test('an attribute operator needs a value, and an empty word is none', async () => {
+  // `[title~=]` is no selector, and takes its group (CSS 2.1 4.1.7); and
+  // `[title~=""]` represents nothing (Selectors 3, 6.3.1), where it was
+  // taken for the empty word between two spaces
+  const { node } = await render(
+    '<style>p { color: #00ff00 } [title~=], p.a { color: #ff0000 }' +
+      ' [title~=""] { color: #ff0000 }</style>' +
+      '<p id="a" class="a">a</p><p id="b" title=" ">b</p>' +
+      '<p id="c" title="">c</p>',
+  );
+  const el = view(node);
+  const color = (id: string) =>
+    (boxOf(el, id) as LaidBox & { style: { color: string } }).style.color;
+  assert.deepStrictEqual(['a', 'b', 'c'].map(color), [
+    '#00ff00',
+    '#00ff00',
+    '#00ff00',
+  ]);
+});
+
 test('a selector list becomes one rule per selector', () => {
   const sheet = parseStylesheet('h1, h2 > .lead { color: red }');
   assert.deepStrictEqual(
@@ -1065,6 +1119,22 @@ test('the generic monospace on its own is smaller, as in a browser', async () =>
   assert.strictEqual(size('g'), 26, "an em of the parent's");
 });
 
+test('a first line keeps its first box after the indent, however wide', async () => {
+  // there is no break before a line's first content, and a first line's
+  // `text-indent` is room, not content: an inline-block that did not fit
+  // after it went to a second line, and a float laid out at its least
+  // width was as wide as the block without the indent
+  const { node } = await render(
+    '<div id="f" style="float:left;text-indent:30px">' +
+      '<span style="display:inline-block;width:10px;height:10px"></span>' +
+      '</div>',
+    1,
+  );
+  const f = boxOf(view(node), 'f') as LaidBox & { lines: unknown[] };
+  assert.strictEqual(f.width, 40);
+  assert.strictEqual(f.lines.length, 1);
+});
+
 metric('font-size: 0 leaves no room between inline-blocks', async () => {
   // the common way to lose the spaces between columns set inline: at no
   // size the space between them takes no room, where it used to be 1px. The
@@ -1192,6 +1262,13 @@ async function documentText(source: string): Promise<string> {
   const { node } = await render(source, 300);
   return (view(node) as unknown as { _tree: { text: string } })._tree.text;
 }
+
+test('a <q> is in quotation marks, and a nested one in the next pair', async () => {
+  // HTML's rendering: `q::before { content: open-quote }` and its close,
+  // which the user-agent sheet did not have, so a quotation was bare
+  const text = await documentText('<p><q>say <q>hi</q></q></p>');
+  assert.strictEqual(text.trim(), '\u201csay \u2018hi\u2019\u201d');
+});
 
 test('::before and ::after hold their content, around the element', async () => {
   assert.strictEqual(
@@ -3355,6 +3432,23 @@ metric(
   },
 );
 
+metric(
+  'a cell with a height of its own centres its content in it',
+  async () => {
+    // `vertical-align: middle` moves the content in the box a height makes
+    // as well: that height is no content, and taken for it, a cell set to
+    // 100px kept its text at the top
+    const { node } = await render(
+      '<table style="border-spacing:0"><tr>' +
+        '<td id="t" style="height:100px;padding:0">b</td></tr></table>',
+    );
+    const el = view(node);
+    const t = boxOf(el, 't');
+    const [line] = linesOf(el, 't');
+    assert.ok(line.y > t.y + 30, `in the middle of the box: ${line.y - t.y}`);
+  },
+);
+
 metric("a caption is outside the table's border, above or below", async () => {
   const { node } = await render(
     '<table id="t" style="border:5px solid #0000ff"><caption id="c">' +
@@ -4736,6 +4830,26 @@ test("a table gives up its cells' set widths before its words", async () => {
   const [w, t, v, u] = ['w', 't', 'v', 'u'].map((id) => boxOf(el, id));
   assert.deepStrictEqual([t.y - w.y, t.width], [0, 50], 'beside the float');
   assert.deepStrictEqual([u.y - v.y, u.width], [100, 250], 'below it');
+});
+
+test('an absolute box a max-width or max-height holds is centred by its auto margins', async () => {
+  // CSS 2.1 10.4 and 10.7: with both offsets and an auto size, the box
+  // fills what they leave — but a `max-width` or `max-height` that holds
+  // it back makes a size like one set, and the rules run again with it,
+  // where auto margins share what is left; it stayed at its start edge,
+  // and at first did not take the `max-width` at all
+  const { node } = await render(
+    '<div style="position:relative;width:300px;height:200px">' +
+      '<div id="a" style="position:absolute;left:0;right:0;top:0;bottom:0;' +
+      'margin:auto;max-width:100px;max-height:50px"></div></div>',
+  );
+  const el = view(node);
+  const a = boxOf(el, 'a');
+  const parent = (a as LaidBox & { parent: LaidBox }).parent;
+  assert.deepStrictEqual(
+    [a.width, a.height, a.x - parent.x, a.y - parent.y],
+    [100, 50, 100, 75],
+  );
 });
 
 test('a float or an absolute box inside an inline box is laid out', async () => {

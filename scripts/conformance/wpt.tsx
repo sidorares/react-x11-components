@@ -14,8 +14,11 @@
 //   built on is registered under its family name, the way an application
 //   brings its fonts.
 // - **XHTML is read as HTML.** Most of the CSS 2.1 suite is `.xht`, which a
-//   browser parses as XML. The CDATA markers round a style sheet are the one
-//   XML construct that changes what an HTML parser sees, so they are removed.
+//   browser parses as XML. Two XML constructs change what an HTML parser
+//   sees in a style sheet: the CDATA markers round one, which are removed,
+//   and the entities outside them, which XML decodes and HTML reads raw —
+//   a selector written `div &gt; span` is a `>` to a browser — so they are
+//   decoded first.
 // - **The palette is a browser's**: black text on white, links #0000ee, a
 //   16px serif. The rest of the user-agent sheet is <Html>'s own — themed
 //   rules for `blockquote` and `pre` included — and costs what it costs.
@@ -239,12 +242,49 @@ function pageOf(path: string): { text: string; charset: string } {
   return { text: bytes.toString('utf8'), charset: 'utf-8' };
 }
 
-/** The source <Html> is handed: XHTML's CDATA markers dropped. */
+/** The source <Html> is handed: XHTML's style sheets as XML reads them,
+ *  entities decoded outside CDATA, and the CDATA markers dropped. */
 function sourceOf(path: string, text = pageOf(path).text): string {
-  return /\.xht(ml)?$/i.test(path)
-    ? text.replace(/<!\[CDATA\[/g, '').replace(/\]\]>/g, '')
-    : text;
+  if (!/\.xht(ml)?$/i.test(path)) return text;
+  return text
+    .replace(
+      /(<style\b[^>]*>)([\s\S]*?)(<\/style>)/gi,
+      (_, open: string, body: string, close: string) =>
+        open +
+        body
+          .split(/(<!\[CDATA\[[\s\S]*?\]\]>)/)
+          .map((part, i) => (i % 2 ? part : decodeXml(part)))
+          .join('') +
+        close,
+    )
+    .replace(/<!\[CDATA\[/g, '')
+    .replace(/\]\]>/g, '');
 }
+
+/** XML's five entities, and character references. */
+function decodeXml(text: string): string {
+  return text.replace(
+    /&(?:(lt|gt|amp|quot|apos)|#(\d+)|#x([0-9a-f]+));/gi,
+    (
+      all,
+      name: string | undefined,
+      dec: string | undefined,
+      hex: string | undefined,
+    ) => {
+      if (name) return XML_ENTITIES[name.toLowerCase()] ?? all;
+      const code = dec ? Number(dec) : parseInt(hex!, 16);
+      return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : all;
+    },
+  );
+}
+
+const XML_ENTITIES: Record<string, string> = {
+  lt: '<',
+  gt: '>',
+  amp: '&',
+  quot: '"',
+  apos: "'",
+};
 
 /** Whether a page's rendering depends on code: a script element, or an
  *  event handler attribute that would have run one. */

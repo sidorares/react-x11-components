@@ -124,6 +124,8 @@ mark { background-color: #fff2a8; color: #1a1a1a; }
 abbr { text-decoration: none; }
 center { text-align: -webkit-center; }
 nobr { white-space: nowrap; }
+q::before { content: open-quote; }
+q::after { content: close-quote; }
 
 /* Deliberately no 'a:hover' rule, though a browser's sheet has one: a
    document containing any ':hover' selector has to be restyled as the

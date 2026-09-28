@@ -44,8 +44,11 @@ What the run adapts, and why each is fair to a static renderer:
   `<Html>` ignores along with everything else that would load. An
   application brings its fonts the same way.
 - **XHTML is read as HTML.** Most of the suite is `.xht`, which a browser
-  parses as XML; the CDATA markers round a style sheet are the one XML
-  construct an HTML parser reads differently, so they are removed.
+  parses as XML. Two XML constructs in a style sheet read differently to an
+  HTML parser: the CDATA markers round one, which are removed, and the
+  entities outside them, which XML decodes and HTML leaves be — a
+  selector written `div &gt; span` is a `>` to a browser — so a style
+  sheet's are decoded first (from round 86).
 - **The palette is a browser's**: black on white, links `#0000ee`, a 16px
   serif. The rest of the user-agent sheet is `<Html>`'s own, themed rules
   included.
@@ -168,6 +171,11 @@ npx tsx scripts/conformance/run.ts wpt fuzz1 --chunk 50 --timeout 60000
 | 82     | `empty-cells: hide`                                | 5,540 (93%) | 5,013 (84%) |
 | 83     | a collapsed border on a half-pixel grid line       | 5,541 (93%) | 5,013 (84%) |
 | 84     | an image told to be a table's part                 | 5,542 (93%) | 5,014 (84%) |
+| 85     | a cell's content in a height of its own            | 5,544 (93%) | 5,015 (84%) |
+| 86     | XHTML style sheets as XML reads them               | 5,548 (93%) | 5,019 (84%) |
+| 87     | a document's language, and attribute selectors     | 5,550 (93%) | 5,021 (84%) |
+| 88     | a `<q>` in quotation marks                         | 5,550 (93%) | 5,021 (84%) |
+| 89     | an absolute box a `max-width` holds, centred       | 5,554 (93%) | 5,025 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -2433,6 +2441,95 @@ two agreed.
      other, and the white space between them collapsed away as between
      two blocks. The box builder, the white space pass and the inline
      layout now all read it as an atomic inline, as an `<img>` is.
+
+### Round 85
+
+193. **A cell with a height of its own kept its content at the top.**
+     `vertical-align: middle`, which HTML gives every cell, moves a
+     cell's content in the cell's box, and that box can be taller for a
+     height the cell sets as well as for a taller cell beside it. The
+     set height was taken for content, the content was as tall as the
+     box already, and there was no room to move it: a `<td height>`
+     kept its text at the top, where every browser centres it. The
+     content's own height is kept apart now, and aligned in the box.
+
+### Round 86
+
+The runner read XHTML's style sheets raw, as HTML does, where a browser
+reads them as XML and decodes their entities: 106 of the suite's files
+have one in a style sheet outside CDATA, most of them a combinator written
+`&gt;`, and every rule with one was dropped — from a test and from its
+reference alike, so that a pair that both lost their rules matched
+whatever `<Html>` did with them. The runner now decodes them first. Eight
+tests pass that could not, the `inline-table` and `inline-block` stacking
+tests among them. Six that passed by that accident are compared for real
+now: two showed the case folding below, and pass again; the four
+`text-indent-intrinsic` tests showed the indent below, and fail still, as
+they set a `<pre>` beside their floats and the user-agent sheet's own
+`<pre>` has padding.
+
+194. **A pseudo-class's name folded Unicode's case, not ASCII's.** CSS
+     matches the names of pseudo-classes, and a `:lang()` argument,
+     without regard to ASCII case alone (CSS 2.1 4.1.3), and Unicode's
+     lower case makes a Kelvin sign a K: `:lin\212A` was taken for
+     `:link`, and `:lang(\212Al)` matched `lang="kl"`. Both are read
+     with ASCII's case now, and a name with a letter from anywhere else
+     is no pseudo-class, and drops its rule.
+195. **A first line's indent made it look full.** A line keeps whatever
+     comes first on it — there is no break before it — and a first
+     line's `text-indent` is room it takes, not content; but an
+     inline-block measured against the room after the indent went to a
+     second line where it did not fit, leaving the first line empty. At
+     a float's least width, that was a float as wide as the
+     inline-block, without the indent.
+
+     `css-text`: 607 of its 1,489 tests passed on X11, 610 do now.
+
+### Round 87
+
+196. **A document's `<meta http-equiv="content-language">` said nothing.**
+     HTML makes it the language of whatever no `lang` covers — the
+     pragma-set default language: the last such `<meta>`'s `content`, up
+     to its first white space, and none where it lists more than one —
+     and `:lang()` read only the attributes. It falls back to the
+     document's now, found once per document, and searched from the
+     document itself, where in a fragment the `<meta>` is a sibling of
+     what it covers. A `Content-Language` HTTP header, the rung below,
+     is the host's to know, and is not read.
+197. **`[title~=]` was a selector.** An attribute selector's operator
+     needs a value; without one the selector is invalid and takes its
+     group with it (CSS 2.1 4.1.7), and a rule written
+     `[title~=], p.valid` coloured `p.valid`. And `[title~=""]`, which
+     represents nothing, since no word of a list is empty, matched a
+     title of spaces: the matcher's `~=` took the empty word for the
+     one between two spaces, and is handed a selector that matches
+     nothing in its place.
+
+### Round 88
+
+198. **A `<q>` had no quotation marks.** HTML's rendering puts them there
+     with `q::before { content: open-quote }` and its close, and the
+     user-agent sheet did not have the rule, though `<Html>` has had
+     `open-quote`, `close-quote` and `quotes` since round 2: a
+     quotation was bare, and a nested one no different. They take the
+     `quotes` in force, so `q:lang(fr) { quotes: "« " " »" }` gives a
+     French one its guillemets. No CSS 2.1 reftest has a `<q>`;
+     `css-content`, which has six, passes 16 of its 63 where it passed 10.
+
+### Round 89
+
+199. **An absolute box a `max-width` held stayed at its start edge.**
+     With both offsets and `width: auto`, the box fills what they leave,
+     its `auto` margins nothing (CSS 2.1 10.3.7, rule 5) — but a
+     `max-width` or `min-width` that moves that width makes one like a
+     width set, and the rules run again with it (10.4), where two `auto`
+     margins share what is left: the box is centred. The width was not
+     held back at all, and a box set to `max-width: 100px` between
+     `left: 8px` and `right: 8px` ran the page's width; held back, it
+     stayed at the left. It is clamped, and centred. The same goes
+     for the height between `top` and `bottom` (10.6.4, 10.7), where
+     `max-height` held it back and the margins stayed at nothing, so a
+     box meant to sit in the middle sat at the top.
 
 ## What `<Html>` supports
 

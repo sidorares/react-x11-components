@@ -671,13 +671,29 @@ function isSelector(s: string): boolean {
         if (!startsIdent(s, j)) return false;
         const end = componentEnd(s, i);
         if (s[end - 1] !== ']') return false;
+        // an operator needs a value after it: `[title~=]` is no selector,
+        // and takes its group with it (CSS 2.1 4.1.7)
+        let k = identEnd(s, j);
+        if (s[k] === '|' && s[k + 1] !== '=' && startsIdent(s, k + 1)) {
+          k = identEnd(s, k + 1);
+        }
+        while (k < end - 1 && isSpace(s[k])) k += 1;
+        if (k < end - 1) {
+          if (s[k] === '=') k += 1;
+          else if ('~|^$*'.includes(s[k]) && s[k + 1] === '=') k += 2;
+          else return false;
+          while (k < end - 1 && isSpace(s[k])) k += 1;
+          if (k >= end - 1) return false;
+        }
         i = end;
       } else if (d === ':') {
         const element = s[i + 1] === ':';
         const at = element ? i + 2 : i + 1;
         if (!startsIdent(s, at)) return false;
         const name = readIdent(s, at);
-        const lower = name.value.toLowerCase();
+        // ASCII's case only (CSS 2.1 4.1.3): Unicode's makes `:lin\u212A`,
+        // with a Kelvin sign, `:link`
+        const lower = asciiLower(name.value);
         if (!knownPseudo(lower, element)) return false;
         if (element || LEGACY_PSEUDO_ELEMENTS.test(lower)) ended = true;
         i = name.end;
@@ -712,6 +728,11 @@ function argumentFits(name: string, argument: string): boolean {
     return name === 'is' || name === 'where' || /\S/.test(argument);
   }
   return MAY_TAKE_ARGUMENT.has(name);
+}
+
+/** A name with its ASCII letters in lower case, and no other letter's. */
+export function asciiLower(name: string): string {
+  return name.replace(/[A-Z]+/g, (upper) => upper.toLowerCase());
 }
 
 /** The pseudo-classes that are functions, and are nothing without it. */
