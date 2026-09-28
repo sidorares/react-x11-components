@@ -59,6 +59,7 @@ import { buildBoxes, CONTENT_IMAGES } from './layout/boxes.js';
 import type { Box, BoxTree, ReplacedKind } from './layout/boxes.js';
 import { layoutDocument } from './layout/block.js';
 import { TextLayoutCache } from './layout/cache.js';
+import { shapingSafe } from './layout/shaping.js';
 import { SurfaceCache } from './surfaces.js';
 import type { FontsLike } from './layout/inline.js';
 // Through the inline module rather than a second cache: the offsets table for
@@ -650,7 +651,9 @@ export class HtmlViewNode extends Node {
 
   private _fonts(): FontsLike | null {
     const fonts = (this.app as { fonts?: FontsLike } | null)?.fonts;
-    return fonts ?? null;
+    // a face the engine cannot shape from costs its characters, not the
+    // document (`shaping.ts`)
+    return fonts ? shapingSafe(fonts) : null;
   }
 
   /** The text layouts the last pass made, for this one to reuse. */

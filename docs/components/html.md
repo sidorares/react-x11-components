@@ -745,6 +745,19 @@ end, for a document it did not write. It is caught, the document is left
 blank, and the error is reported once through `console.error` outside
 production; a change to the source, or the width, tries again.
 
+**A character the text engine cannot shape is drawn as U+FFFD.** The engine
+picks the face a character is drawn in, and it can pick one its shaper has
+no glyphs in: a bitmap-only colour emoji font (`CBDT`) — what fontconfig on
+most Linux desktops answers first for an emoji — has no outlines fontkit
+can make a glyph from, and the shaper throws. That used to be the whole
+document left blank, for an emoji in a heading. A layout that throws is now
+tried again with each character that cannot be shaped in its run's face
+drawn as U+FFFD (a character past the BMP as U+FFFD and U+FE0F, the same
+length in UTF-16), found by laying each out alone and remembered per face.
+The document's text is untouched — selection, copy and the accessors see
+the page's own characters — and the first stand-in is reported once through
+`console.warn` outside production.
+
 ## Streaming
 
 `partial` works the way `<Markdown partial>` does, and rather better: the

@@ -3015,6 +3015,63 @@ test('a document a hair past a whole pixel measures that pixel', async () => {
   );
 });
 
+metric(
+  'a character the engine cannot shape costs itself, not the document',
+  async () => {
+    // A bitmap-only colour emoji font (CBDT) is what fontconfig answers first
+    // for an emoji on most Linux desktops, and fontkit has no glyph to make
+    // from it: its shaper threw on meetup.com's pin, and the page was left
+    // blank. The character is drawn as U+FFFD instead, at the same length in
+    // UTF-16, so every offset past it still lands.
+    const pin = '\u{1F4CD}';
+    const { result } = await render('<p id="p">x</p>');
+    const engine = (result.app as unknown as { fonts: FontsLike }).fonts;
+    const inner = engine.layout;
+    const shaped: string[] = [];
+    engine.layout = function (content, style, options) {
+      const text = content.map((r) => r.text).join('');
+      if (text.includes(pin)) {
+        throw new TypeError("Cannot read properties of null (reading 'id')");
+      }
+      shaped.push(text);
+      return inner.call(this, content, style, options);
+    };
+    const warn = console.warn;
+    const warned: string[] = [];
+    console.warn = (message: string) => void warned.push(String(message));
+    try {
+      await act(() =>
+        result.rerender(
+          h(
+            'box',
+            { style: { width: 400, flexDirection: 'column' } },
+            h(Html, {
+              source: `<p id="p">${pin} Melbourne, AU</p><p id="q">after</p>`,
+              partial: false,
+              'data-testname': 'doc',
+            }),
+          ),
+        ),
+      );
+      await act();
+    } finally {
+      engine.layout = inner;
+      console.warn = warn;
+    }
+    const el = view(screen.getByTestName('doc') as DrawnNode);
+    assert.ok(el['_tree' as keyof typeof el], 'laid out, not left blank');
+    assert.ok(boxOf(el, 'q').height > 0, 'and what follows is there');
+    // the document is the page's; only what is drawn stands in
+    assert.ok(el.textContent().startsWith(`${pin} Melbourne`));
+    assert.ok(
+      shaped.includes('\uFFFD\uFE0F Melbourne, AU'),
+      `the stand-in is shaped: ${JSON.stringify(shaped)}`,
+    );
+    assert.strictEqual(warned.length, 1, 'said once');
+    assert.match(warned[0], /U\+1F4CD/);
+  },
+);
+
 metric("a table column is the table's, not a row of its own", async () => {
   // A <colgroup> was taken for a stray child, wrapped in a row and a cell of
   // its own, and drawn as one — a table of one row had two.
