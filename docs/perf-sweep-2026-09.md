@@ -3075,8 +3075,8 @@ code spans.
   - `<Markdown>` and `<RichTextEditor>`, only when what they mount has
     code in it.
 
-  The four spawns cost the main thread about 8 ms, so a document with no
-  code does not warm anything.
+  The four spawns cost the main thread about 8 ms (round 31 made them one),
+  so a document with no code does not warm anything.
 
 | cell                                       | first flush before |          after |
 | ------------------------------------------ | -----------------: | -------------: |
@@ -3098,6 +3098,66 @@ Over the startup probe (import, connect, first paint of a small app), the
 time inside `createRoot()` went from a median of 154 ms to 128 ms. What is
 left of the roughly 480 ms to a first paint is mostly Node's module loader:
 resolving and compiling several hundred modules, about 180 ms of it.
+
+## Round 31: what a first frame forks
+
+Round 30 warmed monospace ahead of a component's first layout. Timing each
+`child_process` call inside a real mount then showed two things: what the
+warm itself cost, and a face that nothing warmed.
+
+### A spawn costs what the process weighs (ntk #424)
+
+Node starts a child by forking the whole process, and the fork's cost grows
+with the heap. ntk ran one `/bin/sh` per face, four per family:
+
+| RSS    | four spawns | one shell starting the four |
+| ------ | ----------: | --------------------------: |
+| 130 MB |      4.7 ms |                      1.4 ms |
+| 260 MB |       33 ms |                        8 ms |
+| 510 MB |       62 ms |                       16 ms |
+
+A prewarm's matches now start from one shell. Each still answers through
+files of its own, so the synchronous path that waits on them is unchanged.
+Inside the sweep's mounts:
+
+| probe                                         | before                   | after                    |
+| --------------------------------------------- | ------------------------ | ------------------------ |
+| `<CodeEditor>` mount                          | 8 spawns, 19–20.5 ms     | 2 spawns, 6.8 ms         |
+| `<Html>` 600 KB mount, its mono warmed (#300) | 8 spawns + 1 sync, 55 ms | 2 spawns + 1 sync, 43 ms |
+
+The same change fixed a bug in #423. `FontManager#prewarm` handed the
+family to the source as written, while `match` asks with the list
+normalized, so `'"Fira Code", monospace'` warmed a pattern no layout asks
+for.
+
+### The menu's medium (react-x11 #741)
+
+A menu's titles and rows are set at 500, and a family is warmed in 400 and
+700 only. So an app with a `<MenuBar>` ran `fc-match sans-serif:weight=100`
+synchronously inside its first frame, 34–49 ms here. `createRoot` now warms
+the medium as the connection comes up, through `prewarm(family, faces)`
+(new in ntk #424). A small app with a menu bar went from a median first
+paint of 495 ms to 465, with no match inside the frame. A core test holds
+every face a menu bar sets to one that was warmed.
+
+`<Html>`'s benchmark document still pays one: `th { font-weight: 600 }`,
+37 ms at 255 MB. Warming the faces its cascade produced, before layout,
+would take that too.
+
+### Module loading (react-x11 #742, open)
+
+Node's compile cache keeps each module's compiled code on disk. It takes a
+small app's first paint from 485 ms to 400, and an editor with a markdown
+pane from 590 to 527. The gain needs the cache on before the app's module
+graph loads, which a library cannot arrange from its own `index.js`: turned
+on there, it saves about 15 ms. #742 asks whether to document it, ship a
+launcher for it, or both.
+
+None of this font warming does anything yet. ntk 8.13.1, the current
+release, has no `prewarm` at all, so #292, #293 and #300 are no-ops against
+it, which is why the Mac run of #300 found nothing. It starts to count with
+the ntk release carrying #423 and #424, and a lockfile bump here and in
+core.
 
 ## Lessons
 
@@ -3288,6 +3348,11 @@ resolving and compiling several hundred modules, about 180 ms of it.
     end, which kept its frames apart by itself. The start-to-start timer of
     the Linux round let them queue, and the Mac's pans lost a fifth, where
     no Linux cell could show it.
+44. **A spawn costs what the process weighs.** Node forks the whole process
+    to start a child, so one `fc-match` spawn cost 1.2 ms at 130 MB and 8
+    ms at 260. Time a spawn inside the app that makes it, not in a script.
+    Start the children a moment needs from one small shell, early, while
+    the heap is small.
 
 ## Still open
 
@@ -3298,9 +3363,10 @@ round 15.
   waits on `fc-match`, which takes 80–150 ms launched from inside a
   mounting app against 20 from a small process — 104–110 ms of a 500-line
   code editor's 143–158 ms first frame. Sans-serif is warmed while the
-  connection is set up; any other family pays it. An app naming its
-  families early, or answers kept across runs, would hide it; neither is
-  small.
+  connection is set up. The components now warm the families they set
+  (round 30), and core warms a menu's medium (round 31). Both wait on the
+  ntk release that carries `prewarm`, and a face nobody names still pays,
+  such as `<Html>`'s `th` at 600.
 - **Markdown reflow's second layout pass**: the floors emulating
   `min-height: auto` come from the previous layout, so a width change lays
   the document out twice — 10,188 nodes at 600 KB with #143, in a frame of
