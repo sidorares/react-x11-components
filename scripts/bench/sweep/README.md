@@ -67,6 +67,15 @@ prints it as tables, one per suite, with a cell that moved by more than the
 noise shown as `was → now` and marked `⚠` when it moved the wrong way. Leave
 the second file off for the tables alone.
 
+Each cell also records whether the screen was up (`display`): `off` when DPMS
+had switched the monitor off, and `,saver` when a screensaver was in front.
+Neither is the machine the cell describes. With the monitor off, Present has
+no display behind it and ntk's windows fall to the fence clock for good. With
+a screensaver up, the window manager is throttled: Cinnamon's applies a
+client's resize about once a second, so a reflow cell measures a window that
+is not resizing. The tables begin with a warning naming any such cell. An
+unattended run needs the screensaver and DPMS kept off for its length.
+
 `results-2026-09-25.jsonl` is the final sweep of that round: components
 `master` with #128 and #134, react-x11 2.22.4 with react-x11#702, ntk 8.12.2
 with ntk#379 — exactly what react-x11 2.22.5 and ntk 8.12.3 released — on an

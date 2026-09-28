@@ -1479,6 +1479,121 @@ test('scrolling a long file keeps a bounded number of laid-out lines', async () 
   assert.ok(most > 0 && most <= 2048 + 64, `${most} lines kept`);
 });
 
+/** A long line's pieces, and how many of them are laid out. */
+interface Pieces {
+  chunks: ReadonlyArray<{ layout: unknown; x: number }>;
+  width: number;
+}
+const laidOut = (layout: Pieces) =>
+  layout.chunks.filter((c) => c.layout).length;
+
+test('a long line is laid out as far as anything asks about it', async () => {
+  // Opening a minified file shaped every piece of its one line before the
+  // first paint: 1.4 s for a million characters, of which the view showed
+  // one piece.
+  const line = 'let alpha = beta(gamma, { delta: 1 }); '.repeat(2000); // 78,000
+  await renderX11(h(CodeEditor, { defaultValue: line }), {
+    width: 600,
+    height: 200,
+  });
+  const node = editorNode();
+  const inside = node as unknown as LineInternals;
+  const layout = inside._lineEntry(0).layout as unknown as Pieces;
+  assert.ok(layout.chunks.length > 30, `${layout.chunks.length} pieces`);
+  assert.ok(
+    laidOut(layout) <= 2,
+    `${laidOut(layout)} of ${layout.chunks.length} pieces laid out for a view of its start`,
+  );
+  // in a monospace face the guess is the line's width, to the column the
+  // trailing space adds
+  const advance = inside._caretX({ line: 0, ch: 1 });
+  assert.ok(
+    Math.abs(layout.width - line.length * advance) < 1,
+    `guessed ${layout.width}, not ${line.length * advance}`,
+  );
+  // the caret at the end lays the line out, and lands where one layout of
+  // the whole line would put it
+  const end = inside._caretX({ line: 0, ch: line.length });
+  assert.strictEqual(laidOut(layout), layout.chunks.length);
+  assert.ok(
+    Math.abs(end - line.length * advance) < 0.01 * (line.length / 100),
+    `the end at ${end}, not ${line.length * advance}`,
+  );
+});
+
+test('a piece of a long line that ends on a space keeps it', async () => {
+  // A piece is set where the caret stands at the end of the one before it.
+  // Set at that one's width, which leaves out the space a layout ends on,
+  // the next piece started a column early: the space vanished from the
+  // screen, and every column after it was out by one more.
+  const line = 'let alpha = beta(gamma, { delta: 1 }); '.repeat(2000);
+  await renderX11(h(CodeEditor, { defaultValue: line }), {
+    width: 600,
+    height: 200,
+  });
+  const node = editorNode();
+  const inside = node as unknown as LineInternals;
+  const advance = inside._caretX({ line: 0, ch: 1 });
+  type Seamed = { chunks: ReadonlyArray<{ u16: number; text: string }> };
+  const pieces = () =>
+    (inside._lineEntry(0).layout as unknown as Seamed).chunks;
+  const after = pieces().filter(
+    (piece, k) => k > 0 && pieces()[k - 1].text.endsWith(' '),
+  );
+  assert.ok(after.length > 2, `${after.length} pieces after one on a space`);
+  for (const piece of after) {
+    const x = inside._caretX({ line: 0, ch: piece.u16 });
+    assert.ok(
+      Math.abs(x - piece.u16 * advance) < 0.5,
+      `column ${piece.u16} at ${x}, not ${piece.u16 * advance}`,
+    );
+  }
+  // …and after an edit, which keeps the pieces before it as they were
+  const end = { line: 0, ch: line.length };
+  node.select(end, end);
+  node.insertText('x');
+  await act(() => {});
+  const x = inside._caretX({ line: 0, ch: line.length + 1 });
+  assert.ok(
+    Math.abs(x - (line.length + 1) * advance) < 1,
+    `the end at ${x}, not ${(line.length + 1) * advance}`,
+  );
+});
+
+test('a guess short of a long line grows the scroll extent as it is laid out', async () => {
+  // A proportional face: \`m\` is wider than the \`0\` a column is measured
+  // by, so the guess falls short. Scrolled to where the guess ends, the
+  // pieces there are laid out, and the extent follows what they measure.
+  const line = 'm'.repeat(20_000);
+  await renderX11(
+    h(CodeEditor, {
+      defaultValue: line,
+      style: { fontFamily: 'sans-serif' },
+    }),
+    { width: 600, height: 200 },
+  );
+  const node = editorNode();
+  const inside = node as unknown as LineInternals & {
+    _maxScrollX(): number;
+    _widest: number;
+  };
+  const layout = inside._lineEntry(0).layout as unknown as Pieces;
+  const guessed = inside._maxScrollX();
+  const laid = laidOut(layout);
+  node.scrollBy(1e9, 0);
+  await act(() => {});
+  assert.ok(
+    laidOut(layout) > laid,
+    'scrolled right, the pieces in view are laid out',
+  );
+  const end = inside._caretX({ line: 0, ch: line.length });
+  assert.ok(inside._maxScrollX() > guessed, 'and the extent grew');
+  assert.ok(
+    inside._widest >= end - 0.5,
+    `the extent reaches the end of the line: ${inside._widest} for ${end}`,
+  );
+});
+
 test('typing at the end of a long line shapes the piece it lands in, not the line', async () => {
   const line = 'let alpha = beta(gamma, { delta: 1 }); '.repeat(160);
   await renderX11(h(CodeEditor, { defaultValue: line }), {

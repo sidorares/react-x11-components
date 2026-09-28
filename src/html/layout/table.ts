@@ -13,7 +13,7 @@
 // algorithm is too slow — which, on a table with a thousand rows, it is.
 import { AUTO, isPct, resolveOrNull } from '../css/values.js';
 import type { Len } from '../css/values.js';
-import { Box } from './boxes.js';
+import { Box, CLIPPED_CELLS, COLLAPSED_CELLS } from './boxes.js';
 import {
   MIN_CONTENT_PROBE,
   clampHeight,
@@ -69,6 +69,7 @@ export function layoutTable(
         ctx,
         contentWidth,
         style.width !== AUTO,
+        spacing,
       );
 
   // --- place ---------------------------------------------------------------
@@ -96,11 +97,20 @@ export function layoutTable(
     }
   }
 
+  // A column that `visibility: collapse` takes out of the table has been
+  // sized with the rest, and is no room at all where they are placed (CSS
+  // 2.1 17.5.5): no width, and no spacing after it. Its cells are still
+  // laid out at the width they would have had, so that taking it out
+  // changes no row's height.
   const columnX: number[] = new Array<number>(columnCount);
+  const gone: boolean[] = new Array<boolean>(columnCount);
+  let anyGone = false;
   let x = table.contentX + spacing;
   for (let c = 0; c < columnCount; c += 1) {
     columnX[c] = x;
-    x += widths[c] + spacing;
+    gone[c] = collapsedColumn(columnBoxes[c], columnGroups[c]);
+    if (gone[c]) anyGone = true;
+    else x += widths[c] + spacing;
   }
   // A table with `width: auto` is as wide as its columns need, not as wide as
   // its container — it shrinks to fit, which is what makes a two-column table
@@ -111,13 +121,14 @@ export function layoutTable(
   // room, as a word is, and one beside a float goes below it.
   //
   // A table set to a width is as wide as it or its columns, whichever is the
-  // wider: columns set wider than the table widen it.
+  // wider: columns set wider than the table widen it. A column taken out
+  // gives its room back either way, set width or not.
   const used = x - table.contentX;
   let tableContentWidth = contentWidth;
   if (style.width === AUTO) {
     tableContentWidth = used;
     table.width = tableContentWidth + table.horizontalExtra;
-  } else if (used > contentWidth) {
+  } else if (used > contentWidth || anyGone) {
     tableContentWidth = used;
     table.width = used + table.horizontalExtra;
   }
@@ -197,18 +208,71 @@ export function layoutTable(
     }
   }
 
+  // And a row it takes out has sized the columns with the rest, and is as
+  // tall as nothing, with no spacing after it; its cells inherit the value,
+  // and are not drawn.
+  const rowGone: boolean[] = new Array<boolean>(rows.length);
   for (let r = 0; r < rows.length; r += 1) {
     rowTop[r] = y;
-    y += rowHeight[r] + rowSpacing;
+    rowGone[r] = rows[r].style.visibility === 'collapse';
+    if (rowGone[r]) rowHeight[r] = 0;
+    else y += rowHeight[r] + rowSpacing;
   }
 
   for (let i = 0; i < cells.length; i += 1) {
     const cell = cells[i];
     const last = Math.min(rows.length - 1, cell.row + cell.rowSpan - 1);
     let height = 0;
-    for (let r = cell.row; r <= last; r += 1) height += rowHeight[r];
+    let clip = false;
+    for (let r = cell.row; r <= last; r += 1) {
+      height += rowHeight[r];
+      if (r > cell.row && rowGone[r]) clip = true;
+    }
     height += rowSpacing * (last - cell.row);
-    const width = spannedWidth(widths, cell, spacing);
+    if (clip) {
+      // down to the last of its rows left in the table, whose spacing went
+      // with the rows taken out
+      let bottom = rowTop[cell.row] + rowHeight[cell.row];
+      for (let r = cell.row + 1; r <= last; r += 1) {
+        if (!rowGone[r]) bottom = rowTop[r] + rowHeight[r];
+      }
+      height = bottom - rowTop[cell.row];
+    }
+    let width = spannedWidth(widths, cell, spacing);
+    // Where its columns are: a cell spanning a column taken out is laid out
+    // across all of them, moved left by the width of the ones before the
+    // first left in, and clipped to the ones left, which cuts out what was
+    // in those (CSS 2.1 17.5.5). The spacing after them goes from the end
+    // of its content, which does not line up with the columns it spans.
+    // One wholly in them is not drawn.
+    let placeX = columnX[cell.column];
+    let boxX = placeX;
+    if (anyGone) {
+      const lastColumn = Math.min(
+        columnCount - 1,
+        cell.column + cell.colSpan - 1,
+      );
+      let first = -1;
+      let end = -1;
+      let before = 0;
+      let some = false;
+      for (let c = cell.column; c <= lastColumn; c += 1) {
+        if (!gone[c]) {
+          if (first < 0) first = c;
+          end = c;
+        } else {
+          if (first < 0) before += (some ? spacing : 0) + widths[c];
+          some = true;
+        }
+      }
+      if (first < 0) COLLAPSED_CELLS.add(cell.box);
+      else if (some) {
+        clip = true;
+        boxX = columnX[first];
+        placeX = boxX - before;
+        width = columnX[end] + widths[end] - boxX;
+      }
+    }
     const inner = cell.box.height;
     // `vertical-align` inside a cell moves the *content*, not the box: the
     // box fills the row, background and all, and the content sits top,
@@ -217,10 +281,16 @@ export function layoutTable(
     const va = cell.box.style.verticalAlign;
     if (va === 'middle') offset = Math.max(0, (height - inner) / 2);
     else if (va === 'bottom') offset = Math.max(0, height - inner);
-    moveTo(cell.box, columnX[cell.column], rowTop[cell.row]);
+    moveTo(cell.box, placeX, rowTop[cell.row]);
     moveContent(cell.box, offset);
+    cell.box.x = boxX;
     cell.box.width = width;
-    cell.box.height = Math.max(inner, height);
+    if (clip) {
+      cell.box.height = height;
+      CLIPPED_CELLS.add(cell.box);
+    } else {
+      cell.box.height = Math.max(inner, height);
+    }
   }
 
   // where the grid lines fell, for the collapsed borders drawn along them
@@ -234,20 +304,25 @@ export function layoutTable(
     collapsed.lineY.push(rowTop[bottom] + rowHeight[bottom] - table.y);
   }
 
+  // A row, and a group of them, spans the columns: from the first one's
+  // left edge to the last one's right, the spacing around them outside it
+  // (CSS 2.1 17.5.1), as it is above and below.
+  const gridX = table.contentX + spacing;
+  const gridWidth = Math.max(0, x - spacing - gridX);
   for (let r = 0; r < rows.length; r += 1) {
     const row = rows[r];
-    row.x = table.contentX;
+    row.x = gridX;
     row.y = rowTop[r];
-    row.width = tableContentWidth;
+    row.width = gridWidth;
     row.height = rowHeight[r];
   }
   for (const child of table.children) {
     if (child.kind !== 'table-row-group') continue;
     const groupRows = child.children.filter((row) => row.kind === 'table-row');
     if (!groupRows.length) continue;
-    child.x = table.contentX;
+    child.x = gridX;
     child.y = groupRows[0].y;
-    child.width = tableContentWidth;
+    child.width = gridWidth;
     child.height =
       groupRows[groupRows.length - 1].y +
       groupRows[groupRows.length - 1].height -
@@ -255,6 +330,12 @@ export function layoutTable(
   }
 
   return y - top;
+}
+
+/** Whether `visibility: collapse` takes a column out: its own, or the
+ *  column group's that holds it with no column box of its own. */
+function collapsedColumn(column: Box | null, group: Box | null): boolean {
+  return (column ?? group)?.style.visibility === 'collapse';
 }
 
 /**
@@ -285,7 +366,21 @@ function layoutCaptions(captions: Box[], ctx: LayoutContext, table: Box): void {
 function captionMinimum(captions: Box[], ctx: LayoutContext): number {
   let widest = 0;
   for (const caption of captions) {
-    const width = measureIntrinsicWidth(caption, ctx, MIN_CONTENT_PROBE);
+    let width = measureIntrinsicWidth(caption, ctx, MIN_CONTENT_PROBE);
+    // and as wide as a length its own `width` sets: the probe lays it out
+    // at none, so an empty caption set to 100px measured nothing, and the
+    // table under it was as narrow as its cells
+    const set = caption.style.width;
+    if (set !== AUTO && !isPct(set)) {
+      const length = resolveOrNull(set, 0);
+      if (length !== null) {
+        const extra =
+          caption.style.boxSizing === 'border-box'
+            ? 0
+            : caption.horizontalExtra;
+        width = Math.max(width, length + extra);
+      }
+    }
     widest = Math.max(widest, width + caption.marginLeft + caption.marginRight);
   }
   return widest;
@@ -398,12 +493,14 @@ function autoColumns(
   ctx: LayoutContext,
   containingWidth: number,
   fill: boolean,
+  spacing: number,
 ): number[] {
   const max: number[] = new Array<number>(columnCount).fill(0);
   const min: number[] = new Array<number>(columnCount).fill(0);
   const explicit: (number | null)[] = new Array<number | null>(
     columnCount,
   ).fill(null);
+  const spanning: Cell[] = [];
 
   for (const cell of cells) {
     // Two probe layouts per cell: unconstrained for max-content, and at no
@@ -425,42 +522,17 @@ function autoColumns(
       // where its words say it exactly, read from the layout just made
       cell.box.intrinsicMinContent =
         (ctx.fonts && exactMinContent(cell.box, ctx.fonts)) ??
-        measureIntrinsicWidth(cell.box, ctx, MIN_CONTENT_PROBE);
+        measureIntrinsicWidth(cell.box, ctx, MIN_CONTENT_PROBE, true);
     }
-    const cellMax = cell.box.intrinsicMaxContent;
-    const cellMin = cell.box.intrinsicMinContent;
-
-    const len = cell.box.style.width;
-    const width = len === AUTO ? null : tableWidth(len, containingWidth);
-    if (cell.colSpan === 1) {
-      max[cell.column] = Math.max(max[cell.column], cellMax);
-      min[cell.column] = Math.max(min[cell.column], cellMin);
-      if (width !== null) {
-        explicit[cell.column] = Math.max(
-          explicit[cell.column] ?? 0,
-          width + cell.box.horizontalExtra,
-        );
-      }
-    } else {
-      // A spanning cell contributes to its columns only when they cannot
-      // already hold it, spread evenly — which is the spec's rule reduced to
-      // the part that matters visually.
-      const last = Math.min(columnCount - 1, cell.column + cell.colSpan - 1);
-      let currentMax = 0;
-      let currentMin = 0;
-      for (let c = cell.column; c <= last; c += 1) {
-        currentMax += max[c];
-        currentMin += min[c];
-      }
-      const spread = last - cell.column + 1;
-      if (cellMax > currentMax) {
-        const each = (cellMax - currentMax) / spread;
-        for (let c = cell.column; c <= last; c += 1) max[c] += each;
-      }
-      if (cellMin > currentMin) {
-        const each = (cellMin - currentMin) / spread;
-        for (let c = cell.column; c <= last; c += 1) min[c] += each;
-      }
+    if (cell.colSpan > 1) {
+      spanning.push(cell);
+      continue;
+    }
+    max[cell.column] = Math.max(max[cell.column], cell.box.intrinsicMaxContent);
+    min[cell.column] = Math.max(min[cell.column], cell.box.intrinsicMinContent);
+    const width = cellWidth(cell, containingWidth);
+    if (width !== null) {
+      explicit[cell.column] = Math.max(explicit[cell.column] ?? 0, width);
     }
   }
 
@@ -471,17 +543,58 @@ function autoColumns(
     if (own !== null) explicit[c] = Math.max(explicit[c] ?? 0, own);
   }
 
+  // A spanning cell comes after the cells of one column, the narrower
+  // spans first, and adds to its columns only what they come short of it
+  // (CSS 2.1 17.5.2.2, step 3). It holds the spacing between them too,
+  // room the columns need not find. What it adds goes to those of them
+  // with no width set, in proportion to their content, and evenly where
+  // they have none. Taken in document order and spread evenly, a spanning
+  // cell in a first row was shared out before the cells of one column
+  // under it were seen, and a column one of them set to 5px took half.
+  spanning.sort((a, b) => a.colSpan - b.colSpan);
+  const grow = (into: number[], want: number, cell: Cell): void => {
+    const last = Math.min(columnCount - 1, cell.column + cell.colSpan - 1);
+    let have = spacing * (last - cell.column);
+    for (let c = cell.column; c <= last; c += 1) have += into[c];
+    if (!(want > have)) return;
+    let free = false;
+    for (let c = cell.column; c <= last && !free; c += 1) {
+      free = explicit[c] === null;
+    }
+    let weight = 0;
+    let count = 0;
+    for (let c = cell.column; c <= last; c += 1) {
+      if (free && explicit[c] !== null) continue;
+      weight += max[c];
+      count += 1;
+    }
+    for (let c = cell.column; c <= last; c += 1) {
+      if (free && explicit[c] !== null) continue;
+      into[c] +=
+        weight > 0 ? ((want - have) * max[c]) / weight : (want - have) / count;
+    }
+  };
+
   // what the columns' content alone asks, before their set widths: the
   // least a column gives way to when the table has less room than its
   // cells' widths want, as beside a float
   const least = min.slice();
+  for (const cell of spanning) grow(least, cell.box.intrinsicMinContent, cell);
   for (let c = 0; c < columnCount; c += 1) {
     if (explicit[c] !== null) {
       max[c] = Math.max(max[c], explicit[c] as number);
       min[c] = Math.max(min[c], Math.min(explicit[c] as number, max[c]));
     }
-    min[c] = Math.min(min[c], max[c]);
   }
+  // and with them: a spanning cell's own width is the least it is, as a
+  // single cell's is (step 1), so a cell over three columns set to 100px,
+  // with 20px between them, has 60 to share, where it had none
+  for (const cell of spanning) {
+    const own = cellWidth(cell, containingWidth) ?? 0;
+    grow(min, Math.max(cell.box.intrinsicMinContent, own), cell);
+    grow(max, Math.max(cell.box.intrinsicMaxContent, own), cell);
+  }
+  for (let c = 0; c < columnCount; c += 1) min[c] = Math.min(min[c], max[c]);
 
   const totalMax = max.reduce((a, b) => a + b, 0);
   if (totalMax <= available) {
@@ -575,6 +688,18 @@ function partWidth(box: Box, base: number): number | null {
   let out = width ?? 0;
   if (max !== null) out = Math.min(out, max);
   return Math.max(0, out, min);
+}
+
+/** A cell's own `width`, its padding and borders in, or null. A
+ *  percentage is a share of the table its padding and borders are part
+ *  of, as browsers read it: added on, a 90% cell and a 10% one came to
+ *  more than the table, which then took it back from both. */
+function cellWidth(cell: Cell, base: number): number | null {
+  const len = cell.box.style.width;
+  const width = len === AUTO ? null : tableWidth(len, base);
+  if (width === null) return null;
+  if (isPct(len)) return Math.max(width, cell.box.horizontalExtra);
+  return width + cell.box.horizontalExtra;
 }
 
 /** A cell's or a column's width. One that adds a percentage to a length,

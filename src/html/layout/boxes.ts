@@ -511,6 +511,16 @@ export const TEXT_RAISES = new WeakMap<LineText, number>();
 export const SHADOWED_TEXT = new WeakSet<Box>();
 export const BOX_RAISES = new WeakMap<Box, number>();
 
+/** The table cells wholly in columns `visibility: collapse` took out of
+ *  their table (CSS 2.1 17.5.5), which the paint pass leaves out: a cell is
+ *  no descendant of its column and inherits nothing from it, so its own
+ *  style still says `visible`. */
+export const COLLAPSED_CELLS = new WeakSet<Box>();
+/** And the cells spanning into a column or a row taken out: laid out as
+ *  they would have been, placed over what is left of their span, and
+ *  clipped to it. */
+export const CLIPPED_CELLS = new WeakSet<Box>();
+
 /** The blocks that broke a relatively positioned inline box in pieces,
  *  under its first piece: its offset moves them too (CSS 2.1 9.2.1.1),
  *  though they stand outside it (`breakAround`). */
@@ -1796,6 +1806,10 @@ function flowOf(
   box: Box,
 ): 'inline' | 'atomic' | 'block' | 'out' {
   if (box.outOfFlow || box.isFloat) return 'out';
+  // an image told to be a table's part is an inline one (`isBlockLevel`)
+  if (box.kind === 'replaced' && style.display.startsWith('table-')) {
+    return 'atomic';
+  }
   switch (style.display) {
     case 'inline':
       return box.kind === 'replaced' ? 'atomic' : 'inline';
@@ -2198,10 +2212,13 @@ function isBlockLevel(box: Box): boolean {
     case 'replaced':
       // an image is inline unless it is told otherwise, and then it is a
       // block: `img { display: block }`, which mail writes to lose the gap
-      // under its images, stacks them
+      // under its images, stacks them. A table's part is no display it
+      // can take, and one told to be a cell is inline (CSS Display 3,
+      // 2.4), which is what a table wraps a cell around.
       return (
         box.style.display !== 'inline' &&
-        !isInlineLevelDisplay(box.style.display)
+        !isInlineLevelDisplay(box.style.display) &&
+        !box.style.display.startsWith('table-')
       );
     default:
       return false;
@@ -2231,21 +2248,35 @@ function wrapOrphans(
     }
   }
   if (!needed) return;
+  // White space goes only between two of the parts, or beside one at an
+  // end (CSS 2.1 17.2.1, rule 1): beside a child the fix-up wraps, it is
+  // that child's run's, so `<span>a</span> <span>b</span>` in a row is one
+  // anonymous cell of `a b`, where it was `ab`
   const next: Box[] = [];
   let run: Box[] | null = null;
+  let space: Box[] = [];
   for (const child of box.children) {
     if (accept(child.kind)) {
       if (run) {
+        run.push(...space);
         next.push(anonymousOf(box, kind, run, anonymous));
         run = null;
       }
+      space = [];
       next.push(child);
       continue;
     }
-    if (isDroppableWhitespace(child)) continue;
-    (run ??= []).push(child);
+    if (isDroppableWhitespace(child)) {
+      space.push(child);
+      continue;
+    }
+    (run ??= []).push(...space, child);
+    space = [];
   }
-  if (run) next.push(anonymousOf(box, kind, run, anonymous));
+  if (run) {
+    run.push(...space);
+    next.push(anonymousOf(box, kind, run, anonymous));
+  }
   box.children = next;
 }
 
@@ -2399,6 +2430,9 @@ function fixUpTable(table: Box, anonymous: AnonymousStyle): void {
     } else if (child.kind === 'table-caption') {
       captions.push(child);
     } else if (isDroppableWhitespace(child)) {
+      // after a loose child it goes with the loose children, and the cells
+      // they are wrapped in say whether it stays (`wrapOrphans`)
+      if (looseCells) looseCells.push(child);
       continue;
     } else if (child.kind === 'table-row') {
       flushCells();

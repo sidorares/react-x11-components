@@ -203,6 +203,18 @@ export interface ComputedStyle {
   tabSize: number;
   tabSizeIsLength: boolean;
   whiteSpace: 'normal' | 'nowrap' | 'pre' | 'pre-wrap' | 'pre-line';
+  /** Whether a word too long for its line may be cut inside itself
+   *  (`overflow-wrap`, CSS Text 3, 5.5): `normal` lets it run past the
+   *  line's end, as a browser does, and `anywhere` is `break-word`. */
+  overflowWrap: 'normal' | 'break-word';
+  /** `word-break` (CSS Text 3, 5.2): `break-all` and `break-word` cut a
+   *  word too long for its line whatever `overflow-wrap` says, which is
+   *  as near as the engines come to breaking between any two letters. */
+  wordBreak: 'normal' | 'break-all' | 'keep-all' | 'break-word';
+  /** `line-break: anywhere` (CSS Text 3, 5.3) breaks between any two
+   *  letters, which the engines come nearest to by cutting a word where
+   *  its line runs out; the other values are the engine's own breaking. */
+  lineBreakAnywhere: boolean;
   /** `text-wrap-style` (CSS Text 4, 6.2): `balance` evens a short
    *  paragraph's lines out; `pretty` and `stable` wrap as `auto` does. */
   textWrapStyle: 'auto' | 'balance';
@@ -217,7 +229,9 @@ export interface ComputedStyle {
     | 'bidi-override'
     | 'isolate-override'
     | 'plaintext';
-  visibility: 'visible' | 'hidden';
+  /** `collapse` is `hidden` but on a table's rows, which it takes out of
+   *  the table (CSS 2.1 17.5.5); paint draws `visible` only. */
+  visibility: 'visible' | 'hidden' | 'collapse';
   listStyleType: string;
   listStylePosition: 'inside' | 'outside';
   /** `list-style-image`: an image a list item's marker is, where it loads,
@@ -229,6 +243,9 @@ export interface ComputedStyle {
   borderSpacing: number;
   borderSpacingY: number;
   captionSide: 'top' | 'bottom';
+  /** `empty-cells` (CSS 2.1 17.6.1.1): `hide` draws no background and no
+   *  borders for a cell with nothing in it, where borders are separate. */
+  emptyCells: 'show' | 'hide';
   /** Inherited so a `<td>` picks up the table's, which is how authors expect
    *  `text-align` on a `<table>` to behave. */
   tableTextAlignSet: boolean;
@@ -482,6 +499,9 @@ export const INHERITED = [
   'tabSize',
   'tabSizeIsLength',
   'whiteSpace',
+  'overflowWrap',
+  'wordBreak',
+  'lineBreakAnywhere',
   'textWrapStyle',
   'direction',
   'visibility',
@@ -493,6 +513,7 @@ export const INHERITED = [
   'borderSpacing',
   'borderSpacingY',
   'captionSide',
+  'emptyCells',
   'tableTextAlignSet',
   'quotes',
   'custom',
@@ -554,6 +575,9 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     tabSize: 8,
     tabSizeIsLength: false,
     whiteSpace: 'normal',
+    overflowWrap: 'normal',
+    wordBreak: 'normal',
+    lineBreakAnywhere: false,
     textWrapStyle: 'auto',
     direction: 'ltr',
     unicodeBidi: 'normal',
@@ -568,6 +592,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     borderSpacing: 0,
     borderSpacingY: 0,
     captionSide: 'top',
+    emptyCells: 'show',
     tableTextAlignSet: false,
     quotes: DEFAULT_QUOTES,
     custom: null,
@@ -774,6 +799,9 @@ export function inherit(
   out.tabSize = parent.tabSize;
   out.tabSizeIsLength = parent.tabSizeIsLength;
   out.whiteSpace = parent.whiteSpace;
+  out.overflowWrap = parent.overflowWrap;
+  out.wordBreak = parent.wordBreak;
+  out.lineBreakAnywhere = parent.lineBreakAnywhere;
   out.textWrapStyle = parent.textWrapStyle;
   out.direction = parent.direction;
   out.visibility = parent.visibility;
@@ -785,6 +813,7 @@ export function inherit(
   out.borderSpacing = parent.borderSpacing;
   out.borderSpacingY = parent.borderSpacingY;
   out.captionSide = parent.captionSide;
+  out.emptyCells = parent.emptyCells;
   out.tableTextAlignSet = parent.tableTextAlignSet;
   out.quotes = parent.quotes;
   out.custom = parent.custom;
@@ -1057,8 +1086,9 @@ export function applyDeclaration(
     }
     case 'visibility': {
       const v = value.toLowerCase();
-      if (v === 'hidden' || v === 'collapse') style.visibility = 'hidden';
-      else if (v === 'visible') style.visibility = 'visible';
+      if (v === 'hidden' || v === 'collapse' || v === 'visible') {
+        style.visibility = v;
+      }
       return;
     }
     case 'z-index': {
@@ -1617,6 +1647,42 @@ export function applyDeclaration(
       }
       return;
     }
+    // a word is cut inside itself only where the style says it may be:
+    // `anywhere` as `break-word` is
+    case 'overflow-wrap':
+    case 'word-wrap': {
+      const v = value.trim().toLowerCase();
+      if (v === 'normal') style.overflowWrap = 'normal';
+      else if (v === 'break-word' || v === 'anywhere') {
+        style.overflowWrap = 'break-word';
+      }
+      return;
+    }
+    case 'line-break': {
+      const v = value.trim().toLowerCase();
+      if (
+        v === 'auto' ||
+        v === 'loose' ||
+        v === 'normal' ||
+        v === 'strict' ||
+        v === 'anywhere'
+      ) {
+        style.lineBreakAnywhere = v === 'anywhere';
+      }
+      return;
+    }
+    case 'word-break': {
+      const v = value.trim().toLowerCase();
+      if (
+        v === 'normal' ||
+        v === 'break-all' ||
+        v === 'keep-all' ||
+        v === 'break-word'
+      ) {
+        style.wordBreak = v;
+      }
+      return;
+    }
     // CSS Text 4 splits `white-space` into what it keeps of the white space
     // and whether its lines wrap; each longhand changes its half of it
     case 'white-space-collapse': {
@@ -1975,6 +2041,11 @@ export function applyDeclaration(
     case 'caption-side': {
       const v = value.toLowerCase();
       if (v === 'top' || v === 'bottom') style.captionSide = v;
+      return;
+    }
+    case 'empty-cells': {
+      const v = value.trim().toLowerCase();
+      if (v === 'show' || v === 'hide') style.emptyCells = v;
       return;
     }
     case 'border-spacing': {
@@ -3307,6 +3378,10 @@ const INHERITED_NAMES = new Set<string>([
   'letter-spacing',
   'word-spacing',
   'white-space',
+  'overflow-wrap',
+  'word-wrap',
+  'word-break',
+  'line-break',
   'white-space-collapse',
   'text-wrap',
   'text-wrap-mode',
@@ -3320,6 +3395,7 @@ const INHERITED_NAMES = new Set<string>([
   'cursor',
   'border-collapse',
   'border-spacing',
+  'empty-cells',
   'quotes',
 ]);
 
@@ -3408,6 +3484,10 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'tab-size': ['tabSize', 'tabSizeIsLength'],
   '-moz-tab-size': ['tabSize', 'tabSizeIsLength'],
   'white-space': ['whiteSpace'],
+  'overflow-wrap': ['overflowWrap'],
+  'word-wrap': ['overflowWrap'],
+  'word-break': ['wordBreak'],
+  'line-break': ['lineBreakAnywhere'],
   'white-space-collapse': ['whiteSpace'],
   'text-wrap': ['whiteSpace', 'textWrapStyle'],
   'text-wrap-mode': ['whiteSpace'],
@@ -3422,6 +3502,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   cursor: ['cursor'],
   'border-collapse': ['borderCollapse'],
   'caption-side': ['captionSide'],
+  'empty-cells': ['emptyCells'],
   quotes: ['quotes'],
   content: ['content'],
   'counter-reset': ['counterReset'],

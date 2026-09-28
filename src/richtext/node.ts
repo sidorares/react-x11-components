@@ -119,6 +119,10 @@ export interface TextRun {
    *  are compared by identity (`sameRuns`), so the same features should be
    *  the same object. */
   features?: Readonly<Record<string, number>>;
+  /** Runs that share a truthy `nowrap` have no break inside them or between
+   *  them — the text of one element with `white-space: nowrap`, the element
+   *  being the value. ntk's, from 8.13.0; CoreText breaks as it would. */
+  nowrap?: unknown;
 }
 
 /** The props `<richtext>` takes. */

@@ -159,6 +159,15 @@ npx tsx scripts/conformance/run.ts wpt fuzz1 --chunk 50 --timeout 60000
 | 73     | flex items no smaller than their content           | 5,484 (93%) | 4,992 (84%) |
 | 74     | percentages of a stretched or flexed item's height | 5,484 (93%) | 4,992 (84%) |
 | 75     | the font's own `ch`, floats in unbroken text       | 5,486 (93%) | 4,994 (84%) |
+| 76     | a word too long for its line kept whole            | 5,520 (93%) | 4,994 (84%) |
+| 77     | `visibility: collapse` in tables                   | 5,525 (93%) | 4,999 (84%) |
+| 78     | the generic `monospace` at its smaller size        | 5,531 (93%) | 5,005 (84%) |
+| 79     | white space in a table's anonymous cells           | 5,536 (93%) | 5,010 (84%) |
+| 80     | a spanning cell's width, and a percentage's        | 5,537 (93%) | 5,011 (84%) |
+| 81     | collapsed borders at corners and at the sides      | 5,539 (93%) | 5,012 (84%) |
+| 82     | `empty-cells: hide`                                | 5,540 (93%) | 5,013 (84%) |
+| 83     | a collapsed border on a half-pixel grid line       | 5,541 (93%) | 5,013 (84%) |
+| 84     | an image told to be a table's part                 | 5,542 (93%) | 5,014 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -2221,6 +2230,210 @@ two agreed.
      runs out; two whose `break-spaces` spaces must not hang; and one whose
      U+2010 the monospace face does not have.
 
+### Round 76
+
+174. **A word too long for its line was cut inside itself.** CSS Text 3's
+     `overflow-wrap: normal`, the initial value, lets such a word run past
+     its line's end, and the text engine cut every one, as `break-word`
+     has it: a long URL in a narrow column was broken across lines where a
+     browser lets it overflow. ntk 8.13.0 keeps a word whole where it is
+     asked to, and `<Html>` asks unless the paragraph says a word may be
+     cut: `overflow-wrap: break-word` or `anywhere`,
+     `word-break: break-all` or `break-word`, or `line-break: anywhere`,
+     the last two emulated, as near as the engines come, by cutting. The
+     engine answers for a paragraph, so an element in it that asks has the
+     paragraph's words cut, and text in a script written without spaces
+     is cut regardless: the engine finds no words in it. The same release
+     starts a line too long for its box at its start edge whatever
+     `text-align` says, where a right-aligned one was pushed out of the
+     box's left side. CoreText, on macOS, cuts a word too long whatever
+     the style says, as it did.
+175. **`truncate` put its ellipsis a word early.** A `text-overflow` cut on
+     a line that does not wrap was the engine's `maxLines: 1`, which wraps
+     the text first and ends the first line with the ellipsis, after the
+     last word that fitted, where a browser fills the box and cuts inside
+     a word. ntk 8.13.0 lays such a line out unwrapped and cuts it where
+     the box ends (`wrap: false`), as CoreText already did.
+176. **Kept whole, a word showed two faults the cutting hid.** A word too
+     long for the room beside a float stayed there when a space followed
+     it, running over the float, where a line with no room for its first
+     word moves down past the floats (CSS 2.1 9.5): a line that ended on
+     white space was taken to have fitted, which was true only while
+     every word was cut. And two `nowrap` elements with a collapsed space
+     between them ran on as one word, where the break between two
+     characters is the call of the nearest element holding both (CSS Text
+     3, 5.1), and that is the paragraph.
+177. **A `nowrap` element broke at its hyphens.** Its spaces were held as
+     no-break spaces, and nothing held its other breaks: Tailwind's
+     `whitespace-nowrap` on "state-of-the-art" broke after "the-". ntk
+     8.13.0 has no break inside or between spans that share a `nowrap`,
+     and each such element's text shares one, itself — so two of them
+     side by side still break between them, as the rule above has it.
+     CoreText has no such option, and on macOS the hyphens break as they
+     did.
+
+     `css-text`: 568 of its 1,489 tests passed on X11, 606 do now. It
+     loses four that passed with every word cut: two that want
+     `hyphens: auto` to hyphenate, which needs a dictionary nothing here
+     has, and two whose `break-spaces` wants a break between two
+     ideographic spaces, which the engine does not make.
+
+### Round 77
+
+178. **`visibility: collapse` took nothing out of a table.** It was read
+     as `hidden`, so a collapsed row or column kept its room and drew
+     nothing in it. CSS 2.1 17.5.5 takes it out: the row is as tall as
+     nothing and the column as wide, with no spacing after either, and
+     the table is that much smaller, a table with a width of its own
+     too. Neither changes anything else: they size the table with the
+     rest, and their cells are laid out at the widths they would have
+     had, so no row is taller or shorter for a column taken out. A row's
+     cells inherit the value and are not drawn; a column is no ancestor
+     of its cells, so one wholly in columns taken out is left out of
+     the paint (`COLLAPSED_CELLS`).
+179. **A cell spanning a collapsed column is clipped to the ones left.**
+     It is laid out across all of its columns, moved left by the width
+     of the ones taken out before the first left in, and clipped to the
+     rest (`CLIPPED_CELLS`), which cuts out what was in them; a cell
+     spanning a row taken out is cut at the last row left. The spacing
+     after a column taken out goes from the end of the content, which
+     does not line up with the columns it spans. `column-visibility-004`
+     passes, where all four browsers on wpt.fyi fail it: Chromium draws
+     the collapsed column's part at the first column left.
+180. **A row was as wide as its table**, the spacing round the cells
+     included, where in the separated borders model its edges are its
+     first and last cells' (CSS 2.1 17.5.1), and a row group's its
+     rows'. An outline on a `<tbody>` stood a spacing out on either
+     side, and a row's background image was placed against the wider
+     box.
+
+     `css-tables`: 83 of its 167 reftests passed on X11, 86 do now.
+
+### Round 78
+
+181. **The generic `monospace` was as large as every other family.** A
+     browser keeps two default sizes, 16px and a "fixed" 13px, and the
+     smaller one is the generic `monospace`'s when it is the whole of
+     the family list — which is why a `<pre>` in a browser is 13px: an
+     element whose family becomes it scales the size it inherits by
+     13/16, one that leaves it scales it back, and a keyword size is
+     read from the smaller scale, while a size an element sets itself
+     stays its own (Blink's `CheckForGenericFamilyChange`). A list with
+     another name in it keeps the size, so `monospace, monospace` is 16
+     pixels, as authors who know the rule write it to get. The monospace
+     tables of `table-anonymous-objects` were as wide as the page at 16
+     and wrapped in their reference, which a browser lays out at 13.
+     The UA sheet's own `<pre>` and `<code>` set their size, `0.9em` of
+     the theme's, and are not moved by it.
+
+### Round 79
+
+182. **White space beside what a table wraps in a cell was dropped.**
+     CSS 2.1 17.2.1 drops white space only between two of a table's
+     parts, or beside one at an end: beside an inline box that the
+     fix-up wraps in an anonymous cell it is that cell's, so
+     `<span>a</span> <span>b</span>` in a `display: table-row` is a cell
+     of `a b`, as it is loose in a table. It was dropped from both, and
+     the words ran together. Firefox keeps it, and on wpt.fyi alone
+     passes `table-anonymous-objects-085` and `-086`; Chrome, Edge and
+     Safari drop it, as this did.
+183. **An empty caption set to a width did not widen its table.** An
+     auto table is at least as wide as its widest caption (CSS 2.1
+     17.4), and a caption's least width is the one it sets itself where
+     it sets one — but it was measured by laying it out at no width,
+     where one set to `100px` measured nothing, and its table was as
+     narrow as its empty cell.
+
+     `css-tables`: 88 of its 167 reftests pass on X11.
+
+### Round 80
+
+184. **A spanning cell's own width was not its columns' to share.** Only
+     a cell of one column read its `width`; one spanning three columns
+     set to 100px, with 20px between them, left them no wider than its
+     content asked, and the content drew in 40. A width of its own is
+     the least a cell is, spanning or not (CSS 2.1 17.5.2.2, step 1),
+     and the spacing between its columns is part of it, room they need
+     not find — so those three columns share 60.
+185. **A spanning cell was shared out before the cells under it were
+     seen.** The cells were taken in document order, so one in a first
+     row was spread evenly over columns a later row's cells set, and a
+     column one of them set to 5px took half of it. The cells of one
+     column come first, then the spanning ones, the narrower spans
+     first (step 3), and what a spanning cell adds goes to those of its
+     columns with no width set, in proportion to their content — to all
+     of them where every one has a width, and compared with their widths
+     rather than their content alone, so a span over two columns set to
+     100px each holds 200 without growing.
+186. **A 90% cell and a 10% one came to more than their table.** A
+     percentage was taken as the cell's content width and its padding
+     and borders added on, so the two came to a hundred percent and
+     their borders, and the table took the excess back from both,
+     leaving them 8.8 to 1. A percentage is a share of the table the
+     cell's padding and borders are part of, as browsers read it.
+187. **A cell set to a width lost its content's least width.** Its
+     `width` is weighed apart, and its content was measured by laying it
+     out at no width and reading back the width it was laid out at,
+     which for a cell set to one was its padding: a column set to 3% cut
+     the word in it, where a table never goes narrower than its words.
+     The content is measured as the content now, whatever the cell's
+     width says.
+
+     `css-tables`: 89 of its 167 reftests pass on X11.
+
+### Round 81
+
+188. **A corner four equal borders met at went to the one below it.**
+     Collapsed borders are painted winners last, so a corner goes to the
+     strongest border meeting there, and between two that won alike the
+     one painted later took it — the one found later, which was the one
+     below the corner. The rule between two borders on one segment is
+     the one further up and further left (CSS 2.1 17.6.2.1), and the
+     corner follows it now: in a grid of equal borders each corner is
+     its top-left cell's.
+189. **A collapsed table's sides took their width from its first row.**
+     CSS 2.1 (17.6.2) sets the table's left and right borders from the
+     first row's outer cells, and a later row's wider one spills into
+     the margin, outside the table — and outside its background, which
+     the cells over it showed through. CSS Tables 3, and browsers, take
+     half the widest along each side, as this already did at the top
+     and the bottom.
+
+### Round 82
+
+190. **`empty-cells` did nothing.** With `hide`, a cell with nothing in
+     it draws no background, of its own or of its row, its column or
+     their groups, and no borders, where borders are separate (CSS 2.1
+     17.6.1.1); the table's background shows through. A cell holds
+     something when anything is in its flow — an empty element or a
+     float among it — but not white space collapsed away. Collapsed
+     borders are the grid's, and it leaves them be. What CSS 2.1 adds
+     for a row whose every cell is empty and hidden, that it takes no
+     height, is not done.
+
+### Round 83
+
+191. **A collapsed border on a line between two pixels started a pixel
+     late.** A border is centred on its grid line, and the grid line
+     was rounded before the border's whole half was taken off it: a
+     line at 12.5 with a 25px border drew it from 1 to 26, and the cell
+     under it showed a pixel wide at the table's edge. It is drawn from
+     the line less half its width, rounded there, 0 to 25, as browsers
+     place it. At 2x the half pixel is a whole one, and Cocoa had it
+     right already.
+
+### Round 84
+
+192. **An image told to be a table's part was laid out as a block.** A
+     replaced element takes no layout-internal display: one set to
+     `table-cell`, or any `table-*`, is inline (CSS Display 3, 2.4). The
+     table fix-up already saw that it was no cell and wrapped it in an
+     anonymous one with what was beside it, but inside that cell, and in
+     a block, it was a block: two such images stood one above the
+     other, and the white space between them collapsed away as between
+     two blocks. The box builder, the white space pass and the inline
+     layout now all read it as an atomic inline, as an `<img>` is.
+
 ## What `<Html>` supports
 
 From the pass rates of the tests that use each feature, at the fixes above,
@@ -2239,7 +2452,7 @@ checked against the code.
 | line height, `vertical-align`                      | 191   | 87%     | **supported**: every inline box's own line height, and `vertical-align` on text as well as on images and inline blocks; text in a font with taller natural lines than its paragraph's takes a bit more room than CSS gives it |
 | `white-space`                                      | 217   | 46%     | **supported**; collapsing is CSS 2.1's across elements                                                                                                                                                                        |
 | lists and markers                                  | 155   | 94%     | **supported**, `list-style-image` included                                                                                                                                                                                    |
-| CSS tables (`display: table-*`), `table-layout`    | 250   | 81%     | **supported**: HTML tables and anonymous ones, both border models, captions, `<col>` widths in both layouts, and column backgrounds with their images; `visibility: collapse` and baseline alignment are not                  |
+| CSS tables (`display: table-*`), `table-layout`    | 250   | 93%     | **supported**: HTML tables and anonymous ones, both border models, captions, `<col>` widths in both layouts, column backgrounds with their images, `visibility: collapse` and `empty-cells`; baseline alignment is not        |
 | `::before`, `::after`, `content`, counters, quotes | 332   | 86%     | **supported**, images in `content` included                                                                                                                                                                                   |
 | `::first-letter`, `::first-line`                   | 398   | 79–100% | `::first-letter` **supported**; `::first-line` **partial**: its colour and background, not its font, spacing or `vertical-align`                                                                                              |
 | `z-index` stacking                                 | 152   | 73%     | **supported**: Appendix E's order — block backgrounds, floats, lines, positioned boxes by `z-index` — with a table, a flex box or a box that clips painted whole among the lines                                              |

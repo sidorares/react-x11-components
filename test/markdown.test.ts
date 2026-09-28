@@ -549,6 +549,67 @@ test(
   },
 );
 
+/** A retained block's props, as the renderer last handed them over. */
+function runsOf(node: RichTextNode): unknown {
+  return (node as unknown as { props: { runs: unknown } }).props.runs;
+}
+
+test('a block inserted mid-document leaves every block after it alone', async () => {
+  // Keyed by index, the paragraph inserted at 6 took paragraph 6's key and
+  // every paragraph after it took the next one's: all of them were handed
+  // new props, and laid out again.
+  const paras = Array.from({ length: 12 }, (_, i) => `Paragraph ${i}.`);
+  const md = (list: string[]) =>
+    h(Markdown, { source: list.join('\n\n'), partial: false });
+  const r = await renderX11(md(paras), { backend: 'mock' });
+  const before = mdNodes();
+  const runs = before.map(runsOf);
+  assert.equal(before.length, 12);
+
+  const inserted = [...paras.slice(0, 6), 'Inserted.', ...paras.slice(6)];
+  await r.rerender(md(inserted));
+  const after = mdNodes();
+  assert.equal(after.length, 13);
+  assert.equal(after[6].textContent(), 'Inserted.');
+  for (let i = 0; i < 12; i += 1) {
+    const now = after[i < 6 ? i : i + 1];
+    assert.ok(now === before[i], `paragraph ${i} kept its node`);
+    assert.ok(runsOf(now) === runs[i], `and paragraph ${i} kept its props`);
+  }
+
+  // an edit updates its block where it stands, rather than replacing it
+  const edited = inserted.slice();
+  edited[3] = 'Paragraph 3, edited.';
+  await r.rerender(md(edited));
+  const edit = mdNodes();
+  assert.ok(edit[3] === after[3], 'the edited paragraph kept its node');
+  assert.equal(edit[3].textContent(), 'Paragraph 3, edited.');
+
+  // …and taking the inserted block out again moves nothing either
+  await r.rerender(md(paras));
+  const back = mdNodes();
+  assert.equal(back.length, 12);
+  for (let i = 7; i < 13; i += 1) {
+    assert.ok(back[i - 1] === after[i], `paragraph ${i - 1} kept its node`);
+  }
+});
+
+test('a heading pushed off the top gets the margin the first one goes without', async () => {
+  const r = await renderX11(
+    h(Markdown, { source: '# Title\n\nText.', partial: false }),
+    { backend: 'mock' },
+  );
+  const marginOf = (n: RichTextNode) =>
+    (n as unknown as { style: { marginTop?: number } }).style.marginTop ?? 0;
+  assert.equal(marginOf(mdNodes()[0]), 0);
+  await r.rerender(
+    h(Markdown, { source: 'Intro.\n\n# Title\n\nText.', partial: false }),
+  );
+  const [, heading] = mdNodes();
+  assert.equal(heading.textContent(), 'Title');
+  assert.ok(marginOf(heading) > 0, 'no longer first, it has a top margin');
+});
+
 // --- the display scale -------------------------------------------------------
 //
 // react-x11 hands a registered element two units (its docs/scale.md): `abs`

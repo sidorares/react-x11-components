@@ -285,7 +285,8 @@ table's `width` includes its borders, as HTML's rendering rules give every
 table `box-sizing: border-box`. Table cells in an inline box are an inline
 table, with the spaces either side of them kept. A table right to left —
 by `direction`, or HTML's `dir`, which is read as it — has its first column
-at the right.
+at the right. `empty-cells: hide` draws neither background nor borders for
+a cell with nothing in it, where borders are separate.
 A block in an inline element breaks it (CSS 2.1 9.2.1.1): the pieces of the
 element before and after the block are on lines of their own, without an
 edge where the block cut them, and the block stands between them as a
@@ -316,7 +317,8 @@ is centred with its images, not text first and the image after it.
 on an inline box takes its room back from the line), `padding`,
 `border` (width, style, colour, radius), `box-sizing`, `overflow`, `clip`,
 `opacity`, `visibility` — a hidden element keeps its room and draws
-nothing, its text included, and a visible element inside it is drawn —
+nothing, its text included, and a visible element inside it is drawn; a
+collapsed table row or column gives its room and its spacing back —
 `z-index`: a positioned box with a negative
 `z-index` is painted under the flow of its stacking context, the root
 element or a positioned box with a `z-index` of its own, and over that
@@ -477,8 +479,10 @@ a table: the body table of a mail stands in the middle of its
 auto margins is centred once it has shrunk to its columns, so a mail's
 button, a one-cell `<table align="center">`, stands in the middle.
 
-**Text:** `font` and its longhands, the families a document brings with
-`@font-face` ([Fonts](#fonts)), the `font-variant` longhands,
+**Text:** `font` and its longhands (the generic `monospace`, as the whole
+of a family list, at 13/16 of the size the others take, as in a
+browser), the families a document brings with `@font-face`
+([Fonts](#fonts)), the `font-variant` longhands,
 `font-kerning` and `font-feature-settings` (the font's own OpenType
 features: small capitals where the font has them, none synthesized),
 `text-shadow` (any number, blurred or hard), `line-height`, `text-align` (with
@@ -490,7 +494,8 @@ first is the text engine's; the second is spacing added to each space and
 no-break space, so only text that asks for it is split into more runs),
 `white-space` (including
 `pre` and `pre-wrap`, on an element as well as on its block: a `nowrap`
-element's words stay together, and `pre`'s spaces take their room at a
+element's text stays together, at its hyphens as well as its spaces, and
+`pre`'s spaces take their room at a
 line's end, where other spaces hang, and its tabs go to their stops, every
 `tab-size` spaces; a line break straight after `<pre>`'s
 start tag is dropped, as HTML's parser drops it) and CSS Text 4's halves
@@ -502,8 +507,16 @@ width, as Chrome does it; `pretty` wraps as `auto` does), `line-clamp` and
 are, the last cut with an ellipsis — Tailwind's `line-clamp-2`; a block
 laid out a line at a time, around an image or a float, is cut with none),
 `text-overflow: ellipsis` on a `nowrap` block that clips (`truncate`: each
-line cut at the box's width with an ellipsis, which the text engine makes
-room for inside the line's last word), `direction`,
+line cut where the box ends, inside a word if need be, with an ellipsis, as
+a browser cuts it), `overflow-wrap` (a word too long for
+its line runs past the line's end, as in a browser, unless the paragraph
+says it may be cut: `overflow-wrap: break-word` or `anywhere`,
+`word-break: break-all` or `break-word`, or `line-break: anywhere`, all of
+which cut it where the line runs out; the text engine answers for a whole
+paragraph, so an element in it that asks has its every word cut, and text
+in a script written without spaces is cut regardless, as the engine finds
+no words in it — CoreText, on macOS, cuts a word too long whatever the
+style says), `direction`,
 `unicode-bidi`, `vertical-align`,
 `text-decoration` in all five rule styles, with `text-decoration-thickness`
 and `text-underline-offset`. `unicode-bidi` is carried out as

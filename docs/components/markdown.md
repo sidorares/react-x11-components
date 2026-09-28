@@ -132,6 +132,31 @@ Rendering is cached per top-level block, keyed on the raw source text of that
 block, so appending to the tail re-renders the tail alone rather than the
 document. That is what makes a token-by-token stream cheap.
 
+A block also keeps its place in the tree from one render to the next. The new
+blocks are matched to the old ones from both ends, so the blocks a change
+left alone keep their nodes, and a block that changed is updated in place. A
+paragraph inserted into the middle of a 600 KB report reaches the screen in
+31 ms. When blocks were keyed by their index it took 958 ms, because every
+block after the insertion moved onto another block's key and was rendered
+and laid out again.
+
+The parse is not repeated whole either. Each new `source` is parsed as an
+edit of the one before (`ParseOptions.previous`). The parse starts at the
+block before the first line that changed and stops once it stands where the
+previous parse stood, among the lines the change left alone. Measured on
+X11 in production:
+
+- A 200-character chunk at the end of a 190 KB stream parses in 0.26 ms,
+  down from 8.1 ms for the whole document.
+- An edit to one paragraph of a 600 KB report parses in about 1 ms, down
+  from 23–27 ms. From the edit to the screen it went from 54 to 32 ms, and
+  an append from 70–82 to 45 ms.
+
+The result is always what a parse from scratch gives: a fence opened
+mid-document still swallows the rest. With `components`, every change parses
+the whole document again, because an open tag looks for its closing tag as
+far as the end of the document.
+
 `partial` is the difference between "this document is finished" and "more may
 arrive". While it is true the live tail is rendered friendly, and constructs
 that cannot yet be read are held rather than shown half-formed. It defaults
@@ -166,6 +191,11 @@ import type {
 
 Same parser, same tolerance, no renderer attached — for a table of contents, a
 word count, or a second renderer of your own.
+
+To parse a changed source, pass the document its previous version parsed into:
+`parseMarkdown(next, { partial, previous: doc })`. Only the blocks around the
+change are parsed again, and the rest are the same objects as before. That
+is what `<Markdown>` does with its `source`.
 
 ## MDX
 

@@ -1036,6 +1036,35 @@ test('white space collapses across elements, and not at a line start', async () 
   );
 });
 
+test('the generic monospace on its own is smaller, as in a browser', async () => {
+  // 13 to 16: an element whose family becomes `monospace` scales the size
+  // it inherits, and one that leaves it scales it back; a keyword reads the
+  // smaller scale; a size an element sets is its own, and a list with a
+  // fallback in it keeps the size it had
+  const { node } = await render(
+    '<div style="font-size:16px">' +
+      '<p id="a" style="font-family:monospace">a</p>' +
+      '<p id="b" style="font-family:monospace, monospace">b</p>' +
+      '<p id="c" style="font-family:monospace;font-size:20px">c</p>' +
+      '<p id="m" style="font-size:medium">m</p>' +
+      '<div style="font-family:monospace">' +
+      '<p id="d" style="font-family:serif">d</p>' +
+      '<p id="e" style="font-size:medium">e</p>' +
+      '<p id="f" style="font:italic medium monospace">f</p>' +
+      '<p id="g" style="font-size:2em">g</p></div></div>',
+  );
+  const el = view(node);
+  const size = (id: string) =>
+    (boxOf(el, id) as LaidBox & { style: { fontSize: number } }).style.fontSize;
+  assert.strictEqual(size('a'), 13, 'inherited, scaled');
+  assert.strictEqual(size('b'), 16, 'a fallback: no');
+  assert.strictEqual(size('c'), 20, 'set: its own');
+  assert.strictEqual(size('d'), 16, 'and back');
+  assert.strictEqual(size('e'), size('m') * (13 / 16), 'medium, smaller');
+  assert.strictEqual(size('f'), size('m') * (13 / 16), 'through `font` too');
+  assert.strictEqual(size('g'), 26, "an em of the parent's");
+});
+
 metric('font-size: 0 leaves no room between inline-blocks', async () => {
   // the common way to lose the spaces between columns set inline: at no
   // size the space between them takes no room, where it used to be 1px. The
@@ -2947,6 +2976,109 @@ metric(
   },
 );
 
+metric("a corner equal borders meet at is the top-left cell's", async () => {
+  // CSS 2.1 17.6.2.1: between two borders that win alike, the one further
+  // up and further left; painted in the order they were found, the border
+  // below the corner in the middle of four cells took it
+  const { node } = await render(
+    '<table style="border-collapse:collapse"><tr>' +
+      '<td id="a" style="border:10px solid #0000ff">a</td>' +
+      '<td style="border:10px solid #ff0000">b</td></tr><tr>' +
+      '<td style="border:10px solid #ff0000">c</td>' +
+      '<td style="border:10px solid #ff0000">d</td></tr></table>',
+  );
+  const el = view(node);
+  const a = boxOf(el, 'a');
+  // the middle of the corner: a's bottom right, half a border in
+  const x = Math.round(a.x + a.width);
+  const y = Math.round(a.y + a.height);
+  const over = (await fillsOf(el)).filter(
+    (f) => f.x <= x && x < f.x + f.w && f.y <= y && y < f.y + f.h,
+  );
+  assert.ok(over.length > 1, 'more than one border meets there');
+  assert.strictEqual(over[over.length - 1].style, parseColor('#0000ff'));
+});
+
+test("a collapsed table's sides are half its widest outer borders", async () => {
+  // CSS Tables 3: along each side, the widest of its rows' borders, where
+  // CSS 2.1 took the first row's and let a wider one below spill out of
+  // the table, from under its background
+  const { node } = await render(
+    '<table id="t" style="border-collapse:collapse">' +
+      '<tr><td style="padding:0;border-left:150px solid"></td></tr>' +
+      '<tr><td style="padding:0;border-right:100px solid"></td></tr></table>',
+  );
+  assert.strictEqual(boxOf(view(node), 't').width, 75 + 75 + 50);
+});
+
+test('empty-cells: hide draws nothing of an empty cell', async () => {
+  // CSS 2.1 17.6.1.1: no background of its own or its row's and no
+  // borders, where borders are separate; white space collapsed away is
+  // nothing, an empty element is something, and collapsed borders are
+  // the grid's, which it does not touch
+  const { node } = await render(
+    '<table style="empty-cells:hide"><tr style="background:#0000ff">' +
+      '<td style="background:#ff0000;border:2px solid #ff0000"> </td>' +
+      '<td style="background:#00ff00"><span></span></td></tr></table>' +
+      '<table style="empty-cells:hide;border-collapse:collapse"><tr>' +
+      '<td style="border:2px solid #ff00ff"></td></tr></table>',
+  );
+  const fills = await fillsOf(view(node));
+  const any = (color: string) =>
+    fills.some((f) => f.style === parseColor(color));
+  assert.ok(!any('#ff0000'), "the empty cell's background and borders");
+  assert.ok(any('#00ff00'), 'a cell with an empty element in it is drawn');
+  assert.strictEqual(
+    fills.filter((f) => f.style === parseColor('#0000ff')).length,
+    1,
+    "the row's background under the second cell only",
+  );
+  assert.ok(any('#ff00ff'), 'collapsed borders are drawn');
+});
+
+test('a collapsed border on a line between two pixels starts on one', async () => {
+  // a grid line at 12.5 carries a 25px border from 0 to 25; rounding the
+  // line first and taking a whole half off drew it from 1, and the cell
+  // under it showed a pixel wide at the table's edge
+  const { node } = await render(
+    '<table id="t" style="border-collapse:collapse;table-layout:fixed;' +
+      'width:100px"><tr><td style="padding:10px 0"></td>' +
+      '<td style="width:50%;padding:10px 0;border-left:25px solid #00ff00;' +
+      'border-right:25px solid #00ff00"></td>' +
+      '<td style="padding:10px 0"></td></tr></table>',
+  );
+  const el = view(node);
+  const t = boxOf(el, 't');
+  const green = (await fillsOf(el)).filter(
+    (f) => f.style === parseColor('#00ff00'),
+  );
+  assert.deepStrictEqual(
+    green.map((f) => [f.x - Math.round(t.x), f.w]).sort((a, b) => a[0] - b[0]),
+    [
+      [0, 25],
+      [75, 25],
+    ],
+  );
+});
+
+test('an image told to be a table cell is inline', async () => {
+  // CSS Display 3, 2.4: a table's part is no display a replaced element
+  // takes, and it is inline — in a row, wrapped in a cell with what is
+  // beside it, and in a block, on the line; they were stacked as blocks
+  const { node } = await render(
+    '<div style="display:table-row">' +
+      '<img id="a" style="display:table-cell;width:15px;height:15px"> ' +
+      '<img id="b" style="display:table-cell;width:15px;height:15px"></div>' +
+      '<div><img id="c" style="display:table-cell;width:15px;height:15px">' +
+      ' <img id="d" style="display:table-row;width:15px;height:15px"></div>',
+  );
+  const el = view(node);
+  const [a, b, c, d] = ['a', 'b', 'c', 'd'].map((id) => boxOf(el, id));
+  assert.strictEqual(b.y, a.y, 'side by side in the row');
+  assert.ok(b.x > a.x + a.width, 'a space between them');
+  assert.strictEqual(d.y, c.y, 'and on one line in a block');
+});
+
 metric('a column group draws its borders where they collapse', async () => {
   const { node } = await render(
     '<table style="border-collapse:collapse"><colgroup ' +
@@ -3126,6 +3258,106 @@ metric("a column's background is painted under its cells", async () => {
     "over the table's, under a cell's own",
   );
 });
+
+metric('a row spans its columns, not the spacing round them', async () => {
+  // CSS 2.1 17.5.1: in the separated borders model a row's edges are its
+  // cells', and a group's are its rows' — the spacing is the table's
+  const { node } = await render(
+    '<table id="t" style="border-spacing:10px;border:none">' +
+      '<tbody id="g"><tr id="r"><td id="a">a</td><td id="b">b</td></tr>' +
+      '</tbody></table>',
+  );
+  const el = view(node);
+  const [t, g, r, a, b] = ['t', 'g', 'r', 'a', 'b'].map((id) => boxOf(el, id));
+  assert.strictEqual(r.x - t.x, 10, 'the spacing before it outside it');
+  assert.strictEqual(r.x, a.x);
+  assert.strictEqual(r.x + r.width, b.x + b.width, 'and the spacing after');
+  assert.deepStrictEqual([g.x, g.width], [r.x, r.width], 'its group the same');
+});
+
+metric(
+  'visibility: collapse takes a row out of its table, and its spacing',
+  async () => {
+    // CSS 2.1 17.5.5: the row has sized the columns with the rest, and takes
+    // no room; its cells inherit the value, and are not drawn
+    const { node } = await render(
+      '<table id="t" style="border-spacing:2px 10px;border:none">' +
+        '<tr><td id="a" style="padding:0">a</td></tr>' +
+        '<tr style="visibility:collapse"><td id="b" ' +
+        'style="padding:0;background:#ff0000">a much wider cell</td></tr>' +
+        '<tr><td id="c" style="padding:0">c</td></tr></table>',
+    );
+    const el = view(node);
+    const [t, a, b, c] = ['t', 'a', 'b', 'c'].map((id) => boxOf(el, id));
+    assert.strictEqual(
+      c.y - (a.y + a.height),
+      10,
+      'one spacing where two were',
+    );
+    assert.strictEqual(t.height, 10 + a.height + 10 + c.height + 10);
+    assert.ok(
+      a.width > 50,
+      `the column as wide as the row taken out: ${a.width}`,
+    );
+    assert.strictEqual(a.width, b.width);
+    const fills = await fillsOf(el);
+    assert.ok(
+      !fills.some((f) => f.style === parseColor('#ff0000')),
+      'its cell not drawn',
+    );
+  },
+);
+
+metric(
+  'visibility: collapse takes a column out, and changes no row',
+  async () => {
+    // Its cells are laid out at the width they had, so a row is as tall as
+    // it was, and are not drawn; the columns after it close up
+    const row = (id: string, collapse: string) =>
+      `<table id="t${id}" style="border-spacing:0;width:100px">` +
+      `<col><col${collapse}><col>` +
+      `<tr id="r${id}"><td id="a${id}">a</td>` +
+      `<td id="b${id}" style="background:#ff0000">one two three` +
+      ` four</td><td id="c${id}">c</td></tr></table>`;
+    const { node } = await render(
+      row('1', '') + row('2', ' style="visibility:collapse"'),
+    );
+    const el = view(node);
+    const box = (id: string) => boxOf(el, id);
+    const lines = (id: string) =>
+      (box(id) as LaidBox & { lines: unknown[] | null }).lines?.length ?? 0;
+    assert.ok(lines('b1') > 1 && lines('b2') === lines('b1'), 'wrapped alike');
+    assert.strictEqual(box('r2').height, box('r1').height, 'as tall as it was');
+    assert.strictEqual(box('c2').x, box('a2').x + box('a2').width, 'closed up');
+    assert.strictEqual(box('t2').width, box('t1').width - box('b1').width);
+    const fills = await fillsOf(el);
+    const red = fills.filter((f) => f.style === parseColor('#ff0000'));
+    assert.strictEqual(red.length, 1, "the first table's cell only");
+  },
+);
+
+metric(
+  'a cell spanning a column taken out is clipped to the ones left',
+  async () => {
+    // CSS 2.1 17.5.5: laid out across all its columns, moved left by the one
+    // taken out, which cuts out what was in it
+    const { node } = await render(
+      '<table style="border-spacing:0"><col style="width:50px">' +
+        '<col style="visibility:collapse;width:30px"><col style="width:40px">' +
+        '<tr><td id="a" style="padding:0">a</td>' +
+        '<td id="s" colspan="2" style="padding:0">x</td></tr>' +
+        '<tr><td style="padding:0"></td><td style="padding:0"></td>' +
+        '<td id="c" style="padding:0">c</td></tr></table>',
+    );
+    const el = view(node);
+    const [a, s, c] = ['a', 's', 'c'].map((id) => boxOf(el, id));
+    assert.strictEqual(s.x, a.x + a.width, 'over the column left');
+    assert.strictEqual(s.width, c.width);
+    const lines = (s as LaidBox & { lines: { texts: { drawX: number }[] }[] })
+      .lines;
+    assert.strictEqual(lines[0].texts[0].drawX, s.x - 30, 'its text cut');
+  },
+);
 
 metric("a table's height is shared among its rows", async () => {
   // CSS 2.1 17.5.3: the height is a least height, and what the rows come
@@ -3951,6 +4183,39 @@ test("white space between a table's parts is no cell, kept or not", async () => 
   assert.deepStrictEqual([c.x, c.y], [t.x, t.y], 'the cell is the first');
 });
 
+test("an auto table is as wide as its caption's own width", async () => {
+  // CSS 2.1 17.4: the caption's least width is the table's, and one set to
+  // a length has that one; measured at no width, an empty caption set to
+  // 100px counted nothing, and the table under it was as narrow as its
+  // empty cell
+  const { node } = await render(
+    '<table id="t" style="border-spacing:0"><caption style="width:100px">' +
+      '</caption><tr><td style="padding:0"></td></tr></table>',
+  );
+  assert.strictEqual(boxOf(view(node), 't').width, 100);
+});
+
+metric(
+  'white space beside what a table wraps in a cell stays in it',
+  async () => {
+    // CSS 2.1 17.2.1, rule 1: it goes only between two of a table's parts;
+    // between two inline boxes in a row it is the anonymous cell's, as it is
+    // between two loose ones in a table, and it was dropped from both
+    const { node } = await render(
+      '<div style="display:table-row"><span id="a">a</span> <span>b</span></div>' +
+        '<div style="display:table"><span id="c">a</span> <span>b</span></div>' +
+        '<div style="display:table"><div id="ref" style="display:table-cell">' +
+        'a b</div></div>',
+    );
+    const el = view(node);
+    const cellOf = (id: string) =>
+      (boxOf(el, id) as LaidBox & { parent: LaidBox }).parent;
+    const ref = boxOf(el, 'ref').width;
+    assert.strictEqual(cellOf('a').width, ref, 'in a row: as wide as "a b"');
+    assert.strictEqual(cellOf('c').width, ref, 'loose in a table: the same');
+  },
+);
+
 test('a float is painted over the backgrounds of the blocks after it', async () => {
   // CSS 2.1 Appendix E: every in-flow block's background, then the floats,
   // then the lines. Painted a block at a time, the shaded paragraph beside
@@ -3984,6 +4249,65 @@ test('a box with a formatting context of its own clears every float along its he
   assert.strictEqual(b.x, f.x + 100, 'and beside the second, lower down');
   assert.strictEqual(b.y, a.y + 50);
 });
+
+test("a spanning cell's width is shared by its columns, less the spacing", async () => {
+  // CSS 2.1 17.5.2.2, steps 1 and 3: its own width is the least it is,
+  // and the spacing between its columns is part of it, so a cell over
+  // three columns set to 100px, with 20px between them, has 60 to share
+  const { node } = await render(
+    '<table style="border-spacing:20px"><tr>' +
+      '<td id="s" colspan="3" style="width:100px;padding:0"></td></tr></table>',
+  );
+  assert.strictEqual(boxOf(view(node), 's').width, 100);
+});
+
+test('a spanning cell comes after the cells of one column', async () => {
+  // in a first row it was shared out evenly before the cells under it
+  // were seen, and a column one of them sets to 5px took half of it
+  const { node } = await render(
+    '<table style="width:110px;border-spacing:0">' +
+      '<tr><td colspan="2" style="width:100px;padding:0"></td>' +
+      '<td colspan="2" style="padding:0"></td></tr>' +
+      '<tr><td id="a" style="width:5px;padding:0"></td>' +
+      '<td id="s" colspan="2" style="padding:0"></td>' +
+      '<td id="b" style="width:5px;padding:0"></td></tr></table>',
+  );
+  const el = view(node);
+  const [a, s, b] = ['a', 's', 'b'].map((id) => boxOf(el, id));
+  assert.deepStrictEqual([a.width, s.width, b.width], [5, 100, 5]);
+});
+
+test("a cell's percentage is a share of the table, its borders in it", async () => {
+  // added on, a 90% cell and a 10% one came to more than the table,
+  // which took it back from both and left them 8.8 to 1
+  const { node } = await render(
+    '<table style="width:400px;border-collapse:collapse"><tr>' +
+      '<td id="a" style="width:90%;border:1px solid;padding:0"></td>' +
+      '<td id="b" style="width:10%;border:1px solid;padding:0"></td></tr>' +
+      '</table>',
+  );
+  const el = view(node);
+  const [a, b] = ['a', 'b'].map((id) => boxOf(el, id));
+  assert.ok(Math.abs(a.width - 9 * b.width) < 0.01, `${a.width} ${b.width}`);
+});
+
+metric(
+  'a cell set to a narrow percentage is no narrower than its word',
+  async () => {
+    // a table never goes narrower than its words (CSS 2.1 17.5.2.2): a
+    // cell's own width is weighed apart from its content, and the content
+    // was measured at the width the probe laid the cell out at, which for
+    // one set to a width was its padding, so a 3% column cut its word
+    const { node } = await render(
+      '<table style="width:320px;border-spacing:0"><tr>' +
+        '<td style="width:97%;padding:0">a</td>' +
+        '<td id="b" style="width:3%;padding:0">unbreakable</td></tr></table>',
+    );
+    const el = view(node);
+    const b = boxOf(el, 'b') as LaidBox & { lines: { width: number }[] };
+    assert.ok(b.width >= b.lines[0].width, `${b.width} ${b.lines[0].width}`);
+  },
+);
 
 test('a table with a width of its own fills it with its columns', async () => {
   // CSS 2.1 17.5.2.2: the columns not set to a width take what the table
@@ -7170,6 +7494,93 @@ metric(
       lineTextsOf(el, 'b').map((line) => line.trim()),
       ['AA', 'BB'],
     );
+  },
+);
+
+metric(
+  'a word too long for its line runs past it unless the style cuts it',
+  async () => {
+    // CSS Text 3, 5.5: `overflow-wrap: normal`, the initial value, lets a
+    // word wider than its line run past the line's end, as a browser does;
+    // `break-word` or `anywhere`, `word-break: break-all` or `break-word`
+    // whatever `overflow-wrap` says, cut it. Every such word was cut.
+    const word = 'Pneumonoultramicroscopicsilicovolcanoconiosis';
+    const { node } = await render(
+      '<style>body{margin:0} p{margin:0;width:100px}</style>' +
+        `<p id="a">${word}</p>` +
+        `<p id="b" style="overflow-wrap:break-word">${word}</p>` +
+        `<p id="c" style="word-break:break-word;overflow-wrap:normal">${word}</p>` +
+        `<div style="word-break:break-all"><p id="d">${word}</p></div>` +
+        // the engine cuts a paragraph's words or none, so a span that asks
+        // for it has them cut
+        `<p id="e">a <span style="overflow-wrap:anywhere">${word}</span></p>`,
+    );
+    const el = view(node);
+    const a = linesOf(el, 'a');
+    assert.strictEqual(a.length, 1, 'whole');
+    assert.ok(a[0].width > 100, `past the line's end: ${a[0].width}`);
+    for (const id of ['b', 'c', 'd', 'e']) {
+      const lines = linesOf(el, id);
+      assert.ok(lines.length > 1, `${id}: cut`);
+      assert.ok(
+        lines.every((line) => line.width <= 100.5),
+        `${id}: within the line`,
+      );
+    }
+  },
+);
+
+metric(
+  'a space that collapses between two nowrap elements is a break',
+  async () => {
+    // CSS Text 3, 4.1.1: a space after another collapses away and keeps its
+    // chance to wrap where its own element wraps, so the lines break between
+    // the elements. They ran on as one word, cut where the line ran out.
+    const spans = Array.from(
+      { length: 8 },
+      (_, i) => `<span style="white-space:nowrap">w${i} </span>`,
+    );
+    const { node } = await render(
+      '<style>p{margin:0;font:10px monospace}</style>' +
+        `<p id="a" style="width:100px">${spans.join(' ')}</p>`,
+    );
+    const lines = lineTextsOf(view(node), 'a').map((line) => line.trim());
+    assert.ok(lines.length > 1, JSON.stringify(lines));
+    for (const line of lines) {
+      assert.match(line, /^w\d(\sw\d)*$/, JSON.stringify(lines));
+    }
+  },
+);
+
+metric('a nowrap element does not break at its hyphens', async () => {
+  // CSS Text 3, 5.1: no break inside an element that does not wrap, at a
+  // space or anywhere else. Its spaces were held; a hyphen was still a
+  // place to break, and `whitespace-nowrap` on "state-of-the-art" broke
+  // inside it.
+  const { node } = await render(
+    '<style>p{margin:0;font:10px monospace;width:100px}</style>' +
+      '<p id="a">a <span style="white-space:nowrap">state-of-the-art</span> ' +
+      'design</p>',
+  );
+  // whole on a line of its own: the line before cannot take it
+  const a = lineTextsOf(view(node), 'a').map((line) => line.trim());
+  assert.deepStrictEqual(a.slice(0, 2), ['a', 'state-of-the-art'], `${a}`);
+});
+
+metric(
+  'a word too long for the room beside a float goes below it whole',
+  async () => {
+    // CSS 2.1 9.5: a line with too little room beside the floats for its
+    // first word moves down past them. A word kept whole ran past the room,
+    // over the float's side of the paragraph, and stayed beside it.
+    const { node } = await render(
+      '<style>body{margin:0}</style><div style="width:200px">' +
+        '<div style="float:left;width:150px;height:30px"></div>' +
+        '<p id="p" style="margin:0">Supercalifragilistic words</p></div>',
+    );
+    const [line] = linesOf(view(node), 'p');
+    assert.ok(line.y >= 30, `below the float: ${line.y}`);
+    assert.strictEqual(line.x, 0);
   },
 );
 
