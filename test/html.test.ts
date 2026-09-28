@@ -4426,6 +4426,26 @@ test("a table gives up its cells' set widths before its words", async () => {
   assert.deepStrictEqual([u.y - v.y, u.width], [100, 250], 'below it');
 });
 
+test('an absolute box a max-width or max-height holds is centred by its auto margins', async () => {
+  // CSS 2.1 10.4 and 10.7: with both offsets and an auto size, the box
+  // fills what they leave — but a `max-width` or `max-height` that holds
+  // it back makes a size like one set, and the rules run again with it,
+  // where auto margins share what is left; it stayed at its start edge,
+  // and at first did not take the `max-width` at all
+  const { node } = await render(
+    '<div style="position:relative;width:300px;height:200px">' +
+      '<div id="a" style="position:absolute;left:0;right:0;top:0;bottom:0;' +
+      'margin:auto;max-width:100px;max-height:50px"></div></div>',
+  );
+  const el = view(node);
+  const a = boxOf(el, 'a');
+  const parent = (a as LaidBox & { parent: LaidBox }).parent;
+  assert.deepStrictEqual(
+    [a.width, a.height, a.x - parent.x, a.y - parent.y],
+    [100, 50, 100, 75],
+  );
+});
+
 test('a float or an absolute box inside an inline box is laid out', async () => {
   // An inline box lays out nothing of its own, and the block's walk met
   // only its own children: a float in a padded <span>, or a badge set

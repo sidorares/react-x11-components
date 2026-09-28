@@ -2192,16 +2192,20 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
         : at.from.x + at.x - cbX);
 
   let width: number;
+  let stretched = NaN;
   if (style.width !== AUTO) {
     width = blockWidth(box, cbWidth, cbWidth, ctx);
   } else if (style.widthKeyword) {
     // an intrinsic size, which both offsets do not stretch
     width = shrinkToFitWidth(box, ctx, cbWidth, offset);
   } else if (left !== null && right !== null) {
-    width = Math.max(
+    stretched = Math.max(
       0,
       cbWidth - left - right - box.marginLeft - box.marginRight,
     );
+    // within its least and greatest width, which make it a width as one
+    // set would, and the margins' rules run again with it (CSS 2.1 10.4)
+    width = clampWidth(box, stretched, cbWidth, ctx);
   } else {
     width = shrinkToFitWidth(box, ctx, cbWidth, offset);
   }
@@ -2215,7 +2219,8 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
     right !== null &&
     (style.width !== AUTO ||
       style.widthKeyword !== null ||
-      box.kind === 'replaced')
+      box.kind === 'replaced' ||
+      width !== stretched)
   ) {
     // Both offsets and a width: what is left over goes to the margins that
     // are `auto`, shared where both are, and where none is, the end offset
@@ -2258,14 +2263,17 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
   }
   let y: number;
   if (top !== null && bottom !== null) {
-    if (style.height === AUTO && box.kind !== 'replaced') {
-      // both offsets and no height: the box fills what they leave, its
-      // `auto` margins nothing (10.6.4, rule 5)
-      box.height = clampHeight(
-        box,
-        Math.max(0, cbHeight - top - bottom - box.marginTop - box.marginBottom),
-      );
-    } else {
+    const fill = Math.max(
+      0,
+      cbHeight - top - bottom - box.marginTop - box.marginBottom,
+    );
+    const stretches = style.height === AUTO && box.kind !== 'replaced';
+    // both offsets and no height: the box fills what they leave, its
+    // `auto` margins nothing (10.6.4, rule 5) — unless `min-height` or
+    // `max-height` moves that, which makes it a height like one set, and
+    // the rules run again with it (10.7)
+    if (stretches) box.height = clampHeight(box, fill);
+    if (!stretches || box.height !== fill) {
       // and a height: the `auto` margins share the rest, and where none
       // is `auto`, `bottom` gives way (10.6.4, 10.6.5)
       const rest = cbHeight - top - bottom - box.height;

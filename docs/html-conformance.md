@@ -175,6 +175,7 @@ npx tsx scripts/conformance/run.ts wpt fuzz1 --chunk 50 --timeout 60000
 | 86     | XHTML style sheets as XML reads them               | 5,548 (93%) | 5,019 (84%) |
 | 87     | a document's language, and attribute selectors     | 5,550 (93%) | 5,021 (84%) |
 | 88     | a `<q>` in quotation marks                         | 5,550 (93%) | 5,021 (84%) |
+| 89     | an absolute box a `max-width` holds, centred       | 5,554 (93%) | 5,025 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -2514,6 +2515,21 @@ they set a `<pre>` beside their floats and the user-agent sheet's own
      `quotes` in force, so `q:lang(fr) { quotes: "« " " »" }` gives a
      French one its guillemets. No CSS 2.1 reftest has a `<q>`;
      `css-content`, which has six, passes 16 of its 63 where it passed 10.
+
+### Round 89
+
+199. **An absolute box a `max-width` held stayed at its start edge.**
+     With both offsets and `width: auto`, the box fills what they leave,
+     its `auto` margins nothing (CSS 2.1 10.3.7, rule 5) — but a
+     `max-width` or `min-width` that moves that width makes one like a
+     width set, and the rules run again with it (10.4), where two `auto`
+     margins share what is left: the box is centred. The width was not
+     held back at all, and a box set to `max-width: 100px` between
+     `left: 8px` and `right: 8px` ran the page's width; held back, it
+     stayed at the left. It is clamped, and centred. The same goes
+     for the height between `top` and `bottom` (10.6.4, 10.7), where
+     `max-height` held it back and the margins stayed at nothing, so a
+     box meant to sit in the middle sat at the top.
 
 ## What `<Html>` supports
 
