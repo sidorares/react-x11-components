@@ -157,6 +157,7 @@ npx tsx scripts/conformance/run.ts wpt fuzz1 --chunk 50 --timeout 60000
 | 71     | tables in tables, boxes clipped to nothing         | 5,485 (93%) | 4,995 (84%) |
 | 72     | the list-item counter, CSS Lists 3 scopes          | 5,484 (93%) | 4,992 (84%) |
 | 73     | flex items no smaller than their content           | 5,484 (93%) | 4,992 (84%) |
+| 74     | percentages of a stretched or flexed item's height | 5,484 (93%) | 4,992 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -2166,6 +2167,32 @@ two agreed.
      none in this suite; a word too long for its item is still broken
      inside itself where a browser lets it overflow, as both engines break
      one everywhere.
+
+### Round 74
+
+170. **What was in a stretched or flexed item had no height to take a
+     percentage of.** CSS Flexbox 9.8 makes an item's height definite once
+     the flex layout has settled it: an item stretched across a row with no
+     height of its own, and an item flexed along a column that has one.
+     `h-full` in a sidebar, or `h-1/2` in a column's `flex-1` panel, took a
+     percentage of nothing, and was as tall as its content. Such an item is
+     laid out again at the height its line gave it, where something in it
+     asks for a percentage of that — asked once of each box and remembered,
+     so an item with nothing of the kind in it is laid out once, as it was.
+171. **A column's item with a height of its own was shrunk under its
+     content.** Round 73's minimum passed it over, and Yoga, which has
+     none, shrank it as far as the column asked; 4.5 keeps it no shorter
+     than the lesser of its height and what its content comes to. That is
+     measured as an intrinsic size is, with no height for a percentage in
+     it to take; an image's is its height, and an item with an
+     `aspect-ratio` counts its width through the ratio as content, so a
+     square in a column with no room stays square, as Chrome keeps it.
+     `min-height: min-content` asks for the content's height whatever the
+     item's `overflow`, and `flex: content` parses.
+
+     `css-flexbox`: 522 of its 1,012 tests passed on X11, 555 do now, and
+     `css-sizing` 217 of 562, 220 now; none lost in either, and none moved
+     in this suite.
 
 ## What `<Html>` supports
 

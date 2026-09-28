@@ -165,7 +165,12 @@ container with no height of its own gives its `flex: 1` items what its
 footer at the bottom of the window. An item is shrunk no smaller than its
 content comes to — its min-content width in a row, its content's height in a
 column — unless its own minimum or an `overflow` that clips lets it go, as
-Tailwind's `min-w-0` does. Items meet where
+Tailwind's `min-w-0` does; in a column that is the lesser of a height of its
+own and its content's, and an item with an `aspect-ratio` counts its width
+through the ratio as content. An item stretched across its row, or flexed
+along a column of a height of its own, has the height it was given for what
+it holds to take a percentage of, so an `h-full` list in a sidebar fills
+the sidebar. Items meet where
 they meet, fractions of a pixel included, and the paint snaps their edges.
 A grid (CSS Grid 1) takes its column tracks from `grid-template-columns` —
 lengths, percentages, `fr`s, `auto`, `minmax()`, and `repeat()` by a count

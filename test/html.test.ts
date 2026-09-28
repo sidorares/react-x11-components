@@ -9785,6 +9785,40 @@ test('a flex item is no smaller than its content, unless its minimum says', asyn
   assert.strictEqual(box('f').y, box('e').y + 60, 'and the one after it');
 });
 
+test('what is in a stretched or flexed item takes its percentages of its height', async () => {
+  // CSS Flexbox 9.8: an item stretched across its line, or flexed in a
+  // column of a height of its own, has a definite height, and `h-full` in
+  // it fills it — a sidebar's scrolling list, a column's panel. They had
+  // nothing to take a percentage of, and were as tall as their content.
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="display:flex;height:200px">' +
+      '<aside style="width:100px"><div id="a" style="height:100%"></div>' +
+      '</aside><main style="flex:1"></main></div>' +
+      '<div style="display:flex;flex-direction:column;height:200px">' +
+      '<div style="height:40px"></div>' +
+      '<div style="flex:1"><div id="b" style="height:50%"></div></div>' +
+      '</div>' +
+      // and a column item is as tall as the column makes it, shrunk too,
+      // to the lesser of its height and its content's
+      '<div style="display:flex;flex-direction:column;height:100px">' +
+      '<div id="c" style="height:150px"><div style="height:120px"></div>' +
+      '</div><div id="d" style="height:150px;min-height:0"></div></div>' +
+      // and one with a ratio no shorter than its width through the ratio
+      '<div style="display:flex;flex-direction:column;width:100px;height:0">' +
+      '<div id="e" style="aspect-ratio:1"></div>' +
+      '<div id="f" style="aspect-ratio:2;height:100px"></div></div>',
+  );
+  const el = view(node);
+  const box = (id: string) => boxOf(el, id);
+  assert.strictEqual(box('a').height, 200, 'h-full in a stretched item');
+  assert.strictEqual(box('b').height, 80, 'half of the flexed item');
+  assert.strictEqual(box('c').height, 120, 'no shorter than its content');
+  assert.strictEqual(box('d').height, 0, 'min-height: 0 lets it go');
+  assert.strictEqual(box('e').height, 100, 'a square stays square');
+  assert.strictEqual(box('f').height, 50, 'shrunk to its ratio');
+});
+
 metric(
   'a flex row measured for its content does not grow its flex: 1 items',
   async () => {
