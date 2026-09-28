@@ -124,7 +124,11 @@ test suite on both backends, is in
 bidi and full shaping, `inline-block`, floats and `clear`, lists with their
 markers, tables (the auto algorithm and `table-layout: fixed`, with `colspan`
 and `rowspan`, and the anonymous table CSS builds around table parts that
-have none), `position: relative | absolute | fixed`, `display: flex`, and
+have none), `position: relative | absolute | fixed`, `display: flex` (and
+the legacy `-webkit-box`, a flex box in its `-webkit-box-orient`'s
+direction, packed, aligned and flexed by the `-webkit-box-*` properties as
+Blink lays one out, or where it clamps its lines vertically a block of its
+own formatting context), and
 `display: grid` as documents write it (below), and `display: contents`,
 which makes no box and hands its children, its `::before` and its
 `::after` to its parent's, in its style — a replaced element set so is not
@@ -417,10 +421,17 @@ start tag is dropped, as HTML's parser drops it) and CSS Text 4's halves
 of it, `white-space-collapse` and `text-wrap-mode`, `text-wrap` (Tailwind
 4's `text-nowrap`, and `text-balance`: a heading of up to six lines broken
 at the narrowest width that keeps as many of them, and set in its whole
-width, as Chrome does it; `pretty` wraps as `auto` does), `line-clamp` and
-`-webkit-line-clamp` (a block shows its first lines and is as tall as they
-are, the last cut with an ellipsis — Tailwind's `line-clamp-2`; a block
-laid out a line at a time, around an image or a float, is cut with none),
+width, as Chrome does it; `pretty` wraps as `auto` does), `line-clamp`
+(CSS Overflow 4: a line-clamp container shows the first lines of its
+formatting context, counted through the blocks in it, and is as tall as
+they are; what comes after them is invisible and takes no room, and the
+last line ends in an ellipsis where more follows, placed after the words
+that fit beside it. Tailwind's `line-clamp-2` writes it as
+`-webkit-line-clamp` on a vertical `-webkit-box`, the one place that form
+clamps, as in a browser; `line-clamp: auto` shows as many lines as the
+box's `height` or `max-height` holds, and `max-lines`, `continue` and
+`block-ellipsis` are read. A block laid out a line at a time, around an
+image or a float, is cut with no ellipsis),
 `text-overflow: ellipsis` on a `nowrap` block that clips (`truncate`: each
 line cut where the box ends, inside a word if need be, with an ellipsis, as
 a browser cuts it), `overflow-wrap` (a word too long for
@@ -483,10 +494,12 @@ down to it. An element on the line with a colour of its own, a link, keeps
 it. The line's font properties, spacing and `vertical-align` are not
 applied: each would change where the line ends.
 
-**Lengths:** `px`, `em`, `rem`, `ex`, `ch`, `vw`, `vh`, `vmin`, `vmax` and
-the absolute units, and `calc()`, `min()`, `max()` and `clamp()` over them
-(CSS Values 4). An `ex` is the font's x-height and a `ch` the advance of its
-"0", as the text engine reports them, or half an em where it cannot say. A math function comes down to pixels and a percentage, which
+**Lengths:** `px`, `em`, `rem`, `ex`, `ch`, `lh`, `rlh`, `vw`, `vh`,
+`vmin`, `vmax` and the absolute units, and `calc()`, `min()`, `max()` and
+`clamp()` over them (CSS Values 4). An `ex` is the font's x-height and a
+`ch` the advance of its "0", as the text engine reports them, or half an em
+where it cannot say; an `lh` is the element's line height, `normal` as its
+font's own, and an `rlh` the root's. A math function comes down to pixels and a percentage, which
 layout resolves as it does any percentage; `min(100%, 600px)`, a
 comparison with a percentage in it, is resolved against each width it
 meets. A percentage that cannot resolve makes the whole value `auto` where

@@ -106,6 +106,10 @@ export interface UnitContext {
   /** The advance of that font's "0", asked only for a length in `ch`; half
    *  an em where it is missing. */
   ch?: () => number;
+  /** The element's line height and the root's, for `lh` and `rlh`, asked
+   *  only for a length in them; 1.2em where they are missing. */
+  lh?: () => number;
+  rlh?: () => number;
   /** Every property at its initial value, which `initial` sets one to. */
   initial?: ComputedStyle;
 }
@@ -116,7 +120,7 @@ export interface UnitContext {
 const NUMBER_SRC = '[+-]?(?:\\d*\\.\\d+|\\d+)(?:e[+-]?\\d+)?';
 
 const LENGTH_RE = new RegExp(
-  `^(${NUMBER_SRC})(px|em|rem|pt|pc|in|cm|mm|ex|ch|vw|vh|vmin|vmax|q|%)?$`,
+  `^(${NUMBER_SRC})(px|em|rem|pt|pc|in|cm|mm|ex|ch|lh|rlh|vw|vh|vmin|vmax|q|%)?$`,
 );
 
 const NUMBER_RE = new RegExp(`^${NUMBER_SRC}$`, 'i');
@@ -196,6 +200,12 @@ function unitScale(unit: string, ctx: UnitContext): number {
     // Arial's, and half of Ahem's and a monospace font's
     case 'ch':
       return ctx.ch ? ctx.ch() : ctx.em * 0.5;
+    // the computed `line-height`, `normal` as the font's own (CSS Values
+    // 4, 6.1.1)
+    case 'lh':
+      return ctx.lh ? ctx.lh() : ctx.em * 1.2;
+    case 'rlh':
+      return ctx.rlh ? ctx.rlh() : ctx.rem * 1.2;
     case 'vw':
       return ctx.vw / 100;
     case 'vh':
