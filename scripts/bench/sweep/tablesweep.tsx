@@ -237,22 +237,9 @@ const wheel = (notches: number) =>
         source: 'button',
         time: tm(),
       });
-const { execSync } = await import('node:child_process');
-const server = !cocoa
-  ? (() => {
-      try {
-        return execSync('pgrep -x X11.bin').toString().trim().split('\n')[0];
-      } catch {
-        return '';
-      }
-    })()
-  : '';
-const cpuOf = (pid: string) => {
-  if (!pid) return NaN;
-  const tt = execSync(`ps -o cputime= -p ${pid}`).toString().trim();
-  const [m, sec] = tt.split(':');
-  return Number(m) * 60 + Number(sec);
-};
+const { serverPid, cpuSeconds } = await import('./xserver.js');
+const server = !cocoa ? serverPid() : '';
+const cpuOf = cpuSeconds;
 emit('mousemove', cx, cy, { buttons: 0 });
 await wait(100);
 const x0 = cpuOf(server);
