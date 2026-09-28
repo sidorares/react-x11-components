@@ -219,6 +219,9 @@ const timers = globalThis as {
 /** How long the zoom has to hold still before mounted bodies come back at
  *  the new scale. Wheel notches in a flick land well inside it. */
 const BODY_ZOOM_REST_MS = 150;
+/** How long held bodies wait for the frame that draws a zoom's last step
+ *  before they come back without it (`_restFrom`). */
+const BODY_REST_CAP_MS = 1000;
 /** What re-scaling the mounted bodies may add to one step of a zoom
  *  gesture before they sit the gesture out (`_holdBodies`). */
 const BODY_BUDGET_MS = 8;
@@ -605,6 +608,11 @@ export class FlowGraphNode extends Node implements FlowInstance {
    *  for the frame that rebuilds the GL world once the stream stops. */
   private _zoomAt = -Infinity;
   private _zoomStream = false;
+  /** When the frame that drew the latest zoom step began, and when it last
+   *  finished a pass: an animation's next step follows the frame that drew
+   *  its last, however long that frame took (`_applyViewport`). */
+  private _zoomFrameAt = -Infinity;
+  private _zoomDrawnAt = -Infinity;
   private _zoomRest: unknown = null;
   /** A 2D paint drew labels scaled mid-zoom, and owes them at their own
    *  sizes once it rests. */
@@ -1357,9 +1365,20 @@ export class FlowGraphNode extends Node implements FlowInstance {
       this._viewMovedAt = now();
     }
     if (previous.zoom !== v.zoom) {
+      // A stream is steps close together — or a step that follows the frame
+      // that drew the one before it: an animation zooms a step a frame, and
+      // a frame whose bodies re-scale can take longer than the rest. Judged
+      // on the steps alone, such an animation was a run of single jumps, so
+      // its bodies were never held, every step re-scaled them all, and it
+      // stayed at two frames a second where held it ran at twenty — on
+      // whichever side of the line its first frames happened to fall.
       const t = now();
-      this._zoomStream = t - this._zoomAt < GL_ZOOM_REST_MS;
+      this._zoomStream =
+        t - this._zoomAt < GL_ZOOM_REST_MS ||
+        t - this._zoomDrawnAt < GL_ZOOM_REST_MS;
       this._zoomAt = t;
+      this._zoomFrameAt = -Infinity;
+      this._zoomDrawnAt = -Infinity;
     }
     // Each claims its own box: a claim with no region is the whole window,
     // which made every pan step and dash tick a full frame. The minimap's
@@ -3347,6 +3366,8 @@ export class FlowGraphNode extends Node implements FlowInstance {
     // this frame just used — the same numbers, never a second derivation.
     this._emitBodies();
     this._emitPanels();
+    // a pass of the frame that drew the latest zoom step ends here
+    if (this._zoomFrameAt === this._lastFrameAt) this._zoomDrawnAt = now();
   }
 
   /**
@@ -4391,15 +4412,31 @@ export class FlowGraphNode extends Node implements FlowInstance {
    *  arriving waits out what is left of the rest instead. */
   private _restBodies(): void {
     if (this._bodiesRest != null) return;
-    const wait = this._bodiesAt + BODY_ZOOM_REST_MS - now();
+    const wait = this._restFrom() + BODY_ZOOM_REST_MS - now();
     this._bodiesRest = timers.setTimeout?.(
       () => {
         this._bodiesRest = null;
-        if (now() - this._bodiesAt < BODY_ZOOM_REST_MS) this._restBodies();
+        if (now() - this._restFrom() < BODY_ZOOM_REST_MS) this._restBodies();
         else this._emitBodies();
       },
       Math.max(0, wait) + 1,
     );
+  }
+
+  /**
+   * What the bodies' rest is counted from: the last step of the zoom, or
+   * the frame that drew it where that came later. A step the window has not
+   * drawn yet is a zoom still moving — the frame is late, not the gesture
+   * over — and counted from the step alone, a frame a server took half a
+   * second to answer brought the bodies back between two steps of one
+   * animation, whose next frame re-scaled all of them and was late in turn.
+   * Past `BODY_REST_CAP_MS` without that frame they come back anyway: a
+   * surface that stopped drawing must not keep them out for good.
+   */
+  private _restFrom(): number {
+    const drawn = this._zoomDrawnAt;
+    if (drawn !== -Infinity) return Math.max(this._bodiesAt, drawn);
+    return now() - this._bodiesAt < BODY_REST_CAP_MS ? now() : this._bodiesAt;
   }
 
   /**
@@ -4627,6 +4664,13 @@ export class FlowGraphNode extends Node implements FlowInstance {
    */
   private _frameTick(): void {
     const t = now();
+    // the first frame to draw the latest zoom step, and when: the GL
+    // renderer's is over as it starts — the bodies' cost is the window's
+    // flush before it — and the 2D one's ends with its last pass (`paint`)
+    if (this._zoomFrameAt === -Infinity && this._zoomAt !== -Infinity) {
+      this._zoomFrameAt = t;
+      this._zoomDrawnAt = t;
+    }
     const dt = t - this._lastFrameAt;
     if (dt < 2) return;
     this._lastFrameAt = t;
