@@ -3519,7 +3519,12 @@ function lineHeightOf(fonts: FontsLike, style: ComputedStyle): number {
     : (style.lineHeight as number) * style.fontSize;
 }
 
-/** A style's x-height, where its font says, or half its size. */
+/**
+ * A style's x-height, where its font says, or half its size, as `ex` takes
+ * it (CSS 2.1 4.3.2). A face whose OS/2 table is older than version 2 —
+ * DejaVu's — states none, and the engine's answer is then NaN, which is a
+ * number: taken for one, it put an image set `middle` nowhere at all.
+ */
 function xHeightOf(fonts: FontsLike, style: ComputedStyle): number {
   try {
     const metrics = fonts
@@ -3529,7 +3534,8 @@ function xHeightOf(fonts: FontsLike, style: ComputedStyle): number {
         style: style.fontStyle,
       })
       .metrics(style.fontSize) as { xHeight?: number | null };
-    if (typeof metrics.xHeight === 'number') return metrics.xHeight;
+    const x = metrics.xHeight;
+    if (typeof x === 'number' && x > 0) return x;
   } catch {
     // no font to ask
   }

@@ -2547,7 +2547,10 @@ On ntk 8.13.1 and react-x11 2.22.11, where master passes 5,554 on X11 and
      takes its raise from its parent's baseline as an inline box does:
      `sub` and `super` by the parent's font size, where they went by the
      line's height, and `text-top` and `text-bottom` to the parent's font,
-     where they were the baseline.
+     where they were the baseline. A face that states no x-height — an
+     OS/2 table older than version 2, as DejaVu's is — is taken at half an
+     em, as `ex` already took it: the engine answers NaN for it, and an
+     image or an inline box set `middle` was raised by that.
 201. **`text-transform: capitalize` capitalized the first character after
      a space**, and the first of every text, in upper case. So `(p.p.)`
      stayed as it was, its bracket "capitalized"; a word an element's edge
