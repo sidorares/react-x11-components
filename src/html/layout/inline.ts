@@ -246,7 +246,10 @@ type Item =
       control?: true;
     }
   | { kind: 'atomic'; box: Box }
-  | { kind: 'edge'; box: Box; side: 'start' | 'end'; width: number };
+  | { kind: 'edge'; box: Box; side: 'start' | 'end'; width: number }
+  /** A float, where it is in the content: placed when the lines reach it
+   *  (`InlineOptions.floatBoxes`). */
+  | { kind: 'float'; box: Box };
 
 function isText(item: Item): item is Extract<Item, { kind: 'text' }> {
   return item.kind === 'text';
@@ -274,6 +277,16 @@ export interface InlineOptions {
   /** Whether any box in the document paints its background through its
    *  text (`BoxTree.clipText`). */
   clipText?: boolean;
+  /**
+   * The floats in the content, placed as the lines reach them: `size` lays
+   * one out and answers its outer width, `place` puts it at a height in the
+   * float context's space. Absent, the floats are not the lines' to place —
+   * they were, by an earlier pass over the same lines.
+   */
+  floatBoxes?: {
+    size(box: Box): number;
+    place(box: Box, y: number): void;
+  };
 }
 
 /**
@@ -329,8 +342,25 @@ function cutOf(style: ComputedStyle): Cut | null {
 function layoutLines(block: Box, options: InlineOptions): InlineResult {
   let fonts = options.fonts;
   const items: Item[] = [];
-  collect(block, items, options.width, fonts, block.style);
-  if (!items.length || !fonts) return EMPTY;
+  const placing = options.floatBoxes;
+  const floatCount = collect(
+    block,
+    items,
+    options.width,
+    fonts,
+    block.style,
+    !!placing,
+  );
+  if (items.length === floatCount || !fonts) {
+    // no line to wait for: the floats go at the top
+    for (const item of items) {
+      if (item.kind === 'float') {
+        placing!.size(item.box);
+        placing!.place(item.box, options.startY);
+      }
+    }
+    return EMPTY;
+  }
   // text a box's background shows through (`background-clip: text`): its
   // layouts are made through a recorder, so paint can lay the same text out
   // again with no ink of its own and fill it with that background
@@ -409,7 +439,11 @@ function layoutLines(block: Box, options: InlineOptions): InlineResult {
       } else if (!hasOffset && isOffset(item.box.style)) hasOffset = true;
     }
   }
-  const floated = options.floats?.intersects(options.startY, Infinity) ?? false;
+  // a float in the content is placed on the line it is on, which only the
+  // line-at-a-time loop knows, as it does whatever floats are beside it
+  const floated =
+    floatCount > 0 ||
+    (options.floats?.intersects(options.startY, Infinity) ?? false);
   // An inline box's edges take room on their lines. Where nothing else on
   // the lines has to be placed a piece at a time, they go into the one
   // layout as spacers (`spacerRun`) — which only holds where no bidi
@@ -568,6 +602,14 @@ function layoutLines(block: Box, options: InlineOptions): InlineResult {
     pending = [];
     pendingWidth = 0;
   };
+  /** Floats met on a line they did not fit beside: they go at the top of
+   *  the next line, as the line they were met on closes. */
+  let deferred: Box[] = [];
+  const placeDeferred = (): void => {
+    for (const box of deferred)
+      options.floatBoxes!.place(box, options.startY + y);
+    deferred = [];
+  };
 
   const strut = fonts ? strutOf(fonts, style) : null;
   const lifts = raised && fonts ? new Lifts(fonts, block.style) : null;
@@ -585,18 +627,43 @@ function layoutLines(block: Box, options: InlineOptions): InlineResult {
     );
     if (!line) {
       open = openLine(0);
+      placeDeferred();
       return;
     }
     lines.push(line);
     widest = Math.max(widest, line.width);
     y += line.height;
     open = openLine(0);
+    placeDeferred();
   };
 
   while (index < items.length) {
     const band = bandAt(options, y, style.fontSize * 1.4);
     const available = band.right - band.left;
     const item = items[index];
+
+    if (item.kind === 'float') {
+      // No higher than the top of the line it is met on (CSS 2.1 9.5.1):
+      // at that top where it fits beside what the line holds already, and
+      // what the line holds moves over for it; under the line where it
+      // does not, with the rest of the line's content still on the line
+      const outer = options.floatBoxes!.size(item.box);
+      if (isEmpty(open) || open.x + pendingWidth + outer <= available) {
+        options.floatBoxes!.place(item.box, options.startY + y);
+        const left = bandAt(options, y, style.fontSize * 1.4).left;
+        if (!isEmpty(open) && left !== open.left) {
+          const dx = left - open.left;
+          for (const text of open.texts) text.drawX += dx;
+          for (const placed of open.atomics) placed.x += dx;
+          for (const edge of open.edges) edge.x += dx;
+          open.left = left;
+        }
+      } else {
+        deferred.push(item.box);
+      }
+      index += 1;
+      continue;
+    }
 
     if (item.kind === 'edge') {
       if (item.side === 'start') {
@@ -685,6 +752,7 @@ function layoutLines(block: Box, options: InlineOptions): InlineResult {
       open.x === 0 &&
       !open.atomics.length &&
       !pending.length &&
+      !deferred.length &&
       !(options.floats?.intersects(options.startY + y, Infinity) ?? false);
     if (tailIsPlain) {
       const layout = fonts.layout(segment.runs, base, {
@@ -774,9 +842,18 @@ function layoutLines(block: Box, options: InlineOptions): InlineResult {
     }
     // An inline box's opening edge goes with the first word after it: where
     // the word does not fit the room the edge leaves, both go to the next
-    // line, rather than the edge being left at this one's end.
+    // line, rather than the edge being left at this one's end. And a word
+    // that may start a line — after a space the line ends on, or after an
+    // atomic, which has a break after it (CSS Text 3, 5.1) — goes to the
+    // next line whole where it does not fit what is left of this one,
+    // rather than being broken inside itself to fit it: the text after an
+    // inline-block, or after a float it was cut at, was its first letter
+    // at the line's end and the rest on the next.
+    const startsLine =
+      wraps(style) &&
+      (open.hang > 0 || open.order[open.order.length - 1]?.kind === 'atomic');
     if (
-      pendingWidth > 0 &&
+      (pendingWidth > 0 || startsLine) &&
       !isEmpty(open) &&
       tooNarrow(segment.runs, first.end, first.width, room)
     ) {
@@ -859,6 +936,7 @@ function layoutLines(block: Box, options: InlineOptions): InlineResult {
   if (pending.length)
     placePending(bandAt(options, y, style.fontSize * 1.4).left);
   if (open.texts.length || open.atomics.length || open.edges.length) close();
+  placeDeferred();
 
   return { lines, height: y, width: widest };
 }
@@ -1743,15 +1821,26 @@ function childBaseline(
 
 /** Flatten an inline subtree into a stream of runs, atomics, breaks and the
  *  edges of the inline boxes the text sits in. */
+/** Gather an inline formatting context's content into `out`, and answer
+ *  how many floats it gathered — none unless `floats` asks for them. */
 function collect(
   box: Box,
   out: Item[],
   width: number,
   fonts: FontsLike | null,
   block: ComputedStyle,
-): void {
+  floats: boolean,
+): number {
+  let floated = 0;
   for (const child of box.children) {
-    if (child.outOfFlow || child.isFloat) continue;
+    if (child.outOfFlow) continue;
+    if (child.isFloat) {
+      if (floats) {
+        out.push({ kind: 'float', box: child });
+        floated += 1;
+      }
+      continue;
+    }
     switch (child.kind) {
       case 'text':
         if (child.text) {
@@ -1822,7 +1911,7 @@ function collect(
         if (controls) {
           pushControls(out, controls[0], child, child.subtreeTextStart);
         }
-        collect(child, out, width, fonts, block);
+        floated += collect(child, out, width, fonts, block, floats);
         if (controls) {
           pushControls(out, controls[1], child, child.subtreeTextEnd);
         }
@@ -1838,6 +1927,7 @@ function collect(
         break;
     }
   }
+  return floated;
 }
 
 /**
@@ -2147,6 +2237,8 @@ function setTabs(
   const tabs = new Set<number>();
   let units = 0;
   for (const item of items) {
+    // a float is beside the line, and takes none of it
+    if (item.kind === 'float') continue;
     if (item.kind !== 'text') {
       const box = item.box;
       runs.push(

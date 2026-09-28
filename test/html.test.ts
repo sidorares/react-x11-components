@@ -3904,6 +3904,117 @@ test('a float or an absolute box inside an inline box is laid out', async () => 
   assert.strictEqual(a.y, p.y, 'at its static position');
 });
 
+/** Blocks of set widths, run together, so a line holds what the widths
+ *  say whatever the font: `[200, 'f', 40]` is two inline-blocks and the
+ *  float `#f` between them. */
+function floatLine(float: string, parts: (number | 'f')[]): string {
+  let n = 0;
+  return parts
+    .map((part) =>
+      part === 'f'
+        ? `<span id="f" style="${float}"></span>`
+        : `<span id="i${n++}" style="display:inline-block;` +
+          `width:${part}px;height:10px"></span>`,
+    )
+    .join('');
+}
+
+test('a float met in a line goes at the top of that line', async () => {
+  // CSS 2.1 9.5.1: a float goes no higher than the top of the line its
+  // anchor is on, and where it fits beside what the line holds it goes at
+  // that top, the line's content moving over for it. Every float in a
+  // paragraph went at the paragraph's top, before its first line.
+  for (const side of ['left', 'right']) {
+    const { node } = await render(
+      `<div id="w" style="width:300px">` +
+        floatLine(`float:${side};width:50px;height:30px`, [200, 200, 'f', 40]) +
+        '</div>',
+    );
+    const el = view(node);
+    const [w, f, i1, i2] = ['w', 'f', 'i1', 'i2'].map((id) => boxOf(el, id));
+    const lines = linesOf(el, 'w');
+    assert.strictEqual(lines.length, 2, side);
+    assert.strictEqual(f.y, lines[1].y, `${side}: at the second line's top`);
+    assert.ok(f.y > w.y, side);
+    const moved = side === 'left' ? 50 : 0;
+    assert.strictEqual(f.x - w.x, side === 'left' ? 0 : 250, side);
+    assert.strictEqual(i1.x - w.x, moved, `${side}: the line moves over`);
+    assert.strictEqual(i2.x - w.x, moved + 200, `${side}: and goes on`);
+    assert.strictEqual(i2.y, i1.y, side);
+    cleanup();
+  }
+});
+
+test('a float too wide for what is left of its line goes under it', async () => {
+  // the rest of the line's content stays on the line, and the float is
+  // placed as the line closes, at the top of the next
+  const { node } = await render(
+    `<div id="w" style="width:300px">` +
+      floatLine('float:left;width:150px;height:30px', [200, 200, 'f', 40, 90]) +
+      '</div>',
+  );
+  const el = view(node);
+  const [w, f, i1, i2, i3] = ['w', 'f', 'i1', 'i2', 'i3'].map((id) =>
+    boxOf(el, id),
+  );
+  const lines = linesOf(el, 'w');
+  assert.strictEqual(f.y, lines[1].y + lines[1].height, 'under the line');
+  assert.strictEqual(f.x, w.x);
+  assert.deepStrictEqual([i1.x - w.x, i2.x - w.x], [0, 200], 'unmoved');
+  assert.strictEqual(i2.y, i1.y, 'what follows it stays on the line');
+  assert.strictEqual(i3.x - w.x, 150, 'and the next line is beside it');
+});
+
+test('a word with too little room left on its line goes to the next, whole', async () => {
+  // Text laid out after something else on its line — an inline-block, or a
+  // float it was cut at — has the room that is left, and a word wider than
+  // that room was broken inside itself to fit it: its first letter at the
+  // line's end, the rest on the next.
+  for (const between of [
+    '',
+    '<span style="float:left;width:50px;height:30px"></span>',
+  ]) {
+    const { node } = await render(
+      '<div id="w" style="width:300px;font:16px/20px sans-serif">' +
+        '<span style="display:inline-block;width:290px;height:10px"></span>' +
+        `${between}goes on</div>`,
+    );
+    const lines = linesOf(view(node), 'w');
+    const which = between ? 'after a float' : 'after an inline-block';
+    assert.strictEqual(lines.length, 2, which);
+    assert.strictEqual(lines[0].texts.length, 0, `${which}: none of it`);
+    cleanup();
+  }
+  // and where the block does not wrap, nothing goes to another line
+  const { node } = await render(
+    '<div id="w" style="width:300px;white-space:nowrap">' +
+      '<span style="display:inline-block;width:290px;height:10px"></span>' +
+      '<span style="float:left;width:50px;height:30px"></span> goes on</div>',
+  );
+  assert.strictEqual(linesOf(view(node), 'w').length, 1, 'nowrap');
+});
+
+test('a float in a line is placed once where ::first-line lays the lines out twice', async () => {
+  const html = (sheet: string) =>
+    `<style>${sheet}</style><div id="w" style="width:300px">` +
+    floatLine('float:left;width:50px;height:30px', [200, 200, 'f', 40]) +
+    '</div>';
+  const place = async (sheet: string) => {
+    const { node } = await render(html(sheet));
+    const el = view(node);
+    const out = ['f', 'i1', 'i2'].map((id) => {
+      const b = boxOf(el, id);
+      return [b.x, b.y];
+    });
+    cleanup();
+    return out;
+  };
+  assert.deepStrictEqual(
+    await place('#w::first-line { color: red }'),
+    await place(''),
+  );
+});
+
 test('a floated image, ::before or first letter in an inline box is laid out', async () => {
   // Found by the same walk into inline boxes, which a document with no
   // float or positioned box in one does not take — so each is alone in its

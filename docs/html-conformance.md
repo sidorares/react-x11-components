@@ -133,6 +133,7 @@ separately, and there are six.
 | 63     | `display: contents`                                | 5,472 (93%) | 4,984 (84%) |
 | 64     | outlines                                           | 5,472 (93%) | 4,984 (84%) |
 | 65     | `list-style-image`                                 | 5,476 (93%) | 4,988 (84%) |
+| 66     | a float on the line it is met on                   | 5,478 (93%) | 4,990 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -1915,6 +1916,38 @@ from-… to-… bg-clip-text text-transparent`: the background clipped
      shorthand's `none` (`lists/list-style-020`, `-021`) and two CSS1 tests
      whose lists are styled through it.
 
+### Round 66
+
+157. **A float in a paragraph went at the paragraph's top.** Every float
+     in an inline formatting context was placed before the first line was
+     built, so an image floated from the middle of a paragraph stood
+     beside its first line, and the lines above its anchor wrapped round
+     it. A float is placed as the lines reach it now (CSS 2.1 9.5.1): at
+     the top of the line it is met on, where it fits beside what the line
+     holds already, which moves over for it; and at the top of the next
+     line where it does not, the rest of its own line staying on the line,
+     as a browser has it. Six tests on X11 and five on macOS: three in
+     `floats` (`float-nowrap-1`, `floats-placement-006`,
+     `floats-placement-vertical-004`), `inlines-013`,
+     `static-inside-float-inside-inline`, and `stack-floats-003` on X11.
+158. **A word with too little room left on its line was cut to fit it.**
+     Text laid out after something else on its line — an inline-block, or
+     the float it is cut at now — has what is left of the line, and both
+     engines break a word wider than that inside itself: the first letter
+     at the line's end, the rest on the next. A word that may start a
+     line, after a space the line ends on or after an atomic, goes to the
+     next line whole now; one glued to what is before it, a full stop
+     after a padded `<code>`, stays. `floats-031` on macOS.
+
+Round 66 lost four tests on both backends, `float-nowrap-3`, `-7`, `-9`
+and `float-nowrap-hyphen-rewind-1`, and none of them for their floats. In
+each a word is wider than what is left of its line — nowrap text, which
+both engines break inside where CSS lets it overflow, or a word a browser
+hyphenates and neither engine does — so the test and its reference, which
+put the float at different places in the text, put it on different lines.
+They passed while every float went at the top of its paragraph, where the
+two agreed.
+
 ## What `<Html>` supports
 
 From the pass rates of the tests that use each feature, at the fixes above,
@@ -1926,13 +1959,13 @@ checked against the code.
 | -------------------------------------------------- | ----- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | block flow, margin collapsing                      | 694   | 83%     | **supported**, through empty blocks and into a parent's; a set of margins of both signs collapses two at a time                                                                                                               |
 | margins, padding, borders                          | 682   | 95%     | **supported**, inline boxes and collapsed table borders included; the `double`/`groove` families are approximations                                                                                                           |
-| floats and `clear`                                 | 311   | 46–67%  | **supported**, with gaps: a float inside a paragraph is placed at the paragraph's top, not its line's                                                                                                                         |
+| floats and `clear`                                 | 311   | 46–67%  | **supported**, a float inside a paragraph at the top of the line it is met on; a word wider than its line is broken where CSS lets it overflow                                                                                |
 | relative and absolute positioning                  | 513   | 84%     | **supported**; an absolute box inside a line takes the line's start for its static position                                                                                                                                   |
 | backgrounds: colour, image, repeat, position       | 336   | 85%     | **supported**, `background-attachment: fixed`, `background-size`, any number of layers and SVG images included                                                                                                                |
 | fonts: family, style, weight, size                 | 159   | 81%     | **supported**; `font-variant` is the font's own OpenType features, so small capitals are drawn where the font has them and not synthesized                                                                                    |
 | line height, `vertical-align`                      | 191   | 87%     | **supported**: every inline box's own line height, and `vertical-align` on text as well as on images and inline blocks; text in a font with taller natural lines than its paragraph's takes a bit more room than CSS gives it |
 | `white-space`                                      | 217   | 46%     | **supported**; collapsing is CSS 2.1's across elements                                                                                                                                                                        |
-| lists and markers                                  | 155   | 94%     | **supported**; `list-style-image` is not                                                                                                                                                                                      |
+| lists and markers                                  | 155   | 94%     | **supported**, `list-style-image` included                                                                                                                                                                                    |
 | CSS tables (`display: table-*`), `table-layout`    | 250   | 81%     | **supported**: HTML tables and anonymous ones, both border models, captions, `<col>` widths in both layouts, and column backgrounds with their images; `visibility: collapse` and baseline alignment are not                  |
 | `::before`, `::after`, `content`, counters, quotes | 332   | 86%     | **supported**, images in `content` included                                                                                                                                                                                   |
 | `::first-letter`, `::first-line`                   | 398   | 79–100% | `::first-letter` **supported**; `::first-line` **partial**: its colour and background, not its font, spacing or `vertical-align`                                                                                              |
@@ -2028,7 +2061,7 @@ directories and caniemail's feature list:
    borders and margins in round 3, and the Cocoa line-box difference turned
    out to be CoreText's placement and its font smoothing. `vertical-align`
    on text was done in round 24 and a line height per inline box in round
-   29, and `justify` in round 48; the float remains.
+   29, `justify` in round 48, and the float in round 66.
 5. **The CSS3 that documents use**: `background-size`, `box-shadow`,
    gradients, `calc()`, custom properties (`var()`), CSS Color 4 —
    Tailwind's output is written in them — and `@font-face` through
