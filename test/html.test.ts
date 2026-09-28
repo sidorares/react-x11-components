@@ -1204,6 +1204,13 @@ async function documentText(source: string): Promise<string> {
   return (view(node) as unknown as { _tree: { text: string } })._tree.text;
 }
 
+test('a <q> is in quotation marks, and a nested one in the next pair', async () => {
+  // HTML's rendering: `q::before { content: open-quote }` and its close,
+  // which the user-agent sheet did not have, so a quotation was bare
+  const text = await documentText('<p><q>say <q>hi</q></q></p>');
+  assert.strictEqual(text.trim(), '\u201csay \u2018hi\u2019\u201d');
+});
+
 test('::before and ::after hold their content, around the element', async () => {
   assert.strictEqual(
     await documentText(
