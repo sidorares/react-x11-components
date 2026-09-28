@@ -2831,18 +2831,19 @@ test('a programmatic zoom applies to bodies at once', async () => {
   assert.strictEqual(retained(bodyBox().children[0]).props.scale, 2);
 });
 
-test("an animation's zoom holds bodies over the budget, as the wheel does", async () => {
-  // An app animating the viewport steps `setViewport` a frame at a time,
-  // which is a gesture in all but its source: every body re-scaled at every
-  // step held a zoom over the stress example's charts to 10 frames a second.
-  // A stream of zooms (`_zoomStream`) holds them as a wheel's does, and a
-  // single jump still applies at once.
-  let renders = 0;
+/**
+ * Ten nodes whose mounted bodies call `rendered` each time one renders —
+ * over the body budget at the model's prior, so a stream of zooms holds
+ * them.
+ */
+async function mountCounted(
+  rendered: () => void,
+): Promise<{ flow: { current: FlowInstance | null } }> {
   const counted: FlowNodeType = {
     size: { width: 200, height: 120 },
     headerHeight: 20,
     render: () => {
-      renders++;
+      rendered();
       return h('text', null, 'body');
     },
   };
@@ -2859,6 +2860,17 @@ test("an animation's zoom holds bodies over the budget, as the wheel does", asyn
   });
   await act();
   assert.strictEqual(bodyLayer().children.length, 10, 'precondition');
+  return { flow };
+}
+
+test("an animation's zoom holds bodies over the budget, as the wheel does", async () => {
+  // An app animating the viewport steps `setViewport` a frame at a time,
+  // which is a gesture in all but its source: every body re-scaled at every
+  // step held a zoom over the stress example's charts to 10 frames a second.
+  // A stream of zooms (`_zoomStream`) holds them as a wheel's does, and a
+  // single jump still applies at once.
+  let renders = 0;
+  const { flow } = await mountCounted(() => renders++);
 
   // one jump, well after anything the mount did to the view: at once
   await act(() => new Promise((resolve) => setTimeout(resolve, 200)));
@@ -2886,6 +2898,99 @@ test("an animation's zoom holds bodies over the budget, as the wheel does", asyn
       1e-9,
     'at the zoom the animation left',
   );
+});
+
+test('an animation holds its bodies however long its frames take', async () => {
+  // An animation zooms a step a frame, and the frame that re-scales every
+  // body can take longer than the rest a stream is judged by. Judged on its
+  // steps alone, every step of such an animation came too late to follow
+  // the one before: none was held, every frame re-scaled every body and
+  // was late in turn, and the stress example's charts zoomed at two frames
+  // a second where held they zoom at forty-eight. And once held, a frame
+  // that drew the last step late brought the bodies back before it.
+  let renders = 0;
+  let cost = 0;
+  const perf = globalThis.performance;
+  let clock = perf.now() + 10_000;
+  const { flow } = await mountCounted(() => {
+    renders++;
+    // what re-scaling this body costs, on the pane's clock
+    clock += cost;
+  });
+  const zoomTo = (zoom: number) => flow.current!.setViewport({ zoom });
+  // time passing on the pane's clock, and long enough on the wall's for the
+  // bodies' rest timer to have looked at it
+  const rest = (ms: number) =>
+    act(() => {
+      clock += ms;
+      return new Promise((resolve) => setTimeout(resolve, 250));
+    });
+  Object.defineProperty(perf, 'now', {
+    value: () => clock,
+    configurable: true,
+  });
+  try {
+    // ten bodies at 20 ms: a frame that re-scales them is past every rest
+    cost = 20;
+    const before = renders;
+    await act(() => zoomTo(0.92));
+    assert.ok(!bodiesAway(), 'the first step applies at once');
+    assert.strictEqual(renders, before + 10, 'and its frame is slow');
+    for (let step = 2; step <= 4; step++) {
+      // the animation's next step, a frame after the one that drew the last
+      clock += 16;
+      await act(() => zoomTo(0.9 + step * 0.02));
+      assert.ok(bodiesAway(), `step ${step} follows its frame: held`);
+    }
+    assert.strictEqual(renders, before + 10, 'and none re-scaled them');
+
+    // the last step, and the frame that draws it half a second late
+    clock += 16;
+    zoomTo(1);
+    await rest(500);
+    assert.ok(bodiesAway(), 'held until the frame that draws the last step');
+    await rest(100);
+    assert.ok(bodiesAway(), 'and for the rest after it');
+    await rest(100);
+  } finally {
+    delete (perf as { now?: unknown }).now;
+  }
+  assert.ok(!bodiesAway(), 'back once the zoom rests');
+  assert.strictEqual(retained(bodyBox().children[0]).props.scale, 1);
+});
+
+test('held bodies come back if the frame that draws the zoom never does', async () => {
+  // The rest is counted from the frame that drew the zoom's last step, and a
+  // surface that stopped drawing — a context lost mid-zoom — draws none: the
+  // bodies must not wait for it for good.
+  const perf = globalThis.performance;
+  let clock = perf.now() + 10_000;
+  const { flow } = await mountCounted(() => {});
+  const zoomTo = (zoom: number) => flow.current!.setViewport({ zoom });
+  const rest = (ms: number) =>
+    act(() => {
+      clock += ms;
+      return new Promise((resolve) => setTimeout(resolve, 250));
+    });
+  // the pane draws nothing from here on
+  (pane() as unknown as { paint: () => void }).paint = () => {};
+  Object.defineProperty(perf, 'now', {
+    value: () => clock,
+    configurable: true,
+  });
+  try {
+    await act(() => zoomTo(0.92));
+    clock += 16;
+    await act(() => zoomTo(0.94));
+    assert.ok(bodiesAway(), 'precondition: a stream holds them');
+    await rest(500);
+    assert.ok(bodiesAway(), 'a frame half a second late is still awaited');
+    await rest(600);
+  } finally {
+    delete (perf as { now?: unknown }).now;
+  }
+  assert.ok(!bodiesAway(), 'past a second, back without it');
+  assert.strictEqual(retained(bodyBox().children[0]).props.scale, 0.94);
 });
 
 test('a wheel over a mounted body zooms the graph', async () => {
