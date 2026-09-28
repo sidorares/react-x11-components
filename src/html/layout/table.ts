@@ -41,6 +41,25 @@ export function layoutTable(
   table.captionTop = 0;
   table.captionBottom = 0;
   if (!columnCount) {
+    // With no columns, an auto table is as wide as its widest caption can
+    // be and its `min-width` asks, as one with columns is at the least
+    // (17.5.2), rather than as the room on offer: a caption over no cells
+    // was centred in the width of the page.
+    if (table.style.width === AUTO) {
+      let inner = captions.length
+        ? captionMinimum(captions, ctx) - table.horizontalExtra
+        : 0;
+      const min = resolveOrNull(table.style.minWidth, contentWidth);
+      if (min !== null) {
+        inner = Math.max(
+          inner,
+          table.style.boxSizing === 'border-box'
+            ? min - table.horizontalExtra
+            : min,
+        );
+      }
+      table.width = Math.max(0, inner) + table.horizontalExtra;
+    }
     layoutCaptions(captions, ctx, table);
     return 0;
   }
@@ -597,7 +616,7 @@ function autoColumns(
   for (const cell of spanning) grow(least, cell.box.intrinsicMinContent, cell);
   for (let c = 0; c < columnCount; c += 1) {
     if (explicit[c] !== null) {
-      max[c] = Math.max(max[c], explicit[c] as number);
+      max[c] = Math.max(min[c], explicit[c] as number);
       min[c] = Math.max(min[c], Math.min(explicit[c] as number, max[c]));
     }
   }

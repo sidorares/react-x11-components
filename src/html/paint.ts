@@ -680,7 +680,13 @@ function paintContent(
   // a hidden box's text is drawn in no ink, so that a visible element's in
   // it is drawn (`runFor`)
   if (box.lines) paintLines(ctx, box, options);
-  paintFlowLines(ctx, box, options);
+  const outlines: Box[] = [];
+  paintFlowLines(ctx, box, options, outlines);
+  // the outlines of the blocks in the flow over all of its lines, and under
+  // its positioned boxes, as browsers draw them (CSS 2.1 Appendix E, step
+  // 10 left the choice open): drawn after each block's own lines, an
+  // outline went under an inline-block the next block held
+  for (const child of outlines) paintOutline(ctx, child, options);
   if (box.collapsed && visible) paintCollapsedBorders(ctx, box, options);
 
   // `z-index: auto` and 0 in document order, then the positive ones
@@ -1294,6 +1300,7 @@ function paintFlowLines(
   ctx: PaintContext,
   box: Box,
   options: PaintOptions,
+  outlines: Box[],
 ): void {
   for (const child of paintedChildren(box, options)) {
     if (child.kind === 'text' || child.kind === 'break') continue;
@@ -1309,10 +1316,10 @@ function paintFlowLines(
       paintMarker(ctx, child.marker, options);
     }
     if (child.lines) paintLines(ctx, child, options);
-    paintFlowLines(ctx, child, options);
+    paintFlowLines(ctx, child, options, outlines);
     // an inline box's is drawn a fragment at a time, on its lines
     if (child.style.outlineStyle !== 'none' && child.kind !== 'inline') {
-      paintOutline(ctx, child, options);
+      outlines.push(child);
     }
   }
 }

@@ -787,6 +787,18 @@ metric('sibling margins collapse to the larger of the two', async () => {
   );
 });
 
+test('margins of both signs collapse to the largest and the most negative of all', async () => {
+  // 2, -4, 0, 14, -4 and 2 are 14 less 4: taken two at a time they came
+  // to 8, and the block after them stood two pixels high (CSS 2.1 8.3.1)
+  const { node } = await render(
+    '<style>body{margin:0}</style><div style="height:1px"></div>' +
+      '<div style="margin:2px"><div style="margin:-4px 20px">' +
+      '<div style="margin:0 0 14px"></div></div></div>' +
+      '<div id="a" style="height:10px"></div>',
+  );
+  assert.strictEqual(boxOf(view(node), 'a').y, 11);
+});
+
 metric(
   'text wraps to the width it is given, and rewraps when that changes',
   async () => {
@@ -1657,6 +1669,43 @@ test('the font shorthand resets what it does not name', async () => {
   // and `font: inherit` takes all of it, the line height's unit included —
   // 40 read as a multiple would be lines 800px tall
   assert.deepStrictEqual(style('inherits'), inherited);
+});
+
+test('a line height below nought is none, alone or in the font shorthand', async () => {
+  // the declaration goes (CSS 2.1 10.8.1): `font: 4em/-2em serif` set the
+  // text at 4em, and `line-height: -2` stood its lines on one another
+  const { node } = await render(
+    '<div style="font: 20px/30px sans-serif">' +
+      '<p id="a" style="font: 40px/-20px sans-serif">a</p>' +
+      '<p id="b" style="line-height: -2">b</p>' +
+      '<p id="c" style="line-height: -10px">c</p></div>',
+  );
+  const style = (id: string) =>
+    (
+      boxOf(view(node), id) as unknown as {
+        style: { fontSize: number; lineHeight: number | 'normal' };
+      }
+    ).style;
+  assert.deepStrictEqual(
+    [style('a').fontSize, style('b').lineHeight, style('c').lineHeight],
+    [20, 30, 30],
+  );
+});
+
+test('an unquoted family name is its words with one space between', async () => {
+  // `Courier    New` over two lines, or with a tab, is `Courier New`
+  // (CSS 2.1 15.3); kept as written, it was a name no font has
+  const { node } = await render(
+    '<p id="a" style="font-family: Courier    New, serif">a</p>' +
+      '<p id="b" style="font-family: \'Courier  New\'">b</p>',
+  );
+  const family = (id: string) =>
+    (boxOf(view(node), id) as unknown as { style: { fontFamily: string } })
+      .style.fontFamily;
+  assert.deepStrictEqual(
+    [family('a'), family('b')],
+    ['Courier New, serif', 'Courier  New'],
+  );
 });
 
 metric(
@@ -2873,6 +2922,24 @@ test('a canvas is the size of its bitmap, and keeps its proportions', async () =
   assert.deepStrictEqual([b.width, b.height], [30, 60], 'its proportions');
   assert.ok(!el.textContent().includes('fallback'), 'a canvas is drawn');
 });
+
+metric(
+  'an anonymous block after a block in an inline takes no text-indent',
+  async () => {
+    // its first line is no element's first formatted line (CSS 2.1 16.1):
+    // the text after the <div> started indented as the text before it did
+    const { node } = await render(
+      '<style>body{margin:0}</style><section id="s" style="text-indent:50px">' +
+        '<span>one <div>two</div> three</span></section>',
+    );
+    const el = view(node);
+    const s = boxOf(el, 's');
+    assert.deepStrictEqual(
+      linesOf(el, 's').map((l) => Math.round(extentOf(l.texts[0])[0] - s.x)),
+      [50, 50, 0],
+    );
+  },
+);
 
 test('a no-break space before an image is added back only where the engine strips it', () => {
   // ntk to 8.12.9 and CoreText through appkit 0.15.0 strip a trailing
@@ -4483,6 +4550,52 @@ metric('a justified paragraph fills every line but its last', async () => {
 });
 
 metric(
+  'text-align-last sets the last line, and each a forced break ends, apart',
+  async () => {
+    // CSS Text 3, 7.2; it was not read, and every line was set as
+    // `text-align` has it. `justify-all` justifies the last line too, and
+    // `text-justify: none` justifies nothing
+    const words = 'the quick brown fox jumps over the lazy dog and back again ';
+    const { node } = await render(
+      '<style>body{margin:0}p{margin:0;width:200px}</style>' +
+        '<p id="one" style="text-align-last:center">short</p>' +
+        `<p id="many" style="text-align-last:right">${words.repeat(2)}</p>` +
+        `<p id="br" style="text-align-last:right">a b<br>${words}</p>` +
+        `<p id="all" style="text-align:justify-all">${words.repeat(2)}</p>` +
+        '<p id="j" style="text-align:justify;text-align-last:center">' +
+        `${words.repeat(2)}</p>` +
+        '<p id="none" style="text-align:justify;text-justify:none">' +
+        `${words.repeat(2)}</p>`,
+    );
+    const el = view(node);
+    const extents = (id: string) =>
+      linesOf(el, id).map((line) => extentOf(line.texts[0]));
+    const last = <T>(list: T[]) => list[list.length - 1];
+    const [[from, to]] = extents('one');
+    assert.ok(Math.abs(from - (200 - to)) < 1, `centred: ${from}..${to}`);
+    const many = extents('many');
+    assert.ok(
+      many[0][0] < 0.5 && last(many)[1] > 199.5,
+      'the last at the right',
+    );
+    assert.ok(extents('br')[0][1] > 199.5, 'and one a break ends');
+    for (const [a, b] of extents('all')) {
+      assert.ok(a < 0.5 && b > 199.5, `justified, the last too: ${a}..${b}`);
+    }
+    const j = extents('j');
+    for (const [a, b] of j.slice(0, -1)) {
+      assert.ok(a < 0.5 && b > 199.5, `${a}..${b}`);
+    }
+    const [ja, jb] = last(j);
+    assert.ok(Math.abs(ja - (200 - jb)) < 1, `the last centred: ${ja}..${jb}`);
+    assert.ok(
+      extents('none').some(([, b]) => b < 199),
+      'text-justify: none spaces nothing',
+    );
+  },
+);
+
+metric(
   'a justified line keeps its breaks where a spaced space is wider',
   async () => {
     // an engine measures a space that is a spaced run of its own wider
@@ -5254,6 +5367,37 @@ test('a line takes its room beside the floats over its own height', async () => 
   assert.deepStrictEqual([s.x - w.x, s.y - w.y], [0, 0]);
 });
 
+test('a float after one that waits for the next line waits too', async () => {
+  // none goes higher than a float before it (CSS 2.1 9.5.1, rule 5): the
+  // two after a float too wide for the line went beside the line's text,
+  // above it
+  const { node } = await render(
+    '<div style="width:100px;font-size:5px">H' +
+      '<div id="a" style="width:100px;height:100px;float:left"></div>' +
+      '<div id="b" style="width:30px;height:30px;float:left"></div>' +
+      '<div id="c" style="width:30px;height:30px;float:right"></div></div>',
+  );
+  const el = view(node);
+  const [a, b, c] = ['a', 'b', 'c'].map((id) => boxOf(el, id));
+  assert.ok(b.y >= a.y + 100 && c.y >= b.y, `${a.y} ${b.y} ${c.y}`);
+});
+
+metric(
+  'a float met inside text that may not break keeps that text on one line',
+  async () => {
+    // no break at the float, so the word before it goes to the next line
+    // with the word after it: the line ran past its width, the float below
+    const { node } = await render(
+      '<style>body{margin:0}#d{font-size:10px;width:12ch;line-height:1}' +
+        '#f{float:left;width:12ch;height:1em}</style>' +
+        '<div id="d">1111 <nobr>2222 <div id="f"></div> 3333</nobr></div>',
+    );
+    const el = view(node);
+    assert.strictEqual(linesOf(el, 'd').length, 2);
+    assert.strictEqual(boxOf(el, 'f').y - boxOf(el, 'd').y, 20);
+  },
+);
+
 test('a margin after an empty block with clearance stays in the parent', async () => {
   // CSS 2.1 8.3.1, 10.6.3: an empty block cleared past a float spends its
   // own margins on its clearance, and the margins that collapse with it
@@ -5272,6 +5416,55 @@ test('a margin after an empty block with clearance stays in the parent', async (
   assert.strictEqual(a.height, 100, 'the 99px after the cleared block');
   assert.strictEqual(b.height, 60, 'but none of its own');
   assert.strictEqual(c.y, b.y + 60 + 40);
+});
+
+test('a cleared block the margin above would take past its float goes under it, up if need be', async () => {
+  // where it would be with `clear: none`, its margin collapsed up through
+  // its parent's top, is above the float, so it has clearance, and its
+  // border edge goes under the float: its own margin, held apart, stood it
+  // 48px lower, and its parent as short as nothing (CSS 2.1 9.5.2)
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="float:left;width:50px;height:100px"></div>' +
+      '<div style="padding-top:1px"><div id="p">' +
+      '<div style="margin-bottom:49px"></div>' +
+      '<div id="c" style="clear:left;margin-top:98px"></div></div></div>',
+  );
+  const el = view(node);
+  const [p, c] = ['p', 'c'].map((id) => boxOf(el, id));
+  assert.deepStrictEqual([p.y, c.y, p.height], [50, 100, 50]);
+});
+
+test("a cleared block's place without clearance counts the margins in it", async () => {
+  // a margin deep inside it collapses up through its top and takes it
+  // past the floats, so it has no clearance: it was cleared from its own
+  // margin alone, and drew itself under the floats (CSS 2.1 9.5.2)
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="float:left;width:50px;height:50px"></div>' +
+      '<div style="float:right;width:50px;height:100px"></div>' +
+      '<div style="width:100px;height:100px">' +
+      '<div style="height:15px;margin-bottom:20px"></div>' +
+      '<div id="a"><div id="l" style="clear:left"><div style="clear:right">' +
+      '<div style="margin-top:185px"></div></div></div></div></div>',
+  );
+  const el = view(node);
+  assert.deepStrictEqual([boxOf(el, 'a').y, boxOf(el, 'l').y], [200, 200]);
+});
+
+test("a block after an empty one cleared past a float starts at the cleared one's edge", async () => {
+  // their margins collapse together, the cleared one's top margin among
+  // them, which is above its edge: the block after starts at the edge
+  // where they come to no more than that margin. It started the cleared
+  // one's bottom margin lower (CSS 2.1 8.3.1)
+  const { node } = await render(
+    '<style>body{margin:0}</style><div id="w">' +
+      '<div style="float:left;width:10px;height:64px"></div>' +
+      '<div style="clear:left;margin:32px 0"></div>' +
+      '<div id="b" style="margin-top:16px;border-top:32px solid"></div></div>',
+  );
+  const el = view(node);
+  assert.deepStrictEqual([boxOf(el, 'b').y, boxOf(el, 'w').height], [64, 96]);
 });
 
 test("a table gives up its cells' set widths before its words", async () => {
@@ -5294,6 +5487,40 @@ test("a table gives up its cells' set widths before its words", async () => {
   const [w, t, v, u] = ['w', 't', 'v', 'u'].map((id) => boxOf(el, id));
   assert.deepStrictEqual([t.y - w.y, t.width], [0, 50], 'beside the float');
   assert.deepStrictEqual([u.y - v.y, u.width], [100, 250], 'below it');
+});
+
+metric(
+  'a column set to a width is that wide, and its text wraps in it',
+  async () => {
+    // browsers take a set width for the column's, which its content widens
+    // only where it cannot break narrower; CSS 2.1's step 2 took it for a
+    // floor under the text's widest line, and the column was one line wide
+    const { node } = await render(
+      '<table style="border-spacing:0"><col><col style="width:80px"><tr>' +
+        '<td>a</td><td id="c" style="padding:0">Filler Text Filler Text</td>' +
+        '</tr></table><table style="border-spacing:0"><tr><td>b</td>' +
+        '<td id="d" style="padding:0;width:60px">Filler Text Filler Text</td>' +
+        '</tr></table>',
+    );
+    const el = view(node);
+    assert.deepStrictEqual(
+      [boxOf(el, 'c').width, boxOf(el, 'd').width],
+      [80, 60],
+    );
+    assert.ok(linesOf(el, 'c').length > 1, 'its text wraps');
+  },
+);
+
+metric('a table of no cells is as wide as its caption can be', async () => {
+  // not as the room on offer, where the caption was centred
+  const { node } = await render(
+    '<table id="t"><caption id="c">XXXXXXXXXX</caption></table>',
+  );
+  const el = view(node);
+  const [t, c] = ['t', 'c'].map((id) => boxOf(el, id));
+  const [line] = linesOf(el, 'c');
+  assert.ok(t.width < 200, `${t.width}`);
+  assert.ok(Math.abs(line.x - c.x) < 1, 'its text starts at its start');
 });
 
 test('an absolute box a max-width or max-height holds is centred by its auto margins', async () => {
@@ -5453,6 +5680,42 @@ test('a float wider than its block stands beside a float on the other side', asy
   assert.strictEqual(boxOf(el, 'a').y, 0, 'beside the right float');
   const b = boxOf(el, 'b');
   assert.ok(b.y >= 230, `below the left float, in its block: ${b.y}`);
+});
+
+test('a new formatting context beside a float takes no negative margin past its block', async () => {
+  // where a float narrows the room, as every engine has it; with none
+  // there, a negative margin still takes the box out
+  const { node } = await render(
+    '<style>body{margin:0 0 0 50px}</style><div style="width:125px">' +
+      '<div style="float:left;width:0;height:50px"></div>' +
+      '<div style="float:right;clear:left;width:25px;height:50px"></div>' +
+      '<div id="a" style="overflow:hidden;margin-left:-50px;height:100px">' +
+      '</div></div><div style="width:100px">' +
+      '<div id="b" style="overflow:hidden;margin-left:-50px;height:10px">' +
+      '</div></div>',
+  );
+  const el = view(node);
+  const [a, b] = ['a', 'b'].map((id) => boxOf(el, id));
+  assert.deepStrictEqual([a.x, a.width, b.x, b.width], [50, 100, 0, 150]);
+});
+
+test('a new formatting context a negative margin takes up meets the float below its top', async () => {
+  // its border box is what may not overlap a float, from its top down:
+  // taken as tall as its margins, less the one taking it up, it missed
+  // the float it overlapped
+  const { node } = await render(
+    '<style>body{margin:0}.w{display:flow-root;width:100px;margin-top:75px}' +
+      '.f{float:left;width:50px;height:50px}' +
+      '.b{overflow:hidden;height:50px;margin-top:-25px}</style>' +
+      '<div class="w" id="w1"><div class="f"></div>' +
+      '<div class="b" id="a" style="width:50px"></div></div>' +
+      '<div class="w" id="w2"><div class="f"></div>' +
+      '<div class="b" id="b" style="width:75px"></div></div>',
+  );
+  const el = view(node);
+  const [w1, a, w2, b] = ['w1', 'a', 'w2', 'b'].map((id) => boxOf(el, id));
+  assert.deepStrictEqual([a.x - w1.x, a.y - w1.y], [50, -25], 'beside it');
+  assert.deepStrictEqual([b.x - w2.x, b.y - w2.y], [0, 50], 'under it');
 });
 
 test('a box as wide as its content measures its floats side by side', async () => {
@@ -7603,6 +7866,16 @@ metric('a body in an html set to be a table paints the canvas', async () => {
   );
   const [r, g, b] = await pixelAt(result.ctx, 4, 4);
   assert.ok(g > 200 && r < 60 && b < 60, `the canvas is green: ${r},${g},${b}`);
+});
+
+test('an area the author gives a display is drawn, in its map', async () => {
+  // <map> is inline (HTML 15.3.1); hidden, it took its areas with it
+  const { node } = await render(
+    '<map><area style="display:block;height:10px;' +
+      'border:2px solid #00ff00"></map>',
+  );
+  const fills = await fillsOf(view(node));
+  assert.ok(fills.some((f) => f.style === '#00ff00'));
 });
 
 metric(
@@ -10569,6 +10842,27 @@ test('an outline is drawn round the border box grown by its offset, over the con
   const blue = fills.findIndex((f) => f.style === '#0000ff');
   const green = fills.findIndex((f) => f.style === '#00ff00');
   assert.ok(blue >= 0 && green > blue, 'over the block inside it');
+});
+
+test("a block's outline is drawn over the lines after it, and under positioned boxes", async () => {
+  // as browsers draw it, after the flow's lines (CSS 2.1 Appendix E, step
+  // 10 leaves the choice): drawn after its own, an inline-block after it
+  // went over it
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="height:10px;outline:4px solid #ff00ff"></div>' +
+      '<span style="display:inline-block;width:20px;height:20px;' +
+      'background:#00ffff"></span>' +
+      '<div style="position:relative;height:5px;background:#00ff00"></div>',
+  );
+  const fills = await fillsOf(view(node));
+  const inline = fills.findIndex((f) => f.style === '#00ffff');
+  const outline = fills.findIndex((f) => f.style === '#ff00ff');
+  const positioned = fills.findIndex((f) => f.style === '#00ff00');
+  assert.ok(
+    inline >= 0 && outline > inline && positioned > outline,
+    `${inline} ${outline} ${positioned}`,
+  );
 });
 
 test("an inline box's outline is drawn round its fragment", async () => {
