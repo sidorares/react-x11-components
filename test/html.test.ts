@@ -1612,6 +1612,43 @@ test('the font shorthand resets what it does not name', async () => {
   assert.deepStrictEqual(style('inherits'), inherited);
 });
 
+test('a line height below nought is none, alone or in the font shorthand', async () => {
+  // the declaration goes (CSS 2.1 10.8.1): `font: 4em/-2em serif` set the
+  // text at 4em, and `line-height: -2` stood its lines on one another
+  const { node } = await render(
+    '<div style="font: 20px/30px sans-serif">' +
+      '<p id="a" style="font: 40px/-20px sans-serif">a</p>' +
+      '<p id="b" style="line-height: -2">b</p>' +
+      '<p id="c" style="line-height: -10px">c</p></div>',
+  );
+  const style = (id: string) =>
+    (
+      boxOf(view(node), id) as unknown as {
+        style: { fontSize: number; lineHeight: number | 'normal' };
+      }
+    ).style;
+  assert.deepStrictEqual(
+    [style('a').fontSize, style('b').lineHeight, style('c').lineHeight],
+    [20, 30, 30],
+  );
+});
+
+test('an unquoted family name is its words with one space between', async () => {
+  // `Courier    New` over two lines, or with a tab, is `Courier New`
+  // (CSS 2.1 15.3); kept as written, it was a name no font has
+  const { node } = await render(
+    '<p id="a" style="font-family: Courier    New, serif">a</p>' +
+      '<p id="b" style="font-family: \'Courier  New\'">b</p>',
+  );
+  const family = (id: string) =>
+    (boxOf(view(node), id) as unknown as { style: { fontFamily: string } })
+      .style.fontFamily;
+  assert.deepStrictEqual(
+    [family('a'), family('b')],
+    ['Courier New, serif', 'Courier  New'],
+  );
+});
+
 metric(
   'mixed-sign sibling margins collapse to the sum of the extremes',
   async () => {
@@ -4207,6 +4244,52 @@ metric('a justified paragraph fills every line but its last', async () => {
   assert.ok(last(rtl)[1] > 199.5, 'whose last line starts at the right');
   assert.ok(Math.abs(width(last(rtl)) - width(last(rtlRagged))) < 0.5);
 });
+
+metric(
+  'text-align-last sets the last line, and each a forced break ends, apart',
+  async () => {
+    // CSS Text 3, 7.2; it was not read, and every line was set as
+    // `text-align` has it. `justify-all` justifies the last line too, and
+    // `text-justify: none` justifies nothing
+    const words = 'the quick brown fox jumps over the lazy dog and back again ';
+    const { node } = await render(
+      '<style>body{margin:0}p{margin:0;width:200px}</style>' +
+        '<p id="one" style="text-align-last:center">short</p>' +
+        `<p id="many" style="text-align-last:right">${words.repeat(2)}</p>` +
+        `<p id="br" style="text-align-last:right">a b<br>${words}</p>` +
+        `<p id="all" style="text-align:justify-all">${words.repeat(2)}</p>` +
+        '<p id="j" style="text-align:justify;text-align-last:center">' +
+        `${words.repeat(2)}</p>` +
+        '<p id="none" style="text-align:justify;text-justify:none">' +
+        `${words.repeat(2)}</p>`,
+    );
+    const el = view(node);
+    const extents = (id: string) =>
+      linesOf(el, id).map((line) => extentOf(line.texts[0]));
+    const last = <T>(list: T[]) => list[list.length - 1];
+    const [[from, to]] = extents('one');
+    assert.ok(Math.abs(from - (200 - to)) < 1, `centred: ${from}..${to}`);
+    const many = extents('many');
+    assert.ok(
+      many[0][0] < 0.5 && last(many)[1] > 199.5,
+      'the last at the right',
+    );
+    assert.ok(extents('br')[0][1] > 199.5, 'and one a break ends');
+    for (const [a, b] of extents('all')) {
+      assert.ok(a < 0.5 && b > 199.5, `justified, the last too: ${a}..${b}`);
+    }
+    const j = extents('j');
+    for (const [a, b] of j.slice(0, -1)) {
+      assert.ok(a < 0.5 && b > 199.5, `${a}..${b}`);
+    }
+    const [ja, jb] = last(j);
+    assert.ok(Math.abs(ja - (200 - jb)) < 1, `the last centred: ${ja}..${jb}`);
+    assert.ok(
+      extents('none').some(([, b]) => b < 199),
+      'text-justify: none spaces nothing',
+    );
+  },
+);
 
 metric(
   'a justified line keeps its breaks where a spaced space is wider',

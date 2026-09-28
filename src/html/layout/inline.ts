@@ -453,7 +453,19 @@ function linesOf(
     color: style.color,
   };
   const lineHeightMul = lineHeightMultiplier(fonts, style);
-  const align = alignFor(style);
+  // The lines the end of the text or a forced break ends take
+  // `text-align-last` (CSS Text 3, 7.2), and a text that does not wrap is
+  // all such lines. Where they are aligned otherwise than the rest, and
+  // neither is justified — which fills a line whatever its alignment — the
+  // lines are made one at a time, each aligned its own way.
+  const lastAlign = lastAlignOf(style);
+  const align = engineAlign(wraps(style) ? style.textAlign : lastAlign);
+  const rtl = style.direction === 'rtl';
+  const alignedApart =
+    wraps(style) &&
+    style.textAlign !== 'justify' &&
+    lastAlign !== 'justify' &&
+    alignShift(style.textAlign, rtl) !== alignShift(lastAlign, rtl);
   const indent = blockIndent(block, options.width);
 
   let hasAtomics = false;
@@ -489,7 +501,13 @@ function linesOf(
 
   // The text-only, float-free, unindented case: one call, every line — or
   // one call per *chunk*, when the text is long and carries hard breaks.
-  if (!hasAtomics && (!hasEdges || spaced) && !floated && !indent) {
+  if (
+    !hasAtomics &&
+    (!hasEdges || spaced) &&
+    !floated &&
+    !indent &&
+    !alignedApart
+  ) {
     // no atomics, so what is not an edge is text
     const textItems = hasEdges
       ? items.filter(isText)
@@ -553,10 +571,15 @@ function linesOf(
       );
       runs.push(item.run);
     }
+    // justified lines fill their width, so where all but the last are,
+    // the layout is aligned as those are
+    const justifies = wraps(style) && style.textJustify !== 'none';
+    const justifyRest = style.textAlign === 'justify' && justifies;
+    const justifyLast = lastAlign === 'justify' && justifies;
     const layoutOptions = {
       maxWidth: wraps(style) || cut ? options.width : undefined,
       lineHeight: lineHeightMul,
-      align,
+      align: justifyRest && !justifyLast ? engineAlign(lastAlign) : align,
       direction: style.direction,
       overflowWrap: cutWrap(style, cut, wrapWords),
       ...cut,
@@ -583,14 +606,19 @@ function linesOf(
       }
     }
     if (
-      style.textAlign === 'justify' &&
-      wraps(style) &&
-      layout.lines.length > 1
+      (justifyRest && layout.lines.length > 1) ||
+      (justifyLast && layout.lines.length > 0)
     ) {
       // measured as it will be drawn, its spaces spaced apart (`HAIR`)
       const spaced = spacedApart(runs);
       const measured = fonts.layout(spaced, base, layoutOptions);
-      const justified = justifiedRuns(spaced, measured, options.width);
+      const justified = justifiedRuns(
+        spaced,
+        measured,
+        options.width,
+        justifyRest,
+        justifyLast,
+      );
       layout = justified
         ? fonts.layout(justified, base, layoutOptions)
         : measured;
@@ -603,9 +631,11 @@ function linesOf(
       0,
       0,
       lines,
-      layoutOptions.maxWidth === undefined || balanced
-        ? unwrappedPlacer(style, options.width)
-        : null,
+      layoutOptions.maxWidth === undefined
+        ? unwrappedPlacer(style, options.width, true)
+        : balanced
+          ? unwrappedPlacer(style, options.width, false)
+          : null,
     );
     return { lines, height: layout.height, width: widest };
   }
@@ -659,15 +689,19 @@ function linesOf(
   // beside.
   const guess = strut ? strut.ascent + strut.descent : style.fontSize * 1.4;
   const lifts = raised && fonts ? new Lifts(fonts, block.style) : null;
-  const close = (): void => {
+  const restShift = alignShift(style.textAlign, rtl);
+  const lastShift = alignShift(lastAlign, rtl);
+  /** Close the open line; `last` where the text or a forced break ends it,
+   *  which `text-align-last` aligns. */
+  const close = (last = false): void => {
     const line = finishLine(
       open,
       y,
       // the room beside the floats over the whole line box, which an
       // inline-block can make taller than its text (CSS 2.1 9.5)
       (height) => bandAt(options, y, Math.max(height, guess)),
-      lineShift(style),
-      style.direction === 'rtl',
+      last || !wraps(style) ? lastShift : restShift,
+      rtl,
       strut,
       lifts,
     );
@@ -815,7 +849,10 @@ function linesOf(
     // takes, and are still on it: an empty `<span>` with a tall line height
     // before the text was left on a line of its own after it, and the
     // text's line was as short as the paragraph's
+    // (and its lines all aligned alike, which the last is not where
+    // `text-align-last` sets it apart)
     const tailIsPlain =
+      !alignedApart &&
       segment.nextIndex >= items.length &&
       open.x === 0 &&
       !open.atomics.length &&
@@ -1012,14 +1049,16 @@ function linesOf(
       offset = 0;
       continue;
     }
-    close();
+    close(breakBefore(segment.runs, first.end));
     const advanced = advance(items, index, offset, first.end);
     index = advanced.index;
     offset = advanced.offset;
   }
 
   if (pending.length) placePending(bandAt(options, y, guess).left);
-  if (open.texts.length || open.atomics.length || open.edges.length) close();
+  if (open.texts.length || open.atomics.length || open.edges.length) {
+    close(true);
+  }
   placeDeferred();
 
   if (!floatsPlaced.length) return { lines, height: y, width: widest };
@@ -3176,9 +3215,14 @@ function wraps(style: ComputedStyle): boolean {
 /** How much of a line's unused room goes before it: 0 for a line set flush
  *  left, 1 flush right, ½ centred. `start` and `end` follow the direction;
  *  `justify` is set as `start`, as `alignFor` sets it. */
-function lineShift(style: ComputedStyle): number {
-  const rtl = style.direction === 'rtl';
-  switch (style.textAlign) {
+/** How far into the room a line an alignment sets goes: 0 at the left, 1
+ *  at the right; `justify` at the start, since a line not justified is
+ *  set there. */
+function alignShift(
+  align: ComputedStyle['textAlign'] | ComputedStyle['textAlignLast'],
+  rtl: boolean,
+): number {
+  switch (align) {
     case 'center':
       return 0.5;
     case 'right':
@@ -3316,12 +3360,17 @@ function balancedWidth(
  * Blink. Null where every line is already where it belongs: flush left in
  * a left-to-right paragraph, or measured for a width it has not been given.
  */
+/** How the lines of a layout made with no width to fill are placed in
+ *  the room: each is its text's last or a forced break's, and takes
+ *  `text-align-last`, but where `last` is false — a balanced paragraph's,
+ *  laid out narrower than its room. */
 function unwrappedPlacer(
   style: ComputedStyle,
   width: number,
+  last = true,
 ): LinePlacer | null {
-  const shift = lineShift(style);
   const rtl = style.direction === 'rtl';
+  const shift = alignShift(last ? lastAlignOf(style) : style.textAlign, rtl);
   if ((shift === 0 && !rtl) || !Number.isFinite(width)) return null;
   return (line) => {
     const free = width - line.width;
@@ -3378,15 +3427,21 @@ function justifiedRuns(
   runs: TextRun[],
   layout: TextLayoutLike,
   width: number,
+  rest = true,
+  last = false,
 ): TextRun[] | null {
   const text = runs.map((run) => run.text).join('');
   // each space's extra, by its offset in the paragraph
   const extra = new Map<number, number>();
   const lines = layout.lines;
-  for (let i = 0; i < lines.length - 1; i += 1) {
+  for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i];
     let end = line.end;
-    if (text[end - 1] === '\n' || text[end] === '\n') continue;
+    // the paragraph's last line, or one a forced break ends, is
+    // `text-align-last`'s to justify
+    const ends =
+      i === lines.length - 1 || text[end - 1] === '\n' || text[end] === '\n';
+    if (!(ends ? last : rest)) continue;
     while (
       end > line.start &&
       (text[end - 1] === ' ' || text[end - 1] === '\u00a0')
@@ -3424,9 +3479,24 @@ function justifiedRuns(
   return out;
 }
 
-function alignFor(style: ComputedStyle): string {
-  // ntk has no justification; `start` is closer than a silent left on an RTL
-  // paragraph, and closer than a ragged-right lie about what was drawn.
+/** An alignment as the text engine takes it. It has no justification:
+ *  `start` is closer than a silent left on an RTL paragraph, and closer
+ *  than a ragged-right lie about what was drawn — justified lines are
+ *  spaced to fill their width before they get here (`justifiedRuns`). */
+function engineAlign(
+  align: ComputedStyle['textAlign'] | ComputedStyle['textAlignLast'],
+): string {
+  return align === 'justify' || align === 'auto' ? 'start' : align;
+}
+
+/** How the lines the text or a forced break ends are aligned (CSS Text 3,
+ *  7.2): `text-align-last`, or where that is `auto`, `text-align`, but
+ *  `justify`'s, which leaves them at the start. */
+function lastAlignOf(
+  style: ComputedStyle,
+): Exclude<ComputedStyle['textAlignLast'], 'auto'> {
+  const last = style.textAlignLast;
+  if (last !== 'auto') return last;
   return style.textAlign === 'justify' ? 'start' : style.textAlign;
 }
 

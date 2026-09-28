@@ -185,6 +185,7 @@ npx tsx scripts/conformance/run.ts wpt fuzz1 --chunk 50 --timeout 60000
 | 96     | float rules 3 and 7, a canvas, a table's height    | 5,615 (95%) | 5,078 (86%) |
 | 97     | a `top` line's baseline, collapsed borders, fields | 5,625 (95%) | 5,085 (86%) |
 | 98     | margins of both signs, clearance, floats, columns  | 5,643 (95%) | 5,100 (86%) |
+| 99     | `text-align-last`, family names, line heights      | 5,646 (95%) | 5,102 (86%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -2880,6 +2881,35 @@ solid 16px red` is invalid, each of the three at most once
      inline-block went over it. Outlines are drawn after all of the
      flow's lines and under its positioned boxes, as browsers draw them
      (`z-index-020`, which allows either of CSS 2.1's two orders).
+
+### Round 99
+
+245. **`text-align-last` was not read.** The lines the end of a text or a
+     forced break ends are aligned as it says (CSS Text 3, 7.2), and a
+     text that does not wrap is all such lines. Where they are aligned
+     otherwise than the rest and neither is justified, the lines are made
+     one at a time, each aligned its own way; where the rest are
+     justified, they fill their width whatever the alignment, and the
+     paragraph stays one layout. `text-align: justify-all` justifies the
+     last line too, and `text-justify: none` justifies nothing
+     (`block-in-inline-align-last-001`, and css-text 611 to 643).
+246. **An unquoted family name kept its spacing.** `Courier    New` over
+     two lines, or with a tab, is `Courier New`, identifiers joined by one
+     space (CSS 2.1 15.3); kept as written, it was a name no font has
+     (`font-family-011`).
+247. **A line height below nought was taken.** It is no line height, and
+     the declaration goes (10.8.1): `line-height: -2` stood the lines on
+     one another, and `font: 4em/-2em serif` set the text at 4em where the
+     whole shorthand should have gone (`c548-ln-ht-002`, and `font-146` on
+     Cocoa).
+248. **Two text-engine faults, filed and fixed upstream.** A letter the
+     first family lacks was set in whichever registered face came first
+     rather than in the next family the style names, and a word shaped
+     under one family list answered the same word under another
+     (sidorares/ntk#433); and `font-kerning: none` still kerned a face
+     that keeps its pairs in the older `kern` table, Times New Roman's
+     (sidorares/ntk#431). With both, `font-family-013`, `fonts-013` and
+     `clear-applies-to-008` pass on X11.
 
 ## What `<Html>` supports
 
