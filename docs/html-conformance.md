@@ -161,6 +161,7 @@ npx tsx scripts/conformance/run.ts wpt fuzz1 --chunk 50 --timeout 60000
 | 75     | the font's own `ch`, floats in unbroken text       | 5,486 (93%) | 4,994 (84%) |
 | 76     | a word too long for its line kept whole            | 5,520 (93%) | 4,994 (84%) |
 | 77     | `visibility: collapse` in tables                   | 5,525 (93%) | 4,999 (84%) |
+| 78     | the generic `monospace` at its smaller size        | 5,531 (93%) | 5,005 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -2301,6 +2302,23 @@ two agreed.
      box.
 
      `css-tables`: 83 of its 167 reftests passed on X11, 86 do now.
+
+### Round 78
+
+181. **The generic `monospace` was as large as every other family.** A
+     browser keeps two default sizes, 16px and a "fixed" 13px, and the
+     smaller one is the generic `monospace`'s when it is the whole of
+     the family list — which is why a `<pre>` in a browser is 13px: an
+     element whose family becomes it scales the size it inherits by
+     13/16, one that leaves it scales it back, and a keyword size is
+     read from the smaller scale, while a size an element sets itself
+     stays its own (Blink's `CheckForGenericFamilyChange`). A list with
+     another name in it keeps the size, so `monospace, monospace` is 16
+     pixels, as authors who know the rule write it to get. The monospace
+     tables of `table-anonymous-objects` were as wide as the page at 16
+     and wrapped in their reference, which a browser lays out at 13.
+     The UA sheet's own `<pre>` and `<code>` set their size, `0.9em` of
+     the theme's, and are not moved by it.
 
 ## What `<Html>` supports
 

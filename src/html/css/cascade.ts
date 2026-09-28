@@ -778,16 +778,40 @@ export class Cascade {
       ch: () => this._chOf(parentStyle),
     };
     // the family goes with the size, so an `ex` after it is its font's
+    let sized = false;
+    let keyword = false;
     for (const c of candidates) {
       for (const d of pick(c)) {
-        if (
-          d.prop === 'font-size' ||
-          d.prop === 'font' ||
-          d.prop === 'font-family'
-        ) {
+        if (d.prop === 'font-family') {
           this._apply(style, parentStyle, d, ctxParent);
+        } else if (d.prop === 'font-size' || d.prop === 'font') {
+          // NaN until a size is set, so one the declaration did not take
+          // leaves the size where it was, and says nothing of it
+          const was = style.fontSize;
+          style.fontSize = NaN;
+          this._apply(style, parentStyle, d, ctxParent);
+          if (Number.isNaN(style.fontSize)) {
+            style.fontSize = was;
+          } else {
+            sized = true;
+            keyword = !d.vars && sizeKeyword(d.prop, d.value);
+          }
         }
       }
+    }
+    // The generic `monospace` on its own has a smaller size than the rest,
+    // 13 pixels to their 16 (the "fixed" font size every browser keeps):
+    // an element whose family becomes it, or stops being it, scales the
+    // size it inherits by that, and a keyword size is read from the
+    // smaller scale — the size it sets itself stays its own. Blink's
+    // CheckForGenericFamilyChange, and why a `<pre>` in a browser is 13px.
+    const mono = monospaceOnly(style.fontFamily);
+    let scaled = NaN;
+    if (
+      sized ? keyword && mono : mono !== monospaceOnly(parentStyle.fontFamily)
+    ) {
+      style.fontSize *= mono ? FIXED_SIZE : 1 / FIXED_SIZE;
+      scaled = style.fontSize;
     }
     const ctx: UnitContext = {
       ...ctxParent,
@@ -801,6 +825,9 @@ export class Cascade {
         this._apply(style, parentStyle, d, ctx);
       }
     }
+    // a `font` applied again, to keep its longhands in cascade order, set
+    // the size it names as it was before the scale
+    if (!Number.isNaN(scaled)) style.fontSize = scaled;
 
     // A table never keeps HTML's alignment, `-webkit-center` and its kin:
     // the `<td align="center">` every mail centres its body table in
@@ -1373,3 +1400,36 @@ function closestTable(el: Element): Element | null {
   }
   return null;
 }
+
+/** The generic fixed-width family's size to everyone else's: 13 to 16. */
+const FIXED_SIZE = 13 / 16;
+
+/** Whether a family list is the generic `monospace` and nothing else,
+ *  which has the smaller size; a list with a fallback after it does not,
+ *  so `monospace, monospace` keeps the size it had. */
+function monospaceOnly(family: string): boolean {
+  return family.length === 9 && family.toLowerCase() === 'monospace';
+}
+
+/** Whether a `font-size`, or the size in a `font`, is an absolute-size
+ *  keyword, or `initial`, which is `medium`. */
+function sizeKeyword(prop: string, value: string): boolean {
+  const words = value.trim().toLowerCase();
+  if (prop === 'font-size') return ABSOLUTE_SIZES.has(words);
+  for (const word of words.split(/[\s/]+/)) {
+    if (ABSOLUTE_SIZES.has(word)) return true;
+  }
+  return false;
+}
+
+const ABSOLUTE_SIZES = new Set([
+  'xx-small',
+  'x-small',
+  'small',
+  'medium',
+  'large',
+  'x-large',
+  'xx-large',
+  'xxx-large',
+  'initial',
+]);

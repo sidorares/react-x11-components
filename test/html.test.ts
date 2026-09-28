@@ -977,6 +977,35 @@ test('white space collapses across elements, and not at a line start', async () 
   );
 });
 
+test('the generic monospace on its own is smaller, as in a browser', async () => {
+  // 13 to 16: an element whose family becomes `monospace` scales the size
+  // it inherits, and one that leaves it scales it back; a keyword reads the
+  // smaller scale; a size an element sets is its own, and a list with a
+  // fallback in it keeps the size it had
+  const { node } = await render(
+    '<div style="font-size:16px">' +
+      '<p id="a" style="font-family:monospace">a</p>' +
+      '<p id="b" style="font-family:monospace, monospace">b</p>' +
+      '<p id="c" style="font-family:monospace;font-size:20px">c</p>' +
+      '<p id="m" style="font-size:medium">m</p>' +
+      '<div style="font-family:monospace">' +
+      '<p id="d" style="font-family:serif">d</p>' +
+      '<p id="e" style="font-size:medium">e</p>' +
+      '<p id="f" style="font:italic medium monospace">f</p>' +
+      '<p id="g" style="font-size:2em">g</p></div></div>',
+  );
+  const el = view(node);
+  const size = (id: string) =>
+    (boxOf(el, id) as LaidBox & { style: { fontSize: number } }).style.fontSize;
+  assert.strictEqual(size('a'), 13, 'inherited, scaled');
+  assert.strictEqual(size('b'), 16, 'a fallback: no');
+  assert.strictEqual(size('c'), 20, 'set: its own');
+  assert.strictEqual(size('d'), 16, 'and back');
+  assert.strictEqual(size('e'), size('m') * (13 / 16), 'medium, smaller');
+  assert.strictEqual(size('f'), size('m') * (13 / 16), 'through `font` too');
+  assert.strictEqual(size('g'), 26, "an em of the parent's");
+});
+
 metric('font-size: 0 leaves no room between inline-blocks', async () => {
   // the common way to lose the spaces between columns set inline: at no
   // size the space between them takes no room, where it used to be 1px. The
