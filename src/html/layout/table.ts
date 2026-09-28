@@ -15,6 +15,7 @@ import { AUTO, isPct, resolveOrNull } from '../css/values.js';
 import type { Len } from '../css/values.js';
 import { Box, CLIPPED_CELLS, COLLAPSED_CELLS } from './boxes.js';
 import {
+  CELL_CONTENT,
   MIN_CONTENT_PROBE,
   clampHeight,
   exactMinContent,
@@ -141,10 +142,15 @@ export function layoutTable(
   y += rowSpacing;
 
   // Size every cell at its column width first, so a row's height is the
-  // tallest cell in it rather than the first one that was measured.
-  for (const cell of cells) {
+  // tallest cell in it rather than the first one that was measured. What
+  // its content came to is kept apart from a height the cell sets: it is
+  // that content `vertical-align` moves in the cell.
+  const natural: number[] = new Array<number>(cells.length);
+  for (let i = 0; i < cells.length; i += 1) {
+    const cell = cells[i];
     const width = spannedWidth(widths, cell, spacing);
     ctx.layoutSubtree(cell.box, width);
+    natural[i] = CELL_CONTENT.get(cell.box) ?? cell.box.height;
     const specified = resolveOrNull(cell.box.style.height, NaN);
     if (specified !== null) {
       cell.box.height = Math.max(
@@ -276,11 +282,14 @@ export function layoutTable(
     const inner = cell.box.height;
     // `vertical-align` inside a cell moves the *content*, not the box: the
     // box fills the row, background and all, and the content sits top,
-    // middle, bottom or on the row's baseline in it.
+    // middle, bottom or on the row's baseline in it — in the box a height
+    // of its own makes too, which is no content to be moved
     let offset = lift[i];
     const va = cell.box.style.verticalAlign;
-    if (va === 'middle') offset = Math.max(0, (height - inner) / 2);
-    else if (va === 'bottom') offset = Math.max(0, height - inner);
+    const content = natural[i];
+    const room = Math.max(height, inner);
+    if (va === 'middle') offset = Math.max(0, (room - content) / 2);
+    else if (va === 'bottom') offset = Math.max(0, room - content);
     moveTo(cell.box, placeX, rowTop[cell.row]);
     moveContent(cell.box, offset);
     cell.box.x = boxX;

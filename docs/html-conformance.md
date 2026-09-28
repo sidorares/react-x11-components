@@ -168,6 +168,7 @@ npx tsx scripts/conformance/run.ts wpt fuzz1 --chunk 50 --timeout 60000
 | 82     | `empty-cells: hide`                                | 5,540 (93%) | 5,013 (84%) |
 | 83     | a collapsed border on a half-pixel grid line       | 5,541 (93%) | 5,013 (84%) |
 | 84     | an image told to be a table's part                 | 5,542 (93%) | 5,014 (84%) |
+| 85     | a cell's content in a height of its own            | 5,544 (93%) | 5,015 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -2433,6 +2434,17 @@ two agreed.
      other, and the white space between them collapsed away as between
      two blocks. The box builder, the white space pass and the inline
      layout now all read it as an atomic inline, as an `<img>` is.
+
+### Round 85
+
+193. **A cell with a height of its own kept its content at the top.**
+     `vertical-align: middle`, which HTML gives every cell, moves a
+     cell's content in the cell's box, and that box can be taller for a
+     height the cell sets as well as for a taller cell beside it. The
+     set height was taken for content, the content was as tall as the
+     box already, and there was no room to move it: a `<td height>`
+     kept its text at the top, where every browser centres it. The
+     content's own height is kept apart now, and aligned in the box.
 
 ## What `<Html>` supports
 

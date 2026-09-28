@@ -1378,7 +1378,14 @@ export function ratioHeight(box: Box): number | null {
     : Math.max(0, box.contentWidth / aspect.ratio);
 }
 
+/** A table cell's height as its content came to, border box, apart from a
+ *  height it sets: what `vertical-align` moves in the cell (`table.ts`). */
+export const CELL_CONTENT = new WeakMap<Box, number>();
+
 function finishHeight(box: Box, contentHeight: number): void {
+  if (box.kind === 'table-cell') {
+    CELL_CONTENT.set(box, contentHeight + box.verticalExtra);
+  }
   const set = resolveOrNull(box.style.height, box.percentHeightBase);
   // at least zero: a `calc()` may come to less
   const specified = set === null ? null : Math.max(0, set);
