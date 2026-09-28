@@ -162,6 +162,7 @@ npx tsx scripts/conformance/run.ts wpt fuzz1 --chunk 50 --timeout 60000
 | 76     | a word too long for its line kept whole            | 5,520 (93%) | 4,994 (84%) |
 | 77     | `visibility: collapse` in tables                   | 5,525 (93%) | 4,999 (84%) |
 | 78     | the generic `monospace` at its smaller size        | 5,531 (93%) | 5,005 (84%) |
+| 79     | white space in a table's anonymous cells           | 5,536 (93%) | 5,010 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -2319,6 +2320,26 @@ two agreed.
      and wrapped in their reference, which a browser lays out at 13.
      The UA sheet's own `<pre>` and `<code>` set their size, `0.9em` of
      the theme's, and are not moved by it.
+
+### Round 79
+
+182. **White space beside what a table wraps in a cell was dropped.**
+     CSS 2.1 17.2.1 drops white space only between two of a table's
+     parts, or beside one at an end: beside an inline box that the
+     fix-up wraps in an anonymous cell it is that cell's, so
+     `<span>a</span> <span>b</span>` in a `display: table-row` is a cell
+     of `a b`, as it is loose in a table. It was dropped from both, and
+     the words ran together. Firefox keeps it, and on wpt.fyi alone
+     passes `table-anonymous-objects-085` and `-086`; Chrome, Edge and
+     Safari drop it, as this did.
+183. **An empty caption set to a width did not widen its table.** An
+     auto table is at least as wide as its widest caption (CSS 2.1
+     17.4), and a caption's least width is the one it sets itself where
+     it sets one — but it was measured by laying it out at no width,
+     where one set to `100px` measured nothing, and its table was as
+     narrow as its empty cell.
+
+     `css-tables`: 88 of its 167 reftests pass on X11.
 
 ## What `<Html>` supports
 
