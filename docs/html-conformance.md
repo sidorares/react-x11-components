@@ -178,6 +178,7 @@ npx tsx scripts/conformance/run.ts wpt fuzz1 --chunk 50 --timeout 60000
 | 89     | an absolute box a `max-width` holds, centred       | 5,554 (93%) | 5,025 (84%) |
 | 90     | an image set `middle`, and `capitalize`            | 5,566 (94%) | 5,038 (85%) |
 | 91     | a table cell's sizes, and `text-decoration`        | 5,575 (95%) | 5,047 (86%) |
+| 92     | a top-aligned box's background, and `font`         | 5,588 (95%) | 5,051 (86%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -2603,6 +2604,39 @@ On ntk 8.13.1 and react-x11 2.22.11, where master passes 5,554 on X11 and
      `.txt` file as that; a browser ignores either as a style sheet in a
      document in standards mode, and the runner, standing in for the server
      and the host, now declines them (`content-type-000`, `-001`).
+
+### Round 92
+
+210. **The background of an inline box set `top` or `bottom` was drawn on
+     the line's baseline**, not its own. The text went where the line's
+     edge put it and the background stayed behind, so in a line made taller
+     by its paragraph the box sat a pixel or two off its text: in
+     `content-174`'s reference, and `padding-applies-to-017`'s and
+     `floats-124`'s, which is one file. Each such box's baseline is kept for
+     the line it is on, which is a different height on every line.
+211. **A line's inline box whose padding reached up over the line before
+     was drawn under that line's text.** CSS 2.1 Appendix E paints a block
+     a line at a time, backgrounds before text, so the box covers it. The
+     ink here goes on in one batch after every line's backgrounds, for its
+     speed, so the part of such a box above its own line is drawn again
+     over it, and nothing is drawn again where no box reaches up
+     (`border-padding-bleed-001` to `-003`).
+212. **The `font` shorthand's size won over a more specific `font-size`.**
+     The cascade takes the font first, so that an `em` in the rest of a rule
+     is the element's own, and then applies everything else in order again
+     but `font-size` — the `font` included, for its other longhands, and so
+     its size too: `span { font: 15px/1 Ahem }` under `.b > span {
+font-size: 3.75em }` was 15px, its `em`s 3.75 of its parent's. The size
+     is the first pass's now (`c43-rpl-bbx-002`, `c43-rpl-ibx-000`,
+     `c42-ibx-ht-000`, `c5506-ipadn-t-000`). Five `text-fit` tests in
+     css-text had passed on it: their references write `font: 10px Ahem`
+     and then `font-size: 20px`, and rendered at the 10px their tests,
+     which `text-fit` would enlarge, are drawn at.
+213. **`letter-spacing` took no percentage**, which CSS Text 4 makes one of
+     the font size (`c542-letter-sp-001`).
+214. **An image told to be a column or a column group was taken for one**
+     and never drawn; it is an inline image, as one told to be a cell is
+     (`outline-applies-to-016`, `-017`).
 
 ## What `<Html>` supports
 

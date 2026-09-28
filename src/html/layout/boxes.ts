@@ -515,6 +515,12 @@ export const TEXT_RAISES = new WeakMap<LineText, number>();
 export const SHADOWED_TEXT = new WeakSet<Box>();
 export const BOX_RAISES = new WeakMap<Box, number>();
 
+/** And the raise, on one line, of each inline box a `top` or `bottom` box
+ *  holds, the box itself among them: that box's baseline is where the
+ *  line's edge puts it, which is a different height on every line, so its
+ *  background, drawn from its baseline, is put there by line. */
+export const LINE_BOX_RAISES = new WeakMap<LineBox, Map<Box, number>>();
+
 /** The table cells wholly in columns `visibility: collapse` took out of
  *  their table (CSS 2.1 17.5.5), which the paint pass leaves out: a cell is
  *  no descendant of its column and inherits nothing from it, so its own
@@ -2572,7 +2578,12 @@ function fixUpTable(table: Box, anonymous: AnonymousStyle): void {
   };
   for (const child of table.children) {
     const display = child.style.display;
-    if (display === 'table-column' || display === 'table-column-group') {
+    // an image told to be a column is an inline image, as one told to be a
+    // cell is (`flowOf`): taken for a column, it was never drawn
+    if (
+      (display === 'table-column' || display === 'table-column-group') &&
+      child.kind !== 'replaced'
+    ) {
       // A column is the table's, beside its rows: it lays out nothing and
       // paints nothing (17.2.1). Taken for a stray child, it was wrapped in
       // a row of its own and drawn as a cell.

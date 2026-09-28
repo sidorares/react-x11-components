@@ -717,6 +717,39 @@ metric('a malformed colour does not reach paint', async () => {
 });
 
 metric(
+  "a letter-spacing percentage is of the font size, and a font's size loses to a later font-size",
+  async () => {
+    // CSS Text 4: `letter-spacing: 200%` is two ems. And the `font`
+    // shorthand's size lost to a more specific `font-size` only until the
+    // cascade's second pass applied the `font` again
+    const { node } = await render(
+      '<style>span{font:15px/1 sans-serif} .b > span{font-size:30px}</style>' +
+        '<p id="p" style="font-size:10px;letter-spacing:200%">x</p>' +
+        '<div class="b"><span id="s">x</span></div>',
+    );
+    const el = view(node);
+    const styleOf = (id: string) =>
+      (
+        boxOf(el, id) as unknown as {
+          style: { letterSpacing: number; fontSize: number };
+        }
+      ).style;
+    assert.strictEqual(styleOf('p').letterSpacing, 20);
+    assert.strictEqual(styleOf('s').fontSize, 30);
+  },
+);
+
+test('an image told to be a column is drawn, as one told to be a cell is', async () => {
+  // a column is not drawn, and an image that is one is an inline image
+  const { node } = await render(
+    '<div style="display:table"><img id="i" width="20" height="10" ' +
+      'style="display:table-column-group" src="x.png"></div>',
+  );
+  const img = boxOf(view(node), 'i');
+  assert.ok(img.width === 20 && img.height === 10, 'laid out at its size');
+});
+
+metric(
   'a hex colour of five or seven digits is none, and does not throw from paint',
   async () => {
     const { el } = await renderWithBytes(
@@ -7505,6 +7538,60 @@ metric(
     assert.deepStrictEqual(
       [raised.x, raised.y, raised.w, raised.h],
       [flat.x, flat.y - 8, flat.w, flat.h],
+    );
+  },
+);
+
+metric(
+  "a top-aligned box's background is drawn around its own text",
+  async () => {
+    // its baseline is where the line's top puts it, not the line's: in a line
+    // made tall by its paragraph, the background stayed on the paragraph's
+    // baseline while the text went up
+    const around = async (align: string) => {
+      const { node } = await render(
+        '<style>p{margin:0;font-size:16px;line-height:40px}</style>' +
+          '<p id="p">a <span id="s" style="background:#00ff00;line-height:1;' +
+          `vertical-align:${align}">x</span></p>`,
+      );
+      const el = view(node);
+      const [fill] = (await fillsOf(el)).filter((f) => f.style === '#00ff00');
+      // on the baseline it is laid out with the text before it
+      const x = baselinesOf(el, 'p').find((f) => f.text.includes('x'))!;
+      cleanup();
+      return x.at - fill.y;
+    };
+    assert.ok(
+      Math.abs((await around('top')) - (await around('baseline'))) < 0.01,
+      'as far above its baseline as on the baseline',
+    );
+  },
+);
+
+metric(
+  'a box whose padding reaches up over the line before is drawn over its text',
+  async () => {
+    // CSS 2.1 Appendix E paints a block a line at a time, backgrounds first:
+    // the second line's padding covers the first line's text
+    const { node } = await render(
+      '<style>body{margin:0}</style>' +
+        '<p style="margin:0;font-size:16px;line-height:20px">first line<br>' +
+        '<span style="background:#00ff00;padding-top:20px">second</span></p>',
+    );
+    const ops: PaintOp[] = [];
+    await fillsOf(view(node), ops);
+    const text = ops.findIndex((op) => op.op === 'text');
+    const again = ops.findIndex(
+      (op, i) => i > text && op.op === 'fill' && op.style === '#00ff00',
+    );
+    assert.ok(text >= 0 && again > text, 'filled again after the text');
+    const clip = ops
+      .slice(text, again)
+      .reverse()
+      .find((op): op is Extract<PaintOp, { op: 'clip' }> => op.op === 'clip');
+    assert.ok(
+      clip && clip.y + clip.h <= 21,
+      `only above its own line: ${JSON.stringify(clip)}`,
     );
   },
 );

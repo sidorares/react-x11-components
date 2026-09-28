@@ -36,6 +36,7 @@ import type { ComputedStyle } from '../css/style.js';
 import { inkColor, isTransparent, resolve } from '../css/values.js';
 import {
   BOX_RAISES,
+  LINE_BOX_RAISES,
   isOffset,
   SHADOWED_TEXT,
   SHIFTED_LINES,
@@ -1662,6 +1663,29 @@ function finishLine(
       if (at !== y + baseline) {
         TEXT_RAISES.set(text, y + baseline - at);
         SHIFTED_LINES.add(line);
+      }
+      // and the boxes it is in, up to the `top` or `bottom` one, whose
+      // backgrounds are drawn from their own baselines
+      if (lift.edge && lifts) {
+        const owner = text.spans.boxAt?.(text.layoutStart);
+        for (
+          let at2 = owner?.parent;
+          at2?.kind === 'inline';
+          at2 = at2.parent
+        ) {
+          const placed = lifts.edgeOf(at2);
+          if (!placed) break;
+          const room = edges!.get(placed.edge);
+          if (!room) break;
+          const own =
+            placed.edge.style.verticalAlign === 'top'
+              ? y + room.ascent
+              : y + height - room.descent;
+          let raises = LINE_BOX_RAISES.get(line);
+          if (!raises) LINE_BOX_RAISES.set(line, (raises = new Map()));
+          raises.set(at2, y + baseline - (own - placed.raise));
+          SHIFTED_LINES.add(line);
+        }
       }
     }
     text.drawY = at - natural.baseline;
@@ -3399,6 +3423,13 @@ class Lifts {
     if (!raise || edge) return null;
     const room = strutOf(this.fonts, box.style);
     return { raise, ascent: room.ascent, descent: room.descent };
+  }
+
+  /** The `top` or `bottom` box a box is in, itself included, and how far
+   *  its baseline is raised from that box's; null outside one. */
+  edgeOf(box: Box): { edge: Box; raise: number } | null {
+    const lift = this._box(box);
+    return lift.edge ? { edge: lift.edge, raise: lift.raise } : null;
   }
 
   private _box(box: Box): { raise: number; edge: Box | null; lead: boolean } {

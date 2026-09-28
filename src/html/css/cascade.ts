@@ -836,12 +836,10 @@ export class Cascade {
     // smaller scale — the size it sets itself stays its own. Blink's
     // CheckForGenericFamilyChange, and why a `<pre>` in a browser is 13px.
     const mono = monospaceOnly(style.fontFamily);
-    let scaled = NaN;
     if (
       sized ? keyword && mono : mono !== monospaceOnly(parentStyle.fontFamily)
     ) {
       style.fontSize *= mono ? FIXED_SIZE : 1 / FIXED_SIZE;
-      scaled = style.fontSize;
     }
     const ctx: UnitContext = {
       ...ctxParent,
@@ -849,15 +847,20 @@ export class Cascade {
       ex: () => this._exOf(style),
       ch: () => this._chOf(style),
     };
+    const settled = style.fontSize;
     for (const c of candidates) {
       for (const d of pick(c)) {
         if (d.prop === 'font-size' || d.custom) continue;
         this._apply(style, parentStyle, d, ctx);
       }
     }
-    // a `font` applied again, to keep its longhands in cascade order, set
-    // the size it names as it was before the scale
-    if (!Number.isNaN(scaled)) style.fontSize = scaled;
+    // A `font` is applied again, to keep its other longhands in cascade
+    // order, and it sets the size it names as well: the size is the first
+    // pass's, which the declarations that outrank the `font` had their say
+    // in, and the scale after them. `span { font: 15px/1 Ahem }` under
+    // `.b > span { font-size: 3.75em }` was 15px, its `em`s 3.75 of its
+    // parent's.
+    style.fontSize = settled;
 
     // A table never keeps HTML's alignment, `-webkit-center` and its kin:
     // the `<td align="center">` every mail centres its body table in
