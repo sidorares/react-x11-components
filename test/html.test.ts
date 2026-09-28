@@ -2977,6 +2977,31 @@ test('empty-cells: hide draws nothing of an empty cell', async () => {
   assert.ok(any('#ff00ff'), 'collapsed borders are drawn');
 });
 
+test('a collapsed border on a line between two pixels starts on one', async () => {
+  // a grid line at 12.5 carries a 25px border from 0 to 25; rounding the
+  // line first and taking a whole half off drew it from 1, and the cell
+  // under it showed a pixel wide at the table's edge
+  const { node } = await render(
+    '<table id="t" style="border-collapse:collapse;table-layout:fixed;' +
+      'width:100px"><tr><td style="padding:10px 0"></td>' +
+      '<td style="width:50%;padding:10px 0;border-left:25px solid #00ff00;' +
+      'border-right:25px solid #00ff00"></td>' +
+      '<td style="padding:10px 0"></td></tr></table>',
+  );
+  const el = view(node);
+  const t = boxOf(el, 't');
+  const green = (await fillsOf(el)).filter(
+    (f) => f.style === parseColor('#00ff00'),
+  );
+  assert.deepStrictEqual(
+    green.map((f) => [f.x - Math.round(t.x), f.w]).sort((a, b) => a[0] - b[0]),
+    [
+      [0, 25],
+      [75, 25],
+    ],
+  );
+});
+
 metric('a column group draws its borders where they collapse', async () => {
   const { node } = await render(
     '<table style="border-collapse:collapse"><colgroup ' +

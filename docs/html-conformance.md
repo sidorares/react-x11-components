@@ -166,6 +166,7 @@ npx tsx scripts/conformance/run.ts wpt fuzz1 --chunk 50 --timeout 60000
 | 80     | a spanning cell's width, and a percentage's        | 5,537 (93%) | 5,011 (84%) |
 | 81     | collapsed borders at corners and at the sides      | 5,539 (93%) | 5,012 (84%) |
 | 82     | `empty-cells: hide`                                | 5,540 (93%) | 5,013 (84%) |
+| 83     | a collapsed border on a half-pixel grid line       | 5,541 (93%) | 5,013 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -2408,6 +2409,17 @@ two agreed.
      borders are the grid's, and it leaves them be. What CSS 2.1 adds
      for a row whose every cell is empty and hidden, that it takes no
      height, is not done.
+
+### Round 83
+
+191. **A collapsed border on a line between two pixels started a pixel
+     late.** A border is centred on its grid line, and the grid line
+     was rounded before the border's whole half was taken off it: a
+     line at 12.5 with a 25px border drew it from 1 to 26, and the cell
+     under it showed a pixel wide at the table's edge. It is drawn from
+     the line less half its width, rounded there, 0 to 25, as browsers
+     place it. At 2x the half pixel is a whole one, and Cocoa had it
+     right already.
 
 ## What `<Html>` supports
 
