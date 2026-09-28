@@ -74,12 +74,7 @@ handle.refresh();
 **`onResource` is the only way anything loads.** This component has no
 network client and no filesystem access; it does not resolve URLs against a
 base, because it has no base and the host does. The request names the URL as
-the document wrote it, what kind of thing it is, and the element that asked.
-A URL a linked or imported stylesheet wrote is relative to that sheet (CSS
-2.1 4.3.4), so it arrives resolved against the sheet's URL and relative to
-the document again: `url(../img/a.png)` in `css/site.css` is asked for as
-`img/a.png`. A host resolves every request against the document, whoever
-wrote it:
+the document wrote it, what kind of thing it is, and the element that asked:
 
 ```jsx
 onResource={async (request) => {

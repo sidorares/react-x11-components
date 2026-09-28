@@ -359,12 +359,7 @@ export class HtmlViewNode extends Node {
     const look = this._deviceLook();
     // What the sheets are read from, in order: a `<style>`'s text or a
     // fetched `<link>`'s, and after them the host's.
-    const read: {
-      text: string;
-      encoding?: string;
-      element: Element;
-      url?: string;
-    }[] = [];
+    const read: { text: string; encoding?: string; element: Element }[] = [];
     for (const ref of this._source.facts().sheets) {
       // A sheet handed over as bytes that names no encoding of its own is in
       // its referrer's: a `<link charset>`, then the document's (CSS 2.1
@@ -379,12 +374,7 @@ export class HtmlViewNode extends Node {
       const text = ref.kind === 'inline' ? ref.text : linked?.text;
       if (!text) continue;
       const encoding = linked ? linked.encoding : props.charset;
-      read.push({
-        text,
-        encoding,
-        element: ref.element,
-        url: ref.kind === 'inline' ? undefined : ref.href,
-      });
+      read.push({ text, encoding, element: ref.element });
     }
     const extra = props.stylesheet;
     const extras = Array.isArray(extra) ? extra : extra ? [extra] : [];
@@ -409,8 +399,8 @@ export class HtmlViewNode extends Node {
       const imports: { url: string; text: string | null }[][] = [];
       let order = 0;
       const layers = new Map<string, number>();
-      for (const { text, encoding, element, url: sheetUrl } of read) {
-        const sheet = parseStylesheet(text, order, layers, sheetUrl);
+      for (const { text, encoding, element } of read) {
+        const sheet = parseStylesheet(text, order, layers);
         // `@import` is a resource like any other, and its rules sit *before*
         // the importing sheet's (CSS 2.1 6.4.1): a fetched import takes the
         // order the sheet's own rules were given, and they move up past it,
@@ -426,7 +416,6 @@ export class HtmlViewNode extends Node {
               fetched.text,
               order + imported,
               layers,
-              url,
             );
             imported += parsed.rules.length + 1;
             sheets.push(parsed);

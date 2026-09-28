@@ -4877,49 +4877,6 @@ test('a stylesheet handed back by the seam reaches the cascade', async () => {
   void result;
 });
 
-test("a stylesheet's URLs are its own, asked for as the document would write them", async () => {
-  // CSS 2.1 4.3.4: a URL in a sheet is relative to the sheet, so a host that
-  // resolves against the document is asked for `img/a.png`, not the
-  // `../img/a.png` written in `css/site.css`
-  const asked: string[] = [];
-  await renderX11(
-    h(Html, {
-      source:
-        '<style>span { background-image: url(c.png) }</style>' +
-        '<link rel="stylesheet" href="css/site.css">' +
-        '<p>text</p><div>block</div><span>span</span>',
-      partial: false,
-      onResource: (r: { url: string; kind: string }) => {
-        asked.push(r.url);
-        if (r.url === 'css/site.css') {
-          return {
-            kind: 'stylesheet' as const,
-            text: '@import url(more.css); p { background: url("../img/a.png") }',
-          };
-        }
-        if (r.url === 'css/more.css') {
-          return {
-            kind: 'stylesheet' as const,
-            text: 'div { background-image: url(b.png) }',
-          };
-        }
-        return null;
-      },
-    }),
-    { backend: 'mock' },
-  );
-  for (const url of [
-    'css/site.css',
-    'css/more.css',
-    'img/a.png',
-    'css/b.png',
-    'c.png',
-  ]) {
-    assert.ok(asked.includes(url), `${url} in ${JSON.stringify(asked)}`);
-  }
-  assert.ok(!asked.includes('../img/a.png') && !asked.includes('b.png'));
-});
-
 test('text-decoration with a word it does not know is ignored, and draws every line it names', async () => {
   // CSS 2.1 4.2: the whole declaration goes, not the words after it
   const { node } = await render(
