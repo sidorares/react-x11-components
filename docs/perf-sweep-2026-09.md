@@ -16,8 +16,9 @@ the next round.
 One machine through round 22: an Apple M1 Pro (10 cores, 16 GB), macOS 15.2,
 the built-in 120 Hz display at scale 2 for Cocoa and XQuartz 2.8.6 at scale 1
 for X11, Node 26, React in development mode. Round 23 is a second machine — a
-Linux desktop on native Xorg with an NVIDIA GPU — and its numbers are its own.
-Numbers from another machine are not comparable with these; the method is.
+Linux desktop on native Xorg with an NVIDIA GPU — and its numbers are its own;
+round 24 is the M1 Pro again. Numbers from another machine are not comparable
+with these; the method is.
 
 ## Where things landed
 
@@ -2212,6 +2213,71 @@ machine that clock is ntk #402.
 - **Document reflows.** Markdown and `<Html>` reflow at 241 and 246 ms a step.
   That is the same order as XQuartz, so it is not a Linux problem.
 
+## Round 24: the Mac, after the correctness rounds
+
+`<Html>` went through twenty more rounds of conformance work between the
+sweep that closed round 17 and this one, #218 to #247, and passes 5,486 of
+the CSS 2.1 suite's reftests on X11 where it passed 5,471. This round asked
+what they cost on the M1 Pro, the way rounds 13, 14 and 17 did: copies of
+one tree that share its `node_modules`, differ only in `src/html`, and run
+the built package, interleaved.
+
+Nothing, and less than nothing where the performance commits among them
+landed (#226, #228, #232, #235, #238, #241):
+
+| `<Html>`, in process                        | after round 17 | after #247 |
+| ------------------------------------------- | -------------- | ---------- |
+| dashboard, a restyle: sheets, boxes, layout | 9.1 ms         | 7.6 ms     |
+| dashboard, a box build: boxes and layout    | 7.9 ms         | 6.8 ms     |
+| dashboard, a layout                         | 4.9 ms         | 1.8 ms     |
+| dashboard, a paint                          | 30.6 ms        | 30.9 ms    |
+| 600 KB report, a layout at a new width      | 16.3–16.8 ms   | 16.4 ms    |
+
+### The whole sweep
+
+`run.sh` against the sweep that closed round 17. Its X11 half moved nothing
+that held:
+
+- The cells it flagged — `<Flow>`'s GL lattice pan, `<Table>`'s thumb and
+  Markdown's reflow — came back to the morning's figures on three reruns
+  each.
+- Two stayed lower: a 2D zoom of 2,000 nodes and a GL drag of the charts
+  scene. With the morning's `<Flow>` run interleaved with today's, both
+  land in the same band on either tree, 13–27 fps and 71–81 fps.
+
+The Cocoa half measured nothing. Partway through it, every Cocoa cell
+settled at about 22 fps with 43 ms frames, whatever the scene — one that
+drew at 120 fps an hour before included — and stayed there. By then the two
+external panels the machine had in the morning were gone. Real-window Cocoa
+numbers wait for the arrangement the baseline was taken on.
+
+### Two tests that ran for five hours
+
+Two `node --test` processes from a mutation check in the conformance work
+were still running when this round began, orphaned, at 100% of a core
+each. They were the fuzzer's nesting cases, run on a tree with the fix
+taken out, and they had been running for five and a half hours. A test
+caught in a synchronous exponential loop cannot be stopped by
+`--test-timeout`, and the runner that gave up on it leaves it behind. Every
+measurement on the Mac in that time, this round's X11 half included, ran
+on eight cores rather than ten.
+
+### What a rebuild of a Tailwind page spends
+
+An edit rebuilds the boxes. Rebuilding those of the dashboard at ten times
+its size, 5,229 boxes, takes 57 ms in process:
+
+- the layout, 38 ms: 14 in Yoga's own code and 5 in converting values
+  across its boundary;
+- the box build, 22 ms: 12.6 of them in the cascade;
+- the collector, 4.4 ms.
+
+Two things were measured and left alone. The array that round 72's counter
+scopes allocate per element is 1% of the box build, inside the noise. Asking
+whether a box holds a percentage height (#244) costs under a millisecond.
+Keeping Yoga's nodes from one layout to the next, and the incremental
+rebuild under "Still open", are where the time is.
+
 ## Lessons
 
 1. **Look for caches that never hit.** Identity-keyed caches handed a new
@@ -2360,6 +2426,11 @@ machine that clock is ntk #402.
     half a dozen deep before anything is wrong with it. Keep a measurement
     for as long as its inputs last — the box's life, for a width that no
     containing width changes — and test with depth, not only with length.
+36. **List the processes before a sweep.** A test that hangs in synchronous
+    code outlives the runner that gave up on it, and a mutation check is
+    where such a test is written on purpose. Two ran at 100% of a core for
+    five and a half hours under every measurement taken in that time, and
+    nothing reported them.
 
 ## Still open
 
