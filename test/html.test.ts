@@ -11586,25 +11586,52 @@ test('a pseudo-element no rule gives a content to is none, whatever reaches it',
 // --- line-clamp and text-overflow ------------------------------------------------
 
 test('line-clamp and text-overflow are read', async () => {
+  const box = 'display:-webkit-box;-webkit-box-orient:vertical;';
   const { node } = await render(
-    '<p id="a" style="-webkit-line-clamp:2">a</p>' +
+    `<p id="a" style="${box}-webkit-line-clamp:2">a</p>` +
       '<p id="b" style="line-clamp:3;line-clamp:none">b</p>' +
-      '<p id="c" style="-webkit-line-clamp:2;-webkit-line-clamp:0">c</p>' +
+      `<p id="c" style="${box}-webkit-line-clamp:2;-webkit-line-clamp:0">c</p>` +
       '<p id="d" style="text-overflow:ellipsis">d</p>' +
       '<p id="e" style="text-overflow:clip ellipsis">e</p>' +
-      '<p id="f" style="text-overflow:ellipsis;text-overflow:fade">f</p>',
+      '<p id="f" style="text-overflow:ellipsis;text-overflow:fade">f</p>' +
+      // `-webkit-line-clamp` clamps a vertical `-webkit-box` only, as it
+      // does in a browser, and `line-clamp` a block container
+      '<p id="g" style="-webkit-line-clamp:2">g</p>' +
+      '<p id="h" style="display:-webkit-box;-webkit-line-clamp:2">h</p>' +
+      '<p id="i" style="line-clamp:3">i</p>' +
+      '<p id="j" style="line-clamp:auto">j</p>' +
+      '<p id="k" style="display:flex;line-clamp:3">k</p>' +
+      '<p id="l" style="line-clamp:3;columns:2">l</p>',
   );
   const el = view(node);
   const style = (id: string) =>
     (
       boxOf(el, id) as unknown as {
-        style: { lineClamp: number | null; textOverflow: string };
+        style: {
+          lineClamp: number | null;
+          textOverflow: string;
+          display: string;
+          flowRoot: boolean;
+          flexDirection: string;
+        };
       }
     ).style;
   assert.strictEqual(style('a').lineClamp, 2);
+  // a block of a formatting context of its own
+  assert.strictEqual(style('a').display, 'block');
+  assert.strictEqual(style('a').flowRoot, true);
   assert.strictEqual(style('b').lineClamp, null);
   // nought is no clamp, and the one before stands
   assert.strictEqual(style('c').lineClamp, 2);
+  assert.strictEqual(style('g').lineClamp, null);
+  // a `-webkit-box` that does not clamp vertically is a flex row
+  assert.strictEqual(style('h').lineClamp, null);
+  assert.strictEqual(style('h').display, 'flex');
+  assert.strictEqual(style('h').flexDirection, 'row');
+  assert.strictEqual(style('i').lineClamp, 3);
+  assert.strictEqual(style('j').lineClamp, Infinity);
+  assert.strictEqual(style('k').lineClamp, null);
+  assert.strictEqual(style('l').lineClamp, null, 'not a multicol container');
   assert.strictEqual(style('d').textOverflow, 'ellipsis');
   // two values name the start and the end, and a line's end is cut
   assert.strictEqual(style('e').textOverflow, 'ellipsis');
@@ -11632,13 +11659,111 @@ metric(
     assert.strictEqual(clamped.length, 2);
     assert.strictEqual(boxOf(el, 'a').height, 40);
     assert.ok(linesOf(el, 'b').length > 2, 'the text is longer than two');
-    const layout = clamped[1].texts[0].layout as unknown as {
-      truncated: boolean;
-    };
-    assert.strictEqual(layout.truncated, true, 'cut, with its ellipsis');
+    assert.strictEqual(lastRunText(clamped[1]), '\u2026', 'with its ellipsis');
     assert.strictEqual(linesOf(el, 'c').length, 1);
   },
 );
+
+/** The text of a line's last run, where the engine hands its span back. */
+function lastRunText(line: PlacedLine): string | undefined {
+  const text = line.texts[line.texts.length - 1];
+  const layout = text.layout as unknown as {
+    lines: { runs: { span?: { text: string } }[] }[];
+  };
+  const runs = layout.lines[text.layoutLine].runs;
+  return runs[runs.length - 1]?.span?.text;
+}
+
+metric(
+  'a clamp counts the lines of its blocks, and hides what is past them',
+  async () => {
+    // CSS Overflow 4, 5.3.1: Tailwind's `line-clamp-3` on a card whose
+    // text is in paragraphs counts through them, and the paragraph after
+    // the third line is not drawn, nor any of its height
+    const { node } = await render(
+      '<style>body{margin:0} p{margin:0} div{width:160px;' +
+        'line-height:20px}</style>' +
+        '<div id="card" style="overflow:hidden;display:-webkit-box;' +
+        '-webkit-box-orient:vertical;-webkit-line-clamp:3">' +
+        '<p id="a">One line.</p>' +
+        '<p id="b">Boost your conversion rate with a layout that keeps ' +
+        'every card the same height.</p>' +
+        '<p id="c" style="background:#ff0000">Hidden.</p></div>' +
+        '<div id="after">After.</div>',
+    );
+    const el = view(node);
+    assert.strictEqual(linesOf(el, 'a').length, 1);
+    const b = linesOf(el, 'b');
+    assert.strictEqual(b.length, 2, 'two of its lines left');
+    assert.strictEqual(lastRunText(b[1]), '\u2026');
+    assert.strictEqual(boxOf(el, 'card').height, 60, 'three lines tall');
+    assert.strictEqual(boxOf(el, 'after').y, 60, 'and nothing below them');
+    const fills = await fillsOf(el);
+    assert.ok(
+      !fills.some((f) => f.style === parseColor('#ff0000')),
+      'the paragraph past the clamp point is invisible',
+    );
+  },
+);
+
+metric(
+  'a clamp ends its last line in an ellipsis at a word, and only where more follows',
+  async () => {
+    // The ellipsis takes room on the line, and the words that do not fit
+    // beside it go to the lines the clamp hides (CSS Overflow 4, 4.2): the
+    // engine's own ellipsis, the one `text-overflow` asks for, cut inside
+    // the last word. A clamp that shows every line shows no ellipsis, and
+    // one that falls just after a block's lines, a block after it, does.
+    const { node } = await render(
+      '<style>body{margin:0} p{margin:0;width:160px;line-height:20px}' +
+        '</style>' +
+        '<p id="a" style="line-clamp:2">Boost your conversion rate with ' +
+        'a layout that keeps uncharacteristically long words.</p>' +
+        '<div style="line-clamp:2"><p id="b">Exactly one line.</p>' +
+        '<p id="c">And one more.</p><p>Hidden.</p></div>' +
+        '<div style="line-clamp:2"><p id="d">One line.</p>' +
+        '<p id="e">And the last.</p></div>',
+    );
+    const el = view(node);
+    const [, last] = linesOf(el, 'a');
+    assert.strictEqual(lastRunText(last), '\u2026');
+    assert.ok(last.width <= 160, `within the box: ${last.width}`);
+    const text = last.texts
+      .map((t) => {
+        const layout = t.layout as unknown as {
+          lines: { runs: { span?: { text: string } }[] }[];
+        };
+        return layout.lines[t.layoutLine].runs
+          .map((r) => r.span?.text ?? '')
+          .join('');
+      })
+      .join('');
+    assert.ok(/\s\S+\u2026$/.test(text), `whole words before it: ${text}`);
+    assert.ok(!/uncharacteri\u2026/.test(text), text);
+    assert.notStrictEqual(lastRunText(linesOf(el, 'b')[0]), '\u2026');
+    assert.strictEqual(lastRunText(linesOf(el, 'c')[0]), '\u2026');
+    assert.notStrictEqual(lastRunText(linesOf(el, 'e')[0]), '\u2026');
+  },
+);
+
+metric('line-clamp: auto shows the lines its height holds', async () => {
+  // as many lines as a `max-height` in `lh` holds, the last cut with an
+  // ellipsis (CSS Overflow 4, 5.3.1)
+  const { node } = await render(
+    '<style>body{margin:0} div{width:160px;line-height:20px}</style>' +
+      '<div id="a" style="line-clamp:auto;max-height:3lh">' +
+      '<p style="margin:0">One.</p><p style="margin:0">Two.</p>' +
+      '<p style="margin:0">Three.</p><p id="d" style="margin:0">Four.</p>' +
+      '</div>' +
+      '<div id="b" style="height:2lh">Two lines tall.</div>',
+  );
+  const el = view(node);
+  assert.strictEqual(boxOf(el, 'a').height, 60);
+  assert.strictEqual(boxOf(el, 'b').height, 40, '`lh` is the line height');
+  const ends = linesOf(el, 'a').map((line) => lastRunText(line));
+  assert.strictEqual(ends.length, 3);
+  assert.strictEqual(ends[2], '\u2026');
+});
 
 metric(
   "truncate: a line that clips ends in an ellipsis at the box's width",
@@ -11701,7 +11826,7 @@ metric(
     // ellipsis, and the block ends where its last line does
     const { node } = await render(
       '<style>body{margin:0} p{margin:0;width:160px;line-height:20px}</style>' +
-        '<p id="a" style="-webkit-line-clamp:2"><img style="width:10px;' +
+        '<p id="a" style="line-clamp:2"><img style="width:10px;' +
         'height:10px"> Boost your conversion rate with a layout that keeps ' +
         'every card the same height, however long its description runs.</p>',
     );

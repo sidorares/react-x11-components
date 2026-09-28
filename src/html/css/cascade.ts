@@ -33,6 +33,7 @@ import type { Declaration, StyleRule, Stylesheet } from './parse.js';
 import {
   applyDeclaration,
   blockify,
+  settleClamp,
   copyStyle,
   decorate,
   inherit,
@@ -381,9 +382,17 @@ export class Cascade {
   private _zeroWidthOf:
     ((family: string, size: number) => number | null) | null;
   private _zeroWidths = new Map<string, number>();
+  /** A font's own line height at a size, for `lh` where `line-height` is
+   *  `normal`, likewise. */
+  private _normalLineOf:
+    ((family: string, size: number) => number | null) | null;
+  private _normalLines = new Map<string, number>();
   /** Whether any declaration sets a custom property or reads one: without
    *  one, no element's style asks about them. */
   private _vars = false;
+  /** Whether any declaration has a length in `lh` or `rlh`: only then is
+   *  the line height settled ahead of the declarations that read it. */
+  private _lh = false;
 
   constructor(
     sheets: Stylesheet[],
@@ -393,9 +402,11 @@ export class Cascade {
     scale = 1,
     xHeight: ((family: string, size: number) => number | null) | null = null,
     zeroWidth: ((family: string, size: number) => number | null) | null = null,
+    normalLine: ((family: string, size: number) => number | null) | null = null,
   ) {
     this._xHeightOf = xHeight;
     this._zeroWidthOf = zeroWidth;
+    this._normalLineOf = normalLine;
     this.look = look;
     this.initial = initialStyle(look, scale);
     this.viewportWidth = viewportWidth;
@@ -405,6 +416,7 @@ export class Cascade {
     for (const sheet of sheets) {
       for (const rule of sheet.rules) {
         if (!this._vars && usesVars(rule.declarations)) this._vars = true;
+        if (!this._lh && usesLh(rule.declarations)) this._lh = true;
         const pseudo = splitPseudoElement(rule);
         if (pseudo) this._pseudo[pseudo.which].add(pseudo.rule);
         else this._index.add(rule);
@@ -782,6 +794,23 @@ export class Cascade {
     return ch;
   }
 
+  /** A style's computed line height as a length, for `lh`: `normal` as
+   *  its font's own, asked once per face and size, or 1.2em. */
+  private _lineHeightOf(style: ComputedStyle): number {
+    const set = style.lineHeight;
+    if (set !== 'normal') {
+      return style.lineHeightIsLength ? set : set * style.fontSize;
+    }
+    const key = `${style.fontFamily}\u0001${style.fontSize}`;
+    let line = this._normalLines.get(key);
+    if (line === undefined) {
+      line = this._normalLineOf?.(style.fontFamily, style.fontSize) ?? NaN;
+      if (!(line > 0)) line = style.fontSize * 1.2;
+      this._normalLines.set(key, line);
+    }
+    return line;
+  }
+
   /** `styleFor`, from the rules and hints already gathered for `el`. */
   private _computeStyle(
     el: Element,
@@ -807,6 +836,8 @@ export class Cascade {
       scale: this.scale,
       ex: () => this._exOf(parentStyle),
       ch: () => this._chOf(parentStyle),
+      lh: () => this._lineHeightOf(parentStyle),
+      rlh: () => this._lineHeightOf(this.initial),
     };
     // the family goes with the size, so an `ex` after it is its font's
     let sized = false;
@@ -847,7 +878,17 @@ export class Cascade {
       em: style.fontSize,
       ex: () => this._exOf(style),
       ch: () => this._chOf(style),
+      lh: () => this._lineHeightOf(style),
     };
+    // the line height, which an `lh` in any other declaration reads, ahead
+    // of them: set again with the rest, in its place among them
+    if (this._lh) {
+      for (const c of candidates) {
+        for (const d of pick(c)) {
+          if (d.prop === 'line-height') this._apply(style, parentStyle, d, ctx);
+        }
+      }
+    }
     const settled = style.fontSize;
     for (const c of candidates) {
       for (const d of pick(c)) {
@@ -873,6 +914,7 @@ export class Cascade {
       style.textAlign = 'start';
       style.alignBlocks = null;
     }
+    settleClamp(style, parentStyle);
     blockify(style, inFlexContainer);
     decorate(style);
     return style;
@@ -1014,6 +1056,7 @@ export class Cascade {
     if (inline) {
       const declarations = parseDeclarations(inline);
       if (!this._vars && usesVars(declarations)) this._vars = true;
+      if (!this._lh && usesLh(declarations)) this._lh = true;
       const normal = declarations.filter((d) => !d.important);
       const important = declarations.filter((d) => d.important);
       if (normal.length) {
@@ -1160,6 +1203,13 @@ function usesVars(declarations: readonly Declaration[]): boolean {
   for (const d of declarations) if (d.custom || d.vars) return true;
   return false;
 }
+
+/** Whether any of the declarations has a length in `lh` or `rlh`. */
+function usesLh(declarations: readonly Declaration[]): boolean {
+  for (const d of declarations) if (LH.test(d.value)) return true;
+  return false;
+}
+const LH = /\d\.?r?lh\b/i;
 
 /** Whether a candidate declares `content`. */
 function setsContent(c: Candidate): boolean {
