@@ -68,10 +68,13 @@ said, and in an application either is its end or its freeze, for a document
 it did not write. So it is run over other WPT directories for their crashes
 alone (round 67), and over pages `fuzz.ts` makes by cutting up this suite's
 tests — a span cut out or repeated, a token put in, a few hundred or
-thousand nested elements — each its own reference (round 68):
+thousand nested elements — each its own reference (round 68), or, with
+`--from`, other directories' tests, with the tokens today's documents are
+made of (round 69):
 
 ```bash
 npx tsx scripts/conformance/fuzz.ts wpt fuzz1 3000 1
+npx tsx scripts/conformance/fuzz.ts wpt fuzz4 3000 4 --from css/css-grid,css/css-text
 npx tsx scripts/conformance/run.ts wpt fuzz1 --chunk 50 --timeout 60000
 ```
 
@@ -149,6 +152,7 @@ npx tsx scripts/conformance/run.ts wpt fuzz1 --chunk 50 --timeout 60000
 | 66     | a float on the line it is met on                   | 5,479 (93%) | 4,990 (84%) |
 | 67     | gradients and shadows far off the window           | 5,479 (93%) | 4,990 (84%) |
 | 68     | nested boxes, fuzzed pages                         | 5,479 (93%) | 4,990 (84%) |
+| 69     | nested grids, floats no higher than the last       | 5,482 (93%) | 4,993 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -2025,6 +2029,45 @@ two agreed.
      seconds in the harness's own X server. The CSS 2.1 suite does not move
      on either backend.
 
+### Round 69
+
+161. **A grid in a grid in a grid was laid out three times a level.** The
+     fuzzer's pages are this suite's by default; `--from` makes them from
+     other directories, and it was given ten — `css-grid`, `css-text`,
+     `css-flexbox`, `css-backgrounds`, `css-sizing`, `selectors`,
+     `css-values`, `css-color`, `css-display` and `css-variables` — with
+     the tokens their documents are made of put in besides: grid templates,
+     areas and spans, `aspect-ratio`, `oklch()`, `color-mix()`,
+     `fit-content()`, `:has()`, nesting, `clamp()`, custom properties that
+     name each other. Four pages of 3,000 hung, and all four were grids
+     nested in grids: a grid item's min- and max-content widths were
+     measured for every layout of its grid, as a flex item's were before
+     round 68, and twelve levels took two thirds of a second. They are
+     measured once in the box's life now, as a table cell's are, and twelve
+     levels take a millisecond.
+162. **A float went up into a gap the floats before it had left.** CSS 2.1
+     9.5.1 keeps a float no higher than the top of any float before it
+     (rule 5); here one that fitted in the room beside a tall float, which
+     the float after that had gone under, went back up into it. Three
+     tests on both backends: `floats-141`, `floats-146` and
+     `floats-placement-005`. Looking for that room was also the cost: each
+     float walked the bottom of every float in every row above its own, so
+     a gallery of a thousand floated thumbnails took 0.7 seconds to lay out
+     and two thousand took six. They take 8 and 22 milliseconds now.
+163. **A nest of right floats laid out what it held once a level.**
+     Measured at no width limit, a right float stands at an infinite x, and
+     its box went there: nothing in it could be moved back from infinity,
+     so all of it was laid out again at its next layout — the content of
+     the innermost of a nest of them as many times as there were levels.
+     A page the fuzzer made from a `css-multicol` crash test, every element
+     floated right, 250 levels deep around 4,000 floats, took 24 seconds;
+     it takes 0.2. The box goes at the left now; what a measure reads of it
+     is its width, and the float context keeps where it stands.
+
+     Found by 3,000 more pages from the other 27 directories of the
+     checkout, `css-tables` to `css-writing-modes`. Of the 6,000, nothing
+     else crashed or hung.
+
 ## What `<Html>` supports
 
 From the pass rates of the tests that use each feature, at the fixes above,
@@ -2121,7 +2164,8 @@ directories and caniemail's feature list:
 1. **Never hang, never throw.** Done for everything this suite reaches; for
    the 9,942 reftests of nineteen more of WPT's `css/` directories in round
    67 and the 5,002 of seventeen more in round 68; and for 9,000 pages the
-   fuzzer made from this suite in round 68. Next: the rest of the `css/`
+   fuzzer made from this suite in round 68 and 6,000 it made from the
+   other directories in round 69. Next: the rest of the `css/`
    tree, and its crash tests, which have no reference and so no place in
    this runner yet — a renderer that can freeze its host is worse than one
    that renders badly.

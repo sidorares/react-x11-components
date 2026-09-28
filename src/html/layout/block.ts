@@ -1967,7 +1967,17 @@ function placeFloat(
     box.style.float === 'right'
       ? band.right - outerWidth + box.marginLeft
       : band.left + box.marginLeft;
-  moveTo(box, x, top + box.marginTop);
+  // A right float in content measured at no width limit stands at an
+  // infinite x, where its box is not put: a box at infinity cannot be moved
+  // back, so everything in it was laid out again at its next layout — at
+  // every level of a nest of such floats, the innermost as many times as
+  // there were levels. What a measure reads of it is its width, and the
+  // float context keeps where it stands.
+  moveTo(
+    box,
+    Number.isFinite(x) ? x : band.left + box.marginLeft,
+    top + box.marginTop,
+  );
   floats.add({
     left: x - box.marginLeft,
     right: x - box.marginLeft + outerWidth,

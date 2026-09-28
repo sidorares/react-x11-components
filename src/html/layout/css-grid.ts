@@ -73,13 +73,22 @@ export function layoutGrid(
 
   const measure = (item: Item): void => {
     if (item.max >= 0) return;
-    const margins = item.box.marginLeft + item.box.marginRight;
-    item.max = measureIntrinsicWidth(item.box, ctx, Infinity) + margins;
-    // where its words say it exactly, read from the layout just made
-    const exact = ctx.fonts && exactMinContent(item.box, ctx.fonts);
-    item.min =
-      (exact ?? measureIntrinsicWidth(item.box, ctx, MIN_CONTENT_PROBE)) +
-      margins;
+    const box = item.box;
+    const margins = box.marginLeft + box.marginRight;
+    // Measured once in the box's life, as a table cell's are: measured for
+    // every layout of the grid, a grid in a grid in a grid laid out its
+    // innermost three times a level, and twelve levels took two thirds of
+    // a second.
+    const fresh = box.intrinsicMaxContent < 0;
+    item.max = maxContentOf(box, ctx) + margins;
+    if (box.intrinsicMinContent < 0) {
+      // where its words say it exactly, read from the layout just made —
+      // which is the max-content one only if it was made just now
+      const exact = fresh && ctx.fonts ? exactMinContent(box, ctx.fonts) : null;
+      box.intrinsicMinContent =
+        exact ?? measureIntrinsicWidth(box, ctx, MIN_CONTENT_PROBE);
+    }
+    item.min = box.intrinsicMinContent + margins;
   };
   const widths = sizeColumns(cols, items, contentWidth, colGap, measure);
   const lefts: number[] = [];
@@ -419,6 +428,15 @@ function spanned(sizes: number[], from: number, count: number, gap: number) {
   return sum + gap * Math.max(0, Math.min(count, sizes.length - from) - 1);
 }
 
+/** An item's max-content width, its border box's: measured once in the
+ *  box's life, as a table cell's is (`Box.intrinsicMaxContent`). */
+function maxContentOf(box: Box, ctx: LayoutContext): number {
+  if (box.intrinsicMaxContent < 0) {
+    box.intrinsicMaxContent = measureIntrinsicWidth(box, ctx, Infinity);
+  }
+  return box.intrinsicMaxContent;
+}
+
 /** Lay an item out in its area: stretched across it where its width is
  *  `auto` and it is stretched, or at its content's width, no wider than
  *  the area, where it is aligned instead. */
@@ -438,8 +456,7 @@ function layoutItem(item: Item, area: number, ctx: LayoutContext): void {
     width = resolve(style.width, area, room - extra) + extra;
   } else if (justify === 'stretch') width = room;
   else {
-    if (item.max < 0)
-      item.max = measureIntrinsicWidth(child, ctx, Infinity) + margins;
+    if (item.max < 0) item.max = maxContentOf(child, ctx) + margins;
     width = Math.min(item.max - margins, room);
   }
   ctx.layoutSubtree(child, width);

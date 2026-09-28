@@ -3965,6 +3965,23 @@ test('a float too wide for what is left of its line goes under it', async () => 
   assert.strictEqual(i3.x - w.x, 150, 'and the next line is beside it');
 });
 
+test('a float goes no higher than the float before it', async () => {
+  // CSS 2.1 9.5.1, rule 5: the third float fits in the room beside the
+  // first, which the second went under, and still goes no higher than the
+  // second's top
+  const { node } = await render(
+    '<div id="w" style="width:300px">' +
+      '<div id="a" style="float:left;width:200px;height:50px"></div>' +
+      '<div id="b" style="float:left;width:150px;height:20px"></div>' +
+      '<div id="c" style="float:left;width:50px;height:20px"></div></div>',
+  );
+  const el = view(node);
+  const [w, b, c] = ['w', 'b', 'c'].map((id) => boxOf(el, id));
+  assert.strictEqual(b.y - w.y, 50, 'under the first');
+  assert.strictEqual(c.y, b.y, 'no higher than the second');
+  assert.strictEqual(c.x - w.x, 150, 'beside it');
+});
+
 test('a word with too little room left on its line goes to the next, whole', async () => {
   // Text laid out after something else on its line — an inline-block, or a
   // float it was cut at — has the room that is left, and a word wider than
