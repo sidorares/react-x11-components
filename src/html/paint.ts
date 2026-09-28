@@ -2768,6 +2768,9 @@ function paintCollapsedBorders(
     w: number;
     h: number;
     horizontal: boolean;
+    /** Where on the grid it starts: its row, and its column. */
+    row: number;
+    column: number;
   }[] = [];
   for (let line = 0; line <= R; line += 1) {
     for (let c = 0; c < C; c += 1) {
@@ -2783,6 +2786,8 @@ function paintCollapsedBorders(
         w: ox + Math.round(lineX[c + 1]) + end - x,
         h: border.width,
         horizontal: true,
+        row: line,
+        column: c,
       });
     }
   }
@@ -2800,10 +2805,20 @@ function paintCollapsedBorders(
         w: border.width,
         h: oy + Math.round(lineY[r + 1]) + end - y,
         horizontal: false,
+        row: r,
+        column: line,
       });
     }
   }
-  segments.sort((a, b) => a.border.rank - b.border.rank);
+  // The winners last, where segments cross — and between two that won
+  // alike, the one further up and further left, as between two borders
+  // on one segment (CSS 2.1 17.6.2.1): a corner four equal borders meet
+  // at is the top-left cell's. Painted in the order they were found, the
+  // segment below a corner took it.
+  segments.sort(
+    (a, b) =>
+      a.border.rank - b.border.rank || b.row - a.row || b.column - a.column,
+  );
   for (const s of segments) {
     if (isTransparent(s.border.color)) continue;
     const rect = clampRect(options, s.x, s.y, s.w, s.h);
