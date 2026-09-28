@@ -81,6 +81,12 @@ export function layoutFlex(
   // a grid container is one of these to the box tree, and laid out apart
   if (box.style.grid) return layoutGrid(box, ctx, contentWidth);
   if (!layoutLoaded()) return layoutAsBlockFallback(box, ctx, contentWidth);
+  // Each flex box in a flex item runs its Yoga pass inside the measure of
+  // the one around it, and Yoga's own stack runs out at about a hundred and
+  // fifty of them — a `RuntimeError` out of the layout. Past this many, one
+  // is laid out as blocks: the markup of a broken page, not of a design.
+  const depth = ctx.flexDepth ?? 0;
+  if (depth >= FLEX_DEPTH) return layoutAsBlockFallback(box, ctx, contentWidth);
 
   const root = Y.Node.create(flexConfig());
   applyContainer(root, box.style);
@@ -109,7 +115,7 @@ export function layoutFlex(
     if (Number.isFinite(max)) root.setMaxHeight(Math.max(0, max));
   }
 
-  const items: { box: Box; node: YogaNode }[] = [];
+  const items: { box: Box; node: YogaNode; laid: Laid }[] = [];
   for (const child of box.children) {
     if (child.kind === 'text' && !child.text.trim()) continue;
     if (child.outOfFlow) {
@@ -118,19 +124,25 @@ export function layoutFlex(
     }
     const node = Y.Node.create(flexConfig());
     resolveEdges(child, contentWidth);
-    applyItem(node, child, ctx, contentWidth);
+    const laid: Laid = { width: NaN, height: NaN };
+    applyItem(node, child, ctx, contentWidth, laid);
     root.insertChild(node, items.length);
-    items.push({ box: child, node });
+    items.push({ box: child, node, laid });
   }
 
-  root.calculateLayout(
-    bounded ? contentWidth : Number.NaN,
-    height ?? Number.NaN,
-    box.style.direction === 'rtl' ? Y.DIRECTION_RTL : Y.DIRECTION_LTR,
-  );
+  ctx.flexDepth = depth + 1;
+  try {
+    root.calculateLayout(
+      bounded ? contentWidth : Number.NaN,
+      height ?? Number.NaN,
+      box.style.direction === 'rtl' ? Y.DIRECTION_RTL : Y.DIRECTION_LTR,
+    );
+  } finally {
+    ctx.flexDepth = depth;
+  }
 
   let bottom = 0;
-  for (const { box: child, node } of items) {
+  for (const { box: child, node, laid } of items) {
     const left = box.contentX + node.getComputedLeft();
     const top = box.contentY + node.getComputedTop();
     const width = node.getComputedWidth();
@@ -138,8 +150,9 @@ export function layoutFlex(
     // The item is laid out again at the width the flex pass settled on: the
     // measure function answered a question, and the answer is not a layout —
     // its line breaks were computed against a width that may have changed
-    // when a sibling grew.
-    layoutItemAt(child, ctx, left, top, width, itemHeight);
+    // when a sibling grew. Unless the last answer was at that width, which
+    // is a layout the item still has (Yoga's widths are float32s).
+    layoutItemAt(child, ctx, left, top, width, itemHeight, laid);
     bottom = Math.max(bottom, top + child.height);
   }
 
@@ -155,6 +168,7 @@ function layoutItemAt(
   y: number,
   width: number,
   height: number,
+  laid: Laid,
 ): void {
   if (box.kind === 'text' || box.kind === 'break') {
     box.x = x;
@@ -165,8 +179,10 @@ function layoutItemAt(
   }
   // `measureBox` lays the box out at (0, 0); re-running it at the final width
   // and then moving it is one pass, not two, because the second call is the
-  // one whose result is kept.
-  ctx.layoutSubtree(box, width);
+  // one whose result is kept — or no pass, where the last measure was at
+  // this width. An item Yoga never measured has none, NaN, and is laid out.
+  if (Math.abs(laid.width - width) <= 0.01) box.height = laid.height;
+  else ctx.layoutSubtree(box, width);
   // A stretched item is taller than its content, and the box has to say so
   // or its background stops short of the row.
   if (height > box.height) box.height = height;
@@ -200,6 +216,7 @@ function applyItem(
   box: Box,
   ctx: LayoutContext,
   containingWidth: number,
+  laid: Laid,
 ): void {
   const style = box.style;
   // an `auto` margin takes the free space on its side, which is how
@@ -281,19 +298,46 @@ function applyItem(
   // Yoga asks; this engine answers. That is the whole of the bridge, and it
   // is what lets a paragraph be a flex item without flex knowing what a
   // paragraph is.
-  // its max-content width is the same at every width Yoga asks at, and
-  // taking it is a layout of the item at no width limit
-  let maxContent = -1;
-  const content = (): number =>
-    maxContent < 0
-      ? (maxContent =
-          measureIntrinsicWidth(box, ctx, Infinity) - box.horizontalExtra)
-      : maxContent;
+  // Its max-content width is the same at every width Yoga asks at, and at
+  // every layout the box has, so it is taken once in the box's life, as a
+  // table cell's is: taken per layout of the container, a flex box in a
+  // flex box in a flex box laid its innermost out three times a level,
+  // and twelve levels took two seconds.
+  const content = (): number => {
+    let width = MAX_CONTENT.get(box);
+    if (width === undefined) {
+      width = measureIntrinsicWidth(box, ctx, Infinity) - box.horizontalExtra;
+      MAX_CONTENT.set(box, width);
+    }
+    return width;
+  };
+  // and an answer Yoga asks for twice is the layout the item already has
+  const answers = new Map<number, { width: number; height: number }>();
   node.setMeasureFunc((w, wm, h, hm) => {
     void h;
     void hm;
-    return measureBox(box, ctx, w, wm, content);
+    const inner = innerWidth(w, wm, content);
+    let answer = answers.get(inner);
+    if (answer === undefined) {
+      answer = measureBox(box, ctx, inner);
+      answers.set(inner, answer);
+      laid.width = box.width;
+      laid.height = box.height;
+    }
+    return answer;
   });
+}
+
+/** How wide an item's content is as the box is laid out: its max-content
+ *  width, measured the once (`applyItem`). Keyed by the box, whose lifetime
+ *  is the cache's: any change to what is in it rebuilds it. */
+const MAX_CONTENT = new WeakMap<Box, number>();
+
+/** The width and height of the layout an item was last given, its border
+ *  box's: what the final pass keeps where the width is the same. */
+interface Laid {
+  width: number;
+  height: number;
 }
 
 function setLength(
@@ -333,27 +377,35 @@ function setLength(
 function measureBox(
   box: Box,
   ctx: LayoutContext,
-  width: number,
-  mode: number,
-  maxContent: () => number,
+  inner: number,
 ): { width: number; height: number } {
-  const across = box.horizontalExtra;
-  let inner: number;
-  if (mode === Y.MEASURE_MODE_EXACTLY && Number.isFinite(width)) {
-    inner = Math.max(0, width);
-  } else {
-    const content = maxContent();
-    inner =
-      mode === Y.MEASURE_MODE_AT_MOST && Number.isFinite(width)
-        ? Math.min(content, Math.max(0, width))
-        : content;
-  }
-  ctx.layoutSubtree(box, inner + across);
+  ctx.layoutSubtree(box, inner + box.horizontalExtra);
   return {
     width: inner,
     height: Math.max(0, box.height - box.verticalExtra),
   };
 }
+
+/** The width an item's content is measured at: the width Yoga gives it
+ *  exactly, or its max-content width, no wider than any it may take up to
+ *  (CSS Flexbox 9.2). */
+function innerWidth(
+  width: number,
+  mode: number,
+  maxContent: () => number,
+): number {
+  if (mode === Y.MEASURE_MODE_EXACTLY && Number.isFinite(width)) {
+    return Math.max(0, width);
+  }
+  const content = maxContent();
+  return mode === Y.MEASURE_MODE_AT_MOST && Number.isFinite(width)
+    ? Math.min(content, Math.max(0, width))
+    : content;
+}
+
+/** How deep flex boxes are laid out by Yoga, one inside another's measure
+ *  (`layoutFlex`). */
+const FLEX_DEPTH = 64;
 
 /** No Yoga assembly: stack the items instead of dropping them. */
 function layoutAsBlockFallback(

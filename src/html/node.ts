@@ -516,9 +516,52 @@ export class HtmlViewNode extends Node {
     return this._layouts.fonts;
   }
 
-  /** Bring the pipeline up to date for a width. */
+  /**
+   * Bring the pipeline up to date for a width — or, where that throws, leave
+   * the document blank. From a paint a throw is the application's end, for
+   * a document it did not write: a stack a thousand nested elements run
+   * down, or a limit of the text engine's or the server's that one more
+   * document finds. Reported once for each thing that went wrong, and tried
+   * again only when something changes, or the width does.
+   */
   private _prepare(width: number): void {
     const target = Math.max(1, Math.floor(width));
+    if (this._failedAt === target && this._stale === Stale.Nothing) return;
+    try {
+      this._update(target);
+      this._failedAt = -1;
+    } catch (error) {
+      this._fail(error, target);
+    }
+  }
+
+  /** The width the pipeline threw at, until something changes (`_prepare`). */
+  private _failedAt = -1;
+  private _failures: Set<string> | null = null;
+
+  private _fail(error: unknown, width: number): void {
+    this._tree = null;
+    this._stale = Stale.Nothing;
+    this._failedAt = width;
+    this._laidOutWidth = -1;
+    this._documentWidth = 0;
+    this._documentHeight = 0;
+    const message = String((error as { stack?: unknown })?.stack ?? error);
+    this._failures ??= new Set();
+    if (this._failures.has(message)) return;
+    this._failures.add(message);
+    const g = globalThis as {
+      process?: { env?: Record<string, string | undefined> };
+      console?: { error(message: string): void };
+    };
+    if (g.process?.env?.NODE_ENV === 'production') return;
+    g.console?.error(
+      '@react-x11/components: <Html> could not lay out or paint its ' +
+        `document, and leaves it blank.\n${message}`,
+    );
+  }
+
+  private _update(target: number): void {
     const props = this._props();
     if ((props.domRevision ?? 0) !== this._reportedDomRevision) {
       this._reportedDomRevision = props.domRevision ?? 0;
@@ -629,9 +672,12 @@ export class HtmlViewNode extends Node {
   override measureContent({ width }: MeasureConstraints): MeasuredSize {
     const offered = Number.isFinite(width) ? width : 800;
     const size = this._sizeAt(offered);
+    // core takes finite numbers only, and throws on any other from the
+    // layout — a document of lengths no clamp foresaw is none too tall
+    const finite = (n: number): number => (Number.isFinite(n) ? n : 0);
     return {
-      width: Math.ceil(Math.min(size.width, offered)),
-      height: Math.ceil(size.height),
+      width: Math.ceil(Math.min(finite(size.width), offered)),
+      height: Math.ceil(finite(size.height)),
     };
   }
 
@@ -915,6 +961,19 @@ export class HtmlViewNode extends Node {
         damage = { x: 0, y: 0, width: window.width, height: window.height };
       }
     }
+    try {
+      this._paint(ctx, tree, range, damage);
+    } catch (error) {
+      this._fail(error, this._laidOutWidth);
+    }
+  }
+
+  private _paint(
+    ctx: Context2D,
+    tree: BoxTree,
+    range: { start: number; end: number } | null,
+    damage: { x: number; y: number; width: number; height: number } | null,
+  ): void {
     paintDocument(ctx as PaintContext, tree, {
       originX: this.abs.x,
       originY: this.abs.y,

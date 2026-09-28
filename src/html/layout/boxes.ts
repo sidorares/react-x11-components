@@ -310,6 +310,10 @@ export class Box {
    */
   intrinsicMinContent = -1;
   intrinsicMaxContent = -1;
+  /** Which layout of the pass this box last had, counted across all boxes:
+   *  what tells a layout kept for reuse (`layoutOwn`) from one a probe has
+   *  laid over since. */
+  layoutSerial = 0;
   /** What a replaced box is: the resource seam and the control host both
    *  key on this rather than re-reading the tag. */
   replaced: ReplacedKind = 'none';
@@ -582,6 +586,8 @@ export function buildBoxes(
  * output, a runaway template) from a stack overflow five phases later.
  * Blink's parser flattens at 512 for the same reason; content past the cap
  * is dropped, which beats the alternative of crashing the application.
+ * The parser keeps a document to 256 elements (`dom.ts`), so what reaches
+ * this now is the anonymous boxes a table builds round each of them.
  */
 const MAX_DEPTH = 512;
 

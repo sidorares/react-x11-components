@@ -65,6 +65,9 @@ export interface LayoutContext {
    * exception would be.
    */
   layoutSubtree(box: Box, width: number): void;
+  /** How many flex boxes' Yoga passes are running, one inside the last's
+   *  measure (`layoutFlex`). */
+  flexDepth?: number;
 }
 
 export interface LayoutResult {
@@ -857,8 +860,78 @@ function layoutAtomic(
     return;
   }
   const width = shrinkToFitWidth(box, ctx, availableWidth);
-  layoutInternals(box, ctx, width, 0, 0);
+  layoutOwn(box, ctx, width);
 }
+
+/**
+ * Lay out a box that sizes itself — a float, an inline-block, an absolute
+ * box — at its own width, where nothing outside it reaches in: or, where
+ * this pass has already laid it out at that width with the same edges,
+ * leave it as it was and move it back to where a layout puts it.
+ *
+ * Measuring a box's content lays its content out, and so a float in a
+ * float was laid out twice a level — as its parent measured, and as its
+ * parent was laid out at the width it measured — and a hundred of them,
+ * the markup of a broken page, never finished. What a caller does to the
+ * box after its layout is move it, and stretch its height, which is put
+ * back; its own, and its content's, are the layout's.
+ */
+function layoutOwn(box: Box, ctx: LayoutContext, width: number): void {
+  const laid = LAID_OWN.get(box);
+  if (
+    laid !== undefined &&
+    laid.ctx === ctx &&
+    // and nothing, a probe of its content, has laid it out since
+    laid.serial === box.layoutSerial &&
+    laid.width === width &&
+    // NaN where no height is a base, which `===` would never find again
+    Object.is(laid.base, box.percentHeightBase) &&
+    laid.padTop === box.padTop &&
+    laid.padRight === box.padRight &&
+    laid.padBottom === box.padBottom &&
+    laid.padLeft === box.padLeft &&
+    // and was put somewhere it can be moved back from: a right float in a
+    // content measured at no width limit stands at an infinite x, and
+    // moved back by it, came out at NaN
+    Number.isFinite(box.x) &&
+    Number.isFinite(box.y)
+  ) {
+    box.height = laid.height;
+    moveTo(box, 0, 0);
+    return;
+  }
+  layoutInternals(box, ctx, width, 0, 0);
+  LAID_OWN.set(box, {
+    ctx,
+    serial: box.layoutSerial,
+    width,
+    base: box.percentHeightBase,
+    padTop: box.padTop,
+    padRight: box.padRight,
+    padBottom: box.padBottom,
+    padLeft: box.padLeft,
+    height: box.height,
+  });
+}
+
+/** Every box's layout counted, for `Box.layoutSerial`. */
+let layoutSerial = 0;
+
+/** What `layoutOwn` laid each box out at, and in which pass. */
+const LAID_OWN = new WeakMap<
+  Box,
+  {
+    ctx: LayoutContext;
+    serial: number;
+    width: number;
+    base: number;
+    padTop: number;
+    padRight: number;
+    padBottom: number;
+    padLeft: number;
+    height: number;
+  }
+>();
 
 function layoutBlockLevel(
   box: Box,
@@ -983,6 +1056,7 @@ function layoutInternals(
   y: number,
   outerFloats?: FloatContext,
 ): void {
+  box.layoutSerial = ++layoutSerial;
   box.x = x;
   box.y = y;
   box.width = borderBoxWidth;
@@ -1430,8 +1504,19 @@ function shrinkToFitWidth(
   }
   const probe = new FloatContext(0, Infinity);
   const saved = box.lines;
-  layoutInternals(box, ctx, Infinity, 0, 0, probe);
-  const preferred = intrinsicWidth(box) + box.horizontalExtra;
+  // Its content's width with no limit on it is the same at every width, so
+  // it is probed once in the box's life, as a cell's is. Probed every time
+  // it was asked, a float in a float was probed as often as there were
+  // floats around it, and each probe laid out all of the floats inside.
+  let content = PREFERRED.get(box);
+  let probed = false;
+  if (content === undefined) {
+    layoutInternals(box, ctx, Infinity, 0, 0, probe);
+    content = intrinsicWidth(box);
+    PREFERRED.set(box, content);
+    probed = true;
+  }
+  const preferred = content + box.horizontalExtra;
   // the room is the containing block's, less the box's margins and where
   // it starts (CSS 2.1 10.3.5, 10.3.7, 10.3.9): a float with side margins
   // was as wide as its containing block, and stood out of it by them
@@ -1440,6 +1525,15 @@ function shrinkToFitWidth(
     available - offset - box.marginLeft - box.marginRight,
   );
   let width = Math.max(preferred, 0);
+  if (
+    width > room &&
+    box.intrinsicMinContent < 0 &&
+    ctx.fonts !== null &&
+    !probed
+  ) {
+    // the words the floor is read from are the probe's
+    layoutInternals(box, ctx, Infinity, 0, 0, probe);
+  }
   // and where its content does not fit the room, its longest word is the
   // least it comes to: `min(max(min-content, room), max-content)`. That
   // matters only for a word wider than the room, which the widest word
@@ -1468,6 +1562,11 @@ function shrinkToFitWidth(
     width = Math.min(width, Math.max(box.intrinsicMinContent, room));
   return clampWidth(box, width, available, ctx);
 }
+
+/** A shrink-to-fit box's content width at no width limit, the once
+ *  (`shrinkToFitWidth`); a box's lifetime is the cache's, as for
+ *  `Box.intrinsicMaxContent`. */
+const PREFERRED = new WeakMap<Box, number>();
 
 /**
  * A box's min-content width as its words give it, laid out at no width
@@ -1838,10 +1937,7 @@ function sizeFloat(
 ): number {
   resolveEdges(box, containingWidth);
   if (box.kind === 'replaced') sizeReplaced(box, containingWidth);
-  else {
-    const width = shrinkToFitWidth(box, ctx, containingWidth);
-    layoutInternals(box, ctx, width, 0, 0);
-  }
+  else layoutOwn(box, ctx, shrinkToFitWidth(box, ctx, containingWidth));
   return box.width + box.marginLeft + box.marginRight;
 }
 
@@ -1955,7 +2051,7 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
   }
 
   if (box.kind === 'replaced') sizeReplaced(box, cbWidth);
-  else layoutInternals(box, ctx, width, 0, 0);
+  else layoutOwn(box, ctx, width);
 
   let x: number;
   if (

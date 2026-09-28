@@ -200,15 +200,6 @@ export function computePaintBounds(box: Box, moved = false): number {
           y2 = Math.max(y2, y + natural.height);
         }
       }
-      for (const placed of line.atomics) {
-        const atomic = placed.box;
-        computePaintBounds(atomic, moved);
-        if (atomic.boundsY === Infinity) continue;
-        x1 = Math.min(x1, atomic.boundsX);
-        y1 = Math.min(y1, atomic.boundsY);
-        x2 = Math.max(x2, atomic.boundsX + atomic.boundsWidth);
-        y2 = Math.max(y2, atomic.boundsY + atomic.boundsHeight);
-      }
     }
     box.maxLineHeight = tallest;
     if (lines.length) {
@@ -236,6 +227,22 @@ export function computePaintBounds(box: Box, moved = false): number {
     y1 = Math.min(y1, child.boundsY);
     x2 = Math.max(x2, child.boundsX + child.boundsWidth);
     y2 = Math.max(y2, child.boundsY + child.boundsHeight);
+  }
+  // An atomic on a line is the box's, or an inline box's in it, so the walk
+  // above has its bounds already: walked from its line as well, an
+  // inline-block in an inline-block was walked twice a level, and twenty of
+  // them took seventy milliseconds a layout.
+  if (lines) {
+    for (const line of lines) {
+      for (const placed of line.atomics) {
+        const atomic = placed.box;
+        if (atomic.boundsY === Infinity) continue;
+        x1 = Math.min(x1, atomic.boundsX);
+        y1 = Math.min(y1, atomic.boundsY);
+        x2 = Math.max(x2, atomic.boundsX + atomic.boundsWidth);
+        y2 = Math.max(y2, atomic.boundsY + atomic.boundsHeight);
+      }
+    }
   }
   if (x1 === Infinity) {
     // nothing to draw: no damage meets it, and no parent takes it in

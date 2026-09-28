@@ -62,6 +62,19 @@ A test passes when the two pictures match. A renderer that draws neither the
 test nor the reference passes too; the runner records both-blank passes
 separately, and there are six.
 
+The runner also looks for crashes. A child that throws out of the renderer
+or does not finish is recorded as `crash`, whatever the pictures would have
+said, and in an application either is its end or its freeze, for a document
+it did not write. So it is run over other WPT directories for their crashes
+alone (round 67), and over pages `fuzz.ts` makes by cutting up this suite's
+tests — a span cut out or repeated, a token put in, a few hundred or
+thousand nested elements — each its own reference (round 68):
+
+```bash
+npx tsx scripts/conformance/fuzz.ts wpt fuzz1 3000 1
+npx tsx scripts/conformance/run.ts wpt fuzz1 --chunk 50 --timeout 60000
+```
+
 ## Results
 
 | round  | what it was                                        | X11         | Cocoa       |
@@ -135,6 +148,7 @@ separately, and there are six.
 | 65     | `list-style-image`                                 | 5,476 (93%) | 4,988 (84%) |
 | 66     | a float on the line it is met on                   | 5,479 (93%) | 4,990 (84%) |
 | 67     | gradients and shadows far off the window           | 5,479 (93%) | 4,990 (84%) |
+| 68     | nested boxes, fuzzed pages                         | 5,479 (93%) | 4,990 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -1973,6 +1987,44 @@ two agreed.
      none does now; nothing else crashed or hung. The shadow was found by
      a page of such boxes, made to look for more.
 
+### Round 68
+
+160. **Pages a fuzzer made crashed the renderer 24 times in 3,000, and
+     hung it twice.** `fuzz.ts` cuts up this suite's tests (above), and
+     what it found was mostly depth:
+     - **A box that sizes itself was laid out again at every level of
+       nesting.** A flex item's content is laid out to measure it, and was
+       measured again for every layout of its container; a float, an
+       inline-block and an absolute box measured theirs on every layout
+       too; and the walk for the paint bounds went into an inline-block
+       from its line and again from its parent. So each level laid out all
+       it held two or three times over: twelve nested flex boxes took two
+       seconds, and a hundred nested floats never finished. A flex item's
+       max-content width and a shrink-to-fit box's are measured once in the
+       box's life now, as a table cell's are; a box that sizes itself, laid
+       out at the same width earlier in the pass, is moved rather than laid
+       out again; and the walk goes into each box once. Forty levels of
+       any of them lay out in a millisecond.
+     - **Past about 150 nested flex boxes Yoga's own stack ran out**, each
+       running its pass inside the measure of the one around it: a
+       `RuntimeError` out of the layout. Past 64 one is laid out as blocks.
+     - **Past a few hundred nested elements the stack ran out** in the
+       walks of the document, where a table built four boxes a level. The
+       parser keeps a document to 256 levels, as Chrome's does to 512:
+       what is opened deeper goes into the element at the limit.
+     - **A `1e308px` length** added up past what a number holds, and core
+       refused the element's infinite height with a throw. A length is kept
+       to ±33,554,428 pixels, as a browser keeps it and as `calc()` already
+       did, and a font size to 10,000.
+     - **Whatever still throws** from the layout or the paint leaves the
+       document blank, reported once through `console.error` outside
+       production, rather than ending the application.
+
+     After them, three runs of 3,000 pages (seeds 1 to 3) crash nowhere and
+     hang nowhere; one page of seven hundred nested tables takes twenty
+     seconds in the harness's own X server. The CSS 2.1 suite does not move
+     on either backend.
+
 ## What `<Html>` supports
 
 From the pass rates of the tests that use each feature, at the fixes above,
@@ -2066,11 +2118,12 @@ In order, each step measured by this runner and, for the CSS3 half, by
 WPT's `css-backgrounds`, `css-color`, `css-values` and `css-flexbox`
 directories and caniemail's feature list:
 
-1. **Never hang, never throw.** Done for everything this suite reaches, and
-   for the 9,942 reftests of nineteen more of WPT's `css/` directories in
-   round 67. Next: the rest of the `css/` tree, and its crash tests, which
-   have no reference and so no place in this runner yet, and a fuzzer over
-   the CSS parser — a renderer that can freeze its host is worse than one
+1. **Never hang, never throw.** Done for everything this suite reaches; for
+   the 9,942 reftests of nineteen more of WPT's `css/` directories in round
+   67 and the 5,002 of seventeen more in round 68; and for 9,000 pages the
+   fuzzer made from this suite in round 68. Next: the rest of the `css/`
+   tree, and its crash tests, which have no reference and so no place in
+   this runner yet — a renderer that can freeze its host is worse than one
    that renders badly.
 2. **Generated content**: `::before`, `::after`, `content` with strings,
    `attr()`, counters and quotes. About 330 tests, and used everywhere —

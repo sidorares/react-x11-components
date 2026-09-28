@@ -603,11 +603,27 @@ rectangle. An author stylesheet still overrides all of it.
 restyles when some selector in the document actually tests `:hover`, which is
 why the user-agent sheet deliberately has no `a:hover` rule.
 
-**Nesting is capped at 512, the way Blink's parser caps it.** Everything
-after the box builder recurses on tree depth, so a degenerately nested
-document (fuzzer output, a runaway template) would otherwise be a stack
-overflow five phases from its cause. Content past the cap is dropped;
-documents this deep are not documents.
+**Nesting is capped at 256 elements, as Blink's parser caps it at 512.**
+Everything from the cascade to paint recurses on tree depth, so a
+degenerately nested document — a few hundred unclosed `<div>`s, a runaway
+template — would otherwise be a stack overflow far from its cause. The
+parser puts what is opened deeper into the element at the cap, as Blink's
+does, so what is lost is the nesting and not the content; and the box
+builder still stops at 512 boxes, for the anonymous boxes a table builds
+round each level. Documents this deep are not documents.
+
+**Lengths are kept to what a browser holds.** A length is ±33,554,428
+pixels at most, as a browser holds one and as `calc()` already made an
+infinity, and a font size 10,000 pixels, as Chrome keeps it: a `1e308px`
+height added up to an infinite document, and a text engine handed a face
+millions of pixels high shapes and caches glyphs that size.
+
+**A document that cannot be laid out or painted is left blank.** What
+still throws — the limit of a text engine or a server that one more
+document finds — does so from a paint, where a throw is the application's
+end, for a document it did not write. It is caught, the document is left
+blank, and the error is reported once through `console.error` outside
+production; a change to the source, or the width, tries again.
 
 ## Streaming
 
