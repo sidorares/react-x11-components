@@ -853,9 +853,14 @@ function layoutLines(block: Box, options: InlineOptions): InlineResult {
       wraps(style) &&
       (open.hang > 0 || open.order[open.order.length - 1]?.kind === 'atomic');
     if (
-      (pendingWidth > 0 || startsLine) &&
       !isEmpty(open) &&
-      tooNarrow(segment.runs, first.end, first.width, room)
+      (pendingWidth > 0
+        ? tooNarrow(segment.runs, first.end, first.width, room)
+        : startsLine &&
+          // run past the room — its white space is no part of the width —
+          // or cut inside itself to fit it
+          (first.width > room + 0.5 ||
+            tooNarrow(segment.runs, first.end, first.width, room)))
     ) {
       close();
       continue;

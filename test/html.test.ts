@@ -3970,20 +3970,24 @@ test('a word with too little room left on its line goes to the next, whole', asy
   // float it was cut at — has the room that is left, and a word wider than
   // that room was broken inside itself to fit it: its first letter at the
   // line's end, the rest on the next.
-  for (const between of [
-    '',
-    '<span style="float:left;width:50px;height:30px"></span>',
-  ]) {
-    const { node } = await render(
-      '<div id="w" style="width:300px;font:16px/20px sans-serif">' +
-        '<span style="display:inline-block;width:290px;height:10px"></span>' +
-        `${between}goes on</div>`,
-    );
-    const lines = linesOf(view(node), 'w');
-    const which = between ? 'after a float' : 'after an inline-block';
-    assert.strictEqual(lines.length, 2, which);
-    assert.strictEqual(lines[0].texts.length, 0, `${which}: none of it`);
-    cleanup();
+  // Room for a letter, where the engine cuts the word after it, and for
+  // none, where it runs the whole word past the line's end: both ways.
+  for (const filled of [290, 298]) {
+    for (const between of [
+      '',
+      '<span style="float:left;width:50px;height:30px"></span>',
+    ]) {
+      const { node } = await render(
+        '<div id="w" style="width:300px;font:16px/20px sans-serif">' +
+          `<span style="display:inline-block;width:${filled}px;height:10px">` +
+          `</span>${between}goes on</div>`,
+      );
+      const lines = linesOf(view(node), 'w');
+      const which = `${300 - filled}px left, after ${between ? 'a float' : 'an inline-block'}`;
+      assert.strictEqual(lines.length, 2, which);
+      assert.strictEqual(lines[0].texts.length, 0, `${which}: none of it`);
+      cleanup();
+    }
   }
   // and where the block does not wrap, nothing goes to another line
   const { node } = await render(

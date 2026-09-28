@@ -133,7 +133,7 @@ separately, and there are six.
 | 63     | `display: contents`                                | 5,472 (93%) | 4,984 (84%) |
 | 64     | outlines                                           | 5,472 (93%) | 4,984 (84%) |
 | 65     | `list-style-image`                                 | 5,476 (93%) | 4,988 (84%) |
-| 66     | a float on the line it is met on                   | 5,478 (93%) | 4,990 (84%) |
+| 66     | a float on the line it is met on                   | 5,479 (93%) | 4,990 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -1937,7 +1937,7 @@ from-… to-… bg-clip-text text-transparent`: the background clipped
      at the line's end, the rest on the next. A word that may start a
      line, after a space the line ends on or after an atomic, goes to the
      next line whole now; one glued to what is before it, a full stop
-     after a padded `<code>`, stays. `floats-031` on macOS.
+     after a padded `<code>`, stays. `floats-031`, on both backends.
 
 Round 66 lost four tests on both backends, `float-nowrap-3`, `-7`, `-9`
 and `float-nowrap-hyphen-rewind-1`, and none of them for their floats. In
