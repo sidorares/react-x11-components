@@ -14,6 +14,8 @@ import { Code } from '../src/code/index.js';
 import { CodeEditor } from '../src/code-editor/index.js';
 import { Markdown } from '../src/markdown/index.js';
 import { TerminalOutput } from '../src/terminal-output/index.js';
+import { Terminal } from '../src/terminal/index.js';
+import { FakePtyHost } from './fake-pty.js';
 import { styleFamily } from '../src/internal/prewarm.js';
 
 const h = React.createElement;
@@ -78,6 +80,17 @@ test('a document warms the mono family only when it has code', async () => {
   assert.deepStrictEqual(
     await asked(h(Markdown, { source: '# a heading\n\nprose, no code' })),
     [],
+  );
+});
+
+test('a terminal warms its family when it draws the grid itself', async () => {
+  // the vt backend draws in `fontFamily`; a pty is pinned, as every test
+  // that renders <Terminal> has to (AGENTS.md)
+  assert.deepStrictEqual(
+    await asked(
+      h(Terminal, { backend: 'vt', pty: new FakePtyHost(), fontFamily: 'T' }),
+    ),
+    ['T'],
   );
 });
 

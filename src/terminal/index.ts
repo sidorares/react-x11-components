@@ -69,6 +69,7 @@ import { useForeignTitle } from './title.js';
 import { hx } from './hx.js';
 import type { PtyHost } from './vt/pty.js';
 import type { VtHandle, VtTerminalProps } from './vt/index.js';
+import { useFontPrewarm } from '../internal/prewarm.js';
 
 export {
   TERMINAL_BACKENDS,
@@ -412,6 +413,9 @@ export function Terminal(props: TerminalProps): ReactElement {
   const [vtFallback, setVtFallback] = useState(false);
   const vt =
     backend === 'vt' || (backend === 'auto' && (vtFallback || !embeddable));
+  // the grid is drawn in this family, and loading the emulator is the head
+  // start; an embedded emulator brings fonts of its own
+  useFontPrewarm(vt ? (props.fontFamily ?? 'monospace') : null);
   useEffect(() => {
     if (backend !== 'auto') setVtFallback(false);
   }, [backend]);
