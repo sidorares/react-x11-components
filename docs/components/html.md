@@ -200,6 +200,13 @@ another block's rather than under them, its margins its containing
 block's: a column with `overflow: hidden` and a 220px margin beside a
 200px sidebar starts 220px in, the margin overlapping the float, and one
 the floats leave too little room for goes below them.
+A float in a paragraph goes on the line it is met on (CSS 2.1 9.5.1): at
+that line's top where it fits beside what the line holds already, which
+moves over for it, and at the next line's top where it does not — so an
+image floated from the middle of a paragraph starts at its own line, and
+the lines above it keep the paragraph's width. A word with too little room
+left on a line after an inline-block or a float goes to the next line
+whole.
 A line with an inline-block or a padded element on it is put in visual order
 a piece at a time — the text engine orders the text inside each piece, and
 the line orders the pieces (UAX #9's L2) — so a right-to-left paragraph with

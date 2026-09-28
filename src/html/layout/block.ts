@@ -745,9 +745,16 @@ function layoutInlineContent(
   contentWidth: number,
   contentLeft: number,
 ): number {
-  // Floats inside an inline context are placed before the lines are built,
-  // so the lines already know to avoid them.
-  placeOutOfLine(box, box, ctx, floats, contentTop, contentWidth, contentLeft);
+  // An absolute box's static position is the block's; a float is placed
+  // on the line it is on, as the lines reach it (`floatBoxes`).
+  const floated = placeOutOfLine(
+    box,
+    box,
+    ctx,
+    contentTop,
+    contentWidth,
+    contentLeft,
+  );
   // Atomics have to be sized before the line breaker can place them.
   sizeAtomics(box, ctx, contentWidth);
 
@@ -758,14 +765,23 @@ function layoutInlineContent(
     floats,
     originX: contentLeft,
     clipText: ctx.clipText,
+    floatBoxes: floated
+      ? {
+          size: (child: Box) => sizeFloat(child, ctx, contentWidth),
+          place: (child: Box, y: number) =>
+            placeFloat(child, floats, y, contentLeft, contentWidth),
+        }
+      : undefined,
   };
   let result = layoutInline(box, options);
   const firstLine = ctx.firstLine ? firstLineOf(box) : null;
   if (firstLine && firstLine.color !== box.style.color && result.lines.length) {
     // the first line's text in its `::first-line` colour, laid out again
-    // with its runs cut where the line ends (CSS 2.1 5.12.1)
+    // with its runs cut where the line ends (CSS 2.1 5.12.1), beside the
+    // floats the first pass placed
     result = layoutInline(box, {
       ...options,
+      floatBoxes: undefined,
       firstLine: {
         color: firstLine.color,
         from: box.style.color,
@@ -1810,12 +1826,34 @@ function layoutFloat(
   containingLeft: number,
   containingWidth: number,
 ): void {
+  sizeFloat(box, ctx, containingWidth);
+  placeFloat(box, floats, y, containingLeft, containingWidth);
+}
+
+/** Lay a float out at its own width, and answer its outer width. */
+function sizeFloat(
+  box: Box,
+  ctx: LayoutContext,
+  containingWidth: number,
+): number {
   resolveEdges(box, containingWidth);
   if (box.kind === 'replaced') sizeReplaced(box, containingWidth);
   else {
     const width = shrinkToFitWidth(box, ctx, containingWidth);
     layoutInternals(box, ctx, width, 0, 0);
   }
+  return box.width + box.marginLeft + box.marginRight;
+}
+
+/** Put a float that is laid out as high as it goes from `y`, and to its
+ *  side, and note it in the float context. */
+function placeFloat(
+  box: Box,
+  floats: FloatContext,
+  y: number,
+  containingLeft: number,
+  containingWidth: number,
+): void {
   const outerWidth = box.width + box.marginLeft + box.marginRight;
   const clearance = floats.clearance(box.style.clear);
   const from = Math.max(y, clearance === -Infinity ? y : clearance);
@@ -2010,15 +2048,17 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
  * children, one in an inline box was never laid out at all, and stood at
  * the page's corner with no size.
  */
+/** Give the absolute boxes in a block's inline content their static
+ *  position, and answer whether the content holds a float. */
 function placeOutOfLine(
   parent: Box,
   block: Box,
   ctx: LayoutContext,
-  floats: FloatContext,
   contentTop: number,
   contentWidth: number,
   contentLeft: number,
-): void {
+): boolean {
+  let floated = false;
   for (const child of parent.children) {
     if (child.outOfFlow) {
       placeStatic(child, block, contentLeft, contentWidth, contentTop);
@@ -2027,19 +2067,20 @@ function placeOutOfLine(
         containing: containingBlockFor(child) ?? block,
       });
     } else if (child.isFloat) {
-      layoutFloat(child, ctx, floats, contentTop, contentLeft, contentWidth);
+      floated = true;
     } else if (child.kind === 'inline' && ctx.nestedOutOfLine) {
-      placeOutOfLine(
+      const inner = placeOutOfLine(
         child,
         block,
         ctx,
-        floats,
         contentTop,
         contentWidth,
         contentLeft,
       );
+      floated ||= inner;
     }
   }
+  return floated;
 }
 
 /** Where an out-of-flow box would have gone in its parent's flow: its
