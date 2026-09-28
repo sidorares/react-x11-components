@@ -51,7 +51,6 @@ import {
   layoutOffsetOf,
   layoutOffsets,
 } from './layout/inline.js';
-import { halves } from './layout/collapse.js';
 import { tableGrid } from './layout/grid.js';
 import type { Cell } from './layout/grid.js';
 import { SvgDrawing, inlineDrawing } from './svg.js';
@@ -2797,18 +2796,23 @@ function paintCollapsedBorders(
     row: number;
     column: number;
   }[] = [];
+  // A border centred on a grid line starts half its width before it,
+  // rounded there: a line at 12.5 carries a 25px border from 0, where
+  // rounding the line first and taking a whole half off drew it from 1
+  const from = (line: number, width: number): number =>
+    Math.round(line - width / 2);
   for (let line = 0; line <= R; line += 1) {
     for (let c = 0; c < C; c += 1) {
       const border = horizontal[line * C + c];
       if (!border) continue;
-      const start = halves(Math.max(v(line - 1, c), v(line, c)))[0];
-      const end = halves(Math.max(v(line - 1, c + 1), v(line, c + 1)))[1];
-      const x = ox + Math.round(lineX[c]) - start;
+      const start = Math.max(v(line - 1, c), v(line, c));
+      const end = Math.max(v(line - 1, c + 1), v(line, c + 1));
+      const x = ox + from(lineX[c], start);
       segments.push({
         border,
         x,
-        y: oy + Math.round(lineY[line]) - halves(border.width)[0],
-        w: ox + Math.round(lineX[c + 1]) + end - x,
+        y: oy + from(lineY[line], border.width),
+        w: ox + from(lineX[c + 1], end) + end - x,
         h: border.width,
         horizontal: true,
         row: line,
@@ -2820,15 +2824,15 @@ function paintCollapsedBorders(
     for (let line = 0; line <= C; line += 1) {
       const border = vertical[r * (C + 1) + line];
       if (!border) continue;
-      const start = halves(Math.max(h(r, line - 1), h(r, line)))[0];
-      const end = halves(Math.max(h(r + 1, line - 1), h(r + 1, line)))[1];
-      const y = oy + Math.round(lineY[r]) - start;
+      const start = Math.max(h(r, line - 1), h(r, line));
+      const end = Math.max(h(r + 1, line - 1), h(r + 1, line));
+      const y = oy + from(lineY[r], start);
       segments.push({
         border,
-        x: ox + Math.round(lineX[line]) - halves(border.width)[0],
+        x: ox + from(lineX[line], border.width),
         y,
         w: border.width,
-        h: oy + Math.round(lineY[r + 1]) + end - y,
+        h: oy + from(lineY[r + 1], end) + end - y,
         horizontal: false,
         row: r,
         column: line,
