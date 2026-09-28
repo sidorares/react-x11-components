@@ -2490,6 +2490,43 @@ test('a label keeps its place against a newcomer that would win a tie, and fades
 
 // --- labels: the atlas and the draw ----------------------------------------------------
 
+test('a batch sets its first string however late it starts', async (t) => {
+  // The draw budget is checked before each string, and a pause before the
+  // first one deferred them all: nothing drawn, a readback of no rows, and
+  // ImageData throwing out of the frame — seen once in CI, on a runner slow
+  // enough. A clock that jumps 10 ms a read spends the budget before any
+  // string is drawn.
+  const { app } = await renderX11(React.createElement('box'), {
+    backend: 'xserver',
+    width: 64,
+    height: 64,
+  });
+  type Fonts = { layout(...a: unknown[]): Record<string, unknown> };
+  const fonts = (app as unknown as { fonts: Fonts }).fonts;
+  // the surface path, whatever the engine can do
+  const bare: Fonts = {
+    layout: (...a: unknown[]) => {
+      const layout = fonts.layout(...a);
+      layout.coverage = undefined;
+      return layout;
+    },
+  };
+  const engine = new SurfaceTextEngine(app, bare as never, 'sans-serif');
+  let clock = performance.now();
+  t.mock.method(performance, 'now', () => (clock += 10));
+  const out = await engine.rasterize(
+    [
+      { text: 'Hamburg', size: 24 },
+      { text: 'Kiel', size: 24 },
+    ],
+    6,
+  );
+  t.mock.restoreAll();
+  engine.dispose();
+  assert.ok(out[0], 'the first string is set');
+  assert.strictEqual(out[1], undefined, 'the second waits for the next batch');
+});
+
 test("the engine's coverage and a surface read back put a name's ink in the same place", async () => {
   // ntk's layouts answer coverage (react-x11#673) on the headless server;
   // with it hidden, the same engine draws onto its staging surface and
