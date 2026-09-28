@@ -1406,7 +1406,9 @@ function xHeightOf(
     const metrics = fonts.match(family, { size }).metrics(size) as {
       xHeight?: number | null;
     };
-    return typeof metrics.xHeight === 'number' ? metrics.xHeight : null;
+    const x = metrics.xHeight;
+    // NaN where the face states none, which is a number
+    return typeof x === 'number' && x > 0 ? x : null;
   } catch {
     return null;
   }

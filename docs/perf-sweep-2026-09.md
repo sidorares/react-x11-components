@@ -2726,7 +2726,133 @@ from the reveal's target before the first render, which is a change to
   feature assignment, lookups and script selection for every word. It is
   most of what a 20,000-line code block's layout still costs.
 
-## Round 27: the Mac, after the correctness rounds again
+## Round 27: an edit's two walks, and a node's style
+
+The same machine, with the monitor blanked for the whole round. Every number
+here is a CPU phase or a latency, which a blanked screen does not change
+(round 25, "A sweep taken with the screen blanked"). Frame rates are left
+out. Each before and after is interleaved, one run against the other, on a
+quiet machine.
+
+### One stale collection a frame (react-x11 #735)
+
+A flush collected what had changed before `_refit`. The floors' measurement
+then collected again, and nothing laid the tree out in between unless the
+window sized itself from its content. On an edit, each collection went down
+the document's column twice for every one of its 1,704 blocks:
+
+- once for yoga's dirty flag;
+- once for a dozen style names the spine checks, most of them unset.
+
+The flush now leaves its collection owed to the first pass that would clear
+yoga's record. The spine now reads a block's style once per style object,
+since a resolved style is replaced when it changes, never edited in place.
+
+On an edit to the 600 KB document:
+
+- the collection went from 2.6 ms a frame to 1.0 ms;
+- the frame p50 went from 14.8 ms to 13.3 ms.
+
+### A pane's measure hands its boxes to the walk (react-x11 #736)
+
+`contentReach` reads every box in a pane to find how far its content
+reaches, and the walk that places those boxes read each of them again. That
+is four crossings into yoga's wasm per box, at about 140 ns each. Now the
+measure reads each box once with `getComputedLayout()`, a third cheaper than
+four getters, and leaves it for the walk. No pass runs in between: the walk's
+reports are deferred, and the measure is only called from the walk.
+
+- placing an edit's boxes: 7.2 ms a frame to 5.7 ms;
+- the frame p50: 13.4 ms to 11.7 ms;
+- change to paint: 22.9 ms to 21.4 ms.
+
+The same hand-over for the has-new-layout flag, which the two also both read,
+was tried and dropped. The `Map` it went through cost what the saved calls
+did.
+
+### A style applied by the keys it carries (react-x11 #739)
+
+`applyLayoutStyle` asked all 57 layout properties of both styles on every
+call, and allocated their names each time. A style names a handful of them.
+It now walks the keys the new style carries, then the ones the old one
+dropped. A typical row's styles:
+
+|                                   | before |  after |
+| --------------------------------- | -----: | -----: |
+| a node that mounts                | 2.5 µs | 1.0 µs |
+| a restyle that changes only paint | 1.6 µs | 0.2 µs |
+
+Measured in the sweep:
+
+- `<Tree>`'s thumb drag, which replaces rows at input rate, went from
+  53.4 fps to 55 at 115% CPU instead of 117%.
+- The Markdown document's first paint went from 1.20 s to 1.15 s.
+
+The test written for it applies a seeded corpus of styles, each over the one
+before, and holds yoga to where the same style leaves a fresh node. It failed
+on master, on a real bug (react-x11 #738): a restyle that dropped `rowGap` or
+`columnGap` reset it to 0, which yoga takes over `gap`. So `{ gap: 8,
+columnGap: 5 }` followed by `{ gap: 8 }` laid a row out with no gap. The
+floors' column sums already fell back to `gap`, so for such a restyle they
+disagreed with yoga as well.
+
+### What a reflow's measurements throw away (react-x11 #737, open)
+
+`measuringExactly` takes the floors' measurements off the pixel grid by
+setting the shared yoga config's point scale factor to 0 and back. Yoga
+answers any config change by treating every cached layout as stale. So each
+of a reflow step's 3.9 passes lays out all 8,606 nodes. Removing the switch,
+as an experiment that measures on the grid, took a reflow step from 198 ms
+to 127.
+
+The fix is a decision about where rounding lives: keep yoga off the grid for
+good and round in the layout walk. It is filed with the measurements.
+
+An append pays for the same thing another way. The new blocks are measured
+on exact copies, then laid out again, from nothing, in the real pass. That is
+most of why an append's pass costs 11 ms where an edit's costs 4.
+
+### Tried and dropped
+
+- **`<Table>`'s fast-scroll pill as a floor boundary.** A scrub was 169 of
+  170 frames on the whole tree's measurement, because the pill's label
+  changes every step and its lane is sized by its insets. Given a size of
+  its own, the frames went scoped and got slower, 10.9 ms to 14.2. A table
+  has a few hundred visible nodes, so three whole passes over them cost less
+  than measuring each row that mounts on a copy of its own.
+- **Warming the code font early.** The Markdown first paint waits about 36 ms
+  on `fc-match` for the monospace faces a code block asks for. A component
+  reaching into ntk's font source is the wrong shape; a public prewarm in
+  ntk would be the right one.
+
+### The cells now
+
+This round's react-x11 master and ntk master (ea37afc), against round 26's
+interleaved sweep, which ran react-x11 2.22.11 and the ntk master of the
+day:
+
+| cell, 600 KB               | round 26 |     now |
+| -------------------------- | -------: | ------: |
+| Markdown edit, frame p50   |  20.7 ms | 11.3 ms |
+| Markdown insert, frame p50 |  23.9 ms | 14.0 ms |
+| Markdown append, frame p50 |  32.9 ms | 22.3 ms |
+| Markdown first paint       |   1.22 s |  1.15 s |
+
+Round 26's Markdown cells ran at a load of about 2 and these on a quiet
+machine, so the columns are not an A/B. Each change's own interleaved
+numbers are in its section above. Round 26's charts stream read 24.9 ms a
+frame at a load of 9; on a quiet machine the cell is 8.9 ms.
+
+### Still open on this machine
+
+- **The reflow's thrown-away layouts** (react-x11 #737), above.
+- **`<Html>` redoes the whole document on an edit**, as round 26 said.
+- **A new node's cost is spread thin now.** A `<Tree>` scrub's React work
+  is creating yoga nodes through embind, flattening styles, the node
+  constructor and inserting it, 50–120 ms each over a run. No single one
+  is left worth taking alone.
+
+## Round 28: the Mac, after the correctness rounds again
 
 The M1 Pro with its built-in panel alone, X11 through XQuartz. `<Html>` went
 through fourteen more rounds of conformance work between round 24 and this
@@ -3026,18 +3152,27 @@ Cocoa, which is core's.
     passed for years. Their colours were saturated to 0 and 255 and their
     solid sources transparent. Break the code a test guards and watch it
     fail before trusting it.
-39. **A rule in the user-agent sheet is in every document.** An index that
+39. **A property test holds a path to itself unless it also pins an
+    answer.** "A style over the one before lands where a fresh node does"
+    caught a dropped-key bug on its first run, and could not catch a change
+    that made both sides wrong alike. One absolute assertion (a placed node
+    holds no offsets) closed that.
+40. **Reinstalling the same package is not a restore.** `npm install
+--no-save` of the tarball already installed does nothing, so a
+    hand-patched `node_modules` stays patched and an A/B runs one side
+    twice. Remove the package first, and diff it against its source.
+41. **A rule in the user-agent sheet is in every document.** An index that
     is asked only when it holds a rule is free for a document with none of
     its own, until the user-agent sheet gives it one. #278's two
     quotation-mark rules made every element of every document ask two
     indexes for nothing. Check what a user-agent rule wakes up, not only
     what it styles.
-40. **A/B against the tree the baseline ran on.** Round 27's first A/Bs
+42. **A/B against the tree the baseline ran on.** Round 28's first A/Bs
     used the tree after round 23's fixes, two ntk releases later than the
     sweep they were checking, and cleared every cell. Against the tree round
     24's sweep ran on, two were real, and one was in those releases. Write down
     a sweep's tree and its lockfile, and A/B that.
-41. **A pacing change moves every limit tuned under the old pacing.** ntk
+43. **A pacing change moves every limit tuned under the old pacing.** ntk
     chose two frames in flight on XQuartz under a timer armed at a frame's
     end, which kept its frames apart by itself. The start-to-start timer of
     the Linux round let them queue, and the Mac's pans lost a fifth, where

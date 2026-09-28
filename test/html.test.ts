@@ -1268,6 +1268,30 @@ async function markersOf(source: string): Promise<string[]> {
   return out;
 }
 
+metric('a pseudo-element set list-item has a marker', async () => {
+  // CSS 2.1 12.5: outside it, or its content's start where it is inside
+  const { node } = await render(
+    '<style>#a::after{content:"x";display:list-item;margin-left:1em}' +
+      '#b::before{content:"y";display:list-item;' +
+      'list-style-position:inside}</style>' +
+      '<div id="a">a</div><div id="b">b</div>',
+  );
+  const el = view(node);
+  type Marked = LaidBox & {
+    pseudo: string | null;
+    marker: { text: string } | null;
+  };
+  const after = (boxOf(el, 'a').children as Marked[]).find(
+    (child) => child.pseudo === 'after',
+  );
+  assert.ok(after?.marker, 'an outside marker');
+  assert.strictEqual(after.marker.text, '\u2022');
+  assert.ok(
+    el.textContent().includes('\u2022 y'),
+    'an inside one, in its text',
+  );
+});
+
 test('a list counts with the list-item counter, down where it is reversed', async () => {
   // `<ol reversed>` counts its items down to 1, and to an item's `value`
   // before it: its counter is `reversed(list-item)`, which starts at as
@@ -3472,6 +3496,30 @@ metric(
       `the table on its first row, its second hanging below: ${c.height}`,
     );
     assert.strictEqual(z.height, 15, 'no strut at no size');
+  },
+);
+
+metric(
+  'text beside a block in an anonymous table cell is laid out',
+  async () => {
+    // the cell the table fix-up makes is a block container like another, and
+    // wraps the text in an anonymous block (CSS 2.1 9.2.1.1)
+    const { node } = await render(
+      '<p>a<span id="t" style="display:inline-table">bcd' +
+        '<span style="display:block">x</span></span>e</p>' +
+        '<p>a<span id="u" style="display:inline-table">bcd</span>e</p>',
+    );
+    const el = view(node);
+    const [t, u] = [boxOf(el, 't'), boxOf(el, 'u')];
+    assert.ok(
+      Math.abs(t.width - u.width) < 0.5,
+      `${t.width} wide, as ${u.width}`,
+    );
+    assert.ok(t.height > u.height, 'and a line taller, for the block');
+    assert.ok(
+      linesOf(el, 't').some((line) => line.texts.length > 0 && line.y === t.y),
+      'its text on its first line',
+    );
   },
 );
 
@@ -7312,6 +7360,55 @@ metric(
     // bottom at that font's bottom
     assert.ok(at('c').at < line - 4, 'text-top is high');
     assert.ok(at('d').at > line, 'text-bottom is low');
+  },
+);
+
+metric(
+  "an image set middle is centred on its parent's x-height, not on its line",
+  async () => {
+    // CSS 2.1 10.8.1: its middle half the parent's x-height above the
+    // baseline, wherever a taller image beside it puts the line's middle
+    const { node } = await render(
+      '<style>p{margin:0;font-size:16px;line-height:20px}</style>' +
+        '<p id="a">x<img id="m" width="10" height="30" src="x.png" ' +
+        'style="vertical-align:middle"></p>' +
+        '<p id="b">x<img width="10" height="60" src="x.png">' +
+        '<img id="n" width="10" height="30" src="x.png" ' +
+        'style="vertical-align:middle"></p>',
+    );
+    const el = view(node);
+    const above = (img: string, p: string) => {
+      const box = boxOf(el, img);
+      const [line] = linesOf(el, p);
+      const { baseline } = line as unknown as { baseline: number };
+      return line.y + baseline - (box.y + box.height / 2);
+    };
+    const alone = above('m', 'a');
+    assert.ok(alone > 0 && alone < 8, `half an x-height up: ${alone}`);
+    assert.ok(
+      Math.abs(above('n', 'b') - alone) < 0.01,
+      `and there beside a taller image: ${above('n', 'b')}`,
+    );
+  },
+);
+
+metric(
+  'text-transform: capitalize takes the first letter of each word',
+  async () => {
+    // CSS Text 3, 2.1: punctuation a word starts with is not its first
+    // letter, and a word runs on across an element's edge
+    const { node } = await render(
+      '<p style="text-transform:capitalize">(p.p.) <b>fo</b>o ' +
+        "well-known don't x.y 3rd éa a&#xA0;b ǆa ᾀa ßa</p>",
+    );
+    const text = view(node).textContent();
+    // in title case, which is not upper case for a letter that is two
+    assert.ok(
+      text.includes(
+        "(P.p.) Foo Well-Known Don't X.y 3rd Éa A\u00a0B ǅa ᾈa Ssa",
+      ),
+      JSON.stringify(text),
+    );
   },
 );
 
