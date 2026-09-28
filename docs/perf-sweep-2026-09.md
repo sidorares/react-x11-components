@@ -3240,6 +3240,56 @@ where the harness has Ahem registered by name and a document that ignored
 and the branch reads 5,612 on X11 and 5,074 on Cocoa, against master's
 5,609 and 5,073.
 
+## Round 33: the tables a first shaping decodes
+
+With round 31's warming in place, a profile of an app's first frame (an
+editor beside a markdown pane) put two things ahead of the layout itself:
+fontkit decoding a face's tables at its first shaping, and ntk reading
+answers nobody had asked for yet.
+
+### A run with no mark, shaped without mark positioning (ntk #425)
+
+fontkit decodes a feature's lookups whole the first time a run asks for
+that feature. Noto Sans, the `sans-serif` here and on several distributions,
+keeps an anchor for every base glyph in every mark class. Its first
+`layout()` took 20.6 ms with the code already warm, and 14 of those went on
+one mark-to-base subtable, once per face, inside the first frame.
+
+Every positioning lookup acts only at a glyph in its first coverage. ntk
+reads the coverage of each `mark` and `mkmk` lookup straight from the GPOS
+bytes, and a run with none of those glyphs is shaped without the two
+features. A run that holds one is shaped again whole, and its face stays
+whole from then on. Faces it cannot read exactly (AAT, feature variations,
+a substitution under the tag) are always shaped whole. Against master's
+`Font` on the 2,113 faces installed here, over a mixed-script corpus with
+and without combining marks, no run changed: 33,735 runs in sequence, and
+27,361 with a fresh face each.
+
+| from `createRoot` to the first paint | before |  after |
+| ------------------------------------ | -----: | -----: |
+| a window with a `<MenuBar>`          | 101 ms |  81 ms |
+| `<CodeEditor>` beside `<Markdown>`   | 182 ms | 121 ms |
+
+### An answer read when a layout asks (ntk #426)
+
+A prewarm's answers are 634 KB apiece here: `fc-match -s` lists 210 faces,
+each with its coverage. ntk read and parsed every one as its child exited,
+9 ms of the main thread for a family, inside `createRoot`, for faces most
+apps never set. They now wait in their files for the first layout that
+asks. `createRoot` went 140 → 126 ms for a small window, 139 → 128 with a
+menu bar, and 140 → 130 for the editor.
+
+Left from the same profile:
+
+- **The rest of fontkit's decoding.** Kerning, `hmtx` and the outlines are
+  about 20 ms of the editor's first frame, spread across the faces it sets.
+- **The mono prewarm.** Started while `<CodeEditor>` renders, it has not
+  answered when the frame lays out, so the frame waits about 7 ms for it.
+- **The shared glyph cache's page token.** It hashes the whole font file on
+  first draw: 0.4 ms for Noto Sans, 3.3 for the 4 MB CJK fallback, 8.8 for
+  colour emoji. Hashing off the main thread when the face loads would take
+  it out of the frame.
+
 ## Lessons
 
 1. **Look for caches that never hit.** Identity-keyed caches handed a new
@@ -3440,6 +3490,11 @@ and the branch reads 5,612 on X11 and 5,074 on Cocoa, against master's
     look like the component's: 574 tests in every directory. Look for what
     the lost tests share first — here, one `<link>` — and read one of them
     after.
+46. **Hold a change to the code it replaces, not to a reimplementation.**
+    The first harness for #425 compared ntk's `Font` with fontkit called
+    directly and found 2,737 differences. Master's `Font` found the same
+    2,737, so the harness was wrong. Against master's code, 30 remained,
+    each of them NaN compared with NaN; compared with `Object.is`, none did.
 
 ## Still open
 
