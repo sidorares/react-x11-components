@@ -181,31 +181,168 @@ function indentOf(line: string): number {
 
 export function parse(source: string, options: ParseOptions = {}): Document {
   const partial = options.partial !== false;
+  const isComponent = options.isComponent ?? NO_COMPONENTS;
+  const expressions = options.expressions === true;
   const normalized = source.replace(/\r\n?/g, '\n');
   const lines = normalized.split('\n').map(expandLeadingTabs);
+  const previous = options.previous;
+  const was = previous ? resumable.get(previous) : undefined;
+  // Not with components: an open tag looks for its close to the end of the
+  // document (`componentCloseLine`), so a close added anywhere below can
+  // change what it is, and the block before an edit is no longer settled.
+  if (
+    previous &&
+    was &&
+    was.partial === partial &&
+    was.expressions === expressions &&
+    isComponent === NO_COMPONENTS &&
+    was.isComponent === NO_COMPONENTS
+  ) {
+    return resume(previous, was, lines);
+  }
   const blocks: BlockNode[] = [];
   const ranges: Array<[number, number]> = [];
-  parseBlocks(
-    lines,
-    partial,
-    blocks,
-    ranges,
-    options.isComponent ?? NO_COMPONENTS,
-    options.expressions === true,
+  const blanks = new Uint8Array(lines.length);
+  parseBlocks(lines, partial, blocks, ranges, isComponent, expressions, {
+    from: 0,
+    blanks,
+  });
+  return remember(
+    { blocks, raws: ranges.map(([a, b]) => lines.slice(a, b).join('\n')) },
+    { lines, ranges, blanks, partial, isComponent, expressions },
   );
-  return {
+}
+
+// --- resuming --------------------------------------------------------------
+
+/**
+ * What a parse leaves for the next parse of the same document to start from
+ * (`ParseOptions.previous`).
+ *
+ * The block loop carries one thing from a block to the next, the paragraph
+ * it is gathering, and it looks only forwards: a block's extent is decided
+ * by the lines up to the first line of the block after it. So `blanks`
+ * marks the lines where the loop stood on a blank line at the top level with
+ * no paragraph open. Two parses standing on such a line, with the same lines
+ * from there to the end, produce the same blocks from there on. That is the
+ * point where an edit's re-parse can stop and take the rest from before.
+ */
+interface Resumable {
+  lines: string[];
+  /** each top-level block's [start, endExcl) line range */
+  ranges: Array<[number, number]>;
+  /** 1 on each line where the top-level loop stood blank with no paragraph */
+  blanks: Uint8Array;
+  partial: boolean;
+  isComponent: (name: string) => boolean;
+  expressions: boolean;
+}
+
+/** Kept beside the documents rather than in them, so a Document stays the
+ *  plain data every caller and test compares. */
+const resumable = new WeakMap<Document, Resumable>();
+
+function remember(doc: Document, state: Resumable): Document {
+  resumable.set(doc, state);
+  return doc;
+}
+
+/**
+ * Parse `lines` as an edit of `previous`: from one block before the first
+ * line that changed, until the loop stands where the previous parse stood
+ * in the lines the edit left alone — or to the end, when it never does (an
+ * unclosed fence swallows the rest of a document either way).
+ */
+function resume(previous: Document, was: Resumable, lines: string[]): Document {
+  const old = was.lines;
+  const oldN = old.length;
+  const n = lines.length;
+  const shortest = Math.min(oldN, n);
+  let first = 0;
+  while (first < shortest && old[first] === lines[first]) first += 1;
+  if (first === oldN && first === n) return previous;
+  // lines at the end the edit did not touch, never counting the prefix twice
+  let same = 0;
+  while (
+    same < shortest - first &&
+    old[oldN - 1 - same] === lines[n - 1 - same]
+  ) {
+    same += 1;
+  }
+  const shift = n - oldN;
+  const suffix = n - same;
+
+  // The first block that reaches the change, and the one before it: a
+  // block's extent is decided by the lines up to the next block's first —
+  // a list looks past blank lines to see whether it goes on — so the block
+  // before the first one touched cannot have depended on the change.
+  const { ranges } = was;
+  let lo = 0;
+  let hi = ranges.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (ranges[mid][1] <= first) lo = mid + 1;
+    else hi = mid;
+  }
+  const kept = Math.max(0, lo - 1);
+  const from = kept === 0 ? 0 : ranges[kept][0];
+
+  const blanks = new Uint8Array(n);
+  blanks.set(was.blanks.subarray(0, from));
+  const blocks: BlockNode[] = previous.blocks.slice(0, kept);
+  const raws = previous.raws.slice(0, kept);
+  const next: Array<[number, number]> = ranges.slice(0, kept);
+  const fresh: Array<[number, number]> = [];
+  const stop = parseBlocks(
+    lines,
+    was.partial,
     blocks,
-    raws: ranges.map(([a, b]) => lines.slice(a, b).join('\n')),
-  };
+    fresh,
+    was.isComponent,
+    was.expressions,
+    {
+      from,
+      blanks,
+      resync: (i) => i >= suffix && was.blanks[i - shift] === 1,
+    },
+  );
+  for (const [a, b] of fresh) {
+    raws.push(lines.slice(a, b).join('\n'));
+    next.push([a, b]);
+  }
+  if (stop < n) {
+    // the previous parse from the same place over the same lines: its
+    // blocks, where they now are
+    const at = stop - shift;
+    blanks.set(was.blanks.subarray(at), stop);
+    let j = ranges.length;
+    while (j > 0 && ranges[j - 1][0] >= at) j -= 1;
+    for (; j < ranges.length; j += 1) {
+      blocks.push(previous.blocks[j]);
+      raws.push(previous.raws[j]);
+      next.push([ranges[j][0] + shift, ranges[j][1] + shift]);
+    }
+  }
+  return remember({ blocks, raws }, { ...was, lines, ranges: next, blanks });
 }
 
 // --- block layer -----------------------------------------------------------
+
+/** The top-level call's extra: where to start, where to record the blank
+ *  lines it stands on, and when to stop (`resume`). */
+interface TopLevel {
+  from: number;
+  blanks: Uint8Array;
+  resync?: (line: number) => boolean;
+}
 
 /**
  * Parse a run of lines into blocks. `tailOpen` says the end of `lines` is
  * the live end of a streaming document — the license for every "complete it
  * anyway" rule. `ranges`, when given, receives each block's [start, endExcl)
  * line range (only the top-level call wants them, for the streaming cache).
+ * Returns the line it stopped at: the end, or where `top.resync` said the
+ * rest would come out as it did before.
  */
 function parseBlocks(
   lines: string[],
@@ -214,8 +351,9 @@ function parseBlocks(
   ranges?: Array<[number, number]>,
   isComponent: (name: string) => boolean = NO_COMPONENTS,
   expressions = false,
-): void {
-  let i = 0;
+  top?: TopLevel,
+): number {
+  let i = top?.from ?? 0;
   const n = lines.length;
 
   let paraStart = -1;
@@ -245,6 +383,10 @@ function parseBlocks(
 
     if (RE_BLANK.test(line)) {
       flushPara(i);
+      if (top) {
+        if (top.resync?.(i)) return i;
+        top.blanks[i] = 1;
+      }
       i += 1;
       continue;
     }
@@ -571,6 +713,7 @@ function parseBlocks(
   }
 
   flushPara(n);
+  return n;
 }
 
 // --- lists -----------------------------------------------------------------

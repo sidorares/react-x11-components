@@ -253,4 +253,15 @@ export interface ParseOptions {
    * evaluates nothing — an expression is kept as source.
    */
   expressions?: boolean;
+  /**
+   * What this document last parsed into, when the new source is an edit of
+   * that one: the parse then reads only the blocks around the change and
+   * takes the rest from `previous`, the same objects. The answer is the
+   * one a parse from scratch gives, whatever the edit; `previous` only
+   * decides how much of it has to be worked out again. Ignored when it came
+   * from different options or from somewhere other than `parse`, and with
+   * `isComponent`: a component's open tag looks for its close as far as the
+   * end of the document, so no block before an edit is settled.
+   */
+  previous?: Document;
 }

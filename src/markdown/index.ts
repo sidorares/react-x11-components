@@ -765,12 +765,19 @@ export function Markdown(props: MarkdownProps): ReactElement {
     [scope],
   );
 
+  // The last parse, which the next one resumes from: an edit or a streamed
+  // chunk reads the blocks around the change, and a 600 KB document is not
+  // read again whole for one paragraph (ParseOptions.previous). Only ever a
+  // hint — a parse resumed from it answers what a parse from scratch would.
+  const lastParse = React.useRef<Document | null>(null);
   const doc: Document = React.useMemo(() => {
     const parsed = parse(source, {
       partial,
       ...(isComponent ? { isComponent } : null),
       ...(evaluate ? { expressions: true } : null),
+      ...(lastParse.current ? { previous: lastParse.current } : null),
     });
+    lastParse.current = parsed;
     // Expressions resolve to text here rather than during the render, so
     // every `runsOf` caller downstream keeps seeing an inline tree it
     // already understands. `raws` is carried through, so the block cache
