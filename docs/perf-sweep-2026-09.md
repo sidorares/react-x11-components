@@ -2429,25 +2429,92 @@ Each cell now records the display's state around it, and `tabulate.ts` opens
 with a warning naming any cell taken with the screen off or a screensaver up
 (#259).
 
+### A Markdown edit is parsed as an edit (#262)
+
+`<Markdown>` hands each parse the document before it (`ParseOptions.previous`).
+The block loop carries only an open paragraph from one block to the next, and
+it looks only forward, so the parse can restart one block before the first
+changed line. It stops at the first top-level blank line in the unchanged
+tail where the previous parse also stood on a blank line, and takes the
+blocks after it as they were. An unclosed fence still swallows the rest of
+the document. With components the whole document is parsed again, because
+an open tag looks for its close as far as the end.
+
+| 600 KB report, production                | before   | after       |
+| ---------------------------------------- | -------- | ----------- |
+| parse of a one-paragraph edit            | 23–27 ms | 0.75–1.2 ms |
+| parse of a 200-character chunk at 190 KB | 8.1 ms   | 0.26 ms     |
+| edit: key→paint p50                      | 54–56 ms | 31–33 ms    |
+| append: key→paint p50                    | 70–82 ms | 44–45 ms    |
+
+A differential test compares 7,200 random edits and 40 streamed documents
+with a parse from scratch. Four deliberately broken versions of the resume
+each fail it.
+
+### A block keeps its key (#263)
+
+Blocks were keyed by their index. A paragraph inserted into the middle of
+the report moved every block after it onto another block's key, and all of
+them were rendered and laid out again: 958 ms from the edit to the screen.
+Blocks now keep their keys from one render to the next, matched from both
+ends. A changed block in the middle takes the key of the one it replaces,
+so an edited paragraph is still updated in place. The insert takes 31 ms.
+The docs sweep gains an `insert` cell for both components.
+
+### A column's floor reads its margins once per style (react-x11 #731)
+
+`columnHeightSpan` asked Yoga for every child's top and bottom margin on
+every sum. That is up to six `getMargin` calls a child, each building an
+object across the WASM boundary: 0.9 µs a child, against 0.37 µs for a
+whole `getComputedLayout()`. Margins reach Yoga only from the style, and a
+changed style is a new object, so the pair is now kept against the style
+it was read under. A Markdown edit went from 27.7–28.3 ms to 24.5–25.5 ms.
+
+### A long line is laid out as far as it is looked at (#268)
+
+Opening a file whose one line is a million characters long shaped every
+piece of it before the first paint. Almost every word was unique, so ntk's
+word cache missed and fontkit shaped each one: 1.4 s, for a view that
+showed one piece. A piece is now laid out when a paint, a caret or a click
+reaches it. Everything left of that point is laid out too, so what is
+drawn is exact, and only the width of the rest is guessed. The first paint
+takes 0.12 s. The first jump to the end of the line pays what the mount
+used to.
+
+The same test found a bug already on master. A piece was placed at the
+previous piece's width, which leaves out the white space a layout ends
+on. So a piece cut after a space started a column early, and the space
+vanished from the screen: 7 columns short by the end of a 78,000-character
+line with eight such seams. Pieces are now placed at the caret position
+after the previous piece.
+
+### A test that held the desktop bus (react-x11 #730)
+
+react-x11's `notify-example.test.js` connected to the real session bus on a
+desktop and hung in 1 of 8 runs; a whole `npm test` once sat on it for ten
+minutes. A diagnostic report showed an idle process with an open pipe to
+`/run/user/1001/bus`. `--test-timeout` cannot end that. It now calls
+`offTheDesktopBus()`, as its neighbours do.
+
 ### Still open on this machine
 
-- **A one-paragraph edit to a 600 KB Markdown document is O(document)**:
-  - the parse, 18.4 ms a call for 1,704 blocks, plus most of the edit's
-    garbage;
-  - the height floors, 10 ms: `columnHeightSpan` and `marginDown` over every
-    block of the column;
-  - the scroll extent, 5 ms: `contentReach` over the column's children.
-
-  Of a 55 ms edit, parse and garbage are nearly half. An incremental parse
-  would have to resynchronise at a block boundary after the edit, the
-  tokenizer's convergence trick, while an unclosed fence can still swallow
-  the rest of the document. Small documents do not feel any of it: a chat
-  message's parse is well under a millisecond.
-
+- **What a Markdown edit still costs in core**: the flush, about 16 ms at
+  600 KB. `contentReach` walks the column's 1,704 children for the scroll
+  extent, and the height floors' stale collection and spine scope walk it
+  too.
+- **A document's first paint** lays out every block's text inside the floor
+  passes. For the 600 KB report that is 1.3 s. The width floors measure
+  each paragraph at width 0, which lays out every word on a line of its own:
+  209 ms of it, for an answer that is only the widest word. Asking a layout
+  for its min-content width would need ntk, react-x11's measure contract and
+  `<richtext>` to change together.
+- **Bold over a large `<RichTextEditor>` document** is ProseMirror's
+  `addMark`, at about 65 ms a toggle over the sweep's 600 KB report. It
+  makes one step per text block, and each step copies the document's
+  top-level children, so the cost is quadratic in blocks.
 - **`<Flow>`'s 2D zoom** of 2,000 nodes is 31–33 fps. The time is ntk's
-  rasterizer stroking every visible edge again at each step (`edge`,
-  `rasterize` and `_strokePolys`), and the GL renderer does it at 59.
-- **`<CodeEditor>`'s long mount**, 1.4 s in production, as round 23 left it.
+  rasterizer stroking every visible edge again at each step, and the GL
+  renderer does it at 59.
 
 ## Lessons
 
