@@ -3423,6 +3423,145 @@ them. The pane's time now reads through a `flowClock` the test holds
 (#308). Stalling one step 250 ms reproduced the failure on the old test,
 and the new one passes through it.
 
+## Round 37: the releases, and two crashes a first frame could reach
+
+The Linux machine, after react-x11 2.22.12 and ntk 8.14.0 shipped rounds
+29 to 35 and the lockfiles took them (#312, react-x11 #745).
+
+### The releases, end to end
+
+The startup probe, with react-x11 2.22.11 and ntk 8.13.1 against 2.22.12
+and 8.14.0, swapped in place, ten rounds interleaved, medians in ms since
+the process started:
+
+| first paint | before | after | `createRoot` before → after |
+| ----------- | ------ | ----- | --------------------------- |
+| `small`     | 494.9  | 433.1 | 383.5 → 361.6               |
+| `menubar`   | 546.2  | 443.5 | 388.9 → 362.5               |
+| `editor`    | 629.8  | 503.6 | 406.1 → 382.6               |
+
+The imports did not move. `small`'s 62 ms is ntk's and core's changes
+alone. `menubar` gains 41 ms more and `editor` 64 ms more, and what each
+starts with that `small` does not is a face warmed for it: the menus'
+medium as the root connects (react-x11 #741), and the monospace and
+markdown faces the components warm. Each warm was a no-op until an ntk
+with `prewarm` was installed.
+
+### A start is busy all the way
+
+Nothing is left to overlap. `performance.eventLoopUtilization()` between
+the probe's marks found the loop idle for 0 to 1.6 ms from the imports to
+the first paint, over ten starts, and a profile found 0.2 ms of idle
+samples. What remains of the editor's 120 ms from `createRoot` to its
+first paint is work. In a profile of it, 143 ms under the profiler:
+React's development render and commit take about 47 ms. Layout takes about
+45, 38 of it laying text out for the first time. Paint takes about 35, 14 of
+it drawing glyphs for the first time, and 3 of those 14 the shared glyph
+cache's SHA-1 page token. None of it waits on anything, so none of it
+gets cheaper by starting earlier.
+
+### Every decoded struct (ntk #437, open)
+
+The largest self time in that window is restructure, which fontkit
+decodes a face's tables through: 19 ms profiled, 7.9 of it in one
+function. `Struct#_setup` gives every decoded struct four hidden
+properties with `Object.defineProperties`, and a Noto Sans face's first
+shaping decodes about 1,800 of them. The first shaping of the editor's
+four faces, fresh processes, 15 rounds, medians:
+
+| `_setup`                                      | total   |
+| --------------------------------------------- | ------- |
+| as it is                                      | 28.6 ms |
+| with its descriptor objects reused            | 27.8 ms |
+| four `Object.defineProperty` calls            | 25.3 ms |
+| private class fields behind prototype getters | 22.8 ms |
+
+The last keeps what anyone reads, and the whole ntk suite and 3,000
+shaped runs come out byte for byte the same with it. The fix belongs in
+restructure, which is maintained outside this organisation, so it is a
+decision the issue asks for rather than a PR. Patching `Struct.prototype`
+from ntk would change a module every other restructure user in the process
+shares.
+
+### Two crashes the equivalence corpus found (ntk #434, #435)
+
+The first equivalence run for those variants crashed on the baseline. On
+the released ntk, a multi-script corpus laid out in every family, face
+and style variant (3,000 layouts, 50 texts) threw 115 times. Both crashes
+come out of the layout inside a render, so either took an app down.
+
+- **An emoji no outline face covers** (60 of them): 🎉, 🚀 and 👨 fall
+  back to a colour emoji face, and both on this machine, EmojiOne and Noto
+  Color Emoji, are bitmap-only (`CBDT`). fontkit makes no glyph from one
+  and the shaper threw on the null. A face no glyph can be made from now
+  covers nothing (#434). The fix was a local branch of the browser
+  example's session, picked onto master with a second commit for #429's
+  first-face match.
+- **A NULL anchor** (55): a mark attachment subtable may leave a base's
+  anchor out for a mark class, and fontkit read the NULL. Noto Sans Bold,
+  DejaVu Sans Mono, Amiri, Noto Naskh Arabic and FreeSerif all hold them,
+  and zalgo text reaches one in plain Noto Sans. A NULL is now what
+  HarfBuzz takes it for (#435): the subtable did not apply, and the
+  lookup's next one gets its turn. That needs a wrapper around a call
+  fontkit makes for every glyph at every lookup, which costs 2% of an
+  uncached word. So a face pays for it only from the first NULL its text
+  reaches, and the run that meets it is shaped again. Against harfbuzzjs,
+  over every base-and-mark pair that reaches a NULL in twelve faces, the
+  4,687 pairs whose glyphs match HarfBuzz's all put the mark where HarfBuzz
+  does. Uncached shaping, with and without marks, did not move.
+
+Both shipped in ntk 8.14.1, and the same corpus throws none on it.
+
+### The whole sweep, against the round the Linux work started from
+
+Every probe again, on the released packages (react-x11 2.22.12, ntk
+8.14.1), held to the sweep that began round 26. The screensaver came up
+after the first fourteen cells. It throttles a window manager's resizes,
+not a window's paints, and the `<Flow>` and `<Map>` cells it covered held
+their frame rates. So the flush times and CPU below stand, and the
+input-to-paint latencies of the editors' scroll and typing cells, which
+moved a few ms either way with their flushes shorter and their CPU lower
+throughout, wait for a rerun with the screen up.
+
+| cell                              | round 26's start | now         |
+| --------------------------------- | ---------------- | ----------- |
+| `<Markdown>` mount                | 1669 ms          | 1282 ms     |
+| `<Html>` mount                    | 1172 ms          | 978 ms      |
+| `<Markdown>` edit, input to paint | 49.7 ms          | 23.8 ms     |
+| `<Markdown>` append               | 80.4 ms          | 38.4 ms     |
+| `<Html>` reflow                   | 389 ms           | 186 ms      |
+| `<CodeEditor>` mount              | 151 ms           | 126 ms      |
+| a million-character line, mount   | 1480 ms          | 102 ms      |
+| `<RichTextEditor>` mount          | 486 ms           | 379 ms      |
+| `<RichTextEditor>` bold-all       | 73.2 ms          | 50.8 ms     |
+| `<Table>` fling, fps              | 38.1             | 48.2        |
+| `<Flow>` 2,000-node pan, fps      | 40.2 / 48.8      | 49.9 / 59.3 |
+
+Two cells went the other way:
+
+- **Typing at the end of the million-character line** at 37 fps rather
+  than 56, and 88% CPU rather than 66. This is #268's own trade, as its PR
+  says: the jump to the end, which the cell times, now lays out what the
+  mount no longer does.
+- **`<Html>`'s edit** flushes in 75.5 ms rather than 68.8, measured with
+  both trees on the same packages. A bisect over the 26 `<Html>` commits
+  between them found #278's `q::before` and `q::after` in the user-agent
+  sheet at 10 ms of it, lesson 41 again. 51a5de7 (round 28) has taken all
+  but 1.6 ms of that back. The rest is spread over the conformance fixes,
+  none of it more than 0.7 ms an edit. The largest piece is a table cell's
+  content height kept in a `WeakMap`. An edit's garbage collection is
+  still the largest single cost, at about 15 ms.
+
+### A test that raced a prewarm (ntk #432)
+
+A family's prewarm runs its jobs side by side, and #430's best-face job
+is the one nothing in a test waits for. Three fontconfig tests counted a
+stub's log once the chains they asked for had answered, and on a slow
+runner the best job had not written its line yet, which failed another
+PR's Node 20 leg. The probe now waits for every child it started, and
+the stub answers a best job last on purpose, so the race happens on every
+run and the old tests fail on every run.
+
 ## Lessons
 
 1. **Look for caches that never hit.** Identity-keyed caches handed a new
@@ -3645,6 +3784,13 @@ and the new one passes through it.
     change's. Unpacking tarballs over an `npm ci` tree held. Count the
     packages and check where each one resolves from before trusting a run.
 
+50. **Run the equivalence corpus on the baseline alone first.** Round
+    37's corpus was built to hold two variants of a decoder to each other,
+    and its first run crashed on the code as it shipped. An emoji and an
+    Arabic word threw out of the layout, on the release and the one before
+    it. A corpus wide enough to compare two versions is a crash test of
+    both, and the crash is worth more than the comparison.
+
 ## Still open
 
 Ordered by practical impact, after round 12, and `<Html>`'s edit after
@@ -3655,9 +3801,9 @@ round 15.
   mounting app against 20 from a small process — 104–110 ms of a 500-line
   code editor's 143–158 ms first frame. Sans-serif is warmed while the
   connection is set up. The components now warm the families they set
-  (round 30), and core warms a menu's medium (round 31). Both wait on the
-  ntk release that carries `prewarm`, and a face nobody names still pays,
-  such as `<Html>`'s `th` at 600.
+  (round 30), and core warms a menu's medium (round 31). Both shipped in
+  ntk 8.14.0 and react-x11 2.22.12 (round 37). A face nobody names still
+  pays, such as `<Html>`'s `th` at 600.
 - **Markdown reflow's second layout pass**: the floors emulating
   `min-height: auto` come from the previous layout, so a width change lays
   the document out twice — 10,188 nodes at 600 KB with #143, in a frame of

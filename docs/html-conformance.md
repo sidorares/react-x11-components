@@ -190,6 +190,7 @@ npx tsx scripts/conformance/run.ts wpt fuzz1 --chunk 50 --timeout 60000
 | 97     | a `top` line's baseline, collapsed borders, fields | 5,625 (95%) | 5,085 (86%) |
 | 98     | margins of both signs, clearance, floats, columns  | 5,643 (95%) | 5,100 (86%) |
 | 99     | `text-align-last`, family names, line heights      | 5,646 (95%) | 5,102 (86%) |
+| 100    | ntk 8.14.1: kerning off, a family list's fallback  | 5,649 (95%) | 5,102 (86%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -2914,6 +2915,12 @@ solid 16px red` is invalid, each of the three at most once
      that keeps its pairs in the older `kern` table, Times New Roman's
      (sidorares/ntk#431). With both, `font-family-013`, `fonts-013` and
      `clear-applies-to-008` pass on X11.
+
+### Round 100
+
+249. **ntk 8.14.1**, which carries the two fixes of item 248: the lockfile
+     moves to it, and the three tests pass on X11. Cocoa's text is
+     CoreText's, which kerns and falls back as browsers do already.
 
 ## What `<Html>` supports
 

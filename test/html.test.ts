@@ -12186,3 +12186,57 @@ metric(
     assert.strictEqual(boxOf(el, 'a').height, 40);
   },
 );
+
+metric(
+  "a document's faces are asked for before its layout sets text in them",
+  async () => {
+    // a `th` at 600 is none of the four faces a family is warmed in, and its
+    // match was a synchronous fc-match inside the layout: 38 ms of the
+    // benchmark report's first paint. The boxes say which faces the text is
+    // set in before anything is laid out, and those are asked for then.
+    const probe = await render('<p>x</p>');
+    const proto = Object.getPrototypeOf(
+      (probe.result.app as unknown as { fonts: object }).fonts,
+    ) as {
+      prewarm(
+        family: string,
+        faces?: { weight: number; style: string }[],
+      ): void;
+      match(
+        family: string,
+        opts?: { weight?: unknown; style?: string },
+      ): unknown;
+    };
+    const { prewarm, match } = proto;
+    const asked: string[] = [];
+    proto.prewarm = function (family, faces) {
+      for (const f of faces ?? []) asked.push(`warm ${f.weight} ${f.style}`);
+      return prewarm.call(this, family, faces);
+    };
+    proto.match = function (family, opts) {
+      asked.push(
+        `match ${String(opts?.weight ?? 400)} ${opts?.style ?? 'normal'}`,
+      );
+      return match.call(this, family, opts);
+    };
+    try {
+      await render(
+        '<style>th { font-weight: 600 } em { font-style: italic }</style>' +
+          '<table><tr><th>Heading</th></tr><tr><td>a <em>cell</em></td></tr></table>',
+      );
+    } finally {
+      proto.prewarm = prewarm;
+      proto.match = match;
+    }
+    const warmed = asked.indexOf('warm 600 normal');
+    assert.ok(warmed >= 0, `the heading's face is warmed: ${asked.join(', ')}`);
+    const matched = asked.indexOf('match 600 normal');
+    assert.ok(
+      matched === -1 || warmed < matched,
+      'before the layout asks for it',
+    );
+    assert.ok(asked.includes('warm 400 italic'), 'and the emphasis');
+    // a face is asked once, however many boxes are set in it
+    assert.strictEqual(asked.filter((a) => a === 'warm 600 normal').length, 1);
+  },
+);

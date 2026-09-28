@@ -34,22 +34,37 @@ export function shapingSafe(engine: FontsLike): FontsLike {
   if (!safe) {
     const cannot = new Map<string, boolean>();
     let warned = false;
-    safe = {
-      layout(content, style, options) {
-        try {
-          return engine.layout(content, style, options);
-        } catch (error) {
-          const stood = standIns(engine, content, style, cannot);
-          if (!stood) throw error;
-          if (!warned) {
-            warned = true;
-            warn(stood.first, error);
-          }
-          return engine.layout(stood.content, style, options);
+    const layout: FontsLike['layout'] = (content, style, options) => {
+      try {
+        return engine.layout(content, style, options);
+      } catch (error) {
+        const stood = standIns(engine, content, style, cannot);
+        if (!stood) throw error;
+        if (!warned) {
+          warned = true;
+          warn(stood.first, error);
         }
-      },
-      match: (family, style) => engine.match(family, style),
+        return engine.layout(stood.content, style, options);
+      }
     };
+    // Everything else the engine answers is its own, called on it: `match`,
+    // and what a caller feature-detects — ntk's `prewarm`, which
+    // `_warmFaces` asks for — where a wrapper that forwarded only the two
+    // it knew of hid the rest, and warming stopped without a word.
+    const bound = new Map<PropertyKey, { from: unknown; to: unknown }>();
+    safe = new Proxy(engine, {
+      get(target, key) {
+        if (key === 'layout') return layout;
+        const value: unknown = Reflect.get(target, key, target);
+        if (typeof value !== 'function') return value;
+        let hit = bound.get(key);
+        if (hit?.from !== value) {
+          hit = { from: value, to: value.bind(target) };
+          bound.set(key, hit);
+        }
+        return hit.to;
+      },
+    });
     SAFE.set(engine, safe);
   }
   return safe;
@@ -73,7 +88,7 @@ function standIns(
         text += char;
         continue;
       }
-      text += cp > 0xffff ? '�️' : '�';
+      text += cp > 0xffff ? '\uFFFD\uFE0F' : '\uFFFD';
       changed = true;
       if (first < 0) first = cp;
     }
