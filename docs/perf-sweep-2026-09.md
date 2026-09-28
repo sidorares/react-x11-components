@@ -68,7 +68,9 @@ Numbers from another machine are not comparable with these; the method is.
 | ntk        | #401 the frame interval runs from a frame's start                                 | released, 8.12.12   |
 | ntk        | #402 the vblank clock under NVIDIA and a compositor (a decision)                  | open                |
 | react-x11  | #719 both accessibility bridges pace what they push                               | merged              |
-| react-x11  | #721 a named size that neither shrinks nor grows is floored by nothing            | open                |
+| react-x11  | #721 a named size that neither shrinks nor grows is floored by nothing            | merged              |
+| components | #249 code editor: an edit to a long line keeps the pieces before it               | merged              |
+| components | #250 `<Map>`: a label batch sets its first string however late it starts          | merged              |
 
 ## Method
 
@@ -2151,16 +2153,64 @@ master.
 
 Fling results: floors 9.4 → 6.3 ms a frame, and 30.9 → 36.2 fps.
 
+### `<CodeEditor>`: an edit to a long line keeps the pieces before it (#249)
+
+Typing at the end of a line of a million characters took 33.7 ms from key to
+paint, against 9.3 on XQuartz. Every keystroke built a cache key from every
+piece's text, a million characters concatenated and then hashed, to find
+layouts it already had. The pieces an edit leaves alone are now the old pieces
+themselves: the same text at the same offset (a native `startsWith`) in the
+same runs. The cuts resume after the last of them, because a cut depends only
+on the text before it. Key to paint went from 33.7 to 17.6 ms, fps from 18.6
+to 30, and CPU from 100% to 61%.
+
+### A readback of no rows (#250)
+
+A CI run on a docs-only change failed once in a `<Map>` GL label test, with
+"ImageData: 0 bytes is not a whole number of 1024px rows". The staging pass
+checks its 1.5 ms budget before each string. A pause before the first string
+deferred all of them, so nothing was drawn and zero rows were read back, which
+throws. A machine that slow would never have set a label at all. The budget
+now applies from the second string. A clock that jumps 10 ms a read reproduces
+the CI failure on master.
+
+### The sweep, after
+
+The whole sweep again, run with the monitor on, like the first one, so 2D
+windows are on the vblank clock in both. It ran against react-x11 master with
+#719 and #721 installed without saving, since neither was released yet.
+
+| cell                                     |                    before |                     after |
+| ---------------------------------------- | ------------------------: | ------------------------: |
+| `<Map>` GL pan / drag / wheel / fly, fps | 52.5 / 50.7 / 37.2 / 42.9 | 60.4 / 58.5 / 53.1 / 58.9 |
+| `<Flow>` GL widgets pan z1 / drag, fps   |               41.5 / 45.4 |               58.8 / 59.1 |
+| `<Flow>` GL charts zoom, fps             |                       1.7 |                      51.8 |
+| `<Flow>` 2D charts zoom, fps             |                      11.4 |                      33.9 |
+| `<Flow>` GL lattice2000 pan z1, fps      |                        54 |                      60.5 |
+| `<Table>` fling: fps / frame p50         |            16.9 / 22.1 ms |            21.2 / 16.4 ms |
+| `<CodeEditor>` long-type, key→paint p50  |                   33.4 ms |                   17.5 ms |
+| `<RichTextEditor>` paste, key→paint p50  |                    112 ms |                   91.5 ms |
+| frames watcher: bad samples, GL and 2D   |                         0 |                         0 |
+| GL against 2D ink, missing / extra       |                   0 / 0 % |                   0 / 0 % |
+
+Every GL cell is now at the display's rate or within a frame or two of it. The
+2D cells are where they were. They are paced by the vblank clock, and on this
+machine that clock is ntk #402.
+
 ### Still open on this machine
 
+- **The vblank clock (ntk #402).** It is a decision, not a bug. Typing latency
+  and every 2D rate on this machine depend on it.
 - **`<Table>`'s cell text.** Its height floors remain: 6.3 ms of an 11 ms
   fling frame. They are floors on text in a column cell, and in a fixed-height
   row they decide where a line that does not fit is drawn. That is behaviour,
   not waste.
-- **Document reflows.** Markdown and `<Html>` reflow at 250 and 234 ms a step.
+- **`<CodeEditor>` long mount (1.5 s against XQuartz's 0.5).** This is shaping
+  a million characters in DejaVu Sans Mono, whose tables fontkit walks more
+  slowly than the Mac's face. The fix would be to lay out only the pieces in
+  view, estimating the rest, and that is a design change.
+- **Document reflows.** Markdown and `<Html>` reflow at 241 and 246 ms a step.
   That is the same order as XQuartz, so it is not a Linux problem.
-- **`<CodeEditor>` long mount (1.4 s)** and **`<RichTextEditor>` paste and
-  bold-all.** Not looked at this round.
 
 ## Lessons
 
