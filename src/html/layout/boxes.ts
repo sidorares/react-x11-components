@@ -374,6 +374,10 @@ export class Box {
   /** Out-of-flow children in paint order (z-index, then document order),
    *  precomputed so a paint does not filter and sort per box per frame. */
   positionedPaint: Box[] | null = null;
+  /** Whether a positioned box is somewhere under this one: what the pass
+   *  that gives each stacking context its positioned boxes walks, so that
+   *  a subtree with none is not walked at all (`stackLayers`). */
+  holdsLayers = false;
   /** The tallest line box under this box — the slack a binary search over
    *  the y-sorted lines needs, since a line's bottom is not monotone. */
   maxLineHeight = 0;

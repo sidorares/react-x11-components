@@ -3829,6 +3829,28 @@ metric(
 );
 
 metric(
+  "an inline box's border before an absolute box is its line's content",
+  async () => {
+    // CSS 2.1 9.4.2: a line with nothing on it but white space is no line,
+    // and one with an inline box's margin or border on it is one, even
+    // where the two add up to no width; a block-level absolute box after
+    // the first goes at its top, and after the second under it
+    const { node } = await render(
+      '<style>body{margin:0} div{line-height:20px}</style>' +
+        '<div id="p"><span> <div id="a" style="position:absolute;' +
+        'width:5px;height:5px"></div></span></div>' +
+        '<div id="q"><span style="border-left:10px solid;margin-left:-10px">' +
+        '<div id="b" style="position:absolute;width:5px;height:5px"></div>' +
+        '</span></div>',
+    );
+    const el = view(node);
+    const [p, a, q, b] = ['p', 'a', 'q', 'b'].map((id) => boxOf(el, id));
+    assert.strictEqual(a.y, p.y, 'at the top');
+    assert.strictEqual(b.y, q.y + 20, 'under the line');
+  },
+);
+
+metric(
   'an absolute box in a positioned inline box is placed against it',
   async () => {
     // CSS 2.1 10.1, item 4: a `position: relative` inline box is the
@@ -3890,6 +3912,64 @@ metric('a relative box after an absolute one is painted over it', async () => {
   assert.ok(order('#0000ff') < order('#ff0000'), 'the flow first');
   assert.ok(order('#ff0000') < order('#00ff00'), 'then in document order');
 });
+
+metric(
+  'a positioned box in a box painted whole is painted with the others',
+  async () => {
+    // CSS 2.1 Appendix E: a stacking context paints every positioned box
+    // in it after its flow, in document order, then by `z-index`, whatever
+    // box it is in. One in an `overflow: hidden` box was painted with that
+    // box, among the flow, and so under a positioned box before it; and a
+    // menu with a `z-index` in a positioned header went under positioned
+    // content after the header.
+    const { node } = await render(
+      '<div style="position:absolute;width:30px;height:30px;' +
+        'background:#ff0000"></div>' +
+        '<div style="overflow:hidden;width:30px;height:30px">' +
+        '<div style="position:absolute;width:30px;height:30px;' +
+        'background:#00ff00"></div></div>' +
+        '<div style="position:relative;height:20px">' +
+        '<div style="position:absolute;z-index:1;top:10px;width:30px;' +
+        'height:40px;background:#0000ff"></div></div>' +
+        '<div style="position:relative;height:40px;background:#ffff00"></div>',
+    );
+    const fills = await fillsOf(view(node));
+    const order = (color: string) =>
+      fills.findIndex((f) => f.style === parseColor(color));
+    assert.ok(order('#ff0000') < order('#00ff00'), 'in document order');
+    assert.ok(order('#ffff00') < order('#0000ff'), 'the z-index over it');
+  },
+);
+
+metric(
+  'a positioned box its stacking context paints is clipped where it is',
+  async () => {
+    // painted after the flow, apart from the boxes around it, an absolute
+    // box is still under the clip of a box its containing block is in, and
+    // a relative one under every one it is in
+    const { node } = await render(
+      '<div id="o" style="position:relative;overflow:hidden;width:20px;' +
+        'height:20px"><div style="position:absolute;left:10px;width:40px;' +
+        'height:40px;background:#00ff00"></div></div>' +
+        '<div id="p" style="overflow:hidden;width:20px;height:20px">' +
+        '<div style="position:relative;left:10px;width:40px;height:40px;' +
+        'background:#0000ff"></div></div>',
+    );
+    const el = view(node);
+    const [o, p] = ['o', 'p'].map((id) => boxOf(el, id));
+    const ops: PaintOp[] = [];
+    await fillsOf(el, ops);
+    const rect = (c: PaintOp) => c.op === 'clip' && [c.x, c.y, c.w, c.h];
+    const [green] = clipsAround(ops, '#00ff00');
+    assert.deepStrictEqual(green.map(rect), [
+      [Math.round(o.x), Math.round(o.y), 20, 20],
+    ]);
+    const [blue] = clipsAround(ops, '#0000ff');
+    assert.deepStrictEqual(blue.map(rect), [
+      [Math.round(p.x), Math.round(p.y), 20, 20],
+    ]);
+  },
+);
 
 metric(
   'a block with a formatting context of its own sits beside a float',

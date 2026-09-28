@@ -2093,6 +2093,21 @@ function penAfter(
 ): { line: LineBox; pen: number; broken: boolean } | null {
   for (let i = index - 1; i >= 0; i -= 1) {
     const item = items[i];
+    if (item.kind === 'edge') {
+      // an inline box's margin, border or padding is content, which keeps
+      // its line from being one of no height (CSS 2.1 9.4.2), even where
+      // they add up to no width
+      if (!hasEdgeOn(item.box, item.side)) continue;
+      for (const line of lines) {
+        const placed = line.edges?.find(
+          (e) => e.box === item.box && e.side === item.side,
+        );
+        if (placed) {
+          return { line, pen: placed.x + placed.width, broken: false };
+        }
+      }
+      continue;
+    }
     if (item.kind === 'atomic') {
       for (const line of lines) {
         const placed = line.atomics.find((a) => a.box === item.box);
@@ -2111,6 +2126,14 @@ function penAfter(
     return { line, pen: broken ? 0 : caretX(line, end), broken };
   }
   return null;
+}
+
+/** Whether an inline box has margin, border or padding on a side. */
+function hasEdgeOn(box: Box, side: 'start' | 'end'): boolean {
+  const left = (side === 'start') !== (box.style.direction === 'rtl');
+  return left
+    ? box.marginLeft !== 0 || box.borderLeft !== 0 || box.padLeft !== 0
+    : box.marginRight !== 0 || box.borderRight !== 0 || box.padRight !== 0;
 }
 
 /** Where the caret at document offset `at` stands on a line, in the
@@ -2206,9 +2229,13 @@ function collect(
         // raises has them, so that its text is laid out apart from the text
         // around it, to be drawn where the box goes (`offsetInline`,
         // `Lifts`)
+        // and a margin a border cancels is still an edge, which keeps its
+        // line from being one of no height (CSS 2.1 9.4.2)
         const edged =
           start !== 0 ||
           end !== 0 ||
+          hasEdgeOn(child, 'start') ||
+          hasEdgeOn(child, 'end') ||
           (child.decoration !== null &&
             child.style.borderRadius.some((r) => r !== 0)) ||
           isOffset(child.style) ||
