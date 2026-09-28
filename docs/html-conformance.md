@@ -167,6 +167,7 @@ npx tsx scripts/conformance/run.ts wpt fuzz1 --chunk 50 --timeout 60000
 | 81     | collapsed borders at corners and at the sides      | 5,539 (93%) | 5,012 (84%) |
 | 82     | `empty-cells: hide`                                | 5,540 (93%) | 5,013 (84%) |
 | 83     | a collapsed border on a half-pixel grid line       | 5,541 (93%) | 5,013 (84%) |
+| 84     | an image told to be a table's part                 | 5,542 (93%) | 5,014 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -2420,6 +2421,18 @@ two agreed.
      the line less half its width, rounded there, 0 to 25, as browsers
      place it. At 2x the half pixel is a whole one, and Cocoa had it
      right already.
+
+### Round 84
+
+192. **An image told to be a table's part was laid out as a block.** A
+     replaced element takes no layout-internal display: one set to
+     `table-cell`, or any `table-*`, is inline (CSS Display 3, 2.4). The
+     table fix-up already saw that it was no cell and wrapped it in an
+     anonymous one with what was beside it, but inside that cell, and in
+     a block, it was a block: two such images stood one above the
+     other, and the white space between them collapsed away as between
+     two blocks. The box builder, the white space pass and the inline
+     layout now all read it as an atomic inline, as an `<img>` is.
 
 ## What `<Html>` supports
 

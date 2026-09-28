@@ -1806,6 +1806,10 @@ function flowOf(
   box: Box,
 ): 'inline' | 'atomic' | 'block' | 'out' {
   if (box.outOfFlow || box.isFloat) return 'out';
+  // an image told to be a table's part is an inline one (`isBlockLevel`)
+  if (box.kind === 'replaced' && style.display.startsWith('table-')) {
+    return 'atomic';
+  }
   switch (style.display) {
     case 'inline':
       return box.kind === 'replaced' ? 'atomic' : 'inline';
@@ -2208,10 +2212,13 @@ function isBlockLevel(box: Box): boolean {
     case 'replaced':
       // an image is inline unless it is told otherwise, and then it is a
       // block: `img { display: block }`, which mail writes to lose the gap
-      // under its images, stacks them
+      // under its images, stacks them. A table's part is no display it
+      // can take, and one told to be a cell is inline (CSS Display 3,
+      // 2.4), which is what a table wraps a cell around.
       return (
         box.style.display !== 'inline' &&
-        !isInlineLevelDisplay(box.style.display)
+        !isInlineLevelDisplay(box.style.display) &&
+        !box.style.display.startsWith('table-')
       );
     default:
       return false;
