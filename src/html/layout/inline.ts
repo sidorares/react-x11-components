@@ -30,9 +30,10 @@
 // (`TextLayoutCache`), so the element under a run is found from its text's
 // place in the document (`LineText.spans`) instead.
 
-import { codeUnitOffsets } from '../../internal/text.js';
+import { codePointAtOffset, codeUnitOffsets } from '../../internal/text.js';
 import type { TextRun } from '../../richtext/index.js';
 import type { ComputedStyle } from '../css/style.js';
+import { INLINE_BEFORE_ABSOLUTE } from '../css/style.js';
 import { inkColor, isTransparent, resolve } from '../css/values.js';
 import {
   BOX_RAISES,
@@ -352,17 +353,34 @@ function cutOf(style: ComputedStyle): Cut | null {
 }
 
 function layoutLines(block: Box, options: InlineOptions): InlineResult {
-  let fonts = options.fonts;
   const items: Item[] = [];
-  const placing = options.floatBoxes;
+  const statics: StaticMark[] = [];
   const floatCount = collect(
     block,
     items,
     options.width,
-    fonts,
+    options.fonts,
     block.style,
-    !!placing,
+    !!options.floatBoxes,
+    statics,
   );
+  const result = linesOf(block, options, items, floatCount);
+  // whichever way the lines were made, one pass over them
+  if (statics.length) {
+    staticPositions(statics, items, result.lines, block, options);
+  }
+  return result;
+}
+
+/** The lines of a block's inline content, gathered into `items`. */
+function linesOf(
+  block: Box,
+  options: InlineOptions,
+  items: Item[],
+  floatCount: number,
+): InlineResult {
+  let fonts = options.fonts;
+  const placing = options.floatBoxes;
   if (items.length === floatCount || !fonts) {
     // no line to wait for: the floats go at the top
     const placed: Box[] = [];
@@ -2015,6 +2033,100 @@ function childBaseline(
   return inside(child);
 }
 
+/** An absolutely positioned box among a paragraph's content, before the
+ *  item at `index`. */
+interface StaticMark {
+  index: number;
+  box: Box;
+}
+
+/**
+ * The static position of each absolutely positioned box among a
+ * paragraph's content (CSS 2.1 10.3.7, 10.6.4): where it would have been
+ * in flow, found from the content before it. A block-level one would have
+ * broken the line that content is on, so it goes under that line at the
+ * line's start; an inline-level one goes on it, where the pen stood after
+ * that content, or under it where a forced break ends the text; either goes
+ * at the top where nothing comes before it. Taken as the block's content
+ * top for every one of them, a box after a line of text was drawn over that
+ * line, and a menu under its link came up on it. Not from a probe of
+ * intrinsic width, whose room is no place for one.
+ */
+function staticPositions(
+  statics: StaticMark[],
+  items: Item[],
+  lines: LineBox[],
+  block: Box,
+  options: InlineOptions,
+): void {
+  if (!Number.isFinite(options.width)) return;
+  for (const { index, box } of statics) {
+    const inline = INLINE_BEFORE_ABSOLUTE.has(box.style);
+    let top = lines.length ? lines[0].y : 0;
+    let x = 0;
+    const after = lines.length ? penAfter(items, index, lines) : null;
+    if (after) {
+      const { line, pen, broken } = after;
+      if (inline && !broken) {
+        top = line.y;
+        x = pen;
+      } else {
+        top = line.y + line.height;
+      }
+    }
+    box.staticPosition = {
+      from: block,
+      x: options.originX + x - block.x,
+      right: options.originX + options.width - block.x,
+      y: options.startY + top - block.y,
+    };
+  }
+}
+
+/** The line the content before `items[index]` ended on, where the pen
+ *  stood after it, and whether it ended in a forced break. Null where no
+ *  text or atomic comes before. */
+function penAfter(
+  items: Item[],
+  index: number,
+  lines: LineBox[],
+): { line: LineBox; pen: number; broken: boolean } | null {
+  for (let i = index - 1; i >= 0; i -= 1) {
+    const item = items[i];
+    if (item.kind === 'atomic') {
+      for (const line of lines) {
+        const placed = line.atomics.find((a) => a.box === item.box);
+        if (!placed) continue;
+        const pen = placed.x + item.box.width + item.box.marginRight;
+        return { line, pen, broken: false };
+      }
+      return null;
+    }
+    if (item.kind !== 'text' || item.control) continue;
+    const end = item.start + item.length;
+    const line =
+      lines.find((l) => l.textStart < end && end <= l.textEnd) ??
+      lines[lines.length - 1];
+    const broken = item.run.text.endsWith('\n');
+    return { line, pen: broken ? 0 : caretX(line, end), broken };
+  }
+  return null;
+}
+
+/** Where the caret at document offset `at` stands on a line, in the
+ *  paragraph's coordinates: the line's end where no text of it holds the
+ *  offset. */
+function caretX(line: LineBox, at: number): number {
+  for (const text of line.texts) {
+    if (at < text.textStart || at > text.textEnd) continue;
+    const offsets = layoutOffsets(text.layout);
+    const units = layoutOffsetOf(text, at, true);
+    const caret = text.layout.caretPosition(codePointAtOffset(offsets, units));
+    return text.drawX + caret.x;
+  }
+  return line.x + line.width;
+}
+
 // --- gathering --------------------------------------------------------------
 
 /** Flatten an inline subtree into a stream of runs, atomics, breaks and the
@@ -2028,10 +2140,16 @@ function collect(
   fonts: FontsLike | null,
   block: ComputedStyle,
   floats: boolean,
+  /** Where each absolutely positioned box among the content is: before the
+   *  item at `index`. No item of the stream, which reads none of them. */
+  statics?: StaticMark[],
 ): number {
   let floated = 0;
   for (const child of box.children) {
-    if (child.outOfFlow) continue;
+    if (child.outOfFlow) {
+      statics?.push({ index: out.length, box: child });
+      continue;
+    }
     if (child.isFloat) {
       if (floats) {
         out.push({ kind: 'float', box: child });
@@ -2109,7 +2227,7 @@ function collect(
         if (controls) {
           pushControls(out, controls[0], child, child.subtreeTextStart);
         }
-        floated += collect(child, out, width, fonts, block, floats);
+        floated += collect(child, out, width, fonts, block, floats, statics);
         if (controls) {
           pushControls(out, controls[1], child, child.subtreeTextEnd);
         }
@@ -2955,7 +3073,10 @@ function inkBeyond(runs: TextRun[], offset: number): boolean {
   let at = 0;
   for (const run of runs) {
     const next = at + run.text.length;
-    if (next > offset && /\S/.test(run.text.slice(Math.max(0, offset - at)))) {
+    if (
+      next > offset &&
+      /[^ \t\n\r\f]/.test(run.text.slice(Math.max(0, offset - at)))
+    ) {
       return true;
     }
     at = next;

@@ -18,7 +18,7 @@
 // the smallest, and its height at a width — is what tables already ask.
 import { AUTO, isPct, resolve } from '../css/values.js';
 import type { GridLine, GridTrack } from '../css/style.js';
-import { Box } from './boxes.js';
+import { Box, isBlank } from './boxes.js';
 import {
   MIN_CONTENT_PROBE,
   exactMinContent,
@@ -50,7 +50,7 @@ export function layoutGrid(
   const style = box.style;
   const boxes: Box[] = [];
   for (const child of box.children) {
-    if (child.kind === 'text' && !child.text.trim()) continue;
+    if (child.kind === 'text' && isBlank(child.text)) continue;
     if (child.outOfFlow) {
       ctx.positioned.push({ box: child, containing: box });
       continue;

@@ -2210,11 +2210,11 @@ function fixUpOwn(box: Box, anonymous: AnonymousStyle): void {
     }
     // Whitespace between two blocks is not content and must not generate a
     // line box — `<div><p>a</p> <p>b</p></div>` has no blank line in it.
-    if (!run && child.kind === 'text' && !child.text.trim()) continue;
+    if (!run && child.kind === 'text' && isBlank(child.text)) continue;
     (run ??= []).push(child);
   }
   if (run) {
-    if (run.every((c) => c.kind === 'text' && !c.text.trim())) {
+    if (run.every((c) => c.kind === 'text' && isBlank(c.text))) {
       // trailing whitespace after the last block: same rule
     } else {
       next.push(anonymousOf(box, 'block', run, anonymous));
@@ -2465,10 +2465,22 @@ function anonymousOf(
  *  table whether it is kept or not (CSS 2.1 17.2.1, rule 1). Kept, under
  *  `white-space: pre`, it made a cell of the line break before every row. */
 function isDroppableWhitespace(box: Box): boolean {
-  return box.kind === 'text' && BLANK.test(box.text);
+  return box.kind === 'text' && isBlank(box.text);
 }
 
-const BLANK = /^\s*$/;
+/**
+ * Whether a text is white space alone: CSS's white space, which is the
+ * space, the tab and the three line breaks and nothing else (CSS Text 3,
+ * 4.1). JavaScript's `\s` and `trim` take in the no-break space and the
+ * other Unicode spaces too, so a `<p>&nbsp;</p>` spacer or a
+ * `<td>&nbsp;</td>` beside a block was dropped as if it held nothing. Tested
+ * rather than trimmed, which copies a paragraph's text to find out.
+ */
+export function isBlank(text: string): boolean {
+  return BLANK.test(text);
+}
+
+const BLANK = /^[ \t\n\r\f]*$/;
 
 /** White space that collapsing would change: anything but a lone space.
  *  Most of a document's text has none, and is its own collapsed form. */

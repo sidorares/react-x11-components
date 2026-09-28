@@ -13,7 +13,7 @@
 // algorithm is too slow — which, on a table with a thousand rows, it is.
 import { AUTO, isPct, resolveOrNull } from '../css/values.js';
 import type { Len } from '../css/values.js';
-import { Box, CLIPPED_CELLS, COLLAPSED_CELLS } from './boxes.js';
+import { Box, CLIPPED_CELLS, COLLAPSED_CELLS, isBlank } from './boxes.js';
 import {
   CELL_CONTENT,
   MIN_CONTENT_PROBE,
@@ -785,7 +785,7 @@ function baselineLifts(cells: Cell[], rowCount: number): number[] {
 function holdsFlow(box: Box): boolean {
   for (const child of box.children) {
     if (child.outOfFlow || child.isFloat) continue;
-    if (child.kind === 'text' && /^\s*$/.test(child.text)) continue;
+    if (child.kind === 'text' && isBlank(child.text)) continue;
     return true;
   }
   return false;

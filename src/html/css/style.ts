@@ -3722,6 +3722,13 @@ export function decorate(style: ComputedStyle): void {
 }
 
 /**
+ * The absolutely positioned styles that were inline-level before they were
+ * made blocks: where such a box would have been in flow is on its line,
+ * where a block's is under it (CSS 2.1 10.3.7, `staticPositions`).
+ */
+export const INLINE_BEFORE_ABSOLUTE = new WeakSet<ComputedStyle>();
+
+/**
  * The blockification the box tree depends on: a floated or absolutely
  * positioned element is a block whatever `display` said, and a flex item's
  * `display: inline` is a block too. Applied after the cascade rather than
@@ -3735,6 +3742,15 @@ export function blockify(style: ComputedStyle, inFlexContainer: boolean): void {
     style.position === 'absolute' ||
     style.position === 'fixed';
   if (!isOutOfFlow && !inFlexContainer) return;
+  if (
+    (style.position === 'absolute' || style.position === 'fixed') &&
+    (out === 'inline' ||
+      out === 'inline-block' ||
+      out === 'inline-table' ||
+      out === 'inline-flex')
+  ) {
+    INLINE_BEFORE_ABSOLUTE.add(style);
+  }
   switch (out) {
     case 'inline':
     case 'inline-block':

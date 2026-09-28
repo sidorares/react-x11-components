@@ -179,6 +179,7 @@ npx tsx scripts/conformance/run.ts wpt fuzz1 --chunk 50 --timeout 60000
 | 90     | an image set `middle`, and `capitalize`            | 5,566 (94%) | 5,038 (85%) |
 | 91     | a table cell's sizes, and `text-decoration`        | 5,575 (95%) | 5,047 (86%) |
 | 92     | a top-aligned box's background, and `font`         | 5,588 (95%) | 5,051 (86%) |
+| 93     | where an absolute box in a line would have been    | 5,595 (95%) | 5,058 (86%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -2638,6 +2639,43 @@ font-size: 3.75em }` was 15px, its `em`s 3.75 of its parent's. The size
      and never drawn; it is an inline image, as one told to be a cell is
      (`outline-applies-to-016`, `-017`).
 
+### Round 93
+
+215. **An absolute box among a paragraph's text took the paragraph's top
+     for its static position**, and was drawn over the text before it. A
+     block-level one goes under the line that text is on, which it would
+     have broken, and an inline-level one where the text left the pen: on
+     that line, or under it after a `<br>` (`abspos-block-level-001`,
+     `abspos-inline-007`, `hypothetical-inline-alone-on-second-line`, and
+     `abspos-007` on Cocoa, which X11 misses by five pixels: a descender
+     reaches a row past its line there, and the box covers it). The
+     position is found from the text before the box once the lines are
+     made, whichever of the four ways they were made: a paragraph laid out
+     in one call to the engine, or around a padded span, never met its
+     absolute boxes at all.
+216. **An absolute box inside a `position: relative` inline box was placed
+     against a rectangle of no size at the page's corner.** An inline box
+     lays nothing out of its own, and was read as a box that does; its
+     containing block is now the padding boxes of its fragments on the
+     lines, from the start of its first to the end of its last (CSS 2.1
+     10.1, `abspos-float-with-inline-container` on Cocoa, which X11 misses
+     by a row: the content area starts a fraction of a pixel under the line
+     there, and a browser rounds that fraction down). A tooltip set under a
+     positioned link was drawn at the top left of the document.
+217. **A page with a `<body>` and no `<html>` lost its `html { … }`
+     rules.** htmlparser2 parses what it is given, and a page that starts
+     `<!DOCTYPE html><title>` has no `<html>` element for a rule to match.
+     The root box stands in for the one a browser implies, as it already
+     did for a fragment with neither, so `html { font-size: 10px }` reaches
+     the body (`abspos-negative-margin-001`, with 215).
+218. **A no-break space beside a block was dropped as white space.**
+     JavaScript's `trim` and `\s` take in U+00A0 and the other Unicode
+     spaces, and CSS's white space is the space, the tab and the line
+     breaks alone. Nine places asked the first whether a text was blank,
+     so the `&nbsp;` a mail layout holds a gap open with vanished beside a
+     block, in a flex box and in a grid, as if it held nothing
+     (`between-float-and-text`, `vertical-align-baseline-004a`, `-005a`).
+
 ## What `<Html>` supports
 
 From the pass rates of the tests that use each feature, at the fixes above,
@@ -2650,7 +2688,7 @@ checked against the code.
 | block flow, margin collapsing                      | 694   | 83%     | **supported**, through empty blocks and into a parent's; a set of margins of both signs collapses two at a time                                                                                                               |
 | margins, padding, borders                          | 682   | 95%     | **supported**, inline boxes and collapsed table borders included; the `double`/`groove` families are approximations                                                                                                           |
 | floats and `clear`                                 | 311   | 46–67%  | **supported**, a float inside a paragraph at the top of the line it is met on; a word wider than its line is broken where CSS lets it overflow                                                                                |
-| relative and absolute positioning                  | 513   | 84%     | **supported**; an absolute box inside a line takes the line's start for its static position                                                                                                                                   |
+| relative and absolute positioning                  | 513   | 84%     | **supported**, against an inline box too; an absolute box inside a line is where the text before it left off                                                                                                                  |
 | backgrounds: colour, image, repeat, position       | 336   | 85%     | **supported**, `background-attachment: fixed`, `background-size`, any number of layers and SVG images included                                                                                                                |
 | fonts: family, style, weight, size                 | 159   | 81%     | **supported**; `font-variant` is the font's own OpenType features, so small capitals are drawn where the font has them and not synthesized                                                                                    |
 | line height, `vertical-align`                      | 191   | 87%     | **supported**: every inline box's own line height, and `vertical-align` on text as well as on images and inline blocks; text in a font with taller natural lines than its paragraph's takes a bit more room than CSS gives it |

@@ -914,25 +914,28 @@ export class Cascade {
    * reads as a bug in the renderer rather than as a missing element. With
    * no `<html>` either, the body inherits from an `<html>` that author
    * `html { … }` rules have styled, as the one a browser implies would be.
+   *
+   * A document with a `<body>` and no `<html>` — the usual shape of a page
+   * that starts `<!DOCTYPE html><title>` — has the root box standing in for
+   * that implied `<html>` instead, so an `html { font-size }` still reaches
+   * the body. Taken as the initial style, the rule matched nothing and the
+   * whole page came out at the theme's size.
    */
   rootStyle(hasBody: boolean, hasHtml = true): ComputedStyle {
     const style = copyStyle(this.initial);
     style.display = 'block';
-    if (hasBody) return style;
+    if (hasBody && hasHtml) return style;
     const synthetic = new DomElement('body', {}, []);
     let parent = style;
     if (!hasHtml) {
-      const html = new DomElement('html', {}, [synthetic]);
+      const html = new DomElement('html', {}, hasBody ? [] : [synthetic]);
       synthetic.parent = html;
       parent = this.styleFor(html, style, false);
+      if (hasBody) return asRoot(parent);
     }
-    const bodyStyle = this.styleFor(synthetic, parent, false);
     // Only the box the body would have drawn is taken, not its layout role:
     // the root is still the initial containing block.
-    bodyStyle.display = 'block';
-    bodyStyle.position = 'static';
-    bodyStyle.float = 'none';
-    return bodyStyle;
+    return asRoot(this.styleFor(synthetic, parent, false));
   }
 
   /** The rules of `index` that match `el`, pushed onto `out` as candidates,
@@ -1037,6 +1040,15 @@ export class Cascade {
     out.sort(byCascade);
     return out;
   }
+}
+
+/** An implied element's style as the root box's: its look, not its role —
+ *  the root is still a block, in flow, and the initial containing block. */
+function asRoot(style: ComputedStyle): ComputedStyle {
+  style.display = 'block';
+  style.position = 'static';
+  style.float = 'none';
+  return style;
 }
 
 /** `:root` is the `<html>` element: the one a browser implies around a
