@@ -137,6 +137,14 @@ export function registerHtmlView(): void {
  *  back. */
 const SIZES_KEPT = 4;
 
+/** What warming a document's faces needs of the fonts: ntk's
+ *  `FontManager#prewarm`, which names faces from the release that added
+ *  them (8.14) and warms the family's four before it. An engine without it
+ *  has nothing to look up. */
+interface WarmingFonts {
+  prewarm?(family: string, faces?: { weight: number; style: string }[]): void;
+}
+
 /** What changed, and therefore how far back up the pipeline to go. */
 const enum Stale {
   Nothing = 0,
@@ -155,6 +163,10 @@ export class HtmlViewNode extends Node {
   private _shadowCache: SurfaceCache | null = null;
   private _cascade: Cascade | null = null;
   private _tree: BoxTree | null = null;
+  /** The faces `_warmFaces` has asked the font matcher for, and of which
+   *  fonts. */
+  private _warmedFaces = new Set<string>();
+  private _warmedFor: unknown = null;
   private _stale: Stale = Stale.Everything;
   /** The width the document was last laid out at. Not `_laidOutAt`: core's
    *  `Node` has a method of that name, which a field would hide. */
@@ -351,6 +363,37 @@ export class HtmlViewNode extends Node {
       if (!sized && this._resources.imageSize(url)) return true;
     }
     return false;
+  }
+
+  /**
+   * Ask the font matcher for the faces the document's text is set in, as
+   * soon as its boxes say which and while its layout is still ahead. A face
+   * nothing had warmed was a synchronous fc-match inside that layout: the
+   * benchmark report's `th`, at 600, waited 38 ms before its first paint.
+   * One child answers every face a call names, off the event loop (ntk's
+   * `FontManager#prewarm`), and a layout reaching a face still on its way
+   * takes the answer rather than asking again. Each face is asked once, by
+   * the family, weight and style the layout hands the engine.
+   */
+  private _warmFaces(tree: BoxTree): void {
+    const fonts = this._fonts() as WarmingFonts | null;
+    if (typeof fonts?.prewarm !== 'function') return;
+    if (this._warmedFor !== fonts) {
+      this._warmedFor = fonts;
+      this._warmedFaces.clear();
+    }
+    let faces: Map<string, { weight: number; style: string }[]> | null = null;
+    for (const style of tree.textStyles) {
+      const key = `${style.fontFamily}|${style.fontWeight}|${style.fontStyle}`;
+      if (this._warmedFaces.has(key)) continue;
+      this._warmedFaces.add(key);
+      faces ??= new Map();
+      let named = faces.get(style.fontFamily);
+      if (!named) faces.set(style.fontFamily, (named = []));
+      named.push({ weight: style.fontWeight, style: style.fontStyle });
+    }
+    if (faces)
+      for (const [family, named] of faces) fonts.prewarm(family, named);
   }
 
   /** Rebuild the cascade — the document's sheets plus the host's. */
@@ -608,6 +651,7 @@ export class HtmlViewNode extends Node {
       this._tree = build();
       this._requestBackgrounds(this._tree);
       if (this._contentImagesArrived(this._tree)) this._tree = build();
+      this._warmFaces(this._tree);
       this._textPoints = null;
       this._pointsAreUnits = null;
       this._laidOutWidth = -1;
