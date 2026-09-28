@@ -929,10 +929,17 @@ export function applyDeclaration(
     return;
   }
   if (lower === 'initial' || lower === 'unset' || lower === 'revert') {
-    // `unset` is `inherit` for an inherited property and `initial` otherwise;
-    // `revert` would be the UA sheet's value, and treating it as initial is
-    // the closest this gets without keeping a third cascade level.
+    // `unset` is `inherit` for an inherited property and `initial` otherwise.
+    // `initial` is the value the property starts at, which an inherited one
+    // does not keep: left as it was, `line-height: initial` in a box inside
+    // a 200px line height was that line height still, and one after an
+    // earlier declaration of the property was that declaration. `revert`
+    // would be the UA sheet's value, and leaving the one the cascade has
+    // reached is the closest this gets without a third cascade level.
     if (lower === 'unset' && isInherited(name)) inheritOne(style, parent, name);
+    else if (lower !== 'revert' && ctx.initial) {
+      inheritOne(style, ctx.initial, name);
+    }
     return;
   }
   // `!important` is stripped by the parser; a stray one here is an author
@@ -2307,19 +2314,29 @@ function applyBorderShorthand(
   let width = BORDER_WIDTH_KEYWORDS.medium * ctx.scale;
   let borderStyle: BorderStyle = 'none';
   let color: string | null = 'currentColor';
+  // each of the three at most once (`<line-width> || <line-style> ||
+  // <color>`): `red solid 16px red` is no border, where the second colour
+  // was taken for the first
+  let seen = 0;
   for (const part of splitValue(value)) {
     const v = part.toLowerCase();
     if (BORDER_STYLES.has(v)) {
+      if (seen & 1) return;
+      seen |= 1;
       borderStyle = v as BorderStyle;
       continue;
     }
     const w = borderWidth(part, ctx);
     if (w !== null) {
+      if (seen & 2) return;
+      seen |= 2;
       width = w;
       continue;
     }
     const c = parseColor(part);
     if (c !== null) {
+      if (seen & 4) return;
+      seen |= 4;
       color = c;
       continue;
     }

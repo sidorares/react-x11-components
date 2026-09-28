@@ -189,10 +189,21 @@ function collapseMargins(a: number, b: number): number {
  * holding only an absolute image stood the rest of a document a body's
  * margin lower than a browser does.
  */
-function collapsedTopMargin(box: Box, containingWidth: number): number {
+function collapsedTopMargin(
+  box: Box,
+  containingWidth: number,
+  floats: FloatContext | null = null,
+  y = 0,
+  pending = 0,
+): number {
   floatsPassed = false;
   floatsLeft = 0;
   floatsRight = 0;
+  passedLeft = false;
+  passedRight = false;
+  walkFloats = floats;
+  walkY = y;
+  walkPending = pending;
   return absorbChildren(box, containingWidth, box.marginTop);
 }
 
@@ -208,6 +219,14 @@ let throughAll = false;
 let floatsPassed = false;
 let floatsLeft = 0;
 let floatsRight = 0;
+/** Which sides the floats the walk passed are on. */
+let passedLeft = false;
+let passedRight = false;
+/** Where the margin the walk collapses starts, and the floats placed before
+ *  it: what says whether a cleared child in it has clearance. */
+let walkFloats: FloatContext | null = null;
+let walkY = 0;
+let walkPending = 0;
 
 /**
  * Collapse into `margin` the margins of `at`'s children that adjoin its top
@@ -261,12 +280,12 @@ function absorbChildren(at: Box, width: number, margin: number): number {
       passFloatsIn(child, inner);
       continue;
     }
-    if (child.style.clear !== 'none') {
+    resolveEdges(child, inner);
+    if (child.style.clear !== 'none' && hasClearance(child, margin)) {
       child.topAbsorbed = 0;
       whole = false;
       break;
     }
-    resolveEdges(child, inner);
     if (
       floatsPassed &&
       (child.kind === 'replaced' || establishesBFC(child)) &&
@@ -390,7 +409,32 @@ function passFloat(float: Box, width: number): void {
   floatsPassed = true;
   if (float.style.float === 'right') {
     floatsRight += statedOuterWidth(float, width);
-  } else floatsLeft += statedOuterWidth(float, width);
+    passedRight = true;
+  } else {
+    floatsLeft += statedOuterWidth(float, width);
+    passedLeft = true;
+  }
+}
+
+/**
+ * Whether a cleared child in the margin the walk collapses has clearance,
+ * which parts it from that margin (CSS 2.1 9.5.2): past a float the walk
+ * passed, which the margin carries down with it, always; past one placed
+ * before, where the margin does not take the child below it already. A
+ * child with none is like any other, and the margin goes on up through it:
+ * stopped there, a large margin under a float was spent inside its parent,
+ * whose background showed above it.
+ */
+function hasClearance(child: Box, margin: number): boolean {
+  const clear = child.style.clear;
+  const left = clear === 'left' || clear === 'both';
+  const right = clear === 'right' || clear === 'both';
+  if ((left && passedLeft) || (right && passedRight)) return true;
+  if (!walkFloats) return true;
+  const floor = walkFloats.clearance(clear);
+  if (floor === -Infinity) return false;
+  const top = collapseMargins(margin, child.marginTop);
+  return walkY + collapseMargins(walkPending, top) < floor;
 }
 
 /** Whether a new formatting context fits beside the floats the walk passed
@@ -493,6 +537,13 @@ function layoutChildren(
   /** The margin left hanging by the previous sibling — or, before the first
    *  child, the one `leading` hands down — for collapsing. */
   let pendingMargin = leading;
+  /** How many floats were placed before this box's content began, while
+   *  nothing has yet fixed where the content is: a margin that collapses
+   *  up through its top edge would take the ones placed since down with
+   *  it (`clearanceSince`). Infinity once a child in flow has fixed it,
+   *  and from the start where a border, padding or a formatting context
+   *  of its own does. */
+  let openFloats = topOpen(box) ? floats.count : Infinity;
   let first = true;
   /** Whether every child in flow so far was absorbed whole into this box's
    *  top margin: the walk that marked the next child reached it only
@@ -545,11 +596,28 @@ function layoutChildren(
     // collapsed with its first descendants' where nothing parts them.
     let absorbed = child.topAbsorbed;
     if (absorbed !== 0 && !(open ??= topOpen(box))) absorbed = 0;
-    const top = absorbed ? 0 : collapsedTopMargin(child, contentWidth);
+    const top = absorbed
+      ? 0
+      : collapsedTopMargin(child, contentWidth, floats, y, pendingMargin);
     const collapsed = collapseMargins(pendingMargin, top);
     let childY = y + collapsed;
-    const clearance = floats.clearance(child.style.clear);
-    if (clearance > -Infinity && clearance > childY) childY = clearance;
+    const clear = child.style.clear;
+    const clearance = floats.clearance(clear);
+    if (clearance > -Infinity) {
+      // A float placed before anything fixed where this box's content is
+      // goes down with the margin where `clear` is none, so the child is
+      // never below it there: it has clearance, and its border edge goes
+      // under the floats whatever its margin is, which may take it back
+      // up (CSS 2.1 9.5.2, as the browsers read it). A margin under a
+      // float in an empty block put a block that cleared it the margin
+      // below the float, and its parent's background showed between.
+      if (
+        openFloats !== Infinity &&
+        floats.clearanceSince(clear, openFloats) > -Infinity
+      ) {
+        childY = clearance;
+      } else if (clearance > childY) childY = clearance;
+    }
 
     if (
       !floats.isEmpty &&
@@ -582,6 +650,7 @@ function layoutChildren(
     open = false;
     y = child.y + child.height;
     pendingMargin = child.marginBottom;
+    openFloats = Infinity;
     // cleared, and empty: its margins collapse together, and what follows
     // collapses with them, a top margin that has clearance (CSS 2.1 8.3.1)
     cleared = moved && collapsesThrough(child);

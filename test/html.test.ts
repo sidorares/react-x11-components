@@ -2740,6 +2740,42 @@ test('inherit reaches the box model', async () => {
   assert.strictEqual(p.padLeft, 3);
 });
 
+test('initial is where a property starts, inherited or not', async () => {
+  // `line-height: initial` in a box inside 200px lines was 200px still,
+  // which it inherits, and `margin: initial` after a margin was that
+  // margin: the keyword is the property's initial value, whatever came
+  // before it (CSS Cascade 4, 7.3.1)
+  const { node } = await render(
+    '<style>#a { margin: 9px } #a { margin: initial }</style>' +
+      '<div style="line-height:200px"><p id="p" style="line-height:initial">' +
+      'x</p></div><p id="a">x</p>',
+  );
+  const el = view(node);
+  const style = (id: string) =>
+    (
+      boxOf(el, id) as unknown as {
+        style: { lineHeight: unknown; marginTop: number };
+      }
+    ).style;
+  assert.strictEqual(style('p').lineHeight, 'normal');
+  assert.strictEqual(style('a').marginTop, 0);
+});
+
+test('a border shorthand that names a part twice is no border', async () => {
+  // `<line-width> || <line-style> || <color>`, each at most once: `red
+  // solid 16px red` is invalid, and the border before it stands, where the
+  // second colour was taken for the first
+  const { node } = await render(
+    '<div id="a" style="border:1px solid #00ff00;' +
+      'border:#ff0000 solid 16px #ff0000"></div>',
+  );
+  const a = boxOf(view(node), 'a') as unknown as {
+    style: { borderTopWidth: number; borderTopColor: string };
+  };
+  assert.strictEqual(a.style.borderTopWidth, 1);
+  assert.strictEqual(a.style.borderTopColor, '#00ff00');
+});
+
 test('an iframe is a box of its size with nothing in it', async () => {
   const { node } = await render(
     '<iframe id="a" style="border:0"></iframe>' +
@@ -8448,7 +8484,64 @@ test('an empty cleared block ends its parent where its collapsed margin ends', a
   assert.strictEqual(boxOf(el, 'q').height, 201);
 });
 
+test('a block that clears a float placed before any content is under it', async () => {
+  // A float placed before anything fixed where its parent's content is
+  // would go down with a margin collapsing up through the parent's top,
+  // were `clear` none, so a block that clears it always has clearance:
+  // its border edge goes under the float whatever its margin, and the
+  // parent is the two of them (CSS 2.1 9.5.2, as the browsers read it).
+  // The margin put it 400px below the float, the parent's background
+  // showing between.
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div id="p" style="width:100px"><div><div id="f" style="float:left;' +
+      'width:100px;height:50px"></div></div><div id="c" style="clear:left;' +
+      'margin-top:400px;height:50px"></div></div>',
+  );
+  const el = view(node);
+  const [p, f, c] = ['p', 'f', 'c'].map((id) => boxOf(el, id));
+  assert.strictEqual(c.y, f.y + 50, 'under the float');
+  assert.strictEqual(p.height, 100);
+});
+
+test('a margin that takes a cleared block past the floats is any margin', async () => {
+  // with no clearance, nothing parts the block's margin from its parent's,
+  // and it goes on up through the parent's top: stopped at the block, it
+  // left the parent where it was, and its background showed above it
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="float:left;width:100px;height:100px"></div>' +
+      '<div style="padding-top:1px"><div id="r"><div id="c" style="clear:left;' +
+      'margin-top:150px;height:10px"></div></div></div>',
+  );
+  const el = view(node);
+  const [r, c] = ['r', 'c'].map((id) => boxOf(el, id));
+  assert.strictEqual(c.y, 151, 'its margin below the padding');
+  assert.strictEqual(r.y, c.y, 'and the parent moved with it');
+});
+
 // --- an inline box's own line height -------------------------------------------------
+
+metric("an empty inline box's line height makes its line taller", async () => {
+  // every inline box is on its line as tall as its own line height, text
+  // or none (CSS 2.1 10.8): an empty span of 100px lines before the text
+  // was on a line of its own after it, and the text's line was 20px. A
+  // line of nothing but empty boxes is no line (9.4.2), unless one of them
+  // has a border or a margin, whatever the two add up to
+  const { node } = await render(
+    '<style>body{margin:0} div{line-height:1;font-size:20px}</style>' +
+      '<div id="t"><span style="line-height:5"></span>X</div>' +
+      '<div id="e"><span style="line-height:5"></span></div>' +
+      '<div id="m"><span style="line-height:5;border-left:10px solid;' +
+      'margin-left:-10px"></span></div>',
+  );
+  const el = view(node);
+  const lines = linesOf(el, 't');
+  assert.strictEqual(lines.length, 1, 'one line');
+  assert.strictEqual(lines[0].height, 100);
+  assert.strictEqual(boxOf(el, 'e').height, 0, 'no line');
+  assert.strictEqual(boxOf(el, 'm').height, 100, 'a line');
+});
 
 metric("an inline box's own line height makes its line taller", async () => {
   // CSS gives every inline box its own line height, and the line box holds
