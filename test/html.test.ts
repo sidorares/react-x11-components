@@ -3015,6 +3015,45 @@ test('a document a hair past a whole pixel measures that pixel', async () => {
   );
 });
 
+test('a flex item as wide as its content keeps it on one line', async () => {
+  // An item exactly as wide as its content — `width: fit-content` in a
+  // column, an item its content sizes in a row, a flex box sized to what it
+  // holds — has that width held by Yoga as a float32, and a width rounded
+  // down under the content laid it out a hair too narrow: meetup.com's
+  // "About us" and "Related topics" headings wrapped their last word. Two
+  // boxes whose widths sum to 116.728px, which a float32 holds as
+  // 116.72799682…, stand in for a line of text.
+  const line = (n: number) =>
+    `<div style="line-height:10px">` +
+    `<span id="a${n}" style="display:inline-block;width:106.728px;height:10px"></span>` +
+    `<span id="b${n}" style="display:inline-block;width:10px;height:10px"></span>` +
+    `</div>`;
+  const shapes = [
+    (n: number) =>
+      `<div style="display:flex;flex-direction:column">` +
+      `<div id="fit${n}" style="width:fit-content">${line(n)}</div></div>`,
+    (n: number) =>
+      `<div style="display:flex;align-items:baseline;justify-content:space-between">` +
+      `<div style="display:flex;gap:8px">${line(n)}</div></div>`,
+    (n: number) =>
+      `<div style="display:flex">` +
+      `<div style="display:flex;flex-direction:column">${line(n)}</div></div>`,
+    (n: number) =>
+      `<div style="display:flex;flex-direction:column;width:fit-content">` +
+      `<div style="display:flex">${line(n)}</div></div>`,
+  ];
+  const { node } = await render(shapes.map((shape, n) => shape(n)).join(''));
+  const el = view(node);
+  assert.strictEqual(boxOf(el, 'fit0').width, 116.728);
+  shapes.forEach((_, n) =>
+    assert.strictEqual(
+      boxOf(el, `b${n}`).y,
+      boxOf(el, `a${n}`).y,
+      `shape ${n}: the second box beside the first, not under it`,
+    ),
+  );
+});
+
 metric(
   'a character the engine cannot shape costs itself, not the document',
   async () => {

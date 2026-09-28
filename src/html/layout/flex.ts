@@ -128,7 +128,7 @@ export function layoutFlex(
     }
     const node = Y.Node.create(flexConfig());
     resolveEdges(child, contentWidth);
-    const laid: Laid = { width: NaN, height: NaN };
+    const laid: Laid = { width: NaN, height: NaN, set: NaN, stretch: NaN };
     applyItem(node, child, ctx, contentWidth, laid);
     root.insertChild(node, items.length);
     items.push({ box: child, node, laid });
@@ -166,7 +166,12 @@ export function layoutFlex(
   for (const { box: child, node, laid } of items) {
     const left = box.contentX + node.getComputedLeft();
     const top = box.contentY + node.getComputedTop();
-    const width = node.getComputedWidth();
+    const width = meant(
+      node.getComputedWidth(),
+      laid.set,
+      laid.stretch,
+      laid.width,
+    );
     const itemHeight = node.getComputedHeight();
     // The item is laid out again at the width the flex pass settled on: the
     // measure function answered a question, and the answer is not a layout —
@@ -279,6 +284,7 @@ function applyItem(
   laid: Laid,
 ): void {
   const style = box.style;
+  laid.stretch = containingWidth - box.marginLeft - box.marginRight;
   // an `auto` margin takes the free space on its side, which is how
   // `margin-left: auto` puts an item at the end of its row (CSS Flexbox
   // 8.1); Yoga does that itself
@@ -301,7 +307,7 @@ function applyItem(
   const across = style.boxSizing === 'border-box' ? 0 : box.horizontalExtra;
   const down = style.boxSizing === 'border-box' ? 0 : box.verticalExtra;
   if (style.width !== AUTO) {
-    setLength(node, true, style.width, containingWidth, across);
+    laid.set = setLength(node, true, style.width, containingWidth, across);
   }
   if (style.height !== AUTO) setLength(node, false, style.height, NaN, down);
   const minWidth = resolveOrNull(style.minWidth, containingWidth);
@@ -320,7 +326,10 @@ function applyItem(
     );
     const size = (keyword: ContentSize): number =>
       contentSizedWidth(box, ctx, keyword, room, containingWidth);
-    if (style.widthKeyword) node.setWidth(size(style.widthKeyword));
+    if (style.widthKeyword) {
+      laid.set = size(style.widthKeyword);
+      node.setWidth(laid.set);
+    }
     if (style.minWidthKeyword) node.setMinWidth(size(style.minWidthKeyword));
     if (style.maxWidthKeyword) node.setMaxWidth(size(style.maxWidthKeyword));
   }
@@ -376,7 +385,12 @@ function applyItem(
   node.setMeasureFunc((w, wm, h, hm) => {
     void h;
     void hm;
-    const inner = innerWidth(w, wm, content);
+    const extra = box.horizontalExtra;
+    const inner = innerWidth(
+      meant(w, laid.set - extra, laid.stretch - extra),
+      wm,
+      content,
+    );
     let answer = answers.get(inner);
     if (answer === undefined) {
       answer = measureBox(box, ctx, inner);
@@ -398,8 +412,40 @@ const MAX_CONTENT = new WeakMap<Box, number>();
 interface Laid {
   width: number;
   height: number;
+  /** The border-box width this engine set on the item's node — a length,
+   *  or the content's for `fit-content` and its kin — or NaN. */
+  set: number;
+  /** Its border-box width stretched across its container: the container's
+   *  content width, less its margins. */
+  stretch: number;
 }
 
+/**
+ * Whether two widths are the same to a float32's precision. Yoga keeps
+ * every length as a float32, a few of its own operations deep, and hands
+ * back a width this engine meant rounded — down as often as up.
+ */
+function nearly(a: number, b: number): boolean {
+  return Math.abs(a - b) <= Math.max(Math.abs(a), Math.abs(b)) * 2 ** -20;
+}
+
+/**
+ * Yoga's width for an item, as this engine meant it: the first of
+ * `intended` it is the float32 of, or its own where it is none of them. A
+ * box exactly as wide as its text — `width: fit-content` in a column, an
+ * item as wide as its content in a row, a flex box sized to what it holds —
+ * came back a hair narrower than the text, and laid out there its last word
+ * wrapped: meetup.com's "About us" and "Related topics" were two lines.
+ */
+function meant(width: number, ...intended: number[]): number {
+  for (const w of intended) {
+    if (Number.isFinite(w) && nearly(width, w)) return w;
+  }
+  return width;
+}
+
+/** Set a length on the node; the points it set, or NaN where it set a
+ *  percentage, which Yoga resolves, or nothing. */
 function setLength(
   node: YogaNode,
   across: boolean,
@@ -407,22 +453,28 @@ function setLength(
   base: number,
   /** Padding and border a `content-box` length goes without. */
   extra: number,
-): void {
-  const px = (v: number) => (across ? node.setWidth(v) : node.setHeight(v));
-  const percent = (v: number) =>
-    across ? node.setWidthPercent(v) : node.setHeightPercent(v);
-  if (len === AUTO) return;
+): number {
+  const px = (v: number) => {
+    if (across) node.setWidth(v);
+    else node.setHeight(v);
+    return v;
+  };
+  const percent = (v: number) => {
+    if (across) node.setWidthPercent(v);
+    else node.setHeightPercent(v);
+    return NaN;
+  };
+  if (len === AUTO) return NaN;
   if (isPct(len)) {
     // Yoga takes a percentage or points, not both: `calc(100% - 20px)`
     // resolves here where its base is known, and so does a percentage with
     // padding to add, and a percentage is kept alone where it is not
-    if (!len.px && !len.of && !extra) percent(len.pct);
-    else if (Number.isFinite(base)) px(resolve(len, base) + extra);
-    else if (len.of) return;
-    else percent(len.pct);
-    return;
+    if (!len.px && !len.of && !extra) return percent(len.pct);
+    if (Number.isFinite(base)) return px(resolve(len, base) + extra);
+    if (len.of) return NaN;
+    return percent(len.pct);
   }
-  px(len + extra);
+  return px(len + extra);
 }
 
 /**
@@ -458,9 +510,13 @@ function innerWidth(
     return Math.max(0, width);
   }
   const content = maxContent();
-  return mode === Y.MEASURE_MODE_AT_MOST && Number.isFinite(width)
-    ? Math.min(content, Math.max(0, width))
-    : content;
+  if (mode !== Y.MEASURE_MODE_AT_MOST || !Number.isFinite(width)) {
+    return content;
+  }
+  // a room exactly as wide as the content, as Yoga holds it, is room for it
+  return content <= width || nearly(content, width)
+    ? content
+    : Math.max(0, width);
 }
 
 /**
@@ -496,7 +552,12 @@ function autoMinimums(
     ) {
       continue;
     }
-    const width = node.getComputedWidth();
+    const width = meant(
+      node.getComputedWidth(),
+      laid.set,
+      laid.stretch,
+      laid.width,
+    );
     // An item its content sizes along a row: one with a width of its own
     // may shrink under it to what its content comes to, which that width
     // hides from a measure, and keeps Yoga's minimum of none
