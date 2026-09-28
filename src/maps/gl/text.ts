@@ -301,12 +301,16 @@ export class SurfaceTextEngine implements TextEngine {
     const started = now();
     // The rows drawn into: what is read back, and no more.
     let used = 0;
+    let drawn = 0;
     items.forEach((item, i) => {
       const place = places[i];
       if (!place) return;
       // Drawing is this thread's time; past the budget the rest wait for
-      // the next batch.
-      if (now() - started > DRAW_BUDGET_MS) {
+      // the next batch — all but the first. A pause before it, a collection
+      // or a slow runner, deferred every string: nothing drawn, a readback of
+      // no rows, and a throw out of the frame; and a machine that slow would
+      // never have set one.
+      if (drawn > 0 && now() - started > DRAW_BUDGET_MS) {
         places[i] = undefined;
         return;
       }
@@ -332,7 +336,13 @@ export class SurfaceTextEngine implements TextEngine {
         );
       }
       used = Math.max(used, place.y + place.h);
+      drawn += 1;
     });
+    // nothing drawn — every icon here had nothing to fill with — is nothing
+    // to read back
+    if (drawn === 0) {
+      return places.map((p) => (p === null ? null : undefined));
+    }
     const image = await ctx.getImageData(0, 0, STAGING_WIDTH, used);
     return places.map((place) => {
       if (!place) return place;
