@@ -2329,7 +2329,9 @@ two agreed.
      fix-up wraps in an anonymous cell it is that cell's, so
      `<span>a</span> <span>b</span>` in a `display: table-row` is a cell
      of `a b`, as it is loose in a table. It was dropped from both, and
-     the words ran together. Firefox keeps it, and on wpt.fyi alone passes `table-anonymous-objects-085` and `-086`; Chrome, Edge and Safari drop it, as this did.
+     the words ran together. Firefox keeps it, and on wpt.fyi alone
+     passes `table-anonymous-objects-085` and `-086`; Chrome, Edge and
+     Safari drop it, as this did.
 183. **An empty caption set to a width did not widen its table.** An
      auto table is at least as wide as its widest caption (CSS 2.1
      17.4), and a caption's least width is the one it sets itself where
