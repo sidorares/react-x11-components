@@ -2516,6 +2516,133 @@ minutes. A diagnostic report showed an idle process with an open pipe to
   rasterizer stroking every visible edge again at each step, and the GL
   renderer does it at 59.
 
+## Round 26: very long text, and the server the tests draw on
+
+The same machine as round 25. This round started from a crash: a `<Code>`
+block of 20,000 lines in a scroll pane threw out of its first paint.
+
+### A box too tall for 16.16 fixed point (ntk #412)
+
+The box behind that code block is a rounded rectangle about 380,000 pixels
+tall. On ntk's server rasterisation route its trapezoids go out in XRender's
+16.16 fixed point, and a coordinate past 32,767 overflows the word node-x11
+writes it into:
+
+```
+RangeError [ERR_OUT_OF_RANGE]: … Received 24_794_300_416
+```
+
+Core X rectangles and composite coordinates have the same limit at 16 bits,
+on other paths. Fills, strokes, clip paths, rectangles and batches of
+rectangles are now cut to the surface first, with a pixel to spare. A
+drawing that fits is sent exactly as before.
+
+### Only the lines the surface shows (ntk #415)
+
+With the crash gone, the first paint was 5.0 s. 1.5 s of it was
+`TextLayout.draw` building glyph runs for all 20,000 lines, for the server
+to clip to the 35 on screen. ntk already culled glyphs one at a time; now a
+layout skips a line whose box, grown by its height and its font's extent on
+either side, is outside the rows the clip lets through. That applies under a
+translation only; a shadow or any other transform draws every line. First
+paint: 5.0 s to 3.55 s.
+
+### Spans that share a style share its shaping (ntk #416)
+
+A highlighted source file is a span a token: half a million for those
+20,000 lines, over a handful of styles. `_prepare` looked a font up and
+built the shaping memo's key once a span, and the key's cache was a WeakMap
+keyed by each new span object, so it never hit. Spans whose every property
+shaping reads is the same now share one shaping style, and with it one font
+lookup and one key.
+
+| first paint, 20,000 lines | before    | after |
+| ------------------------- | --------- | ----- |
+| `<Code>`, TypeScript      | 3.6–4.2 s | 2.2 s |
+| `<TerminalOutput>`, a log | 1.4–1.9 s | 1.2 s |
+
+What is left of the code block's layout is mostly fontkit shaping its
+40,000 distinct words, which is fontkit's own set-up per call.
+
+### A word nothing of which fits (ntk #417)
+
+Core measures a column's width floors by laying each paragraph out at
+width 0. There every word is wider than its line, and `_forceBreak`
+segmented each one into graphemes and binary searched its prefixes. It
+shaped a dozen strings the memo had never seen, to learn that not even the
+first cluster fits and the word overflows whole. It now shapes the first
+cluster alone. For the 600 KB Markdown report the width floor pass went
+from 459 ms to 294 ms, and first paint from 1.31–1.33 s to 1.24–1.30 s.
+Lesson 32 is the same engine question from the other side.
+
+The next profile had most of what was left in finding that first cluster:
+`Intl.Segmenter` at a microsecond a call, 76 ms of the mount. Two ASCII
+characters are never one cluster, bar CR LF, so for ASCII text the first
+character is the answer (ntk #419); the report's first paint went to 1.19 s.
+
+### react-x11's suite, on the ntk its users get (ntk #413, react-x11 #732, #733)
+
+react-x11's lockfile held ntk at 8.10.0 while its `^8.10.0` range gave
+every fresh install 8.13. Run against 8.13.0, its suite had 25 failures.
+
+- **Most were ntk #410's compositor probe.** Its three requests run from
+  each other's replies, and when a window presented once and closed at
+  once, the next request threw `client is in closing state` out of the
+  reply dispatch, failing whichever test it landed in.
+- **One was a window no one asked for.** The probe watched the compositor's
+  selection through `app.clipboard`, which made the clipboard's hidden
+  window first. So every app that presented a frame had an unmapped window
+  on the root, and `offscreen.test.js`, which takes the last root child for
+  its `<window>`, took that one.
+- **Two were a gate that had moved.** The real-ntk latency tests assumed one
+  frame in flight; ntk 8.12 keeps two (ntk #370). On a loaded machine ten
+  events outlast the blit interval, and a second one paints on the spot.
+
+ntk #413 guards each step of the probe and registers the watch on the root
+window, as GDK does. react-x11 #732 pins the tests to one frame in flight,
+and #733 moved the lockfile. The suite passes whole on 8.13.1.
+
+### The compositor the tests draw on (node-x11 #302)
+
+The slowest file in this repository's suite was
+`code-editor-highlight.test.ts`, at 125 s alone; one of its tests took 72 s.
+Nine tenths of that was node-x11's in-process X server compositing:
+
+- **a solid colour through a glyph mask**, blended per pixel even where the
+  mask was 0;
+- **a8 onto a8**, a mask meeting a clip;
+- **trapezoids added into an a8 picture**, ntk rasterising clip paths. That
+  was 133 million pixels over 278 calls, each the size of the window, through
+  the general per-pixel loop.
+
+Each of the three has its own path now, with the general loop's arithmetic
+in its order, so what lands is the same to the bit. In `bench-render.js`:
+45 to 168 Mpx/s through a glyph mask, 20 to 161 for a stroke as trapezoids,
+19 to 51 for a clip mask. That file now runs in 49 s, and this repository's
+suite in 1m20s rather than 2m40s.
+
+node-x11's own equivalence tests had been checking less than they seemed
+to. Their helpers passed 16-bit colours to a client that takes 0..1 and
+saturates the rest, so every gradient was 0 and 255. `CreateSolidFill` was
+given one array where it takes four arguments, so every solid source was
+transparent black. Fixed, the whole file still passes against the old
+compositor, and each new path was broken on purpose to see the file catch
+it.
+
+### Still open on this machine
+
+- **A Markdown edit's walks in core.** `contentReach` reads every block of
+  a column that was laid out again, and an edit that changes one block's
+  height re-lays out the column: about 5 ms of the 9.5 ms placing an edit's
+  boxes takes at 600 KB. An incremental reach would need core to know
+  which children moved only by their offset.
+- **Reflow is yoga's.** A Markdown reflow step is 209–215 ms at 600 KB. The
+  root layout is half of it, and seven tenths of that is yoga's own
+  algorithm over 8,606 nodes, run 3.8 times a frame.
+- **Shaping a word the memo has not seen** is fontkit's set-up per call:
+  feature assignment, lookups and script selection for every word. It is
+  most of what a 20,000-line code block's layout still costs.
+
 ## Lessons
 
 1. **Look for caches that never hit.** Identity-keyed caches handed a new
@@ -2669,6 +2796,17 @@ minutes. A diagnostic report showed an idle process with an open pipe to
     where such a test is written on purpose. Two ran at 100% of a core for
     five and a half hours under every measurement taken in that time, and
     nothing reported them.
+37. **Run a dependency's newest release, not only the locked one.** A
+    lockfile that pins what CI installs, under a range that gives users
+    something newer, means CI tests a version nobody gets. react-x11's
+    held ntk at 8.10.0 through three minors; the suite on 8.13 found a
+    crash and a stray window in ntk, and a test written for a gate ntk had
+    since moved.
+38. **An equivalence test is as strong as what it draws.** node-x11's
+    fast-path tests compared every path against the general loop and
+    passed for years. Their colours were saturated to 0 and 255 and their
+    solid sources transparent. Break the code a test guards and watch it
+    fail before trusting it.
 
 ## Still open
 
