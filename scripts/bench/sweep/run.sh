@@ -88,7 +88,7 @@ for b in $BACKENDS; do
   fi
   if has docs; then
     for c in md html; do
-      for a in mount edit append scroll reflow; do cell docsweep.tsx REACT_X11_BACKEND=$b COMP=$c ACTION=$a; done
+      for a in mount edit insert append scroll reflow; do cell docsweep.tsx REACT_X11_BACKEND=$b COMP=$c ACTION=$a; done
     done
   fi
   if has editors; then

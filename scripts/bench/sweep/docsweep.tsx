@@ -6,6 +6,8 @@
 //   ACTION   mount   render it; time to the first painted frame and to idle
 //            reflow  the window's width swept 1000 <-> 640, a step a frame
 //            edit    one paragraph mid-document rewritten every 100 ms
+//            insert  a paragraph inserted mid-document and taken out again,
+//                    every 100 ms: the block count changes on each step
 //            append  a section appended every 50 ms, `partial`
 //            scroll  the pane wheeled, 60 notches a second
 // Frames are the window's own flushes that painted; `lat` is from a change
@@ -225,6 +227,22 @@ if (ACTION !== 'mount') {
           ...sec.paras.slice(1),
         ],
       };
+      setSource(docOf(edited));
+    });
+  } else if (ACTION === 'insert') {
+    const mid = Math.floor(SIZE / 2);
+    await every(100, (i) => {
+      const edited = base.slice();
+      const sec = edited[mid];
+      if (i % 2 === 0)
+        edited[mid] = {
+          ...sec,
+          paras: [
+            sec.paras[0],
+            { ...sec.paras[0], text: `An inserted paragraph ${i}.` },
+            ...sec.paras.slice(1),
+          ],
+        };
       setSource(docOf(edited));
     });
   } else if (ACTION === 'append') {

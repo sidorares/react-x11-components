@@ -365,7 +365,12 @@ function renderBlocks(blocks: BlockNode[], ctx: RenderCtx): ReactNode[] {
   return blocks.map((b, i) => renderBlock(b, ctx, i));
 }
 
-function renderBlock(block: BlockNode, ctx: RenderCtx, key: number): ReactNode {
+function renderBlock(
+  block: BlockNode,
+  ctx: RenderCtx,
+  key: number,
+  first = key === 0,
+): ReactNode {
   const look = ctx.look;
   switch (block.type) {
     case 'paragraph':
@@ -378,7 +383,7 @@ function renderBlock(block: BlockNode, ctx: RenderCtx, key: number): ReactNode {
         weight: 700,
       });
       return richtext(key, runsOf(block.children, s), {
-        marginTop: key === 0 ? 0 : Math.round(look.blockGap * 0.6),
+        marginTop: first ? 0 : Math.round(look.blockGap * 0.6),
       });
     }
 
@@ -706,9 +711,20 @@ const STYLES = {
 
 // --- the component ---------------------------------------------------------
 
+/** What the last render made for one top-level block. */
+interface RenderedBlock {
+  raw: string;
+  live: boolean;
+  first: boolean;
+  key: number;
+  element: ReactNode;
+}
+
 interface BlockCache {
   epoch: string;
-  map: Map<string, ReactNode>;
+  blocks: RenderedBlock[];
+  /** a key no block has had */
+  next: number;
 }
 
 /**
@@ -786,10 +802,18 @@ export function Markdown(props: MarkdownProps): ReactElement {
     return evaluate ? resolveExpressions(parsed, evaluate) : parsed;
   }, [source, partial, isComponent, evaluate]);
 
-  // Per-block element cache, keyed on the block's raw source (+ whether it
-  // is the live tail). Streaming appends re-render only the block that
-  // changed; everything else is the same ReactElement, so React bails out
-  // and the retained nodes keep their layout caches.
+  // Per-block element cache: a block whose raw source is what it was (and
+  // is still the live tail, or not, and still first, or not) is the same
+  // ReactElement, so React bails out and the retained nodes keep their
+  // layout caches. Streaming appends re-render only the block that changed.
+  //
+  // Each block keeps its React key from one render to the next, found by
+  // lining the blocks up with the last render's from both ends: those the
+  // change left alone keep theirs, and the changed ones in the middle take
+  // the keys of the ones they replace, in order, so an edited paragraph is
+  // updated where it stands. Keyed by index, a paragraph inserted mid-way
+  // moved every block after it onto another block's key, and all of them
+  // were rendered and laid out again: a second, in a 600 KB document.
   const cacheRef = React.useRef<BlockCache | null>(null);
   const fonts = app?.fonts ?? null;
   // Neither the fences map nor `resolveLanguage` can be part of a string
@@ -824,13 +848,35 @@ export function Markdown(props: MarkdownProps): ReactElement {
   }
   const epoch = `${look.key}|${fonts ? 'f' : '-'}|${seamsRef.current.gen}`;
   if (!cacheRef.current || cacheRef.current.epoch !== epoch) {
-    cacheRef.current = { epoch, map: new Map() };
+    // the keys carry over, so a new epoch updates each block in place
+    cacheRef.current = {
+      epoch,
+      blocks: (cacheRef.current?.blocks ?? []).map((b) => ({
+        ...b,
+        element: undefined,
+      })),
+      next: cacheRef.current?.next ?? 0,
+    };
   }
   const cache = cacheRef.current;
 
   const children: ReactNode[] = [];
   {
-    const nextMap = new Map<string, ReactNode>();
+    const was = cache.blocks;
+    const n = doc.blocks.length;
+    let head = 0;
+    while (head < n && head < was.length && was[head].raw === doc.raws[head]) {
+      head += 1;
+    }
+    let tail = 0;
+    while (
+      tail < n - head &&
+      tail < was.length - head &&
+      was[was.length - 1 - tail].raw === doc.raws[n - 1 - tail]
+    ) {
+      tail += 1;
+    }
+    const kept: RenderedBlock[] = [];
     const ctx: RenderCtx = {
       look,
       fonts,
@@ -839,24 +885,39 @@ export function Markdown(props: MarkdownProps): ReactElement {
       components: props.components,
       ...(evaluate ? { evaluate } : null),
     };
-    for (let i = 0; i < doc.blocks.length; i += 1) {
-      const live = partial && i === doc.blocks.length - 1;
-      const cacheKey = `${i}|${live ? 'L' : '.'}|${doc.raws[i]}`;
-      const hit = cache.map.get(cacheKey) ?? nextMap.get(cacheKey);
-      if (hit !== undefined) {
-        children.push(hit);
-        nextMap.set(cacheKey, hit);
-        continue;
-      }
-      const element = renderBlock(
-        doc.blocks[i],
-        live ? { ...ctx, live } : ctx,
-        i,
-      );
+    for (let i = 0; i < n; i += 1) {
+      const raw = doc.raws[i];
+      const live = partial && i === n - 1;
+      const first = i === 0;
+      // the block this one stands for in the last render, if any
+      const before =
+        i < head
+          ? was[i]
+          : i >= n - tail
+            ? was[was.length - n + i]
+            : i < was.length - tail
+              ? was[i]
+              : undefined;
+      const key = before ? before.key : cache.next++;
+      const element =
+        before &&
+        before.element !== undefined &&
+        before.raw === raw &&
+        before.live === live &&
+        before.first === first
+          ? before.element
+          : renderBlock(
+              doc.blocks[i],
+              live ? { ...ctx, live } : ctx,
+              key,
+              first,
+            );
       children.push(element);
-      nextMap.set(cacheKey, element);
+      kept.push({ raw, live, first, key, element });
     }
-    cache.map = nextMap; // old entries fall away with the text that made them
+    // what the next render lines up against; the rest falls away with the
+    // text that made it
+    cache.blocks = kept;
   }
 
   const rootStyle: Style = {
