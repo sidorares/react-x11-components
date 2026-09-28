@@ -449,20 +449,26 @@ function baselineOf(layout: LayoutLike): number | null {
   return typeof b === 'number' && Number.isFinite(b) ? b : null;
 }
 
+/** One piece of a `ChunkedLayout`: where it starts in the line's display
+ *  text, in code points and in UTF-16 units, where it starts across, its
+ *  text, its layout, and the runs its spans styled it in — length, colour,
+ *  weight and style, four entries a run — which is what a rebuild compares
+ *  to keep it (`_chunkedLayout`). */
+interface Chunk {
+  cp: number;
+  u16: number;
+  x: number;
+  text: string;
+  layout: LayoutLike;
+  runs: readonly unknown[];
+}
+
 class ChunkedLayout implements LayoutLike {
   readonly width: number;
   readonly height: number;
   constructor(
-    /** Each piece: where it starts in the line's display text, in code
-     *  points and in UTF-16 units, where it starts across, its text and its
-     *  layout. In order, and never empty. */
-    private readonly chunks: {
-      cp: number;
-      u16: number;
-      x: number;
-      text: string;
-      layout: LayoutLike;
-    }[],
+    /** The pieces, in order, and never empty. */
+    readonly chunks: readonly Chunk[],
   ) {
     const last = chunks[chunks.length - 1];
     this.width = last.x + last.layout.width;
@@ -541,10 +547,10 @@ class ChunkedLayout implements LayoutLike {
  *  come, so a character typed into a piece moves the cuts near it and none
  *  of the rest — the pieces after it are the same text as before, and their
  *  layouts are found again rather than shaped again. */
-function chunkBreaks(display: string): number[] {
-  const breaks = [0];
-  let last = 0;
-  for (let i = 1; i < display.length; i++) {
+function chunkBreaks(display: string, from = 0): number[] {
+  const breaks = [from];
+  let last = from;
+  for (let i = from + 1; i < display.length; i++) {
     const since = i - last;
     if (since < CHUNK_MIN) continue;
     const code = display.charCodeAt(i - 1);
@@ -772,7 +778,7 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
         ? lang.createTokenizer({
             invalidate: (fromLine) => {
               for (const key of this._lineCache.keys()) {
-                if (key >= fromLine) this._lineCache.delete(key);
+                if (key >= fromLine) this._dropLine(key);
               }
               this._repaint();
             },
@@ -780,6 +786,7 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
         : null;
       this._tok?.setLines(this._lines);
       this._lineCache.clear();
+      this._chunkedStash = null;
     }
     return this._tok;
   }
@@ -993,10 +1000,26 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
       if (cursor < map.display.length) {
         spans.push({ text: map.display.slice(cursor) });
       }
-      layout =
-        map.display.length > CHUNKED_PAST
-          ? this._chunkedLayout(fonts, base, styleKey, spans)
-          : fonts.layout(spans.length > 0 ? spans : [{ text: '' }], base);
+      if (map.display.length > CHUNKED_PAST) {
+        const stash = this._chunkedStash;
+        const previous =
+          cached?.layout instanceof ChunkedLayout &&
+          cached.styleKey === styleKey
+            ? cached.layout
+            : stash?.styleKey === styleKey
+              ? stash.layout
+              : null;
+        layout = this._chunkedLayout(
+          fonts,
+          base,
+          styleKey,
+          map.display,
+          spans,
+          previous,
+        );
+      } else {
+        layout = fonts.layout(spans.length > 0 ? spans : [{ text: '' }], base);
+      }
     }
     const entry: LineCacheEntry = {
       raw,
@@ -1019,24 +1042,95 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
    */
   private _chunkLayouts = new Map<string, LayoutLike>();
 
+  /** The last long line an edit took out of the line cache, which the next
+   *  long line laid out starts from (`_chunkedLayout`). Checked piece by
+   *  piece against what it is asked for, so one from another line, or from
+   *  before an edit that changed everything, is simply not used. */
+  private _chunkedStash: { styleKey: string; layout: ChunkedLayout } | null =
+    null;
+
+  /** Take a line's entry out of the cache, keeping a long one's pieces for
+   *  the rebuild the edit that dropped it is about to ask for. */
+  private _dropLine(line: number): void {
+    const entry = this._lineCache.get(line);
+    if (entry?.layout instanceof ChunkedLayout) {
+      this._chunkedStash = { styleKey: entry.styleKey, layout: entry.layout };
+    }
+    this._lineCache.delete(line);
+  }
+
   private _chunkedLayout(
     fonts: FontsLike,
     base: Record<string, unknown>,
     styleKey: string,
+    display: string,
     spans: Array<Record<string, unknown>>,
+    previous: ChunkedLayout | null,
   ): LayoutLike {
-    const chunks: {
-      cp: number;
-      u16: number;
-      x: number;
-      text: string;
-      layout: LayoutLike;
-    }[] = [];
-    let cp = 0;
-    let u16 = 0;
-    let x = 0;
-    const display = spans.map((sp) => sp.text as string).join('');
-    for (const piece of chunkSpans(spans, chunkBreaks(display))) {
+    const chunks: Chunk[] = [];
+    // The pieces an edit left alone, from the start of the line: the same
+    // text at the same place, in the same runs. Their layouts, and where
+    // they sit, are what they were, and the break after each is a break of
+    // the new line too, since a break depends on the text before it alone —
+    // all but the old line's last piece, which ended where the old line did.
+    // A keystroke at the end of a line of a million characters built a key
+    // from every piece's text and looked each one up: most of its 30 ms.
+    let from = 0;
+    let si = 0;
+    let spanStart = 0;
+    if (previous) {
+      const old = previous.chunks;
+      for (let k = 0; k < old.length - 1; k++) {
+        const chunk = old[k];
+        if (chunk.u16 !== from || !display.startsWith(chunk.text, from)) break;
+        const end = from + chunk.text.length;
+        let i = si;
+        let start = spanStart;
+        let at = from;
+        let r = 0;
+        let same = true;
+        while (at < end) {
+          const span = spans[i];
+          const spanEnd = start + (span.text as string).length;
+          const take = Math.min(spanEnd, end) - at;
+          const runs = chunk.runs;
+          if (
+            runs[r] !== take ||
+            runs[r + 1] !== (span.color ?? '') ||
+            runs[r + 2] !== (span.weight ?? '') ||
+            runs[r + 3] !== (span.style ?? '')
+          ) {
+            same = false;
+            break;
+          }
+          r += 4;
+          at += take;
+          if (at === spanEnd) {
+            start = spanEnd;
+            i += 1;
+          }
+        }
+        if (!same || r !== chunk.runs.length) break;
+        chunks.push(chunk);
+        from = end;
+        si = i;
+        spanStart = start;
+      }
+    }
+    const last = chunks[chunks.length - 1];
+    let cp = last ? last.cp + utf16ToCp(last.text, last.text.length) : 0;
+    let x = last ? last.x + last.layout.width : 0;
+    // the spans from where the kept pieces end, the first one cut there
+    const rest = spans.slice(si);
+    if (rest.length > 0 && from > spanStart) {
+      rest[0] = {
+        ...rest[0],
+        text: (rest[0].text as string).slice(from - spanStart),
+      };
+    }
+    const breaks = chunkBreaks(display, from).map((b) => b - from);
+    let u16 = from;
+    for (const piece of chunkSpans(rest, breaks)) {
       const key =
         styleKey +
         '|' +
@@ -1053,10 +1147,25 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
         this._chunkLayouts.set(key, layout);
       }
       const text = piece.map((sp) => sp.text as string).join('');
-      chunks.push({ cp, u16, x, text, layout });
+      const runs: unknown[] = [];
+      for (const sp of piece) {
+        runs.push(
+          (sp.text as string).length,
+          sp.color ?? '',
+          sp.weight ?? '',
+          sp.style ?? '',
+        );
+      }
+      chunks.push({ cp, u16, x, text, layout, runs });
       cp += utf16ToCp(text, text.length);
       u16 += text.length;
       x += layout.width;
+    }
+    if (chunks.length === 0) {
+      // an empty display is never chunked; kept here all the same so the
+      // layout is never empty
+      const layout = fonts.layout([{ text: '' }], base);
+      chunks.push({ cp: 0, u16: 0, x: 0, text: '', layout, runs: [] });
     }
     return new ChunkedLayout(chunks);
   }
@@ -2002,7 +2111,7 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
     const shift = edit.inserted - edit.removed;
     if (shift === 0) {
       for (let line = edit.fromLine; line < end; line++) {
-        this._lineCache.delete(line);
+        this._dropLine(line);
       }
       return;
     }
@@ -2010,6 +2119,9 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
     for (const [line, entry] of this._lineCache) {
       if (line < edit.fromLine) moved.set(line, entry);
       else if (line >= end) moved.set(line + shift, entry);
+      else if (entry.layout instanceof ChunkedLayout) {
+        this._chunkedStash = { styleKey: entry.styleKey, layout: entry.layout };
+      }
     }
     this._lineCache = moved;
   }
@@ -2645,6 +2757,7 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
       nextProps.tabSize !== before.tabSize
     ) {
       this._lineCache.clear();
+      this._chunkedStash = null;
       this._repaint();
     } else if (nextProps.lineNumbers !== before.lineNumbers) {
       this._repaint(); // every column moves with the gutter; no layout does
