@@ -2891,7 +2891,12 @@ test("an animation's zoom holds bodies over the budget, as the wheel does", asyn
     assert.ok(bodiesAway(), 'from the second, hidden while it runs');
     assert.strictEqual(renders, before + 10, 'and not rendered once a step');
   });
-  await act(() => new Promise((resolve) => setTimeout(resolve, 250)));
+  // The rest is counted from the frame that draws the last step, and the
+  // steps above drew none: a frame now, or the wait below races whichever
+  // frame the harness gets round to — on a loaded runner, the one at its
+  // end, 150 ms before the bodies come back.
+  await act();
+  await act(() => new Promise((resolve) => setTimeout(resolve, 300)));
   assert.ok(!bodiesAway(), 'back once the zoom rests');
   assert.ok(
     Math.abs((retained(bodyBox().children[0]).props.scale as number) - 0.98) <
