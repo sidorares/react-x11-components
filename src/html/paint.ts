@@ -27,7 +27,7 @@ import {
 } from '../richtext/runs.js';
 import type { FillContext } from '../richtext/runs.js';
 import { alphaOf, inkColor, isTransparent, resolve } from './css/values.js';
-import { borderShades } from './css/color.js';
+import { blend, borderShades } from './css/color.js';
 import type { Len } from './css/values.js';
 import type { BoxShadow, ComputedStyle, LinearGradient } from './css/style.js';
 import { copyStyle } from './css/style.js';
@@ -772,12 +772,21 @@ function paintShadows(
       ) {
         continue;
       }
+      // Cut, as a background is (`clampRect`), to what the paint reaches
+      // and as far again as the blur does, so the cut edges cast nothing
+      // on it. A shadow down a box thousands of pixels tall went to the
+      // server whole, and its outline, sent in 16.16 fixed point, threw.
+      const within = reach + CLAMP_PAD;
+      const cut = clampAround(options, shape, within);
+      if (!cut) continue;
+      Object.assign(shape, cut);
+      const own = clampAround(options, rect, within) ?? rect;
       const around = grownCorners(corners, s.spread);
       const color = inkColor(s.color, style.color);
       if (!(s.blur > 0) && !s.x && !s.y && s.spread >= 0 && !covered) {
         // a ring about the box: the band between it and the spread
         ctx.fillStyle = color;
-        fillRing(ctx, shape, around, rect, corners);
+        fillRing(ctx, shape, around, own, corners);
         continue;
       }
       if (!(s.blur > 0) && covered) {
@@ -808,7 +817,7 @@ function paintShadows(
           color,
           shape,
           around,
-          covered ? null : { rect, corners },
+          covered ? null : { rect: own, corners },
         )
       ) {
         continue;
@@ -826,10 +835,10 @@ function paintShadows(
         );
         roundedRect(
           ctx,
-          rect.x,
-          rect.y,
-          rect.width,
-          rect.height,
+          own.x,
+          own.y,
+          own.width,
+          own.height,
           corners,
           true,
           true,
@@ -865,6 +874,20 @@ function paintShadows(
   };
   if (!(pad.width > 0 && pad.height > 0)) return;
   if (!clampRect(options, pad.x, pad.y, pad.width, pad.height)) return;
+  // cut as an outer shadow is, by as far as any of them reaches: what is
+  // cast from beside a cut edge falls short of what the paint reaches
+  let furthest = 0;
+  for (const s of shadows) {
+    if (s.inset) {
+      furthest = Math.max(
+        furthest,
+        shadowReach(s.blur) + Math.abs(s.x) + Math.abs(s.y) + 1,
+      );
+    }
+  }
+  const padCut = clampAround(options, pad, furthest + CLAMP_PAD);
+  if (!padCut) return;
+  Object.assign(pad, padCut);
   const inner = insetCorners(
     corners,
     box.borderTop,
@@ -1708,6 +1731,23 @@ function intersects(box: Box, options: PaintOptions): boolean {
  */
 const CLAMP_PAD = 64;
 
+/** `clampRect` with a margin of its own, as a `Rect`. */
+function clampAround(options: PaintOptions, r: Rect, pad: number): Rect | null {
+  const damage = options.damage;
+  const x1 = Math.max(r.x, damage ? damage.x - pad : -COORD_LIMIT);
+  const y1 = Math.max(r.y, damage ? damage.y - pad : -COORD_LIMIT);
+  const x2 = Math.min(
+    r.x + r.width,
+    damage ? damage.x + damage.width + pad : COORD_LIMIT,
+  );
+  const y2 = Math.min(
+    r.y + r.height,
+    damage ? damage.y + damage.height + pad : COORD_LIMIT,
+  );
+  if (x2 <= x1 || y2 <= y1) return null;
+  return { x: x1, y: y1, width: x2 - x1, height: y2 - y1 };
+}
+
 function clampRect(
   options: PaintOptions,
   x: number,
@@ -1799,6 +1839,7 @@ function paintBackground(
         at.width,
         at.height,
         style.color,
+        rect,
       );
       fill();
     } else paintGradient(ctx, style, gradient, rect, at);
@@ -1857,7 +1898,16 @@ function paintGradient(
   if (Math.ceil((toX - fromX) / w) * Math.ceil((toY - fromY) / h) > MAX_TILES) {
     // a sliver of a root repeated down a long canvas: the one tile, and
     // its end colours on past it
-    ctx.fillStyle = linearGradient(ctx, gradient, x0, y0, w, h, style.color);
+    ctx.fillStyle = linearGradient(
+      ctx,
+      gradient,
+      x0,
+      y0,
+      w,
+      h,
+      style.color,
+      area,
+    );
     ctx.fillRect(area.x, area.y, area.w, area.h);
     return;
   }
@@ -1869,8 +1919,18 @@ function paintGradient(
       const left = Math.max(x, area.x);
       const right = Math.min(x + w, area.x + area.w);
       if (right <= left) continue;
-      ctx.fillStyle = linearGradient(ctx, gradient, x, y, w, h, style.color);
-      ctx.fillRect(left, top, right - left, bottom - top);
+      const tile = { x: left, y: top, w: right - left, h: bottom - top };
+      ctx.fillStyle = linearGradient(
+        ctx,
+        gradient,
+        x,
+        y,
+        w,
+        h,
+        style.color,
+        tile,
+      );
+      ctx.fillRect(tile.x, tile.y, tile.w, tile.h);
     }
   }
 }
@@ -1892,6 +1952,7 @@ function linearGradient(
   w: number,
   h: number,
   currentColor: string,
+  visible: { x: number; y: number; w: number; h: number } | null = null,
 ): unknown {
   let angle = gradient.angle;
   if (gradient.corner) {
@@ -1937,18 +1998,115 @@ function linearGradient(
   const to = Math.max(1, at[at.length - 1]!);
   const startX = x + w / 2 - (dx * length) / 2;
   const startY = y + h / 2 - (dy * length) / 2;
-  const g = ctx.createLinearGradient!(
-    startX + dx * length * from,
-    startY + dy * length * from,
-    startX + dx * length * to,
-    startY + dy * length * to,
-  );
-  for (let i = 0; i < stops.length; i += 1) {
-    g.addColorStop(
-      (at[i]! - from) / (to - from),
-      inkColor(stops[i].color, currentColor),
+  const x0 = startX + dx * length * from;
+  const y0 = startY + dy * length * from;
+  const x1 = startX + dx * length * to;
+  const y1 = startY + dy * length * to;
+  const colors = stops.map((stop) => inkColor(stop.color, currentColor));
+  if (
+    visible &&
+    length > 0 &&
+    !(
+      Math.abs(x0) < GRADIENT_REACH &&
+      Math.abs(y0) < GRADIENT_REACH &&
+      Math.abs(x1) < GRADIENT_REACH &&
+      Math.abs(y1) < GRADIENT_REACH
+    )
+  ) {
+    return clippedGradient(
+      ctx,
+      at as number[],
+      colors,
+      startX,
+      startY,
+      dx * length,
+      dy * length,
+      visible,
     );
   }
+  const g = ctx.createLinearGradient!(x0, y0, x1, y1);
+  for (let i = 0; i < stops.length; i += 1) {
+    g.addColorStop((at[i]! - from) / (to - from), colors[i]);
+  }
+  return g;
+}
+
+/**
+ * How far from the origin a gradient's line may end. X RENDER takes the
+ * ends in 16.16 fixed point, and a pair past ±32,767 pixels threw from the
+ * paint: a gradient down a document's long wrapper, scrolled far enough,
+ * or a stop at `calc(1px / 0)`.
+ */
+const GRADIENT_REACH = 16384;
+
+/**
+ * A gradient's line cut to the part `visible` sees — the colours the rest
+ * of it holds are never drawn — and moved along its perpendicular to run
+ * through `visible`, which a linear gradient's colours do not change
+ * along. `at` is where each stop is on the line from (`sx`, `sy`) that
+ * runs (`lx`, `ly`) for 1; a stop before or past the part is its colour
+ * there instead.
+ */
+function clippedGradient(
+  ctx: PaintContext,
+  at: number[],
+  colors: string[],
+  sx: number,
+  sy: number,
+  lx: number,
+  ly: number,
+  visible: { x: number; y: number; w: number; h: number },
+): unknown {
+  const along = (px: number, py: number): number =>
+    ((px - sx) * lx + (py - sy) * ly) / (lx * lx + ly * ly);
+  // and no further out than a context draws
+  const left = Math.max(visible.x, -GRADIENT_REACH);
+  const top = Math.max(visible.y, -GRADIENT_REACH);
+  const right = Math.max(left, Math.min(visible.x + visible.w, GRADIENT_REACH));
+  const bottom = Math.max(top, Math.min(visible.y + visible.h, GRADIENT_REACH));
+  let t0 = Infinity;
+  let t1 = -Infinity;
+  for (const [px, py] of [
+    [left, top],
+    [right, top],
+    [left, bottom],
+    [right, bottom],
+  ]) {
+    const t = along(px, py);
+    t0 = Math.min(t0, t);
+    t1 = Math.max(t1, t);
+  }
+  if (!(t1 > t0)) t1 = t0 + 1e-6;
+  const cx = (left + right) / 2;
+  const cy = (top + bottom) / 2;
+  const tc = along(cx, cy);
+  const g = ctx.createLinearGradient!(
+    cx + (t0 - tc) * lx,
+    cy + (t0 - tc) * ly,
+    cx + (t1 - tc) * lx,
+    cy + (t1 - tc) * ly,
+  );
+  // the colour at a place on the line: a stop's, or between two
+  const colorAt = (t: number): string => {
+    if (!(t > at[0])) return colors[0];
+    for (let i = 1; i < at.length; i += 1) {
+      if (t > at[i]) continue;
+      const span = at[i] - at[i - 1];
+      const f = span > 0 ? (t - at[i - 1]) / span : 1;
+      return (
+        blend(colors[i - 1], colors[i], f) ??
+        (f < 0.5 ? colors[i - 1] : colors[i])
+      );
+    }
+    return colors[colors.length - 1];
+  };
+  g.addColorStop(0, colorAt(t0));
+  for (let i = 0; i < at.length; i += 1) {
+    if (at[i] > t0 && at[i] < t1) {
+      g.addColorStop((at[i] - t0) / (t1 - t0), colors[i]);
+    }
+  }
+  g.addColorStop(1, colorAt(t1));
   return g;
 }
 
@@ -2979,6 +3137,19 @@ function paintClippedText(
     let fill: unknown = null;
     if (gradient && ctx.createLinearGradient) {
       if (!(area.width > 0 && area.height > 0)) continue;
+      // the text it shows through: what the fill is drawn over
+      let x0 = Infinity;
+      let y0 = Infinity;
+      let x1 = -Infinity;
+      let y1 = -Infinity;
+      for (const part of list) {
+        for (const r of part.rects) {
+          x0 = Math.min(x0, r.x);
+          y0 = Math.min(y0, r.y);
+          x1 = Math.max(x1, r.x + r.width);
+          y1 = Math.max(y1, r.y + r.height);
+        }
+      }
       fill = linearGradient(
         ctx,
         gradient,
@@ -2987,6 +3158,7 @@ function paintClippedText(
         area.width,
         area.height,
         style.color,
+        x1 > x0 ? { x: x0, y: y0, w: x1 - x0, h: y1 - y0 } : null,
       );
     } else if (!isTransparent(style.backgroundColor)) {
       fill = inkColor(style.backgroundColor as string, style.color);
