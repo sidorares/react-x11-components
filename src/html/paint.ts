@@ -303,11 +303,14 @@ function buildChildIndexes(box: Box): void {
   box.positionedPaint = null;
   let positioned: Box[] | null = null;
   let paintable = 0;
+  let inner = false;
   for (const child of box.children) {
     if (child.kind === 'text' || child.kind === 'break') continue;
+    if (child.holdsLayers) inner = true;
     if (layered(box, child)) (positioned ??= []).push(child);
     else if (!onLine(box, child)) paintable += 1;
   }
+  box.holdsLayers = positioned !== null || inner;
   if (positioned) {
     // Pre-sorted once per layout instead of filtered and sorted per paint.
     positioned.sort(byZIndex);
@@ -606,7 +609,7 @@ function paintContent(
   // background and under everything else in it (CSS 2.1 Appendix E)
   const below = options.negative ? NEGATIVE.get(box) : undefined;
   if (below) {
-    for (const child of below) paintPositioned(ctx, child, options);
+    for (const child of below) paintStacked(ctx, child, options);
   }
   if (visible) {
     if (box.marker) paintMarker(ctx, box.marker, options);
@@ -628,23 +631,7 @@ function paintContent(
     }
   }
   if (clips) {
-    // on the pixels the box's own background covers, inside its borders:
-    // rounded out to whole pixels instead, a box at a fractional position
-    // showed a row of what it clips beyond its background's edge
-    const left = box.x + options.originX;
-    const top = frameY(box) + options.originY;
-    const x = Math.round(left);
-    const y = Math.round(top);
-    const rect = {
-      x: x + box.borderLeft,
-      y: y + box.borderTop,
-      w: Math.round(left + box.width) - x - box.borderLeft - box.borderRight,
-      h:
-        Math.round(top + frameHeight(box)) -
-        y -
-        box.borderTop -
-        box.borderBottom,
-    };
+    const rect = overflowClip(box, options);
     // Clipped to no area, nothing in the box shows but an absolute box
     // whose containing block is outside it, and where it holds none what it
     // holds is not painted at all: a menu at `max-height: 0`. Clipped to an
@@ -665,15 +652,15 @@ function paintContent(
 
   // The flow this box holds, in CSS 2.1 Appendix E's order: the backgrounds
   // and borders of its in-flow blocks, then its floats, then the lines of
-  // them all, then its positioned boxes. Painted a block at a time instead,
+  // them all, then — where it is a stacking context — the positioned boxes
+  // in it (`stackLayers`). Painted a block at a time instead,
   // a float was covered by the background of every block after it — the
   // shaded paragraph beside a floated image hid the image — and a block's
   // text by the next one's background where a negative margin overlapped
   // them. A child that is no plain block of the flow — a table, a flex box,
   // a box that clips, a replaced element — is painted whole in its place.
   const floats: Box[] = [];
-  const positioned: Box[] = [];
-  paintFlowBackgrounds(ctx, box, options, floats, positioned);
+  paintFlowBackgrounds(ctx, box, options, floats);
   for (const float of floats) paintBox(ctx, float, options);
   // a hidden box's text is drawn in no ink, so that a visible element's in
   // it is drawn (`runFor`)
@@ -682,8 +669,8 @@ function paintContent(
   if (box.collapsed && visible) paintCollapsedBorders(ctx, box, options);
 
   // `z-index: auto` and 0 in document order, then the positive ones
-  if (positioned.length > 1) positioned.sort(byZIndex);
-  for (const child of positioned) paintPositioned(ctx, child, options);
+  const stacked = STACKED.get(box);
+  if (stacked) for (const child of stacked) paintStacked(ctx, child, options);
   if (level) {
     ctx.restore();
     options.clips!.pop();
@@ -1250,34 +1237,22 @@ function inFlow(parent: Box, child: Box, options: PaintOptions): boolean {
 
 /**
  * The first pass over a box's flow: each plain block's background and
- * borders, in document order and at any depth, while the floats and the
- * positioned boxes met on the way are kept for their own passes. A child
- * that is no plain block is left for the last pass, where it is painted
- * whole among the lines: its text is text, over every block background,
- * and it stands beside the floats rather than under them.
+ * borders, in document order and at any depth, while the floats met on the
+ * way are kept for their own pass, and the positioned boxes are left to
+ * the stacking context that paints them (`stackLayers`). A child that is
+ * no plain block is left for the last pass, where it is painted whole
+ * among the lines: its text is text, over every block background, and it
+ * stands beside the floats rather than under them.
  */
 function paintFlowBackgrounds(
   ctx: PaintContext,
   box: Box,
   options: PaintOptions,
   floats: Box[],
-  positioned: Box[],
 ): void {
-  const indexed = box.paintIndex !== null && !!options.damage;
-  if (indexed && box.positionedPaint) {
-    for (const child of box.positionedPaint) {
-      if (!(options.negative && HOISTED.has(child))) positioned.push(child);
-    }
-  }
   for (const child of paintedChildren(box, options)) {
     if (child.kind === 'text' || child.kind === 'break') continue;
-    if (layered(box, child)) {
-      if (!indexed && !(options.negative && HOISTED.has(child))) {
-        positioned.push(child);
-      }
-      continue;
-    }
-    if (onLine(box, child)) continue;
+    if (layered(box, child) || onLine(box, child)) continue;
     if (child.isFloat) {
       floats.push(child);
       continue;
@@ -1286,7 +1261,7 @@ function paintFlowBackgrounds(
     if (child.style.visibility === 'visible') {
       paintOwnBackground(ctx, child, options);
     }
-    paintFlowBackgrounds(ctx, child, options, floats, positioned);
+    paintFlowBackgrounds(ctx, child, options, floats);
   }
 }
 
@@ -1318,6 +1293,27 @@ function paintFlowLines(
       paintOutline(ctx, child, options);
     }
   }
+}
+
+/** Where a box that clips its overflow clips it: on the pixels its own
+ *  background covers, inside its borders. Rounded out to whole pixels
+ *  instead, a box at a fractional position showed a row of what it clips
+ *  beyond its background's edge. */
+function overflowClip(
+  box: Box,
+  options: PaintOptions,
+): { x: number; y: number; w: number; h: number } {
+  const left = box.x + options.originX;
+  const top = frameY(box) + options.originY;
+  const x = Math.round(left);
+  const y = Math.round(top);
+  return {
+    x: x + box.borderLeft,
+    y: y + box.borderTop,
+    w: Math.round(left + box.width) - x - box.borderLeft - box.borderRight,
+    h:
+      Math.round(top + frameHeight(box)) - y - box.borderTop - box.borderBottom,
+  };
 }
 
 /** A box clipping what it holds, and the positioned boxes inside it that
@@ -1719,6 +1715,147 @@ function onLine(parent: Box, child: Box): boolean {
   );
 }
 
+/**
+ * Per stacking context — the root, and a positioned box with a `z-index` —
+ * the positioned boxes it paints over its flow (CSS 2.1 9.9.1, Appendix E,
+ * steps 8 and 9): every one in it that no stacking context inside it
+ * paints, at any depth, in document order and then by `z-index`. Painted
+ * by their parent after its flow, as they were, the ones in a box painted
+ * whole — one that clips, a table, a flex box, a float, a positioned box
+ * with no `z-index` — were painted with it, among the flow around it: a
+ * box absolute in an `overflow: hidden` one went under a positioned box
+ * before it, and a menu with a `z-index` in a positioned header under the
+ * positioned content after the header.
+ */
+const STACKED = new WeakMap<Box, Box[]>();
+
+/** Between a positioned box and the stacking context that paints it, the
+ *  boxes whose clips it is under (`clipsFor`), outermost first. */
+const CLIPS_BETWEEN = new WeakMap<Box, Box[]>();
+const NO_CLIPS: Box[] = [];
+
+/** Gather each stacking context's positioned boxes (`STACKED`); once per
+ *  layout, after `hoistNegative`, whose boxes it leaves where they are. */
+export function stackLayers(root: Box): void {
+  const list: Box[] = [];
+  if (root.holdsLayers) gatherLayers(root, root, list);
+  settleLayers(root, list);
+}
+
+function gatherLayers(box: Box, context: Box, into: Box[]): void {
+  for (const child of box.children) {
+    if (child.kind === 'text' || child.kind === 'break') continue;
+    // one below the flow is on its stacking context's list already
+    const below = HOISTED.has(child);
+    if (below || layered(box, child)) {
+      const clips = clipsFor(child, context);
+      if (clips.length) CLIPS_BETWEEN.set(child, clips);
+      else CLIPS_BETWEEN.delete(child);
+      if (!below) into.push(child);
+    }
+    if (below || stacksLayers(child)) {
+      const own: Box[] = [];
+      if (child.holdsLayers) gatherLayers(child, child, own);
+      settleLayers(child, own);
+    } else if (child.holdsLayers) {
+      gatherLayers(child, context, into);
+    }
+  }
+}
+
+function settleLayers(box: Box, list: Box[]): void {
+  if (!list.length) {
+    STACKED.delete(box);
+    return;
+  }
+  // a stable sort: `z-index: auto` and 0 in document order, then the
+  // positive ones, each in document order
+  list.sort(byZIndex);
+  STACKED.set(box, list);
+}
+
+/** Whether a box is a stacking context, which paints the positioned boxes
+ *  in it itself (`stacksContext`). */
+function stacksLayers(box: Box): boolean {
+  return stacksContext(box.style);
+}
+
+/**
+ * Whether a box is a stacking context of its own: positioned with a
+ * `z-index` (CSS 2.1 9.9.1), or under full opacity (CSS Color 4 3.2), which
+ * is painted as one group — so the positioned boxes in it, and the ones
+ * below its flow, are its to paint, faded with it or not at all: at
+ * `opacity: 0` its root context drew a hover menu's absolute children.
+ */
+function stacksContext(style: ComputedStyle): boolean {
+  return (
+    (style.position !== 'static' && typeof style.zIndex === 'number') ||
+    style.opacity < 1
+  );
+}
+
+/**
+ * The boxes between a positioned box and its stacking context whose clips
+ * it is under: the ones that clip their overflow, or are cut to a `clip`,
+ * at or above its containing block (CSS 2.1 11.1.1). An absolute box is
+ * outside a box that clips where its containing block is, a fixed one
+ * outside every one, and a relative one inside every one.
+ */
+function clipsFor(box: Box, context: Box): Box[] {
+  let from: Box | null = box.parent;
+  if (box.outOfFlow) {
+    const fixed = box.style.position === 'fixed';
+    while (from && from !== context) {
+      const style = from.style;
+      if (style.translate || style.transformTranslate) break;
+      if (!fixed && style.position !== 'static') break;
+      from = from.parent;
+    }
+  }
+  let clips: Box[] | null = null;
+  for (let at = from; at && at !== context; at = at.parent) {
+    if (clipsOverflow(at) || (at.outOfFlow && at.style.clip)) {
+      (clips ??= []).push(at);
+    }
+  }
+  return clips ? clips.reverse() : NO_CLIPS;
+}
+
+/**
+ * A positioned box its stacking context paints, under the clips of the
+ * boxes between them that hold it (`clipsFor`): inside them, where its
+ * parent painted it, it was. A clip of no area leaves none of it to paint.
+ */
+function paintStacked(
+  ctx: PaintContext,
+  box: Box,
+  options: PaintOptions,
+): void {
+  if (!intersects(box, options)) return;
+  const between = CLIPS_BETWEEN.get(box);
+  if (!between) {
+    paintPositioned(ctx, box, options);
+    return;
+  }
+  let pushed = 0;
+  let empty = false;
+  for (const clipper of between) {
+    if (clipper.outOfFlow && clipper.style.clip) {
+      const rect = clipOf(clipper, options);
+      if (rect.w <= 0 || rect.h <= 0) empty = true;
+      else if (pushClip(ctx, rect, null)) pushed += 1;
+    }
+    if (!empty && clipsOverflow(clipper)) {
+      const rect = overflowClip(clipper, options);
+      if (rect.w <= 0 || rect.h <= 0) empty = true;
+      else if (pushClip(ctx, rect, innerRadii(clipper))) pushed += 1;
+    }
+    if (empty) break;
+  }
+  if (!empty) paintPositioned(ctx, box, options);
+  for (let i = 0; i < pushed; i += 1) ctx.restore();
+}
+
 /** Per stacking context, its descendants with a negative `z-index`, in
  *  paint order; and every box so placed, which its parent's positioned
  *  children then leave out. Kept beside the boxes: few documents have one. */
@@ -1749,10 +1886,7 @@ function hoistFrom(box: Box, root: boolean): Box[] | null {
       (pending ??= []).push(child);
     }
   }
-  const style = box.style;
-  if (!root && (style.position === 'static' || style.zIndex === 'auto')) {
-    return pending;
-  }
+  if (!root && !stacksContext(box.style)) return pending;
   if (pending) {
     pending.sort(byZIndex);
     NEGATIVE.set(box, pending);

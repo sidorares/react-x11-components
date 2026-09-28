@@ -832,6 +832,7 @@ export class Cascade {
     const ctxParent: UnitContext = {
       em: parentStyle.fontSize,
       rem: this.initial.fontSize,
+      initial: this.initial,
       vw: this.viewportWidth,
       vh: this.viewportHeight,
       scale: this.scale,

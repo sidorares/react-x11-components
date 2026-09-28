@@ -316,8 +316,9 @@ is centred with its images, not text first and the image after it.
 **Boxes:** `width`/`height` with `min-`/`max-`, `margin` (a negative one
 on an inline box takes its room back from the line), `padding`,
 `border` (width, style, colour, radius), `box-sizing`, `overflow`, `clip`,
-`opacity` — an element under 1 is painted whole in its place, at 0 not at
-all and between faded, each thing drawn in it multiplied rather than the
+`opacity` — an element under 1 is a stacking context painted whole in its
+place, the positioned boxes in it with it, at 0 not at all and between
+faded, each thing drawn in it multiplied rather than the
 group, so where two of its boxes overlap the lower shows through; the
 opacity of an inline element's own text is not applied — `visibility` — a
 hidden element keeps its room and draws nothing, its text included, and a

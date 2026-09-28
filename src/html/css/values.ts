@@ -19,6 +19,7 @@
 // goes to the context as written. A functional one is read once, in
 // `color.ts`, and written back in the form every context reads the same.
 
+import type { ComputedStyle } from './style.js';
 import { functionalColor } from './color.js';
 import { LARGEST, parseMath, parseMathNumber } from './calc.js';
 
@@ -109,6 +110,8 @@ export interface UnitContext {
    *  itself, with `@font-face`, put as the text engine knows them — see
    *  `fonts.ts`. Absent, the list is the one the author wrote. */
   families?: (list: string) => string;
+  /** Every property at its initial value, which `initial` sets one to. */
+  initial?: ComputedStyle;
 }
 
 /** A CSS number (CSS Syntax 3 4.3.12): a sign, digits with at most one
