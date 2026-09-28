@@ -3051,6 +3051,23 @@ metric(
   },
 );
 
+metric(
+  'a cell with a height of its own centres its content in it',
+  async () => {
+    // `vertical-align: middle` moves the content in the box a height makes
+    // as well: that height is no content, and taken for it, a cell set to
+    // 100px kept its text at the top
+    const { node } = await render(
+      '<table style="border-spacing:0"><tr>' +
+        '<td id="t" style="height:100px;padding:0">b</td></tr></table>',
+    );
+    const el = view(node);
+    const t = boxOf(el, 't');
+    const [line] = linesOf(el, 't');
+    assert.ok(line.y > t.y + 30, `in the middle of the box: ${line.y - t.y}`);
+  },
+);
+
 metric("a caption is outside the table's border, above or below", async () => {
   const { node } = await render(
     '<table id="t" style="border:5px solid #0000ff"><caption id="c">' +
