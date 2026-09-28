@@ -425,9 +425,9 @@ function innerWidth(
 
 /**
  * An item's automatic minimum (CSS Flexbox 4.5): with `min-width: auto` in
- * a row, or `min-height: auto` in a column, an item is no smaller along the
- * row than its content comes to — its min-content width, or its content's
- * height at its width — nor than a size of its own where it is smaller.
+ * a row, or `min-height: auto` in a column, an item its content sizes is no
+ * smaller along the row than its content comes to — its min-content width,
+ * or its content's height at its width.
  * Yoga has no such minimum, and shrank an item under a long word or a
  * column's content, which ran out over the next one; `min-w-0` is what
  * lets an item shrink past it, and so `auto` is kept apart from 0.
@@ -452,10 +452,16 @@ function autoMinimums(
       continue;
     }
     const width = node.getComputedWidth();
+    // An item its content sizes along the row: one with a size of its own
+    // may shrink under it to what its content comes to, which that size
+    // hides from a measure, and keeps Yoga's minimum of none
     if (
       row
-        ? style.minWidth !== AUTO || style.minWidthKeyword
-        : style.minHeight !== AUTO
+        ? style.minWidth !== AUTO ||
+          style.minWidthKeyword ||
+          style.width !== AUTO ||
+          style.widthKeyword
+        : style.minHeight !== AUTO || style.height !== AUTO
     ) {
       continue;
     }
@@ -482,8 +488,6 @@ function autoMinimums(
       }
       least = box.intrinsicMinContent;
       const extra = style.boxSizing === 'border-box' ? 0 : box.horizontalExtra;
-      const own = resolveOrNull(style.width, containingWidth);
-      if (own !== null) least = Math.min(least, own + extra);
       if (style.maxWidth !== 'none') {
         const most = resolveOrNull(style.maxWidth, containingWidth);
         if (most !== null) least = Math.min(least, most + extra);
@@ -493,8 +497,6 @@ function autoMinimums(
     } else {
       least = laid.height;
       const extra = style.boxSizing === 'border-box' ? 0 : box.verticalExtra;
-      const own = resolveOrNull(style.height, NaN);
-      if (own !== null) least = Math.min(least, own + extra);
       if (style.maxHeight !== 'none') {
         const most = resolveOrNull(style.maxHeight, NaN);
         if (most !== null) least = Math.min(least, most + extra);
