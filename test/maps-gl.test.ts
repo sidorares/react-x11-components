@@ -1405,13 +1405,21 @@ test('a drag on the map pans it with the pointer', async () => {
   );
 });
 
-test('a wheel zooms about the pointer, and a double click zooms in', async () => {
+test('a wheel zooms about the pointer, and a double click zooms in', async (t) => {
   const { handle, node } = await mountGlMap();
+  // The glide is held (./glide-clock.ts) and landed before the double
+  // click. The click reaches the map only when `act` flushes the server's
+  // queue, and on the wall clock a glide step could come first and be added
+  // to the level the click adds — CI read 12.75 and got 13.9375.
+  const glide = holdGlide(t);
   const size = { width: node.abs.width, height: node.abs.height };
   const point = { x: size.width / 2 - 140, y: size.height / 2 + 90 };
   const before = groundAt(handle, size, point.x, point.y);
   await userEvent.wheel(node, { dx: -140, dy: 90, deltaY: -4 });
   assert.ok(handle.getCamera().zoom > 12, 'the wheel zoomed in');
+  // Every step of the glide is about the pointer, not only the notches'
+  // own, so the place under it is looked at where the glide stops.
+  await glide.finish();
   const after = groundAt(handle, size, point.x, point.y);
   assert.ok(
     Math.abs(after.lon - before.lon) < 1e-6,
