@@ -927,7 +927,7 @@ export class Cascade {
         if (!indexed.compiled) {
           indexed.compiled = true;
           try {
-            indexed.match = compile(rule.selector, {
+            indexed.match = compile(noEmptyWords(rule.selector), {
               adapter: this._adapter,
               xmlMode: false,
               pseudos: PSEUDOS,
@@ -1027,6 +1027,7 @@ const PSEUDOS = {
       .map((range) => range.trim().replace(/^['"]|['"]$/g, ''))
       .filter((range) => range.length > 0)
       .map((range) => asciiLower(range).split('-'));
+    let root = el;
     for (let node: Element | null = el; node;) {
       const value = node.attribs['xml:lang'] ?? node.attribs.lang;
       if (value != null) {
@@ -1034,12 +1035,69 @@ const PSEUDOS = {
         const tag = asciiLower(value).split('-');
         return ranges.some((range) => langRangeMatches(tag, range));
       }
+      root = node;
       const parent: Element['parent'] = node.parent;
       node = parent && isTag(parent as Element) ? (parent as Element) : null;
     }
-    return ranges.some((range) => range[0] === '');
+    // with no element saying, the document's, as its `<meta>` sets it —
+    // searched from the document, where a fragment's `<meta>` is a
+    // sibling of what it covers
+    const pragma = pragmaLanguage(root.parent ?? root);
+    if (!pragma) return ranges.some((range) => range[0] === '');
+    const tag = asciiLower(pragma).split('-');
+    return ranges.some((range) => langRangeMatches(tag, range));
   },
 };
+
+/**
+ * A selector with its `[attr~=""]` made one that matches nothing: an empty
+ * string is no word of a list, and such a selector represents nothing
+ * (Selectors 3, 6.3.1) — which the matcher's `~=` is not told, taking the
+ * empty word for one between two spaces, or at either end of none.
+ */
+function noEmptyWords(selector: string): string {
+  if (!selector.includes('~=')) return selector;
+  return selector.replace(
+    /\[[^\]"']*~=\s*(?:""|'')\s*(?:[is]\s*)?\]/gi,
+    ':not(*)',
+  );
+}
+
+/**
+ * A document's language as a `<meta http-equiv="content-language">` sets
+ * it — HTML's pragma-set default language, the last such `<meta>`'s
+ * `content` up to its first white space, and none where it lists more
+ * than one — by the document's root element, found once.
+ */
+function pragmaLanguage(root: { children: unknown[] }): string {
+  let lang = PRAGMA_LANGUAGE.get(root);
+  if (lang !== undefined) return lang;
+  lang = '';
+  const stack: { children: unknown[] }[] = [root];
+  while (stack.length) {
+    const node = stack.pop()! as Element;
+    if (
+      isTag(node) &&
+      node.name === 'meta' &&
+      node.attribs['http-equiv']?.trim().toLowerCase() === 'content-language'
+    ) {
+      const content = node.attribs.content;
+      if (content !== undefined && !content.includes(',')) {
+        const candidate = content.trim().split(/[\t\n\f\r ]/)[0];
+        if (candidate) lang = candidate;
+      }
+    }
+    // in document order: the last one pushed is taken first
+    for (let i = node.children.length - 1; i >= 0; i -= 1) {
+      const child = node.children[i];
+      if (isTag(child as Element)) stack.push(child as Element);
+    }
+  }
+  PRAGMA_LANGUAGE.set(root, lang);
+  return lang;
+}
+
+const PRAGMA_LANGUAGE = new WeakMap<object, string>();
 
 /** RFC 4647's extended filtering, of a tag's subtags by a range's, as
  *  css-select does it. */

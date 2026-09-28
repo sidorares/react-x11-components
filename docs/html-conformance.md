@@ -173,6 +173,7 @@ npx tsx scripts/conformance/run.ts wpt fuzz1 --chunk 50 --timeout 60000
 | 84     | an image told to be a table's part                 | 5,542 (93%) | 5,014 (84%) |
 | 85     | a cell's content in a height of its own            | 5,544 (93%) | 5,015 (84%) |
 | 86     | XHTML style sheets as XML reads them               | 5,548 (93%) | 5,019 (84%) |
+| 87     | a document's language, and attribute selectors     | 5,550 (93%) | 5,021 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -2481,6 +2482,26 @@ they set a `<pre>` beside their floats and the user-agent sheet's own
      inline-block, without the indent.
 
      `css-text`: 607 of its 1,489 tests passed on X11, 610 do now.
+
+### Round 87
+
+196. **A document's `<meta http-equiv="content-language">` said nothing.**
+     HTML makes it the language of whatever no `lang` covers — the
+     pragma-set default language: the last such `<meta>`'s `content`, up
+     to its first white space, and none where it lists more than one —
+     and `:lang()` read only the attributes. It falls back to the
+     document's now, found once per document, and searched from the
+     document itself, where in a fragment the `<meta>` is a sibling of
+     what it covers. A `Content-Language` HTTP header, the rung below,
+     is the host's to know, and is not read.
+197. **`[title~=]` was a selector.** An attribute selector's operator
+     needs a value; without one the selector is invalid and takes its
+     group with it (CSS 2.1 4.1.7), and a rule written
+     `[title~=], p.valid` coloured `p.valid`. And `[title~=""]`, which
+     represents nothing, since no word of a list is empty, matched a
+     title of spaces: the matcher's `~=` took the empty word for the
+     one between two spaces, and is handed a selector that matches
+     nothing in its place.
 
 ## What `<Html>` supports
 

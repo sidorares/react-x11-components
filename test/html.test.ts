@@ -139,6 +139,41 @@ test('pseudo-class names and :lang() fold ASCII case only', async () => {
   assert.strictEqual(style('k').fontStyle, 'italic', 'but KL is kl');
 });
 
+test("a document's language is its meta's, where no element says", async () => {
+  // HTML's pragma-set default language: `<meta http-equiv=
+  // "content-language">` is the language of what no `lang` covers
+  const { node } = await render(
+    '<meta http-equiv="content-language" content="fr">' +
+      '<style>:lang(fr) { color: #00ff00 } :lang(de) { color: #0000ff }</style>' +
+      '<p id="a">a</p><div lang="de"><p id="b">b</p></div>',
+  );
+  const el = view(node);
+  const color = (id: string) =>
+    (boxOf(el, id) as LaidBox & { style: { color: string } }).style.color;
+  assert.strictEqual(color('a'), '#00ff00', "the document's");
+  assert.strictEqual(color('b'), '#0000ff', "an element's own wins");
+});
+
+test('an attribute operator needs a value, and an empty word is none', async () => {
+  // `[title~=]` is no selector, and takes its group (CSS 2.1 4.1.7); and
+  // `[title~=""]` represents nothing (Selectors 3, 6.3.1), where it was
+  // taken for the empty word between two spaces
+  const { node } = await render(
+    '<style>p { color: #00ff00 } [title~=], p.a { color: #ff0000 }' +
+      ' [title~=""] { color: #ff0000 }</style>' +
+      '<p id="a" class="a">a</p><p id="b" title=" ">b</p>' +
+      '<p id="c" title="">c</p>',
+  );
+  const el = view(node);
+  const color = (id: string) =>
+    (boxOf(el, id) as LaidBox & { style: { color: string } }).style.color;
+  assert.deepStrictEqual(['a', 'b', 'c'].map(color), [
+    '#00ff00',
+    '#00ff00',
+    '#00ff00',
+  ]);
+});
+
 test('a selector list becomes one rule per selector', () => {
   const sheet = parseStylesheet('h1, h2 > .lead { color: red }');
   assert.deepStrictEqual(
