@@ -77,6 +77,7 @@ import { runsOf, plainTextOf } from './spans.js';
 import type { InlineStyles } from './spans.js';
 import { useLinkClicks } from '../richtext/index.js';
 import { hx } from './hx.js';
+import { useFontPrewarm } from '../internal/prewarm.js';
 
 export type {
   AttributeValue,
@@ -746,6 +747,14 @@ export function Markdown(props: MarkdownProps): ReactElement {
   // same widening `hx.ts` documents for the `theme` prop.
   const theme = useTheme() as unknown as Record<string, unknown>;
   const app = useApp() as { fonts?: FontsMeasureLike } | null;
+  // a document with code in it sets that code in the mono family, and its
+  // render is the head start (a fence or a code span needs a backtick or a
+  // tilde fence; an indented block is rare enough to find its own way)
+  useFontPrewarm(
+    source.includes('`') || source.includes('~~~')
+      ? (props.monoFamily ?? 'monospace')
+      : null,
+  );
 
   const links = useLinkClicks(onLink);
   const menu = useSelectionMenu(selectable);
