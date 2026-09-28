@@ -14,6 +14,7 @@ import { Code } from '../src/code/index.js';
 import { CodeEditor } from '../src/code-editor/index.js';
 import { Markdown } from '../src/markdown/index.js';
 import { TerminalOutput } from '../src/terminal-output/index.js';
+import { Html } from '../src/html/index.js';
 import { Terminal } from '../src/terminal/index.js';
 import { FakePtyHost } from './fake-pty.js';
 import { RichTextEditor } from '../src/rich-text-editor/index.js';
@@ -83,6 +84,48 @@ test('a document warms the mono family only when it has code', async () => {
     await asked(h(Markdown, { source: '# a heading\n\nprose, no code' })),
     [],
   );
+});
+
+test('an HTML document warms the mono family only when it has code', async () => {
+  assert.deepStrictEqual(
+    await asked(h(Html, { source: '<p>a <code>line</code> of code</p>' })),
+    ['monospace'],
+  );
+  // as old mail writes it, and in the family the app names
+  assert.deepStrictEqual(
+    await asked(h(Html, { source: '<PRE>fixed</PRE>', monoFamily: 'M' })),
+    ['M'],
+  );
+  assert.deepStrictEqual(
+    await asked(
+      h(Html, {
+        source: '<style>p { font-family: monospace }</style><p>fixed</p>',
+      }),
+    ),
+    ['monospace'],
+  );
+  assert.deepStrictEqual(
+    await asked(h(Html, { source: '<h1>a heading</h1><p>prose, no code</p>' })),
+    [],
+  );
+});
+
+test('a streamed HTML document warms the mono family when code arrives', async () => {
+  const families: string[] = [];
+  function Probe(props: { children?: ReactNode }): ReactNode {
+    const app = useApp() as { fonts?: { prewarm?: (f: string) => void } };
+    if (app.fonts && !families.length) {
+      app.fonts.prewarm = (family: string) => void families.push(family);
+    }
+    return props.children ?? null;
+  }
+  const { rerender } = await renderX11(h(Probe));
+  const doc = (source: string) => h(Probe, null, h(Html, { source }));
+  await act(() => rerender(doc('<p>prose first, and then <co')));
+  assert.deepStrictEqual(families, [], 'none yet');
+  // the tag's name split between two chunks
+  await act(() => rerender(doc('<p>prose first, and then <code>x</code></p>')));
+  assert.deepStrictEqual(families, ['monospace']);
 });
 
 test('a terminal warms its family when it draws the grid itself', async () => {
