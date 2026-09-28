@@ -756,6 +756,8 @@ function layoutLines(block: Box, options: InlineOptions): InlineResult {
         x: room.left + open.x + box.marginLeft,
         y: 0,
       };
+      const raise = atomicRaise(fonts, box, (box.parent ?? block).style);
+      if (raise) placed.raise = raise;
       open.atomics.push(placed);
       open.order.push({ kind: 'atomic', at: open.x, item: placed });
       open.x += outer;
@@ -1587,12 +1589,13 @@ function finishLine(
     const box = placed.box;
     const h = box.height + box.marginTop + box.marginBottom;
     const va = box.style.verticalAlign;
-    if (va === 'top' || va === 'bottom' || va === 'middle') {
+    if (va === 'top' || va === 'bottom') {
       height = Math.max(height, h);
       continue;
     }
-    // on the line's baseline by its own, and below it by the rest of it
-    const raise = typeof va === 'number' ? va : 0;
+    // on the line's baseline by its own, raised from it by its
+    // `vertical-align`, and below it by the rest of it
+    const raise = placed.raise ?? 0;
     const b = atomicBaseline(box);
     ascent = Math.max(ascent, b + raise);
     descent = Math.max(descent, h - b - raise);
@@ -1641,8 +1644,7 @@ function finishLine(
     atomics: open.atomics,
     ...(open.edges.length ? { edges: open.edges } : null),
   };
-  for (const placed of open.atomics)
-    placed.y = y + alignAtomic(placed.box, line);
+  for (const placed of open.atomics) placed.y = y + alignAtomic(placed, line);
   // Every fragment on this line shares the line's baseline, whatever its own
   // layout thinks: that is what makes a small `<span>` beside body text sit
   // on the same baseline rather than on its own. One that `vertical-align`
@@ -1840,24 +1842,61 @@ const LEFT_TO_RIGHT =
   /(?![\u0590-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFF\u{10800}-\u{10FFF}\u{1E800}-\u{1EFFF}])\p{L}/u;
 
 /** Where an atomic's top edge sits, relative to the line box top. */
-function alignAtomic(box: Box, line: LineBox): number {
-  const h = box.height + box.marginTop + box.marginBottom;
+function alignAtomic(placed: AtomicPlacement, line: LineBox): number {
+  const box = placed.box;
   switch (box.style.verticalAlign) {
     case 'top':
       return 0;
     case 'bottom':
-      return line.height - h;
-    case 'middle':
-      return (line.height - h) / 2;
-    case 'sub':
-      return line.baseline - atomicBaseline(box) + line.height * 0.1;
-    case 'super':
-      return line.baseline - atomicBaseline(box) - line.height * 0.25;
+      return line.height - (box.height + box.marginTop + box.marginBottom);
     default:
-      if (typeof box.style.verticalAlign === 'number') {
-        return line.baseline - atomicBaseline(box) - box.style.verticalAlign;
-      }
-      return line.baseline - atomicBaseline(box);
+      return line.baseline - atomicBaseline(box) - (placed.raise ?? 0);
+  }
+}
+
+/**
+ * How far an atomic's `vertical-align` raises its baseline above its
+ * parent's (CSS 2.1 10.8.1), as `Lifts` raises an inline box's: `sub` and
+ * `super` by a fifth and a third of the parent's font size and a pixel,
+ * `text-top` and `text-bottom` to the edges of the parent's font, `middle`
+ * by its middle to half the parent's x-height above the baseline, a length
+ * by itself and a percentage of its own line height. `top` and `bottom` are
+ * the line box's edges, and raise nothing from a baseline.
+ *
+ * `middle` is the parent's baseline, not the middle of the line: an image
+ * set `middle` beside text in a line an image before it made tall sat
+ * where that image left room, and drew the text beside it a pixel off.
+ * Read before the line moves the atomic, as `atomicBaseline` is.
+ */
+function atomicRaise(
+  fonts: FontsLike,
+  box: Box,
+  parent: ComputedStyle,
+): number {
+  const va = box.style.verticalAlign;
+  switch (va) {
+    case 'baseline':
+    case 'top':
+    case 'bottom':
+      return 0;
+    case 'sub':
+      return -(parent.fontSize / 5 + parent.fontSize / 16);
+    case 'super':
+      return parent.fontSize / 3 + parent.fontSize / 16;
+  }
+  const h = box.height + box.marginTop + box.marginBottom;
+  const b = atomicBaseline(box);
+  switch (va) {
+    case 'text-top':
+      return faceExtent(fonts, parent).ascent - b;
+    case 'text-bottom':
+      return h - b - faceExtent(fonts, parent).descent;
+    case 'middle':
+      return xHeightOf(fonts, parent) / 2 + h / 2 - b;
+    default:
+      return typeof va === 'number'
+        ? va
+        : resolve(va, lineHeightOf(fonts, box.style));
   }
 }
 

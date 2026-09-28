@@ -176,6 +176,7 @@ npx tsx scripts/conformance/run.ts wpt fuzz1 --chunk 50 --timeout 60000
 | 87     | a document's language, and attribute selectors     | 5,550 (93%) | 5,021 (84%) |
 | 88     | a `<q>` in quotation marks                         | 5,550 (93%) | 5,021 (84%) |
 | 89     | an absolute box a `max-width` holds, centred       | 5,554 (93%) | 5,025 (84%) |
+| 90     | an image set `middle`, and `capitalize`            | 5,566 (94%) | 5,038 (85%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -2530,6 +2531,45 @@ they set a `<pre>` beside their floats and the user-agent sheet's own
      for the height between `top` and `bottom` (10.6.4, 10.7), where
      `max-height` held it back and the margins stayed at nothing, so a
      box meant to sit in the middle sat at the top.
+
+### Round 90
+
+On ntk 8.13.1 and react-x11 2.22.11, where master passes 5,554 on X11 and
+5,031 on Cocoa.
+
+200. **An image set `vertical-align: middle` was centred in its line.**
+     CSS 2.1 puts its middle half the parent's x-height above the parent's
+     baseline (10.8.1). The middle of the line is somewhere else whenever
+     the line is taller than its text, which an image taller than the text
+     makes it on its own: beside a 30-pixel image, 15-pixel Ahem sat a
+     pixel and a half higher than CSS puts it, which `c544-valgn-001` and
+     three of the `c44-ln-box` tests show. An image or an inline block now
+     takes its raise from its parent's baseline as an inline box does:
+     `sub` and `super` by the parent's font size, where they went by the
+     line's height, and `text-top` and `text-bottom` to the parent's font,
+     where they were the baseline.
+201. **`text-transform: capitalize` capitalized the first character after
+     a space**, and the first of every text, in upper case. So `(p.p.)`
+     stayed as it was, its bracket "capitalized"; a word an element's edge
+     crossed — `<b>fo</b>o` — got a second capital after the edge; and `ǆ`
+     became `Ǆ`. The first letter or number of each word is in title case
+     now, which for a digraph is `ǅ` and for a Greek vowel keeps its iota
+     subscript, and a word runs on across element edges as white space
+     collapses across them. What joins letters into one word is UAX #29's,
+     as the spec suggests — `x.y`, `don't` — and a hyphen or a bracket is
+     between words. Chrome splits `x.y` and `a:b` too.
+202. **A `::before` or `::after` set `display: list-item` had no marker.**
+     It counted the `list-item` counter, as an element does, and drew
+     nothing for it. It has the marker an element has, outside, or at the
+     start of its content where it is `inside`.
+203. **Text beside a block in an anonymous table cell was never laid
+     out.** The fix-up works from the leaves up, so a cell the table
+     part of it makes has children that were fixed as the table's, and
+     the cell itself never had the block container's turn: `bcd` beside a
+     block in `<span style="display: inline-table">` was text a block
+     container held beside a block, which lays out as nothing, and the
+     table was as wide as the block. The cells it makes have their turn
+     now.
 
 ## What `<Html>` supports
 
