@@ -162,7 +162,10 @@ side by side. The items are laid out in the container's content box, its
 height less the padding and borders a `border-box` height holds, and a
 container with no height of its own gives its `flex: 1` items what its
 `min-height` leaves them, so a page `min-h-screen flex flex-col` puts its
-footer at the bottom of the window. Items meet where
+footer at the bottom of the window. An item is shrunk no smaller than its
+content comes to — its min-content width in a row, its content's height in a
+column — unless its own minimum or an `overflow` that clips lets it go, as
+Tailwind's `min-w-0` does. Items meet where
 they meet, fractions of a pixel included, and the paint snaps their edges.
 A grid (CSS Grid 1) takes its column tracks from `grid-template-columns` —
 lengths, percentages, `fr`s, `auto`, `minmax()`, and `repeat()` by a count

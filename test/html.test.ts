@@ -9752,6 +9752,39 @@ test('a flex container lays its items out in its content box', async () => {
   assert.deepStrictEqual([d.x, d.y - 364], [140, 70]);
 });
 
+test('a flex item is no smaller than its content, unless its minimum says', async () => {
+  // `min-width: auto` in a row and `min-height: auto` in a column are the
+  // least an item's content comes to (CSS Flexbox 4.5). Yoga has no such
+  // minimum: it shrank a row's items under what they held, and a column's
+  // first item under its content, which the next one was drawn over.
+  const { node } = await render(
+    '<style>body{margin:0} .i{display:inline-block;width:150px;' +
+      'height:10px}</style>' +
+      '<div style="display:flex;width:200px">' +
+      '<div id="a" style="flex:1"><span class="i"></span></div>' +
+      '<div id="b" style="flex:1"><span class="i"></span></div></div>' +
+      // `min-w-0` lets it go, and so does a box that clips
+      '<div style="display:flex;width:200px">' +
+      '<div id="c" style="flex:1;min-width:0"><span class="i"></span></div>' +
+      '<div id="d" style="flex:1;overflow:hidden"><span class="i"></span>' +
+      '</div></div>' +
+      '<div style="display:flex;flex-direction:column;height:30px">' +
+      '<div id="e"><div style="height:60px"></div></div>' +
+      '<div id="f" style="height:20px"></div></div>',
+  );
+  const el = view(node);
+  const box = (id: string) => boxOf(el, id);
+  assert.deepStrictEqual(
+    [box('a').width, box('b').width],
+    [150, 150],
+    'a row overflows before an item shrinks under its content',
+  );
+  assert.ok(box('c').width < 150, 'min-width: 0');
+  assert.ok(box('d').width < 150, 'overflow: hidden');
+  assert.strictEqual(box('e').height, 60, 'a column item');
+  assert.strictEqual(box('f').y, box('e').y + 60, 'and the one after it');
+});
+
 metric(
   'a flex row measured for its content does not grow its flex: 1 items',
   async () => {
