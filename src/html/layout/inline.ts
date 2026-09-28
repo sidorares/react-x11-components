@@ -656,9 +656,18 @@ function layoutLines(block: Box, options: InlineOptions): InlineResult {
       // No higher than the top of the line it is met on (CSS 2.1 9.5.1):
       // at that top where it fits beside what the line holds already, and
       // what the line holds moves over for it; under the line where it
-      // does not, with the rest of the line's content still on the line
+      // does not, with the rest of the line's content still on the line.
+      // Where the line cannot break at the float, what follows it up to
+      // where it can is on the line too, and has to fit beside it as well,
+      // as browsers place one: `nowrap` text it is in the middle of runs on
+      // past it otherwise, under it.
       const outer = options.floatBoxes!.size(item.box);
-      if (isEmpty(open) || open.x + pendingWidth + outer <= available) {
+      let fits = isEmpty(open) || open.x + pendingWidth + outer <= available;
+      if (fits && !isEmpty(open) && !breaksAtEnd(open, style)) {
+        const after = unbreakableAfter(items, index + 1, style, fonts!, base);
+        fits = open.x + pendingWidth + after + outer <= available;
+      }
+      if (fits) {
         options.floatBoxes!.place(item.box, options.startY + y);
         floatsPlaced.push(item.box);
         const left = bandAt(options, y, style.fontSize * 1.4).left;
@@ -1430,6 +1439,56 @@ function openLine(indent: number): OpenLine {
     hang: 0,
     indent,
   };
+}
+
+/** Whether a line may break where it has got to: after the white space it
+ *  ends on, which hangs, or after an inline-block, where its block wraps. */
+function breaksAtEnd(open: OpenLine, style: ComputedStyle): boolean {
+  return (
+    wraps(style) &&
+    (open.hang > 0 || open.order[open.order.length - 1]?.kind === 'atomic')
+  );
+}
+
+/**
+ * How wide the content from `from` on is up to where its line may break:
+ * its text up to a space it may break at — one `holdNoWrap` left a space —
+ * or, in a block that does not wrap, up to a line's end, with the edges of
+ * inline boxes on the way, and an inline-block, which has a break before it
+ * where the block wraps. Floats take no room on the line.
+ */
+function unbreakableAfter(
+  items: readonly Item[],
+  from: number,
+  style: ComputedStyle,
+  fonts: FontsLike,
+  base: Record<string, unknown>,
+): number {
+  const wrapping = wraps(style);
+  const runs: TextRun[] = [];
+  let width = 0;
+  for (let i = from; i < items.length; i += 1) {
+    const item = items[i];
+    if (item.kind === 'float') continue;
+    if (item.kind === 'edge') {
+      width += item.width;
+      continue;
+    }
+    if (item.kind === 'atomic') {
+      if (wrapping) break;
+      width += item.box.width + item.box.marginLeft + item.box.marginRight;
+      continue;
+    }
+    const text = item.run.text;
+    const stop = wrapping ? text.search(/[ \t\n]/) : text.indexOf('\n');
+    if (stop < 0) {
+      runs.push(item.run);
+      continue;
+    }
+    if (stop > 0) runs.push({ ...item.run, text: text.slice(0, stop) });
+    break;
+  }
+  return runs.length ? width + fonts.layout(runs, base, {}).width : width;
 }
 
 /**

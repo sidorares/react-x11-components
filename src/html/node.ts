@@ -438,6 +438,7 @@ export class HtmlViewNode extends Node {
         this._viewportHeight(),
         this._scale,
         fonts ? (family, size) => xHeightOf(fonts, family, size) : null,
+        fonts ? (family, size) => zeroWidthOf(fonts, family, size) : null,
       );
       this._sheetsRead = {
         look,
@@ -1378,6 +1379,21 @@ function ownerOf(boxes: readonly Box[], index: number): Element | null {
 }
 
 export type { ControlRect, ReplacedKind, ResourceRequest, ResourceResult };
+
+/** The advance of a font's "0" at a size, laid out: null where the engine
+ *  cannot lay it out. */
+function zeroWidthOf(
+  fonts: FontsLike,
+  family: string,
+  size: number,
+): number | null {
+  try {
+    return fonts.layout([{ text: '0', family, size }], { family, size }, {})
+      .width;
+  } catch {
+    return null;
+  }
+}
 
 /** A font's x-height at a size, as the engine reports it: null where the
  *  face states none, or the engine does not say. */

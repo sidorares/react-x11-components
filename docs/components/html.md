@@ -217,7 +217,9 @@ A float in a paragraph goes on the line it is met on (CSS 2.1 9.5.1): at
 that line's top where it fits beside what the line holds already, which
 moves over for it, and at the next line's top where it does not — so an
 image floated from the middle of a paragraph starts at its own line, and
-the lines above it keep the paragraph's width. A word with too little room
+the lines above it keep the paragraph's width. Where the line cannot break
+at the float, as in `nowrap` text, what follows it up to where the line can
+has to fit beside it too. A word with too little room
 left on a line after an inline-block or a float goes to the next line
 whole.
 A line with an inline-block or a padded element on it is put in visual order
@@ -470,7 +472,8 @@ applied: each would change where the line ends.
 
 **Lengths:** `px`, `em`, `rem`, `ex`, `ch`, `vw`, `vh`, `vmin`, `vmax` and
 the absolute units, and `calc()`, `min()`, `max()` and `clamp()` over them
-(CSS Values 4). A math function comes down to pixels and a percentage, which
+(CSS Values 4). An `ex` is the font's x-height and a `ch` the advance of its
+"0", as the text engine reports them, or half an em where it cannot say. A math function comes down to pixels and a percentage, which
 layout resolves as it does any percentage; `min(100%, 600px)`, a
 comparison with a percentage in it, is resolved against each width it
 meets. A percentage that cannot resolve makes the whole value `auto` where

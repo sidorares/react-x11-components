@@ -102,6 +102,9 @@ export interface UnitContext {
   /** The x-height of the font the lengths are in, asked only for a length
    *  in `ex`; half an em where it is missing. */
   ex?: () => number;
+  /** The advance of that font's "0", asked only for a length in `ch`; half
+   *  an em where it is missing. */
+  ch?: () => number;
 }
 
 /** A CSS number (CSS Syntax 3 4.3.12): a sign, digits with at most one
@@ -185,8 +188,11 @@ function unitScale(unit: string, ctx: UnitContext): number {
     // is not.
     case 'ex':
       return ctx.ex ? ctx.ex() : ctx.em * 0.5;
+    // the advance of the font's "0" (CSS Values 4, 6.1.1), where the
+    // cascade can ask for it: half an em is Times's, a little under
+    // Arial's, and half of Ahem's and a monospace font's
     case 'ch':
-      return ctx.em * 0.5;
+      return ctx.ch ? ctx.ch() : ctx.em * 0.5;
     case 'vw':
       return ctx.vw / 100;
     case 'vh':
