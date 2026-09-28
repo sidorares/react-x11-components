@@ -22,7 +22,13 @@ import type { Element } from 'domhandler';
 
 import { attr, tagOf } from '../dom.js';
 import { svgSizeHint } from '../svg.js';
-import { escapeEnd, mediaMatches, readIdent, startsIdent } from './parse.js';
+import {
+  asciiLower,
+  escapeEnd,
+  mediaMatches,
+  readIdent,
+  startsIdent,
+} from './parse.js';
 import type { Declaration, StyleRule, Stylesheet } from './parse.js';
 import {
   applyDeclaration,
@@ -1012,7 +1018,44 @@ export class Cascade {
 const PSEUDOS = {
   root: (el: Element) =>
     el.name === 'html' && !(el.parent && isTag(el.parent as Element)),
+  // css-select's, but its ranges and tags lower-cased as ASCII has it, and
+  // no other script (CSS 2.1 4.1.3): Unicode's took `:lang(\u212Al)`, a
+  // Kelvin sign for the K, for `:lang(kl)`
+  lang: (el: Element, code: string | null): boolean => {
+    const ranges = (code ?? '')
+      .split(',')
+      .map((range) => range.trim().replace(/^['"]|['"]$/g, ''))
+      .filter((range) => range.length > 0)
+      .map((range) => asciiLower(range).split('-'));
+    for (let node: Element | null = el; node;) {
+      const value = node.attribs['xml:lang'] ?? node.attribs.lang;
+      if (value != null) {
+        if (!value) return ranges.some((range) => range[0] === '');
+        const tag = asciiLower(value).split('-');
+        return ranges.some((range) => langRangeMatches(tag, range));
+      }
+      const parent: Element['parent'] = node.parent;
+      node = parent && isTag(parent as Element) ? (parent as Element) : null;
+    }
+    return ranges.some((range) => range[0] === '');
+  },
 };
+
+/** RFC 4647's extended filtering, of a tag's subtags by a range's, as
+ *  css-select does it. */
+function langRangeMatches(tag: string[], range: string[]): boolean {
+  if (range[0] !== '*' && range[0] !== tag[0]) return false;
+  let at = 1;
+  for (let r = 1; r < range.length; r += 1) {
+    if (range[r] === '*') continue;
+    while (at < tag.length && tag[at] !== range[r]) {
+      if (tag[at++].length <= 1) return false;
+    }
+    if (at >= tag.length) return false;
+    at += 1;
+  }
+  return true;
+}
 
 /** Whether any of these declarations sets a custom property or reads one. */
 function usesVars(declarations: readonly Declaration[]): boolean {
