@@ -2637,6 +2637,17 @@ transparent black. Fixed, the whole file still passes against the old
 compositor, and each new path was broken on purpose to see the file catch
 it.
 
+### Bold over a whole document is one step (#281)
+
+Round 25 left this to ProseMirror. Its `addMark` makes a step for each run of
+text lacking the mark, and a run ends with its textblock, so bold over the
+600 KB report was 1,700 steps that each copied the document's top-level
+children. Its `removeMark` joins runs across blocks already. The editor's
+`toggleMark` is prosemirror-commands' own, but the transaction it starts adds
+marks the way `removeMark` removes them. A node that already has the mark
+still ends a run, so the undo is exact. A toggle, from the key to the paint,
+went from 69–75 ms to 45–50 ms; the rest is re-rendering the blocks.
+
 ### Still open on this machine
 
 - **A Markdown edit's walks in core.** `contentReach` reads every block of
