@@ -3803,6 +3803,76 @@ metric(
   },
 );
 
+metric(
+  'an absolute box after text is under its line, or after it on the line',
+  async () => {
+    // The static position among a paragraph's text (CSS 2.1 10.3.7,
+    // 10.6.4): a block-level box would have broken the line, so it goes
+    // under it, and an inline-level one goes where the text left the pen.
+    // Both went at the paragraph's top, over its text. The second is in a
+    // padded span, whose paragraph is laid out another way.
+    const { node } = await render(
+      '<style>body{margin:0} div{line-height:20px}</style>' +
+        '<div id="p">Some text<div id="a" style="position:absolute;' +
+        'width:5px;height:5px"></div></div>' +
+        '<div id="q">Some <span style="padding-left:4px">text<span id="b" ' +
+        'style="position:absolute;width:5px;height:5px"></span></span></div>',
+    );
+    const el = view(node);
+    const [p, a, q, b] = ['p', 'a', 'q', 'b'].map((id) => boxOf(el, id));
+    assert.deepStrictEqual([a.x, a.y], [p.x, p.y + 20], 'under the line');
+    const [line] = linesOf(el, 'q');
+    assert.strictEqual(b.y, q.y, 'on the line');
+    const end = line.x + line.width;
+    assert.ok(Math.abs(b.x - end) < 1, `after the text: ${b.x}, ${end}`);
+  },
+);
+
+metric(
+  'an absolute box in a positioned inline box is placed against it',
+  async () => {
+    // CSS 2.1 10.1, item 4: a `position: relative` inline box is the
+    // containing block of what is absolute in it, from the padding edge its
+    // first fragment starts at. Read as a box that lays itself out, it was
+    // a rectangle of no size at the page's corner, and a tooltip under its
+    // link came up there.
+    const { node } = await render(
+      '<style>body{margin:0}</style>' +
+        '<p id="p" style="margin:0 0 0 30px;line-height:20px">Hover ' +
+        '<a id="l" style="position:relative;padding-left:4px">here<span ' +
+        'id="t" style="position:absolute;left:0;top:100%;width:10px;' +
+        'height:10px"></span></a></p>',
+    );
+    const el = view(node);
+    const [p, t] = ['p', 't'].map((id) => boxOf(el, id));
+    const [line] = linesOf(el, 'p');
+    // the link's, the one inline box on the line
+    const start = line.edges!.find((e) => e.side === 'start')!;
+    assert.strictEqual(t.x, start.x, "at the link's padding edge");
+    assert.ok(t.x > p.x, 'not at the corner');
+    assert.ok(t.y > p.y && t.y <= p.y + 20, `under its text: ${t.y}`);
+  },
+);
+
+metric(
+  'a shrink-to-fit box that does not wrap is as wide as its line',
+  async () => {
+    // min(max(min-content, room), max-content) (CSS 2.1 10.3.5), and a line
+    // that does not wrap is its own min-content: a `nowrap` tooltip in a
+    // link narrower than it was cut to the link's width, its words taken
+    // for places it could break
+    const { node } = await render(
+      '<div style="width:40px"><div id="f" style="float:left;' +
+        'white-space:nowrap">one two three</div></div>',
+    );
+    const el = view(node);
+    const [line] = linesOf(el, 'f');
+    const f = boxOf(el, 'f');
+    assert.ok(f.width > 40, `past its room: ${f.width}`);
+    assert.ok(Math.abs(f.width - line.width) < 1, 'as wide as its line');
+  },
+);
+
 metric('a relative box after an absolute one is painted over it', async () => {
   // both are positioned, and CSS paints positioned boxes in document order
   // after the flow (CSS 2.1 Appendix E); the relative one was painted with
@@ -4351,6 +4421,21 @@ test("white space between a table's parts is no cell, kept or not", async () => 
   const el = view(node);
   const [t, c] = ['t', 'c'].map((id) => boxOf(el, id));
   assert.deepStrictEqual([c.x, c.y], [t.x, t.y], 'the cell is the first');
+});
+
+metric('a no-break space beside a block is a line of its own', async () => {
+  // CSS's white space is the space, the tab and the line breaks (CSS Text
+  // 3, 4.1); `trim` and `\s` take the no-break space in too, so the
+  // `&nbsp;` a mail layout holds a gap open with was dropped beside a
+  // block as if it held nothing
+  const { node } = await render(
+    '<style>body{margin:0} div{line-height:20px}</style>' +
+      '<div id="d">&nbsp;<div>x</div></div>' +
+      '<div id="e"> <div>x</div></div>',
+  );
+  const el = view(node);
+  assert.strictEqual(boxOf(el, 'd').height, 40, 'its line, then the block');
+  assert.strictEqual(boxOf(el, 'e').height, 20, 'a space is white space');
 });
 
 test("an auto table is as wide as its caption's own width", async () => {
@@ -6743,6 +6828,17 @@ metric(
       {},
     );
     assert.strictEqual(style(fragment.el).color, '#00ff00');
+    cleanup();
+    // and so does a page with a <body> and no <html>, the usual shape of
+    // one that starts `<!DOCTYPE html><title>`, where the rule matched
+    // nothing and the page came out at the theme's size
+    const page = await renderWithBytes(
+      '<!DOCTYPE html><title>t</title><style>html { color: #00ff00; ' +
+        'font-size: 10px }</style><body><p id="p">x</p></body>',
+      {},
+    );
+    assert.strictEqual(style(page.el).color, '#00ff00');
+    assert.strictEqual(style(page.el).fontSize, 10);
   },
 );
 

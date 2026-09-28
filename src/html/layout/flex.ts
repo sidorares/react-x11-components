@@ -27,7 +27,7 @@ import type { Config as YogaConfig, Node as YogaNode } from 'react-x11/yoga';
 
 import { AUTO, isPct, resolve, resolveOrNull } from '../css/values.js';
 import type { ComputedStyle, ContentSize } from '../css/style.js';
-import { Box } from './boxes.js';
+import { Box, isBlank } from './boxes.js';
 import {
   FLEXED_HEIGHT,
   MIN_CONTENT_PROBE,
@@ -121,7 +121,7 @@ export function layoutFlex(
 
   const items: { box: Box; node: YogaNode; laid: Laid }[] = [];
   for (const child of box.children) {
-    if (child.kind === 'text' && !child.text.trim()) continue;
+    if (child.kind === 'text' && isBlank(child.text)) continue;
     if (child.outOfFlow) {
       ctx.positioned.push({ box: child, containing: box });
       continue;
@@ -660,7 +660,7 @@ function layoutAsBlockFallback(
 ): number {
   let y = box.contentY;
   for (const child of box.children) {
-    if (child.kind === 'text' && !child.text.trim()) continue;
+    if (child.kind === 'text' && isBlank(child.text)) continue;
     if (child.outOfFlow) {
       ctx.positioned.push({ box: child, containing: box });
       continue;
