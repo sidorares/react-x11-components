@@ -3051,6 +3051,54 @@ speed up. Every reached route still has all its points moved in place each
 frame, about 2 ms of it; not moving them would mean every consumer of a
 scene taking an offset.
 
+## Round 29: what a first frame waits for
+
+Two waits sat on every first frame; neither is layout or paint.
+
+### A family nobody warmed (ntk #423, #292, #293)
+
+ntk warms sans-serif's four faces while the client connects. Any other
+family started matching only when a layout first asked for it, and that
+layout then waited on `fc-match`: 20–40 ms here, and 80–150 on XQuartz.
+Monospace is the family that matters: code, a terminal's grid, a document's
+code spans.
+
+- **ntk #423** adds `FontManager#prewarm(family)`: the family's four faces
+  start off the event loop, and a layout that asks before the loop runs
+  takes their answers.
+- **#292 and #293** call it while a component renders, because a render
+  runs ahead of the frame that lays it out, and a long document's render is
+  hundreds of milliseconds of head start. The components that call it:
+  - `<CodeEditor>`, in the family its style names;
+  - `<Code>` and `<TerminalOutput>`;
+  - a vt `<Terminal>`;
+  - `<Markdown>` and `<RichTextEditor>`, only when what they mount has
+    code in it.
+
+  The four spawns cost the main thread about 8 ms, so a document with no
+  code does not warm anything.
+
+| cell                                       | first flush before |          after |
+| ------------------------------------------ | -----------------: | -------------: |
+| `<CodeEditor>` mount                       |     127.5–134.9 ms | 101.4–107.4 ms |
+| `<RichTextEditor>` mount, 600 KB with code |         239–257 ms |     194–223 ms |
+| `<Markdown>` mount, 600 KB with code       |         783–830 ms |     769–793 ms |
+
+### The layout engine, fetched from itself (react-x11 #740)
+
+yoga-layout ships its WebAssembly only as a base64 `data:` URL inside its
+loader, and the loader, handed nothing, fetches that URL. That is Node
+loading undici, its `fetch`, at every app's startup, and compiling the
+module through a streamed Response: 36–50 ms. The same bytes handed to the
+loader as `wasmBinary` compile in 9–13. `loadLayout()` now reads them out
+of the loader's file. Where it cannot, in a bundle, a single executable, or
+a yoga-layout that moved its files, it loads the stock way.
+
+Over the startup probe (import, connect, first paint of a small app), the
+time inside `createRoot()` went from a median of 154 ms to 128 ms. What is
+left of the roughly 480 ms to a first paint is mostly Node's module loader:
+resolving and compiling several hundred modules, about 180 ms of it.
+
 ## Lessons
 
 1. **Look for caches that never hit.** Identity-keyed caches handed a new
