@@ -372,6 +372,10 @@ export default function Page(props: PageProps): ReactElement {
             <Html
               key={`${doc}@${zoom}`}
               ref={handle.ref}
+              // the web's `medium`: every page's `rem` is sixteen pixels in
+              // a browser, and a design system spaces a page in them, where
+              // the theme's own text size set it all an eighth too tight
+              fontSize={16}
               source={page.source}
               partial={page.partial}
               charset={page.charset}
