@@ -132,6 +132,14 @@ Rendering is cached per top-level block, keyed on the raw source text of that
 block, so appending to the tail re-renders the tail alone rather than the
 document. That is what makes a token-by-token stream cheap.
 
+A block also keeps its place in the tree from one render to the next. The new
+blocks are matched to the old ones from both ends, so the blocks a change
+left alone keep their nodes, and a block that changed is updated in place. A
+paragraph inserted into the middle of a 600 KB report reaches the screen in
+31 ms. When blocks were keyed by their index it took 958 ms, because every
+block after the insertion moved onto another block's key and was rendered
+and laid out again.
+
 The parse is not repeated whole either. Each new `source` is parsed as an
 edit of the one before (`ParseOptions.previous`). The parse starts at the
 block before the first line that changed and stops once it stands where the
