@@ -7,6 +7,7 @@
 // answer, and the tests assert on the answer directly.
 
 import type { ReactNode } from 'react';
+import { compareText } from '../internal/collate.js';
 
 /** What a row is keyed by. Numbers are allowed because a row often comes
  *  from a database, and stringifying an id is a chance to lose one. */
@@ -108,20 +109,12 @@ export function columnValue<Row>(row: Row, column: TableColumn<Row>): unknown {
     : (row as Record<string, unknown>)[column.id];
 }
 
-/** One collator for every comparison. `localeCompare` with no locale is
- *  defined as a new `Intl.Collator()`'s `compare` (ECMA-402), and making
- *  that collator on every call was most of a 100,000-row sort. Made on
- *  first use, so importing the table constructs nothing. */
-let collator: Intl.Collator | null = null;
-
 /** Core's comparator: numbers numerically, everything else as text, with
- *  `null`/`undefined` sorting as the empty string. */
+ *  `null`/`undefined` sorting as the empty string. The text half is
+ *  `localeCompare`'s, through one collator (`../internal/collate.ts`). */
 export function defaultCompare(a: unknown, b: unknown): number {
   if (typeof a === 'number' && typeof b === 'number') return a - b;
-  return (collator ??= new Intl.Collator()).compare(
-    String(a ?? ''),
-    String(b ?? ''),
-  );
+  return compareText(String(a ?? ''), String(b ?? ''));
 }
 
 /**
