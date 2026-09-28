@@ -292,6 +292,24 @@ test('rankCompletions: prefix beats substring, boost breaks ties', () => {
   );
 });
 
+test('rankCompletions: ties are in localeCompare order', () => {
+  // text ties go through one collator now (src/internal/collate.ts); the
+  // order is the one `localeCompare` gave, case and accents included
+  const labels = ['b', 'B', 'a', 'á', 'Z', '10', '2', 'ab', 'Ab', 'aB'];
+  const items = labels.map((label) => ({ label }));
+  const was = [...labels].sort((a, b) => a.localeCompare(b));
+  assert.deepEqual(
+    rankCompletions(items, '').map((r) => r.label),
+    was,
+  );
+  // exact first, then the case-sensitive prefix tie in collator order, then
+  // the case-insensitive prefix
+  assert.deepEqual(
+    rankCompletions(items, 'a').map((r) => r.label),
+    ['a', 'ab', 'aB', 'Ab'],
+  );
+});
+
 test('sqlCompletionSource: tables, aliases, columns', () => {
   const source = sqlCompletionSource({
     users: ['id', 'name'],

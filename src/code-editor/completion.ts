@@ -11,6 +11,7 @@ import type {
   CompletionResult,
   CompletionSource,
 } from '../code-language/types.js';
+import { compareText } from '../internal/collate.js';
 
 /**
  * Rank `items` against what has been typed: prefix matches first (case
@@ -24,7 +25,7 @@ export function rankCompletions(
   if (typed.length === 0) {
     return [...items].sort(
       (a, b) =>
-        (b.boost ?? 0) - (a.boost ?? 0) || a.label.localeCompare(b.label),
+        (b.boost ?? 0) - (a.boost ?? 0) || compareText(a.label, b.label),
     );
   }
   const lower = typed.toLowerCase();
@@ -41,7 +42,7 @@ export function rankCompletions(
     scored.push({ item, score: score * 1000 + (item.boost ?? 0) });
   }
   scored.sort(
-    (a, b) => b.score - a.score || a.item.label.localeCompare(b.item.label),
+    (a, b) => b.score - a.score || compareText(a.item.label, b.item.label),
   );
   return scored.map((s) => s.item);
 }
