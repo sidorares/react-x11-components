@@ -3374,6 +3374,55 @@ asks which.
 - **A popup's first open** is 17–20 ms to its first painted frame, and 4–7
   after. Nothing to take.
 
+## Round 35: what a first layout reads
+
+With round 33's changes in, timing each `FontManager#match` during an app's
+start showed where a first layout still waited: on reading fontconfig's
+answers, and on the answers arriving.
+
+### Only the head of an answer (ntk #429)
+
+A prewarm's answer is the whole fallback chain `fc-match -s` gives, each
+face with its coverage: 634 KB for `sans-serif` here. A layout setting text
+in a face needs its first line, and it read and parsed all of it, 2.6–3.3 ms
+a face. `FontManager#match` now asks the source for the best face alone,
+and the fontconfig source reads the head of a waiting answer. The chain
+stays in its file for the first character that falls back. An editor beside
+a markdown pane read four answers whole during its start and now reads
+none. A small app read one and now reads none, and its `createRoot` to
+first paint went 68.5 → 65.1 ms.
+
+### The best face beside the chain (ntk #430)
+
+fontconfig answers "which face" in about half the time it takes to answer
+the chain: 15 ms against 30, since it sorts nothing and writes one line. A
+prewarm now runs one `best` job beside a family's chains, for the face a
+layout will ask for first. That's the face being asked for, or the regular
+when a family is warmed ahead. Across 22 families and scripts, 5 faces
+each, the best face was always the chain's first face ntk can open.
+
+| an editor beside a markdown pane, 8 pairs | before    | after      |
+| ----------------------------------------- | --------- | ---------- |
+| the first monospace match                 | 2.4–32 ms | 2.1–2.5 ms |
+| `FontManager#match`, the whole start      | 12.3 ms   | 4.5 ms     |
+| `createRoot` to the first paint           | 122.7 ms  | 115.6 ms   |
+
+Before, the first monospace match waited 9–32 ms in 5 of the 8 starts, on
+the fc-match `<CodeEditor>` started while it rendered. After, it waited in
+none. On XQuartz, where fc-match takes 80–150 ms, the wait should shrink
+about in half, which is round 36's to measure.
+
+### The probe, and a test that raced the clock
+
+The startup probe these rounds quote is in the repository now
+(`scripts/bench/sweep/startup.mjs`, #309). It runs under plain `node`, since
+what it measures is module loading. `<Flow>`'s "the dashes sit a pan out"
+failed a docs-only PR's CI: the dashes march again once the view has held
+still for two ticks, and a runner slow over one step of the test's pan let
+them. The pane's time now reads through a `flowClock` the test holds
+(#308). Stalling one step 250 ms reproduced the failure on the old test,
+and the new one passes through it.
+
 ## Lessons
 
 1. **Look for caches that never hit.** Identity-keyed caches handed a new
@@ -3588,6 +3637,13 @@ asks which.
     `localeCompare` with no locale is a new `Intl.Collator` by the spec's
     own definition, and a sort of 100,000 rows made 1.7 million of them.
     Read what a convenience is defined as before calling it in a loop.
+49. **The tree a probe runs on is part of the probe.** An `npm install
+--no-save` of one tarball pruned another package that had been
+    installed the same way. Resolution then fell through to a parent
+    checkout's copy of it, with a second React behind that copy. The
+    result was broken hooks and startups 100 ms slower, none of it the
+    change's. Unpacking tarballs over an `npm ci` tree held. Count the
+    packages and check where each one resolves from before trusting a run.
 
 ## Still open
 
