@@ -173,6 +173,11 @@ img { max-width: 100%; }</style></head>
 export function fileName(url: string): string {
   try {
     const parsed = new URL(url);
+    // no path, only a payload — the tail of `<body>…</body>` is no name —
+    // so the page goes by its URL, as it does in a browser
+    if (parsed.protocol === 'data:') {
+      return url.length > 64 ? `${url.slice(0, 63)}…` : url;
+    }
     const last = parsed.pathname.split('/').filter(Boolean).pop();
     return last ? decodeURIComponent(last) : parsed.host || url;
   } catch {

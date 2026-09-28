@@ -1103,7 +1103,16 @@ function TabView({
             // `<Html>` keeps its device-pixel work on that promise, so a new
             // zoom is a new page — built from the source it already has and
             // resources the network layer kept.
-            <box scale={tab.zoom} style={{ flexDirection: 'column' }}>
+            //
+            // Both grow: a page shorter than the window is still as tall as
+            // it, as a browser's canvas is, so its background reaches the
+            // bottom of the window at any size rather than stopping where
+            // the text does (`<Html>` paints its root's background down the
+            // whole element).
+            <box
+              scale={tab.zoom}
+              style={{ flexDirection: 'column', flexGrow: 1 }}
+            >
               <Html
                 key={`${entry.doc}@${tab.zoom}`}
                 ref={handle.ref}
@@ -1114,6 +1123,7 @@ function TabView({
                 onResource={onResource}
                 onDocument={onDocument}
                 onLink={onLink}
+                style={{ flexGrow: 1 }}
               />
             </box>
           ) : null}
