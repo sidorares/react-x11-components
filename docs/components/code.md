@@ -14,7 +14,8 @@ It is composition, not a new element — a `<box selectable>` over
 [`code-language`](code-language.md) and painted with the palette and chrome
 in [`codeblock`](codeblock.md). Those are the same three pieces
 [`<Markdown>`](markdown.md)'s fenced blocks use, which is why the two agree
-inside one window.
+inside one window. A tab goes to its stop, every eight spaces from the
+line's start, and is copied as the tab it is.
 
 ## Props
 

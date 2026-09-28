@@ -193,6 +193,113 @@ interface FontsLike {
   ): TextLayoutLike;
 }
 
+/** Spacing that tells runs apart and moves nothing: an engine that merges
+ *  adjacent runs alike (CoreText) keeps a tab's space to itself. */
+const HAIR = 1e-6;
+
+/**
+ * The runs with each tab laid out as a space of its own, letter-spaced to
+ * the next stop: every eight spaces from its line's start, and past one
+ * less than half a "0" on (CSS Text 3, 4.2's `tab-size`). Neither engine
+ * sets a tab so — ntk has no glyph for one and draws a box, and CoreText
+ * stops every 28 points — so a tab-indented fence in `<Markdown>` or a
+ * `<Code>` block came out boxed or ragged. The space is the tab's length,
+ * so every offset holds, and the text a selection copies keeps its tabs.
+ * Placed from a first layout that has each tab as an unspaced space; a
+ * later tab on a line moves by what the ones before it added.
+ */
+function tabbedRuns(
+  fonts: FontsLike,
+  runs: TextRun[],
+  base: Record<string, unknown>,
+): TextRun[] {
+  const out: TextRun[] = [];
+  const tabs: { at: number; index: number }[] = [];
+  let units = 0;
+  for (const run of runs) {
+    const text = run.text;
+    if (!text.includes('\t')) {
+      out.push(run);
+      units += text.length;
+      continue;
+    }
+    let done = 0;
+    for (let p = text.indexOf('\t'); p >= 0; p = text.indexOf('\t', p + 1)) {
+      if (p > done) out.push({ ...run, text: text.slice(done, p) });
+      tabs.push({ at: units + p, index: out.length });
+      out.push({
+        ...run,
+        text: ' ',
+        letterSpacing: (run.letterSpacing ?? 0) + tabs.length * HAIR,
+      });
+      done = p + 1;
+    }
+    if (done < text.length) out.push({ ...run, text: text.slice(done) });
+    units += text.length;
+  }
+  const natural = fonts.layout(out, base, {});
+  const found = new Map<number, { x: number; line: number }>();
+  natural.lines.forEach((line, i) => {
+    for (const run of line.runs ?? []) {
+      found.set(run.start, { x: line.x + run.x, line: i });
+    }
+  });
+  /** The room tabs have added to each line so far. */
+  const added = new Map<number, number>();
+  for (const tab of tabs) {
+    const run = out[tab.index];
+    const face = {
+      ...base,
+      ...(run.family !== undefined ? { family: run.family } : null),
+      ...(run.size !== undefined ? { size: run.size } : null),
+      ...(run.weight !== undefined ? { weight: run.weight } : null),
+      ...(run.style !== undefined ? { style: run.style } : null),
+    };
+    const space = advanceOf(fonts, face, ' ');
+    const every = 8 * space;
+    const own = space + (run.letterSpacing ?? 0);
+    const at = found.get(tab.at) ?? natural.caretPosition(tab.at);
+    const before = added.get(at.line) ?? 0;
+    const x = at.x + before;
+    let advance = own;
+    if (every > 0) {
+      let stop = (Math.floor(x / every) + 1) * every;
+      if (stop - x < advanceOf(fonts, face, '0') / 2) stop += every;
+      advance = stop - x;
+    }
+    out[tab.index] = {
+      ...run,
+      letterSpacing: (run.letterSpacing ?? 0) + advance - own,
+    };
+    added.set(at.line, before + advance - own);
+  }
+  return out;
+}
+
+/** A character's advance in a face: between two letters, so that no engine
+ *  drops it as a line's end. Kept per engine and face: a file indented with
+ *  tabs asks for it thousands of times. */
+function advanceOf(
+  fonts: FontsLike,
+  face: Record<string, unknown>,
+  char: string,
+): number {
+  let kept = ADVANCES.get(fonts);
+  if (!kept) ADVANCES.set(fonts, (kept = new Map()));
+  const key = `${face.family}|${face.size}|${face.weight}|${face.style}|${char}`;
+  let advance = kept.get(key);
+  if (advance === undefined) {
+    advance =
+      fonts.layout([{ ...face, text: `x${char}x` } as TextRun], face, {})
+        .width -
+      fonts.layout([{ ...face, text: 'xx' } as TextRun], face, {}).width;
+    kept.set(key, advance);
+  }
+  return advance;
+}
+
+const ADVANCES = new WeakMap<FontsLike, Map<string, number>>();
+
 /**
  * The bands a highlight over `[start, end)` fills, in layout coordinates —
  * one per line, and more than one on a line that changes direction. The
@@ -256,6 +363,9 @@ function sameRuns(a: unknown, b: unknown): boolean {
 export class RichTextNode extends Node {
   private _layouts = new Map<string, TextLayoutLike | null>();
   private _text: string | null = null;
+  /** The runs as laid out where a tab is among them, and what from. */
+  private _tabbed: { from: TextRun[]; scale: number; to: TextRun[] } | null =
+    null;
 
   /**
    * `kind` is for a subclass registered under a name of its own — the rich
@@ -307,19 +417,34 @@ export class RichTextNode extends Node {
     let layout: TextLayoutLike | null = null;
     if (fonts) {
       const s = this._scale;
-      layout = fonts.layout(
-        this._deviceRuns(s),
-        { family: 'sans-serif', size: 14 * s },
-        {
-          maxWidth: Number.isFinite(maxWidth) ? maxWidth : undefined,
-          lineHeight: this.style.lineHeight,
-          align: this.style.textAlign,
-        },
-      );
+      const base = { family: 'sans-serif', size: 14 * s };
+      layout = fonts.layout(this._tabRuns(fonts, base, s), base, {
+        maxWidth: Number.isFinite(maxWidth) ? maxWidth : undefined,
+        lineHeight: this.style.lineHeight,
+        align: this.style.textAlign,
+      });
     }
     if (this._layouts.size > 32) this._layouts.clear();
     this._layouts.set(key, layout);
     return layout;
+  }
+
+  /** The runs with their tabs set to their stops (`tabbedRuns`), found
+   *  once for a list of runs: most have none, and are handed on as they
+   *  are. */
+  private _tabRuns(
+    fonts: FontsLike,
+    base: Record<string, unknown>,
+    scale: number,
+  ): TextRun[] {
+    const from = this._runs();
+    const runs = this._deviceRuns(scale);
+    if (!runs.some((run) => run.text.includes('\t'))) return runs;
+    const kept = this._tabbed;
+    if (kept && kept.from === from && kept.scale === scale) return kept.to;
+    const to = tabbedRuns(fonts, runs, base);
+    this._tabbed = { from, scale, to };
+    return to;
   }
 
   // --- units ---------------------------------------------------------------
@@ -386,6 +511,7 @@ export class RichTextNode extends Node {
     ) {
       this._layouts.clear();
       this._text = null;
+      this._tabbed = null;
       this.invalidateMeasure('content');
     }
   }
