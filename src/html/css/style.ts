@@ -203,6 +203,18 @@ export interface ComputedStyle {
   tabSize: number;
   tabSizeIsLength: boolean;
   whiteSpace: 'normal' | 'nowrap' | 'pre' | 'pre-wrap' | 'pre-line';
+  /** Whether a word too long for its line may be cut inside itself
+   *  (`overflow-wrap`, CSS Text 3, 5.5): `normal` lets it run past the
+   *  line's end, as a browser does, and `anywhere` is `break-word`. */
+  overflowWrap: 'normal' | 'break-word';
+  /** `word-break` (CSS Text 3, 5.2): `break-all` and `break-word` cut a
+   *  word too long for its line whatever `overflow-wrap` says, which is
+   *  as near as the engines come to breaking between any two letters. */
+  wordBreak: 'normal' | 'break-all' | 'keep-all' | 'break-word';
+  /** `line-break: anywhere` (CSS Text 3, 5.3) breaks between any two
+   *  letters, which the engines come nearest to by cutting a word where
+   *  its line runs out; the other values are the engine's own breaking. */
+  lineBreakAnywhere: boolean;
   /** `text-wrap-style` (CSS Text 4, 6.2): `balance` evens a short
    *  paragraph's lines out; `pretty` and `stable` wrap as `auto` does. */
   textWrapStyle: 'auto' | 'balance';
@@ -482,6 +494,9 @@ export const INHERITED = [
   'tabSize',
   'tabSizeIsLength',
   'whiteSpace',
+  'overflowWrap',
+  'wordBreak',
+  'lineBreakAnywhere',
   'textWrapStyle',
   'direction',
   'visibility',
@@ -554,6 +569,9 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     tabSize: 8,
     tabSizeIsLength: false,
     whiteSpace: 'normal',
+    overflowWrap: 'normal',
+    wordBreak: 'normal',
+    lineBreakAnywhere: false,
     textWrapStyle: 'auto',
     direction: 'ltr',
     unicodeBidi: 'normal',
@@ -774,6 +792,9 @@ export function inherit(
   out.tabSize = parent.tabSize;
   out.tabSizeIsLength = parent.tabSizeIsLength;
   out.whiteSpace = parent.whiteSpace;
+  out.overflowWrap = parent.overflowWrap;
+  out.wordBreak = parent.wordBreak;
+  out.lineBreakAnywhere = parent.lineBreakAnywhere;
   out.textWrapStyle = parent.textWrapStyle;
   out.direction = parent.direction;
   out.visibility = parent.visibility;
@@ -1613,6 +1634,42 @@ export function applyDeclaration(
         // `pre-wrap` whose spaces take room at a line's end rather than
         // hanging past it, which is as near as the engines come
         style.whiteSpace = 'pre-wrap';
+      }
+      return;
+    }
+    // a word is cut inside itself only where the style says it may be:
+    // `anywhere` as `break-word` is
+    case 'overflow-wrap':
+    case 'word-wrap': {
+      const v = value.trim().toLowerCase();
+      if (v === 'normal') style.overflowWrap = 'normal';
+      else if (v === 'break-word' || v === 'anywhere') {
+        style.overflowWrap = 'break-word';
+      }
+      return;
+    }
+    case 'line-break': {
+      const v = value.trim().toLowerCase();
+      if (
+        v === 'auto' ||
+        v === 'loose' ||
+        v === 'normal' ||
+        v === 'strict' ||
+        v === 'anywhere'
+      ) {
+        style.lineBreakAnywhere = v === 'anywhere';
+      }
+      return;
+    }
+    case 'word-break': {
+      const v = value.trim().toLowerCase();
+      if (
+        v === 'normal' ||
+        v === 'break-all' ||
+        v === 'keep-all' ||
+        v === 'break-word'
+      ) {
+        style.wordBreak = v;
       }
       return;
     }
@@ -3306,6 +3363,10 @@ const INHERITED_NAMES = new Set<string>([
   'letter-spacing',
   'word-spacing',
   'white-space',
+  'overflow-wrap',
+  'word-wrap',
+  'word-break',
+  'line-break',
   'white-space-collapse',
   'text-wrap',
   'text-wrap-mode',
@@ -3407,6 +3468,10 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'tab-size': ['tabSize', 'tabSizeIsLength'],
   '-moz-tab-size': ['tabSize', 'tabSizeIsLength'],
   'white-space': ['whiteSpace'],
+  'overflow-wrap': ['overflowWrap'],
+  'word-wrap': ['overflowWrap'],
+  'word-break': ['wordBreak'],
+  'line-break': ['lineBreakAnywhere'],
   'white-space-collapse': ['whiteSpace'],
   'text-wrap': ['whiteSpace', 'textWrapStyle'],
   'text-wrap-mode': ['whiteSpace'],

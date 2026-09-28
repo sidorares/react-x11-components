@@ -66,6 +66,13 @@ export interface FontsLike {
       maxLines?: number;
       /** What a `maxLines` cut looks like: an ellipsis, or nothing. */
       overflow?: 'clip' | 'ellipsis';
+      /** A word too long for its line kept whole, past the line's end, or
+       *  cut inside itself — ntk's option, which an engine without it
+       *  leaves at cutting. */
+      overflowWrap?: 'normal' | 'break-word';
+      /** Whether soft wraps are made at all: false is a line to each
+       *  forced break, cut at `maxWidth` where `overflow` says so. ntk's. */
+      wrap?: boolean;
     },
   ): TextLayoutLike;
   match(
@@ -317,15 +324,16 @@ export function layoutInline(block: Box, options: InlineOptions): InlineResult {
  * The cut a block's own style asks of its text, as the engine takes it:
  * `line-clamp`'s lines, or the one line of a `white-space: nowrap` block
  * that clips with `text-overflow: ellipsis` — Tailwind's `truncate`, cut at
- * the box's width with an ellipsis. The engine cuts the line where it
- * would have broken it and makes room for the ellipsis inside its last
- * word, so a line of words shows a little less of them than a browser,
- * which fills the line with as much of the text as fits.
+ * the box's width with an ellipsis. That line is laid out unwrapped and
+ * cut where the box ends, inside a word if need be, as a browser cuts it,
+ * by an engine that reads `wrap` (ntk from 8.13.0); one that does not
+ * wraps it first and ends it after the word that fits.
  */
 /** A layout cut at a number of lines, with an ellipsis. */
 interface Cut {
   maxLines: number;
   overflow: 'ellipsis';
+  wrap?: false;
 }
 
 function cutOf(style: ComputedStyle): Cut | null {
@@ -337,7 +345,7 @@ function cutOf(style: ComputedStyle): Cut | null {
     !wraps(style) &&
     style.overflowX !== 'visible'
   ) {
-    return { maxLines: 1, overflow: 'ellipsis' };
+    return { maxLines: 1, overflow: 'ellipsis', wrap: false };
   }
   return null;
 }
@@ -374,7 +382,7 @@ function layoutLines(block: Box, options: InlineOptions): InlineResult {
     CLIPPED_TEXT.add(block);
     fonts = recording(fonts);
   }
-  if (wraps(block.style)) holdNoWrap(items);
+  if (wraps(block.style)) holdNoWrap(items, block);
   // one walk for what few paragraphs have: text that casts a shadow, and a
   // tab, which only a `white-space` that keeps it leaves — so no text is
   // searched for one where it cannot be
@@ -417,6 +425,7 @@ function layoutLines(block: Box, options: InlineOptions): InlineResult {
   if (options.firstLine) firstLineColour(items, options.firstLine);
 
   const style = block.style;
+  const wrapWords = overflowWrapOf(style, items);
   const base = {
     family: style.fontFamily,
     size: style.fontSize,
@@ -529,6 +538,7 @@ function layoutLines(block: Box, options: InlineOptions): InlineResult {
       lineHeight: lineHeightMul,
       align,
       direction: style.direction,
+      overflowWrap: cutWrap(style, cut, wrapWords),
       ...cut,
     };
     let layout = fonts.layout(runs, base, layoutOptions);
@@ -780,6 +790,7 @@ function layoutLines(block: Box, options: InlineOptions): InlineResult {
         lineHeight: lineHeightMul,
         align,
         direction: style.direction,
+        overflowWrap: wrapWords,
       });
       LAYOUT_RUNS.set(layout, segment.runs);
       for (let i = 0; i < layout.lines.length; i += 1) {
@@ -832,6 +843,7 @@ function layoutLines(block: Box, options: InlineOptions): InlineResult {
       // not been, over it.
       align: 'left',
       direction: style.direction,
+      overflowWrap: wrapWords,
       maxLines: 1,
     });
     LAYOUT_RUNS.set(fragment, segment.runs);
@@ -846,9 +858,7 @@ function layoutLines(block: Box, options: InlineOptions): InlineResult {
     // fit — so the line moves down to where a float ends, and tries again
     // there (CSS 2.1 9.5). Only where a float took some of the line's width:
     // past the floats the line has the whole of it, and a word wider still
-    // is the engine's to break. A line that ends on white space fitted its
-    // word: the space hangs, and CoreText counted it in the width until
-    // @windowkit/appkit 0.15.0.
+    // is `overflow-wrap`'s to break or to let run past.
     if (
       isEmpty(open) &&
       available < options.width &&
@@ -1094,6 +1104,7 @@ function layoutSpaced(
   align: string,
   fonts: FontsLike,
 ): InlineResult {
+  const wrapWords = overflowWrapOf(style, items);
   const runs: TextRun[] = [];
   const spans = new SpanMap();
   const spacers: { at: number; edge: Extract<Item, { kind: 'edge' }> }[] = [];
@@ -1124,6 +1135,7 @@ function layoutSpaced(
     lineHeight: lineHeightMul,
     align,
     direction: style.direction,
+    overflowWrap: wrapWords,
   });
   LAYOUT_RUNS.set(layout, runs);
   const place = wraps(style) ? null : unwrappedPlacer(style, width);
@@ -1306,6 +1318,7 @@ function layoutChunked(
   fonts: FontsLike,
   chunking: Chunking = CHUNKS,
 ): InlineResult {
+  const wrapWords = overflowWrapOf(style, items);
   const lines: LineBox[] = [];
   let widest = 0;
   let y = 0;
@@ -1324,6 +1337,7 @@ function layoutChunked(
       lineHeight: lineHeightMul,
       align,
       direction: style.direction,
+      overflowWrap: cutWrap(style, cut, wrapWords),
       ...cut,
     });
     LAYOUT_RUNS.set(layout, chunkRuns);
@@ -2049,29 +2063,90 @@ function collect(
 }
 
 /**
- * Keep the words of a `nowrap` element together where its block wraps
- * (CSS 2.1 16.6): laid out, a space it may not break after is a no-break
- * space, as wide and as many, so every offset holds. Whether a line breaks
- * after a space is the call of the nearest element holding the space and
- * what follows it (CSS Text 3, 5.1), so the space such an element ends on
- * stays one where the text after it wraps.
+ * What a paragraph does with a word too long for its line: cuts it where
+ * its style or any text in it says a word may be cut — `overflow-wrap`, or
+ * `word-break` or `line-break: anywhere`, which cut one whatever
+ * `overflow-wrap` says (CSS Text 3, 5.2 and 5.3) — and lets it run past the
+ * line's end where nothing does, as a browser does. The engine takes one answer for the paragraph, so a span
+ * that breaks its words breaks the paragraph's.
  */
-function holdNoWrap(items: Item[]): void {
-  let next: Extract<Item, { kind: 'text' }> | null = null;
+function overflowWrapOf(
+  style: ComputedStyle,
+  items: readonly Item[],
+): 'normal' | 'break-word' {
+  if (breaksWords(style)) return 'break-word';
+  for (const item of items) {
+    if (item.kind === 'text' && breaksWords(item.box.style)) {
+      return 'break-word';
+    }
+  }
+  return 'normal';
+}
+
+/** A `text-overflow` cut on a line that does not wrap puts its ellipsis at
+ *  the box's edge, inside a word where one runs past it, as a browser
+ *  does — which is the engine cutting the word there. */
+function cutWrap(
+  style: ComputedStyle,
+  cut: Cut | null | undefined,
+  wrapWords: 'normal' | 'break-word',
+): 'normal' | 'break-word' {
+  return cut && !wraps(style) ? 'break-word' : wrapWords;
+}
+
+function breaksWords(style: ComputedStyle): boolean {
+  return (
+    style.overflowWrap !== 'normal' ||
+    style.wordBreak === 'break-all' ||
+    style.wordBreak === 'break-word' ||
+    style.lineBreakAnywhere
+  );
+}
+
+/**
+ * Keep the text of a `nowrap` element together where its block wraps (CSS
+ * 2.1 16.6). Its runs share the element as their `nowrap`, which ntk makes
+ * no break inside or between; and, for an engine that does not read it,
+ * a space it may not break after is a no-break space, as wide and as many,
+ * so every offset holds. Whether a line breaks between two characters is
+ * the call of the nearest element holding both (CSS Text 3, 5.1), so the
+ * space such an element ends on stays one to break at where the text after
+ * it is not the same element's: text that wraps, or another `nowrap`
+ * element's — two tags side by side, a collapsed space between them.
+ */
+function holdNoWrap(items: Item[], block: Box): void {
+  let last = true;
+  let nextGroup: Box | null = null;
   for (let i = items.length - 1; i >= 0; i -= 1) {
     const item = items[i];
     if (item.kind !== 'text') continue;
-    const text = item.run.text;
-    // `pre`'s are no-break spaces already (`runFor`)
-    if (item.box.style.whiteSpace === 'nowrap' && text.includes(' ')) {
-      let held = text.replace(/ /g, '\u00a0');
-      if (text.endsWith(' ') && (!next || wraps(next.box.style))) {
-        held = held.slice(0, -1) + ' ';
+    const group = wraps(item.box.style) ? null : noWrapGroup(item.box, block);
+    if (group) {
+      const text = item.run.text;
+      let held = text;
+      // `pre`'s are no-break spaces already (`runFor`)
+      if (item.box.style.whiteSpace === 'nowrap' && text.includes(' ')) {
+        held = text.replace(/ /g, '\u00a0');
+        if (text.endsWith(' ') && (last || nextGroup !== group)) {
+          held = held.slice(0, -1) + ' ';
+        }
       }
-      item.run = { ...item.run, text: held };
+      item.run = { ...item.run, text: held, nowrap: group };
     }
-    next = item;
+    last = false;
+    nextGroup = group;
   }
+}
+
+/** The element a text that does not wrap is held together by: the outermost
+ *  one inside the block that does not wrap either. */
+function noWrapGroup(box: Box, block: Box): Box {
+  let group = box;
+  for (let up = box.parent; up && up !== block; up = up.parent) {
+    if (wraps(up.style)) break;
+    group = up;
+  }
+  return group;
 }
 
 /** The bidi controls `unicode-bidi` stands for, opening and closing (CSS
@@ -3437,10 +3512,11 @@ function belowFloats(
 
 /**
  * Whether a line's first word did not fit its room: the line runs past the
- * room on a word rather than on hanging white space, or it ends inside a
- * word — between two letters or digits, where no break is allowed, so only
- * a line too narrow for the word put one there. Ideographs and kana break
- * between any two, and are not counted as a word's letters.
+ * room — a line's width leaves out the white space it ends on, which hangs,
+ * so this is the word, kept whole where `overflow-wrap` says so — or it
+ * ends inside a word — between two letters or digits, where no break is
+ * allowed, so only a line too narrow for the word put one there. Ideographs
+ * and kana break between any two, and are not counted as a word's letters.
  */
 function tooNarrow(
   runs: TextRun[],
@@ -3458,7 +3534,7 @@ function tooNarrow(
     at += text.length;
   }
   if (WORD_CHAR.test(before) && WORD_CHAR.test(after)) return true;
-  return width > room + 0.5 && before !== '' && !/\s/.test(before);
+  return width > room + 0.5 && before !== '';
 }
 
 const WORD_CHAR =

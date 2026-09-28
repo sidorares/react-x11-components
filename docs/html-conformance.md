@@ -159,6 +159,7 @@ npx tsx scripts/conformance/run.ts wpt fuzz1 --chunk 50 --timeout 60000
 | 73     | flex items no smaller than their content           | 5,484 (93%) | 4,992 (84%) |
 | 74     | percentages of a stretched or flexed item's height | 5,484 (93%) | 4,992 (84%) |
 | 75     | the font's own `ch`, floats in unbroken text       | 5,486 (93%) | 4,994 (84%) |
+| 76     | a word too long for its line kept whole            | 5,520 (93%) | 4,994 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -2220,6 +2221,54 @@ two agreed.
      letters, which the engines emulate by cutting a word where the line
      runs out; two whose `break-spaces` spaces must not hang; and one whose
      U+2010 the monospace face does not have.
+
+### Round 76
+
+174. **A word too long for its line was cut inside itself.** CSS Text 3's
+     `overflow-wrap: normal`, the initial value, lets such a word run past
+     its line's end, and the text engine cut every one, as `break-word`
+     has it: a long URL in a narrow column was broken across lines where a
+     browser lets it overflow. ntk 8.13.0 keeps a word whole where it is
+     asked to, and `<Html>` asks unless the paragraph says a word may be
+     cut: `overflow-wrap: break-word` or `anywhere`,
+     `word-break: break-all` or `break-word`, or `line-break: anywhere`,
+     the last two emulated, as near as the engines come, by cutting. The
+     engine answers for a paragraph, so an element in it that asks has the
+     paragraph's words cut, and text in a script written without spaces
+     is cut regardless: the engine finds no words in it. The same release
+     starts a line too long for its box at its start edge whatever
+     `text-align` says, where a right-aligned one was pushed out of the
+     box's left side. CoreText, on macOS, cuts a word too long whatever
+     the style says, as it did.
+175. **`truncate` put its ellipsis a word early.** A `text-overflow` cut on
+     a line that does not wrap was the engine's `maxLines: 1`, which wraps
+     the text first and ends the first line with the ellipsis, after the
+     last word that fitted, where a browser fills the box and cuts inside
+     a word. ntk 8.13.0 lays such a line out unwrapped and cuts it where
+     the box ends (`wrap: false`), as CoreText already did.
+176. **Kept whole, a word showed two faults the cutting hid.** A word too
+     long for the room beside a float stayed there when a space followed
+     it, running over the float, where a line with no room for its first
+     word moves down past the floats (CSS 2.1 9.5): a line that ended on
+     white space was taken to have fitted, which was true only while
+     every word was cut. And two `nowrap` elements with a collapsed space
+     between them ran on as one word, where the break between two
+     characters is the call of the nearest element holding both (CSS Text
+     3, 5.1), and that is the paragraph.
+177. **A `nowrap` element broke at its hyphens.** Its spaces were held as
+     no-break spaces, and nothing held its other breaks: Tailwind's
+     `whitespace-nowrap` on "state-of-the-art" broke after "the-". ntk
+     8.13.0 has no break inside or between spans that share a `nowrap`,
+     and each such element's text shares one, itself — so two of them
+     side by side still break between them, as the rule above has it.
+     CoreText has no such option, and on macOS the hyphens break as they
+     did.
+
+     `css-text`: 568 of its 1,489 tests passed on X11, 606 do now. It
+     loses four that passed with every word cut: two that want
+     `hyphens: auto` to hyphenate, which needs a dictionary nothing here
+     has, and two whose `break-spaces` wants a break between two
+     ideographic spaces, which the engine does not make.
 
 ## What `<Html>` supports
 

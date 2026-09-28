@@ -144,6 +144,7 @@ const other: Record<(typeof RUN_FIELDS)[number], TextRun[keyof TextRun]> = {
   strike: '#ff0000',
   href: 'https://example.com/',
   features: { tnum: 1 },
+  nowrap: true,
 };
 
 test('every field of a run is what it is found by', () => {
@@ -173,6 +174,8 @@ test("every field of a block's style, and every option, is what a layout is foun
     direction: 'rtl',
     maxLines: 1,
     overflow: 'ellipsis',
+    overflowWrap: 'normal',
+    wrap: false,
   };
   const engine = countingEngine();
   const cache = new TextLayoutCache(engine);
