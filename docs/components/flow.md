@@ -528,6 +528,27 @@ lattice's first at 56 ms on Windows and the last at 111. The field is
 `<Map>`'s own (`src/internal/sdf.ts`); `docs/prd-flow-gl.md` has the
 numbers.
 
+**Under GL the world draws every card, mounted or not.** A node with a
+body has its card painted in the bodies' layer, under the body, so that
+it stacks with it. On the 2D renderer the pane then leaves that card out:
+the pane and the layer are painted in the same pass of the same frame, so
+one of them always has it. Under GL they are not. The layer is the
+surface's overlay, which reaches the screen with the window's frame, and
+the GL frame is swapped on the surface's own turn. Nothing orders the two:
+on macOS a wheel notch puts the overlay on screen inside its own dispatch,
+and the GL frame the notch asked for comes 20–25 ms later. So a card the
+world left to the layer was, for that long, a card nobody drew. At the
+start of every zoom that held the bodies, the screen showed bare edges
+where the cards had been. Each time one path was ordered — the first paint,
+a GL frame between a hold and React's commit — another turned up. So the
+world draws the card too, under the layer's copy, and the layer only ever
+adds to it. Whatever order the two paths land in, the worst the screen can
+show is a body a frame early or late, over a card that is there. On the
+stress example's widgets at 0.9× that is 30 cards more in a world of 180,
+within the noise of a rebuild on macOS (1.6–2.3 ms of scene, 3.9–5 ms to
+pack and draw, either way), and a hold ending no longer rebuilds the world
+at all.
+
 **The grid tiles.** At an integral device pitch the background is one
 `createPattern('repeat')` composite (ntk#263) — the phase baked into the
 tile, so alignment with the graph's own coordinates is exact — and at a
