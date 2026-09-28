@@ -453,31 +453,124 @@ function baselineOf(layout: LayoutLike): number | null {
  *  text, in code points and in UTF-16 units, where it starts across, its
  *  text, its layout, and the runs its spans styled it in — length, colour,
  *  weight and style, four entries a run — which is what a rebuild compares
- *  to keep it (`_chunkedLayout`). */
+ *  to keep it (`_chunkedLayout`).
+ *
+ *  `layout` is null until something asks about the piece or one past it,
+ *  when it is made from `spans`. `advance` is how far the next piece
+ *  starts after this one: a guess until then, and after it the caret's
+ *  place at the piece's end (`advanceOf`). */
 interface Chunk {
   cp: number;
   u16: number;
   x: number;
   text: string;
-  layout: LayoutLike;
+  layout: LayoutLike | null;
+  spans: Array<Record<string, unknown>> | null;
+  advance: number;
   runs: readonly unknown[];
 }
 
+/**
+ * How far a laid-out piece takes the line across: where the caret stands at
+ * its end. Not its layout's width, which leaves out the white space a piece
+ * ends on, as a layout's width does. A piece cut after a space set the next
+ * one a column to its left, so the space vanished from the screen and every
+ * caret after it was a column out: seven columns by the end of a line of
+ * 78,000 characters, from the eight pieces that ended on one. The larger of
+ * the two, since the caret after a right-to-left piece is at its left.
+ */
+function advanceOf(layout: LayoutLike, text: string): number {
+  const end = layout.caretPosition(utf16ToCp(text, text.length)).x;
+  return Math.max(layout.width, end);
+}
+
 class ChunkedLayout implements LayoutLike {
-  readonly width: number;
-  readonly height: number;
+  /**
+   * The pieces before this one are laid out, and every piece up to it sits
+   * where it is drawn. Past it, a piece sits where the guesses before it
+   * put it.
+   *
+   * Laying out a line of a million characters shaped every piece of it
+   * before the first paint: 1.4 s to open a minified file, of which the
+   * view needed one piece. So a piece is laid out when anything asks about
+   * it or a piece after it: a draw, a caret, a click. Everything left of
+   * what is asked about is laid out too, so whatever is drawn is where one
+   * layout of the whole line would put it. Only the width of the part
+   * nobody has looked at is a guess, and the editor's scroll extent follows
+   * it as it firms up (`grew`).
+   */
+  private _laid = 0;
+
   constructor(
     /** The pieces, in order, and never empty. */
     readonly chunks: readonly Chunk[],
+    /** A piece's layout, from its spans. */
+    private readonly _layOut: (
+      spans: Array<Record<string, unknown>>,
+    ) => LayoutLike,
+    /** Told the line's width when laying out more of it changed it. */
+    private readonly _grew: (width: number) => void = () => {},
   ) {
-    const last = chunks[chunks.length - 1];
-    this.width = last.x + last.layout.width;
-    this.height = Math.max(...chunks.map((c) => c.layout.height));
+    while (this._laid < chunks.length && chunks[this._laid].layout) {
+      this._laid += 1;
+    }
+    // the first piece at once: the line's height, and its baseline
+    this._layOutThrough(0);
   }
 
-  /** The last piece whose `key` is at or before `at`. */
+  get width(): number {
+    // the last piece's ink, as one layout of the whole line measures it
+    const last = this.chunks[this.chunks.length - 1];
+    return last.x + (last.layout?.width ?? last.advance);
+  }
+
+  get height(): number {
+    let height = 0;
+    for (let k = 0; k < this._laid; k++) {
+      height = Math.max(height, this.chunks[k].layout!.height);
+    }
+    return height;
+  }
+
+  /** Lay out the pieces through `k`, and move every piece after them to
+   *  where the laid-out ones now end. */
+  private _layOutThrough(k: number): void {
+    const chunks = this.chunks;
+    const from = this._laid;
+    const through = Math.min(k, chunks.length - 1);
+    if (through < from) return;
+    const before = this.width;
+    for (let j = from; j <= through; j++) {
+      const piece = chunks[j];
+      if (!piece.layout) {
+        piece.layout = this._layOut(piece.spans!);
+        piece.spans = null;
+        piece.advance = advanceOf(piece.layout, piece.text);
+      }
+    }
+    this._laid = through + 1;
+    // the first piece that was not laid out sits where the ones before it
+    // end, and every piece after it where the one before it does
+    let x = chunks[from].x;
+    for (let j = from; j < chunks.length; j++) {
+      const piece = chunks[j];
+      piece.x = x;
+      x += piece.advance;
+    }
+    const width = this.width;
+    if (width !== before) this._grew(width);
+  }
+
+  /** The last piece whose `key` is at or before `at`, laid out. */
   private _pieceAt(at: number, key: 'cp' | 'u16' | 'x') {
     const chunks = this.chunks;
+    if (key === 'x') {
+      // a piece's place across is known only as far as the pieces are laid
+      // out: lay them out until the one `at` falls in is among them
+      while (this._laid < chunks.length && chunks[this._laid].x <= at) {
+        this._layOutThrough(this._laid);
+      }
+    }
     let lo = 0;
     let hi = chunks.length - 1;
     while (lo < hi) {
@@ -485,7 +578,8 @@ class ChunkedLayout implements LayoutLike {
       if (chunks[mid][key] <= at) lo = mid;
       else hi = mid - 1;
     }
-    return chunks[lo];
+    this._layOutThrough(lo);
+    return chunks[lo] as Chunk & { layout: LayoutLike };
   }
 
   caretPosition(cp: number): { x: number; y: number; height: number } {
@@ -522,7 +616,8 @@ class ChunkedLayout implements LayoutLike {
    * The pieces that reach into `[from, to)` across the line, each with its
    * first baseline at `baseline` — a piece holding an emoji is laid out
    * taller than the rest, and set by its top it sat on a baseline of its
-   * own. `y` places a piece whose engine gives no baseline.
+   * own. `y` places a piece whose engine gives no baseline. The pieces up to
+   * `to` are laid out on the way, so each is drawn where it belongs.
    */
   drawSpan(
     ctx: unknown,
@@ -532,8 +627,13 @@ class ChunkedLayout implements LayoutLike {
     to: number,
     baseline: number | null = null,
   ) {
-    for (const piece of this.chunks) {
-      if (piece.x >= to) break;
+    const chunks = this.chunks;
+    for (let k = 0; k < chunks.length; k++) {
+      // where an unlaid piece sits is exact here: the ones before it are
+      // laid out by now
+      if (chunks[k].x >= to) break;
+      this._layOutThrough(k);
+      const piece = chunks[k] as Chunk & { layout: LayoutLike };
       if (piece.x + piece.layout.width <= from) continue;
       const b = baseline == null ? null : baselineOf(piece.layout);
       piece.layout.draw(ctx, x + piece.x, b == null ? y : baseline! - b);
@@ -1082,6 +1182,9 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
       const old = previous.chunks;
       for (let k = 0; k < old.length - 1; k++) {
         const chunk = old[k];
+        // a piece nobody laid out is no saving to keep, and its place across
+        // was a guess
+        if (!chunk.layout) break;
         if (chunk.u16 !== from || !display.startsWith(chunk.text, from)) break;
         const end = from + chunk.text.length;
         let i = si;
@@ -1119,7 +1222,7 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
     }
     const last = chunks[chunks.length - 1];
     let cp = last ? last.cp + utf16ToCp(last.text, last.text.length) : 0;
-    let x = last ? last.x + last.layout.width : 0;
+    let x = last ? last.x + last.advance : 0;
     // the spans from where the kept pieces end, the first one cut there
     const rest = spans.slice(si);
     if (rest.length > 0 && from > spanStart) {
@@ -1128,24 +1231,14 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
         text: (rest[0].text as string).slice(from - spanStart),
       };
     }
+    // The rest are laid out when something asks about them (ChunkedLayout),
+    // and guessed across until then: a column a code point, which is what
+    // a monospace face makes of ASCII to the pixel.
+    this._metrics();
+    const column = this._charW;
     const breaks = chunkBreaks(display, from).map((b) => b - from);
     let u16 = from;
     for (const piece of chunkSpans(rest, breaks)) {
-      const key =
-        styleKey +
-        '|' +
-        piece
-          .map(
-            (sp) =>
-              `${sp.color ?? ''},${sp.weight ?? ''},${sp.style ?? ''},${sp.text}`,
-          )
-          .join('\u0000');
-      let layout = this._chunkLayouts.get(key);
-      if (!layout) {
-        if (this._chunkLayouts.size > 4096) this._chunkLayouts.clear();
-        layout = fonts.layout(piece, base);
-        this._chunkLayouts.set(key, layout);
-      }
       const text = piece.map((sp) => sp.text as string).join('');
       const runs: unknown[] = [];
       for (const sp of piece) {
@@ -1156,18 +1249,70 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
           sp.style ?? '',
         );
       }
-      chunks.push({ cp, u16, x, text, layout, runs });
-      cp += utf16ToCp(text, text.length);
+      const points = utf16ToCp(text, text.length);
+      const guess = points * column;
+      chunks.push({
+        cp,
+        u16,
+        x,
+        text,
+        layout: null,
+        spans: piece,
+        advance: guess,
+        runs,
+      });
+      cp += points;
       u16 += text.length;
-      x += layout.width;
+      x += guess;
     }
     if (chunks.length === 0) {
       // an empty display is never chunked; kept here all the same so the
       // layout is never empty
       const layout = fonts.layout([{ text: '' }], base);
-      chunks.push({ cp: 0, u16: 0, x: 0, text: '', layout, runs: [] });
+      chunks.push({
+        cp: 0,
+        u16: 0,
+        x: 0,
+        text: '',
+        layout,
+        spans: null,
+        advance: layout.width,
+        runs: [],
+      });
     }
-    return new ChunkedLayout(chunks);
+    return new ChunkedLayout(
+      chunks,
+      (piece) => this._pieceLayout(fonts, base, styleKey, piece),
+      (width) => {
+        if (width > this._widest) this._widest = width;
+      },
+    );
+  }
+
+  /** A long line's piece, laid out — or found, where the same text in the
+   *  same colours was laid out before (`_chunkLayouts`). */
+  private _pieceLayout(
+    fonts: FontsLike,
+    base: Record<string, unknown>,
+    styleKey: string,
+    piece: Array<Record<string, unknown>>,
+  ): LayoutLike {
+    const key =
+      styleKey +
+      '|' +
+      piece
+        .map(
+          (sp) =>
+            `${sp.color ?? ''},${sp.weight ?? ''},${sp.style ?? ''},${sp.text}`,
+        )
+        .join('\u0000');
+    let layout = this._chunkLayouts.get(key);
+    if (!layout) {
+      if (this._chunkLayouts.size > 4096) this._chunkLayouts.clear();
+      layout = fonts.layout(piece, base);
+      this._chunkLayouts.set(key, layout);
+    }
+    return layout;
   }
 
   /** Caret x (device pixels from the text origin) for a position. */
@@ -2985,7 +3130,13 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
       for (let i = first; shownFrom < shownTo && i <= last; i++) {
         const entry = this._lineEntry(i);
         const layout = entry.layout;
-        if (!layout || layout.width < shownFrom) continue;
+        if (!layout) continue;
+        // a long line's width past what is laid out is a guess, and one
+        // short of the truth would skip text that is there: its pieces are
+        // placed by laying out the ones before them (`drawSpan`)
+        if (!(layout instanceof ChunkedLayout) && layout.width < shownFrom) {
+          continue;
+        }
         // Every row's text on the base face's baseline. Centred by its own
         // height, a line with an emoji in it — laid out taller, in a
         // fallback face — sat a pixel off every other line.
