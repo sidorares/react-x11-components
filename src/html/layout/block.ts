@@ -1082,15 +1082,24 @@ export const MIN_CONTENT_PROBE = 0;
  * *is* unbounded: it fills its containing block, and its containing block was
  * `Infinity`. The answer has to come from what the content came to, which is
  * exactly what `intrinsicWidth` walks.
+ *
+ * A box with a width of its own answers with it, as its contribution to
+ * whatever is sizing it — unless `content` asks for what the content
+ * alone came to, which is how a table cell's is taken: its `width` is
+ * weighed apart, and answered with the width the probe laid it out at,
+ * a cell set to 10% measured no wider than its padding.
  */
 export function measureIntrinsicWidth(
   box: Box,
   ctx: LayoutContext,
   available: number,
+  content = false,
 ): number {
   ctx.layoutSubtree(box, available);
   const specified = box.style.width;
-  if (specified !== AUTO && Number.isFinite(box.width)) return box.width;
+  if (!content && specified !== AUTO && Number.isFinite(box.width)) {
+    return box.width;
+  }
   return intrinsicWidth(box) + box.horizontalExtra;
 }
 

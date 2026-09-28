@@ -163,6 +163,7 @@ npx tsx scripts/conformance/run.ts wpt fuzz1 --chunk 50 --timeout 60000
 | 77     | `visibility: collapse` in tables                   | 5,525 (93%) | 4,999 (84%) |
 | 78     | the generic `monospace` at its smaller size        | 5,531 (93%) | 5,005 (84%) |
 | 79     | white space in a table's anonymous cells           | 5,536 (93%) | 5,010 (84%) |
+| 80     | a spanning cell's width, and a percentage's        | 5,537 (93%) | 5,011 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -2340,6 +2341,41 @@ two agreed.
      narrow as its empty cell.
 
      `css-tables`: 88 of its 167 reftests pass on X11.
+
+### Round 80
+
+184. **A spanning cell's own width was not its columns' to share.** Only
+     a cell of one column read its `width`; one spanning three columns
+     set to 100px, with 20px between them, left them no wider than its
+     content asked, and the content drew in 40. A width of its own is
+     the least a cell is, spanning or not (CSS 2.1 17.5.2.2, step 1),
+     and the spacing between its columns is part of it, room they need
+     not find — so those three columns share 60.
+185. **A spanning cell was shared out before the cells under it were
+     seen.** The cells were taken in document order, so one in a first
+     row was spread evenly over columns a later row's cells set, and a
+     column one of them set to 5px took half of it. The cells of one
+     column come first, then the spanning ones, the narrower spans
+     first (step 3), and what a spanning cell adds goes to those of its
+     columns with no width set, in proportion to their content — to all
+     of them where every one has a width, and compared with their widths
+     rather than their content alone, so a span over two columns set to
+     100px each holds 200 without growing.
+186. **A 90% cell and a 10% one came to more than their table.** A
+     percentage was taken as the cell's content width and its padding
+     and borders added on, so the two came to a hundred percent and
+     their borders, and the table took the excess back from both,
+     leaving them 8.8 to 1. A percentage is a share of the table the
+     cell's padding and borders are part of, as browsers read it.
+187. **A cell set to a width lost its content's least width.** Its
+     `width` is weighed apart, and its content was measured by laying it
+     out at no width and reading back the width it was laid out at,
+     which for a cell set to one was its padding: a column set to 3% cut
+     the word in it, where a table never goes narrower than its words.
+     The content is measured as the content now, whatever the cell's
+     width says.
+
+     `css-tables`: 89 of its 167 reftests pass on X11.
 
 ## What `<Html>` supports
 
