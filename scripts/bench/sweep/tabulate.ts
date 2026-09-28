@@ -49,6 +49,31 @@ if (!file) {
 const rows = load(file);
 const base = baseFile ? load(baseFile) : [];
 for (const r of rows) if (r.failed) console.log(`FAILED ${r.failed}`);
+// A cell run with the monitor off or a screensaver up measured something
+// other than what it names (run.sh, `display_state`): said before any table.
+for (const [which, set] of [
+  ['', rows],
+  [' of the baseline', base],
+] as const) {
+  const dark = set.filter(
+    (r) =>
+      typeof r.display === 'string' &&
+      r.display !== 'on' &&
+      r.display !== 'unknown',
+  );
+  if (dark.length === 0) continue;
+  console.log(
+    `WARNING: ${dark.length} cell(s)${which} ran with the screen off or ` +
+      `a screensaver up — ` +
+      dark
+        .map((r) =>
+          [...new Set([r.suite, r.comp, r.scene, r.action].filter(Boolean))]
+            .concat(`[${r.display}]`)
+            .join(' '),
+        )
+        .join('; '),
+  );
+}
 
 /** What a cell reports: frames a second (more is better) or milliseconds
  *  (less is better), and the noise below which a change is not shown. */
