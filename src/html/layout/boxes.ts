@@ -116,6 +116,10 @@ export interface LineBox {
   /** A `::first-line` style with a background, painted behind the line's
    *  content over its face's height, as an inline box's is. */
   background?: { style: ComputedStyle } & InlineDecoration;
+  /** How wide the floats placed at this line's top are, side by side: what
+   *  stands beside its content, and so what its content is measured with
+   *  where a box is as wide as its content (`intrinsicWidth`). */
+  floats?: number;
 }
 
 /**
@@ -293,6 +297,10 @@ export class Box {
 
   /** Lines, for a box that established an inline formatting context. */
   lines: LineBox[] | null = null;
+  /** The widest row of floats its lines placed beside none of them, side
+   *  by side: what the box is measured with, as a line's floats are
+   *  (`LineBox.floats`). */
+  floatRow = 0;
 
   /** A replaced box's intrinsic size and ratio; null on every other box,
    *  which is nearly all of them, so it is one field rather than four. */

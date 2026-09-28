@@ -781,7 +781,8 @@ function layoutInlineContent(
   if (firstLine && firstLine.color !== box.style.color && result.lines.length) {
     // the first line's text in its `::first-line` colour, laid out again
     // with its runs cut where the line ends (CSS 2.1 5.12.1), beside the
-    // floats the first pass placed
+    // floats the first pass placed — and measured with them
+    const placed = result;
     result = layoutInline(box, {
       ...options,
       floatBoxes: undefined,
@@ -791,7 +792,14 @@ function layoutInlineContent(
         end: result.lines[0].textEnd,
       },
     });
+    if (placed.lines.length === result.lines.length) {
+      placed.lines.forEach((line, i) => {
+        if (line.floats) result.lines[i].floats = line.floats;
+      });
+    }
+    result.floatRow = placed.floatRow;
   }
+  box.floatRow = result.floatRow ?? 0;
   if (
     firstLine &&
     ctx.fonts &&
@@ -1722,14 +1730,28 @@ function intrinsicWidth(box: Box): number {
   let items = 0;
   const lines = box.lines;
   if (lines) {
-    for (const line of lines) widest = Math.max(widest, line.width);
+    // a float met in a line stands beside what the line holds, at its
+    // width, as does a row of them beside no line
+    for (const line of lines) {
+      widest = Math.max(widest, line.width + (line.floats ?? 0));
+    }
+    widest = Math.max(widest, box.floatRow);
   }
+  // Floats among blocks stand side by side too, as many as come together,
+  // where each block in flow is a line of its own; one with a formatting
+  // context of its own stands beside them (as Blink measures them). Taken
+  // for the widest of them, a floated menu's items were one under another.
+  // That is at the box's widest, laid out at no width limit; at its
+  // narrowest each is as narrow as it can be, and one under another.
+  const sideBySide = !Number.isFinite(box.width);
+  let left = 0;
+  let right = 0;
   for (const child of box.children) {
     if (child.kind === 'text' || child.kind === 'break') continue;
     if (child.outOfFlow) continue;
     // what sits in the lines is measured with them, indent and all: an
     // inline-block after a negative `text-indent` ends where its line does
-    if (lines && isInlineLevel(child)) continue;
+    if (lines && (isInlineLevel(child) || child.isFloat)) continue;
     const margins = child.marginLeft + child.marginRight;
     const own = Number.isFinite(child.width) ? child.width + margins : 0;
     const style = child.style;
@@ -1756,8 +1778,24 @@ function intrinsicWidth(box: Box): number {
     if (row) {
       total += contribution;
       items += 1;
-    } else widest = Math.max(widest, contribution);
+    } else if (!sideBySide) widest = Math.max(widest, contribution);
+    else if (child.isFloat) {
+      const clear = style.clear;
+      if (clear !== 'none') {
+        widest = Math.max(widest, left + right);
+        if (clear !== 'right') left = 0;
+        if (clear !== 'left') right = 0;
+      }
+      if (style.float === 'right') right += contribution;
+      else left += contribution;
+    } else {
+      const beside = establishesBFC(child) ? left + right : 0;
+      widest = Math.max(widest, beside + contribution, left + right);
+      left = 0;
+      right = 0;
+    }
   }
+  widest = Math.max(widest, left + right);
   if (row && items) {
     widest = Math.max(widest, total + box.style.columnGap * (items - 1));
   }

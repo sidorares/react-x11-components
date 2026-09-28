@@ -153,6 +153,7 @@ npx tsx scripts/conformance/run.ts wpt fuzz1 --chunk 50 --timeout 60000
 | 67     | gradients and shadows far off the window           | 5,479 (93%) | 4,990 (84%) |
 | 68     | nested boxes, fuzzed pages                         | 5,479 (93%) | 4,990 (84%) |
 | 69     | nested grids, floats no higher than the last       | 5,482 (93%) | 4,993 (84%) |
+| 70     | floats side by side in a content width             | 5,485 (93%) | 4,995 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -2067,6 +2068,26 @@ two agreed.
      Found by 3,000 more pages from the other 27 directories of the
      checkout, `css-tables` to `css-writing-modes`. Of the 6,000, nothing
      else crashed or hung.
+
+### Round 70
+
+164. **A box as wide as its content took the widest of its floats for how
+     wide they came to.** A float, an inline-block, a table cell and
+     anything else its content sizes is as wide as that content at its
+     widest, and floats stand side by side there: beside the line they are
+     met on, and among blocks as many as come together. Taken one at a
+     time, a floated menu's items went one under another, the text beside
+     a floated image in an inline-block wrapped under it, and a float
+     around a linked, floated logo was no width at all, since the logo was
+     in the link and the link measured as a line holding nothing. At its
+     widest a box now measures a line with the floats placed at its top,
+     and floats among blocks side by side until a block in flow starts a
+     row of its own, which one with a formatting context of its own stands
+     beside (as Blink measures them). At its narrowest each is alone, as a
+     word is. Three tests on X11 and two on macOS: `floats-143`,
+     `intrinsic-size-float-and-line`, and `text-indent-012`, an absolute
+     box around a float and an indented inline-block that is as wide as
+     the three of them.
 
 ## What `<Html>` supports
 

@@ -3982,6 +3982,52 @@ test('a float goes no higher than the float before it', async () => {
   assert.strictEqual(c.x - w.x, 150, 'beside it');
 });
 
+test('a box as wide as its content measures its floats side by side', async () => {
+  // A float, an inline-block and a table cell are as wide as their content
+  // at its widest, and floats stand side by side there, beside the line
+  // they are met on. Taken for the widest of them, a floated menu's items
+  // went one under another, text beside a floated image wrapped, and a
+  // float holding a linked, floated logo was no width at all.
+  const { node } = await render(
+    '<div id="menu" style="float:left">' +
+      '<div id="m1" style="float:left;width:60px;height:20px"></div>' +
+      '<div id="m2" style="float:left;width:80px;height:20px"></div>' +
+      '<div id="m3" style="float:right;width:40px;height:20px"></div>' +
+      '</div>' +
+      '<div id="card" style="clear:both;display:inline-block">' +
+      '<span style="float:left;width:50px;height:20px"></span>' +
+      '<span id="t" style="display:inline-block;width:90px;height:10px">' +
+      '</span></div>' +
+      '<div id="logo" style="float:left"><a href="#">' +
+      '<span style="float:left;width:70px;height:20px"></span></a></div>' +
+      '<div id="cleared" style="clear:both;float:left">' +
+      '<div style="float:left;width:60px;height:20px"></div>' +
+      '<div style="float:left;clear:left;width:80px;height:20px"></div></div>',
+    600,
+  );
+  const el = view(node);
+  const box = (id: string) => boxOf(el, id);
+  assert.strictEqual(box('menu').width, 180, 'a menu holds its items');
+  assert.strictEqual(box('m2').y, box('m1').y, 'side by side');
+  assert.strictEqual(box('m3').y, box('m1').y, 'on both sides');
+  assert.strictEqual(box('card').width, 140, 'the text beside its image');
+  assert.strictEqual(box('logo').width, 70, 'a logo in a link');
+  assert.strictEqual(box('cleared').width, 80, 'one under the other');
+});
+
+test('a box as narrow as its content is no narrower than a float in it', async () => {
+  // and no wider than its widest float or word: the float's line breaks
+  // under it where the two do not fit side by side
+  const { node } = await render(
+    '<table style="width:300px;border-spacing:0"><tr>' +
+      '<td id="c" style="padding:0">' +
+      '<span style="float:left;width:30px;height:20px"></span>' +
+      '<span style="display:inline-block;width:70px;height:10px"></span>' +
+      '</td><td style="width:100%;padding:0"></td></tr></table>',
+  );
+  assert.strictEqual(boxOf(view(node), 'c').width, 70);
+});
+
 test('a word with too little room left on its line goes to the next, whole', async () => {
   // Text laid out after something else on its line — an inline-block, or a
   // float it was cut at — has the room that is left, and a word wider than
