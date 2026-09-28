@@ -106,6 +106,7 @@ import type { ToolbarEntry } from './toolbar.js';
 import { RichEditorView } from './view.js';
 import type { ViewConfig, ViewProps } from './view.js';
 import { useBlockWindow } from './virtual.js';
+import { useFontPrewarm } from '../internal/prewarm.js';
 
 registerRichText();
 registerEditorElements();
@@ -384,6 +385,33 @@ interface LinkEdit {
  * />
  * ```
  */
+/**
+ * Whether the document an editor mounts with has code in it: a code span or
+ * block as markdown spells one, as HTML does, or as a node's schema says.
+ */
+function hasCode(props: RichTextEditorProps, format: EditorFormat): boolean {
+  const content = props.state?.doc ?? props.value ?? props.defaultValue;
+  if (content == null) return false;
+  if (typeof content === 'string') {
+    if (format === 'markdown') {
+      return content.includes('`') || content.includes('~~~');
+    }
+    if (format === 'html') {
+      return content.includes('<code') || content.includes('<pre');
+    }
+    return false;
+  }
+  let found = false;
+  content.descendants((node) => {
+    if (found) return false;
+    if (node.type.spec.code || node.marks.some((m) => m.type.spec.code)) {
+      found = true;
+    }
+    return !found;
+  });
+  return found;
+}
+
 export function RichTextEditor(props: RichTextEditorProps): ReactElement {
   const theme = useTheme() as unknown as Record<string, unknown>;
   const clipboard = useClipboard();
@@ -431,6 +459,11 @@ export function RichTextEditor(props: RichTextEditorProps): ReactElement {
       disabled,
     ],
   );
+  // A document that mounts with code in it sets that code in the mono
+  // family on its first frame: warmed while the editor renders, asked of
+  // the content it mounts with, once.
+  const [mountsWithCode] = useState(() => hasCode(props, format));
+  useFontPrewarm(mountsWithCode ? look.mono : null);
 
   // The editor's own plugins, made once per schema and option set — a
   // plugin instance carries its state across a reconfigure, so the undo
