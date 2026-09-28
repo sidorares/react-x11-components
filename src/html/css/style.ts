@@ -177,6 +177,14 @@ export interface ComputedStyle {
   lineHeight: number | 'normal';
   lineHeightIsLength: boolean;
   textAlign: 'left' | 'right' | 'center' | 'justify' | 'start' | 'end';
+  /** How a block's last line is aligned, and each line a forced break ends
+   *  (CSS Text 3, 7.2); `auto` is as `textAlign` has it, but `justify`,
+   *  which leaves those lines at the start. */
+  textAlignLast:
+    'auto' | 'left' | 'right' | 'center' | 'justify' | 'start' | 'end';
+  /** `none` turns justification off, the lines `justify` sets going to the
+   *  start (CSS Text 3, 7.4); the rest space the words apart. */
+  textJustify: 'auto' | 'none' | 'inter-word' | 'inter-character';
   /** Where an element aligns the blocks in it that fill no line of their
    *  own and have no auto margin: HTML's `<center>` and `align`, and the
    *  `-webkit-center` that browsers spell them as. Inherited with
@@ -486,6 +494,8 @@ export const INHERITED = [
   'lineHeight',
   'lineHeightIsLength',
   'textAlign',
+  'textAlignLast',
+  'textJustify',
   'alignBlocks',
   'textIndent',
   'textTransform',
@@ -563,6 +573,8 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     lineHeight: 'normal',
     lineHeightIsLength: false,
     textAlign: 'start',
+    textAlignLast: 'auto',
+    textJustify: 'auto',
     alignBlocks: null,
     textIndent: 0,
     textTransform: 'none',
@@ -787,6 +799,8 @@ export function inherit(
   out.lineHeight = parent.lineHeight;
   out.lineHeightIsLength = parent.lineHeightIsLength;
   out.textAlign = parent.textAlign;
+  out.textAlignLast = parent.textAlignLast;
+  out.textJustify = parent.textJustify;
   out.alignBlocks = parent.alignBlocks;
   out.textIndent = parent.textIndent;
   out.textTransform = parent.textTransform;
@@ -1477,8 +1491,15 @@ export function applyDeclaration(
       // `test!foo, Ahem` is no list, and set Ahem.
       const names = splitCommas(value);
       if (!names.every(isFamilyName)) return;
+      // and an unquoted name is its identifiers joined by one space each,
+      // however they were spaced: `Courier   New` over two lines is
+      // `Courier New`, and was a name no font has
       style.fontFamily = names
-        .map((f) => f.replace(/^['"]|['"]$/g, ''))
+        .map((f) =>
+          /^['"]/.test(f)
+            ? f.replace(/^['"]|['"]$/g, '')
+            : f.trim().replace(/[ \t\n\r\f]+/g, ' '),
+        )
         .filter(Boolean)
         .join(', ');
       return;
@@ -1524,18 +1545,24 @@ export function applyDeclaration(
         style.lineHeightIsLength = false;
         return;
       }
+      // none of it below nought, which drops the declaration (CSS 2.1
+      // 10.8.1)
       const n = parseNumber(value);
       if (n !== null) {
+        if (n < 0) return;
         style.lineHeight = n;
         style.lineHeightIsLength = false;
         return;
       }
       const len = parseLength(value, ctx);
       if (typeof len === 'number') {
+        if (len < 0) return;
         style.lineHeight = len;
         style.lineHeightIsLength = true;
       } else if (len && typeof len === 'object') {
-        style.lineHeight = resolve(len, style.fontSize);
+        const px = resolve(len, style.fontSize);
+        if (px < 0) return;
+        style.lineHeight = px;
         style.lineHeightIsLength = true;
       }
       return;
@@ -1555,6 +1582,14 @@ export function applyDeclaration(
         style.tableTextAlignSet = true;
         return;
       }
+      // every line justified, the last as well (CSS Text 3, 7.1)
+      if (v === 'justify-all') {
+        style.textAlign = 'justify';
+        style.textAlignLast = 'justify';
+        style.alignBlocks = null;
+        style.tableTextAlignSet = true;
+        return;
+      }
       // the value HTML's alignment is given as, the blocks inside aligned
       // with the text — and which mail writes for itself
       const aligned = /^-(?:webkit|moz|khtml)-(left|right|center)$/.exec(v);
@@ -1563,6 +1598,37 @@ export function applyDeclaration(
         style.textAlign = side;
         style.alignBlocks = side;
         style.tableTextAlignSet = true;
+      }
+      return;
+    }
+    case 'text-align-last': {
+      const v = value.toLowerCase();
+      if (
+        v === 'auto' ||
+        v === 'left' ||
+        v === 'right' ||
+        v === 'center' ||
+        v === 'justify' ||
+        v === 'start' ||
+        v === 'end'
+      ) {
+        style.textAlignLast = v;
+      } else if (v === 'match-parent') {
+        style.textAlignLast = parent.textAlignLast;
+      }
+      return;
+    }
+    case 'text-justify': {
+      const v = value.toLowerCase();
+      if (
+        v === 'auto' ||
+        v === 'none' ||
+        v === 'inter-word' ||
+        v === 'inter-character'
+      ) {
+        style.textJustify = v;
+      } else if (v === 'distribute') {
+        style.textJustify = 'inter-character';
       }
       return;
     }
@@ -2934,11 +3000,13 @@ function applyFontShorthand(
   }
   const family = parts.slice(next).join(' ');
   // A size and a family, or the value is not a font and the declaration is
-  // dropped whole, as CSS drops any value it cannot read.
+  // dropped whole, as CSS drops any value it cannot read — a line height
+  // below nought included: `font: 4em/-2em serif` set the text at 4em.
   const size =
     keywordFontSize(sizeText ?? '', parent.fontSize, ctx.rem) ??
     parseLength(sizeText ?? '', { ...ctx, em: parent.fontSize });
   if (!family || size === null || size === AUTO) return;
+  if (lineText && negativeLength(lineText, ctx)) return;
   // What the shorthand does not name goes back to its initial value rather
   // than keeping the parent's (CSS 2.1 15.8): `p { font: 12pt serif }`
   // inside a document set at `20px/1em` has lines of normal height, not 20px.
@@ -2961,6 +3029,15 @@ function applyFontShorthand(
     });
   }
   applyDeclaration(style, parent, 'font-family', family, ctx);
+}
+
+/** Whether a line height is a number or a length below nought. */
+function negativeLength(value: string, ctx: UnitContext): boolean {
+  const n = parseNumber(value);
+  if (n !== null) return n < 0;
+  const len = parseLength(value, ctx);
+  if (typeof len === 'number') return len < 0;
+  return !!len && typeof len === 'object' && resolve(len, 100) < 0;
 }
 
 function applyFlexShorthand(
@@ -3426,6 +3503,8 @@ const INHERITED_NAMES = new Set<string>([
   'font-style',
   'line-height',
   'text-align',
+  'text-align-last',
+  'text-justify',
   'text-indent',
   'text-transform',
   'letter-spacing',
@@ -3518,6 +3597,8 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   ],
   'line-height': ['lineHeight', 'lineHeightIsLength'],
   'text-align': ['textAlign', 'alignBlocks'],
+  'text-align-last': ['textAlignLast'],
+  'text-justify': ['textJustify'],
   'text-indent': ['textIndent'],
   'text-transform': ['textTransform'],
   'letter-spacing': ['letterSpacing'],
