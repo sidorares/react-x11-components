@@ -1388,7 +1388,7 @@ export function clampHeight(box: Box, height: number): number {
   // 10.7), which leaves a `calc()` its pixels
   const min =
     box.style.minHeight === AUTO
-      ? null
+      ? 0
       : resolve(box.style.minHeight, Number.isFinite(base) ? base : 0);
   const max =
     box.style.maxHeight === 'none'
@@ -1491,7 +1491,11 @@ function clampWidth(
       keywordWidth(box, ctx, style.maxWidthKeyword, containingWidth),
     );
   }
-  const min = resolveOrNull(style.minWidth, containingWidth);
+  // `auto` is 0 but for a flex item, which `flex.ts` answers
+  const min =
+    style.minWidth === AUTO
+      ? 0
+      : resolveOrNull(style.minWidth, containingWidth);
   if (min !== null) out = Math.max(out, min + extra);
   if (style.minWidthKeyword && ctx) {
     out = Math.max(
@@ -1783,7 +1787,7 @@ function wordBound(box: Box, fonts: FontsLike, measured: boolean): number {
  * Skipping the non-finite ones is what stops the probe from answering
  * `Infinity` for every box that contains a paragraph.
  */
-function intrinsicWidth(box: Box): number {
+export function intrinsicWidth(box: Box): number {
   // a grid laid out at no width limit has its columns at their widest, and
   // is as wide as where its items end
   if (box.style.grid) {
@@ -1836,7 +1840,7 @@ function intrinsicWidth(box: Box): number {
     // a minimum's percentage is of zero here (CSS Sizing 3 5.2.1), which
     // leaves a `calc()` its pixels
     const min =
-      style.minWidth === 0
+      style.minWidth === 0 || style.minWidth === AUTO
         ? 0
         : resolve(style.minWidth, 0) + contentExtra(child);
     let contribution: number;

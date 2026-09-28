@@ -592,9 +592,11 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
 
     width: AUTO,
     height: AUTO,
-    minWidth: 0,
+    // `auto`, which is 0 but for a flex item (CSS Flexbox 4.5): what
+    // `min-w-0` undoes has to be told from what it is set to
+    minWidth: AUTO,
     maxWidth: 'none',
-    minHeight: 0,
+    minHeight: AUTO,
     maxHeight: 'none',
     widthKeyword: null,
     minWidthKeyword: null,

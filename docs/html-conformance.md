@@ -156,6 +156,7 @@ npx tsx scripts/conformance/run.ts wpt fuzz1 --chunk 50 --timeout 60000
 | 70     | floats side by side in a content width             | 5,485 (93%) | 4,995 (84%) |
 | 71     | tables in tables, boxes clipped to nothing         | 5,485 (93%) | 4,995 (84%) |
 | 72     | the list-item counter, CSS Lists 3 scopes          | 5,484 (93%) | 4,992 (84%) |
+| 73     | flex items no smaller than their content           | 5,484 (93%) | 4,992 (84%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -2146,6 +2147,25 @@ two agreed.
      as this does now: `content-counter-006`, `-007` and `-008` and
      `counters-010`, whose nested resets reach their later siblings (two of
      them on X11, where the other two fail for their fonts).
+
+### Round 73
+
+169. **A flex item was shrunk under what it held.** CSS Flexbox 4.5 keeps
+     an item with `min-width: auto` in a row, or `min-height: auto` in a
+     column, no smaller than its content comes to, and Yoga has no such
+     minimum: a row's items were shrunk under their images and
+     inline-blocks, which then ran out over the next item, and a column's
+     first item under its content, which the next one was drawn over.
+     `min-width` and `min-height` are `auto` now, as CSS 3 has them, so
+     that `min-w-0` — which lets an item go, and which Tailwind writes for
+     exactly that — is told from what they are set to; outside a flex item
+     `auto` is 0. The minimum is asked of an item only where its content
+     overflows it at the size Yoga gave it, laid out as the final pass
+     keeps it, so a row with room pays nothing, and the Tailwind
+     dashboard's layout does not move. Six tests in `css-flexbox`, and
+     none in this suite; a word too long for its item is still broken
+     inside itself where a browser lets it overflow, as both engines break
+     one everywhere.
 
 ## What `<Html>` supports
 

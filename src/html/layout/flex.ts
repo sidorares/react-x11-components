@@ -29,8 +29,11 @@ import { AUTO, isPct, resolve, resolveOrNull } from '../css/values.js';
 import type { ComputedStyle, ContentSize } from '../css/style.js';
 import { Box } from './boxes.js';
 import {
+  MIN_CONTENT_PROBE,
   clampHeight,
   contentSizedWidth,
+  exactMinContent,
+  intrinsicWidth,
   measureIntrinsicWidth,
   moveTo,
   percentBaseInside,
@@ -130,13 +133,30 @@ export function layoutFlex(
     items.push({ box: child, node, laid });
   }
 
+  const direction =
+    box.style.direction === 'rtl' ? Y.DIRECTION_RTL : Y.DIRECTION_LTR;
   ctx.flexDepth = depth + 1;
   try {
     root.calculateLayout(
       bounded ? contentWidth : Number.NaN,
       height ?? Number.NaN,
-      box.style.direction === 'rtl' ? Y.DIRECTION_RTL : Y.DIRECTION_LTR,
+      direction,
     );
+    // an item Yoga shrank under what its content comes to is kept to it,
+    // and the row is laid out again (`autoMinimums`) — which may shrink
+    // another under its own, a few times over at most
+    const row = box.style.flexDirection.startsWith('row');
+    for (
+      let pass = 0;
+      pass < 4 && autoMinimums(items, row, ctx, contentWidth);
+      pass += 1
+    ) {
+      root.calculateLayout(
+        bounded ? contentWidth : Number.NaN,
+        height ?? Number.NaN,
+        direction,
+      );
+    }
   } finally {
     ctx.flexDepth = depth;
   }
@@ -401,6 +421,90 @@ function innerWidth(
   return mode === Y.MEASURE_MODE_AT_MOST && Number.isFinite(width)
     ? Math.min(content, Math.max(0, width))
     : content;
+}
+
+/**
+ * An item's automatic minimum (CSS Flexbox 4.5): with `min-width: auto` in
+ * a row, or `min-height: auto` in a column, an item is no smaller along the
+ * row than its content comes to — its min-content width, or its content's
+ * height at its width — nor than a size of its own where it is smaller.
+ * Yoga has no such minimum, and shrank an item under a long word or a
+ * column's content, which ran out over the next one; `min-w-0` is what
+ * lets an item shrink past it, and so `auto` is kept apart from 0.
+ *
+ * Asked of an item only where its content overflows it at the size Yoga
+ * gave it, laid out there as the final pass would lay it out and keeps
+ * (`Laid`), so a row with room pays for nothing. True where some item
+ * was given a minimum and the row has to be laid out again.
+ */
+function autoMinimums(
+  items: { box: Box; node: YogaNode; laid: Laid }[],
+  row: boolean,
+  ctx: LayoutContext,
+  containingWidth: number,
+): boolean {
+  let changed = false;
+  for (const { box, node, laid } of items) {
+    if (box.kind === 'text' || box.kind === 'break') continue;
+    const style = box.style;
+    // a box that scrolls or clips has none
+    if (style.overflowX !== 'visible' || style.overflowY !== 'visible') {
+      continue;
+    }
+    const width = node.getComputedWidth();
+    if (
+      row
+        ? style.minWidth !== AUTO || style.minWidthKeyword
+        : style.minHeight !== AUTO
+    ) {
+      continue;
+    }
+    // no narrower than its content at its widest, where Yoga measured that
+    const widest = row ? MAX_CONTENT.get(box) : undefined;
+    if (widest !== undefined && widest + box.horizontalExtra <= width + 0.5) {
+      continue;
+    }
+    if (!(Math.abs(laid.width - width) <= 0.01)) {
+      ctx.layoutSubtree(box, width);
+      laid.width = box.width;
+      laid.height = box.height;
+    }
+    let least: number;
+    if (row) {
+      // or than what it drew at the width it has: nothing overflows it
+      if (intrinsicWidth(box) + box.horizontalExtra <= width + 0.5) continue;
+      if (box.intrinsicMinContent < 0) {
+        const exact = ctx.fonts ? exactMinContent(box, ctx.fonts) : null;
+        box.intrinsicMinContent =
+          exact ?? measureIntrinsicWidth(box, ctx, MIN_CONTENT_PROBE);
+        // a probe lays the box out where the kept layout was
+        if (exact === null) laid.width = NaN;
+      }
+      least = box.intrinsicMinContent;
+      const extra = style.boxSizing === 'border-box' ? 0 : box.horizontalExtra;
+      const own = resolveOrNull(style.width, containingWidth);
+      if (own !== null) least = Math.min(least, own + extra);
+      if (style.maxWidth !== 'none') {
+        const most = resolveOrNull(style.maxWidth, containingWidth);
+        if (most !== null) least = Math.min(least, most + extra);
+      }
+      if (node.getComputedWidth() >= least - 0.01) continue;
+      node.setMinWidth(least);
+    } else {
+      least = laid.height;
+      const extra = style.boxSizing === 'border-box' ? 0 : box.verticalExtra;
+      const own = resolveOrNull(style.height, NaN);
+      if (own !== null) least = Math.min(least, own + extra);
+      if (style.maxHeight !== 'none') {
+        const most = resolveOrNull(style.maxHeight, NaN);
+        if (most !== null) least = Math.min(least, most + extra);
+      }
+      if (node.getComputedHeight() >= least - 0.01) continue;
+      node.setMinHeight(least);
+    }
+    changed = true;
+  }
+  return changed;
 }
 
 /** How deep flex boxes are laid out by Yoga, one inside another's measure
