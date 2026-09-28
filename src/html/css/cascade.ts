@@ -136,6 +136,30 @@ class RuleIndex {
   size = 0;
   private _nextId = 0;
 
+  /**
+   * Whether a bucket here could hold a rule for `el`, by its tag, id and
+   * classes and without matching anything: an index of a rule or two is
+   * asked of every element — the user-agent sheet's `q::before` and
+   * `q::after` made every element of a document split its `class` twice —
+   * and almost none of them has a rule in it.
+   */
+  reaches(el: Element): boolean {
+    if (this.universal.length || this.byTag.has(tagOf(el))) return true;
+    if (this.byId.size) {
+      const id = attr(el, 'id');
+      if (id && this.byId.has(id)) return true;
+    }
+    if (this.byClass.size) {
+      const className = attr(el, 'class');
+      if (className) {
+        for (const name of className.split(/\s+/)) {
+          if (name && this.byClass.has(name)) return true;
+        }
+      }
+    }
+    return false;
+  }
+
   add(rule: StyleRule): void {
     this.size += 1;
     const indexed: IndexedRule = {
@@ -640,7 +664,7 @@ export class Cascade {
     elementStyle: ComputedStyle,
   ): ComputedStyle | null {
     const index = this._pseudo[which];
-    if (!index.size) return null;
+    if (!index.size || !index.reaches(el)) return null;
     const candidates: Candidate[] = [];
     this._matchInto(index, el, candidates);
     if (!candidates.length) return null;
@@ -669,7 +693,7 @@ export class Cascade {
    */
   firstLetterRules(el: Element): FirstLetterRules | null {
     const index = this._pseudo['first-letter'];
-    if (!index.size) return null;
+    if (!index.size || !index.reaches(el)) return null;
     const candidates: Candidate[] = [];
     this._matchInto(index, el, candidates);
     if (!candidates.length) return null;
@@ -690,7 +714,7 @@ export class Cascade {
    */
   markerStyle(el: Element, style: ComputedStyle): ComputedStyle | null {
     const index = this._pseudo.marker;
-    if (!index.size) return null;
+    if (!index.size || !index.reaches(el)) return null;
     const candidates: Candidate[] = [];
     this._matchInto(index, el, candidates);
     if (!candidates.length) return null;
