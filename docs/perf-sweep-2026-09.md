@@ -3159,6 +3159,87 @@ it, which is why the Mac run of #300 found nothing. It starts to count with
 the ntk release carrying #423 and #424, and a lockfile bump here and in
 core.
 
+## Round 32: the Mac, after rounds 91 to 95
+
+The M1 Pro with its built-in panel alone, X11 through XQuartz, on ntk
+8.13.1 and react-x11 2.22.11. `<Html>` went through five more rounds of
+conformance work between round 28 and this one, #286 to #299, and passes
+5,609 of the CSS 2.1 suite's reftests on X11 where it passed 5,566.
+
+### What they cost
+
+The documents suite on 51a5de7, where round 28 ended, and on dcdca94,
+after the rounds: one install, interleaved, medians of two runs each.
+
+| cell                 | X11 before |   after | Cocoa before |   after |
+| -------------------- | ---------: | ------: | -----------: | ------: |
+| `<Html>` mount       |     452 ms |  445 ms |       534 ms |  531 ms |
+| `<Html>` edit        |    55.9 ms |   59 ms |      63.7 ms | 64.1 ms |
+| `<Html>` append      |    53.5 ms | 53.8 ms |      59.5 ms | 59.7 ms |
+| `<Html>` scroll, p50 |     1.4 ms |  1.2 ms |       3.3 ms |  2.5 ms |
+
+The mount is its first paint, the edit and the append input to paint, and
+the scroll the frame. The insert, the reflow and both Tailwind cells held
+within 2%. Only X11's edit moved, and not every run: six a tree came to
+54.6–57.2 ms before and 54.8–63.1 after, three of them 60–63.
+
+The pipeline alone says how much of it is the rounds: the box build and
+the layout of the 600 KB document, over the node's own cascade and fonts,
+in six processes for each round's commit.
+
+| tree            | box build |  layout |
+| --------------- | --------: | ------: |
+| before, 51a5de7 |   14.8 ms | 23.6 ms |
+| round 91, #286  |   15.0 ms | 23.5 ms |
+| round 92, #289  |   14.7 ms | 23.1 ms |
+| round 93, #294  |   14.8 ms | 23.7 ms |
+| round 94, #298  |   14.9 ms | 23.9 ms |
+| round 95, #299  |   15.0 ms | 23.9 ms |
+
+The build held, and the layout took about 0.3 ms, 1%, in rounds 93 and 94:
+a paragraph's absolute boxes placed after its lines are made, and the pass
+that gives each stacking context its positioned boxes. The scroll's frame
+got cheaper on both backends, which was not bisected.
+
+### The whole sweep, against round 28's
+
+`run.sh` on dcdca94 against round 28's sweep, which ran on 3d0f4b9: 226
+cells, none failed. Two came out worse, both `<Flow>` wheels on X11 in 2D,
+and neither is the code:
+
+- **the 2,000-node lattice**, 57.1 → 49.5 fps. Interleaved on one install,
+  the tree round 28 swept reads 50–52 and master 49–57: noise.
+- **the charts scene**, 79.9 → 69.7. Both trees read 68–73 on today's
+  install, each with the probe of its own day, where a frame's scene takes
+  0.1 ms and its drawing 0.05: the rate is XQuartz's pacing. Between the
+  two sweeps ntk went from 8.13.0 to 8.13.1 and react-x11 from 2.22.10 to
+  2.22.11; not bisected further.
+
+Better than round 28's, none bisected here:
+
+- `<Html>`'s append, 64 → 53.7 ms on X11: round 28's pseudo-element index
+  (#284), which that sweep predates.
+- `<RichTextEditor>`'s bold-all, 127 → 79.1 ms on Cocoa and 69.3 → 59.5 on
+  X11.
+- `<Flow>`'s 2D pans on X11, the lattice 65 → 73 fps and the fan-out 66 →
+  75, and the 2,000-node lattice's on Cocoa, 70.7 → 85 and 92.4 → 116:
+  round 29's changes, the likeliest cause.
+- The 2,000-node lattice's GL drag on X11 reads 76 fps, where round 28's
+  sweep recorded no frames.
+
+### A runner that refused a font
+
+#264, base URLs and `@font-face` through `onResource`, read 587 of the
+suite's tests worse than master, 5,025 against 5,609. Of the 574 it still
+lost after a master merge, 569 link `/fonts/ahem.css`. With #264 a page's
+`@font-face` asks the host for its face with `kind: 'font'`. The runner's
+`resourcesFor` knew stylesheets and images and answered the font as an
+image, which #264 refused, so the family fell back to the default serif,
+where the harness has Ahem registered by name and a document that ignored
+`@font-face` found it. The runner answers a font as a font now (on #264),
+and the branch reads 5,612 on X11 and 5,074 on Cocoa, against master's
+5,609 and 5,073.
+
 ## Lessons
 
 1. **Look for caches that never hit.** Identity-keyed caches handed a new
@@ -3353,6 +3434,12 @@ core.
     ms at 260. Time a spawn inside the app that makes it, not in a script.
     Start the children a moment needs from one small shell, early, while
     the heap is small.
+45. **A drop of hundreds in every area is the harness until shown
+    otherwise.** A component that starts asking its host for something new
+    sends the old harness a request it answers wrongly, and the failures
+    look like the component's: 574 tests in every directory. Look for what
+    the lost tests share first — here, one `<link>` — and read one of them
+    after.
 
 ## Still open
 
