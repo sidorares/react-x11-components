@@ -928,8 +928,9 @@ export function Flow<N = FlowNodeData, E = unknown>(
   });
 
   // The cards whose canvases are on screen, told to the pane once they are,
-  // so it stops drawing them itself — and the empty set while bodies are
-  // held out of a zoom, when their cards are the graph's again.
+  // so the 2D pane stops drawing them itself — and the empty set while
+  // bodies are held out of a zoom, when their cards are the pane's again.
+  // The GL world draws every card whatever this says (`_cardInLayer`).
   useLayoutEffect(() => {
     const shown = new Set<string>();
     if (mounts && !held) for (const body of bodies) shown.add(body.id);

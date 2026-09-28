@@ -3442,9 +3442,9 @@ test('a card is painted again for what it shows, not for its body’s own data',
   assert.notStrictEqual(key(), first, 'its label does');
 });
 
-test('a data change to a node whose card the layer draws claims nothing, and rebuilds no GL world', async () => {
-  // Nothing of it is the pane's, or the world's: the layer repaints the
-  // card, if anything it shows changed.
+test('a data change a mounted card does not show claims nothing, and rebuilds no GL world', async () => {
+  // Nothing of it is drawn by the pane, or by the world: the layer repaints
+  // the body, and the card only if anything it shows changed.
   const element = (list: FlowNode[]) =>
     h(FLOW_ELEMENT, {
       nodes: list,
@@ -3505,12 +3505,13 @@ test('a data change a card does not show claims nothing, and one it shows claims
   assert.ok(claims.length > 0, 'its label, which it does');
 });
 
-test('under GL a shown card stays in the world until the bodies’ layer has painted it', async () => {
-  // The layer is 2D, over the surface: it reaches the screen with the
-  // window's paint, and a GL frame presents at once. Leaving the card out
-  // of the world from the commit that mounted its body showed edges with no
-  // cards under them for as long as that paint took — the whole first paint
-  // of a scene of charts, and again after every zoom that held the bodies.
+test('under GL the world draws every card, whatever the bodies’ layer shows', async () => {
+  // The layer is the surface's overlay, presented with the window's frame,
+  // and a GL frame is swapped on the surface's own turn: nothing orders the
+  // two. A card the world left to the layer was a card nobody drew on some
+  // path — the first paint of a scene of charts, a GL frame between a
+  // zoom's hold and React's commit, and on macOS every wheel notch that held
+  // the bodies — each a frame of bare edges where the card should be.
   const { ctx } = await renderX11(
     h(FLOW_ELEMENT, {
       nodes: bodyNode(),
@@ -3526,31 +3527,34 @@ test('under GL a shown card stays in the world until the bodies’ layer has pai
   let asked = 0;
   node.setGlRequest(() => void asked++);
   await act();
-  const cards = () =>
-    (node.glFrame(null)!.world as { nodes: { id: string }[] }).nodes.map(
-      (n) => n.id,
-    );
-  assert.deepStrictEqual(cards(), ['a'], 'precondition: the world draws it');
-  // the commit that mounts its body
-  node.setShownBodies(new Set(['a']));
-  assert.deepStrictEqual(cards(), ['a'], 'shown and not yet painted: kept');
-  // the layer's paint
+  const first = node.glFrame(null)!;
+  const cards = (world: unknown) =>
+    (world as { nodes: { id: string }[] }).nodes.map((n) => n.id);
+  assert.deepStrictEqual(cards(first.world), ['a'], 'the world draws it');
   const before = asked;
+  // the commit that mounts its body, the layer's paint, a hold and a
+  // release: none of them is anything to the world
+  node.setShownBodies(new Set(['a']));
   node.paintCard('a', ctx, { x: 0, y: 0 });
-  assert.ok(asked > before, 'a frame is asked for once the layer has it');
-  assert.deepStrictEqual(cards(), [], 'and the world leaves it out');
-  // held out of a zoom, then shown again: kept until it is painted again
   node.setShownBodies(new Set());
   node.setShownBodies(new Set(['a']));
-  assert.deepStrictEqual(cards(), ['a'], 'a card shown again is kept again');
+  assert.strictEqual(asked, before, 'no GL frame is asked for');
+  assert.strictEqual(
+    node.glFrame(first.key)!.world,
+    null,
+    'and the world on the GPU, card and all, is still the graph',
+  );
+  assert.deepStrictEqual(cards(node.glFrame(null)!.world), ['a']);
 });
 
-test('under GL a zoom that holds the bodies draws their cards from its first frame', async () => {
-  // The bodies are hidden by <Flow>'s commit, and the graph used to take
-  // their cards back only when that commit reported it (`setShownBodies`).
-  // A GL frame does not wait for React's: one that landed between the two
-  // drew neither — edges and no nodes, for a frame at the start of a zoom.
-  // The raw pane, with nothing to report back, is that frame.
+test('under GL the world on screen when a zoom hides the bodies already draws their cards', async () => {
+  // On macOS a wheel notch is painted at once, inside its own dispatch, and
+  // that paint presents the overlay — the bodies' layer, hidden for the
+  // zoom — while the GL frame the notch asked for waits for the surface's
+  // next turn. For that frame the screen is the hidden layer over the world
+  // drawn *before* the notch; one that had left the mounted cards to the
+  // layer showed nothing but edges there. The world that frame shows is the
+  // one drawn while the bodies were still shown.
   const held: boolean[] = [];
   const { ctx } = await renderX11(
     h(FLOW_ELEMENT, {
@@ -3571,30 +3575,28 @@ test('under GL a zoom that holds the bodies draws their cards from its first fra
   };
   node.setGlRequest(() => {});
   await act();
-  const cards = () =>
-    (node.glFrame(null)!.world as { nodes: { id: string }[] }).nodes.map(
-      (n) => n.id,
-    );
-  // shown in the layer and painted there: the graph leaves it out
+  const cards = (world: unknown) =>
+    (world as { nodes: { id: string }[] }).nodes.map((n) => n.id);
+  // mounted, shown and painted in the layer: the steady state before a zoom
   node.setShownBodies(new Set(['a']));
   node.paintCard('a', ctx, { x: 0, y: 0 });
-  assert.deepStrictEqual(cards(), [], 'precondition: the layer draws it');
+  const onScreen = node.glFrame(null)!;
   await heldClock(async () => {
     await userEvent.wheel(pane() as unknown as DrawnNode, {
       ...at(150, 150),
       deltaY: -24,
     });
   });
-  assert.ok(held.includes(true), 'precondition: the zoom held the bodies');
+  assert.ok(held.includes(true), 'precondition: the notch held the bodies');
   assert.deepStrictEqual(
-    cards(),
+    cards(onScreen.world),
     ['a'],
-    'the graph draws the card before anything reports the body hidden',
+    'the frame still on screen draws the card the hidden layer took away',
   );
-  // …and keeps it once the report comes and goes, until painted again
+  // …and so does the zoom's own, before and after the hold is reported
+  assert.deepStrictEqual(cards(node.glFrame(null)!.world), ['a']);
   node.setShownBodies(new Set());
-  node.setShownBodies(new Set(['a']));
-  assert.deepStrictEqual(cards(), ['a']);
+  assert.deepStrictEqual(cards(node.glFrame(null)!.world), ['a']);
 });
 
 test('under GL a pan asks for a GL frame and claims nothing of the 2D pane', async () => {
