@@ -3075,8 +3075,8 @@ code spans.
   - `<Markdown>` and `<RichTextEditor>`, only when what they mount has
     code in it.
 
-  The four spawns cost the main thread about 8 ms, so a document with no
-  code does not warm anything.
+  The four spawns cost the main thread about 8 ms (round 31 made them one),
+  so a document with no code does not warm anything.
 
 | cell                                       | first flush before |          after |
 | ------------------------------------------ | -----------------: | -------------: |
@@ -3098,6 +3098,210 @@ Over the startup probe (import, connect, first paint of a small app), the
 time inside `createRoot()` went from a median of 154 ms to 128 ms. What is
 left of the roughly 480 ms to a first paint is mostly Node's module loader:
 resolving and compiling several hundred modules, about 180 ms of it.
+
+## Round 31: what a first frame forks
+
+Round 30 warmed monospace ahead of a component's first layout. Timing each
+`child_process` call inside a real mount then showed two things: what the
+warm itself cost, and a face that nothing warmed.
+
+### A spawn costs what the process weighs (ntk #424)
+
+Node starts a child by forking the whole process, and the fork's cost grows
+with the heap. ntk ran one `/bin/sh` per face, four per family:
+
+| RSS    | four spawns | one shell starting the four |
+| ------ | ----------: | --------------------------: |
+| 130 MB |      4.7 ms |                      1.4 ms |
+| 260 MB |       33 ms |                        8 ms |
+| 510 MB |       62 ms |                       16 ms |
+
+A prewarm's matches now start from one shell. Each still answers through
+files of its own, so the synchronous path that waits on them is unchanged.
+Inside the sweep's mounts:
+
+| probe                                         | before                   | after                    |
+| --------------------------------------------- | ------------------------ | ------------------------ |
+| `<CodeEditor>` mount                          | 8 spawns, 19–20.5 ms     | 2 spawns, 6.8 ms         |
+| `<Html>` 600 KB mount, its mono warmed (#300) | 8 spawns + 1 sync, 55 ms | 2 spawns + 1 sync, 43 ms |
+
+The same change fixed a bug in #423. `FontManager#prewarm` handed the
+family to the source as written, while `match` asks with the list
+normalized, so `'"Fira Code", monospace'` warmed a pattern no layout asks
+for.
+
+### The menu's medium (react-x11 #741)
+
+A menu's titles and rows are set at 500, and a family is warmed in 400 and
+700 only. So an app with a `<MenuBar>` ran `fc-match sans-serif:weight=100`
+synchronously inside its first frame, 34–49 ms here. `createRoot` now warms
+the medium as the connection comes up, through `prewarm(family, faces)`
+(new in ntk #424). A small app with a menu bar went from a median first
+paint of 495 ms to 465, with no match inside the frame. A core test holds
+every face a menu bar sets to one that was warmed.
+
+`<Html>`'s benchmark document still pays one: `th { font-weight: 600 }`,
+37 ms at 255 MB. Warming the faces its cascade produced, before layout,
+would take that too.
+
+### Module loading (react-x11 #742, open)
+
+Node's compile cache keeps each module's compiled code on disk. It takes a
+small app's first paint from 485 ms to 400, and an editor with a markdown
+pane from 590 to 527. The gain needs the cache on before the app's module
+graph loads, which a library cannot arrange from its own `index.js`: turned
+on there, it saves about 15 ms. #742 asks whether to document it, ship a
+launcher for it, or both.
+
+None of this font warming does anything yet. ntk 8.13.1, the current
+release, has no `prewarm` at all, so #292, #293 and #300 are no-ops against
+it, which is why the Mac run of #300 found nothing. It starts to count with
+the ntk release carrying #423 and #424, and a lockfile bump here and in
+core.
+
+## Round 32: the Mac, after rounds 91 to 95
+
+The M1 Pro with its built-in panel alone, X11 through XQuartz, on ntk
+8.13.1 and react-x11 2.22.11. `<Html>` went through five more rounds of
+conformance work between round 28 and this one, #286 to #299, and passes
+5,609 of the CSS 2.1 suite's reftests on X11 where it passed 5,566.
+
+### What they cost
+
+The documents suite on 51a5de7, where round 28 ended, and on dcdca94,
+after the rounds: one install, interleaved, medians of two runs each.
+
+| cell                 | X11 before |   after | Cocoa before |   after |
+| -------------------- | ---------: | ------: | -----------: | ------: |
+| `<Html>` mount       |     452 ms |  445 ms |       534 ms |  531 ms |
+| `<Html>` edit        |    55.9 ms |   59 ms |      63.7 ms | 64.1 ms |
+| `<Html>` append      |    53.5 ms | 53.8 ms |      59.5 ms | 59.7 ms |
+| `<Html>` scroll, p50 |     1.4 ms |  1.2 ms |       3.3 ms |  2.5 ms |
+
+The mount is its first paint, the edit and the append input to paint, and
+the scroll the frame. The insert, the reflow and both Tailwind cells held
+within 2%. Only X11's edit moved, and not every run: six a tree came to
+54.6–57.2 ms before and 54.8–63.1 after, three of them 60–63.
+
+The pipeline alone says how much of it is the rounds: the box build and
+the layout of the 600 KB document, over the node's own cascade and fonts,
+in six processes for each round's commit.
+
+| tree            | box build |  layout |
+| --------------- | --------: | ------: |
+| before, 51a5de7 |   14.8 ms | 23.6 ms |
+| round 91, #286  |   15.0 ms | 23.5 ms |
+| round 92, #289  |   14.7 ms | 23.1 ms |
+| round 93, #294  |   14.8 ms | 23.7 ms |
+| round 94, #298  |   14.9 ms | 23.9 ms |
+| round 95, #299  |   15.0 ms | 23.9 ms |
+
+The build held, and the layout took about 0.3 ms, 1%, in rounds 93 and 94:
+a paragraph's absolute boxes placed after its lines are made, and the pass
+that gives each stacking context its positioned boxes. The scroll's frame
+got cheaper on both backends, which was not bisected.
+
+### The whole sweep, against round 28's
+
+`run.sh` on dcdca94 against round 28's sweep, which ran on 3d0f4b9: 226
+cells, none failed. Two came out worse, both `<Flow>` wheels on X11 in 2D,
+and neither is the code:
+
+- **the 2,000-node lattice**, 57.1 → 49.5 fps. Interleaved on one install,
+  the tree round 28 swept reads 50–52 and master 49–57: noise.
+- **the charts scene**, 79.9 → 69.7. Both trees read 68–73 on today's
+  install, each with the probe of its own day, where a frame's scene takes
+  0.1 ms and its drawing 0.05: the rate is XQuartz's pacing. Between the
+  two sweeps ntk went from 8.13.0 to 8.13.1 and react-x11 from 2.22.10 to
+  2.22.11; not bisected further.
+
+Better than round 28's, none bisected here:
+
+- `<Html>`'s append, 64 → 53.7 ms on X11: round 28's pseudo-element index
+  (#284), which that sweep predates.
+- `<RichTextEditor>`'s bold-all, 127 → 79.1 ms on Cocoa and 69.3 → 59.5 on
+  X11.
+- `<Flow>`'s 2D pans on X11, the lattice 65 → 73 fps and the fan-out 66 →
+  75, and the 2,000-node lattice's on Cocoa, 70.7 → 85 and 92.4 → 116:
+  round 29's changes, the likeliest cause.
+- The 2,000-node lattice's GL drag on X11 reads 76 fps, where round 28's
+  sweep recorded no frames.
+
+### A runner that refused a font
+
+#264, base URLs and `@font-face` through `onResource`, read 587 of the
+suite's tests worse than master, 5,025 against 5,609. Of the 574 it still
+lost after a master merge, 569 link `/fonts/ahem.css`. With #264 a page's
+`@font-face` asks the host for its face with `kind: 'font'`. The runner's
+`resourcesFor` knew stylesheets and images and answered the font as an
+image, which #264 refused, so the family fell back to the default serif,
+where the harness has Ahem registered by name and a document that ignored
+`@font-face` found it. The runner answers a font as a font now (on #264),
+and the branch reads 5,612 on X11 and 5,074 on Cocoa, against master's
+5,609 and 5,073.
+
+## Round 33: the tables a first shaping decodes
+
+With round 31's warming in place, a profile of an app's first frame (an
+editor beside a markdown pane) put two things ahead of the layout itself:
+fontkit decoding a face's tables at its first shaping, and ntk reading
+answers nobody had asked for yet.
+
+### A run with no mark, shaped without mark positioning (ntk #425)
+
+fontkit decodes a feature's lookups whole the first time a run asks for
+that feature. Noto Sans, the `sans-serif` here and on several distributions,
+keeps an anchor for every base glyph in every mark class. Its first
+`layout()` took 20.6 ms with the code already warm, and 14 of those went on
+one mark-to-base subtable, once per face, inside the first frame.
+
+Every positioning lookup acts only at a glyph in its first coverage. ntk
+reads the coverage of each `mark` and `mkmk` lookup straight from the GPOS
+bytes, and a run with none of those glyphs is shaped without the two
+features. A run that holds one is shaped again whole, and its face stays
+whole from then on. Faces it cannot read exactly (AAT, feature variations,
+a substitution under the tag) are always shaped whole. Against master's
+`Font` on the 2,113 faces installed here, over a mixed-script corpus with
+and without combining marks, no run changed: 33,735 runs in sequence, and
+27,361 with a fresh face each.
+
+| from `createRoot` to the first paint | before |  after |
+| ------------------------------------ | -----: | -----: |
+| a window with a `<MenuBar>`          | 101 ms |  81 ms |
+| `<CodeEditor>` beside `<Markdown>`   | 182 ms | 121 ms |
+
+That first cut left the features out through fontkit's feature overrides,
+and fontkit applies overrides to the plan it builds on every call. Every
+word the shaping memo had not seen then paid 1–3 µs (DejaVu Sans Mono,
+8.1 → 11.0 µs a word), and a long `<Markdown>` scrolled into unshaped text
+went from 3.81 to 4.05 ms a frame in one A/B. ntk #428 stands an empty
+lookup in for each `mark` and `mkmk` lookup in fontkit's cache instead, and
+hands fontkit the caller's features untouched. An empty lookup costs less
+to apply than the real one did, so a word now shapes 5–10% faster than
+before #425: Noto Sans 23.3 → 22.0 µs, DejaVu Sans 14.2 → 12.8. The first
+shaping keeps the win, Noto Sans 17.8 → 4.2 ms. A stood-in lookup is exact
+however it is reached, so the variation and GSUB-tag bail-outs went too.
+Again no run changed on the 2,113 faces.
+
+### An answer read when a layout asks (ntk #426)
+
+A prewarm's answers are 634 KB apiece here: `fc-match -s` lists 210 faces,
+each with its coverage. ntk read and parsed every one as its child exited,
+9 ms of the main thread for a family, inside `createRoot`, for faces most
+apps never set. They now wait in their files for the first layout that
+asks. `createRoot` went 140 → 126 ms for a small window, 139 → 128 with a
+menu bar, and 140 → 130 for the editor.
+
+Left from the same profile:
+
+- **The rest of fontkit's decoding.** Kerning, `hmtx` and the outlines are
+  about 20 ms of the editor's first frame, spread across the faces it sets.
+- **The mono prewarm.** Started while `<CodeEditor>` renders, it has not
+  answered when the frame lays out, so the frame waits about 7 ms for it.
+- **The shared glyph cache's page token.** It hashes the whole font file on
+  first draw: 0.4 ms for Noto Sans, 3.3 for the 4 MB CJK fallback, 8.8 for
+  colour emoji. Hashing off the main thread when the face loads would take
+  it out of the frame.
 
 ## Lessons
 
@@ -3288,6 +3492,27 @@ resolving and compiling several hundred modules, about 180 ms of it.
     end, which kept its frames apart by itself. The start-to-start timer of
     the Linux round let them queue, and the Mac's pans lost a fifth, where
     no Linux cell could show it.
+44. **A spawn costs what the process weighs.** Node forks the whole process
+    to start a child, so one `fc-match` spawn cost 1.2 ms at 130 MB and 8
+    ms at 260. Time a spawn inside the app that makes it, not in a script.
+    Start the children a moment needs from one small shell, early, while
+    the heap is small.
+45. **A drop of hundreds in every area is the harness until shown
+    otherwise.** A component that starts asking its host for something new
+    sends the old harness a request it answers wrongly, and the failures
+    look like the component's: 574 tests in every directory. Look for what
+    the lost tests share first — here, one `<link>` — and read one of them
+    after.
+46. **Hold a change to the code it replaces, not to a reimplementation.**
+    The first harness for #425 compared ntk's `Font` with fontkit called
+    directly and found 2,737 differences. Master's `Font` found the same
+    2,737, so the harness was wrong. Against master's code, 30 remained,
+    each of them NaN compared with NaN; compared with `Object.is`, none did.
+47. **A first-frame win can bill every frame after it.** #425 took 14 ms
+    out of each face's first shaping and put 1–3 µs on every unseen word
+    after it, which the first-frame probes could not see and a scroll
+    through new text could. Measure the steady state of any path a
+    first-frame change sits on.
 
 ## Still open
 
@@ -3298,9 +3523,10 @@ round 15.
   waits on `fc-match`, which takes 80–150 ms launched from inside a
   mounting app against 20 from a small process — 104–110 ms of a 500-line
   code editor's 143–158 ms first frame. Sans-serif is warmed while the
-  connection is set up; any other family pays it. An app naming its
-  families early, or answers kept across runs, would hide it; neither is
-  small.
+  connection is set up. The components now warm the families they set
+  (round 30), and core warms a menu's medium (round 31). Both wait on the
+  ntk release that carries `prewarm`, and a face nobody names still pays,
+  such as `<Html>`'s `th` at 600.
 - **Markdown reflow's second layout pass**: the floors emulating
   `min-height: auto` come from the previous layout, so a width change lays
   the document out twice — 10,188 nodes at 600 KB with #143, in a frame of

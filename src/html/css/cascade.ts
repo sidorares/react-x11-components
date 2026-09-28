@@ -1537,7 +1537,6 @@ const SIZED = new Set([
   'colgroup',
   'iframe',
   'video',
-  'canvas',
   'object',
   'embed',
   'hr',

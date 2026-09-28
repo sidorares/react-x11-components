@@ -2855,6 +2855,24 @@ test('an iframe is a box of its size with nothing in it', async () => {
   assert.strictEqual(c.height, 100, 'half its containing block');
 });
 
+test('a canvas is the size of its bitmap, and keeps its proportions', async () => {
+  // HTML 4.12.5: `width` and `height` give a canvas its bitmap, 300 by 150
+  // where they do not, and no script draws in it here. Taken for an
+  // element with no box of its own it took no room, and the attributes
+  // were no size hints either, so a canvas set a height kept no width.
+  const { node } = await render(
+    '<div><canvas id="a"></canvas></div>' +
+      '<div><canvas id="b" width="10" height="20" style="height:60px">' +
+      'fallback</canvas></div>',
+  );
+  const el = view(node);
+  const a = boxOf(el, 'a');
+  assert.deepStrictEqual([a.width, a.height], [300, 150], 'the default bitmap');
+  const b = boxOf(el, 'b');
+  assert.deepStrictEqual([b.width, b.height], [30, 60], 'its proportions');
+  assert.ok(!el.textContent().includes('fallback'), 'a canvas is drawn');
+});
+
 test('a no-break space before an image is added back only where the engine strips it', () => {
   // ntk to 8.12.9 and CoreText through appkit 0.15.0 strip a trailing
   // U+00A0, which CSS measures; the line adds back what the engine took, so
@@ -3810,6 +3828,17 @@ metric("a table's height is shared among its rows", async () => {
   assert.ok(Math.abs(c.height - 100) < 0.01, `clamped: ${c.height}`);
 });
 
+test('a table set shorter than its rows is as tall as they are', async () => {
+  // CSS 2.1 17.5.3: a table's height is a least one. Taken as the table's
+  // height it ended its background over its rows, and a float after it
+  // went up beside them.
+  const { node } = await render(
+    '<div id="t" style="display:table;width:50px;height:10px">' +
+      '<div style="height:100px"></div></div>',
+  );
+  assert.strictEqual(boxOf(view(node), 't').height, 100);
+});
+
 metric(
   'table cells in an inline box are an inline table, with the spaces either side of it',
   async () => {
@@ -4278,6 +4307,32 @@ metric(
       fills.findIndex((f) => f.style === parseColor(color));
     assert.ok(order('#ff0000') < order('#00ff00'), 'in document order');
     assert.ok(order('#ffff00') < order('#0000ff'), 'the z-index over it');
+  },
+);
+
+metric(
+  'a fixed box is a stacking context, and a box below its flow is not drawn over it',
+  async () => {
+    // CSS Positioned Layout 3: a fixed box is a stacking context with no
+    // `z-index`, so a box in it set to `-1` goes over its background, not
+    // behind the page. And a box set below the flow on a line, an
+    // inline-block's canvas, is its stacking context's to draw there, and
+    // was drawn by its line as well, over the box it was under.
+    const { node } = await render(
+      '<div style="position:fixed;left:0;top:0;width:30px;height:30px;' +
+        'background:#ff0000"><div style="position:absolute;z-index:-1;' +
+        'width:30px;height:30px;background:#00ff00"></div></div>' +
+        '<div style="display:inline-block;width:40px;height:40px;' +
+        'background:#0000ff"><canvas width="4" height="4" style="height:100%;' +
+        'position:relative;z-index:-1;background:#ffff00"></canvas></div>',
+    );
+    const fills = await fillsOf(view(node));
+    const at = (color: string) =>
+      fills.findIndex((f) => f.style === parseColor(color));
+    assert.ok(at('#ff0000') < at('#00ff00'), 'over the fixed box');
+    const yellow = fills.filter((f) => f.style === parseColor('#ffff00'));
+    assert.strictEqual(yellow.length, 1, 'drawn once');
+    assert.ok(at('#ffff00') < at('#0000ff'), 'under the inline-block');
   },
 );
 
@@ -5304,6 +5359,27 @@ test('a float goes no higher than the float before it', async () => {
   assert.strictEqual(b.y - w.y, 50, 'under the first');
   assert.strictEqual(c.y, b.y, 'no higher than the second');
   assert.strictEqual(c.x - w.x, 150, 'beside it');
+});
+
+test('a float wider than its block stands beside a float on the other side', async () => {
+  // CSS 2.1 9.5.1: a left float may not reach past a right float beside it
+  // (rule 3), and past its containing block only where a left float stands
+  // beside it too (rule 7). Held to its block always, a float wider than
+  // its block went below every float beside it.
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="float:left;width:500px;height:200px">' +
+      '<div style="float:right;width:50px;height:100px"></div>' +
+      '<div style="margin-right:100px"><div id="a" style="float:left;' +
+      'width:425px;height:10px"></div></div></div>' +
+      '<div style="clear:both;width:200px">' +
+      '<div style="float:left;width:50px;height:30px"></div>' +
+      '<div id="b" style="float:left;width:175px;height:10px"></div></div>',
+  );
+  const el = view(node);
+  assert.strictEqual(boxOf(el, 'a').y, 0, 'beside the right float');
+  const b = boxOf(el, 'b');
+  assert.ok(b.y >= 230, `below the left float, in its block: ${b.y}`);
 });
 
 test('a box as wide as its content measures its floats side by side', async () => {

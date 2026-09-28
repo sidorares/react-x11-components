@@ -29,6 +29,7 @@ import type { Style } from 'react-x11/style';
 import type {} from 'react-x11/jsx-runtime';
 
 import { useLinkClicks, useSelectionMenu } from '../richtext/index.js';
+import { useFontPrewarm } from '../internal/prewarm.js';
 import { hx } from './hx.js';
 import { attr, tagOf } from './dom.js';
 import type { Document, Element } from './dom.js';
@@ -230,6 +231,30 @@ function deriveLook(
   };
 }
 
+/** What a document sets in the code face: the elements the UA sheet puts in
+ *  it, and a style sheet that names `monospace`, in either case. */
+const CODE_MARKUP = /<(?:code|pre|kbd|samp|tt|listing|xmp)\b|monospace/i;
+
+/**
+ * The code face, once the source holds code, and null before. A source that
+ * grows is read once, from a little before where it was last read to find a
+ * name a chunk split, so a document streamed in thousands of pieces is not
+ * read again at each one; a source that does not start with the last is
+ * read whole. Once found, found: warming a face twice warms nothing.
+ */
+function useCodeFamily(source: string, family: string): string | null {
+  const read = React.useRef({ source: '', found: false });
+  const seen = read.current;
+  if (!seen.found && source !== seen.source) {
+    const from = source.startsWith(seen.source)
+      ? Math.max(0, seen.source.length - 'monospace'.length)
+      : 0;
+    seen.found = CODE_MARKUP.test(from ? source.slice(from) : source);
+    seen.source = source;
+  }
+  return seen.found ? family : null;
+}
+
 // --- the component ----------------------------------------------------------
 
 /**
@@ -270,6 +295,10 @@ export function Html(props: HtmlProps): ReactElement {
     () => deriveLook(theme, props),
     [theme, props.fontSize, props.fontFamily, props.monoFamily],
   );
+  // a document with code in it sets that code in the mono family, and its
+  // render is the head start its first layout would otherwise wait on the
+  // system's font matcher for (`useFontPrewarm`)
+  useFontPrewarm(useCodeFamily(source, look.monoFamily));
 
   const documentRef = React.useRef<Document | null>(null);
   const [controls, setControls] = React.useState<ControlRect[]>([]);
