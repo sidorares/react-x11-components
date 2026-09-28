@@ -38,7 +38,7 @@ import type { FontsLike } from './inline.js';
 import { layoutFlex } from './flex.js';
 import { finishCaptions, layoutTable } from './table.js';
 import { collapseEdges } from './collapse.js';
-import { computePaintBounds, hoistNegative } from '../paint.js';
+import { computePaintBounds, hoistNegative, stackLayers } from '../paint.js';
 
 export interface LayoutContext {
   fonts: FontsLike | null;
@@ -153,6 +153,7 @@ export function layoutDocument(
   if (tree.relative) applyRelativeOffsets(root);
   const reach = computePaintBounds(root, tree.movedInline);
   if (tree.negative) hoistNegative(root);
+  stackLayers(root);
 
   // The document is as tall as what overflows the root, not the root: an
   // `html, body { height: 100% }` a window tall holds a message longer than
