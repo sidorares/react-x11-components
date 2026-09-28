@@ -91,6 +91,18 @@ export interface InlineDecoration {
   descent: number;
 }
 
+/**
+ * A set of adjoining margins as CSS 2.1 8.3.1 collapses them: the largest
+ * positive and the most negative, whose sum is the margin. Kept apart as
+ * margins join, because summing at each join is not associative once the
+ * signs mix: 2, -4 and 14 collapse to 10, and taken two at a time to 12,
+ * and to 8 with a -4 after.
+ */
+export interface MarginStrut {
+  pos: number;
+  neg: number;
+}
+
 /** A laid-out line inside an inline formatting context. */
 export interface LineBox {
   /** Content-box relative, resolved to document coordinates at paint. */
@@ -273,6 +285,11 @@ export class Box {
   marginRight = 0;
   marginBottom = 0;
   marginLeft = 0;
+  /** The margin that came out through the box's bottom edge from its last
+   *  children, collapsed with its own bottom margin, which is their sum:
+   *  kept as a strut for the next sibling's to collapse with. Null where
+   *  none came out, which is most boxes. Set by the block layout. */
+  bottomStrut: MarginStrut | null = null;
   /** An inline box with a background or a border to paint behind its
    *  fragments: the ascent and descent of its own face, the height CSS
    *  paints them over (10.6.1). Set by the inline layout. */

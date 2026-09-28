@@ -52,8 +52,10 @@ article, aside, footer, header, hgroup, main, nav, section, details,
 summary, dir, menu, center, marquee {
   display: block;
 }
+/* <map> is inline (HTML 15.3.1), so an <area> in it the author gives a
+   display of its own is drawn */
 head, link, meta, style, script, title, base, template, noscript, param,
-source, track, col, colgroup, datalist, area, map, rp { display: none; }
+source, track, col, colgroup, datalist, area, rp { display: none; }
 
 /* HTML's bidi rules for the two elements that are about it: <bdi> takes
    its first strong letter's direction, and <bdo> overrides. The \`dir\`

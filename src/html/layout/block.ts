@@ -24,7 +24,13 @@ import {
   TEXT_SHIFTS,
   isBlank,
 } from './boxes.js';
-import type { BoxTree, Intrinsic, LineBox, Marker } from './boxes.js';
+import type {
+  BoxTree,
+  Intrinsic,
+  LineBox,
+  MarginStrut,
+  Marker,
+} from './boxes.js';
 import { FloatContext } from './floats.js';
 import {
   faceExtentOf,
@@ -166,14 +172,45 @@ export function layoutDocument(
   return { width: viewportWidth, height: bottom };
 }
 
+/** No margin at all, shared: most joins leave a strut as it was. */
+const NO_MARGIN: MarginStrut = Object.freeze({ pos: 0, neg: 0 });
+
+/** One margin, as a strut to collapse others with. */
+function marginStrut(margin: number): MarginStrut {
+  if (margin > 0) return { pos: margin, neg: 0 };
+  if (margin < 0) return { pos: 0, neg: margin };
+  return NO_MARGIN;
+}
+
 /**
- * The collapsed value of two adjoining margins: the largest positive plus
- * the most negative — CSS 8.3.1's rule, whole. Both-positive takes the max,
- * both-negative the min, and a mixed pair genuinely adds, which is what
- * makes a `-8px` pull work against a `40px` push and come out at `32`.
+ * A strut with one more margin collapsed into it: the largest positive
+ * and the most negative stay apart, and add up only where the margin is
+ * read (`marginOf`) — CSS 8.3.1's rule, whole. A `-8px` pull still works
+ * against a `40px` push and comes out at `32`, and a third margin after
+ * them collapses with the two, not with their sum.
  */
-function collapseMargins(a: number, b: number): number {
-  return Math.max(0, Math.max(a, b)) + Math.min(0, Math.min(a, b));
+function join(strut: MarginStrut, margin: number): MarginStrut {
+  if (margin > strut.pos) return { pos: margin, neg: strut.neg };
+  if (margin < strut.neg) return { pos: strut.pos, neg: margin };
+  return strut;
+}
+
+/** Two sets of adjoining margins collapsed into one. */
+function joinStruts(a: MarginStrut, b: MarginStrut): MarginStrut {
+  if (b.pos <= a.pos && b.neg >= a.neg) return a;
+  if (a.pos <= b.pos && a.neg >= b.neg) return b;
+  return { pos: Math.max(a.pos, b.pos), neg: Math.min(a.neg, b.neg) };
+}
+
+/** The margin a strut comes to. */
+function marginOf(strut: MarginStrut): number {
+  return strut.pos + strut.neg;
+}
+
+/** A box's bottom margin as the next sibling's collapses with it, with
+ *  what came out through its bottom edge where anything did. */
+function bottomOf(box: Box): MarginStrut {
+  return box.bottomStrut ?? marginStrut(box.marginBottom);
 }
 
 /**
@@ -194,8 +231,8 @@ function collapsedTopMargin(
   containingWidth: number,
   floats: FloatContext | null = null,
   y = 0,
-  pending = 0,
-): number {
+  pending: MarginStrut = NO_MARGIN,
+): MarginStrut {
   floatsPassed = false;
   floatsLeft = 0;
   floatsRight = 0;
@@ -204,7 +241,7 @@ function collapsedTopMargin(
   walkFloats = floats;
   walkY = y;
   walkPending = pending;
-  return absorbChildren(box, containingWidth, box.marginTop);
+  return absorbChildren(box, containingWidth, marginStrut(box.marginTop));
 }
 
 /** Whether the last `absorbChildren` went through every child in flow of
@@ -226,7 +263,7 @@ let passedRight = false;
  *  it: what says whether a cleared child in it has clearance. */
 let walkFloats: FloatContext | null = null;
 let walkY = 0;
-let walkPending = 0;
+let walkPending: MarginStrut = NO_MARGIN;
 
 /**
  * Collapse into `margin` the margins of `at`'s children that adjoin its top
@@ -238,7 +275,11 @@ let walkPending = 0;
  * an inline box with an edge, or a percentage, stops it where it might have
  * gone on.
  */
-function absorbChildren(at: Box, width: number, margin: number): number {
+function absorbChildren(
+  at: Box,
+  width: number,
+  margin: MarginStrut,
+): MarginStrut {
   let whole = true;
   /** `at`'s content width, worked out when a child first needs it: most
    *  blocks start with text, and never do. */
@@ -281,10 +322,26 @@ function absorbChildren(at: Box, width: number, margin: number): number {
       continue;
     }
     resolveEdges(child, inner);
-    if (child.style.clear !== 'none' && hasClearance(child, margin)) {
-      child.topAbsorbed = 0;
-      whole = false;
-      break;
+    /** The margin that collapses up through the child's top edge, where
+     *  it had to be worked out before the child was taken. */
+    let through: MarginStrut | null = null;
+    if (child.style.clear !== 'none') {
+      // Where it would be with `clear: none` is where its top margin and
+      // every one that comes up through its top edge put it: a large
+      // margin inside it takes it past the floats as surely as its own
+      // (CSS 2.1 9.5.2). The walk into it is undone where it has
+      // clearance, which it passes no float for.
+      const passed = passedFloats(child.style.clear);
+      const walked = passed ? null : saveWalk();
+      if (!passed) {
+        through = absorbChildren(child, inner, join(margin, child.marginTop));
+      }
+      if (passed || hasClearance(child, through!)) {
+        if (walked) restoreWalk(walked);
+        child.topAbsorbed = 0;
+        whole = false;
+        break;
+      }
     }
     if (
       floatsPassed &&
@@ -298,15 +355,15 @@ function absorbChildren(at: Box, width: number, margin: number): number {
       whole = false;
       break;
     }
-    margin = collapseMargins(margin, child.marginTop);
-    margin = absorbChildren(child, inner, margin);
+    margin =
+      through ?? absorbChildren(child, inner, join(margin, child.marginTop));
     if (!throughAll || !bottomOpen(child)) {
       child.topAbsorbed = 1;
       whole = false;
       break;
     }
     child.topAbsorbed = 2;
-    margin = collapseMargins(margin, child.marginBottom);
+    margin = join(margin, child.marginBottom);
   }
   throughAll = whole && (inner >= 0 || topOpen(at));
   return margin;
@@ -416,25 +473,46 @@ function passFloat(float: Box, width: number): void {
   }
 }
 
+/** Whether the walk passed a float that a `clear` clears, which the margin
+ *  carries down with it: a child that clears one has clearance whatever
+ *  its margin is. */
+function passedFloats(clear: Box['style']['clear']): boolean {
+  return (
+    ((clear === 'left' || clear === 'both') && passedLeft) ||
+    ((clear === 'right' || clear === 'both') && passedRight)
+  );
+}
+
 /**
- * Whether a cleared child in the margin the walk collapses has clearance,
- * which parts it from that margin (CSS 2.1 9.5.2): past a float the walk
- * passed, which the margin carries down with it, always; past one placed
- * before, where the margin does not take the child below it already. A
- * child with none is like any other, and the margin goes on up through it:
- * stopped there, a large margin under a float was spent inside its parent,
- * whose background showed above it.
+ * Whether a cleared child in the margin the walk collapses has clearance
+ * from a float placed before the walk, which parts it from that margin
+ * (CSS 2.1 9.5.2): where `through`, the margin that collapses up through
+ * its top edge, does not take it below the float already. A child with none
+ * is like any other, and the margin goes on up through it: stopped there, a
+ * large margin under a float was spent inside its parent, whose background
+ * showed above it.
  */
-function hasClearance(child: Box, margin: number): boolean {
-  const clear = child.style.clear;
-  const left = clear === 'left' || clear === 'both';
-  const right = clear === 'right' || clear === 'both';
-  if ((left && passedLeft) || (right && passedRight)) return true;
+function hasClearance(child: Box, through: MarginStrut): boolean {
   if (!walkFloats) return true;
-  const floor = walkFloats.clearance(clear);
+  const floor = walkFloats.clearance(child.style.clear);
   if (floor === -Infinity) return false;
-  const top = collapseMargins(margin, child.marginTop);
-  return walkY + collapseMargins(walkPending, top) < floor;
+  return walkY + marginOf(joinStruts(walkPending, through)) < floor;
+}
+
+/** What the walk has passed, to be put back where a look ahead into a
+ *  child is undone. */
+function saveWalk(): [boolean, number, number, boolean, boolean] {
+  return [floatsPassed, floatsLeft, floatsRight, passedLeft, passedRight];
+}
+
+function restoreWalk([passed, left, right, onLeft, onRight]: ReturnType<
+  typeof saveWalk
+>): void {
+  floatsPassed = passed;
+  floatsLeft = left;
+  floatsRight = right;
+  passedLeft = onLeft;
+  passedRight = onRight;
 }
 
 /** Whether a new formatting context fits beside the floats the walk passed
@@ -504,7 +582,7 @@ function collapsesThrough(box: Box): boolean {
  *  past the last of them when the box's own bottom edge does not stop it. */
 interface FlowResult {
   height: number;
-  hanging: number;
+  hanging: MarginStrut;
 }
 
 /**
@@ -530,13 +608,13 @@ function layoutChildren(
       contentWidth,
       contentLeft,
     );
-    return { height: height + leading, hanging: 0 };
+    return { height: height + leading, hanging: NO_MARGIN };
   }
 
   let y = contentTop;
   /** The margin left hanging by the previous sibling — or, before the first
    *  child, the one `leading` hands down — for collapsing. */
-  let pendingMargin = leading;
+  let pendingMargin = marginStrut(leading);
   /** How many floats were placed before this box's content began, while
    *  nothing has yet fixed where the content is: a margin that collapses
    *  up through its top edge would take the ones placed since down with
@@ -556,7 +634,7 @@ function layoutChildren(
    *  them. It stays in this box rather than escape its bottom (CSS 2.1
    *  8.3.1, 10.6.3). */
   let cleared = false;
-  let afterClear = 0;
+  let afterClear = NO_MARGIN;
   /** The cleared block's own top margin: its top border edge is that far
    *  inside the margin its margins and the ones after it collapse to. */
   let clearTop = 0;
@@ -571,7 +649,13 @@ function layoutChildren(
       firstLine = null;
     }
     if (child.outOfFlow) {
-      placeStatic(child, box, contentLeft, contentWidth, y + pendingMargin);
+      placeStatic(
+        child,
+        box,
+        contentLeft,
+        contentWidth,
+        y + marginOf(pendingMargin),
+      );
       ctx.positioned.push({
         box: child,
         containing: containingBlockFor(child) ?? box,
@@ -583,7 +667,7 @@ function layoutChildren(
         child,
         ctx,
         floats,
-        y + pendingMargin,
+        y + marginOf(pendingMargin),
         contentLeft,
         contentWidth,
       );
@@ -597,10 +681,18 @@ function layoutChildren(
     let absorbed = child.topAbsorbed;
     if (absorbed !== 0 && !(open ??= topOpen(box))) absorbed = 0;
     const top = absorbed
-      ? 0
+      ? NO_MARGIN
       : collapsedTopMargin(child, contentWidth, floats, y, pendingMargin);
-    const collapsed = collapseMargins(pendingMargin, top);
-    let childY = y + collapsed;
+    const collapsed = joinStruts(pendingMargin, top);
+    // After an empty block cleared past a float, what collapses with its
+    // margins is placed from its top border edge, less its own top
+    // margin, which is above that edge: the depth the margin they make
+    // reaches below it (CSS 2.1 8.3.1), as the box's bottom is below it
+    // where the block is the last in it
+    const at: number = cleared
+      ? y + Math.max(0, marginOf(joinStruts(afterClear, top)) - clearTop)
+      : y + marginOf(collapsed);
+    let childY = at;
     const clear = child.style.clear;
     const clearance = floats.clearance(clear);
     if (clearance > -Infinity) {
@@ -611,9 +703,16 @@ function layoutChildren(
       // up (CSS 2.1 9.5.2, as the browsers read it). A margin under a
       // float in an empty block put a block that cleared it the margin
       // below the float, and its parent's background showed between.
+      // And one the walk that placed this box reached through every child
+      // before it, and stopped at for its clearance, has it too: where
+      // it would have been with `clear: none`, its margin collapsed up
+      // through this box's top, is above the floats, so its border edge
+      // goes under them, and its own margin, held apart there, may not
+      // take it lower. The clearance is negative then.
       if (
-        openFloats !== Infinity &&
-        floats.clearanceSince(clear, openFloats) > -Infinity
+        (openFloats !== Infinity &&
+          floats.clearanceSince(clear, openFloats) > -Infinity) ||
+        (child.topAbsorbed === 0 && (open ?? topOpen(box)))
       ) {
         childY = clearance;
       } else if (clearance > childY) childY = clearance;
@@ -628,7 +727,7 @@ function layoutChildren(
       layoutBlockLevel(child, ctx, floats, contentLeft, childY, contentWidth);
     }
     first = false;
-    const moved = childY !== y + collapsed;
+    const moved = childY !== at;
     if (!moved && collapsesThrough(child)) {
       // nothing in it parts its margins: they and the ones either side of
       // it are one (CSS 2.1 8.3.1), still hanging for what comes next —
@@ -638,24 +737,21 @@ function layoutChildren(
         continue;
       }
       open = false;
-      pendingMargin = collapseMargins(collapsed, child.marginBottom);
+      pendingMargin = joinStruts(collapsed, bottomOf(child));
       if (cleared) {
-        afterClear = collapseMargins(
-          collapseMargins(afterClear, top),
-          child.marginBottom,
-        );
+        afterClear = joinStruts(joinStruts(afterClear, top), bottomOf(child));
       }
       continue;
     }
     open = false;
     y = child.y + child.height;
-    pendingMargin = child.marginBottom;
+    pendingMargin = bottomOf(child);
     openFloats = Infinity;
     // cleared, and empty: its margins collapse together, and what follows
     // collapses with them, a top margin that has clearance (CSS 2.1 8.3.1)
     cleared = moved && collapsesThrough(child);
-    afterClear = cleared ? collapseMargins(top, child.marginBottom) : 0;
-    clearTop = cleared ? top : 0;
+    afterClear = cleared ? joinStruts(top, bottomOf(child)) : NO_MARGIN;
+    clearTop = cleared ? marginOf(top) : 0;
   }
 
   // The last child's bottom margin collapses through the parent's bottom
@@ -683,7 +779,7 @@ function layoutChildren(
     const parted =
       box.style.minHeight !== AUTO &&
       clampHeight(box, height + box.verticalExtra) > height + box.verticalExtra;
-    return { height, hanging: parted ? 0 : pendingMargin };
+    return { height, hanging: parted ? NO_MARGIN : pendingMargin };
   }
   // The cleared block's top border edge is where it would be with a border
   // at its bottom, its top margin's depth inside the margin they all make:
@@ -691,11 +787,14 @@ function layoutChildren(
   // the top margin (8.3.1, 10.6.3)
   if (cleared) {
     return {
-      height: y + Math.max(0, afterClear - clearTop) - contentTop,
-      hanging: 0,
+      height: y + Math.max(0, marginOf(afterClear) - clearTop) - contentTop,
+      hanging: NO_MARGIN,
     };
   }
-  return { height: y + pendingMargin - contentTop, hanging: 0 };
+  return {
+    height: y + marginOf(pendingMargin) - contentTop,
+    hanging: NO_MARGIN,
+  };
 }
 
 /**
@@ -757,8 +856,15 @@ function layoutBesideFloats(
           contentWidth,
         );
       }
-      const tall = box.marginTop + box.height + box.marginBottom;
-      const over = floats.bandAt(at, tall, reachLeft, reachRight, !inRoom);
+      // its border box, from its top: its margins may overlap a float, and
+      // a negative top margin takes the box up past one it then meets
+      const over = floats.bandAt(
+        at,
+        box.height,
+        reachLeft,
+        reachRight,
+        !inRoom,
+      );
       if (over.left > band.left + 0.5 || over.right < band.right - 0.5) {
         band = over;
         continue;
@@ -779,7 +885,8 @@ function layoutBesideFloats(
       break;
     }
     if (fits) return;
-    const below = floats.nextEdgeBelow(at, 1);
+    // under the float it meets, which may start below its top
+    const below = floats.nextEdgeBelow(at, Math.max(1, box.height));
     if (below === null || below <= at) break;
     at = below;
   }
@@ -799,10 +906,16 @@ function besideFloats(
   lo: number,
   hi: number,
 ): [number, number] {
-  return [
-    Math.max(left + box.marginLeft, lo),
-    Math.min(right - box.marginRight, hi),
-  ];
+  // Where a float narrows the containing block's room on either side, a
+  // negative margin takes the box no further out than the containing
+  // block's edge, as every engine has it; where none does, the margins
+  // are the containing block's in full. The suite's
+  // floats-wrap-bfc-with-margin-006 to -009 propose otherwise, and pass in
+  // no browser.
+  const beside = lo > left || hi < right;
+  const ml = beside ? Math.max(0, box.marginLeft) : box.marginLeft;
+  const mr = beside ? Math.max(0, box.marginRight) : box.marginRight;
+  return [Math.max(left + ml, lo), Math.min(right - mr, hi)];
 }
 
 function layoutInlineContent(
@@ -1263,9 +1376,13 @@ function layoutInternals(
   // The margin that escaped through this box's bottom edge becomes part of
   // its own: the parent's flow loop reads `child.marginBottom` for the next
   // sibling's collapse, which is exactly where an escaped margin goes.
-  if (flow.hanging) {
-    box.marginBottom = collapseMargins(box.marginBottom, flow.hanging);
-  }
+  // Kept as a strut too, for the next sibling's margins to collapse with
+  // all of the ones it came to rather than with their sum.
+  if (flow.hanging.pos || flow.hanging.neg) {
+    const bottom = join(flow.hanging, box.marginBottom);
+    box.bottomStrut = bottom;
+    box.marginBottom = marginOf(bottom);
+  } else box.bottomStrut = null;
   if (box.marker) layoutMarker(box, box.marker, ctx);
 }
 
@@ -2666,6 +2783,7 @@ export function resolveEdges(box: Box, containingWidth: number): void {
   box.marginRight = edge(style.marginRight, containingWidth);
   box.marginBottom = edge(style.marginBottom, containingWidth);
   box.marginLeft = edge(style.marginLeft, containingWidth);
+  box.bottomStrut = null;
   // A table's parts but its caption have no margins, and its rows and row
   // groups no padding either (CSS 2.1 8.3, 8.4): a cell set `margin: 50px`
   // left a gap in its table that no browser draws. The values stay theirs,
