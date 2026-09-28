@@ -2278,6 +2278,177 @@ whether a box holds a percentage height (#244) costs under a millisecond.
 Keeping Yoga's nodes from one layout to the next, and the incremental
 rebuild under "Still open", are where the time is.
 
+## Round 25: the compositor's clock
+
+The Linux desktop of round 23 again: Linux Mint, native Xorg, an NVIDIA GTX
+1080 Ti, Cinnamon's compositor (Muffin), one 60 Hz panel. Round 23 filed the
+question of how a 2D window should end its frames under a compositor as ntk
+#402 rather than changing ntk's default. It was decided for option 1.
+
+### Under a compositor, the fence ends frames and CopyArea blits them (ntk #410)
+
+While `_NET_WM_CM_S0` has an owner, a 2D window's frames end on the fence
+and its blits are CopyArea, instead of Present's vblank clock:
+
+- **Excluded:** Xwayland keeps Present, because its clock is the Wayland
+  compositor's frame callback, and `frameClock: 'present'` or
+  `NTK_FRAME_CLOCK=present` keep it by name.
+- **The switch is safe both ways.** A compositor that starts or stops mid-run
+  moves the window across, and a present still in flight is waited out
+  first: the #223 hazard.
+- **Top-level windows ask not to be unredirected**
+  (`_NET_WM_BYPASS_COMPOSITOR=2`), since a CopyArea on the scanout can tear.
+
+It shipped in ntk 8.13.0. Here is the whole sweep before and after, both with
+the monitor on and in React's development build:
+
+| cell                                           |            vblank clock |          fence + CopyArea |
+| ---------------------------------------------- | ----------------------: | ------------------------: |
+| retained `<Map>` pan / drag / wheel / fly, fps | 39 / 49.5 / 29.8 / 35.4 | 59.7 / 59.9 / 52.3 / 55.5 |
+| `<Flow>` 2D pan z1: lattice / widgets / charts |      33.7 / 33.3 / 37.2 |        60.4 / 57.4 / 59.2 |
+| `<Flow>` 2D widgets drag                       |                    34.7 |                        54 |
+| `<Flow>` 2D lattice2000 zoom                   |                    18.6 |                        33 |
+| charts scatter                                 |                      34 |                      60.6 |
+| `<Table>` wheel / fling                        |             42.8 / 21.2 |               60.1 / 38.1 |
+| `<CodeEditor>` type-end: key→paint p50         |                 12.4 ms |                    1.9 ms |
+| `<RichTextEditor>` type-mid: key→paint p50     |                 12.1 ms |                    5.5 ms |
+| frames watchers: bad samples                   |                       0 |                         0 |
+
+GL cells are unchanged, because GL was already on the fence (round 23).
+
+### A resize that grew by a title bar (ntk #411, react-x11 #726)
+
+One cell went the other way. `<Html>`'s reflow went from 246 ms a step
+to 389. Its frames had gone from 211–223 ms to 515–551 ms, and every other
+frame laid the 600 KB document out three times: at the new width, at the old
+width for the height floors' probe, and at the new width again for the paint.
+Each size is kept in a cache that lives only as long as the viewport height,
+and the viewport height was changing. The X window's height alternated
+between 760 and 792 while the app asked for 760 throughout.
+
+A bare node-x11 client shows why. Muffin answers a ConfigureRequest that names
+only the width by setting the height to its frame's, title bar included
+(`_NET_FRAME_EXTENTS` is 0, 0, 32, 0 here), and it does so every time:
+
+| request                       | ConfigureNotify |
+| ----------------------------- | --------------- |
+| mapped at 400×300             | 400×300         |
+| `{ width: 380 }`              | 380×**332**     |
+| `{ width: 360 }`              | 360×**364**     |
+| `{ width: 340, height: 300 }` | 340×300         |
+| `{ height: 280 }`             | 340×280         |
+
+ntk's `setState` sent only the axis that changed. Xlib's `XResizeWindow` and
+GTK always send both axes, which is why nothing else trips over this. Now
+ntk's `setState` does the same (#411). With that fixed, reflow frames are
+191–196 ms against the vblank clock's 209–211.
+
+The same trace found a second request in every resize: the window's `x` and
+`y`. react-x11 handed `setState` the position on any geometry change, and
+`setState` compares a position with the last ConfigureNotify, which under a
+reparenting window manager is in the frame's coordinates. So every resize
+re-sent the position. Muffin had placed a window asked for at 20,40 at
+50,82, and the first width change moved it to 20,72. A window the user had
+dragged went back the same way. Now a commit sends only the geometry it
+changed (react-x11 #726).
+
+The vblank clock had hidden both. There, the window stuck at 792 and the
+cache kept its entries.
+
+### The accessibility bridge, with nobody listening (react-x11 #728)
+
+Round 23 paced the AT-SPI bridge. That bounds what a push costs, but not
+that nobody hears it. This desktop's registry answers `GetRegisteredEvents`
+with nothing, and nothing calls into the app. Yet dragging `<Table>`'s
+scrollbar thumb spent 607 ms of a 4-second drag in the bridge's flush: 328
+of them in `AddAccessible` for every node that scrolled in.
+
+GTK 4 and at-spi2-atk both ask the registry. They hold back every event no
+listener registered for, and keep sending the cache's signals and
+`children-changed` regardless, because libatspi subscribes every client to
+those without registering anything. So the bridge now does this:
+
+- **It falls silent** when the registry reports no listener and nothing but
+  the registry has called in. Nothing is queued, pushed or exported.
+- **It wakes for good** on the first `EventListenerRegistered`, or the first
+  call from anyone else.
+
+| `<Table>` thumb, fps | before    | after     |
+| -------------------- | --------- | --------- |
+| bridge on            | 19.0–19.6 | 23.9–24.2 |
+| bridge off           | 24.4–24.9 | 23.1–24.3 |
+
+Both wake paths were checked against the real registry with libatspi 2.52:
+
+- A client that registered `object:children-changed` partway through woke
+  the bridge and received 9 events in 3 s.
+- A client that registered nothing and only walked the desktop read the
+  app's window, a push button "Save" and a list, and woke it too.
+
+The Windows bridge already gated its pushes on `UiaClientsAreListening` and
+a per-window read.
+
+### The development build, and the input rate
+
+The sweep runs React's development build, so some of its numbers are not an
+app's numbers:
+
+| cell                            | development | production |
+| ------------------------------- | ----------: | ---------: |
+| `<Table>` thumb, fps            |          26 |         51 |
+| `<Table>` fling, fps            |          44 |         58 |
+| Markdown edit, key→paint p50    |       56 ms |      55 ms |
+| `<RichTextEditor>` bold-all p50 |       73 ms |      66 ms |
+
+What the table pays for in development is React's own: debug stacks for every
+element, 593 ms of a thumb drag in `createElement` alone.
+
+The typing cells are shaped by their input. A character every 16 ms is 62.5
+a second, and the fence clock paces frames at 60, so an input's wait for its
+frame drifts through the whole period. That is why `type-start` read 12 ms
+and `type-end` 2 in the same sweep. At one input every 50 ms:
+
+- `<CodeEditor>`: 1.9 ms at the start of the file and 1.2 ms at its end.
+- `<RichTextEditor>`: 5.5 ms at the end of a 50,000-character paragraph.
+
+### A sweep taken with the screen blanked
+
+A production sweep began with the monitor on and ended with DPMS off and
+Cinnamon's screensaver up. Neither state is the machine a cell describes:
+
+- **With the monitor off**, Present loses its display and windows fall to the
+  fence clock for good (round 23).
+- **With the screensaver up**, Muffin applies a client's resize about once a
+  second. A bare client that asked every 100 ms heard back 0.6, 1.6, 2.6 and
+  3.6 s after its first request, in batches.
+
+So that run's `<Html>` reflow read 2.3 ms a step for a window that was not
+resizing, and Markdown's read 66 ms, against 234 in the sweep before it.
+
+Each cell now records the display's state around it, and `tabulate.ts` opens
+with a warning naming any cell taken with the screen off or a screensaver up
+(#259).
+
+### Still open on this machine
+
+- **A one-paragraph edit to a 600 KB Markdown document is O(document)**:
+  - the parse, 18.4 ms a call for 1,704 blocks, plus most of the edit's
+    garbage;
+  - the height floors, 10 ms: `columnHeightSpan` and `marginDown` over every
+    block of the column;
+  - the scroll extent, 5 ms: `contentReach` over the column's children.
+
+  Of a 55 ms edit, parse and garbage are nearly half. An incremental parse
+  would have to resynchronise at a block boundary after the edit, the
+  tokenizer's convergence trick, while an unclosed fence can still swallow
+  the rest of the document. Small documents do not feel any of it: a chat
+  message's parse is well under a millisecond.
+
+- **`<Flow>`'s 2D zoom** of 2,000 nodes is 31–33 fps. The time is ntk's
+  rasterizer stroking every visible edge again at each step (`edge`,
+  `rasterize` and `_strokePolys`), and the GL renderer does it at 59.
+- **`<CodeEditor>`'s long mount**, 1.4 s in production, as round 23 left it.
+
 ## Lessons
 
 1. **Look for caches that never hit.** Identity-keyed caches handed a new
