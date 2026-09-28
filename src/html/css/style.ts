@@ -306,6 +306,9 @@ export interface ComputedStyle {
   widthKeyword: ContentSize | null;
   minWidthKeyword: ContentSize | null;
   maxWidthKeyword: ContentSize | null;
+  /** `min-height` as one: the content's height, which a flex item in a
+   *  column is no shorter than whatever its `overflow` (`flex.ts`). */
+  minHeightKeyword: ContentSize | null;
 
   marginTop: Len;
   marginRight: Len;
@@ -600,6 +603,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     maxHeight: 'none',
     widthKeyword: null,
     minWidthKeyword: null,
+    minHeightKeyword: null,
     maxWidthKeyword: null,
 
     marginTop: 0,
@@ -1102,6 +1106,7 @@ export function applyDeclaration(
         (style as unknown as Record<string, unknown>)[camel(name)] = AUTO;
         if (name === 'width') style.widthKeyword = keyword;
         else if (name === 'min-width') style.minWidthKeyword = keyword;
+        else if (name === 'min-height') style.minHeightKeyword = keyword;
         return;
       }
       // a negative size is no value, and the declaration goes (CSS 2.1
@@ -1111,6 +1116,7 @@ export function applyDeclaration(
         (style as unknown as Record<string, unknown>)[camel(name)] = len;
         if (name === 'width') style.widthKeyword = null;
         else if (name === 'min-width') style.minWidthKeyword = null;
+        else if (name === 'min-height') style.minHeightKeyword = null;
       }
       return;
     }
@@ -2852,8 +2858,12 @@ function applyFlexShorthand(
   }
   const parts = splitValue(value);
   const numbers: number[] = [];
-  let basis: Len | null = null;
+  let basis: Len | 'content' | null = null;
   for (const part of parts) {
+    if (part.toLowerCase() === 'content') {
+      basis = 'content';
+      continue;
+    }
     const n = parseNumber(part);
     if (n !== null && numbers.length < 2 && !part.includes('%')) {
       numbers.push(n);
@@ -3422,7 +3432,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   height: ['height'],
   'min-width': ['minWidth', 'minWidthKeyword'],
   'max-width': ['maxWidth', 'maxWidthKeyword'],
-  'min-height': ['minHeight'],
+  'min-height': ['minHeight', 'minHeightKeyword'],
   'max-height': ['maxHeight'],
   'box-sizing': ['boxSizing'],
   margin: sides((s) => `margin${s}`),

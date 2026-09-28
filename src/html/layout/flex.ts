@@ -29,6 +29,7 @@ import { AUTO, isPct, resolve, resolveOrNull } from '../css/values.js';
 import type { ComputedStyle, ContentSize } from '../css/style.js';
 import { Box } from './boxes.js';
 import {
+  FLEXED_HEIGHT,
   MIN_CONTENT_PROBE,
   clampHeight,
   contentSizedWidth,
@@ -135,6 +136,7 @@ export function layoutFlex(
 
   const direction =
     box.style.direction === 'rtl' ? Y.DIRECTION_RTL : Y.DIRECTION_LTR;
+  const row = box.style.flexDirection.startsWith('row');
   ctx.flexDepth = depth + 1;
   try {
     root.calculateLayout(
@@ -145,7 +147,6 @@ export function layoutFlex(
     // an item Yoga shrank under what its content comes to is kept to it,
     // and the row is laid out again (`autoMinimums`) — which may shrink
     // another under its own, a few times over at most
-    const row = box.style.flexDirection.startsWith('row');
     for (
       let pass = 0;
       pass < 4 && autoMinimums(items, row, ctx, contentWidth);
@@ -172,7 +173,29 @@ export function layoutFlex(
     // its line breaks were computed against a width that may have changed
     // when a sibling grew. Unless the last answer was at that width, which
     // is a layout the item still has (Yoga's widths are float32s).
-    layoutItemAt(child, ctx, left, top, width, itemHeight, laid);
+    // Its height is definite where the flex layout made it so (CSS Flexbox
+    // 9.8): stretched across a row's line, or flexed in a column of a
+    // height of its own. What is in it takes its percentages of that —
+    // the `h-full` in a stretched sidebar — where they had nothing to be
+    // of, and the item is laid out again for them.
+    const definite = row
+      ? stretches(child, box.style)
+        ? itemHeight
+        : null
+      : height !== null
+        ? itemHeight
+        : null;
+    layoutItemAt(
+      child,
+      ctx,
+      left,
+      top,
+      width,
+      itemHeight,
+      laid,
+      definite,
+      !row,
+    );
     bottom = Math.max(bottom, top + child.height);
   }
 
@@ -189,6 +212,11 @@ function layoutItemAt(
   width: number,
   height: number,
   laid: Laid,
+  /** Its border box's height where the flex layout made it definite. */
+  definite: number | null,
+  /** Whether its height is the one the flex layout gave it, in a column,
+   *  whatever its own says: flexed, it is shrunk as well as grown. */
+  column = false,
 ): void {
   if (box.kind === 'text' || box.kind === 'break') {
     box.x = x;
@@ -197,15 +225,27 @@ function layoutItemAt(
     box.height = height;
     return;
   }
+  const inner =
+    definite === null || !percentHeightsIn(box)
+      ? null
+      : Math.max(0, definite - box.verticalExtra);
+  if (inner !== null && !Object.is(inner, percentBaseInside(box))) {
+    FLEXED_HEIGHT.set(box, inner);
+    try {
+      ctx.layoutSubtree(box, width);
+    } finally {
+      FLEXED_HEIGHT.delete(box);
+    }
+  }
   // `measureBox` lays the box out at (0, 0); re-running it at the final width
   // and then moving it is one pass, not two, because the second call is the
   // one whose result is kept — or no pass, where the last measure was at
   // this width. An item Yoga never measured has none, NaN, and is laid out.
-  if (Math.abs(laid.width - width) <= 0.01) box.height = laid.height;
+  else if (Math.abs(laid.width - width) <= 0.01) box.height = laid.height;
   else ctx.layoutSubtree(box, width);
   // A stretched item is taller than its content, and the box has to say so
   // or its background stops short of the row.
-  if (height > box.height) box.height = height;
+  if (height > box.height || column) box.height = height;
   moveTo(box, x, y);
 }
 
@@ -447,13 +487,18 @@ function autoMinimums(
   for (const { box, node, laid } of items) {
     if (box.kind === 'text' || box.kind === 'break') continue;
     const style = box.style;
-    // a box that scrolls or clips has none
-    if (style.overflowX !== 'visible' || style.overflowY !== 'visible') {
+    // a box that scrolls or clips has none, but for one that asks for its
+    // content's height
+    const asked = !row && style.minHeightKeyword !== null;
+    if (
+      !asked &&
+      (style.overflowX !== 'visible' || style.overflowY !== 'visible')
+    ) {
       continue;
     }
     const width = node.getComputedWidth();
-    // An item its content sizes along the row: one with a size of its own
-    // may shrink under it to what its content comes to, which that size
+    // An item its content sizes along a row: one with a width of its own
+    // may shrink under it to what its content comes to, which that width
     // hides from a measure, and keeps Yoga's minimum of none
     if (
       row
@@ -461,7 +506,7 @@ function autoMinimums(
           style.minWidthKeyword ||
           style.width !== AUTO ||
           style.widthKeyword
-        : style.minHeight !== AUTO || style.height !== AUTO
+        : style.minHeight !== AUTO && !asked
     ) {
       continue;
     }
@@ -495,7 +540,35 @@ function autoMinimums(
       if (node.getComputedWidth() >= least - 0.01) continue;
       node.setMinWidth(least);
     } else {
-      least = laid.height;
+      // its height, or where it has one of its own and its content comes to
+      // less, its content's: the lesser of the two (4.5)
+      let content: number;
+      if (box.kind === 'replaced') content = laid.height;
+      else if (style.height !== AUTO && percentHeightsIn(box)) {
+        // what its content comes to where it has no height to take
+        // percentages of, as an intrinsic size is measured: laid out so
+        // apart, and the final pass lays it out again
+        FLEXED_HEIGHT.set(box, NaN);
+        try {
+          ctx.layoutSubtree(box, width);
+        } finally {
+          FLEXED_HEIGHT.delete(box);
+        }
+        content = contentBottom(box) + box.verticalExtra;
+        laid.width = NaN;
+      } else content = contentBottom(box) + box.verticalExtra;
+      // and a ratio's content is at least its width through the ratio,
+      // height of its own or not (CSS Sizing 4, 5.1)
+      const aspect = style.aspectRatio;
+      if (aspect && box.kind !== 'replaced') {
+        content = Math.max(
+          content,
+          style.boxSizing === 'border-box'
+            ? box.width / aspect.ratio
+            : box.contentWidth / aspect.ratio + box.verticalExtra,
+        );
+      }
+      least = Math.min(laid.height, content);
       const extra = style.boxSizing === 'border-box' ? 0 : box.verticalExtra;
       if (style.maxHeight !== 'none') {
         const most = resolveOrNull(style.maxHeight, NaN);
@@ -508,6 +581,72 @@ function autoMinimums(
   }
   return changed;
 }
+
+/** How far down a laid-out box's content reaches inside its content box:
+ *  its lines and its children, floats included, with their margins. */
+function contentBottom(box: Box): number {
+  const top = box.contentY;
+  let bottom = 0;
+  for (const line of box.lines ?? []) {
+    bottom = Math.max(bottom, line.y + line.height - top);
+  }
+  for (const child of box.children) {
+    if (child.outOfFlow || child.kind === 'text' || child.kind === 'break') {
+      continue;
+    }
+    if (child.kind === 'inline') continue;
+    bottom = Math.max(
+      bottom,
+      child.y + child.height + child.marginBottom - top,
+    );
+  }
+  return bottom;
+}
+
+/** Whether an item is stretched across its line: `stretch`, its own or its
+ *  container's, with no height of its own and no `auto` margin across. */
+function stretches(box: Box, container: ComputedStyle): boolean {
+  const style = box.style;
+  const align =
+    style.alignSelf === AUTO ? container.alignItems : style.alignSelf;
+  return (
+    align === 'stretch' &&
+    style.height === AUTO &&
+    style.marginTop !== AUTO &&
+    style.marginBottom !== AUTO
+  );
+}
+
+/** Whether anything in a box takes a percentage of a height: what a height
+ *  the flex layout makes definite changes. Kept for the tree's life. */
+function percentHeightsIn(box: Box): boolean {
+  let found = PERCENT_HEIGHTS.get(box);
+  if (found === undefined) {
+    found = false;
+    // a column's basis is a height too
+    const column =
+      box.kind === 'flex' &&
+      !box.style.grid &&
+      box.style.flexDirection.startsWith('column');
+    for (const child of box.children) {
+      const style = child.style;
+      if (
+        isPct(style.height) ||
+        isPct(style.minHeight) ||
+        (style.maxHeight !== 'none' && isPct(style.maxHeight)) ||
+        (column && style.flexBasis !== 'content' && isPct(style.flexBasis)) ||
+        percentHeightsIn(child)
+      ) {
+        found = true;
+        break;
+      }
+    }
+    PERCENT_HEIGHTS.set(box, found);
+  }
+  return found;
+}
+
+const PERCENT_HEIGHTS = new WeakMap<Box, boolean>();
 
 /** How deep flex boxes are laid out by Yoga, one inside another's measure
  *  (`layoutFlex`). */

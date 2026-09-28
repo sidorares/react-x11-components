@@ -1301,6 +1301,8 @@ function layoutMarker(box: Box, marker: Marker, ctx: LayoutContext): void {
  * longer than the window is not cut off (`layoutDocument`).
  */
 export function percentBaseInside(box: Box): number {
+  const flexed = FLEXED_HEIGHT.get(box);
+  if (flexed !== undefined) return flexed;
   if (!box.el && !box.pseudo) return box.percentHeightBase;
   const resolved = resolveOrNull(box.style.height, box.percentHeightBase);
   if (resolved === null) {
@@ -1319,6 +1321,14 @@ export function percentBaseInside(box: Box): number {
       : set + box.verticalExtra;
   return Math.max(0, clampHeight(box, borderBox) - box.verticalExtra);
 }
+
+/**
+ * The content height a flex layout made definite for an item — a stretched
+ * item's, a flexed one's in a container of a definite height (CSS Flexbox
+ * 9.8) — which what is in it takes its percentages of. Set by `flex.ts`
+ * for the item's own layout alone.
+ */
+export const FLEXED_HEIGHT = new WeakMap<Box, number>();
 
 /**
  * Hand a box's children the height their percentages resolve against —
