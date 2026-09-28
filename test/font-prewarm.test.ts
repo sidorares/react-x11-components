@@ -16,6 +16,8 @@ import { Markdown } from '../src/markdown/index.js';
 import { TerminalOutput } from '../src/terminal-output/index.js';
 import { Terminal } from '../src/terminal/index.js';
 import { FakePtyHost } from './fake-pty.js';
+import { RichTextEditor } from '../src/rich-text-editor/index.js';
+import { schema } from '../src/rich-text-editor/schema.js';
 import { styleFamily } from '../src/internal/prewarm.js';
 
 const h = React.createElement;
@@ -91,6 +93,38 @@ test('a terminal warms its family when it draws the grid itself', async () => {
       h(Terminal, { backend: 'vt', pty: new FakePtyHost(), fontFamily: 'T' }),
     ),
     ['T'],
+  );
+});
+
+test('an editor warms its mono family when it mounts with code', async () => {
+  assert.deepStrictEqual(
+    await asked(h(RichTextEditor, { defaultValue: 'some `code` here' })),
+    ['monospace'],
+  );
+  assert.deepStrictEqual(
+    await asked(h(RichTextEditor, { defaultValue: 'prose alone' })),
+    [],
+  );
+  assert.deepStrictEqual(
+    await asked(
+      h(RichTextEditor, {
+        format: 'html',
+        defaultValue: '<pre>x = 1</pre>',
+        monoFamily: 'H',
+      }),
+    ),
+    ['H'],
+  );
+  // a node: the code is a mark, as the schema says
+  const doc = schema.node('doc', null, [
+    schema.node('paragraph', null, [
+      schema.text('see '),
+      schema.text('x', [schema.marks.code.create()]),
+    ]),
+  ]);
+  assert.deepStrictEqual(
+    await asked(h(RichTextEditor, { defaultValue: doc })),
+    ['monospace'],
   );
 });
 
