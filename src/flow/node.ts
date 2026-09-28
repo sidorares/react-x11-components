@@ -744,12 +744,30 @@ export class FlowGraphNode extends Node implements FlowInstance {
   ): { width: number; height: number } =>
     measureText(this._textOptions(), text, options);
 
+  /**
+   * The palette, resolved once for the theme and the `palette` prop it was
+   * resolved from. Every text measured asks for it (`_textOptions`), and
+   * resolving it tints the accent and reads the background's lightness out
+   * of a colour string: a 2D pan's passes measured their labels with a
+   * fresh one each. The theme object is replaced when it changes.
+   */
   private _palette(): FlowPalette {
-    return resolvePalette(
-      this.theme as Record<string, unknown> | null,
-      this._prop<Partial<FlowPalette>>('palette'),
-    );
+    const theme = this.theme as Record<string, unknown> | null;
+    const overrides = this._prop<Partial<FlowPalette>>('palette');
+    const held = this._paletteHeld;
+    if (held && held.theme === theme && held.overrides === overrides) {
+      return held.palette;
+    }
+    const palette = resolvePalette(theme, overrides);
+    this._paletteHeld = { theme, overrides, palette };
+    return palette;
   }
+
+  private _paletteHeld: {
+    theme: Record<string, unknown> | null;
+    overrides: Partial<FlowPalette> | undefined;
+    palette: FlowPalette;
+  } | null = null;
 
   // --- the derived graph ---------------------------------------------------
 
