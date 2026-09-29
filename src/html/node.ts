@@ -89,6 +89,7 @@ import { lineBands as bandsFor } from '../richtext/runs.js';
 import {
   clipsOverflow,
   containingBlockOf,
+  forgetDecoratedAncestors,
   hasRect,
   holds,
   holdsAbsolute,
@@ -1481,7 +1482,14 @@ export class HtmlViewNode extends Node {
 
     // and only now, all of it
     for (const [box, style] of restyled) box.style = style;
-    for (const [box, decoration] of redecorated) box.decoration = decoration;
+    for (const [box, decoration] of redecorated) {
+      // what is inside it keeps which boxes around it paint, and this is
+      // one more or one fewer of them
+      if ((decoration === null) !== (box.decoration === null)) {
+        forgetDecoratedAncestors(box);
+      }
+      box.decoration = decoration;
+    }
     for (const text of texts) {
       const next = relaid.get(text.layout);
       if (next) text.layout = next;

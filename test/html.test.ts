@@ -14900,6 +14900,38 @@ metric(
 );
 
 metric(
+  'an inline box a hover gives a background paints it in place, and one it takes it from does not',
+  async () => {
+    // the text inside a link keeps the list of decorated boxes around it,
+    // which a hover that gives the link its first background changes
+    const { result, node } = await render(
+      '<style>body{margin:0} a{color:#0000ee} a:hover{background:#ffff00}</style>' +
+        '<p>Some text with <a href="#x">a <span id="s">link</span> in it that' +
+        ' runs on long enough to wrap onto the next line</a> and more.</p>' +
+        '<p id="q">Another paragraph.</p>',
+      200,
+    );
+    const el = view(node);
+    const quiet = await snapshot(result, el);
+    const tree = treeOf(el);
+
+    el.setHover(...pointIn(el, 's'));
+    const hovered = await snapshot(result, el);
+    assert.strictEqual(treeOf(el), tree, 'the document was built again');
+    assert.notDeepStrictEqual(hovered, quiet, 'the hover drew nothing');
+    assert.deepStrictEqual(hovered, await rebuilt(result, el));
+
+    // …and off it, from the document built with the background
+    const again = treeOf(el);
+    el.setHover(...pointIn(el, 'q'));
+    const left = await snapshot(result, el);
+    assert.strictEqual(treeOf(el), again, 'the document was built again');
+    assert.deepStrictEqual(left, quiet);
+    assert.deepStrictEqual(left, await rebuilt(result, el));
+  },
+);
+
+metric(
   'a move that touches no rule restyles nothing, and one that changes more than ink builds the document again',
   async () => {
     const { result, node } = await render(
