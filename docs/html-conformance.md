@@ -204,6 +204,7 @@ npx tsx scripts/conformance/run.ts wpt fuzz1 --chunk 50 --timeout 60000
 | 115    | grid items with ratios, `auto-fit`, `%` gaps       | 5,652 (95%) | 5,103 (86%) |
 | 116    | `stretch` and `-webkit-fill-available`             | 5,652 (95%) | 5,103 (86%) |
 | 117    | containment and `content-visibility`               | 5,652 (95%) | 5,103 (86%) |
+| 118    | `overflow-clip-margin`, `background-clip`, borders | 5,652 (95%) | 5,103 (86%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -3477,6 +3478,54 @@ the timing of their native drawing; the CSS 2.1 suite is unchanged.
 css-contain went from 110 to 243 of 431 on X11 and from 101 to 229 on
 Cocoa, css-sizing from 373 to 397 of 562 on both; the CSS 2.1 suite is
 unchanged.
+
+### Round 118
+
+307. **`overflow-clip-margin` was not read**, so `overflow: clip` and paint
+     containment cut at the padding box whatever it said (CSS Overflow 4,
+     3.2). They cut at the box it names — the padding box, the content box
+     or the border box — moved out by its length, or in where the length
+     is negative, as Overflow 4 allows. A box that scrolls cuts at its
+     padding box whatever the margin says, paint containment or none. The
+     rounded corners move with the edge as a browser moves them: from the
+     padding box's own, by the outset-adjusted border radius (CSS
+     Backgrounds 3, 4.2), which is what the tests draw where the Overflow
+     text measures from the border edge instead. The three tests that have
+     a scroller honour a content-box margin fail in every browser and are
+     left.
+308. **`clip` on one axis cut both.** An `overflow-x: clip` beside a
+     `visible` y cut what overflowed downwards too; the axis it leaves
+     `visible` is not cut now.
+309. **`background-clip`'s box keywords and `background-origin` were not
+     read.** Every background was painted over the border box and placed
+     at the padding box's corner. Each layer is now painted in the box its
+     `background-clip` names, with that box's corners, and placed in the
+     box its `background-origin` names. The colour goes with the bottom
+     layer's clip, and the shorthand's one box is both while its two are
+     the origin and then the clip.
+310. **Border widths were not snapped** (CSS Values 4, "snap as a border
+     width"): they are whole device pixels now, rounded down, and a
+     hairline narrower than a pixel is one. Two 49.75px borders left the
+     box between them half a pixel, which painted nothing where a browser
+     leaves two. An outline's width is snapped the same way.
+311. **A spread grew every rounded corner by the whole spread.** An outer
+     shadow's corners, and an overflow clip edge's, now grow by the
+     outset-adjusted border radius (CSS Backgrounds 3, 4.2): a radius
+     small beside the spread grows by less, the less the rounder the box
+     already is. A card with a 4px radius and a 20px ring keeps nearly
+     square corners, and a circle stays a circle.
+
+One test that passed by accident fails now:
+background-rounded-image-clip-002 draws a padding-box background under a
+rounded border and scales it by 5% so the two overlap, and passed while
+the background was painted under the border as well. `transform: scale()`
+is read and not drawn, and the antialiased seam shows.
+
+css-overflow went from 269 to 293 of 639 on X11 and from 258 to 274 on
+Cocoa, css-backgrounds from 286 to 311 of 711 on X11 and from 278 to 300
+on Cocoa; the CSS 2.1 suite is unchanged. The Cocoa sweep of it, run beside
+other work, reported 217 tests lost and 98 won; each of those run alone
+passes, and each of these fails on both trees — the load, not the change.
 
 ## What `<Html>` supports
 

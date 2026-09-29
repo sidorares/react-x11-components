@@ -308,6 +308,10 @@ export interface ComputedStyle {
   contain: number;
   /** `content-visibility`: `hidden` skips painting what the box holds. */
   contentVisibility: 'visible' | 'auto' | 'hidden';
+  /** `overflow-clip-margin`: the box an `overflow: clip` box cuts what it
+   *  holds at, and how far out from it (CSS Overflow 3, 3.2). */
+  overflowClipBox: VisualBox;
+  overflowClipMargin: number;
   /** `contain-intrinsic-size`'s two lengths: the size a box's content
    *  comes to under size containment, none where it says `none`. */
   containIntrinsicWidth: number | null;
@@ -485,6 +489,13 @@ export interface ComputedStyle {
   /** `background-clip: text` (CSS Backgrounds 4): the background is
    *  painted through the element's text rather than behind its box. */
   backgroundClipText: boolean;
+  /** `background-clip` and `background-origin` (CSS Backgrounds 3, 3.7 and
+   *  3.8): the box a layer is painted in and the box it is placed in, the
+   *  colour painted in the bottom layer's; each a list as the four above. */
+  backgroundClip: VisualBox;
+  backgroundOrigin: VisualBox;
+  backgroundClips: VisualBox[] | null;
+  backgroundOrigins: VisualBox[] | null;
   /** `-webkit-text-fill-color`: what the glyphs are filled with where it
    *  is not the text's `color` — Tailwind's `text-transparent` over a
    *  `bg-clip-text` gradient; null for `color`, as `currentColor` is. */
@@ -719,6 +730,8 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     flowRoot: false,
     contain: 0,
     contentVisibility: 'visible',
+    overflowClipBox: 'padding-box',
+    overflowClipMargin: 0,
     containIntrinsicWidth: null,
     containIntrinsicHeight: null,
     position: 'static',
@@ -818,6 +831,10 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     backgroundAttachments: null,
     backgroundPositions: null,
     backgroundClipText: false,
+    backgroundClip: 'border-box',
+    backgroundOrigin: 'padding-box',
+    backgroundClips: null,
+    backgroundOrigins: null,
     textFillColor: null,
 
     textDecorationLine: 'none',
@@ -1303,6 +1320,25 @@ export function applyDeclaration(
       if (bits !== null) style.contain = bits;
       return;
     }
+    case 'overflow-clip-margin': {
+      let box: ComputedStyle['overflowClipBox'] | null = null;
+      let margin: number | null = null;
+      // a length that shrinks the box where it is negative (CSS Overflow 4)
+      for (const part of splitValue(value)) {
+        const word = part.toLowerCase();
+        if (box === null && isVisualBox(word)) {
+          box = word;
+          continue;
+        }
+        const len = parseLength(part, ctx);
+        if (margin !== null || typeof len !== 'number') return;
+        margin = len;
+      }
+      if (box === null && margin === null) return;
+      style.overflowClipBox = box ?? 'padding-box';
+      style.overflowClipMargin = margin ?? 0;
+      return;
+    }
     case 'content-visibility': {
       const v = value.trim().toLowerCase();
       if (v === 'visible' || v === 'auto' || v === 'hidden') {
@@ -1692,16 +1728,26 @@ export function applyDeclaration(
     }
     case 'background-clip':
     case '-webkit-background-clip': {
-      // the first layer's; the box keywords all clip where the box is
-      const v = (splitCommas(value)[0] ?? '').trim().toLowerCase();
-      if (v === 'text') style.backgroundClipText = true;
-      else if (
-        v === 'border-box' ||
-        v === 'padding-box' ||
-        v === 'content-box'
-      ) {
-        style.backgroundClipText = false;
-      }
+      // `text` the first layer's alone, which paints through the text
+      const clips = layerValues(value, (part) => {
+        const v = part.toLowerCase();
+        return v === 'text' || isVisualBox(v) ? v : null;
+      });
+      if (!clips) return;
+      style.backgroundClipText = clips[0] === 'text';
+      const boxes = clips.map((c) => (c === 'text' ? 'border-box' : c));
+      style.backgroundClip = boxes[0];
+      style.backgroundClips = boxes.length > 1 ? boxes : null;
+      return;
+    }
+    case 'background-origin': {
+      const origins = layerValues(value, (part) => {
+        const v = part.toLowerCase();
+        return isVisualBox(v) ? v : null;
+      });
+      if (!origins) return;
+      style.backgroundOrigin = origins[0];
+      style.backgroundOrigins = origins.length > 1 ? origins : null;
       return;
     }
     case 'background-repeat': {
@@ -2734,6 +2780,13 @@ export function settleOverflow(style: ComputedStyle): void {
  * formatting context and keeps a flex or grid item's automatic minimum
  * (CSS Overflow 3, 3.1) — so only this asks it apart from `hidden`.
  */
+/** A `<visual-box>` (CSS Box 4): the edge of a box a property names. */
+export type VisualBox = 'border-box' | 'padding-box' | 'content-box';
+
+function isVisualBox(v: string): v is VisualBox {
+  return v === 'border-box' || v === 'padding-box' || v === 'content-box';
+}
+
 export function scrolls(style: ComputedStyle): boolean {
   const x = style.overflowX;
   const y = style.overflowY;
@@ -2810,11 +2863,24 @@ function borderWidth(value: string, ctx: UnitContext): number | null {
   const kw = BORDER_WIDTH_KEYWORDS[value.trim().toLowerCase()];
   // The keywords are CSS pixels that never pass through `parseLength`, so
   // they take the display scale here.
-  if (kw !== undefined) return kw * ctx.scale;
+  if (kw !== undefined) return snapBorderWidth(kw * ctx.scale);
   const len = parseLength(value, ctx);
   // a negative width is not a width: the declaration is dropped, and the
   // one before it stands (CSS 2.1 8.5.1)
-  return typeof len === 'number' && len >= 0 ? len : null;
+  return typeof len === 'number' && len >= 0 ? snapBorderWidth(len) : null;
+}
+
+/**
+ * A border's or an outline's width in whole device pixels, as it computes
+ * (CSS Values 4, "snap as a border width"): down to the pixel, and a
+ * hairline narrower than one pixel up to it — so two borders of 49.75px
+ * leave the box between them its two pixels, and a 0.5px rule is drawn.
+ * The fraction a length in `em` comes to beside a whole number is not
+ * taken for less than it.
+ */
+function snapBorderWidth(width: number): number {
+  if (width > 0 && width < 1) return 1;
+  return Math.floor(width + 1e-6);
 }
 
 const HORIZONTAL: Record<string, number> = { left: 0, center: 50, right: 100 };
@@ -3039,6 +3105,8 @@ function applyBackgroundShorthand(
   style.backgroundRepeat = top.repeat;
   style.backgroundSize = top.size;
   style.backgroundAttachment = top.attachment;
+  style.backgroundOrigin = top.origin;
+  style.backgroundClip = top.clip;
   [style.backgroundPositionX, style.backgroundPositionY] = top.position ?? [
     0, 0,
   ];
@@ -3049,6 +3117,8 @@ function applyBackgroundShorthand(
   style.backgroundRepeats = many ? layers.map((l) => l.repeat) : null;
   style.backgroundSizes = many ? layers.map((l) => l.size) : null;
   style.backgroundAttachments = many ? layers.map((l) => l.attachment) : null;
+  style.backgroundOrigins = many ? layers.map((l) => l.origin) : null;
+  style.backgroundClips = many ? layers.map((l) => l.clip) : null;
   style.backgroundPositions = many
     ? layers.map((l) => l.position ?? [0, 0])
     : null;
@@ -3088,6 +3158,8 @@ interface BackgroundLayer {
   repeat: ComputedStyle['backgroundRepeat'];
   size: ComputedStyle['backgroundSize'];
   attachment: ComputedStyle['backgroundAttachment'];
+  origin: VisualBox;
+  clip: VisualBox;
   position: [Len, Len] | null;
 }
 
@@ -3113,6 +3185,8 @@ function readBackgroundLayer(
     repeat: 'repeat',
     size: 'auto',
     attachment: 'scroll',
+    origin: 'padding-box',
+    clip: 'border-box',
     position: null,
   };
   let seen = 0;
@@ -3144,12 +3218,11 @@ function readBackgroundLayer(
       if (!once(4)) return null;
       layer.attachment = v;
       i += 1;
-    } else if (
-      v === 'border-box' ||
-      v === 'padding-box' ||
-      v === 'content-box'
-    ) {
+    } else if (isVisualBox(v)) {
+      // one box is both the origin and the clip, and a second the clip
       if ((boxes += 1) > 2) return null;
+      if (boxes === 1) layer.origin = v;
+      layer.clip = v;
       i += 1;
     } else if (isPositionPart(v, ctx)) {
       if (!once(8)) return null;
@@ -4404,8 +4477,17 @@ const sides = (
 const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   color: ['color'],
   '-webkit-text-fill-color': ['textFillColor'],
-  'background-clip': ['backgroundClipText'],
-  '-webkit-background-clip': ['backgroundClipText'],
+  'background-clip': [
+    'backgroundClipText',
+    'backgroundClip',
+    'backgroundClips',
+  ],
+  '-webkit-background-clip': [
+    'backgroundClipText',
+    'backgroundClip',
+    'backgroundClips',
+  ],
+  'background-origin': ['backgroundOrigin', 'backgroundOrigins'],
   'font-family': ['fontFamily'],
   'font-size': ['fontSize'],
   'font-weight': ['fontWeight'],
@@ -4605,6 +4687,10 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
     'backgroundAttachments',
     'backgroundPositions',
     'backgroundClipText',
+    'backgroundClip',
+    'backgroundOrigin',
+    'backgroundClips',
+    'backgroundOrigins',
   ],
   'background-color': ['backgroundColor'],
   'background-image': [
@@ -4624,6 +4710,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'object-fit': ['objectFit'],
   contain: ['contain'],
   'content-visibility': ['contentVisibility'],
+  'overflow-clip-margin': ['overflowClipBox', 'overflowClipMargin'],
   'contain-intrinsic-size': ['containIntrinsicWidth', 'containIntrinsicHeight'],
   'contain-intrinsic-width': ['containIntrinsicWidth'],
   'contain-intrinsic-height': ['containIntrinsicHeight'],
