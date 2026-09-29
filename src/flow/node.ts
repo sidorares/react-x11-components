@@ -37,7 +37,7 @@ import {
   XK_UP,
 } from 'react-x11/keysyms';
 
-import { createPainter, measureText, toDevice } from './draw.js';
+import { createPainter, measureText, snapToGrid, toDevice } from './draw.js';
 import type { CachedText, FontsLike, PainterOptions } from './draw.js';
 import {
   boundsOf,
@@ -91,6 +91,7 @@ import {
   SceneCache,
   CULL_MARGIN,
   edgeCoarseBox,
+  withLabelPlate,
   edgeRoute,
   endpoint,
   HANDLE_ZOOM,
@@ -843,12 +844,12 @@ export class FlowGraphNode extends Node implements FlowInstance {
         // a fresh literal saying the same thing: keep the built entry
         continue;
       }
-      const wasBox = this._edgeCoarseBox(this._edges[i]);
+      const wasBox = this._edgeInkBox(this._edges[i]);
       this._edges[i] = defaults
         ? ({ ...defaults, ...next } as AnyEdge)
         : (next as AnyEdge);
       this._edgesRaw[i] = next;
-      const isBox = this._edgeCoarseBox(this._edges[i]);
+      const isBox = this._edgeInkBox(this._edges[i]);
       if (wasBox) damage = damage ? unionRects(damage, wasBox) : wasBox;
       if (isBox) damage = damage ? unionRects(damage, isBox) : isBox;
       if (next.source !== old.source || next.target !== old.target) {
@@ -929,6 +930,10 @@ export class FlowGraphNode extends Node implements FlowInstance {
     // selection change re-measured every node and repainted the pane, which
     // a box selection does on every step that takes a node in.
     let reordered = false;
+    // The minimap draws every node where it is, at its size, marked when it
+    // is selected — and, to a `nodeColor` function, as anything at all.
+    const colour = this._miniMapOptions()?.nodeColor;
+    let mapped = false;
     // round the box: its handles, and the resize grips a selected node
     // grows at its corners, which at a deep zoom reach past the cull margin
     const margin = Math.max(
@@ -942,9 +947,11 @@ export class FlowGraphNode extends Node implements FlowInstance {
       if (next === old) continue;
       if (!lift?.has(next.id)) onlyLifted = false;
       if (next.selected !== old.selected) reordered = true;
+      if (typeof colour === 'function') mapped = true;
       const moved =
         next.position.x !== old.position.x ||
         next.position.y !== old.position.y;
+      if (moved) mapped = true;
       // `data`, an explicit size or a paint style are the node's own to
       // change: they re-measure and repaint *this* node, never the graph. A
       // keystroke into a mounted node's textarea patches `data` on every
@@ -973,6 +980,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
         entry.specs = resolveHandles(next, entry.type);
       }
       const grew = entry.width !== widthBefore || entry.height !== heightBefore;
+      if (grew) mapped = true;
       // Nothing the pane draws changed, while the node holds its place and
       // its size, when its card is the bodies' layer's on the 2D renderer —
       // the layer repaints it, if anything it shows changed — or when what
@@ -997,9 +1005,12 @@ export class FlowGraphNode extends Node implements FlowInstance {
       );
       damage.push(inflateRect(box, margin));
     }
-    if (reordered) {
-      this._sortOrder();
-      // the minimap marks what is selected, in its corner of the pane
+    if (reordered) this._sortOrder();
+    if (reordered || mapped) {
+      // A node that moved, grew or was picked out is a change in the
+      // minimap's corner too. Only a selection used to claim it, so a node
+      // the app moved repainted its own box and edges and the minimap went
+      // on showing it where it had been.
       const map = this._miniMapCorner();
       if (map) damage.push(map);
     }
@@ -1023,12 +1034,13 @@ export class FlowGraphNode extends Node implements FlowInstance {
     let box = this._screenRect(entry);
     const edges = this._edgesByNode.get(entry.node.id) ?? [];
     const tight = edges.length <= 16;
+    const zoom = this._viewport().zoom;
     for (const edge of edges) {
       const geometry = tight ? this._edgeGeometry(edge) : null;
       const bounds = geometry
         ? pathBounds(geometry.points)
         : this._edgeCoarseBox(edge);
-      if (bounds) box = unionRects(box, bounds);
+      if (bounds) box = unionRects(box, withLabelPlate(bounds, edge, zoom));
     }
     return box;
   }
@@ -1162,6 +1174,16 @@ export class FlowGraphNode extends Node implements FlowInstance {
    * already. */
   private _claim(rect: FlowRect, reason: string): void {
     this.invalidate(false, this._device(rect), reason);
+  }
+
+  /** The minimap's corner, where the pane draws the minimap itself: it
+   *  shows every node where it is and at its size, so a gesture that moves
+   *  or resizes one changes it on every step. On a canvas of its own —
+   *  under mounted bodies — it is `invalidate`'s to repaint. */
+  private _claimMiniMap(reason: string): void {
+    if (this._panelCanvases.length > 0) return;
+    const map = this._miniMapCorner();
+    if (map) this._claim(map, reason);
   }
 
   /**
@@ -1840,6 +1862,14 @@ export class FlowGraphNode extends Node implements FlowInstance {
    * the square root of the gap (see `paths.ts`) — `8` where the shoulder
    * uses `6.25`, so the bound is generous rather than tight.
    */
+  /** The coarse box with the label's plate in it: what an edge that
+   *  changes has to claim, where its route alone would leave a plate's
+   *  ends. */
+  private _edgeInkBox(edge: AnyEdge): FlowRect | null {
+    const box = this._edgeCoarseBox(edge);
+    return box && withLabelPlate(box, edge, this._viewport().zoom);
+  }
+
   private _edgeCoarseBox(edge: AnyEdge): FlowRect | null {
     const source = this._byId.get(edge.source);
     const target = this._byId.get(edge.target);
@@ -2478,6 +2508,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
     const reason = this._lifted() ? 'lift' : 'content';
     if (damage) {
       this._claim(inflateRect(damage, CULL_MARGIN), reason);
+      this._claimMiniMap(reason);
     } else {
       // under GL: a frame, and — while the nodes are lifted — of them alone
       this._repaint(reason);
@@ -2538,6 +2569,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
     }
     this._emitNodes(changes);
     this._claim(inflateRect(damage, CULL_MARGIN), 'content');
+    this._claimMiniMap('content');
     this._emitBodies();
   }
 
@@ -4752,8 +4784,8 @@ export class FlowGraphNode extends Node implements FlowInstance {
     const v = this._viewport();
     const pane = this._pane();
     const mod = (a: number, m: number): number => ((a % m) + m) % m;
-    const px = Math.round(mod(toDevice(pane.x + v.x, s), tileSize)) % tileSize;
-    const py = Math.round(mod(toDevice(pane.y + v.y, s), tileSize)) % tileSize;
+    const px = snapToGrid(mod(toDevice(pane.x + v.x, s), tileSize)) % tileSize;
+    const py = snapToGrid(mod(toDevice(pane.y + v.y, s), tileSize)) % tileSize;
     // device pixels per graph unit — what a mark's size is drawn in
     const unit = v.zoom * s;
     const key = `${options.variant}|${Math.round(options.size * unit * 4)}|${color}|${px},${py}`;
@@ -4807,6 +4839,16 @@ export class FlowGraphNode extends Node implements FlowInstance {
     py: number,
   ): void {
     const t = tile.size;
+    // Every mark on whole pixels. A backend cuts a fractional edge its own
+    // way, and X11 cut a mark's position and its size separately, so a mark
+    // that straddled the tile's edge lost a column: at phase 0 a 3px dot
+    // came out as two pixels a column apart and a 1px line not at all. The
+    // grid changed shape as the view panned, and a pan's blit kept the old
+    // shape where a repaint drew the new one. The phase point `(px, py)` is
+    // a pixel edge; a line and a cross are centred on the pixel before it,
+    // and a dot is `size` pixels ending on it, where the cut had put them.
+    const arm = Math.max(1, Math.floor(Math.max(2, options.size * 3 * unit)));
+    const dot = Math.max(1, Math.round(options.size * 2 * unit));
     tile.surface.render((ctx) => {
       ctx.clearRect?.(0, 0, t, t);
       ctx.fillStyle = color;
@@ -4815,15 +4857,15 @@ export class FlowGraphNode extends Node implements FlowInstance {
           const cx = px + i * t;
           const cy = py + j * t;
           if (options.variant === 'lines') {
-            if (j === 0) ctx.fillRect(cx - 0.5, 0, 1, t);
-            if (i === 0) ctx.fillRect(0, cy - 0.5, t, 1);
+            if (j === 0) ctx.fillRect(cx - 1, 0, 1, t);
+            if (i === 0) ctx.fillRect(0, cy - 1, t, 1);
           } else if (options.variant === 'cross') {
-            const arm = Math.max(2, options.size * 3 * unit);
-            ctx.fillRect(cx - arm, cy - 0.5, arm * 2, 1);
-            ctx.fillRect(cx - 0.5, cy - arm, 1, arm * 2);
+            ctx.fillRect(cx - 1 - arm, cy - 1, arm * 2 + 1, 1);
+            ctx.fillRect(cx - 1, cy - 1 - arm, 1, arm * 2 + 1);
           } else {
-            const dot = Math.max(1, Math.round(options.size * 2 * unit));
-            ctx.fillRect(cx - dot / 2, cy - dot / 2, dot, dot);
+            const x0 = Math.floor(cx - dot / 2);
+            const y0 = Math.floor(cy - dot / 2);
+            ctx.fillRect(x0, y0, dot, dot);
           }
         }
       }
