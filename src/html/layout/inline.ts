@@ -431,6 +431,8 @@ function linesOf(
     CLIPPED_TEXT.add(block);
     fonts = recording(fonts);
   }
+  // small capitals the face does not have, made of its capitals
+  synthesizeSmallCaps(items, fonts);
   if (wraps(block.style)) holdNoWrap(items, block);
   // one walk for what few paragraphs have: text that casts a shadow, and a
   // tab, which only a `white-space` that keeps it leaves — so no text is
@@ -3356,6 +3358,149 @@ function shortOfStrut(
   }
   return false;
 }
+
+/** The share of the size a synthesized small capital is set at, rounded to
+ *  a whole pixel as Blink rounds it (`SimpleFontData`'s scaled font data):
+ *  CSS Fonts 4 (6.2) leaves the size to the user agent. */
+const SMALL_CAPS_SCALE = 0.7;
+
+/**
+ * Small capitals a face does not have, made of its capitals set smaller
+ * (CSS Fonts 4, 6.2): where `font-variant-caps` asks for `smcp` — or
+ * `c2sc` too, for `all-small-caps` — and the face does not answer it,
+ * each letter that would be a small capital is its capital at 70% of the
+ * size, in a run of its own: a lower-case letter, and for `all-small-caps`
+ * the rest of the text too. Under `small-caps` what has no case — a space,
+ * a digit, a mark of punctuation — keeps its size, as Blink keeps it. Only
+ * a letter whose capital is one character is made one, so every offset
+ * holds.
+ */
+function synthesizeSmallCaps(items: Item[], fonts: FontsLike): void {
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    if (item.kind !== 'text' || item.control) continue;
+    // `font-variant-caps`'s, which is synthesized where the face has none;
+    // not `font-feature-settings`', which asks for the feature as it is
+    const caps = item.box.style.fontVariantCaps;
+    const features = item.run.features;
+    if (!caps.includes('smcp') || !features?.smcp) continue;
+    const all = caps.includes('c2sc');
+    if (hasSmallCaps(fonts, item.run, all)) continue;
+    const pieces = smallCapsPieces(item, all, withoutCaps(features));
+    if (!pieces) continue;
+    items.splice(i, 1, ...pieces);
+    i += pieces.length - 1;
+  }
+}
+
+/** A text item cut where its letters turn to synthesized small capitals
+ *  and back, or null where none does. */
+function smallCapsPieces(
+  item: Extract<Item, { kind: 'text' }>,
+  all: boolean,
+  features: Readonly<Record<string, number>> | null,
+): Extract<Item, { kind: 'text' }>[] | null {
+  const text = item.run.text;
+  const pieces: Extract<Item, { kind: 'text' }>[] = [];
+  let from = 0;
+  let small = false;
+  let capitals = '';
+  const cut = (to: number): void => {
+    if (to === from) return;
+    const run: TextRun = small
+      ? {
+          ...item.run,
+          text: capitals,
+          size: Math.round((item.run.size ?? 16) * SMALL_CAPS_SCALE),
+        }
+      : { ...item.run, text: text.slice(from, to) };
+    if (small) {
+      if (features) run.features = features;
+      else delete run.features;
+    }
+    pieces.push({ ...item, run, start: item.start + from, length: to - from });
+    from = to;
+    capitals = '';
+  };
+  let any = false;
+  for (let at = 0; at < text.length;) {
+    const ch = String.fromCodePoint(text.codePointAt(at)!);
+    const upper = ch.toUpperCase();
+    // everything, for `all-small-caps`: its spaces are small too
+    const becomes = (all || upper !== ch) && upper.length === ch.length;
+    if (becomes !== small) {
+      cut(at);
+      small = becomes;
+    }
+    if (becomes) {
+      capitals += upper;
+      any = true;
+    }
+    at += ch.length;
+  }
+  cut(text.length);
+  return any ? pieces : null;
+}
+
+/** Features without the small capitals a synthesis stands in for, one
+ *  object for each set, as `featuresOf` keeps them. */
+function withoutCaps(
+  features: Readonly<Record<string, number>>,
+): Readonly<Record<string, number>> | null {
+  let kept = WITHOUT_CAPS.get(features);
+  if (kept === undefined) {
+    const out: Record<string, number> = {};
+    for (const [tag, value] of Object.entries(features)) {
+      if (tag !== 'smcp' && tag !== 'c2sc') out[tag] = value;
+    }
+    kept = Object.keys(out).length ? out : null;
+    WITHOUT_CAPS.set(features, kept);
+  }
+  return kept;
+}
+
+const WITHOUT_CAPS = new WeakMap<
+  Readonly<Record<string, number>>,
+  Readonly<Record<string, number>> | null
+>();
+
+/**
+ * Whether a run's face has small capitals of its own — and capitals to
+ * small capitals, for `all-small-caps`: the alphabet set with the feature
+ * and without it comes out another width where it does. Asked of the
+ * engine's layout rather than of the font's tables, which a CoreText face
+ * does not hand over. Kept per face.
+ */
+function hasSmallCaps(fonts: FontsLike, run: TextRun, all: boolean): boolean {
+  let known = SMALL_CAPS.get(fonts);
+  if (!known) SMALL_CAPS.set(fonts, (known = new Map()));
+  const key = `${run.family}|${run.weight}|${run.style}|${all}`;
+  let has = known.get(key);
+  if (has === undefined) {
+    const face = {
+      family: run.family,
+      weight: run.weight,
+      style: run.style,
+      size: 16,
+    };
+    const width = (text: string, features: Record<string, number> | null) =>
+      fonts.layout(
+        [{ text, ...face, ...(features ? { features } : null) }],
+        face,
+        {},
+      ).width;
+    const lower = 'abcdefghijklmnopqrstuvwxyz';
+    has = Math.abs(width(lower, { smcp: 1 }) - width(lower, null)) > 0.01;
+    if (has && all) {
+      const upper = lower.toUpperCase();
+      has = Math.abs(width(upper, { c2sc: 1 }) - width(upper, null)) > 0.01;
+    }
+    known.set(key, has);
+  }
+  return has;
+}
+
+const SMALL_CAPS = new WeakMap<FontsLike, Map<string, boolean>>();
 
 /**
  * The OpenType features a style's text is shaped with: the `font-variant`

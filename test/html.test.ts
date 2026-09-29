@@ -8866,6 +8866,44 @@ metric(
 );
 
 metric(
+  'small capitals a face does not have are made of its capitals, smaller',
+  async (t) => {
+    // CSS Fonts 4, 6.2: a face with no `smcp` of its own has its small
+    // capitals made of its capitals at a smaller size — 70%, rounded to a
+    // pixel as Blink rounds it — where they drew as lower case. A space
+    // keeps its size under `small-caps`, and is small under
+    // `all-small-caps`, which makes the whole text small capitals.
+    const { el } = await renderWithBytes(
+      '<style>body{margin:0;font:16px sans-serif}span{white-space:pre}</style>' +
+        '<p><span id="native" style="font-feature-settings:\'smcp\'">' +
+        'abcdef</span> <span id="plain">abcdef</span></p>' +
+        '<p><span id="sc" style="font-variant:small-caps">Abc def</span></p>' +
+        '<p><span id="a">A</span><span id="bc" style="font-size:11px">BC' +
+        '</span><span id="s"> </span><span id="def" style="font-size:11px">' +
+        'DEF</span></p>' +
+        '<p><span id="asc" style="font-variant-caps:all-small-caps">Abc def' +
+        '</span></p>' +
+        '<p><span id="all" style="font-size:11px">ABC DEF</span></p>',
+      {},
+    );
+    const w = (id: string) => el.elementRect(findById(el.document, id)!)!.width;
+    if (Math.abs(w('native') - w('plain')) > 0.01) {
+      t.skip('the face has small capitals of its own');
+      return;
+    }
+    const made = w('a') + w('bc') + w('s') + w('def');
+    assert.ok(
+      Math.abs(w('sc') - made) < 0.05,
+      `small-caps ${w('sc')}, made of capitals ${made}`,
+    );
+    assert.ok(
+      Math.abs(w('asc') - w('all')) < 0.05,
+      `all-small-caps ${w('asc')}, capitals ${w('all')}`,
+    );
+  },
+);
+
+metric(
   "a line of smaller text alone is as tall as the block's strut",
   async () => {
     // every line box starts with the strut, the block's font at its line
