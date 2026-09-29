@@ -1771,21 +1771,25 @@ class CounterScopes {
    *  counts down. */
   private _instances = new Map<string, CounterInstance[]>();
   /** The names each open level made an instance of, so closing it drops
-   *  exactly those. */
-  private _made: string[][] = [[]];
+   *  exactly those: null for a level that made none, which is nearly every
+   *  one, so that opening an element allocates nothing. */
+  private _made: (string[] | null)[] = [null];
   /** The levels of the open elements with style containment, innermost
    *  last: below one, a counter made further out is not counted on. */
   private _contained: number[] = [];
 
   open(): void {
-    this._made.push([]);
+    this._made.push(null);
   }
 
   close(): void {
     const level = this._made.length - 1;
-    for (const name of this._made.pop() ?? []) {
-      const stack = this._instances.get(name);
-      if (stack && stack[stack.length - 1]?.level === level) stack.pop();
+    const made = this._made.pop();
+    if (made) {
+      for (const name of made) {
+        const stack = this._instances.get(name);
+        if (stack && stack[stack.length - 1]?.level === level) stack.pop();
+      }
     }
     const contained = this._contained;
     if (contained[contained.length - 1] === level) contained.pop();
@@ -1832,7 +1836,7 @@ class CounterScopes {
       return;
     }
     stack.push({ level, own, value, reversed });
-    this._made[level].push(name);
+    (this._made[level] ??= []).push(name);
   }
 
   /** The innermost instance, made here at 0 where there is none. */
@@ -1869,7 +1873,7 @@ class CounterScopes {
     const parent = level - 1;
     const fresh = { level: parent, own: false, value: 0, reversed: false };
     this._instances.get(name)!.push(fresh);
-    this._made[parent].push(name);
+    (this._made[parent] ??= []).push(name);
     return fresh;
   }
 
