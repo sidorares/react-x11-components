@@ -1775,7 +1775,7 @@ export function parseMediaQuery(prelude: string): MediaCondition[] {
         sawWidth = true;
         continue;
       }
-      const feature = /^\(\s*([a-z-]+)\s*:\s*([^)]+?)\s*\)$/i.exec(term);
+      const feature = mediaFeature(term);
       if (feature) {
         const key = feature[1].toLowerCase();
         const len = parseLength(feature[2], ZERO_UNITS);
@@ -1843,6 +1843,26 @@ export function parseMediaQuery(prelude: string): MediaCondition[] {
     out.push(condition);
   }
   return out.length ? out : [{ staticPass: true }];
+}
+
+/**
+ * A `(name: value)` media feature: the whole term, its name, and its value
+ * read to the parenthesis that closes the feature, or null where the term is
+ * no such thing. A value may hold parentheses of its own: MediaWiki's
+ * breakpoints are `(max-width: calc(640px - 1px))`, and a value read to the
+ * first `)` found no feature there — the term was passed over as though it
+ * said nothing, and every narrow-screen rule held at every width.
+ */
+function mediaFeature(term: string): [string, string, string] | null {
+  const m = /^\(\s*([a-z-]+)\s*:([\s\S]*)\)$/i.exec(term);
+  if (!m) return null;
+  let depth = 0;
+  for (const c of m[2]) {
+    if (c === '(') depth += 1;
+    else if (c === ')' && --depth < 0) return null;
+  }
+  const value = m[2].trim();
+  return depth === 0 && value ? [term, m[1], value] : null;
 }
 
 /** A `@media` width is compared with the viewport in CSS pixels — the

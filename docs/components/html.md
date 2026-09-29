@@ -774,7 +774,8 @@ standing for it and a selector without one a descendant, and an `@media`,
 `@supports` or `@layer` inside one holds for the same element, which is how
 Tailwind 4 writes its `hover:` and `md:` variants. `@media` width and
 `prefers-color-scheme` queries are evaluated, widths in Media Queries 4's
-ranges, `(width >= 48rem)`, as well as `min-width` — the scheme is the react-x11
+ranges, `(width >= 48rem)`, as well as `min-width`, a `calc()` in a value
+too — the scheme is the react-x11
 palette's in force, so a `<ThemeProvider colorScheme>` above the element
 answers it and a desktop that switches schemes re-cascades the document.
 `@import` goes through the resource seam. Cascade layers are read (CSS

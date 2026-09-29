@@ -16011,3 +16011,28 @@ metric(
     assert.deepStrictEqual(changes, [['c', true]]);
   },
 );
+
+test("a media feature's value may hold parentheses of its own", async () => {
+  // MediaWiki writes its breakpoints `(max-width: calc(640px - 1px))`: the
+  // value was read to the first `)`, found no feature, and the term was
+  // passed over — every narrow-screen rule held at every width, and hid
+  // Wikipedia's Read, Edit and View history tabs on a desktop
+  assert.deepStrictEqual(
+    parseMediaQuery('screen and (max-width:calc(640px - 1px))'),
+    [{ max: 639 }],
+  );
+  assert.deepStrictEqual(
+    parseMediaQuery(
+      '(min-width: calc(40rem - 1px)) and (max-width: calc(1680px - 1px))',
+    ),
+    [{ min: 639, max: 1679 }],
+  );
+  const { node } = await render(
+    '<style>@media screen and (max-width:calc(200px - 1px)){#a{display:none}}' +
+      '@media screen and (min-width:calc(200px - 1px)){#b{display:none}}' +
+      '</style><p id="a">wide</p><p id="b">narrow</p>',
+  );
+  const text = view(node).textContent();
+  assert.ok(text.includes('wide'), `the wide rule holds: ${text}`);
+  assert.ok(!text.includes('narrow'), `and the narrow one does not: ${text}`);
+});
