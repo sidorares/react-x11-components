@@ -9962,6 +9962,106 @@ metric(
   },
 );
 
+metric(
+  "a flex box's background goes with the flow's, and its items with its lines",
+  async () => {
+    // CSS 2.1 Appendix E: a block-level flex box's background and borders
+    // are painted with the other blocks', in the document's order, and its
+    // items as inline blocks are, over all of them — painted whole in its
+    // place, it covered the block after it that a negative margin drew up
+    const { node } = await render(
+      '<style>body{margin:0}</style>' +
+        '<div style="display:flex;height:40px;background:#ff0000">' +
+        '<div style="width:20px;background:#0000ff"></div></div>' +
+        '<div style="height:40px;margin-top:-40px;background:#00ff00"></div>',
+    );
+    const fills = await fillsOf(view(node));
+    const at = (color: string) =>
+      fills.findIndex((f) => f.style === parseColor(color));
+    assert.ok(at('#ff0000') < at('#00ff00'), 'the next block over the box');
+    assert.ok(at('#00ff00') < at('#0000ff'), 'and the item over both');
+  },
+);
+
+metric(
+  "justify-content's start, end, left and right follow the flex box's direction",
+  async () => {
+    // CSS Box Alignment 3, 6.1: `start` and `end` are the writing mode's,
+    // so a reversed row turns them round; `left` and `right` are the
+    // page's along a row, and `start` along a column. Read as the main
+    // axis's own ends, `right` put a column's items at its bottom
+    const place = async (css: string) => {
+      const { node } = await render(
+        '<style>body{margin:0} .f{display:flex;width:100px;height:100px}' +
+          '.f>div{width:20px;height:20px}</style>' +
+          `<div class="f" style="${css}"><div id="i"></div></div>`,
+      );
+      const box = boxOf(view(node), 'i');
+      cleanup();
+      return [box.x, box.y];
+    };
+    assert.deepStrictEqual(
+      await place('flex-direction:column;justify-content:right'),
+      [0, 0],
+    );
+    assert.deepStrictEqual(
+      await place('flex-direction:row-reverse;justify-content:start'),
+      [0, 0],
+    );
+    assert.deepStrictEqual(
+      await place('flex-direction:row-reverse;justify-content:right'),
+      [80, 0],
+    );
+    assert.deepStrictEqual(
+      await place('direction:rtl;justify-content:left'),
+      [0, 0],
+    );
+    assert.deepStrictEqual(
+      await place('flex-direction:column-reverse;justify-content:end'),
+      [0, 80],
+    );
+    assert.deepStrictEqual(
+      await place('justify-content:unsafe center'),
+      [40, 0],
+    );
+  },
+);
+
+metric(
+  'a replaced flex item is the size the flex layout makes it',
+  async () => {
+    // An image was measured as nothing wide — its content's width, of which
+    // it has none — and then laid out at its natural size whatever the
+    // flex layout said: it did not grow, stretch or shrink. It grows and
+    // stretches now; it shrinks no further than its natural width; a line
+    // of a definite height that stretches it gives it the width its ratio
+    // makes of that height; and `flex-basis: content` is its content's
+    // width whatever width it has
+    const { node } = await render(
+      '<style>body{margin:0} .r{display:flex;width:200px}</style>' +
+        '<div class="r"><canvas id="a" width="20" height="10" ' +
+        'style="flex-grow:1"></canvas></div>' +
+        '<div class="r" style="width:10px"><canvas id="b" width="60" ' +
+        'height="60"></canvas></div>' +
+        '<div class="r" style="height:50px"><canvas id="c" width="20" ' +
+        'height="150"></canvas></div>' +
+        '<div class="r"><div id="d" style="flex-basis:content;width:0">' +
+        '<span style="display:inline-block;width:30px"></span></div></div>',
+    );
+    const el = view(node);
+    const size = (id: string) => {
+      const box = boxOf(el, id);
+      return [box.width, box.height];
+    };
+    assert.deepStrictEqual(size('a'), [200, 10], 'grown along its row');
+    assert.deepStrictEqual(size('b'), [60, 60], 'not shrunk under its width');
+    const [width, height] = size('c');
+    assert.strictEqual(height, 50, 'stretched across its line');
+    assert.ok(Math.abs(width - (50 * 20) / 150) < 0.01, `${width}`);
+    assert.strictEqual(size('d')[0], 30, "its content's width, not its own");
+  },
+);
+
 metric('flex items are laid out in `order`', async () => {
   // CSS Flexbox 5.4: `order` first, the document's where it is the same;
   // an `order` that is no integer is no value
