@@ -71,7 +71,12 @@ import type { TextRun } from '../../richtext/index.js';
 import { layoutFlex } from './flex.js';
 import { finishCaptions, layoutTable } from './table.js';
 import { collapseEdges } from './collapse.js';
-import { computePaintBounds, hoistNegative, stackLayers } from '../paint.js';
+import {
+  clipsFor,
+  computePaintBounds,
+  hoistNegative,
+  stackLayers,
+} from '../paint.js';
 
 export interface LayoutContext {
   fonts: FontsLike | null;
@@ -245,11 +250,17 @@ export function layoutDocument(
 
   // The document is as tall as what overflows the root, not the root: an
   // `html, body { height: 100% }` a window tall holds a message longer than
-  // the window, and the element sizes to all of it.
+  // the window, and the element sizes to all of it. Not what a box that
+  // clips its overflow holds: that is its own to scroll, and the root's
+  // scrollable overflow takes in a positioned box only where no box on the
+  // way to it clips it (CSS Overflow 3, 2.2): an absolute box 900px down
+  // an `overflow: hidden` card made a page a browser shows 400px tall run
+  // on to 980, blank
   let bottom = Math.max(root.height, reach);
   for (const { box } of ctx.positioned) {
-    if (box.style.position !== 'fixed')
-      bottom = Math.max(bottom, box.y + box.height);
+    if (box.style.position === 'fixed') continue;
+    if (clipsFor(box, root).length) continue;
+    bottom = Math.max(bottom, box.y + box.height);
   }
   return {
     width: viewportWidth,

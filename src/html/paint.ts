@@ -2238,7 +2238,7 @@ function flexItem(box: Box): boolean {
  * outside a box that clips where its containing block is, a fixed one
  * outside every one, and a relative one inside every one.
  */
-function clipsFor(box: Box, context: Box): Box[] {
+export function clipsFor(box: Box, context: Box): Box[] {
   let from: Box | null = box.parent;
   if (box.outOfFlow) {
     const fixed = box.style.position === 'fixed';
