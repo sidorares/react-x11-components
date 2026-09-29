@@ -13473,6 +13473,31 @@ test('background-clip and background-origin name the boxes a layer takes', async
   );
 });
 
+test("a table's height goes to its rows as a browser gives it", async () => {
+  // It went to every row in proportion to its height, so the rows whose
+  // cells set one grew, and an empty row between them stayed empty. CSS
+  // 2.1 leaves it open (17.5.3); browsers give it to the rows a percentage
+  // sets, up to it, then to the rows nothing sets, and to the empty ones
+  // where every other row is set
+  const { node } = await render(
+    '<style>body{margin:0}table{border-spacing:0;height:300px}td{padding:0}' +
+      '</style>' +
+      '<table><tr id="a"><td style="height:50px"></td></tr>' +
+      '<tr id="b"><td></td></tr>' +
+      '<tr id="c"><td style="height:50px"></td></tr></table>' +
+      '<table><tr id="d"><td>x</td></tr>' +
+      '<tr id="e"><td style="height:50px">y</td></tr></table>' +
+      '<table><tr id="f" style="height:50%"><td></td></tr>' +
+      '<tr id="g"><td>x</td></tr></table>',
+  );
+  const el = view(node);
+  const height = (id: string) => boxOf(el, id).height;
+  assert.deepStrictEqual(
+    ['a', 'b', 'c', 'd', 'e', 'f', 'g'].map(height),
+    [50, 200, 50, 250, 50, 150, 150],
+  );
+});
+
 test("border-image's shorthand and longhands are read", async () => {
   // none of them was (CSS Backgrounds 3, 6)
   const { node } = await render(

@@ -223,13 +223,17 @@ function written(n: number, style: CounterStyle, rtl: boolean): string | null {
   const signed = n < 0 && style.system !== 'cyclic' && style.system !== 'fixed';
   let text = generate(signed ? -n : n, style, rtl);
   if (text === null) return null;
+  // the clusters are counted only where a style pads: a segmenter walk for
+  // every bullet of every list was a fifth of building a long document
   const [width, symbol] = style.pad;
-  let short = width - graphemes(text);
-  if (signed) short -= graphemes(style.negative[0] + style.negative[1]);
-  if (short > 0 && symbol)
-    text = symbol.repeat(Math.min(short, LONGEST)) + text;
+  if (width > 0 && symbol) {
+    let short = width - graphemes(text);
+    if (signed) short -= graphemes(style.negative[0] + style.negative[1]);
+    if (short > 0) text = symbol.repeat(Math.min(short, LONGEST)) + text;
+  }
   if (signed) text = style.negative[0] + text + style.negative[1];
-  return [...text].length > LONGEST ? null : text;
+  // no longer in code points than it is in code units
+  return text.length > LONGEST && [...text].length > LONGEST ? null : text;
 }
 
 let segmenter: Intl.Segmenter | null | undefined;

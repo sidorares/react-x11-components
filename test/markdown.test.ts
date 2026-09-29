@@ -839,3 +839,55 @@ test(
     );
   },
 );
+
+test('a code chip at the start of a line is claimed with the pad past the box', async () => {
+  // A chip is padded two pixels past the run behind it, so at the start of
+  // a line the pad lies outside the paragraph's box. Claimed by the box
+  // alone, an edit left the old chip's pad behind as a column of chip one
+  // pixel wide beside the paragraph, and drew the new chip without its own
+  // (react-x11's `paintOverhang`).
+  const scene = (source: string): ReturnType<typeof h> =>
+    h('box', { style: { flexGrow: 1, padding: 10 } }, h(Markdown, { source }));
+  const { ctx, rerender, windowNode } = await renderX11(
+    scene('`inline code` at the start\n\nand `more code` later'),
+    { backend: 'xserver', width: 320, height: 120 },
+  );
+  await act();
+  const para = mdNodes()[0] as unknown as DrawnNode & {
+    paintBounds(): { x: number };
+  };
+  assert.ok(
+    para.paintBounds().x <= para.abs.x - 2,
+    'the paragraph is claimed two pixels past its box',
+  );
+  const read = async (): Promise<Uint8ClampedArray> =>
+    (
+      await (
+        ctx as unknown as {
+          getImageData(
+            x: number,
+            y: number,
+            w: number,
+            h: number,
+          ): Promise<{ data: Uint8ClampedArray }>;
+        }
+      ).getImageData(0, 0, 320, 120)
+    ).data;
+  for (const source of [
+    'plain words at the start\n\nand `more code` later',
+    '`code again` at the start\n\nand plain words later',
+  ]) {
+    await act(() => rerender(scene(source)));
+    const frame = await read();
+    await act(() => {
+      (windowNode as unknown as { invalidate(all: boolean): void }).invalidate(
+        true,
+      );
+    });
+    const whole = await read();
+    assert.ok(
+      Buffer.from(frame).equals(Buffer.from(whole)),
+      `after ${JSON.stringify(source)} the frame and a full repaint differ`,
+    );
+  }
+});

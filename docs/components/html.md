@@ -326,7 +326,11 @@ table `box-sizing: border-box`. Table cells in an inline box are an inline
 table, with the spaces either side of them kept. A table right to left —
 by `direction`, or HTML's `dir`, which is read as it — has its first column
 at the right. `empty-cells: hide` draws neither background nor borders for
-a cell with nothing in it, where borders are separate.
+a cell with nothing in it, where borders are separate. A table taller than
+its rows gives them the rest as browsers do, which CSS 2.1 leaves open:
+first to the rows a percentage sets, up to it, then to the rows with
+content that nothing sets, and, where every row with content is set, to
+the empty ones.
 A block in an inline element breaks it (CSS 2.1 9.2.1.1): the pieces of the
 element before and after the block are on lines of their own, without an
 edge where the block cut them, and the block stands between them as a
