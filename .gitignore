@@ -11,3 +11,6 @@ maps-screen.png
 
 # recorded Jev sessions from examples/json-render-jev.tsx (JEV_RECORD)
 *.jsonl
+
+# the Zen Garden bench's reports and cache (scripts/zengarden/)
+zengarden-results/

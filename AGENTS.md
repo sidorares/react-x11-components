@@ -1584,6 +1584,7 @@ npm run typecheck     # builds, then tsc over src, test, examples, scripts
 npm run check:package # exports map + tree-shaking contract (needs a build)
 npm run docs          # sync docs/ into website/ and serve it
 npm run docs:build    # what the deploy workflow runs
+npm run bench:zengarden  # the CSS Zen Garden against Chrome — scripts/zengarden/
 ```
 
 Every `examples:<name>` needs a display — a real `$DISPLAY`, or a Mac running
