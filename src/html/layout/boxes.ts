@@ -615,9 +615,10 @@ export const GRID_TRACKS = new WeakMap<Box, GridTracks>();
  *  `order` moves any: an absolutely positioned child's is 0. */
 export const PAINT_ORDER = new WeakMap<Box, Box[]>();
 
-/** The blocks that broke a relatively positioned inline box in pieces,
- *  under its first piece: its offset moves them too (CSS 2.1 9.2.1.1),
- *  though they stand outside it (`breakAround`). */
+/** The blocks that broke an inline box in pieces, under its first piece
+ *  (`breakAround`): a relative offset of the box moves them too (CSS 2.1
+ *  9.2.1.1), though they stand outside it, and its rect takes them in, as
+ *  a browser's does (`elementRect`). */
 export const CUT_BLOCKS = new WeakMap<Box, Box[]>();
 
 /** The blocks that broke an inline box under full opacity in pieces, and
@@ -2608,7 +2609,7 @@ function breakAround(inline: Box): Box[] | null {
   for (let i = 0; i < pieces.length; i += 1) {
     pieces[i].cut = (i > 0 ? 1 : 0) | (i < pieces.length - 1 ? 2 : 0);
   }
-  if (isRelative(inline.style)) CUT_BLOCKS.set(pieces[0], blocks);
+  CUT_BLOCKS.set(pieces[0], blocks);
   const fade = inline.style.opacity;
   if (fade < 1) {
     for (const block of blocks) {
