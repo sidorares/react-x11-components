@@ -7696,6 +7696,23 @@ test("a table in an aligned cell keeps its cells' text at their start", async ()
   assert.strictEqual(align('c3'), 'center', "the author's own centring");
 });
 
+test("a list, a definition and a figure are indented the HTML standard's 40px, whatever the size", async () => {
+  // HTML 15.3.3 and 15.3.8: the indents are lengths, not ems. At 2.5em, a
+  // list in a 10px sidebar was indented 25px, and one in a 20px article 50
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="font-size:10px"><ul id="u"><li id="a">item</li></ul>' +
+      '<dl><dt>term</dt><dd id="d">definition</dd></dl>' +
+      '<figure id="f">figure</figure></div>' +
+      '<ol id="o" style="font-size:20px"><li id="b">item</li></ol>',
+  );
+  const el = view(node);
+  assert.strictEqual(boxOf(el, 'a').x, 40, 'a list item at 10px');
+  assert.strictEqual(boxOf(el, 'b').x, 40, 'and at 20px');
+  assert.strictEqual(boxOf(el, 'd').x, 40, 'a definition');
+  assert.strictEqual(boxOf(el, 'f').x, 40, 'a figure');
+});
+
 test('a ::marker rule styles the marker, and not its item', async () => {
   // `::marker` rules were read and never applied: Tailwind's `prose` sets
   // its bullets in a grey, and they came out in the text's colour
