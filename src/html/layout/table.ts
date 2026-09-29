@@ -216,8 +216,8 @@ export function layoutTable(
   }
 
   // A table's own height, within its least and greatest, is a least
-  // height: what its rows come short of it goes to them, in proportion to
-  // what they have (CSS 2.1 17.5.3)
+  // height: what its rows come short of it goes to them (CSS 2.1 17.5.3,
+  // which leaves how to its user agents: `growRows`)
   const wanted = resolveOrNull(style.height, table.percentHeightBase);
   if (rows.length) {
     const extraBox = table.verticalExtra;
@@ -231,12 +231,7 @@ export function layoutTable(
     let total = 0;
     for (const h of rowHeight) total += h;
     const extra = inner - total - rowSpacing * (rows.length + 1);
-    if (extra > 0) {
-      for (let r = 0; r < rows.length; r += 1) {
-        rowHeight[r] +=
-          total > 0 ? (extra * rowHeight[r]) / total : extra / rows.length;
-      }
-    }
+    if (extra > 0) growRows(rowHeight, rowSizing(rows, cells), extra, inner);
   }
 
   // And a row it takes out has sized the columns with the rest, and is as
@@ -808,4 +803,88 @@ function holdsFlow(box: Box): boolean {
     return true;
   }
   return false;
+}
+
+/** What a row's height is set as: a length its own or a cell's in it
+ *  sets, which makes it constrained, and a percentage one does. */
+interface RowSizing {
+  constrained: boolean;
+  percent: number | null;
+}
+
+function rowSizing(rows: Box[], cells: Cell[]): RowSizing[] {
+  const sizing = rows.map((row): RowSizing => {
+    const height = row.style.height;
+    return {
+      constrained: typeof height === 'number',
+      percent: height !== AUTO && isPct(height) ? height.pct : null,
+    };
+  });
+  for (const cell of cells) {
+    if (cell.rowSpan > 1 || !sizing[cell.row]) continue;
+    const height = cell.box.style.height;
+    const row = sizing[cell.row];
+    if (typeof height === 'number') row.constrained = true;
+    else if (height !== AUTO && isPct(height)) {
+      row.percent = Math.max(row.percent ?? 0, height.pct);
+    }
+  }
+  return sizing;
+}
+
+/**
+ * The height a table has past its rows' given out among them, as browsers
+ * give it (the CSS Tables 3 draft leaves it open, csswg-drafts#4418): first
+ * to the rows a percentage sets, up to it; then to the rows nothing sets
+ * that have content, in proportion to their heights; then, where every row
+ * with content is set, to the empty rows, those nothing sets first, evenly;
+ * and else to every row with content, in proportion. A row whose cells set
+ * its height keeps it while an empty row beside it takes the rest.
+ */
+function growRows(
+  heights: number[],
+  sizing: RowSizing[],
+  extra: number,
+  base: number,
+): void {
+  const n = heights.length;
+  const deficit = heights.map((h, r) => {
+    const pct = sizing[r].percent;
+    return pct ? Math.max(0, (pct / 100) * base - h) : 0;
+  });
+  const empty: number[] = [];
+  const nothingSetEmpty: number[] = [];
+  const full: number[] = [];
+  const nothingSetFull: number[] = [];
+  let setFull = 0;
+  for (let r = 0; r < n; r += 1) {
+    const set = sizing[r].constrained || sizing[r].percent !== null;
+    if (heights[r] === 0 && deficit[r] === 0) {
+      empty.push(r);
+      if (!set) nothingSetEmpty.push(r);
+    } else {
+      full.push(r);
+      if (set) setFull += 1;
+      else nothingSetFull.push(r);
+    }
+  }
+  const owed = deficit.reduce((a, b) => a + b, 0);
+  if (owed > 0) {
+    const give = Math.min(owed, extra);
+    for (let r = 0; r < n; r += 1) heights[r] += (give * deficit[r]) / owed;
+    extra -= give;
+    if (!(extra > 0)) return;
+  }
+  const grow = (which: number[], even: boolean) => {
+    let sum = 0;
+    for (const r of which) sum += heights[r];
+    for (const r of which) {
+      heights[r] +=
+        even || !(sum > 0) ? extra / which.length : (extra * heights[r]) / sum;
+    }
+  };
+  if (nothingSetFull.length) grow(nothingSetFull, false);
+  else if (empty.length && empty.length + setFull === n) {
+    grow(nothingSetEmpty.length ? nothingSetEmpty : empty, true);
+  } else grow(full, false);
 }
