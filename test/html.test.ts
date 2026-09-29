@@ -15644,3 +15644,85 @@ metric(
     );
   },
 );
+
+test("a box's leading is split as a browser splits it: the half above rounded down to a whole pixel", async () => {
+  // CSS gives each side of a box's text half its leading; which side of the
+  // pixel grid a half that is not whole goes to is the user agent's, and
+  // Blink rounds the half above down (`CalculateLeadingSpace`). On a
+  // browser's whole-pixel metrics a 13px Arial on an 18px line has 1px of
+  // leading over its 15 and 2px under; split evenly, it reached half a pixel
+  // above the 12px strut beside it, and the line came out 18.5px tall —
+  // every design in the Zen Garden's 040 list, eight of them to a column
+  const { strutOf } = await import('../src/html/layout/inline.js');
+  const faces: Record<number, { ascent: number; descent: number }> = {
+    12: { ascent: 11, descent: 3 },
+    13: { ascent: 12, descent: 3 },
+  };
+  const fonts = {
+    layout: () => {
+      throw new Error('not laid out');
+    },
+    match: (_family: string, { size }: { size: number }) => ({
+      metrics: () => ({ ...faces[size], lineGap: 0, lineHeight: 15 }),
+    }),
+  } as unknown as FontsLike;
+  // what the strut reads of a style
+  const style = (fontSize: number, lineHeight: number): ComputedStyle =>
+    ({
+      fontFamily: 'Blink',
+      fontSize,
+      fontWeight: 400,
+      fontStyle: 'normal',
+      lineHeight,
+      lineHeightIsLength: true,
+    }) as unknown as ComputedStyle;
+  assert.deepStrictEqual(
+    strutOf(fonts, style(12, 18)),
+    { ascent: 13, descent: 5 },
+    'four pixels of leading, two above and two below',
+  );
+  assert.deepStrictEqual(
+    strutOf(fonts, style(13, 18)),
+    { ascent: 13, descent: 5 },
+    'three, one above and two below: level with the 12px strut',
+  );
+  assert.deepStrictEqual(
+    strutOf(fonts, style(13, 12)),
+    { ascent: 10, descent: 2 },
+    'and less than none, rounded down all the same',
+  );
+});
+
+metric(
+  "a paragraph's baseline is where a browser puts it, and its glyphs are drawn on it",
+  async () => {
+    // A paragraph laid out whole takes its baselines from the text engine,
+    // which splits the leading evenly; its lines are placed as the strut's
+    // are, and the layout drawn that much higher, so its glyphs, its
+    // decorations and an inline box beside it agree
+    const { result, node } = await render(
+      '<style>body{margin:0}p{margin:0;font:13px/18px sans-serif}</style>' +
+        '<p id="plain">plain text</p>',
+    );
+    const el = view(node);
+    await act();
+    const fonts = (result.app as unknown as { fonts: FontsLike }).fonts;
+    const face = fonts
+      .match('sans-serif', { size: 13, weight: 400, style: 'normal' })
+      .metrics(13);
+    const [plain] = linesOf(el, 'plain');
+    const want =
+      face.ascent + Math.floor((18 - face.ascent - face.descent) / 2 + 1e-6);
+    assert.ok(
+      Math.abs(plain.baseline - want) < 0.01,
+      `the leading's half above rounded down: ${plain.baseline}, not ${want}`,
+    );
+    const [text] = plain.texts;
+    const natural = text.layout.lines[text.layoutLine];
+    assert.ok(
+      Math.abs(text.drawY + natural.baseline - (plain.y + plain.baseline)) <
+        1e-6,
+      'and its glyphs are drawn on it',
+    );
+  },
+);
