@@ -3695,6 +3695,24 @@ creates, 200 ns each on a desktop with an accent. The appearance snapshot
 is frozen and replaced whole on a change, so it answers by identity now,
 in 4–8 ns (react-x11 #753).
 
+### What a production mount spends
+
+A mount of 12,000 nodes against the mock app, production build, 2,000
+rows of two cells with hoisted styles, tokens and one inline style: 385 ms
+at the median, 32 µs a node, with no text measured and nothing painted.
+Yoga and the floors are most of it again. The largest share outside them
+was a scan: every style swap read seven grid properties off the old style
+and the new one, on every node, and a mount swaps each node's style
+several times. The answer is only acted on for a layout host, so it is
+asked of those alone now, and a mount is 4–5% faster (react-x11 #754).
+
+The next largest is the same swap made twice. A node resolves its tokens
+detached, against the desktop's palette, and again on attach against the
+palette above it, which with no provider is the same object. Skipping the
+second would need the scale, the container queries and the unknown-token
+report to be unchanged as well, and the detached pass drops an unknown
+token without saying so. So it is left as it is.
+
 ## Lessons
 
 1. **Look for caches that never hit.** Identity-keyed caches handed a new
