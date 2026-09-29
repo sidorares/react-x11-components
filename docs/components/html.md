@@ -171,11 +171,12 @@ padding and border counted once, and a width, height or basis of its own is
 its content box's unless `box-sizing` says otherwise. An `auto` margin takes
 the free space on its side, so `margin-left: auto` puts an item at the end
 of its row. A row of flex items inside another item is as wide as its items
-side by side. The items are laid out in the container's content box, its
-height less the padding and borders a `border-box` height holds, and a
-container with no height of its own gives its `flex: 1` items what its
-`min-height` leaves them, so a page `min-h-screen flex flex-col` puts its
-footer at the bottom of the window. An item is shrunk no smaller than its
+side by side and the gaps between them; a gap is a length, or a percentage
+of the container's size along it. The items are laid out in the
+container's content box, its height less the padding and borders a
+`border-box` height holds, and a container with no height of its own gives
+its `flex: 1` items what its `min-height` leaves them, so a page
+`min-h-screen flex flex-col` puts its footer at the bottom of the window. An item is shrunk no smaller than its
 content comes to — its min-content width in a row, its content's height in a
 column — unless its own minimum or an `overflow` that scrolls lets it go,
 as Tailwind's `min-w-0` does; in a column that is the lesser of a height of
@@ -196,8 +197,10 @@ they meet, fractions of a pixel included, and the paint snaps their edges.
 A grid (CSS Grid 1) takes its tracks from `grid-template-columns` and
 `grid-template-rows`, or the `grid-template` and `grid` shorthands —
 lengths, percentages, `fr`s, `auto`, `minmax()`, `fit-content()`, and
-`repeat()` by a count or by what fits, `auto-fill` and `auto-fit` alike —
-and those past the template from `grid-auto-columns` and `grid-auto-rows`.
+`repeat()` by a count or by what fits, an `auto-fit` repetition that no item
+is in collapsing with the gaps beside it — and those past the template from
+`grid-auto-columns` and `grid-auto-rows`, with gaps of lengths or
+percentages of the grid's size along them.
 It places its items by line, span, line name or the area
 `grid-template-areas` names, or in order into the first cells free, along
 the rows or down the columns by `grid-auto-flow`, `dense` or not, and
@@ -207,7 +210,13 @@ an item spanning several tracks grows the ones its content sizes, and the
 page's footer at the bottom. `justify-content` and `align-content` place
 the tracks. An item is stretched to its area or aligned in it by
 `justify-self`, `align-self` and its `auto` margins, and one that is not
-stretched is as wide as its content fits. An absolutely positioned box
+stretched is as wide as its content fits. `normal` stretches an item but an
+image, which keeps its own size, and a box with an `aspect-ratio`, which is
+as wide as a height it has makes it, and as a block would be where it has
+none; an item stretched down its area is as wide as its ratio makes that
+height. An item's percentage height is of its area, and a stretched item's
+height is one what is in it takes percentages of. A grid is as wide as
+its tracks, whatever runs past them. An absolutely positioned box
 takes the grid area its lines name for its containing block, and a grid's
 or a flex box's child is where it would be as the box's one item.
 Baseline alignment and subgrids are not read.
