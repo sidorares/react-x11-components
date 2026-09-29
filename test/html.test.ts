@@ -7478,6 +7478,52 @@ metric(
   },
 );
 
+metric(
+  "an inline box's background image is drawn, as its colour is",
+  async () => {
+    // CSS Backgrounds 3: an inline box's background is its images as much
+    // as its colour, on each of its fragments. Only its colour was drawn:
+    // design 021's resource links, each with an arrow in its left padding,
+    // came out as coloured boxes with none
+    const { result } = await renderWithBytes(
+      '<style>body{margin:0;font:16px/30px sans-serif}p{margin:0}' +
+        'span{padding:0 0 0 20px;background:#ffffff url(a.svg) 0 5px ' +
+        'no-repeat}</style><p><span>word</span></p>',
+      {
+        'a.svg': svgBytes(
+          `<svg ${SVG_NS} width="10" height="10">` +
+            '<rect width="10" height="10" fill="#ff0000"/></svg>',
+        ),
+      },
+    );
+    await act();
+    const ctx = result.ctx;
+    // the image, 10px square at 0 5px of the span's padding box: its top
+    // is the span's content area's, which a 30px line puts below the top
+    let found = -1;
+    for (let y = 0; y < 30 && found < 0; y += 1) {
+      const px = await new Promise<Uint8ClampedArray>((ok, fail) =>
+        (
+          ctx as unknown as {
+            getImageData(
+              x: number,
+              y: number,
+              w: number,
+              h: number,
+              cb: (e: unknown, d: { data: Uint8ClampedArray }) => void,
+            ): void;
+          }
+        ).getImageData(5, y, 1, 1, (e, d) => (e ? fail(e) : ok(d.data))),
+      );
+      if (px[0] > 200 && px[1] < 60 && px[2] < 60) found = y;
+    }
+    assert.ok(found >= 0, 'the image is drawn in the padding');
+    await expectPixel(ctx, 15, found + 2, '#ffffff', {
+      message: 'and no further than its own width',
+    });
+  },
+);
+
 metric('a viewBox of no height, or no width, draws nothing', async () => {
   // SVG: a zero extent disables the drawing, where a negative one is an
   // error and as though there were no viewBox. Both were read as no

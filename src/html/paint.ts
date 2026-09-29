@@ -837,28 +837,41 @@ function paintOwnBackground(
   const style = box.style;
   if (style.boxShadow) paintShadows(ctx, box, options, false);
   if (box !== options.canvasSource) {
-    paintLayers(ctx, box, options, (layer) => {
-      const painted = clipArea(box, options, layer, true);
-      const area =
-        painted &&
-        clampRect(options, painted.x, painted.y, painted.w, painted.h);
-      if (area) {
-        paintBackgroundImage(
-          ctx,
-          layer,
-          area,
-          originBox(box, options, layer),
-          options,
-          painted.corners,
-        );
-      }
-    });
+    paintLayers(ctx, box, options, frameImages(ctx, box, options));
   }
   if (style.boxShadow) paintShadows(ctx, box, options, true);
   if (!box.bordersCollapsed && !paintBorderImage(ctx, box, options)) {
     paintBorders(ctx, box, options);
   }
   if (box.kind === 'table') paintPartBackgrounds(ctx, box, options);
+}
+
+/**
+ * How `paintLayers` draws a frame's image layers: each in the area its
+ * `background-clip` names, from the box its `background-origin` names
+ * (CSS Backgrounds 3, 3.7 and 3.8) — a block's, or an inline box's
+ * fragment's, whose background is its images as much as its colour.
+ */
+function frameImages(
+  ctx: PaintContext,
+  frame: Frame,
+  options: PaintOptions,
+): (layer: ComputedStyle) => void {
+  return (layer) => {
+    const painted = clipArea(frame, options, layer, true);
+    const area =
+      painted && clampRect(options, painted.x, painted.y, painted.w, painted.h);
+    if (area) {
+      paintBackgroundImage(
+        ctx,
+        layer,
+        area,
+        originBox(frame, options, layer),
+        options,
+        painted.corners,
+      );
+    }
+  };
 }
 
 /** How far past its shape a shadow's blur shows: three standard deviations,
@@ -4091,7 +4104,7 @@ function paintBleeds(
     ctx.beginPath();
     ctx.rect(left, top, Math.ceil(fragment.width) + 2, bottom - top);
     ctx.clip();
-    paintLayers(ctx, fragment, options);
+    paintLayers(ctx, fragment, options, frameImages(ctx, fragment, options));
     paintBorders(ctx, fragment, options);
     ctx.restore();
   }
@@ -4615,7 +4628,10 @@ function paintInlineBoxes(
       style,
     };
     if (fragment.width <= 0) continue;
-    paintLayers(ctx, fragment, options);
+    // its images from its own padding box, as its gradients are, each
+    // fragment alike: `slice` would lay them out as though the fragments
+    // were one box end to end, which a box on one line is
+    paintLayers(ctx, fragment, options, frameImages(ctx, fragment, options));
     paintBorders(ctx, fragment, options);
     if (box.style.outlineStyle !== 'none') paintOutline(ctx, fragment, options);
     if (bleeds && fragment.y < line.y - 0.5) {
