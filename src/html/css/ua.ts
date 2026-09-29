@@ -142,6 +142,8 @@ hr {
 img { display: inline-block; }
 /* never loaded: a box of its own size, framed as a browser frames one */
 iframe { border: 2px inset; }
+/* a poster is drawn within the video's box at its own ratio (HTML 15.4.1) */
+video { object-fit: contain; }
 figure { margin: 1em 2.5em; }
 
 table { display: table; border-collapse: separate; border-spacing: 2px; box-sizing: border-box; }

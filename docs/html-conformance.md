@@ -198,6 +198,7 @@ npx tsx scripts/conformance/run.ts wpt fuzz1 --chunk 50 --timeout 60000
 | 109    | absolute boxes in grids, `grid-template`, `grid`   | 5,651 (95%) | 5,102 (86%) |
 | 110    | the grid track sizing algorithm, content alignment | 5,651 (95%) | 5,102 (86%) |
 | 111    | grid areas and line names, `grid-auto-flow`        | 5,651 (95%) | 5,102 (86%) |
+| 112    | `object-fit`, `object-position`, posters, embeds   | 5,651 (95%) | 5,102 (86%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -3231,6 +3232,31 @@ this ends: five `grid-lanes` masonry tests whose references are grids
 with the names, the flow and the percentage rows this reads, and a
 `subgrid` whose items flowed down one column only while `grid-auto-flow`
 was not read.
+
+### Round 112
+
+279. **`object-position` did not move a stretched image**, the `fill` that
+     is the default: with the box's size the image has no room to move in
+     by a percentage, but it does by a length, and `right 2px bottom 1px`
+     puts it two pixels in from the right and one up, cut to the box.
+280. **An image with a ratio and no size of its own was stretched to its
+     box** whatever its `object-fit` said: an SVG with only a `viewBox` is
+     sized by the concrete object size rules (CSS Images 3, 5.2 and 5.5) —
+     within the box or over it at its ratio, and for `none` its own size, a
+     side it lacks from the other through its ratio, and with neither,
+     within the box.
+281. **An image was drawn at a fraction of a pixel** where its position
+     came to one, and a background's tile at the pixel: a position of
+     `13%` blurred it, and a pixelated image shifted a row. It is placed on
+     the pixel grid as the tile is.
+282. **A `<video>`'s poster and an `<embed>`'s image were not drawn**: both
+     were frames with nothing in them. An `<embed>` whose `src` is an image
+     shows it, as an `<object>` does, and a `<video>` shows its `poster`,
+     which HTML's style sheet contains in its box (`object-fit: contain`,
+     15.4.1). Where there is no image, both are frames as before.
+
+css-images went from 132 to 262 of 470 on X11 and from 126 to 257 on
+Cocoa, css-sizing from 256 to 258; the CSS 2.1 suite is unchanged on both.
 
 ## What `<Html>` supports
 

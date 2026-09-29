@@ -309,13 +309,17 @@ an intrinsic width, height and ratio (CSS 2.1 10.3.2, 10.6.2), and a
 `<img width="600" style="max-width: 100%">` in a narrow column is scaled,
 not squashed (10.4). `object-fit` fits the image to its box — stretched,
 the default, or at its own ratio, within it, over the whole of it
-(`object-cover`, an avatar's), at its own size, or the smaller of those —
-and `object-position` places it, in the middle unless it says otherwise;
-what falls past the box is cut. An `<object>` whose `data` is an image shows it, and
-its fallback content until then or when it is not one. `<iframe>`,
-`<video>` and `<embed>` are boxes of their `width` and `height` — 300×150
-without them, as HTML sizes them — with nothing in them, because nothing is
-loaded.
+(`object-cover`, an avatar's), at its own size, or the smaller of those,
+an SVG with only a `viewBox` sized from its ratio — and `object-position`
+places it on the pixel grid, in the middle unless it says otherwise, and
+by its lengths even when it is stretched; what falls past the box is cut.
+An `<object>` whose `data` is an image shows it, and its fallback content
+until then or when it is not one; an `<embed>` whose `src` is an image
+shows it, and a `<video>` its `poster`, contained in its box as HTML's
+style sheet has it. `<iframe>`, and a `<video>` or an `<embed>` with no
+image, are boxes of their `width` and `height` — 300×150 without them, as
+HTML sizes them — with nothing in them, because nothing is loaded or
+played.
 
 **Intrinsic sizes:** `width`, `min-width` and `max-width` take
 `fit-content`, `max-content` and `min-content` — Tailwind's `w-fit`, `w-max`

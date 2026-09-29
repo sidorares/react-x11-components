@@ -12245,9 +12245,9 @@ test('object-fit places an image in its box, and object-position in it', async (
   };
   assert.deepStrictEqual(at(0), [0, 0, 90, 90], 'fill: stretched');
   assert.deepStrictEqual(at(1), [-45, 0, 180, 90], 'cover: the middle');
-  assert.deepStrictEqual(at(2), [0, 22.5, 90, 45], 'contain: all of it');
+  assert.deepStrictEqual(at(2), [0, 23, 90, 45], 'contain: all of it');
   assert.deepStrictEqual(at(3), [-75, -15, 240, 120], 'none: its own size');
-  assert.deepStrictEqual(at(4), [0, 22.5, 90, 45], 'scale-down, when smaller');
+  assert.deepStrictEqual(at(4), [0, 23, 90, 45], 'scale-down, when smaller');
   assert.deepStrictEqual(at(5), [0, 0, 180, 90], 'cover, from the left');
   // scale-down in a box larger than the image: its own size, in the middle
   const big = drawn[6];
@@ -12256,6 +12256,60 @@ test('object-fit places an image in its box, and object-position in it', async (
   // what falls past its box is clipped to it, and nothing else is
   const clips = ops.filter((op) => op.op === 'clip').length;
   assert.strictEqual(clips, 3, 'cover twice and none');
+});
+
+test('object-position places a filled image, and one with a ratio and no size', async () => {
+  // CSS Images 3, 5.5: `fill` was drawn at the box whatever object-position
+  // said — its lengths still move it — and an image with a ratio and no
+  // size of its own, an SVG with only a viewBox, was stretched to the box
+  // whatever the fit. And it is placed on the pixel grid, as a
+  // background's tile is: 13% of 15 pixels is 1.95
+  const { node } = await render(
+    '<style>body{margin:0} img{display:block;width:90px;height:60px}</style>' +
+      '<img id="a" src="a.png" style="object-position:right 2px bottom 1px">' +
+      '<img id="b" src="b.svg" style="object-fit:contain">' +
+      '<img id="c" src="c.svg" style="object-fit:none">' +
+      '<img id="d" src="d.png" style="object-fit:contain;' +
+      'object-position:50% 13%">',
+  );
+  const el = view(node);
+  const own = (id: string, missing: number) => {
+    (boxOf(el, id) as unknown as { intrinsic: unknown }).intrinsic = {
+      width: missing ? 300 : 240,
+      height: missing ? 150 : 120,
+      missing,
+      ratio: 2,
+    };
+  };
+  own('a', 0);
+  own('b', 3);
+  own('c', 3);
+  own('d', 0);
+  const ops: PaintOp[] = [];
+  await fillsOf(view(node), ops, { imageFor: () => ({}) });
+  const drawn = ops.filter((op) => op.op === 'image');
+  const at = (i: number) => {
+    const op = drawn[i];
+    return op.op === 'image' ? [op.x, op.y - i * 60, op.w, op.h] : [];
+  };
+  assert.deepStrictEqual(at(0), [-2, -1, 90, 60], 'fill, moved by lengths');
+  assert.deepStrictEqual(at(1), [0, 8, 90, 45], 'contain: at its ratio');
+  assert.deepStrictEqual(at(2), [0, 8, 90, 45], 'none, with no size: within');
+  assert.deepStrictEqual(at(3), [0, 2, 90, 45], 'on the pixel grid');
+});
+
+metric("a video's poster and an embedded image are drawn", async () => {
+  // A `<video>` and an `<embed>` were frames whatever they pointed at: a
+  // video shows its poster, which it fits into its box by the HTML style
+  // sheet's `object-fit: contain`, and an embed its image
+  const ctx = await renderWithImages(
+    '<style>body{margin:0} *{display:block}</style>' +
+      '<video poster="p.png" style="width:40px;height:20px"></video>' +
+      '<embed src="e.png" style="width:20px;height:20px">',
+  );
+  await expectPixel(ctx, 20, 10, '#ff0000', { message: "the poster's middle" });
+  await expectPixel(ctx, 5, 10, '#ffffff', { message: 'contained: not here' });
+  await expectPixel(ctx, 10, 30, '#ff0000', { message: 'the embed' });
 });
 
 // --- a restyle's cost --------------------------------------------------------------

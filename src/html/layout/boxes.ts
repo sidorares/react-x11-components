@@ -906,13 +906,16 @@ class Builder {
       return;
     }
 
-    // an `<object>` is its image once it has one, and its content until
+    // an `<object>` is its image once it has one, and its content until;
+    // an `<embed>` its image, and a `<video>` its poster, or a frame
     const replaced =
       tag === 'object'
         ? this._options.imageSize(el)
           ? 'image'
           : 'none'
-        : replacedKind(el, tag);
+        : (tag === 'embed' || tag === 'video') && this._options.imageSize(el)
+          ? 'image'
+          : replacedKind(el, tag);
     if (replaced !== 'none') {
       this._replaced(el, tag, replaced, style, into);
       return;
