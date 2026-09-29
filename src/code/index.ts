@@ -21,7 +21,7 @@ import { registerRichText, useSelectionMenu } from '../richtext/index.js';
 import type { TextRun } from '../richtext/index.js';
 import {
   codeBlockLook,
-  codeBlockRuns,
+  CodeBlockRunCache,
   codeBlockStyle,
   codeTextStyle,
 } from '../codeblock/index.js';
@@ -104,8 +104,14 @@ export function Code(props: CodeProps): ReactElement {
   );
   useFontPrewarm(look.family);
 
+  // Kept between renders, so a source that changes at its end is tokenized
+  // again from the line that changed (`CodeBlockRunCache`).
+  const runCache = React.useRef<CodeBlockRunCache | null>(null);
+  runCache.current ??= new CodeBlockRunCache();
+  React.useEffect(() => () => runCache.current?.dispose(), []);
   const runs: TextRun[] = React.useMemo(
-    () => codeBlockRuns(source, look, { lang, language, resolveLanguage }),
+    () =>
+      runCache.current!.runs(source, look, { lang, language, resolveLanguage }),
     [source, lang, language, resolveLanguage, look],
   );
 

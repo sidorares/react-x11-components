@@ -62,7 +62,7 @@ import {
 import type { RichTextProps, TextRun } from '../richtext/index.js';
 import {
   codeBlockLook,
-  codeBlockRuns,
+  CodeBlockRunCache,
   codeBlockStyle,
   codeTextStyle,
 } from '../codeblock/index.js';
@@ -500,19 +500,46 @@ function renderCode(
       custom({ lang, text, partial: ctx.live === true }),
     );
   }
-  const code = ctx.look.code;
-  const runs = codeBlockRuns(text, code, {
+  return h(CodeFence, {
+    key,
+    text,
     lang,
+    look: ctx.look.code,
     highlight: ctx.look.highlight,
-    ...(ctx.resolveLanguage ? { resolveLanguage: ctx.resolveLanguage } : null),
+    resolveLanguage: ctx.resolveLanguage,
+  });
+}
+
+interface CodeFenceProps {
+  text: string;
+  lang: string;
+  look: CodeBlockLook;
+  highlight: boolean;
+  resolveLanguage?: MarkdownProps['resolveLanguage'];
+}
+
+/**
+ * A fenced block of code. A component rather than a render function so
+ * that it keeps a tokenizer between renders (`CodeBlockRunCache`): a fence
+ * being streamed is tokenized again from the line that changed, where it
+ * was tokenized whole for every token a model wrote.
+ */
+function CodeFence(props: CodeFenceProps): ReactElement {
+  const { text, lang, look, highlight, resolveLanguage } = props;
+  const cache = React.useRef<CodeBlockRunCache | null>(null);
+  cache.current ??= new CodeBlockRunCache();
+  React.useEffect(() => () => cache.current?.dispose(), []);
+  const runs = cache.current.runs(text, look, {
+    lang,
+    highlight,
+    ...(resolveLanguage ? { resolveLanguage } : null),
   });
   // The block scrolls horizontally rather than wrapping — code is code.
   return hx(
     'box',
     {
-      key,
       style: {
-        ...codeBlockStyle(code),
+        ...codeBlockStyle(look),
         overflow: 'scroll',
         flexDirection: 'column',
       },
@@ -520,9 +547,8 @@ function renderCode(
     // in blocks of lines, so a fence that streams lays out the block its
     // new lines land in (`../internal/codelines.ts`)
     h(CodeLines, {
-      key: 'code',
       runs,
-      style: codeTextStyle(code, false),
+      style: codeTextStyle(look, false),
       wrap: false,
     }),
   );

@@ -15,7 +15,11 @@
 // A shared module, not a component: no element registration, no React, and
 // nothing imported from either of its consumers (a component never imports
 // another component).
-import { codeRuns, autoTokenStyles } from '../code-language/index.js';
+import {
+  codeRuns,
+  autoTokenStyles,
+  CodeRunCache,
+} from '../code-language/index.js';
 import type { Language, TokenStyles } from '../code-language/index.js';
 import type { TextRun } from '../richtext/index.js';
 import { tint } from 'react-x11/style';
@@ -128,6 +132,49 @@ export function codeBlockRuns(
     ...(highlight && resolveLanguage ? { resolveLanguage } : null),
     resolveToken: look.resolveToken,
   }).map((run) => ({ ...run, family: look.family, size: look.size }));
+}
+
+/**
+ * `codeBlockRuns` kept between calls, for a block of code that changes a
+ * little at a time — a fence being streamed, a source being appended to:
+ * the tokenizer is told which lines changed and the rest keep their runs
+ * (`CodeRunCache`). Call `dispose()` when done with it.
+ */
+export class CodeBlockRunCache {
+  private cache: CodeRunCache<TextRun> | null = null;
+  private family: string | undefined;
+  private size: number | undefined;
+
+  runs(
+    source: string,
+    look: CodeBlockLook,
+    options: CodeBlockRunOptions = {},
+  ): TextRun[] {
+    if (!this.cache || this.family !== look.family || this.size !== look.size) {
+      this.cache?.dispose();
+      const { family, size } = look;
+      this.family = family;
+      this.size = size;
+      this.cache = new CodeRunCache<TextRun>((run) => ({
+        ...run,
+        family,
+        size,
+      }));
+    }
+    const { lang = '', language, resolveLanguage, highlight = true } = options;
+    return this.cache.runs(source, highlight ? lang : '', {
+      styles: look.styles,
+      color: look.color,
+      ...(highlight && language ? { language } : null),
+      ...(highlight && resolveLanguage ? { resolveLanguage } : null),
+      resolveToken: look.resolveToken,
+    });
+  }
+
+  dispose(): void {
+    this.cache?.dispose();
+    this.cache = null;
+  }
 }
 
 /** The block's own box: fill, radius, padding. What surrounds it — a row

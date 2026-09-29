@@ -34,7 +34,7 @@ export {
 } from './theme.js';
 
 export { languageForTag, tokenizeText } from './registry.js';
-export { codeRuns } from './runs.js';
+export { codeRuns, CodeRunCache } from './runs.js';
 export type { CodeRun, CodeRunOptions } from './runs.js';
 
 export { TOKEN_FALLBACK } from './types.js';
