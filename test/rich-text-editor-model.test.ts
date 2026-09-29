@@ -34,6 +34,7 @@ import {
   markdownCodec,
   markdownFromDoc,
 } from '../src/rich-text-editor/markdown.js';
+import { replaceDocumentTr } from '../src/rich-text-editor/replace.js';
 import { schema } from '../src/rich-text-editor/schema.js';
 import {
   acceptSuggestion,
@@ -658,6 +659,95 @@ test('markdown ↔ document: a generated corpus keeps its text, and settles afte
       `did not settle: ${JSON.stringify(md1)} → ${JSON.stringify(md2)}`,
     );
     assert.strictEqual(markdownFromDoc(d2), md2);
+  }
+});
+
+test('a value handed in: a reset that keeps the nodes it did not change, read by resuming the last parse', () => {
+  let seed = 0xa11ce;
+  const rnd = (): number => {
+    seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  const pick = <T>(a: readonly T[]): T => a[Math.floor(rnd() * a.length)];
+  const WORDS = ['a', 'word', '**b**', '_i_', '`c`', '[l](u)', '~~s~~', 'aa'];
+  const words = (): string =>
+    Array.from({ length: 1 + Math.floor(rnd() * 4) }, () => pick(WORDS)).join(
+      ' ',
+    );
+  const BLOCKS: Array<() => string> = [
+    () => words(),
+    () => words(),
+    () => `${'#'.repeat(1 + Math.floor(rnd() * 3))} ${words()}`,
+    () => `\`\`\`js\n${words()}\n\`\`\``,
+    () => `> ${words()}`,
+    () => `- ${words()}\n- ${words()}`,
+    () => `1. ${words()}\n2. ${words()}`,
+    () => `- [ ] ${words()}\n- [x] ${words()}`,
+    () => `| a | b |\n|---|---|\n| ${words()} | ${words()} |`,
+    () => '---',
+  ];
+  // what a stream, a paste, an app's formatter or another client does
+  const edit = (src: string): string => {
+    const lines = src.split('\n');
+    const at = Math.floor(rnd() * lines.length);
+    const r = rnd();
+    if (r < 0.3) return src + pick([' ', '', '\n', '\n\n']) + pick(WORDS);
+    if (r < 0.45) {
+      lines.splice(at, 0, ...pick(BLOCKS)().split('\n'), '');
+    } else if (r < 0.6) {
+      lines.splice(at, 1 + Math.floor(rnd() * 2));
+    } else if (r < 0.75) {
+      lines[at] += pick(WORDS);
+    } else if (r < 0.85) {
+      lines[at] = lines[at].slice(0, Math.floor(rnd() * lines[at].length));
+    } else if (r < 0.92) {
+      lines.splice(at, 0, lines[at]);
+    } else {
+      return lines.slice(0, at).join('\n');
+    }
+    return lines.join('\n');
+  };
+  const codec = markdownCodec(schema);
+  for (let run = 0; run < 60; run++) {
+    let src = Array.from({ length: 1 + Math.floor(rnd() * 6) }, () =>
+      pick(BLOCKS)(),
+    ).join('\n\n');
+    let state = EditorState.create({ schema, doc: codec.parse(src) });
+    for (let step = 0; step < 25; step++) {
+      src = edit(src);
+      const value = codec.parse(src);
+      assert.ok(
+        value.eq(docFromMarkdown(schema, src)),
+        `read as a fresh parse reads it: ${JSON.stringify(src)}`,
+      );
+      const tr = replaceDocumentTr(state, value, false);
+      assert.ok(tr.doc.eq(value), `made the value: ${JSON.stringify(src)}`);
+      let same = 0;
+      const shorter = Math.min(state.doc.childCount, value.childCount);
+      while (same < shorter && state.doc.child(same).eq(value.child(same))) {
+        same++;
+      }
+      for (let i = 0; i < same; i++) {
+        assert.ok(
+          tr.doc.child(i) === state.doc.child(i),
+          `block ${i}, before the change, is the node it was: ${JSON.stringify(src)}`,
+        );
+      }
+      // and still a reset to whatever maps a position through it
+      const size = state.doc.content.size;
+      for (const pos of [1, size >> 1, size - 1]) {
+        if (pos > 0 && pos < size) {
+          assert.ok(
+            tr.mapping.mapResult(pos).deletedAcross,
+            `${pos} of ${size}`,
+          );
+        }
+      }
+      assert.strictEqual(tr.getMeta('addToHistory'), false);
+      state = state.apply(tr);
+    }
   }
 });
 

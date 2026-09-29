@@ -500,6 +500,16 @@ function Fence({ node, children, updateAttributes }: NodeViewProps) {
 - **A reset is not an edit.** A new `value`, or `setValue`, replaces the
   document outside the undo history, so Undo never resurrects the draft the
   app just cleared.
+- **A reset is still cheap when it is a stream.** A model writing into the
+  editor hands over a value that grows a word at a time, and each one is a
+  reset. It is a reset as far as the history, the caret and every plugin
+  that maps a position can tell: the whole document is replaced, as it
+  always was. But where the new document is the same as the old one, it is
+  made of the old one's nodes. The markdown is read by resuming the last
+  parse, and a block seen before becomes the nodes it became then. So the
+  blocks a word does not reach are neither keyed nor drawn again, and
+  prosemirror-tables' repair does not walk them. A word streamed into 3,200
+  paragraphs went from 75 ms to 5 ms.
 - **The toolbar never takes focus.** Its buttons are not focusable and stop
   the press before the editor sees it, so the caret stays put and the command
   runs on the selection that is visible.

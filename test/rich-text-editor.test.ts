@@ -575,6 +575,73 @@ test('controlled: handing back what onChange said changes nothing; another value
   assert.deepStrictEqual(drawnText(), ['two']);
 });
 
+test('controlled: a value that streams in replaces what changed, and leaves the blocks before it', async () => {
+  const ref = React.createRef<RichTextEditorHandle>();
+  const element = (v: string): ReactElement =>
+    h(RichTextEditor, { ref, value: v, onChange: () => {} });
+  const r = await renderX11(
+    element('one\n\n- two\n- three\n\nthe'),
+    WITH_FONTS,
+  );
+  const doc = ref.current!.state.doc;
+  const drawnBefore = blocks();
+  await r.rerender(element('one\n\n- two\n- three\n\nthe answer'));
+  await r.rerender(element('one\n\n- two\n- three\n\nthe answer grows'));
+  const now = ref.current!.state.doc;
+  assert.ok(
+    now.child(0) === doc.child(0) && now.child(1) === doc.child(1),
+    'the blocks before the change are the nodes they were',
+  );
+  const drawnNow = blocks();
+  assert.ok(
+    drawnNow[0] === drawnBefore[0] && drawnNow[2] === drawnBefore[2],
+    'and are drawn by the elements that drew them',
+  );
+  assert.deepStrictEqual(drawnText(), [
+    'one',
+    'two',
+    'three',
+    'the answer grows',
+  ]);
+});
+
+test('controlled: a reset leaves nothing to undo, where it kept blocks and where there was nothing to change', async () => {
+  let value = 'kept';
+  const ref = React.createRef<RichTextEditorHandle>();
+  const element = (v: string): ReactElement =>
+    h(RichTextEditor, {
+      ref,
+      value: v,
+      onChange: (ev) => {
+        value = ev.value;
+      },
+    });
+  const r = await renderX11(element(value), WITH_FONTS);
+  await focusAtEnd();
+  // a typo fixed at the end, then the app clears the draft and keeps the
+  // paragraph before it
+  await userEvent.key(XK_RETURN);
+  await type('hellp');
+  await userEvent.key(XK_BACKSPACE);
+  await type('o');
+  assert.strictEqual(value, 'kept\n\nhello');
+  const kept = ref.current!.state.doc.child(0);
+  await r.rerender(element('kept'));
+  assert.ok(
+    ref.current!.state.doc.child(0) === kept,
+    'the block the value left alone is the node it was',
+  );
+  for (let i = 0; i < 4; i++) await act(() => ref.current!.undo());
+  assert.strictEqual(ref.current!.getValue(), 'kept', 'no letter came back');
+  // typed, then handed a value that reads as the document already there:
+  // still a reset, with nothing of the typing left to undo
+  await type(' more');
+  assert.strictEqual(value, 'kept more');
+  await r.rerender(element('kept more\n'));
+  for (let i = 0; i < 4; i++) await act(() => ref.current!.undo());
+  assert.strictEqual(ref.current!.getValue(), 'kept more', 'nor any word');
+});
+
 test('readOnly: keys that would edit do nothing; selecting and copying still work', async () => {
   const { r, editor } = await mount({
     defaultValue: 'look, no hands',

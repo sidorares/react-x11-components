@@ -53,7 +53,7 @@ import type { Style } from 'react-x11/style';
 import { redo, undo } from 'prosemirror-history';
 import { Fragment, Slice } from 'prosemirror-model';
 import type { Node as PMNode, Schema } from 'prosemirror-model';
-import { EditorState, Selection } from 'prosemirror-state';
+import { EditorState } from 'prosemirror-state';
 import type { Command, Plugin, Transaction } from 'prosemirror-state';
 import type { EditorProps, EditorView } from 'prosemirror-view';
 
@@ -85,6 +85,7 @@ import { docFromText, markdownCodec, textFromDoc } from './markdown.js';
 import type { MarkdownCodec } from './markdown.js';
 import { registerEditorElements, ROOT_ELEMENT, TEXT_ELEMENT } from './nodes.js';
 import { renderBlockRange, renderBlocks } from './render.js';
+import { replaceDocumentTr } from './replace.js';
 import type { ImageInfo, NodeViewProps, RenderContext } from './render.js';
 import type { RunStyle } from './inline.js';
 import { schema as defaultSchema } from './schema.js';
@@ -338,16 +339,7 @@ function replaceDocument(
   doc: PMNode,
   addToHistory: boolean,
 ): void {
-  const { state } = view;
-  const tr = state.tr.replaceWith(0, state.doc.content.size, doc.content);
-  // keep the caret about where it was, inside what is there now
-  tr.setSelection(
-    Selection.near(
-      tr.doc.resolve(Math.min(state.selection.head, tr.doc.content.size)),
-    ),
-  );
-  if (!addToHistory) tr.setMeta('addToHistory', false);
-  view.dispatch(tr);
+  view.dispatch(replaceDocumentTr(view.state, doc, addToHistory));
 }
 
 function inListOrCode(state: EditorState): boolean {
