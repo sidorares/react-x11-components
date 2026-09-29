@@ -1206,6 +1206,25 @@ export class HtmlViewNode extends Node {
   }
 
   /**
+   * The cursor for a point of this element's, in device pixels: what core
+   * asks a drawn element as the pointer moves over it (`cursorAt`,
+   * react-x11#757). The `cursor` the document's styles give what is under
+   * it — a link's `pointer`, the user-agent sheet's — and where they say
+   * nothing, text's I-beam over text, as a browser shows it. Null over
+   * nothing in particular, which is the default arrow.
+   */
+  cursorAt(x: number, y: number): string | null {
+    const tree = this._tree;
+    if (!tree) return null;
+    const hit = { text: false };
+    const el = deepestAt(tree, x - this.abs.x, y - this.abs.y, hit);
+    const cursor = el ? tree.styles.get(el)?.style.cursor : null;
+    // a keyword; a `url()` this cannot load falls back, as its list would
+    if (cursor && cursor !== 'auto' && /^[a-z-]+$/.test(cursor)) return cursor;
+    return hit.text ? 'text' : null;
+  }
+
+  /**
    * The pointer moved, to a logical window point. Returns true when the
    * cascade's answer could have changed, so the caller knows whether to
    * invalidate — which it only ever does for a document that actually
@@ -1886,9 +1905,17 @@ function collectBands(
 }
 
 /** The deepest element box containing a document-space point. */
-function deepestAt(tree: BoxTree, x: number, y: number): Element | null {
+function deepestAt(
+  tree: BoxTree,
+  x: number,
+  y: number,
+  /** Told whether what was found was found under text: a run's, rather
+   *  than a box's. */
+  hit?: { text: boolean },
+): Element | null {
   const box = tree.root;
   let found: Element | null = box.el;
+  let viaText = false;
   const visit = (node: Box): void => {
     // The paint index answers a point query too — the wide level of a flat
     // document is the root's child list, and a hit test that walked all of
@@ -1904,7 +1931,10 @@ function deepestAt(tree: BoxTree, x: number, y: number): Element | null {
         y >= child.y &&
         y < child.y + child.height
       ) {
-        if (child.el) found = child.el;
+        if (child.el) {
+          found = child.el;
+          viaText = false;
+        }
         visit(child);
       }
     }
@@ -1916,7 +1946,10 @@ function deepestAt(tree: BoxTree, x: number, y: number): Element | null {
           y >= child.y &&
           y < child.y + child.height
         ) {
-          if (child.el) found = child.el;
+          if (child.el) {
+            found = child.el;
+            viaText = false;
+          }
           visit(child);
         }
       }
@@ -1930,7 +1963,10 @@ function deepestAt(tree: BoxTree, x: number, y: number): Element | null {
             y >= placed.box.y &&
             y < placed.box.y + placed.box.height
           ) {
-            if (placed.box.el) found = placed.box.el;
+            if (placed.box.el) {
+              found = placed.box.el;
+              viaText = false;
+            }
             visit(placed.box);
           }
         }
@@ -1952,7 +1988,10 @@ function deepestAt(tree: BoxTree, x: number, y: number): Element | null {
                   tree.textBoxes,
                   text.spans.documentAt(run.start),
                 );
-                if (owner) found = owner;
+                if (owner) {
+                  found = owner;
+                  viaText = true;
+                }
               }
             }
           }
@@ -1961,6 +2000,7 @@ function deepestAt(tree: BoxTree, x: number, y: number): Element | null {
     }
   };
   visit(box);
+  if (hit) hit.text = viaText;
   return found;
 }
 

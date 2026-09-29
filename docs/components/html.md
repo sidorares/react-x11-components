@@ -786,6 +786,14 @@ used to — text set bold on hover, a pseudo-element or a list marker the
 element colours, a `:hover` inside `:not()` or `:has()`. `:active` is never
 set here, so a selector testing it changes nothing as the pointer moves.
 
+**The cursor is the document's.** Over a link it is the `pointer` the
+user-agent sheet gives `a[href]`, wherever a page writes `cursor` it is
+what the page wrote, and where nothing says, it is the text I-beam over
+text and the arrow elsewhere, as a browser shows them. Core asks the
+element for the point as the pointer moves (`cursorAt`, react-x11#757): a
+document is one node with a cursor for each part of it. A `url()` cursor
+is not loaded, and falls back as its list would.
+
 **Nesting is capped at 256 elements, as Blink's parser caps it at 512.**
 Everything from the cascade to paint recurses on tree depth, so a
 degenerately nested document — a few hundred unclosed `<div>`s, a runaway

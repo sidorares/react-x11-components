@@ -12837,3 +12837,28 @@ metric('a hover in a long document builds and lays out nothing', async () => {
   assert.strictEqual(treeOf(el), tree);
   assert.ok(updates.n < 1000, 'a hover built the document again');
 });
+
+metric(
+  "the cursor under the pointer is the document's: a link's pointer, text's I-beam",
+  async () => {
+    // what core asks a drawn element for as the pointer moves (`cursorAt`,
+    // react-x11#757), in device pixels — at a scale of 1, the window's
+    const { node } = await render(
+      '<style>body{margin:0} .m{cursor:move} .u{cursor:url(x.cur)}</style>' +
+        '<p><span id="t">plain text here</span></p>' +
+        '<p><a id="a" href="#x">a <b id="ab">link</b></a></p>' +
+        '<p><span class="m" id="m">moving</span></p>' +
+        '<p><span class="u" id="u">unloaded</span></p>' +
+        '<div id="e" style="height:40px"></div>',
+      300,
+    );
+    const el = view(node);
+    const at = (id: string) => el.cursorAt(...pointIn(el, id));
+    assert.strictEqual(at('a'), 'pointer');
+    assert.strictEqual(at('ab'), 'pointer', "and the link's own elements");
+    assert.strictEqual(at('t'), 'text');
+    assert.strictEqual(at('m'), 'move');
+    assert.strictEqual(at('u'), 'text', 'a cursor it cannot load');
+    assert.strictEqual(at('e'), null);
+  },
+);
