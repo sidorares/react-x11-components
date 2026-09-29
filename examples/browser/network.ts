@@ -27,6 +27,8 @@ import { setDefaultAutoSelectFamilyAttemptTimeout } from 'node:net';
 import { extname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import type { ResourceResult } from '../../src/html/index.js';
+
 // Happy Eyeballs (RFC 8305) gives each address family 250 ms in Node. A page
 // being laid out holds the event loop longer than that, and a connection
 // whose handshake came back meanwhile is counted as timed out when the loop
@@ -350,6 +352,35 @@ function transient(error: unknown): boolean {
     code === 'UND_ERR_CONNECT_TIMEOUT' ||
     Array.isArray(cause?.errors)
   );
+}
+
+/**
+ * A fetched subresource as `<Html>` takes it back from `onResource`: a
+ * stylesheet's bytes with the charset the server named, a font's bytes, an
+ * image's. WebP and AVIF are declined — nothing here decodes them, and a
+ * declined image keeps its box. The page's and the Zen Garden bench's
+ * (`scripts/zengarden/`) one conversion.
+ */
+export function resourceResult(
+  fetched: Fetched,
+  kind: ResourceKind,
+): ResourceResult | null {
+  if (kind === 'stylesheet') {
+    return {
+      kind: 'stylesheet',
+      bytes: fetched.bytes,
+      charset: fetched.charset ?? undefined,
+      url: fetched.url,
+    };
+  }
+  if (kind === 'font') return { kind: 'font', bytes: fetched.bytes };
+  const b = fetched.bytes;
+  const webp =
+    b.length > 12 &&
+    String.fromCharCode(b[0], b[1], b[2], b[3], b[8], b[9], b[10], b[11]) ===
+      'RIFFWEBP';
+  if (webp || fetched.type === 'image/avif') return null;
+  return { kind: 'image', bytes: b };
 }
 
 /**

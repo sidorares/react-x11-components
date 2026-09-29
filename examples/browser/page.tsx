@@ -52,7 +52,7 @@ import { decodeIcon, iconCandidates } from './favicon.js';
 import { shortcuts } from './keys.js';
 import type { Command } from './keys.js';
 import type { TabIcon } from './favicon.js';
-import { Network, NetworkError, schemeOf } from './network.js';
+import { Network, NetworkError, resourceResult, schemeOf } from './network.js';
 import type { DocumentResponse } from './network.js';
 import {
   BLANK,
@@ -617,9 +617,7 @@ function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
   return out;
 }
 
-/** The subresource a page asked for, as `<Html>` takes it back. WebP and
- *  AVIF are declined — nothing here decodes them, and a declined image
- *  keeps its box. */
+/** The subresource a page asked for, as `<Html>` takes it back. */
 async function resource(
   request: ResourceRequest,
   page: string,
@@ -631,23 +629,7 @@ async function resource(
     page,
     signal,
   );
-  if (!fetched) return null;
-  if (request.kind === 'stylesheet') {
-    return {
-      kind: 'stylesheet',
-      bytes: fetched.bytes,
-      charset: fetched.charset ?? undefined,
-      url: fetched.url,
-    };
-  }
-  if (request.kind === 'font') return { kind: 'font', bytes: fetched.bytes };
-  const b = fetched.bytes;
-  const webp =
-    b.length > 12 &&
-    String.fromCharCode(b[0], b[1], b[2], b[3], b[8], b[9], b[10], b[11]) ===
-      'RIFFWEBP';
-  if (webp || fetched.type === 'image/avif') return null;
-  return { kind: 'image', bytes: b };
+  return fetched ? resourceResult(fetched, request.kind) : null;
 }
 
 /** Decoded icons by URL, for every document this process shows: a site's
