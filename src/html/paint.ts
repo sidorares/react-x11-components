@@ -89,7 +89,13 @@ export interface Rect {
 export interface PaintContext extends FillContext {
   beginPath?(): void;
   rect?(x: number, y: number, w: number, h: number): void;
-  roundRect?(x: number, y: number, w: number, h: number, radii: number[]): void;
+  roundRect?(
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+    radii: (number | { x: number; y: number })[],
+  ): void;
   moveTo?(x: number, y: number): void;
   lineTo?(x: number, y: number): void;
   bezierCurveTo?(
@@ -1047,19 +1053,6 @@ function paintShadows(
         );
         continue;
       }
-      if (
-        bakedOuter(
-          ctx,
-          options,
-          s,
-          color,
-          shape,
-          around,
-          covered ? null : { rect: own, corners },
-        )
-      ) {
-        continue;
-      }
       // what of the shadow falls under the box is not drawn
       const clipped = !covered && ctx.clip && ctx.rect && ctx.save;
       if (clipped) {
@@ -1088,7 +1081,7 @@ function paintShadows(
         s,
         color,
         (dx) => {
-          roundedRect(
+          shadowShape(
             ctx,
             shape.x - dx,
             shape.y,
@@ -1151,7 +1144,6 @@ function paintShadows(
       fillRing(ctx, pad, inner, hole, within);
       continue;
     }
-    if (bakedInset(ctx, options, s, color, pad, inner, hole, within)) continue;
     if (!ctx.clip || !ctx.save || !ctx.rect) continue;
     ctx.save();
     ctx.beginPath();
@@ -1172,171 +1164,21 @@ function paintShadows(
       (dx) => {
         ctx.rect!(frame.x - dx, frame.y, frame.width, frame.height);
         if (hole.width > 0 && hole.height > 0) {
-          roundedRect(
+          shadowShape(
             ctx,
             hole.x - dx,
             hole.y,
             hole.width,
             hole.height,
             within,
-            true,
-            true,
           );
         }
       },
       frame.x + frame.width + shadowReach(s.blur),
+      'evenodd',
     );
     ctx.restore();
   }
-}
-
-/** Corners as part of a key. */
-function cornerKey(c: Corners): string {
-  return `${c.x.join(',')}/${c.y.join(',')}`;
-}
-
-/**
- * An outer shadow drawn once on a surface of its own and composited: the
- * shape's shadow, and where `box` is given the box cut out of it — so a box
- * that shows what is behind it shows no shadow there, with the clip on the
- * small surface rather than the window. False where there is no surface.
- */
-function bakedOuter(
-  ctx: PaintContext,
-  options: PaintOptions,
-  s: BoxShadow,
-  color: string,
-  shape: Rect,
-  around: Corners,
-  box: { rect: Rect; corners: Corners } | null,
-): boolean {
-  if (!options.cached || !ctx.drawImage) return false;
-  const reach = shadowReach(s.blur) + 1;
-  const x0 = Math.floor(shape.x) - reach;
-  const y0 = Math.floor(shape.y) - reach;
-  const w = Math.ceil(shape.x + shape.width) + reach - x0;
-  const h = Math.ceil(shape.y + shape.height) + reach - y0;
-  const sx = shape.x - x0;
-  const sy = shape.y - y0;
-  const cut = box && {
-    x: box.rect.x - x0,
-    y: box.rect.y - y0,
-    width: box.rect.width,
-    height: box.rect.height,
-  };
-  const key = [
-    'shadow',
-    w,
-    h,
-    sx,
-    sy,
-    shape.width,
-    shape.height,
-    cornerKey(around),
-    s.blur,
-    color,
-    cut
-      ? `${cut.x},${cut.y},${cut.width},${cut.height},${cornerKey(box.corners)}`
-      : '',
-  ].join('|');
-  const image = options.cached(key, w, h, (sctx) => {
-    if (cut) {
-      sctx.save();
-      sctx.beginPath!();
-      sctx.rect!(0, 0, w, h);
-      roundedRect(
-        sctx,
-        cut.x,
-        cut.y,
-        cut.width,
-        cut.height,
-        box.corners,
-        true,
-        true,
-      );
-      sctx.clip!();
-    }
-    fillShadow(
-      sctx,
-      s,
-      color,
-      (dx) => {
-        roundedRect(sctx, sx - dx, sy, shape.width, shape.height, around);
-      },
-      sx + shape.width + reach,
-    );
-    if (cut) sctx.restore();
-  });
-  if (!image) return false;
-  ctx.drawImage(image, x0, y0);
-  return true;
-}
-
-/**
- * An inset shadow drawn once on a surface the size of the padding box and
- * composited: a frame around the hole, whose shadow falls inside, clipped
- * to the padding box's corners on the surface. False where there is none.
- */
-function bakedInset(
-  ctx: PaintContext,
-  options: PaintOptions,
-  s: BoxShadow,
-  color: string,
-  pad: Rect,
-  inner: Corners,
-  hole: Rect,
-  within: Corners,
-): boolean {
-  if (!options.cached || !ctx.drawImage) return false;
-  const w = Math.round(pad.width);
-  const h = Math.round(pad.height);
-  const hx = hole.x - pad.x;
-  const hy = hole.y - pad.y;
-  const reach = shadowReach(s.blur) + Math.abs(s.x) + Math.abs(s.y) + 1;
-  const key = [
-    'inset',
-    w,
-    h,
-    cornerKey(inner),
-    hx,
-    hy,
-    hole.width,
-    hole.height,
-    cornerKey(within),
-    s.blur,
-    color,
-  ].join('|');
-  const image = options.cached(key, w, h, (sctx) => {
-    sctx.save();
-    sctx.beginPath!();
-    roundedRect(sctx, 0, 0, w, h, inner);
-    sctx.clip!();
-    fillShadow(
-      sctx,
-      s,
-      color,
-      (dx) => {
-        sctx.rect!(-reach - dx, -reach, w + 2 * reach, h + 2 * reach);
-        if (hole.width > 0 && hole.height > 0) {
-          roundedRect(
-            sctx,
-            hx - dx,
-            hy,
-            hole.width,
-            hole.height,
-            within,
-            true,
-            true,
-          );
-        }
-      },
-      w + reach + shadowReach(s.blur),
-    );
-    sctx.restore();
-  });
-  if (!image) return false;
-  ctx.drawImage(image, pad.x, pad.y);
-  return true;
 }
 
 /**
@@ -1351,12 +1193,13 @@ function fillShadow(
   color: string,
   shape: (dx: number) => void,
   right: number,
+  rule: 'nonzero' | 'evenodd' = 'nonzero',
 ): void {
   if (!(s.blur > 0)) {
     ctx.fillStyle = color;
     ctx.beginPath!();
     shape(0);
-    ctx.fill!();
+    ctx.fill!(rule);
     return;
   }
   const dx = Math.ceil(right) + 1;
@@ -1368,8 +1211,34 @@ function fillShadow(
   ctx.fillStyle = '#000000';
   ctx.beginPath!();
   shape(dx);
-  ctx.fill!();
+  ctx.fill!(rule);
   ctx.restore();
+}
+
+/**
+ * A shadow's shape, spelled the way a 2d context recognises one: a `rect`,
+ * or a `roundRect` with each corner's own radii, elliptical where the
+ * corner is. react-x11's contexts draw the blurred shadow of such a shape —
+ * and of a `rect` less such a shape, filled `evenodd` — from a tile they
+ * keep, where one built of curves they blur afresh on every fill.
+ */
+function shadowShape(
+  ctx: PaintContext,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  c: Corners,
+): void {
+  if (c.x.every((r) => r === 0) || c.y.every((r) => r === 0)) {
+    ctx.rect!(x, y, w, h);
+    return;
+  }
+  // a circular corner as the number every context has always taken; only
+  // an elliptical one as the point
+  const corner = (i: number) =>
+    c.x[i] === c.y[i] ? c.x[i] : { x: c.x[i], y: c.y[i] };
+  ctx.roundRect!(x, y, w, h, [corner(0), corner(1), corner(2), corner(3)]);
 }
 
 /**
