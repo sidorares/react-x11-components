@@ -14530,3 +14530,32 @@ metric(
     assert.strictEqual(el.hrefAtPoint(...pointIn(el, 'top')), '#top');
   },
 );
+
+metric(
+  "a box's end edge stays on the line of the content it closes",
+  async () => {
+    // A break after a box's last character is after its end edge (CSS
+    // Text 3, 5.1). Laid out as spacers in one text layout, the edge was a
+    // no-break space after a space, which the engine may break before
+    // (UAX #14, LB12a): it began the next line, and the box after it
+    // started its margin over. The Zen Garden's third design runs its list
+    // of designs inline, `margin-right: 5px` on each
+    const { node } = await render(
+      '<style>body{margin:0}p{margin:0;width:200px}' +
+        '.i{margin-right:20px}</style>' +
+        '<p id="p"><span class="i">aaaa </span>' +
+        '<span id="long" class="i">ccccccccccccccccccccccccccc</span></p>',
+      400,
+    );
+    const el = view(node);
+    await act();
+    const lines = linesOf(el, 'p');
+    assert.strictEqual(lines.length, 2, `${lines.length} lines`);
+    const opening = lines[1].edges?.find(
+      (edge) => edge.side === 'end' && edge.x <= lines[1].x + 0.5,
+    );
+    assert.ok(!opening, "the second line begins with the first box's end");
+    const long = el.elementRect(findById(el.document, 'long')!)!;
+    assert.ok(long.x < 0.5, `the next box starts the line: at ${long.x}`);
+  },
+);
