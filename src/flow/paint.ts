@@ -73,11 +73,24 @@ function paintText(painter: FlowPainter, item: SceneText): void {
  * per-edge request into a per-pen one. The key carries the dash *and* its
  * offset: two edges marching out of phase cannot share a path, because the
  * offset is set on the context, not on the subpath.
+ *
+ * And below the batch, one edge is still one path, however many runs a pass
+ * cut it into. Where a route crosses itself — a step edge that leaves its
+ * handle and doubles straight back along its own line — one path adds the
+ * two legs' coverage and two paths lay one over the other, so a pass that
+ * cut the fold's turn out of the edge drew the legs' shared line lighter at
+ * its edges than a repaint of the whole edge did.
  */
 class StrokeBuckets {
   private readonly byPen = new Map<
     string,
-    { options: StrokeOptions; runs: (readonly XYPosition[])[] }
+    {
+      options: StrokeOptions;
+      runs: (readonly XYPosition[])[];
+      // where each edge's runs start in `runs`, and whose the last were
+      starts: number[];
+      owner: object | null;
+    }
   >();
 
   push(
@@ -86,6 +99,7 @@ class StrokeBuckets {
     lineWidth: number,
     dash: readonly number[] | undefined,
     dashOffset: number,
+    owner: object,
   ): void {
     const key = `${stroke}|${lineWidth}|${dash?.join(',') ?? ''}|${dashOffset}`;
     let entry = this.byPen.get(key);
@@ -93,18 +107,29 @@ class StrokeBuckets {
       entry = {
         options: { stroke, lineWidth, dash, dashOffset },
         runs: [],
+        starts: [],
+        owner: null,
       };
       this.byPen.set(key, entry);
+    }
+    if (entry.owner !== owner) {
+      entry.starts.push(entry.runs.length);
+      entry.owner = owner;
     }
     entry.runs.push(points);
   }
 
   paint(painter: FlowPainter): void {
-    for (const { options, runs } of this.byPen.values()) {
+    for (const { options, runs, starts } of this.byPen.values()) {
       if (runs.length >= BATCH_MIN) {
         painter.strokeRuns(runs, options);
-      } else {
-        for (const run of runs) painter.polyline(run, options);
+        continue;
+      }
+      for (let i = 0; i < starts.length; i++) {
+        const from = starts[i];
+        const to = i + 1 < starts.length ? starts[i + 1] : runs.length;
+        if (to - from === 1) painter.polyline(runs[from], options);
+        else painter.strokeRuns(runs.slice(from, to), options);
       }
     }
   }
@@ -135,6 +160,7 @@ function paintEdges(painter: FlowPainter, edges: readonly SceneEdge[]): void {
         edge.lineWidth,
         edge.dash,
         edge.dashOffset + (edge.runStarts?.[i] ?? 0),
+        edge,
       );
     }
     for (const marker of edge.markers) {
