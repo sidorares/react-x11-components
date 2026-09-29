@@ -195,6 +195,7 @@ npx tsx scripts/conformance/run.ts wpt fuzz1 --chunk 50 --timeout 60000
 | 106    | a flex box's background with the flow's            | 5,651 (95%) | 5,102 (86%) |
 | 107    | `justify-content`'s start, end, left and right     | 5,651 (95%) | 5,102 (86%) |
 | 108    | a replaced flex item's size, `flex-basis: content` | 5,651 (95%) | 5,102 (86%) |
+| 109    | absolute boxes in grids, `grid-template`, `grid`   | 5,651 (95%) | 5,102 (86%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -3102,6 +3103,50 @@ CSS 2.1 together 19 more on Cocoa.
 267. **`flex-basis: content` took a row item's width** for its basis, as
      `auto` does; it is its max-content width, or a replaced element's
      natural one, whatever width it has (7.2.3).
+
+### Round 109
+
+268. **An absolutely positioned child of a flex box or a grid was placed
+     at the box's corner**, and against the box whatever its containing
+     block was: one in a flex box that is not positioned took the flex
+     box's padding box for its own. It is where it would be as the box's
+     one item (CSS Flexbox 4.1, CSS Grid 1, 9.2): in a flex box's content
+     box, set along the main axis by `justify-content` and across by
+     `align-self`, and in a grid's padding box by `justify-self` and
+     `align-self` — against its own containing block.
+269. **A grid gave an absolutely positioned box no grid area.** The
+     containing block of a box a grid positions is the area between the
+     lines its placement names (9.1), and a line that is `auto`, is no line
+     of the grid, or is only a `span` is the grid's padding edge — so
+     `grid-column: 2`, whose end is `auto`, runs to the edge. A child of
+     the grid is aligned in the area where its offsets are `auto`; a box
+     deeper in the grid takes its percentages and offsets from the area and
+     stays where its flow put it. css-grid's `abspos` tests went from 27
+     to 73 of 150, and css-flexbox's from 21 to 26 of 32.
+270. **`grid-template`, `grid` and `grid-auto-columns` were not read**, so
+     a grid written with a shorthand had no tracks and stacked its items
+     in one column. `grid-template` is rows, a slash and columns, the rows
+     written as area strings each sized by what follows it or `auto`;
+     `grid` the same, or one axis's tracks and the other's `auto-flow`
+     size. The area names are not placed by, nor is `auto-flow` down the
+     columns. The rows a template names are the grid's whether or not an
+     item is in them, and `auto` rows share a height the grid has of its
+     own, as `align-content: normal` stretches them (11.8).
+271. **A grid item that does not stretch was cut to its area.** It is
+     `fit-content`: as wide as its content fits, no wider than its area
+     unless its longest word is (6.2).
+
+css-grid went from 366 to 418 of 1,651 on X11, css-flexbox from 639 to
+646, css-sizing from 246 to 252. Eighteen tests passed by the accidents
+this ends. Nine `subgrid` and `grid-lanes` tests and
+`grid-intrinsic-maximums` matched references written with the `grid` and
+`grid-template` shorthands only while neither was read; three `safe`
+alignments of an absolutely positioned box matched references that had
+their boxes at the corner too; and five of css-break's grids in
+multi-column boxes, which `<Html>` does not fragment, matched their green
+squares only while the shorthands, the rows a template names and no item
+fills, and the stretch of an `auto` row were not there to push their items
+past the column.
 
 ## What `<Html>` supports
 

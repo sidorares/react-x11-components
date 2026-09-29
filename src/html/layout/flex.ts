@@ -38,6 +38,7 @@ import {
   measureIntrinsicWidth,
   moveTo,
   percentBaseInside,
+  positionOutOfFlow,
   resolveEdges,
 } from './block.js';
 import { layoutGrid } from './css-grid.js';
@@ -125,7 +126,7 @@ export function layoutFlex(
   for (const child of box.children) {
     if (child.kind === 'text' && isBlank(child.text)) continue;
     if (child.outOfFlow) {
-      ctx.positioned.push({ box: child, containing: box });
+      positionOutOfFlow(child, box, ctx, true);
       continue;
     }
     if (child.style.order !== 0) reordered = true;
@@ -1026,7 +1027,7 @@ function layoutAsBlockFallback(
   for (const child of box.children) {
     if (child.kind === 'text' && isBlank(child.text)) continue;
     if (child.outOfFlow) {
-      ctx.positioned.push({ box: child, containing: box });
+      positionOutOfFlow(child, box, ctx, true);
       continue;
     }
     resolveEdges(child, contentWidth);

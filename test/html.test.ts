@@ -9830,6 +9830,173 @@ metric('a grid places its items in its column tracks', async () => {
   assert.ok(c.width < 20 && c.x > 40, `${c.x} ${c.width}`);
 });
 
+metric('grid-template and grid set the tracks they name', async () => {
+  // Neither shorthand was read, so a grid written with one had no tracks
+  // and stacked its items in a column; nor was grid-auto-columns
+  const cells = async (css: string, items: string) => {
+    const { node } = await render(
+      '<style>body{margin:0;font:14px/20px sans-serif}</style>' +
+        `<div id="g" style="display:grid;${css}">${items}</div>`,
+      700,
+    );
+    const g = boxOf(view(node), 'g');
+    const out = g.children
+      .filter((c) => (c as unknown as { kind: string }).kind !== 'text')
+      .map((c) => [c.x, c.y, c.width, c.height].map((v) => Math.round(v)));
+    cleanup();
+    return out;
+  };
+  const four = '<div>a</div><div>b</div><div>c</div><div>d</div>';
+  assert.deepStrictEqual(
+    await cells('grid-template:30px 40px / 100px 50px', four),
+    [
+      [0, 0, 100, 30],
+      [100, 0, 50, 30],
+      [0, 30, 100, 40],
+      [100, 30, 50, 40],
+    ],
+    'rows, a slash and columns',
+  );
+  assert.deepStrictEqual(
+    await cells("grid-template:'a b' 30px 'c d' / 60px 70px", four),
+    [
+      [0, 0, 60, 30],
+      [60, 0, 70, 30],
+      [0, 30, 60, 20],
+      [60, 30, 70, 20],
+    ],
+    "each area string's row the size after it, and auto with none",
+  );
+  assert.deepStrictEqual(
+    await cells('grid:auto-flow 25px / 60px 60px', four),
+    [
+      [0, 0, 60, 25],
+      [60, 0, 60, 25],
+      [0, 25, 60, 25],
+      [60, 25, 60, 25],
+    ],
+    "auto-flow's rows, and the columns",
+  );
+  assert.deepStrictEqual(
+    await cells(
+      'grid-template-columns:50px;grid-auto-columns:30px',
+      '<div>a</div><div style="grid-column:2">b</div>',
+    ),
+    [
+      [0, 0, 50, 20],
+      [50, 0, 30, 20],
+    ],
+    'a column past the template is grid-auto-columns wide',
+  );
+});
+
+metric(
+  'an absolute box in a grid takes its grid area for its containing block',
+  async () => {
+    // CSS Grid 1, 9.1: the area between the lines it names, the grid's
+    // padding edge where a line is auto — which `grid-column: 2` leaves its
+    // end line. Its offsets, its percentages and
+    // its alignment were the grid's padding box's; a box deeper in the grid
+    // is where its own flow put it
+    const { node } = await render(
+      '<style>body{margin:0;font:14px/20px sans-serif}' +
+        '.a{position:absolute}</style>' +
+        '<div style="display:grid;position:relative;padding:10px;' +
+        'grid-template-columns:50px 100px;grid-template-rows:30px 40px">' +
+        '<div>a</div><div>b</div><div>c</div>' +
+        '<div><div id="d" class="a" style="width:50%;height:5px"></div></div>' +
+        '<div id="p" class="a" style="grid-column:2 / 3;grid-row:2 / 3;' +
+        'width:100%;height:100%"></div>' +
+        '<div id="r" class="a" style="grid-column:2;grid-row:2;' +
+        'width:100%;height:100%"></div>' +
+        '<div id="q" class="a" style="grid-column:2 / 3;inset:5px"></div>' +
+        '<div id="s" class="a" style="width:20px;height:20px;' +
+        'justify-self:center;align-self:end"></div></div>',
+      700,
+    );
+    const el = view(node);
+    const rect = (id: string) => {
+      const b = boxOf(el, id);
+      return [b.x, b.y, b.width, b.height];
+    };
+    // the grid's padding box is 700 by 90
+    assert.deepStrictEqual(rect('p'), [60, 40, 100, 40], 'its area');
+    assert.deepStrictEqual(rect('r'), [60, 40, 640, 50], 'auto: the edge');
+    assert.deepStrictEqual(rect('q'), [65, 5, 90, 80], 'a column, all rows');
+    assert.deepStrictEqual(rect('s'), [340, 70, 20, 20], 'aligned in it');
+    assert.deepStrictEqual(rect('d'), [60, 40, 350, 5], 'in the flow, deeper');
+  },
+);
+
+metric(
+  'an absolute box in a flex box is where it would be as its one item',
+  async () => {
+    // CSS Flexbox 4.1: its static position is in the flex box's content box,
+    // aligned by justify-content and align-self; it was at the box's corner.
+    // And its containing block is its own: one in a flex box that is not
+    // positioned was placed against the flex box
+    const place = async (css: string, child = 'width:20px;height:10px') => {
+      const { node } = await render(
+        '<style>body{margin:0}</style>' +
+          '<div style="position:relative;padding:7px">' +
+          `<div style="display:flex;width:100px;height:60px;padding:5px;${css}">` +
+          `<div id="a" style="position:absolute;${child}"></div></div></div>`,
+      );
+      const b = boxOf(view(node), 'a');
+      cleanup();
+      return [b.x, b.y];
+    };
+    assert.deepStrictEqual(
+      await place('justify-content:center;align-items:flex-end'),
+      [52, 62],
+      'centred along the row, at the end across it',
+    );
+    assert.deepStrictEqual(
+      await place(
+        'flex-direction:column;justify-content:flex-end;align-items:center',
+      ),
+      [52, 62],
+      'and the same down a column',
+    );
+    assert.deepStrictEqual(
+      await place('flex-direction:row-reverse'),
+      [92, 12],
+      'a reversed row starts at its end',
+    );
+    assert.deepStrictEqual(
+      await place('', 'top:0;left:0;width:20px;height:10px'),
+      [0, 0],
+      "its offsets are from its containing block's padding edge",
+    );
+  },
+);
+
+metric(
+  'auto rows share a grid height, and an item that does not stretch fits its content',
+  async () => {
+    // CSS Grid 1, 11.8: with align-content normal, the auto rows stretch to
+    // fill a grid of a definite height; and an item that is not stretched is
+    // as wide as its content fits, which is its longest word where that is
+    // wider than its area — it was cut to the area
+    const { node } = await render(
+      '<style>body{margin:0;font:14px/20px sans-serif}</style>' +
+        '<div style="display:grid;height:100px;grid-template-rows:20px auto auto">' +
+        '<div>a</div><div id="b">b</div><div id="c">c</div></div>' +
+        '<div style="display:grid;height:100px;align-content:start;' +
+        'grid-template-rows:20px auto"><div>a</div><div id="e">e</div></div>' +
+        '<div style="display:grid;grid-template-columns:10px;justify-items:start">' +
+        '<div id="w">Supercalifragilistic</div></div>',
+      700,
+    );
+    const el = view(node);
+    assert.strictEqual(boxOf(el, 'b').height, 40, 'half of what is left');
+    assert.strictEqual(boxOf(el, 'c').y, 60);
+    assert.strictEqual(boxOf(el, 'e').height, 20, 'align-content: start');
+    const w = boxOf(el, 'w');
+    assert.ok(w.width > 50, `as wide as its word: ${w.width}`);
+  },
+);
+
 // --- rounded borders -------------------------------------------------------------
 
 test("a rounded box's border is a ring that follows its corners", async () => {
